@@ -157,13 +157,16 @@ enum Format {
     }
 
     /// Compact binary units: `0 B`, `812 KB`, `11.1 MB`.
-    static func bytes(_ value: Double) -> String {
+    static func bytes(_ value: Double, locale: Locale = .current) -> String {
         let units = ["B", "KB", "MB", "GB", "TB"]
         var v = max(value, 0), i = 0
         while v >= 1024 && i < units.count - 1 { v /= 1024; i += 1 }
         let digits = i == 0 || v >= 100 ? 0 : 1
-        return "\(v.formatted(.number.precision(.fractionLength(digits)))) \(units[i])"
+        return "\(v.formatted(.number.precision(.fractionLength(digits)).locale(locale))) \(units[i])"
     }
+
+    /// Locale-neutral sizes for text an agent will read.
+    static func plainBytes(_ value: Double) -> String { bytes(value, locale: Locale(identifier: "en_US_POSIX")) }
 
     static func rate(_ value: Double) -> String {
         "\(bytes(value))/s"

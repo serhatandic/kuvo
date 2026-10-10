@@ -12,12 +12,6 @@ struct Sandboxes: Sendable {
     let client: DockerClient
     var clientName = "agent"
 
-    struct ExecResult {
-        var exitCode: Int?
-        var output: String
-        var duration: Double
-    }
-
     // MARK: Lifecycle
 
     func list() async throws -> [Container] {
@@ -26,7 +20,7 @@ struct Sandboxes: Sendable {
     }
 
     func create(name: String?, image: String, network: Bool, cpus: Double?, memoryMB: Int?) async throws -> Container {
-        try await pullIfNeeded(image)
+        try await client.pull(image)
         let name = name ?? Self.generatedName()
         // Back after Terrarium restarts, unless archived (stopped on purpose).
         var host: [String: Any] = [
@@ -80,49 +74,11 @@ struct Sandboxes: Sendable {
         try await wake(sandbox)
         let entry = Journal.Entry(kind: .exec, title: command)
         Journal.append(entry, to: sandbox.id)
-        let start = ContinuousClock.now
-
-        struct Created: Decodable { let Id: String }
-        let exec = try await client.send("POST", "/containers/\(sandbox.id)/exec", json: [
-            "AttachStdout": true, "AttachStderr": true, "Tty": false,
-            "WorkingDir": workdir ?? Self.workspace,
-            // Prefer a bash login shell (PATH, profiles) and fall back to sh.
-            "Cmd": ["sh", "-c", #"if command -v bash >/dev/null 2>&1; then exec bash -lc "$1"; else exec sh -c "$1"; fi"#, "sh", command],
-        ], as: Created.self)
-
-        let output = OutputBuffer()
-        let body = try JSONSerialization.data(withJSONObject: ["Detach": false, "Tty": false])
-        let finished = await withTaskGroup(of: Bool.self) { group in
-            group.addTask { [client] in
-                var demuxer = StreamDemuxer()
-                do {
-                    for try await chunk in client.stream("POST", "/exec/\(exec.Id)/start", body: body) {
-                        for (_, data) in demuxer.feed(chunk) { output.append(data) }
-                    }
-                } catch {}
-                return true
-            }
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-                return false
-            }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
-        }
-
-        struct Inspect: Decodable { let ExitCode: Int?; let Running: Bool }
-        let state = try? await JSONDecoder().decode(Inspect.self, from: client.send("GET", "/exec/\(exec.Id)/json"))
-        var text = output.text
-        if !finished { text += "\n[Still running after \(timeout). It continues in the background.]" }
-
-        let elapsed = start.duration(to: .now)
-        let duration = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
-        let exitCode = state?.Running == false ? state?.ExitCode : nil
+        let result = try await client.execute(in: sandbox.id, command: command, workdir: workdir ?? Self.workspace, timeout: timeout)
         var done = entry
-        done.finish(exitCode: exitCode, duration: duration, output: text)
+        done.finish(exitCode: result.exitCode, duration: result.duration, output: result.output)
         Journal.append(done, to: sandbox.id)
-        return ExecResult(exitCode: exitCode, output: text, duration: duration)
+        return result
     }
 
     func writeFile(_ sandbox: Container, path: String, content: Data) async throws {
@@ -132,7 +88,7 @@ struct Sandboxes: Sendable {
         try await makeDirectory(sandbox, directory)
         let tar = Tar.archive([.file(path: (path as NSString).lastPathComponent, data: content)])
         _ = try await client.send("PUT", "/containers/\(sandbox.id)/archive?path=\(directory.urlQuery)", body: tar, contentType: "application/x-tar")
-        Journal.append(.init(kind: .write, title: path, detail: Format.bytes(Double(content.count)), finished: true), to: sandbox.id)
+        Journal.append(.init(kind: .write, title: path, detail: Format.plainBytes(Double(content.count)), finished: true), to: sandbox.id)
     }
 
     func readFile(_ sandbox: Container, path: String) async throws -> Data {
@@ -152,7 +108,7 @@ struct Sandboxes: Sendable {
         _ = try await client.send("PUT", "/containers/\(sandbox.id)/archive?path=\(destination.urlQuery)",
                                   body: Tar.archive(entries), contentType: "application/x-tar")
         let target = (destination as NSString).appendingPathComponent(source.lastPathComponent)
-        let summary = "\(files) files, \(Format.bytes(Double(bytes)))"
+        let summary = "\(files) files, \(Format.plainBytes(Double(bytes)))"
         Journal.append(.init(kind: .copy, title: "\(source.path.abbreviatingHome) → \(target)", detail: summary, finished: true), to: sandbox.id)
         return (target, files, bytes)
     }
@@ -166,22 +122,6 @@ struct Sandboxes: Sendable {
         _ = try await client.send("POST", "/exec/\(exec.Id)/start", body: JSONSerialization.data(withJSONObject: ["Detach": false]))
     }
 
-    private func pullIfNeeded(_ image: String) async throws {
-        if (try? await client.send("GET", "/images/\(image.urlQuery)/json")) != nil { return }
-        var query = "fromImage=\(image.urlQuery)"
-        if !image.contains("@"), let colon = image.lastIndex(of: ":"), !image[colon...].contains("/") {
-            query = "fromImage=\(String(image[..<colon]).urlQuery)&tag=\(String(image[image.index(after: colon)...]).urlQuery)"
-        }
-        var lines = LineSplitter()
-        for try await chunk in client.stream("POST", "/images/create?\(query)") {
-            for line in lines.feed(chunk) {
-                if let message = (try? JSONSerialization.jsonObject(with: line) as? [String: Any])?["error"] as? String {
-                    throw DockerError(message: "Couldn't pull \(image): \(message)")
-                }
-            }
-        }
-    }
-
     private static func absolute(_ path: String) -> String {
         path.hasPrefix("/") ? path : (workspace as NSString).appendingPathComponent(path)
     }
@@ -189,27 +129,6 @@ struct Sandboxes: Sendable {
     private static func generatedName() -> String {
         let letters = Array("abcdefghjkmnpqrstuvwxyz23456789")
         return "sandbox-" + String((0..<4).map { _ in letters.randomElement()! })
-    }
-}
-
-/// Collects exec output from a background task, keeping it to a readable size.
-private final class OutputBuffer: @unchecked Sendable {
-    private let lock = NSLock()
-    private var data = Data()
-    private static let limit = 64 * 1024
-
-    func append(_ chunk: Data) {
-        lock.withLock {
-            data.append(chunk)
-            // Keep the start (context) and the end (results), drop the middle.
-            if data.count > Self.limit * 2 {
-                data = data.prefix(Self.limit / 4) + Data("\n[…]\n".utf8) + data.suffix(Self.limit)
-            }
-        }
-    }
-
-    var text: String {
-        lock.withLock { String(decoding: data, as: UTF8.self) }
     }
 }
 
