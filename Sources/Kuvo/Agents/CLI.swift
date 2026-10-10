@@ -124,7 +124,8 @@ struct CLI: AsyncParsableCommand {
                 let (name, directory) = CLI.remote(destination) ?? (destination, nil)
                 let target = try await service.resolve(name)
                 let copied = try await service.copyIn(target, hostPath: source, destination: directory)
-                print("Copied \(copied.files) files (\(Format.plainBytes(Double(copied.bytes)))) to \(target.name):\(copied.path).")
+                let files = copied.files == 1 ? "1 file" : "\(copied.files) files"
+                print("Copied \(files) (\(Format.plainBytes(Double(copied.bytes)))) to \(target.name):\(copied.path).")
             }
         }
     }
