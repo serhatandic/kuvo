@@ -2,21 +2,22 @@ import AppKit
 import ArgumentParser
 import Foundation
 
-/// `terrarium`: disposable Linux sandboxes from the command line, written to
+/// `terrarium`: work inside containers from the command line, written to
 /// read well for people and for agents (plain output, real exit codes).
 struct CLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "terrarium",
-        abstract: "Disposable Linux sandboxes, isolated from your Mac.",
+        abstract: "Work inside your containers: run commands, open shells, copy files.",
         discussion: """
-        Sandboxes keep their state until you archive or remove them, so reuse one when it fits.
-        Commands run in /workspace with bash. The network is on unless you turn it off.
+        Works on any container, by name, Compose service name or ID prefix. Commands run with
+        terrarium exec show up in the container's Activity in Terrarium.
 
         Examples:
           terrarium new bench --cpus 2 --memory 2g
           terrarium exec bench "apt-get update && apt-get install -y hyperfine"
           terrarium cp ~/code/parser bench
           terrarium exec -w /workspace/parser bench hyperfine 'python3 bench.py'
+          terrarium exec db pg_isready
         """,
         version: CLIInstaller.appBundle?.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev",
         subcommands: [New.self, List.self, Exec.self, ShellCommand.self, Copy.self,
@@ -24,47 +25,51 @@ struct CLI: AsyncParsableCommand {
     )
 
     struct New: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Create a sandbox and start it.")
+        static let configuration = CommandConfiguration(
+            abstract: "Create a Linux container to work in.",
+            discussion: "It idles in /workspace until given commands and stays until you archive or remove it."
+        )
 
-        @Argument(help: "Name, e.g. bench. Generated if omitted.") var name: String?
-        @Option(help: "Docker image.") var image = Sandboxes.defaultImage
+        @Argument(help: "Name, e.g. bench. Docker picks one if omitted.") var name: String?
+        @Option(help: "Image.") var image = ContainerService.defaultImage
         @Flag(help: "Turn off network access.") var noNetwork = false
         @Option(help: "CPU limit, e.g. 2.") var cpus: Double?
         @Option(help: "Memory limit, e.g. 2g or 512m.") var memory: String?
 
         func run() async throws {
-            let sandbox = try await CLI.connect().create(
+            let container = try await CLI.connect().create(
                 name: name, image: image, network: !noNetwork, cpus: cpus, memoryMB: try memory.map(CLI.megabytes)
             )
-            print("Created sandbox \(sandbox.name) from \(image).")
-            print("Run commands with: terrarium exec \(sandbox.name) <command>")
+            print("Created \(container.name) from \(image).")
+            print("Run commands with: terrarium exec \(container.name) <command>")
         }
     }
 
     struct List: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(commandName: "ls", abstract: "List sandboxes.")
+        static let configuration = CommandConfiguration(commandName: "ls", abstract: "List containers.")
 
         func run() async throws {
-            let all = try await CLI.connect().list()
-            guard !all.isEmpty else { return print("No sandboxes. Create one with: terrarium new") }
-            let rows = all.sorted { $0.created > $1.created }.map { sandbox -> [String] in
-                let state = Journal.archivedAt(sandbox.id).map { SandboxRetention.summary(archivedAt: $0).lowercased() }
-                    ?? (sandbox.isRunning ? "running" : "stopped")
-                return [sandbox.name, sandbox.image, state, sandbox.created.formatted(.relative(presentation: .named)),
-                        sandbox.sandboxClient ?? ""]
+            let all = try await CLI.connect().client.containers()
+            guard !all.isEmpty else { return print("No containers. Create one with: terrarium new") }
+            let rows = all.map { container -> [String] in
+                let state = Journal.archivedAt(container.id).map { ArchiveRetention.summary(archivedAt: $0).lowercased() }
+                    ?? container.humanStatus.lowercased()
+                return [container.name, container.image, state, container.creator ?? ""]
             }
-            print(CLI.table(["NAME", "IMAGE", "STATE", "CREATED", "BY"], rows))
+            // Only show who created what when terrarium new was used.
+            let showCreator = all.contains { $0.creator != nil }
+            print(CLI.table(["NAME", "IMAGE", "STATE"] + (showCreator ? ["CREATED BY"] : []), rows.map { showCreator ? $0 : Array($0.prefix(3)) }))
         }
     }
 
     struct Exec: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Run a command in a sandbox. Exits with the command's exit code.",
+            abstract: "Run a command in a container. Exits with the command's exit code.",
             discussion: "One argument is run as a shell string (pipes and && work). Several are quoted like a normal command line."
         )
 
-        @Option(name: .shortAndLong, help: "Working directory. Default: /workspace.") var workdir: String?
-        @Argument var sandbox: String
+        @Option(name: .shortAndLong, help: "Working directory. Default: the container's.") var workdir: String?
+        @Argument var container: String
         @Argument(parsing: .captureForPassthrough) var command: [String]
 
         func run() async throws {
@@ -72,10 +77,10 @@ struct CLI: AsyncParsableCommand {
             guard !parts.isEmpty else { throw ValidationError("Missing command.") }
             let line = parts.count == 1 ? parts[0] : parts.map(CLI.shellQuoted).joined(separator: " ")
 
-            let sandboxes = try await CLI.connect()
-            let target = try await sandboxes.resolve(sandbox)
-            let interrupt = Interrupt(sandbox: target.id)
-            let result = try await sandboxes.exec(target, command: line, workdir: workdir, onOutput: { kind, data in
+            let service = try await CLI.connect()
+            let target = try await service.resolve(container)
+            let interrupt = Interrupt(container: target.id)
+            let result = try await service.exec(target, command: line, workdir: workdir, onOutput: { kind, data in
                 (kind == .stderr ? FileHandle.standardError : FileHandle.standardOutput).write(data)
             }, started: interrupt.arm)
             if let code = result.exitCode, code != 0 { throw ExitCode(Int32(truncatingIfNeeded: code)) }
@@ -83,14 +88,14 @@ struct CLI: AsyncParsableCommand {
     }
 
     struct ShellCommand: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(commandName: "shell", abstract: "Open an interactive shell in a sandbox.")
+        static let configuration = CommandConfiguration(commandName: "shell", abstract: "Open an interactive shell in a container.")
 
-        @Argument var sandbox: String
+        @Argument var container: String
 
         func run() async throws {
-            let (sandboxes, target) = try await CLI.target(sandbox)
-            try await sandboxes.wake(target)
-            let code = try await Shell.run(target, client: sandboxes.client)
+            let (service, target) = try await CLI.target(container)
+            try await service.wake(target)
+            let code = try await Shell.run(target, client: service.client)
             if code != 0 { throw ExitCode(code) }
         }
     }
@@ -98,10 +103,10 @@ struct CLI: AsyncParsableCommand {
     struct Copy: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "cp",
-            abstract: "Copy files between your Mac and a sandbox.",
+            abstract: "Copy files between your Mac and a container.",
             discussion: """
-            terrarium cp <path> <sandbox>[:dir]    Copy a folder or file in (skips git-ignored files)
-            terrarium cp <sandbox>:<file> <path>   Copy a file out
+            terrarium cp <path> <container>[:dir]    Copy a folder or file in (skips git-ignored files)
+            terrarium cp <container>:<file> <path>   Copy a file out
             """
         )
 
@@ -109,54 +114,54 @@ struct CLI: AsyncParsableCommand {
         @Argument var destination: String
 
         func run() async throws {
-            let sandboxes = try await CLI.connect()
+            let service = try await CLI.connect()
             if let (name, path) = CLI.remote(source), let path {
-                let target = try await sandboxes.resolve(name)
-                let data = try await sandboxes.readFile(target, path: path)
+                let target = try await service.resolve(name)
+                let data = try await service.readFile(target, path: path)
                 var url = URL(filePath: (destination as NSString).expandingTildeInPath)
                 if FileManager.default.isDirectory(url) { url.append(path: (path as NSString).lastPathComponent) }
                 try data.write(to: url)
                 print("Copied \(path) to \(url.path.abbreviatingHome) (\(Format.plainBytes(Double(data.count)))).")
             } else {
                 let (name, directory) = CLI.remote(destination) ?? (destination, nil)
-                let target = try await sandboxes.resolve(name)
-                let copied = try await sandboxes.copyIn(target, hostPath: source, destination: directory)
+                let target = try await service.resolve(name)
+                let copied = try await service.copyIn(target, hostPath: source, destination: directory)
                 print("Copied \(copied.files) files (\(Format.plainBytes(Double(copied.bytes)))) to \(target.name):\(copied.path).")
             }
         }
     }
 
     struct Archive: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Stop a sandbox and keep it. Deleted after the retention period.")
-        @Argument var sandbox: String
+        static let configuration = CommandConfiguration(abstract: "Stop a container and keep it. Deleted after the retention period.")
+        @Argument var container: String
 
         func run() async throws {
-            let (sandboxes, target) = try await CLI.target(sandbox)
-            try await sandboxes.archive(target)
+            let (service, target) = try await CLI.target(container)
+            try await service.archive(target)
             print("Archived \(target.name).")
         }
     }
 
     struct Restore: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Restore an archived sandbox and start it.")
-        @Argument var sandbox: String
+        static let configuration = CommandConfiguration(abstract: "Restore an archived container and start it.")
+        @Argument var container: String
 
         func run() async throws {
-            let (sandboxes, target) = try await CLI.target(sandbox)
-            try await sandboxes.wake(target)
+            let (service, target) = try await CLI.target(container)
+            try await service.wake(target)
             print("Restored \(target.name).")
         }
     }
 
     struct Remove: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(commandName: "rm", abstract: "Delete sandboxes now.")
-        @Argument var sandboxes: [String]
+        static let configuration = CommandConfiguration(commandName: "rm", abstract: "Remove containers now, stopping them first.")
+        @Argument var containers: [String]
 
         func run() async throws {
-            let client = try await CLI.connect()
-            for name in sandboxes {
-                let target = try await client.resolve(name)
-                try await client.destroy(target)
+            let service = try await CLI.connect()
+            for name in containers {
+                let target = try await service.resolve(name)
+                try await service.remove(target)
                 print("Removed \(target.name).")
             }
         }
@@ -172,9 +177,7 @@ struct CLI: AsyncParsableCommand {
                 throw ExitCode.failure
             }
             let containers = (try? await client.containers()) ?? []
-            let sandboxes = containers.filter(\.isSandbox).count
-            let running = containers.filter { $0.isRunning && !$0.isSandbox }.count
-            print("Running: Docker \(version.Version), \(running) containers running, \(sandboxes) sandboxes.")
+            print("Running: Docker \(version.Version), \(containers.filter(\.isRunning).count) of \(containers.count) containers running.")
             print("Socket: \(EnginePaths.socket.path)")
         }
     }
@@ -190,15 +193,15 @@ struct CLI: AsyncParsableCommand {
 
     // MARK: Helpers
 
-    static func target(_ name: String) async throws -> (Sandboxes, Container) {
-        let sandboxes = try await connect()
-        return (sandboxes, try await sandboxes.resolve(name))
+    static func target(_ name: String) async throws -> (ContainerService, Container) {
+        let service = try await connect()
+        return (service, try await service.resolve(name))
     }
 
     /// Connects to the engine, starting Terrarium first if needed.
-    static func connect() async throws -> Sandboxes {
-        let sandboxes = Sandboxes(client: DockerClient(socketPath: EnginePaths.socket.path))
-        if (try? await sandboxes.client.ping()) != nil { return sandboxes }
+    static func connect() async throws -> ContainerService {
+        let service = ContainerService(client: DockerClient(socketPath: EnginePaths.socket.path))
+        if (try? await service.client.ping()) != nil { return service }
 
         FileHandle.standardError.write(Data("Starting Terrarium…\n".utf8))
         if let app = CLIInstaller.appBundle {
@@ -210,7 +213,7 @@ struct CLI: AsyncParsableCommand {
         }
         for _ in 0..<600 {
             try await Task.sleep(for: .milliseconds(500))
-            if (try? await sandboxes.client.ping()) != nil { return sandboxes }
+            if (try? await service.client.ping()) != nil { return service }
         }
         throw DockerError(message: "The engine didn't start. Open Terrarium to see what's wrong.")
     }
@@ -249,18 +252,18 @@ struct CLI: AsyncParsableCommand {
 
 /// Closes the journal record if the user presses Ctrl-C mid-command.
 final class Interrupt: @unchecked Sendable {
-    private let sandbox: String
+    private let container: String
     private var source: DispatchSourceSignal?
 
-    init(sandbox: String) { self.sandbox = sandbox }
+    init(container: String) { self.container = container }
 
     func arm(_ entry: Journal.Entry) {
         signal(SIGINT, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-        source.setEventHandler { [sandbox] in
+        source.setEventHandler { [container] in
             var done = entry
             done.finish(exitCode: 130, duration: Date().timeIntervalSince(entry.date), output: "[Interrupted]")
-            Journal.append(done, to: sandbox)
+            Journal.append(done, to: container)
             exit(130)
         }
         source.resume()

@@ -1,11 +1,17 @@
 import Foundation
 
-/// Archived sandboxes are kept for a while, then deleted. Nothing else expires.
-enum SandboxRetention {
-    static let key = "sandboxes.retentionDays"
+/// Archived containers are kept for a while, then deleted. Nothing else expires.
+enum ArchiveRetention {
+    static let key = "archive.retentionDays"
     static let choices = [1, 7, 30, 0] // 0 keeps them forever.
 
-    static var days: Int { UserDefaults.standard.object(forKey: key) as? Int ?? 7 }
+    /// The app's own defaults, so the CLI (a different process) sees the same setting.
+    static var defaults: UserDefaults {
+        Bundle.main.bundleIdentifier == suite ? .standard : UserDefaults(suiteName: suite) ?? .standard
+    }
+    private static let suite = "dev.terrarium.app"
+
+    static var days: Int { defaults.object(forKey: key) as? Int ?? 7 }
 
     static func deadline(archivedAt: Date) -> Date? {
         days > 0 ? archivedAt.addingTimeInterval(Double(days) * 86_400) : nil
@@ -16,12 +22,12 @@ enum SandboxRetention {
         return "Archived, deleted \(deadline.formatted(.relative(presentation: .numeric)))"
     }
 
-    /// Deletes expired archived sandboxes and journals whose container is gone.
+    /// Deletes expired archived containers, and records of containers that are gone.
     static func prune(_ containers: [Container], client: DockerClient) async {
-        let sandboxes = Sandboxes(client: client)
-        for container in containers where container.isSandbox {
+        let service = ContainerService(client: client)
+        for container in containers {
             if let archived = Journal.archivedAt(container.id), let deadline = deadline(archivedAt: archived), deadline < .now {
-                try? await sandboxes.destroy(container)
+                try? await service.remove(container)
             }
         }
         let ids = Set(containers.map(\.id))

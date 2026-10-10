@@ -6,7 +6,6 @@ struct Sidebar: View {
     @Binding var selection: String?
     @State private var query = ""
     @State private var collapsed: Set<String> = []
-    private static let sandboxesKey = "terrarium:sandboxes"
 
     private enum Item: Identifiable {
         case project(String, [Container])
@@ -24,10 +23,8 @@ struct Sidebar: View {
         query.isEmpty || container.name.localizedCaseInsensitiveContains(query) || container.image.localizedCaseInsensitiveContains(query)
     }
 
-    private var sandboxes: [Container] { store.containers.filter { $0.isSandbox && matches($0) } }
-
     private var items: [Item] {
-        let matches = store.containers.filter { !$0.isSandbox && matches($0) }
+        let matches = store.containers.filter(matches)
         var items: [Item] = []
         var seen = Set<String>()
         for container in matches {
@@ -63,13 +60,6 @@ struct Sidebar: View {
                     }
                 case .container(let container):
                     row(container)
-                }
-            }
-            if query.isEmpty || !sandboxes.isEmpty {
-                SandboxesRow(sandboxes: sandboxes, expanded: expansion(Self.sandboxesKey))
-                    .tag("sandboxes")
-                if expansion(Self.sandboxesKey).wrappedValue {
-                    ForEach(sandboxes) { row($0).padding(.leading, 16) }
                 }
             }
         }
@@ -212,28 +202,6 @@ private struct GroupGlyph: View {
     }
 }
 
-/// Always present, so the feature is discoverable before any agent uses it.
-private struct SandboxesRow: View {
-    let sandboxes: [Container]
-    @Binding var expanded: Bool
-
-    var body: some View {
-        RowLayout(title: "Sandboxes", subtitle: subtitle, action: nil) { hovering in
-            GroupGlyph(icon: "flask", expanded: $expanded, hovering: hovering)
-        } trailing: {
-            EmptyView()
-        }
-    }
-
-    private var subtitle: String {
-        let all = sandboxes.count
-        let archived = sandboxes.filter { Journal.archivedAt($0.id) != nil }.count
-        if all == 0 { return "For your agents" }
-        if archived == 0 { return all == 1 ? "1 sandbox" : "\(all) sandboxes" }
-        return "\(all - archived) active, \(archived) archived"
-    }
-}
-
 private struct ProjectRow: View {
     @Environment(DockerStore.self) private var store
     let project: String
@@ -311,11 +279,11 @@ private struct ContainerRow: View {
             : RowAction(systemImage: "play.fill", help: "Start") { store.perform(.start, on: container) }
     }
 
-    private var archivedAt: Date? { container.isSandbox ? Journal.archivedAt(container.id) : nil }
+    private var archivedAt: Date? { Journal.archivedAt(container.id) }
 
     private var subtitle: String {
         if let busy { return "\(busy.progressLabel)…" }
-        if let archivedAt { return SandboxRetention.summary(archivedAt: archivedAt) }
+        if let archivedAt { return ArchiveRetention.summary(archivedAt: archivedAt) }
         let ports = container.publishedPorts.prefix(2).map { ":\($0)" }.joined(separator: " ")
         return ports.isEmpty ? container.image : "\(container.image) · \(ports)"
     }
@@ -379,14 +347,22 @@ struct ContainerMenu: View {
         } else {
             Button("Start") { store.perform(.start, on: container) }
         }
-        if let port = container.publishedPorts.first, container.isRunning {
+        if container.isRunning {
             Divider()
-            Button("Open localhost:\(String(port))") { NSWorkspace.shared.open(URL(string: "http://localhost:\(port)")!) }
+            Button("Open in Terminal") { TerminalLauncher.open(container) }
+            if let port = container.publishedPorts.first {
+                Button("Open localhost:\(String(port))") { NSWorkspace.shared.open(URL(string: "http://localhost:\(port)")!) }
+            }
         }
         Divider()
         Button("Copy ID") { copy(container.id) }
         Button("Copy Name") { copy(container.name) }
         Divider()
+        if Journal.archivedAt(container.id) != nil {
+            Button("Restore") { store.restore(container) }
+        } else {
+            Button("Archive") { store.archive(container) }
+        }
         Button("Remove", role: .destructive) { store.perform(.remove, on: container) }
     }
 

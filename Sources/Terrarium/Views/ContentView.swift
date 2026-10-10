@@ -40,7 +40,7 @@ struct ContentView: View {
             Text(store.failure ?? "")
         }
         .onChange(of: store.containers.map(\.id)) { _, ids in
-            if selectedProject == nil, selection != "sandboxes", selection == nil || !ids.contains(selection!) {
+            if selectedProject == nil, selection == nil || !ids.contains(selection!) {
                 withAnimation(.snappy) { selection = store.containers.first(where: \.isRunning)?.id ?? ids.first }
             }
         }
@@ -48,14 +48,7 @@ struct ContentView: View {
 
     @ViewBuilder private var detail: some View {
         ZStack {
-            if let selected, selected.isSandbox {
-                SandboxDetail(container: selected)
-                    .id(selected.id)
-                    .transition(.opacity.combined(with: .offset(y: 6)))
-            } else if selection == "sandboxes" {
-                SandboxesOverview()
-                    .transition(.opacity.combined(with: .offset(y: 6)))
-            } else if let selected {
+            if let selected {
                 ContainerDetail(container: selected)
                     .id(selected.id)
                     .transition(.opacity.combined(with: .offset(y: 6)))

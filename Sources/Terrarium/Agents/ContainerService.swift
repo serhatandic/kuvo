@@ -1,35 +1,29 @@
 import Foundation
 
-/// Disposable Linux environments for agents. A sandbox is a plain container
-/// with a label, plus a journal of what happened inside it. Nothing expires
-/// on its own; archived sandboxes are deleted after a retention period.
-struct Sandboxes: Sendable {
-    static let label = "dev.terrarium.sandbox"
-    static let clientLabel = "dev.terrarium.client"
+/// What Terrarium adds on top of Docker, for any container: commands that
+/// leave a record, file copies, archiving, and quick containers to work in.
+/// Shared by the app and the `terrarium` CLI.
+struct ContainerService: Sendable {
+    static let creatorLabel = "dev.terrarium.creator"
     static let defaultImage = "ubuntu:24.04"
     static let workspace = "/workspace"
 
     let client: DockerClient
-    var clientName = Self.detectClient()
+    var creator = Self.detectCreator()
 
     /// Who's driving: Claude Code sets CLAUDECODE=1 in its shells.
-    static func detectClient() -> String {
+    static func detectCreator() -> String {
         let env = ProcessInfo.processInfo.environment
-        if let client = env["TERRARIUM_CLIENT"], !client.isEmpty { return client }
+        if let creator = env["TERRARIUM_CREATOR"], !creator.isEmpty { return creator }
         return env["CLAUDECODE"] == "1" ? "Claude Code" : "you"
     }
 
     // MARK: Lifecycle
 
-    func list() async throws -> [Container] {
-        let filter = #"{"label":["\#(Self.label)"]}"#.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
-        return try await JSONDecoder().decode([Container].self, from: client.send("GET", "/containers/json?all=true&filters=\(filter)"))
-    }
-
+    /// A long-lived container to work in: idles until given commands, and
+    /// comes back after Terrarium restarts unless archived.
     func create(name: String?, image: String, network: Bool, cpus: Double?, memoryMB: Int?) async throws -> Container {
         try await client.pull(image)
-        let name = name ?? Self.generatedName()
-        // Back after Terrarium restarts, unless archived (stopped on purpose).
         var host: [String: Any] = [
             "Init": true, "NetworkMode": network ? "bridge" : "none", "RestartPolicy": ["Name": "unless-stopped"],
         ]
@@ -37,12 +31,13 @@ struct Sandboxes: Sendable {
         if let memoryMB { host["Memory"] = memoryMB * 1024 * 1024 }
 
         struct Created: Decodable { let Id: String }
-        let created = try await client.send("POST", "/containers/create?name=\(name.urlQuery)", json: [
+        let path = name.map { "/containers/create?name=\($0.urlQuery)" } ?? "/containers/create"
+        let created = try await client.send("POST", path, json: [
             "Image": image,
             "Entrypoint": [String](),
             "Cmd": ["sleep", "infinity"],
             "WorkingDir": Self.workspace,
-            "Labels": [Self.label: "1", Self.clientLabel: clientName],
+            "Labels": [Self.creatorLabel: creator],
             "HostConfig": host,
         ], as: Created.self)
         _ = try await client.send("POST", "/containers/\(created.Id)/start")
@@ -50,98 +45,94 @@ struct Sandboxes: Sendable {
         return try await resolve(created.Id)
     }
 
-    /// Finds a sandbox by name or ID prefix.
+    /// By name, Compose service name (when unambiguous), or ID prefix.
     func resolve(_ reference: String) async throws -> Container {
-        let all = try await list()
-        if let match = all.first(where: { $0.name == reference || $0.id.hasPrefix(reference) }) { return match }
-        let names = all.map(\.name).joined(separator: ", ")
-        throw DockerError(message: "No sandbox named \(reference).\(names.isEmpty ? "" : " Existing: \(names)")")
+        let all = try await client.containers()
+        if let exact = all.first(where: { $0.name == reference || $0.id == reference }) { return exact }
+        let matches = all.filter { $0.service == reference || (reference.count >= 3 && $0.id.hasPrefix(reference)) }
+        if matches.count == 1 { return matches[0] }
+        if matches.count > 1 {
+            throw DockerError(message: "\(reference) is ambiguous: \(matches.map(\.name).joined(separator: ", ")).")
+        }
+        throw DockerError(message: "No container named \(reference). Run terrarium ls to see them.")
     }
 
-    func archive(_ sandbox: Container) async throws {
-        if sandbox.isRunning { _ = try await client.send("POST", "/containers/\(sandbox.id)/stop?t=2") }
-        Journal.setArchived(sandbox.id, Date())
+    /// Stops it and keeps it; it's deleted after the retention period.
+    func archive(_ container: Container) async throws {
+        if container.isRunning { _ = try await client.send("POST", "/containers/\(container.id)/stop?t=2") }
+        Journal.setArchived(container.id, Date())
     }
 
-    func destroy(_ sandbox: Container) async throws {
-        _ = try await client.send("DELETE", "/containers/\(sandbox.id)?force=true")
-        Journal.remove(sandbox.id)
+    func remove(_ container: Container) async throws {
+        _ = try await client.send("DELETE", "/containers/\(container.id)?force=true")
+        Journal.remove(container.id)
     }
 
     /// Running and unarchived, so commands can execute.
-    func wake(_ sandbox: Container) async throws {
-        Journal.setArchived(sandbox.id, nil)
-        if sandbox.state == .paused { _ = try await client.send("POST", "/containers/\(sandbox.id)/unpause") }
-        if !sandbox.isRunning && sandbox.state != .paused { _ = try await client.send("POST", "/containers/\(sandbox.id)/start") }
+    func wake(_ container: Container) async throws {
+        Journal.setArchived(container.id, nil)
+        if container.state == .paused { _ = try await client.send("POST", "/containers/\(container.id)/unpause") }
+        if !container.isRunning && container.state != .paused { _ = try await client.send("POST", "/containers/\(container.id)/start") }
     }
 
     // MARK: Work
 
-    /// Runs a command, recording it in the journal. `interrupted` lets a
-    /// caller close the record if the process is stopped mid-command.
-    func exec(_ sandbox: Container, command: String, workdir: String?,
+    /// Runs a command and records it in the container's activity.
+    /// `started` lets a caller close the record if it's interrupted.
+    func exec(_ container: Container, command: String, workdir: String?,
               onOutput: @Sendable (StreamDemuxer.Kind, Data) -> Void = { _, _ in },
               started: (Journal.Entry) -> Void = { _ in }) async throws -> ExecResult {
-        try await wake(sandbox)
+        try await wake(container)
         let entry = Journal.Entry(kind: .exec, title: command)
-        Journal.append(entry, to: sandbox.id)
+        Journal.append(entry, to: container.id)
         started(entry)
-        let result = try await client.execute(in: sandbox.id, command: command, workdir: workdir ?? Self.workspace, onOutput: onOutput)
+        let result = try await client.execute(in: container.id, command: command, workdir: workdir, onOutput: onOutput)
         var done = entry
         done.finish(exitCode: result.exitCode, duration: result.duration, output: result.output)
-        Journal.append(done, to: sandbox.id)
+        Journal.append(done, to: container.id)
         return result
     }
 
-    func writeFile(_ sandbox: Container, path: String, content: Data) async throws {
-        try await wake(sandbox)
-        let path = Self.absolute(path)
-        let directory = (path as NSString).deletingLastPathComponent
-        try await makeDirectory(sandbox, directory)
-        let tar = Tar.archive([.file(path: (path as NSString).lastPathComponent, data: content)])
-        _ = try await client.send("PUT", "/containers/\(sandbox.id)/archive?path=\(directory.urlQuery)", body: tar, contentType: "application/x-tar")
-        Journal.append(.init(kind: .write, title: path, detail: Format.plainBytes(Double(content.count)), finished: true), to: sandbox.id)
-    }
-
-    func readFile(_ sandbox: Container, path: String) async throws -> Data {
-        let path = Self.absolute(path)
-        let tar = try await client.send("GET", "/containers/\(sandbox.id)/archive?path=\(path.urlQuery)")
+    func readFile(_ container: Container, path: String) async throws -> Data {
+        let path = try await absolute(path, in: container)
+        let tar = try await client.send("GET", "/containers/\(container.id)/archive?path=\(path.urlQuery)")
         guard let data = Tar.firstFile(in: tar) else { throw DockerError(message: "\(path) isn't a regular file") }
         return data
     }
 
-    /// Copies a folder (or file) from the Mac into the sandbox. A copy, never a mount.
-    func copyIn(_ sandbox: Container, hostPath: String, destination: String?) async throws -> (path: String, files: Int, bytes: Int) {
-        try await wake(sandbox)
+    /// Copies a folder (or file) from the Mac into the container. A copy, never a mount.
+    func copyIn(_ container: Container, hostPath: String, destination: String?) async throws -> (path: String, files: Int, bytes: Int) {
+        try await wake(container)
         let source = URL(filePath: (hostPath as NSString).expandingTildeInPath).standardizedFileURL
-        let destination = Self.absolute(destination ?? Self.workspace)
+        let destination = try await absolute(destination ?? ".", in: container)
         let (entries, files, bytes) = try HostFiles.entries(for: source)
-        try await makeDirectory(sandbox, destination)
-        _ = try await client.send("PUT", "/containers/\(sandbox.id)/archive?path=\(destination.urlQuery)",
+        try await makeDirectory(container, destination)
+        _ = try await client.send("PUT", "/containers/\(container.id)/archive?path=\(destination.urlQuery)",
                                   body: Tar.archive(entries), contentType: "application/x-tar")
         let target = (destination as NSString).appendingPathComponent(source.lastPathComponent)
         let summary = "\(files) files, \(Format.plainBytes(Double(bytes)))"
-        Journal.append(.init(kind: .copy, title: "\(source.path.abbreviatingHome) → \(target)", detail: summary, finished: true), to: sandbox.id)
+        Journal.append(.init(kind: .copy, title: "\(source.path.abbreviatingHome) → \(target)", detail: summary, finished: true), to: container.id)
         return (target, files, bytes)
+    }
+
+    /// Relative paths are relative to the container's working directory.
+    private func absolute(_ path: String, in container: Container) async throws -> String {
+        guard !path.hasPrefix("/") else { return path }
+        struct Inspect: Decodable { struct Config: Decodable { let WorkingDir: String? }; let Config: Config }
+        let workdir = (try? await JSONDecoder().decode(Inspect.self, from: client.send("GET", "/containers/\(container.id)/json")))?
+            .Config.WorkingDir.flatMap { $0.isEmpty ? nil : $0 } ?? "/"
+        return ((workdir as NSString).appendingPathComponent(path) as NSString).standardizingPath
     }
 
     // MARK: Helpers
 
-    private func makeDirectory(_ sandbox: Container, _ path: String) async throws {
+    private func makeDirectory(_ container: Container, _ path: String) async throws {
         guard path != "/" else { return }
         struct Created: Decodable { let Id: String }
-        let exec = try await client.send("POST", "/containers/\(sandbox.id)/exec", json: ["Cmd": ["mkdir", "-p", path]], as: Created.self)
+        let exec = try await client.send("POST", "/containers/\(container.id)/exec", json: ["Cmd": ["mkdir", "-p", path]], as: Created.self)
         _ = try await client.send("POST", "/exec/\(exec.Id)/start", body: JSONSerialization.data(withJSONObject: ["Detach": false]))
     }
 
-    private static func absolute(_ path: String) -> String {
-        path.hasPrefix("/") ? path : (workspace as NSString).appendingPathComponent(path)
-    }
-
-    private static func generatedName() -> String {
-        let letters = Array("abcdefghjkmnpqrstuvwxyz23456789")
-        return "sandbox-" + String((0..<4).map { _ in letters.randomElement()! })
-    }
 }
 
 /// Files to copy from the Mac, honoring .gitignore when the folder is a git repo.
@@ -232,8 +223,8 @@ enum HostFiles {
 
 // MARK: - Journal
 
-/// What happened in each sandbox, as JSON lines on disk. Written by the MCP
-/// server, read by the app. Also records when a sandbox was archived.
+/// What happened in each container, as JSON lines on disk. Written by the
+/// CLI, read by the app. Also records when a container was archived.
 enum Journal {
     struct Entry: Codable, Identifiable, Equatable, Sendable {
         enum Kind: String, Codable, Sendable { case create, exec, write, copy }
@@ -256,7 +247,7 @@ enum Journal {
         }
     }
 
-    static let directory = EnginePaths.support.appending(path: "sandboxes", directoryHint: .isDirectory)
+    static let directory = EnginePaths.support.appending(path: "activity", directoryHint: .isDirectory)
 
     static func append(_ entry: Entry, to id: String) {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -324,8 +315,8 @@ enum Journal {
 }
 
 extension Container {
-    var isSandbox: Bool { labels[Sandboxes.label] != nil }
-    var sandboxClient: String? { labels[Sandboxes.clientLabel] }
+    /// "Claude Code" or "you", for containers made with terrarium new.
+    var creator: String? { labels[ContainerService.creatorLabel] }
 }
 
 extension String {

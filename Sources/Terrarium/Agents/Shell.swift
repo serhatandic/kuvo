@@ -1,18 +1,18 @@
 import Foundation
 
-/// `terrarium shell`: an interactive TTY inside a sandbox. Docker hands over
+/// `terrarium shell`: an interactive TTY inside a container. Docker hands over
 /// the raw connection after an HTTP upgrade; we put the terminal in raw mode
 /// and copy bytes both ways, resizing along with the window.
 enum Shell {
-    static func run(_ sandbox: Container, client: DockerClient) async throws -> Int32 {
+    static func run(_ container: Container, client: DockerClient) async throws -> Int32 {
         guard isatty(STDIN_FILENO) == 1 else {
             throw DockerError(message: "shell needs a terminal. Use terrarium exec to run commands.")
         }
         struct Created: Decodable { let Id: String }
         let term = ProcessInfo.processInfo.environment["TERM"] ?? "xterm-256color"
-        let exec = try await client.send("POST", "/containers/\(sandbox.id)/exec", json: [
+        let exec = try await client.send("POST", "/containers/\(container.id)/exec", json: [
             "AttachStdin": true, "AttachStdout": true, "AttachStderr": true, "Tty": true,
-            "Env": ["TERM=\(term)"], "WorkingDir": Sandboxes.workspace,
+            "Env": ["TERM=\(term)"],
             "Cmd": ["sh", "-c", "command -v bash >/dev/null && exec bash -l || exec sh"],
         ], as: Created.self)
 

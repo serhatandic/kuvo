@@ -7,76 +7,92 @@ struct LogSource: Hashable, Sendable {
     var label: String?
 }
 
+/// A titled logs panel (used for Compose projects).
 struct LogsView: View {
-    @Environment(DockerStore.self) private var store
     let sources: [LogSource]
     var isRunning = true
     @State private var model = LogModel()
-    @AppStorage("logs.timestamps") private var timestamps = false
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 2) {
-                Text("Logs")
-                    .font(.system(size: 13, weight: .semibold))
-                Text("\(model.lineCount) lines")
-                    .font(.system(size: 11).monospacedDigit())
-                    .foregroundStyle(.tertiary)
-                    .contentTransition(.numericText(value: Double(model.lineCount)))
-                    .animation(.snappy, value: model.lineCount)
-                    .padding(.leading, 6)
-                Spacer()
-                Button { timestamps.toggle() } label: {
-                    Image(systemName: "clock")
-                }
-                .buttonStyle(HoverButtonStyle(tint: timestamps ? .accentColor : .secondary))
-                .help(timestamps ? "Hide timestamps" : "Show timestamps")
-                Button { model.clear() } label: { Image(systemName: "trash") }
-                    .buttonStyle(HoverButtonStyle(tint: .secondary))
-                    .help("Clear")
+                Text("Logs").font(.system(size: 13, weight: .semibold))
+                LogsAccessory(model: model)
             }
-            .font(.system(size: 12))
-            .padding(.leading, 14)
-            .padding(.trailing, 8)
-            .padding(.vertical, 6)
-
+            .panelHeader()
             Divider().opacity(0.6)
-
-            LogTextView(model: model)
-                .overlay(alignment: .bottomTrailing) {
-                    if !model.isFollowing {
-                        Button { model.scrollToEnd() } label: {
-                            Label("Latest", systemImage: "arrow.down")
-                                .font(.system(size: 11, weight: .medium))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(.regularMaterial, in: .capsule)
-                                .overlay(Capsule().strokeBorder(.separator, lineWidth: 0.5))
-                                .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
-                        }
-                        .buttonStyle(.plain)
-                        .padding(12)
-                        .transition(.scale(0.8).combined(with: .opacity))
-                    }
-                }
-                .animation(.snappy, value: model.isFollowing)
-                .overlay {
-                    if model.lineCount == 0 && model.loaded {
-                        Text(isRunning ? "Waiting for output…" : "No output")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.tertiary)
-                            .transition(.opacity)
-                    }
-                }
+            LogsBody(model: model, sources: sources, isRunning: isRunning)
         }
         .panel()
-        .onChange(of: timestamps, initial: true) { model.showTimestamps = timestamps }
-        .task(id: sources) {
-            guard let client = store.client else { return }
-            await model.follow(client: client, sources: sources) { [store] id in
-                store.containers.first { $0.id == id }?.isRunning ?? false
-            }
+    }
+}
+
+/// Line count, timestamps toggle and clear, for a panel's header.
+struct LogsAccessory: View {
+    let model: LogModel
+    @AppStorage("logs.timestamps") private var timestamps = false
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Text("\(model.lineCount) lines")
+                .font(.system(size: 11).monospacedDigit())
+                .foregroundStyle(.tertiary)
+                .contentTransition(.numericText(value: Double(model.lineCount)))
+                .animation(.snappy, value: model.lineCount)
+                .padding(.leading, 6)
+            Spacer()
+            Button { timestamps.toggle() } label: { Image(systemName: "clock") }
+                .buttonStyle(HoverButtonStyle(tint: timestamps ? .accentColor : .secondary))
+                .help(timestamps ? "Hide timestamps" : "Show timestamps")
+            Button { model.clear() } label: { Image(systemName: "trash") }
+                .buttonStyle(HoverButtonStyle(tint: .secondary))
+                .help("Clear")
         }
+        .font(.system(size: 12))
+        .onChange(of: timestamps, initial: true) { model.showTimestamps = timestamps }
+    }
+}
+
+/// The log text itself, following the given containers.
+struct LogsBody: View {
+    @Environment(DockerStore.self) private var store
+    let model: LogModel
+    let sources: [LogSource]
+    var isRunning = true
+
+    var body: some View {
+        LogTextView(model: model)
+            .overlay(alignment: .bottomTrailing) {
+                if !model.isFollowing {
+                    Button { model.scrollToEnd() } label: {
+                        Label("Latest", systemImage: "arrow.down")
+                            .font(.system(size: 11, weight: .medium))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(.regularMaterial, in: .capsule)
+                            .overlay(Capsule().strokeBorder(.separator, lineWidth: 0.5))
+                            .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(12)
+                    .transition(.scale(0.8).combined(with: .opacity))
+                }
+            }
+            .animation(.snappy, value: model.isFollowing)
+            .overlay {
+                if model.lineCount == 0 && model.loaded {
+                    Text(isRunning ? "Waiting for output…" : "No output")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                        .transition(.opacity)
+                }
+            }
+            .task(id: sources) {
+                guard let client = store.client else { return }
+                await model.follow(client: client, sources: sources) { [store] id in
+                    store.containers.first { $0.id == id }?.isRunning ?? false
+                }
+            }
     }
 }
 

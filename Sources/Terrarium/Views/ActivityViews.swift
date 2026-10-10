@@ -1,87 +1,8 @@
 import SwiftUI
 
-// MARK: - Sandbox
+// MARK: - Activity
 
-/// One sandbox: live stats, what the agent did, and what it changed.
-struct SandboxDetail: View {
-    @Environment(DockerStore.self) private var store
-    let container: Container
-    @State private var tab = Tab.activity
-    @State private var journal = JournalWatcher()
-    @State private var confirmDestroy = false
-
-    enum Tab { case activity, changes }
-
-    private var archivedAt: Date? { Journal.archivedAt(container.id) }
-    private var commands: Int { journal.entries.filter { $0.kind == .exec }.count }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            StatsRow(stats: [store.stats(for: container.id)], running: container.state == .running)
-            VStack(spacing: 0) {
-                HStack {
-                    Picker("View", selection: $tab) {
-                        Text("Activity").tag(Tab.activity)
-                        Text("Changes").tag(Tab.changes)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                Divider().opacity(0.6)
-                switch tab {
-                case .activity: ActivityList(entries: journal.entries)
-                case .changes: ChangesList(containerID: container.id, refresh: journal.entries.count)
-                }
-            }
-            .panel()
-        }
-        .padding([.horizontal, .bottom], 20)
-        .padding(.top, 8)
-        .navigationTitle(container.name)
-        .navigationSubtitle(subtitle)
-        .toolbar {
-            ToolbarItem(placement: .navigation) { TitleIcon(systemName: "flask.fill") }
-            ToolbarItemGroup {
-                if let docker = SandboxTerminal.dockerCLI {
-                    Button { SandboxTerminal.open(container, docker: docker) } label: {
-                        Label("Open in Terminal", systemImage: "terminal")
-                    }
-                    .help("Open a shell in this sandbox")
-                    .disabled(!container.isRunning)
-                }
-                if archivedAt != nil {
-                    Button { store.restore(sandbox: container) } label: { Label("Restore", systemImage: "arrow.uturn.backward") }
-                        .help("Restore and start")
-                } else {
-                    Button { store.archive(sandbox: container) } label: { Label("Archive", systemImage: "archivebox") }
-                        .help("Stop and keep for later")
-                }
-                Button { confirmDestroy = true } label: { Label("Destroy", systemImage: "trash") }
-                    .help("Destroy")
-            }
-        }
-        .task(id: container.id) { await journal.watch(container.id) }
-        .confirmationDialog("Destroy \(container.name)?", isPresented: $confirmDestroy) {
-            Button("Destroy", role: .destructive) { store.perform(.remove, on: container) }
-        } message: {
-            Text("The sandbox and everything in it will be deleted.")
-        }
-    }
-
-    private var subtitle: String {
-        if let archivedAt { return SandboxRetention.summary(archivedAt: archivedAt) }
-        var parts = [container.image]
-        if let client = container.sandboxClient { parts.append("by \(client)") }
-        parts.append(commands == 1 ? "1 command" : "\(commands) commands")
-        return parts.joined(separator: "  ·  ")
-    }
-}
-
-/// Re-reads a sandbox's journal whenever the MCP server writes to it.
+/// Re-reads a container's activity whenever the CLI records something.
 @MainActor @Observable
 final class JournalWatcher {
     private(set) var entries: [Journal.Entry] = []
@@ -102,12 +23,12 @@ final class JournalWatcher {
 
 // MARK: - Activity
 
-private struct ActivityList: View {
+struct ActivityList: View {
     let entries: [Journal.Entry]
 
     var body: some View {
         if entries.isEmpty {
-            Text("Nothing yet. Commands your agent runs show up here.")
+            Text("No activity yet.")
                 .font(.system(size: 12))
                 .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -225,7 +146,7 @@ private struct ActivityRow: View {
 // MARK: - Changes
 
 /// Files the agent added, modified or deleted, compared with the image.
-private struct ChangesList: View {
+struct ChangesList: View {
     @Environment(DockerStore.self) private var store
     let containerID: String
     let refresh: Int
@@ -304,119 +225,17 @@ private struct ChangesList: View {
     }
 }
 
-// MARK: - Overview
-
-/// Shown when the Sandboxes group is selected: the command-line tool and retention.
-struct SandboxesOverview: View {
-    @Environment(DockerStore.self) private var store
-    @AppStorage(SandboxRetention.key) private var retentionDays = 7
-    private var installed: String? { CLIInstaller.installedPath }
-
-    private var count: Int { store.containers.filter(\.isSandbox).count }
-
-    private static let agentNote = "Use the `terrarium` CLI for throwaway Linux sandboxes (benchmarks, experiments, installing tools) instead of running them on this Mac. Run `terrarium --help` to see how."
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Command line")
-                        .font(.system(size: 15, weight: .semibold))
-                    Text("terrarium comes with the app and gives you and your agents disposable Linux sandboxes from any terminal: create one, run commands, copy files in and out, open a shell.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    CopyableLine(text: "terrarium --help")
-                    if let installed {
-                        Text("Linked at \(installed.abbreviatingHome)")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.tertiary)
-                    }
-
-                    Divider().padding(.vertical, 4)
-
-                    Text("Tell your agent about it. Add this to CLAUDE.md or AGENTS.md:")
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(.secondary)
-                    CopyableLine(text: Self.agentNote, monospaced: false)
-                }
-                .padding(18)
-                .panel()
-
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Archived sandboxes")
-                            .font(.system(size: 13, weight: .medium))
-                        Text("Sandboxes are kept until archived or removed. Archived ones are deleted after:")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 16)
-                    Picker("Delete after", selection: $retentionDays) {
-                        ForEach(SandboxRetention.choices, id: \.self) { days in
-                            Text(days == 0 ? "Never" : days == 1 ? "1 day" : "\(days) days").tag(days)
-                        }
-                    }
-                    .labelsHidden()
-                    .fixedSize()
-                }
-                .padding(18)
-                .panel()
-            }
-            .frame(maxWidth: 640, alignment: .leading)
-            .padding(.horizontal, 20)
-            .padding(.top, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .navigationTitle("Sandboxes")
-        .navigationSubtitle(count == 0 ? "None yet" : count == 1 ? "1 sandbox" : "\(count) sandboxes")
-        .toolbar { ToolbarItem(placement: .navigation) { TitleIcon(systemName: "flask.fill") } }
-    }
-}
-
-/// A line of text with a Copy button that confirms itself.
-private struct CopyableLine: View {
-    let text: String
-    var monospaced = true
-    @State private var copied = false
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(text)
-                .font(monospaced ? .system(size: 12).monospaced() : .system(size: 12.5))
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 8)
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(text, forType: .string)
-                withAnimation(.snappy) { copied = true }
-            } label: {
-                Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
-                    .contentTransition(.symbolEffect(.replace))
-            }
-        }
-        .padding(12)
-        .background(.primary.opacity(0.05), in: .rect(cornerRadius: 8))
-    }
-}
-
 // MARK: - Terminal
 
-enum SandboxTerminal {
-    static let dockerCLI = [
-        "/opt/homebrew/bin/docker", "/usr/local/bin/docker", "/Applications/Docker.app/Contents/Resources/bin/docker",
-    ].first { FileManager.default.isExecutableFile(atPath: $0) }
-
-    /// Opens Terminal with a shell inside the sandbox, via a throwaway .command file.
-    static func open(_ sandbox: Container, docker: String) {
+/// Opens Terminal with a shell inside a container, via our own CLI.
+enum TerminalLauncher {
+    static func open(_ container: Container) {
         let script = """
         #!/bin/sh
-        export DOCKER_HOST=unix://\(EnginePaths.socket.path)
         clear
-        exec "\(docker)" exec -it -w \(Sandboxes.workspace) \(sandbox.id) sh -c 'command -v bash >/dev/null && exec bash -l || exec sh'
+        exec '\(CLIInstaller.executable)' shell \(container.id)
         """
-        let url = FileManager.default.temporaryDirectory.appending(path: "terrarium-\(sandbox.name).command")
+        let url = FileManager.default.temporaryDirectory.appending(path: "terrarium-\(container.name).command")
         try? script.write(to: url, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         NSWorkspace.shared.open(url)

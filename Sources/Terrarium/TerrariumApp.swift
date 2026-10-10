@@ -36,6 +36,25 @@ struct TerrariumApp: App {
             Image(systemName: delegate.store.containers.contains(where: \.isRunning) ? "shippingbox.fill" : "shippingbox")
         }
         .menuBarExtraStyle(.window)
+
+        Settings { SettingsView() }
+    }
+}
+
+private struct SettingsView: View {
+    @AppStorage(ArchiveRetention.key, store: ArchiveRetention.defaults) private var retentionDays = 7
+
+    var body: some View {
+        Form {
+            Picker("Delete archived containers after", selection: $retentionDays) {
+                ForEach(ArchiveRetention.choices, id: \.self) { days in
+                    Text(days == 0 ? "Never" : days == 1 ? "1 day" : "\(days) days").tag(days)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 440)
+        .fixedSize()
     }
 }
 

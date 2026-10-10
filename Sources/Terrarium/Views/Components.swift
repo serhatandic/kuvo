@@ -196,6 +196,13 @@ extension View {
     }
 }
 
+extension View {
+    /// Spacing for the row of controls at the top of a panel.
+    func panelHeader() -> some View {
+        padding(.leading, 14).padding(.trailing, 8).frame(minHeight: 40)
+    }
+}
+
 /// A glyph beside the window title, like a folder icon in Finder.
 struct TitleIcon: View {
     let systemName: String
