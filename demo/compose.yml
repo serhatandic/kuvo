@@ -28,7 +28,7 @@ services:
           [ $$((i % 7)) -eq 0 ] && printf '\033[33mWARN\033[0m  queue depth high (%d)\n' $$((RANDOM % 200))
           [ $$((i % 19)) -eq 0 ] && printf '\033[31mERROR\033[0m retrying payment webhook\n' >&2
           # Bursty CPU so the sparklines have something to draw.
-          [ $$((RANDOM % 3)) -eq 0 ] && timeout 0.6 sh -c 'while :; do :; done'
-          wget -q -O /dev/null http://web || true
+          [ $$((RANDOM % 3)) -eq 0 ] && timeout 0.6 sh -c 'while :; do :; done' >/dev/null 2>&1
+          wget -q -O /dev/null http://web >/dev/null 2>&1 || true
           sleep 0.7
         done

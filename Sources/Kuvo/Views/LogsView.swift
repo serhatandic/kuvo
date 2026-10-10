@@ -80,9 +80,7 @@ struct LogsBody: View {
             }
             .task(id: sources) {
                 guard let client = store.client else { return }
-                await model.follow(client: client, sources: sources) { [store] id in
-                    store.containers.first { $0.id == id }?.isRunning ?? false
-                }
+                await model.follow(client: client, sources: sources)
             }
     }
 }
@@ -103,7 +101,7 @@ final class LogModel {
     @ObservationIgnored private var labelWidth = 0
     private static let cap = 5000
 
-    func follow(client: DockerClient, sources: [LogSource], isRunning: @escaping @MainActor (String) -> Bool) async {
+    func follow(client: DockerClient, sources: [LogSource]) async {
         lines = []; lengths = []; lineCount = 0; loaded = false
         labels = sources.map { $0.label ?? "" }
         labelWidth = labels.map(\.count).max() ?? 0
@@ -134,13 +132,15 @@ final class LogModel {
         await withTaskGroup(of: Void.self) { group in
             for (index, source) in sources.enumerated() {
                 let start = since[source.id] ?? start
-                group.addTask { await self.tail(client, source.id, index: index, since: start, isRunning: isRunning) }
+                group.addTask { await self.tail(client, source.id, index: index, since: start) }
             }
         }
     }
 
-    /// Follows one container, resuming after restarts.
-    private func tail(_ client: DockerClient, _ id: String, index: Int, since: Date, isRunning: @MainActor (String) -> Bool) async {
+    /// Follows one container for as long as its logs are on screen. A stopped
+    /// container ends the stream at once; reconnecting each second picks it up
+    /// again when it starts or restarts.
+    private func tail(_ client: DockerClient, _ id: String, index: Int, since: Date) async {
         var since = since
         repeat {
             var decoder = LogDecoder()
@@ -154,7 +154,7 @@ final class LogModel {
                 }
             } catch {}
             try? await Task.sleep(for: .seconds(1))
-        } while !Task.isCancelled && isRunning(id)
+        } while !Task.isCancelled
     }
 
     private nonisolated static func read(_ client: DockerClient, _ id: String, index: Int, query: String) async -> [LogLine] {
