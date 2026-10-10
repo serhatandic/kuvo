@@ -10,7 +10,14 @@ struct Sandboxes: Sendable {
     static let workspace = "/workspace"
 
     let client: DockerClient
-    var clientName = "agent"
+    var clientName = Self.detectClient()
+
+    /// Who's driving: Claude Code sets CLAUDECODE=1 in its shells.
+    static func detectClient() -> String {
+        let env = ProcessInfo.processInfo.environment
+        if let client = env["TERRARIUM_CLIENT"], !client.isEmpty { return client }
+        return env["CLAUDECODE"] == "1" ? "Claude Code" : "you"
+    }
 
     // MARK: Lifecycle
 
@@ -70,11 +77,16 @@ struct Sandboxes: Sendable {
 
     // MARK: Work
 
-    func exec(_ sandbox: Container, command: String, workdir: String?, timeout: Duration) async throws -> ExecResult {
+    /// Runs a command, recording it in the journal. `interrupted` lets a
+    /// caller close the record if the process is stopped mid-command.
+    func exec(_ sandbox: Container, command: String, workdir: String?,
+              onOutput: @Sendable (StreamDemuxer.Kind, Data) -> Void = { _, _ in },
+              started: (Journal.Entry) -> Void = { _ in }) async throws -> ExecResult {
         try await wake(sandbox)
         let entry = Journal.Entry(kind: .exec, title: command)
         Journal.append(entry, to: sandbox.id)
-        let result = try await client.execute(in: sandbox.id, command: command, workdir: workdir ?? Self.workspace, timeout: timeout)
+        started(entry)
+        let result = try await client.execute(in: sandbox.id, command: command, workdir: workdir ?? Self.workspace, onOutput: onOutput)
         var done = entry
         done.finish(exitCode: result.exitCode, duration: result.duration, output: result.output)
         Journal.append(done, to: sandbox.id)

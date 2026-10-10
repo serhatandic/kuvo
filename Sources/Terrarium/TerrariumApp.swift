@@ -1,12 +1,15 @@
 import SwiftUI
 
-/// One binary, two roles: the app, or `Terrarium mcp` for agents.
+/// One binary, two roles: the app, or the `terrarium` command-line tool.
 @main
 enum Entry {
     static func main() {
-        guard CommandLine.arguments.dropFirst().first == "mcp" else { return TerrariumApp.main() }
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        let invokedAsTool = (CommandLine.arguments.first as NSString?)?.lastPathComponent == "terrarium"
+        let looksLikeCommand = arguments.first.map { !$0.hasPrefix("-") || ["-h", "--help", "--version"].contains($0) } ?? false
+        guard invokedAsTool || looksLikeCommand else { return TerrariumApp.main() }
         Task {
-            await MCPServer.run()
+            await CLI.main(arguments)
             exit(0)
         }
         dispatchMain()

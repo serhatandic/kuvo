@@ -7,9 +7,10 @@ struct ExecResult: Sendable {
 }
 
 extension DockerClient {
-    /// Runs a shell command in a running container and collects its output.
-    /// Waits up to `timeout`; a longer command keeps running in the background.
-    func execute(in id: String, command: String, workdir: String? = nil, timeout: Duration) async throws -> ExecResult {
+    /// Runs a shell command in a running container, streaming its output as
+    /// it arrives and keeping a trimmed copy for the record.
+    func execute(in id: String, command: String, workdir: String? = nil,
+                 onOutput: @Sendable (StreamDemuxer.Kind, Data) -> Void = { _, _ in }) async throws -> ExecResult {
         let start = ContinuousClock.now
         struct Created: Decodable { let Id: String }
         var config: [String: Any] = [
@@ -21,33 +22,20 @@ extension DockerClient {
         let exec = try await send("POST", "/containers/\(id)/exec", json: config, as: Created.self)
 
         let output = OutputBuffer()
+        var demuxer = StreamDemuxer()
         let body = try JSONSerialization.data(withJSONObject: ["Detach": false, "Tty": false])
-        let finished = await withTaskGroup(of: Bool.self) { group in
-            group.addTask {
-                var demuxer = StreamDemuxer()
-                do {
-                    for try await chunk in stream("POST", "/exec/\(exec.Id)/start", body: body) {
-                        for (_, data) in demuxer.feed(chunk) { output.append(data) }
-                    }
-                } catch {}
-                return true
+        for try await chunk in stream("POST", "/exec/\(exec.Id)/start", body: body) {
+            for (kind, data) in demuxer.feed(chunk) {
+                output.append(data)
+                onOutput(kind, data)
             }
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-                return false
-            }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
         }
 
-        struct Inspect: Decodable { let ExitCode: Int?; let Running: Bool }
+        struct Inspect: Decodable { let ExitCode: Int? }
         let state = try? await JSONDecoder().decode(Inspect.self, from: send("GET", "/exec/\(exec.Id)/json"))
-        var text = output.text
-        if !finished { text += "\n[Still running after \(timeout). It continues in the background.]" }
         let elapsed = start.duration(to: .now)
         let duration = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
-        return ExecResult(exitCode: state?.Running == false ? state?.ExitCode : nil, output: text, duration: duration)
+        return ExecResult(exitCode: state?.ExitCode, output: output.text, duration: duration)
     }
 
     /// Pulls an image unless it's already present.
