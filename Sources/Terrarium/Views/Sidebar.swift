@@ -6,6 +6,7 @@ struct Sidebar: View {
     @Binding var selection: String?
     @State private var query = ""
     @State private var collapsed: Set<String> = []
+    private static let sandboxesKey = "terrarium:sandboxes"
 
     private enum Item: Identifiable {
         case project(String, [Container])
@@ -19,10 +20,14 @@ struct Sidebar: View {
         }
     }
 
+    private func matches(_ container: Container) -> Bool {
+        query.isEmpty || container.name.localizedCaseInsensitiveContains(query) || container.image.localizedCaseInsensitiveContains(query)
+    }
+
+    private var sandboxes: [Container] { store.containers.filter { $0.isSandbox && matches($0) } }
+
     private var items: [Item] {
-        let matches = store.containers.filter {
-            query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.image.localizedCaseInsensitiveContains(query)
-        }
+        let matches = store.containers.filter { !$0.isSandbox && matches($0) }
         var items: [Item] = []
         var seen = Set<String>()
         for container in matches {
@@ -58,6 +63,13 @@ struct Sidebar: View {
                     }
                 case .container(let container):
                     row(container)
+                }
+            }
+            if query.isEmpty || !sandboxes.isEmpty {
+                SandboxesRow(sandboxes: sandboxes, expanded: expansion(Self.sandboxesKey))
+                    .tag("sandboxes")
+                if expansion(Self.sandboxesKey).wrappedValue {
+                    ForEach(sandboxes) { row($0).padding(.leading, 16) }
                 }
             }
         }
@@ -171,6 +183,57 @@ private struct RowAction: View {
     }
 }
 
+/// A group's icon, which turns into its disclosure chevron while hovered.
+private struct GroupGlyph: View {
+    let icon: String
+    @Binding var expanded: Bool
+    let hovering: Bool
+
+    var body: some View {
+        Button { withAnimation(.snappy) { expanded.toggle() } } label: {
+            ZStack {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .bold))
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .opacity(hovering ? 1 : 0)
+                    .scaleEffect(hovering ? 1 : 0.6)
+                Image(systemName: icon)
+                    .font(.system(size: 12))
+                    .opacity(hovering ? 0 : 1)
+                    .scaleEffect(hovering ? 0.6 : 1)
+            }
+            .foregroundStyle(.secondary)
+            .frame(width: 16, height: 24)
+            .contentShape(.rect)
+            .animation(.snappy(duration: 0.18), value: hovering)
+        }
+        .buttonStyle(.plain)
+        .help(expanded ? "Collapse" : "Expand")
+    }
+}
+
+/// Always present, so the feature is discoverable before any agent uses it.
+private struct SandboxesRow: View {
+    let sandboxes: [Container]
+    @Binding var expanded: Bool
+
+    var body: some View {
+        RowLayout(title: "Sandboxes", subtitle: subtitle, action: nil) { hovering in
+            GroupGlyph(icon: "flask", expanded: $expanded, hovering: hovering)
+        } trailing: {
+            EmptyView()
+        }
+    }
+
+    private var subtitle: String {
+        let all = sandboxes.count
+        let archived = sandboxes.filter { Journal.archivedAt($0.id) != nil }.count
+        if all == 0 { return "For your agents" }
+        if archived == 0 { return all == 1 ? "1 sandbox" : "\(all) sandboxes" }
+        return "\(all - archived) active, \(archived) archived"
+    }
+}
+
 private struct ProjectRow: View {
     @Environment(DockerStore.self) private var store
     let project: String
@@ -181,26 +244,7 @@ private struct ProjectRow: View {
 
     var body: some View {
         RowLayout(title: project, subtitle: subtitle, action: action) { hovering in
-            // The project icon turns into a disclosure chevron while hovered.
-            Button { withAnimation(.snappy) { expanded.toggle() } } label: {
-                ZStack {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .bold))
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
-                        .opacity(hovering ? 1 : 0)
-                        .scaleEffect(hovering ? 1 : 0.6)
-                    Image(systemName: "square.stack.3d.up")
-                        .font(.system(size: 12))
-                        .opacity(hovering ? 0 : 1)
-                        .scaleEffect(hovering ? 0.6 : 1)
-                }
-                .foregroundStyle(.secondary)
-                .frame(width: 16, height: 24)
-                .contentShape(.rect)
-                .animation(.snappy(duration: 0.18), value: hovering)
-            }
-            .buttonStyle(.plain)
-            .help(expanded ? "Collapse" : "Expand")
+            GroupGlyph(icon: "square.stack.3d.up", expanded: $expanded, hovering: hovering)
         } trailing: {
             ProjectCPU(stats: containers.filter(\.isRunning).map { store.stats(for: $0.id) })
         }
@@ -247,7 +291,11 @@ private struct ContainerRow: View {
 
     var body: some View {
         RowLayout(title: container.service ?? container.name, subtitle: subtitle, action: action) { _ in
-            StatusDot(state: container.state, busy: busy != nil)
+            if archivedAt != nil {
+                Image(systemName: "archivebox").font(.system(size: 11)).foregroundStyle(.tertiary)
+            } else {
+                StatusDot(state: container.state, busy: busy != nil)
+            }
         } trailing: {
             if container.isRunning {
                 RowStats(stats: store.stats(for: container.id))
@@ -263,8 +311,11 @@ private struct ContainerRow: View {
             : RowAction(systemImage: "play.fill", help: "Start") { store.perform(.start, on: container) }
     }
 
+    private var archivedAt: Date? { container.isSandbox ? Journal.archivedAt(container.id) : nil }
+
     private var subtitle: String {
         if let busy { return "\(busy.progressLabel)…" }
+        if let archivedAt { return SandboxRetention.summary(archivedAt: archivedAt) }
         let ports = container.publishedPorts.prefix(2).map { ":\($0)" }.joined(separator: " ")
         return ports.isEmpty ? container.image : "\(container.image) · \(ports)"
     }

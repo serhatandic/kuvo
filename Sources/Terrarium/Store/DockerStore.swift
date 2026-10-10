@@ -22,6 +22,7 @@ final class DockerStore {
     @ObservationIgnored private var live: [String: LiveStats] = [:]
     @ObservationIgnored private var statsTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var lastPrune = Date.distantPast
 
     // MARK: Lifecycle
 
@@ -79,6 +80,10 @@ final class DockerStore {
             withAnimation(.snappy) { containers = fresh }
         }
         syncStats()
+        if Date.now.timeIntervalSince(lastPrune) > 600 {
+            lastPrune = .now
+            Task { await SandboxRetention.prune(fresh, client: client) }
+        }
         onPortsChanged(Set(fresh.filter(\.isRunning).flatMap(\.publishedPorts).compactMap { UInt16(exactly: $0) }))
     }
 
@@ -86,6 +91,7 @@ final class DockerStore {
 
     func perform(_ action: ContainerAction, on container: Container) {
         guard let client, busy[container.id] == nil else { return }
+        if container.isSandbox, action == .start || action == .restart { Journal.setArchived(container.id, nil) }
         withAnimation(.snappy) { busy[container.id] = action }
         Task {
             do {
@@ -96,6 +102,17 @@ final class DockerStore {
             try? await refresh()
             withAnimation(.snappy) { busy[container.id] = nil }
         }
+    }
+
+    /// Stops a sandbox and keeps it; it's deleted after the retention period.
+    func archive(sandbox: Container) {
+        Journal.setArchived(sandbox.id, .now)
+        if sandbox.isRunning { perform(.stop, on: sandbox) } else { Task { try? await refresh() } }
+    }
+
+    func restore(sandbox: Container) {
+        Journal.setArchived(sandbox.id, nil)
+        if sandbox.isRunning { Task { try? await refresh() } } else { perform(.start, on: sandbox) }
     }
 
     func perform(_ action: ContainerAction, onProject project: String) {
