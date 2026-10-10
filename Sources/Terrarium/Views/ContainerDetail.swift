@@ -10,15 +10,14 @@ struct ContainerDetail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            StatsRow(stats: store.stats(for: container.id), running: container.state == .running)
-            LogsView(container: container)
+            StatsRow(stats: [store.stats(for: container.id)], running: container.state == .running)
+            LogsView(sources: [LogSource(id: container.id)], isRunning: container.isRunning)
         }
         .padding([.horizontal, .bottom], 20)
         .padding(.top, 8)
         // Name and status live in the toolbar, next to the actions, like Mail or Xcode.
         .navigationTitle(container.name)
         .background { Subtitle(container: container, details: details, busy: busy) }
-        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .toolbar {
             ToolbarItemGroup {
                 if let port = container.publishedPorts.first, container.isRunning {
@@ -97,11 +96,13 @@ private struct Subtitle: View {
 
 // MARK: - Stats
 
-private struct StatsRow: View {
-    let stats: LiveStats
+/// CPU, memory and network for one container, or summed across several.
+struct StatsRow: View {
+    let stats: [LiveStats]
     let running: Bool
 
     var body: some View {
+        let stats = StatsSeries(stats)
         HStack(spacing: 12) {
             StatCard(
                 title: "CPU", color: .blue, values: stats.cpu, tick: stats.tick, minimum: 5,
@@ -123,6 +124,37 @@ private struct StatsRow: View {
         .opacity(running ? 1 : 0.55)
         .saturation(running ? 1 : 0)
         .animation(.smooth(duration: 0.5), value: running)
+    }
+}
+
+/// Series from one or more containers, summed and aligned on the newest sample.
+private struct StatsSeries {
+    var cpu: [Double] = []
+    var memory: [Double] = []
+    var network: [Double] = []
+    var memoryLimit: Double = 0
+    var rxRate: Double = 0
+    var txRate: Double = 0
+    var tick = 0
+
+    @MainActor init(_ all: [LiveStats]) {
+        for stats in all {
+            cpu = Self.sum(cpu, stats.cpu)
+            memory = Self.sum(memory, stats.memory, isLevel: true)
+            network = Self.sum(network, stats.network)
+            memoryLimit = max(memoryLimit, stats.memoryLimit)
+            rxRate += stats.rxRate
+            txRate += stats.txRate
+            tick = max(tick, stats.tick)
+        }
+    }
+
+    /// Levels (memory) extend a shorter history with its first sample; rates with zero.
+    private static func sum(_ a: [Double], _ b: [Double], isLevel: Bool = false) -> [Double] {
+        let (long, short) = a.count >= b.count ? (a, b) : (b, a)
+        let offset = long.count - short.count
+        let fill = isLevel ? short.first ?? 0 : 0
+        return long.enumerated().map { i, v in v + (i >= offset ? short[i - offset] : fill) }
     }
 }
 

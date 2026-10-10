@@ -8,6 +8,13 @@ struct ContentView: View {
         store.containers.first { $0.id == selection }
     }
 
+    /// Projects are selected as `project:<name>`.
+    private var selectedProject: String? {
+        guard let selection, selection.hasPrefix("project:") else { return nil }
+        let name = String(selection.dropFirst("project:".count))
+        return store.containers.contains { $0.project == name } ? name : nil
+    }
+
     var body: some View {
         ZStack {
             switch store.connection {
@@ -33,7 +40,7 @@ struct ContentView: View {
             Text(store.failure ?? "")
         }
         .onChange(of: store.containers.map(\.id)) { _, ids in
-            if selection == nil || !ids.contains(selection!) {
+            if selectedProject == nil, selection == nil || !ids.contains(selection!) {
                 withAnimation(.snappy) { selection = store.containers.first(where: \.isRunning)?.id ?? ids.first }
             }
         }
@@ -45,6 +52,10 @@ struct ContentView: View {
                 ContainerDetail(container: selected)
                     .id(selected.id)
                     .transition(.opacity.combined(with: .offset(y: 6)))
+            } else if let selectedProject {
+                ProjectDetail(project: selectedProject)
+                    .id(selectedProject)
+                    .transition(.opacity.combined(with: .offset(y: 6)))
             } else if store.containers.isEmpty {
                 EmptyStateView().transition(.opacity)
             } else {
@@ -52,7 +63,8 @@ struct ContentView: View {
                     .transition(.opacity)
             }
         }
-        .animation(.snappy(duration: 0.28), value: selected?.id)
+        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        .animation(.snappy(duration: 0.28), value: selection)
     }
 }
 

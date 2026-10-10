@@ -1,9 +1,16 @@
 import AppKit
 import SwiftUI
 
+/// A container whose logs to show; `label` prefixes each line when merging several.
+struct LogSource: Hashable, Sendable {
+    let id: String
+    var label: String?
+}
+
 struct LogsView: View {
     @Environment(DockerStore.self) private var store
-    let container: Container
+    let sources: [LogSource]
+    var isRunning = true
     @State private var model = LogModel()
     @AppStorage("logs.timestamps") private var timestamps = false
 
@@ -55,7 +62,7 @@ struct LogsView: View {
                 .animation(.snappy, value: model.isFollowing)
                 .overlay {
                     if model.lineCount == 0 && model.loaded {
-                        Text(container.isRunning ? "Waiting for output…" : "No output")
+                        Text(isRunning ? "Waiting for output…" : "No output")
                             .font(.system(size: 12))
                             .foregroundStyle(.tertiary)
                             .transition(.opacity)
@@ -66,10 +73,9 @@ struct LogsView: View {
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator.opacity(0.6), lineWidth: 0.5))
         .clipShape(.rect(cornerRadius: 12))
         .onChange(of: timestamps, initial: true) { model.showTimestamps = timestamps }
-        .task(id: container.id) {
+        .task(id: sources) {
             guard let client = store.client else { return }
-            let id = container.id
-            await model.follow(client: client, id: id) { [store] in
+            await model.follow(client: client, sources: sources) { [store] id in
                 store.containers.first { $0.id == id }?.isRunning ?? false
             }
         }
@@ -88,29 +94,77 @@ final class LogModel {
     @ObservationIgnored weak var textView: NSTextView?
     @ObservationIgnored private var lines: [LogLine] = []
     @ObservationIgnored private var lengths: [Int] = []
+    @ObservationIgnored private var labels: [String] = []
+    @ObservationIgnored private var labelWidth = 0
     private static let cap = 5000
 
-    func follow(client: DockerClient, id: String, isRunning: @escaping @MainActor () -> Bool) async {
+    func follow(client: DockerClient, sources: [LogSource], isRunning: @escaping @MainActor (String) -> Bool) async {
         lines = []; lengths = []; lineCount = 0; loaded = false
+        labels = sources.map { $0.label ?? "" }
+        labelWidth = labels.map(\.count).max() ?? 0
         textView?.textStorage?.setAttributedString(NSAttributedString())
-        var since: Date?
+
+        // Backlog first, merged by time so a project's services interleave.
+        let start = Date()
+        var backlog: [LogLine] = []
+        var since: [String: Date] = [:]
+        await withTaskGroup(of: (String, [LogLine]).self) { group in
+            for (index, source) in sources.enumerated() {
+                group.addTask { (source.id, await Self.read(client, source.id, index: index, query: "tail=1000")) }
+            }
+            for await (id, lines) in group {
+                backlog += lines
+                since[id] = lines.last?.date ?? start
+            }
+        }
+        if sources.count > 1 {
+            backlog = backlog.enumerated()
+                .sorted { ($0.element.date ?? .distantPast, $0.offset) < ($1.element.date ?? .distantPast, $1.offset) }
+                .map(\.element)
+        }
+        append(backlog)
+        loaded = true
+
+        // Then follow each source live.
+        await withTaskGroup(of: Void.self) { group in
+            for (index, source) in sources.enumerated() {
+                let start = since[source.id] ?? start
+                group.addTask { await self.tail(client, source.id, index: index, since: start, isRunning: isRunning) }
+            }
+        }
+    }
+
+    /// Follows one container, resuming after restarts.
+    private func tail(_ client: DockerClient, _ id: String, index: Int, since: Date, isRunning: @MainActor (String) -> Bool) async {
+        var since = since
         repeat {
             var decoder = LogDecoder()
-            let path = since.map { "&since=\($0.timeIntervalSince1970)" } ?? ""
-            let stream = client.stream("GET", "/containers/\(id)/logs?follow=true&stdout=true&stderr=true&timestamps=true&tail=1000\(path)")
+            let stream = client.stream("GET", Self.path(id, "follow=true&since=\(since.timeIntervalSince1970)"))
             do {
                 for try await chunk in stream {
-                    var batch = decoder.feed(chunk)
-                    if let since { batch.removeAll { ($0.date ?? .distantFuture) <= since } }
+                    var batch = decoder.feed(chunk).map { var line = $0; line.source = index; return line }
+                    batch.removeAll { ($0.date ?? .distantFuture) <= since }
                     append(batch)
-                    loaded = true
+                    since = batch.last?.date ?? since
                 }
             } catch {}
-            loaded = true
-            since = lines.last?.date ?? since ?? Date()
-            // A container that restarts ends the stream; pick it back up.
             try? await Task.sleep(for: .seconds(1))
-        } while !Task.isCancelled && isRunning()
+        } while !Task.isCancelled && isRunning(id)
+    }
+
+    private nonisolated static func read(_ client: DockerClient, _ id: String, index: Int, query: String) async -> [LogLine] {
+        var decoder = LogDecoder()
+        var lines: [LogLine] = []
+        do {
+            for try await chunk in client.stream("GET", path(id, query)) {
+                lines += decoder.feed(chunk).map { var line = $0; line.source = index; return line }
+            }
+        } catch {}
+        return lines
+    }
+
+    private nonisolated static func path(_ id: String, _ query: String) -> String {
+        "/containers/\(id)/logs?stdout=true&stderr=true&timestamps=true&\(query)"
     }
 
     func clear() {
@@ -175,6 +229,12 @@ final class LogModel {
         if showTimestamps, let date = line.date {
             out.append(NSAttributedString(string: date.formatted(Self.timeFormat) + "  ", attributes: [
                 .font: ANSI.font, .foregroundColor: NSColor.tertiaryLabelColor, .paragraphStyle: ANSI.paragraph,
+            ]))
+        }
+        if labelWidth > 0, let source = line.source, labels.indices.contains(source) {
+            let label = labels[source].padding(toLength: labelWidth, withPad: " ", startingAt: 0)
+            out.append(NSAttributedString(string: label + "  ", attributes: [
+                .font: ANSI.bold, .foregroundColor: ANSI.sourceColor(source), .paragraphStyle: ANSI.paragraph,
             ]))
         }
         out.append(ANSI.render(line.text))
@@ -256,6 +316,12 @@ private final class UserScrollView: NSScrollView {
         90: .tertiaryLabelColor, 91: .systemRed, 92: .systemGreen, 93: .systemYellow,
         94: .systemBlue, 95: .systemPink, 96: .systemCyan, 97: .labelColor,
     ]
+
+    /// Stable per-service colors for merged logs, like `docker compose logs`.
+    static func sourceColor(_ index: Int) -> NSColor {
+        let colors: [NSColor] = [.systemBlue, .systemPurple, .systemTeal, .systemOrange, .systemPink, .systemGreen, .systemIndigo, .systemBrown]
+        return colors[index % colors.count]
+    }
 
     private static let levels: [(String, NSColor)] = [
         ("ERROR", .systemRed), ("FATAL", .systemRed), ("PANIC", .systemRed),

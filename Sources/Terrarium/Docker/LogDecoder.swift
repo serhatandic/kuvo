@@ -4,6 +4,8 @@ struct LogLine: Sendable {
     let date: Date?
     let text: String
     let isError: Bool
+    /// Which source this came from when several are merged (a Compose project).
+    var source: Int?
 }
 
 /// Decodes Docker's log stream. Non-TTY containers multiplex stdout/stderr

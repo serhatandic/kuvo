@@ -42,10 +42,10 @@ struct Sidebar: View {
             ForEach(items) { item in
                 switch item {
                 case .project(let name, let containers):
-                    DisclosureGroup(isExpanded: expansion(name)) {
-                        ForEach(containers) { row($0) }
-                    } label: {
-                        ProjectRow(project: name, containers: containers)
+                    ProjectRow(project: name, containers: containers, expanded: expansion(name))
+                        .tag("project:\(name)")
+                    if expansion(name).wrappedValue {
+                        ForEach(containers) { row($0).padding(.leading, 16) }
                     }
                 case .container(let container):
                     row(container)
@@ -139,14 +139,23 @@ private struct ProjectRow: View {
     @Environment(DockerStore.self) private var store
     let project: String
     let containers: [Container]
+    @Binding var expanded: Bool
 
     private var running: Int { containers.filter(\.isRunning).count }
 
     var body: some View {
         RowLayout(title: project, subtitle: subtitle, action: action) {
-            Image(systemName: "square.stack.3d.up")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+            // The chevron sits in the glyph slot, centered like every other row's glyph.
+            Button { expanded.toggle() } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .frame(width: 16, height: 24)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .help(expanded ? "Collapse" : "Expand")
         } trailing: {
             ProjectCPU(stats: containers.filter(\.isRunning).map { store.stats(for: $0.id) })
         }
