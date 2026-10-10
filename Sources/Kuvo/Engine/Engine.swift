@@ -37,11 +37,7 @@ final class Engine {
             }
             withAnimation(.smooth) { state = .booting(installed ? "Starting" : "Starting Linux") }
 
-            let memory = min(ProcessInfo.processInfo.physicalMemory / 2, 8 << 30)
-            let vm = try VirtualMachine(cpus: max(2, ProcessInfo.processInfo.activeProcessorCount / 2), memory: memory)
-            vm.onStep = { [weak self] step in self?.guestReported(step) }
-            vm.onStop = { [weak self] error in self?.vmStopped(error) }
-            try await vm.start()
+            let vm = try await startMachine()
             self.vm = vm
 
             bridge = try SocketBridge(unixPath: EnginePaths.socket.path) { [vm] in
@@ -100,6 +96,26 @@ final class Engine {
         if case .failed = state { return }
         withAnimation(.smooth) {
             state = error.map { .failed($0.localizedDescription) } ?? .stopped
+        }
+    }
+
+    /// Boots the VM. Right after a previous Kuvo quits, its disk can stay locked
+    /// for a moment, so a failed start is retried briefly before giving up.
+    private func startMachine() async throws -> VirtualMachine {
+        let memory = min(ProcessInfo.processInfo.physicalMemory / 2, 8 << 30)
+        var attempt = 0
+        while true {
+            do {
+                let vm = try VirtualMachine(cpus: max(2, ProcessInfo.processInfo.activeProcessorCount / 2), memory: memory)
+                vm.onStep = { [weak self] step in self?.guestReported(step) }
+                vm.onStop = { [weak self] error in self?.vmStopped(error) }
+                try await vm.start()
+                return vm
+            } catch {
+                attempt += 1
+                guard attempt < 10 else { throw error }
+                try await Task.sleep(for: .milliseconds(500))
+            }
         }
     }
 
