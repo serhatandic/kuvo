@@ -3,16 +3,26 @@ import Foundation
 
 /// Where the engine keeps its files.
 enum EnginePaths {
-    static let support = URL.applicationSupportDirectory.appending(path: "Terrarium", directoryHint: .isDirectory)
+    static let support = URL.applicationSupportDirectory.appending(path: "Kuvo", directoryHint: .isDirectory)
     static let downloads = support.appending(path: "downloads", directoryHint: .isDirectory)
-    /// Shared into the guest over virtiofs as `terrarium`.
+    /// Shared into the guest over virtiofs as `kuvo`.
     static let share = support.appending(path: "share", directoryHint: .isDirectory)
     static let kernel = support.appending(path: "kernel")
     static let initramfs = support.appending(path: "initramfs")
     static let disk = support.appending(path: "disk.img")
     static let console = support.appending(path: "console.log")
     static let macAddress = support.appending(path: "mac-address")
-    static let socket = URL.homeDirectory.appending(path: ".terrarium/docker.sock")
+    static let socket = URL.homeDirectory.appending(path: ".kuvo/docker.sock")
+
+    /// Kuvo was called Terrarium before; keep the VM disk (and its images) from then.
+    static func migrateFromTerrarium() {
+        let fm = FileManager.default
+        let old = URL.applicationSupportDirectory.appending(path: "Terrarium", directoryHint: .isDirectory)
+        if fm.fileExists(atPath: old.path), !fm.fileExists(atPath: support.path) {
+            try? fm.moveItem(at: old, to: support)
+        }
+        try? fm.removeItem(at: URL.homeDirectory.appending(path: ".terrarium", directoryHint: .isDirectory))
+    }
 }
 
 /// Fetches Alpine Linux and turns it into something Virtualization.framework can boot.
@@ -44,6 +54,7 @@ enum GuestImage {
 
     /// Downloads (if needed) and lays out everything the VM needs to boot.
     static func prepare(progress: @escaping @Sendable (Double) -> Void) async throws {
+        EnginePaths.migrateFromTerrarium()
         let fm = FileManager.default
         for dir in [EnginePaths.downloads, EnginePaths.share, EnginePaths.socket.deletingLastPathComponent()] {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)

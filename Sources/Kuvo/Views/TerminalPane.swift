@@ -43,7 +43,7 @@ final class Terminals {
     }
 }
 
-/// One shell: our own `terrarium shell` running under a real PTY.
+/// One shell: our own `kuvo shell` running under a real PTY.
 @MainActor @Observable
 final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewDelegate {
     let view = LocalProcessTerminalView(frame: .zero)
@@ -58,7 +58,7 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
             executable: CLIInstaller.executable,
             args: ["shell", container.id],
             // The app is already the engine; its shells must never try to launch it again.
-            environment: Terminal.getEnvironmentVariables(termName: "xterm-256color") + ["TERRARIUM_NO_LAUNCH=1"]
+            environment: Terminal.getEnvironmentVariables(termName: "xterm-256color") + ["KUVO_NO_LAUNCH=1"]
         )
     }
 
@@ -116,7 +116,7 @@ enum TerminalLauncher {
         clear
         exec '\(CLIInstaller.executable)' shell \(container.id)
         """
-        let url = FileManager.default.temporaryDirectory.appending(path: "terrarium-\(container.name).command")
+        let url = FileManager.default.temporaryDirectory.appending(path: "kuvo-\(container.name).command")
         try? script.write(to: url, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         NSWorkspace.shared.open(url)

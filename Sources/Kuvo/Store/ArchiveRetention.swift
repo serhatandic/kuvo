@@ -9,7 +9,7 @@ enum ArchiveRetention {
     static var defaults: UserDefaults {
         Bundle.main.bundleIdentifier == suite ? .standard : UserDefaults(suiteName: suite) ?? .standard
     }
-    private static let suite = "dev.terrarium.app"
+    private static let suite = "dev.kuvo.app"
 
     static var days: Int { defaults.object(forKey: key) as? Int ?? 7 }
 

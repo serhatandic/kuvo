@@ -1,8 +1,8 @@
 import Foundation
 import SwiftUI
 
-/// Terrarium's own Docker engine: a small Alpine VM running dockerd,
-/// exposed on `~/.terrarium/docker.sock`.
+/// Kuvo's own Docker engine: a small Alpine VM running dockerd,
+/// exposed on `~/.kuvo/docker.sock`.
 @MainActor @Observable
 final class Engine {
     enum State: Equatable {

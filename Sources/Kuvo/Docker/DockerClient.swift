@@ -83,7 +83,7 @@ struct DockerClient: Sendable {
     /// Streams the decoded response body. Cancelling the consuming task closes the connection.
     func stream(_ method: String, _ path: String, body: Data? = nil, contentType: String = "application/json") -> AsyncThrowingStream<Data, Error> {
         AsyncThrowingStream { continuation in
-            var head = "\(method) \(path) HTTP/1.1\r\nHost: docker\r\nUser-Agent: Terrarium\r\nContent-Length: \(body?.count ?? 0)\r\n"
+            var head = "\(method) \(path) HTTP/1.1\r\nHost: docker\r\nUser-Agent: Kuvo\r\nContent-Length: \(body?.count ?? 0)\r\n"
             if body != nil { head += "Content-Type: \(contentType)\r\n" }
             let request = Data((head + "\r\n").utf8) + (body ?? Data())
             let exchange = Exchange(socketPath: socketPath, request: request, continuation: continuation)
@@ -99,7 +99,7 @@ private final class Exchange: @unchecked Sendable {
     private let connection: NWConnection
     private let request: Data
     private let continuation: AsyncThrowingStream<Data, Error>.Continuation
-    private let queue = DispatchQueue(label: "terrarium.socket")
+    private let queue = DispatchQueue(label: "kuvo.socket")
     private var parser = HTTPParser()
     private var errorBody = Data()
 

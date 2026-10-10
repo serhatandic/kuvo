@@ -8,7 +8,7 @@ final class VirtualMachine: NSObject, VZVirtualMachineDelegate {
     private let console = Pipe()
     private var stopped: CheckedContinuation<Void, Never>?
 
-    /// Lines the guest prints as `terrarium: <step>` while booting.
+    /// Lines the guest prints as `kuvo: <step>` while booting.
     var onStep: ((String) -> Void)?
     var onStop: ((Error?) -> Void)?
 
@@ -36,7 +36,7 @@ final class VirtualMachine: NSObject, VZVirtualMachineDelegate {
         config.networkDevices = [network]
 
         config.directorySharingDevices = [
-            Self.share("terrarium", EnginePaths.share),
+            Self.share("kuvo", EnginePaths.share),
             Self.share("users", URL(filePath: "/Users")),
         ]
         // Rosetta runs linux/amd64 images at near-native speed.
@@ -119,8 +119,8 @@ final class VirtualMachine: NSObject, VZVirtualMachineDelegate {
             try? log?.write(contentsOf: data)
             let steps = lines.splitter.feed(data)
                 .map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { $0.hasPrefix("terrarium: ") }
-                .map { String($0.dropFirst("terrarium: ".count)) }
+                .filter { $0.hasPrefix("kuvo: ") }
+                .map { String($0.dropFirst("kuvo: ".count)) }
             guard !steps.isEmpty else { return }
             Task { @MainActor in steps.forEach { self?.onStep?($0) } }
         }

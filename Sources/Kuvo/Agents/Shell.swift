@@ -1,12 +1,12 @@
 import Foundation
 
-/// `terrarium shell`: an interactive TTY inside a container. Docker hands over
+/// `kuvo shell`: an interactive TTY inside a container. Docker hands over
 /// the raw connection after an HTTP upgrade; we put the terminal in raw mode
 /// and copy bytes both ways, resizing along with the window.
 enum Shell {
     static func run(_ container: Container, client: DockerClient) async throws -> Int32 {
         guard isatty(STDIN_FILENO) == 1 else {
-            throw DockerError(message: "shell needs a terminal. Use terrarium exec to run commands.")
+            throw DockerError(message: "shell needs a terminal. Use kuvo exec to run commands.")
         }
         struct Created: Decodable { let Id: String }
         let term = ProcessInfo.processInfo.environment["TERM"] ?? "xterm-256color"
@@ -74,7 +74,7 @@ enum Shell {
         let connected = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
-        guard fd >= 0, connected == 0 else { throw DockerError(message: "Couldn't connect to Terrarium") }
+        guard fd >= 0, connected == 0 else { throw DockerError(message: "Couldn't connect to Kuvo") }
         return fd
     }
 

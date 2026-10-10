@@ -16,18 +16,19 @@ enum GuestScripts {
     mount -t sysfs sysfs /sys
     mount -t devtmpfs devtmpfs /dev
 
-    step() { echo "terrarium: $*"; }
-    fail() { echo "terrarium: error: $*"; sleep 1; poweroff -f; }
+    step() { echo "kuvo: $*"; }
+    fail() { echo "kuvo: error: $*"; sleep 1; poweroff -f; }
 
     modprobe -a virtio_blk virtio_net virtiofs loop squashfs
     mkdir -p /host /.modloop /newroot
-    mount -t virtiofs terrarium /host || fail "shared folder missing"
+    mount -t virtiofs kuvo /host || fail "shared folder missing"
     mount -o loop,ro /host/modloop /.modloop || fail "modules missing"
     rm -rf /usr/lib/modules && ln -s /.modloop/modules /usr/lib/modules
     modprobe ext4
 
     if mount -t ext4 /dev/vda /newroot 2>/dev/null; then
-        [ -f /newroot/etc/terrarium-installed ] || { umount /newroot; NEEDS_INSTALL=1; }
+        # Disks installed before the rename carry the old marker; never reformat those.
+        [ -f /newroot/etc/kuvo-installed ] || [ -f /newroot/etc/terrarium-installed ] || { umount /newroot; NEEDS_INSTALL=1; }
     else
         NEEDS_INSTALL=1
     fi
@@ -43,7 +44,7 @@ enum GuestScripts {
         cp /etc/resolv.conf /stage/etc/
         for d in dev proc sys; do mount --bind /$d /stage/$d; done
         chroot /stage apk add --quiet --no-progress e2fsprogs || fail "could not fetch e2fsprogs"
-        chroot /stage mkfs.ext4 -q -F -L terrarium /dev/vda || fail "could not format disk"
+        chroot /stage mkfs.ext4 -q -F -L kuvo /dev/vda || fail "could not format disk"
         for d in dev proc sys; do umount /stage/$d; done
         umount /stage
 
@@ -58,7 +59,7 @@ enum GuestScripts {
             || fail "could not install Docker"
         ln -sf /mnt/host/inittab /newroot/etc/inittab
         for d in dev proc sys; do umount /newroot/$d; done
-        touch /newroot/etc/terrarium-installed
+        touch /newroot/etc/kuvo-installed
         sync
         step "Starting Docker"
     fi
@@ -92,7 +93,7 @@ enum GuestScripts {
     mount -t tmpfs run /run
     mount -t cgroup2 cgroup2 /sys/fs/cgroup
     rm -rf /lib/modules && ln -s /.modloop/modules /lib/modules
-    hostname terrarium
+    hostname kuvo
 
     for m in vmw_vsock_virtio_transport overlay bridge br_netfilter veth nf_tables nft_compat \
              nf_nat nf_conntrack iptable_nat iptable_filter xt_MASQUERADE xt_conntrack xt_addrtype; do

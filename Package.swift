@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "Terrarium",
+    name: "Kuvo",
     platforms: [.macOS(.v15)],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
@@ -11,12 +11,12 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "Terrarium",
+            name: "Kuvo",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
-            path: "Sources/Terrarium",
+            path: "Sources/Kuvo",
             swiftSettings: [.unsafeFlags(["-Osize"], .when(configuration: .release))]
         ),
     ]

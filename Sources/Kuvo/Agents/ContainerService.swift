@@ -1,10 +1,10 @@
 import Foundation
 
-/// What Terrarium adds on top of Docker, for any container: commands,
+/// What Kuvo adds on top of Docker, for any container: commands,
 /// file copies, archiving, and quick containers to work in.
-/// Shared by the app and the `terrarium` CLI.
+/// Shared by the app and the `kuvo` CLI.
 struct ContainerService: Sendable {
-    static let creatorLabel = "dev.terrarium.creator"
+    static let creatorLabel = "dev.kuvo.creator"
     static let defaultImage = "ubuntu:24.04"
     static let workspace = "/workspace"
 
@@ -14,14 +14,14 @@ struct ContainerService: Sendable {
     /// Who's driving: Claude Code sets CLAUDECODE=1 in its shells.
     static func detectCreator() -> String {
         let env = ProcessInfo.processInfo.environment
-        if let creator = env["TERRARIUM_CREATOR"], !creator.isEmpty { return creator }
+        if let creator = env["KUVO_CREATOR"], !creator.isEmpty { return creator }
         return env["CLAUDECODE"] == "1" ? "Claude Code" : "you"
     }
 
     // MARK: Lifecycle
 
     /// A long-lived container to work in: idles until given commands, and
-    /// comes back after Terrarium restarts unless archived.
+    /// comes back after Kuvo restarts unless archived.
     func create(name: String?, image: String, network: Bool, cpus: Double?, memoryMB: Int?) async throws -> Container {
         try await client.pull(image)
         var host: [String: Any] = [
@@ -53,7 +53,7 @@ struct ContainerService: Sendable {
         if matches.count > 1 {
             throw DockerError(message: "\(reference) is ambiguous: \(matches.map(\.name).joined(separator: ", ")).")
         }
-        throw DockerError(message: "No container named \(reference). Run terrarium ls to see them.")
+        throw DockerError(message: "No container named \(reference). Run kuvo ls to see them.")
     }
 
     /// Stops it and keeps it; it's deleted after the retention period.
@@ -237,7 +237,7 @@ enum Archive {
 }
 
 extension Container {
-    /// "Claude Code" or "you", for containers made with terrarium new.
+    /// "Claude Code" or "you", for containers made with kuvo new.
     var creator: String? { labels[ContainerService.creatorLabel] }
 }
 

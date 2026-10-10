@@ -75,7 +75,7 @@ final class SocketBridge: @unchecked Sendable {
 
 /// Copies bytes both ways between two sockets until both sides finish.
 private final class Splice: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "terrarium.splice")
+    private let queue = DispatchQueue(label: "kuvo.splice")
     private var sources: [DispatchSourceRead] = []
     private var open = 2
     private let a: Int32, b: Int32

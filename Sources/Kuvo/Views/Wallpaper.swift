@@ -39,7 +39,7 @@ final class Wallpaper {
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: 1, height: 1))
         var value = (0.2126 * Double(pixel[0]) + 0.7152 * Double(pixel[1]) + 0.0722 * Double(pixel[2])) / 255
         // Dynamic wallpapers show their dark variant when macOS itself is dark, whatever
-        // Terrarium's own appearance is; the image above is the light variant.
+        // Kuvo's own appearance is; the image above is the light variant.
         if UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark" { value = min(value, 0.15) }
         if abs(value - luminance) > 0.02 { withAnimation(.smooth) { luminance = value } }
     }

@@ -1,13 +1,13 @@
 import SwiftUI
 
-/// One binary, two roles: the app, or the `terrarium` command-line tool.
+/// One binary, two roles: the app, or the `kuvo` command-line tool.
 @main
 enum Entry {
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
-        let invokedAsTool = (CommandLine.arguments.first as NSString?)?.lastPathComponent == "terrarium"
+        let invokedAsTool = (CommandLine.arguments.first as NSString?)?.lastPathComponent == "kuvo"
         let looksLikeCommand = arguments.first.map { !$0.hasPrefix("-") || ["-h", "--help", "--version"].contains($0) } ?? false
-        guard invokedAsTool || looksLikeCommand else { return TerrariumApp.main() }
+        guard invokedAsTool || looksLikeCommand else { return KuvoApp.main() }
         Task {
             await CLI.main(arguments)
             exit(0)
@@ -16,12 +16,12 @@ enum Entry {
     }
 }
 
-struct TerrariumApp: App {
+struct KuvoApp: App {
     @NSApplicationDelegateAdaptor private var delegate: AppDelegate
     @AppStorage(Appearance.key) private var appearance = Appearance.system
 
     var body: some Scene {
-        Window("Terrarium", id: "main") {
+        Window("Kuvo", id: "main") {
             ContentView()
                 .environment(delegate.store)
                 .environment(delegate.engine)
@@ -128,10 +128,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     #if DEBUG
-    /// `TERRARIUM_SNAPSHOT=/tmp/shot.png swift run` writes the main window to disk
+    /// `KUVO_SNAPSHOT=/tmp/shot.png swift run` writes the main window to disk
     /// every two seconds. Captures only our own window, no screen recording needed.
     private func startSnapshots() {
-        guard let path = ProcessInfo.processInfo.environment["TERRARIUM_SNAPSHOT"] else { return }
+        guard let path = ProcessInfo.processInfo.environment["KUVO_SNAPSHOT"] else { return }
         Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
             MainActor.assumeIsolated {
                 guard let window = NSApp.windows.first(where: { $0.isVisible && $0.identifier?.rawValue.hasPrefix("main") == true })

@@ -2,21 +2,21 @@ import AppKit
 import ArgumentParser
 import Foundation
 
-/// `terrarium`: work inside containers from the command line, written to
+/// `kuvo`: work inside containers from the command line, written to
 /// read well for people and for agents (plain output, real exit codes).
 struct CLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "terrarium",
+        commandName: "kuvo",
         abstract: "Work inside your containers: run commands, open shells, copy files.",
         discussion: """
         Works on any container, by name, Compose service name or ID prefix.
 
         Examples:
-          terrarium new bench --cpus 2 --memory 2g
-          terrarium exec bench "apt-get update && apt-get install -y hyperfine"
-          terrarium cp ~/code/parser bench
-          terrarium exec -w /workspace/parser bench hyperfine 'python3 bench.py'
-          terrarium exec db pg_isready
+          kuvo new bench --cpus 2 --memory 2g
+          kuvo exec bench "apt-get update && apt-get install -y hyperfine"
+          kuvo cp ~/code/parser bench
+          kuvo exec -w /workspace/parser bench hyperfine 'python3 bench.py'
+          kuvo exec db pg_isready
         """,
         version: CLIInstaller.appBundle?.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev",
         subcommands: [New.self, List.self, Exec.self, ShellCommand.self, Copy.self,
@@ -40,7 +40,7 @@ struct CLI: AsyncParsableCommand {
                 name: name, image: image, network: !noNetwork, cpus: cpus, memoryMB: try memory.map(CLI.megabytes)
             )
             print("Created \(container.name) from \(image).")
-            print("Run commands with: terrarium exec \(container.name) <command>")
+            print("Run commands with: kuvo exec \(container.name) <command>")
         }
     }
 
@@ -49,13 +49,13 @@ struct CLI: AsyncParsableCommand {
 
         func run() async throws {
             let all = try await CLI.connect().client.containers()
-            guard !all.isEmpty else { return print("No containers. Create one with: terrarium new") }
+            guard !all.isEmpty else { return print("No containers. Create one with: kuvo new") }
             let rows = all.map { container -> [String] in
                 let state = Archive.archivedAt(container.id).map { ArchiveRetention.summary(archivedAt: $0).lowercased() }
                     ?? container.humanStatus.lowercased()
                 return [container.name, container.image, state, container.creator ?? ""]
             }
-            // Only show who created what when terrarium new was used.
+            // Only show who created what when kuvo new was used.
             let showCreator = all.contains { $0.creator != nil }
             print(CLI.table(["NAME", "IMAGE", "STATE"] + (showCreator ? ["CREATED BY"] : []), rows.map { showCreator ? $0 : Array($0.prefix(3)) }))
         }
@@ -103,8 +103,8 @@ struct CLI: AsyncParsableCommand {
             commandName: "cp",
             abstract: "Copy files between your Mac and a container.",
             discussion: """
-            terrarium cp <path> <container>[:dir]    Copy a folder or file in (skips git-ignored files)
-            terrarium cp <container>:<file> <path>   Copy a file out
+            kuvo cp <path> <container>[:dir]    Copy a folder or file in (skips git-ignored files)
+            kuvo cp <container>:<file> <path>   Copy a file out
             """
         )
 
@@ -166,12 +166,12 @@ struct CLI: AsyncParsableCommand {
     }
 
     struct Status: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Show whether Terrarium's engine is running.")
+        static let configuration = CommandConfiguration(abstract: "Show whether Kuvo's engine is running.")
 
         func run() async throws {
             let client = DockerClient(socketPath: EnginePaths.socket.path)
             guard let version = try? await client.version() else {
-                print("Terrarium isn't running. Any terrarium command starts it.")
+                print("Kuvo isn't running. Any kuvo command starts it.")
                 throw ExitCode.failure
             }
             let containers = (try? await client.containers()) ?? []
@@ -182,8 +182,8 @@ struct CLI: AsyncParsableCommand {
 
     struct Env: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Print DOCKER_HOST so the docker command uses Terrarium.",
-            discussion: "eval \"$(terrarium env)\""
+            abstract: "Print DOCKER_HOST so the docker command uses Kuvo.",
+            discussion: "eval \"$(kuvo env)\""
         )
 
         func run() { print("export DOCKER_HOST=unix://\(EnginePaths.socket.path)") }
@@ -196,15 +196,15 @@ struct CLI: AsyncParsableCommand {
         return (service, try await service.resolve(name))
     }
 
-    /// Connects to the engine, starting Terrarium first if needed.
+    /// Connects to the engine, starting Kuvo first if needed.
     static func connect() async throws -> ContainerService {
         let service = ContainerService(client: DockerClient(socketPath: EnginePaths.socket.path))
         if (try? await service.client.ping()) != nil { return service }
-        if ProcessInfo.processInfo.environment["TERRARIUM_NO_LAUNCH"] == "1" {
-            throw DockerError(message: "Terrarium's engine isn't running.")
+        if ProcessInfo.processInfo.environment["KUVO_NO_LAUNCH"] == "1" {
+            throw DockerError(message: "Kuvo's engine isn't running.")
         }
 
-        FileHandle.standardError.write(Data("Starting Terrarium…\n".utf8))
+        FileHandle.standardError.write(Data("Starting Kuvo…\n".utf8))
         if let app = CLIInstaller.appBundle {
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = false
@@ -216,7 +216,7 @@ struct CLI: AsyncParsableCommand {
             try await Task.sleep(for: .milliseconds(500))
             if (try? await service.client.ping()) != nil { return service }
         }
-        throw DockerError(message: "The engine didn't start. Open Terrarium to see what's wrong.")
+        throw DockerError(message: "The engine didn't start. Open Kuvo to see what's wrong.")
     }
 
     /// "bench:/workspace/out.json" → ("bench", "/workspace/out.json"); local paths → nil.
