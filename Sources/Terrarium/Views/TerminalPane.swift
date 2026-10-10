@@ -252,7 +252,7 @@ struct PaneSplit<First: View, Second: View>: View {
     @ViewBuilder var first: First
     @ViewBuilder var second: Second
 
-    private let gap: CGFloat = 12
+    private let gap: CGFloat = 10
 
     var body: some View {
         GeometryReader { geometry in
@@ -265,7 +265,6 @@ struct PaneSplit<First: View, Second: View>: View {
                 first
                     .frame(width: horizontal ? firstLength : nil, height: horizontal ? nil : firstLength)
                     .opacity(maximized && showsSecond ? 0 : 1)
-                    .clipped()
                 if showsSecond {
                     if !maximized { handle(horizontal: horizontal, total: total) }
                     let secondLength = maximized ? total : max(total - gap - firstLength, 0)

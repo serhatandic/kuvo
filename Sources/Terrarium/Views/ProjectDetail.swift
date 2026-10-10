@@ -9,7 +9,7 @@ struct ProjectDetail: View {
     private var running: [Container] { containers.filter(\.isRunning) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             StatsRow(stats: running.map { store.stats(for: $0.id) }, running: !running.isEmpty)
                 .fixedSize(horizontal: false, vertical: true)
             LogsView(

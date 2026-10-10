@@ -17,7 +17,7 @@ struct ContainerDetail: View {
     var body: some View {
         let session = terminals.sessions[container.id]
         PaneSplit(placement: placement, fraction: $fraction, showsSecond: session != nil, maximized: maximized) {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
                 StatsRow(stats: [store.stats(for: container.id)], running: container.state == .running)
                     .fixedSize(horizontal: false, vertical: true)
                 panel

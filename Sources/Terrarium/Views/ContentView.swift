@@ -25,18 +25,21 @@ struct ContentView: View {
             case .connected:
                 NavigationSplitView(columnVisibility: $columns) {
                     Sidebar(selection: $selection)
+                        .lightGlass() // The sidebar draws its own material; tint it the same.
                         .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 420)
                         .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).maxX }) { sidebarWidth = $0 }
                 } detail: {
                     detail
                 }
+                // One continuous sheet of tinted glass behind sidebar and detail (light mode).
+                .lightGlass()
                 .overlay(alignment: .topLeading) {
                     // The system divider is pure black in dark mode and reads as heavy on
                     // translucent panes; cover it with a soft seam. Dragging still works.
                     if columns != .detailOnly, sidebarWidth > 0 {
                         Rectangle()
                             .fill(.thinMaterial)
-                            .overlay(Color.primary.opacity(0.1))
+                            .overlay(Color.primary.opacity(scheme == .light ? 0.06 : 0.1))
                             .frame(width: 1)
                             .offset(x: sidebarWidth)
                             .ignoresSafeArea()
@@ -53,11 +56,8 @@ struct ContentView: View {
         }
         .frame(minWidth: 820, minHeight: 520)
         .onChange(of: appearance, initial: true) { appearance.apply() }
-        // Dark: frosted, tinted by the wallpaper. Light: solid, so a dark desktop can't muddy it.
-        .containerBackground(
-            scheme == .light ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor)) : AnyShapeStyle(.thinMaterial),
-            for: .window
-        )
+        // Frosted and tinted by the wallpaper; light mode adds a tinted layer on top (see lightGlass).
+        .containerBackground(.thinMaterial, for: .window)
         .alert("Something went wrong", isPresented: Binding(get: { store.failure != nil }, set: { if !$0 { store.failure = nil } })) {
             Button("OK") {}
         } message: {

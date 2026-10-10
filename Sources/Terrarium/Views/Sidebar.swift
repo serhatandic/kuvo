@@ -6,6 +6,7 @@ struct Sidebar: View {
     @Binding var selection: String?
     @State private var query = ""
     @State private var collapsed: Set<String> = []
+    @Environment(\.colorScheme) private var scheme
 
     private enum Item: Identifiable {
         case project(String, [Container])
@@ -64,6 +65,8 @@ struct Sidebar: View {
             }
         }
         .listStyle(.sidebar)
+        // Light mode: let the window's tinted glass show instead of the gray sidebar material.
+        .scrollContentBackground(scheme == .light ? .hidden : .automatic)
     }
 
     private func row(_ container: Container) -> some View {

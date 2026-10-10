@@ -134,6 +134,8 @@ struct Sparkline: View {
         return (peak / magnitude * 2).rounded(.up) / 2 * magnitude
     }
 
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
         // Pad to a full window so a fresh series reads as a flat line with data flowing in.
         let padded = Array(repeating: isLevel ? values.first ?? 0 : 0, count: max(LiveStats.window + 1 - values.count, 0)) + values
@@ -141,8 +143,9 @@ struct Sparkline: View {
         var area = line
         area.closed = true
         return ZStack {
-            area.fill(LinearGradient(colors: [color.opacity(0.28), color.opacity(0)], startPoint: .top, endPoint: .bottom))
-            line.stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
+            // Lighter on white cards, where color reads heavier than on dark glass.
+            area.fill(LinearGradient(colors: [color.opacity(scheme == .light ? 0.18 : 0.28), color.opacity(0)], startPoint: .top, endPoint: .bottom))
+            line.stroke(color, style: StrokeStyle(lineWidth: scheme == .light ? lineWidth * 0.85 : lineWidth, lineCap: .round, lineJoin: .round))
         }
         .clipped()
         .animation(.linear(duration: 1), value: tick)
@@ -195,6 +198,7 @@ struct Pane<Title: View, Accessory: View, Content: View>: View {
                     .contentTransition(.symbolEffect(.replace))
                 title
                     .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(PaneTitleStyle())
                     .lineLimit(1)
                 Spacer(minLength: 8)
                 accessory
@@ -213,6 +217,13 @@ extension Pane {
     nonisolated static var radius: CGFloat { 14 }
 }
 
+/// Primary in dark mode; a softer #333 on white cards in light mode.
+private struct PaneTitleStyle: ShapeStyle {
+    func resolve(in environment: EnvironmentValues) -> Color {
+        environment.colorScheme == .light ? Color(white: 0.2) : .primary
+    }
+}
+
 extension Pane where Title == Text {
     init(icon: String, title: String, @ViewBuilder accessory: () -> Accessory, @ViewBuilder content: () -> Content) {
         self.init(icon: icon, title: { Text(title) }, accessory: accessory, content: content)
@@ -221,7 +232,7 @@ extension Pane where Title == Text {
 
 extension View {
     /// The pane surface. Dark: frosted glass with a hairline edge. Light:
-    /// white cards with a soft lift on a solid off-white window.
+    /// near-white cards with a soft, diffuse lift.
     func glassCard(cornerRadius: CGFloat) -> some View {
         modifier(PaneSurface(cornerRadius: cornerRadius))
     }
@@ -234,16 +245,43 @@ private struct PaneSurface: ViewModifier {
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius)
         if scheme == .light {
-            // Solid white: translucency over a dark desktop turns light mode muddy.
+            // Near-white cards lifted off the tinted glass by shadow, not by borders.
             content
-                .background(Color.white, in: shape)
-                .overlay(shape.strokeBorder(.black.opacity(0.07), lineWidth: 0.5))
-                .shadow(color: .black.opacity(0.05), radius: 6, y: 1)
+                .background(Color.white.opacity(0.92), in: shape)
+                .background(.regularMaterial, in: shape)
+                .overlay(shape.strokeBorder(.black.opacity(0.035), lineWidth: 0.5))
+                // Light enough that two neighbors' shadows don't darken the gap between them.
+                .shadow(color: .black.opacity(0.05), radius: 10, y: 3)
+                .shadow(color: .black.opacity(0.04), radius: 1.5, y: 0.5)
         } else {
             // No shadow: Liquid Glass-style shadows darken the gaps between panes.
             content
                 .background(.thinMaterial, in: shape)
                 .overlay(shape.strokeBorder(.white.opacity(0.08), lineWidth: 0.5))
+        }
+    }
+}
+
+extension View {
+    /// Light mode only: a faint tinted layer over the window's blur, so the glass
+    /// stays bright over a dark desktop. Thicker when the window is inactive,
+    /// since materials flatten then.
+    func lightGlass() -> some View {
+        modifier(LightGlass())
+    }
+}
+
+private struct LightGlass: ViewModifier {
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.controlActiveState) private var activeState
+
+    func body(content: Content) -> some View {
+        content.background {
+            if scheme == .light {
+                Color(red: 0.925, green: 0.915, blue: 0.935)
+                    .opacity(activeState == .inactive ? 0.8 : 0.66)
+                    .ignoresSafeArea()
+            }
         }
     }
 }
