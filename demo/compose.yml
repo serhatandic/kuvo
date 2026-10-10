@@ -1,0 +1,34 @@
+# A small stack that looks alive on screen: colored logs, CPU spikes, network traffic.
+#   docker compose -f demo/compose.yml up -d
+name: shop
+
+services:
+  web:
+    image: nginx:alpine
+    ports: ["8080:80"]
+
+  cache:
+    image: redis:alpine
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: demo
+
+  worker:
+    image: alpine
+    command:
+      - sh
+      - -c
+      - |
+        i=0
+        while true; do
+          i=$$((i+1))
+          printf '\033[2m%s\033[0m \033[32mINFO\033[0m  processed job \033[1m#%d\033[0m in %dms\n' "$$(date +%T)" $$i $$((RANDOM % 900 + 40))
+          [ $$((i % 7)) -eq 0 ] && printf '\033[33mWARN\033[0m  queue depth high (%d)\n' $$((RANDOM % 200))
+          [ $$((i % 19)) -eq 0 ] && printf '\033[31mERROR\033[0m retrying payment webhook\n' >&2
+          # Bursty CPU so the sparklines have something to draw.
+          [ $$((RANDOM % 3)) -eq 0 ] && timeout 0.6 sh -c 'while :; do :; done'
+          wget -q -O /dev/null http://web || true
+          sleep 0.7
+        done
