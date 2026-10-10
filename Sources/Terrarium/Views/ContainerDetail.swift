@@ -47,90 +47,84 @@ struct ContainerDetail: View {
 
 // MARK: - Header
 
+/// Just type: the name, then one quiet line of facts.
 private struct Header: View {
+    @Environment(DockerStore.self) private var store
     let container: Container
     let busy: ContainerAction?
-    @State private var copied = false
+    @State private var details: ContainerDetails?
 
     var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(container.state.color.gradient.opacity(container.isRunning ? 0.9 : 0.25))
-                Image(systemName: "shippingbox.fill")
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundStyle(container.isRunning ? .white : .secondary)
-                    .symbolEffect(.bounce, value: container.state)
-            }
-            .frame(width: 46, height: 46)
-            .shadow(color: container.state.color.opacity(container.isRunning ? 0.35 : 0), radius: 8, y: 3)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(container.name)
-                    .font(.system(size: 20, weight: .semibold))
-                    .lineLimit(1)
-                HStack(spacing: 6) {
-                    Text(container.image)
-                    Text("·").foregroundStyle(.tertiary)
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(container.id, forType: .string)
-                        withAnimation(.snappy) { copied = true }
-                        Task {
-                            try? await Task.sleep(for: .seconds(1.4))
-                            withAnimation(.snappy) { copied = false }
-                        }
-                    } label: {
-                        HStack(spacing: 3) {
-                            Text(copied ? "Copied" : container.shortID)
-                                .contentTransition(.interpolate)
-                            Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                                .font(.system(size: 9))
-                                .contentTransition(.symbolEffect(.replace))
-                        }
-                        .font(.system(size: 12).monospaced())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Copy full ID")
-                }
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            Text(container.name)
+                .font(.system(size: 22, weight: .semibold))
                 .lineLimit(1)
-            }
-
-            Spacer(minLength: 12)
-
-            HStack(spacing: 8) {
-                ForEach(container.publishedPorts.prefix(3), id: \.self) { port in
-                    PortChip(port: port, enabled: container.isRunning)
+            HStack(spacing: 0) {
+                StatusDot(state: container.state, busy: busy != nil, size: 6)
+                    .padding(.trailing, 7)
+                Group {
+                    if let busy {
+                        Text("\(busy.progressLabel)…").foregroundStyle(.primary)
+                    } else {
+                        StatusText(container: container, details: details)
+                    }
                 }
-                StatePill(container: container, busy: busy)
+                .contentTransition(.interpolate)
+                separator
+                Text(container.image)
+                ForEach(container.publishedPorts.prefix(3), id: \.self) { port in
+                    separator
+                    PortLink(port: port, enabled: container.isRunning)
+                }
             }
+            .font(.system(size: 12.5))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
         }
-        .animation(.smooth, value: container.state)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 2)
+        .contextMenu { ContainerMenu(container: container) }
+        .task(id: "\(container.id)\(container.state)\(container.status)") {
+            details = try? await store.client?.inspect(container.id)
+        }
+        .animation(.snappy, value: container.status)
+        .animation(.snappy, value: busy)
+    }
+
+    private var separator: some View {
+        Text("·").foregroundStyle(.tertiary).padding(.horizontal, 7)
     }
 }
 
-private struct StatePill: View {
+/// "Running for 4 minutes", ticking live; falls back to Docker's own wording.
+private struct StatusText: View {
     let container: Container
-    let busy: ContainerAction?
+    let details: ContainerDetails?
 
     var body: some View {
-        HStack(spacing: 6) {
-            StatusDot(state: container.state, busy: busy != nil, size: 7)
-            Text(busy.map { "\($0.progressLabel)…" } ?? container.status)
-                .contentTransition(.interpolate)
+        if container.state == .running, let started = details?.startedAt {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(running(since: started, now: context.date))
+            }
+        } else if container.state == .exited, let details, let finished = details.finishedAt {
+            let ago = finished.formatted(.relative(presentation: .named))
+            Text(details.State.ExitCode == 0 ? "Stopped \(ago)" : "Exited with code \(details.State.ExitCode), \(ago)")
+        } else {
+            Text(container.humanStatus)
         }
-        .font(.system(size: 11.5, weight: .medium))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background((busy != nil ? Color.orange : container.state.color).opacity(0.12), in: .capsule)
-        .animation(.snappy, value: busy)
-        .animation(.snappy, value: container.status)
+    }
+
+    private func running(since start: Date, now: Date) -> String {
+        let seconds = max(now.timeIntervalSince(start), 0)
+        let fields: Set<Date.ComponentsFormatStyle.Field> = seconds < 60 ? [.second] : seconds < 3600 ? [.minute] : [.day, .hour, .minute]
+        let uptime = (start..<max(now, start)).formatted(.components(style: .wide, fields: fields))
+        guard let health = details?.State.Health?.Status, health != "none" else { return "Running for \(uptime)" }
+        return "Running for \(uptime), \(health)"
     }
 }
 
-private struct PortChip: View {
+/// `localhost:8080`, underlined on hover, opens in the browser.
+private struct PortLink: View {
     let port: Int
     let enabled: Bool
     @State private var hovering = false
@@ -139,21 +133,14 @@ private struct PortChip: View {
         Button {
             NSWorkspace.shared.open(URL(string: "http://localhost:\(port)")!)
         } label: {
-            HStack(spacing: 4) {
-                Text(":\(String(port))").monospacedDigit()
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 8, weight: .bold))
-                    .offset(x: hovering ? 1 : 0, y: hovering ? -1 : 0)
-            }
-            .font(.system(size: 11.5, weight: .medium))
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(.primary.opacity(hovering ? 0.1 : 0.05), in: .capsule)
+            Text(verbatim: "localhost:\(port)")
+                .underline(hovering && enabled)
+                .foregroundStyle(enabled ? Color.accentColor : .secondary)
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.45)
-        .onHover { hover in withAnimation(.snappy(duration: 0.2)) { hovering = hover } }
+        .onHover { hovering = $0 }
+        .pointerStyle(enabled ? .link : nil)
         .help("Open http://localhost:\(String(port))")
     }
 }

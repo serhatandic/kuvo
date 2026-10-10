@@ -21,8 +21,6 @@ struct LogsView: View {
                 Spacer()
                 Button { timestamps.toggle() } label: {
                     Image(systemName: "clock")
-                        .symbolVariant(timestamps ? .fill : .none)
-                        .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(HoverButtonStyle(tint: timestamps ? .accentColor : .secondary))
                 .help(timestamps ? "Hide timestamps" : "Show timestamps")

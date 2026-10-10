@@ -53,10 +53,53 @@ struct Container: Decodable, Identifiable, Hashable, Sendable {
     var service: String? { labels["com.docker.compose.service"] }
     var isRunning: Bool { state == .running || state == .restarting }
 
+    /// Docker's status line in plain English: "Up 25 minutes (healthy)"
+    /// becomes "Running for 25 minutes, healthy".
+    var humanStatus: String {
+        let health = ["unhealthy", "healthy", "health: starting"].first { status.contains("(\($0))") }
+        let detail = status.replacing(/\s*\(.*?\)/, with: "")
+        func lower(_ s: Substring) -> String { s.prefix(1).lowercased() + s.dropFirst() }
+
+        switch state {
+        case .running:
+            let uptime = detail.hasPrefix("Up ") ? "Running for \(lower(detail.dropFirst(3)))" : "Running"
+            return health.map { "\(uptime), \($0.replacingOccurrences(of: "health: ", with: ""))" } ?? uptime
+        case .exited:
+            let ago = detail.hasPrefix("Exited ") ? lower(detail.dropFirst(7)) : ""
+            let code = status.firstMatch(of: /Exited \((\d+)\)/).flatMap { Int($0.1) } ?? 0
+            return code == 0 ? "Stopped \(ago)" : "Exited with code \(code), \(ago)"
+        case .created: return "Created, never started"
+        default: return state.label
+        }
+    }
+
     /// Unique published host ports, e.g. `[8080, 5432]`.
     var publishedPorts: [Int] {
         var seen = Set<Int>()
         return ports.compactMap(\.publicPort).filter { seen.insert($0).inserted }.sorted()
+    }
+}
+
+/// The subset of `/containers/{id}/json` we care about.
+struct ContainerDetails: Decodable, Sendable {
+    let State: StateInfo
+
+    struct StateInfo: Decodable, Sendable {
+        let StartedAt: String
+        let FinishedAt: String
+        let ExitCode: Int
+        let Health: HealthInfo?
+    }
+    struct HealthInfo: Decodable, Sendable { let Status: String }
+
+    var startedAt: Date? { Self.date(State.StartedAt) }
+    var finishedAt: Date? { Self.date(State.FinishedAt) }
+
+    /// Docker uses nanosecond RFC 3339 timestamps and "0001-01-01..." for never.
+    private static func date(_ string: String) -> Date? {
+        guard !string.hasPrefix("0001") else { return nil }
+        let trimmed = string.replacing(/\.\d+/, with: "")
+        return try? Date(trimmed, strategy: .iso8601)
     }
 }
 

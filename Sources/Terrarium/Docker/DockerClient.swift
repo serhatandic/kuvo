@@ -40,6 +40,10 @@ struct DockerClient: Sendable {
         try await JSONDecoder().decode([Container].self, from: send("GET", "/containers/json?all=true"))
     }
 
+    func inspect(_ id: String) async throws -> ContainerDetails {
+        try await JSONDecoder().decode(ContainerDetails.self, from: send("GET", "/containers/\(id)/json"))
+    }
+
     func perform(_ action: ContainerAction, on id: String) async throws {
         switch action {
         case .start:   _ = try await send("POST", "/containers/\(id)/start")
