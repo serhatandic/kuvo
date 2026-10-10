@@ -38,6 +38,15 @@ struct Sidebar: View {
     }
 
     var body: some View {
+        VStack(spacing: 8) {
+            FilterField(text: $query)
+                .padding(.horizontal, 10)
+            list
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) { Footer() }
+    }
+
+    private var list: some View {
         List(selection: $selection) {
             ForEach(items) { item in
                 switch item {
@@ -53,8 +62,6 @@ struct Sidebar: View {
             }
         }
         .listStyle(.sidebar)
-        .searchable(text: $query, placement: .sidebar, prompt: "Filter")
-        .safeAreaInset(edge: .bottom, spacing: 0) { Footer() }
     }
 
     private func row(_ container: Container) -> some View {
@@ -72,6 +79,34 @@ struct Sidebar: View {
     }
 }
 
+/// The system search field, placed above the list so we control its spacing.
+private struct FilterField: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeNSView(context: Context) -> NSSearchField {
+        let field = NSSearchField()
+        field.placeholderString = "Filter"
+        field.controlSize = .large
+        field.delegate = context.coordinator
+        return field
+    }
+
+    func updateNSView(_ field: NSSearchField, context: Context) {
+        if field.stringValue != text { field.stringValue = text }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    final class Coordinator: NSObject, NSSearchFieldDelegate {
+        let text: Binding<String>
+        init(text: Binding<String>) { self.text = text }
+
+        func controlTextDidChange(_ notification: Notification) {
+            text.wrappedValue = (notification.object as? NSSearchField)?.stringValue ?? ""
+        }
+    }
+}
+
 // MARK: - Rows
 
 /// Shared layout for every sidebar row: a 16pt leading glyph, two lines of
@@ -81,13 +116,14 @@ private struct RowLayout<Glyph: View, Trailing: View>: View {
     let title: String
     let subtitle: String
     let action: RowAction?
-    @ViewBuilder var glyph: Glyph
+    /// Receives whether the row is hovered, so a glyph can reveal a control.
+    @ViewBuilder var glyph: (_ hovering: Bool) -> Glyph
     @ViewBuilder var trailing: Trailing
     @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 8) {
-            glyph.frame(width: 16)
+            glyph(hovering).frame(width: 16)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .font(.system(size: 13, weight: .medium))
@@ -144,15 +180,24 @@ private struct ProjectRow: View {
     private var running: Int { containers.filter(\.isRunning).count }
 
     var body: some View {
-        RowLayout(title: project, subtitle: subtitle, action: action) {
-            // The chevron sits in the glyph slot, centered like every other row's glyph.
-            Button { expanded.toggle() } label: {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(expanded ? 90 : 0))
-                    .frame(width: 16, height: 24)
-                    .contentShape(.rect)
+        RowLayout(title: project, subtitle: subtitle, action: action) { hovering in
+            // The project icon turns into a disclosure chevron while hovered.
+            Button { withAnimation(.snappy) { expanded.toggle() } } label: {
+                ZStack {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .opacity(hovering ? 1 : 0)
+                        .scaleEffect(hovering ? 1 : 0.6)
+                    Image(systemName: "square.stack.3d.up")
+                        .font(.system(size: 12))
+                        .opacity(hovering ? 0 : 1)
+                        .scaleEffect(hovering ? 0.6 : 1)
+                }
+                .foregroundStyle(.secondary)
+                .frame(width: 16, height: 24)
+                .contentShape(.rect)
+                .animation(.snappy(duration: 0.18), value: hovering)
             }
             .buttonStyle(.plain)
             .help(expanded ? "Collapse" : "Expand")
@@ -201,7 +246,7 @@ private struct ContainerRow: View {
     private var busy: ContainerAction? { store.busy[container.id] }
 
     var body: some View {
-        RowLayout(title: container.service ?? container.name, subtitle: subtitle, action: action) {
+        RowLayout(title: container.service ?? container.name, subtitle: subtitle, action: action) { _ in
             StatusDot(state: container.state, busy: busy != nil)
         } trailing: {
             if container.isRunning {

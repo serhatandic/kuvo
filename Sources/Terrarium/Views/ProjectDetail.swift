@@ -19,8 +19,9 @@ struct ProjectDetail: View {
         .padding([.horizontal, .bottom], 20)
         .padding(.top, 8)
         .navigationTitle(project)
-        .navigationSubtitle("Compose project  ·  \(summary)")
+        .navigationSubtitle(summary)
         .toolbar {
+            ToolbarItem(placement: .navigation) { ProjectIcon() }
             ToolbarItemGroup {
                 Button {
                     store.perform(running.isEmpty ? .start : .stop, onProject: project)
@@ -41,9 +42,20 @@ struct ProjectDetail: View {
 
     private var summary: String {
         switch running.count {
-        case 0: "\(containers.count) services, all stopped"
-        case containers.count: "\(containers.count) services, all running"
+        case 0: containers.count == 1 ? "1 service, stopped" : "\(containers.count) services, all stopped"
+        case containers.count: containers.count == 1 ? "1 service, running" : "\(containers.count) services, all running"
         default: "\(running.count) of \(containers.count) services running"
         }
+    }
+}
+
+/// The project glyph beside the window title, like a folder icon in Finder.
+private struct ProjectIcon: View {
+    var body: some View {
+        Image(systemName: "square.stack.3d.up.fill")
+            .font(.system(size: 18, weight: .regular))
+            .foregroundStyle(.secondary)
+            .frame(width: 28, height: 28)
+            .accessibilityLabel("Compose project")
     }
 }
