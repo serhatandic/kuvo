@@ -13,7 +13,7 @@ enum SandboxRetention {
 
     static func summary(archivedAt: Date) -> String {
         guard let deadline = deadline(archivedAt: archivedAt) else { return "Archived" }
-        return "Archived, deleted \(deadline.formatted(.relative(presentation: .named)))"
+        return "Archived, deleted \(deadline.formatted(.relative(presentation: .numeric)))"
     }
 
     /// Deletes expired archived sandboxes and journals whose container is gone.
