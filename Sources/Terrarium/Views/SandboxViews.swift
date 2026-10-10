@@ -325,7 +325,7 @@ struct SandboxesOverview: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Connect Claude Code")
                         .font(.system(size: 15, weight: .semibold))
-                    Text("Give Claude disposable Linux sandboxes for benchmarks, experiments and anything you'd rather not run on your Mac. Run this once:")
+                    Text("Let Claude see and manage your containers, and give it disposable sandboxes for its own work, like benchmarks and experiments. Run this once:")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -346,7 +346,7 @@ struct SandboxesOverview: View {
                     }
                     .padding(12)
                     .background(.primary.opacity(0.05), in: .rect(cornerRadius: 8))
-                    Text("Then ask something like \u{201C}benchmark these two JSON parsers in a sandbox.\u{201D} Sandboxes show up here, with every command Claude runs.")
+                    Text("Then ask things like \u{201C}why does my db keep restarting?\u{201D} or \u{201C}benchmark these two JSON parsers in a sandbox.\u{201D} Sandboxes show up here, with every command Claude runs.")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
