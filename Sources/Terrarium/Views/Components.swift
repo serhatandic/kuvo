@@ -133,8 +133,8 @@ struct Sparkline: View {
     }
 
     var body: some View {
-        // Pad with zeros so a fresh series reads as a baseline with data flowing in.
-        let padded = Array(repeating: 0, count: max(LiveStats.window + 1 - values.count, 0)) + values
+        // Pad with the first sample so a fresh series reads as a flat line with data flowing in.
+        let padded = Array(repeating: values.first ?? 0, count: max(LiveStats.window + 1 - values.count, 0)) + values
         let line = SparklineShape(values: padded, window: LiveStats.window, tick: Double(tick), target: Double(tick), ceiling: ceiling)
         var area = line
         area.closed = true
