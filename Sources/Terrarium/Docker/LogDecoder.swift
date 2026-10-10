@@ -8,15 +8,14 @@ struct LogLine: Sendable {
     var source: Int?
 }
 
-/// Decodes Docker's log stream. Non-TTY containers multiplex stdout/stderr
-/// into frames with an 8-byte header; TTY containers send raw bytes.
-struct LogDecoder {
+/// Splits Docker's multiplexed stdout/stderr stream. Non-TTY containers and
+/// execs prefix each frame with an 8-byte header; TTY ones send raw bytes.
+struct StreamDemuxer {
+    enum Kind { case stdout, stderr }
     private var buffer = Data()
     private var multiplexed: Bool?
-    private var stdout = LineSplitter()
-    private var stderr = LineSplitter()
 
-    mutating func feed(_ data: Data) -> [LogLine] {
+    mutating func feed(_ data: Data) -> [(Kind, Data)] {
         buffer.append(data)
         if multiplexed == nil {
             guard buffer.count >= 8 else { return [] }
@@ -25,23 +24,32 @@ struct LogDecoder {
         }
         guard multiplexed == true else {
             defer { buffer = Data() }
-            return stdout.feed(buffer).map { Self.parse($0, isError: false) }
+            return [(.stdout, buffer)]
         }
-
-        var lines: [LogLine] = []
+        var frames: [(Kind, Data)] = []
         while buffer.count >= 8 {
             let header = [UInt8](buffer.prefix(8))
             let size = Int(header[4]) << 24 | Int(header[5]) << 16 | Int(header[6]) << 8 | Int(header[7])
             guard buffer.count >= 8 + size else { break }
-            let payload = buffer.dropFirst(8).prefix(size)
-            if header[0] == 2 {
-                lines += stderr.feed(Data(payload)).map { Self.parse($0, isError: true) }
-            } else {
-                lines += stdout.feed(Data(payload)).map { Self.parse($0, isError: false) }
-            }
+            frames.append((header[0] == 2 ? .stderr : .stdout, Data(buffer.dropFirst(8).prefix(size))))
             buffer = Data(buffer.dropFirst(8 + size))
         }
-        return lines
+        return frames
+    }
+}
+
+/// Decodes a container's log stream into timestamped lines.
+struct LogDecoder {
+    private var demuxer = StreamDemuxer()
+    private var stdout = LineSplitter()
+    private var stderr = LineSplitter()
+
+    mutating func feed(_ data: Data) -> [LogLine] {
+        demuxer.feed(data).flatMap { kind, payload in
+            kind == .stderr
+                ? stderr.feed(payload).map { Self.parse($0, isError: true) }
+                : stdout.feed(payload).map { Self.parse($0, isError: false) }
+        }
     }
 
     nonisolated(unsafe) private static let iso: ISO8601DateFormatter = {

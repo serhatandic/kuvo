@@ -60,10 +60,6 @@ struct DockerClient: Sendable {
         stream("GET", "/containers/\(id)/stats?stream=true")
     }
 
-    func logs(_ id: String, tail: Int = 1000) -> AsyncThrowingStream<Data, Error> {
-        stream("GET", "/containers/\(id)/logs?follow=true&stdout=true&stderr=true&timestamps=true&tail=\(tail)")
-    }
-
     func events() -> AsyncThrowingStream<Data, Error> {
         let filter = #"{"type":["container"]}"#.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
         return stream("GET", "/events?filters=\(filter)")
@@ -72,16 +68,24 @@ struct DockerClient: Sendable {
     // MARK: Transport
 
     /// One-shot request; returns the full body, throws on non-2xx.
-    func send(_ method: String, _ path: String) async throws -> Data {
-        var body = Data()
-        for try await piece in stream(method, path) { body.append(piece) }
-        return body
+    func send(_ method: String, _ path: String, body: Data? = nil, contentType: String = "application/json") async throws -> Data {
+        var response = Data()
+        for try await piece in stream(method, path, body: body, contentType: contentType) { response.append(piece) }
+        return response
+    }
+
+    /// Sends a JSON body and decodes a JSON response.
+    func send<T: Decodable>(_ method: String, _ path: String, json: [String: Any], as _: T.Type) async throws -> T {
+        let body = try JSONSerialization.data(withJSONObject: json)
+        return try await JSONDecoder().decode(T.self, from: send(method, path, body: body))
     }
 
     /// Streams the decoded response body. Cancelling the consuming task closes the connection.
-    func stream(_ method: String, _ path: String) -> AsyncThrowingStream<Data, Error> {
+    func stream(_ method: String, _ path: String, body: Data? = nil, contentType: String = "application/json") -> AsyncThrowingStream<Data, Error> {
         AsyncThrowingStream { continuation in
-            let request = Data("\(method) \(path) HTTP/1.1\r\nHost: docker\r\nUser-Agent: Terrarium\r\nContent-Length: 0\r\n\r\n".utf8)
+            var head = "\(method) \(path) HTTP/1.1\r\nHost: docker\r\nUser-Agent: Terrarium\r\nContent-Length: \(body?.count ?? 0)\r\n"
+            if body != nil { head += "Content-Type: \(contentType)\r\n" }
+            let request = Data((head + "\r\n").utf8) + (body ?? Data())
             let exchange = Exchange(socketPath: socketPath, request: request, continuation: continuation)
             continuation.onTermination = { _ in exchange.cancel() }
             exchange.start()
