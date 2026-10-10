@@ -6,8 +6,8 @@ cd "$(dirname "$0")/.."
 VERSION="${VERSION:-0.1.0}"
 APP="build/Terrarium.app"
 
-swift build -c release --arch arm64 --arch x86_64
-BIN="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/Terrarium"
+swift build -c release --arch arm64
+BIN="$(swift build -c release --arch arm64 --show-bin-path)/Terrarium"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -29,11 +29,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$VERSION</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
+    <key>LSArchitecturePriority</key><array><string>arm64</string></array>
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
 PLIST
 
-codesign --force --sign - "$APP"
+codesign --force --sign - --entitlements Terrarium.entitlements "$APP"
 echo "Built $APP ($(du -sh "$APP" | cut -f1)), binary $(du -h "$APP/Contents/MacOS/Terrarium" | cut -f1)"
