@@ -3,18 +3,34 @@ import SwiftUI
 struct ContainerDetail: View {
     @Environment(DockerStore.self) private var store
     let container: Container
+    @State private var details: ContainerDetails?
     @State private var confirmRemove = false
 
     private var busy: ContainerAction? { store.busy[container.id] }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Header(container: container, busy: busy)
             StatsRow(stats: store.stats(for: container.id), running: container.state == .running)
             LogsView(container: container)
         }
-        .padding(20)
+        .padding([.horizontal, .bottom], 20)
+        .padding(.top, 8)
+        // Name and status live in the toolbar, next to the actions, like Mail or Xcode.
+        .navigationTitle(container.name)
+        .background { Subtitle(container: container, details: details, busy: busy) }
+        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .toolbar {
+            ToolbarItemGroup {
+                if let port = container.publishedPorts.first, container.isRunning {
+                    Button {
+                        NSWorkspace.shared.open(URL(string: "http://localhost:\(port)")!)
+                    } label: {
+                        Label(String("localhost:\(port)"), systemImage: "arrow.up.forward")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .help("Open http://localhost:\(String(port))")
+                }
+            }
             ToolbarItemGroup {
                 Button {
                     store.perform(container.isRunning ? .stop : .start, on: container)
@@ -37,6 +53,9 @@ struct ContainerDetail: View {
             }
         }
         .disabled(busy != nil)
+        .task(id: "\(container.id)\(container.state)\(container.status)") {
+            details = try? await store.client?.inspect(container.id)
+        }
         .confirmationDialog("Remove \(container.name)?", isPresented: $confirmRemove) {
             Button("Remove", role: .destructive) { store.perform(.remove, on: container) }
         } message: {
@@ -45,103 +64,34 @@ struct ContainerDetail: View {
     }
 }
 
-// MARK: - Header
+// MARK: - Subtitle
 
-/// Just type: the name, then one quiet line of facts.
-private struct Header: View {
-    @Environment(DockerStore.self) private var store
-    let container: Container
-    let busy: ContainerAction?
-    @State private var details: ContainerDetails?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(container.name)
-                .font(.system(size: 22, weight: .semibold))
-                .lineLimit(1)
-            HStack(spacing: 0) {
-                StatusDot(state: container.state, busy: busy != nil, size: 6)
-                    .padding(.trailing, 7)
-                Group {
-                    if let busy {
-                        Text("\(busy.progressLabel)…").foregroundStyle(.primary)
-                    } else {
-                        StatusText(container: container, details: details)
-                    }
-                }
-                .contentTransition(.interpolate)
-                separator
-                Text(container.image)
-                ForEach(container.publishedPorts.prefix(3), id: \.self) { port in
-                    separator
-                    PortLink(port: port, enabled: container.isRunning)
-                }
-            }
-            .font(.system(size: 12.5))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 2)
-        .contextMenu { ContainerMenu(container: container) }
-        .task(id: "\(container.id)\(container.state)\(container.status)") {
-            details = try? await store.client?.inspect(container.id)
-        }
-        .animation(.snappy, value: container.status)
-        .animation(.snappy, value: busy)
-    }
-
-    private var separator: some View {
-        Text("·").foregroundStyle(.tertiary).padding(.horizontal, 7)
-    }
-}
-
-/// "Running for 4 minutes", ticking live; falls back to Docker's own wording.
-private struct StatusText: View {
+/// "Running for 4 minutes · redis:alpine" under the window title, ticking live.
+private struct Subtitle: View {
     let container: Container
     let details: ContainerDetails?
+    let busy: ContainerAction?
 
     var body: some View {
-        if container.state == .running, let started = details?.startedAt {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                Text(running(since: started, now: context.date))
-            }
-        } else if container.state == .exited, let details, let finished = details.finishedAt {
-            let ago = finished.formatted(.relative(presentation: .named))
-            Text(details.State.ExitCode == 0 ? "Stopped \(ago)" : "Exited with code \(details.State.ExitCode), \(ago)")
-        } else {
-            Text(container.humanStatus)
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            Color.clear.navigationSubtitle("\(status(now: context.date))  ·  \(container.image)")
         }
     }
 
-    private func running(since start: Date, now: Date) -> String {
-        let seconds = max(now.timeIntervalSince(start), 0)
-        let fields: Set<Date.ComponentsFormatStyle.Field> = seconds < 60 ? [.second] : seconds < 3600 ? [.minute] : [.day, .hour, .minute]
-        let uptime = (start..<max(now, start)).formatted(.components(style: .wide, fields: fields))
-        guard let health = details?.State.Health?.Status, health != "none" else { return "Running for \(uptime)" }
-        return "Running for \(uptime), \(health)"
-    }
-}
-
-/// `localhost:8080`, underlined on hover, opens in the browser.
-private struct PortLink: View {
-    let port: Int
-    let enabled: Bool
-    @State private var hovering = false
-
-    var body: some View {
-        Button {
-            NSWorkspace.shared.open(URL(string: "http://localhost:\(port)")!)
-        } label: {
-            Text(verbatim: "localhost:\(port)")
-                .underline(hovering && enabled)
-                .foregroundStyle(enabled ? Color.accentColor : .secondary)
+    private func status(now: Date) -> String {
+        if let busy { return "\(busy.progressLabel)…" }
+        if container.state == .running, let start = details?.startedAt {
+            let seconds = max(now.timeIntervalSince(start), 0)
+            let fields: Set<Date.ComponentsFormatStyle.Field> = seconds < 60 ? [.second] : seconds < 3600 ? [.minute] : [.day, .hour, .minute]
+            let uptime = (start..<max(now, start)).formatted(.components(style: .wide, fields: fields))
+            guard let health = details?.State.Health?.Status, health != "none" else { return "Running for \(uptime)" }
+            return "Running for \(uptime), \(health)"
         }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .onHover { hovering = $0 }
-        .pointerStyle(enabled ? .link : nil)
-        .help("Open http://localhost:\(String(port))")
+        if container.state == .exited, let details, let finished = details.finishedAt {
+            let ago = finished.formatted(.relative(presentation: .named, unitsStyle: .wide))
+            return details.State.ExitCode == 0 ? "Stopped \(ago)" : "Exited with code \(details.State.ExitCode), \(ago)"
+        }
+        return container.humanStatus
     }
 }
 
@@ -161,7 +111,8 @@ private struct StatsRow: View {
             StatCard(
                 title: "Memory", color: .purple, values: stats.memory, tick: stats.tick, minimum: 32 * 1024 * 1024,
                 value: stats.memory.last ?? 0, text: Format.bytes(stats.memory.last ?? 0),
-                detail: stats.memoryLimit > 0 ? "of \(Format.bytes(stats.memoryLimit))" : ""
+                detail: stats.memoryLimit > 0 ? "of \(Format.bytes(stats.memoryLimit))" : "",
+                isLevel: true
             )
             StatCard(
                 title: "Network", color: .teal, values: stats.network, tick: stats.tick, minimum: 2048,
@@ -184,6 +135,7 @@ private struct StatCard: View {
     let value: Double
     let text: String
     let detail: String
+    var isLevel = false
 
     private var hasData: Bool { !values.isEmpty }
 
@@ -206,7 +158,7 @@ private struct StatCard: View {
                     .font(.system(size: 22, weight: .semibold, design: .rounded).monospacedDigit())
                     .contentTransition(.numericText(value: value))
                     .animation(.snappy, value: tick)
-                Sparkline(values: values, tick: tick, minimum: minimum, color: color)
+                Sparkline(values: values, tick: tick, minimum: minimum, color: color, isLevel: isLevel)
                     .frame(height: 38)
             }
         }

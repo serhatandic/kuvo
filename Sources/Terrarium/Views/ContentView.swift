@@ -20,11 +20,13 @@ struct ContentView: View {
                 }
                 .transition(.opacity)
             case .connecting, .unavailable:
-                EngineStatusView().transition(.opacity.combined(with: .scale(0.98)))
+                EngineStatusView()
+                    .toolbar(removing: .title)
+                    .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+                    .transition(.opacity.combined(with: .scale(0.98)))
             }
         }
         .frame(minWidth: 820, minHeight: 520)
-        .toolbar(removing: .title)
         .alert("Something went wrong", isPresented: Binding(get: { store.failure != nil }, set: { if !$0 { store.failure = nil } })) {
             Button("OK") {}
         } message: {

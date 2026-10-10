@@ -124,6 +124,8 @@ struct Sparkline: View {
     var minimum: Double = 1
     var color: Color = .accentColor
     var lineWidth: CGFloat = 1.5
+    /// Levels like memory read better padded with their first sample; rates with zero.
+    var isLevel = false
 
     /// Rounded up so the scale doesn't twitch with every sample.
     private var ceiling: Double {
@@ -133,8 +135,8 @@ struct Sparkline: View {
     }
 
     var body: some View {
-        // Pad with the first sample so a fresh series reads as a flat line with data flowing in.
-        let padded = Array(repeating: values.first ?? 0, count: max(LiveStats.window + 1 - values.count, 0)) + values
+        // Pad to a full window so a fresh series reads as a flat line with data flowing in.
+        let padded = Array(repeating: isLevel ? values.first ?? 0 : 0, count: max(LiveStats.window + 1 - values.count, 0)) + values
         let line = SparklineShape(values: padded, window: LiveStats.window, tick: Double(tick), target: Double(tick), ceiling: ceiling)
         var area = line
         area.closed = true

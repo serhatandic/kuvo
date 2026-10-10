@@ -60,7 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let path = ProcessInfo.processInfo.environment["TERRARIUM_SNAPSHOT"] else { return }
         Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
             MainActor.assumeIsolated {
-                guard let view = NSApp.windows.first(where: { $0.isVisible && $0.title == "Terrarium" })?.contentView?.superview,
+                guard let view = NSApp.windows.first(where: { $0.isVisible && $0.identifier?.rawValue.hasPrefix("main") == true })?.contentView?.superview,
                       let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
                 view.cacheDisplay(in: view.bounds, to: rep)
                 try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
