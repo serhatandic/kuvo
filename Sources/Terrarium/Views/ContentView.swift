@@ -3,6 +3,8 @@ import SwiftUI
 struct ContentView: View {
     @Environment(DockerStore.self) private var store
     @SceneStorage("selection") private var selection: String?
+    @State private var columns = NavigationSplitViewVisibility.all
+    @State private var sidebarWidth: CGFloat = 0
 
     private var selected: Container? {
         store.containers.first { $0.id == selection }
@@ -19,11 +21,25 @@ struct ContentView: View {
         ZStack {
             switch store.connection {
             case .connected:
-                NavigationSplitView {
+                NavigationSplitView(columnVisibility: $columns) {
                     Sidebar(selection: $selection)
                         .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 420)
+                        .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).maxX }) { sidebarWidth = $0 }
                 } detail: {
                     detail
+                }
+                .overlay(alignment: .topLeading) {
+                    // The system divider is pure black in dark mode and reads as heavy on
+                    // translucent panes; cover it with a soft seam. Dragging still works.
+                    if columns != .detailOnly, sidebarWidth > 0 {
+                        Rectangle()
+                            .fill(.thinMaterial)
+                            .overlay(Color.primary.opacity(0.1))
+                            .frame(width: 1)
+                            .offset(x: sidebarWidth)
+                            .ignoresSafeArea()
+                            .allowsHitTesting(false)
+                    }
                 }
                 .transition(.opacity)
             case .connecting, .unavailable:
