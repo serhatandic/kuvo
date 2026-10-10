@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var columns = NavigationSplitViewVisibility.all
     @State private var sidebarWidth: CGFloat = 0
     @AppStorage(Appearance.key) private var appearance = Appearance.system
+    @Environment(\.colorScheme) private var scheme
 
     private var selected: Container? {
         store.containers.first { $0.id == selection }
@@ -52,7 +53,11 @@ struct ContentView: View {
         }
         .frame(minWidth: 820, minHeight: 520)
         .onChange(of: appearance, initial: true) { appearance.apply() }
-        .containerBackground(.thinMaterial, for: .window)
+        // Dark: frosted, tinted by the wallpaper. Light: solid, so a dark desktop can't muddy it.
+        .containerBackground(
+            scheme == .light ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor)) : AnyShapeStyle(.thinMaterial),
+            for: .window
+        )
         .alert("Something went wrong", isPresented: Binding(get: { store.failure != nil }, set: { if !$0 { store.failure = nil } })) {
             Button("OK") {}
         } message: {

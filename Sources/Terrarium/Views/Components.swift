@@ -220,11 +220,31 @@ extension Pane where Title == Text {
 }
 
 extension View {
-    /// Frosted glass with a hairline edge and no shadow. (Liquid Glass's shadow
-    /// darkens the gap between neighboring panes, so panes don't use it.)
+    /// The pane surface. Dark: frosted glass with a hairline edge. Light:
+    /// white cards with a soft lift on a solid off-white window.
     func glassCard(cornerRadius: CGFloat) -> some View {
-        background(.thinMaterial, in: .rect(cornerRadius: cornerRadius))
-            .overlay(RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(.primary.opacity(0.08), lineWidth: 0.5))
+        modifier(PaneSurface(cornerRadius: cornerRadius))
+    }
+}
+
+private struct PaneSurface: ViewModifier {
+    let cornerRadius: CGFloat
+    @Environment(\.colorScheme) private var scheme
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius)
+        if scheme == .light {
+            // Solid white: translucency over a dark desktop turns light mode muddy.
+            content
+                .background(Color.white, in: shape)
+                .overlay(shape.strokeBorder(.black.opacity(0.07), lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.05), radius: 6, y: 1)
+        } else {
+            // No shadow: Liquid Glass-style shadows darken the gaps between panes.
+            content
+                .background(.thinMaterial, in: shape)
+                .overlay(shape.strokeBorder(.white.opacity(0.08), lineWidth: 0.5))
+        }
     }
 }
 
