@@ -69,9 +69,7 @@ struct LogsView: View {
                     }
                 }
         }
-        .background(.background.secondary, in: .rect(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator.opacity(0.6), lineWidth: 0.5))
-        .clipShape(.rect(cornerRadius: 12))
+        .panel()
         .onChange(of: timestamps, initial: true) { model.showTimestamps = timestamps }
         .task(id: sources) {
             guard let client = store.client else { return }

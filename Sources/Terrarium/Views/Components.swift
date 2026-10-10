@@ -184,6 +184,28 @@ struct Card<Content: View>: View {
     }
 }
 
+extension View {
+    /// The rounded, hairline-bordered surface used for logs and other panels.
+    func panel() -> some View {
+        background(.background.secondary, in: .rect(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator.opacity(0.6), lineWidth: 0.5))
+            .clipShape(.rect(cornerRadius: 12))
+    }
+}
+
+/// A glyph beside the window title, like a folder icon in Finder.
+struct TitleIcon: View {
+    let systemName: String
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: 18))
+            .foregroundStyle(.secondary)
+            .frame(width: 28, height: 28)
+            .accessibilityHidden(true)
+    }
+}
+
 /// Hover highlight for borderless icon buttons.
 struct HoverButtonStyle: ButtonStyle {
     var tint: Color = .primary

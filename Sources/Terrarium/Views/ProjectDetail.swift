@@ -21,7 +21,7 @@ struct ProjectDetail: View {
         .navigationTitle(project)
         .navigationSubtitle(summary)
         .toolbar {
-            ToolbarItem(placement: .navigation) { ProjectIcon() }
+            ToolbarItem(placement: .navigation) { TitleIcon(systemName: "square.stack.3d.up.fill") }
             ToolbarItemGroup {
                 Button {
                     store.perform(running.isEmpty ? .start : .stop, onProject: project)
@@ -49,13 +49,3 @@ struct ProjectDetail: View {
     }
 }
 
-/// The project glyph beside the window title, like a folder icon in Finder.
-private struct ProjectIcon: View {
-    var body: some View {
-        Image(systemName: "square.stack.3d.up.fill")
-            .font(.system(size: 18, weight: .regular))
-            .foregroundStyle(.secondary)
-            .frame(width: 28, height: 28)
-            .accessibilityLabel("Compose project")
-    }
-}
