@@ -11,8 +11,9 @@ struct DockerError: LocalizedError {
 struct DockerClient: Sendable {
     let socketPath: String
 
-    /// Docker Desktop, OrbStack, Colima, Rancher Desktop and plain Linux-style setups.
-    static func discover() -> DockerClient? {
+    /// An engine that's already running elsewhere: Docker Desktop, OrbStack,
+    /// Colima, Rancher Desktop, or `DOCKER_HOST`.
+    static func discoverExternal() -> DockerClient? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var candidates = [
             "\(home)/.docker/run/docker.sock",
@@ -126,7 +127,9 @@ private final class Exchange: @unchecked Sendable {
             }
             if let error { return finish(error) }
             guard eof || parser.isComplete else { return receive() }
-            if isFailure {
+            if !parser.hasHead {
+                finish(DockerError(message: "Docker closed the connection"))
+            } else if isFailure {
                 let message = (try? JSONDecoder().decode([String: String].self, from: errorBody))?["message"]
                 finish(DockerError(message: message ?? "Docker returned HTTP \(parser.status ?? 0)"))
             } else {
