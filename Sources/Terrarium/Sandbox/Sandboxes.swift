@@ -28,7 +28,10 @@ struct Sandboxes: Sendable {
     func create(name: String?, image: String, network: Bool, cpus: Double?, memoryMB: Int?) async throws -> Container {
         try await pullIfNeeded(image)
         let name = name ?? Self.generatedName()
-        var host: [String: Any] = ["Init": true, "NetworkMode": network ? "bridge" : "none"]
+        // Back after Terrarium restarts, unless archived (stopped on purpose).
+        var host: [String: Any] = [
+            "Init": true, "NetworkMode": network ? "bridge" : "none", "RestartPolicy": ["Name": "unless-stopped"],
+        ]
         if let cpus { host["NanoCpus"] = Int(cpus * 1_000_000_000) }
         if let memoryMB { host["Memory"] = memoryMB * 1024 * 1024 }
 
