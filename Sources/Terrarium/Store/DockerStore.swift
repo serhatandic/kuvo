@@ -15,6 +15,10 @@ final class DockerStore {
     var failure: String?
 
     @ObservationIgnored private(set) var client: DockerClient?
+    /// Where to find Docker; nil while no engine is available.
+    @ObservationIgnored var socketPath: @MainActor () -> String? = { DockerClient.discoverExternal()?.socketPath }
+    /// Called with the host ports running containers publish.
+    @ObservationIgnored var onPortsChanged: @MainActor (Set<UInt16>) -> Void = { _ in }
     @ObservationIgnored private var live: [String: LiveStats] = [:]
     @ObservationIgnored private var statsTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
@@ -25,13 +29,12 @@ final class DockerStore {
     func run() async {
         while !Task.isCancelled {
             do {
-                guard let client = DockerClient.discover() else {
-                    throw DockerError(message: "No Docker socket found")
-                }
+                guard let path = socketPath() else { throw DockerError(message: "Docker engine isn't running") }
+                let client = DockerClient(socketPath: path)
                 self.client = client
                 let version = try await client.version()
                 withAnimation(.smooth) {
-                    connection = .connected(engine: version.Platform?.Name ?? "Docker Engine \(version.Version)")
+                    connection = .connected(engine: version.Platform.map(\.Name).flatMap { $0.isEmpty ? nil : $0 } ?? "Docker \(version.Version)")
                 }
                 try await refresh()
                 try await followEvents(client)
@@ -42,7 +45,7 @@ final class DockerStore {
                 }
                 stopAllStats()
             }
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: .seconds(1))
         }
     }
 
@@ -76,6 +79,7 @@ final class DockerStore {
             withAnimation(.snappy) { containers = fresh }
         }
         syncStats()
+        onPortsChanged(Set(fresh.filter(\.isRunning).flatMap(\.publishedPorts).compactMap { UInt16(exactly: $0) }))
     }
 
     // MARK: Actions

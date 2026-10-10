@@ -19,10 +19,8 @@ struct ContentView: View {
                     detail
                 }
                 .transition(.opacity)
-            case .connecting:
-                ProgressView().controlSize(.small).transition(.opacity)
-            case .unavailable(let reason):
-                DisconnectedView(reason: reason).transition(.opacity.combined(with: .scale(0.98)))
+            case .connecting, .unavailable:
+                EngineStatusView().transition(.opacity.combined(with: .scale(0.98)))
             }
         }
         .frame(minWidth: 820, minHeight: 520)
@@ -94,31 +92,83 @@ private struct EmptyStateView: View {
     }
 }
 
-private struct DisconnectedView: View {
-    let reason: String
+/// Shown until Docker answers: first-run download, install steps, boot, errors.
+private struct EngineStatusView: View {
+    @Environment(Engine.self) private var engine
 
     var body: some View {
         VStack(spacing: 14) {
-            Image(systemName: "shippingbox")
-                .font(.system(size: 48, weight: .light))
-                .foregroundStyle(.tertiary)
-                .symbolEffect(.pulse, options: .repeating)
-            Text("Docker isn't running")
+            icon
+                .font(.system(size: 46, weight: .light))
+                .frame(height: 56)
+            Text(title)
                 .font(.system(size: 17, weight: .semibold))
-            Text("Start Docker Desktop, OrbStack or Colima.\nTerrarium connects automatically.")
+                .contentTransition(.interpolate)
+            detail
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            if let docker = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.docker.docker") {
-                Button("Open Docker Desktop") { NSWorkspace.shared.open(docker) }
-                    .controlSize(.large)
-                    .padding(.top, 6)
-            }
-            Text(reason)
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
-                .padding(.top, 12)
+                .frame(maxWidth: 340)
+                .contentTransition(.interpolate)
+            actions.padding(.top, 4)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.smooth, value: engine.state)
+    }
+
+    @ViewBuilder private var icon: some View {
+        switch engine.state {
+        case .failed:
+            Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+        case .stopped:
+            Image(systemName: "shippingbox").foregroundStyle(.tertiary)
+        default:
+            Image(systemName: "shippingbox")
+                .foregroundStyle(.tertiary)
+                .symbolEffect(.pulse, options: .repeating)
+        }
+    }
+
+    private var title: String {
+        switch engine.state {
+        case .downloading: "Downloading Linux"
+        case .booting(let step): step
+        case .running: "Connecting"
+        case .stopping: "Stopping"
+        case .stopped: "Engine stopped"
+        case .failed: "Engine didn't start"
+        }
+    }
+
+    @ViewBuilder private var detail: some View {
+        switch engine.state {
+        case .downloading(let progress):
+            VStack(spacing: 10) {
+                ProgressView(value: progress).frame(width: 220)
+                Text("A one-time \(Format.bytes(Double(GuestImage.assets.reduce(0) { $0 + $1.size }))) download of Alpine Linux \(GuestImage.alpine).")
+            }
+        case .booting(let step) where step != "Starting":
+            Text("First launch sets up a small Linux VM with Docker. This takes about a minute.")
+        case .failed(let reason):
+            Text(reason)
+        case .stopped:
+            Text("Start it to run containers.")
+        default:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder private var actions: some View {
+        switch engine.state {
+        case .failed:
+            HStack {
+                Button("Show Log") { NSWorkspace.shared.activateFileViewerSelecting([EnginePaths.console]) }
+                Button("Try Again") { Task { await engine.start() } }.keyboardShortcut(.defaultAction)
+            }
+        case .stopped:
+            Button("Start Engine") { Task { await engine.start() } }.keyboardShortcut(.defaultAction)
+        default:
+            EmptyView()
+        }
     }
 }

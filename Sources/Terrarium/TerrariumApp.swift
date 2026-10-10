@@ -3,34 +3,54 @@ import SwiftUI
 @main
 struct TerrariumApp: App {
     @NSApplicationDelegateAdaptor private var delegate: AppDelegate
-    @State private var store = DockerStore()
 
     var body: some Scene {
         Window("Terrarium", id: "main") {
             ContentView()
-                .environment(store)
-                .task { await store.run() }
+                .environment(delegate.store)
+                .environment(delegate.engine)
         }
         .defaultSize(width: 1080, height: 680)
         .windowToolbarStyle(.unified)
 
         MenuBarExtra {
-            MenuBarView().environment(store)
+            MenuBarView()
+                .environment(delegate.store)
+                .environment(delegate.engine)
         } label: {
-            Image(systemName: store.containers.contains(where: \.isRunning) ? "shippingbox.fill" : "shippingbox")
+            Image(systemName: delegate.store.containers.contains(where: \.isRunning) ? "shippingbox.fill" : "shippingbox")
         }
         .menuBarExtraStyle(.window)
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    let engine = Engine()
+    let store = DockerStore()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Lets `swift run` behave like a real app (dock icon, focus) without a bundle.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
+
+        store.socketPath = { [engine] in engine.socketPath }
+        store.onPortsChanged = { [engine] ports in engine.forward(ports) }
+        Task { await engine.start() }
+        Task { await store.run() }
         #if DEBUG
         startSnapshots()
         #endif
+    }
+
+    /// Give dockerd a chance to shut down cleanly before we exit.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard engine.state != .stopped else { return .terminateNow }
+        Task {
+            await engine.stop()
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     #if DEBUG
