@@ -99,12 +99,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let path = ProcessInfo.processInfo.environment["TERRARIUM_SNAPSHOT"] else { return }
         Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
             MainActor.assumeIsolated {
-                guard let view = NSApp.windows.first(where: { $0.isVisible && $0.identifier?.rawValue.hasPrefix("main") == true })?.contentView?.superview,
-                      let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
-                view.cacheDisplay(in: view.bounds, to: rep)
-                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+                guard let window = NSApp.windows.first(where: { $0.isVisible && $0.identifier?.rawValue.hasPrefix("main") == true })
+                else { return }
+                // A real composited capture of our own window (materials included), falling back to drawing the views.
+                if let image = Self.captureWindow(window.windowNumber) {
+                    try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+                } else if let view = window.contentView?.superview, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+                }
             }
         }
+    }
+
+    /// CGWindowListCreateImage is hidden from Swift in newer SDKs; look it up at runtime.
+    private static func captureWindow(_ number: Int) -> CGImage? {
+        typealias Create = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else { return nil }
+        let create = unsafeBitCast(symbol, to: Create.self)
+        // Including just this window; ignore framing shadow, best resolution.
+        return create(.null, 1 << 3, UInt32(number), (1 << 0) | (1 << 3))?.takeRetainedValue()
     }
     #endif
 }
