@@ -84,31 +84,41 @@ struct Sidebar: View {
     }
 }
 
-/// The system search field, placed above the list so we control its spacing.
-private struct FilterField: NSViewRepresentable {
+/// The sidebar's filter: a search field sized to sit comfortably above the rows.
+private struct FilterField: View {
     @Binding var text: String
+    @FocusState private var focused: Bool
 
-    func makeNSView(context: Context) -> NSSearchField {
-        let field = NSSearchField()
-        field.placeholderString = "Filter"
-        field.controlSize = .large
-        field.delegate = context.coordinator
-        return field
-    }
-
-    func updateNSView(_ field: NSSearchField, context: Context) {
-        if field.stringValue != text { field.stringValue = text }
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
-
-    final class Coordinator: NSObject, NSSearchFieldDelegate {
-        let text: Binding<String>
-        init(text: Binding<String>) { self.text = text }
-
-        func controlTextDidChange(_ notification: Notification) {
-            text.wrappedValue = (notification.object as? NSSearchField)?.stringValue ?? ""
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+            TextField("Filter", text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .focused($focused)
+                .onExitCommand { text = "" }
+            if !text.isEmpty {
+                Button { text = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear")
+                .transition(.opacity)
+            }
         }
+        .padding(.horizontal, 10)
+        .frame(height: 28)
+        .background(.primary.opacity(0.06), in: .rect(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(focused ? Color.accentColor.opacity(0.6) : .primary.opacity(0.08), lineWidth: focused ? 1.5 : 0.5)
+        }
+        .contentShape(.rect)
+        .onTapGesture { focused = true }
+        .animation(.easeOut(duration: 0.15), value: focused)
+        .animation(.easeOut(duration: 0.15), value: text.isEmpty)
     }
 }
 
