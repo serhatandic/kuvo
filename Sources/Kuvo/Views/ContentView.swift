@@ -26,6 +26,8 @@ struct ContentView: View {
                 NavigationSplitView(columnVisibility: $columns) {
                     Sidebar(selection: $selection)
                         .lightGlass() // The sidebar draws its own material; tint it the same.
+                        // Also as a frame: without saved split state, the column width alone is ignored.
+                        .frame(minWidth: 250, idealWidth: 290, maxWidth: 420)
                         .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 420)
                         .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).maxX }) { sidebarWidth = $0 }
                 } detail: {
