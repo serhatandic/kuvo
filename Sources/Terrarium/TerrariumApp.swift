@@ -1,6 +1,18 @@
 import SwiftUI
 
+/// One binary, two roles: the app, or `Terrarium mcp` for agents.
 @main
+enum Entry {
+    static func main() {
+        guard CommandLine.arguments.dropFirst().first == "mcp" else { return TerrariumApp.main() }
+        Task {
+            await MCPServer.run()
+            exit(0)
+        }
+        dispatchMain()
+    }
+}
+
 struct TerrariumApp: App {
     @NSApplicationDelegateAdaptor private var delegate: AppDelegate
 
