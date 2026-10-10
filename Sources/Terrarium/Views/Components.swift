@@ -263,9 +263,9 @@ private struct PaneSurface: ViewModifier {
 }
 
 extension View {
-    /// Light mode only: a faint tinted layer over the window's blur, so the glass
-    /// stays bright over a dark desktop. Thicker when the window is inactive,
-    /// since materials flatten then.
+    /// Light mode only: a tinted layer over the window's blur. Its strength follows
+    /// the wallpaper: thin over a light one (real glass), nearly opaque over a dark
+    /// one (otherwise the blur turns light mode gray). Thicker when inactive.
     func lightGlass() -> some View {
         modifier(LightGlass())
     }
@@ -278,8 +278,9 @@ private struct LightGlass: ViewModifier {
     func body(content: Content) -> some View {
         content.background {
             if scheme == .light {
-                Color(red: 0.925, green: 0.915, blue: 0.935)
-                    .opacity(activeState == .inactive ? 0.8 : 0.66)
+                let base = 0.92 - 0.37 * Wallpaper.shared.luminance
+                Color(red: 0.935, green: 0.925, blue: 0.945)
+                    .opacity(min(base + (activeState == .inactive ? 0.05 : 0), 0.97))
                     .ignoresSafeArea()
             }
         }
