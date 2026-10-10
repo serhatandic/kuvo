@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.onPortsChanged = { [engine] ports in engine.forward(ports) }
         Task { await engine.start() }
         Task { await store.run() }
+        Task.detached(priority: .background) { CLIInstaller.ensureInstalled() }
         #if DEBUG
         startSnapshots()
         #endif

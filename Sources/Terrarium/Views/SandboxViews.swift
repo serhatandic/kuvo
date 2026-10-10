@@ -310,8 +310,7 @@ private struct ChangesList: View {
 struct SandboxesOverview: View {
     @Environment(DockerStore.self) private var store
     @AppStorage(SandboxRetention.key) private var retentionDays = 7
-    @State private var installed = CLIInstaller.installedPath
-    @State private var installFailed = false
+    private var installed: String? { CLIInstaller.installedPath }
 
     private var count: Int { store.containers.filter(\.isSandbox).count }
 
@@ -323,29 +322,15 @@ struct SandboxesOverview: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Command line")
                         .font(.system(size: 15, weight: .semibold))
-                    Text("terrarium gives you and your agents disposable Linux sandboxes from any terminal: create one, run commands, copy files in and out, open a shell.")
+                    Text("terrarium comes with the app and gives you and your agents disposable Linux sandboxes from any terminal: create one, run commands, copy files in and out, open a shell.")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-
+                    CopyableLine(text: "terrarium --help")
                     if let installed {
-                        Label("Installed at \(installed.abbreviatingHome)", systemImage: "checkmark.circle.fill")
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(.secondary)
-                            .symbolRenderingMode(.multicolor)
-                            .transition(.opacity)
-                    } else if installFailed {
-                        Text("No folder on your PATH is writable. Run this in Terminal instead:")
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(.secondary)
-                        CopyableLine(text: CLIInstaller.manualCommand)
-                    } else {
-                        Button("Install Command-Line Tool") {
-                            withAnimation(.snappy) {
-                                if let path = try? CLIInstaller.install() { installed = path } else { installFailed = true }
-                            }
-                        }
-                        .controlSize(.large)
+                        Text("Linked at \(installed.abbreviatingHome)")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.tertiary)
                     }
 
                     Divider().padding(.vertical, 4)
