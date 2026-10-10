@@ -18,6 +18,7 @@ enum Entry {
 
 struct TerrariumApp: App {
     @NSApplicationDelegateAdaptor private var delegate: AppDelegate
+    @AppStorage(Appearance.key) private var appearance = Appearance.system
 
     var body: some Scene {
         Window("Terrarium", id: "main") {
@@ -28,6 +29,13 @@ struct TerrariumApp: App {
         }
         .defaultSize(width: 1080, height: 680)
         .windowToolbarStyle(.unified)
+        .commands {
+            CommandGroup(after: .sidebar) {
+                Picker("Appearance", selection: $appearance) {
+                    ForEach(Appearance.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+            }
+        }
 
         MenuBarExtra {
             MenuBarView()
@@ -43,11 +51,38 @@ struct TerrariumApp: App {
     }
 }
 
+/// System, light or dark, applied to the whole app (AppKit views and the menu bar panel included).
+enum Appearance: String, CaseIterable {
+    case system, light, dark
+    static let key = "appearance"
+
+    var title: String {
+        switch self {
+        case .system: "System"
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
+
+    @MainActor func apply() {
+        NSApp.appearance = switch self {
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
 private struct SettingsView: View {
     @AppStorage(ArchiveRetention.key, store: ArchiveRetention.defaults) private var retentionDays = 7
+    @AppStorage(Appearance.key) private var appearance = Appearance.system
 
     var body: some View {
         Form {
+            Picker("Appearance", selection: $appearance) {
+                ForEach(Appearance.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
             Picker("Delete archived containers after", selection: $retentionDays) {
                 ForEach(ArchiveRetention.choices, id: \.self) { days in
                     Text(days == 0 ? "Never" : days == 1 ? "1 day" : "\(days) days").tag(days)

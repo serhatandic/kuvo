@@ -8,6 +8,14 @@ import SwiftUI
 @MainActor @Observable
 final class Terminals {
     private(set) var sessions: [String: TerminalSession] = [:]
+    @ObservationIgnored private var appearanceObserver: NSKeyValueObservation?
+
+    init() {
+        // SwiftTerm stores colors as fixed RGB, so re-apply them when light/dark changes.
+        appearanceObserver = NSApplication.shared.observe(\.effectiveAppearance) { [weak self] _, _ in
+            Task { @MainActor in self?.sessions.values.forEach { $0.restyle() } }
+        }
+    }
 
     func isOpen(_ id: String) -> Bool { sessions[id] != nil }
 
@@ -45,7 +53,7 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
     init(container: Container) {
         super.init()
         view.processDelegate = self
-        Self.style(view)
+        NSApp.effectiveAppearance.performAsCurrentDrawingAppearance { Self.style(view) }
         view.startProcess(
             executable: CLIInstaller.executable,
             args: ["shell", container.id],
@@ -55,6 +63,11 @@ final class TerminalSession: NSObject, @preconcurrency LocalProcessTerminalViewD
     }
 
     func terminate() { if !ended { view.terminate() } }
+
+    func restyle() {
+        NSApp.effectiveAppearance.performAsCurrentDrawingAppearance { Self.style(view) }
+        view.needsDisplay = true
+    }
 
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}

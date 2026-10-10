@@ -5,6 +5,7 @@ struct ContentView: View {
     @SceneStorage("selection") private var selection: String?
     @State private var columns = NavigationSplitViewVisibility.all
     @State private var sidebarWidth: CGFloat = 0
+    @AppStorage(Appearance.key) private var appearance = Appearance.system
 
     private var selected: Container? {
         store.containers.first { $0.id == selection }
@@ -50,6 +51,7 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 820, minHeight: 520)
+        .onChange(of: appearance, initial: true) { appearance.apply() }
         .containerBackground(.thinMaterial, for: .window)
         .alert("Something went wrong", isPresented: Binding(get: { store.failure != nil }, set: { if !$0 { store.failure = nil } })) {
             Button("OK") {}
