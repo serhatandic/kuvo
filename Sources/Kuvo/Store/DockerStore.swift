@@ -34,10 +34,11 @@ final class DockerStore {
                 let client = DockerClient(socketPath: path)
                 self.client = client
                 let version = try await client.version()
+                // Load containers before showing them, so "No containers yet" never flashes.
+                try await refresh()
                 withAnimation(.smooth) {
                     connection = .connected(engine: version.Platform.map(\.Name).flatMap { $0.isEmpty ? nil : $0 } ?? "Docker \(version.Version)")
                 }
-                try await refresh()
                 try await followEvents(client)
             } catch {
                 withAnimation(.smooth) {
