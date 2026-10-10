@@ -253,6 +253,8 @@ struct PaneSplit<First: View, Second: View>: View {
     @ViewBuilder var second: Second
 
     private let gap: CGFloat = 10
+    /// The split position when the current drag began; drags are measured from it.
+    @State private var dragOrigin: Double?
 
     var body: some View {
         GeometryReader { geometry in
@@ -284,11 +286,18 @@ struct PaneSplit<First: View, Second: View>: View {
             .frame(width: horizontal ? gap : nil, height: horizontal ? nil : gap)
             .contentShape(.rect)
             .pointerStyle(horizontal ? .columnResize : .rowResize)
-            .gesture(DragGesture(coordinateSpace: .global).onChanged { value in
-                let delta = horizontal ? value.translation.width : value.translation.height
-                let start = (total - gap) * fraction
-                fraction = min(max((start + delta) / (total - gap), 0.3), 0.75)
-            })
+            .gesture(
+                DragGesture(coordinateSpace: .global)
+                    .onChanged { value in
+                        // Translation is cumulative, so offset it from where the drag began,
+                        // not from the already-moved position, or the divider runs ahead.
+                        let origin = dragOrigin ?? fraction
+                        dragOrigin = origin
+                        let delta = horizontal ? value.translation.width : value.translation.height
+                        fraction = min(max(origin + delta / (total - gap), 0.3), 0.75)
+                    }
+                    .onEnded { _ in dragOrigin = nil }
+            )
     }
 }
 
