@@ -306,50 +306,54 @@ private struct ChangesList: View {
 
 // MARK: - Overview
 
-/// Shown when the Sandboxes group is selected: how to connect an agent, and retention.
+/// Shown when the Sandboxes group is selected: the command-line tool and retention.
 struct SandboxesOverview: View {
     @Environment(DockerStore.self) private var store
     @AppStorage(SandboxRetention.key) private var retentionDays = 7
-    @State private var copied = false
+    @State private var installed = CLIInstaller.installedPath
+    @State private var installFailed = false
 
     private var count: Int { store.containers.filter(\.isSandbox).count }
 
-    private var command: String {
-        let path = Bundle.main.executablePath ?? "/Applications/Terrarium.app/Contents/MacOS/Terrarium"
-        return "claude mcp add --scope user terrarium -- \(path.contains(" ") ? "\"\(path)\"" : path) mcp"
-    }
+    private static let agentNote = "Use the `terrarium` CLI for throwaway Linux sandboxes (benchmarks, experiments, installing tools) instead of running them on this Mac. Run `terrarium --help` to see how."
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Connect Claude Code")
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Command line")
                         .font(.system(size: 15, weight: .semibold))
-                    Text("Let Claude see and manage your containers, and give it disposable sandboxes for its own work, like benchmarks and experiments. Run this once:")
+                    Text("terrarium gives you and your agents disposable Linux sandboxes from any terminal: create one, run commands, copy files in and out, open a shell.")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: 10) {
-                        Text(command)
-                            .font(.system(size: 12).monospaced())
-                            .textSelection(.enabled)
-                            .lineLimit(2)
-                        Spacer(minLength: 8)
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(command, forType: .string)
-                            withAnimation(.snappy) { copied = true }
-                        } label: {
-                            Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
-                                .contentTransition(.symbolEffect(.replace))
+
+                    if let installed {
+                        Label("Installed at \(installed.abbreviatingHome)", systemImage: "checkmark.circle.fill")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.secondary)
+                            .symbolRenderingMode(.multicolor)
+                            .transition(.opacity)
+                    } else if installFailed {
+                        Text("No folder on your PATH is writable. Run this in Terminal instead:")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.secondary)
+                        CopyableLine(text: CLIInstaller.manualCommand)
+                    } else {
+                        Button("Install Command-Line Tool") {
+                            withAnimation(.snappy) {
+                                if let path = try? CLIInstaller.install() { installed = path } else { installFailed = true }
+                            }
                         }
+                        .controlSize(.large)
                     }
-                    .padding(12)
-                    .background(.primary.opacity(0.05), in: .rect(cornerRadius: 8))
-                    Text("Then ask things like \u{201C}why does my db keep restarting?\u{201D} or \u{201C}benchmark these two JSON parsers in a sandbox.\u{201D} Sandboxes show up here, with every command Claude runs.")
-                        .font(.system(size: 12))
+
+                    Divider().padding(.vertical, 4)
+
+                    Text("Tell your agent about it. Add this to CLAUDE.md or AGENTS.md:")
+                        .font(.system(size: 12.5))
                         .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    CopyableLine(text: Self.agentNote, monospaced: false)
                 }
                 .padding(18)
                 .panel()
@@ -358,7 +362,7 @@ struct SandboxesOverview: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Archived sandboxes")
                             .font(.system(size: 13, weight: .medium))
-                        Text("Sandboxes are kept until archived or destroyed. Archived ones are deleted after:")
+                        Text("Sandboxes are kept until archived or removed. Archived ones are deleted after:")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
@@ -382,6 +386,33 @@ struct SandboxesOverview: View {
         .navigationTitle("Sandboxes")
         .navigationSubtitle(count == 0 ? "None yet" : count == 1 ? "1 sandbox" : "\(count) sandboxes")
         .toolbar { ToolbarItem(placement: .navigation) { TitleIcon(systemName: "flask.fill") } }
+    }
+}
+
+/// A line of text with a Copy button that confirms itself.
+private struct CopyableLine: View {
+    let text: String
+    var monospaced = true
+    @State private var copied = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(text)
+                .font(monospaced ? .system(size: 12).monospaced() : .system(size: 12.5))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                withAnimation(.snappy) { copied = true }
+            } label: {
+                Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    .contentTransition(.symbolEffect(.replace))
+            }
+        }
+        .padding(12)
+        .background(.primary.opacity(0.05), in: .rect(cornerRadius: 8))
     }
 }
 
