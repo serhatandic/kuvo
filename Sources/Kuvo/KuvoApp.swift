@@ -4,6 +4,9 @@ import SwiftUI
 @main
 enum Entry {
     static func main() {
+        // Writing to a socket the other side already closed must be an error we
+        // handle, not a SIGPIPE that silently kills the app (or the CLI).
+        signal(SIGPIPE, SIG_IGN)
         let arguments = Array(CommandLine.arguments.dropFirst())
         let invokedAsTool = (CommandLine.arguments.first as NSString?)?.lastPathComponent == "kuvo"
         let looksLikeCommand = arguments.first.map { !$0.hasPrefix("-") || ["-h", "--help", "--version"].contains($0) } ?? false
