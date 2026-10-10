@@ -9,8 +9,9 @@ struct ProjectDetail: View {
     private var running: [Container] { containers.filter(\.isRunning) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             StatsRow(stats: running.map { store.stats(for: $0.id) }, running: !running.isEmpty)
+                .fixedSize(horizontal: false, vertical: true)
             LogsView(
                 sources: containers.map { LogSource(id: $0.id, label: $0.service ?? $0.name) },
                 isRunning: !running.isEmpty

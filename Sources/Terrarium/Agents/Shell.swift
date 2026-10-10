@@ -44,6 +44,14 @@ enum Shell {
         winch.resume()
         defer { winch.cancel() }
 
+        // If whoever opened us goes away (the app quit or crashed), don't linger.
+        let parent = getppid()
+        let watchdog = DispatchSource.makeTimerSource(queue: .global())
+        watchdog.schedule(deadline: .now() + 1, repeating: 1)
+        watchdog.setEventHandler { if getppid() != parent { shutdown(socket, SHUT_RDWR) } }
+        watchdog.resume()
+        defer { watchdog.cancel() }
+
         if !leftover.isEmpty { _ = writeAll(STDOUT_FILENO, leftover) }
         Thread.detachNewThread { pump(from: STDIN_FILENO, to: socket) }
         await withCheckedContinuation { continuation in

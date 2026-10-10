@@ -26,15 +26,15 @@ enum ArchiveRetention {
     static func prune(_ containers: [Container], client: DockerClient) async {
         let service = ContainerService(client: client)
         for container in containers {
-            if let archived = Journal.archivedAt(container.id), let deadline = deadline(archivedAt: archived), deadline < .now {
+            if let archived = Archive.archivedAt(container.id), let deadline = deadline(archivedAt: archived), deadline < .now {
                 try? await service.remove(container)
             }
         }
         let ids = Set(containers.map(\.id))
-        let files = (try? FileManager.default.contentsOfDirectory(atPath: Journal.directory.path)) ?? []
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: Archive.directory.path)) ?? []
         for file in files {
             let id = (file as NSString).deletingPathExtension
-            if !ids.contains(id) { Journal.remove(id) }
+            if !ids.contains(id) { Archive.remove(id) }
         }
     }
 }

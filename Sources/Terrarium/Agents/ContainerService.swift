@@ -1,7 +1,7 @@
 import Foundation
 
-/// What Terrarium adds on top of Docker, for any container: commands that
-/// leave a record, file copies, archiving, and quick containers to work in.
+/// What Terrarium adds on top of Docker, for any container: commands,
+/// file copies, archiving, and quick containers to work in.
 /// Shared by the app and the `terrarium` CLI.
 struct ContainerService: Sendable {
     static let creatorLabel = "dev.terrarium.creator"
@@ -41,7 +41,6 @@ struct ContainerService: Sendable {
             "HostConfig": host,
         ], as: Created.self)
         _ = try await client.send("POST", "/containers/\(created.Id)/start")
-        Journal.append(.init(kind: .create, title: "Created from \(image)", detail: network ? nil : "No network"), to: created.Id)
         return try await resolve(created.Id)
     }
 
@@ -60,37 +59,28 @@ struct ContainerService: Sendable {
     /// Stops it and keeps it; it's deleted after the retention period.
     func archive(_ container: Container) async throws {
         if container.isRunning { _ = try await client.send("POST", "/containers/\(container.id)/stop?t=2") }
-        Journal.setArchived(container.id, Date())
+        Archive.setArchived(container.id, Date())
     }
 
     func remove(_ container: Container) async throws {
         _ = try await client.send("DELETE", "/containers/\(container.id)?force=true")
-        Journal.remove(container.id)
+        Archive.remove(container.id)
     }
 
     /// Running and unarchived, so commands can execute.
     func wake(_ container: Container) async throws {
-        Journal.setArchived(container.id, nil)
+        Archive.setArchived(container.id, nil)
         if container.state == .paused { _ = try await client.send("POST", "/containers/\(container.id)/unpause") }
         if !container.isRunning && container.state != .paused { _ = try await client.send("POST", "/containers/\(container.id)/start") }
     }
 
     // MARK: Work
 
-    /// Runs a command and records it in the container's activity.
-    /// `started` lets a caller close the record if it's interrupted.
+    /// Runs a command, starting the container first if needed.
     func exec(_ container: Container, command: String, workdir: String?,
-              onOutput: @Sendable (StreamDemuxer.Kind, Data) -> Void = { _, _ in },
-              started: (Journal.Entry) -> Void = { _ in }) async throws -> ExecResult {
+              onOutput: @Sendable (StreamDemuxer.Kind, Data) -> Void = { _, _ in }) async throws -> ExecResult {
         try await wake(container)
-        let entry = Journal.Entry(kind: .exec, title: command)
-        Journal.append(entry, to: container.id)
-        started(entry)
-        let result = try await client.execute(in: container.id, command: command, workdir: workdir, onOutput: onOutput)
-        var done = entry
-        done.finish(exitCode: result.exitCode, duration: result.duration, output: result.output)
-        Journal.append(done, to: container.id)
-        return result
+        return try await client.execute(in: container.id, command: command, workdir: workdir, onOutput: onOutput)
     }
 
     func readFile(_ container: Container, path: String) async throws -> Data {
@@ -110,8 +100,6 @@ struct ContainerService: Sendable {
         _ = try await client.send("PUT", "/containers/\(container.id)/archive?path=\(destination.urlQuery)",
                                   body: Tar.archive(entries), contentType: "application/x-tar")
         let target = (destination as NSString).appendingPathComponent(source.lastPathComponent)
-        let summary = "\(files) files, \(Format.plainBytes(Double(bytes)))"
-        Journal.append(.init(kind: .copy, title: "\(source.path.abbreviatingHome) → \(target)", detail: summary, finished: true), to: container.id)
         return (target, files, bytes)
     }
 
@@ -221,97 +209,31 @@ enum HostFiles {
     }
 }
 
-// MARK: - Journal
+// MARK: - Archive
 
-/// What happened in each container, as JSON lines on disk. Written by the
-/// CLI, read by the app. Also records when a container was archived.
-enum Journal {
-    struct Entry: Codable, Identifiable, Equatable, Sendable {
-        enum Kind: String, Codable, Sendable { case create, exec, write, copy }
-
-        var id = UUID()
-        let kind: Kind
-        var date = Date()
-        let title: String
-        var detail: String?
-        var exitCode: Int?
-        var duration: Double?
-        var output: String?
-        var finished = false
-
-        mutating func finish(exitCode: Int?, duration: Double, output: String) {
-            self.exitCode = exitCode
-            self.duration = duration
-            self.output = output
-            finished = true
-        }
-    }
-
-    static let directory = EnginePaths.support.appending(path: "activity", directoryHint: .isDirectory)
-
-    static func append(_ entry: Entry, to id: String) {
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let url = file(id, "jsonl")
-        guard var line = try? encoder.encode(entry) else { return }
-        line.append(10)
-        if let handle = try? FileHandle(forWritingTo: url) {
-            _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: line)
-            try? handle.close()
-        } else {
-            try? line.write(to: url)
-        }
-    }
-
-    /// Entries in order; a finished record replaces its start record.
-    static func entries(_ id: String) -> [Entry] {
-        guard let data = try? Data(contentsOf: file(id, "jsonl")) else { return [] }
-        var order: [UUID] = []
-        var latest: [UUID: Entry] = [:]
-        for line in data.split(separator: 10) {
-            guard let entry = try? decoder.decode(Entry.self, from: line) else { continue }
-            if latest[entry.id] == nil { order.append(entry.id) }
-            latest[entry.id] = entry
-        }
-        return order.compactMap { latest[$0] }
-    }
-
-    static func modified(_ id: String) -> Date? {
-        (try? FileManager.default.attributesOfItem(atPath: file(id, "jsonl").path))?[.modificationDate] as? Date
-    }
+/// Which containers are archived, and since when: one small file per container,
+/// shared by the app and the CLI.
+enum Archive {
+    static let directory = EnginePaths.support.appending(path: "archive", directoryHint: .isDirectory)
 
     static func archivedAt(_ id: String) -> Date? {
-        (try? String(contentsOf: file(id, "archived"), encoding: .utf8)).flatMap { try? Date($0, strategy: .iso8601) }
+        (try? String(contentsOf: file(id), encoding: .utf8)).flatMap { try? Date($0, strategy: .iso8601) }
     }
 
     static func setArchived(_ id: String, _ date: Date?) {
         if let date {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try? date.formatted(.iso8601).write(to: file(id, "archived"), atomically: true, encoding: .utf8)
+            try? date.formatted(.iso8601).write(to: file(id), atomically: true, encoding: .utf8)
         } else {
-            try? FileManager.default.removeItem(at: file(id, "archived"))
+            remove(id)
         }
     }
 
     static func remove(_ id: String) {
-        for ext in ["jsonl", "archived"] { try? FileManager.default.removeItem(at: file(id, ext)) }
+        try? FileManager.default.removeItem(at: file(id))
     }
 
-    private static func file(_ id: String, _ ext: String) -> URL {
-        directory.appending(path: "\(id).\(ext)")
-    }
-
-    private static let encoder: JSONEncoder = {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        return encoder
-    }()
-
-    private static let decoder: JSONDecoder = {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return decoder
-    }()
+    private static func file(_ id: String) -> URL { directory.appending(path: id) }
 }
 
 extension Container {

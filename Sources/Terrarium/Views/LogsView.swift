@@ -7,23 +7,18 @@ struct LogSource: Hashable, Sendable {
     var label: String?
 }
 
-/// A titled logs panel (used for Compose projects).
+/// A logs pane (used for Compose projects, where it's the only one).
 struct LogsView: View {
     let sources: [LogSource]
     var isRunning = true
     @State private var model = LogModel()
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 2) {
-                Text("Logs").font(.system(size: 13, weight: .semibold))
-                LogsAccessory(model: model)
-            }
-            .panelHeader()
-            Divider().opacity(0.6)
+        Pane(icon: "text.alignleft", title: "Logs") {
+            LogsAccessory(model: model)
+        } content: {
             LogsBody(model: model, sources: sources, isRunning: isRunning)
         }
-        .panel()
     }
 }
 
@@ -39,16 +34,12 @@ struct LogsAccessory: View {
                 .foregroundStyle(.tertiary)
                 .contentTransition(.numericText(value: Double(model.lineCount)))
                 .animation(.snappy, value: model.lineCount)
-                .padding(.leading, 6)
-            Spacer()
-            Button { timestamps.toggle() } label: { Image(systemName: "clock") }
-                .buttonStyle(HoverButtonStyle(tint: timestamps ? .accentColor : .secondary))
-                .help(timestamps ? "Hide timestamps" : "Show timestamps")
-            Button { model.clear() } label: { Image(systemName: "trash") }
-                .buttonStyle(HoverButtonStyle(tint: .secondary))
-                .help("Clear")
+                .padding(.trailing, 6)
+            PaneButton(timestamps ? "clock.fill" : "clock", help: timestamps ? "Hide timestamps" : "Show timestamps") {
+                timestamps.toggle()
+            }
+            PaneButton("trash", help: "Clear") { model.clear() }
         }
-        .font(.system(size: 12))
         .onChange(of: timestamps, initial: true) { model.showTimestamps = timestamps }
     }
 }

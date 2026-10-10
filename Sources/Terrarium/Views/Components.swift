@@ -175,31 +175,56 @@ enum Format {
 
 // MARK: - Small pieces
 
-struct Card<Content: View>: View {
+// MARK: - Panes
+
+/// The one surface every part of the detail view sits on: a soft glass card
+/// with a small header (icon, title, controls) and content directly below.
+struct Pane<Title: View, Accessory: View, Content: View>: View {
+    let icon: String
+    @ViewBuilder var title: Title
+    @ViewBuilder var accessory: Accessory
     @ViewBuilder var content: Content
 
     var body: some View {
-        content
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.background.secondary, in: .rect(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator.opacity(0.6), lineWidth: 0.5))
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                    .contentTransition(.symbolEffect(.replace))
+                title
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                accessory
+            }
+            .padding(.leading, 14)
+            .padding(.trailing, 8)
+            .frame(height: 38)
+            content
+        }
+        .clipShape(.rect(cornerRadius: Pane.radius))
+        .glassCard(cornerRadius: Pane.radius)
+    }
+}
+
+extension Pane {
+    nonisolated static var radius: CGFloat { 14 }
+}
+
+extension Pane where Title == Text {
+    init(icon: String, title: String, @ViewBuilder accessory: () -> Accessory, @ViewBuilder content: () -> Content) {
+        self.init(icon: icon, title: { Text(title) }, accessory: accessory, content: content)
     }
 }
 
 extension View {
-    /// The rounded, hairline-bordered surface used for logs and other panels.
-    func panel() -> some View {
-        background(.background.secondary, in: .rect(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator.opacity(0.6), lineWidth: 0.5))
-            .clipShape(.rect(cornerRadius: 12))
-    }
-}
-
-extension View {
-    /// Spacing for the row of controls at the top of a panel.
-    func panelHeader() -> some View {
-        padding(.leading, 14).padding(.trailing, 8).frame(minHeight: 40)
+    /// Frosted glass with a hairline edge and no shadow. (Liquid Glass's shadow
+    /// darkens the gap between neighboring panes, so panes don't use it.)
+    func glassCard(cornerRadius: CGFloat) -> some View {
+        background(.thinMaterial, in: .rect(cornerRadius: cornerRadius))
+            .overlay(RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(.primary.opacity(0.08), lineWidth: 0.5))
     }
 }
 

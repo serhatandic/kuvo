@@ -279,7 +279,7 @@ private struct ContainerRow: View {
             : RowAction(systemImage: "play.fill", help: "Start") { store.perform(.start, on: container) }
     }
 
-    private var archivedAt: Date? { Journal.archivedAt(container.id) }
+    private var archivedAt: Date? { Archive.archivedAt(container.id) }
 
     private var subtitle: String {
         if let busy { return "\(busy.progressLabel)…" }
@@ -335,6 +335,7 @@ private struct Footer: View {
 
 struct ContainerMenu: View {
     @Environment(DockerStore.self) private var store
+    @Environment(Terminals.self) private var terminals
     let container: Container
 
     var body: some View {
@@ -349,7 +350,8 @@ struct ContainerMenu: View {
         }
         if container.isRunning {
             Divider()
-            Button("Open in Terminal") { TerminalLauncher.open(container) }
+            Button("Open Terminal") { withAnimation(.smooth) { terminals.open(container) } }
+            Button("Open in Terminal App") { TerminalLauncher.open(container) }
             if let port = container.publishedPorts.first {
                 Button("Open localhost:\(String(port))") { NSWorkspace.shared.open(URL(string: "http://localhost:\(port)")!) }
             }
@@ -358,7 +360,7 @@ struct ContainerMenu: View {
         Button("Copy ID") { copy(container.id) }
         Button("Copy Name") { copy(container.name) }
         Divider()
-        if Journal.archivedAt(container.id) != nil {
+        if Archive.archivedAt(container.id) != nil {
             Button("Restore") { store.restore(container) }
         } else {
             Button("Archive") { store.archive(container) }

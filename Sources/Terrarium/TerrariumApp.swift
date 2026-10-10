@@ -24,6 +24,7 @@ struct TerrariumApp: App {
             ContentView()
                 .environment(delegate.store)
                 .environment(delegate.engine)
+                .environment(delegate.terminals)
         }
         .defaultSize(width: 1080, height: 680)
         .windowToolbarStyle(.unified)
@@ -32,6 +33,7 @@ struct TerrariumApp: App {
             MenuBarView()
                 .environment(delegate.store)
                 .environment(delegate.engine)
+                .environment(delegate.terminals)
         } label: {
             Image(systemName: delegate.store.containers.contains(where: \.isRunning) ? "shippingbox.fill" : "shippingbox")
         }
@@ -62,6 +64,7 @@ private struct SettingsView: View {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let engine = Engine()
     let store = DockerStore()
+    let terminals = Terminals()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Lets `swift run` behave like a real app (dock icon, focus) without a bundle.
@@ -80,6 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Give dockerd a chance to shut down cleanly before we exit.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        terminals.closeAll()
         guard engine.state != .stopped else { return .terminateNow }
         Task {
             await engine.stop()

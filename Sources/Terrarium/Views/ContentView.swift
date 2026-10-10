@@ -34,6 +34,7 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 820, minHeight: 520)
+        .containerBackground(.thinMaterial, for: .window)
         .alert("Something went wrong", isPresented: Binding(get: { store.failure != nil }, set: { if !$0 { store.failure = nil } })) {
             Button("OK") {}
         } message: {

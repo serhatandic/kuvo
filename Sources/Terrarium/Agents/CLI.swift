@@ -9,8 +9,7 @@ struct CLI: AsyncParsableCommand {
         commandName: "terrarium",
         abstract: "Work inside your containers: run commands, open shells, copy files.",
         discussion: """
-        Works on any container, by name, Compose service name or ID prefix. Commands run with
-        terrarium exec show up in the container's Activity in Terrarium.
+        Works on any container, by name, Compose service name or ID prefix.
 
         Examples:
           terrarium new bench --cpus 2 --memory 2g
@@ -21,7 +20,7 @@ struct CLI: AsyncParsableCommand {
         """,
         version: CLIInstaller.appBundle?.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev",
         subcommands: [New.self, List.self, Exec.self, ShellCommand.self, Copy.self,
-                      Archive.self, Restore.self, Remove.self, Status.self, Env.self]
+                      ArchiveCommand.self, Restore.self, Remove.self, Status.self, Env.self]
     )
 
     struct New: AsyncParsableCommand {
@@ -52,7 +51,7 @@ struct CLI: AsyncParsableCommand {
             let all = try await CLI.connect().client.containers()
             guard !all.isEmpty else { return print("No containers. Create one with: terrarium new") }
             let rows = all.map { container -> [String] in
-                let state = Journal.archivedAt(container.id).map { ArchiveRetention.summary(archivedAt: $0).lowercased() }
+                let state = Archive.archivedAt(container.id).map { ArchiveRetention.summary(archivedAt: $0).lowercased() }
                     ?? container.humanStatus.lowercased()
                 return [container.name, container.image, state, container.creator ?? ""]
             }
@@ -79,10 +78,9 @@ struct CLI: AsyncParsableCommand {
 
             let service = try await CLI.connect()
             let target = try await service.resolve(container)
-            let interrupt = Interrupt(container: target.id)
-            let result = try await service.exec(target, command: line, workdir: workdir, onOutput: { kind, data in
+            let result = try await service.exec(target, command: line, workdir: workdir) { kind, data in
                 (kind == .stderr ? FileHandle.standardError : FileHandle.standardOutput).write(data)
-            }, started: interrupt.arm)
+            }
             if let code = result.exitCode, code != 0 { throw ExitCode(Int32(truncatingIfNeeded: code)) }
         }
     }
@@ -131,8 +129,8 @@ struct CLI: AsyncParsableCommand {
         }
     }
 
-    struct Archive: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Stop a container and keep it. Deleted after the retention period.")
+    struct ArchiveCommand: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(commandName: "archive", abstract: "Stop a container and keep it. Deleted after the retention period.")
         @Argument var container: String
 
         func run() async throws {
@@ -202,6 +200,9 @@ struct CLI: AsyncParsableCommand {
     static func connect() async throws -> ContainerService {
         let service = ContainerService(client: DockerClient(socketPath: EnginePaths.socket.path))
         if (try? await service.client.ping()) != nil { return service }
+        if ProcessInfo.processInfo.environment["TERRARIUM_NO_LAUNCH"] == "1" {
+            throw DockerError(message: "Terrarium's engine isn't running.")
+        }
 
         FileHandle.standardError.write(Data("Starting Terrarium…\n".utf8))
         if let app = CLIInstaller.appBundle {
@@ -247,27 +248,6 @@ struct CLI: AsyncParsableCommand {
             row.enumerated().map { i, cell in i == row.count - 1 ? cell : cell.padding(toLength: widths[i], withPad: " ", startingAt: 0) }
                 .joined(separator: "  ")
         }.joined(separator: "\n")
-    }
-}
-
-/// Closes the journal record if the user presses Ctrl-C mid-command.
-final class Interrupt: @unchecked Sendable {
-    private let container: String
-    private var source: DispatchSourceSignal?
-
-    init(container: String) { self.container = container }
-
-    func arm(_ entry: Journal.Entry) {
-        signal(SIGINT, SIG_IGN)
-        let source = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-        source.setEventHandler { [container] in
-            var done = entry
-            done.finish(exitCode: 130, duration: Date().timeIntervalSince(entry.date), output: "[Interrupted]")
-            Journal.append(done, to: container)
-            exit(130)
-        }
-        source.resume()
-        self.source = source
     }
 }
 

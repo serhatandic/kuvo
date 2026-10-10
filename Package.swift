@@ -6,11 +6,16 @@ let package = Package(
     platforms: [.macOS(.v15)],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
+        // 1.11.x is the last line without Metal shaders, so building needs no extra Xcode components.
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm", .upToNextMinor(from: "1.11.2")),
     ],
     targets: [
         .executableTarget(
             name: "Terrarium",
-            dependencies: [.product(name: "ArgumentParser", package: "swift-argument-parser")],
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+            ],
             path: "Sources/Terrarium",
             swiftSettings: [.unsafeFlags(["-Osize"], .when(configuration: .release))]
         ),

@@ -91,7 +91,7 @@ final class DockerStore {
 
     func perform(_ action: ContainerAction, on container: Container) {
         guard let client, busy[container.id] == nil else { return }
-        if action == .start || action == .restart { Journal.setArchived(container.id, nil) }
+        if action == .start || action == .restart { Archive.setArchived(container.id, nil) }
         withAnimation(.snappy) { busy[container.id] = action }
         Task {
             do {
@@ -106,12 +106,12 @@ final class DockerStore {
 
     /// Stops a container and keeps it; it's deleted after the retention period.
     func archive(_ container: Container) {
-        Journal.setArchived(container.id, .now)
+        Archive.setArchived(container.id, .now)
         if container.isRunning { perform(.stop, on: container) } else { Task { try? await refresh() } }
     }
 
     func restore(_ container: Container) {
-        Journal.setArchived(container.id, nil)
+        Archive.setArchived(container.id, nil)
         if container.isRunning { Task { try? await refresh() } } else { perform(.start, on: container) }
     }
 

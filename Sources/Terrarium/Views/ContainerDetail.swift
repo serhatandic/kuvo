@@ -2,22 +2,32 @@ import SwiftUI
 
 struct ContainerDetail: View {
     @Environment(DockerStore.self) private var store
+    @Environment(Terminals.self) private var terminals
     let container: Container
+    @AppStorage("terminal.placement") private var placement = PanePlacement.trailing
+    @AppStorage("terminal.fraction") private var fraction = 0.5
+    @State private var maximized = false
     @State private var details: ContainerDetails?
     @State private var confirmRemove = false
-    @SceneStorage("detail.tab") private var tab = Tab.logs
     @State private var logs = LogModel()
-    @State private var journal = JournalWatcher()
-
-    enum Tab: String { case logs, activity, changes }
 
     private var busy: ContainerAction? { store.busy[container.id] }
-    private var archivedAt: Date? { Journal.archivedAt(container.id) }
+    private var archivedAt: Date? { Archive.archivedAt(container.id) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            StatsRow(stats: [store.stats(for: container.id)], running: container.state == .running)
-            panel
+        let session = terminals.sessions[container.id]
+        PaneSplit(placement: placement, fraction: $fraction, showsSecond: session != nil, maximized: maximized) {
+            VStack(alignment: .leading, spacing: 12) {
+                StatsRow(stats: [store.stats(for: container.id)], running: container.state == .running)
+                    .fixedSize(horizontal: false, vertical: true)
+                panel
+            }
+        } second: {
+            if let session {
+                TerminalPane(container: container, session: session, placement: $placement, maximized: $maximized,
+                             onRestart: { terminals.restart(container) },
+                             onClose: { withAnimation(.smooth) { maximized = false; terminals.close(container.id) } })
+            }
         }
         .padding([.horizontal, .bottom], 20)
         .padding(.top, 8)
@@ -37,9 +47,13 @@ struct ContainerDetail: View {
                 }
             }
             ToolbarItemGroup {
-                Button { TerminalLauncher.open(container) } label: { Label("Open in Terminal", systemImage: "terminal") }
-                    .help("Open a shell in Terminal")
-                    .disabled(!container.isRunning)
+                Button { withAnimation(.smooth) { terminals.toggle(container) } } label: {
+                    Label("Terminal", systemImage: terminals.isOpen(container.id) ? "terminal.fill" : "terminal")
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .help(terminals.isOpen(container.id) ? "Close terminal (⌃`)" : "Open a terminal (⌃`)")
+                .keyboardShortcut("`", modifiers: .control)
+                .disabled(!container.isRunning && !terminals.isOpen(container.id))
 
                 Button {
                     store.perform(container.isRunning ? .stop : .start, on: container)
@@ -73,7 +87,6 @@ struct ContainerDetail: View {
         .task(id: "\(container.id)\(container.state)\(container.status)") {
             details = try? await store.client?.inspect(container.id)
         }
-        .task(id: container.id) { await journal.watch(container.id) }
         .confirmationDialog("Remove \(container.name)?", isPresented: $confirmRemove) {
             Button("Remove", role: .destructive) { store.perform(.remove, on: container) }
         } message: {
@@ -85,50 +98,12 @@ struct ContainerDetail: View {
 // MARK: - Panel
 
 extension ContainerDetail {
-    /// Logs, Activity (commands run with terrarium exec) and Changes, in one panel.
-    /// Logs stay alive while hidden so following and scroll position survive.
     private var panel: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Picker("View", selection: $tab.animation(.snappy(duration: 0.2))) {
-                    Text("Logs").tag(Tab.logs)
-                    Text("Activity").tag(Tab.activity)
-                    Text("Changes").tag(Tab.changes)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-                if tab == .logs { LogsAccessory(model: logs) } else { Spacer() }
-            }
-            .panelHeader()
-            .background {
-                // ⌘1 ⌘2 ⌘3 switch tabs.
-                ForEach(Array([Tab.logs, .activity, .changes].enumerated()), id: \.offset) { index, target in
-                    Button("") { withAnimation(.snappy(duration: 0.2)) { tab = target } }
-                        .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
-                        .opacity(0)
-                        .accessibilityHidden(true)
-                }
-            }
-            Divider().opacity(0.6)
-            ZStack {
-                LogsBody(model: logs, sources: [LogSource(id: container.id)], isRunning: container.isRunning)
-                    .opacity(tab == .logs ? 1 : 0)
-                    .allowsHitTesting(tab == .logs)
-                if tab != .logs {
-                    Group {
-                        if tab == .activity {
-                            ActivityList(entries: journal.entries)
-                        } else {
-                            ChangesList(containerID: container.id, refresh: journal.entries.count)
-                        }
-                    }
-                    .background(.background.secondary)
-                    .transition(.opacity)
-                }
-            }
+        Pane(icon: "text.alignleft", title: "Logs") {
+            LogsAccessory(model: logs)
+        } content: {
+            LogsBody(model: logs, sources: [LogSource(id: container.id)], isRunning: container.isRunning)
         }
-        .panel()
     }
 }
 
@@ -168,34 +143,45 @@ private struct Subtitle: View {
 
 // MARK: - Stats
 
-/// CPU, memory and network for one container, or summed across several.
+/// CPU, memory and network for one container, or summed across several,
+/// as one pane with three columns.
 struct StatsRow: View {
     let stats: [LiveStats]
     let running: Bool
 
     var body: some View {
         let stats = StatsSeries(stats)
-        HStack(spacing: 12) {
-            StatCard(
-                title: "CPU", color: .blue, values: stats.cpu, tick: stats.tick, minimum: 5,
-                value: stats.cpu.last ?? 0, text: Format.percent(stats.cpu.last ?? 0),
-                detail: "of one core"
-            )
-            StatCard(
-                title: "Memory", color: .purple, values: stats.memory, tick: stats.tick, minimum: 32 * 1024 * 1024,
-                value: stats.memory.last ?? 0, text: Format.bytes(stats.memory.last ?? 0),
-                detail: stats.memoryLimit > 0 ? "of \(Format.bytes(stats.memoryLimit))" : "",
-                isLevel: true
-            )
-            StatCard(
-                title: "Network", color: .teal, values: stats.network, tick: stats.tick, minimum: 2048,
-                value: stats.rxRate + stats.txRate, text: Format.rate(stats.rxRate + stats.txRate),
-                detail: "↓ \(Format.rate(stats.rxRate))  ↑ \(Format.rate(stats.txRate))"
-            )
+        Pane(icon: "waveform.path.ecg", title: "Resources") {
+            EmptyView()
+        } content: {
+            HStack(spacing: 0) {
+                Metric(
+                    title: "CPU", color: .blue, values: stats.cpu, tick: stats.tick, minimum: 5,
+                    value: stats.cpu.last ?? 0, text: Format.percent(stats.cpu.last ?? 0), detail: "of one core"
+                )
+                divider
+                Metric(
+                    title: "Memory", color: .purple, values: stats.memory, tick: stats.tick, minimum: 32 * 1024 * 1024,
+                    value: stats.memory.last ?? 0, text: Format.bytes(stats.memory.last ?? 0),
+                    detail: stats.memoryLimit > 0 ? "of \(Format.bytes(stats.memoryLimit))" : "", isLevel: true
+                )
+                divider
+                Metric(
+                    title: "Network", color: .teal, values: stats.network, tick: stats.tick, minimum: 2048,
+                    value: stats.rxRate + stats.txRate, text: Format.rate(stats.rxRate + stats.txRate),
+                    detail: "↓ \(Format.rate(stats.rxRate))  ↑ \(Format.rate(stats.txRate))"
+                )
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 14)
+            .opacity(running ? 1 : 0.5)
+            .saturation(running ? 1 : 0)
+            .animation(.smooth(duration: 0.5), value: running)
         }
-        .opacity(running ? 1 : 0.55)
-        .saturation(running ? 1 : 0)
-        .animation(.smooth(duration: 0.5), value: running)
+    }
+
+    private var divider: some View {
+        Rectangle().fill(.separator.opacity(0.5)).frame(width: 0.5).padding(.vertical, 6).padding(.horizontal, 14)
     }
 }
 
@@ -230,7 +216,7 @@ private struct StatsSeries {
     }
 }
 
-private struct StatCard: View {
+private struct Metric: View {
     let title: String
     let color: Color
     let values: [Double]
@@ -244,27 +230,22 @@ private struct StatCard: View {
     private var hasData: Bool { !values.isEmpty }
 
     var body: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(title)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-                        .kerning(0.4)
-                    Spacer()
-                    Text(hasData ? detail : "")
-                        .font(.system(size: 10.5).monospacedDigit())
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-                Text(hasData ? text : "—")
-                    .font(.system(size: 22, weight: .semibold, design: .rounded).monospacedDigit())
-                    .contentTransition(.numericText(value: value))
-                    .animation(.snappy, value: tick)
-                Sparkline(values: values, tick: tick, minimum: minimum, color: color, isLevel: isLevel)
-                    .frame(height: 38)
-            }
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text(hasData ? text : "—")
+                .font(.system(size: 20, weight: .semibold, design: .rounded).monospacedDigit())
+                .contentTransition(.numericText(value: value))
+                .animation(.snappy, value: tick)
+            Text(hasData ? detail : " ")
+                .font(.system(size: 11).monospacedDigit())
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+            Sparkline(values: values, tick: tick, minimum: minimum, color: color, isLevel: isLevel)
+                .frame(height: 34)
+                .padding(.top, 8)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
