@@ -185,8 +185,21 @@ final class LogModel {
     }
 
     func scrollToEnd() {
-        textView?.scrollToEndOfDocument(nil)
+        scrollToBottom()
         isFollowing = true
+    }
+
+    /// Shows the newest line without scrolling sideways. AppKit's scrollToEndOfDocument
+    /// also scrolls to the end of the last line, which, with wrapping off, cut off the
+    /// start of every line.
+    private func scrollToBottom() {
+        guard let textView, let clip = textView.enclosingScrollView?.contentView else { return }
+        let x = clip.bounds.minX
+        textView.scrollToEndOfDocument(nil)
+        if clip.bounds.minX != x {
+            clip.scroll(to: NSPoint(x: x, y: clip.bounds.minY))
+            textView.enclosingScrollView?.reflectScrolledClipView(clip)
+        }
     }
 
     /// Only user scrolling can stop following; reaching the bottom by any means resumes it.
@@ -212,7 +225,7 @@ final class LogModel {
             scrollView.contentView.scroll(to: NSPoint(x: 0, y: scrollView.contentView.bounds.minY))
         }
         textView.sizeToFit()
-        if isFollowing { textView.scrollToEndOfDocument(nil) }
+        if isFollowing { scrollToBottom() }
     }
 
     func rebuild() {
@@ -222,7 +235,7 @@ final class LogModel {
         let all = NSMutableAttributedString()
         rendered.forEach(all.append)
         storage.setAttributedString(all)
-        if isFollowing { textView?.scrollToEndOfDocument(nil) }
+        if isFollowing { scrollToBottom() }
     }
 
     private func append(_ batch: [LogLine]) {
@@ -248,7 +261,7 @@ final class LogModel {
             lineCount = lines.count
         }
         storage.endEditing()
-        if isFollowing { textView?.scrollToEndOfDocument(nil) }
+        if isFollowing { scrollToBottom() }
     }
 
     private static let timeFormat = Date.FormatStyle().hour(.twoDigits(amPM: .omitted)).minute().second()
