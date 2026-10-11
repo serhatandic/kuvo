@@ -33,6 +33,9 @@ struct KuvoApp: App {
         .defaultSize(width: 1080, height: 680)
         .windowToolbarStyle(.unified)
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About Kuvo") { showAbout(engine: delegate.store.connection) }
+            }
             CommandGroup(after: .sidebar) {
                 Picker("Appearance", selection: $appearance) {
                     ForEach(Appearance.allCases, id: \.self) { Text($0.title).tag($0) }
@@ -52,6 +55,21 @@ struct KuvoApp: App {
 
         Settings { SettingsView() }
     }
+}
+
+/// The standard About panel, with the Docker engine's version as its credits.
+@MainActor private func showAbout(engine connection: DockerStore.Connection) {
+    let engine = if case .connected(let name) = connection { "Runs \(name)" } else { "Docker engine not running" }
+    let style = NSMutableParagraphStyle()
+    style.alignment = .center
+    NSApp.orderFrontStandardAboutPanel(options: [
+        .credits: NSAttributedString(string: engine, attributes: [
+            .font: NSFont.systemFont(ofSize: 11),
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .paragraphStyle: style,
+        ]),
+    ])
+    NSApp.activate()
 }
 
 /// System, light or dark, applied to the whole app (AppKit views and the menu bar panel included).

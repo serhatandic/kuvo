@@ -46,7 +46,6 @@ struct Sidebar: View {
                 .padding(.horizontal, 10)
             list
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { Footer() }
     }
 
     private var list: some View {
@@ -323,30 +322,6 @@ private struct RowStats: View {
         }
         .opacity(stats.hasData ? 1 : 0)
         .animation(.easeOut(duration: 0.4), value: stats.hasData)
-    }
-}
-
-private struct Footer: View {
-    @Environment(DockerStore.self) private var store
-
-    private var running: Int { store.containers.filter(\.isRunning).count }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle().fill(.green).frame(width: 6, height: 6)
-            if case .connected(let engine) = store.connection {
-                Text(engine).lineLimit(1)
-            }
-            Spacer()
-            Text("\(running) running")
-                .monospacedDigit()
-                .contentTransition(.numericText(value: Double(running)))
-                .animation(.snappy, value: running)
-        }
-        .font(.system(size: 11))
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
     }
 }
 
