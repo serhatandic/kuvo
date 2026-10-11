@@ -1,0 +1,79 @@
+{
+  "fill": {
+    "linear-gradient": [
+      "display-p3:0.075,0.115,0.140,1.00000",
+      "display-p3:0.018,0.032,0.042,1.00000"
+    ],
+    "orientation": {
+      "start": {
+        "x": 0.5,
+        "y": 0
+      },
+      "stop": {
+        "x": 0.5,
+        "y": 1
+      }
+    }
+  },
+  "groups": [
+    {
+      "name": "Stem",
+      "layers": [
+        {
+          "image-name": "stem.svg",
+          "name": "stem",
+          "glass": true,
+          "position": {
+            "scale": 1,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.0
+      },
+      "lighting": "individual",
+      "specular": true
+    },
+    {
+      "name": "Chevron",
+      "layers": [
+        {
+          "image-name": "chevron.svg",
+          "name": "chevron",
+          "glass": true,
+          "position": {
+            "scale": 1,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.35
+      },
+      "lighting": "individual",
+      "specular": true
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}
