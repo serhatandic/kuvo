@@ -7,3 +7,4 @@ build/
 # Local notes for coding agents
 CLAUDE.md
 .claude/
+dist/
