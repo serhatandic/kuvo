@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: build and smoke test
+    # macOS 26 runners ship Xcode 26, which has the Swift 6 toolchain and the
+    # Virtualization framework Kuvo builds against.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      # Package.resolved is part of the build input: fail if building would
+      # change it rather than testing a different dependency graph.
+      - name: Resolve dependencies
+        run: |
+          swift package resolve
+          git diff --exit-code Package.resolved
+
+      - name: Build (debug)
+        run: swift build
+
+      - name: Build the app
+        run: ./scripts/build-app.sh
+
+      # The app binary is also the kuvo command. These run without starting
+      # the VM, which the runner can't do.
+      - name: Smoke test the CLI
+        run: |
+          kuvo=build/Kuvo.app/Contents/MacOS/Kuvo
+          "$kuvo" --version
+          "$kuvo" --help
+          "$kuvo" env
+
+      - name: Check the app bundle
+        run: |
+          app=build/Kuvo.app
+          for file in Assets.car AppIcon.icns LICENSE NOTICE THIRD_PARTY_LICENSES.txt; do
+            test -f "$app/Contents/Resources/$file" || { echo "Missing $file in the app bundle" >&2; exit 1; }
+          done
+          codesign --verify --strict --verbose=2 "$app"
+          codesign -d --entitlements - "$app" 2>/dev/null | grep -q com.apple.security.virtualization \
+            || { echo "The virtualization entitlement is missing" >&2; exit 1; }
+
+  licenses:
+    name: third-party licenses
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check THIRD_PARTY_LICENSES.txt is up to date
+        run: |
+          ./scripts/third-party-licenses.sh
+          git diff --exit-code THIRD_PARTY_LICENSES.txt \
+            || { echo "Run scripts/third-party-licenses.sh and commit the result." >&2; exit 1; }
