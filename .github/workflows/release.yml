@@ -68,9 +68,10 @@ jobs:
             exit 1
           fi
 
+          # Releases come from main, but main may move on while a release builds.
           git fetch --no-tags origin main:refs/remotes/origin/main
-          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
-            echo "Release tags must point at the current main commit." >&2
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "Release tags must point at a commit on main." >&2
             exit 1
           fi
 
