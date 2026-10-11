@@ -1,0 +1,62 @@
+name: Bug report
+description: Report something that doesn't work as it should
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Logs can include container names and
+        paths from your Mac, so remove anything private before you share them.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run docker compose up -d in …
+        2. Select …
+        3. See …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Kuvo version
+      description: Kuvo › About Kuvo, or `kuvo --version`.
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac
+      placeholder: macOS 26.1, MacBook Air M2
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: Output of `kuvo status`
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        The last lines of ~/Library/Application Support/Kuvo/console.log and
+        ~/Library/Application Support/Kuvo/share/docker.log, if the engine is involved.
+      render: text
+  - type: checkboxes
+    id: security
+    attributes:
+      label: Security check
+      options:
+        - label: This report does not disclose a security vulnerability.
+          required: true
