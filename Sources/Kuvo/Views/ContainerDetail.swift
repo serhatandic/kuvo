@@ -119,7 +119,7 @@ private struct Subtitle: View {
     let archivedAt: Date?
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        TimelineView(UptimeSchedule(start: details?.startedAt ?? .now)) { context in
             let creator = container.creator.map { "  ·  by \($0)" } ?? ""
             Color.clear.navigationSubtitle("\(status(now: context.date))  ·  \(container.image)\(creator)")
         }
@@ -140,6 +140,26 @@ private struct Subtitle: View {
             return details.State.ExitCode == 0 ? "Stopped \(ago)" : "Exited with code \(details.State.ExitCode), \(ago)"
         }
         return container.humanStatus
+    }
+}
+
+/// Ticks only when the uptime text can change: every second for the first minute,
+/// then once a minute. Redrawing the toolbar subtitle re-lays out the window, so a
+/// fixed one-second tick kept an idle app busy.
+private struct UptimeSchedule: TimelineSchedule {
+    let start: Date
+
+    func entries(from startDate: Date, mode: TimelineScheduleMode) -> AnyIterator<Date> {
+        var next = startDate
+        return AnyIterator {
+            defer {
+                let elapsed = next.timeIntervalSince(start)
+                next = elapsed < 60
+                    ? next.addingTimeInterval(1)
+                    : start.addingTimeInterval((floor(elapsed / 60) + 1) * 60)
+            }
+            return next
+        }
     }
 }
 
