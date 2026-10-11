@@ -12,6 +12,10 @@ name: Release
 #   MACOS_SIGNING_IDENTITY      e.g. "Developer ID Application: Name (TEAMID)"
 #   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   for notarytool
 #
+# Every release also needs SPARKLE_PRIVATE_KEY, the EdDSA key that signs the
+# update feed (appcast.xml). Installed copies of Kuvo only accept updates
+# signed with it.
+#
 # Running it by hand (Actions › Release › Run workflow) is a dry run: it signs,
 # notarizes and checks the app with Gatekeeper, then uploads it as a workflow
 # artifact instead of publishing a release. Use it to check the secrets.
@@ -84,6 +88,7 @@ jobs:
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -93,6 +98,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Without the update key, installed copies could never update past this release.
+          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "The SPARKLE_PRIVATE_KEY secret is missing." >&2
+            exit 1
+          fi
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then
             echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           else
@@ -157,6 +167,9 @@ jobs:
           ditto -c -k --keepParent build/Kuvo.app "dist/Kuvo-$VERSION.zip"
           cp LICENSE NOTICE THIRD_PARTY_LICENSES.txt dist/
           (cd dist && shasum -a 256 "Kuvo-$VERSION.zip" > SHA256SUMS)
+          # The update feed. Installed copies read it from the newest release.
+          ./scripts/appcast.sh "$VERSION" "dist/Kuvo-$VERSION.zip" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/Kuvo-$VERSION.zip" > dist/appcast.xml
           cat dist/SHA256SUMS
 
       - name: Upload the dry-run build

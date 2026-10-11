@@ -57,7 +57,12 @@ jobs:
           for file in Assets.car AppIcon.icns LICENSE NOTICE THIRD_PARTY_LICENSES.txt; do
             test -f "$app/Contents/Resources/$file" || { echo "Missing $file in the app bundle" >&2; exit 1; }
           done
-          codesign --verify --strict --verbose=2 "$app"
+          test -d "$app/Contents/Frameworks/Sparkle.framework" || { echo "Sparkle isn't embedded" >&2; exit 1; }
+          for key in SUFeedURL SUPublicEDKey; do
+            /usr/libexec/PlistBuddy -c "Print :$key" "$app/Contents/Info.plist" >/dev/null \
+              || { echo "Info.plist is missing $key" >&2; exit 1; }
+          done
+          codesign --verify --strict --deep --verbose=2 "$app"
           codesign -d --entitlements - "$app" 2>/dev/null | grep -q com.apple.security.virtualization \
             || { echo "The virtualization entitlement is missing" >&2; exit 1; }
 
