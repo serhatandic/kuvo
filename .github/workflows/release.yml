@@ -1,8 +1,8 @@
 name: Release
 
-# Pushing an annotated vMAJOR.MINOR.PATCH tag on main builds Kuvo, attaches it
-# to a draft release with checksums and license notices, and publishes the
-# release once everything is uploaded.
+# Pushing an annotated vMAJOR.MINOR.PATCH tag on main builds Kuvo, attaches the
+# disk image and the update feed to a draft release, and publishes the release
+# once both are uploaded.
 #
 # Signing is optional. With these repository secrets the app is signed with a
 # Developer ID and notarized; without them it is signed ad hoc, and macOS asks
@@ -178,16 +178,15 @@ jobs:
           # Only now run the app: once it has run, macOS protects the bundle
           # from changes, and stapling the notarization ticket would fail.
           test "$(build/Kuvo.app/Contents/MacOS/Kuvo --version)" = "$VERSION"
+          # A release is two files: the disk image people download and the update
+          # feed installed copies read. Updates install from the same disk image.
+          # The license notices travel inside the app.
           mkdir dist
-          ditto -c -k --keepParent build/Kuvo.app "dist/Kuvo-$VERSION.zip"
           # Unversioned, so kuvo.run can always link to releases/latest/download/Kuvo.dmg.
           cp build/Kuvo.dmg dist/Kuvo.dmg
-          cp LICENSE NOTICE THIRD_PARTY_LICENSES.txt dist/
-          (cd dist && shasum -a 256 Kuvo.dmg "Kuvo-$VERSION.zip" > SHA256SUMS)
-          # The update feed. Installed copies read it from the newest release.
-          ./scripts/appcast.sh "$VERSION" "dist/Kuvo-$VERSION.zip" \
-            "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/Kuvo-$VERSION.zip" > dist/appcast.xml
-          cat dist/SHA256SUMS
+          ./scripts/appcast.sh "$VERSION" dist/Kuvo.dmg \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/Kuvo.dmg" > dist/appcast.xml
+          cat dist/appcast.xml
 
       - name: Upload the dry-run build
         if: github.event_name == 'workflow_dispatch'
