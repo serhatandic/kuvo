@@ -29,7 +29,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <dict>
     <key>CFBundleName</key><string>Kuvo</string>
     <key>CFBundleDisplayName</key><string>Kuvo</string>
-    <key>CFBundleIdentifier</key><string>dev.kuvo.app</string>
+    <key>CFBundleIdentifier</key><string>run.kuvo.app</string>
     <key>CFBundleExecutable</key><string>Kuvo</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleIconName</key><string>AppIcon</string>

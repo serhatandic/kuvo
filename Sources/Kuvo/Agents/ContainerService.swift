@@ -4,7 +4,7 @@ import Foundation
 /// file copies, archiving, and quick containers to work in.
 /// Shared by the app and the `kuvo` CLI.
 struct ContainerService: Sendable {
-    static let creatorLabel = "dev.kuvo.creator"
+    static let creatorLabel = "run.kuvo.creator"
     static let defaultImage = "ubuntu:24.04"
     static let workspace = "/workspace"
 
