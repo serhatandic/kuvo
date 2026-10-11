@@ -63,9 +63,10 @@ Kuvo needs a Mac with Apple silicon and macOS 15 or later.
    docker run -d -p 8080:80 nginx:alpine
    ```
 
-Opening Docker Desktop switches the context back to Docker Desktop. Run
-`docker context use kuvo` to switch back to Kuvo, and
-`docker context use desktop-linux` whenever you want Docker Desktop again.
+> [!WARNING]
+> Opening Docker Desktop switches the context back to Docker Desktop. Run
+> `docker context use kuvo` to switch back to Kuvo, and
+> `docker context use desktop-linux` whenever you want Docker Desktop again.
 
 If you don't have the `docker` command, see
 [Installation](https://kuvo.run/docs/installation/#the-docker-command). The
