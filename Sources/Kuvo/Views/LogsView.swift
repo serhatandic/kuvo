@@ -22,10 +22,11 @@ struct LogsView: View {
     }
 }
 
-/// Line count, timestamps toggle and clear, for a panel's header.
+/// Line count, wrap and timestamps toggles, and clear, for a panel's header.
 struct LogsAccessory: View {
     let model: LogModel
     @AppStorage("logs.timestamps") private var timestamps = false
+    @AppStorage("logs.wrap") private var wrap = false
 
     var body: some View {
         HStack(spacing: 2) {
@@ -34,12 +35,16 @@ struct LogsAccessory: View {
                 .foregroundStyle(.tertiary)
                 .contentTransition(.numericText(value: Double(model.lineCount)))
                 .padding(.trailing, 6)
-            PaneButton(timestamps ? "clock.fill" : "clock", help: timestamps ? "Hide timestamps" : "Show timestamps") {
+            PaneButton("arrow.turn.down.left", help: wrap ? "Don't wrap lines" : "Wrap lines", isOn: wrap) {
+                wrap.toggle()
+            }
+            PaneButton(timestamps ? "clock.fill" : "clock", help: timestamps ? "Hide timestamps" : "Show timestamps", isOn: timestamps) {
                 timestamps.toggle()
             }
             PaneButton("trash", help: "Clear") { model.clear() }
         }
         .onChange(of: timestamps, initial: true) { model.showTimestamps = timestamps }
+        .onChange(of: wrap, initial: true) { model.wrapsLines = wrap }
     }
 }
 
@@ -92,6 +97,8 @@ final class LogModel {
     private(set) var isFollowing = true
     private(set) var loaded = false
     var showTimestamps = false { didSet { if oldValue != showTimestamps { rebuild() } } }
+    /// Off: long lines run past the edge and the pane scrolls sideways.
+    var wrapsLines = false { didSet { if oldValue != wrapsLines { applyWrapping() } } }
 
     @ObservationIgnored weak var textView: NSTextView?
     @ObservationIgnored private var lines: [LogLine] = []
@@ -190,6 +197,24 @@ final class LogModel {
         if byUser && !atBottom && isFollowing { isFollowing = false }
     }
 
+    func applyWrapping() {
+        guard let textView, let container = textView.textContainer, let scrollView = textView.enclosingScrollView else { return }
+        let wrap = wrapsLines
+        let huge = CGFloat.greatestFiniteMagnitude
+        scrollView.hasHorizontalScroller = !wrap
+        textView.isHorizontallyResizable = !wrap
+        textView.autoresizingMask = wrap ? [.width] : []
+        textView.maxSize = NSSize(width: huge, height: huge)
+        container.widthTracksTextView = wrap
+        container.containerSize = NSSize(width: wrap ? scrollView.contentSize.width : huge, height: huge)
+        if wrap {
+            textView.setFrameSize(NSSize(width: scrollView.contentSize.width, height: textView.frame.height))
+            scrollView.contentView.scroll(to: NSPoint(x: 0, y: scrollView.contentView.bounds.minY))
+        }
+        textView.sizeToFit()
+        if isFollowing { textView.scrollToEndOfDocument(nil) }
+    }
+
     func rebuild() {
         guard let storage = textView?.textStorage else { return }
         let rendered = lines.map(render)
@@ -278,6 +303,7 @@ private struct LogTextView: NSViewRepresentable {
         ) { [weak model] _ in MainActor.assumeIsolated { model?.scrolled(byUser: false) } }
 
         model.textView = textView
+        model.applyWrapping()
         model.rebuild()
         return scrollView
     }
