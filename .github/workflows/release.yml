@@ -1,0 +1,162 @@
+name: Release
+
+# Pushing an annotated vMAJOR.MINOR.PATCH tag on main builds Kuvo, attaches it
+# to a draft release with checksums and license notices, and publishes the
+# release once everything is uploaded.
+#
+# Signing is optional. With these repository secrets the app is signed with a
+# Developer ID and notarized; without them it is signed ad hoc, and macOS asks
+# people to approve it in System Settings the first time they open it.
+#   MACOS_CERTIFICATE_P12       base64 of the Developer ID Application .p12
+#   MACOS_CERTIFICATE_PASSWORD  password of that .p12
+#   MACOS_SIGNING_IDENTITY      e.g. "Developer ID Application: Name (TEAMID)"
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   for notarytool
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  verify:
+    name: verify release tag
+    needs: ci
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tags must look like vMAJOR.MINOR.PATCH." >&2
+            exit 1
+          fi
+
+          tag_ref="refs/tags/$GITHUB_REF_NAME"
+          tag_oid="$(git ls-remote --tags origin "$tag_ref" | awk 'NR == 1 { print $1 }')"
+          peeled_oid="$(git ls-remote --tags origin "$tag_ref^{}" | awk 'NR == 1 { print $1 }')"
+          if [[ -z "$tag_oid" || -z "$peeled_oid" ]]; then
+            echo "Release tags must be annotated (git tag -a)." >&2
+            exit 1
+          fi
+          if [[ "$peeled_oid" != "$(git rev-parse HEAD)" ]]; then
+            echo "The release tag does not resolve to the checked-out commit." >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+            echo "Release tags must point at the current main commit." >&2
+            exit 1
+          fi
+
+  release:
+    name: build and publish
+    needs: verify
+    runs-on: macos-26
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Import the signing certificate
+        if: env.MACOS_CERTIFICATE_P12 != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -base64 24)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/certificate.p12"
+
+      - name: Build the app
+        shell: bash
+        run: |
+          set -euo pipefail
+          export VERSION="${GITHUB_REF_NAME#v}"
+          export SIGN_IDENTITY="${MACOS_SIGNING_IDENTITY:--}"
+          ./scripts/build-app.sh
+          test "$(build/Kuvo.app/Contents/MacOS/Kuvo --version)" = "$VERSION"
+
+      - name: Notarize
+        if: env.MACOS_CERTIFICATE_P12 != '' && env.APPLE_ID != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          ditto -c -k --keepParent build/Kuvo.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple build/Kuvo.app
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir dist
+          ditto -c -k --keepParent build/Kuvo.app "dist/Kuvo-$version.zip"
+          cp LICENSE NOTICE THIRD_PARTY_LICENSES.txt dist/
+          (cd dist && shasum -a 256 "Kuvo-$version.zip" > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - name: Publish the release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [[ "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != true ]]; then
+              echo "A published release already exists for $GITHUB_REF_NAME." >&2
+              exit 1
+            fi
+            gh release delete "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --yes
+          fi
+
+          if [[ -n "$MACOS_CERTIFICATE_P12" && -n "$APPLE_ID" ]]; then
+            note="Signed with a Developer ID and notarized by Apple."
+          else
+            note="This build is not notarized. The first time you open it, macOS asks you to approve it: open System Settings › Privacy & Security and click Open Anyway."
+          fi
+
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --draft --title "Kuvo ${GITHUB_REF_NAME#v}" --generate-notes \
+            --notes "Requires macOS 15 or later on Apple silicon. $note"
+
+          expected="$(cd dist && ls | sort)"
+          actual="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort)"
+          if [[ "$expected" != "$actual" ]]; then
+            echo "Uploaded assets don't match:" >&2
+            diff <(echo "$expected") <(echo "$actual") >&2 || true
+            exit 1
+          fi
+
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
