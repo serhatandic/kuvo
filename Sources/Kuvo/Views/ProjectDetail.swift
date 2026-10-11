@@ -70,11 +70,15 @@ private struct RemoveProjectConfirmation: ViewModifier {
 
     func body(content: Content) -> some View {
         content.confirmationDialog("Remove \(project)?", isPresented: $isPresented) {
-            Button("Remove", role: .destructive) { store.perform(.remove, onProject: project) }
+            Button("Remove", role: .destructive) { remove(deletingVolumes: false) }
+            Button("Remove with Volumes", role: .destructive) { remove(deletingVolumes: true) }
         } message: {
-            Text(count == 1
-                 ? "Its container will be stopped and deleted. Volumes are kept."
-                 : "Its \(count) containers will be stopped and deleted. Volumes are kept.")
+            Text((count == 1 ? "Its container will be stopped and deleted." : "Its \(count) containers will be stopped and deleted.")
+                 + " Its volumes, and the data in them, are kept unless you remove them too.")
         }
+    }
+
+    private func remove(deletingVolumes: Bool) {
+        store.remove(store.containers.filter { $0.project == project }, deletingVolumes: deletingVolumes, project: project)
     }
 }

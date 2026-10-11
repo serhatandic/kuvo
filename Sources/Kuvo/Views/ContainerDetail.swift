@@ -88,9 +88,11 @@ struct ContainerDetail: View {
             details = try? await store.client?.inspect(container.id)
         }
         .confirmationDialog("Remove \(container.name)?", isPresented: $confirmRemove) {
-            Button("Remove", role: .destructive) { store.perform(.remove, on: container) }
+            Button("Remove", role: .destructive) { store.remove([container], deletingVolumes: false) }
+            Button("Remove with Volumes", role: .destructive) { store.remove([container], deletingVolumes: true) }
         } message: {
-            Text(container.isRunning ? "The container will be stopped and deleted." : "The container will be deleted.")
+            Text((container.isRunning ? "The container will be stopped and deleted." : "The container will be deleted.")
+                 + " Its volumes are kept unless you remove them too; volumes other containers use are always kept.")
         }
     }
 }

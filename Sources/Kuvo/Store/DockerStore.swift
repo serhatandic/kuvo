@@ -105,6 +105,51 @@ final class DockerStore {
         }
     }
 
+    /// Removes containers, and optionally their volumes: the ones they mount, plus a
+    /// Compose project's own named volumes. Volumes go only after the containers are
+    /// gone and without force, so Docker keeps any that another container still uses.
+    func remove(_ targets: [Container], deletingVolumes: Bool, project: String? = nil) {
+        guard let client, !targets.isEmpty else { return }
+        withAnimation(.snappy) { for container in targets { busy[container.id] = .remove } }
+        Task {
+            let volumes = deletingVolumes ? await Self.volumes(of: targets, project: project, client: client) : []
+            for container in targets {
+                do {
+                    try await client.perform(.remove, on: container.id)
+                    Archive.remove(container.id)
+                } catch {
+                    failure = error.localizedDescription
+                }
+            }
+            for volume in volumes {
+                _ = try? await client.send("DELETE", "/volumes/\(volume.urlQuery)")
+            }
+            try? await refresh()
+            withAnimation(.snappy) { for container in targets { busy[container.id] = nil } }
+        }
+    }
+
+    private static func volumes(of containers: [Container], project: String?, client: DockerClient) async -> Set<String> {
+        var names = Set<String>()
+        for container in containers {
+            guard let data = try? await client.send("GET", "/containers/\(container.id)/json"),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let mounts = json["Mounts"] as? [[String: Any]] else { continue }
+            for mount in mounts where mount["Type"] as? String == "volume" {
+                if let name = mount["Name"] as? String { names.insert(name) }
+            }
+        }
+        if let project {
+            let filter = #"{"label":["com.docker.compose.project=\#(project)"]}"#.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+            if let data = try? await client.send("GET", "/volumes?filters=\(filter)"),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let volumes = json["Volumes"] as? [[String: Any]] {
+                names.formUnion(volumes.compactMap { $0["Name"] as? String })
+            }
+        }
+        return names
+    }
+
     /// Stops a container and keeps it; it's deleted after the retention period.
     func archive(_ container: Container) {
         Archive.setArchived(container.id, .now)
