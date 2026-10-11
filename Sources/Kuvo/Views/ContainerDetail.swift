@@ -239,7 +239,6 @@ private struct Metric: View {
             Text(hasData ? text : "—")
                 .font(.system(size: 20, weight: .semibold, design: .rounded).monospacedDigit())
                 .contentTransition(.numericText(value: value))
-                .animation(.snappy, value: tick)
             Text(hasData ? detail : " ")
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(.tertiary)

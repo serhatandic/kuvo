@@ -33,7 +33,6 @@ struct LogsAccessory: View {
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(.tertiary)
                 .contentTransition(.numericText(value: Double(model.lineCount)))
-                .animation(.snappy, value: model.lineCount)
                 .padding(.trailing, 6)
             PaneButton(timestamps ? "clock.fill" : "clock", help: timestamps ? "Hide timestamps" : "Show timestamps") {
                 timestamps.toggle()

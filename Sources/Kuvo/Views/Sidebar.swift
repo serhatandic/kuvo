@@ -263,7 +263,6 @@ private struct ProjectCPU: View {
             .font(.system(size: 10.5, weight: .medium).monospacedDigit())
             .foregroundStyle(.secondary)
             .contentTransition(.numericText(value: total))
-            .animation(.snappy, value: total)
     }
 }
 
@@ -318,7 +317,6 @@ private struct RowStats: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 34, alignment: .trailing)
                 .contentTransition(.numericText(value: stats.cpu.last ?? 0))
-                .animation(.snappy, value: stats.tick)
         }
         .opacity(stats.hasData ? 1 : 0)
         .animation(.easeOut(duration: 0.4), value: stats.hasData)
