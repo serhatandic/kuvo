@@ -41,8 +41,10 @@ struct ContentView: View {
                     Sidebar(selection: $selection)
                         .lightGlass() // The sidebar draws its own material; tint it the same.
                         // Also as a frame: without saved split state, the column width alone is ignored.
-                        .frame(minWidth: 250, idealWidth: 290, maxWidth: 420)
+                        // No maximum here: the contents fill the column, and SidebarWidthLimits caps it.
+                        .frame(minWidth: 250, idealWidth: 290, maxWidth: .infinity)
                         .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 420)
+                        .background(SidebarWidthLimits(min: 250, max: 420))
                         .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).maxX }) { sidebarWidth = $0 }
                 } detail: {
                     detail
@@ -219,6 +221,68 @@ private struct EngineStatusView: View {
             Button("Start Engine") { Task { await engine.start() } }.keyboardShortcut(.defaultAction)
         default:
             EmptyView()
+        }
+    }
+}
+
+/// Keeps the sidebar between `min` and `max` points wide. SwiftUI's column limits
+/// stop holding once macOS restores a saved divider position, and SwiftUI also
+/// resets limits set on the AppKit split view item, so this checks after every
+/// resize and moves the divider back when the sidebar is too wide.
+private struct SidebarWidthLimits: NSViewRepresentable {
+    let min: CGFloat
+    let max: CGFloat
+
+    func makeNSView(context: Context) -> Probe { Probe(min: min, max: max) }
+    func updateNSView(_ view: Probe, context: Context) {}
+
+    final class Probe: NSView {
+        private let min: CGFloat
+        private let max: CGFloat
+        private weak var splitView: NSSplitView?
+        private var observer: NSObjectProtocol?
+
+        init(min: CGFloat, max: CGFloat) {
+            self.min = min
+            self.max = max
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) { fatalError() }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard window != nil else {
+                observer.map(NotificationCenter.default.removeObserver)
+                observer = nil
+                splitView = nil
+                return
+            }
+            // The split view finishes assembling after this view joins the window.
+            DispatchQueue.main.async { [weak self] in self?.attach() }
+        }
+
+        private func attach() {
+            var view = superview
+            while let current = view, !(current is NSSplitView) { view = current.superview }
+            guard let split = view as? NSSplitView, split !== splitView else { return }
+            splitView = split
+            observer.map(NotificationCenter.default.removeObserver)
+            observer = NotificationCenter.default.addObserver(
+                forName: NSSplitView.didResizeSubviewsNotification, object: split, queue: .main
+            ) { [weak self] _ in MainActor.assumeIsolated { self?.enforce() } }
+            enforce()
+        }
+
+        private func enforce() {
+            guard let split = splitView, let sidebar = split.arrangedSubviews.first, !sidebar.isHidden else { return }
+            if let item = (split.delegate as? NSSplitViewController)?.splitViewItems.first {
+                item.minimumThickness = min
+                item.maximumThickness = max
+            }
+            if sidebar.frame.width > max + 0.5 {
+                split.setPosition(max, ofDividerAt: 0)
+            }
         }
     }
 }
