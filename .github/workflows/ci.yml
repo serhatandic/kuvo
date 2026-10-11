@@ -42,6 +42,15 @@ jobs:
       - name: Build the app
         run: ./scripts/build-app.sh
 
+      - name: Build the disk image
+        run: |
+          ./scripts/build-dmg.sh
+          mount=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" build/Kuvo.dmg >/dev/null
+          test -d "$mount/Kuvo.app" || { echo "Kuvo.app is missing from the disk image" >&2; exit 1; }
+          test "$(readlink "$mount/Applications")" = /Applications || { echo "The Applications link is missing" >&2; exit 1; }
+          hdiutil detach "$mount" >/dev/null
+
       # The app binary is also the kuvo command. These run without starting
       # the VM, which the runner can't do.
       - name: Smoke test the CLI

@@ -157,6 +157,20 @@ jobs:
           # The same check macOS makes when someone opens the download.
           spctl --assess --type execute --verbose=2 build/Kuvo.app
 
+      # The download: a disk image with the app and a link to Applications.
+      # It's notarized on its own, so it opens without a warning too.
+      - name: Build the disk image
+        shell: bash
+        run: |
+          set -euo pipefail
+          SIGN_IDENTITY="${MACOS_SIGNING_IDENTITY:-}" ./scripts/build-dmg.sh
+          if [[ -n "$MACOS_CERTIFICATE_P12" && -n "$APPLE_ID" ]]; then
+            xcrun notarytool submit build/Kuvo.dmg \
+              --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+            xcrun stapler staple build/Kuvo.dmg
+            spctl --assess --type open --context context:primary-signature --verbose=2 build/Kuvo.dmg
+          fi
+
       - name: Package
         shell: bash
         run: |
@@ -166,8 +180,10 @@ jobs:
           test "$(build/Kuvo.app/Contents/MacOS/Kuvo --version)" = "$VERSION"
           mkdir dist
           ditto -c -k --keepParent build/Kuvo.app "dist/Kuvo-$VERSION.zip"
+          # Unversioned, so kuvo.run can always link to releases/latest/download/Kuvo.dmg.
+          cp build/Kuvo.dmg dist/Kuvo.dmg
           cp LICENSE NOTICE THIRD_PARTY_LICENSES.txt dist/
-          (cd dist && shasum -a 256 "Kuvo-$VERSION.zip" > SHA256SUMS)
+          (cd dist && shasum -a 256 Kuvo.dmg "Kuvo-$VERSION.zip" > SHA256SUMS)
           # The update feed. Installed copies read it from the newest release.
           ./scripts/appcast.sh "$VERSION" "dist/Kuvo-$VERSION.zip" \
             "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/Kuvo-$VERSION.zip" > dist/appcast.xml
