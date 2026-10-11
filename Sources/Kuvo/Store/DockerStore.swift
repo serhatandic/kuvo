@@ -118,7 +118,11 @@ final class DockerStore {
 
     func perform(_ action: ContainerAction, onProject project: String) {
         for container in containers where container.project == project {
-            let applies = action == .stop || action == .restart ? container.isRunning : !container.isRunning
+            let applies = switch action {
+            case .remove: true
+            case .stop, .restart: container.isRunning
+            default: !container.isRunning
+            }
             if applies { perform(action, on: container) }
         }
     }

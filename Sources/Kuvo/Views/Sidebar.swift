@@ -220,6 +220,7 @@ private struct ProjectRow: View {
     let project: String
     let containers: [Container]
     @Binding var expanded: Bool
+    @State private var confirmRemove = false
 
     private var running: Int { containers.filter(\.isRunning).count }
 
@@ -232,7 +233,10 @@ private struct ProjectRow: View {
         .contextMenu {
             Button("Start All") { store.perform(.start, onProject: project) }.disabled(running == containers.count)
             Button("Stop All") { store.perform(.stop, onProject: project) }.disabled(running == 0)
+            Divider()
+            Button("Remove…", role: .destructive) { confirmRemove = true }
         }
+        .confirmRemove(project: project, count: containers.count, isPresented: $confirmRemove)
     }
 
     private var subtitle: String {

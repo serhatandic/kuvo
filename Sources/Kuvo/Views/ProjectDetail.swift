@@ -4,6 +4,7 @@ import SwiftUI
 struct ProjectDetail: View {
     @Environment(DockerStore.self) private var store
     let project: String
+    @State private var confirmRemove = false
 
     private var containers: [Container] { store.containers.filter { $0.project == project } }
     private var running: [Container] { containers.filter(\.isRunning) }
@@ -37,8 +38,12 @@ struct ProjectDetail: View {
                 }
                 .help("Restart all services")
                 .disabled(running.isEmpty)
+
+                Button { confirmRemove = true } label: { Label("Remove", systemImage: "trash") }
+                    .help("Remove all services")
             }
         }
+        .confirmRemove(project: project, count: containers.count, isPresented: $confirmRemove)
     }
 
     private var summary: String {
@@ -50,3 +55,26 @@ struct ProjectDetail: View {
     }
 }
 
+extension View {
+    /// Asks before removing every container in a Compose project.
+    func confirmRemove(project: String, count: Int, isPresented: Binding<Bool>) -> some View {
+        modifier(RemoveProjectConfirmation(project: project, count: count, isPresented: isPresented))
+    }
+}
+
+private struct RemoveProjectConfirmation: ViewModifier {
+    @Environment(DockerStore.self) private var store
+    let project: String
+    let count: Int
+    @Binding var isPresented: Bool
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog("Remove \(project)?", isPresented: $isPresented) {
+            Button("Remove", role: .destructive) { store.perform(.remove, onProject: project) }
+        } message: {
+            Text(count == 1
+                 ? "Its container will be stopped and deleted. Volumes are kept."
+                 : "Its \(count) containers will be stopped and deleted. Volumes are kept.")
+        }
+    }
+}
