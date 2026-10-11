@@ -22,6 +22,8 @@ struct ContentView: View {
     /// False while the window is closed, minimized or covered. Live stats (which drive
     /// every graph and number) only stream while it's on screen.
     @State private var onScreen = true
+    /// Offered once, the first time the engine is up.
+    @State private var askToUseKuvo = false
 
     var body: some View {
         content
@@ -29,6 +31,24 @@ struct ContentView: View {
             .background(WindowVisibilityReader(isVisible: $onScreen))
             .onChange(of: onScreen, initial: true) { store.wantsLiveStats = onScreen }
             .onChange(of: appearance, initial: true) { appearance.apply() }
+            .onChange(of: store.connection, initial: true) {
+                // Only installed copies ask; development builds leave docker alone.
+                if case .connected = store.connection, CLIInstaller.appBundle != nil, DockerContext.shouldAsk {
+                    askToUseKuvo = true
+                }
+            }
+            .alert("Use Kuvo for the docker command?", isPresented: $askToUseKuvo) {
+                Button("Use Kuvo") {
+                    DockerContext.markAsked()
+                    do { try DockerContext.use() } catch { store.failure = error.localizedDescription }
+                }
+                .keyboardShortcut(.defaultAction)
+                Button("Not Now", role: .cancel) { DockerContext.markAsked() }
+            } message: {
+                Text(DockerContext.hasDockerDesktop
+                    ? "docker, Docker Compose and other tools will use Kuvo in every terminal.\n\nIt's easy to undo: opening Docker Desktop switches them back to it."
+                    : "docker, Docker Compose and other tools will use Kuvo in every terminal.\n\nTo undo it, run: docker context use default")
+            }
             // Frosted and tinted by the wallpaper; light mode adds a tinted layer on top (see lightGlass).
             .containerBackground(.thinMaterial, for: .window)
     }
