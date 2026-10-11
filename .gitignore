@@ -3,3 +3,7 @@ build/
 .swiftpm/
 *.xcodeproj
 .DS_Store
+
+# Local notes for coding agents
+CLAUDE.md
+.claude/
