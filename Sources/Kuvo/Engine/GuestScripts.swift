@@ -75,7 +75,7 @@ enum GuestScripts {
     /// the vsock relays, runs boot/shutdown hooks.
     static let inittab = """
     ::sysinit:/bin/sh /mnt/host/boot.sh
-    ::respawn:/bin/sh -c 'exec /usr/bin/dockerd --shutdown-timeout 3 >>/var/log/docker.log 2>&1'
+    ::respawn:/bin/sh -c 'exec /usr/bin/dockerd --shutdown-timeout 3 >>/mnt/host/docker.log 2>&1'
     ::respawn:/usr/bin/socat VSOCK-LISTEN:\(dockerPort),fork,reuseaddr UNIX-CONNECT:/var/run/docker.sock
     ::respawn:/usr/bin/socat VSOCK-LISTEN:\(powerOffPort),reuseaddr EXEC:/sbin/poweroff
     ::respawn:/usr/sbin/ntpd -n -p pool.ntp.org
