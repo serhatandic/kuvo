@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: swift
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      # SwiftTerm 1.12 and later need Metal shaders, which building Kuvo
+      # deliberately doesn't require. Patch releases of 1.11 are fine.
+      - dependency-name: "github.com/migueldeicaza/SwiftTerm"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
