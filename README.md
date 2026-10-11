@@ -10,10 +10,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg" alt="License: PolyForm Noncommercial 1.0.0"></a>
 </p>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshot-dark.webp">
-  <img src="docs/images/screenshot-light.webp" alt="Kuvo showing a Compose project's containers with live CPU, memory and network graphs and the selected container's logs" width="100%">
-</picture>
+<img src="docs/images/screenshot.webp" alt="Kuvo showing a Compose project's containers with live CPU, memory and network graphs and the selected container's logs" width="100%">
 
 Kuvo is a native macOS app that runs the real Docker Engine in a small Linux
 virtual machine. It's a 3 MB download, it's ready about three seconds after you
