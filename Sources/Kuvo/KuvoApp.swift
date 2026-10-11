@@ -35,6 +35,10 @@ struct KuvoApp: App {
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About Kuvo") { showAbout(engine: delegate.store.connection) }
+                if delegate.updates.isAvailable {
+                    Button("Check for Updates…") { delegate.updates.check() }
+                        .disabled(!delegate.updates.canCheck)
+                }
             }
             CommandGroup(after: .sidebar) {
                 Picker("Appearance", selection: $appearance) {
@@ -53,7 +57,7 @@ struct KuvoApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Settings { SettingsView() }
+        Settings { SettingsView().environment(delegate.updates) }
     }
 }
 
@@ -97,6 +101,7 @@ enum Appearance: String, CaseIterable {
 private struct SettingsView: View {
     @AppStorage(ArchiveRetention.key, store: ArchiveRetention.defaults) private var retentionDays = 7
     @AppStorage(Appearance.key) private var appearance = Appearance.system
+    @Environment(Updates.self) private var updates
 
     var body: some View {
         Form {
@@ -108,6 +113,10 @@ private struct SettingsView: View {
                 ForEach(ArchiveRetention.choices, id: \.self) { days in
                     Text(days == 0 ? "Never" : days == 1 ? "1 day" : "\(days) days").tag(days)
                 }
+            }
+            if updates.isAvailable {
+                @Bindable var updates = updates
+                Toggle("Check for updates automatically", isOn: $updates.checksAutomatically)
             }
         }
         .formStyle(.grouped)
@@ -121,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let engine = Engine()
     let store = DockerStore()
     let terminals = Terminals()
+    let updates = Updates()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Lets `swift run` behave like a real app (dock icon, focus) without a bundle.
