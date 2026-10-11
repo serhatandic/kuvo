@@ -176,12 +176,15 @@ struct TerminalPane: View {
 struct PaneButton: View {
     let symbol: String
     let help: String
+    /// For toggles: tinted while on.
+    var isOn = false
     let action: () -> Void
     @State private var hovering = false
 
-    init(_ symbol: String, help: String, action: @escaping () -> Void) {
+    init(_ symbol: String, help: String, isOn: Bool = false, action: @escaping () -> Void) {
         self.symbol = symbol
         self.help = help
+        self.isOn = isOn
         self.action = action
     }
 
@@ -191,8 +194,8 @@ struct PaneButton: View {
                 .font(.system(size: 11.5))
                 .frame(width: 24, height: 22)
                 .contentShape(.rect)
-                .foregroundStyle(hovering ? .primary : .secondary)
-                .background(.primary.opacity(hovering ? 0.08 : 0), in: .rect(cornerRadius: 6))
+                .foregroundStyle(isOn ? AnyShapeStyle(.tint) : hovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .background(isOn ? AnyShapeStyle(.tint.opacity(0.14)) : AnyShapeStyle(.primary.opacity(hovering ? 0.08 : 0)), in: .rect(cornerRadius: 6))
                 .contentTransition(.symbolEffect(.replace))
         }
         .buttonStyle(.plain)
