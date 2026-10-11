@@ -130,28 +130,36 @@ private struct EmptyStateView: View {
     @Environment(DockerStore.self) private var store
     /// Re-checked when Kuvo comes to the front, in case the context changed in a terminal.
     @State private var usesKuvo = DockerContext.current == DockerContext.name
+    /// Once the steps are showing they stay, so finishing step 1 doesn't rearrange the view.
+    @State private var showsSteps = DockerContext.current != DockerContext.name
     private let command = "docker run -d -p 8080:80 --name hello nginx:alpine"
 
     var body: some View {
         VStack(spacing: 14) {
-            if usesKuvo {
+            if !showsSteps {
                 Text("Run something and it shows up here instantly.")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                 CommandChip(command: command).padding(.top, 6)
             } else {
                 VStack(alignment: .leading, spacing: 18) {
-                    Step(number: 1, title: "Point the docker command at Kuvo") {
-                        Button("Use Kuvo for docker") {
+                    Step(number: 1, title: "Point the docker command at Kuvo", done: usesKuvo) {
+                        Button {
                             do {
                                 try DockerContext.use()
                                 withAnimation(.snappy) { usesKuvo = true }
                             } catch {
                                 store.failure = error.localizedDescription
                             }
+                        } label: {
+                            Label(usesKuvo ? "Docker uses Kuvo" : "Use Kuvo for docker",
+                                  systemImage: usesKuvo ? "checkmark" : "arrow.right")
+                                .labelStyle(StepButtonLabelStyle(showsIcon: usesKuvo))
+                                .contentTransition(.interpolate)
                         }
                         .controlSize(.large)
                         .buttonStyle(.borderedProminent)
+                        .disabled(usesKuvo)
                         Text(DockerContext.hasDockerDesktop
                             ? "It's easy to undo: opening Docker Desktop switches docker back to it."
                             : "To undo it, run: docker context use default")
@@ -173,19 +181,43 @@ private struct EmptyStateView: View {
     }
 }
 
-/// A numbered step in the empty state.
+/// The button's checkmark only appears once the step is done.
+private struct StepButtonLabelStyle: LabelStyle {
+    let showsIcon: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) {
+            if showsIcon { configuration.icon.transition(.scale.combined(with: .opacity)) }
+            configuration.title
+        }
+    }
+}
+
+/// A numbered step in the empty state; its number turns into a checkmark when done.
 private struct Step<Content: View>: View {
     let number: Int
     let title: String
+    var done = false
     @ViewBuilder var content: Content
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text("\(number)")
-                .font(.system(size: 12, weight: .semibold).monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 22, height: 22)
-                .background(.primary.opacity(0.07), in: .circle)
+            ZStack {
+                if done {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white)
+                        .transition(.scale.combined(with: .opacity))
+                } else {
+                    Text("\(number)")
+                        .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .transition(.opacity)
+                }
+            }
+            .frame(width: 22, height: 22)
+            .background(done ? AnyShapeStyle(Color.green) : AnyShapeStyle(.primary.opacity(0.07)), in: .circle)
+            .animation(.snappy, value: done)
             VStack(alignment: .leading, spacing: 8) {
                 Text(title).font(.system(size: 13, weight: .medium))
                 content
