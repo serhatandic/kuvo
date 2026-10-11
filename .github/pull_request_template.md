@@ -1,3 +1,10 @@
+<!--
+The title becomes the commit message on main: one plain sentence saying what
+the change does, e.g. "Stop the sidebar from growing past its maximum width".
+-->
+
+Fixes #<!-- issue number -->
+
 ## Summary
 
 <!-- What changed, and why? -->

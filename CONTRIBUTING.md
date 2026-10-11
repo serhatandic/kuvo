@@ -48,10 +48,45 @@ Kuvo depends on swift-argument-parser, SwiftTerm and Sparkle. If you add or upda
 package, run `./scripts/third-party-licenses.sh` and commit the updated
 `THIRD_PARTY_LICENSES.txt`; CI checks that it's current.
 
+## Workflow
+
+Every change starts from an issue and lands on `main` through a pull request.
+
+1. **Find or open an issue** for the change, and comment that you're working on
+   it.
+2. **Fork the repository** and create a branch named
+   `type/issue-short-description`, for example `fix/42-sidebar-width` or
+   `feat/57-import-from-docker-desktop`. Use one of these types:
+
+   | Type | For |
+   | --- | --- |
+   | `feat` | new behavior |
+   | `fix` | bug fixes |
+   | `perf` | speed, memory or battery improvements |
+   | `refactor` | code changes that don't change behavior |
+   | `docs` | documentation only |
+   | `test` | tests only |
+   | `ci` | workflows and build scripts |
+   | `chore` | dependencies and other upkeep |
+
+3. **Open a pull request** against `main`.
+   - **The title becomes the commit message**, because pull requests are
+     squash-merged into a single commit. Write it as one plain sentence that
+     says what the change does, in the imperative: "Stop the sidebar from
+     growing past its maximum width", not "Fixed sidebar" or "feat: sidebar".
+   - **Start the description with `Fixes #42`** (your issue's number), so
+     merging closes the issue.
+   - Fill in the rest of the template: what changed, why, and how you verified
+     it.
+4. **CI must pass**, and a maintainer reviews and approves the pull request.
+   It's then squash-merged and the branch is deleted.
+
+`main` only accepts changes through pull requests.
+
 ## Pull requests
 
-Describe what changed, why it changed, and how you verified it. Keep commit
-messages short and factual. Don't include generated build output, credentials,
+Keep commit messages on your branch short and factual; they're combined when
+the pull request is merged. Don't include generated build output, credentials,
 personal paths, AI session metadata, or co-author trailers added by coding
 tools.
 
