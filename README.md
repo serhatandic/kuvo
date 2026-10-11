@@ -49,8 +49,9 @@ Kuvo needs a Mac with Apple silicon and macOS 15 or later.
    Applications folder.
 2. Open it. The first launch downloads Alpine Linux and installs Docker into
    the VM, which takes a minute or two.
-3. Point the `docker` command at Kuvo. This creates a Docker context and makes
-   it the default for every terminal, and it stays that way after a restart:
+3. When Kuvo asks to be used for the `docker` command, choose **Use Kuvo**. It
+   creates a Docker context called `kuvo` and makes it the default for every
+   terminal, and it stays that way after a restart. To do it yourself later:
 
    ```sh
    docker context create kuvo --docker host=unix://$HOME/.kuvo/docker.sock
