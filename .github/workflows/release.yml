@@ -11,10 +11,15 @@ name: Release
 #   MACOS_CERTIFICATE_PASSWORD  password of that .p12
 #   MACOS_SIGNING_IDENTITY      e.g. "Developer ID Application: Name (TEAMID)"
 #   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   for notarytool
+#
+# Running it by hand (Actions › Release › Run workflow) is a dry run: it signs,
+# notarizes and checks the app with Gatekeeper, then uploads it as a workflow
+# artifact instead of publishing a release. Use it to check the secrets.
 on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
 
 concurrency:
   group: release-${{ github.ref }}
@@ -38,6 +43,7 @@ jobs:
           persist-credentials: false
 
       - name: Check the tag
+        if: github.event_name == 'push'
         shell: bash
         run: |
           set -euo pipefail
@@ -83,6 +89,23 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Choose the version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=0.0.0" >> "$GITHUB_ENV"
+            # A dry run exists to check signing, so it must not quietly skip it.
+            for name in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD MACOS_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
+              if [[ -z "${!name}" ]]; then
+                echo "The $name secret is missing." >&2
+                exit 1
+              fi
+            done
+          fi
+
       - name: Import the signing certificate
         if: env.MACOS_CERTIFICATE_P12 != ''
         shell: bash
@@ -96,17 +119,20 @@ jobs:
           echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
           security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain" >/dev/null
-          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          # Add ours to the search list, keeping the keychains already there.
+          existing=()
+          while IFS= read -r line; do
+            existing+=("$(sed 's/^ *"//; s/"$//' <<< "$line")")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$keychain" "${existing[@]}"
           rm "$RUNNER_TEMP/certificate.p12"
 
       - name: Build the app
         shell: bash
         run: |
           set -euo pipefail
-          export VERSION="${GITHUB_REF_NAME#v}"
           export SIGN_IDENTITY="${MACOS_SIGNING_IDENTITY:--}"
           ./scripts/build-app.sh
-          test "$(build/Kuvo.app/Contents/MacOS/Kuvo --version)" = "$VERSION"
 
       - name: Notarize
         if: env.MACOS_CERTIFICATE_P12 != '' && env.APPLE_ID != ''
@@ -117,19 +143,32 @@ jobs:
           xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
             --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
           xcrun stapler staple build/Kuvo.app
+          # The same check macOS makes when someone opens the download.
+          spctl --assess --type execute --verbose=2 build/Kuvo.app
 
       - name: Package
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          # Only now run the app: once it has run, macOS protects the bundle
+          # from changes, and stapling the notarization ticket would fail.
+          test "$(build/Kuvo.app/Contents/MacOS/Kuvo --version)" = "$VERSION"
           mkdir dist
-          ditto -c -k --keepParent build/Kuvo.app "dist/Kuvo-$version.zip"
+          ditto -c -k --keepParent build/Kuvo.app "dist/Kuvo-$VERSION.zip"
           cp LICENSE NOTICE THIRD_PARTY_LICENSES.txt dist/
-          (cd dist && shasum -a 256 "Kuvo-$version.zip" > SHA256SUMS)
+          (cd dist && shasum -a 256 "Kuvo-$VERSION.zip" > SHA256SUMS)
           cat dist/SHA256SUMS
 
+      - name: Upload the dry-run build
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Kuvo-dry-run
+          path: dist/
+          retention-days: 3
+
       - name: Publish the release
+        if: github.event_name == 'push'
         shell: bash
         run: |
           set -euo pipefail
@@ -151,7 +190,7 @@ jobs:
             --draft --title "Kuvo ${GITHUB_REF_NAME#v}" --generate-notes \
             --notes "Requires macOS 15 or later on Apple silicon. $note"
 
-          expected="$(cd dist && ls | sort)"
+          expected="$(find dist -type f -exec basename {} \; | sort)"
           actual="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort)"
           if [[ "$expected" != "$actual" ]]; then
             echo "Uploaded assets don't match:" >&2
