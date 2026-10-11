@@ -127,40 +127,97 @@ struct ContentView: View {
 }
 
 private struct EmptyStateView: View {
-    @State private var copied = false
+    @Environment(DockerStore.self) private var store
+    /// Re-checked when Kuvo comes to the front, in case the context changed in a terminal.
+    @State private var usesKuvo = DockerContext.current == DockerContext.name
     private let command = "docker run -d -p 8080:80 --name hello nginx:alpine"
 
     var body: some View {
         VStack(spacing: 14) {
-            Image(systemName: "shippingbox")
-                .font(.system(size: 44, weight: .light))
-                .foregroundStyle(.tertiary)
-                .symbolEffect(.bounce, options: .nonRepeating)
-            Text("No containers yet")
-                .font(.system(size: 17, weight: .semibold))
-            Text("Run something and it shows up here instantly.")
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(command, forType: .string)
-                withAnimation(.snappy) { copied = true }
-            } label: {
-                HStack(spacing: 8) {
-                    Text(command).font(.system(size: 12).monospaced())
-                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .contentTransition(.symbolEffect(.replace))
-                        .foregroundStyle(copied ? .green : .secondary)
+            if usesKuvo {
+                Text("Run something and it shows up here instantly.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                CommandChip(command: command).padding(.top, 6)
+            } else {
+                VStack(alignment: .leading, spacing: 18) {
+                    Step(number: 1, title: "Point the docker command at Kuvo") {
+                        Button("Use Kuvo for docker") {
+                            do {
+                                try DockerContext.use()
+                                withAnimation(.snappy) { usesKuvo = true }
+                            } catch {
+                                store.failure = error.localizedDescription
+                            }
+                        }
+                        .controlSize(.large)
+                        .buttonStyle(.borderedProminent)
+                        Text(DockerContext.hasDockerDesktop
+                            ? "It's easy to undo: opening Docker Desktop switches docker back to it."
+                            : "To undo it, run: docker context use default")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    Step(number: 2, title: "Run something") {
+                        CommandChip(command: command)
+                    }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.background.secondary, in: .rect(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator, lineWidth: 0.5))
+                .padding(.top, 8)
             }
-            .buttonStyle(.plain)
-            .padding(.top, 6)
         }
         .padding(40)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            let current = DockerContext.current == DockerContext.name
+            if current != usesKuvo { withAnimation(.snappy) { usesKuvo = current } }
+        }
+    }
+}
+
+/// A numbered step in the empty state.
+private struct Step<Content: View>: View {
+    let number: Int
+    let title: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text("\(number)")
+                .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 22, height: 22)
+                .background(.primary.opacity(0.07), in: .circle)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title).font(.system(size: 13, weight: .medium))
+                content
+            }
+        }
+    }
+}
+
+/// A command shown in monospace that copies itself when clicked.
+private struct CommandChip: View {
+    let command: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(command, forType: .string)
+            withAnimation(.snappy) { copied = true }
+        } label: {
+            HStack(spacing: 8) {
+                Text(command).font(.system(size: 12).monospaced())
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .contentTransition(.symbolEffect(.replace))
+                    .foregroundStyle(copied ? .green : .secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.background.secondary, in: .rect(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .help("Copy")
     }
 }
 
