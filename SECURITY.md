@@ -22,6 +22,7 @@ Reports are especially welcome about:
   folder and the Docker socket at `~/.kuvo/docker.sock`;
 - ports forwarded to `localhost`;
 - the downloads and checksums Kuvo uses to set up its VM;
+- software updates: the update feed, its signatures and how they're checked;
 - the `kuvo` command and the PATH changes Kuvo makes.
 
 Vulnerabilities in Docker Engine or Alpine Linux themselves should go to those

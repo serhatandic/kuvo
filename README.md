@@ -84,8 +84,8 @@ See the [CLI reference](https://kuvo.run/docs/cli/).
 Kuvo boots Alpine Linux with Apple's Virtualization framework and installs the
 stock Docker packages on first launch. The Docker socket is relayed over vsock
 to `~/.kuvo/docker.sock`, published ports are bridged to localhost, and `/Users`
-is shared with virtiofs. The whole app is one Swift binary with two
-dependencies. See [How it works](https://kuvo.run/docs/architecture/) for
+is shared with virtiofs. The whole app is one Swift binary with three
+dependencies, and it keeps itself up to date with signed updates. See [How it works](https://kuvo.run/docs/architecture/) for
 details, and [Performance](https://kuvo.run/docs/performance/) for how it
 compares with Docker Desktop.
 

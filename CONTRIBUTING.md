@@ -44,7 +44,7 @@ committed, so you only need this when changing the icon.
 
 ### Dependencies
 
-Kuvo depends on swift-argument-parser and SwiftTerm. If you add or update a
+Kuvo depends on swift-argument-parser, SwiftTerm and Sparkle. If you add or update a
 package, run `./scripts/third-party-licenses.sh` and commit the updated
 `THIRD_PARTY_LICENSES.txt`; CI checks that it's current.
 
