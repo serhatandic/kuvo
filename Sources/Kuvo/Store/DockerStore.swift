@@ -181,8 +181,13 @@ final class DockerStore {
         return stats
     }
 
+    /// Live stats are only streamed while someone can see them.
+    var wantsLiveStats = true {
+        didSet { if oldValue != wantsLiveStats { syncStats() } }
+    }
+
     private func syncStats() {
-        let running = Set(containers.filter(\.isRunning).map(\.id))
+        let running = wantsLiveStats ? Set(containers.filter(\.isRunning).map(\.id)) : []
         for (id, task) in statsTasks where !running.contains(id) {
             task.cancel()
             statsTasks[id] = nil

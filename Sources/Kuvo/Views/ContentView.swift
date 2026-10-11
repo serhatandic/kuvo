@@ -19,7 +19,21 @@ struct ContentView: View {
         return store.containers.contains { $0.project == name } ? name : nil
     }
 
+    /// False while the window is closed, minimized or covered. Live stats (which drive
+    /// every graph and number) only stream while it's on screen.
+    @State private var onScreen = true
+
     var body: some View {
+        content
+            .frame(minWidth: 820, minHeight: 520)
+            .background(WindowVisibilityReader(isVisible: $onScreen))
+            .onChange(of: onScreen, initial: true) { store.wantsLiveStats = onScreen }
+            .onChange(of: appearance, initial: true) { appearance.apply() }
+            // Frosted and tinted by the wallpaper; light mode adds a tinted layer on top (see lightGlass).
+            .containerBackground(.thinMaterial, for: .window)
+    }
+
+    @ViewBuilder private var content: some View {
         ZStack {
             switch store.connection {
             case .connected:
@@ -56,10 +70,6 @@ struct ContentView: View {
                     .transition(.opacity.combined(with: .scale(0.98)))
             }
         }
-        .frame(minWidth: 820, minHeight: 520)
-        .onChange(of: appearance, initial: true) { appearance.apply() }
-        // Frosted and tinted by the wallpaper; light mode adds a tinted layer on top (see lightGlass).
-        .containerBackground(.thinMaterial, for: .window)
         .alert("Something went wrong", isPresented: Binding(get: { store.failure != nil }, set: { if !$0 { store.failure = nil } })) {
             Button("OK") {}
         } message: {
