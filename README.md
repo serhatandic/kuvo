@@ -19,7 +19,7 @@ open it, and it stays quiet when you're not looking at it.
 You keep using the `docker` command, Compose and your existing scripts. Kuvo
 gives them an engine to talk to and a window to see what's running.
 
-[Download for macOS](https://github.com/serhatandic/kuvo/releases/latest)
+[Download for macOS](https://github.com/serhatandic/kuvo/releases/latest/download/Kuvo.dmg)
 · [Docs](https://kuvo.run/docs/)
 · [Report a bug](https://github.com/serhatandic/kuvo/issues/new/choose)
 · [Build from source](#build-from-source)
@@ -45,8 +45,8 @@ gives them an engine to talk to and a window to see what's running.
 
 Kuvo needs a Mac with Apple silicon and macOS 15 or later.
 
-1. [Download Kuvo](https://github.com/serhatandic/kuvo/releases/latest) and
-   move it to your Applications folder.
+1. [Download Kuvo.dmg](https://github.com/serhatandic/kuvo/releases/latest/download/Kuvo.dmg), open it, and drag Kuvo onto the
+   Applications folder.
 2. Open it. The first launch downloads Alpine Linux and installs Docker into
    the VM, which takes a minute or two.
 3. Point the `docker` command at Kuvo. This creates a Docker context and makes
