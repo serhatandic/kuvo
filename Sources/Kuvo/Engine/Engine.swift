@@ -35,6 +35,9 @@ final class Engine {
                     if case .downloading = self?.state { self?.state = .downloading(progress) }
                 }
             }
+            // The setting outlives the disk when someone deletes Kuvo's data folder;
+            // that disk is installed again and needs the longer first-boot wait.
+            if !FileManager.default.fileExists(atPath: EnginePaths.disk.path) { installed = false }
             withAnimation(.smooth) { state = .booting(installed ? "Starting" : "Starting Linux") }
 
             let vm = try await startMachine()
