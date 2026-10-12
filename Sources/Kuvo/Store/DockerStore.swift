@@ -12,6 +12,9 @@ final class DockerStore {
     private(set) var connection = Connection.connecting
     private(set) var containers: [Container] = []
     private(set) var busy: [String: ContainerAction] = [:]
+    /// Nil until loaded: volumes are only fetched while they're on screen (see `wantsVolumes`).
+    private(set) var volumes: [Volume]?
+    private(set) var removingVolumes: Set<String> = []
     var failure: String?
 
     @ObservationIgnored private(set) var client: DockerClient?
@@ -44,6 +47,7 @@ final class DockerStore {
                 withAnimation(.smooth) {
                     connection = .unavailable(error.localizedDescription)
                     containers = []
+                    volumes = nil
                 }
                 stopAllStats()
             }
@@ -69,6 +73,8 @@ final class DockerStore {
             try? await Task.sleep(for: .milliseconds(120))
             guard !Task.isCancelled else { return }
             try? await refresh()
+            // Only on events, not the periodic refresh: measuring walks every volume's files.
+            await refreshVolumes()
         }
     }
 
@@ -86,6 +92,53 @@ final class DockerStore {
             Task { await ArchiveRetention.prune(fresh, client: client) }
         }
         onPortsChanged(Set(fresh.filter(\.isRunning).flatMap(\.publishedPorts).compactMap { UInt16(exactly: $0) }))
+    }
+
+    // MARK: Volumes
+
+    /// Sizing a volume means walking its files, so volumes are only loaded while
+    /// the list is on screen, and then again on Docker events rather than a timer.
+    var wantsVolumes = false {
+        didSet { if wantsVolumes, !oldValue { Task { await refreshVolumes() } } }
+    }
+
+    func refreshVolumes() async {
+        guard wantsVolumes, let client, let fresh = try? await client.volumes() else { return }
+        let sorted = fresh.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        if sorted != volumes {
+            withAnimation(.snappy) { volumes = sorted }
+        }
+    }
+
+    /// Every container that mounts the volume, running or not.
+    func containers(using volume: Volume) -> [Container] {
+        containers.filter { $0.volumes.contains(volume.name) }
+    }
+
+    func createVolume(named name: String) async throws {
+        guard let client else { return }
+        try await client.createVolume(name)
+        await refreshVolumes()
+    }
+
+    /// Removes each volume by name, so only the ones the person confirmed go, and
+    /// Docker keeps any a container started using in the meantime.
+    func removeVolumes(_ names: [String]) {
+        guard let client, !names.isEmpty else { return }
+        withAnimation(.snappy) { removingVolumes.formUnion(names) }
+        Task {
+            var failed: [String] = []
+            for name in names {
+                do { try await client.removeVolume(name) } catch { failed.append(name) }
+            }
+            if !failed.isEmpty {
+                failure = failed.count == 1
+                    ? "Couldn't remove \(failed[0]). A container may have started using it."
+                    : "Couldn't remove \(failed.count) volumes. Containers may have started using them."
+            }
+            await refreshVolumes()
+            withAnimation(.snappy) { removingVolumes.subtract(names) }
+        }
     }
 
     // MARK: Actions
@@ -122,7 +175,7 @@ final class DockerStore {
                 }
             }
             for volume in volumes {
-                _ = try? await client.send("DELETE", "/volumes/\(volume.urlQuery)")
+                try? await client.removeVolume(volume)
             }
             try? await refresh()
             withAnimation(.snappy) { for container in targets { busy[container.id] = nil } }

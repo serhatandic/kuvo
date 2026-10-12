@@ -15,6 +15,8 @@ struct Container: Decodable, Identifiable, Hashable, Sendable {
     let created: Date
     let ports: [Port]
     let labels: [String: String]
+    /// Names of the volumes it mounts.
+    let volumes: [String]
 
     struct Port: Decodable, Hashable, Sendable {
         let privatePort: Int
@@ -32,7 +34,13 @@ struct Container: Decodable, Identifiable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id = "Id", names = "Names", image = "Image", state = "State", status = "Status"
-        case created = "Created", ports = "Ports", labels = "Labels"
+        case created = "Created", ports = "Ports", labels = "Labels", mounts = "Mounts"
+    }
+
+    private struct Mount: Decodable {
+        let type: String?
+        let name: String?
+        enum CodingKeys: String, CodingKey { case type = "Type", name = "Name" }
     }
 
     init(from decoder: Decoder) throws {
@@ -45,6 +53,7 @@ struct Container: Decodable, Identifiable, Hashable, Sendable {
         created = Date(timeIntervalSince1970: try c.decode(Double.self, forKey: .created))
         ports = try c.decodeIfPresent([Port].self, forKey: .ports) ?? []
         labels = try c.decodeIfPresent([String: String].self, forKey: .labels) ?? [:]
+        volumes = (try c.decodeIfPresent([Mount].self, forKey: .mounts) ?? []).compactMap { $0.type == "volume" ? $0.name : nil }
     }
 
     var name: String { names.first.map { String($0.drop { $0 == "/" }) } ?? String(id.prefix(12)) }
@@ -92,14 +101,54 @@ struct ContainerDetails: Decodable, Sendable {
     }
     struct HealthInfo: Decodable, Sendable { let Status: String }
 
-    var startedAt: Date? { Self.date(State.StartedAt) }
-    var finishedAt: Date? { Self.date(State.FinishedAt) }
+    var startedAt: Date? { dockerDate(State.StartedAt) }
+    var finishedAt: Date? { dockerDate(State.FinishedAt) }
+}
 
-    /// Docker uses nanosecond RFC 3339 timestamps and "0001-01-01..." for never.
-    private static func date(_ string: String) -> Date? {
-        guard !string.hasPrefix("0001") else { return nil }
-        let trimmed = string.replacing(/\.\d+/, with: "")
-        return try? Date(trimmed, strategy: .iso8601)
+/// Docker uses nanosecond RFC 3339 timestamps and "0001-01-01..." for never.
+private func dockerDate(_ string: String) -> Date? {
+    guard !string.hasPrefix("0001") else { return nil }
+    let trimmed = string.replacing(/\.\d+/, with: "")
+    return try? Date(trimmed, strategy: .iso8601)
+}
+
+/// A volume as `/system/df` reports it: `/volumes` leaves out the size.
+struct Volume: Decodable, Identifiable, Hashable, Sendable {
+    let name: String
+    let driver: String
+    let mountpoint: String
+    let createdAt: Date?
+    let labels: [String: String]
+    /// Bytes on disk; nil when Docker can't measure it (volumes from other drivers).
+    let size: Int64?
+
+    var id: String { name }
+    var project: String? { labels["com.docker.compose.project"] }
+    /// Made by `-v /path` or an image's VOLUME, named with a random 64-character ID.
+    var isAnonymous: Bool {
+        labels["com.docker.volume.anonymous"] != nil || (name.count == 64 && name.allSatisfy(\.isHexDigit))
+    }
+    var displayName: String { isAnonymous ? String(name.prefix(12)) : name }
+
+    enum CodingKeys: String, CodingKey {
+        case name = "Name", driver = "Driver", mountpoint = "Mountpoint", createdAt = "CreatedAt"
+        case labels = "Labels", usage = "UsageData"
+    }
+
+    private struct Usage: Decodable {
+        let size: Int64
+        enum CodingKeys: String, CodingKey { case size = "Size" }
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        driver = try c.decodeIfPresent(String.self, forKey: .driver) ?? "local"
+        mountpoint = try c.decodeIfPresent(String.self, forKey: .mountpoint) ?? ""
+        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt).flatMap(dockerDate)
+        labels = try c.decodeIfPresent([String: String].self, forKey: .labels) ?? [:]
+        // -1 means not measured.
+        size = try c.decodeIfPresent(Usage.self, forKey: .usage).flatMap { $0.size >= 0 ? $0.size : nil }
     }
 }
 

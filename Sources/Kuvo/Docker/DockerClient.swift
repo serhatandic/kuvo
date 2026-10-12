@@ -60,8 +60,23 @@ struct DockerClient: Sendable {
         stream("GET", "/containers/\(id)/stats?stream=true")
     }
 
+    /// Every volume with its size. Docker measures each one by walking its files.
+    func volumes() async throws -> [Volume] {
+        struct Usage: Decodable { let Volumes: [Volume]? }
+        return try await JSONDecoder().decode(Usage.self, from: send("GET", "/system/df?type=volume")).Volumes ?? []
+    }
+
+    func createVolume(_ name: String) async throws {
+        _ = try await send("POST", "/volumes/create", body: JSONSerialization.data(withJSONObject: ["Name": name]))
+    }
+
+    /// Without force, so Docker refuses while any container, even a stopped one, uses it.
+    func removeVolume(_ name: String) async throws {
+        _ = try await send("DELETE", "/volumes/\(name.urlQuery)")
+    }
+
     func events() -> AsyncThrowingStream<Data, Error> {
-        let filter = #"{"type":["container"]}"#.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        let filter = #"{"type":["container","volume"]}"#.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
         return stream("GET", "/events?filters=\(filter)")
     }
 
