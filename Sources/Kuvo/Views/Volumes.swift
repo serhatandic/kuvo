@@ -33,7 +33,7 @@ struct VolumeList: View {
                         VolumeRow(volume: volume) { confirmRemove = [volume] }.tag(volume.name)
                     }
                 } header: {
-                    UnusedHeader(volumes: unused) { confirmRemove = unused }
+                    CleanupHeader(count: unused.count, size: unused.compactMap(\.size).reduce(0, +), noun: "volumes") { confirmRemove = unused }
                 }
             }
         }
@@ -54,30 +54,6 @@ struct VolumeList: View {
                 withAnimation(.snappy) { selection = names.first }
             }
         }
-    }
-}
-
-/// "Unused · 3 · 1.2 GB" with a button to remove them all.
-private struct UnusedHeader: View {
-    let volumes: [Volume]
-    let removeAll: () -> Void
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text("Unused")
-            Text("\(volumes.count) · \(Format.bytes(Double(volumes.compactMap(\.size).reduce(0, +))))")
-                .foregroundStyle(.tertiary)
-                .monospacedDigit()
-            Spacer(minLength: 4)
-            Button("Remove All…", action: removeAll)
-                .buttonStyle(.borderless)
-                .font(.system(size: 11, weight: .medium))
-                .help("Remove every unused volume listed here")
-        }
-        .padding(.trailing, 12)
-        // Sidebar section headers hide their contents from accessibility; offer the button as an action.
-        .accessibilityElement(children: .combine)
-        .accessibilityAction(named: "Remove All Unused Volumes", removeAll)
     }
 }
 
@@ -104,8 +80,8 @@ private struct VolumeRow: View {
         }
         .opacity(removing ? 0.5 : 1)
         .contextMenu {
-            Button("Copy Name") { copy(volume.name) }
-            Button("Copy Path in the VM") { copy(volume.mountpoint) }
+            Button("Copy Name") { copyToPasteboard(volume.name) }
+            Button("Copy Path in the VM") { copyToPasteboard(volume.mountpoint) }
             if let onRemove {
                 Divider()
                 Button("Remove…", role: .destructive, action: onRemove)
@@ -188,20 +164,11 @@ private struct VolumeDetail: View {
             ToolbarItem(placement: .navigation) { TitleIcon(systemName: "cylinder.fill") }
             ToolbarItem {
                 Button { confirmRemove = [volume] } label: { Label("Remove", systemImage: "trash") }
-                    .help(removeHelp)
+                    .help(users.isEmpty ? "Remove" : removeBlockedHelp(users))
                     .disabled(!users.isEmpty || store.removingVolumes.contains(volume.name))
             }
         }
         .confirmRemove(volumes: $confirmRemove)
-    }
-
-    /// Docker won't remove a volume any container uses, so say what to do instead.
-    private var removeHelp: String {
-        guard !users.isEmpty else { return "Remove" }
-        let names = users.map(\.name).formatted(.list(type: .and))
-        return users.contains(where: \.isRunning)
-            ? "In use by \(names). Stop and remove \(users.count == 1 ? "it" : "them") first."
-            : "Remove \(names) first, or remove \(users.count == 1 ? "it" : "them") with \(users.count == 1 ? "its" : "their") volumes."
     }
 
     private var mounts: some View {
@@ -211,7 +178,13 @@ private struct VolumeDetail: View {
             VStack(spacing: 0) {
                 ForEach(users) { container in
                     if let mount = container.volumeMounts.first(where: { $0.name == volume.name }) {
-                        MountRow(container: container, mount: mount) { openContainer(container) }
+                        ContainerLinkRow(
+                            container: container,
+                            accessibilityDetail: "mounted at \(mount.destination)\(mount.readOnly ? ", read-only" : "")",
+                            open: { openContainer(container) }
+                        ) {
+                            MountPath(mount: mount, container: container)
+                        }
                     }
                 }
             }
@@ -258,18 +231,7 @@ private struct VolumeDetail: View {
     let store: DockerStore
 
     var verdict: String {
-        if !users.isEmpty {
-            // Stopped-only matters: it's why Docker still refuses to remove the volume.
-            if !users.contains(where: \.isRunning) {
-                return users.count == 1 ? "Used by \(users[0].name), which is stopped" : "Used by \(users.count) stopped containers"
-            }
-            let names = users.map(\.name)
-            return switch names.count {
-            case 1: "Used by \(names[0])"
-            case 2: "Used by \(names[0]) and \(names[1])"
-            default: "Used by \(names[0]) and \(names.count - 1) others"
-            }
-        }
+        if !users.isEmpty { return usedBy(users) }
         // Its age is in Overview, so it isn't repeated here.
         if let project = volume.project {
             return store.containers.contains(where: { $0.project == project })
@@ -280,83 +242,24 @@ private struct VolumeDetail: View {
     }
 }
 
-private struct DetailRow: View {
-    let label: String
-    let value: String
-    var monospaced = false
-    var help: String?
-
-    init(_ label: String, _ value: String, monospaced: Bool = false, help: String? = nil) {
-        self.label = label
-        self.value = value
-        self.monospaced = monospaced
-        self.help = help
-    }
-
-    var body: some View {
-        GridRow {
-            Text(label)
-                .foregroundStyle(.secondary)
-                .gridColumnAlignment(.trailing)
-            Text(value)
-                .font(monospaced ? .system(size: 12).monospaced() : .system(size: 13))
-                .textSelection(.enabled)
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .help(help ?? "")
-        }
-        .font(.system(size: 13))
-    }
-}
-
-/// A container that mounts the volume: where its data lives inside the container,
-/// and whether the container runs, which decides whether the volume can go.
-/// Clicking it opens the container.
-private struct MountRow: View {
-    let container: Container
+/// Where the volume appears inside a container, and whether it's read-only.
+private struct MountPath: View {
     let mount: Container.VolumeMount
-    let open: () -> Void
-    @State private var hovering = false
+    let container: Container
 
     var body: some View {
-        Button(action: open) {
-            HStack(spacing: 10) {
-                StatusDot(state: container.state)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(container.name).font(.system(size: 13, weight: .medium))
-                    Text(container.humanStatus)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                .lineLimit(1)
-                Spacer(minLength: 12)
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(mount.destination)
-                        .font(.system(size: 12).monospaced())
-                        .truncationMode(.head)
-                    if mount.readOnly {
-                        Text("read-only")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .lineLimit(1)
-                .help("Mounted at \(mount.destination) inside \(container.name)\(mount.readOnly ? ", read-only" : "")")
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .opacity(hovering ? 1 : 0)
+        VStack(alignment: .trailing, spacing: 1) {
+            Text(mount.destination)
+                .font(.system(size: 12).monospaced())
+                .truncationMode(.head)
+            if mount.readOnly {
+                Text("read-only")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(.primary.opacity(hovering ? 0.06 : 0), in: .rect(cornerRadius: 8))
-            .contentShape(.rect)
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .animation(.easeOut(duration: 0.12), value: hovering)
-        .accessibilityLabel("\(container.name), \(container.humanStatus), mounted at \(mount.destination)\(mount.readOnly ? ", read-only" : "")")
-        .accessibilityHint("Shows the container")
+        .lineLimit(1)
+        .help("Mounted at \(mount.destination) inside \(container.name)\(mount.readOnly ? ", read-only" : "")")
     }
 }
 
@@ -399,9 +302,4 @@ private struct RemoveVolumesConfirmation: ViewModifier {
         let names = targets.count <= 6 ? targets.map(\.displayName).formatted(.list(type: .and)) : "All \(targets.count)"
         return "\(names) are deleted, with \(amount) in them. This can't be undone."
     }
-}
-
-private func copy(_ text: String) {
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
 }
