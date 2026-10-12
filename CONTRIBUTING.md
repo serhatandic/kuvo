@@ -78,6 +78,9 @@ Every change starts from an issue and lands on `main` through a pull request.
      merging closes the issue.
    - Fill in the rest of the template: what changed, why, and how you verified
      it.
+   - **If people using Kuvo would notice the change, add a line to
+     `CHANGELOG.md`** under Unreleased, saying what they'll see. It becomes
+     part of the next release's notes.
 4. **CI must pass**, and a maintainer reviews and approves the pull request.
    It's then squash-merged and the branch is deleted.
 

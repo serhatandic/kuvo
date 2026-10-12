@@ -4,6 +4,10 @@ name: Release
 # disk image and the update feed to a draft release, and publishes the release
 # once both are uploaded.
 #
+# The release notes, on the release page and in the app's update window, are the
+# version's section of CHANGELOG.md. Before tagging, rename its "## Unreleased"
+# heading to the version, like "## 0.1.4"; a tag without notes fails right away.
+#
 # Signing is optional. With these repository secrets the app is signed with a
 # Developer ID and notarized; without them it is signed ad hoc, and macOS asks
 # people to approve it in System Settings the first time they open it.
@@ -104,9 +108,13 @@ jobs:
             echo "The SPARKLE_PRIVATE_KEY secret is missing." >&2
             exit 1
           fi
+          # Notes come from CHANGELOG.md; checked now so a tag without them fails in seconds.
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then
             echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+            ./scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > "$RUNNER_TEMP/notes.md"
           else
+            # A dry run shows the newest notes, or a placeholder before there are any.
+            ./scripts/release-notes.sh > "$RUNNER_TEMP/notes.md" || echo "Dry run." > "$RUNNER_TEMP/notes.md"
             echo "VERSION=0.0.0" >> "$GITHUB_ENV"
             # A dry run exists to check signing, so it must not quietly skip it.
             for name in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD MACOS_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
@@ -185,7 +193,7 @@ jobs:
           # Unversioned, so kuvo.run can always link to releases/latest/download/Kuvo.dmg.
           cp build/Kuvo.dmg dist/Kuvo.dmg
           ./scripts/appcast.sh "$VERSION" dist/Kuvo.dmg \
-            "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/Kuvo.dmg" > dist/appcast.xml
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/Kuvo.dmg" "$RUNNER_TEMP/notes.md" > dist/appcast.xml
           cat dist/appcast.xml
 
       - name: Upload the dry-run build
@@ -215,9 +223,11 @@ jobs:
             note="This build is not notarized. The first time you open it, macOS asks you to approve it: open System Settings › Privacy & Security and click Open Anyway."
           fi
 
+          printf '\n\nRequires macOS 15 or later on Apple silicon. %s\n' "$note" >> "$RUNNER_TEMP/notes.md"
+          # --generate-notes adds the link to the full list of commits after these notes.
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
             --draft --title "Kuvo ${GITHUB_REF_NAME#v}" --generate-notes \
-            --notes "Requires macOS 15 or later on Apple silicon. $note"
+            --notes-file "$RUNNER_TEMP/notes.md"
 
           expected="$(find dist -type f -exec basename {} \; | sort)"
           actual="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort)"

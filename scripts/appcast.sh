@@ -1,14 +1,27 @@
 #!/bin/sh
 # Prints the Sparkle update feed for one release:
-#   scripts/appcast.sh VERSION ZIP URL > appcast.xml
-# URL is where ZIP will be downloaded from. The zip is signed with the update
+#   scripts/appcast.sh VERSION FILE URL [NOTES] > appcast.xml
+# URL is where FILE will be downloaded from. The file is signed with the update
 # key from SPARKLE_PRIVATE_KEY if set (CI), or else from the login keychain.
+# NOTES is a Markdown file the update window shows (see scripts/release-notes.sh).
 set -eu
 
 VERSION=$1
 ZIP=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
 URL=$3
+NOTES=${4:+$(cd "$(dirname "$4")" && pwd)/$(basename "$4")}
 cd "$(dirname "$0")/.."
+
+DESCRIPTION=""
+if [ -n "$NOTES" ]; then
+    if grep -q ']]>' "$NOTES"; then
+        echo "The release notes can't contain ]]>." >&2
+        exit 1
+    fi
+    DESCRIPTION="<description sparkle:format=\"markdown\"><![CDATA[
+$(cat "$NOTES")
+]]></description>"
+fi
 
 TOOL=$(find .build/artifacts -path '*/Sparkle/bin/sign_update' -type f | head -n 1)
 if [ -z "$TOOL" ]; then
@@ -37,6 +50,7 @@ cat <<XML
       <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:fullReleaseNotesLink>https://github.com/serhatandic/kuvo/releases/tag/v$VERSION</sparkle:fullReleaseNotesLink>
+      $DESCRIPTION
       <pubDate>$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')</pubDate>
       <enclosure url="$URL" $SIGNATURE type="application/octet-stream"/>
     </item>

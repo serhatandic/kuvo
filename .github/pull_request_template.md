@@ -15,6 +15,7 @@ Fixes #<!-- issue number -->
 - [ ] `./scripts/build-app.sh` builds the app, and I tried the change in it
 - [ ] If dependencies changed, I ran `./scripts/third-party-licenses.sh`
 - [ ] If the change is user-facing, I noted what the docs at kuvo.run need
+- [ ] If the change is user-facing, I added it to `CHANGELOG.md` under Unreleased
 
 ## Hygiene
 
