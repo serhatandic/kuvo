@@ -74,6 +74,7 @@ struct ContentView: View {
                 }
                 // One continuous sheet of tinted glass behind sidebar and detail (light mode).
                 .lightGlass()
+                .focusedSceneValue(\.sidebarSection, $section)
                 .overlay(alignment: .topLeading) {
                     // The system divider is pure black in dark mode and reads as heavy on
                     // translucent panes; cover it with a soft seam. Dragging still works.

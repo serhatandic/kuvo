@@ -40,6 +40,10 @@ struct KuvoApp: App {
                         .disabled(!delegate.updates.canCheck)
                 }
             }
+            CommandGroup(before: .sidebar) {
+                SectionCommands()
+                Divider()
+            }
             CommandGroup(after: .sidebar) {
                 Picker("Appearance", selection: $appearance) {
                     ForEach(Appearance.allCases, id: \.self) { Text($0.title).tag($0) }

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// What the sidebar lists. Each section keeps its own selection.
+/// What the sidebar lists. Each section keeps its own selection and filter.
 enum SidebarSection: String, CaseIterable {
     case containers, volumes
 
@@ -10,17 +10,33 @@ enum SidebarSection: String, CaseIterable {
         case .volumes: "Volumes"
         }
     }
+
+    var symbol: String {
+        switch self {
+        case .containers: "shippingbox"
+        case .volumes: "cylinder"
+        }
+    }
+
+    /// ⌘1, ⌘2… in order, like Xcode's navigators.
+    var shortcut: KeyEquivalent {
+        KeyEquivalent(Character(String(Self.allCases.firstIndex(of: self)! + 1)))
+    }
 }
 
-/// Containers or volumes, picked at the top. In the container list, Compose
-/// projects are collapsible groups and everything else is a plain row.
+/// One kind of thing at a time, picked in the icon bar at the top. In the
+/// container list, Compose projects are collapsible groups and everything else
+/// is a plain row.
 struct Sidebar: View {
     @Environment(DockerStore.self) private var store
     @Binding var section: SidebarSection
     @Binding var selection: String?
     @Binding var volumeSelection: String?
-    @State private var query = ""
+    /// Per section, so filtering containers for "redis" doesn't empty the volume list.
+    @State private var queries: [SidebarSection: String] = [:]
     @State private var collapsed: Set<String> = []
+
+    private var query: String { queries[section] ?? "" }
 
     private enum Item: Identifiable {
         case project(String, [Container])
@@ -56,19 +72,22 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            Picker("Show", selection: $section) {
-                ForEach(SidebarSection.allCases, id: \.self) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 10)
-            FilterField(text: $query)
+            SectionBar(section: $section)
                 .padding(.horizontal, 10)
-            switch section {
-            case .containers: list
-            case .volumes: VolumeList(selection: $volumeSelection, query: query)
+            FilterField(text: Binding(get: { query }, set: { queries[section] = $0 }))
+                // A field being edited keeps its own text; a fresh one per section shows that section's filter.
+                .id(section)
+                .padding(.horizontal, 10)
+            ZStack {
+                switch section {
+                case .containers: list
+                case .volumes: VolumeList(selection: $volumeSelection, query: query)
+                }
             }
+            .id(section)
+            .transition(.opacity)
         }
+        .animation(.easeOut(duration: 0.15), value: section)
     }
 
     private var list: some View {
@@ -101,6 +120,48 @@ struct Sidebar: View {
             get: { !query.isEmpty || !collapsed.contains(project) },
             set: { expanded in withAnimation(.snappy) { if expanded { collapsed.remove(project) } else { collapsed.insert(project) } } }
         )
+    }
+}
+
+/// The sections as a row of icons, like Xcode's navigator bar: it stays one row
+/// as sections are added, where text labels stop fitting. The names are in the
+/// tooltips, the View menu and VoiceOver.
+private struct SectionBar: View {
+    @Binding var section: SidebarSection
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(SidebarSection.allCases, id: \.self) { item in
+                SectionButton(item: item, selected: item == section) { section = item }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Show")
+    }
+}
+
+private struct SectionButton: View {
+    let item: SidebarSection
+    let selected: Bool
+    let select: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: select) {
+            Image(systemName: selected ? "\(item.symbol).fill" : item.symbol)
+                .font(.system(size: 14))
+                .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .frame(maxWidth: .infinity)
+                .frame(height: 28)
+                .background(.primary.opacity(hovering && !selected ? 0.06 : 0), in: .rect(cornerRadius: 7))
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .help("\(item.title) (⌘\(String(item.shortcut.character)))")
+        .accessibilityLabel(item.title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
@@ -400,5 +461,23 @@ struct ContainerMenu: View {
     private func copy(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+}
+
+extension FocusedValues {
+    /// The front window's sidebar section, for the View menu.
+    @Entry var sidebarSection: Binding<SidebarSection>?
+}
+
+/// View › Containers ⌘1, Volumes ⌘2…, checked for the section showing.
+struct SectionCommands: View {
+    @FocusedBinding(\.sidebarSection) private var section
+
+    var body: some View {
+        ForEach(SidebarSection.allCases, id: \.self) { item in
+            Toggle(item.title, isOn: Binding(get: { section == item }, set: { if $0 { section = item } }))
+                .keyboardShortcut(item.shortcut, modifiers: .command)
+        }
+        .disabled(section == nil)
     }
 }

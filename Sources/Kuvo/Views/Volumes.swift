@@ -153,6 +153,9 @@ struct VolumesDetail: View {
                     Button("New Volume…") { creating = true }
                 }
                 .transition(.opacity)
+                .navigationTitle("Volumes")
+            } else {
+                Color.clear.navigationTitle("Volumes")
             }
         }
         .animation(.snappy(duration: 0.28), value: selection)
