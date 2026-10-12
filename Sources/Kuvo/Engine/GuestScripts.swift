@@ -6,6 +6,24 @@ enum GuestScripts {
     static let dockerPort: UInt32 = 2375
     static let powerOffPort: UInt32 = 2376
 
+    /// Name lookups go to the Mac's DNS proxy on the NAT gateway. A VPN, firewall
+    /// or content filter on the Mac can leave it silent; when it stays silent but a
+    /// public resolver answers, those are added so the VM can still reach the
+    /// internet. A working proxy is never overridden, so names only it knows keep
+    /// resolving.
+    static let dnsFallback = #"""
+    resolves() { nslookup -timeout=2 -retry=1 dl-cdn.alpinelinux.org $1 >/dev/null 2>&1; }
+    ensure_dns() {
+        for i in 1 2 3 4 5; do resolves && return 0; sleep 1; done
+        for ns in 1.1.1.1 8.8.8.8; do
+            resolves $ns || continue
+            printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' >> /etc/resolv.conf
+            return 0
+        done
+        return 1
+    }
+    """#
+
     /// Stage 1, `/init` in the initramfs. Attaches kernel modules, installs
     /// Alpine + Docker onto the disk on first boot, then switches to it.
     static let stage1 = #"""
@@ -18,6 +36,7 @@ enum GuestScripts {
 
     step() { echo "kuvo: $*"; }
     fail() { echo "kuvo: error: $*"; sleep 1; poweroff -f; }
+    \#(dnsFallback)
 
     modprobe -a virtio_blk virtio_net virtiofs loop squashfs
     mkdir -p /host /.modloop /newroot
@@ -37,6 +56,7 @@ enum GuestScripts {
         step "Connecting to the network"
         ip link set lo up && ip link set eth0 up
         udhcpc -i eth0 -f -q -n -t 20 -T 1 -s /usr/share/udhcpc/default.script >/dev/null || fail "no network"
+        ensure_dns || fail "the VM can't reach the internet. A VPN, firewall or content filter on this Mac may be blocking it"
 
         step "Preparing disk"
         mkdir -p /stage && mount -t tmpfs tmpfs /stage
@@ -104,6 +124,9 @@ enum GuestScripts {
     ip link set lo up && ip link set eth0 up
     udhcpc -i eth0 -q -n -t 20 -T 1 -s /usr/share/udhcpc/default.script >/dev/null
     ip -4 -o addr show eth0 | awk '{ split($4, a, "/"); print a[1] }' > /mnt/host/ip
+    # In the background, so a Mac that's offline doesn't hold up the engine.
+    \#(dnsFallback)
+    ensure_dns &
 
     # Same paths as on the Mac, so bind mounts like -v $PWD:/app just work.
     mount -t virtiofs users /Users
