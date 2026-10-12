@@ -284,6 +284,61 @@ struct ImageDetails: Decodable, Sendable {
     var exposedPorts: [String] { (Config?.ExposedPorts?.keys).map { $0.sorted() } ?? [] }
 }
 
+/// `/system/df`: what Docker's things take on the VM's disk. Docker 29 adds totals
+/// (`ImageUsage` and so on); the per-item lists cover older engines too.
+struct DiskUsage: Decodable, Sendable {
+    let LayersSize: Int64?
+    let Images: [ImageItem]?
+    let Containers: [ContainerItem]?
+    let Volumes: [VolumeItem]?
+    let BuildCache: [CacheItem]?
+    let ImageUsage: Totals?
+    let ContainerUsage: Totals?
+    let VolumeUsage: Totals?
+    let BuildCacheUsage: Totals?
+
+    struct Totals: Decodable, Sendable {
+        let TotalSize: Int64?
+        let Reclaimable: Int64?
+    }
+    struct ImageItem: Decodable, Sendable {
+        let Size: Int64?
+    }
+    struct ContainerItem: Decodable, Sendable {
+        let Id: String
+        let SizeRw: Int64?
+        let State: String?
+    }
+    struct VolumeItem: Decodable, Sendable {
+        let UsageData: Usage?
+        struct Usage: Decodable, Sendable {
+            let Size: Int64
+            let RefCount: Int
+        }
+    }
+    struct CacheItem: Decodable, Sendable {
+        let Size: Int64?
+        let InUse: Bool?
+        let LastUsedAt: String?
+    }
+
+    var images: Int64 { ImageUsage?.TotalSize ?? LayersSize ?? 0 }
+    /// Containers' own files: what they wrote on top of their images.
+    var containers: Int64 { ContainerUsage?.TotalSize ?? (Containers ?? []).reduce(0) { $0 + max($1.SizeRw ?? 0, 0) } }
+    var volumes: Int64 { VolumeUsage?.TotalSize ?? (Volumes ?? []).reduce(0) { $0 + max($1.UsageData?.Size ?? 0, 0) } }
+    var unusedVolumes: Int64 {
+        (Volumes ?? []).filter { $0.UsageData?.RefCount == 0 }.reduce(0) { $0 + max($1.UsageData?.Size ?? 0, 0) }
+    }
+    var buildCache: Int64 { BuildCacheUsage?.TotalSize ?? (BuildCache ?? []).reduce(0) { $0 + max($1.Size ?? 0, 0) } }
+    var reclaimableBuildCache: Int64 {
+        BuildCacheUsage?.Reclaimable ?? (BuildCache ?? []).filter { $0.InUse != true }.reduce(0) { $0 + max($1.Size ?? 0, 0) }
+    }
+    var buildCacheLastUsed: Date? {
+        (BuildCache ?? []).compactMap { $0.LastUsedAt.flatMap(dockerDate) }.max()
+    }
+    var total: Int64 { images + containers + volumes + buildCache }
+}
+
 /// Splits a byte stream into lines, buffering partial lines across chunks.
 struct LineSplitter {
     private var pending = Data()

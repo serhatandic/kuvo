@@ -15,6 +15,8 @@ final class Engine {
     }
 
     private(set) var state = State.stopped
+    /// Counts finished trims, so the Storage page can re-measure after one.
+    private(set) var trims = 0
 
     @ObservationIgnored private var vm: VirtualMachine?
     @ObservationIgnored private var trimTask: Task<Void, Never>?
@@ -79,6 +81,7 @@ final class Engine {
             while read(fd, &buffer, buffer.count) > 0 {}
             close(fd)
         }.value
+        trims += 1
     }
 
     /// Trims shortly after the last deletion, so a burst of them costs one trim.

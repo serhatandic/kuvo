@@ -29,6 +29,7 @@ struct KuvoApp: App {
                 .environment(delegate.store)
                 .environment(delegate.engine)
                 .environment(delegate.terminals)
+                .environment(delegate.navigator)
         }
         .defaultSize(width: 1080, height: 680)
         .windowToolbarStyle(.unified)
@@ -39,6 +40,10 @@ struct KuvoApp: App {
                     Button("Check for Updates…") { delegate.updates.check() }
                         .disabled(!delegate.updates.canCheck)
                 }
+            }
+            CommandGroup(before: .systemServices) {
+                StorageCommand()
+                Divider()
             }
             CommandGroup(before: .sidebar) {
                 SectionCommands()
@@ -61,7 +66,14 @@ struct KuvoApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Settings { SettingsView().environment(delegate.updates) }
+        Settings {
+            SettingsView()
+                .environment(delegate.updates)
+                .environment(delegate.store)
+                .environment(delegate.engine)
+                .environment(delegate.storage)
+                .environment(delegate.navigator)
+        }
     }
 }
 
@@ -102,7 +114,41 @@ enum Appearance: String, CaseIterable {
     }
 }
 
+enum SettingsTab: String {
+    case general, storage
+    static let key = "settings.tab"
+}
+
 private struct SettingsView: View {
+    @AppStorage(SettingsTab.key) private var tab = SettingsTab.general
+
+    var body: some View {
+        TabView(selection: $tab) {
+            Tab("General", systemImage: "gearshape", value: SettingsTab.general) { GeneralSettings() }
+            Tab("Storage", systemImage: "internaldrive", value: SettingsTab.storage) { StorageView() }
+        }
+    }
+}
+
+/// Kuvo › Storage…: Settings, opened on the Storage tab.
+private struct StorageCommand: View {
+    @Environment(\.openSettings) private var openSettings
+
+    var body: some View {
+        Button("Storage…") {
+            UserDefaults.standard.set(SettingsTab.storage.rawValue, forKey: SettingsTab.key)
+            openSettings()
+        }
+    }
+}
+
+/// Lets other windows, like Settings, send the main window to a sidebar section.
+@MainActor @Observable
+final class Navigator {
+    var section: SidebarSection?
+}
+
+private struct GeneralSettings: View {
     @AppStorage(ArchiveRetention.key, store: ArchiveRetention.defaults) private var retentionDays = 7
     @AppStorage(Appearance.key) private var appearance = Appearance.system
     @Environment(Updates.self) private var updates
@@ -135,6 +181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let store = DockerStore()
     let terminals = Terminals()
     let updates = Updates()
+    let storage = Storage()
+    let navigator = Navigator()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Lets `swift run` behave like a real app (dock icon, focus) without a bundle.
@@ -164,13 +212,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     #if DEBUG
-    /// `KUVO_SNAPSHOT=/tmp/shot.png swift run` writes the main window to disk
+    /// `KUVO_SNAPSHOT=/tmp/shot.png swift run` writes the front window to disk
     /// every two seconds. Captures only our own window, no screen recording needed.
     private func startSnapshots() {
         guard let path = ProcessInfo.processInfo.environment["KUVO_SNAPSHOT"] else { return }
         Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
             MainActor.assumeIsolated {
-                guard let window = NSApp.windows.first(where: { $0.isVisible && $0.identifier?.rawValue.hasPrefix("main") == true })
+                // The window in front (Settings, a sheet's parent), else the main window.
+                guard let window = NSApp.keyWindow.flatMap({ $0.isVisible ? $0 : nil })
+                    ?? NSApp.windows.first(where: { $0.isVisible && $0.identifier?.rawValue.hasPrefix("main") == true })
                 else { return }
                 // A real composited capture of our own window (materials included), falling back to drawing the views.
                 if let image = Self.captureWindow(window.windowNumber) {

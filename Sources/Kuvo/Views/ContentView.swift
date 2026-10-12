@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(DockerStore.self) private var store
+    @Environment(Navigator.self) private var navigator
     @SceneStorage("section") private var section = SidebarSection.containers
     @SceneStorage("selection") private var selection: String?
     @SceneStorage("imageSelection") private var imageSelection: String?
@@ -33,6 +34,11 @@ struct ContentView: View {
             .frame(minWidth: 820, minHeight: 520)
             .background(WindowVisibilityReader(isVisible: $onScreen))
             .onChange(of: onScreen, initial: true) { store.wantsLiveStats = onScreen }
+            .onChange(of: navigator.section) {
+                guard let requested = navigator.section else { return }
+                withAnimation(.snappy) { section = requested }
+                navigator.section = nil
+            }
             .onChange(of: [onScreen, section == .volumes], initial: true) { store.wantsVolumes = onScreen && section == .volumes }
             .onChange(of: appearance, initial: true) { appearance.apply() }
             .onChange(of: store.connection, initial: true) {

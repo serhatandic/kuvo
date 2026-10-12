@@ -284,28 +284,44 @@ final class DockerStore {
     /// Removes each image tag by tag, so the image goes with its last tag, and an
     /// untagged one by ID. Never forced: Docker keeps any a container uses.
     func removeImages(_ targets: [DockerImage]) {
-        guard let client, !targets.isEmpty else { return }
-        withAnimation(.snappy) { removingImages.formUnion(targets.map(\.id)) }
+        guard !targets.isEmpty else { return }
         Task {
-            var failed: [String] = []
-            for image in targets {
-                do {
-                    for reference in image.isUntagged ? [image.id] : image.tags {
-                        try await client.removeImage(reference)
-                    }
-                } catch {
-                    failed.append(image.tags.first ?? image.shortID)
-                }
-            }
+            let failed = await deleteImages(targets)
             if !failed.isEmpty {
                 failure = failed.count == 1
                     ? "Couldn't remove \(failed[0]). A container may have started using it."
                     : "Couldn't remove \(failed.count) images. Containers may have started using them."
             }
-            await refreshImages()
-            withAnimation(.snappy) { removingImages.subtract(targets.map(\.id)) }
         }
     }
+
+    /// Removes each image tag by tag, then an untagged one by ID, and returns the names
+    /// of those that couldn't go. An image a container runs is never forced, so Docker
+    /// keeps it. One no container runs is: Docker would otherwise keep it for a container
+    /// created from one of its tags that now runs an older image (as after a pull), and
+    /// untagging doesn't affect that container, which runs its image by ID.
+    @discardableResult
+    func deleteImages(_ targets: [DockerImage]) async -> [String] {
+        guard let client else { return targets.map { $0.tags.first ?? $0.shortID } }
+        withAnimation(.snappy) { removingImages.formUnion(targets.map(\.id)) }
+        var failed: [String] = []
+        for image in targets {
+            let unused = containers(using: image).isEmpty
+            do {
+                for reference in image.isUntagged ? [image.id] : image.tags {
+                    try await client.removeImage(reference, force: unused)
+                }
+            } catch {
+                failed.append(image.tags.first ?? image.shortID)
+            }
+        }
+        await refreshImages()
+        withAnimation(.snappy) { removingImages.subtract(targets.map(\.id)) }
+        return failed
+    }
+
+    /// Images no container runs: what the Images list calls unused.
+    var unusedImages: [DockerImage] { (images ?? []).filter { containers(using: $0).isEmpty } }
 
     /// Removes one of an image's several tags; the image stays with the others.
     func removeTag(_ tag: String) {

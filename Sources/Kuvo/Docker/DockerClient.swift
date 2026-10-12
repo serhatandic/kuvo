@@ -75,9 +75,25 @@ struct DockerClient: Sendable {
     }
 
     /// By tag, this removes the tag, and the image with its last one; by ID, an untagged image.
-    /// Without force, so Docker refuses while any container, even a stopped one, uses it.
-    func removeImage(_ reference: String) async throws {
-        _ = try await send("DELETE", "/images/\(reference.urlQuery)")
+    /// Without force, Docker also refuses while a container was created from one of the
+    /// image's tags, even one now running an older image; see `DockerStore.deleteImages`.
+    func removeImage(_ reference: String, force: Bool = false) async throws {
+        _ = try await send("DELETE", "/images/\(reference.urlQuery)\(force ? "?force=true" : "")")
+    }
+
+    /// Walks every volume's files to size them, so it's only asked for on demand.
+    func diskUsage() async throws -> DiskUsage {
+        try await JSONDecoder().decode(DiskUsage.self, from: send("GET", "/system/df"))
+    }
+
+    func pruneBuildCache() async throws {
+        _ = try await send("POST", "/build/prune?all=true")
+    }
+
+    /// Removes every volume no container uses, named ones included.
+    func pruneVolumes() async throws {
+        let filter = #"{"all":["true"]}"#.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        _ = try await send("POST", "/volumes/prune?filters=\(filter)")
     }
 
     /// Without force, so Docker refuses while any container, even a stopped one, uses it.
