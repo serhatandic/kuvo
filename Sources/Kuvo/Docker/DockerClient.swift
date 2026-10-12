@@ -66,13 +66,27 @@ struct DockerClient: Sendable {
         return try await JSONDecoder().decode(Usage.self, from: send("GET", "/system/df?type=volume")).Volumes ?? []
     }
 
+    func images() async throws -> [DockerImage] {
+        try await JSONDecoder().decode([DockerImage].self, from: send("GET", "/images/json"))
+    }
+
+    func inspectImage(_ id: String) async throws -> ImageDetails {
+        try await JSONDecoder().decode(ImageDetails.self, from: send("GET", "/images/\(id.urlQuery)/json"))
+    }
+
+    /// By tag, this removes the tag, and the image with its last one; by ID, an untagged image.
+    /// Without force, so Docker refuses while any container, even a stopped one, uses it.
+    func removeImage(_ reference: String) async throws {
+        _ = try await send("DELETE", "/images/\(reference.urlQuery)")
+    }
+
     /// Without force, so Docker refuses while any container, even a stopped one, uses it.
     func removeVolume(_ name: String) async throws {
         _ = try await send("DELETE", "/volumes/\(name.urlQuery)")
     }
 
     func events() -> AsyncThrowingStream<Data, Error> {
-        let filter = #"{"type":["container","volume"]}"#.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        let filter = #"{"type":["container","volume","image"]}"#.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
         return stream("GET", "/events?filters=\(filter)")
     }
 

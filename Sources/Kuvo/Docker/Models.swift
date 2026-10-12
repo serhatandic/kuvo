@@ -9,7 +9,10 @@ struct EngineVersion: Decodable, Sendable {
 struct Container: Decodable, Identifiable, Hashable, Sendable {
     let id: String
     let names: [String]
+    /// The name it was run with, like nginx:alpine.
     let image: String
+    /// The image it actually runs, which keeps working after its tag moves to a newer image.
+    let imageID: String
     let state: State
     let status: String
     let created: Date
@@ -40,7 +43,7 @@ struct Container: Decodable, Identifiable, Hashable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id = "Id", names = "Names", image = "Image", state = "State", status = "Status"
+        case id = "Id", names = "Names", image = "Image", imageID = "ImageID", state = "State", status = "Status"
         case created = "Created", ports = "Ports", labels = "Labels", mounts = "Mounts"
     }
 
@@ -57,6 +60,7 @@ struct Container: Decodable, Identifiable, Hashable, Sendable {
         id = try c.decode(String.self, forKey: .id)
         names = try c.decodeIfPresent([String].self, forKey: .names) ?? []
         image = try c.decode(String.self, forKey: .image)
+        imageID = try c.decodeIfPresent(String.self, forKey: .imageID) ?? ""
         state = try c.decode(State.self, forKey: .state)
         status = try c.decode(String.self, forKey: .status)
         created = Date(timeIntervalSince1970: try c.decode(Double.self, forKey: .created))
@@ -204,6 +208,80 @@ struct StatsSample: Decodable, Sendable {
     var memoryLimit: UInt64 { memory_stats.limit ?? 0 }
     var rxBytes: UInt64 { networks?.values.reduce(0) { $0 + $1.rx_bytes } ?? 0 }
     var txBytes: UInt64 { networks?.values.reduce(0) { $0 + $1.tx_bytes } ?? 0 }
+}
+
+/// An image from `/images/json`: one per ID, with every tag pointing at it.
+struct DockerImage: Decodable, Identifiable, Hashable, Sendable {
+    let id: String
+    /// Like nginx:alpine; empty for an image whose tag moved to a newer one.
+    let tags: [String]
+    /// Like nginx@sha256:…; kept after the tag moves, so an untagged image still has a name.
+    let digests: [String]
+    let created: Date
+    /// Bytes on disk, unpacked.
+    let size: Int64
+    let labels: [String: String]
+
+    var shortID: String { String(id.drop { $0 != ":" }.dropFirst().prefix(12)) }
+    var isUntagged: Bool { tags.isEmpty }
+    /// Like nginx or ghcr.io/owner/app.
+    var repository: String? {
+        if let tag = tags.first { return Self.repository(of: tag) }
+        return digests.first?.split(separator: "@").first.map(String.init)
+    }
+
+    /// nginx:alpine → nginx, localhost:5000/app:dev → localhost:5000/app.
+    static func repository(of reference: String) -> String {
+        guard let colon = reference.lastIndex(of: ":"), !reference[colon...].contains("/") else { return reference }
+        return String(reference[..<colon])
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id = "Id", tags = "RepoTags", digests = "RepoDigests", created = "Created", size = "Size", labels = "Labels"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        // Older engines list an untagged image as "<none>:<none>".
+        tags = (try c.decodeIfPresent([String].self, forKey: .tags) ?? []).filter { $0 != "<none>:<none>" }.sorted()
+        digests = try c.decodeIfPresent([String].self, forKey: .digests) ?? []
+        created = Date(timeIntervalSince1970: try c.decodeIfPresent(Double.self, forKey: .created) ?? 0)
+        size = try c.decodeIfPresent(Int64.self, forKey: .size) ?? 0
+        labels = try c.decodeIfPresent([String: String].self, forKey: .labels) ?? [:]
+    }
+}
+
+/// The subset of `/images/{id}/json` the detail view shows.
+struct ImageDetails: Decodable, Sendable {
+    let Id: String
+    let Architecture: String?
+    let Os: String?
+    let Variant: String?
+    let Config: ImageConfig?
+
+    struct ImageConfig: Decodable, Sendable {
+        let Cmd: [String]?
+        let Entrypoint: [String]?
+        let ExposedPorts: [String: Empty]?
+        let WorkingDir: String?
+        struct Empty: Decodable, Sendable {}
+    }
+
+    /// Like linux/arm64 or linux/amd64.
+    var platform: String? {
+        guard let Os, let Architecture else { return nil }
+        return [Os, Architecture, Variant].compactMap(\.self).filter { !$0.isEmpty }.joined(separator: "/")
+    }
+
+    /// What a container runs by default: entrypoint, then command.
+    var command: String? {
+        let parts = (Config?.Entrypoint ?? []) + (Config?.Cmd ?? [])
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
+    /// Like ["80/tcp", "443/tcp"].
+    var exposedPorts: [String] { (Config?.ExposedPorts?.keys).map { $0.sorted() } ?? [] }
 }
 
 /// Splits a byte stream into lines, buffering partial lines across chunks.

@@ -15,6 +15,9 @@ final class DockerStore {
     /// Nil until loaded: volumes are only fetched while they're on screen (see `wantsVolumes`).
     private(set) var volumes: [Volume]?
     private(set) var removingVolumes: Set<String> = []
+    /// Nil until loaded: images are only fetched while they're on screen (see `wantsImages`).
+    private(set) var images: [DockerImage]?
+    private(set) var removingImages: Set<String> = []
     var failure: String?
 
     @ObservationIgnored private(set) var client: DockerClient?
@@ -48,6 +51,7 @@ final class DockerStore {
                     connection = .unavailable(error.localizedDescription)
                     containers = []
                     volumes = nil
+                    images = nil
                 }
                 stopAllStats()
             }
@@ -75,6 +79,7 @@ final class DockerStore {
             try? await refresh()
             // Only on events, not the periodic refresh: measuring walks every volume's files.
             await refreshVolumes()
+            await refreshImages()
         }
     }
 
@@ -219,6 +224,112 @@ final class DockerStore {
         }
     }
 
+    // MARK: Images
+
+    /// Loaded while the list is on screen, and again on Docker events.
+    var wantsImages = false {
+        didSet { if wantsImages, !oldValue { Task { await refreshImages() } } }
+    }
+
+    func refreshImages() async {
+        guard wantsImages, let client, let fresh = try? await client.images() else { return }
+        // Tagged by name, then untagged newest first.
+        let sorted = fresh.sorted { a, b in
+            if a.isUntagged != b.isUntagged { return !a.isUntagged }
+            return a.isUntagged ? a.created > b.created : a.tags[0].localizedStandardCompare(b.tags[0]) == .orderedAscending
+        }
+        if sorted != images {
+            withAnimation(.snappy) { images = sorted }
+        }
+    }
+
+    /// Every container created from the image, running or not.
+    func containers(using image: DockerImage) -> [Container] {
+        containers.filter { $0.imageID == image.id }
+    }
+
+    /// Removes each image tag by tag, so the image goes with its last tag, and an
+    /// untagged one by ID. Never forced: Docker keeps any a container uses.
+    func removeImages(_ targets: [DockerImage]) {
+        guard let client, !targets.isEmpty else { return }
+        withAnimation(.snappy) { removingImages.formUnion(targets.map(\.id)) }
+        Task {
+            var failed: [String] = []
+            for image in targets {
+                do {
+                    for reference in image.isUntagged ? [image.id] : image.tags {
+                        try await client.removeImage(reference)
+                    }
+                } catch {
+                    failed.append(image.tags.first ?? image.shortID)
+                }
+            }
+            if !failed.isEmpty {
+                failure = failed.count == 1
+                    ? "Couldn't remove \(failed[0]). A container may have started using it."
+                    : "Couldn't remove \(failed.count) images. Containers may have started using them."
+            }
+            await refreshImages()
+            withAnimation(.snappy) { removingImages.subtract(targets.map(\.id)) }
+        }
+    }
+
+    /// Pulls in progress, shown at the top of the image list.
+    private(set) var pulls: [ImagePull] = []
+    /// The image a pull just finished with, for the list to select.
+    private(set) var pulledImageID: String?
+    /// Progress updates hop to the main actor on their own, so one can land after its pull ended.
+    @ObservationIgnored private var activePulls: Set<String> = []
+
+    /// Starts pulling the image's current version, returning once the download has
+    /// begun, or once it's done if there's nothing new. Errors that come before any
+    /// download (no such image, a login needed, a bad name) are thrown here, so the
+    /// sheet that asked can show them; later ones go to `failure`.
+    func startPull(_ name: String) async throws {
+        guard let client else { throw DockerError(message: "Docker engine isn't running") }
+        guard !activePulls.contains(name) else { throw DockerError(message: "\(name) is already being pulled.") }
+        let started = PullStart()
+        activePulls.insert(name)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            started.continuation = continuation
+            Task {
+                do {
+                    let outcome = try await client.pullLatest(name) { progress in
+                        Task { @MainActor in
+                            started.resume()
+                            if self.activePulls.contains(name) { self.show(ImagePull(name: name, progress: progress)) }
+                        }
+                    }
+                    started.resume()
+                    await finishPull(name, outcome: outcome, client: client)
+                } catch {
+                    activePulls.remove(name)
+                    if !started.resume(throwing: error) { failure = error.localizedDescription }
+                    withAnimation(.snappy) { pulls.removeAll { $0.name == name } }
+                }
+            }
+        }
+    }
+
+    private func show(_ pull: ImagePull) {
+        withAnimation(.snappy) {
+            if let index = pulls.firstIndex(where: { $0.name == pull.name }) { pulls[index] = pull } else { pulls.insert(pull, at: 0) }
+        }
+    }
+
+    private func finishPull(_ name: String, outcome: PullOutcome, client: DockerClient) async {
+        activePulls.remove(name)
+        await refreshImages()
+        let id = try? await client.inspectImage(name).Id
+        withAnimation(.snappy) { pulledImageID = id }
+        if outcome == .upToDate {
+            // Say so briefly where the progress was, then let the image's own row speak.
+            show(ImagePull(name: name, progress: PullProgress(), upToDate: true))
+            try? await Task.sleep(for: .seconds(3))
+        }
+        withAnimation(.snappy) { pulls.removeAll { $0.name == name } }
+    }
+
     // MARK: Stats
 
     func stats(for id: String) -> LiveStats {
@@ -267,6 +378,33 @@ final class DockerStore {
         statsTasks.values.forEach { $0.cancel() }
         statsTasks = [:]
         live = [:]
+    }
+}
+
+/// An image being pulled, as its row in the list shows it.
+struct ImagePull: Identifiable, Equatable {
+    let name: String
+    var progress: PullProgress
+    var upToDate = false
+    var id: String { name }
+}
+
+/// Resumes a pull's caller exactly once: when the download starts, when it ends, or when it fails first.
+@MainActor private final class PullStart {
+    var continuation: CheckedContinuation<Void, Error>?
+
+    func resume() {
+        continuation?.resume()
+        continuation = nil
+    }
+
+    /// Returns whether the caller was still waiting for this error.
+    @discardableResult
+    func resume(throwing error: Error) -> Bool {
+        guard let continuation else { return false }
+        continuation.resume(throwing: error)
+        self.continuation = nil
+        return true
     }
 }
 
