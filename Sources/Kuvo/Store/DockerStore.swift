@@ -24,6 +24,8 @@ final class DockerStore {
     @ObservationIgnored private(set) var client: DockerClient?
     /// Where to find Docker; nil while no engine is available.
     @ObservationIgnored var socketPath: @MainActor () -> String? = { DockerClient.discoverExternal()?.socketPath }
+    /// Called when Docker deletes something, whoever asked it to, so the space can go back to the Mac.
+    @ObservationIgnored var onSpaceFreed: @MainActor () -> Void = {}
     /// Called with the host ports running containers publish.
     @ObservationIgnored var onPortsChanged: @MainActor (Set<UInt16>) -> Void = { _ in }
     @ObservationIgnored private var live: [String: LiveStats] = [:]
@@ -70,7 +72,21 @@ final class DockerStore {
             }
         }
         defer { periodic.cancel() }
-        for try await _ in client.events() { scheduleRefresh() }
+        var lines = LineSplitter()
+        for try await chunk in client.events() {
+            scheduleRefresh()
+            if lines.feed(chunk).contains(where: Self.freesSpace) { onSpaceFreed() }
+        }
+    }
+
+    /// Whether a Docker event deleted something that took disk space.
+    private static func freesSpace(_ line: Data) -> Bool {
+        guard let event = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              let type = event["Type"] as? String, let action = event["Action"] as? String else { return false }
+        switch (type, action) {
+        case ("container", "destroy"), ("image", "delete"), ("volume", "destroy"), ("builder", "prune"): return true
+        default: return false
+        }
     }
 
     private func scheduleRefresh() {

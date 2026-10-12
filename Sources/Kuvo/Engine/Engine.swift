@@ -17,6 +17,7 @@ final class Engine {
     private(set) var state = State.stopped
 
     @ObservationIgnored private var vm: VirtualMachine?
+    @ObservationIgnored private var trimTask: Task<Void, Never>?
     @ObservationIgnored private var bridge: SocketBridge?
     @ObservationIgnored private var forwards: [UInt16: SocketBridge] = [:]
     @ObservationIgnored @AppStorage("engine.installed") private var installed = false
@@ -65,6 +66,29 @@ final class Engine {
     func restart() async {
         await stop()
         await start()
+    }
+
+    /// Tells macOS which of the VM disk's blocks are free, so disk.img shrinks on the
+    /// Mac. Deleting files in the VM frees space only inside it until this runs. The
+    /// guest syncs first: ext4 can't trim blocks freed since its last journal commit.
+    func trim() async {
+        guard state == .running, let vm, let fd = try? await vm.connect(port: GuestScripts.trimPort) else { return }
+        // The guest closes the connection when fstrim is done.
+        await Task.detached {
+            var buffer = [UInt8](repeating: 0, count: 64)
+            while read(fd, &buffer, buffer.count) > 0 {}
+            close(fd)
+        }.value
+    }
+
+    /// Trims shortly after the last deletion, so a burst of them costs one trim.
+    func scheduleTrim() {
+        trimTask?.cancel()
+        trimTask = Task {
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            await trim()
+        }
     }
 
     /// Mirrors published container ports onto localhost.

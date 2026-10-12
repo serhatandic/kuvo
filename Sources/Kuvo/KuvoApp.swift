@@ -143,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         store.socketPath = { [engine] in engine.socketPath }
         store.onPortsChanged = { [engine] ports in engine.forward(ports) }
+        store.onSpaceFreed = { [engine] in engine.scheduleTrim() }
         Task { await engine.start() }
         Task { await store.run() }
         Task.detached(priority: .background) { CLIInstaller.ensureInstalled() }

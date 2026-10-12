@@ -86,7 +86,7 @@ struct DockerClient: Sendable {
     }
 
     func events() -> AsyncThrowingStream<Data, Error> {
-        let filter = #"{"type":["container","volume","image"]}"#.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        let filter = #"{"type":["container","volume","image","builder"]}"#.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
         return stream("GET", "/events?filters=\(filter)")
     }
 

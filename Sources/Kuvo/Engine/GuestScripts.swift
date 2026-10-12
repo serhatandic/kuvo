@@ -5,6 +5,7 @@ enum GuestScripts {
     /// vsock ports the guest listens on.
     static let dockerPort: UInt32 = 2375
     static let powerOffPort: UInt32 = 2376
+    static let trimPort: UInt32 = 2377
 
     /// Name lookups go to the Mac's DNS proxy on the NAT gateway. A VPN, firewall
     /// or content filter on the Mac can leave it silent; when it stays silent but a
@@ -101,6 +102,7 @@ enum GuestScripts {
     ::respawn:/bin/sh -c 'exec /usr/bin/dockerd --shutdown-timeout 3 >>/mnt/host/docker.log 2>&1'
     ::respawn:/usr/bin/socat -t 315360000 VSOCK-LISTEN:\(dockerPort),fork,reuseaddr UNIX-CONNECT:/var/run/docker.sock
     ::respawn:/usr/bin/socat VSOCK-LISTEN:\(powerOffPort),reuseaddr EXEC:/sbin/poweroff
+    ::respawn:/usr/bin/socat VSOCK-LISTEN:\(trimPort),reuseaddr,fork SYSTEM:'sync; fstrim /'
     ::respawn:/usr/sbin/ntpd -n -p pool.ntp.org
     ::shutdown:/bin/sh /mnt/host/shutdown.sh
 
@@ -142,6 +144,9 @@ enum GuestScripts {
         printf '%s' ':rosetta:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00:\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/mnt/rosetta/rosetta:CF' \
             > /proc/sys/fs/binfmt_misc/register
     fi
+
+    # Hand blocks freed while Kuvo wasn't watching back to the Mac (see Engine.trim).
+    fstrim / &
     """#
 
     static let shutdown = #"""
