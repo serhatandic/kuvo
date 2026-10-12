@@ -31,6 +31,10 @@ final class Engine {
         case .stopped, .failed: break
         default: return
         }
+        // The setting outlives the disk when someone deletes Kuvo's data folder; that
+        // disk is installed again and needs the longer first-boot wait. Checked before
+        // GuestImage.prepare, which creates an empty disk.
+        if !FileManager.default.fileExists(atPath: EnginePaths.disk.path) { installed = false }
         do {
             if !GuestImage.isDownloaded { state = .downloading(0) }
             try await GuestImage.prepare { [weak self] progress in
@@ -38,9 +42,6 @@ final class Engine {
                     if case .downloading = self?.state { self?.state = .downloading(progress) }
                 }
             }
-            // The setting outlives the disk when someone deletes Kuvo's data folder;
-            // that disk is installed again and needs the longer first-boot wait.
-            if !FileManager.default.fileExists(atPath: EnginePaths.disk.path) { installed = false }
             withAnimation(.smooth) { state = .booting(installed ? "Starting" : "Starting Linux") }
 
             let vm = try await startMachine()
