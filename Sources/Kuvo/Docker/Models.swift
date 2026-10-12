@@ -15,8 +15,15 @@ struct Container: Decodable, Identifiable, Hashable, Sendable {
     let created: Date
     let ports: [Port]
     let labels: [String: String]
-    /// Names of the volumes it mounts.
-    let volumes: [String]
+    /// The volumes it mounts, and where.
+    let volumeMounts: [VolumeMount]
+
+    struct VolumeMount: Hashable, Sendable {
+        let name: String
+        /// The path inside the container, like /var/lib/postgresql/data.
+        let destination: String
+        let readOnly: Bool
+    }
 
     struct Port: Decodable, Hashable, Sendable {
         let privatePort: Int
@@ -40,7 +47,9 @@ struct Container: Decodable, Identifiable, Hashable, Sendable {
     private struct Mount: Decodable {
         let type: String?
         let name: String?
-        enum CodingKeys: String, CodingKey { case type = "Type", name = "Name" }
+        let destination: String?
+        let rw: Bool?
+        enum CodingKeys: String, CodingKey { case type = "Type", name = "Name", destination = "Destination", rw = "RW" }
     }
 
     init(from decoder: Decoder) throws {
@@ -53,9 +62,14 @@ struct Container: Decodable, Identifiable, Hashable, Sendable {
         created = Date(timeIntervalSince1970: try c.decode(Double.self, forKey: .created))
         ports = try c.decodeIfPresent([Port].self, forKey: .ports) ?? []
         labels = try c.decodeIfPresent([String: String].self, forKey: .labels) ?? [:]
-        volumes = (try c.decodeIfPresent([Mount].self, forKey: .mounts) ?? []).compactMap { $0.type == "volume" ? $0.name : nil }
+        volumeMounts = (try c.decodeIfPresent([Mount].self, forKey: .mounts) ?? []).compactMap { mount in
+            guard mount.type == "volume", let name = mount.name else { return nil }
+            return VolumeMount(name: name, destination: mount.destination ?? "", readOnly: mount.rw == false)
+        }
     }
 
+    /// Names of the volumes it mounts.
+    var volumes: [String] { volumeMounts.map(\.name) }
     var name: String { names.first.map { String($0.drop { $0 == "/" }) } ?? String(id.prefix(12)) }
     var shortID: String { String(id.prefix(12)) }
     var project: String? { labels["com.docker.compose.project"] }

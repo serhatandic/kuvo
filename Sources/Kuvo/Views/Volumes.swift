@@ -105,6 +105,7 @@ private struct VolumeRow: View {
         .opacity(removing ? 0.5 : 1)
         .contextMenu {
             Button("Copy Name") { copy(volume.name) }
+            Button("Copy Path in the VM") { copy(volume.mountpoint) }
             if let onRemove {
                 Divider()
                 Button("Remove…", role: .destructive, action: onRemove)
@@ -159,6 +160,10 @@ struct VolumesDetail: View {
     }
 }
 
+/// Answers, in order: is anything using this volume, and if not, why is it still
+/// here (the subtitle); where each container keeps its data in it (Mounts); and
+/// how big and old it is (Overview). Technical facts nobody reads twice, like
+/// its path inside the VM, are copy actions in the sidebar row's menu.
 private struct VolumeDetail: View {
     @Environment(DockerStore.self) private var store
     let volume: Volume
@@ -170,72 +175,64 @@ private struct VolumeDetail: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                usedBy
-                details
+                if !users.isEmpty { mounts }
+                // The planned file browser goes here, between Mounts and Overview.
+                overview
             }
             .padding([.horizontal, .bottom], 20)
             .padding(.top, 8)
         }
         .navigationTitle(volume.displayName)
-        .navigationSubtitle(subtitle)
+        .navigationSubtitle(VolumeStatus(volume: volume, users: users, store: store).verdict)
         .toolbar {
             ToolbarItem(placement: .navigation) { TitleIcon(systemName: "cylinder.fill") }
             ToolbarItem {
                 Button { confirmRemove = [volume] } label: { Label("Remove", systemImage: "trash") }
-                    .help(users.isEmpty ? "Remove" : "In use: remove the containers using it first")
+                    .help(removeHelp)
                     .disabled(!users.isEmpty || store.removingVolumes.contains(volume.name))
             }
         }
         .confirmRemove(volumes: $confirmRemove)
     }
 
-    private var subtitle: String {
-        let size = volume.size.map { Format.bytes(Double($0)) }
-        let age = volume.createdAt.map { "created \($0.formatted(.relative(presentation: .named)))" }
-        return [size, age].compactMap(\.self).joined(separator: "  ·  ").capitalizedSentence
+    /// Docker won't remove a volume any container uses, so say what to do instead.
+    private var removeHelp: String {
+        guard !users.isEmpty else { return "Remove" }
+        let names = users.map(\.name).formatted(.list(type: .and))
+        return users.contains(where: \.isRunning)
+            ? "In use by \(names). Stop and remove \(users.count == 1 ? "it" : "them") first."
+            : "Remove \(names) first, or remove \(users.count == 1 ? "it" : "them") with \(users.count == 1 ? "its" : "their") volumes."
     }
 
-    private var usedBy: some View {
-        Pane(icon: "shippingbox", title: "Used By") {
+    private var mounts: some View {
+        Pane(icon: "shippingbox", title: "Mounts") {
             EmptyView()
         } content: {
-            if users.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("No container uses this volume.")
-                        .font(.system(size: 13))
-                    Text("Removing it deletes the data in it.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 14)
-                .padding(.bottom, 14)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(users) { container in
-                        UserRow(container: container) { openContainer(container) }
+            VStack(spacing: 0) {
+                ForEach(users) { container in
+                    if let mount = container.volumeMounts.first(where: { $0.name == volume.name }) {
+                        MountRow(container: container, mount: mount) { openContainer(container) }
                     }
                 }
-                .padding(.horizontal, 6)
-                .padding(.bottom, 6)
             }
+            .padding(.horizontal, 6)
+            .padding(.bottom, 6)
         }
     }
 
-    private var details: some View {
-        Pane(icon: "info.circle", title: "Details") {
+    private var overview: some View {
+        Pane(icon: "info.circle", title: "Overview") {
             EmptyView()
         } content: {
             Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 16, verticalSpacing: 8) {
-                DetailRow("Name", volume.name, monospaced: volume.isAnonymous)
-                if let size = volume.size { DetailRow("Size", Format.bytes(Double(size))) }
+                DetailRow("Size", volume.size.map { Format.bytes(Double($0)) } ?? "Not measured")
                 if let created = volume.createdAt {
-                    DetailRow("Created", created.formatted(date: .abbreviated, time: .shortened))
+                    DetailRow("Created", created.formatted(.relative(presentation: .named)).capitalizedSentence,
+                              help: created.formatted(date: .long, time: .shortened))
                 }
                 if let project = volume.project { DetailRow("Compose project", project) }
-                if volume.isAnonymous { DetailRow("Kind", "Anonymous, made by a container or image without a name") }
-                DetailRow("Driver", volume.driver)
-                DetailRow("Path in the VM", volume.mountpoint, monospaced: true)
+                if volume.isAnonymous { DetailRow("Origin", "Anonymous, from an image's VOLUME or a -v /path mount") }
+                if volume.driver != "local" { DetailRow("Driver", volume.driver) }
                 ForEach(labels, id: \.key) { label in
                     DetailRow(label.key, label.value, monospaced: true)
                 }
@@ -254,15 +251,46 @@ private struct VolumeDetail: View {
     }
 }
 
+/// The one-line answer under the title: who uses the volume, or why an unused one exists.
+@MainActor private struct VolumeStatus {
+    let volume: Volume
+    let users: [Container]
+    let store: DockerStore
+
+    var verdict: String {
+        if !users.isEmpty {
+            // Stopped-only matters: it's why Docker still refuses to remove the volume.
+            if !users.contains(where: \.isRunning) {
+                return users.count == 1 ? "Used by \(users[0].name), which is stopped" : "Used by \(users.count) stopped containers"
+            }
+            let names = users.map(\.name)
+            return switch names.count {
+            case 1: "Used by \(names[0])"
+            case 2: "Used by \(names[0]) and \(names[1])"
+            default: "Used by \(names[0]) and \(names.count - 1) others"
+            }
+        }
+        // Its age is in Overview, so it isn't repeated here.
+        if let project = volume.project {
+            return store.containers.contains(where: { $0.project == project })
+                ? "Not in use  ·  from the Compose project \(project)"
+                : "Not in use  ·  left by the Compose project \(project), which has no containers"
+        }
+        return volume.isAnonymous ? "Not in use  ·  anonymous" : "Not in use"
+    }
+}
+
 private struct DetailRow: View {
     let label: String
     let value: String
     var monospaced = false
+    var help: String?
 
-    init(_ label: String, _ value: String, monospaced: Bool = false) {
+    init(_ label: String, _ value: String, monospaced: Bool = false, help: String? = nil) {
         self.label = label
         self.value = value
         self.monospaced = monospaced
+        self.help = help
     }
 
     var body: some View {
@@ -275,14 +303,18 @@ private struct DetailRow: View {
                 .textSelection(.enabled)
                 .lineLimit(2)
                 .truncationMode(.middle)
+                .help(help ?? "")
         }
         .font(.system(size: 13))
     }
 }
 
-/// A container using the volume; clicking it opens the container.
-private struct UserRow: View {
+/// A container that mounts the volume: where its data lives inside the container,
+/// and whether the container runs, which decides whether the volume can go.
+/// Clicking it opens the container.
+private struct MountRow: View {
     let container: Container
+    let mount: Container.VolumeMount
     let open: () -> Void
     @State private var hovering = false
 
@@ -292,12 +324,24 @@ private struct UserRow: View {
                 StatusDot(state: container.state)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(container.name).font(.system(size: 13, weight: .medium))
-                    Text("\(container.humanStatus) · \(container.image)")
+                    Text(container.humanStatus)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
                 .lineLimit(1)
-                Spacer(minLength: 8)
+                Spacer(minLength: 12)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(mount.destination)
+                        .font(.system(size: 12).monospaced())
+                        .truncationMode(.head)
+                    if mount.readOnly {
+                        Text("read-only")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .lineLimit(1)
+                .help("Mounted at \(mount.destination) inside \(container.name)\(mount.readOnly ? ", read-only" : "")")
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.tertiary)
@@ -311,7 +355,8 @@ private struct UserRow: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
-        .help("Show \(container.name)")
+        .accessibilityLabel("\(container.name), \(container.humanStatus), mounted at \(mount.destination)\(mount.readOnly ? ", read-only" : "")")
+        .accessibilityHint("Shows the container")
     }
 }
 
