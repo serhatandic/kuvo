@@ -2,7 +2,9 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(DockerStore.self) private var store
+    @SceneStorage("section") private var section = SidebarSection.containers
     @SceneStorage("selection") private var selection: String?
+    @SceneStorage("volumeSelection") private var volumeSelection: String?
     @State private var columns = NavigationSplitViewVisibility.all
     @State private var sidebarWidth: CGFloat = 0
     @AppStorage(Appearance.key) private var appearance = Appearance.system
@@ -30,6 +32,7 @@ struct ContentView: View {
             .frame(minWidth: 820, minHeight: 520)
             .background(WindowVisibilityReader(isVisible: $onScreen))
             .onChange(of: onScreen, initial: true) { store.wantsLiveStats = onScreen }
+            .onChange(of: [onScreen, section == .volumes], initial: true) { store.wantsVolumes = onScreen && section == .volumes }
             .onChange(of: appearance, initial: true) { appearance.apply() }
             .onChange(of: store.connection, initial: true) {
                 // Only installed copies ask; development builds leave docker alone.
@@ -58,7 +61,7 @@ struct ContentView: View {
             switch store.connection {
             case .connected:
                 NavigationSplitView(columnVisibility: $columns) {
-                    Sidebar(selection: $selection)
+                    Sidebar(section: $section, selection: $selection, volumeSelection: $volumeSelection)
                         .lightGlass() // The sidebar draws its own material; tint it the same.
                         // Also as a frame: without saved split state, the column width alone is ignored.
                         // No maximum here: the contents fill the column, and SidebarWidthLimits caps it.
@@ -105,6 +108,20 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var detail: some View {
+        if section == .volumes {
+            VolumesDetail(selection: $volumeSelection) { container in
+                withAnimation(.snappy) {
+                    section = .containers
+                    selection = container.id
+                }
+            }
+            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        } else {
+            containerDetail
+        }
+    }
+
+    @ViewBuilder private var containerDetail: some View {
         ZStack {
             if let selected {
                 ContainerDetail(container: selected)

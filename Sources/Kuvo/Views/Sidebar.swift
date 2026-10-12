@@ -1,12 +1,26 @@
 import SwiftUI
 
-/// One list: Compose projects are collapsible groups, everything else is a plain row.
+/// What the sidebar lists. Each section keeps its own selection.
+enum SidebarSection: String, CaseIterable {
+    case containers, volumes
+
+    var title: String {
+        switch self {
+        case .containers: "Containers"
+        case .volumes: "Volumes"
+        }
+    }
+}
+
+/// Containers or volumes, picked at the top. In the container list, Compose
+/// projects are collapsible groups and everything else is a plain row.
 struct Sidebar: View {
     @Environment(DockerStore.self) private var store
+    @Binding var section: SidebarSection
     @Binding var selection: String?
+    @Binding var volumeSelection: String?
     @State private var query = ""
     @State private var collapsed: Set<String> = []
-    @Environment(\.colorScheme) private var scheme
 
     private enum Item: Identifiable {
         case project(String, [Container])
@@ -42,9 +56,18 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            Picker("Show", selection: $section) {
+                ForEach(SidebarSection.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 10)
             FilterField(text: $query)
                 .padding(.horizontal, 10)
-            list
+            switch section {
+            case .containers: list
+            case .volumes: VolumeList(selection: $volumeSelection, query: query)
+            }
         }
     }
 
@@ -63,9 +86,7 @@ struct Sidebar: View {
                 }
             }
         }
-        .listStyle(.sidebar)
-        // Light mode: let the window's tinted glass show instead of the gray sidebar material.
-        .scrollContentBackground(scheme == .light ? .hidden : .automatic)
+        .sidebarList()
     }
 
     private func row(_ container: Container) -> some View {
@@ -80,6 +101,22 @@ struct Sidebar: View {
             get: { !query.isEmpty || !collapsed.contains(project) },
             set: { expanded in withAnimation(.snappy) { if expanded { collapsed.remove(project) } else { collapsed.insert(project) } } }
         )
+    }
+}
+
+extension View {
+    /// The sidebar's list style, shared by every section.
+    func sidebarList() -> some View { modifier(SidebarListStyle()) }
+}
+
+private struct SidebarListStyle: ViewModifier {
+    @Environment(\.colorScheme) private var scheme
+
+    func body(content: Content) -> some View {
+        content
+            .listStyle(.sidebar)
+            // Light mode: let the window's tinted glass show instead of the gray sidebar material.
+            .scrollContentBackground(scheme == .light ? .hidden : .automatic)
     }
 }
 
@@ -126,10 +163,12 @@ private struct FilterField: View {
 /// Shared layout for every sidebar row: a 16pt leading glyph, two lines of
 /// text, and a fixed trailing slot that swaps to an action on hover without
 /// changing the row's size.
-private struct RowLayout<Glyph: View, Trailing: View>: View {
+struct RowLayout<Glyph: View, Trailing: View>: View {
     let title: String
     let subtitle: String
     let action: RowAction?
+    /// Room for the trailing view: container rows show a CPU graph, volume rows a size.
+    var trailingWidth: CGFloat = 84
     /// Receives whether the row is hovered, so a glyph can reveal a control.
     @ViewBuilder var glyph: (_ hovering: Bool) -> Glyph
     @ViewBuilder var trailing: Trailing
@@ -155,7 +194,7 @@ private struct RowLayout<Glyph: View, Trailing: View>: View {
                     trailing.transition(.opacity)
                 }
             }
-            .frame(width: 84, height: 24, alignment: .trailing)
+            .frame(width: trailingWidth, height: 24, alignment: .trailing)
             .animation(.easeOut(duration: 0.12), value: hovering)
         }
         .padding(.vertical, 3)
@@ -165,7 +204,7 @@ private struct RowLayout<Glyph: View, Trailing: View>: View {
 }
 
 /// A real, comfortably sized button for row actions (not a bare glyph).
-private struct RowAction: View {
+struct RowAction: View {
     let systemImage: String
     let help: String
     let perform: () -> Void

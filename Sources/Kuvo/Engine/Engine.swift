@@ -160,6 +160,6 @@ private func connectTCP(host: String, port: UInt16) throws -> Int32 {
     return fd
 }
 
-private extension String {
+extension String {
     var capitalizedSentence: String { prefix(1).uppercased() + dropFirst() }
 }
