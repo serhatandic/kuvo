@@ -2,11 +2,12 @@ import SwiftUI
 
 /// What the sidebar lists. Each section keeps its own selection and filter.
 enum SidebarSection: String, CaseIterable {
-    case containers, volumes
+    case containers, images, volumes
 
     var title: String {
         switch self {
         case .containers: "Containers"
+        case .images: "Images"
         case .volumes: "Volumes"
         }
     }
@@ -14,6 +15,7 @@ enum SidebarSection: String, CaseIterable {
     var symbol: String {
         switch self {
         case .containers: "shippingbox"
+        case .images: "square.3.layers.3d"
         case .volumes: "cylinder"
         }
     }
@@ -31,6 +33,7 @@ struct Sidebar: View {
     @Environment(DockerStore.self) private var store
     @Binding var section: SidebarSection
     @Binding var selection: String?
+    @Binding var imageSelection: String?
     @Binding var volumeSelection: String?
     /// Per section, so filtering containers for "redis" doesn't empty the volume list.
     @State private var queries: [SidebarSection: String] = [:]
@@ -82,6 +85,7 @@ struct Sidebar: View {
             ZStack {
                 switch section {
                 case .containers: list
+                case .images: ImageList(selection: $imageSelection, query: query)
                 case .volumes: VolumeList(selection: $volumeSelection, query: query)
                 }
             }

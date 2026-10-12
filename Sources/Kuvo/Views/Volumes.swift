@@ -48,7 +48,7 @@ struct VolumeList: View {
             }
         }
         .confirmRemove(volumes: $confirmRemove)
-        .onChange(of: store.volumes?.map(\.name)) { _, names in
+        .onChange(of: store.volumes?.map(\.name), initial: true) { _, names in
             guard let names else { return }
             if selection == nil || !names.contains(selection!) {
                 withAnimation(.snappy) { selection = names.first }

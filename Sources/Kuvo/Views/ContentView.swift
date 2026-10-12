@@ -4,6 +4,7 @@ struct ContentView: View {
     @Environment(DockerStore.self) private var store
     @SceneStorage("section") private var section = SidebarSection.containers
     @SceneStorage("selection") private var selection: String?
+    @SceneStorage("imageSelection") private var imageSelection: String?
     @SceneStorage("volumeSelection") private var volumeSelection: String?
     @State private var columns = NavigationSplitViewVisibility.all
     @State private var sidebarWidth: CGFloat = 0
@@ -61,7 +62,7 @@ struct ContentView: View {
             switch store.connection {
             case .connected:
                 NavigationSplitView(columnVisibility: $columns) {
-                    Sidebar(section: $section, selection: $selection, volumeSelection: $volumeSelection)
+                    Sidebar(section: $section, selection: $selection, imageSelection: $imageSelection, volumeSelection: $volumeSelection)
                         .lightGlass() // The sidebar draws its own material; tint it the same.
                         // Also as a frame: without saved split state, the column width alone is ignored.
                         // No maximum here: the contents fill the column, and SidebarWidthLimits caps it.
@@ -109,16 +110,23 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var detail: some View {
-        if section == .volumes {
-            VolumesDetail(selection: $volumeSelection) { container in
-                withAnimation(.snappy) {
-                    section = .containers
-                    selection = container.id
-                }
-            }
-            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-        } else {
+        switch section {
+        case .containers:
             containerDetail
+        case .images:
+            ImagesDetail(selection: $imageSelection, openContainer: open)
+                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        case .volumes:
+            VolumesDetail(selection: $volumeSelection, openContainer: open)
+                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        }
+    }
+
+    /// From an image or volume to a container that uses it.
+    private func open(_ container: Container) {
+        withAnimation(.snappy) {
+            section = .containers
+            selection = container.id
         }
     }
 

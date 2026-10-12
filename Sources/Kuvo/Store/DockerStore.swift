@@ -15,7 +15,8 @@ final class DockerStore {
     /// Nil until loaded: volumes are only fetched while they're on screen (see `wantsVolumes`).
     private(set) var volumes: [Volume]?
     private(set) var removingVolumes: Set<String> = []
-    /// Nil until loaded: images are only fetched while they're on screen (see `wantsImages`).
+    /// Nil until loaded. Unlike volumes, listing images is cheap, so they're kept
+    /// current whenever Docker is: that's how Kuvo sees a tag move to a newer image.
     private(set) var images: [DockerImage]?
     private(set) var removingImages: Set<String> = []
     var failure: String?
@@ -42,6 +43,7 @@ final class DockerStore {
                 let version = try await client.version()
                 // Load containers before showing them, so "No containers yet" never flashes.
                 try await refresh()
+                await refreshImages()
                 withAnimation(.smooth) {
                     connection = .connected(engine: version.Platform.map(\.Name).flatMap { $0.isEmpty ? nil : $0 } ?? "Docker \(version.Version)")
                 }
@@ -226,13 +228,9 @@ final class DockerStore {
 
     // MARK: Images
 
-    /// Loaded while the list is on screen, and again on Docker events.
-    var wantsImages = false {
-        didSet { if wantsImages, !oldValue { Task { await refreshImages() } } }
-    }
-
     func refreshImages() async {
-        guard wantsImages, let client, let fresh = try? await client.images() else { return }
+        guard let client, let fresh = try? await client.images() else { return }
+        rememberTags(fresh)
         // Tagged by name, then untagged newest first.
         let sorted = fresh.sorted { a, b in
             if a.isUntagged != b.isUntagged { return !a.isUntagged }
@@ -241,6 +239,25 @@ final class DockerStore {
         if sorted != images {
             withAnimation(.snappy) { images = sorted }
         }
+    }
+
+    /// The tags an image had before they moved to newer images, as far as Kuvo saw.
+    /// Docker keeps nothing about an untagged image's name, so Kuvo remembers it,
+    /// across launches, for images that still exist.
+    func formerTags(of image: DockerImage) -> [String] {
+        image.isUntagged ? knownTags[image.id] ?? [] : []
+    }
+
+    @ObservationIgnored private lazy var knownTags: [String: [String]] =
+        UserDefaults.standard.dictionary(forKey: Self.knownTagsKey) as? [String: [String]] ?? [:]
+    private static let knownTagsKey = "images.knownTags"
+
+    private func rememberTags(_ images: [DockerImage]) {
+        var known = knownTags.filter { id, _ in images.contains { $0.id == id } }
+        for image in images where !image.isUntagged { known[image.id] = image.tags }
+        guard known != knownTags else { return }
+        knownTags = known
+        UserDefaults.standard.set(known, forKey: Self.knownTagsKey)
     }
 
     /// Every container created from the image, running or not.
@@ -274,6 +291,15 @@ final class DockerStore {
         }
     }
 
+    /// Removes one of an image's several tags; the image stays with the others.
+    func removeTag(_ tag: String) {
+        guard let client else { return }
+        Task {
+            do { try await client.removeImage(tag) } catch { failure = error.localizedDescription }
+            await refreshImages()
+        }
+    }
+
     /// Pulls in progress, shown at the top of the image list.
     private(set) var pulls: [ImagePull] = []
     /// The image a pull just finished with, for the list to select.
@@ -290,6 +316,7 @@ final class DockerStore {
         guard !activePulls.contains(name) else { throw DockerError(message: "\(name) is already being pulled.") }
         let started = PullStart()
         activePulls.insert(name)
+        pulledImageID = nil
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             started.continuation = continuation
             Task {
