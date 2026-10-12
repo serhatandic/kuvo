@@ -74,6 +74,7 @@ struct Sidebar: View {
         VStack(spacing: 8) {
             SectionBar(section: $section)
                 .padding(.horizontal, 10)
+                .padding(.bottom, -2) // 6pt to the filter it applies to, 8pt from the filter to the list.
             FilterField(text: Binding(get: { query }, set: { queries[section] = $0 }))
                 // A field being edited keeps its own text; a fresh one per section shows that section's filter.
                 .id(section)
@@ -123,45 +124,74 @@ struct Sidebar: View {
     }
 }
 
-/// The sections as a row of icons, like Xcode's navigator bar: it stays one row
-/// as sections are added, where text labels stop fitting. The names are in the
-/// tooltips, the View menu and VoiceOver.
+/// The sections as tabs, an icon over a short name, like the tabs in a Mac app's
+/// settings window. Below the width where every name fits, the names drop and the
+/// tabs become icons only; the names stay in the tooltips, the View menu and VoiceOver.
 private struct SectionBar: View {
     @Binding var section: SidebarSection
+    @State private var width: CGFloat = 0
+
+    /// Measured, because tabs that fill the row "fit" any width they're offered.
+    private var labeled: Bool { width >= CGFloat(SidebarSection.allCases.count) * 62 }
 
     var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 4) {
             ForEach(SidebarSection.allCases, id: \.self) { item in
-                SectionButton(item: item, selected: item == section) { section = item }
+                SectionButton(item: item, selected: item == section, labeled: labeled) { section = item }
             }
         }
+        .onGeometryChange(for: CGFloat.self, of: \.size.width) { width = $0 }
+        .animation(.snappy(duration: 0.2), value: labeled)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Show")
+        .accessibilityLabel("Sections")
     }
 }
 
 private struct SectionButton: View {
     let item: SidebarSection
     let selected: Bool
+    let labeled: Bool
     let select: () -> Void
     @State private var hovering = false
 
     var body: some View {
         Button(action: select) {
-            Image(systemName: selected ? "\(item.symbol).fill" : item.symbol)
-                .font(.system(size: 14))
-                .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                .frame(maxWidth: .infinity)
-                .frame(height: 28)
-                .background(.primary.opacity(hovering && !selected ? 0.06 : 0), in: .rect(cornerRadius: 7))
-                .contentShape(.rect)
+            VStack(spacing: 3) {
+                Image(systemName: item.symbol)
+                    .font(.system(size: labeled ? 17 : 16, weight: .medium))
+                    // Not by appending ".fill" to the name: some symbols have no filled variant.
+                    .symbolVariant(selected ? .fill : .none)
+                    .frame(height: 20)
+                if labeled {
+                    Text(item.title)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .lineLimit(1)
+                        .transition(.opacity)
+                }
+            }
+            .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+            .frame(maxWidth: .infinity)
+            .frame(height: labeled ? 46 : 28)
+            .contentShape(.rect)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SectionButtonStyle(hovering: hovering && !selected))
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
         .help("\(item.title) (⌘\(String(item.shortcut.character)))")
         .accessibilityLabel(item.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// A soft pill on hover and press; the selected tab is marked by its tint alone.
+private struct SectionButtonStyle: ButtonStyle {
+    let hovering: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(.primary.opacity(configuration.isPressed ? 0.1 : hovering ? 0.06 : 0), in: .rect(cornerRadius: 8))
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.snappy(duration: 0.15), value: configuration.isPressed)
     }
 }
 
