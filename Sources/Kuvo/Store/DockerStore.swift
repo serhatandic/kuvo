@@ -115,12 +115,6 @@ final class DockerStore {
         containers.filter { $0.volumes.contains(volume.name) }
     }
 
-    func createVolume(named name: String) async throws {
-        guard let client else { return }
-        try await client.createVolume(name)
-        await refreshVolumes()
-    }
-
     /// Removes each volume by name, so only the ones the person confirmed go, and
     /// Docker keeps any a container started using in the meantime.
     func removeVolumes(_ names: [String]) {

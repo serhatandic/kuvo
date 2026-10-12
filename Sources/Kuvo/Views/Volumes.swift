@@ -134,7 +134,6 @@ struct VolumesDetail: View {
     @Environment(DockerStore.self) private var store
     @Binding var selection: String?
     let openContainer: (Container) -> Void
-    @State private var creating = false
 
     private var selected: Volume? { store.volumes?.first { $0.name == selection } }
 
@@ -148,9 +147,7 @@ struct VolumesDetail: View {
                 ContentUnavailableView {
                     Label("No Volumes", systemImage: "cylinder")
                 } description: {
-                    Text("Volumes keep data, like a database's files, after its container is removed.")
-                } actions: {
-                    Button("New Volume…") { creating = true }
+                    Text("Volumes show up here when a container stores data in one, like a database's files. They keep it after the container is removed.")
                 }
                 .transition(.opacity)
                 .navigationTitle("Volumes")
@@ -159,16 +156,6 @@ struct VolumesDetail: View {
             }
         }
         .animation(.snappy(duration: 0.28), value: selection)
-        .toolbar {
-            ToolbarItem {
-                Button { creating = true } label: { Label("New Volume", systemImage: "plus") }
-                    .help("New volume (⌘N)")
-                    .keyboardShortcut("n", modifiers: .command)
-            }
-        }
-        .sheet(isPresented: $creating) {
-            NewVolumeSheet { name in withAnimation(.snappy) { selection = name } }
-        }
     }
 }
 
@@ -325,64 +312,6 @@ private struct UserRow: View {
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
         .help("Show \(container.name)")
-    }
-}
-
-// MARK: - Create
-
-private struct NewVolumeSheet: View {
-    @Environment(DockerStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    let onCreated: (String) -> Void
-    @State private var name = ""
-    @State private var error: String?
-    @State private var creating = false
-
-    /// Docker's rule for volume names.
-    private var isValid: Bool { name.wholeMatch(of: /[a-zA-Z0-9][a-zA-Z0-9_.-]+/) != nil }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("New Volume").font(.headline)
-            TextField("Name", text: $name, prompt: Text("e.g. postgres-data"))
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(create)
-            Text(error ?? "Letters, numbers, and . _ - after the first character.")
-                .font(.system(size: 11))
-                .foregroundStyle(error == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
-                .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Create", action: create)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!isValid || creating)
-            }
-        }
-        .padding(20)
-        .frame(width: 340)
-        .onChange(of: name) { error = nil }
-    }
-
-    private func create() {
-        guard isValid, !creating else { return }
-        // Docker returns the existing volume instead of failing, so check first.
-        guard store.volumes?.contains(where: { $0.name == name }) != true else {
-            error = "A volume named \(name) already exists."
-            return
-        }
-        creating = true
-        Task {
-            do {
-                try await store.createVolume(named: name)
-                onCreated(name)
-                dismiss()
-            } catch {
-                self.error = error.localizedDescription
-                creating = false
-            }
-        }
     }
 }
 

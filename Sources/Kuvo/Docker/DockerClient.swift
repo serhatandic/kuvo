@@ -66,10 +66,6 @@ struct DockerClient: Sendable {
         return try await JSONDecoder().decode(Usage.self, from: send("GET", "/system/df?type=volume")).Volumes ?? []
     }
 
-    func createVolume(_ name: String) async throws {
-        _ = try await send("POST", "/volumes/create", body: JSONSerialization.data(withJSONObject: ["Name": name]))
-    }
-
     /// Without force, so Docker refuses while any container, even a stopped one, uses it.
     func removeVolume(_ name: String) async throws {
         _ = try await send("DELETE", "/volumes/\(name.urlQuery)")
