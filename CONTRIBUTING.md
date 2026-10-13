@@ -1,6 +1,6 @@
-# Contributing to Kuvo
+# Contributing to Kuvo Box
 
-Thanks for helping improve Kuvo. It's meant to stay small, fast and native, so
+Thanks for helping improve Kuvo Box. It's meant to stay small, fast and native, so
 the best changes keep the app light: no web views, few dependencies, and no
 work done while nobody is looking.
 
@@ -11,7 +11,7 @@ work done while nobody is looking.
   to how the VM is set up. Small fixes don't need prior approval.
 - Keep pull requests focused. Separate mechanical moves from behavior changes.
 - If the change is user-facing, say what the docs at
-  [kuvo.run/docs](https://kuvo.run/docs/) need to cover.
+  [kuvo.run/box/docs](https://kuvo.run/box/docs/) need to cover.
 
 ## Development setup
 
@@ -19,8 +19,8 @@ You need a Mac with Apple silicon, macOS 15 or later, and Xcode 16 or later
 (Swift 6).
 
 ```sh
-git clone https://github.com/serhatandic/kuvo.git
-cd kuvo
+git clone https://github.com/serhatandic/kuvo-box.git
+cd kuvo-box
 ./scripts/run.sh
 ```
 
@@ -44,7 +44,7 @@ committed, so you only need this when changing the icon.
 
 ### Dependencies
 
-Kuvo depends on swift-argument-parser, SwiftTerm and Sparkle. If you add or update a
+Kuvo Box depends on swift-argument-parser, SwiftTerm and Sparkle. If you add or update a
 package, run `./scripts/third-party-licenses.sh` and commit the updated
 `THIRD_PARTY_LICENSES.txt`; CI checks that it's current.
 
@@ -78,7 +78,7 @@ Every change starts from an issue and lands on `main` through a pull request.
      merging closes the issue.
    - Fill in the rest of the template: what changed, why, and how you verified
      it.
-   - **If people using Kuvo would notice the change, add a line to
+   - **If people using Kuvo Box would notice the change, add a line to
      `CHANGELOG.md`** under Unreleased, saying what they'll see. It becomes
      part of the next release's notes.
 4. **CI must pass**, and a maintainer reviews and approves the pull request.
@@ -95,7 +95,7 @@ tools.
 
 ## Contribution license
 
-Kuvo is source-available for noncommercial use under the
+Kuvo Box is source-available for noncommercial use under the
 [PolyForm Noncommercial License](LICENSE). To keep commercial licensing rights
 coherent as the project accepts outside work, every contributor must accept
 the [Contributor License Agreement](CONTRIBUTOR_LICENSE_AGREEMENT.md).

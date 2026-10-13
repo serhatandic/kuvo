@@ -1,7 +1,7 @@
 # Contributor License Agreement
 
 This agreement documents the rights granted by contributors to Serhat Andıç
-(the **project owner**) for contributions to Kuvo. It is based on the grant of
+(the **project owner**) for contributions to Kuvo Box. It is based on the grant of
 rights in the Harmony Individual Contributor License Agreement, with the
 outbound-license option that permits commercial and proprietary licensing.
 
@@ -11,7 +11,7 @@ template, you agree to the following terms.
 ## 1. Your contribution
 
 A **Contribution** is any original work of authorship that you intentionally
-submit to Kuvo for inclusion in the project. General discussion, bug reports,
+submit to Kuvo Box for inclusion in the project. General discussion, bug reports,
 and material clearly marked `Not a Contribution` are excluded.
 
 You retain ownership of the copyright in your Contribution and remain free to
@@ -22,11 +22,11 @@ use or license it independently.
 You grant the project owner a perpetual, worldwide, non-exclusive,
 transferable, royalty-free, irrevocable copyright license, with the right to
 sublicense, to reproduce, modify, display, perform, distribute, and otherwise
-use your Contribution as part of Kuvo.
+use your Contribution as part of Kuvo Box.
 
-The project owner may license your Contribution as part of Kuvo under any
+The project owner may license your Contribution as part of Kuvo Box under any
 license, including source-available, commercial, or proprietary terms. If the
-Contribution is included in Kuvo, it will also remain available under the
+Contribution is included in Kuvo Box, it will also remain available under the
 public project license in effect on the date you submitted it.
 
 ## 3. Patent license
@@ -35,7 +35,7 @@ For any patent claims that you own or control and that are necessarily
 infringed by your Contribution, you grant the project owner a perpetual,
 worldwide, non-exclusive, transferable, royalty-free, irrevocable patent
 license, with the right to sublicense, to make, have made, use, sell, offer for
-sale, import, and otherwise transfer your Contribution as part of Kuvo.
+sale, import, and otherwise transfer your Contribution as part of Kuvo Box.
 
 ## 4. Your assurances
 

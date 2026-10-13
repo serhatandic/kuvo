@@ -28,8 +28,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: Kuvo version
-      description: Kuvo › About Kuvo, or `kuvo --version`.
+      label: Kuvo Box version
+      description: Kuvo Box › About Kuvo Box, or `kuvo --version`.
       placeholder: 0.1.0
     validations:
       required: true

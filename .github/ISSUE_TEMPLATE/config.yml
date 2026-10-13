@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Report a security vulnerability
-    url: https://github.com/serhatandic/kuvo/security/advisories/new
+    url: https://github.com/serhatandic/kuvo-box/security/advisories/new
     about: Send security reports privately instead of opening a public issue.
   - name: Documentation
-    url: https://kuvo.run/docs/
+    url: https://kuvo.run/box/docs/
     about: Guides, the CLI reference and troubleshooting.

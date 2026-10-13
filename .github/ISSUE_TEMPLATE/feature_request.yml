@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest a focused improvement to Kuvo
+description: Suggest a focused improvement to Kuvo Box
 title: "[Feature]: "
 labels: [enhancement]
 body:
@@ -7,7 +7,7 @@ body:
     id: problem
     attributes:
       label: Problem
-      description: What are you trying to do that Kuvo makes hard today?
+      description: What are you trying to do that Kuvo Box makes hard today?
     validations:
       required: true
   - type: textarea

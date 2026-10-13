@@ -3,11 +3,11 @@
 ## Reporting a vulnerability
 
 Please do not open a public issue for a vulnerability. Use GitHub's
-[private vulnerability reporting](https://github.com/serhatandic/kuvo/security/advisories/new)
+[private vulnerability reporting](https://github.com/serhatandic/kuvo-box/security/advisories/new)
 so the report, reproduction steps, and any proposed fix remain private.
 
 Include the affected version and macOS version, the impact, and the smallest
-reproduction you can provide. Kuvo's logs can contain container names, image
+reproduction you can provide. Kuvo Box's logs can contain container names, image
 names, and paths from your Mac, so remove anything identifying from logs and
 screenshots before you share them.
 
@@ -21,14 +21,14 @@ Reports are especially welcome about:
 - the boundary between the Linux VM and the Mac, including the shared `/Users`
   folder and the Docker socket at `~/.kuvo/docker.sock`;
 - ports forwarded to `localhost`;
-- the downloads and checksums Kuvo uses to set up its VM;
+- the downloads and checksums Kuvo Box uses to set up its VM;
 - software updates: the update feed, its signatures and how they're checked;
-- the `kuvo` command and the PATH changes Kuvo makes.
+- the `kuvo` command and the PATH changes Kuvo Box makes.
 
 Vulnerabilities in Docker Engine or Alpine Linux themselves should go to those
-projects. Tell us too if Kuvo's setup makes one easier to exploit.
+projects. Tell us too if Kuvo Box's setup makes one easier to exploit.
 
 ## Supported versions
 
-Kuvo is pre-1.0. Security fixes are made on `main` and released in the newest
+Kuvo Box is pre-1.0. Security fixes are made on `main` and released in the newest
 build; older builds are not maintained separately.
