@@ -8,7 +8,7 @@ struct MenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Kuvo").font(.system(size: 13, weight: .semibold))
+                Text("Kuvo Box").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 let running = store.containers.filter(\.isRunning).count
                 Text("\(running) running")
@@ -39,7 +39,7 @@ struct MenuBarView: View {
 
             Divider().padding(.top, 6)
             HStack {
-                Button("Open Kuvo") {
+                Button("Open Kuvo Box") {
                     openWindow(id: "main")
                     NSApp.activate()
                 }

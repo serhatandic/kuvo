@@ -41,7 +41,7 @@ struct StorageView: View {
     private var headline: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Kuvo uses")
+                Text("Kuvo Box uses")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                 Text(storage.onMac.map { "\(Format.bytes(Double($0))) on your Mac" } ?? "—")

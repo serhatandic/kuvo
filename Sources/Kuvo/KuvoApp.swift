@@ -24,7 +24,7 @@ struct KuvoApp: App {
     @AppStorage(Appearance.key) private var appearance = Appearance.system
 
     var body: some Scene {
-        Window("Kuvo", id: "main") {
+        Window("Kuvo Box", id: "main") {
             ContentView()
                 .environment(delegate.store)
                 .environment(delegate.engine)
@@ -35,7 +35,7 @@ struct KuvoApp: App {
         .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button("About Kuvo") { showAbout(engine: delegate.store.connection) }
+                Button("About Kuvo Box") { showAbout(engine: delegate.store.connection) }
                 if delegate.updates.isAvailable {
                     Button("Check for Updates…") { delegate.updates.check() }
                         .disabled(!delegate.updates.canCheck)

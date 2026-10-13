@@ -47,8 +47,8 @@ struct ContentView: View {
                     askToUseKuvo = true
                 }
             }
-            .alert("Use Kuvo for the docker command?", isPresented: $askToUseKuvo) {
-                Button("Use Kuvo") {
+            .alert("Use Kuvo Box for the docker command?", isPresented: $askToUseKuvo) {
+                Button("Use Kuvo Box") {
                     DockerContext.markAsked()
                     do { try DockerContext.use() } catch { store.failure = error.localizedDescription }
                 }
@@ -56,8 +56,8 @@ struct ContentView: View {
                 Button("Not Now", role: .cancel) { DockerContext.markAsked() }
             } message: {
                 Text(DockerContext.hasDockerDesktop
-                    ? "docker, Docker Compose and other tools will use Kuvo in every terminal.\n\nIt's easy to undo: opening Docker Desktop switches them back to it."
-                    : "docker, Docker Compose and other tools will use Kuvo in every terminal.\n\nTo undo it, run: docker context use default")
+                    ? "docker, Docker Compose and other tools will use Kuvo Box in every terminal.\n\nIt's easy to undo: opening Docker Desktop switches them back to it."
+                    : "docker, Docker Compose and other tools will use Kuvo Box in every terminal.\n\nTo undo it, run: docker context use default")
             }
             // Frosted and tinted by the wallpaper; light mode adds a tinted layer on top (see lightGlass).
             .containerBackground(.thinMaterial, for: .window)
@@ -175,7 +175,7 @@ private struct EmptyStateView: View {
                 CommandChip(command: command).padding(.top, 6)
             } else {
                 VStack(alignment: .leading, spacing: 18) {
-                    Step(number: 1, title: "Point the docker command at Kuvo", done: usesKuvo) {
+                    Step(number: 1, title: "Point the docker command at Kuvo Box", done: usesKuvo) {
                         Button {
                             do {
                                 try DockerContext.use()
@@ -184,7 +184,7 @@ private struct EmptyStateView: View {
                                 store.failure = error.localizedDescription
                             }
                         } label: {
-                            Label(usesKuvo ? "Docker uses Kuvo" : "Use Kuvo for docker",
+                            Label(usesKuvo ? "Docker uses Kuvo Box" : "Use Kuvo Box for docker",
                                   systemImage: usesKuvo ? "checkmark" : "arrow.right")
                                 .labelStyle(StepButtonLabelStyle(showsIcon: usesKuvo))
                                 .contentTransition(.interpolate)

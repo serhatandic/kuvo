@@ -6,7 +6,7 @@
 # app-specific password from account.apple.com, not your Apple ID password.
 set -eu
 
-REPO=${REPO:-serhatandic/kuvo}
+REPO=${REPO:-serhatandic/kuvo-box}
 
 printf 'Apple ID (email): '
 IFS= read -r APPLE_ID

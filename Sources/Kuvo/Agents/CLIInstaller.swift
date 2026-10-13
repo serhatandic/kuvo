@@ -52,7 +52,7 @@ enum CLIInstaller {
     }
 
     private static func addToShellProfiles() {
-        let line = "\n# Added by Kuvo: the kuvo command-line tool\nexport PATH=\"$HOME/.kuvo/bin:$PATH\"\n"
+        let line = "\n# Added by Kuvo Box: the kuvo command-line tool\nexport PATH=\"$HOME/.kuvo/bin:$PATH\"\n"
         let home = FileManager.default.homeDirectoryForCurrentUser
         var profiles = [home.appending(path: ".zprofile")] // zsh is the macOS default.
         let bash = home.appending(path: ".bash_profile")

@@ -167,12 +167,12 @@ struct CLI: AsyncParsableCommand {
     }
 
     struct Status: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Show whether Kuvo's engine is running.")
+        static let configuration = CommandConfiguration(abstract: "Show whether Kuvo Box's engine is running.")
 
         func run() async throws {
             let client = DockerClient(socketPath: EnginePaths.socket.path)
             guard let version = try? await client.version() else {
-                print("Kuvo isn't running. Any kuvo command starts it.")
+                print("Kuvo Box isn't running. Any kuvo command starts it.")
                 throw ExitCode.failure
             }
             let containers = (try? await client.containers()) ?? []
@@ -183,7 +183,7 @@ struct CLI: AsyncParsableCommand {
 
     struct Env: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Print DOCKER_HOST so the docker command uses Kuvo.",
+            abstract: "Print DOCKER_HOST so the docker command uses Kuvo Box.",
             discussion: "eval \"$(kuvo env)\""
         )
 
@@ -202,10 +202,10 @@ struct CLI: AsyncParsableCommand {
         let service = ContainerService(client: DockerClient(socketPath: EnginePaths.socket.path))
         if (try? await service.client.ping()) != nil { return service }
         if ProcessInfo.processInfo.environment["KUVO_NO_LAUNCH"] == "1" {
-            throw DockerError(message: "Kuvo's engine isn't running.")
+            throw DockerError(message: "Kuvo Box's engine isn't running.")
         }
 
-        FileHandle.standardError.write(Data("Starting Kuvo…\n".utf8))
+        FileHandle.standardError.write(Data("Starting Kuvo Box…\n".utf8))
         if let app = CLIInstaller.appBundle {
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = false
@@ -217,7 +217,7 @@ struct CLI: AsyncParsableCommand {
             try await Task.sleep(for: .milliseconds(500))
             if (try? await service.client.ping()) != nil { return service }
         }
-        throw DockerError(message: "The engine didn't start. Open Kuvo to see what's wrong.")
+        throw DockerError(message: "The engine didn't start. Open Kuvo Box to see what's wrong.")
     }
 
     /// "bench:/workspace/out.json" → ("bench", "/workspace/out.json"); local paths → nil.

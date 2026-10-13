@@ -14,7 +14,7 @@ APP="build/Kuvo.app"
 
 # Updates: Sparkle reads the feed from the newest GitHub release and only
 # installs updates signed with the private half of this key.
-FEED_URL="${FEED_URL:-https://github.com/serhatandic/kuvo/releases/latest/download/appcast.xml}"
+FEED_URL="${FEED_URL:-https://github.com/serhatandic/kuvo-box/releases/latest/download/appcast.xml}"
 UPDATE_PUBLIC_KEY="uG/YbzL4kf+DAYCiTTfK8ztEOBo96hkEAuKk9rw9BE4="
 
 swift build -c release --arch arm64
@@ -45,14 +45,22 @@ ditto "$SPARKLE" "$FRAMEWORK"
 cp Resources/Icon/Assets.car Resources/Icon/AppIcon.icns "$APP/Contents/Resources/"
 # The license requires these notices to travel with every copy.
 cp LICENSE NOTICE THIRD_PARTY_LICENSES.txt "$APP/Contents/Resources/"
+# Finder, the Dock and Spotlight show a bundle's file name unless it declares a
+# localized display name, so the app reads "Kuvo Box" while staying Kuvo.app. The
+# unlocalized display name in Info.plist must match the file name, or macOS takes
+# the file as renamed by its owner and shows the file name.
+mkdir -p "$APP/Contents/Resources/en.lproj"
+printf '"CFBundleDisplayName" = "Kuvo Box";\n"CFBundleName" = "Kuvo Box";\n' > "$APP/Contents/Resources/en.lproj/InfoPlist.strings"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>Kuvo</string>
+    <key>CFBundleName</key><string>Kuvo Box</string>
     <key>CFBundleDisplayName</key><string>Kuvo</string>
+    <key>LSHasLocalizedDisplayName</key><true/>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
     <key>CFBundleIdentifier</key><string>run.kuvo.app</string>
     <key>CFBundleExecutable</key><string>Kuvo</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>

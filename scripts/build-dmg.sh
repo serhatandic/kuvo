@@ -21,7 +21,7 @@ if [ ! -x "$VENV/bin/dmgbuild" ]; then
 fi
 
 rm -f "$DMG"
-"$VENV/bin/dmgbuild" -s scripts/dmg-settings.py -D app="$APP" Kuvo "$DMG"
+"$VENV/bin/dmgbuild" -s scripts/dmg-settings.py -D app="$APP" "Kuvo Box" "$DMG"
 
 if [ -n "${SIGN_IDENTITY:-}" ] && [ "$SIGN_IDENTITY" != "-" ]; then
     codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG"

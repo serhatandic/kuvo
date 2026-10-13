@@ -46,7 +46,7 @@ enum DockerContext {
         var attributes: [FileAttributeKey: Any]?
         if fm.fileExists(atPath: configURL.path) {
             guard let parsed = try? JSONSerialization.jsonObject(with: Data(contentsOf: configURL)) as? [String: Any] else {
-                throw DockerError(message: "\(configURL.path) isn't valid JSON, so Kuvo left it alone. Fix it, then run: docker context use kuvo")
+                throw DockerError(message: "\(configURL.path) isn't valid JSON, so Kuvo Box left it alone. Fix it, then run: docker context use kuvo")
             }
             config = parsed
             attributes = try? fm.attributesOfItem(atPath: configURL.path)

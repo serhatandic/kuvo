@@ -7,7 +7,7 @@
 set -eu
 
 P12=${1:?usage: scripts/set-signing-secrets.sh path/to/DeveloperID.p12}
-REPO=${REPO:-serhatandic/kuvo}
+REPO=${REPO:-serhatandic/kuvo-box}
 
 printf 'Password you chose when exporting %s: ' "$(basename "$P12")"
 stty -echo

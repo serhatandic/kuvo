@@ -190,7 +190,7 @@ jobs:
           # feed installed copies read. Updates install from the same disk image.
           # The license notices travel inside the app.
           mkdir dist
-          # Unversioned, so kuvo.run can always link to releases/latest/download/Kuvo.dmg.
+          # Unversioned, so kuvo.run/box can always link to releases/latest/download/Kuvo.dmg.
           cp build/Kuvo.dmg dist/Kuvo.dmg
           ./scripts/appcast.sh "$VERSION" dist/Kuvo.dmg \
             "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/Kuvo.dmg" "$RUNNER_TEMP/notes.md" > dist/appcast.xml
@@ -226,7 +226,7 @@ jobs:
           printf '\n\nRequires macOS 15 or later on Apple silicon. %s\n' "$note" >> "$RUNNER_TEMP/notes.md"
           # --generate-notes adds the link to the full list of commits after these notes.
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
-            --draft --title "Kuvo ${GITHUB_REF_NAME#v}" --generate-notes \
+            --draft --title "Kuvo Box ${GITHUB_REF_NAME#v}" --generate-notes \
             --notes-file "$RUNNER_TEMP/notes.md"
 
           expected="$(find dist -type f -exec basename {} \; | sort)"

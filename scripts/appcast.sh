@@ -43,13 +43,13 @@ cat <<XML
 <?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
-    <title>Kuvo</title>
+    <title>Kuvo Box</title>
     <item>
-      <title>Kuvo $VERSION</title>
+      <title>Kuvo Box $VERSION</title>
       <sparkle:version>$VERSION</sparkle:version>
       <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
-      <sparkle:fullReleaseNotesLink>https://github.com/serhatandic/kuvo/releases/tag/v$VERSION</sparkle:fullReleaseNotesLink>
+      <sparkle:fullReleaseNotesLink>https://github.com/serhatandic/kuvo-box/releases/tag/v$VERSION</sparkle:fullReleaseNotesLink>
       $DESCRIPTION
       <pubDate>$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')</pubDate>
       <enclosure url="$URL" $SIGNATURE type="application/octet-stream"/>

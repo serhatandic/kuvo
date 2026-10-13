@@ -74,7 +74,7 @@ enum Shell {
         let connected = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
-        guard fd >= 0, connected == 0 else { throw DockerError(message: "Couldn't connect to Kuvo") }
+        guard fd >= 0, connected == 0 else { throw DockerError(message: "Couldn't connect to Kuvo Box") }
         return fd
     }
 
