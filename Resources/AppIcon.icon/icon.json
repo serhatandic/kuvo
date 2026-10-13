@@ -17,11 +17,11 @@
   },
   "groups": [
     {
-      "name": "Stem",
+      "name": "Dot",
       "layers": [
         {
-          "image-name": "stem.svg",
-          "name": "stem",
+          "image-name": "dot.svg",
+          "name": "dot",
           "glass": true,
           "position": {
             "scale": 1,
@@ -44,11 +44,11 @@
       "specular": true
     },
     {
-      "name": "Chevron",
+      "name": "Outline",
       "layers": [
         {
-          "image-name": "chevron.svg",
-          "name": "chevron",
+          "image-name": "outline.svg",
+          "name": "outline",
           "glass": true,
           "position": {
             "scale": 1,

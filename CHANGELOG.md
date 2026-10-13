@@ -8,6 +8,7 @@ the release notes, and the app's update window shows it.
 ## Unreleased
 
 - **Kuvo is now Kuvo Box,** the first of a family of Kuvo apps. Nothing else changes: the `kuvo` command, your containers, images and volumes, and your settings all stay as they are.
+- **A new icon:** a box seen corner-on. The K is now the logo for the Kuvo family.
 
 ### Fixes
 
