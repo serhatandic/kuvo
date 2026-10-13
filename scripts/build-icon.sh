@@ -9,7 +9,9 @@ OUT=Resources/Icon
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-xcrun actool Resources/AppIcon.icon \
+# An absolute path: actool hands the file to a helper that resolves relative
+# paths against its own working folder, not this one.
+xcrun actool "$(pwd)/Resources/AppIcon.icon" \
     --compile "$TMP" \
     --platform macosx \
     --minimum-deployment-target 15.0 \
