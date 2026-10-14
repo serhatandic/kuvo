@@ -12,6 +12,7 @@ the release notes, and the app's update window shows it.
 
 ### Fixes
 
+- Settings › Storage no longer cuts off the Reclaim Space button once its numbers come in.
 - Setting Kuvo Box up again after deleting its data folder no longer stops with "Docker didn't start in time".
 
 ## 0.1.3

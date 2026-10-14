@@ -88,9 +88,12 @@ struct StorageView: View {
                 RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 8, height: 8)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).font(.system(size: 13))
-                    if let detail {
-                        Text(detail).font(.system(size: 11)).foregroundStyle(.secondary)
-                    }
+                    // Always two lines, so the page keeps its height as numbers arrive: Settings
+                    // sizes its window from the first layout, and a taller page got cut off.
+                    Text(detail ?? " ")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(detail == nil)
                 }
                 Spacer(minLength: 8)
                 Text(size.map { Format.bytes(Double($0)) } ?? "—")
