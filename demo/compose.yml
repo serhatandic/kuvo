@@ -14,6 +14,8 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_PASSWORD: demo
+    volumes:
+      - db-data:/var/lib/postgresql/data
 
   worker:
     image: alpine
@@ -32,3 +34,6 @@ services:
           wget -q -O /dev/null http://web >/dev/null 2>&1 || true
           sleep 0.7
         done
+
+volumes:
+  db-data:
