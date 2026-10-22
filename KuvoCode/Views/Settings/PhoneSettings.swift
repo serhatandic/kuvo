@@ -75,16 +75,6 @@ struct PhoneSettings: View {
             }
         }
         .onAppear { relay = link.relay.absoluteString }
-        #if DEBUG
-        // KUVO_DEMO_PHONE_PAIR=<file>: shows a pairing code once the relay answers, and writes its
-        // link to that file, for pairing a simulator without a camera.
-        .task {
-            guard let file = ProcessInfo.processInfo.environment["KUVO_DEMO_PHONE_PAIR"] else { return }
-            for _ in 0..<60 where link.status != .connected { try? await Task.sleep(for: .milliseconds(500)) }
-            link.beginPairing()
-            try? link.pairing?.url.absoluteString.write(toFile: file, atomically: true, encoding: .utf8)
-        }
-        #endif
         .onDisappear { link.endPairing() }
         .confirmationDialog("Remove \(removing?.name ?? "this phone")?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing) { phone in
             Button("Remove", role: .destructive) { link.remove(phone) }

@@ -158,7 +158,24 @@ final class PhoneLink {
         server = makeServer(endpoint: endpoint)
         running = Task { await run() }
         keepPresent()
+        #if DEBUG
+        pairForDemo()
+        #endif
     }
+
+    #if DEBUG
+    /// KUVO_DEMO_PHONE_PAIR=<file>: once the relay answers, a pairing code, its link written to
+    /// that file, for pairing a simulator (or a test) without a camera or the window.
+    private func pairForDemo() {
+        guard let file = ProcessInfo.processInfo.environment["KUVO_DEMO_PHONE_PAIR"] else { return }
+        Task { [weak self] in
+            for _ in 0..<60 where self?.status != .connected { try? await Task.sleep(for: .milliseconds(500)) }
+            guard let self, pairing == nil else { return }
+            beginPairing()
+            try? pairing?.url.absoluteString.write(toFile: file, atomically: true, encoding: .utf8)
+        }
+    }
+    #endif
 
     func stop() {
         running?.cancel()
