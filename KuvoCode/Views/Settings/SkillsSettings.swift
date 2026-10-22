@@ -148,6 +148,8 @@ struct SkillsSettings: View {
             }
         }
         .task(id: config.settings) { await refresh() }
+        // Again once its engine answers (a machine's, connecting as the page opened).
+        .task(id: app.isReady(box)) { if app.isReady(box) { await refresh() } }
         .settingsDetail(item: $writing, title: { $0.name ?? "New Skill" }) { draft in
             SkillEditor(name: draft.name, place: place, taken: Set((skills ?? []).map(\.id))) {
                 writing = nil

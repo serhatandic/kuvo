@@ -116,6 +116,8 @@ struct PermissionsSettings: View {
             }
             await loadSaved()
         }
+        // Again once its engine answers (a machine's, connecting as the page opened).
+        .task(id: app.isReady(box)) { if app.isReady(box) { await loadSaved() } }
     }
 
     static let policyKinds: [(id: String, title: String)] = [

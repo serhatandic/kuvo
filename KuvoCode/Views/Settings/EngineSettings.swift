@@ -17,7 +17,7 @@ struct EngineSettings: View {
     /// The machine's, on a machine's tab.
     private var machine: MachineEngine? { app.machines.engine(box.machine) }
     /// Its engine is running and answering, here or there.
-    private var isReady: Bool { machine.map { $0.isReady && $0.isLive } ?? (app.engine == .ready) }
+    private var isReady: Bool { app.isReady(box) }
 
     var body: some View {
         ScrollingSettingsForm {

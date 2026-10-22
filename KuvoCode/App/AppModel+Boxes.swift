@@ -16,6 +16,13 @@ extension AppModel {
         return machines.engine(machine)?.api
     }
 
+    /// Its engine is running and answering: what pages read from it, read again once it is.
+    func isReady(_ box: SidebarBox) -> Bool {
+        guard let machine = box.machine else { return engine == .ready }
+        guard let engine = machines.engine(machine) else { return false }
+        return engine.isReady && engine.isLive
+    }
+
     /// Its models, accounts and agents, as its engine lists them.
     func catalog(for box: SidebarBox) -> Catalog {
         guard let machine = box.machine else { return catalog }
