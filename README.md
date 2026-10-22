@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/serhatandic/kuvo-code/actions/workflows/ci.yml"><img src="https://github.com/serhatandic/kuvo-code/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="https://github.com/serhatandic/kuvo-code/releases"><img src="https://img.shields.io/github/v/release/serhatandic/kuvo-code?include_prereleases&label=release" alt="Release"></a>
+  <a href="https://github.com/serhatandic/kuvo-code/releases"><img src="https://img.shields.io/github/v/release/serhatandic/kuvo-code?label=release" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg" alt="License: PolyForm Noncommercial 1.0.0"></a>
 </p>
 
@@ -125,8 +125,9 @@ side panel and the usage menu.
   drives it over a pipe rather than a port, gives the engine the same tools,
   and streams the page to the panel over SSH.
 - **Updates** come through [Sparkle](https://sparkle-project.org), signed,
-  from this repository's releases. Releases are signed with a Developer ID and
-  notarized by Apple.
+  from this repository's releases, and its betas (prereleases) to copies with
+  Get beta updates on. Releases are signed with a Developer ID and notarized by
+  Apple.
 - **The usage menu** is UsageKit, our fork of
   [OpenUsage](https://github.com/robinebers/openusage) by Robin Ebers. It
   follows the accounts you connect in Kuvo Code and reads their usage with

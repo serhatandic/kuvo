@@ -35,6 +35,9 @@ nonisolated enum AppInfo {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
     }
 
+    /// A beta: a release being tried out before everyone gets it ("0.7.0-beta.1").
+    static var isBeta: Bool { version.contains("-beta") }
+
     static var bundleID: String {
         Bundle.main.bundleIdentifier ?? "run.kuvo.code"
     }

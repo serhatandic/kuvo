@@ -47,6 +47,14 @@ open "build/Kuvo Code.app"
 Only these builds update themselves; debug builds have no update feed and hide
 the update controls.
 
+Releases come from the release workflow: an annotated `vX.Y.Z` tag on `main`,
+with that version's section of `CHANGELOG.md` as its notes. A beta, for trying
+what's next before it's released, is a `vX.Y.Z-beta.N` tag (the version it
+leads up to), with the Unreleased notes as they are: it's published as a
+prerelease, and only copies with **Settings › General › Get beta updates** on
+are offered it. Its build version is `X.Y.ZbN` (`scripts/build-version.sh`),
+which Sparkle orders before the release.
+
 Builds are signed ad hoc, so macOS treats every build as a new app and asks for
 privacy permissions (like access to Desktop) again. To keep one identity
 between builds, copy `Config/Signing.local.xcconfig.example` to

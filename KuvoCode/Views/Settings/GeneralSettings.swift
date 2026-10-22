@@ -80,6 +80,10 @@ struct GeneralSettings: View {
                 if updates.isAvailable {
                     @Bindable var updates = updates
                     Toggle("Check for updates automatically", isOn: $updates.checksAutomatically)
+                    Toggle(isOn: $updates.getsBetas) {
+                        Text("Get beta updates")
+                        Text("Try new features before they’re released. Betas can have bugs.")
+                    }
                 }
                 LabeledContent {
                     if updates.isAvailable {

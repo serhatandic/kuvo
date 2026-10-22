@@ -1,5 +1,7 @@
 #!/bin/sh
-# Prints the Sparkle update feed for one release:
+# Prints the Sparkle update feed for one release, or a beta (VERSION like 0.7.0-beta.1, in the
+# feed's "beta" channel, which only copies that get betas read); scripts/merge-appcast.py adds
+# the newest of the other kind from the feed that's out:
 #   scripts/appcast.sh VERSION FILE URL [NOTES] > appcast.xml
 # URL is where FILE will be downloaded from. The file is signed with the update
 # key from SPARKLE_PRIVATE_KEY if set (CI), or else from the login keychain.
@@ -11,6 +13,11 @@ FILE=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
 URL=$3
 NOTES=${4:+$(cd "$(dirname "$4")" && pwd)/$(basename "$4")}
 cd "$(dirname "$0")/.."
+
+BUILD=$(./scripts/build-version.sh "$VERSION")
+CHANNEL=""
+case "$VERSION" in *-beta.*) CHANNEL="
+      <sparkle:channel>beta</sparkle:channel>" ;; esac
 
 DESCRIPTION=""
 if [ -n "$NOTES" ]; then
@@ -46,8 +53,8 @@ cat <<XML
     <title>Kuvo Code</title>
     <item>
       <title>Kuvo Code $VERSION</title>
-      <sparkle:version>$VERSION</sparkle:version>
-      <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+      <sparkle:version>$BUILD</sparkle:version>
+      <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>$CHANNEL
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
       <sparkle:fullReleaseNotesLink>https://github.com/serhatandic/kuvo-code/releases/tag/v$VERSION</sparkle:fullReleaseNotesLink>
       $DESCRIPTION

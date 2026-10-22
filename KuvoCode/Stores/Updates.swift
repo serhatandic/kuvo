@@ -14,12 +14,26 @@ final class Updates {
     var checksAutomatically: Bool {
         didSet { controller?.updater.automaticallyChecksForUpdates = checksAutomatically }
     }
+    /// Betas too: releases being tried out before everyone gets them, in the update feed's
+    /// "beta" channel. Off, a beta stays until a release is newer; nothing goes back.
+    var getsBetas: Bool {
+        didSet {
+            UserDefaults.standard.set(getsBetas, forKey: Self.betasKey)
+            // On: the newest beta now, not at the next daily check.
+            if getsBetas, !oldValue { controller?.updater.checkForUpdatesInBackground() }
+        }
+    }
+
+    nonisolated static let betasKey = "updates.betas"
+    /// Unless you chose, a beta gets the next ones and a release doesn't.
+    nonisolated static var wantsBetas: Bool { UserDefaults.standard.object(forKey: betasKey) as? Bool ?? AppInfo.isBeta }
 
     @ObservationIgnored private let controller: SPUStandardUpdaterController?
     @ObservationIgnored private var observation: NSKeyValueObservation?
     @ObservationIgnored private let steps = UpdateSteps()
 
     init() {
+        getsBetas = Self.wantsBetas
         guard Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil else {
             isAvailable = false
             checksAutomatically = false
@@ -46,6 +60,11 @@ final class Updates {
 nonisolated private final class UpdateSteps: NSObject, SPUUpdaterDelegate {
     /// A download that failed was just counted: Sparkle then ends the update with the same error.
     private var downloadFailed = false
+
+    /// The feed's betas, for those who get them; releases are in no channel, for everyone.
+    func allowedChannels(for updater: SPUUpdater) -> Set<String> {
+        Updates.wantsBetas ? ["beta"] : []
+    }
 
     func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
         downloadFailed = false

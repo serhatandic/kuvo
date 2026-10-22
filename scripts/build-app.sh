@@ -1,6 +1,7 @@
 #!/bin/sh
 # Builds a release "Kuvo Code.app" into ./build, the way the release workflow does.
-#   VERSION         version to stamp into the app (default: the project's MARKETING_VERSION)
+#   VERSION         version to stamp into the app (default: the project's MARKETING_VERSION);
+#                   a beta's is like 0.7.0-beta.1
 #   SIGN_IDENTITY   codesigning identity, e.g. "Developer ID Application: …";
 #                   the default "-" signs ad hoc, for local use
 #   FEED_URL        update feed (default: the newest GitHub release); for
@@ -9,6 +10,9 @@ set -eu
 cd "$(dirname "$0")/.."
 
 VERSION="${VERSION:-$(sed -n 's/.*MARKETING_VERSION = \(.*\);/\1/p' KuvoCode.xcodeproj/project.pbxproj | head -n 1)}"
+# What Sparkle compares (CFBundleVersion): a beta's "-beta.1" as "b1", since it reads nothing
+# after a dash, and orders 0.7.0b1 before 0.7.0b2 before 0.7.0.
+BUILD=$(./scripts/build-version.sh "$VERSION")
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 APP="build/Kuvo Code.app"
 
@@ -23,7 +27,7 @@ UPDATE_PUBLIC_KEY="uG/YbzL4kf+DAYCiTTfK8ztEOBo96hkEAuKk9rw9BE4="
 # secure timestamp, which notarization requires.
 xcodebuild -project KuvoCode.xcodeproj -scheme KuvoCode -configuration Release \
     -derivedDataPath build/DerivedData -clonedSourcePackagesDirPath build/SourcePackages \
-    MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$VERSION" \
+    MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
     CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
     -quiet build
 
