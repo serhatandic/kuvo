@@ -1,8 +1,8 @@
 // Claude Code's thread against a fake SDK: messages you send partway, taken late or never.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { ClaudeAgent } from "../src/agents/claude"
 import { Auto } from "../src/auto"
@@ -11,7 +11,7 @@ import type { Roster } from "../src/roster"
 import { Sessions } from "../src/sessions"
 import { shellOutput, shells } from "../src/shells"
 import { Store } from "../src/store"
-import type { Message } from "../src/wire"
+import type { Message, PermissionRule } from "../src/wire"
 
 /** A Claude Code that answers as the test says: what it was sent, and what it says. */
 class FakeClaude {
@@ -25,6 +25,9 @@ class FakeClaude {
 
   /** One-off prompts it answered (a title). */
   oneOffs: string[] = []
+
+  /** The permission modes it was switched to after it started. */
+  modes: string[] = []
 
   options: any
 
@@ -60,7 +63,9 @@ class FakeClaude {
         return { maxTokens: this.windows[this.model ?? ""] }
       },
       applyFlagSettings: async () => {},
-      setPermissionMode: async () => {},
+      setPermissionMode: async (mode: string) => {
+        this.modes.push(mode)
+      },
       getTaskOutput: async (task: string) => ({ output: this.outputs.get(task) ?? "", total_bytes: Buffer.byteLength(this.outputs.get(task) ?? ""), truncated: false }),
       stopTask: async (task: string) => {
         this.stopped.push(task)
@@ -80,12 +85,53 @@ class FakeClaude {
     this.out.push({ type: "assistant", message: { id: `m${Math.random()}`, content: [{ type: "text", text }] }, user_message_uuids: uuids, parent_tool_use_id: null })
   }
 
-  result(uuids: string[], subtype = "success") {
-    this.out.push({ type: "result", subtype, is_error: subtype !== "success", result: "", user_message_uuids: uuids })
+  result(uuids: string[], subtype = "success", more: Record<string, unknown> = {}) {
+    this.out.push({ type: "result", subtype, is_error: subtype !== "success", result: "", user_message_uuids: uuids, ...more })
+  }
+
+  /**
+   * One request's reply, streamed as Claude Code streams it (each block whole as it ends), with
+   * what the request used: its prompt (`input`, read from and written to the cache) and its output.
+   */
+  streams(uuids: string[], blocks: any[], usage = { input: 10, read: 0, write: 0, output: 5 }) {
+    const id = `msg_${Math.random().toString(36).slice(2)}`
+    const event = (event: any) => this.out.push({ type: "stream_event", event, parent_tool_use_id: null })
+    event({ type: "message_start", message: { id, usage: { input_tokens: usage.input, cache_read_input_tokens: usage.read, cache_creation_input_tokens: usage.write, output_tokens: 1 } } })
+    blocks.forEach((block, index) => {
+      if (block.type === "text") {
+        event({ type: "content_block_start", index, content_block: { type: "text", text: "" } })
+        event({ type: "content_block_delta", index, delta: { type: "text_delta", text: block.text } })
+      } else {
+        event({ type: "content_block_start", index, content_block: { ...block, input: {} } })
+        event({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input) } })
+      }
+      event({ type: "content_block_stop", index })
+      this.out.push({ type: "assistant", message: { id, content: [block] }, parent_tool_use_id: null, user_message_uuids: uuids })
+    })
+    event({ type: "message_delta", delta: { stop_reason: blocks.some((block) => block.type === "tool_use") ? "tool_use" : "end_turn" }, usage: { output_tokens: usage.output } })
+    event({ type: "message_stop" })
+  }
+
+  /** What a tool came back with, and Claude Code's own account of it (a command's output, an edit's hunks). */
+  toolResult(id: string, content: any, options: { error?: boolean; structured?: any } = {}) {
+    this.out.push({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content, is_error: options.error }] }, parent_tool_use_id: null, tool_use_result: options.structured })
+  }
+
+  /** Your rules' hook, as Claude Code runs it before a tool: what it decided (nothing, ask or deny), and why. */
+  async hook(name: string, input: Record<string, unknown>, toolUseID: string): Promise<{ decision?: string; reason?: string }> {
+    const said = await this.options.hooks.PreToolUse[0].hooks[0]({ hook_event_name: "PreToolUse", tool_name: name, tool_input: input, tool_use_id: toolUseID })
+    return { decision: said?.hookSpecificOutput?.permissionDecision, reason: said?.hookSpecificOutput?.permissionDecisionReason }
+  }
+
+  /** Claude Code asks whether it may use a tool (its own settings say ask, or the hook did). */
+  canUse(name: string, input: Record<string, unknown>, toolUseID: string, more: Record<string, unknown> = {}): Promise<any> {
+    return this.options.canUseTool(name, input, { toolUseID, signal: new AbortController().signal, ...more })
   }
 }
 
 class TestClaude extends ClaudeAgent {
+  /** Signed in with an API key (paid per token) rather than a plan. */
+  key = false
   constructor(
     readonly fake: FakeClaude,
     home: string,
@@ -98,6 +144,9 @@ class TestClaude extends ClaudeAgent {
   override executable() {
     return "/bin/false"
   }
+  override usesKey() {
+    return this.key
+  }
 }
 
 const base = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-claude-test-"))
@@ -105,16 +154,22 @@ afterAll(() => rmSync(base, { recursive: true, force: true }))
 
 let root: string
 let fake: FakeClaude
+let claude: TestClaude
 let sessions: Sessions
 let provider: string
 
 beforeEach(() => {
   root = mkdtempSync(join(base, "case-"))
   fake = new FakeClaude()
-  const claude = new TestClaude(fake, root)
+  claude = new TestClaude(fake, root)
   provider = claude.providerID
-  sessions = new Sessions(new Store(join(root, "sessions")), { find: (id: string | undefined) => (id === claude.providerID ? claude : undefined) } as unknown as Roster, new Auto(root))
+  sessions = withBlocks([])
 })
+
+/** The sessions, with Settings › Permissions' Blocks as the engine gives them. */
+function withBlocks(blocks: PermissionRule[]) {
+  return new Sessions(new Store(join(root, "sessions")), { find: (id: string | undefined) => (id === claude.providerID ? claude : undefined) } as unknown as Roster, new Auto(root), undefined, async () => blocks)
+}
 
 afterEach(() => sessions.closeAll())
 
@@ -375,5 +430,235 @@ describe("Claude Code's models", () => {
     fake.models = listed
     const want = { default: 200_000, opus: 200_000, "claude-haiku-4-5": 200_000, "opus[1m]": 1_000_000 }
     expect(await windows(new TestClaude(fake, root), want)).toEqual(want)
+  })
+})
+
+/** A session on Claude Code with your message sent: its id, and Claude Code's id for the message. */
+async function begin(options: { permissions?: PermissionRule[]; agent?: string } = {}) {
+  const id = sessions.create({ model: { providerID: provider, id: "default" }, location: { directory: root }, agent: options.agent, permissions: options.permissions }).id
+  const sent = fake.sent.length
+  sessions.prompt(id, { id: `msg_claude_turn_${String(sent).padStart(4, "0")}`, text: "go", files: [], delivery: "steer" })
+  await until(() => fake.sent.length === sent + 1)
+  return { id, first: fake.sent[sent].uuid as string }
+}
+
+const steps = (id: string) => sessions.messages(id).filter((message) => message.type === "assistant") as Extract<Message, { type: "assistant" }>[]
+const toolCalls = (id: string) => steps(id).flatMap((message) => message.content.filter((content) => content.type === "tool")) as any[]
+
+/** Ask First, as the composer's menu sets it. */
+const askFirst: PermissionRule[] = ["edit", "write", "patch", "shell", "webfetch", "external_directory"].map((action) => ({ action, resource: "*", effect: "ask" }))
+
+describe("Claude Code's permissions", () => {
+  test("Ask First: a command it would run is your card on its step; Allow Once lets it run", async () => {
+    const { id, first } = await begin({ permissions: askFirst })
+    fake.streams([first], [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "npm test" } }])
+    // Asked, even where Claude Code's own settings would let it run.
+    expect((await fake.hook("Bash", { command: "npm test" }, "toolu_1")).decision).toBe("ask")
+    const answer = fake.canUse("Bash", { command: "npm test" }, "toolu_1", { title: "Claude wants to run npm test" })
+    await until(() => sessions.permissions(id).length === 1)
+    const [card] = sessions.permissions(id)
+    expect(card).toMatchObject({ action: "shell", resources: ["npm test"], message: "Claude wants to run npm test", source: { type: "tool", id: "toolu_1" } })
+    sessions.replyPermission(id, card.id, "once")
+    expect(await answer).toEqual({ behavior: "allow", updatedInput: { command: "npm test" }, toolUseID: "toolu_1" })
+    fake.toolResult("toolu_1", "3 passed")
+    fake.streams([first], [{ type: "text", text: "They pass." }])
+    fake.result([first])
+    await until(() => idles(id).length === 1)
+    expect(toolCalls(id)[0]).toMatchObject({ name: "shell", state: { status: "completed", content: [{ type: "text", text: "3 passed" }] } })
+  })
+
+  test("Allow Always: Claude Code keeps it for this session only, and the same command isn't asked about again; one more in the line is", async () => {
+    const { id } = await begin({ permissions: askFirst })
+    const suggestions = [{ type: "addRules", rules: [{ toolName: "Bash", ruleContent: "npm test" }], behavior: "allow", destination: "localSettings" }]
+    const answer = fake.canUse("Bash", { command: "npm test" }, "toolu_1", { suggestions })
+    await until(() => sessions.permissions(id).length === 1)
+    sessions.replyPermission(id, sessions.permissions(id)[0].id, "always")
+    // Not written into the project's own Claude settings.
+    expect((await answer).updatedPermissions).toEqual([{ ...suggestions[0], destination: "session" }])
+    expect((await fake.hook("Bash", { command: "npm test" }, "toolu_2")).decision).toBeUndefined()
+    expect(await fake.canUse("Bash", { command: "npm test" }, "toolu_2")).toMatchObject({ behavior: "allow" })
+    expect(sessions.permissions(id)).toHaveLength(0)
+    expect((await fake.hook("Bash", { command: "npm test && rm -rf build" }, "toolu_3")).decision).toBe("ask")
+  })
+
+  test("Deny: an edit's card shows what it would change; Claude Code is told you declined, and the turn goes on", async () => {
+    const file = join(root, "a.ts")
+    writeFileSync(file, "const a = 1\n")
+    const { id, first } = await begin({ permissions: askFirst })
+    const edit = { file_path: file, old_string: "const a = 1", new_string: "const a = 2" }
+    fake.streams([first], [{ type: "tool_use", id: "toolu_1", name: "Edit", input: edit }])
+    const answer = fake.canUse("Edit", edit, "toolu_1")
+    await until(() => sessions.permissions(id).length === 1)
+    const [card] = sessions.permissions(id)
+    expect(card).toMatchObject({ action: "edit", resources: [file], metadata: { files: [{ file, additions: 1, deletions: 1 }] } })
+    sessions.replyPermission(id, card.id, "reject")
+    expect(await answer).toEqual({ behavior: "deny", message: "The user declined this.", toolUseID: "toolu_1" })
+    fake.toolResult("toolu_1", "The user declined this.", { error: true })
+    fake.streams([first], [{ type: "text", text: "Leaving it as it is." }])
+    fake.result([first])
+    await until(() => idles(id).length === 1)
+    expect(idles(id)[0].outcome).toBe("succeeded")
+    expect(toolCalls(id)[0]).toMatchObject({ name: "edit", state: { status: "error" } })
+    expect(texts(id)).toContain("Leaving it as it is.")
+  })
+
+  test("Approve All: what it asks about runs without a card, but reading a .env file still asks", async () => {
+    const { id } = await begin()
+    const edit = { file_path: join(root, "a.ts"), old_string: "1", new_string: "2" }
+    expect((await fake.hook("Edit", edit, "toolu_1")).decision).toBeUndefined()
+    expect(await fake.canUse("Edit", edit, "toolu_1")).toMatchObject({ behavior: "allow", updatedInput: edit })
+    expect(await fake.canUse("Bash", { command: "rm -rf build" }, "toolu_2")).toMatchObject({ behavior: "allow" })
+    expect(sessions.permissions(id)).toHaveLength(0)
+    const secrets = join(root, ".env")
+    expect((await fake.hook("Read", { file_path: secrets }, "toolu_3")).decision).toBe("ask")
+    const answer = fake.canUse("Read", { file_path: secrets }, "toolu_3")
+    await until(() => sessions.permissions(id).length === 1)
+    expect(sessions.permissions(id)[0]).toMatchObject({ action: "read", resources: [secrets] })
+    sessions.replyPermission(id, sessions.permissions(id)[0].id, "once")
+    expect(await answer).toMatchObject({ behavior: "allow" })
+  })
+
+  test("your Blocks refuse a tool before it runs, under Approve All too: any command in a line counts, and Claude Code is told why", async () => {
+    sessions = withBlocks([{ action: "shell", resource: "rm *", effect: "deny" }])
+    const { id } = await begin()
+    const refused = await fake.hook("Bash", { command: "npm test && rm -rf build" }, "toolu_1")
+    expect(refused.decision).toBe("deny")
+    expect(refused.reason).toContain("Settings › Permissions")
+    expect((await fake.hook("Bash", { command: "npm test" }, "toolu_2")).decision).toBeUndefined()
+    // Asked about by Claude Code all the same: refused, with no card.
+    expect(await fake.canUse("Bash", { command: "rm -rf build" }, "toolu_3")).toMatchObject({ behavior: "deny" })
+    expect(sessions.permissions(id)).toHaveLength(0)
+  })
+
+  test("plan mode is Claude Code's own: it writes its plan to its file even under Ask First, other edits are refused, and Build takes it out", async () => {
+    const { id, first } = await begin({ permissions: askFirst, agent: "plan" })
+    expect(fake.options.permissionMode).toBe("plan")
+    const plan = { file_path: join(homedir(), ".claude", "plans", "a-plan.md"), content: "# The plan" }
+    const written = await fake.hook("Write", plan, "toolu_1")
+    expect(written.decision).toBeUndefined()
+    const edit = { file_path: join(root, "a.ts"), old_string: "1", new_string: "2" }
+    expect(await fake.canUse("Edit", edit, "toolu_2")).toMatchObject({ behavior: "deny" })
+    // Done planning: told to wait for you, who builds it when you're ready.
+    expect(await fake.canUse("ExitPlanMode", { plan: "# The plan" }, "toolu_3")).toMatchObject({ behavior: "deny", message: expect.stringContaining("wait") })
+    expect(sessions.permissions(id)).toHaveLength(0)
+    fake.say("Here's the plan.", [first])
+    fake.result([first])
+    await until(() => idles(id).length === 1)
+    sessions.selectAgent(id, "build")
+    sessions.prompt(id, { id: "msg_claude_build_01", text: "build it", files: [], delivery: "steer" })
+    await until(() => fake.sent.length === 2)
+    expect(fake.modes).toEqual(["default"])
+  })
+
+  test("a question it asks is a form: your answers reach it, and dismissing one tells it so", async () => {
+    const { id } = await begin()
+    const questions = [{ question: "Which database?", header: "Database", options: [{ label: "Postgres" }, { label: "SQLite", description: "One file" }], multiSelect: false }]
+    const asked = fake.canUse("AskUserQuestion", { questions }, "toolu_1")
+    await until(() => sessions.forms(id).length === 1)
+    const [form] = sessions.forms(id)
+    expect(form.fields[0]).toMatchObject({ title: "Database", description: "Which database?", options: [{ value: "Postgres" }, { value: "SQLite", description: "One file" }] })
+    sessions.replyForm(id, form.id, { q0: "SQLite" })
+    expect(await asked).toMatchObject({ behavior: "allow", updatedInput: { questions, answers: { "Which database?": "SQLite" } } })
+    const again = fake.canUse("AskUserQuestion", { questions }, "toolu_2")
+    await until(() => sessions.forms(id).length === 1)
+    sessions.replyForm(id, sessions.forms(id)[0].id, null)
+    expect(await again).toMatchObject({ behavior: "deny" })
+  })
+})
+
+describe("Claude Code's context and usage", () => {
+  test("how full its context is, as its last request was: what the context ring counts", async () => {
+    const { id, first } = await begin()
+    fake.streams([first], [{ type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: join(root, "a.ts") } }], { input: 3_000, read: 40_000, write: 1_000, output: 120 })
+    fake.toolResult("toolu_1", "const a = 1")
+    fake.streams([first], [{ type: "text", text: "It sets a to 1." }], { input: 200, read: 44_000, write: 300, output: 400 })
+    fake.result([first])
+    await until(() => idles(id).length === 1)
+    expect(steps(id).at(-1)?.tokens).toEqual({ input: 200, output: 400, reasoning: 0, cache: { read: 44_000, write: 300 } })
+  })
+
+  test("a turn's usage: each request's tokens, and with an API key, what Claude Code says it cost since the turn before", async () => {
+    claude.key = true
+    const { id, first } = await begin()
+    fake.streams([first], [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "ls" } }], { input: 3_000, read: 40_000, write: 1_000, output: 120 })
+    fake.toolResult("toolu_1", "a.ts")
+    fake.streams([first], [{ type: "text", text: "One file." }], { input: 200, read: 44_000, write: 300, output: 400 })
+    fake.result([first], "success", { total_cost_usd: 0.12 })
+    await until(() => idles(id).length === 1)
+    // What the reply's footer counts.
+    expect(steps(id).reduce((sum, step) => sum + (step.tokens?.output ?? 0), 0)).toBe(520)
+    expect(sessions.get(id).tokens).toEqual({ input: 3_200, output: 520, reasoning: 0, cache: { read: 84_000, write: 1_300 } })
+    expect(sessions.get(id).cost).toBeCloseTo(0.12)
+    sessions.prompt(id, { id: "msg_claude_cost_002", text: "and now?", files: [], delivery: "steer" })
+    await until(() => fake.sent.length === 2)
+    const second = fake.sent[1].uuid
+    fake.streams([second], [{ type: "text", text: "Still one." }], { input: 100, read: 45_000, write: 0, output: 50 })
+    fake.result([second], "success", { total_cost_usd: 0.2 })
+    await until(() => idles(id).length === 2)
+    expect(sessions.get(id).cost).toBeCloseTo(0.2)
+  })
+
+  test("on a plan, a turn costs nothing here: the plan pays", async () => {
+    const { id, first } = await begin()
+    fake.streams([first], [{ type: "text", text: "Hi." }])
+    fake.result([first], "success", { total_cost_usd: 0.12 })
+    await until(() => idles(id).length === 1)
+    expect(sessions.get(id).cost).toBe(0)
+  })
+})
+
+describe("Claude Code's reply", () => {
+  test("in steps: its words, a command that failed, the edit it made with what changed, the command passing, then its answer", async () => {
+    const file = join(root, "a.ts")
+    writeFileSync(file, "const a = 1\n")
+    const { id, first } = await begin()
+    fake.streams([first], [{ type: "text", text: "Running the tests." }, { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "npm test" } }])
+    fake.toolResult("toolu_1", "1 failed", { error: true })
+    fake.streams([first], [{ type: "tool_use", id: "toolu_2", name: "Edit", input: { file_path: file, old_string: "const a = 1", new_string: "const a = 2" } }])
+    fake.toolResult("toolu_2", "The file has been updated.", { structured: { filePath: file, structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-const a = 1", "+const a = 2"] }] } })
+    fake.streams([first], [{ type: "tool_use", id: "toolu_3", name: "Bash", input: { command: "npm test" } }])
+    fake.toolResult("toolu_3", "3 passed", { structured: { stdout: "3 passed", stderr: "", interrupted: false } })
+    fake.streams([first], [{ type: "text", text: "Fixed: a is 2 now." }])
+    fake.result([first])
+    await until(() => idles(id).length === 1)
+    expect(idles(id)[0].outcome).toBe("succeeded")
+    const [one, two, three, four] = steps(id)
+    expect(one.content).toMatchObject([
+      { type: "text", text: "Running the tests." },
+      { type: "tool", name: "shell", state: { status: "error", input: { command: "npm test" }, error: { message: "1 failed" } } },
+    ])
+    expect(two.content).toMatchObject([{ type: "tool", name: "edit", state: { status: "completed", input: { path: file }, metadata: { files: [{ file, additions: 1, deletions: 1 }] } } }])
+    expect(three.content).toMatchObject([{ type: "tool", name: "shell", state: { status: "completed", content: [{ type: "text", text: "3 passed" }] } }])
+    expect(four.content).toEqual([{ type: "text", text: "Fixed: a is 2 now." }])
+    expect(steps(id)).toHaveLength(4)
+  })
+
+  test("Stop mid-turn: it ends stopped, the command still running shows stopped, what it said stays, and the same Claude Code takes your next message", async () => {
+    const { id, first } = await begin()
+    fake.streams([first], [{ type: "text", text: "Building it." }, { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "npm run build" } }])
+    await until(() => toolCalls(id)[0]?.state.status === "running")
+    fake.onInterrupt = () => fake.result([first], "error_during_execution")
+    await sessions.interrupt(id, false)
+    await until(() => idles(id).length === 1)
+    expect(idles(id)[0].outcome).toBe("interrupted")
+    expect(fake.interrupts).toBe(1)
+    expect(toolCalls(id)[0].state).toMatchObject({ status: "error", error: { type: "aborted" } })
+    expect(texts(id)).toContain("Building it.")
+    expect(fake.closed).toBe(false)
+    sessions.prompt(id, { id: "msg_claude_after_01", text: "try again", files: [], delivery: "steer" })
+    await until(() => fake.sent.length === 2)
+  })
+
+  test("Stop while it asks: the card goes, Claude Code is told no, and the turn ends stopped", async () => {
+    const { id, first } = await begin({ permissions: askFirst })
+    fake.streams([first], [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "rm -rf build" } }])
+    const answer = fake.canUse("Bash", { command: "rm -rf build" }, "toolu_1")
+    await until(() => sessions.permissions(id).length === 1)
+    fake.onInterrupt = () => fake.result([first], "error_during_execution")
+    await sessions.interrupt(id, false)
+    expect(await answer).toMatchObject({ behavior: "deny" })
+    await until(() => idles(id).length === 1)
+    expect(idles(id)[0].outcome).toBe("interrupted")
+    expect(sessions.permissions(id)).toHaveLength(0)
   })
 })

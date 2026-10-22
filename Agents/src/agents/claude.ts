@@ -1169,7 +1169,11 @@ class ClaudeThread implements Thread {
     await this.ownTaken()
     const hooks = this.active?.hooks ?? this.lastHooks
     if (!hooks) return {}
-    let verdict = hooks.check(permissionAsk(String(input.tool_name ?? ""), input.tool_input ?? {}), true)
+    const ask = permissionAsk(String(input.tool_name ?? ""), input.tool_input ?? {})
+    let verdict = hooks.check(ask, true)
+    // In plan mode its edits are its own to weigh: its plan, to its file, goes; any other edit it
+    // asks about, and that's refused. Asking first would refuse its plan too.
+    if (verdict === "ask" && ask.action === "edit" && this.opened?.plan) verdict = undefined
     // No one to ask between turns, but for a subagent in the background (it asks as its own).
     if (verdict === "ask" && !this.active && !this.backgroundLane(input.agent_id)) verdict = "deny"
     if (verdict === "deny") {
