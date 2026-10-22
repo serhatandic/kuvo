@@ -442,6 +442,9 @@ describe("the engine's models", () => {
       providers = [{ id: "opencode" }]
       expect(await new EngineAgent(link, "openai").signedOut()).toBe(true)
       expect(await new EngineAgent(link, "opencode").signedOut()).toBe(false)
+      // Signed in since the engine was last asked: it's asked again rather than turned away.
+      providers = [{ id: "opencode" }, { id: "openai" }]
+      expect(await new EngineAgent(link, "openai").signedOut()).toBe(false)
     } finally {
       link.configure(undefined, undefined)
       server.stop(true)

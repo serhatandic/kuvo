@@ -380,9 +380,10 @@ enum BrowserTools {
     static func showFileCall(_ arguments: [String: Any]) -> [String: Any] {
         func text(_ value: String, error: Bool = false) -> [String: Any] { ["content": [["type": "text", "text": value]], "isError": error] }
         guard let raw = arguments["path"] as? String, !raw.isEmpty else { return text("Missing path.", error: true) }
-        let full = (raw as NSString).expandingTildeInPath
+        // As given, which is what the conversation shows it from: a full path, nothing to expand.
+        let full = raw
         guard full.hasPrefix("/"), !full.split(separator: "/").contains(where: { $0 == ".." || $0 == "." }) else {
-            return text("Give the file's full path.", error: true)
+            return text("Give the file's full path" + (raw.hasPrefix("~") ? ": \((raw as NSString).expandingTildeInPath)" : "."), error: true)
         }
         var isFolder: ObjCBool = false
         guard FileManager.default.fileExists(atPath: full, isDirectory: &isFolder) else { return text("There's nothing at \(full).", error: true) }

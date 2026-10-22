@@ -71,7 +71,11 @@ import Testing
         catalog.api = workspace.api
         await catalog.refresh()
         let luna = ModelRef(id: "luna", providerID: "openai")
-        #expect(catalog.isUnavailable(luna))
+        #expect(catalog.needsSignIn(luna))
+        // One only missing from the list (a coding agent's, as it starts, lists a few at first)
+        // goes on to its agent, which says for itself if it can't run it.
+        #expect(!catalog.needsSignIn(ModelRef(id: "opus[1m]", providerID: "claude-code")))
+        #expect(!catalog.needsSignIn(ModelRef(id: "mystery", providerID: "elsewhere")))
 
         let conversation = try #require(workspace.model(for: id))
         conversation.draftText = "Summarize the release"

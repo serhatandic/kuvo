@@ -2258,8 +2258,11 @@ async function tool(name, args) {
   if (name === "show_file") {
     const raw = string("path");
     if (!raw) throw new ToolError("Missing path.");
-    const full = raw.replace(/^~(?=$|\/)/, os.homedir());
-    if (!path.isAbsolute(full) || full.split("/").some((part) => part === "." || part === "..")) return text("Give the file's full path.", true);
+    // As given, which is what the conversation shows it from: a full path, nothing to expand.
+    const full = raw;
+    if (!path.isAbsolute(full) || full.split("/").some((part) => part === "." || part === "..")) {
+      return text(raw.startsWith("~") ? `Give the file's full path: ${raw.replace(/^~(?=$|\/)/, os.homedir())}` : "Give the file's full path.", true);
+    }
     let stat;
     try {
       stat = fs.statSync(full);

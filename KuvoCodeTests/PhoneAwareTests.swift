@@ -61,5 +61,6 @@ import Testing
         #expect(call(folder.appending(path: "gone.png").path).failed)
         #expect(call(folder.path).text.contains("is a folder"))
         #expect(call("chart.png").text == "Give the file's full path.")
+        #expect(call("~/chart.png").failed, "the conversation shows it from the path as given")
     }
 }

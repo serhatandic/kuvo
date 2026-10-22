@@ -205,6 +205,15 @@ final class Catalog {
         return isKnown(ref) && offeredModel(ref) == nil
     }
 
+    /// A model whose account you signed out of (its provider has a sign-in, and isn't signed in):
+    /// the engine would drop a message on it without a word, so it's said before it's sent.
+    /// Only then: a model missing from a list for a moment (a coding agent's, as it starts) goes
+    /// to its agent, which says for itself if it can't run it.
+    func needsSignIn(_ ref: ModelRef?) -> Bool {
+        guard let ref, isUnavailable(ref) else { return false }
+        return integrations.contains { $0.id == ref.providerID && !$0.isConnected && !$0.methods.isEmpty }
+    }
+
     /// Why `ref` can't run here, and what to do, for one `isUnavailable` turned down: its account
     /// to sign in to (on the machine named `on`, as Settings › Accounts lists it), or another
     /// model. Without it, the engine takes the message and drops it without a word.

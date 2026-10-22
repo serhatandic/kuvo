@@ -212,9 +212,9 @@ export class EngineLink {
   }
 
   /** Whether a provider is ready to use now, and its models; nothing known when the engine isn't. */
-  async offered(providerID: string): Promise<{ ready: boolean; models: Model[]; listed?: boolean } | undefined> {
+  async offered(providerID: string, fresh = false): Promise<{ ready: boolean; models: Model[]; listed?: boolean } | undefined> {
     if (!this.url) return undefined
-    if (!this.catalog || Date.now() - this.catalog.at > 60_000) {
+    if (fresh || !this.catalog || Date.now() - this.catalog.at > 60_000) {
       try {
         const [providers, models] = await Promise.all([this.request("GET", "/api/provider"), this.request("GET", "/api/model")])
         const ready = new Set<string>((providers?.data ?? []).map((provider: { id: string }) => provider.id))
@@ -327,7 +327,10 @@ export class EngineAgent implements Agent {
 
   /** Not among the providers the engine listed as ready: a request on it, the engine drops. */
   async signedOut() {
-    const offered = await this.link.offered(this.providerID).catch(() => undefined)
+    const cached = await this.link.offered(this.providerID).catch(() => undefined)
+    if (!(cached?.listed === true && !cached.ready)) return false
+    // Signed in since the engine was last asked (it's asked a minute at a time): asked again.
+    const offered = await this.link.offered(this.providerID, true).catch(() => undefined)
     return offered?.listed === true && !offered.ready
   }
 

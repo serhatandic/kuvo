@@ -1122,7 +1122,7 @@ final class PhoneLink {
         let catalog = machine.flatMap { app.machines.engine($0)?.catalog } ?? app.catalog
         if let model = given.model {
             guard ModelScope.on(machine: machine).allows(model.providerID) else { return (422, Self.message("That model can’t run on \(place ?? "this Mac"): choose another.")) }
-            if catalog.isUnavailable(model) { return (422, Self.message(catalog.unavailable(model, on: place))) }
+            if catalog.needsSignIn(model) { return (422, Self.message(catalog.unavailable(model, on: place))) }
         }
         do {
             let bot = try await bots.create(name: name, look: given.look ?? template?.look ?? .random(), personality: personality, model: given.model, machine: machine, project: given.project)

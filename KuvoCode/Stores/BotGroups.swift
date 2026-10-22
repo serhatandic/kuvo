@@ -828,7 +828,7 @@ final class BotGroups {
         let catalog = bot.machine.flatMap { app.machines.engine($0)?.catalog } ?? app.catalog
         let model = bot.model ?? app.workspace.session(bot.sessionID)?.model
         let place = bot.machine.map { machine in app.machines.list.first { $0.id == machine }?.name ?? machine }
-        if let model, catalog.isUnavailable(model) {
+        if let model, catalog.needsSignIn(model) {
             note("\(bot.name) couldn’t answer: \(catalog.unavailable(model, on: place))", in: id)
             return .absent
         }

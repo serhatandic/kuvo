@@ -747,10 +747,10 @@ ${directory}`;
     }
     return prompt;
   }
-  async offered(providerID2) {
+  async offered(providerID2, fresh = false) {
     if (!this.url)
       return;
-    if (!this.catalog || Date.now() - this.catalog.at > 60000) {
+    if (fresh || !this.catalog || Date.now() - this.catalog.at > 60000) {
       try {
         const [providers, models] = await Promise.all([this.request("GET", "/api/provider"), this.request("GET", "/api/model")]);
         const ready = new Set((providers?.data ?? []).map((provider) => provider.id));
@@ -864,7 +864,12 @@ class EngineAgent {
     return { installed: true, signedIn: this.link.ready && (offered?.ready ?? true) };
   }
   async signedOut() {
-    const offered = await this.link.offered(this.providerID).catch(() => {
+    const cached = await this.link.offered(this.providerID).catch(() => {
+      return;
+    });
+    if (!(cached?.listed === true && !cached.ready))
+      return false;
+    const offered = await this.link.offered(this.providerID, true).catch(() => {
       return;
     });
     return offered?.listed === true && !offered.ready;
@@ -13562,4 +13567,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Agents/src 3fb5d470bf13e4c6769f86f2759b7cd00fc9b229232f84974c088e105ed5dd0e
+// Built from Agents/src 35bfa1df37a775c45e1381d98c88c1a11da00872f3af88abda8096b785112acf

@@ -1013,8 +1013,10 @@ struct WritingText: View {
 struct MarkdownText: View {
     /// The agents `text` names with "&" (a bot's face and color, as in your messages); none
     /// without an "&", so most replies aren't looked through.
+    /// Only for a reply with an "&" before a name: one with "&&" in its code doesn't look up (and
+    /// follow) your sessions.
     static func agents(namedIn text: String) -> [MessageMentions.Agent] {
-        text.contains(AgentReferences.trigger) ? MessageMentions.agents(namedIn: text) : []
+        text.range(of: #"&[\p{L}\p{N}]"#, options: .regularExpression) != nil ? MessageMentions.agents(namedIn: text) : []
     }
 
     let text: String
