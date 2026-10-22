@@ -149,7 +149,7 @@ struct GeneralSettings: View {
         guard let api = app.api else { return }
         let count = await OpencodeImport.apply(plan, to: app.engineConfig, api: api)
         importNote = count == 1 ? "Brought over 1 thing from opencode." : "Brought over \(count) things from opencode."
-        // Accounts and servers take effect as the engines start again, each once it's not at work.
+        // Accounts and servers take effect as this Mac's engine starts again, once it's not at work.
         app.renewEngines(mac: true)
     }
 }

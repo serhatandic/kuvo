@@ -164,13 +164,13 @@ extension AppModel {
         connect(engine)
     }
 
-    /// Starts engines again, so they take new settings (an integration's key, an integration a
-    /// machine gets only when its engine starts): this Mac's with `mac`, and the machines'
-    /// connected now. Each as soon as nothing's at work in it, now or when that's done, so no
-    /// one's work is cut off and nothing waits for you to remember.
-    func renewEngines(mac: Bool) {
+    /// Starts engines again, so they take what they read only as they start (accounts brought over
+    /// from opencode, say): this Mac's with `mac`, and those of `machines` connected now (each
+    /// computer's own settings change only it). Each as soon as nothing's at work in it, now or
+    /// when that's done, so no one's work is cut off and nothing waits for you to remember.
+    func renewEngines(mac: Bool, machines named: [String] = []) {
         if mac { renewals.insert("") }
-        for engine in machines.engines.values where engine.isReady { renewals.insert(engine.machine.id) }
+        for id in named where machines.engine(id)?.isReady == true { renewals.insert(id) }
         guard renewing == nil else { return }
         renewing = Task { [weak self] in
             while let self, !self.renewals.isEmpty, !Task.isCancelled {
