@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- With Claude Code in Build, a plan it makes on its own for a big task no longer leaves it stuck planning: it carries on building once its plan is done.
 - With Claude Code in Plan mode under Ask First, it writes its plan again; asking first about its plan file had it refused.
 - A bot in a group chat talks on the model its own conversation is on when the one picked for it belongs to an account you've signed out of (Edit Bot shows no model for it then), rather than saying it needs a sign-in for a model you aren't using.
 - Ask the agent for a screenshot of the page it's browsing and it shows in the conversation, not only inside its browser step.

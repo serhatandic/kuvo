@@ -1221,14 +1221,17 @@ class ClaudeThread implements Thread {
       })
       return { behavior: "allow", updatedInput: { ...input, answers }, toolUseID }
     }
-    if (name === "ExitPlanMode") {
-      // The plan shows in the conversation; building starts when you switch to Build and say so.
+    // In Plan mode, the plan shows in the conversation, and building starts when you switch to
+    // Build and say so. In Build, a plan mode it went into on its own (its EnterPlanMode, for a big
+    // task) it leaves when its plan is done, and carries on.
+    if (name === "ExitPlanMode" && this.opened?.plan) {
       return {
         behavior: "deny",
         message: "The plan is shown to the user. Stop here and wait: they'll switch out of plan mode and ask you to build it when they're ready.",
         toolUseID,
       }
     }
+    if (name === "ExitPlanMode") return { behavior: "allow", updatedInput: input, toolUseID }
     return this.decide(name, input, options, background ? (ask) => background.run.permission(ask) : hooks.permission)
   }
 

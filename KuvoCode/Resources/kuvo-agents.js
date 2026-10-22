@@ -5285,13 +5285,15 @@ class ClaudeThread {
       });
       return { behavior: "allow", updatedInput: { ...input, answers }, toolUseID };
     }
-    if (name === "ExitPlanMode") {
+    if (name === "ExitPlanMode" && this.opened?.plan) {
       return {
         behavior: "deny",
         message: "The plan is shown to the user. Stop here and wait: they'll switch out of plan mode and ask you to build it when they're ready.",
         toolUseID
       };
     }
+    if (name === "ExitPlanMode")
+      return { behavior: "allow", updatedInput: input, toolUseID };
     return this.decide(name, input, options, background ? (ask) => background.run.permission(ask) : hooks.permission);
   }
   async stopSubagent(callID) {
@@ -13596,4 +13598,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Agents/src 81cdc9edae1183a1e5c0895a9fef0960141b6e7b4d7f0c3ec98b10f07ce01079
+// Built from Agents/src dd16105b7d1e3d51bcdc08dbeb27f1f8fe18b5701d4344a3b6a592479be81fd1

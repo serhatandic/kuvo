@@ -550,6 +550,13 @@ describe("Claude Code's permissions", () => {
     expect(fake.modes).toEqual(["default"])
   })
 
+  test("in Build, a plan mode it went into on its own it leaves when its plan is done, and carries on", async () => {
+    const { id } = await begin()
+    expect(fake.options.permissionMode).toBe("default")
+    expect(await fake.canUse("ExitPlanMode", { plan: "# The plan" }, "toolu_1")).toMatchObject({ behavior: "allow", updatedInput: { plan: "# The plan" } })
+    expect(sessions.permissions(id)).toHaveLength(0)
+  })
+
   test("a question it asks is a form: your answers reach it, and dismissing one tells it so", async () => {
     const { id } = await begin()
     const questions = [{ question: "Which database?", header: "Database", options: [{ label: "Postgres" }, { label: "SQLite", description: "One file" }], multiSelect: false }]
