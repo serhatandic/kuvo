@@ -1056,11 +1056,17 @@ export class GroupRunner {
     return bridge ? new SeatAPI(bridge) : undefined
   }
 
-  /** The model a bot talks on: its own, or its conversation's. */
+  /**
+   * The model a bot talks on: the one picked for it (Edit Bot's) while it can run here; otherwise
+   * (its account signed out of here, which takes its models away, so Edit Bot shows none) what its
+   * own conversation is on now.
+   */
   private async model(bot: MachineBot): Promise<ModelRef | undefined> {
-    if (bot.model) return bot.model
-    const own = this.ownAPI(bot)
-    return (await own?.session(bot.sessionID).catch(() => undefined))?.model
+    const conversation = async () => (await this.ownAPI(bot)?.session(bot.sessionID).catch(() => undefined))?.model as ModelRef | undefined
+    if (!bot.model) return conversation()
+    if (runsWithAgents(bot.model)) return bot.model
+    const account = await new SeatAPI(this.context.engine).account(bot.model).catch(() => undefined)
+    return account?.signedOut ? ((await conversation()) ?? bot.model) : bot.model
   }
 
   /** The bot's seat in the chat, made the first time it's needed, told who's there now, on its bot's model. */
@@ -1123,7 +1129,7 @@ export class GroupRunner {
    * that hears the whole chat. Whether the seat is still the one.
    */
   private async keepModel(seat: string, bot: MachineBot, id: string, api: SeatAPI): Promise<boolean> {
-    const model = bot.model
+    const model = await this.model(bot)
     if (!model) return true
     const session = await api.session(seat).catch(() => undefined)
     if (!session) return true

@@ -336,7 +336,7 @@ final class BotGroups {
         let onAgents = if let seat = group?.seats[bot.id] {
             group?.agentSeats?.contains(seat) == true
         } else {
-            OutsideAgents.runsWithAgents(bot.model ?? app.workspace.session(bot.sessionID)?.model, machine: bot.machine)
+            OutsideAgents.runsWithAgents(talkingModel(of: bot), machine: bot.machine)
         }
         return onAgents ? app.workspace.agents(forFolder: bot.directory)?.api : app.workspace.api(forFolder: bot.directory)
     }
@@ -469,29 +469,41 @@ final class BotGroups {
         onAgents && OutsideAgents.base(model?.providerID ?? "") == "cursor" ? "plan" : nil
     }
 
+    /// The model a bot talks on in a chat: the one picked for it in Edit Bot while that can run
+    /// where it lives; otherwise (its account signed out of, which takes its models away, so Edit
+    /// Bot shows none) what its own conversation is on now.
+    func talkingModel(of bot: Bot) -> ModelRef? {
+        let conversation = app?.workspace.session(bot.sessionID)?.model
+        guard let picked = bot.model else { return conversation }
+        let catalog = bot.machine.flatMap { app?.machines.engine($0)?.catalog } ?? app?.catalog
+        return catalog?.isUnavailable(picked) == true ? (conversation ?? picked) : picked
+    }
+
     /// A bot's new default model, for its seats.
     func modelChanged(of bot: Bot) async {
-        guard let model = bot.model else { return }
+        guard let model = talkingModel(of: bot) else { return }
+        for group in list where group.seats[bot.id] != nil { await follow(model, bot: bot, in: group) }
+    }
+
+    /// A bot's seat in `group`, on `model`: switched, or, where it can't run there (the engine,
+    /// the agents), gone, for a new one at its next turn, which hears the whole chat.
+    private func follow(_ model: ModelRef, bot: Bot, in group: BotGroup) async {
         let onAgents = OutsideAgents.runsWithAgents(model, machine: bot.machine)
-        for group in list {
-            guard let seat = group.seats[bot.id] else { continue }
-            // One that runs elsewhere than the new model can (the engine, the agents): a new seat
-            // at its next turn, which hears the whole chat.
-            if group.agentSeats?.contains(seat) == true || !onAgents {
-                if let api = seatAPI(of: bot, in: group) {
-                    try? await api.selectModel(session: seat, model: model)
-                    // Cursor plans in a seat (it can't stop to ask); others take part as seats do.
-                    if group.agentSeats?.contains(seat) == true {
-                        try? await api.selectAgent(session: seat, agent: Self.seatAgent(for: model, onAgents: onAgents) ?? "build")
-                    }
+        guard let seat = group.seats[bot.id] else { return }
+        if group.agentSeats?.contains(seat) == true || !onAgents {
+            if let api = seatAPI(of: bot, in: group) {
+                try? await api.selectModel(session: seat, model: model)
+                // Cursor plans in a seat (it can't stop to ask); others take part as seats do.
+                if group.agentSeats?.contains(seat) == true {
+                    try? await api.selectAgent(session: seat, agent: Self.seatAgent(for: model, onAgents: onAgents) ?? "build")
                 }
-            } else {
-                await deleteSeat(seat, of: bot.id, in: group)
-                guard let index = list.firstIndex(where: { $0.id == group.id }) else { continue }
-                list[index].seats[bot.id] = nil
-                list[index].heard[bot.id] = nil
-                save()
             }
+        } else {
+            await deleteSeat(seat, of: bot.id, in: group)
+            guard let index = list.firstIndex(where: { $0.id == group.id }) else { return }
+            list[index].seats[bot.id] = nil
+            list[index].heard[bot.id] = nil
+            save()
         }
     }
 
@@ -826,14 +838,19 @@ final class BotGroups {
         // Its model can't run where it lives (its account signed out of): said, rather than
         // sent to an engine that drops it without a word.
         let catalog = bot.machine.flatMap { app.machines.engine($0)?.catalog } ?? app.catalog
-        let model = bot.model ?? app.workspace.session(bot.sessionID)?.model
+        let model = talkingModel(of: bot)
         let place = bot.machine.map { machine in app.machines.list.first { $0.id == machine }?.name ?? machine }
         if let model, catalog.needsSignIn(model) {
             note("\(bot.name) couldn’t answer: \(catalog.unavailable(model, on: place))", in: id)
             return .absent
         }
+        // A seat made on another model (picked since, in its conversation or Edit Bot): on this one.
+        if let model, let group = group(id), let seat = group.seats[bot.id], let api = seatAPI(of: bot, in: group),
+           let current = try? await api.session(seat).model, !current.sameModel(as: model) {
+            await follow(model, bot: bot, in: group)
+        }
         guard let api = seatAPI(of: bot, in: group(id)) else {
-            note("\(bot.name) couldn’t answer: \(app.workspace.agents(forFolder: bot.directory)?.api == nil && OutsideAgents.runsWithAgents(bot.model, machine: bot.machine) ? "the coding agents aren’t running" : "the engine isn’t running").", in: id)
+            note("\(bot.name) couldn’t answer: \(app.workspace.agents(forFolder: bot.directory)?.api == nil && OutsideAgents.runsWithAgents(model, machine: bot.machine) ? "the coding agents aren’t running" : "the engine isn’t running").", in: id)
             return .absent
         }
         do {
@@ -1399,7 +1416,7 @@ final class BotGroups {
             return seat
         }
         guard let group = group(id), let app else { throw CancellationError() }
-        let model = bot.model ?? app.workspace.session(bot.sessionID)?.model
+        let model = talkingModel(of: bot)
         let onAgents = OutsideAgents.runsWithAgents(model, machine: bot.machine)
         let agent = Self.seatAgent(for: model, onAgents: onAgents)
         let session = try await api.createSession(directory: bot.directory, title: "\(bot.name) in \(group.name)", agent: agent, model: model, permissions: Self.seatRules(for: bot))

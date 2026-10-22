@@ -34,6 +34,8 @@ class Engine {
   /** The accounts the engine lists, those it has ready, and seats whose provider turns them down with `failing`'s words. */
   integrations: any[] = [{ id: "p", name: "Provider P", methods: [{ type: "key" }], connections: [{ id: "c" }] }]
   providers: any[] = [{ id: "p" }]
+  /** The model each bot's own conversation is on, when not its seat's ("m" of "p"). */
+  ownModels: Record<string, { id: string; providerID: string }> = {}
   failing = new Map<string, string>()
   private busy = new Set<string>()
   private queued = new Map<string, { id: string }[]>()
@@ -82,7 +84,10 @@ class Engine {
       return ok()
     }
     if (this.deleted.has(session)) return Response.json({ message: "No such session." }, { status: 404 })
-    if (request.method === "GET" && !what) return ok({ id: session, model: { id: "m", providerID: "p" } })
+    if (request.method === "GET" && !what) {
+      const own = session.startsWith("ses_own_") ? this.ownModels[session.slice("ses_own_".length)] : undefined
+      return ok({ id: session, model: own ?? { id: "m", providerID: "p" } })
+    }
     if (what === "prompt" && this.stuck.has(this.seats.get(session) ?? "")) {
       this.queued.set(session, [...(this.queued.get(session) ?? []), { id: body.id }])
       return ok()
@@ -212,6 +217,20 @@ describe("a group chat on a machine", () => {
     groups.send("grp_team000001", "Anyone there?")
     await until(() => !groups.talk("grp_team000001").discussing && (groups.get("grp_team000001")?.messages.some((message) => message.author === "bot_ada") ?? false))
     expect(groups.get("grp_team000001")!.messages.some((message) => message.kind === "note")).toBe(false)
+  })
+
+  test("a bot whose own model's account was signed out of talks on what its conversation is on now", async () => {
+    const { groups } = runner()
+    engine.integrations = [{ id: "p", name: "Provider P", methods: [{ type: "key" }], connections: [] }, { id: "zen", name: "Zen", methods: [], connections: [] }]
+    engine.providers = [{ id: "zen" }]
+    engine.ownModels = { Ada: { id: "q", providerID: "zen" }, Ben: { id: "q", providerID: "zen" } }
+    engine.lines = { Ada: ["Hello!", "PASS"], Ben: ["PASS"] }
+    groups.put(group(), [], "active", false)
+    groups.send("grp_team000001", "Anyone there?")
+    await until(() => !groups.talk("grp_team000001").discussing && (groups.get("grp_team000001")?.messages.some((message) => message.author === "bot_ada") ?? false))
+    expect(groups.get("grp_team000001")!.messages.some((message) => message.kind === "note")).toBe(false)
+    const seat = engine.requests.find((request) => request.method === "POST" && request.path === "/api/session" && String(request.body.title).startsWith("Ada"))
+    expect(seat?.body.model).toEqual({ id: "q", providerID: "zen" })
   })
 
   test("a provider of the project's own settings, which the engine lists only there, isn't taken for signed out", async () => {

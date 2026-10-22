@@ -95,7 +95,7 @@ import Testing
     }
 
     /// Ada (the lead) and Ben in a chat, with the lines they'll say; the app around them.
-    private func start(lines: [String: [String]], meeting: BotGroup.Meeting? = nil, benOn model: ModelRef? = nil) async throws -> (AppModel, BotGroup, Seats) {
+    private func start(lines: [String: [String]], meeting: BotGroup.Meeting? = nil, benOn model: ModelRef? = nil, benTalksOn conversation: ModelRef? = nil) async throws -> (AppModel, BotGroup, Seats) {
         try FileManager.default.createDirectory(at: botsFile.deletingLastPathComponent(), withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: [bot("bot_ada", "Ada"), bot("bot_ben", "Ben", model: model)]).write(to: botsFile)
         let app = AppModel()
@@ -104,7 +104,8 @@ import Testing
         app.groups.app = app
         app.workspace.api = engine.api
         engine.list([StubEngine.session("ses_bot_ada", title: "Ada", directory: root.appending(path: "bot_ada").path(percentEncoded: false)),
-                     StubEngine.session("ses_bot_ben", title: "Ben", directory: root.appending(path: "bot_ben").path(percentEncoded: false))])
+                     StubEngine.session("ses_bot_ben", title: "Ben", directory: root.appending(path: "bot_ben").path(percentEncoded: false),
+                                        extra: conversation.map { ["model": ["id": $0.id, "providerID": $0.providerID]] } ?? [:])])
         let seats = Seats(lines: lines)
         let events = Events(app.workspace, engine)
         let directory = root.path(percentEncoded: false)
@@ -199,6 +200,35 @@ import Testing
 
     /// A provider that turns a bot's request down for want of a sign-in is said in words that say
     /// what to do, not in the provider's.
+    /// Ben was given a model whose account you then signed out of (Edit Bot shows none for him),
+    /// and you picked another in his own conversation: he talks on that one in the chat.
+    @Test func aBotTalksOnItsConversationsModelWhenItsOwnIsSignedOut() async throws {
+        defer { done() }
+        let luna = ModelRef(id: "luna", providerID: "openai"), sol = ModelRef(id: "sol", providerID: "anthropic")
+        let (app, group, seats) = try await start(lines: ["Ada": ["Morning!", "PASS"], "Ben": ["Hi!", "PASS"]], benOn: luna, benTalksOn: sol)
+        func model(_ id: String, _ provider: String, _ name: String) -> [String: Any] {
+            ["id": id, "modelID": id, "providerID": provider, "name": name, "capabilities": ["tools": true, "input": ["text"], "output": ["text"]], "variants": [],
+             "time": ["released": 1], "cost": [["input": 1, "output": 1]], "status": "active", "enabled": true, "limit": ["context": 100_000, "output": 8_000]]
+        }
+        engine.on("GET", "/api/integration", json: ["location": ["directory": "/"], "data": [
+            ["id": "openai", "name": "OpenAI", "methods": [["type": "key"]], "connections": []],
+            ["id": "anthropic", "name": "Anthropic", "methods": [["type": "key"]], "connections": [["type": "credential", "id": "c1", "label": "Mine"]]]]])
+        engine.on("GET", "/api/model", json: ["location": ["directory": "/"], "data": [model("luna", "openai", "Luna"), model("sol", "anthropic", "Sol")]])
+        engine.on("GET", "/api/model/default", json: ["location": ["directory": "/"], "data": NSNull()])
+        engine.on("GET", "/api/agent", json: ["location": ["directory": "/"], "data": []])
+        engine.on("GET", "/api/command", json: ["location": ["directory": "/"], "data": []])
+        app.catalog.api = engine.api
+        await app.catalog.refresh()
+        #expect(app.catalog.isUnavailable(luna) && !app.catalog.isUnavailable(sol))
+        app.groups.send("Morning all", to: group.id)
+        try await talkedThrough(app, group)
+        #expect(said(app, group) == [nil, "bot_ada", "bot_ben"], "\(app.groups.messages(in: group.id).map(\.text))")
+        #expect(!app.groups.messages(in: group.id).contains { $0.kind == .note })
+        let made = engine.requests("POST", "/api/session").first { ($0.body["title"] as? String)?.hasPrefix("Ben") == true }
+        #expect((made?.body["model"] as? [String: Any])?["id"] as? String == "sol", "his seat is on his conversation's model")
+        #expect(seats.turns.contains { $0.bot == "Ben" })
+    }
+
     @Test func aRefusedSignInIsSaidPlainly() async throws {
         defer { done() }
         let (app, group, _) = try await start(lines: ["Ada": ["Morning!", "PASS"], "Ben": ["ERROR: Missing required Authorization header"]])
