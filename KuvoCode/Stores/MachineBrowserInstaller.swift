@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Foundation
 import OpenCodeKit
+import Sparkle
 
 /// The browser machines run, as `browser-runtime.json` pins it (`scripts/browser-runtime.py`):
 /// Chrome for Testing for each Linux architecture, run headless, and the Enterprise Linux 8
@@ -152,20 +153,21 @@ nonisolated enum MachineBrowserInstaller {
     /// Chromium, or the same Chromium put there by a newer Kuvo Code. A Mac with an older version
     /// of the app uses the browser a newer one put there, rather than swapping it back, so two Macs
     /// on different versions don't send theirs in turns. A build from before they said which Kuvo
-    /// Code put them there is replaced.
-    static func keeps(_ build: String, madeBy: String, over runtime: BrowserRuntime, version: String = AppInfo.version) -> Bool {
+    /// Code put them there is replaced. Kuvo Code's versions are its builds' (`AppInfo.build`),
+    /// ordered as updates are, so a beta's (0.7.0b1) comes before the release (0.7.0).
+    static func keeps(_ build: String, madeBy: String, over runtime: BrowserRuntime, version: String = AppInfo.build) -> Bool {
         let theirs = build.split(separator: "-").first.map(String.init) ?? ""
         switch theirs.compare(runtime.chromium.version, options: .numeric) {
         case .orderedDescending: return true
         case .orderedAscending: return false
-        case .orderedSame: return !madeBy.isEmpty && madeBy.compare(version, options: .numeric) == .orderedDescending
+        case .orderedSame: return !madeBy.isEmpty && SUStandardVersionComparator.default.compareVersion(madeBy, toVersion: version) == .orderedDescending
         }
     }
 
     /// Sends a bundle to the machine and makes it the one in use. Older builds go, unless a browser
     /// still runs from one (it moves to the new one when it next starts).
     static func send(_ bundle: URL, _ runtime: BrowserRuntime, to connection: SSHConnection) async throws {
-        let version = AppInfo.version.filter { $0.isASCII && ($0.isNumber || $0 == ".") }
+        let version = AppInfo.build.filter { $0.isASCII && ($0.isNumber || $0 == "." || $0 == "b") }
         try await connection.run("""
             set -e
             B="\(folder)"

@@ -41,9 +41,10 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+"
   workflow_dispatch:
 
-# One at a time, releases and betas alike: each writes the update feed from the one before.
+# One at a time, releases and betas alike: each writes the update feed from the one before. A
+# dry run waits in a line of its own, so starting one never cancels a release waiting its turn.
 concurrency:
-  group: release
+  group: ${{ github.event_name == 'push' && 'release' || format('release-dry-run-{0}', github.run_id) }}
   cancel-in-progress: false
 
 permissions:
@@ -208,11 +209,20 @@ jobs:
           cp build/KuvoCode.dmg dist/KuvoCode.dmg
           ./scripts/appcast.sh "$VERSION" dist/KuvoCode.dmg \
             "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/KuvoCode.dmg" "$RUNNER_TEMP/notes.md" > "$RUNNER_TEMP/item.xml"
-          # With the newest of the other kind from the feed that's out, on the newest release
-          # (none before the first).
+          # With the newest of the other kind from the feed that's out, on the newest release.
+          # None before the first release; one that lost its feed starts it again. Anything
+          # else (GitHub not answering) stops here rather than leave betas or releases out.
           mkdir "$RUNNER_TEMP/current"
-          if latest="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null)"; then
-            gh release download "$latest" --repo "$GITHUB_REPOSITORY" --pattern appcast.xml --dir "$RUNNER_TEMP/current"
+          if [[ "$GITHUB_EVENT_NAME" != push ]]; then
+            : # A dry run shows the feed of what it built.
+          elif latest="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>"$RUNNER_TEMP/view.err")"; then
+            if ! gh release download "$latest" --repo "$GITHUB_REPOSITORY" --pattern appcast.xml --dir "$RUNNER_TEMP/current" 2>"$RUNNER_TEMP/download.err"; then
+              grep -qi "no assets match" "$RUNNER_TEMP/download.err" || { cat "$RUNNER_TEMP/download.err" >&2; exit 1; }
+              echo "$latest has no update feed: this one starts it again." >&2
+            fi
+          elif ! grep -qi "release not found" "$RUNNER_TEMP/view.err"; then
+            cat "$RUNNER_TEMP/view.err" >&2
+            exit 1
           fi
           python3 ./scripts/merge-appcast.py "$RUNNER_TEMP/item.xml" "$RUNNER_TEMP/current/appcast.xml" > dist/appcast.xml
           cat dist/appcast.xml
@@ -262,8 +272,14 @@ jobs:
             gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
           else
             gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
-            # Installed copies read the newest release's feed, so the beta goes there too.
-            if latest="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null)"; then
-              gh release upload "$latest" dist/appcast.xml --repo "$GITHUB_REPOSITORY" --clobber
-            fi
+            # Installed copies read the newest release's feed, so the beta goes there too. The
+            # upload replaces the feed by taking the old one off first: checked, and tried again,
+            # so that release isn't left without one.
+            latest="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+            for attempt in 1 2 3; do
+              gh release upload "$latest" dist/appcast.xml --repo "$GITHUB_REPOSITORY" --clobber || true
+              if gh release view "$latest" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qx appcast.xml; then break; fi
+              if [[ $attempt == 3 ]]; then echo "$latest is left without its update feed: upload dist/appcast.xml there by hand." >&2; exit 1; fi
+              sleep 10
+            done
           fi
