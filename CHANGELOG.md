@@ -9,6 +9,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A remote machine's engine runs on its own, with its sessions, bots and group chats: quitting Kuvo Code or clicking Disconnect leaves it running, it no longer stops after a day without Kuvo Code, and it starts again by itself if it crashes.
 - Stop Engine in Settings › Machines stops a machine's engine until you click Start Engine, through restarts of the machine too.
 - Open at login, in Settings › General: Kuvo Code opens in the background when you log in, without its window, so your bots and sessions on this Mac keep working from then on. Its engine also starts with the app now, whether or not the window is open.
+- Each computer has its own settings: with machines, Settings' sidebar has a page for each, and a machine's Accounts, Custom Auto, Agents, Permissions, Commands, Skills, Integrations, MCP Servers, Engine and Worktrees are its own, in tabs named for it. Your Mac no longer copies its settings, keys and sign-ins to machines; a new machine starts with a copy, once.
+- Also Apply to…: after you change a setting on one computer, a bar at the bottom of the page makes the same change on another computer, or every one, keys included.
+- With machines, the sidebar has a page for each computer, with its bots, chats and projects: swipe with two fingers between them, or click one below the sidebar (or above it, as names: Settings › Appearance › Switch computers with). It follows the tab you're on, and search covers every computer.
+- A machine's sessions, bots and group chats go by that machine's own permissions, not this Mac's.
 
 ## 0.7.2
 
