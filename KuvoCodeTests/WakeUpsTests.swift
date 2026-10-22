@@ -113,6 +113,46 @@ import Testing
         #expect(sessions.first?["watching"] as? Bool == false)
     }
 
+    /// From a phone, as the bar over the composer does: a session's wake-ups read, one sent now (a
+    /// repeating one keeps its time), one canceled; one that isn't there says so.
+    @Test func aPhoneSendsOneNowAndCancelsOne() async throws {
+        await start()
+        defer { done() }
+        let prompts = recordPrompts()
+        let link = PhoneLink()
+        link.wakeUps = app.wakeUps
+        // The app, as it is once it's running.
+        let before = AgentMail.shared.app
+        AgentMail.shared.app = app
+        defer { AgentMail.shared.app = before }
+        func ask(_ path: String, _ body: [String: String]? = nil) async throws -> (status: Int, json: [String: Any]?) {
+            let request = LinkRequest(method: body == nil ? "GET" : "POST", path: path, headers: ["content-type": "application/json"],
+                                      body: try body.map { try JSONSerialization.data(withJSONObject: $0) } ?? Data())
+            var status = 0
+            var data = Data()
+            for try await part in PhoneLink.respond(to: request, link: link, engine: URL(string: Self.engine + "/")!, password: nil, agents: nil) {
+                switch part {
+                case .head(let code, _): status = code
+                case .body(let chunk): data += chunk
+                }
+            }
+            return (status, try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+        #expect(!(await app.wakeUps.call("schedule_wake_up", arguments: ["when": "+2h", "note": "Look at the build", "every": "1d"], caller: id)).isError)
+        #expect(!(await app.wakeUps.call("schedule_wake_up", arguments: ["when": "+3h", "note": "Ask about the release"], caller: id)).isError)
+        let wakes = try #require(try await ask("kuvo/wakes/\(id)").json?["wakes"] as? [[String: Any]])
+        #expect(wakes.compactMap { $0["note"] as? String } == ["Look at the build", "Ask about the release"])
+        let daily = try #require(wakes.first?["id"] as? String), once = try #require(wakes.last?["id"] as? String)
+
+        #expect(try await ask("kuvo/wakes/\(id)/now", ["wake": daily]).status == 200)
+        try await eventually { prompts.all.contains { $0.contains("Look at the build") } }
+        #expect(prompts.all.filter { $0.hasPrefix(Wakes.marker) }.count == 1)
+        #expect(try await ask("kuvo/wakes/\(id)/cancel", ["wake": once]).status == 200)
+        let left = try #require(try await ask("kuvo/wakes/\(id)").json?["wakes"] as? [[String: Any]])
+        #expect(left.compactMap { $0["note"] as? String } == ["Look at the build"], "the daily one keeps coming")
+        #expect(try await ask("kuvo/wakes/\(id)/cancel", ["wake": once]).status == 404)
+    }
+
     /// The prompts the engine was sent for the session, each a wake-up's.
     nonisolated final class Prompts: @unchecked Sendable {
         private let lock = NSLock()

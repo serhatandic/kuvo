@@ -1,4 +1,5 @@
 import Foundation
+import KuvoLink
 import OpenCodeKit
 import Testing
 @testable import KuvoCode
@@ -205,6 +206,47 @@ import Testing
         try await talkedThrough(app, group)
         let note = try #require(app.groups.messages(in: group.id).first { $0.kind == .note })
         #expect(note.text.hasPrefix("Ben couldn’t answer: ") && note.text.contains("isn’t signed in: sign in to it again in Settings › Accounts"), "\(note.text)")
+    }
+
+    /// From a phone, as in the window: your message starts the talk, the list shows the chat with
+    /// its last word, Undo takes your message back with what came after it (its words for the
+    /// phone's composer), and looking at it clears unread. A chat that isn't there, or a message
+    /// with no words, says so.
+    @Test func aPhoneWritesInAChatAndTakesItBack() async throws {
+        defer { done() }
+        let (app, group, _) = try await start(lines: ["Ada": ["Morning!", "PASS"], "Ben": ["Hi!", "PASS"]])
+        let link = PhoneLink()
+        link.groups = app.chats
+        link.bots = app.bots
+        func ask(_ path: String, _ body: [String: Any]? = nil) async throws -> (status: Int, json: [String: Any]?) {
+            let request = LinkRequest(method: body == nil ? "GET" : "POST", path: path, headers: ["content-type": "application/json"],
+                                      body: try body.map { try JSONSerialization.data(withJSONObject: $0) } ?? Data())
+            var status = 0
+            var data = Data()
+            for try await part in PhoneLink.respond(to: request, link: link, engine: URL(string: "http://127.0.0.1:9/")!, password: nil, agents: nil) {
+                switch part {
+                case .head(let code, _): status = code
+                case .body(let chunk): data += chunk
+                }
+            }
+            return (status, try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+
+        #expect(try await ask("kuvo/groups/\(group.id)", ["text": "Morning all"]).status == 200)
+        try await talkedThrough(app, group)
+        #expect(said(app, group) == [nil, "bot_ada", "bot_ben"])
+        let listed = try #require((try await ask("kuvo/groups").json?["groups"] as? [[String: Any]])?.first)
+        #expect(listed["id"] as? String == group.id && (listed["last"] as? [String: Any])?["text"] as? String == "Hi!")
+
+        let mine = try #require(app.groups.messages(in: group.id).first { $0.author == nil && $0.kind == .message })
+        let undone = try await ask("kuvo/groups/\(group.id)/undo", ["message": mine.id])
+        #expect(undone.status == 200 && undone.json?["text"] as? String == "Morning all")
+        #expect(said(app, group).isEmpty, "taken back, with what came after it")
+
+        #expect(try await ask("kuvo/groups/\(group.id)/viewed", [:]).status == 200)
+        #expect(!app.groups.isUnread(try #require(app.groups.group(group.id))))
+        #expect(try await ask("kuvo/groups/\(group.id)", ["text": "  "]).status == 400)
+        #expect(try await ask("kuvo/groups/grp_nothere000", ["text": "Hello?"]).status == 404)
     }
 
     @Test func aBotYouNameSpeaksFirst() async throws {
