@@ -11,6 +11,13 @@ public protocol RelayTransport: AnyObject, Sendable {
     /// messages in the order they were encrypted.
     func send(_ message: RelayMessage)
     func close()
+    /// Whether messages queued with `send` are still on their way out (a big body on a slow
+    /// connection): the other end can't have answered what hasn't reached it.
+    var isSending: Bool { get }
+}
+
+extension RelayTransport {
+    public var isSending: Bool { false }
 }
 
 /// The relay over a WebSocket.
@@ -20,6 +27,8 @@ public final class WebSocketRelay: RelayTransport, @unchecked Sendable {
     private let task: URLSessionWebSocketTask
     private let outbox: AsyncStream<RelayMessage>.Continuation
     private let inbox: AsyncStream<RelayMessage>.Continuation
+    /// Messages queued that the socket hasn't taken yet.
+    private let queued = OSAllocatedUnfairLock(initialState: 0)
 
     /// Connects, says hello and waits for the relay's welcome.
     public static func connect(to url: URL, secret: RelaySecret) async throws -> any RelayTransport {
@@ -47,10 +56,18 @@ public final class WebSocketRelay: RelayTransport, @unchecked Sendable {
         self.inbox = inbox
         self.outbox = outbox
 
-        Task { [task] in
+        Task { [task, queued] in
             for await message in outgoing {
-                do { try await task.send(.data(message.data)) } catch { break }
+                do {
+                    try await task.send(.data(message.data))
+                } catch {
+                    // Nothing more goes out: closed, so it isn't taken for one still sending.
+                    task.cancel(with: .goingAway, reason: nil)
+                    break
+                }
+                queued.withLock { $0 -= 1 }
             }
+            queued.withLock { $0 = 0 }
         }
         Task { [task, inbox] in
             while true {
@@ -80,8 +97,11 @@ public final class WebSocketRelay: RelayTransport, @unchecked Sendable {
     deinit { close() }
 
     public func send(_ message: RelayMessage) {
+        queued.withLock { $0 += 1 }
         outbox.yield(message)
     }
+
+    public var isSending: Bool { queued.withLock { $0 > 0 } }
 
     public func close() {
         task.cancel(with: .normalClosure, reason: nil)

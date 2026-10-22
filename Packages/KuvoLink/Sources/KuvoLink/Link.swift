@@ -7,6 +7,22 @@ public enum Link {
     static let mailPrologue = Data("kuvo-link mail v1".utf8)
     /// How long a handshake may take before the host counts as unreachable.
     static let handshakeTimeout: Duration = .seconds(15)
+    /// How long a session may go without a word from its host before the phone checks the host
+    /// still has it, before sending a read: longer than the engine's event stream heartbeat
+    /// (15 s), so reads on a session following events are never held up. A read that fails all
+    /// the same (sent just after the host started again) is one its caller asks again.
+    static let quietBeforeRead: Duration = .seconds(20)
+    /// The same before anything that changes something (a message, an answer, a setting), which
+    /// mustn't fail because the host started again a moment ago: checked unless the host spoke
+    /// just now, at the cost of a round trip on a quiet session.
+    static let quietBeforeChange: Duration = .seconds(3)
+    /// How long a request may wait for its answer with nothing at all from the host before the
+    /// phone checks the host's still there: a frame lost on the way (to a host starting again,
+    /// whose old relay connection was still taking them) is never answered, and nothing else
+    /// would end the wait. A host that's there answers the check, and the request waits on.
+    static let answerWithin: Duration = .seconds(5)
+    /// How long a check may take: a host that has the session answers at once.
+    static let checkTimeout: Duration = .seconds(5)
 }
 
 public enum LinkError: Error, Equatable, LocalizedError {
@@ -130,6 +146,16 @@ public actor LinkClient {
     private var connecting: Task<any RelayTransport, Error>?
     private var sessions: [LinkAddress: Session] = [:]
     private var registration: PushRegistration?
+    private var timing = Timing()
+
+    /// How long a session may stay quiet before it's checked (see `Link`), and how long a check
+    /// may take: shorter in tests.
+    struct Timing {
+        var beforeRead = Link.quietBeforeRead
+        var beforeChange = Link.quietBeforeChange
+        var answer = Link.answerWithin
+        var check = Link.checkTimeout
+    }
 
     private final class Session {
         let id = UInt32.random(in: 1...UInt32.max)
@@ -138,6 +164,14 @@ public actor LinkClient {
         var transport: Transport?
         var hostHello: HostHello?
         var waiting: [CheckedContinuation<Void, Error>] = []
+        /// When the host last said anything on it.
+        var lastHeard = ContinuousClock.now
+        /// Who waits on a check that the host still has it (see `checkStillThere`), while one's
+        /// under way; which check it is, for its timeout.
+        var checking: [CheckedContinuation<Void, Error>]?
+        var check = 0
+        /// Requests sent that have no answer yet.
+        var unanswered: Set<Int> = []
         var nextID = 1
         var streams: [Int: AsyncThrowingStream<LinkResponsePart, Error>.Continuation] = [:]
         var sockets: [Int: AsyncThrowingStream<LinkSocketEvent, Error>.Continuation] = [:]
@@ -221,6 +255,11 @@ public actor LinkClient {
     func dropRelayForTesting() {
         relay?.close()
     }
+
+    /// Sessions count as quiet sooner, and checks give up sooner, so a test needn't wait.
+    func setTimingForTesting(_ timing: Timing) {
+        self.timing = timing
+    }
     #endif
 
     /// Ends every session and the relay connection.
@@ -274,6 +313,9 @@ public actor LinkClient {
         if sessions[address] === session { sessions[address] = nil }
         for waiter in session.waiting { waiter.resume(throwing: error) }
         session.waiting = []
+        for waiter in session.checking ?? [] { waiter.resume(throwing: error) }
+        session.checking = nil
+        session.unanswered = []
         for stream in session.streams.values { stream.finish(throwing: error) }
         session.streams = [:]
         for socket in session.sockets.values { socket.finish(throwing: error) }
@@ -299,10 +341,12 @@ public actor LinkClient {
         }
     }
 
-    /// Sends `request`, once there's a session, with who hears its answer set up first.
+    /// Sends `request`, once there's a session the host still has, with who hears its answer set
+    /// up first.
     private func start(_ request: LinkRequest, to host: PairedHost, ticket: Ticket, for listener: Listener) async {
         do {
             try await open(host, pairing: nil)
+            try await checkStillThere(host, before: request)
             guard let session = sessions[host.linkAddress], session.transport != nil else { throw LinkError.closed }
             try Task.checkCancellation()
             let id = session.nextID
@@ -316,13 +360,97 @@ public actor LinkClient {
             for piece in LinkMessage.pieces(head, body: request.body, end: true) {
                 try seal(piece, in: session)
             }
+            session.unanswered.insert(id)
+            watchAnswer(id, in: session)
         } catch {
             listener.failed(error)
         }
     }
 
+    /// Before sending on a session that's been quiet a while, whether the host still has it. A
+    /// host started again since (a Mac that quit and opened again) has forgotten its sessions and
+    /// closes one when something comes on it, failing a request it never ran: a ping finds that
+    /// out first, and a new session takes its place. One heard from lately goes straight on.
+    private func checkStillThere(_ host: PairedHost, before request: LinkRequest) async throws {
+        let address = host.linkAddress
+        let reads = ["GET", "HEAD", "OPTIONS"].contains(request.method.uppercased())
+        guard let session = sessions[address], session.transport != nil,
+              ContinuousClock.now - session.lastHeard > (reads ? timing.beforeRead : timing.beforeChange)
+        else { return }
+        do {
+            try startCheck(session)
+            try await withCheckedThrowingContinuation { session.checking?.append($0) }
+        } catch {
+            // Gone with the check (closed by the host, no answer, or no way to ask): opened again,
+            // as for a first request, which says so if the host isn't there.
+            end(session, with: .closed)
+        }
+        if sessions[address] !== session || session.transport == nil {
+            try await open(host, pairing: nil)
+        }
+    }
+
+    /// Pings the host on a session, unless a ping's already on its way: its answer, or the host
+    /// closing a session it doesn't have, says whether it's still there; no answer in time ends it.
+    private func startCheck(_ session: Session) throws {
+        guard session.checking == nil else { return }
+        try seal(LinkMessage(.init(t: .ping)), in: session)
+        session.checking = []
+        session.check += 1
+        timeCheck(session.check, on: session)
+    }
+
+    /// Gives a check its time from when the ping has left: it may be behind this phone's own
+    /// frames on their way out (a big body on a slow connection).
+    private func timeCheck(_ check: Int, on session: Session) {
+        let timeout = timing.check
+        Task {
+            while self.relay?.isSending == true, session.checking != nil, session.check == check {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            try? await Task.sleep(for: timeout)
+            self.checkTimedOut(session, check: check)
+        }
+    }
+
+    /// Checks on a request a while after it went, and again while it waits.
+    private func watchAnswer(_ id: Int, in session: Session) {
+        let wait = timing.answer
+        Task {
+            try? await Task.sleep(for: wait)
+            self.checkAnswer(id, in: session)
+        }
+    }
+
+    /// A request still without an answer: if the host hasn't said anything for a while either, a
+    /// check finds out whether it's there. One that's there just takes long, and waits on.
+    private func checkAnswer(_ id: Int, in session: Session) {
+        guard sessions[session.host.linkAddress] === session, session.unanswered.contains(id) else { return }
+        // Not while this phone's own frames are still going out (a big body on a slow
+        // connection): the host can't answer what hasn't reached it, and a ping would wait behind it.
+        if relay?.isSending != true, ContinuousClock.now - session.lastHeard >= timing.answer {
+            do { try startCheck(session) } catch { return end(session, with: .closed) }
+        }
+        watchAnswer(id, in: session)
+    }
+
+    /// The host said something on it: it's still there.
+    private func heard(_ session: Session) {
+        session.lastHeard = .now
+        guard let waiters = session.checking else { return }
+        session.checking = nil
+        for waiter in waiters { waiter.resume() }
+    }
+
+    /// No answer to a check in time: the session's gone, whatever was on it with it.
+    private func checkTimedOut(_ session: Session, check: Int) {
+        guard session.checking != nil, session.check == check else { return }
+        end(session, with: .timedOut)
+    }
+
     private func cancel(_ ticket: Ticket, on host: PairedHost) {
         guard let (id, sessionID) = ticket.value, let session = sessions[host.linkAddress], session.id == sessionID else { return }
+        session.unanswered.remove(id)
         let socket = session.sockets.removeValue(forKey: id)
         guard session.streams.removeValue(forKey: id) != nil || socket != nil else { return }
         socket?.finish()
@@ -397,6 +525,7 @@ public actor LinkClient {
                 let hello = try JSONDecoder().decode(HostHello.self, from: payload)
                 session.initiator = nil
                 session.transport = transport
+                session.lastHeard = .now
                 guard hello.v == Link.version else { return end(session, with: .unsupportedVersion) }
                 session.hostHello = hello
                 for waiter in session.waiting { waiter.resume() }
@@ -410,6 +539,7 @@ public actor LinkClient {
                 return end(session, with: .closed)
             }
             session.transport = transport
+            heard(session)
             receive(message, in: session)
         case .close:
             end(session, with: session.transport == nil ? .refused : .closed)
@@ -422,6 +552,8 @@ public actor LinkClient {
         let head = message.head
         switch head.t {
         case .res, .data:
+            // Answered, with a head or (a host that sends none) its body.
+            if let id = head.id { session.unanswered.remove(id) }
             if let id = head.id, let socket = session.sockets[id] {
                 if head.t == .res, head.s != 101 {
                     session.sockets[id] = nil
@@ -444,6 +576,7 @@ public actor LinkClient {
             }
         case .cancel:
             guard let id = head.id else { return }
+            session.unanswered.remove(id)
             session.streams.removeValue(forKey: id)?.finish(throwing: LinkError.closed)
             session.sockets.removeValue(forKey: id)?.finish(throwing: LinkError.closed)
         case .ping:

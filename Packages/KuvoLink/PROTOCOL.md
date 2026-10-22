@@ -167,7 +167,7 @@ like HTTP:
 | `{"t": "res", "id": 7, "s": 200, "h": {"content-type": "…"}, "end": false}` | The response's status and headers, with the first piece of its body. |
 | `{"t": "data", "id": 7, "end": false}` | More body. Event streams (`api/event`) go on until cancelled. |
 | `{"t": "cancel", "id": 7}` | Either side stops request 7. |
-| `{"t": "ping"}`, `{"t": "pong"}` | Is the other end still there? The relay's own pings only reach the relay. |
+| `{"t": "ping"}`, `{"t": "pong"}` | Is the other end still there? The relay's own pings only reach the relay. The phone pings before sending on a session that's been quiet (a host started again since closes the session, and the phone opens a new one before anything's lost), and while a request waits with nothing from the host (no answer ends the session). Answer at once. |
 
 `h` holds `x-opencode-directory` and `content-type`; the host adds the engine's password
 itself. A host serves:
