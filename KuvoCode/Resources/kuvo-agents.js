@@ -2408,7 +2408,7 @@ ${others.map((path) => `- ${path}`).join(`
         if (typeof update.size === "number")
           this.flavor.noteContext?.(turn.currentModel.id, update.size);
         if (typeof update.cost?.amount === "number" && (update.cost.currency ?? "USD") === "USD")
-          turn.addUsage(undefined, update.cost.amount);
+          this.cost(turn, update.cost.amount);
         return;
       case "current_mode_update":
         if (this.setup && update.currentModeId)
@@ -2571,6 +2571,12 @@ ${others.map((path) => `- ${path}`).join(`
   stepTokens(active) {
     return active.used === undefined ? undefined : { input: active.used, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
   }
+  cost(turn, total) {
+    const kept = this.state.acpCost;
+    const before = kept?.session === this.sessionID ? kept?.amount ?? 0 : 0;
+    this.state.acpCost = { session: this.sessionID, amount: total };
+    turn.addUsage(undefined, total >= before ? total - before : total);
+  }
   tool(active, update) {
     const turn = active.turn;
     const id = update.toolCallId;
@@ -2680,6 +2686,8 @@ ${others.map((path) => `- ${path}`).join(`
         };
         const automatic = active.hooks.check(ask) === "deny";
         const decision = await active.hooks.permission(ask);
+        if (active.hooks.signal.aborted)
+          return { outcome: { outcome: "cancelled" } };
         if (decision === "reject") {
           active.refused = automatic ? refusedWhat(ask.action, ask.resources) : undefined;
           (active.declined ??= new Map).set(call.toolCallId, "Declined.");
@@ -5226,7 +5234,10 @@ class ClaudeThread {
     const hooks = this.active?.hooks ?? this.lastHooks;
     if (!hooks)
       return {};
-    let verdict = hooks.check(permissionAsk(String(input.tool_name ?? ""), input.tool_input ?? {}), true);
+    const ask = permissionAsk(String(input.tool_name ?? ""), input.tool_input ?? {});
+    let verdict = hooks.check(ask, true);
+    if (verdict === "ask" && ask.action === "edit" && this.opened?.plan)
+      verdict = undefined;
     if (verdict === "ask" && !this.active && !this.backgroundLane(input.agent_id))
       verdict = "deny";
     if (verdict === "deny") {
@@ -6289,7 +6300,7 @@ ${others.map((path) => `- ${path}`).join(`
         this.active = undefined;
         if (active.plan)
           turn.toolSucceeded(active.plan.id, "", { todos: active.plan.todos });
-        turn.endStep({ tokens: active.usage });
+        turn.endStep();
         const status = params.turn?.status;
         const limit = status === "failed" ? active.limit ?? this.limitOf(params.turn?.error, active.model) : status === "interrupted" && active.stoppedForLimit ? active.limit : undefined;
         if (limit && !active.stopping && !active.hooks.signal.aborted) {
@@ -6377,14 +6388,17 @@ ${others.map((path) => `- ${path}`).join(`
       }
       case "thread/tokenUsage/updated": {
         const last2 = params.tokenUsage?.last;
-        if (last2) {
-          lane.usage = {
+        if (!last2?.inputTokens && !last2?.outputTokens)
+          return;
+        lane.toolsSinceText = false;
+        turn.endStep({
+          tokens: {
             input: Math.max(0, (last2.inputTokens ?? 0) - (last2.cachedInputTokens ?? 0)),
             output: Math.max(0, (last2.outputTokens ?? 0) - (last2.reasoningOutputTokens ?? 0)),
             reasoning: last2.reasoningOutputTokens ?? 0,
             cache: { read: last2.cachedInputTokens ?? 0, write: last2.cacheWriteInputTokens ?? 0 }
-          };
-        }
+          }
+        });
         return;
       }
       case "hook/started":
@@ -6541,15 +6555,14 @@ ${others.map((path) => `- ${path}`).join(`
     if (lane.ended)
       return;
     lane.ended = true;
-    lane.turn.endStep({ tokens: lane.usage });
+    lane.turn.endStep();
     lane.run.end(outcome, outcome === "failed" ? { type: "agent", message: message ?? "The agent stopped with an error." } : undefined);
   }
   words(lane) {
     if (!lane.toolsSinceText)
       return;
     lane.toolsSinceText = false;
-    lane.turn.endStep({ tokens: lane.usage });
-    lane.usage = undefined;
+    lane.turn.endStep();
     lane.turn.startStep();
   }
   itemStarted(lane, item) {
@@ -6846,7 +6859,7 @@ From memory: ${cited.join("; ")}`);
       }
       case "item/fileChange/requestApproval": {
         const changes = (lane ?? active).changes.get(params.itemId) ?? [];
-        const files = changes.map((change) => fromPatch(change.path, change.diff, change.kind === "add" ? "added" : change.kind === "delete" ? "deleted" : "modified"));
+        const files = changes.map(changeDiff);
         const decision = await hooks.permission({
           toolCallID: params.itemId,
           action: "edit",
@@ -7001,7 +7014,11 @@ function codexChanges(raw) {
   return (Array.isArray(raw) ? raw : []).map((change) => ({ path: change.path, kind: change.kind?.type ?? "update", diff: change.diff ?? "", movedTo: change.kind?.move_path ?? undefined }));
 }
 function changeDiff(change) {
-  return fromPatch(change.movedTo ?? change.path, change.diff, change.kind === "add" ? "added" : change.kind === "delete" ? "deleted" : "modified");
+  if (change.kind === "add")
+    return fileDiff(change.path, undefined, change.diff);
+  if (change.kind === "delete")
+    return fileDiff(change.path, change.diff, undefined);
+  return fromPatch(change.movedTo ?? change.path, change.diff, "modified");
 }
 function mcpParts(content) {
   const lines2 = [];
@@ -7473,10 +7490,16 @@ ${text}`;
       const usage = active.usage ?? result?.usage;
       if (active.listed > active.told)
         turn.notice(`Cursor used ${active.listed - active.told} more ${active.listed - active.told === 1 ? "tool" : "tools"} than it reports to Kuvo Code.`);
+      const cut = hooks.signal.aborted || result?.status === "cancelled" || result?.status === "error";
       for (const lane of active.subagents.values())
-        lane.run.end(result?.status === "error" ? "interrupted" : "succeeded");
+        lane.run.end(cut ? "interrupted" : "succeeded");
       turn.endStep({
-        tokens: usage ? { input: usage.inputTokens ?? 0, output: usage.outputTokens ?? 0, reasoning: usage.reasoningTokens ?? 0, cache: { read: usage.cacheReadTokens ?? 0, write: usage.cacheWriteTokens ?? 0 } } : undefined
+        tokens: usage ? {
+          input: usage.inputTokens ?? 0,
+          output: Math.max(0, (usage.outputTokens ?? 0) - (usage.reasoningTokens ?? 0)),
+          reasoning: usage.reasoningTokens ?? 0,
+          cache: { read: usage.cacheReadTokens ?? 0, write: usage.cacheWriteTokens ?? 0 }
+        } : undefined
       });
       if (hooks.signal.aborted || result?.status === "cancelled")
         return { outcome: "interrupted" };
@@ -13171,12 +13194,17 @@ class GroupRunner {
     return bridge ? new SeatAPI(bridge) : undefined;
   }
   async model(bot) {
-    if (bot.model)
-      return bot.model;
-    const own = this.ownAPI(bot);
-    return (await own?.session(bot.sessionID).catch(() => {
+    const conversation = async () => (await this.ownAPI(bot)?.session(bot.sessionID).catch(() => {
       return;
     }))?.model;
+    if (!bot.model)
+      return conversation();
+    if (runsWithAgents(bot.model))
+      return bot.model;
+    const account = await new SeatAPI(this.context.engine).account(bot.model).catch(() => {
+      return;
+    });
+    return account?.signedOut ? await conversation() ?? bot.model : bot.model;
   }
   async seat(bot, id, api) {
     const kept2 = this.chat(id);
@@ -13232,7 +13260,7 @@ class GroupRunner {
     return seatInstructions(bot, group, others, lead, personality, settings?.identityNote ?? "");
   }
   async keepModel(seat, bot, id, api) {
-    const model2 = bot.model;
+    const model2 = await this.model(bot);
     if (!model2)
       return true;
     const session = await api.session(seat).catch(() => {
@@ -13568,4 +13596,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Agents/src ccb941b48087242f33384959c561587789d8ade53fe8a035a9229ba590708e49
+// Built from Agents/src 81cdc9edae1183a1e5c0895a9fef0960141b6e7b4d7f0c3ec98b10f07ce01079
