@@ -166,7 +166,7 @@ struct LiveRemoteEngineTests {
         #expect(left.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
         // Nothing of the test's stays on the machine: its watchdog, and its folder.
-        _ = try await connection.run("pkill -f '[/]\\.kuvo-code-test/run' || true; rm -rf \"$HOME/.kuvo-code-test\"")
+        _ = try await connection.run("pkill -f '[/]\\.kuvo-code-test/' || true; rm -rf \"$HOME/.kuvo-code-test\"")
         #expect(try await connection.run("[ -e \"$HOME/.kuvo-code-test\" ] && echo left || true").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
@@ -205,12 +205,13 @@ struct LiveRemoteEngineTests {
         #expect(try await connection.run("stat -c %a \(file)").trimmingCharacters(in: .whitespacesAndNewlines) == "600")
         let kept = try await connection.run("cat \"$HOME/.kuvo-code-test/run/launch.env\"")
         #expect(!kept.contains(secret) && !kept.contains(RemoteServer.privateSettingsVariable) && !kept.contains("PASSWORD"))
-        _ = try await connection.run("pkill -f '[/]\\.kuvo-code-test/run' || true; rm -rf \"$HOME/.kuvo-code-test\"")
+        _ = try await connection.run("pkill -f '[/]\\.kuvo-code-test/' || true; rm -rf \"$HOME/.kuvo-code-test\"")
     }
 
-    /// After a restart (its engine, agents bridge and watchdog gone), `kuvo-start` starts it again
-    /// as the Mac last did, with its settings and keys and new passwords, and the Mac finds it as
-    /// its own; while one runs, it starts none. A test's folder never touches the crontab.
+    /// After a restart (its keeper, engine, agents bridge and phone link gone), `kuvo-start` starts
+    /// its keeper again, which starts the engine as the Mac last did, with its settings and keys
+    /// and new passwords, and the Mac finds it as its own; while one runs, it starts none. A test's
+    /// folder never touches the crontab.
     @Test func comesBackAfterARestart() async throws {
         let cache = FileManager.default.temporaryDirectory.appending(path: "opencodekit-remote-cache")
         defer { try? FileManager.default.removeItem(at: cache) }
@@ -222,11 +223,11 @@ struct LiveRemoteEngineTests {
         let settings = #"{"mcp":{"servers":{"private-test":{"type":"local","command":["true"],"disabled":true,"environment":{"TOKEN":"\#(secret)"}}}}}"#
         let first = try await RemoteServer.launch(on: connection, environment: [RemoteServer.privateSettingsVariable: settings, "KUVO_KEY_TEST_TOKEN": secret, "KUVO_TZ": "Europe/Istanbul"], notes: ["mac": "test-mac", "settings": "abc"])
         // As a restart leaves it: nothing of it running.
-        _ = try await connection.run("pkill -f '[/]\\.kuvo-code-test/run' || true; kill \(first.pid) 2>/dev/null; sleep 1; true")
-        #expect(try await RemoteServer.running(on: connection) == nil)
+        _ = try await connection.run("pkill -f '[/]\\.kuvo-code-test/' || true; kill \(first.pid) 2>/dev/null; sleep 1; true")
+        #expect(try await connection.run("pgrep -f '[.]kuvo-code-test/' || true").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
         _ = try await connection.run("sh \"$HOME/.kuvo-code-test/bin/kuvo-start\"")
-        let again = try #require(try await RemoteServer.running(on: connection))
+        let again = try #require(try await runningSoon { $0.pid != first.pid })
         #expect(again.pid != first.pid && again.password != first.password)
         #expect(again.notes == ["mac": "test-mac", "settings": "abc"], "the Mac knows it as its own, with the same settings")
         let server = try await RemoteServer.attach(to: again, on: connection)
@@ -243,16 +244,58 @@ struct LiveRemoteEngineTests {
         #expect(try await RemoteServer.running(on: connection)?.pid == again.pid)
         #expect(try await connection.run("crontab -l 2>/dev/null || true") == before, "a test's folder leaves the crontab alone")
 
-        // Two at once after a restart: one engine, not two.
-        _ = try await connection.run("pkill -f '[/]\\.kuvo-code-test/run' || true; kill \(again.pid) 2>/dev/null; sleep 1; true")
+        // Two at once after a restart: one keeper, one engine.
+        _ = try await connection.run("pkill -f '[/]\\.kuvo-code-test/' || true; kill \(again.pid) 2>/dev/null; sleep 1; true")
         _ = try await connection.run("sh \"$HOME/.kuvo-code-test/bin/kuvo-start\" & sh \"$HOME/.kuvo-code-test/bin/kuvo-start\"; wait")
+        _ = try #require(try await runningSoon { $0.pid != again.pid })
+        try await Task.sleep(for: .seconds(2))
         let engines = try await connection.run("pgrep -fc '[.]kuvo-code-test/engine/.*/opencode serve' || true")
         #expect(engines.trimmingCharacters(in: .whitespacesAndNewlines) == "1")
+        let keepers = try await connection.run("pgrep -fc '[.]kuvo-code-test/bin/kuvo-start keep' || true")
+        #expect(keepers.trimmingCharacters(in: .whitespacesAndNewlines) == "1")
 
         // One stopped on purpose stays stopped.
-        try await RemoteServer.stop(on: connection)
+        try await RemoteServer.stopEngine(on: connection)
         _ = try await connection.run("sh \"$HOME/.kuvo-code-test/bin/kuvo-start\"")
-        #expect(try await RemoteServer.running(on: connection) == nil)
+        try await Task.sleep(for: .seconds(3))
+        #expect(try await RemoteServer.find(on: connection) == .stopped)
+        _ = try await connection.run("pkill -f '[/]\\.kuvo-code-test/' || true; rm -rf \"$HOME/.kuvo-code-test\"")
+    }
+
+    /// The engine running now, once it is (the keeper starts it in the background): a minute at
+    /// most, and one `matching`.
+    private func runningSoon(_ matching: (RemoteServer.Engine) -> Bool = { _ in true }) async throws -> RemoteServer.Engine? {
+        for _ in 0..<120 {
+            if let found = try await RemoteServer.running(on: connection), matching(found) { return found }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+        return nil
+    }
+
+    /// The machine keeps its engine running by itself: one that crashes comes back; Stop keeps it
+    /// down, though its keeper runs on; Start brings it back.
+    @Test func itKeepsItselfRunningUntilStopped() async throws {
+        let cache = FileManager.default.temporaryDirectory.appending(path: "opencodekit-remote-cache")
+        defer { try? FileManager.default.removeItem(at: cache) }
+        try await RemoteEngineInstaller(connection: connection, cache: cache).install()
+        try await RemoteServer.stop(on: connection)
+        let first = try await RemoteServer.launch(on: connection, environment: [:], notes: ["mac": "test-mac", "settings": "abc"])
+
+        _ = try await connection.run("kill -9 \(first.pid)")
+        let back = try #require(try await runningSoon { $0.pid != first.pid }, "its keeper started it again")
+        #expect(back.notes == ["mac": "test-mac", "settings": "abc"])
+
+        try await RemoteServer.stopEngine(on: connection)
+        #expect(try await RemoteServer.find(on: connection) == .stopped)
+        try await Task.sleep(for: .seconds(20))
+        #expect(try await RemoteServer.find(on: connection) == .stopped, "it stays stopped")
+        #expect(!(try await connection.run("pgrep -f '[.]kuvo-code-test/bin/kuvo-start keep' || true")).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "its keeper runs on")
+        // A start from the Mac keeps it so; Start doesn't.
+        await #expect(throws: RemoteEngineError.self) { try await RemoteServer.launch(on: connection, environment: [:], notes: [:]) }
+        try await RemoteServer.startEngine(on: connection)
+        #expect(try await runningSoon() != nil)
+
+        try await RemoteServer.stop(on: connection)
         _ = try await connection.run("pkill -f '[/]\\.kuvo-code-test/' || true; rm -rf \"$HOME/.kuvo-code-test\"")
     }
 
@@ -363,6 +406,6 @@ struct LiveRemoteEngineTests {
         server.disconnect()
 
         try await RemoteServer.stop(on: connection)
-        _ = try await connection.run("pkill -f '[/]\\.kuvo-code-test/run' || true; rm -rf \"$HOME/.kuvo-code-test\"")
+        _ = try await connection.run("pkill -f '[/]\\.kuvo-code-test/' || true; rm -rf \"$HOME/.kuvo-code-test\"")
     }
 }

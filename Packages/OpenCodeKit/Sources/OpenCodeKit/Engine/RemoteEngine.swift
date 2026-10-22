@@ -142,6 +142,8 @@ public enum RemoteEngineError: LocalizedError {
     case exited(status: Int32, output: String)
     case unreadableHandshake(String)
     case timedOut
+    /// Its engine is stopped on purpose (Stop), and stays so until it's started.
+    case stopped
 
     public var errorDescription: String? {
         switch self {
@@ -162,6 +164,8 @@ public enum RemoteEngineError: LocalizedError {
             return "The engine on the machine said something unexpected when starting: \(line)"
         case .timedOut:
             return "The engine on the machine took too long to start."
+        case .stopped:
+            return "The engine on the machine is stopped."
         }
     }
 }
@@ -282,9 +286,8 @@ public struct RemoteEngineInstaller: Sendable {
 /// engine's own store, in `~/.kuvo-code/data`, readable by that user only, and signed out when the
 /// machine is removed. What's needed to find it again (its process, port and password) is kept in
 /// `~/.kuvo-code/run/engine.json`, readable by that user only, who could read it from the engine's
-/// process anyway. If the app hasn't been connected for a day, the engine stops by itself, unless
-/// wake-ups wait there, a group chat there has a meeting coming or talk or work under way, or a phone paired with the machine used it in the last week (its link
-/// keeps the engine up for it, KuvoLink's `kuvo-link.js`).
+/// process anyway. The machine keeps it running on its own (`bootScript`'s keeper): after a crash
+/// or a restart, with or without a Mac; only a Stop, from any Mac or phone, stops it.
 public final class RemoteServer: @unchecked Sendable {
     /// The engine running on a machine.
     public struct Engine: Codable, Sendable, Equatable {
@@ -368,26 +371,52 @@ public final class RemoteServer: @unchecked Sendable {
 
     static var run: String { "$HOME/\(RemoteEngineInstaller.root)/run" }
 
-    /// The engine already running on the machine, if there is one. Finding it counts as the app
-    /// being around, for the engine's watchdog.
-    public static func running(on connection: SSHConnection) async throws -> Engine? {
+    /// What runs on the machine: its engine, or that it's stopped on purpose, or nothing.
+    public enum Found: Sendable, Equatable {
+        case running(Engine)
+        case stopped
+        case none
+
+        public var engine: Engine? {
+            if case .running(let engine) = self { return engine }
+            return nil
+        }
+    }
+
+    /// The engine running on the machine, if there is one, or whether it's stopped on purpose;
+    /// and the box's keeper made sure of (a machine set up by an older version gets it here).
+    public static func find(on connection: SSHConnection) async throws -> Found {
         let text = try await connection.run("""
-            R="\(run)"
-            [ -f "$R/engine.json" ] || exit 0
-            pid=$(sed -n 's/^{"pid":\\([0-9]*\\),.*/\\1/p' "$R/engine.json")
-            [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && grep -q opencode "/proc/$pid/cmdline" 2>/dev/null || exit 0
-            touch "$R/attached"
-            cat "$R/engine.json"
+            K="$HOME/\(RemoteEngineInstaller.root)"; R="\(run)"
+            [ -f "$K/bin/kuvo-start" ] && sh "$K/bin/kuvo-start" box >/dev/null 2>&1
+            pid=$(sed -n 's/^{"pid":\\([0-9]*\\),.*/\\1/p' "$R/engine.json" 2>/dev/null)
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && grep -q opencode "/proc/$pid/cmdline" 2>/dev/null; then
+              touch "$R/attached"
+              cat "$R/engine.json"
+            elif [ -f "$R/stopped" ]; then
+              echo stopped
+            fi
             """)
         let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !line.isEmpty else { return nil }
-        return try? JSONDecoder().decode(Engine.self, from: Data(line.utf8))
+        if line == "stopped" { return .stopped }
+        guard !line.isEmpty, let engine = try? JSONDecoder().decode(Engine.self, from: Data(line.utf8)) else { return .none }
+        return .running(engine)
+    }
+
+    /// The engine already running on the machine, if there is one.
+    public static func running(on connection: SSHConnection) async throws -> Engine? {
+        try await find(on: connection).engine
     }
 
     /// Starts the engine on the machine, on its own, and waits until it's listening. `environment`
     /// is handed to it, with values on one line each; `notes` are kept with it. `withAgents`: the
     /// agents bridge (`bin/kuvo-agents.js`, put there first) starts beside it.
-    public static func launch(on connection: SSHConnection, environment base: [String: String], notes: [String: String] = [:], withAgents: Bool = false) async throws -> Engine {
+    /// `replace`: the one running there that this replaces (another version, other settings), by
+    /// its process, stopped first, in the same start, so nothing starts one in between; another
+    /// found running instead is used as it is. `start`: one stopped on purpose is started
+    /// (Start); otherwise it stays stopped, and this throws `stopped`.
+    public static func launch(on connection: SSHConnection, environment base: [String: String], notes: [String: String] = [:], withAgents: Bool = false,
+                              replace: Int? = nil, start: Bool = false) async throws -> Engine {
         // What starts it again after a restart, as this launch does.
         try await installBoot(on: connection)
         var lastError: Error = RemoteEngineError.timedOut
@@ -400,6 +429,8 @@ public final class RemoteServer: @unchecked Sendable {
             environment["OPENCODE_PASSWORD"] = engine.password
             environment["OPENCODE_CLIENT"] = "desktop"
             environment.removeValue(forKey: "OPENCODE_SERVER_PASSWORD")
+            if let replace { environment["KUVO_REPLACE"] = String(replace) }
+            if start { environment["KUVO_START"] = "1" }
             // What's kept to find it again, but its process, which the script adds.
             struct Record: Encodable { var port: Int, password: String, version: String, notes: [String: String], agentsPort: Int?, agentsPassword: String? }
             let record = String(decoding: try JSONEncoder().encode(Record(port: engine.port, password: engine.password, version: engine.version, notes: engine.notes, agentsPort: agents?.port, agentsPassword: agents?.password)), as: UTF8.self)
@@ -431,6 +462,8 @@ public final class RemoteServer: @unchecked Sendable {
                 // One started meanwhile (after a restart, or by another Mac): that one, as it is.
                 if let running = try await running(on: connection) { return running }
                 lastError = RemoteEngineError.timedOut
+            } catch RemoteEngineError.ssh(let status, _) where status == 6 {
+                throw RemoteEngineError.stopped
             } catch RemoteEngineError.ssh(let status, let message) where status == 3 && message.localizedCaseInsensitiveContains("in use") {
                 lastError = RemoteEngineError.exited(status: status, output: message)
             } catch RemoteEngineError.ssh(let status, let message) where status == 3 {
@@ -445,7 +478,7 @@ public final class RemoteServer: @unchecked Sendable {
 
     /// Reads the settings from the input, gives the engine its own folders under `~/.kuvo-code`,
     /// starts it in a session of its own on the machine's localhost, writes down how to find it,
-    /// and starts its watchdog. Prints its process once it listens.
+    /// and makes sure the box's keeper runs (`bootScript`). Prints its process once it listens.
     ///
     /// `KUVO_SETTINGS`, when it's given, becomes the engine's settings file there (its global
     /// settings, which a project's own outrank), in place of what was there.
@@ -461,9 +494,9 @@ public final class RemoteServer: @unchecked Sendable {
     /// of what was there; they stay when the engine stops, so the machine works on its own after a
     /// restart (see `bootScript`), and go when the machine is removed.
     ///
-    /// Every minute the watchdog sends bots' and sessions' wake-ups that are due ([Wakes]). Every
-    /// ten, it stops the engine if the app hasn't been around for a day and nothing waits there (a
-    /// wake-up, a group chat's meeting, talk or work).
+    /// Stopped on purpose (`run/stopped`), it starts none, unless `KUVO_START` is given (Start):
+    /// it exits 6. With `KUVO_REPLACE`, one running is stopped first, under its lock. An engine it
+    /// started but couldn't note in `engine.json` (cut off) is stopped as it ends.
     ///
     /// With `KUVO_AGENTS_PORT` and `KUVO_AGENTS_PASSWORD`, the agents bridge starts beside the
     /// engine once it listens, with the same settings, and stops with it ([agentsScript]). Only it
@@ -489,38 +522,175 @@ public final class RemoteServer: @unchecked Sendable {
     /// The crontab line itself.
     static var rebootLine: String { "@reboot sh \"$HOME/\(RemoteEngineInstaller.root)/bin/kuvo-start\" >/dev/null 2>&1 \(rebootTag)" }
 
-    /// Starts the engine again after the machine restarts (from its crontab, `rebootLine`), as the
-    /// Mac last started it (`run/launch.env`), with a new port and passwords: only one that was
-    /// running when it went down (one stopped on purpose has no `run/engine.json`), and not while
-    /// one runs. Keys stay as they were. What it started is found by the Mac as it connects, as
-    /// its own.
+    /// The box's own tool on the machine (`bin/kuvo-start`): what keeps its engine, coding agents
+    /// and phone link running on their own, whatever a Mac does. The crontab's `@reboot` line and
+    /// every connect run it plainly, which starts its keeper once; the Mac and the phone link run
+    /// `start`, `stop` and `restart`, and removing the machine `off`.
+    ///
+    /// The keeper (`keep`, its process in `run/box.pid`): every 15 seconds it starts the engine
+    /// when it's down and not stopped on purpose (`run/stopped`), as Kuvo Code last started it
+    /// (`run/launch.env`, with a new port and passwords), waiting longer between starts that keep
+    /// failing; it starts the phone link while a phone is paired (`run/link.needed`); and each
+    /// minute it sends the bots' and sessions' wake-ups that are due ([Wakes]). It takes the place
+    /// of the watchdog each engine had before, and carries on from its new script when that's
+    /// replaced. It ends when its script goes or another keeper takes over.
+    ///
+    /// Starts and stops take the launch's lock (`run/.launching`), one at a time.
     static var bootScript: String {
-        """
+        #"""
         #!/bin/sh
-        # Kuvo Code: starts its engine on this machine again after a restart, as Kuvo Code on your
-        # Mac last started it, if it was running. (From the @reboot line in your crontab.)
-        K="$HOME/\(RemoteEngineInstaller.root)"; R="$K/run"
-        [ -f "$R/launch.env" ] && [ -f "$K/bin/kuvo-launch" ] && [ -f "$R/engine.json" ] || exit 0
-        pid=$(sed -n 's/^{"pid":\\([0-9]*\\),.*/\\1/p' "$R/engine.json" 2>/dev/null)
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && grep -q "$K/engine/" "/proc/$pid/cmdline" 2>/dev/null; then exit 0; fi
-        notes=$(cat "$R/launch.notes" 2>/dev/null); [ -n "$notes" ] || notes='{}'
-        word() { od -An -N16 -tx1 /dev/urandom | tr -d ' \\n'; }
-        number() { echo $(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 40000 + 20000 )); }
-        for try in 1 2 3; do
-          port=$(number); password=$(word); record="\\"port\\":$port,\\"password\\":\\"$password\\",\\"version\\":\\"\(OpenCodeEngine.version)\\",\\"notes\\":$notes"
-          agents=
-          if [ -f "$K/bin/kuvo-agents.js" ]; then aport=$(number); apassword=$(word); record="$record,\\"agentsPort\\":$aport,\\"agentsPassword\\":\\"$apassword\\""; agents="KUVO_AGENTS_PORT=$aport
+        # Kuvo Code's box on this machine: keeps its engine, coding agents and phone link running on
+        # their own, with or without a Mac. From the @reboot line in your crontab, and from Kuvo Code:
+        #   kuvo-start           keeps the box running (starts its keeper, once)
+        #   kuvo-start start     starts the engine, after a stop
+        #   kuvo-start stop      stops the engine until it's started again
+        #   kuvo-start restart   starts the engine over
+        K="$HOME/\#(RemoteEngineInstaller.root)"; R="$K/run"
+        mkdir -p "$R" 2>/dev/null && chmod 700 "$R" 2>/dev/null
+        # Whether process $1 runs and is $2 (in its command line).
+        is() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null && grep -q -- "$2" "/proc/$1/cmdline" 2>/dev/null; }
+        engine() { sed -n 's/^{"pid":\([0-9]*\),.*/\1/p' "$R/engine.json" 2>/dev/null; }
+        up() { is "$(engine)" "$K/engine/"; }
+        # The engine's version to start: this one's, or while that isn't there (Kuvo Code updated
+        # while an engine of another version was at work), the newest one there is.
+        V=\#(OpenCodeEngine.version)
+        [ -x "$K/engine/$V/opencode" ] || V=$(for d in "$K"/engine/*/; do [ -x "${d}opencode" ] && basename "$d"; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+        # What it runs gets the box's own folders, as the engine does, and how Kuvo Code last
+        # started it (in a subshell).
+        environment() {
+          if [ -f "$R/launch.env" ]; then while IFS= read -r line; do [ -n "$line" ] && export "$line"; done <"$R/launch.env"; fi
+          unset KUVO_SETTINGS
+          \#(RemoteEngineInstaller.folders)
+          export PATH="$K/bin:$PATH" KUVO_BOTS="$K/bots" KUVO_WAKES="$K/wakes"
+        }
+        # One start or stop at a time, as the launch takes it; one left by a start cut off goes after
+        # five minutes. False when it isn't had within $1 tenths of a second.
+        lock() {
+          n=0
+          until mkdir "$R/.launching" 2>/dev/null; do
+            [ -z "$(find "$R/.launching" -maxdepth 0 -mmin +5 2>/dev/null)" ] || rmdir "$R/.launching" 2>/dev/null
+            n=$((n + 1)); [ $n -lt "${1:-2400}" ] || return 1
+            sleep 0.1
+          done
+        }
+        # The engine and its coding agents' bridge, stopped (under the lock).
+        halt() {
+          a=$(cat "$R/agents.pid" 2>/dev/null)
+          if is "$a" kuvo-agents; then kill -- "-$a" 2>/dev/null || kill "$a" 2>/dev/null; fi
+          rm -f "$R/agents.pid"
+          p=$(engine)
+          if is "$p" "$K/engine/"; then
+            kill "$p"; n=0
+            while kill -0 "$p" 2>/dev/null && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+            # Never two on the same data: one that won't end is ended.
+            kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null
+          fi
+          rm -f "$R/engine.json"
+        }
+        case "${1:-box}" in
+        box)
+          [ -f "$K/bin/kuvo-start" ] || exit 0
+          is "$(cat "$R/box.pid" 2>/dev/null)" kuvo-start && exit 0
+          cd "$K" || exit 0
+          env -i HOME="$HOME" PATH="$PATH" setsid sh "$K/bin/kuvo-start" keep </dev/null >/dev/null 2>&1 &
+          ;;
+        keep)
+          echo $$ >"$R/box.pid"
+          boot=$(cat "$K/bin/.kuvo-boot" 2>/dev/null)
+          # The watchdogs engines had before, one each: this keeper does their work now.
+          pkill -f "watchdog [0-9]+ $R" 2>/dev/null
+          fails=0; next=0; started=; round=0
+          while :; do
+            [ -f "$K/bin/kuvo-start" ] && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
+            # Its script replaced: the new one carries on.
+            [ "$(cat "$K/bin/.kuvo-boot" 2>/dev/null)" = "$boot" ] || exec sh "$K/bin/kuvo-start" keep
+            now=$(date +%s)
+            if ! up && [ ! -f "$R/stopped" ] && [ -f "$R/launch.env" ] && [ "$now" -ge "$next" ]; then
+              # Down: one this started that ran under ten minutes counts as failing, and makes it
+              # wait longer before the next start; one that ran longer starts the count again.
+              if [ -n "$started" ]; then
+                if [ $((now - started)) -lt 600 ]; then fails=$((fails + 1)); else fails=0; fi
+              fi
+              sh "$K/bin/kuvo-start" engine >/dev/null 2>&1
+              if up; then started=$now; else started=; fails=$((fails + 1)); fi
+              case $fails in 0) wait=0 ;; 1) wait=15 ;; 2) wait=30 ;; 3) wait=60 ;; 4) wait=120 ;; 5) wait=300 ;; *) wait=600 ;; esac
+              next=$((now + wait))
+            fi
+            # The phone link, while a phone is paired with it or a pairing's open.
+            if [ -f "$R/link.needed" ] && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && ! is "$(cat "$R/link.pid" 2>/dev/null)" kuvo-link; then
+              (environment; cd "$K/workspace" 2>/dev/null || cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 setsid "$K/engine/$V/opencode" "$K/bin/kuvo-link.js" run >"$R/link.log" 2>&1 </dev/null &)
+            fi
+            # Wake-ups that are due, each minute, while the engine's up, as the engine was started:
+            # beside this loop, which a slow watch never holds up, one round at a time.
+            round=$((round + 1))
+            if [ $((round % 4)) -eq 0 ] && up && ! is "${waking-}" kuvo-wake; then
+              (environment; cd "$K/workspace" 2>/dev/null || cd "$K"; exec "$K/bin/kuvo-wake" fire "$K/bots" "$R/engine.json") >/dev/null 2>&1 </dev/null &
+              waking=$!
+            fi
+            sleep 15
+          done
+          ;;
+        engine)
+          # As Kuvo Code last started it, with a new port and passwords: not when it's stopped on
+          # purpose, or running.
+          [ -f "$R/stopped" ] && exit 0
+          [ -f "$R/launch.env" ] && [ -f "$K/bin/kuvo-launch" ] && [ -n "$V" ] || exit 0
+          up && exit 0
+          notes=$(cat "$R/launch.notes" 2>/dev/null); [ -n "$notes" ] || notes='{}'
+          word() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
+          number() { echo $(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 40000 + 20000 )); }
+          for try in 1 2 3; do
+            port=$(number); password=$(word); record="\"port\":$port,\"password\":\"$password\",\"version\":\"$V\",\"notes\":$notes"
+            agents=
+            if [ -f "$K/bin/kuvo-agents.js" ]; then aport=$(number); apassword=$(word); record="$record,\"agentsPort\":$aport,\"agentsPassword\":\"$apassword\""; agents="KUVO_AGENTS_PORT=$aport
         KUVO_AGENTS_PASSWORD=$apassword"; fi
-          { cat "$R/launch.env"; printf 'KUVO_BOOT=1\\nOPENCODE_PASSWORD=%s\\nKUVO_PORT=%s\\nKUVO_RECORD=%s}\\n' "$password" "$port" "$record"; [ -z "$agents" ] || printf '%s\\n' "$agents"; printf '\\n'; } | sh "$K/bin/kuvo-launch" >/dev/null 2>&1 && exit 0
-          sleep 2
-        done
-        exit 1
-        """
+            { cat "$R/launch.env"; printf 'KUVO_BOOT=1\nKUVO_VERSION=%s\nOPENCODE_PASSWORD=%s\nKUVO_PORT=%s\nKUVO_RECORD=%s}\n' "$V" "$password" "$port" "$record"; [ -z "$agents" ] || printf '%s\n' "$agents"; printf '\n'; } | sh "$K/bin/kuvo-launch" >/dev/null 2>&1 && up && exit 0
+            [ -f "$R/stopped" ] && exit 0
+            sleep 2
+          done
+          exit 1
+          ;;
+        start)
+          rm -f "$R/stopped"
+          sh "$K/bin/kuvo-start" engine
+          sh "$K/bin/kuvo-start" box
+          up
+          ;;
+        stop)
+          # Under the lock, so a start under way finishes first, and then stays stopped.
+          lock || { echo "A start of the engine is under way there." >&2; exit 4; }
+          trap 'rmdir "$R/.launching" 2>/dev/null' EXIT
+          touch "$R/stopped"
+          halt
+          ;;
+        restart)
+          rm -f "$R/stopped"
+          lock || { echo "A start of the engine is under way there." >&2; exit 4; }
+          halt
+          rmdir "$R/.launching" 2>/dev/null
+          sh "$K/bin/kuvo-start" engine
+          sh "$K/bin/kuvo-start" box
+          up
+          ;;
+        off)
+          # Everything it runs, for good (the machine removed, a demo copy done): the phone link
+          # first, which would start the keeper again, then the keeper, which would start the
+          # rest again, then the engine and its agents' bridge. Then it's as before its first
+          # start, for when it's added again.
+          touch "$R/stopped"
+          rm -f "$R/link.needed"
+          l=$(cat "$R/link.pid" 2>/dev/null); is "$l" kuvo-link && kill "$l" 2>/dev/null
+          b=$(cat "$R/box.pid" 2>/dev/null); is "$b" kuvo-start && kill "$b" 2>/dev/null; rm -f "$R/box.pid"
+          if lock 600; then halt; rmdir "$R/.launching" 2>/dev/null; else halt; fi
+          rm -f "$R/stopped"
+          ;;
+        esac
+        """#
     }
 
     /// Puts `kuvo-launch` and `kuvo-start` in the machine's `bin` (unless it has these ones
     /// already), apart from the launch, whose command line has a size limit.
-    static func installBoot(on connection: SSHConnection) async throws {
+    public static func installBoot(on connection: SSHConnection) async throws {
         let files = [("kuvo-launch", bootLaunchScript), ("kuvo-start", bootScript)]
         let hash = SHA256.hash(data: Data(files.map { $0.0 + "\n" + $0.1 }.joined(separator: "\n").utf8)).map { String(format: "%02x", $0) }.joined()
         let marker = "\"$HOME/\(RemoteEngineInstaller.root)/bin/.kuvo-boot\""
@@ -548,6 +718,8 @@ public final class RemoteServer: @unchecked Sendable {
         "; done
         port=$KUVO_PORT; record=$KUVO_RECORD; unset KUVO_PORT KUVO_RECORD
         aport=${KUVO_AGENTS_PORT-}; unset KUVO_AGENTS_PORT
+        replace=${KUVO_REPLACE-}; starting=${KUVO_START-}; unset KUVO_REPLACE KUVO_START
+        \(boot ? "V=${KUVO_VERSION:-\(OpenCodeEngine.version)}; unset KUVO_VERSION" : "V=\(OpenCodeEngine.version)")
         \(RemoteEngineInstaller.folders)
         R="$K/run"; mkdir -p "$R"; chmod 700 "$R"
         # One launch at a time; one left by a launch that was cut off goes after five minutes (a
@@ -559,12 +731,22 @@ public final class RemoteServer: @unchecked Sendable {
           [ $i -lt 2400 ] || \(boot ? "exit 0" : "{ echo \"Another start of the engine is under way there.\" >&2; exit 4; }")
           sleep 0.1
         done
-        trap 'rmdir "$R/.launching" 2>/dev/null' EXIT
+        # The lock goes as it ends, and an engine it started but didn't get to note with it: nothing
+        # else would know to stop that one.
+        trap 'rmdir "$R/.launching" 2>/dev/null; [ -z "${pid-}" ] || [ -n "${noted-}" ] || kill "$pid" 2>/dev/null' EXIT
         trap 'exit 1' HUP INT TERM PIPE
-        # One that started meanwhile (after a restart, or for another Mac) is used as it is.
+        # Stopped on purpose (Stop, from the Mac or a phone): it stays stopped, unless this is Start.
+        if [ -f "$R/stopped" ]; then
+          \(boot ? "exit 0" : "if [ -n \"$starting\" ]; then rm -f \"$R/stopped\"; else echo \"Its engine is stopped.\" >&2; exit 6; fi")
+        fi
+        # One that started meanwhile (after a restart, or for another Mac) is used as it is; from
+        # the Mac, the one it found to replace (another version, other settings), and only that
+        # one, is stopped here, under the lock, so nothing starts one in between.
         old=$(sed -n 's/^{"pid":\\([0-9]*\\),.*/\\1/p' "$R/engine.json" 2>/dev/null)
         if [ -n "$old" ] && kill -0 "$old" 2>/dev/null && grep -q "$K/engine/" "/proc/$old/cmdline" 2>/dev/null; then
-          \(boot ? "exit 0" : "echo \"An engine runs there now.\" >&2; exit 5")
+          \(boot ? "exit 0" : "[ \"$replace\" = \"$old\" ] || { echo \"An engine runs there now.\" >&2; exit 5; }")
+          \(boot ? "" : stopAgentsScript)
+          \(boot ? "" : "kill \"$old\"; n=0; while kill -0 \"$old\" 2>/dev/null && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; kill -0 \"$old\" 2>/dev/null && kill -9 \"$old\" 2>/dev/null; rm -f \"$R/engine.json\"")
         fi
         \(boot ? "unset KUVO_BOOT" : "rm -rf \"$K/keys\"")
         # Its settings only once it's the start that goes ahead: one that finds an engine running
@@ -590,21 +772,21 @@ public final class RemoteServer: @unchecked Sendable {
         export KUVO_BOTS="$K/bots" KUVO_WAKES="$K/wakes"
         cd "$K/workspace"
         touch "$R/attached"
-        env -u KUVO_AGENTS_PASSWORD -u BUN_BE_BUN setsid "$K/engine/\(OpenCodeEngine.version)/opencode" serve --port "$port" --hostname 127.0.0.1 >"$R/engine.log" 2>&1 </dev/null &
+        env -u KUVO_AGENTS_PASSWORD -u BUN_BE_BUN setsid "$K/engine/$V/opencode" serve --port "$port" --hostname 127.0.0.1 >"$R/engine.log" 2>&1 </dev/null &
         pid=$!
         i=0
         until grep -q "server listening" "$R/engine.log" 2>/dev/null; do
           if ! kill -0 "$pid" 2>/dev/null || [ $i -ge 900 ]; then tail -n 5 "$R/engine.log" >&2; kill "$pid" 2>/dev/null; exit 3; fi
           sleep 0.1; i=$((i + 1))
         done
-        (umask 077; printf '{"pid":%s,%s\\n' "$pid" "$record" >"$R/engine.json")
+        # Noted, or it's stopped (by the trap): one nothing knows of would run on unseen.
+        (umask 077; printf '{"pid":%s,%s\\n' "$pid" "$record" >"$R/engine.json") || { echo "Its engine couldn't be noted down there." >&2; exit 3; }
+        noted=1
         \(agentsScript)
-        # Kuvo Link, for the phones you've paired: beside the engine, once the Mac has set it up.
-        if [ -f "$R/link.json" ] && [ -f "$K/bin/kuvo-link.js" ]; then
-          KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 setsid "$K/engine/\(OpenCodeEngine.version)/opencode" "$K/bin/kuvo-link.js" run >"$R/link.log" 2>&1 </dev/null &
-        fi
-        setsid sh -c 'i=0; while kill -0 "$1" 2>/dev/null; do sleep 60; grep -q "\\"pid\\":$1," "$2/engine.json" 2>/dev/null || break; "$3/bin/kuvo-wake" fire "$3/bots" "$2/engine.json" 2>/dev/null; i=$((i + 1)); [ $((i % 10)) -eq 0 ] || continue; \(waiting(in: "\"$3\"")) && continue; [ -n "$(find "$2/attached" -mmin +1440 2>/dev/null)" ] && { kill "$1"; rm -f "$2/engine.json"; }; done' watchdog "$pid" "$R" "$K" >/dev/null 2>&1 </dev/null &
         \(boot ? "" : startAgainScript)
+        # The box's keeper, which keeps it all running from here on (the phone link, wake-ups, the
+        # engine itself after a crash or a restart): once.
+        [ -f "$K/bin/kuvo-start" ] && sh "$K/bin/kuvo-start" box
         echo "$pid${aport:+ $aport}"
         """
     }
@@ -615,7 +797,7 @@ public final class RemoteServer: @unchecked Sendable {
     /// restart, added once. A crontab that can't be read is left as it is, never written over.
     private static var startAgainScript: String {
         """
-        (umask 077; { printf '%s\\n' "$kuvo_env"; printf '%s' "$lines" | grep -v -E '^(OPENCODE_PASSWORD|KUVO_PORT|KUVO_RECORD|KUVO_AGENTS_PORT|KUVO_AGENTS_PASSWORD|KUVO_BOOT|\(privateSettingsVariable)|KUVO_KEY_[A-Za-z0-9_]*)='; } | grep -v '^$' >"$R/launch.env.new"; mv -f "$R/launch.env.new" "$R/launch.env")
+        (umask 077; { printf '%s\\n' "$kuvo_env"; printf '%s' "$lines" | grep -v -E '^(OPENCODE_PASSWORD|KUVO_PORT|KUVO_RECORD|KUVO_AGENTS_PORT|KUVO_AGENTS_PASSWORD|KUVO_BOOT|KUVO_VERSION|KUVO_REPLACE|KUVO_START|\(privateSettingsVariable)|KUVO_KEY_[A-Za-z0-9_]*)='; } | grep -v '^$' >"$R/launch.env.new"; mv -f "$R/launch.env.new" "$R/launch.env")
         (umask 077; printf '%s' "$record" | sed -n 's/.*"notes":\\({[^}]*}\\).*/\\1/p' >"$R/launch.notes")
         \(RemoteEngineInstaller.root == ".kuvo-code" ? rebootCrontabScript : "")
         """
@@ -737,7 +919,7 @@ public final class RemoteServer: @unchecked Sendable {
           try=0
           while :; do
             : >"$R/agents.log"
-            KUVO_AGENTS_REMOTE=1 KUVO_AGENTS_HOME="$K/agents" KUVO_HOME="$K" KUVO_AGENTS_PORT="$aport" KUVO_ENGINE_PORT="$port" KUVO_ENGINE_PID="$pid" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 setsid sh -c 'n=0; while kill -0 "$1" 2>/dev/null && [ $n -lt 5 ]; do s=$(date +%s); "$2" "$3" >>"$4" 2>&1 </dev/null; e=$?; [ $e -eq 98 ] && exit 98; [ $(($(date +%s) - s)) -ge 600 ] && n=0; n=$((n + 1)); sleep 5; done' kuvo-agents "$pid" "$K/engine/\(OpenCodeEngine.version)/opencode" "$K/bin/kuvo-agents.js" "$R/agents.log" </dev/null >/dev/null 2>&1 &
+            KUVO_AGENTS_REMOTE=1 KUVO_AGENTS_HOME="$K/agents" KUVO_HOME="$K" KUVO_AGENTS_PORT="$aport" KUVO_ENGINE_PORT="$port" KUVO_ENGINE_PID="$pid" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 setsid sh -c 'n=0; while kill -0 "$1" 2>/dev/null && [ $n -lt 5 ]; do s=$(date +%s); "$2" "$3" >>"$4" 2>&1 </dev/null; e=$?; [ $e -eq 98 ] && exit 98; [ $(($(date +%s) - s)) -ge 600 ] && n=0; n=$((n + 1)); sleep 5; done' kuvo-agents "$pid" "$K/engine/$V/opencode" "$K/bin/kuvo-agents.js" "$R/agents.log" </dev/null >/dev/null 2>&1 &
             apid=$!
             echo "$apid" >"$R/agents.pid"
             i=0; until grep -q '"url"' "$R/agents.log" 2>/dev/null || ! kill -0 "$apid" 2>/dev/null || [ $i -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
@@ -761,9 +943,14 @@ public final class RemoteServer: @unchecked Sendable {
         """
     }
 
+    /// Everything the box runs, stopped for good (the machine removed, a test done): its keeper
+    /// first, so it starts nothing again, then the phone link, the engine and its agents bridge.
+    /// On a machine without the keeper's script yet, as before: the agents bridge and the engine.
     static var stopScript: String {
         """
-        R="\(run)"
+        K="$HOME/\(RemoteEngineInstaller.root)"; R="\(run)"
+        # Its keeper's script, if it's one that knows `off` (an older one would start the engine).
+        if grep -q '^off)' "$K/bin/kuvo-start" 2>/dev/null; then sh "$K/bin/kuvo-start" off; exit 0; fi
         \(stopAgentsScript)
         [ -f "$R/engine.json" ] || exit 0
         pid=$(sed -n 's/^{"pid":\\([0-9]*\\),.*/\\1/p' "$R/engine.json")
@@ -772,33 +959,33 @@ public final class RemoteServer: @unchecked Sendable {
         """
     }
 
-    /// What stops the engine, as part of a longer script (in a shell of its own: it ends early when
-    /// there's nothing to stop).
+    /// What stops everything there, as part of a longer script (in a shell of its own).
     public static var stopCommand: String { "(\n" + stopScript + "\n)" }
 
-    /// Stops the engine on the machine, if it's running.
+    /// Stops everything the box runs on the machine, for good (see `stopScript`).
     public static func stop(on connection: SSHConnection) async throws {
         try await connection.run(stopScript)
     }
 
-    /// Stops the engine on the machine without waiting more than `timeout`, for when the app quits.
-    /// With `unlessWaking`, an engine something waits for keeps running: bots' or sessions'
-    /// wake-ups, to send them, a group chat there with a meeting coming or talk or work under way
-    /// (its `awake` mark), or a phone paired with the machine that used it in the last week
-    /// (its link notes when, in `run/link.seen`), to reach it with this Mac closed. `first` runs
-    /// before, either way.
-    /// What keeps a machine's engine up without the app (the watchdog's and `stopNow`'s test): a
-    /// bot's or a session's wake-up or watch waiting, or a group chat at work (`awake`). Shell
-    /// that succeeds when one is; `folder` is Kuvo Code's, as the shell writes it.
-    static func waiting(in folder: String) -> String {
-        "{ ls \(folder)/bots/*/wakes/* || ls -d \(folder)/bots/*/watches/*/ || ls \(folder)/wakes/*/wakes/* || ls -d \(folder)/wakes/*/watches/*/ || ls \(folder)/groups/*/awake; } >/dev/null 2>&1"
+    /// Stops the machine's engine until it's started again, from here or anywhere (Stop): its
+    /// keeper stays, with the phone link, so a phone can start it.
+    public static func stopEngine(on connection: SSHConnection) async throws {
+        try await installBoot(on: connection)
+        try await connection.run("sh \"$HOME/\(RemoteEngineInstaller.root)/bin/kuvo-start\" stop")
     }
 
-    public static func stopNow(on connection: SSHConnection, timeout: TimeInterval = 3, unlessWaking: Bool = false, first: String = "") {
-        let root = "\"$HOME/\(RemoteEngineInstaller.root)\""
-        let waiting = Self.waiting(in: root) + " && exit 0\n"
-            + "[ -n \"$(find \(root)/run/link.seen -mtime -7 2>/dev/null)\" ] && exit 0\n"
-        runNow(first + (unlessWaking ? waiting : "") + stopScript, on: connection, timeout: timeout)
+    /// Starts the machine's engine after a stop, as it was last started there (Start). False when
+    /// it didn't come up.
+    @discardableResult
+    public static func startEngine(on connection: SSHConnection) async throws -> Bool {
+        try await installBoot(on: connection)
+        return (try? await connection.run("sh \"$HOME/\(RemoteEngineInstaller.root)/bin/kuvo-start\" start")) != nil
+    }
+
+    /// Stops everything there without waiting more than `timeout`, for when the app quits (a demo
+    /// or test copy's machine, which leaves nothing running). `first` runs before.
+    public static func stopNow(on connection: SSHConnection, timeout: TimeInterval = 3, first: String = "") {
+        runNow(first + stopScript, on: connection, timeout: timeout)
     }
 
     /// Runs `script` on the machine without waiting more than `timeout`, for when the app quits.
@@ -827,11 +1014,6 @@ public final class RemoteServer: @unchecked Sendable {
     /// Takes the Mac `mac` out of the machine's present ones, as it quits: what `stopNow` runs first.
     public static func leavingScript(_ mac: String) -> String {
         "rm -f \"\(run)/present/\(mac)\"\n"
-    }
-
-    /// Tells the engine's watchdog the app is still around.
-    public static func heartbeat(on connection: SSHConnection) async {
-        _ = try? await connection.run("touch \"\(run)/attached\" 2>/dev/null || true")
     }
 
     /// A port nobody on this Mac is listening on right now, other than `taken`.

@@ -77,6 +77,11 @@ struct MachinesSettings: View {
                 switch engine.state {
                 case .ready:
                     Button("Disconnect") { app.disconnect(engine) }
+                        .help("Close this Mac’s connection; \(engine.machine.name) keeps running on its own")
+                    Button("Stop Engine") { app.stopEngine(engine) }
+                        .help("Stop its engine, with its sessions, bots and group chats, until you start it again")
+                case .preparing where engine.isStopped:
+                    Button("Start Engine") { app.startEngine(engine) }
                 case .failed, .preparing:
                     Button(engine.isRetrying ? "Connect Now" : "Connect") { app.connect(engine) }
                 default:

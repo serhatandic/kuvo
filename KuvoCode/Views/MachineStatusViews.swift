@@ -28,7 +28,7 @@ struct MachineIndicator: View {
         switch connection {
         case .connected: if !quiet { Circle().fill(.green).frame(width: size, height: size) }
         case .failed: Circle().fill(.orange).frame(width: size, height: size)
-        case .notConnected: Circle().fill(.secondary).frame(width: size, height: size)
+        case .notConnected, .stopped: Circle().fill(.secondary).frame(width: size, height: size)
         case .connecting, .reconnecting, .installing: Spinner(size: size + 4)
         }
     }
@@ -66,6 +66,14 @@ struct MachineWaitingView: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: 440)
                 Button("Try Again") { app.connect(engine) }
+                    .buttonStyle(.glass)
+                    .controlSize(.large)
+            case .preparing where engine.isStopped:
+                Text("It stays stopped, through restarts too, until you start it.")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 440)
+                Button("Start") { app.startEngine(engine) }
                     .buttonStyle(.glass)
                     .controlSize(.large)
             case .preparing:
@@ -113,9 +121,15 @@ struct MachineOfflineBar: View {
             Spacer(minLength: 8)
             // Not while it's trying already.
             if !isAttempting {
-                Button(connection.isUnderWay ? "Connect Now" : connection == .notConnected ? "Connect" : "Try Again") { app.reconnectNow(engine) }
-                    .buttonStyle(.glass)
-                    .help("Connect to \(engine.machine.name) again")
+                if connection == .stopped {
+                    Button("Start") { app.startEngine(engine) }
+                        .buttonStyle(.glass)
+                        .help("Start \(engine.machine.name)’s engine")
+                } else {
+                    Button(connection.isUnderWay ? "Connect Now" : connection == .notConnected ? "Connect" : "Try Again") { app.reconnectNow(engine) }
+                        .buttonStyle(.glass)
+                        .help("Connect to \(engine.machine.name) again")
+                }
             }
         }
         .padding(.horizontal, 14)

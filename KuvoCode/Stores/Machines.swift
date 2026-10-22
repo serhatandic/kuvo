@@ -60,6 +60,11 @@ final class MachineEngine {
     private(set) var isLive = false
     /// Waiting to try again by itself, after the connection dropped.
     var isRetrying = false
+    /// Its engine is stopped on purpose (Stop, here or from anywhere): it stays so until Start.
+    private(set) var isStopped = false
+    /// Start was pressed here: the next connection starts it if it's stopped, until one does (one
+    /// that fails, the machine away, carries it to Try Again), or it's stopped or disconnected.
+    var startWanted = false
     let catalog = Catalog()
     /// The coding agents there: the agents bridge beside its engine, through the same tunnel.
     let agents: OutsideAgents
@@ -70,7 +75,6 @@ final class MachineEngine {
 
     @ObservationIgnored private var server: RemoteServer?
     @ObservationIgnored private var eventTask: Task<Void, Never>?
-    @ObservationIgnored private var heartbeatTask: Task<Void, Never>?
     @ObservationIgnored private var isStopping = false
     /// Keeps its sign-ins in step with this Mac's while it's connected (`AppModel.syncSignIns`).
     @ObservationIgnored var signInSync: Task<Void, Never>?
@@ -88,6 +92,9 @@ final class MachineEngine {
     @ObservationIgnored var onReconnect: () async -> Void = {}
     /// The connection closed without being asked to (the machine restarted, the network went).
     @ObservationIgnored var onExit: () -> Void = {}
+    /// Stopped, then started from elsewhere (a phone, another Mac): connect to it.
+    @ObservationIgnored var onStartedElsewhere: () -> Void = {}
+    @ObservationIgnored private var stoppedWatch: Task<Void, Never>?
     private let log = Logger(subsystem: "run.kuvo.code", category: "machine")
 
     init(machine: Machine) {
@@ -161,7 +168,7 @@ final class MachineEngine {
 
     /// Where its connection is, as every view says it.
     enum Connection: Equatable {
-        case notConnected, connecting, reconnecting, installing, connected, failed
+        case notConnected, connecting, reconnecting, installing, connected, failed, stopped
 
         /// It's getting there by itself (a spinner), nothing to do.
         var isUnderWay: Bool { [.connecting, .reconnecting, .installing].contains(self) }
@@ -169,7 +176,7 @@ final class MachineEngine {
 
     var connection: Connection {
         switch state {
-        case .preparing: .notConnected
+        case .preparing: isStopped ? .stopped : .notConnected
         // At 0 it's only checking the engine it has.
         case .downloading(let progress) where progress > 0: .installing
         case .downloading, .starting: isRetrying ? .reconnecting : .connecting
@@ -188,6 +195,7 @@ final class MachineEngine {
         case .installing: "Installing the engine…"
         case .connected: "Connected"
         case .failed: "Couldn’t connect"
+        case .stopped: "Stopped"
         }
     }
 
@@ -204,6 +212,7 @@ final class MachineEngine {
         case .installing: "Installing the engine on \(name)…"
         case .connected: "Connected to \(name)"
         case .failed: "Couldn’t connect to \(name)"
+        case .stopped: "\(name)’s engine is stopped"
         }
     }
 
@@ -259,9 +268,10 @@ final class MachineEngine {
     /// Connects to the machine's engine: the one already running there (from an earlier launch,
     /// maybe still working on something), or a new one, installed first if needed. One this Mac
     /// started with an older version, or older settings while nothing is running, is
-    /// replaced. One another Mac started is used as it is, unless it's an older version: two Macs
-    /// with different settings would otherwise take turns starting it over, each dropping the
-    /// other's connection, and an older app would put back an older engine.
+    /// replaced, in the same start. One another Mac started is used as it is, unless it's an older
+    /// version: two Macs with different settings would otherwise take turns starting it over, each
+    /// dropping the other's connection, and an older app would put back an older engine. One
+    /// stopped on purpose stays stopped (`isStopped`), unless Start was pressed (`startWanted`).
     func start(_ launch: Launch, cache: URL) async {
         // Once at a time.
         switch state {
@@ -279,8 +289,19 @@ final class MachineEngine {
             await reach()
             try check()
             let connection = machine.connection
-            var engine = try await RemoteServer.running(on: connection)
+            // The box's own tool and keeper first, which what follows counts on.
+            try await RemoteServer.installBoot(on: connection)
+            let found = try await RemoteServer.find(on: connection)
             try check()
+            let starting = startWanted
+            if found == .stopped, !starting {
+                isStopped = true
+                state = .preparing
+                watchWhileStopped()
+                return
+            }
+            isStopped = false
+            var engine = found.engine
             let isNewer = engine.map { $0.version.compare(OpenCodeEngine.version, options: .numeric) == .orderedDescending } ?? false
             var updates = engine?.version != OpenCodeEngine.version && !(isNewer && engine.map(isAnotherMacs) == true)
             // An engine of another version still at work (a session left running when the app
@@ -308,15 +329,14 @@ final class MachineEngine {
                 }
                 try check()
                 state = .starting
-                if engine != nil { try await RemoteServer.stop(on: connection) }
-                engine = nil
             }
             // The browser tools' helper, and the agents bridge, which an engine starts with.
             try await MachineBrowserInstaller.installHelper(launch.helper, on: connection)
             if let agents = launch.agents { try await Self.installAgents(agents, on: connection) }
             try check()
             let running: RemoteServer.Engine
-            if let engine { running = engine } else { running = try await launchEngine(launch) }
+            // One of another version is replaced in the same start, so its keeper starts no other.
+            if let engine, !updates { running = engine } else { running = try await launchEngine(launch, replace: engine?.pid, starting: starting) }
             try check()
             var server: RemoteServer
             if let busy { server = busy } else { server = try await attach(running, launch) }
@@ -328,8 +348,7 @@ final class MachineEngine {
                 try check()
                 server.disconnect()
                 attached = nil
-                try await RemoteServer.stop(on: connection)
-                server = try await attach(launchEngine(launch), launch)
+                server = try await attach(launchEngine(launch, replace: server.engine.pid), launch)
                 attached = server
                 try check()
             }
@@ -341,11 +360,11 @@ final class MachineEngine {
             agents.connect(server.agentsEndpoint, folderPrefix: RemoteFolder.prefix(for: machine.id))
             // An engine started without its agents bridge (an older one): none to wait for.
             if server.agentsEndpoint == nil { catalog.forgetAgents() }
+            startWanted = false
             state = .ready
             learnIdentity()
             Analytics.shared.trackOnce("machine_connected")
             listen(to: current)
-            keepAlive()
             // The browser, in the background: the first time, a download and an upload. A browser
             // tab in view comes back live.
             Task { await browser.prepare() }
@@ -357,6 +376,12 @@ final class MachineEngine {
         } catch where connections != attempt {
             // Failed after a newer attempt began: that one's state isn't this one's to change.
             if let attached, attached !== server { attached.disconnect() }
+        } catch RemoteEngineError.stopped {
+            // Stopped from elsewhere as this connected.
+            if let attached, attached !== server { attached.disconnect() }
+            isStopped = true
+            state = .preparing
+            watchWhileStopped()
         } catch {
             log.error("\(self.machine.destination, privacy: .public) didn't start: \(error.localizedDescription, privacy: .public)")
             server?.disconnect()
@@ -367,8 +392,9 @@ final class MachineEngine {
 
     private struct Superseded: Error {}
 
-    private func launchEngine(_ launch: Launch) async throws -> RemoteServer.Engine {
-        try await RemoteServer.launch(on: machine.connection, environment: launch.environment, notes: ["settings": launch.fingerprint, "mac": Self.macID], withAgents: launch.agents != nil)
+    private func launchEngine(_ launch: Launch, replace: Int? = nil, starting: Bool = false) async throws -> RemoteServer.Engine {
+        try await RemoteServer.launch(on: machine.connection, environment: launch.environment, notes: ["settings": launch.fingerprint, "mac": Self.macID],
+                                      withAgents: launch.agents != nil, replace: replace, start: starting)
     }
 
     /// `kuvo-agents.js` as it goes to a machine: the bundle, with a last line naming its contents,
@@ -410,8 +436,8 @@ final class MachineEngine {
         connections += 1
         eventTask?.cancel()
         eventTask = nil
-        heartbeatTask?.cancel()
-        heartbeatTask = nil
+        stoppedWatch?.cancel()
+        stoppedWatch = nil
         server?.disconnect()
         server = nil
         api = nil
@@ -422,8 +448,43 @@ final class MachineEngine {
         state = .preparing
     }
 
-    /// Closes the connection and stops the engine on the machine.
+    /// Stops the engine on the machine until it's started again, from here or anywhere (Stop).
+    /// Its keeper and phone link stay, so a phone can start it.
     func stopEngine() async {
+        startWanted = false
+        disconnect()
+        let attempt = connections
+        let stopped = (try? await RemoteServer.stopEngine(on: machine.connection)) != nil
+        // Unless it was connected again meanwhile.
+        guard stopped, attempt == connections, case .preparing = state else { return }
+        isStopped = true
+        watchWhileStopped()
+    }
+
+    /// While it's stopped, each minute: started from elsewhere (a phone, another Mac), it connects.
+    private func watchWhileStopped() {
+        stoppedWatch?.cancel()
+        let connection = machine.connection
+        stoppedWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled, self?.isWaitingStopped == true else { return }
+                guard case .running? = try? await RemoteServer.find(on: connection) else { continue }
+                guard !Task.isCancelled, let self, self.isWaitingStopped else { return }
+                self.onStartedElsewhere()
+                return
+            }
+        }
+    }
+
+    private var isWaitingStopped: Bool {
+        guard isStopped, case .preparing = state else { return false }
+        return true
+    }
+
+    /// Closes the connection and stops everything Kuvo Code runs there, for good (the machine
+    /// removed, or a demo or test copy's, which leaves nothing running).
+    func shutDown() async {
         disconnect()
         try? await RemoteServer.stop(on: machine.connection)
     }
@@ -451,18 +512,6 @@ final class MachineEngine {
         }
         signInTurn = Task { _ = await turn.value }
         return await turn.value
-    }
-
-    /// The machine's engine stops by itself after a day without the app: say it's still here.
-    private func keepAlive() {
-        heartbeatTask?.cancel()
-        let connection = machine.connection
-        heartbeatTask = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(600))
-                await RemoteServer.heartbeat(on: connection)
-            }
-        }
     }
 
     private func listen(to api: OpenCodeAPI) {
@@ -860,7 +909,7 @@ final class Machines {
                     removing.insert(id)
                     Task { [weak self] in
                         let forgotten = await engine.forgetAccounts()
-                        await engine.stopEngine()
+                        await engine.shutDown()
                         // What it kept to work on its own goes too: its keys, how it starts after
                         // a restart, and the crontab line that does it.
                         let leftovers = Self.leftoversScript

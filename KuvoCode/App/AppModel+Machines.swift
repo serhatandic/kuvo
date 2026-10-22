@@ -153,6 +153,7 @@ extension AppModel {
         }
         engine.disconnect()
         workspace.forget(engine.machine.id)
+        if engine.isStopped { engine.startWanted = true }
         connect(engine)
     }
 
@@ -192,6 +193,32 @@ extension AppModel {
 
     /// Installs and starts a machine's engine over SSH, with what it gets from this Mac, and
     /// feeds its sessions into the workspace.
+    /// A demo or test copy's own folder on machines (`KUVO_DEMO_MACHINE_ROOT`): what it starts
+    /// there stops when it's done with it, leaving nothing running. Kuvo Code's own runs on its own.
+    var leavesMachinesRunning: Bool { RemoteEngineInstaller.root == ".kuvo-code" }
+
+    /// Starts a machine's engine stopped on purpose (Start), and connects to it.
+    func startEngine(_ engine: MachineEngine) {
+        engine.disconnect()
+        workspace.forget(engine.machine.id)
+        engine.startWanted = true
+        connect(engine)
+    }
+
+    /// What Connect does where you pick a machine: one stopped on purpose starts (Start).
+    func connectOrStart(_ engine: MachineEngine) {
+        if engine.isStopped { startEngine(engine) } else { connect(engine) }
+    }
+
+    /// Stops a machine's engine until it's started again, from here or a phone (Stop): its sessions
+    /// stay there, and its bots' wake-ups wait.
+    func stopEngine(_ engine: MachineEngine) {
+        engine.browser.reset()
+        utilities.closeMachineBrowser(engine.machine.id)
+        workspace.forget(engine.machine.id)
+        Task { await engine.stopEngine() }
+    }
+
     func connect(_ engine: MachineEngine) {
         let machine = engine.machine.id
         // Its pages are the panel's browser tabs while a session there is in view.
@@ -227,6 +254,10 @@ extension AppModel {
                 await self.moves.recover()
             }
         }
+        engine.onStartedElsewhere = { [weak self, weak engine] in
+            guard let self, let engine, self.machines.engine(machine) === engine else { return }
+            self.connect(engine)
+        }
         engine.onExit = { [weak self] in
             self?.workspace.forget(machine)
             self?.machineGroups.disconnected(machine)
@@ -261,7 +292,7 @@ extension AppModel {
         // Removed while it started: nothing of yours goes there (its removal waits in the queue).
         // Checked again before each step that sends it something, as removing can come any time.
         guard machines.engine(engine.machine.id) === engine else {
-            if engine.isReady { await engine.stopEngine() }
+            if engine.isReady { await engine.shutDown() }
             return
         }
         // What waits for it (a bot deleted, an integration removed while it was away), now.
@@ -324,13 +355,14 @@ extension AppModel {
         engine.isReady && machines.engine(engine.machine.id) === engine
     }
 
-    /// Closes the connection to a machine. Its engine stops too, unless a session there is still
-    /// working: then it carries on, and its work is there when you connect again.
+    /// Closes this Mac's connection to a machine. It runs on, as a box of its own: its sessions,
+    /// bots, group chats and phone link carry on, and are there when you connect again. (A demo or
+    /// test copy's stops, unless a session there is working.)
     func disconnect(_ engine: MachineEngine) {
+        engine.startWanted = false
         engine.browser.reset()
         utilities.closeMachineBrowser(engine.machine.id)
-        let busy = workspace.isRunning(on: engine.machine.id)
-        if busy { engine.disconnect() } else { Task { await engine.stopEngine() } }
+        if leavesMachinesRunning || workspace.isRunning(on: engine.machine.id) { engine.disconnect() } else { Task { await engine.shutDown() } }
         workspace.forget(engine.machine.id)
     }
 
@@ -374,17 +406,25 @@ extension AppModel {
         Task { await moves.machineRemoved(id) }
     }
 
-    /// When the app quits: each machine's engine stops, unless a session there is still working,
-    /// which carries on there while this Mac is off, or a bot there has a wake-up waiting. Its
-    /// phone link bridge tells your phones what happens there from now on.
+    /// When the app quits: each machine runs on, as a box of its own, and its phone link bridge
+    /// tells your phones what happens there from now on. (A demo or test copy's stops, unless a
+    /// session there is working.)
     func stopMachines() {
         let leaving = PhoneLink.isEnabled ? RemoteServer.leavingScript(MachineEngine.macID) : ""
         var left = Set<String>()
-        for engine in machines.engines.values where engine.isReady {
+        // Each machine it's connected to, and a demo or test copy's it reached at all: a connection
+        // tried starts the box's keeper there.
+        let reached = machines.engines.values.filter { engine in
+            if engine.isReady { return true }
+            guard !leavesMachinesRunning else { return false }
+            if case .preparing = engine.state { return engine.isStopped }
+            return true
+        }
+        for engine in reached {
             let busy = workspace.isRunning(on: engine.machine.id)
             engine.disconnect()
-            if !busy {
-                RemoteServer.stopNow(on: engine.machine.connection, unlessWaking: true, first: leaving)
+            if !leavesMachinesRunning && !busy {
+                RemoteServer.stopNow(on: engine.machine.connection, first: leaving)
             } else if !leaving.isEmpty {
                 RemoteServer.runNow(leaving, on: engine.machine.connection)
             }
@@ -423,7 +463,8 @@ extension AppModel {
                    (try? await engine.api?.activeSessions())?.isEmpty == true {
                     // Said in the log, so one that keeps starting over is seen there.
                     Logger(subsystem: "run.kuvo.code", category: "machine").info("\(engine.machine.id, privacy: .public)'s engine starts over with this Mac's newer settings")
-                    await engine.stopEngine()
+                    // Connecting again starts it over with them, in one start (`MachineEngine.start`).
+                    engine.disconnect()
                     // Apart from this task, which connecting replaces.
                     Task { await self.start(engine) }
                     return

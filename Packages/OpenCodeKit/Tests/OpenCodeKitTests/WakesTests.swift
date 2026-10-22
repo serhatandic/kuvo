@@ -642,10 +642,10 @@ struct WakesTests {
         #expect(Wakes.Pending(id: "notes.txt", note: "") == nil)
     }
 
-    @Test func theWatchdogSendsWakeUpsAndKeepsTheEngineForThem() {
-        let script = RemoteServer.launchScript
-        #expect(script.contains("kuvo-wake\" fire"))
-        #expect(script.contains("bots/*/wakes/*"))
-        #expect(script.contains("KUVO_WAKE"))
+    /// The machine's keeper sends them each minute (RebootTests runs it); the launch puts
+    /// `kuvo-wake` there.
+    @Test func theKeeperSendsWakeUps() {
+        #expect(RemoteServer.bootScript.contains("kuvo-wake\" fire"))
+        #expect(RemoteServer.launchScript.contains("KUVO_WAKE"))
     }
 }

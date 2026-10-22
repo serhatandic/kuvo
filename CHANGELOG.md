@@ -6,6 +6,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A remote machine's engine runs on its own, with its sessions, bots and group chats: quitting Kuvo Code or clicking Disconnect leaves it running, it no longer stops after a day without Kuvo Code, and it starts again by itself if it crashes.
+- Stop Engine in Settings › Machines stops a machine's engine until you click Start Engine, through restarts of the machine too.
+
 ## 0.7.2
 
 - Edit Bot shows the model a bot really talks on: when the one picked for it belongs to an account you've signed out of, its conversation's model, rather than "Choose a Model".

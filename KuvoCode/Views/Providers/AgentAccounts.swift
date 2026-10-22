@@ -121,16 +121,16 @@ struct SubscriptionsSection: View {
     /// A machine whose agents can't be asked now: why, and a way back.
     @ViewBuilder private func unavailable(_ engine: MachineEngine) -> some View {
         if engine.isReady {
-            ErrorCard(message: "The coding agents aren’t running on \(engine.machine.name). They start with its engine: when nothing runs there, disconnect it in Settings › Machines and connect it again.")
+            ErrorCard(message: "The coding agents aren’t running on \(engine.machine.name). They start with its engine: when nothing runs there, stop its engine in Settings › Machines and start it again.")
         } else {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(engine.machine.name) isn’t connected")
+                    Text(engine.isStopped ? "\(engine.machine.name)’s engine is stopped" : "\(engine.machine.name) isn’t connected")
                     MachineStatus(engine: engine)
                 }
                 Spacer()
                 if !engine.connection.isUnderWay {
-                    Button("Connect") { app.connect(engine) }
+                    Button(engine.isStopped ? "Start" : "Connect") { app.connectOrStart(engine) }
                         .buttonStyle(.glass)
                 }
             }

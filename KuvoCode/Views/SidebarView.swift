@@ -400,7 +400,7 @@ struct SidebarView: View {
             if let engine = app.machines.engine(RemoteFolder.machine(of: project.directory)) {
                 if !engine.isReady {
                     Divider()
-                    Button("Connect to \(engine.machine.name)") { app.connect(engine) }
+                    Button(engine.isStopped ? "Start \(engine.machine.name)" : "Connect to \(engine.machine.name)") { app.connectOrStart(engine) }
                 }
             } else {
                 Divider()
@@ -637,10 +637,10 @@ struct SidebarView: View {
             Button("Edit Bot…") { editBot(bot) }
         } else if let engine = app.machines.engine(workspace.waitingMachine(for: session.id)) {
             // On a machine that's away, the session is as last seen: what it does waits for it.
-            Text("\(engine.machine.name) isn’t connected")
+            Text(engine.isStopped ? "\(engine.machine.name)’s engine is stopped" : "\(engine.machine.name) isn’t connected")
             switch engine.state {
             case .starting, .downloading: Text("Connecting…")
-            default: Button("Connect Now") { app.reconnectNow(engine) }
+            default: Button(engine.isStopped ? "Start" : "Connect Now") { app.reconnectNow(engine) }
             }
         } else {
             liveMenu(for: session, in: place)
@@ -1516,7 +1516,7 @@ private struct AccountsRow: View {
         for engine in app.machines.list.compactMap({ app.machines.engine($0.id) }) {
             submenu.addItem(ActionItem(engine.machine.name, subtitle: engine.statusText, image: Self.symbol("server.rack")) {
                 switch engine.state {
-                case .preparing, .failed: app.connect(engine)
+                case .preparing, .failed: app.connectOrStart(engine)
                 default: app.openSettings(.machines)
                 }
             })
