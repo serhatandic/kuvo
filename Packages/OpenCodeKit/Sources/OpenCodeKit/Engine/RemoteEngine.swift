@@ -547,10 +547,6 @@ public final class RemoteServer: @unchecked Sendable {
         port=$KUVO_PORT; record=$KUVO_RECORD; unset KUVO_PORT KUVO_RECORD
         aport=${KUVO_AGENTS_PORT-}; unset KUVO_AGENTS_PORT
         \(RemoteEngineInstaller.folders)
-        if [ -n "${KUVO_SETTINGS+set}" ]; then
-          mkdir -p "$K/config/opencode" && (umask 077; printf '%s\\n' "$KUVO_SETTINGS" >"$K/config/opencode/opencode.json")
-          unset KUVO_SETTINGS
-        fi
         R="$K/run"; mkdir -p "$R"; chmod 700 "$R"
         # One launch at a time; one left by a launch that was cut off goes after five minutes (a
         # launch takes three at most). Never one without it.
@@ -569,6 +565,12 @@ public final class RemoteServer: @unchecked Sendable {
           \(boot ? "exit 0" : "echo \"An engine runs there now.\" >&2; exit 5")
         fi
         \(boot ? "unset KUVO_BOOT" : "rm -rf \"$K/keys\"")
+        # Its settings only once it's the start that goes ahead: one that finds an engine running
+        # (another Mac's, started at the same moment) leaves that one's as they are.
+        if [ -n "${KUVO_SETTINGS+set}" ]; then
+          mkdir -p "$K/config/opencode" && (umask 077; printf '%s\\n' "$KUVO_SETTINGS" >"$K/config/opencode/opencode.json")
+          unset KUVO_SETTINGS
+        fi
         mkdir -p "$K/keys"; chmod 700 "$K/keys"
         for v in $(env | sed -n 's/^\\(KUVO_KEY_[A-Za-z0-9_]*\\)=.*/\\1/p'); do
           (umask 077; printf '%s' "$(printenv "$v")" >"$K/keys/$v"); unset "$v"

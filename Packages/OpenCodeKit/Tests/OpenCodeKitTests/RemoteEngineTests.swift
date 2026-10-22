@@ -58,8 +58,9 @@ struct RemoteEngineTests {
     /// Settings given as `KUVO_SETTINGS` become the engine's own settings file, in its folder, for
     /// its user only, and aren't left in its environment; without them, the file is left alone.
     @Test func settingsGoInTheEnginesOwnFile() throws {
-        // Up to where it starts the engine.
-        let setup = try #require(RemoteServer.launchScript.components(separatedBy: "R=\"$K/run\"").first) + "env | grep -c '^KUVO_SETTINGS=' || true\n"
+        // Up to its keys: past the start lock and the check for one running, before which a start
+        // that won't go ahead (another Mac's engine came up meanwhile) writes nothing.
+        let setup = try #require(RemoteServer.launchScript.components(separatedBy: "mkdir -p \"$K/keys\";").first) + "env | grep -c '^KUVO_SETTINGS=' || true\n"
         for shell in WakesTests.shells {
             let home = FileManager.default.temporaryDirectory.appending(path: "opencodekit-home-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: home) }
