@@ -585,6 +585,7 @@ test("engine events become notifications, as the Mac words them", async () => {
     ses_main: { id: "ses_main", title: "Fix the tests", location: { directory: "/home/me/kuvo-ai" } },
     ses_sub: { id: "ses_sub", parentID: "ses_main", title: "Explore", location: { directory: "/home/me/kuvo-ai" } },
     ses_bot: { id: "ses_bot", title: "Fixer", metadata: { kuvo: { bot: "bot_1" } }, location: { directory: "/home/me/.kuvo-code/bots/bot_1/workspace" } },
+    ses_run: { id: "ses_run", title: "Auto", metadata: { kuvo: { engineFor: "ses_agent" } }, location: { directory: "/home/me/kuvo-ai" } },
   };
   const messages = { data: [{ type: "assistant", content: [{ type: "text", text: "**All** green:\n 42 tests pass." }] }, { type: "user", content: [] }] };
   // ses_main is at work, with a tool of the "linear" server running.
@@ -624,6 +625,11 @@ test("engine events become notifications, as the Mac words them", async () => {
   const failed = await link.noticeFor({ type: "session.execution.failed", data: { sessionID: "ses_main" } }, get);
   assert.equal(failed.category, "failed");
   assert.equal(failed.body, "Stopped with an error.");
+
+  // An engine run a coding agent's session started: the agents' bridge tells its news, as that
+  // session's, not the engine.
+  assert.equal(await link.noticeFor({ type: "permission.asked", data: { id: "per_2", sessionID: "ses_run", action: "shell", resources: ["ls"] } }, get), null);
+  assert.equal(await link.noticeFor({ type: "session.execution.succeeded", data: { sessionID: "ses_run" } }, get), null);
 
   // A subagent's run is its parent's business; a stopped run and the rest aren't news.
   assert.equal(await link.noticeFor({ type: "session.execution.succeeded", data: { sessionID: "ses_sub" } }, get), null);
@@ -863,4 +869,15 @@ test("a phone answers what an agent asks for while it browses on a machine, with
   }
   // The browser gone: an answer can't reach it.
   assert.equal(await link.answerAsk("ask-1", { type: "declined" }, path.join(run, "browser.sock")), false);
+});
+
+test("a group chat that lives on a machine tells your phones its news, as the Mac words it", () => {
+  const met = link.groupNotice({ type: "kuvo.group.met", data: { id: "grp_1", name: "Standup", who: "Ada", last: { kind: "wrapUp", text: "**Done**: shipped the fix." } } });
+  assert.deepEqual(met, { title: "Standup", subtitle: "Ada\u2019s wrap-up", body: "Done: shipped the fix.", category: "message", thread: "grp_1", data: { group: "grp_1" } });
+  assert.equal(link.groupNotice({ type: "kuvo.group.met", data: { id: "grp_1", name: "Standup", who: "Ada", last: { kind: "message", text: "Hi" } } }).subtitle, "Ada");
+  assert.equal(link.groupNotice({ type: "kuvo.group.met", data: { id: "grp_1", name: "Standup" } }).body, "The meeting came, but no one could take part.");
+  const done = link.groupNotice({ type: "kuvo.group.done", data: { id: "grp_1", name: "Standup", who: "Ada", text: "x".repeat(400) } });
+  assert.equal(done.subtitle, "Ada finished its part");
+  assert.equal(done.body.length, 220);
+  assert.equal(link.groupNotice({ type: "kuvo.group.done", data: {} }), null);
 });

@@ -152,8 +152,11 @@ Who sends it:
   its screen locked), or while a phone has a session open (the phone leaves out what's on
   its screen); at the Mac, its own notifications are enough.
 - **A machine's bridge**, for that machine's sessions (permissions, questions, runs finished
-  or failed, bots' news) and, from 0.9.9, what agents ask for as they browse there (category
-  `ask`, as the Mac's), while no Mac is connected to it. A Mac that's connected touches
+  or failed, bots' news), from 0.9.9 what agents ask for as they browse there (category `ask`),
+  and from 0.9.10 its coding agents' sessions and the group chats that live there (a meeting
+  held, a bot done with its part: category `message`, `data.group`), each as the Mac words it,
+  while no Mac is connected to it. An engine run a coding agent's session started (Auto on an
+  engine model) tells its news as that session's, once. A Mac that's connected touches
   `~/.kuvo-code/run/present/<its id>` each minute and removes it when it quits; the bridge
   tells your phones only when none of those files is less than 150 seconds old. The Mac
   tells them only for 120 seconds after it last touched its file, so the two never both do.

@@ -23,7 +23,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Goes up with every change, so `setup` replaces a running bridge that's older.
-export const BRIDGE_VERSION = "0.9.9";
+export const BRIDGE_VERSION = "0.9.10";
 const K = process.env.KUVO_HOME || path.join(os.homedir(), ".kuvo-code");
 const RUN = path.join(K, "run");
 export const LINK_FILE = path.join(RUN, "link.json");
@@ -1729,6 +1729,10 @@ export function describeForm(form) {
 
 const isBot = session => Boolean(session.metadata?.kuvo?.bot) || /\/bots\/bot_[^/]+\//.test(`${session.location?.directory ?? ""}/`);
 
+// An engine run a coding agents' session started (Auto on one of the engine's models), kept out
+// of sight: the agents' bridge tells its news, as its session's.
+const isHiddenRun = session => Boolean(session?.metadata?.kuvo?.engineFor);
+
 // Asks the engine for `route` (a path under its API), as JSON.
 function engineGet(engine, route) {
   return fetch(`http://127.0.0.1:${engine.port}/${route}`, { headers: { authorization: `Basic ${Buffer.from(`opencode:${engine.password}`).toString("base64")}` }, signal: AbortSignal.timeout(10_000) })
@@ -1777,6 +1781,7 @@ export async function noticeFor(event, get) {
   switch (event.type) {
     case "permission.asked": {
       const where = await shown(data.sessionID);
+      if (isHiddenRun(where)) return null;
       return about(where, "permission", describePermission(data), { request: data.id, ...(where.id !== data.sessionID ? { requestSession: data.sessionID } : {}) });
     }
     case "form.created": {
@@ -1785,6 +1790,7 @@ export async function noticeFor(event, get) {
       const asker = form.sessionID === "global" ? await waitingOn(form.metadata?.server, event.location?.directory) : form.sessionID;
       if (!asker) return null;
       const where = await shown(asker);
+      if (isHiddenRun(where)) return null;
       return about(where, "question", describeForm(form), { request: form.id, ...(where.id !== form.sessionID ? { requestSession: form.sessionID } : {}) });
     }
     case "session.execution.succeeded":
@@ -1792,7 +1798,7 @@ export async function noticeFor(event, get) {
       const id = data.sessionID;
       const ended = await session(id);
       // A subagent's run is part of its parent's.
-      if (ended.parentID) return null;
+      if (ended.parentID || isHiddenRun(ended)) return null;
       if (event.type === "session.execution.failed") return about(ended, "failed", "Stopped with an error.");
       let reply = "";
       try {
@@ -1834,24 +1840,47 @@ async function* serverEvents(body) {
   }
 }
 
-// The events that can be news.
+// The events that can be news: a session's (the engine's, or a coding agent's) and a group
+// chat's.
 const NEWS = new Set(["permission.asked", "form.created", "session.execution.succeeded", "session.execution.failed"]);
+const GROUP_NEWS = new Set(["kuvo.group.met", "kuvo.group.done"]);
 
-// Follows the engine's events for as long as the bridge runs, handing each one's notification to
-// `tell`, while no Mac is present.
-async function watchEngine(tell) {
+// A group chat's news, as the Mac tells it: its meeting held (who spoke last, or no one could take
+// part), or a bot done with the part it took on.
+export function groupNotice(event) {
+  const data = event.data ?? {};
+  if (typeof data.id !== "string") return null;
+  const about = { title: String(data.name ?? ""), category: "message", thread: data.id, data: { group: data.id } };
+  if (event.type === "kuvo.group.met") {
+    if (!data.last) return { ...about, body: "The meeting came, but no one could take part." };
+    const who = data.who ? (data.last.kind === "wrapUp" ? `${data.who}’s wrap-up` : String(data.who)) : undefined;
+    return { ...about, subtitle: who, body: cut(plain(data.last.text), 220) };
+  }
+  if (event.type === "kuvo.group.done") return { ...about, subtitle: `${data.who} finished its part`, body: cut(plain(data.text), 220) };
+  return null;
+}
+
+// Follows `source`'s events (the engine's, or the coding agents' bridge's: `read` gives its port
+// and password) for as long as the bridge runs, handing each one's notification to `tell`, while
+// no Mac is present.
+async function watchEvents(read, tell) {
   let attempt = 0;
   while (true) {
     try {
-      const engine = readEngineFile();
-      const response = await fetch(`http://127.0.0.1:${engine.port}/api/event`, {
-        headers: { authorization: `Basic ${Buffer.from(`opencode:${engine.password}`).toString("base64")}`, accept: "text/event-stream" },
+      const source = read();
+      const response = await fetch(`http://127.0.0.1:${source.port}/api/event`, {
+        headers: { authorization: `Basic ${Buffer.from(`opencode:${source.password}`).toString("base64")}`, accept: "text/event-stream" },
       });
       if (!response.ok || !response.body) throw new Error(`${response.status}`);
       attempt = 0;
       for await (const event of serverEvents(response.body)) {
-        if (!NEWS.has(event.type) || macPresent()) continue;
-        noticeFor(event, route => engineGet(engine, route)).then(notice => notice && tell(notice)).catch(() => {});
+        if ((!NEWS.has(event.type) && !GROUP_NEWS.has(event.type)) || macPresent()) continue;
+        if (GROUP_NEWS.has(event.type)) {
+          const notice = groupNotice(event);
+          if (notice) tell(notice);
+          continue;
+        }
+        noticeFor(event, route => engineGet(source, route)).then(notice => notice && tell(notice)).catch(() => {});
       }
     } catch {}
     attempt += 1;
@@ -2368,7 +2397,9 @@ async function run() {
     }
     return sent;
   };
-  watchEngine(tellPhones);
+  watchEvents(readEngineFile, tellPhones);
+  // The coding agents here (their sessions, and group chats that live here), through their bridge.
+  watchEvents(readBridgeFile, tellPhones);
   watchAsks(tellPhones);
 
   let attempt = 0;
