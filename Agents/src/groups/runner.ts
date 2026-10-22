@@ -83,15 +83,16 @@ class Cancelled extends Error {}
 const sleep = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((done, fail) => {
     if (signal?.aborted) return fail(new Cancelled())
-    const timer = setTimeout(done, ms)
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer)
-        fail(new Cancelled())
-      },
-      { once: true },
-    )
+    const stop = () => {
+      clearTimeout(timer)
+      fail(new Cancelled())
+    }
+    // Its listener goes with it, or a long turn's looks would pile them up on the run's signal.
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", stop)
+      done()
+    }, ms)
+    signal?.addEventListener("abort", stop, { once: true })
   })
 
 const groupMessageID = () => "gm_" + crypto.randomUUID().toLowerCase()
@@ -520,6 +521,9 @@ export class GroupRunner {
     if (!bot) return "absent"
     const live = this.state(id)
     live.speaking = botID
+    // Its run: once stopped, what it leaves behind is no longer its to clear (the next run's
+    // turn may be the same bot's).
+    const run = live.run
     this.told(id)
     // Its discussion stopped meanwhile (Stop, Undo, a move): it stops where it is.
     const going = () => {
@@ -568,7 +572,7 @@ export class GroupRunner {
       const sent = Date.now()
       await this.waitForRun(seat, promptID, sent, api, signal, (messages) => {
         const now = activityOf(messages, promptID, sent)
-        if (live.speaking !== botID || JSON.stringify(now) === JSON.stringify(live.activity ?? [])) return
+        if (live.run !== run || live.speaking !== botID || JSON.stringify(now) === JSON.stringify(live.activity ?? [])) return
         live.activity = now.length ? now : undefined
         this.told(id)
       })
@@ -594,7 +598,7 @@ export class GroupRunner {
       this.note(`${bot.name} couldn’t answer: ${reason(error)}`, id)
       return "absent"
     } finally {
-      if (live.speaking === botID) {
+      if (live.speaking === botID && live.run === run) {
         live.speaking = undefined
         live.activity = undefined
       }

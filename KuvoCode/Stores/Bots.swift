@@ -311,8 +311,11 @@ final class Bots {
     /// about a new name, personality or model; its group chats hear about them too. The rest is
     /// kept as it is now: its job may have changed in its memory while Edit Bot was open.
     func update(_ edited: Bot) async {
-        // Moving to another computer: the edit comes once it's there.
-        while Moves.isFrozen(edited.id) { try? await Task.sleep(for: .seconds(1)) }
+        // Moving to another computer: the edit comes once it's there (for ten minutes at most: a
+        // move cut short whose other computer doesn't answer keeps it here, where it's saved).
+        for _ in 0..<600 where Moves.isFrozen(edited.id) {
+            do { try await Task.sleep(for: .seconds(1)) } catch { break }
+        }
         guard let index = list.firstIndex(where: { $0.id == edited.id }) else { return }
         let old = list[index]
         var bot = old

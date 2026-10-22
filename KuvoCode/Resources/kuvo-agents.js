@@ -12181,11 +12181,15 @@ class Cancelled extends Error {
 var sleep = (ms, signal) => new Promise((done, fail) => {
   if (signal?.aborted)
     return fail(new Cancelled);
-  const timer = setTimeout(done, ms);
-  signal?.addEventListener("abort", () => {
+  const stop = () => {
     clearTimeout(timer);
     fail(new Cancelled);
-  }, { once: true });
+  };
+  const timer = setTimeout(() => {
+    signal?.removeEventListener("abort", stop);
+    done();
+  }, ms);
+  signal?.addEventListener("abort", stop, { once: true });
 });
 var groupMessageID = () => "gm_" + crypto.randomUUID().toLowerCase();
 var reason2 = (error3) => String(error3?.message ?? error3 ?? "it failed").trim();
@@ -12597,6 +12601,7 @@ class GroupRunner {
       return "absent";
     const live = this.state(id);
     live.speaking = botID;
+    const run2 = live.run;
     this.told(id);
     const going = () => {
       if (signal.aborted)
@@ -12645,7 +12650,7 @@ class GroupRunner {
       const sent = Date.now();
       await this.waitForRun(seat, promptID, sent, api, signal, (messages) => {
         const now2 = activity(messages, promptID, sent);
-        if (live.speaking !== botID || JSON.stringify(now2) === JSON.stringify(live.activity ?? []))
+        if (live.run !== run2 || live.speaking !== botID || JSON.stringify(now2) === JSON.stringify(live.activity ?? []))
           return;
         live.activity = now2.length ? now2 : undefined;
         this.told(id);
@@ -12672,7 +12677,7 @@ class GroupRunner {
       this.note(`${bot.name} couldn\u2019t answer: ${reason2(error3)}`, id);
       return "absent";
     } finally {
-      if (live.speaking === botID) {
+      if (live.speaking === botID && live.run === run2) {
         live.speaking = undefined;
         live.activity = undefined;
       }
@@ -13519,4 +13524,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Agents/src dfc4dd2a1c231104dbb6434a0edc3af9e67c3099c34f3e476ee40f19024db403
+// Built from Agents/src d7aec6bbbfdd0776a6227db97f9b610ef11e4c16e65f0a2b8a9da2c0e38fe54a

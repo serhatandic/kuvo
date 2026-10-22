@@ -658,6 +658,7 @@ final class BotGroups {
         discussions.removeValue(forKey: id)?.cancel()
         runs[id] = nil
         paused.remove(id)
+        activity[id] = nil
         // The bot talking, or the lead handing out the work.
         for speaker in [speaking.removeValue(forKey: id), splitting.removeValue(forKey: id)].compactMap({ $0 }) {
             guard let bot = app?.bots.bot(speaker), let seat = group(id)?.seats[speaker] else { continue }
@@ -1201,9 +1202,12 @@ final class BotGroups {
 
     /// One part, to its bot's conversation; then it's followed until the bot reports.
     private func hand(_ taskID: String, of wrapUpID: String, in id: String) async {
-        // A bot moving to another computer gets its part there, once it is.
+        // A bot moving to another computer gets its part there, once it is (for ten minutes at
+        // most: a move cut short whose other computer doesn't answer leaves it to the checks below).
         if let bot = group(id).flatMap({ group in messages(in: id).first { $0.id == wrapUpID }?.tasks?.first { $0.id == taskID }?.bot }) {
-            while Moves.isFrozen(bot) { try? await Task.sleep(for: .seconds(2)) }
+            for _ in 0..<300 where Moves.isFrozen(bot) {
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            }
         }
         guard let app, let group = group(id), let wrapUp = messages(in: id).first(where: { $0.id == wrapUpID }),
               let task = wrapUp.tasks?.first(where: { $0.id == taskID }) else { return }
@@ -1377,8 +1381,12 @@ final class BotGroups {
     /// The bot's seat in the chat, made the first time it's needed.
     private func seat(of bot: Bot, in id: String, api: OpenCodeAPI) async throws -> String {
         if let seat = group(id)?.seats[bot.id] {
-            // One an earlier version made: its rules as seats get them now, once a launch.
-            if seatsChecked.insert(seat).inserted { try? await api.setPermissions(session: seat, rules: Self.seatRules(for: bot)) }
+            // One an earlier version made: its rules and instructions as seats get them now, once a
+            // launch (so a seat from before & names whoever it asks with &, as the chat reads it).
+            if seatsChecked.insert(seat).inserted {
+                try? await api.setPermissions(session: seat, rules: Self.seatRules(for: bot))
+                if let group = group(id) { try? await api.setInstruction(session: seat, key: Self.seatKey, text: seatInstructions(for: bot, in: group)) }
+            }
             return seat
         }
         guard let group = group(id), let app else { throw CancellationError() }
