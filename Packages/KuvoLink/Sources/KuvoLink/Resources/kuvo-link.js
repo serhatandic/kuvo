@@ -22,7 +22,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Goes up with every change, so `setup` replaces a running bridge that's older.
-export const BRIDGE_VERSION = "0.9.4";
+export const BRIDGE_VERSION = "0.9.5";
 const K = process.env.KUVO_HOME || path.join(os.homedir(), ".kuvo-code");
 const RUN = path.join(K, "run");
 export const LINK_FILE = path.join(RUN, "link.json");
@@ -720,10 +720,23 @@ export function engineHandler(readEngine = readEngineFile, info = {}, readBridge
       yield { body: Buffer.from(JSON.stringify({ credentials: listed })) };
       return;
     }
-    // New bots and chats are the Mac's to make (it keeps their list); one can live here.
+    // New bots and group chats, made here as New Bot and New Group Chat make them on the Mac,
+    // which takes them in when it next connects.
     const route = request.path.split("?")[0];
-    if (route === "kuvo/bots/templates" || (request.method.toUpperCase() === "POST" && (route === "kuvo/bots" || route === "kuvo/groups"))) {
-      return yield* json(409, { message: "Make it from your Mac; it can live here." });
+    if (route === "kuvo/bots/templates") {
+      const kit = readKit();
+      if (!kit) return yield* json(409, { message: "Connect to this machine from your Mac once, then try again." });
+      return yield* json(200, botTemplates(kit, info.name));
+    }
+    if (request.method.toUpperCase() === "POST" && route === "kuvo/bots") {
+      const { status, value } = await makeBot(parsed(request.body), readEngine, bridge, info.name, signal);
+      return yield* json(status, value);
+    }
+    if (request.method.toUpperCase() === "POST" && route === "kuvo/groups") {
+      const target = bridge();
+      if (!target) return yield* json(503, { message: "Group chats run with the coding agents' bridge, which isn't running on this machine." });
+      const { status, value } = await makeGroup(parsed(request.body), target, signal);
+      return yield* json(status, value);
     }
     // The group chats that live here, as the Mac answers its own (`kuvo/groups`), from the
     // coding agents' bridge, which runs them.
@@ -1280,6 +1293,163 @@ export function listBots(machine) {
   }
   // In the order they were made, as the Mac's list is.
   return bots.sort((a, b) => a.created.localeCompare(b.created)).map(entry => entry.bot);
+}
+
+// ---- Bots and group chats made here ----
+
+// What New Bot needs here, which the Mac gives the machine as it connects (Bots.MachineKit).
+const KIT_FILE = path.join(BOTS, "kit.json");
+// The coding agents' providers (the Mac's OutsideAgents): a bot on one of theirs runs with them.
+const AGENT_PROVIDERS = ["claude-code", "codex-cli", "cursor", "grok-cli", "antigravity"];
+const runsWithAgents = model => model?.providerID === "auto" || AGENT_PROVIDERS.includes(String(model?.providerID ?? "").split("@")[0]);
+
+export function readKit() {
+  try {
+    const kit = JSON.parse(textOf(KIT_FILE) ?? "");
+    return kit?.kuvo === 1 && Array.isArray(kit.templates) && Array.isArray(kit.personalities) && typeof kit.instructions === "string" ? kit : null;
+  } catch {
+    return null;
+  }
+}
+
+const parsed = body => {
+  try {
+    return JSON.parse(Buffer.from(body ?? "").toString() || "{}");
+  } catch {
+    return undefined;
+  }
+};
+
+// As Swift writes dates: to the second.
+const stamp = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+const newID = prefix => prefix + Array.from(crypto.randomBytes(10), byte => "abcdefghijklmnopqrstuvwxyz0123456789"[byte % 36]).join("");
+// A name as one line of plain text, as the Mac's name field has it.
+const plainName = text => String(text ?? "").replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").split(/\s+/).filter(Boolean).join(" ");
+
+// `kuvo/bots/templates`, as the Mac's: what New Bot offers, the model a bot starts on here (by
+// this machine's name, as its bots' `machine` has it), and its projects.
+export function botTemplates(kit, machine) {
+  return {
+    templates: kit.templates.map(({ firstMessage: _, ...template }) => template),
+    personalities: kit.personalities.map(({ instruction: _, ...personality }) => personality),
+    looks: kit.looks,
+    startingModel: { [machine || "machine"]: kit.startingModel ?? null },
+    projects: (kit.projects ?? []).map(project => ({ ...project, machine: machine || undefined })),
+  };
+}
+
+async function call(target, method, route, body, signal) {
+  const response = await fetch(`http://127.0.0.1:${target.port}${route}`, {
+    method,
+    headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`, ...(body ? { "content-type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+    signal,
+  });
+  const value = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(value?.message || `It answered ${response.status}.`);
+  return value?.data ?? value;
+}
+
+// What a bot is told, from the kit's words with its own name, folder, personality and project.
+export function botInstructions(kit, name, folder, personality, project) {
+  let text = kit.instructions.replaceAll("⟦name⟧", name).replaceAll("⟦folder⟧", folder);
+  text = personality ? text.replace("⟦personality⟧", personality) : text.replace("\n⟦personality⟧\n", "");
+  if (project) text = text.replace(`\n\n${kit.identityNote}`, `\n\n${kit.projectNote}\n\n${kit.identityNote}`);
+  return text;
+}
+
+// `POST kuvo/bots`, as the Mac's: the bot made here, its folder, conversation and instructions,
+// and the template's job for your composer, or else its greeting, so it writes first.
+export async function makeBot(given, readEngine, readBridge, machine, signal) {
+  const no = (status, message) => ({ status, value: { message } });
+  const kit = readKit();
+  if (!kit) return no(409, "Connect to this machine from your Mac once, then try again.");
+  if (!given || typeof given !== "object") return no(400, "That isn’t a bot to make.");
+  const name = plainName(given.name);
+  if (!name) return no(400, "A bot needs a name.");
+  let template;
+  if (given.template !== undefined && given.template !== null) {
+    template = kit.templates.find(each => each.id === given.template);
+    if (!template) return no(400, `There’s no template “${given.template}”.`);
+  }
+  const personalityID = given.personality ?? template?.personality;
+  const personality = personalityID ? kit.personalities.find(each => each.id === personalityID) : undefined;
+  if (personalityID && !personality) return no(400, `There’s no personality “${personalityID}”.`);
+  const project = given.project ?? undefined;
+  if (project !== undefined && !(kit.projects ?? []).some(each => each.directory === project)) return no(400, "That project isn’t in Kuvo Code.");
+  const looks = kit.looks;
+  const pick = list => list[crypto.randomInt(list.length)];
+  const fits = look => look && looks.colors.includes(look.color) && looks.shapes.includes(look.shape) && looks.faces.includes(look.face);
+  const look = fits(given.look) ? given.look : template?.look ?? { color: pick(looks.colors), shape: pick(looks.shapes), face: pick(looks.faces) };
+  const model = given.model && typeof given.model.id === "string" && typeof given.model.providerID === "string" ? given.model : kit.startingModel;
+  if (!model) return no(422, "There’s no model to start it on here: sign in to an account on this machine first.");
+  const agents = runsWithAgents(model);
+  let target;
+  try {
+    target = agents ? readBridge() : readEngine();
+  } catch {}
+  if (!target) return no(503, agents ? "The coding agents aren’t running on this machine." : "The engine isn’t running.");
+  // A model of the engine's whose account isn't signed in here: said now, as the engine would drop it.
+  if (!agents) {
+    const ready = await call(target, "GET", "/api/provider", undefined, signal).catch(() => undefined);
+    const ids = Array.isArray(ready) ? ready.map(each => each?.id) : [];
+    if (ids.length && !ids.includes(model.providerID)) return no(422, `${model.id} needs a sign-in on this machine: sign in to it in Settings › Accounts, or choose another model.`);
+  }
+
+  const id = newID("bot_");
+  const folder = path.join(BOTS, id);
+  const directory = project ?? path.join(folder, "workspace");
+  const discard = () => fs.rmSync(folder, { recursive: true, force: true });
+  let session;
+  try {
+    fs.mkdirSync(path.join(folder, "workspace"), { recursive: true });
+    fs.mkdirSync(path.join(folder, "wakes"), { recursive: true });
+    fs.writeFileSync(path.join(folder, "MEMORY.md"), kit.memory.replaceAll("⟦name⟧", name));
+    const rules = [...(kit.rules ?? []), { action: "external_directory", resource: path.join(folder, "*"), effect: "allow" }];
+    session = await call(target, "POST", "/api/session", { title: name, location: { directory }, model, permissions: rules }, signal);
+    if (!session?.id) throw new Error("No conversation was made.");
+    await call(target, "PATCH", `/api/session/${encodeURIComponent(session.id)}`, { metadata: { kuvo: { bot: id } } }, signal).catch(() => {});
+    const told = botInstructions(kit, name, folder, personality?.instruction, project);
+    await call(target, "PUT", `/api/experimental/session/${encodeURIComponent(session.id)}/instructions/entries/kuvo.bot`, { value: told }, signal);
+    fs.writeFileSync(path.join(folder, "session"), session.id);
+    fs.writeFileSync(path.join(folder, "directory"), directory);
+    if (kit.timeZone) fs.writeFileSync(path.join(folder, "timezone"), kit.timeZone);
+    if (kit.zoneinfo) fs.writeFileSync(path.join(folder, "zoneinfo"), Buffer.from(kit.zoneinfo, "base64"));
+    if (agents) fs.writeFileSync(path.join(folder, "via"), "bridge");
+    const now = stamp();
+    const described = { created: now, id, job: "", kuvo: DESCRIPTION, look, model, name, ...(personality ? { personality: personality.id } : {}), ...(project ? { project } : {}), updated: now };
+    fs.writeFileSync(path.join(folder, "bot.json"), JSON.stringify(described, null, 2));
+  } catch (error) {
+    if (session?.id) await call(target, "DELETE", `/api/session/${encodeURIComponent(session.id)}`, undefined, signal).catch(() => {});
+    discard();
+    return no(503, `The bot couldn’t be made: ${error?.message ?? error}`);
+  }
+  // Without a template's job for you to send, it writes first.
+  if (!template) await call(target, "POST", `/api/session/${encodeURIComponent(session.id)}/synthetic`, { text: kit.greeting, description: "A new bot's first message" }, signal).catch(() => {});
+  const bot = listBots(machine).find(each => each.id === id);
+  return { status: 201, value: { bot, firstMessage: template?.firstMessage ?? null } };
+}
+
+// `POST kuvo/groups`, as the Mac's: a group chat of this machine's bots, which lives here and runs
+// in the coding agents' bridge, as the others here do.
+export async function makeGroup(given, target, signal) {
+  const no = (status, message) => ({ status, value: { message } });
+  if (!given || typeof given !== "object") return no(400, "That isn’t a group chat to make.");
+  const name = plainName(given.name);
+  if (!name) return no(400, "A group chat needs a name.");
+  const members = [...new Set(Array.isArray(given.members) ? given.members.filter(each => typeof each === "string") : [])];
+  if (members.length < 2) return no(400, "A group chat needs at least two bots.");
+  const here = new Set(listBots().map(bot => bot.id));
+  const missing = members.find(member => !here.has(member));
+  if (missing) return no(404, `There’s no bot “${missing}”.`);
+  const purpose = typeof given.purpose === "string" && given.purpose.trim() ? given.purpose.trim() : undefined;
+  const id = newID("grp_");
+  const now = stamp();
+  const group = { id, name, ...(purpose ? { purpose } : {}), members, seats: {}, heard: {}, created: now, viewed: now };
+  const { status, value } = await askGroups(target, "PUT", `/${id}`, { group, messages: [], status: "active" }, signal).catch(error => ({ status: 503, value: { message: String(error?.message ?? error) } }));
+  if (status !== 200) return no(status === 409 ? 409 : 503, value?.message ?? "The group chat couldn’t be made.");
+  const listed = await groupsList(target, signal).catch(() => null);
+  return { status: 201, value: { group: listed?.groups.find(each => each.id === id) ?? null } };
 }
 
 const LETTERS = /^[A-Za-z0-9]+$/;

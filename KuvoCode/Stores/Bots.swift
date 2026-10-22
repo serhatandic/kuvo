@@ -741,13 +741,16 @@ final class Bots {
 
     /// What the bot's session knows about being a bot: who it is, its job, its memory and how to
     /// wake itself up.
-    static func instructions(for bot: Bot) -> String {
+    /// `personality`: what its personality tells it, when not its own (a machine's kit, see
+    /// `MachineKit`, has a stand-in there).
+    static func instructions(for bot: Bot, personality: String? = nil) -> String {
         let place = bot.machine.map { "the Linux machine \"\($0)\"" } ?? "this Mac"
         let job = bot.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        let told = personality ?? Personalities.shared.personality(bot.personality)?.instruction
         return """
         You are \(bot.name), one of the user's bots in Kuvo Code\(bot.job.isEmpty ? "" : ": \(bot.job)"). A bot is a teammate with one job, \
         who keeps working on it over time in this one conversation. You run on \(place).
-        \(Personalities.shared.personality(bot.personality).map { "\n\($0.instruction)\n" } ?? "")
+        \(told.map { "\n\($0)\n" } ?? "")
         Your job is what the user gives you in this conversation, and it changes as they tell you more. Keep it at the top \
         of your memory file, under a "## Job" heading: first, on a line of its own, what you do in a few words, like "Keeps \
         the build green" (Kuvo Code shows it under your name); then, below it, the details: what to watch, what to make, what \
@@ -1050,5 +1053,134 @@ final class Bots {
             changed = true
         }
         if changed { save() }
+    }
+}
+
+// MARK: - Bots a machine makes
+
+/// Bots a machine makes itself, with this Mac closed (New Bot there, from a phone): what it needs to
+/// make them as this Mac does, given as it connects, and the bots it made, taken in here as it does.
+extension Bots {
+    /// What a machine needs to make bots itself, kept in `~/.kuvo-code/bots/kit.json` there: New
+    /// Bot's templates, personalities and looks; what a bot is told (with ⟦name⟧, ⟦folder⟧ and
+    /// ⟦personality⟧ for its own), its first memory (⟦name⟧) and its greeting; the projects there
+    /// and the model a bot starts on; the rules a new conversation gets; and your time zone.
+    struct MachineKit: Encodable {
+        struct Template: Encodable {
+            var id: String, name: String, job: String, instructions: String, look: BotLook, personality: String?, wantsProject: Bool
+            /// The template's job, as the first message to the bot, for your composer.
+            var firstMessage: String
+        }
+        struct Personality: Encodable { var id: String, name: String, description: String, custom: Bool, instruction: String }
+        struct Looks: Encodable { var colors: [String], shapes: [String], faces: [String] }
+        struct Project: Encodable { var directory: String, name: String }
+        var kuvo = 1
+        var templates: [Template]
+        var personalities: [Personality]
+        var looks: Looks
+        var startingModel: ModelRef?
+        var projects: [Project]
+        var instructions: String
+        var projectNote: String
+        var identityNote: String
+        var memory: String
+        var greeting: String
+        /// A new conversation's rules, before a bot's own (its folder).
+        var rules: [PermissionRule]
+        var timeZone: String
+        /// Its time zone's rules, for a machine without zone files of its own.
+        var zoneinfo: String?
+    }
+
+    func kit(for machine: String) -> MachineKit {
+        let sample = Bot(id: "bot_sample", name: "⟦name⟧", job: "", instructions: "", look: .random(), machine: machine, project: nil,
+                         folder: "⟦folder⟧", sessionID: "", created: .now)
+        let approval = UserDefaults.standard.string(forKey: ToolApproval.key).flatMap(ToolApproval.init) ?? .approveAll
+        let catalog = app?.machines.engine(machine)?.catalog
+        return MachineKit(
+            templates: BotTemplate.all.map { .init(id: $0.id, name: $0.name, job: $0.job, instructions: $0.instructions, look: $0.look, personality: $0.personality,
+                                                   wantsProject: $0.wantsProject, firstMessage: BotTemplate.firstMessage(job: $0.job, instructions: $0.instructions)) },
+            personalities: Personalities.shared.all.map { .init(id: $0.id, name: $0.name, description: $0.description, custom: $0.isCustom, instruction: $0.instruction) },
+            looks: .init(colors: BotLook.Tint.allCases.map(\.rawValue), shapes: BotLook.Form.allCases.map(\.rawValue), faces: BotLook.Face.allCases.map(\.rawValue)),
+            startingModel: catalog?.startingModel(LastModel.current, scope: .on(machine: machine)),
+            projects: (app?.workspace.projects ?? []).filter { RemoteFolder.machine(of: $0.directory) == machine }
+                .map { .init(directory: RemoteFolder.parse($0.directory)?.path ?? $0.directory, name: $0.name) },
+            instructions: Self.instructions(for: sample, personality: "⟦personality⟧"),
+            projectNote: Self.projectNote, identityNote: Self.identityNote, memory: Self.blankMemory("⟦name⟧"), greeting: Self.greeting,
+            rules: approval.rules(settings: EngineConfig.current?.permissionRules ?? []),
+            timeZone: TimeZone.current.identifier, zoneinfo: WakeUps.zoneRules(TimeZone.current.identifier)?.base64EncodedString())
+    }
+
+    /// Gives a machine its kit, as it connects.
+    func writeKit(on machine: String) async {
+        guard let connection = app?.machines.engine(machine)?.machine.connection,
+              let data = try? JSONEncoder().encode(kit(for: machine)) else { return }
+        let folder = FileManager.default.temporaryDirectory.appending(path: AppInfo.bundleID)
+        let input = folder.appending(path: "bot-kit-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: input) }
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try data.write(to: input)
+            _ = try await connection.run("""
+                B="$HOME/\(RemoteEngineInstaller.root)/bots"
+                mkdir -p "$B" && cat >"$B/kit.json.new" && mv -f "$B/kit.json.new" "$B/kit.json"
+                """, input: input)
+        } catch {
+            log.error("A machine's bot kit wasn't written: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// A bot's folder on a machine, as read there: its description, its conversation and where
+    /// that runs.
+    struct Found {
+        var folder: String
+        var descriptor: Data
+        var session: String
+        var via: String
+    }
+
+    /// Takes in the bots a machine made while this Mac was away (`MachineKit`), from their
+    /// folders there; the ones it knows stay as they are. The bots taken in.
+    @discardableResult
+    func adopt(_ found: [Found], on machine: String) -> [Bot] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var adopted: [Bot] = []
+        for entry in found {
+            guard let described = try? decoder.decode(Bot.Descriptor.self, from: entry.descriptor), described.kuvo == Bot.Descriptor.version,
+                  described.id.hasPrefix("bot_"), (entry.folder as NSString).lastPathComponent == described.id,
+                  !entry.session.isEmpty, bot(described.id) == nil, !adopted.contains(where: { $0.id == described.id }) else { continue }
+            var bot = Bot(id: described.id, name: Self.oneLine(described.name), job: described.job, instructions: "", look: described.look, machine: machine,
+                          project: described.project.map { RemoteFolder.folder($0, on: machine) }, folder: entry.folder, sessionID: entry.session, created: described.created)
+            bot.jobInMemory = true
+            bot.model = described.model
+            bot.personality = described.personality
+            if entry.via == "bridge" { bot.agents = true }
+            bot.updated = described.updated
+            adopted.append(bot)
+        }
+        guard !adopted.isEmpty else { return [] }
+        list.append(contentsOf: adopted)
+        save()
+        noteSessions()
+        return adopted
+    }
+
+    /// The bots a machine made while this Mac was away, read there and taken in, as it connects.
+    func adoptMade(on machine: String) async {
+        guard let connection = app?.machines.engine(machine)?.machine.connection,
+              let output = try? await connection.run("""
+                for d in "$HOME/\(RemoteEngineInstaller.root)/bots"/bot_*; do
+                  [ -f "$d/\(Bot.Descriptor.file)" ] && [ -s "$d/session" ] || continue
+                  printf '%s\t%s\t%s\t%s\n' "$d" "$(base64 <"$d/\(Bot.Descriptor.file)" | tr -d '\n')" "$(head -c 200 "$d/session" | tr -d '\n\t')" "$(head -c 20 "$d/via" 2>/dev/null | tr -d '\n\t')"
+                done
+                """) else { return }
+        let found = output.split(separator: "\n").compactMap { line -> Found? in
+            let parts = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 4, let descriptor = Data(base64Encoded: parts[1]) else { return nil }
+            return Found(folder: parts[0], descriptor: descriptor, session: parts[2], via: parts[3])
+        }
+        let adopted = adopt(found, on: machine)
+        for bot in adopted { await syncJob(of: bot.id) }
     }
 }

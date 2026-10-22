@@ -341,9 +341,14 @@ itself. A host serves:
 - On a Mac, `POST kuvo/groups` with `{name, members, purpose?}` (members by bot `id`, at least
   two) makes a group chat on the Mac, as New Group Chat does: `201 {"group": <as kuvo/groups
   lists one>}`, 400 `{"message"}` without a name or two bots, 404 `{"message"}` for a bot that
-  isn't there. Moving it to a machine is the Mac's Move to Computer. A machine's bridge (from
-  0.9.4) answers these three with `409 {"message": "Make it from your Mac; it can live here."}`:
-  the Mac keeps the list of bots and chats.
+  isn't there. Moving it to a machine is the Mac's Move to Computer.
+- A machine's bridge (from 0.9.5) answers the same three, with the Mac closed too: what New Bot
+  offers there (`startingModel` has one key, the machine's name as its bots' `machine` has it,
+  and `projects` are its own); a bot made there, with its folder, conversation and instructions,
+  listed at once (`machine` is ignored); a group chat of its own bots, which lives and runs there.
+  What New Bot needs comes from the Mac, which gives it to the machine each time it connects; one
+  never connected from a Mac answers `409 {"message"}`. The Mac takes in the bots a machine made
+  the next time it connects (its group chats it follows there already).
 - On a Mac, `kuvo/named`: who you can name with `&` in a message, as the Mac's composer
   offers them: `{"agents": [{session, name, kind, machine, project, about}]}`, every bot
   (`kind: "bot"`, `about` its job) then the latest sessions with a title (`kind: "session"`,

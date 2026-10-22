@@ -101,11 +101,11 @@ test("kuvo/bots lists the machine's described bots, each as its folder is now", 
     job: "Watches the build", paused: true, wakes: 1792000100, watching: 1, agents: true,
   });
   assert.equal("wakes" in answer.json.bots[0], false, "none waiting: left out, as the Mac leaves it out");
-  // Made from the Mac, which keeps their list.
-  for (const [method, route] of [["POST", "kuvo/bots"], ["GET", "kuvo/bots/templates"], ["POST", "kuvo/groups"]]) {
+  // Before the Mac ever gave it what New Bot needs, it says so.
+  for (const [method, route] of [["POST", "kuvo/bots"], ["GET", "kuvo/bots/templates"]]) {
     const refused = await ask(handle, method, route);
     assert.equal(refused.status, 409, route);
-    assert.equal(refused.json.message, "Make it from your Mac; it can live here.");
+    assert.equal(refused.json.message, "Connect to this machine from your Mac once, then try again.");
   }
   assert.equal((await ask(handle, "PUT", "kuvo/bots")).status, 405);
 });
@@ -238,4 +238,145 @@ test("a bot on its way to another computer isn't woken or changed from a phone u
   // Paused by you instead: Wake Up Now still sends it, as on the Mac.
   write(path.join(scout, "paused"), "");
   assert.equal((await ask(handle, "POST", "kuvo/wakes/ses_bot_scout00001/now", { wake: "AbC123" })).status, 200);
+});
+
+// What New Bot needs, as the Mac leaves it on the machine as it connects (Bots.MachineKit).
+const kit = {
+  kuvo: 1,
+  templates: [{ id: "news", name: "Herald", job: "Sends you a morning news digest", instructions: "Every morning…", look: { color: "sky", shape: "round", face: "happy" }, personality: "preset.straight", wantsProject: false, firstMessage: "Your job, in a few words: Sends you a morning news digest." }],
+  personalities: [{ id: "preset.straight", name: "Straight Shooter", description: "Direct.", custom: false, instruction: "Your personality: Straight Shooter. Direct." }],
+  looks: { colors: ["mint", "sky"], shapes: ["round"], faces: ["calm", "happy"] },
+  startingModel: { id: "big-pickle", providerID: "opencode" },
+  projects: [{ directory: "/home/me/app", name: "app" }],
+  instructions: "You are ⟦name⟧, one of the user's bots.\n\n⟦personality⟧\n\nMemory: the file \"⟦folder⟧/MEMORY.md\" is yours.\n\nWho sets what.",
+  projectNote: "You work in one of the user's projects.",
+  identityNote: "Who sets what.",
+  memory: "# ⟦name⟧'s memory\n",
+  greeting: "<system-reminder>Write first.</system-reminder>",
+  rules: [{ action: "edit", resource: "*", effect: "ask" }],
+  timeZone: "Europe/Istanbul",
+};
+
+// An engine and the agents' bridge as a new bot and a new chat need them: conversations made,
+// what each was told, its greeting; the providers ready; group chats put and listed.
+async function makingEngine(ready = ["opencode"]) {
+  const asked = [];
+  const chats = new Map();
+  let next = 1;
+  const server = http.createServer((request, response) => {
+    let body = "";
+    request.on("data", chunk => { body += chunk; });
+    request.on("end", () => {
+      const given = body ? JSON.parse(body) : undefined;
+      asked.push({ method: request.method, url: request.url, body: given });
+      const reply = (value, status = 200) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
+      if (request.method === "GET" && request.url === "/api/provider") return reply({ data: ready.map(id => ({ id })) });
+      if (request.method === "POST" && request.url === "/api/session") return reply({ data: { id: `ses_made${next++}` } });
+      if (request.method === "PUT" && request.url.startsWith("/api/kuvo/groups/")) {
+        chats.set(given.group.id, given);
+        return reply({ data: given });
+      }
+      if (request.method === "GET" && request.url === "/api/kuvo/groups") return reply({ data: [...chats.values()].map(chat => ({ group: chat.group, status: chat.status, state: {} })) });
+      reply({});
+    });
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  return { asked, port: server.address().port, password: "p", close: () => { server.closeAllConnections(); server.close(); } };
+}
+
+test("with the Mac closed, a bot is made here as New Bot makes it: its folder, conversation and instructions, and it writes first", async () => {
+  write(path.join(bots, "kit.json"), JSON.stringify(kit));
+  const engine = await makingEngine();
+  try {
+    const handle = link.engineHandler(() => ({ port: engine.port, password: "p" }), { name: "my-server" }, () => null);
+    const offered = await ask(handle, "GET", "kuvo/bots/templates");
+    assert.equal(offered.status, 200);
+    assert.deepEqual(offered.json.startingModel, { "my-server": { id: "big-pickle", providerID: "opencode" } });
+    assert.deepEqual(offered.json.projects, [{ directory: "/home/me/app", name: "app", machine: "my-server" }]);
+    assert.equal("firstMessage" in offered.json.templates[0], false);
+    assert.deepEqual(offered.json.personalities, [{ id: "preset.straight", name: "Straight Shooter", description: "Direct.", custom: false }]);
+
+    const made = await ask(handle, "POST", "kuvo/bots", { name: "  Inbox\nHelper ", personality: "preset.straight", project: "/home/me/app" });
+    assert.equal(made.status, 201);
+    const { bot: listed, firstMessage } = made.json;
+    assert.equal(firstMessage, null);
+    assert.match(listed.id, /^bot_[a-z0-9]{10}$/);
+    assert.equal(listed.name, "Inbox Helper");
+    assert.equal(listed.machine, "my-server");
+    assert.equal(listed.session, "ses_made1");
+    const folder = path.join(bots, listed.id);
+    assert.equal(fs.readFileSync(path.join(folder, "MEMORY.md"), "utf8"), "# Inbox Helper's memory\n");
+    assert.equal(fs.readFileSync(path.join(folder, "directory"), "utf8"), "/home/me/app");
+    assert.equal(fs.readFileSync(path.join(folder, "timezone"), "utf8"), "Europe/Istanbul");
+    const described = JSON.parse(fs.readFileSync(path.join(folder, "bot.json"), "utf8"));
+    assert.match(described.created, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, "a date the Mac reads");
+    assert.deepEqual({ ...described, created: undefined, updated: undefined, look: undefined }, { created: undefined, updated: undefined, look: undefined, id: listed.id, job: "", kuvo: 1, model: kit.startingModel, name: "Inbox Helper", personality: "preset.straight", project: "/home/me/app" });
+    const session = engine.asked.find(each => each.method === "POST" && each.url === "/api/session");
+    assert.equal(session.body.location.directory, "/home/me/app");
+    assert.deepEqual(session.body.permissions, [...kit.rules, { action: "external_directory", resource: path.join(folder, "*"), effect: "allow" }]);
+    const told = engine.asked.find(each => each.url === "/api/experimental/session/ses_made1/instructions/entries/kuvo.bot").body.value;
+    assert.equal(told, `You are Inbox Helper, one of the user's bots.\n\nYour personality: Straight Shooter. Direct.\n\nMemory: the file "${folder}/MEMORY.md" is yours.\n\nYou work in one of the user's projects.\n\nWho sets what.`);
+    assert.deepEqual(engine.asked.find(each => each.method === "PATCH").body, { metadata: { kuvo: { bot: listed.id } } });
+    assert.equal(engine.asked.find(each => each.url === "/api/session/ses_made1/synthetic").body.text, kit.greeting, "it writes first");
+    assert.ok((await ask(handle, "GET", "kuvo/bots")).json.bots.some(each => each.id === listed.id), "listed at once");
+
+    // From a template: its look and personality, and its job for your composer; it waits for you.
+    const herald = await ask(handle, "POST", "kuvo/bots", { name: "Herald", template: "news" });
+    assert.equal(herald.status, 201);
+    assert.equal(herald.json.firstMessage, kit.templates[0].firstMessage);
+    assert.equal(engine.asked.some(each => each.url === `/api/session/${herald.json.bot.session}/synthetic`), false);
+    assert.deepEqual(herald.json.bot.look, kit.templates[0].look);
+    const plain = engine.asked.find(each => each.url === `/api/experimental/session/${herald.json.bot.session}/instructions/entries/kuvo.bot`).body.value;
+    assert.ok(plain.includes("Straight Shooter") && !plain.includes("⟦") && !plain.includes("projects"));
+  } finally {
+    engine.close();
+  }
+});
+
+test("what's missing or unknown is said, and nothing is made", async () => {
+  write(path.join(bots, "kit.json"), JSON.stringify(kit));
+  const engine = await makingEngine(["opencode"]);
+  try {
+    const handle = link.engineHandler(() => ({ port: engine.port, password: "p" }), { name: "my-server" }, () => null);
+    for (const [body, status, words] of [
+      [{ look: { color: "sky" } }, 400, "A bot needs a name."],
+      [{ name: "X", template: "nope" }, 400, "There’s no template “nope”."],
+      [{ name: "X", personality: "custom.gone" }, 400, "There’s no personality “custom.gone”."],
+      [{ name: "X", project: "/nowhere" }, 400, "That project isn’t in Kuvo Code."],
+      [{ name: "X", model: { id: "luna", providerID: "openai" } }, 422, "luna needs a sign-in on this machine: sign in to it in Settings › Accounts, or choose another model."],
+      [{ name: "X", model: { id: "sonnet", providerID: "claude-code" } }, 503, "The coding agents aren’t running on this machine."],
+    ]) {
+      const answer = await ask(handle, "POST", "kuvo/bots", body);
+      assert.equal(answer.status, status, JSON.stringify(body));
+      assert.equal(answer.json.message, words);
+    }
+    assert.deepEqual(link.listBots(), []);
+    assert.equal(engine.asked.some(each => each.url === "/api/session"), false);
+  } finally {
+    engine.close();
+  }
+});
+
+test("with the Mac closed, a group chat of this machine's bots is made here and listed", async () => {
+  bot("bot_ada0000001", { name: "Ada" });
+  bot("bot_ben0000001", { name: "Ben" });
+  const agents = await makingEngine();
+  try {
+    const handle = link.engineHandler(() => { throw new Error("not needed"); }, { name: "my-server" }, () => ({ port: agents.port, password: "p", pid: process.pid }));
+    const made = await ask(handle, "POST", "kuvo/groups", { name: "Release", members: ["bot_ada0000001", "bot_ben0000001", "bot_ada0000001"], purpose: "  Ship it  " });
+    assert.equal(made.status, 201, JSON.stringify(made.json));
+    assert.match(made.json.group.id, /^grp_[a-z0-9]{10}$/);
+    assert.equal(made.json.group.name, "Release");
+    assert.equal(made.json.group.purpose, "Ship it");
+    assert.deepEqual(made.json.group.members.map(member => member.id), ["bot_ada0000001", "bot_ben0000001"]);
+    const put = agents.asked.find(each => each.method === "PUT");
+    assert.equal(put.body.status, "active");
+    assert.deepEqual(put.body.messages, []);
+    assert.equal((await ask(handle, "POST", "kuvo/groups", { name: "Solo", members: ["bot_ada0000001"] })).status, 400);
+    const unknown = await ask(handle, "POST", "kuvo/groups", { name: "Who", members: ["bot_ada0000001", "bot_gone000001"] });
+    assert.equal(unknown.status, 404);
+    assert.equal(unknown.json.message, "There’s no bot “bot_gone000001”.");
+  } finally {
+    agents.close();
+  }
 });

@@ -276,6 +276,9 @@ extension AppModel {
         if live(engine) { await phoneLink.sync(engine) }
         // Its bots' keys of their own, which may have changed while it was away.
         if live(engine) { await BotKeys.applyAll(on: engine.machine.id, app: self) }
+        // Bots it made while this Mac was away, taken in; and what it needs to make them itself.
+        if live(engine) { await bots.adoptMade(on: engine.machine.id) }
+        if live(engine) { await bots.writeKit(on: engine.machine.id) }
         // What its bots are, in their folders there, for what runs there without this Mac.
         if live(engine) { await bots.describeAll(on: engine.machine.id) }
         // A move to or from it cut short (the app quit, it went away) is finished or taken back.
