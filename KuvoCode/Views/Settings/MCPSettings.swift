@@ -28,7 +28,7 @@ struct MCPSettings: View {
             guard !builtIn.contains(id), case .object(let settings) = server, settings["codemode"] == nil else { return nil }
             return (path + [id, "codemode"], .bool(false))
         }
-        if !changes.isEmpty { config.set(changes) }
+        if !changes.isEmpty { config.set(changes, noted: false) }
     }
 
     /// Your servers: not Kuvo Code's own, nor integrations', which their page adds and removes

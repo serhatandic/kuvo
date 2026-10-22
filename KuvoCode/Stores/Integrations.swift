@@ -78,8 +78,9 @@ nonisolated enum Integrations {
     /// Brings added integrations up to date before the engine starts: tools made plain tools (for
     /// those added before they were), a package's server started as it's pinned now (so a new
     /// version or option reaches integrations added with an older one), and keys read from their
-    /// files where an earlier version named them in the environment.
-    @MainActor static func upgrade(_ config: EngineConfig) {
+    /// files where an earlier version named them in the environment. A machine's (`machine`) as
+    /// it keeps its keys.
+    @MainActor static func upgrade(_ config: EngineConfig, on machine: String? = nil) {
         guard case .object(let servers) = config.value(at: MCPSettings.path) else { return }
         for (id, original) in servers {
             guard let service = service(id), case .object(var server) = original else { continue }
@@ -87,8 +88,13 @@ nonisolated enum Integrations {
             // place of the package, whose key goes.
             if case .official = service.way, case .array(let old)? = server["command"], old.first?.string == Launcher.name,
                let settings = settings(for: service) {
-                for variable in Self.keyNames(in: original) { IntegrationKeys.set(nil, for: variable) }
-                config.set(settings, at: MCPSettings.path + [id])
+                let keys = Self.keyNames(in: original)
+                if let machine {
+                    Task { for variable in keys { try? await MachineBox.setKey(variable, nil, on: SSHConnection(destination: machine)) } }
+                } else {
+                    for variable in keys { IntegrationKeys.set(nil, for: variable) }
+                }
+                config.set(settings, at: MCPSettings.path + [id], noted: false)
                 continue
             }
             if server["codemode"] == nil { server["codemode"] = .bool(false) }
@@ -103,25 +109,26 @@ nonisolated enum Integrations {
                     server["environment"] = .object(environment)
                 }
             }
-            let updated = Self.keyFiles(in: .object(server))
-            if updated != original { config.set(updated, at: MCPSettings.path + [id]) }
+            let updated = Self.keyFiles(in: .object(server), on: machine)
+            if updated != original { config.set(updated, at: MCPSettings.path + [id], noted: false) }
         }
     }
 
-    /// Settings with each key named by the file this Mac's engine reads it from: one an earlier
-    /// version named in the environment (`{env:KUVO_KEY_…}`), or in another temporary folder.
-    nonisolated static func keyFiles(in value: JSONValue) -> JSONValue {
+    /// Settings with each key named by the file the computer's engine reads it from (this Mac's,
+    /// or `machine`'s): one an earlier version named in the environment (`{env:KUVO_KEY_…}`), or
+    /// in another folder.
+    nonisolated static func keyFiles(in value: JSONValue, on machine: String? = nil) -> JSONValue {
         switch value {
         case .string(let text):
             guard text.contains("KUVO_KEY_"), let regex = try? NSRegularExpression(pattern: #"\{(?:env|file):[^{}]*?(KUVO_KEY_[A-Z0-9_]+)\}"#) else { return value }
             let original = text as NSString
             let result = NSMutableString(string: text)
             for match in regex.matches(in: text, range: NSRange(location: 0, length: original.length)).reversed() {
-                result.replaceCharacters(in: match.range, with: IntegrationKeys.reference(original.substring(with: match.range(at: 1))))
+                result.replaceCharacters(in: match.range, with: IntegrationKeys.reference(original.substring(with: match.range(at: 1)), on: machine))
             }
             return .string(result as String)
-        case .object(let object): return .object(object.mapValues(keyFiles))
-        case .array(let array): return .array(array.map(keyFiles))
+        case .object(let object): return .object(object.mapValues { keyFiles(in: $0, on: machine) })
+        case .array(let array): return .array(array.map { keyFiles(in: $0, on: machine) })
         default: return value
         }
     }

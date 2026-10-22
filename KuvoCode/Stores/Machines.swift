@@ -351,7 +351,11 @@ final class MachineEngine {
             var launch = launch
             let box = try await MachineBox.adopt(on: connection, seed: launch.seed)
             config.took(box.settings)
-            launch.boxEnvironment = launch.fromBox(box.settings)
+            // As Kuvo Code brings this Mac's up to date as its engine starts: its integrations as
+            // they're set up now, its servers' tools plain tools.
+            Integrations.upgrade(config, on: machine.id)
+            MCPSettings.upgrade(config)
+            launch.boxEnvironment = launch.fromBox(config.settings)
             if box.seeded { seededNow = true }
             try check()
             // The browser tools' helper, and the agents bridge, which an engine starts with.
@@ -781,7 +785,7 @@ final class Machines {
 
     private static var leftovers: String {
         """
-        rm -rf "$K/keys"
+        rm -rf "$K/keys" "$K/box/keys"
         rm -f "$K/run/launch.env" "$K/run/launch.notes" "$K/bin/kuvo-start" "$K/bin/kuvo-launch" "$K/bin/.kuvo-boot"
         \(RemoteServer.rebootCrontabRemoval)
         """

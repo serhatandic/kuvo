@@ -88,7 +88,7 @@ nonisolated enum MCPCatalog {
         guard command != words || environment != (server["environment"]?.object ?? [:]) else { return }
         server["command"] = .array(command.map(JSONValue.string))
         server["environment"] = .object(environment)
-        config.set(.object(server), at: MCPSettings.path + ["chrome-devtools"])
+        config.set(.object(server), at: MCPSettings.path + ["chrome-devtools"], noted: false)
     }
 
     /// Whether `version` ("1.10.2"; nil or "latest", as unpinned) is before `pinned`'s.

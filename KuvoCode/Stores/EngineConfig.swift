@@ -265,9 +265,11 @@ final class EngineConfig {
 
     /// Sets the value at a path of keys, or removes it with nil (and any object it leaves
     /// empty), then saves.
-    func set(_ value: JSONValue?, at path: [String]) {
+    /// `noted`: false for what Kuvo Code changes itself (bringing settings up to date), rather
+    /// than you.
+    func set(_ value: JSONValue?, at path: [String], noted: Bool = true) {
         guard problem == nil, isLoaded, !path.isEmpty else { return }
-        note(path, from: self.value(at: path), to: value)
+        if noted { note(path, from: self.value(at: path), to: value) }
         settings = Self.setting(value, at: path[...], in: settings)
         save([(path, value)])
     }

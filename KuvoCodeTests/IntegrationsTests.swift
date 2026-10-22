@@ -73,6 +73,20 @@ import Testing
         #expect(!Integrations.macOnly.isEmpty)
     }
 
+    /// A machine's integrations brought up to date as it starts: their keys named where that
+    /// machine keeps them, whatever named them before; and that isn't a change of yours to offer
+    /// to other computers.
+    @Test func aMachinesAreBroughtUpToDateWhereItKeepsItsKeys() throws {
+        for old in ["{env:KUVO_KEY_GITHUB_TOKEN}", "{file:~/.kuvo-code/keys/KUVO_KEY_GITHUB_TOKEN}", "{file:\(IntegrationKeys.folder.path)/KUVO_KEY_GITHUB_TOKEN}"] {
+            #expect(Integrations.keyFiles(in: .string("Bearer " + old), on: "lab") == .string("Bearer {file:~/.kuvo-code/box/keys/KUVO_KEY_GITHUB_TOKEN}"), "\(old)")
+        }
+        config.set(.object(["servers": .object(["x": .object(["url": .string("https://x.example")])])]), at: ["mcp"])
+        let before = config.changes.count
+        MCPSettings.upgrade(config)
+        #expect(config.value(at: ["mcp", "servers", "x", "codemode"]) == .bool(false))
+        #expect(config.changes.count == before)
+    }
+
     /// One added when keys were named in the engine's environment: named by their files now, and
     /// bringing it up to date again changes nothing.
     @Test func anOlderOneIsBroughtUpToDate() throws {
