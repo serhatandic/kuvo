@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- With Codex, a file it creates or deletes shows its lines in the conversation and on its permission card, rather than +0 and the file's bare text, and a turn's token count includes every step, not only those just before its words.
 - A bot in a group chat talks on the model its own conversation is on when the one picked for it belongs to an account you've signed out of (Edit Bot shows no model for it then), rather than saying it needs a sign-in for a model you aren't using.
 - Ask the agent for a screenshot of the page it's browsing and it shows in the conversation, not only inside its browser step.
 - With Cursor, a subagent still at work when you press Stop shows as stopped in its session, rather than finished, and how full the context is no longer counts Cursor's thinking twice.
