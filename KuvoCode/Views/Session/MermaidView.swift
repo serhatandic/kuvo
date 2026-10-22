@@ -262,8 +262,6 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
             Task { @MainActor in job.isCancelled = true }
         }
         if let outcome, case .drawn(let image) = outcome { kept.setObject(Kept(outcome), forKey: key as NSString, cost: Self.bytes(of: image)) }
-        // One Mermaid never finished isn't tried again, at any width (each try costs its wait).
-        if let outcome, case .failed(Self.tooLong) = outcome { kept.setObject(Kept(outcome), forKey: Self.slowKey(source), cost: 1) }
         return outcome
     }
 
@@ -282,6 +280,9 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
     }
 
     private func draw(_ job: Job) async -> Outcome {
+        // One Mermaid never finished isn't tried again, at any width (each try costs its wait),
+        // queued before it ran out or not.
+        if let slow = kept.object(forKey: Self.slowKey(job.source)) { return slow.outcome }
         if !isLoaded, !loadFailed {
             // As long as a diagram may take, then the page is taken as stuck.
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -297,6 +298,7 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
         // Given up on after a while: a diagram Mermaid never finishes would hold up every other
         // one. The next ones get a new web view, as its page may not even load again.
         guard let answer = await answer(to: job) else {
+            kept.setObject(Kept(.failed(Self.tooLong)), forKey: Self.slowKey(job.source), cost: 1)
             replaceWeb()
             return .failed(Self.tooLong)
         }
