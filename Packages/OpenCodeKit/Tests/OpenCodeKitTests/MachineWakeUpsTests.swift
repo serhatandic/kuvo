@@ -187,6 +187,49 @@ import Testing
         #expect(prompts() == ["\(Self.bridgePort) ses_agent [Wake-up] Look at the PR"])
     }
 
+    /// A watch that saw a change it hasn't told yet, in `folder`: the next minute tells it.
+    private func watchToTell(in folder: URL) throws {
+        let watch = folder.appending(path: "watches/AbCd12")
+        try write(watch.appending(path: "check"), "echo changed")
+        try write(watch.appending(path: "every"), "10m")
+        try write(watch.appending(path: "note"), "Tell the user")
+        try write(watch.appending(path: "next"), "0")
+        try write(watch.appending(path: "last"), "2/0 0")
+        try write(watch.appending(path: "pending"), "2/0 0")
+    }
+
+    /// The minute's watches, which run beside its wake-ups: done.
+    private func watchesDone() {
+        let lock = sessions.appending(path: ".watching")
+        let end = Date.now.addingTimeInterval(30)
+        while FileManager.default.fileExists(atPath: lock.path), Date.now < end { usleep(50_000) }
+    }
+
+    /// Archived from any app (a phone's, say, which marks the session itself), with the Mac closed:
+    /// its wake-ups and watches wait there, kept, until it's brought back; then they go.
+    @Test func anArchivedSessionsWakeUpsAndWatchesWaitUntilItsBack() throws {
+        defer { cleanUp() }
+        let old = try folder("ses_old", in: sessions, session: "ses_old", wake: "Follow up")
+        try watchToTell(in: old)
+        try answer(Self.enginePort, "GET", "api/session/ses_old", #"{"id":"ses_old","metadata":{"kuvo.archived":true}}"#)
+        try fire()
+        watchesDone()
+        #expect(prompts().isEmpty)
+        #expect(wakes(of: old).count == 1, "kept for when it's back")
+        // The engine's own mark, too.
+        try answer(Self.enginePort, "GET", "api/session/ses_old", #"{"id":"ses_old","time":{"created":1,"archived":1760000000000}}"#)
+        try fire()
+        watchesDone()
+        #expect(prompts().isEmpty)
+        // Brought back: they go.
+        try answer(Self.enginePort, "GET", "api/session/ses_old", #"{"id":"ses_old","metadata":{"kuvo.archived":false},"time":{"created":1,"archived":null}}"#)
+        try fire()
+        watchesDone()
+        let sent = prompts()
+        #expect(sent.contains("\(Self.enginePort) ses_old [Wake-up] Follow up"))
+        #expect(sent.contains { $0.contains("Tell the user") }, "\(sent)")
+    }
+
     @Test func aSessionTheEngineNoLongerHasGoesToTheTrash() throws {
         defer { cleanUp() }
         let gone = try folder("ses_gone", in: sessions, session: "ses_gone", wake: "Follow up")

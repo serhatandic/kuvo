@@ -640,6 +640,13 @@ public enum Wakes {
         if [ "$(cat "${bot}via" 2>/dev/null)" = bridge ]; then port=$bport password=$bpassword tools=1; else port=$eport password=$epassword; fi
         [ -n "$port" ] && [ -n "$password" ]
       }
+      # A session the engine has as archived: Kuvo Code's mark in its metadata, or the engine's own.
+      archived='"kuvo\.archived" *: *true|"archived" *: *[0-9]'
+      # A session's watches wait too while it's archived (its wake-ups do, in `settle`).
+      archivedNow() {
+        [ "$bots" != "$botsroot" ] && command -v curl >/dev/null 2>&1 || return 1
+        printf 'user = "opencode:%s"\n' "$password" | curl -q -sf -m 5 --noproxy '*' -K - "http://127.0.0.1:$port/api/session/$session" 2>/dev/null | grep -qE "$archived"
+      }
       # A session's folder (not a bot's, in $botsroot) as its engine knows the
       # session now: one that's gone goes to the trash, rather than its wake-ups being tried for
       # ever; a subagent's goes to the conversation that started it (its bot's folder, if it's a
@@ -661,6 +668,9 @@ public enum Wakes {
           *) return 0 ;;
         esac
         s_body=$(printf '%s' "$s_out" | sed '$d')
+        # Archived, from any app (a Mac's, a phone's: they mark the session itself), wherever it
+        # was done: its wake-ups wait, as when paused, until it's brought back.
+        printf '%s' "$s_body" | grep -qE "$archived" && return 1
         s_dir=$(printf '%s' "$s_body" | sed -n 's/.*"location" *: *{[^}]*"directory" *: *"\([^"]*\)".*/\1/p' | head -n 1)
         [ -n "$s_dir" ] && [ "$s_dir" != "$(cat "${bot}directory" 2>/dev/null)" ] && printf '%s' "$s_dir" >"${bot}directory"
         s_parent=$(printf '%s' "$s_body" | sed -n 's/.*"parentID" *: *"\(ses_[A-Za-z0-9]*\)".*/\1/p' | head -n 1)
@@ -728,7 +738,7 @@ public enum Wakes {
       mkdir "$lock" 2>/dev/null || continue
       trap 'rmdir "$lock" 2>/dev/null' EXIT
       for bot in "$bots"/*/; do
-        # Paused by you (a session's, while it's archived): its wake-ups wait.
+        # Paused by you (a session's, while it's archived: see `settle` too): its wake-ups wait.
         [ -e "${bot}paused" ] && continue
         tools=
         session=$(cat "$bot/session" 2>/dev/null) || continue
@@ -776,6 +786,7 @@ public enum Wakes {
         session=$(cat "$bot/session" 2>/dev/null) || continue
         [ -n "$session" ] || continue
         reach || continue
+        archivedNow && continue
         tz=$(zone "$bot")
         for letters in $( ( [ -n "$tz" ] && export TZ="$tz"; checks "${bot%/}" ) | sed -n 's/^KUVO-WATCH //p'); do
           w="${bot}watches/$letters"
