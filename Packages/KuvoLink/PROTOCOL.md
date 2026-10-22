@@ -152,7 +152,8 @@ Who sends it:
   its screen locked), or while a phone has a session open (the phone leaves out what's on
   its screen); at the Mac, its own notifications are enough.
 - **A machine's bridge**, for that machine's sessions (permissions, questions, runs finished
-  or failed, bots' news), while no Mac is connected to it. A Mac that's connected touches
+  or failed, bots' news) and, from 0.9.9, what agents ask for as they browse there (category
+  `ask`, as the Mac's), while no Mac is connected to it. A Mac that's connected touches
   `~/.kuvo-code/run/present/<its id>` each minute and removes it when it quits; the bridge
   tells your phones only when none of those files is less than 150 seconds old. The Mac
   tells them only for 120 seconds after it last touched its file, so the two never both do.
@@ -414,6 +415,12 @@ itself. A host serves:
   (or `"saved": "<account>"`, which the Mac fills in from Passwords itself), `{"answer":
   "code", "code"}`, `{"answer": "done"}` or `{"answer": "declined"}`. What's typed goes into
   the page, never to the agent.
+- A machine's bridge (from 0.9.9) answers the same three for what's asked in that machine's
+  browser, with the Mac closed too: `saved` is empty and `offersToSave` false (saved passwords
+  are the Mac's), and a `saved` answer gets `400 {"message"}`. A Mac connected to the machine
+  lists the same asks, by the same `id`: the first answer counts, and the ask goes from both.
+  The browser keeps them in `~/.kuvo-code/run/browser-asks.json` for the bridge, and waits the
+  whole 15 minutes for an answer while the bridge runs, rather than a few for a Mac.
 - On a Mac, `kuvo/groups`: your group chats, with their bots (face, name, session), who's
   talking, whether one is under way or paused, and the last thing said; `kuvo/groups/events`
   streams that list as it changes, and `kuvo/groups/<id>/events` one chat's latest messages,

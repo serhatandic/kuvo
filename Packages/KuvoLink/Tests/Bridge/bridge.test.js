@@ -796,3 +796,71 @@ test("a phone lists the phones paired with a machine and removes a lost one ther
   assert.deepEqual(link.readLink().removed, [{ key: lost.toString("base64url"), pairing: "b" }], "the old one still out");
   fs.rmSync(path.join(home, "run", "link.json"), { force: true });
 });
+
+test("a phone answers what an agent asks for while it browses on a machine, with the Mac closed: listed and answered as on the Mac, the answer going to the machine's browser", async () => {
+  const run = path.join(home, "run");
+  fs.mkdirSync(run, { recursive: true });
+  const asks = [
+    { id: "ask-1", kind: "signIn", host: "github.com", targetId: "T1", username: true, password: true, session: "ses_sub" },
+    { id: "ask-2", kind: "code", host: "github.com", targetId: "T1", prompt: "The code GitHub sent", session: "ses_1" },
+  ];
+  fs.writeFileSync(path.join(run, "browser-asks.json"), JSON.stringify({ asks }));
+  // The engine: a subagent's session, and the conversation it works for.
+  const sessions = { ses_sub: { id: "ses_sub", parentID: "ses_1", title: "Look it up" }, ses_1: { id: "ses_1", title: "Fixer" } };
+  const engine = http.createServer((request, response) => {
+    const id = decodeURIComponent(request.url.split("/").pop());
+    response.writeHead(sessions[id] ? 200 : 404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ data: sessions[id] }));
+  });
+  await new Promise(resolve => engine.listen(0, "127.0.0.1", resolve));
+  const readEngine = () => ({ port: engine.address().port, password: "p" });
+  // The browser's socket: it says hello first, as the keeper does, then takes answers.
+  const taken = [];
+  const browser = (await import("node:net")).createServer(socket => {
+    socket.write(JSON.stringify({ method: "Kuvo.hello", params: { asks } }) + "\n");
+    let buffer = "";
+    socket.on("data", chunk => {
+      buffer += chunk;
+      let end;
+      while ((end = buffer.indexOf("\n")) >= 0) {
+        const message = JSON.parse(buffer.slice(0, end));
+        buffer = buffer.slice(end + 1);
+        if (message.method === "Kuvo.answer") {
+          taken.push(message.params);
+          socket.write(JSON.stringify({ id: message.id, result: {} }) + "\n");
+        }
+      }
+    });
+  });
+  await new Promise(resolve => browser.listen(path.join(run, "browser.sock"), resolve));
+  try {
+    const handle = link.engineHandler(readEngine, { name: "Lokum" });
+    // None while the browser isn't running: what one left behind was asked of no one now.
+    assert.deepEqual((await answer(handle, "GET", "kuvo/asks")).json, { asks: [] });
+    fs.writeFileSync(path.join(run, "browser.pid"), String(process.pid));
+    const listed = await answer(handle, "GET", "kuvo/asks");
+    // A subagent's, in the conversation it works for, by that one's name.
+    assert.deepEqual(listed.json.asks[0], { id: "ask-1", kind: "signIn", host: "github.com", machine: "Lokum", session: "ses_1", asker: "Fixer", username: true, password: true, saved: [], offersToSave: false });
+    assert.equal(listed.json.asks[1].prompt, "The code GitHub sent");
+
+    assert.equal((await answer(handle, "POST", "kuvo/asks/ask-1", JSON.stringify({ answer: "signIn", saved: "me" }))).status, 400, "saved passwords are the Mac's");
+    assert.equal((await answer(handle, "POST", "kuvo/asks/ask-1", JSON.stringify({ answer: "code", code: "1" }))).status, 400, "not what it asks");
+    assert.equal((await answer(handle, "POST", "kuvo/asks/ask-9", JSON.stringify({ answer: "declined" }))).status, 404);
+    assert.equal((await answer(handle, "POST", "kuvo/asks/ask-1", JSON.stringify({ answer: "signIn", username: "me", password: "secret" }))).status, 200);
+    assert.equal((await answer(handle, "POST", "kuvo/asks/ask-2", JSON.stringify({ answer: "code", code: " 123456 " }))).status, 200);
+    assert.deepEqual(taken, [
+      { id: "ask-1", answer: { type: "signIn", username: "me", password: "secret" } },
+      { id: "ask-2", answer: { type: "code", code: "123456" } },
+    ]);
+
+    // Its notification, as the Mac words it (in the conversation it's filed in).
+    assert.deepEqual(link.askNotice({ ...asks[0], session: "ses_1" }, "Fixer"), { title: "Sign in to github.com", subtitle: "Fixer", body: "The agent needs your sign-in to go on.", category: "ask", thread: "ses_1", data: { session: "ses_1", ask: "ask-1" } });
+    assert.equal(link.askNotice(asks[1]).body, "The code GitHub sent");
+  } finally {
+    browser.close();
+    engine.close();
+    for (const name of ["browser-asks.json", "browser.pid"]) fs.rmSync(path.join(run, name), { force: true });
+  }
+  // The browser gone: an answer can't reach it.
+  assert.equal(await link.answerAsk("ask-1", { type: "declined" }, path.join(run, "browser.sock")), false);
+});

@@ -130,6 +130,9 @@ A machine's browser is Chrome for Testing, the full browser run in Chrome's own 
 - **mcp**, the agent's browser tools for the machine's engine, talking to the keeper.
 - **connect**, the Mac's live view of the pages, over SSH, also through the keeper.
 
+What agents ask you for there also goes to `run/browser-asks.json`, for the machine's phone link,
+which answers it for a phone with the Mac closed (`Kuvo.answer` on the keeper's socket).
+
 `KEEPER` at its top goes up with every change to the host side, so a newer copy replaces one
 that's running; `BrowserAgent`'s page scripts are shared with this Mac's browser tools.
 

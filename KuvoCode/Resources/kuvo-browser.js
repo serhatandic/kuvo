@@ -29,6 +29,9 @@ const PIDFILE = path.join(RUN, "browser.pid");
 // The pages open when the keeper last stopped (for an update, or with nobody around), to open
 // again when it starts.
 const PAGESFILE = path.join(RUN, "pages.json");
+// What agents ask the user for now, for the machine's phone link, which answers it for a phone
+// with the Mac closed (KuvoLink's PROTOCOL.md, "kuvo/asks"); gone while nothing is.
+const ASKSFILE = path.join(RUN, "browser-asks.json");
 const ERRORFILE = path.join(RUN, "browser.error");
 const LOGFILE = path.join(RUN, "browser.log");
 const BROWSER = path.join(K, "browser");
@@ -52,7 +55,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 
 // Goes up with every change to the keeper (host mode): a newer one replaces one that's running
 // (its pages close, its sign-ins stay), and an older one never replaces a newer.
-const KEEPER = 34;
+const KEEPER = 35;
 // Passkeys: none yet, as in the panel's browser on the Mac (Passkeys.swift, the same script).
 const NO_PASSKEYS = "(() => {\n  try {\n    const none = () => Promise.reject(new DOMException(\"Passkeys can't be used in this browser.\", \"NotAllowedError\"));\n    const Container = window.CredentialsContainer;\n    if (Container && Container.prototype) {\n      const prototype = Container.prototype, get = prototype.get, create = prototype.create;\n      if (get) prototype.get = function (options) { return options && options.publicKey ? none() : get.call(this, options); };\n      if (create) prototype.create = function (options) { return options && options.publicKey ? none() : create.call(this, options); };\n    }\n    const Credential = window.PublicKeyCredential;\n    if (Credential) {\n      Credential.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(false);\n      if (Credential.isConditionalMediationAvailable) Credential.isConditionalMediationAvailable = () => Promise.resolve(false);\n    }\n  } catch {}\n})();";
 
@@ -456,6 +459,8 @@ async function host() {
     reopen = JSON.parse(fs.readFileSync(PAGESFILE, "utf8")).filter((url) => typeof url === "string" && /^(https?|file):/.test(url)).slice(0, 8);
   } catch {}
   fs.rmSync(PAGESFILE, { force: true });
+  // What a keeper before this one left asked: it went with it.
+  fs.rmSync(ASKSFILE, { force: true });
   let started = await launchChrome(sandbox);
   if (!started.chrome && sandbox && /No usable sandbox|SUID sandbox|user namespace/i.test(started.output)) sandbox = false;
   if (!started.chrome) started = await launchChrome(sandbox);
@@ -490,8 +495,18 @@ async function host() {
   // What agents ask the user for (a sign-in, a code, a step), by ID: who asked, and the ask. The
   // answer goes to the one who asked, and no one else.
   const asks = new Map();
+  const noteAsks = () => {
+    try {
+      if (!asks.size) return fs.rmSync(ASKSFILE, { force: true });
+      fs.writeFileSync(ASKSFILE + ".tmp", JSON.stringify({ asks: [...asks.values()].map((ask) => ask.params) }), { mode: 0o600 });
+      fs.renameSync(ASKSFILE + ".tmp", ASKSFILE);
+    } catch {}
+  };
   const closeAsk = (id) => {
-    if (asks.delete(id)) broadcast({ method: "Kuvo.askClosed", params: { id } });
+    if (asks.delete(id)) {
+      broadcast({ method: "Kuvo.askClosed", params: { id } });
+      noteAsks();
+    }
   };
 
   const send = (client, message) => {
@@ -601,6 +616,7 @@ async function host() {
   };
   const cleanUp = () => {
     fs.rmSync(SOCKET, { force: true });
+    fs.rmSync(ASKSFILE, { force: true });
     try {
       if (Number(fs.readFileSync(PIDFILE, "utf8")) === process.pid) fs.rmSync(PIDFILE, { force: true });
     } catch {}
@@ -774,6 +790,7 @@ async function host() {
           // One already asked keeps its asker: its answer goes to it.
           if (!params.id || asks.has(params.id)) return;
           asks.set(params.id, { client, params });
+          noteAsks();
           return broadcast({ method: "Kuvo.asked", params });
         }
         case "Kuvo.answer": {
@@ -1454,16 +1471,16 @@ async function point(p, index, action) {
 }
 
 /// Asks the user, in Kuvo Code, and waits for the answer (15 minutes at most), out of the line.
-/// With no Mac connected, it waits a few minutes for one (Kuvo Code opening) rather than the
-/// whole while. Meanwhile its page stays this conversation's; the engine giving up on the call
-/// closes the ask.
+/// With no Mac connected and no phone to answer it, it waits a few minutes for one (Kuvo Code
+/// opening) rather than the whole while. Meanwhile its page stays this conversation's; the engine
+/// giving up on the call closes the ask.
 function askUser(params) {
   if (current.cancelled) throw new Cancelled();
   const id = crypto.randomUUID();
   const session = caller;
   link.notify("Kuvo.ask", { id, ...params, ...(session ? { session } : {}) });
   const started = Date.now();
-  let alone = viewerCount ? null : started;
+  let alone = viewerCount || phoneCanAnswer() ? null : started;
   return outOfLine((call) => new Promise((resolve) => {
     const finish = (answer) => {
       clearInterval(check);
@@ -1478,7 +1495,7 @@ function askUser(params) {
     waiting.set(id, finish);
     call.stops.add(stop);
     const check = setInterval(() => {
-      if (viewerCount) alone = null;
+      if (viewerCount || phoneCanAnswer()) alone = null;
       else alone ??= Date.now();
       const nobody = alone !== null && Date.now() - alone > 180_000;
       if (nobody || Date.now() - started >= 900_000) {
@@ -1489,6 +1506,19 @@ function askUser(params) {
     }, 5_000);
     if (call.cancelled) stop();
   }));
+}
+
+/// Whether a phone can answer: one is paired with this machine, and its phone link runs, which
+/// tells it what's asked (`ASKSFILE`) and gives the browser its answer.
+function phoneCanAnswer() {
+  try {
+    if (!fs.existsSync(path.join(RUN, "link.needed"))) return false;
+    if (!(JSON.parse(fs.readFileSync(path.join(RUN, "link.json"), "utf8")).phones?.length > 0)) return false;
+    const pid = Number(fs.readFileSync(path.join(RUN, "link.pid"), "utf8"));
+    return pid > 0 && fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("kuvo-link");
+  } catch {
+    return false;
+  }
 }
 
 /// Back in the page a call waited for you in, as the page in use: nil if it can go on there (it's
