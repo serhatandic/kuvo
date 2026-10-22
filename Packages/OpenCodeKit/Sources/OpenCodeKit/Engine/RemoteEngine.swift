@@ -749,6 +749,15 @@ public final class RemoteServer: @unchecked Sendable {
           \(boot ? "" : "kill \"$old\"; n=0; while kill -0 \"$old\" 2>/dev/null && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; kill -0 \"$old\" 2>/dev/null && kill -9 \"$old\" 2>/dev/null; rm -f \"$R/engine.json\"")
         fi
         \(boot ? "unset KUVO_BOOT" : "rm -rf \"$K/keys\"")
+        # A box of its own (KuvoLink's PROTOCOL.md, "Settings per box"): its own settings and keys,
+        # in `box`, never a Mac's, which an older Mac may still send. What's below them goes as
+        # this start begins, the engine that read it gone: the Mac's copy, and the global file once
+        # it came into the box whole.
+        if [ -f "$K/box/opencode.json" ]; then
+          unset KUVO_SETTINGS \(privateSettingsVariable)
+          rm -f "$K/keys/settings.json"
+          [ -f "$K/box/global-adopted" ] && mkdir -p "$K/config/opencode" && (umask 077; printf '{}\\n' >"$K/config/opencode/opencode.json")
+        fi
         # Its settings only once it's the start that goes ahead: one that finds an engine running
         # (another Mac's, started at the same moment) leaves that one's as they are.
         if [ -n "${KUVO_SETTINGS+set}" ]; then
@@ -764,6 +773,7 @@ public final class RemoteServer: @unchecked Sendable {
           unset \(privateSettingsVariable)
         fi
         [ -f "$K/keys/settings.json" ] && export OPENCODE_CONFIG="$K/keys/settings.json"
+        [ -f "$K/box/opencode.json" ] && export OPENCODE_CONFIG="$K/box/opencode.json"
         \(boot ? "" : Wakes.installScript)
         \(boot ? "" : Launcher.installScript)
         \(boot ? "" : CommandEnvironment.installScript)
@@ -797,7 +807,7 @@ public final class RemoteServer: @unchecked Sendable {
     /// restart, added once. A crontab that can't be read is left as it is, never written over.
     private static var startAgainScript: String {
         """
-        (umask 077; { printf '%s\\n' "$kuvo_env"; printf '%s' "$lines" | grep -v -E '^(OPENCODE_PASSWORD|KUVO_PORT|KUVO_RECORD|KUVO_AGENTS_PORT|KUVO_AGENTS_PASSWORD|KUVO_BOOT|KUVO_VERSION|KUVO_REPLACE|KUVO_START|\(privateSettingsVariable)|KUVO_KEY_[A-Za-z0-9_]*)='; } | grep -v '^$' >"$R/launch.env.new"; mv -f "$R/launch.env.new" "$R/launch.env")
+        (umask 077; { printf '%s\\n' "$kuvo_env"; printf '%s' "$lines" | grep -v -E '^(OPENCODE_PASSWORD|KUVO_PORT|KUVO_RECORD|KUVO_AGENTS_PORT|KUVO_AGENTS_PASSWORD|KUVO_BOOT|KUVO_VERSION|KUVO_REPLACE|KUVO_START|KUVO_SETTINGS|\(privateSettingsVariable)|KUVO_KEY_[A-Za-z0-9_]*)='; } | grep -v '^$' >"$R/launch.env.new"; mv -f "$R/launch.env.new" "$R/launch.env")
         (umask 077; printf '%s' "$record" | sed -n 's/.*"notes":\\({[^}]*}\\).*/\\1/p' >"$R/launch.notes")
         \(RemoteEngineInstaller.root == ".kuvo-code" ? rebootCrontabScript : "")
         """

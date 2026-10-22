@@ -346,6 +346,67 @@ struct LiveRemoteEngineTests {
         _ = try await connection.run("pkill -f '[/]\\.kuvo-code-test/' || true; rm -rf \"$HOME/.kuvo-code-test\"")
     }
 
+    /// A machine's settings become its own (a box of its own): what an older Mac's start left goes
+    /// in its box, with its key; a start then reads the box, nothing of a Mac's below it; and a
+    /// change made through the box's tool, as a phone's or a Mac's is, reaches the engine running
+    /// without starting it over.
+    @Test func aMachinesSettingsBecomeItsOwnAndReloadAsTheyChange() async throws {
+        let cache = FileManager.default.temporaryDirectory.appending(path: "opencodekit-remote-cache")
+        defer { try? FileManager.default.removeItem(at: cache) }
+        try await RemoteEngineInstaller(connection: connection, cache: cache).install()
+        try await RemoteServer.stop(on: connection)
+        // As an older Mac started it: its settings, the integrations' in the global file, a key.
+        let older = try await RemoteServer.launch(on: connection, environment: [
+            RemoteServer.privateSettingsVariable: #"{"agents":{"reviewer":{"description":"Reviews code","mode":"subagent","prompt":"Review."}}}"#,
+            "KUVO_SETTINGS": #"{"websearch":{"provider":"exa"}}"#,
+            "KUVO_KEY_TEST_TOKEN": "box-secret",
+        ], notes: ["mac": "test-mac"])
+
+        let tool = URL(filePath: #filePath).deletingLastPathComponent().appending(path: "../../../KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js").standardizedFileURL
+        _ = try await connection.run("cat >\"$HOME/.kuvo-code-test/bin/kuvo-link.js\"", input: tool)
+        let box = { (command: String) in
+            try await self.connection.run("""
+                K="$HOME/.kuvo-code-test"; cd "$K/workspace" && KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/\(OpenCodeEngine.version)/opencode" "$K/bin/kuvo-link.js" box \(command)
+                """)
+        }
+        let adopted = try await box("adopt </dev/null")
+        #expect(adopted.contains(#""status":"adopted""#), "\(adopted)")
+        let own = try await connection.run("cat \"$HOME/.kuvo-code-test/box/opencode.json\"")
+        #expect(own.contains("Reviews code") && own.contains("exa"), "both of what the older start left: \(own)")
+        #expect(try await connection.run("cat \"$HOME/.kuvo-code-test/box/keys/KUVO_KEY_TEST_TOKEN\"") == "box-secret")
+
+        // A start from this Mac now: nothing of its settings sent, the box read.
+        let started = try await RemoteServer.launch(on: connection, environment: [:], notes: ["mac": "test-mac"], replace: older.pid)
+        let environment = try await connection.run("tr '\\0' '\\n' </proc/\(started.pid)/environ")
+        #expect(environment.contains("OPENCODE_CONFIG=\(try await connection.run("printf %s \"$HOME\"").trimmingCharacters(in: .whitespacesAndNewlines))/.kuvo-code-test/box/opencode.json"))
+        #expect(try await connection.run("cat \"$HOME/.kuvo-code-test/config/opencode/opencode.json\"").trimmingCharacters(in: .whitespacesAndNewlines) == "{}")
+        #expect(try await connection.run("[ -e \"$HOME/.kuvo-code-test/keys/settings.json\" ] && echo there || true").isEmpty)
+
+        let server = try await RemoteServer.attach(to: started, on: connection)
+        defer { server.disconnect() }
+        let api = OpenCodeAPI(endpoint: server.endpoint)
+        let sources = { String(decoding: try JSONEncoder().encode(try await api.configSources()), as: UTF8.self) }
+        #expect(try await sources().contains("Reviews code"), "the engine reads the box")
+
+        // Changed through the box's tool, as from a phone: the engine running takes it.
+        let changes = FileManager.default.temporaryDirectory.appending(path: "box-change-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: changes) }
+        try Data(#"{"changes":[{"path":["agents","reviewer","description"],"value":"Reviews code carefully"}]}"#.utf8).write(to: changes)
+        _ = try await connection.run("cat >\"$HOME/.kuvo-code-test/run/change.json\"", input: changes)
+        let changed = try await box("change <\"$HOME/.kuvo-code-test/run/change.json\"")
+        #expect(changed.contains("Reviews code carefully"), "\(changed)")
+        var reloaded = false
+        for _ in 0..<40 where !reloaded {
+            try await Task.sleep(for: .milliseconds(250))
+            reloaded = (try? await sources().contains("Reviews code carefully")) == true
+        }
+        #expect(reloaded, "reloaded, not started over")
+        #expect(try await RemoteServer.running(on: connection)?.pid == started.pid)
+
+        try await RemoteServer.stop(on: connection)
+        _ = try await connection.run("pkill -f '[/]\\.kuvo-code-test/' || true; rm -rf \"$HOME/.kuvo-code-test\"")
+    }
+
     /// The crontab line that starts it after a restart: added once, beside what's there; a crontab
     /// that can't be read is left as it is; taken out with the machine, the rest kept. Against a
     /// stand-in `crontab` in a folder of the test's own, never the machine's.

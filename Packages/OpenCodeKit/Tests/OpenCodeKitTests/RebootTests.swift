@@ -402,6 +402,39 @@ import Testing
         return process.terminationStatus
     }
 
+    /// A box of its own (settings in `box`): a start reads them, whichever starts it (a Mac, an
+    /// older Mac sending its own, the keeper after a crash), and clears what's below them once.
+    @Test func aBoxsOwnSettingsAreWhatItsEngineReads() throws {
+        defer { cleanUp() }
+        let box = root.appending(path: "box")
+        try FileManager.default.createDirectory(at: box, withIntermediateDirectories: true)
+        try write(box.appending(path: "opencode.json"), #"{"model":"openai/gpt-6"}"#)
+        try write(box.appending(path: "global-adopted"), "")
+        let global = root.appending(path: "config/opencode/opencode.json")
+        try FileManager.default.createDirectory(at: global.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try write(global, #"{"websearch":{"provider":"exa"}}"#)
+        try write(root.appending(path: "keys/settings.json"), #"{"model":"anthropic/sonnet"}"#)
+
+        // An older Mac's start, sending its settings: they don't count.
+        #expect(try macLaunch([#"KUVO_SETTINGS={"websearch":{"provider":"tavily"}}"#, #"KUVO_PRIVATE_SETTINGS={"model":"x/y"}"#]) == 0)
+        let first = try #require(running())
+        let environment = try #require(try started().first)
+        #expect(environment.contains("OPENCODE_CONFIG=\(box.path)/opencode.json"))
+        #expect(try String(contentsOf: global, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) == "{}", "what's below it, cleared")
+        #expect(!FileManager.default.fileExists(atPath: root.appending(path: "keys/settings.json").path))
+        #expect(try String(contentsOf: box.appending(path: "opencode.json"), encoding: .utf8) == #"{"model":"openai/gpt-6"}"#, "its own, untouched")
+        let kept = try String(contentsOf: run.appending(path: "launch.env"), encoding: .utf8)
+        #expect(!kept.contains("KUVO_SETTINGS"), "no start writes them back")
+
+        // The keeper's, after a crash: the box again.
+        kill(pid_t(first.pid), SIGKILL)
+        try start()
+        until { running().map { $0.pid != first.pid } ?? false }
+        _ = try #require(running())
+        #expect(try started().allSatisfy { $0.contains("OPENCODE_CONFIG=\(box.path)/opencode.json") })
+        #expect(try String(contentsOf: global, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) == "{}")
+    }
+
     @Test func aStartFromTheMacKeepsAStoppedEngineStoppedUnlessItsStart() throws {
         defer { cleanUp() }
         try write(run.appending(path: "stopped"), "")
