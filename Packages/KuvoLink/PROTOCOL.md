@@ -322,8 +322,8 @@ itself. A host serves:
   a project with `GET api/permission/saved?projectID=` and `DELETE api/permission/saved/<id>`.
 - `kuvo/keys`: the computer's own integrations' keys (`KUVO_KEY_<INTEGRATION>_<NAME>`, as its
   settings name them; a bot's own aren't among them). `GET kuvo/keys` lists them, `{"keys":
-  [name]}`; `GET kuvo/keys/<name>` answers `{"value"}` (404 for none), `PUT` with `{"value"}`
-  sets one and `DELETE` removes it. On a Mac they're in its Keychain; on a machine (bridge 0.9.12
+  [name]}`; `GET kuvo/keys/<name>` answers `{"value"}` (404 for none, 400 for a name that
+  isn't a shared key's), `PUT` with `{"value"}` sets one and `DELETE` removes it. On a Mac they're in its Keychain; on a machine (bridge 0.9.12
   or later, once its settings are its own: `409 {"message"}` before) in `~/.kuvo-code/box/keys`.
   The engine reads one as it next reads its settings, so set the key before adding what names it
   (`kuvo/config`). An integration added on a machine names its keys
