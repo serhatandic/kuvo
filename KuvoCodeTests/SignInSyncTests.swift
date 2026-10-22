@@ -3,11 +3,12 @@ import OpenCodeKit
 import Testing
 @testable import KuvoCode
 
-/// Your accounts on your machines: API keys and GitHub Copilot's sign-in go to them and stay in
-/// step; a sign-in that renews itself with a new token each time (ChatGPT's, GitLab's) doesn't,
-/// as two copies end it everywhere, so each machine signs in to those on its own. Copies made
-/// before are taken back (a newer one the machine renewed comes here first), and signing out here
-/// never takes a machine's own sign-in. Two engines' accounts, faked (FakeEngine).
+/// Your accounts on your machines: each computer's own. A new machine starts with this Mac's API
+/// keys and GitHub Copilot's sign-in, once, and from then on keeps its own: what changes here
+/// stays here. A sign-in that renews itself with a new token each time (ChatGPT's, GitLab's) is
+/// never copied, as two copies end it everywhere. Copies made before of those are taken back (a
+/// newer one the machine renewed comes here first), and signing out here never takes a machine's
+/// sign-in. Two engines' accounts, faked (FakeEngine).
 @MainActor
 @Suite(.serialized) struct SignInSyncTests {
     let app: AppModel
@@ -25,8 +26,8 @@ import Testing
         app = AppModel()
     }
 
-    private func sync() async {
-        await app.copySignIns(mac: mac.api, remote: machine.api, machine: server)
+    private func sync(accounts: Bool = false) async {
+        await app.copySignIns(mac: mac.api, remote: machine.api, machine: server, accounts: accounts)
     }
 
     private func done() {
@@ -38,17 +39,20 @@ import Testing
         ["type": "oauth", "methodID": "chatgpt-browser", "access": "a", "refresh": refresh, "expires": expires, "metadata": ["accountID": "acct_1"]]
     }
 
-    @Test func keysAndCopilotGoSignInsThatRenewDont() async {
+    @Test func aNewMachineStartsWithTheKeysAndCopilotThenKeepsItsOwn() async {
         defer { done() }
         mac.store("deepseek", value: ["type": "key", "key": "sk-mac"])
         mac.store("github-copilot", value: ["type": "oauth", "access": "a", "refresh": "gho_mac", "expires": 1])
         mac.store("openai", value: chatGPT("rt_mac"))
-        await sync()
+        // New: it starts with them, but not one that renews itself.
+        await sync(accounts: true)
         #expect(machine.stored("deepseek").map(\.secret) == ["sk-mac"])
         #expect(machine.stored("github-copilot").map(\.secret) == ["gho_mac"])
         #expect(machine.stored("openai").isEmpty)
-        // Again: nothing more.
+        // From then on its own: a key added or changed here stays here.
+        mac.store("gitlab", value: ["type": "key", "key": "glpat-mac"])
         await sync()
+        #expect(machine.stored("gitlab").isEmpty)
         #expect(machine.stored("deepseek").count == 1 && machine.stored("github-copilot").count == 1)
     }
 
@@ -85,11 +89,12 @@ import Testing
         #expect(mac.stored("openai").map(\.secret) == ["sk-mac"])
     }
 
-    /// Signing out here takes the copies from the machine, not a sign-in it made itself.
-    @Test func signingOutHereLeavesTheMachinesOwn() async {
+    /// A sign-out left from before computers kept their own takes the copies from the machine, not
+    /// a sign-in it made itself.
+    @Test func anOldSignOutLeavesTheMachinesOwn() async {
         defer { done() }
         let key = mac.store("gitlab", value: ["type": "key", "key": "glpat-mac"])
-        await sync()
+        await sync(accounts: true)
         #expect(machine.stored("gitlab").map(\.secret) == ["glpat-mac"])
         machine.store("gitlab", value: ["type": "oauth", "access": "a", "refresh": "glrt_machine", "expires": 5])
         // Signed out here, while the machine was away (as forgetSignIn leaves it for an account).

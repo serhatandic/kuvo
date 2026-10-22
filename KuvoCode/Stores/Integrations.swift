@@ -243,7 +243,12 @@ nonisolated enum Integrations {
 
     /// The integrations added in the engine's settings, by ID.
     @MainActor static func added(in config: EngineConfig) -> [String] {
-        (config.value(at: MCPSettings.path)?.object ?? [:]).keys.filter { service($0) != nil }.sorted()
+        added(inSettings: config.settings)
+    }
+
+    /// Those added in `settings` (a box's, say).
+    static func added(inSettings settings: [String: JSONValue]) -> [String] {
+        (settings["mcp"]?["servers"]?.object ?? [:]).keys.filter { service($0) != nil }.sorted()
     }
 
     /// The sites of the integrations `ids`, those with tools of their own.

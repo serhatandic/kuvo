@@ -67,26 +67,27 @@ import Testing
     }
 }
 
-/// Settings made on this Mac are your machines' too (unlike Custom Auto's lists): a mode added
-/// here, like a security audit, is in what a machine's engine starts with, so one connected
-/// starts over with it (once nothing runs there) and shows it in its sessions' mode menu.
+/// Each computer keeps its own settings (a box of its own): a mode added here, like a security
+/// audit, is this Mac's. A machine with no settings yet starts with this Mac's, so it's in that
+/// machine's start; one with its own keeps them, and nothing of this Mac's goes in what its engine
+/// starts with.
 @MainActor
 @Suite(.serialized) struct MachineSettingsTests {
-    @Test func aModeAddedHereGoesToMachines() async throws {
+    @Test func aModeAddedHereIsThisMacsAndANewMachinesStart() async throws {
         TestEnvironment.prepare()
         let app = AppModel()
         let config = app.engineConfig
-        let before = await app.machineEnvironment()[RemoteServer.privateSettingsVariable] ?? ""
-        #expect(!before.contains("security-audit"))
+        #expect((await app.machineSeed()).settings["agents"]?["security-audit"] == nil)
         defer { config.set(nil, at: ["agents", "security-audit"]) }
 
-        var saved = 0
-        config.onSaved = { saved += 1 }
         config.set(.object(["description": .string("Audits the code for security problems"), "mode": .string("primary"),
                             "prompt": .string("Look for security problems.")]), at: ["agents", "security-audit"])
-        #expect(saved == 1, "machines are told when settings are saved")
-        let after = try #require(await app.machineEnvironment()[RemoteServer.privateSettingsVariable])
-        let agents = try #require((try JSONSerialization.jsonObject(with: Data(after.utf8)) as? [String: Any])?["agents"] as? [String: Any])
-        #expect((agents["security-audit"] as? [String: Any])?["description"] as? String == "Audits the code for security problems")
+        let seed = await app.machineSeed()
+        #expect(seed.settings["agents"]?["security-audit"]?["description"]?.string == "Audits the code for security problems", "a new machine starts with it")
+
+        // What a machine's engine starts with carries none of it.
+        let launch = await app.machineLaunch(MachineEngine(machine: Machine(destination: "box")))
+        #expect(!launch.environment.keys.contains { ["KUVO_SETTINGS", RemoteServer.privateSettingsVariable].contains($0) || $0.hasPrefix("KUVO_KEY_") })
+        #expect(!launch.environment.values.contains { $0.contains("security-audit") })
     }
 }

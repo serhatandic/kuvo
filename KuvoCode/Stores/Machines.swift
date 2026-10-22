@@ -62,6 +62,9 @@ final class MachineEngine {
     var isRetrying = false
     /// Its engine is stopped on purpose (Stop, here or from anywhere): it stays so until Start.
     private(set) var isStopped = false
+    /// It started with this Mac's settings just now, having none of its own: your accounts go
+    /// too, once (`AppModel.syncSignIns`).
+    @ObservationIgnored var seededNow = false
     /// Start was pressed here: the next connection starts it if it's stopped, until one does (one
     /// that fails, the machine away, carries it to Try Again), or it's stopped or disconnected.
     var startWanted = false
@@ -224,19 +227,27 @@ final class MachineEngine {
 
     /// What a new engine on the machine gets from this Mac.
     struct Launch {
-        /// Accounts and settings (the browser tools' among them), as environment variables.
+        /// What this Mac starts it with, as environment variables: never its settings or keys,
+        /// which are its own (`MachineBox`), but its time zone, its name, and the browser tools.
         var environment: [String: String]
         /// The browser helper the engine runs for the browser tools (`kuvo-browser.js`).
         var helper: (text: String, hash: String)
         /// The agents bridge that starts beside it (`kuvo-agents.js`), for the coding agents there.
         var agents: (text: String, hash: String)?
+        /// What a machine with no settings yet gets (this Mac's), asked for only then.
+        var seed: () async -> MachineBox.Seed = { .init(settings: [:], keys: [:]) }
+        /// What it starts with from its own settings: its integrations' sites, for the browser
+        /// tools. Filled in as it starts (`boxEnvironment`).
+        var fromBox: ([String: JSONValue]) -> [String: String] = { _ in [:] }
+        var boxEnvironment: [String: String] = [:]
 
-        /// Changes when the settings do, so an engine started with older ones is known.
-        /// The launch script's, the watchdog's and the browser helper's versions count too: an
-        /// engine running older ones is started over the next time it's idle. (The launch script's
-        /// goes up when what it sets up changes: its folders, `kuvo-npx`, the commands' plugin.)
+        /// Changes when what this Mac starts it with does, so an engine started with older
+        /// things is started over the next time it's idle: the launch script's, the watchdog's,
+        /// the browser helper's and the agents bridge's versions too. (The launch script's goes
+        /// up when what it sets up changes: its folders, `kuvo-npx`, the commands' plugin, where
+        /// its settings are.) Not its own settings, which it reloads as they change.
         var fingerprint: String {
-            let text = environment.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "\n") + "\nlaunch=11\nwatchdog=groups\nbrowser=\(helper.hash)\nagents=\(agents?.hash ?? "none")"
+            let text = environment.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "\n") + "\nlaunch=12\nwatchdog=groups\nbrowser=\(helper.hash)\nagents=\(agents?.hash ?? "none")"
             return SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
         }
     }
@@ -330,6 +341,14 @@ final class MachineEngine {
                 try check()
                 state = .starting
             }
+            // Its own settings, a box of its own: made so once (from what it runs with, or this
+            // Mac's on one with none), then read, for what its engine starts with.
+            try await MachineBox.install(on: connection)
+            var launch = launch
+            let box = try await MachineBox.adopt(on: connection, seed: launch.seed)
+            launch.boxEnvironment = launch.fromBox(box.settings)
+            if box.seeded { seededNow = true }
+            try check()
             // The browser tools' helper, and the agents bridge, which an engine starts with.
             try await MachineBrowserInstaller.installHelper(launch.helper, on: connection)
             if let agents = launch.agents { try await Self.installAgents(agents, on: connection) }
@@ -393,7 +412,7 @@ final class MachineEngine {
     private struct Superseded: Error {}
 
     private func launchEngine(_ launch: Launch, replace: Int? = nil, starting: Bool = false) async throws -> RemoteServer.Engine {
-        try await RemoteServer.launch(on: machine.connection, environment: launch.environment, notes: ["settings": launch.fingerprint, "mac": Self.macID],
+        try await RemoteServer.launch(on: machine.connection, environment: launch.environment.merging(launch.boxEnvironment) { $1 }, notes: ["settings": launch.fingerprint, "mac": Self.macID],
                                       withAgents: launch.agents != nil, replace: replace, start: starting)
     }
 

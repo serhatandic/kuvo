@@ -439,13 +439,26 @@ extension AppModel {
 
     /// What a machine's engine starts with: this Mac's accounts and settings, and the browser tools
     /// with the machine's own browser.
-    private func machineLaunch(_ engine: MachineEngine) async -> MachineEngine.Launch {
-        var environment = await machineEnvironment()
+    /// What a machine's engine starts with from this Mac: never its settings or keys, which are
+    /// its own (`MachineBox`), but your time zone, its name as you know it, and the browser tools,
+    /// with its own integrations' sites.
+    func machineLaunch(_ engine: MachineEngine) async -> MachineEngine.Launch {
+        var environment: [String: String] = [:]
+        // Your time zone, for times its agents bridge says (when a limit resets).
+        environment["KUVO_TZ"] = TimeZone.current.identifier
         // Its name as you know it, for what its agents bridge says ("not signed in on …").
         environment["KUVO_MACHINE_NAME"] = engine.machine.name
-        let sites = Integrations.sites(Integrations.added(in: engineConfig).filter { !Integrations.macOnly.contains($0) })
-        environment["OPENCODE_CONFIG_CONTENT"] = AppModel.merged(MachineBrowserInstaller.engineConfig(sites: sites), into: environment["OPENCODE_CONFIG_CONTENT"])
-        return MachineEngine.Launch(environment: environment, helper: MachineBrowserInstaller.helper, agents: MachineEngine.agentsBridge)
+        // What some providers need until opencode handles it, as on this Mac.
+        let compatibility = ProviderCompatibility.config
+        if !compatibility.isEmpty { environment["OPENCODE_CONFIG_CONTENT"] = AppModel.merged(compatibility, into: nil) }
+        let base = environment["OPENCODE_CONFIG_CONTENT"]
+        var launch = MachineEngine.Launch(environment: environment, helper: MachineBrowserInstaller.helper, agents: MachineEngine.agentsBridge)
+        launch.seed = { [weak self] in await self?.machineSeed() ?? .init(settings: [:], keys: [:]) }
+        launch.fromBox = { settings in
+            let sites = Integrations.sites(Integrations.added(inSettings: settings).filter { !Integrations.macOnly.contains($0) })
+            return ["OPENCODE_CONFIG_CONTENT": AppModel.merged(MachineBrowserInstaller.engineConfig(sites: sites), into: base)]
+        }
+        return launch
     }
 
     /// Starts `engine` over with this Mac's settings as they are now (an integration's key), if
@@ -484,84 +497,42 @@ extension AppModel {
         settingsSync = Task { [weak self] in
             try? await Task.sleep(for: .seconds(3))
             guard let self, !Task.isCancelled else { return }
-            for engine in machines.engines.values where engine.isReady { keepSettingsCurrent(engine) }
-            // What their group chats go by (Ask First, what's denied).
+            // Machines keep their own settings (`MachineBox`): this Mac's stay here. What their
+            // group chats go by (Ask First, what's denied).
             machineGroups.settingsChanged()
         }
     }
 
-    /// What a machine's engine starts with from this Mac: its engine settings, minus what only
-    /// makes sense here (web search goes in its settings file, as here), and integrations' keys.
-    /// Accounts don't: they're copied to its engine as they are and kept in step
-    /// (`syncSignIns`), so a change reaches it without starting it over.
-    func machineEnvironment() async -> [String: String] {
-        var environment: [String: String] = [:]
+    /// What a machine with no settings yet starts with, once (`MachineBox.adopt`): this Mac's
+    /// engine settings, minus what only makes sense here, and its integrations' keys. From then
+    /// on they're the machine's own, changed in its own tab in Settings.
+    func machineSeed() async -> MachineBox.Seed {
         // Web search that works, as on this Mac, unless the file chose otherwise.
         engineConfig.addDefaults()
-        // What goes in the settings file of the machine's engine, in `~/.kuvo-code`, rather than
-        // with the rest: web search, and integrations (below), which the rest and a project's own
-        // settings outrank, as here. Only which provider, or none: a choice with more in it (a
-        // key, say) stays out of that file. The rest, which can hold secrets, goes in a file only
-        // you can read, kept there so the machine works on its own after a restart, never in its
-        // environment, where the agent's commands (`env`) would show it.
-        var global: [String: JSONValue] = [:]
+        var seed: [String: JSONValue] = [:]
         if let data = try? Data(contentsOf: engineConfig.file),
            var settings = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
             // A shell or a worktree folder on this Mac means nothing on the machine, nor do
             // integrations that use this Mac's apps.
             for key in ["$schema", "shell", "worktree"] { settings.removeValue(forKey: key) }
-            if let search = (try? JSONDecoder().decode([String: JSONValue].self, from: data))?["websearch"] {
-                let isPlain = switch search {
-                case .bool: true
-                case .object(let choice): choice.count == 1 && choice["provider"]?.string != nil
-                default: false
-                }
-                if isPlain {
-                    settings.removeValue(forKey: "websearch")
-                    global["websearch"] = search
-                }
-            }
             if var mcp = settings["mcp"] as? [String: Any], var servers = mcp["servers"] as? [String: Any] {
                 for id in Integrations.macOnly + MCPCatalog.macOnly { servers.removeValue(forKey: id) }
                 // Keys there come in files of their own on the machine, not this Mac's.
                 servers = Integrations.keyVariables(in: servers) as? [String: Any] ?? servers
-                // Integrations go in its settings file, as here, so a folder's own outrank them:
-                // a bot with a key of its own names its server there (`BotKeys`). They name their
-                // keys' files, never the keys.
-                let integrations = servers.filter { Integrations.service($0.key) != nil }
-                if !integrations.isEmpty,
-                   let data = try? JSONSerialization.data(withJSONObject: integrations, options: [.withoutEscapingSlashes]),
-                   let value = try? JSONDecoder().decode(JSONValue.self, from: data) {
-                    for id in integrations.keys { servers.removeValue(forKey: id) }
-                    global["mcp"] = .object(["servers": value])
-                }
                 mcp["servers"] = servers
                 settings["mcp"] = mcp
             }
             // Slashes as they are: the engine finds `{file:…}` in the text before it reads it.
+            // Files brought over from opencode are on this Mac only: their text goes along.
             if let json = try? JSONSerialization.data(withJSONObject: settings, options: [.sortedKeys, .withoutEscapingSlashes]) {
-                // Files brought over from opencode are on this Mac only.
-                environment[RemoteServer.privateSettingsVariable] = OpencodeImport.inlined(String(decoding: json, as: UTF8.self))
+                seed = (try? JSONDecoder().decode([String: JSONValue].self, from: Data(OpencodeImport.inlined(String(decoding: json, as: UTF8.self)).utf8))) ?? [:]
             }
         }
-        // Your time zone, for times its agents bridge says (when a limit resets).
-        environment["KUVO_TZ"] = TimeZone.current.identifier
-        // Always, so a choice taken back here is taken back there.
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        environment["KUVO_SETTINGS"] = (try? encoder.encode(global)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
-        // Keys you brought for the integrations machines run, which go in files of their own
-        // there as the engine starts (see `RemoteServer.launchScript`): not those that stay on
-        // this Mac (an app's secret for a sign-in, say), nor bots' own, which reach only their
-        // bot's machine (`BotKeys`).
+        // Keys you brought for the integrations machines run: not those that stay on this Mac (an
+        // app's secret for a sign-in, say), nor bots' own, which reach only their bot's machine
+        // (`BotKeys`).
         let here = Set(Integrations.macOnly.map { IntegrationKeys.variable($0, "") })
         let keys = await Task.detached { IntegrationKeys.environment }.value.filter { name, _ in !here.contains { name.hasPrefix($0) } && !IntegrationKeys.isBots(name) }
-        environment.merge(keys) { _, key in key }
-        // What some providers need until opencode handles it, as on this Mac.
-        let compatibility = ProviderCompatibility.config
-        if !compatibility.isEmpty {
-            environment["OPENCODE_CONFIG_CONTENT"] = AppModel.merged(compatibility, into: environment["OPENCODE_CONFIG_CONTENT"])
-        }
-        return environment
+        return MachineBox.Seed(settings: seed, keys: keys)
     }
 }

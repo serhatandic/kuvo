@@ -58,9 +58,9 @@ import Testing
 
         // Nobody else's.
         #expect(settings(of: ben) == nil, "another bot's folder doesn't name it")
-        let machines = await app.machineEnvironment()
-        #expect(!machines.keys.contains(where: IntegrationKeys.isBots), "no bot's own key")
-        #expect(!machines.values.contains { $0.contains(token) }, "what a machine's engine is given doesn't carry it")
+        let seed = await app.machineSeed()
+        #expect(!seed.keys.keys.contains(where: IntegrationKeys.isBots), "no bot's own key")
+        #expect(!seed.keys.values.contains { $0.contains(token) }, "what a new machine starts with doesn't carry it")
 
         // Taken away: her server goes, her folder's own settings stay.
         await BotKeys.remove(service, bot: ada, app: app)
