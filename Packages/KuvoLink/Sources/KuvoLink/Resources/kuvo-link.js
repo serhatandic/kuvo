@@ -577,6 +577,22 @@ const readEngineFile = () => JSON.parse(fs.readFileSync(ENGINE_FILE, "utf8"));
 const readBridgeFile = () => JSON.parse(fs.readFileSync(BRIDGE_FILE, "utf8"));
 const AGENTS = "kuvo/agents/";
 
+// The block a prompt from a phone ends with, for the agent, in the Mac's words (FromPhone.swift):
+// the user is on their iPhone, where a file is shown with show_file. Never shown.
+export const FROM_PHONE = ["<from-phone>", "The user sent this from Kuvo Code on their iPhone.", "They read your reply on a small screen, and can't open file paths, links to files on the computer or Kuvo Code's side panel there. Keep your reply short and easy to read on a phone. To show them a file (a picture, a chart, a PDF, a document you made or found), use show_file: it puts the file in this conversation, where they see it.", "</from-phone>"].join("\n");
+
+// A prompt's body with the block at the end of its text, once; any other body as it is.
+export function fromPhone(body) {
+  let prompt;
+  try {
+    prompt = JSON.parse(Buffer.from(body ?? "").toString());
+  } catch {
+    return body;
+  }
+  if (typeof prompt?.text !== "string" || prompt.text.trimEnd().endsWith("</from-phone>")) return body;
+  return Buffer.from(JSON.stringify({ ...prompt, text: `${prompt.text}\n\n${FROM_PHONE}` }));
+}
+
 // Passes `path` to the engine or the agents' bridge on this machine, with its password, and
 // streams back what it answers. What's sent is checked with `allows` as the URL parser leaves it
 // too, so nothing it tidies up reaches what the path as written wouldn't.
@@ -596,10 +612,12 @@ async function* forward(target, path, request, signal, allows) {
   const headers = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` };
   const given = Object.fromEntries(Object.entries(request.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
   for (const name of REQUEST_HEADERS) if (given[name]) headers[name] = given[name];
+  // A message the phone sends: that it's from the phone goes with it.
+  const prompt = method === "POST" && /^\/api\/session\/[^/]+\/prompt$/.test(url.pathname);
   const response = await fetch(url, {
     method,
     headers,
-    body: method === "GET" || method === "HEAD" ? undefined : request.body,
+    body: method === "GET" || method === "HEAD" ? undefined : prompt ? fromPhone(request.body) : request.body,
     signal,
   });
   const out = {};

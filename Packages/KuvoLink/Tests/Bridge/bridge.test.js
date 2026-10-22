@@ -221,7 +221,8 @@ test("requests go to the engine with its password, all of its API; paths that ar
   assert.equal(answer.head.s, 200);
   assert.equal(answer.head.h["content-type"], "application/json");
   assert.equal(answer.head.h["set-cookie"], undefined);
-  assert.deepEqual(JSON.parse(answer.body), { path: "/api/session/ses_1/prompt?x=1", body: '{"text":"hi"}' });
+  // A message from the phone says so, at its end.
+  assert.deepEqual(JSON.parse(answer.body), { path: "/api/session/ses_1/prompt?x=1", body: JSON.stringify({ text: `hi\n\n${link.FROM_PHONE}` }) });
   const call = engine.asked.at(-1);
   assert.equal(call.auth, `Basic ${Buffer.from("opencode:s3cret").toString("base64")}`);
   assert.equal(call.directory, "/home/me/p");

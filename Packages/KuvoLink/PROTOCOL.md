@@ -355,6 +355,20 @@ itself. A host serves:
   `- &<name> (<session>): <what it is>` lines) to a line `</named-agents>`, before the
   `<review-comments>` and `<attached-files>` blocks. Show each `&<name>` it lists in bold
   (a bot's in its color), opening that session.
+- A prompt a phone sends (`POST api/session/<id>/prompt`, and `kuvo/agents/api/…` alike) gets a
+  block at the end of its text that tells the agent it's from the phone: a line `<from-phone>`,
+  the words in `FromPhone.swift`, and a line `</from-phone>`. The Mac adds it, and a machine's
+  bridge (from 0.9.4) in the same words with the Mac closed; send the text without it. Show a
+  message without it (everything from a line `<from-phone>` to the line `</from-phone>`), as
+  sent from the phone. It tells the agent to keep replies short and to show files with
+  `show_file`.
+- An agent shows a file in the conversation with `show_file`, one of Kuvo Code's tools (on the
+  Mac and machines, for the engine and the coding agents): a tool call named
+  `kuvo-browser_show_file` with input `{"path": "<full path on the computer it runs on>",
+  "caption"?}`, which fails when the path isn't a file. Show a completed one in the
+  conversation's flow, as `generate_image`'s: a picture (by its extension) large, any other
+  file as a row that opens it, its caption under it; get its bytes with `kuvo/file` from the
+  computer the session runs on.
 - `kuvo/wakes/<session>`: a session's (or chat's) wake-ups and watches, which its
   agent sets with `kuvo-wake`, as the bar over the Mac's composer shows them: `{"wakes": [{id,
   due, note, every}], "watches": [{letters, every, check, note}], "paused"}` (`due` in seconds

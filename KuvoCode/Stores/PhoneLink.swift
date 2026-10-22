@@ -514,13 +514,15 @@ final class PhoneLink {
                                                  forward: @escaping @Sendable (LinkRequest) -> AsyncThrowingStream<LinkResponsePart, Error>) -> AsyncThrowingStream<LinkResponsePart, Error> {
         let parts = request.path.split(separator: "?").first?.split(separator: "/") ?? []
         guard request.method.uppercased() == "POST", parts.count == 4, parts[0] == "api", parts[1] == "session", parts[3] == "prompt",
-              let session = String(parts[2]).removingPercentEncoding, request.body.contains(UInt8(ascii: "&")) else { return forward(request) }
+              let session = String(parts[2]).removingPercentEncoding else { return forward(request) }
         return AsyncThrowingStream { continuation in
             let task = Task { @MainActor in
                 var named = request
                 if var body = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any], let text = body["text"] as? String {
                     let directory = link?.workspace?.session(session)?.location.directory
-                    body["text"] = AgentReferences.naming(in: text, excluding: session, here: directory.flatMap(RemoteFolder.machine(of:)))
+                    // Who it names with "&", then that it's from the phone (see `FromPhone`).
+                    let naming = text.contains(AgentReferences.trigger) ? AgentReferences.naming(in: text, excluding: session, here: directory.flatMap(RemoteFolder.machine(of:))) : text
+                    body["text"] = FromPhone.adding(to: naming)
                     if let data = try? JSONSerialization.data(withJSONObject: body) { named.body = data }
                 }
                 do {

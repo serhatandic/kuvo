@@ -144,6 +144,8 @@ nonisolated enum AgentReferences {
     /// at its end, where `SentMessage.split` reads it: after its words, before its comments on the
     /// changes and its note of attached files.
     @MainActor static func naming(in message: String, excluding session: String?, here machine: String?) -> String {
+        // From a phone again: that it's from one is said afresh too.
+        let message = FromPhone.split(message).text
         let (withComments, _) = Attachments.split(message)
         let (words, _) = ReviewComments.split(withComments)
         // Sent again (Retry, Edit) with the block it had: that goes, and its agents are named afresh.
@@ -180,11 +182,12 @@ nonisolated enum AgentReferences {
 }
 
 /// A message you sent, as the app wrote it for the agent: your words, then the blocks it adds
-/// (the agents you named with "&", your comments on the changes, the note of attached files),
-/// taken apart again for wherever it shows: its bubble, a draft, the export, a title.
+/// (the agents you named with "&", your comments on the changes, the note of attached files, and
+/// last that it came from your phone), taken apart again for wherever it shows: its bubble, a
+/// draft, the export, a title.
 nonisolated enum SentMessage {
     static func split(_ message: String) -> (text: String, comments: [ReviewComment], paths: [String], references: [AgentReferences.Reference]) {
-        let (withComments, paths) = Attachments.split(message)
+        let (withComments, paths) = Attachments.split(FromPhone.split(message).text)
         let (withReferences, comments) = ReviewComments.split(withComments)
         let (text, references) = AgentReferences.split(withReferences)
         return (text, comments, paths, references)

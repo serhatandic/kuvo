@@ -2254,6 +2254,22 @@ async function tool(name, args) {
     return text(`Sent: the ${isFolder ? "folder" : "file"} ${full} opens in Kuvo Code's side panel beside this conversation, at once if the user is looking at it, or else when they come back to it.`);
   }
 
+  // Shown by Kuvo Code from the call, in the conversation (and on a phone, which fetches it).
+  if (name === "show_file") {
+    const raw = string("path");
+    if (!raw) throw new ToolError("Missing path.");
+    const full = raw.replace(/^~(?=$|\/)/, os.homedir());
+    if (!path.isAbsolute(full) || full.split("/").some((part) => part === "." || part === "..")) return text("Give the file's full path.", true);
+    let stat;
+    try {
+      stat = fs.statSync(full);
+    } catch {
+      return text(`There's nothing at ${full}.`, true);
+    }
+    if (stat.isDirectory()) return text(`${full} is a folder: show a file in it, or the folder with show_in_panel.`, true);
+    return text(`Shown in the conversation: the file ${full}. The user sees it there, on their Mac and their phone.`);
+  }
+
   if (name === "browser_upload") {
     const index = integer("index");
     const files = Array.isArray(args.files) ? args.files.filter((f) => typeof f === "string" && f) : [];
@@ -2608,7 +2624,7 @@ async function mcp() {
           const note = integrationNote(params.arguments?.url, call.session);
           if (note) return reply(text(note));
         }
-        if (params.name === "show_in_panel" || params.name === "show_widget") {
+        if (params.name === "show_in_panel" || params.name === "show_widget" || params.name === "show_file") {
           tool(params.name, params.arguments || {}).then(reply, (error) => reply(text(error instanceof ToolError ? error.message : String(error), true)));
           return;
         }

@@ -59,7 +59,8 @@ test("the coding agents' bridge gets what a phone asks, with its password; where
   assert.equal(sent.url, "/api/session/ses_1/prompt");
   assert.equal(sent.auth, `Basic ${Buffer.from("opencode:agents").toString("base64")}`);
   assert.equal(sent.directory, "/home/me/p");
-  assert.equal(sent.body, '{"text":"hi"}');
+  // A message from the phone says so, at its end, as one to the engine does.
+  assert.equal(sent.body, JSON.stringify({ text: `hi\n\n${link.FROM_PHONE}` }));
   assert.equal((await ask(handle, "PUT", "kuvo/agents/api/kuvo/auto", { body: "{}" })).status, 200);
 
   // An agent's update too: the phone is yours.

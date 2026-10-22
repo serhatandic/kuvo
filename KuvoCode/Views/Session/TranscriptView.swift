@@ -702,9 +702,11 @@ private struct RowView: View, Equatable {
         case .user(let message) where CommandMessages.shared.text(of: message).hasPrefix(Wakes.marker):
             WakeRow(note: String(CommandMessages.shared.text(of: message).dropFirst(Wakes.marker.count)), at: message.time.created)
         case .user(let message):
-            let (text, comments, paths, references) = SentMessage.split(CommandMessages.shared.text(of: message))
+            let written = CommandMessages.shared.text(of: message)
+            let (text, comments, paths, references) = SentMessage.split(written)
             let stored = (message.files ?? []).enumerated().map { AttachmentItem.stored($1, id: "\(message.id)#\($0)") }
             YourMessage(text: text, references: references, folders: folders(), attachments: stored + Attachments.paths(paths, besides: (message.files ?? []).compactMap(\.fileURL)).map(AttachmentItem.path), comments: comments, sent: Date(timeIntervalSince1970: message.time.created / 1000),
+                        fromPhone: FromPhone.isFromPhone(written),
                         fork: { fork(message) }, undo: { undo(message) },
                         undoNote: YourMessage.undoNote(in: directory),
                         isOffline: isOffline)
@@ -722,7 +724,7 @@ private struct RowView: View, Equatable {
         case .widget(let call):
             WidgetCard(call: call, send: answerAgent)
         case .picture(let call):
-            MadePictureRow(call: call)
+            MadePictureRow(call: call, directory: directory)
         case .sent(let call):
             AgentSentRow(call: call)
         case .subagent(let call):

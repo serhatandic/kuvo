@@ -27,7 +27,7 @@ struct ToolCallView: View {
         if WidgetCard.isWidget(call), !call.state.isFailure {
             WidgetCard(call: call, send: answerAgent)
         } else if MadePictureRow.isMade(call) {
-            MadePictureRow(call: call)
+            MadePictureRow(call: call, directory: directory)
         } else {
             step
         }
@@ -252,7 +252,7 @@ struct ToolCallView: View {
             let of = string("of").map { $0.hasPrefix("&") ? String($0.dropFirst()) : $0 } ?? "another agent"
             let about = string("query").map { " about “\($0)”" } ?? ""
             return (isActive ? "Reading " : "Read ") + of + "’s conversation" + about
-        case "show_in_panel": return (isActive ? "Showing " : "Showed ") + (relative(string("path")) ?? "a file")
+        case "show_in_panel", "show_file": return (isActive ? "Showing " : "Showed ") + (relative(string("path")) ?? "a file")
         case "start_session": return (isActive ? "Starting a session" : "Started a session") + (string("title").map { ": \($0)" } ?? "")
         // Kuvo Code's wake-up tools, worded as the kuvo-wake commands they run are.
         case "schedule_wake_up":
@@ -363,6 +363,7 @@ struct ToolCallView: View {
         case "list_wake_ups": "list.bullet"
         case "cancel_wake_up": "xmark.circle"
         case "show_in_panel": "sidebar.right"
+        case "show_file": "doc.richtext"
         default: "safari"
         }
     }

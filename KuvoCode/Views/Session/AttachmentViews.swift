@@ -257,14 +257,57 @@ struct MessageAttachments: View {
 
 /// An image the agent made (generate_image, whichever agent's), in the conversation's flow as
 /// its widgets are: a line while it's being made, then the picture, large, to click for a closer look.
+/// A file it showed you (show_file) too: a picture as one it made, any other file as a row that
+/// opens it in the side panel, with its caption under it.
 struct MadePictureRow: View {
     let call: Message.ToolCall
+    /// Where the conversation runs, for a file it showed on a machine.
+    var directory: String?
+    @Environment(AppModel.self) private var app
 
     static func isMade(_ call: Message.ToolCall) -> Bool {
-        call.name == "generate_image"
+        call.name == "generate_image" || isShownFile(call)
+    }
+
+    static func isShownFile(_ call: Message.ToolCall) -> Bool {
+        call.name == "kuvo-browser_" + BrowserTools.showFile
     }
 
     var body: some View {
+        if Self.isShownFile(call) { shownFile } else { made }
+    }
+
+    @ViewBuilder private var shownFile: some View {
+        let path = call.state.input?["path"]?.string ?? ""
+        let name = (path as NSString).lastPathComponent
+        switch call.state {
+        case .completed:
+            let url = RemoteFolder.fileURL(path, in: directory ?? "/")
+            VStack(alignment: .leading, spacing: 6) {
+                if url.isFileURL, UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true {
+                    StepPictures(items: [.path(path)], height: 420, maxWidth: 560)
+                } else {
+                    AttachmentRow(item: .path(path)) { app.utilities.show(url) }
+                }
+                if let caption = call.state.input?["caption"]?.string, !caption.isEmpty {
+                    Text(caption)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+        case .failed(_, let error, _, _):
+            line("Couldn't show \(name.isEmpty ? "the file" : name): \(error.message)", symbol: "exclamationmark.triangle")
+        default:
+            HStack(spacing: 8) {
+                Spinner(size: 12)
+                Text("Showing \(name.isEmpty ? "a file" : name)…")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private var made: some View {
         switch call.state {
         case .completed(_, let output, _):
             let items = StepPictures.items(in: output, step: call.id)
@@ -385,10 +428,12 @@ private struct AttachmentPicture: View {
 
 private struct AttachmentRow: View {
     let item: AttachmentItem
+    /// What a click does, when not opening it in its app.
+    var open: (() -> Void)?
     @State private var isHovering = false
 
     var body: some View {
-        Button(action: item.open) {
+        Button(action: open ?? item.open) {
             HStack(spacing: 10) {
                 AttachmentIcon(item: item, size: 30)
                 VStack(alignment: .leading, spacing: 1) {
