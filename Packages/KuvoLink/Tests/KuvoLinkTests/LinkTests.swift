@@ -119,6 +119,7 @@ private struct TestHost {
         private var keys: Set<Data> = []
         func contains(_ key: Data) -> Bool { lock.withLock { keys.contains(key) } }
         func insert(_ key: Data) { _ = lock.withLock { keys.insert(key) } }
+        func remove(_ key: Data) { _ = lock.withLock { keys.remove(key) } }
     }
 }
 
@@ -269,6 +270,45 @@ private func collect(_ stream: LinkResponse) async throws -> (status: Int, heade
         let posted = try await collect(client.send(LinkRequest(method: "POST", path: "api/x", body: Data("once".utf8)), to: paired))
         #expect(posted.status == 200)
         #expect(posted.body == Data("once".utf8))
+        #expect(runs.value == 1)
+    }
+
+    /// Removed from the Mac's paired phones: its session ends there and then, and it's turned away
+    /// from then on, its key no longer one the Mac knows (the pairing link it used, gone too).
+    @Test func aPhoneRemovedFromTheMacIsTurnedAway() async throws {
+        let relay = MemoryRelay()
+        let host = TestHost(relay: relay, handle: echo)
+        let key = LinkKey()
+        let client = LinkClient(relay: host.link.relay, key: key, secret: RelaySecret(), name: "p", app: "0", connect: relay.connect)
+        let paired = try await client.pair(host.link)
+        #expect(try await collect(client.send(LinkRequest(path: "api/info"), to: paired)).status == 200)
+
+        host.paired.remove(key.publicBytes)
+        await host.server.forget(phone: key.publicBytes)
+        await client.setTimingForTesting(LinkClient.Timing(beforeRead: .zero, beforeChange: .zero))
+        await #expect(throws: LinkError.refused) { try await collect(client.send(LinkRequest(path: "api/info"), to: paired)) }
+    }
+
+    /// The Mac's own connection to the relay drops and comes back (the network changed, the relay
+    /// restarted): a paired phone carries on, on a new session, and what it sends runs once.
+    @Test func aPhoneCarriesOnAfterTheMacsRelayConnectionComesBack() async throws {
+        let relay = MemoryRelay()
+        let runs = Count()
+        let counting: LinkServer.Handle = { request, phone in
+            if request.method == "POST" { runs.add() }
+            return echo(request, phone)
+        }
+        let host = TestHost(relay: relay, handle: counting)
+        let client = phone(on: relay)
+        let paired = try await client.pair(host.link)
+        #expect(try await collect(client.send(LinkRequest(path: "api/info"), to: paired)).status == 200)
+
+        // The same host, serving on a new connection: the old one's sessions are over.
+        let again = relay.connect(host.secret)
+        Task { [server = host.server] in await server.serve(again) }
+        await client.setTimingForTesting(LinkClient.Timing(beforeRead: .zero, beforeChange: .zero))
+        let posted = try await collect(client.send(LinkRequest(method: "POST", path: "api/x", body: Data("once".utf8)), to: paired))
+        #expect(posted.status == 200 && posted.body == Data("once".utf8))
         #expect(runs.value == 1)
     }
 
