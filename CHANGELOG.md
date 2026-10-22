@@ -4,6 +4,8 @@ What changed in each release, for people using Kuvo Code. Add changes people wou
 Unreleased, in plain words about what they'll see, as part of the change itself. Before a
 release, Unreleased is renamed to the version; the release notes come from that section.
 
+## Unreleased
+
 ## 0.7.1
 
 - A message to a conversation or a bot whose model you're no longer signed in to says so right away, naming the account to sign in to, and stays in the composer, rather than going unanswered without a word. In a group chat, that bot says so and the others carry on, on your Mac or on a machine.
