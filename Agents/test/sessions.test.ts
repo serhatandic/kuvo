@@ -929,6 +929,7 @@ describe("steering", () => {
 })
 
 describe("undo, carefully", () => {
+  // Each turn here snapshots the folder with git, which a busy Mac (CI) can make slow: given room.
   /** A git repository in the test's folder, with its first commit. */
   function repository(files: Record<string, string>, setup?: (folder: string) => void) {
     const folder = mkdtempSync(join(root, "repo-"))
@@ -958,7 +959,7 @@ describe("undo, carefully", () => {
     }
     const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
     const first = send(id, "change a")
-    await settled(id, 1)
+    await settled(id, 1, 20_000)
     // You, by hand, after it.
     writeFileSync(join(folder, "b.txt"), "mine, edited\n")
     writeFileSync(join(folder, "notes.txt"), "new of mine\n")
@@ -968,7 +969,7 @@ describe("undo, carefully", () => {
     expect(readFileSync(join(folder, "notes.txt"), "utf8")).toBe("new of mine\n")
     await sessions.clearRevert(id)
     expect(readFileSync(join(folder, "a.txt"), "utf8")).toBe("agent\n")
-  })
+  }, 30_000)
 
   test("undo from a message sent partway puts back what its turn changed after it", async () => {
     const folder = repository({ "a.txt": "one\n", "b.txt": "two\n" })
@@ -989,13 +990,13 @@ describe("undo, carefully", () => {
       return true
     }
     const partway = send(id, "now b")
-    await settled(id, 1)
+    await settled(id, 1, 20_000)
     await sessions.stageRevert(id, partway)
     expect(readFileSync(join(folder, "a.txt"), "utf8")).toBe("before it\n")
     expect(readFileSync(join(folder, "b.txt"), "utf8")).toBe("two\n")
     await sessions.clearRevert(id)
     expect(readFileSync(join(folder, "b.txt"), "utf8")).toBe("after it\n")
-  })
+  }, 30_000)
 
   test("a repository inside the project (a submodule, a clone) is never touched", async () => {
     const folder = repository({ "a.txt": "one\n" })
@@ -1016,13 +1017,13 @@ describe("undo, carefully", () => {
     }
     const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
     const first = send(id, "update the library")
-    await settled(id, 1)
+    await settled(id, 1, 20_000)
     await sessions.stageRevert(id, first)
     expect(readFileSync(join(folder, "a.txt"), "utf8")).toBe("one\n")
     expect(readFileSync(join(inner, "lib.js"), "utf8")).toBe("v2\n")
     expect(readFileSync(join(inner, "work.txt"), "utf8")).toBe("mine, not committed\n")
     expect(existsSync(join(inner, ".git"))).toBe(true)
-  })
+  }, 30_000)
 
   test("files the ignore rules left out stay when the turn changed those rules", async () => {
     const folder = repository({ ".gitignore": ".env\nnode_modules/\n", "a.txt": "one\n" }, (folder) => {
@@ -1038,13 +1039,13 @@ describe("undo, carefully", () => {
     }
     const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
     const first = send(id, "tidy the ignore file")
-    await settled(id, 1)
+    await settled(id, 1, 20_000)
     await sessions.stageRevert(id, first)
     expect(readFileSync(join(folder, ".gitignore"), "utf8")).toBe(".env\nnode_modules/\n")
     expect(readFileSync(join(folder, ".env"), "utf8")).toBe("SECRET=1\n")
     expect(existsSync(join(folder, "node_modules", "x", "index.js"))).toBe(true)
     expect(existsSync(join(folder, "new.txt"))).toBe(false)
-  })
+  }, 30_000)
 
   test("a turn cut short (a quit) can still be undone, and the messages before it", async () => {
     const folder = repository({ "a.txt": "one\n" })
@@ -1055,7 +1056,7 @@ describe("undo, carefully", () => {
     }
     const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
     const first = send(id, "change it")
-    await settled(id, 1)
+    await settled(id, 1, 20_000)
     // The next turn is cut short: its note has no files, as after a crash.
     a.script = async (_input, turn) => {
       writeFileSync(join(folder, "a.txt"), "three\n")
@@ -1072,7 +1073,7 @@ describe("undo, carefully", () => {
     // At once: the undo waits while the cut-short turn's files are read.
     await sessions.stageRevert(id, first)
     expect(readFileSync(join(folder, "a.txt"), "utf8")).toBe("one\n")
-  })
+  }, 30_000)
 
   test("a file it made whose name looks like git's pathspec magic goes with the undo", async () => {
     const folder = repository({ "a.txt": "one\n" })
@@ -1083,10 +1084,10 @@ describe("undo, carefully", () => {
     }
     const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
     const first = send(id, "make it")
-    await settled(id, 1)
+    await settled(id, 1, 20_000)
     await sessions.stageRevert(id, first)
     expect(existsSync(join(folder, ":(new)"))).toBe(false)
-  })
+  }, 30_000)
 
   test("in a subfolder, a file the top folder's rules left out stays, though the agent changed those rules", async () => {
     const folder = repository({ ".gitignore": "sub/secret.txt\n", "sub/a.txt": "one\n", "sub/secret.txt": "mine\n" })
@@ -1098,11 +1099,11 @@ describe("undo, carefully", () => {
     }
     const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: join(folder, "sub") } }).id
     const first = send(id, "change it")
-    await settled(id, 1)
+    await settled(id, 1, 20_000)
     await sessions.stageRevert(id, first)
     expect(existsSync(join(folder, "sub", "new.txt"))).toBe(false)
     expect(readFileSync(join(folder, "sub", "secret.txt"), "utf8")).toBe("mine\n")
-  })
+  }, 30_000)
 
   test("a turn cut short long ago (the app was closed) isn't undone through: your edits since stay", async () => {
     const folder = repository({ "a.txt": "one\n" })
@@ -1113,7 +1114,7 @@ describe("undo, carefully", () => {
     }
     const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
     const first = send(id, "change it")
-    await settled(id, 1)
+    await settled(id, 1, 20_000)
     a.script = async (_input, turn) => {
       turn.startStep()
       return new Promise(() => {})
@@ -1131,7 +1132,7 @@ describe("undo, carefully", () => {
     await Bun.sleep(300)
     await expect(sessions.stageRevert(id, first)).rejects.toThrow("couldn't keep")
     expect(readFileSync(join(folder, "a.txt"), "utf8")).toBe("mine\n")
-  })
+  }, 30_000)
 
   test("a turn the agent begins on its own while Undo is being staged is turned away, and the undo stays", async () => {
     const folder = repository({ "a.txt": "one\n" })
@@ -1142,7 +1143,7 @@ describe("undo, carefully", () => {
     }
     const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
     const first = send(id, "change it")
-    await settled(id, 1)
+    await settled(id, 1, 20_000)
     const staging = sessions.stageRevert(id, first)
     // Taken for now (the files are being put back), then let go once the undo is staged.
     expect(a.threads[0].onOwnTurn!({ text: "Alpha carried on by itself." })).toBe(true)
@@ -1154,22 +1155,22 @@ describe("undo, carefully", () => {
     expect(readFileSync(join(folder, "a.txt"), "utf8")).toBe("one\n")
     // And one while it's staged isn't taken at all.
     expect(a.threads[0].onOwnTurn!({ text: "Alpha carried on by itself." })).toBe(false)
-  })
+  }, 30_000)
 
   test("Stop before a turn the agent began on its own is taken stops that too", async () => {
     const folder = repository({ "a.txt": "one\n" })
     withSnapshots()
     const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
     send(id, "hello")
-    await settled(id, 1)
+    await settled(id, 1, 20_000)
     expect(a.threads[0].onOwnTurn!({ text: "Alpha carried on by itself." })).toBe(true)
     // Its files are being kept: Stop comes first.
     await sessions.interrupt(id)
-    await settled(id, 2)
+    await settled(id, 2, 20_000)
     expect(idles(id)[1].outcome).toBe("interrupted")
     expect(a.runs).toHaveLength(1)
     expect(a.threads[0].turnedAway).toBe(1)
-  })
+  }, 30_000)
 
   test("Undo doesn't start what was waiting, so it isn't made final at once", async () => {
     const folder = repository({ "a.txt": "one\n" })
@@ -1180,20 +1181,20 @@ describe("undo, carefully", () => {
     }
     const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
     const first = send(id, "change it")
-    await settled(id, 1)
+    await settled(id, 1, 20_000)
     // One waiting, held after a Stop.
     a.script = works
     send(id, "working")
     await until(() => a.runs.length === 2)
     send(id, "waits", "queue")
     await sessions.interrupt(id)
-    await settled(id, 2)
+    await settled(id, 2, 20_000)
     await sessions.stageRevert(id, first)
     await Bun.sleep(50)
     expect(a.runs).toHaveLength(2)
     expect(sessions.get(id).revert?.messageID).toBe(first)
     expect(sessions.inbox(id)).toHaveLength(1)
-  })
+  }, 30_000)
 
   test("a message sent while the stopped turn's files are being kept goes once that's done", async () => {
     const folder = repository({ "a.txt": "one\n" })
@@ -1217,9 +1218,9 @@ describe("undo, carefully", () => {
     await Bun.sleep(100)
     send(id, "now this")
     await until(() => a.runs.length === 2, 5_000)
-    await settled(id, 2)
+    await settled(id, 2, 20_000)
     expect(sessions.inbox(id)).toHaveLength(0)
-  })
+  }, 30_000)
 
   test("an Undo that fails partway puts the files back as they were, and stages nothing", async () => {
     const folder = repository({ "a.txt": "one\n", "b.txt": "one\n" })
@@ -1244,7 +1245,7 @@ describe("undo, carefully", () => {
     }
     const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
     const first = send(id, "change both")
-    await settled(id, 1)
+    await settled(id, 1, 20_000)
     snapshots.failNext = true
     await expect(sessions.stageRevert(id, first)).rejects.toThrow()
     expect(readFileSync(join(folder, "a.txt"), "utf8")).toBe("two\n")
@@ -1254,7 +1255,7 @@ describe("undo, carefully", () => {
     expect(readFileSync(join(folder, "a.txt"), "utf8")).toBe("one\n")
     await sessions.clearRevert(id)
     expect(readFileSync(join(folder, "a.txt"), "utf8")).toBe("two\n")
-  })
+  }, 30_000)
 
   test("never deletes through a link the agent replaced", async () => {
     const outside = mkdtempSync(join(root, "outside-"))
@@ -1270,11 +1271,11 @@ describe("undo, carefully", () => {
     }
     const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
     const first = send(id, "vendor it")
-    await settled(id, 1)
+    await settled(id, 1, 20_000)
     await sessions.stageRevert(id, first)
     expect(lstatSync(join(folder, "lib")).isSymbolicLink()).toBe(true)
     expect(readFileSync(join(outside, "lib.js"), "utf8")).toBe("keep me\n")
-  })
+  }, 30_000)
 
   test("another session's work in the same project stays", async () => {
     const folder = repository({ "a.txt": "one\n" })
@@ -1292,7 +1293,7 @@ describe("undo, carefully", () => {
     await sessions.stageRevert(one, first)
     expect(existsSync(join(folder, "from-a.txt"))).toBe(false)
     expect(existsSync(join(folder, "from-b.txt"))).toBe(true)
-  })
+  }, 30_000)
 
   test("a file that became a folder goes back", async () => {
     const folder = repository({ "config": "plain\n" })
@@ -1305,12 +1306,12 @@ describe("undo, carefully", () => {
     }
     const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: folder } }).id
     const first = send(id, "split it")
-    await settled(id, 1)
+    await settled(id, 1, 20_000)
     await sessions.stageRevert(id, first)
     expect(readFileSync(join(folder, "config"), "utf8")).toBe("plain\n")
     await sessions.clearRevert(id)
     expect(readFileSync(join(folder, "config", "main.json"), "utf8")).toBe("{}\n")
-  })
+  }, 30_000)
 
   test("in a subfolder, the repository's ignore rules hold: what it ignores is left alone", async () => {
     const folder = repository({ ".gitignore": "node_modules/\n", "app/a.txt": "one\n" })
@@ -1323,11 +1324,11 @@ describe("undo, carefully", () => {
     }
     const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: join(folder, "app") } }).id
     const first = send(id, "install and change")
-    await settled(id, 1)
+    await settled(id, 1, 20_000)
     await sessions.stageRevert(id, first)
     expect(readFileSync(join(folder, "app", "a.txt"), "utf8")).toBe("one\n")
     expect(existsSync(join(folder, "app", "node_modules", "pkg", "index.js"))).toBe(true)
-  })
+  }, 30_000)
 })
 
 describe("commands you run yourself", () => {
