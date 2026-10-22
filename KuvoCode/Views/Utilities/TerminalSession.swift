@@ -155,7 +155,18 @@ extension TerminalSession: @preconcurrency LocalProcessTerminalViewDelegate {
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
 
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
-        self.title = title.isEmpty ? "Terminal" : title
+        // Only when it says something new, without the spinner some agents turn at its start: one
+        // changing every tenth of a second would draw the tabs and the sidebar again as often.
+        let steady = Self.steady(title)
+        if self.title != steady { self.title = steady }
+    }
+
+    /// A title without the spinner or mark an agent keeps changing at its start (Braille dots, ✳).
+    static func steady(_ title: String) -> String {
+        let marks: Set<Character> = ["✳", "✶", "✻", "✽", "✢", "✺", "·", "•", "●", "○", "◐", "◓", "◑", "◒", "⏺"]
+        let kept = title.drop { $0.isWhitespace || marks.contains($0) || $0.unicodeScalars.allSatisfy { (0x2800...0x28FF).contains($0.value) } }
+        let named = kept.trimmingCharacters(in: .whitespaces)
+        return named.isEmpty ? "Terminal" : named
     }
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}

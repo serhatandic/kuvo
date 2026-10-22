@@ -150,7 +150,7 @@ struct ProjectEditor: View {
                 }
             }
 
-            section("Terminal Instead of Chat", note: "New sessions in this project open a terminal running this command, in place of a conversation. It's typed in your shell, so flags and arguments work (`claude --continue`, `opencode --continue`). Leave empty for the usual chat. A conversation can still be started from the project's menu in the sidebar, with New Chat.") {
+            section("Terminal Instead of Chat", note: "New sessions in this project open a terminal running this command, flags and all; leave it empty for the usual chat.") {
                 VStack(alignment: .leading, spacing: 10) {
                     WellGroup(isActive: isTerminalFocused) {
                         WellRow(isActive: isTerminalFocused) {
@@ -174,9 +174,8 @@ struct ProjectEditor: View {
                                     .font(.system(size: 12, design: .monospaced))
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 4)
-                                    .background(.quaternary, in: Capsule())
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(FilledButtonStyle(shape: .capsule))
                         }
                     }
                 }

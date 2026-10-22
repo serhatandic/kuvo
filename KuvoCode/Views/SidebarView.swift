@@ -394,7 +394,7 @@ struct SidebarView: View {
             Button("New Session") { newSession(project.directory) }
             if workspace.settings[project.directory]?.terminal != nil {
                 // Its sessions open a terminal; this still starts a conversation.
-                Button("New Chat") { newConversation(project.directory) }
+                Button("New Conversation") { newConversation(project.directory) }
             }
             Button("Edit Project…") { editProject(project) }
             if let engine = app.machines.engine(RemoteFolder.machine(of: project.directory)) {

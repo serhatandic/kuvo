@@ -705,7 +705,7 @@ struct MainView: View {
         } content: {
             SidebarView(
                 selection: Binding(get: { selection }, set: { id in if let id { openTab(id) } }),
-                newSession: newSession,
+                newSession: { newSession(in: $0) },
                 newProject: { openProjectEditor(ProjectEditorRequest(project: nil)) },
                 editProject: { openProjectEditor(ProjectEditorRequest(project: $0)) },
                 showProviders: { app.openSettings(.accounts) },
@@ -1273,8 +1273,7 @@ struct MainView: View {
     /// Adds a file's lines ("@src/App.swift:12-20") or a terminal's output to what's in the
     /// composer of the session you work in, and puts the cursor there.
     private func addToMessage(_ addition: String) {
-        // With no tab open, a new session gets it.
-        if selection == nil { newSession(in: nil) }
+        composerForAdding()
         guard let key = messageTarget else { return }
         var text = Drafts.shared[key].text
         let isBlock = addition.hasPrefix("```")
@@ -1289,11 +1288,19 @@ struct MainView: View {
     /// Attaches files to the message in the composer of the session you work in, and puts the
     /// cursor there.
     private func attachToMessage(_ files: [URL]) {
-        if selection == nil { newSession(in: nil) }
+        composerForAdding()
         guard let key = messageTarget else { return }
         Drafts.shared[key].files += files.filter { !Drafts.shared[key].files.contains($0) }
         if SidebarView.draftDirectory(from: key) != nil { draftFocus += 1 } else { workspace.model(for: key)?.focusComposer() }
         focus = worksBeside ? .split : .conversation
+    }
+
+    /// With no composer in view to add to (no tab open, or a terminal's): a new conversation, in
+    /// the terminal's folder if one's in view, never a terminal (which would start the project's
+    /// command, and not have the text).
+    private func composerForAdding() {
+        guard selection == nil || messageTarget.map(MainTerminals.isTerminal) == true else { return }
+        newSession(in: selection.flatMap { terminals.entry($0)?.directory }, conversation: true)
     }
 
     /// A session that carries on in another: the new one takes its tab (or its place beside
@@ -1531,11 +1538,12 @@ struct MainView: View {
     /// Starts a draft in `directory`, or in the current project (a worktree's, for a session in one).
     /// A new session in `directory`, or the project in view, or the latest one; with no project
     /// at all, a chat. A bot's own folder isn't a project: from its conversation, the latest one.
-    private func newSession(in directory: String?) {
+    /// `conversation`: one, even in a project whose sessions open its terminal command.
+    private func newSession(in directory: String?, conversation: Bool = false) {
         let inView = activeDirectory.map(workspace.projectDirectory).flatMap { Workspace.isBotFolder($0) ? nil : $0 }
         let directory = directory ?? inView ?? workspace.projects.first?.directory ?? Workspace.chatsFolder
         // A project that has a terminal command for its sessions opens that, not a conversation.
-        if let command = workspace.settings[workspace.projectDirectory(directory)]?.terminal {
+        if !conversation, let command = workspace.settings[workspace.projectDirectory(directory)]?.terminal {
             openTerminalTab(command: command, in: directory)
             return
         }
@@ -1545,7 +1553,8 @@ struct MainView: View {
     /// A terminal as a tab, in the folder of the tab in view (or the one given), typing `command`
     /// in it. Without one, a plain shell: where you start `omp` or any agent yourself.
     private func openTerminalTab(command: String?, in directory: String? = nil) {
-        let directory = directory ?? activeDirectory ?? NSHomeDirectory()
+        // A project's folder, not a bot's own or the chats' (their agents work there).
+        let directory = directory ?? activeProject ?? NSHomeDirectory()
         Analytics.shared.track("terminal_tab_opened", ["kind": command == nil ? "shell" : "project"])
         openTab(terminals.open(in: directory, command: command, environment: app.shellEnvironment))
     }
