@@ -1,4 +1,5 @@
 import Foundation
+import KuvoLink
 import Testing
 @testable import KuvoCode
 
@@ -58,6 +59,43 @@ import Testing
         _ = ask(.signIn(username: false, password: true), session: "ses_b")
         _ = ask(.signIn(username: false, password: true), host: "gitlab.com", session: "ses_a")
         #expect(asks.asks.count == 2)
+    }
+
+    /// From a phone: the cards listed (the site, the machine by its name, what the page asks for),
+    /// each answered as on the Mac, once; an answer that isn't the card's, or a card that's gone,
+    /// says so.
+    @Test func aPhoneAnswersThem() async throws {
+        let link = PhoneLink()
+        link.browserAsks = asks
+        link.machineName = { $0 == "box" ? "Build Box" : nil }
+        func phone(_ path: String, _ body: [String: String]? = nil) async throws -> (status: Int, json: [String: Any]?) {
+            let request = LinkRequest(method: body == nil ? "GET" : "POST", path: path, headers: ["content-type": "application/json"],
+                                      body: try body.map { try JSONSerialization.data(withJSONObject: $0) } ?? Data())
+            var status = 0
+            var data = Data()
+            for try await part in PhoneLink.respond(to: request, link: link, engine: URL(string: "http://127.0.0.1:9/")!, password: nil, agents: nil) {
+                switch part {
+                case .head(let code, _): status = code
+                case .body(let chunk): data += chunk
+                }
+            }
+            return (status, try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+        let (signIn, signedIn) = ask(.signIn(username: true, password: true), session: "ses_a")
+        let (code, coded) = ask(.code(prompt: "Enter the 6-digit code"), host: "bank.example", session: "ses_b", machine: nil)
+        let listed = try #require(try await phone("kuvo/asks").json?["asks"] as? [[String: Any]])
+        let card = try #require(listed.first { $0["id"] as? String == signIn })
+        #expect(card["kind"] as? String == "signIn" && card["host"] as? String == "github.com" && card["machine"] as? String == "Build Box")
+        #expect(card["username"] as? Bool == true && card["password"] as? Bool == true)
+        #expect(listed.first { $0["id"] as? String == code }?["prompt"] as? String == "Enter the 6-digit code")
+
+        #expect(try await phone("kuvo/asks/\(signIn)", ["answer": "code", "code": "1"]).status == 400, "not what the card asks")
+        #expect(try await phone("kuvo/asks/\(signIn)", ["answer": "signIn", "username": "me@example.com", "password": "hunter2"]).status == 200)
+        if case .signIn(let username, let password)? = signedIn.got.first { #expect(username == "me@example.com" && password == "hunter2") } else { Issue.record("not signed in: \(signedIn.got)") }
+        #expect(try await phone("kuvo/asks/\(code)", ["answer": "code", "code": " 123456 "]).status == 200)
+        if case .code(let given)? = coded.got.first { #expect(given == "123456") } else { Issue.record("no code: \(coded.got)") }
+        #expect(asks.asks.isEmpty)
+        #expect(try await phone("kuvo/asks/\(code)", ["answer": "declined"]).status == 404, "answered already")
     }
 
     /// A machine gone: its cards go, this Mac's and other machines' stay.
