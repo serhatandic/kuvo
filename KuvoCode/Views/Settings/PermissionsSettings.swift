@@ -116,8 +116,6 @@ struct PermissionsSettings: View {
             }
             await loadSaved()
         }
-        // Sessions' rules hold these too (see ToolApproval.rules(settings:)): open ones follow now.
-        .onChange(of: app.engineConfig.settings["permissions"]) { workspace.syncPermissions() }
     }
 
     static let policyKinds: [(id: String, title: String)] = [

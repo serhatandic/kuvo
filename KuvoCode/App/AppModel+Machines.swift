@@ -72,6 +72,7 @@ extension AppModel {
         machines.onFolded = { [weak self] address, machine in self?.machineFolded(address, into: machine) }
         // Settings changed here (a mode, a rule): machines take them too, not only when they connect.
         engineConfig.onSaved = { [weak self] in self?.settingsSaved() }
+        engineConfig.onRulesChanged = { [weak self] in self?.workspace.syncPermissions() }
         workspace.onRunEnded = { [weak self] session in
             self?.bots.runEnded(session: session)
             // An ask its agent left in this Mac's browser has no one waiting for it now.

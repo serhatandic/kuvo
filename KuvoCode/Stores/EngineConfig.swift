@@ -34,6 +34,17 @@ final class EngineConfig {
 
     /// Saved with a change: machines take it too (`AppModel.settingsSaved`).
     @ObservationIgnored var onSaved: () -> Void = {}
+    /// Settings › Permissions' rules changed, wherever from (Settings, a phone, the file edited
+    /// by hand): open sessions follow (`Workspace.syncPermissions`).
+    @ObservationIgnored var onRulesChanged: () -> Void = {}
+    /// The rules as they were last, to tell when they change.
+    @ObservationIgnored private var rules: JSONValue?
+
+    private func noteRules() {
+        guard settings["permissions"] != rules else { return }
+        rules = settings["permissions"]
+        onRulesChanged()
+    }
 
     /// Reads the file again and adds what Kuvo Code starts every engine with, unless it sets it:
     /// web search through Exa, which needs no key. The engine has none chosen, and every search
@@ -76,6 +87,7 @@ final class EngineConfig {
             do {
                 try Data(text.utf8).write(to: target, options: .atomic)
                 settings = parsed
+                noteRules()
             } catch {
                 problem = "It couldn't be saved: \(error.localizedDescription)"
             }
@@ -150,11 +162,13 @@ final class EngineConfig {
         guard let data = try? Data(contentsOf: file) else {
             settings = [:]
             problem = nil
+            noteRules()
             return
         }
         do {
             settings = data.isEmpty ? [:] : try JSONDecoder().decode([String: JSONValue].self, from: data)
             problem = nil
+            noteRules()
         } catch {
             problem = "It isn't plain JSON, so Kuvo Code leaves it alone. (Comments aren't supported here.)"
         }
@@ -210,6 +224,7 @@ final class EngineConfig {
             try encoder.encode(document).write(to: target, options: .atomic)
             settings = document
             onSaved()
+            noteRules()
         } catch {
             problem = "It couldn't be saved: \(error.localizedDescription)"
         }

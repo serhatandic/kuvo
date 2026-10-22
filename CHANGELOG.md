@@ -7,6 +7,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - A project can use a terminal instead of the chat: in Edit Project, **Terminal Instead of Chat** takes a command (`omp`, `claude`, `codex`, `opencode`, `pi`…, with any flags: `claude --continue`), with the common ones a click away, and each new session in that project opens a terminal tab in the main area running it. **New Terminal Tab** (⌃⇧`, or ⌘K) opens a plain shell there for any project. The project's terminals are listed under it in the sidebar, and its menu has **New Conversation** to start a conversation anyway. Closing a tab, or the window, ends the shell; terminal tabs aren't kept when the app quits.
+- A change to Settings › Permissions' rules made outside that page, like in the engine's settings file, applies to conversations that are already open, not only to new ones.
 - In a group chat, the bot that's talking shows what it's doing under its name, like the file it's reading or the line it's thinking, so a long turn doesn't look stuck.
 - A conversation no longer goes blank when a long reply comes in; it used to show nothing until you scrolled.
 - The list that opens over the composer as you type /, @ or & no longer shows a dark block behind it.
