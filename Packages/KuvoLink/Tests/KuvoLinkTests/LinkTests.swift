@@ -362,6 +362,36 @@ private func collect(_ stream: LinkResponse) async throws -> (status: Int, heade
         #expect(response.body == big)
     }
 
+    @Test(.timeLimit(.minutes(1))) func aHostThatStopsTellsItsPhones() async throws {
+        let relay = MemoryRelay()
+        // An event stream that never ends by itself.
+        let host = TestHost(relay: relay) { request, phone in
+            guard request.path == "api/event" else { return echo(request, phone) }
+            return AsyncThrowingStream { continuation in
+                let task = Task {
+                    continuation.yield(.head(status: 200, headers: ["content-type": "text/event-stream"]))
+                    continuation.yield(.body(Data("data: hello\n\n".utf8)))
+                    while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        }
+        let client = phone(on: relay)
+        let paired = try await client.pair(host.link)
+        await client.setTimingForTesting(LinkClient.Timing(answer: .seconds(30), check: .seconds(30)))
+        var parts = client.send(LinkRequest(path: "api/event"), to: paired).makeAsyncIterator()
+        // Its head, and its first event.
+        _ = try await parts.next()
+        _ = try await parts.next()
+        // The host stops (its engine starting over): the phone hears at once, not after its checks.
+        let began = ContinuousClock.now
+        await host.server.closeAll()
+        await #expect(throws: LinkError.closed) { _ = try await parts.next() }
+        #expect(ContinuousClock.now - began < .seconds(2))
+        // What it asks next goes on a new session.
+        #expect(try await collect(client.send(LinkRequest(path: "api/info"), to: paired)).status == 200)
+    }
+
     @Test func aStreamStopsOnTheHostWhenThePhoneStopsReading() async throws {
         let relay = MemoryRelay()
         let stopped = AsyncStream.makeStream(of: Void.self)

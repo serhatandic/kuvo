@@ -93,6 +93,13 @@ public actor LinkServer {
     /// Whether a phone has a session open: the app on its screen.
     public var hasSessions: Bool { !sessions.isEmpty }
 
+    /// Ends every session, telling each phone, as this host stops (its engine starting over, the
+    /// app quitting): a phone opens a new one for what it asks next at once, rather than finding
+    /// out the old one's gone when that goes unanswered.
+    public func closeAll() {
+        for session in sessions.values { end(session, notify: true) }
+    }
+
     /// Sends `notice` (a `Notice`'s JSON) to each phone's notifications, sealed for it alone; the
     /// relay pushes it to the phone through Apple. False with no relay connection to send it on.
     @discardableResult

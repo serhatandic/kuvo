@@ -181,12 +181,19 @@ final class PhoneLink {
     #endif
 
     func stop() {
-        running?.cancel()
-        running = nil
+        let server = server, running = running
+        self.running = nil
         presence?.cancel()
         presence = nil
-        server = nil
+        self.server = nil
         status = .off
+        // Phones hear their sessions end (see `LinkServer.closeAll`); the relay connection goes
+        // once that's on its way.
+        Task {
+            await server?.closeAll()
+            try? await Task.sleep(for: .milliseconds(300))
+            running?.cancel()
+        }
     }
 
     private func restart() {
