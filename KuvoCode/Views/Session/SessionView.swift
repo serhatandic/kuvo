@@ -327,7 +327,9 @@ private struct BottomStack: View {
             Analytics.shared.firstMessageBlocked("machine_offline")
             return
         }
-        model.submitDraft(for: catalog.model(model.session.model), queue: queue, commands: catalog.commands(in: model.session.location.directory))
+        let machine = RemoteFolder.machine(of: model.session.location.directory).map { id in app.machines.list.first { $0.id == id }?.name ?? id }
+        let unavailable = model.session.model.flatMap { catalog.isUnavailable($0) ? catalog.unavailable($0, on: machine) : nil }
+        model.submitDraft(for: catalog.model(model.session.model), queue: queue, commands: catalog.commands(in: model.session.location.directory), unavailable: unavailable)
     }
 }
 

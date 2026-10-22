@@ -823,6 +823,13 @@ final class BotGroups {
             note("\(bot.name) is on \(machine), which isn’t connected, so it sat this out.", in: id)
             return .absent
         }
+        // Its model can't run where it lives (its account signed out of): said, rather than
+        // sent to an engine that drops it without a word.
+        let catalog = bot.machine.flatMap { app.machines.engine($0)?.catalog } ?? app.catalog
+        if let model = bot.model ?? app.workspace.session(bot.sessionID)?.model, catalog.isUnavailable(model) {
+            note("\(bot.name) couldn’t answer: \(catalog.unavailable(model, on: bot.machine.map { machine in app.machines.list.first { $0.id == machine }?.name ?? machine }))", in: id)
+            return .absent
+        }
         guard let api = seatAPI(of: bot, in: group(id)) else {
             note("\(bot.name) couldn’t answer: \(app.workspace.agents(forFolder: bot.directory)?.api == nil && OutsideAgents.runsWithAgents(bot.model, machine: bot.machine) ? "the coding agents aren’t running" : "the engine isn’t running").", in: id)
             return .absent

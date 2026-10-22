@@ -82,18 +82,20 @@ import Testing
         }
     }
 
-    private func bot(_ id: String, _ name: String) -> [String: Any] {
+    private func bot(_ id: String, _ name: String, model: ModelRef? = nil) -> [String: Any] {
         let folder = root.appending(path: id).path(percentEncoded: false)
         try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
-        return ["id": id, "name": name, "job": "Helps", "instructions": "Helps.", "jobInMemory": true,
-                "look": ["color": "mint", "shape": "round", "face": "calm"], "folder": folder,
-                "sessionID": "ses_" + id, "created": "2026-10-21T09:00:00Z"]
+        var bot: [String: Any] = ["id": id, "name": name, "job": "Helps", "instructions": "Helps.", "jobInMemory": true,
+                                  "look": ["color": "mint", "shape": "round", "face": "calm"], "folder": folder,
+                                  "sessionID": "ses_" + id, "created": "2026-10-21T09:00:00Z"]
+        if let model { bot["model"] = ["id": model.id, "providerID": model.providerID] }
+        return bot
     }
 
     /// Ada (the lead) and Ben in a chat, with the lines they'll say; the app around them.
-    private func start(lines: [String: [String]], meeting: BotGroup.Meeting? = nil) async throws -> (AppModel, BotGroup, Seats) {
+    private func start(lines: [String: [String]], meeting: BotGroup.Meeting? = nil, benOn model: ModelRef? = nil) async throws -> (AppModel, BotGroup, Seats) {
         try FileManager.default.createDirectory(at: botsFile.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONSerialization.data(withJSONObject: [bot("bot_ada", "Ada"), bot("bot_ben", "Ben")]).write(to: botsFile)
+        try JSONSerialization.data(withJSONObject: [bot("bot_ada", "Ada"), bot("bot_ben", "Ben", model: model)]).write(to: botsFile)
         let app = AppModel()
         app.bots.app = app
         app.wakeUps.app = app
@@ -165,6 +167,34 @@ import Testing
 
     /// Named with &, a bot speaks first, the lead after it; being in the chat, it's asked there,
     /// not described to the others as an agent to go and write to.
+    /// A bot on a model whose account you signed out of says so in the chat, naming what to sign
+    /// in to, and the talk goes on without it; nothing goes to its seat, where the engine would
+    /// drop it without a word (the chat waited, then nothing).
+    @Test func aBotWhoseAccountYouSignedOutOfSaysSo() async throws {
+        defer { done() }
+        let luna = ModelRef(id: "luna", providerID: "openai")
+        let (app, group, seats) = try await start(lines: ["Ada": ["Morning!", "PASS"], "Ben": ["Hi!", "PASS"]], benOn: luna)
+        engine.on("GET", "/api/integration", json: ["location": ["directory": "/"], "data": [["id": "openai", "name": "OpenAI", "methods": [["type": "key"]], "connections": []]]])
+        engine.on("GET", "/api/model", json: ["location": ["directory": "/"], "data": [[
+            "id": "luna", "modelID": "luna", "providerID": "openai", "name": "Luna",
+            "capabilities": ["tools": true, "input": ["text"], "output": ["text"]], "variants": [], "time": ["released": 1],
+            "cost": [["input": 1, "output": 1]], "status": "active", "enabled": true, "limit": ["context": 100_000, "output": 8_000]]]])
+        engine.on("GET", "/api/model/default", json: ["location": ["directory": "/"], "data": NSNull()])
+        engine.on("GET", "/api/agent", json: ["location": ["directory": "/"], "data": []])
+        engine.on("GET", "/api/command", json: ["location": ["directory": "/"], "data": []])
+        app.catalog.api = engine.api
+        await app.catalog.refresh()
+        #expect(app.catalog.isLoaded, "the models known")
+        #expect(app.catalog.isUnavailable(luna), "known, and signed out of")
+        #expect(app.bots.bot("bot_ben")?.model == luna, "Ben's model")
+        app.groups.send("Morning all", to: group.id)
+        try await talkedThrough(app, group)
+        #expect(said(app, group) == [nil, "bot_ada"])
+        #expect(!seats.turns.contains { $0.bot == "Ben" }, "nothing sent to its seat")
+        let note = try #require(app.groups.messages(in: group.id).first { $0.kind == .note })
+        #expect(note.text.hasPrefix("Ben couldn’t answer: Luna needs a sign-in: sign in to Codex (your ChatGPT plan"), "\(note.text)")
+    }
+
     @Test func aBotYouNameSpeaksFirst() async throws {
         defer { done() }
         let (app, group, seats) = try await start(lines: [

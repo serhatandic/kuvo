@@ -205,6 +205,18 @@ final class Catalog {
         return isKnown(ref) && offeredModel(ref) == nil
     }
 
+    /// Why `ref` can't run here, and what to do, for one `isUnavailable` turned down: its account
+    /// to sign in to (on the machine named `on`, as Settings › Accounts lists it), or another
+    /// model. Without it, the engine takes the message and drops it without a word.
+    func unavailable(_ ref: ModelRef, on machine: String? = nil) -> String {
+        let name = model(ref)?.name ?? ref.id
+        let there = machine.map { " on \($0)" } ?? ""
+        if let provider = integrations.first(where: { $0.id == ref.providerID }), !provider.isConnected, !provider.methods.isEmpty {
+            return "\(name) needs a sign-in\(there): sign in to \(signInName(ref.providerID)) in Settings › Accounts, or choose another model."
+        }
+        return "\(name) isn’t available\(there) now: choose another model."
+    }
+
     /// Whether the models `ref` would be among are known yet: the engine's, or the coding agents'
     /// (this Mac's, or the machine's beside its engine).
     private func isKnown(_ ref: ModelRef) -> Bool {

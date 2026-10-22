@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A message to a conversation or a bot whose model you're no longer signed in to says so right away, naming the account to sign in to, and stays in the composer, rather than going unanswered without a word. In a group chat, that bot says so and the others carry on.
 - A bot's reply that names another agent with &, like &Finance, shows its face and colored name, as your own messages do, in conversations and in the cards for messages between agents.
 - A loader beside text, like a message card's "Waiting for its answer", sits in line with the words rather than below them.
 ## 0.7.0

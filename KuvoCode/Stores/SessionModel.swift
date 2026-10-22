@@ -845,9 +845,15 @@ final class SessionModel {
     }
 
     /// Sends the composer's draft as it is (its text, files and what it replies to), emptying it
-    /// first: what can't be sent comes back to it.
-    func submitDraft(for model: Model?, queue: Bool, commands: [Command]) {
+    /// first: what can't be sent comes back to it. `unavailable`: why the session's model can't
+    /// run (its account signed out of, `Catalog.unavailable`), said instead, the draft kept: the
+    /// engine would take the message and drop it without a word. A "!" command needs no model.
+    func submitDraft(for model: Model?, queue: Bool, commands: [Command], unavailable: String? = nil) {
         failure = nil
+        if let unavailable, Self.shellCommand(in: draftText) == nil {
+            failure = unavailable
+            return
+        }
         // A "!" or "/" command runs as typed; what you were replying to waits for a message.
         let isCommand = Self.shellCommand(in: draftText) != nil || SlashCommands.parse(draftText, commands: commands) != nil
         let text = isCommand ? draftText : Quoting.message(quotes: draftQuotes, text: draftText)

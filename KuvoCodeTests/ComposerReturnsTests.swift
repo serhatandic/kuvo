@@ -51,6 +51,41 @@ import Testing
         #expect(model.failure != nil)
     }
 
+    /// A conversation on a model whose account you signed out of: said at once, naming what to
+    /// sign in to, and nothing sent (the engine takes such a message and drops it without a
+    /// word); your message stays to send once you've signed in or picked another model.
+    @Test func aModelYouSignedOutOfSaysSoAndKeepsYourMessage() async throws {
+        defer { done() }
+        StubWeb.handle(Self.engine + "/api/session/\(id)/prompt") { _, _ in StubWeb.json([:]) }
+        let location = ["directory": "/"]
+        let model: [String: Any] = ["id": "luna", "modelID": "luna", "providerID": "openai", "name": "Luna",
+                                    "capabilities": ["tools": true, "input": ["text"], "output": ["text"]], "variants": [],
+                                    "time": ["released": 1], "cost": [["input": 1, "output": 1]], "status": "active", "enabled": true,
+                                    "limit": ["context": 100_000, "output": 8_000]]
+        try StubWeb.answer(Self.engine + "/api/integration", json: ["location": location, "data": [["id": "openai", "name": "OpenAI", "methods": [["type": "key"]], "connections": []]]])
+        try StubWeb.answer(Self.engine + "/api/model", json: ["location": location, "data": [model]])
+        try StubWeb.answer(Self.engine + "/api/model/default", json: ["location": location, "data": NSNull()])
+        try StubWeb.answer(Self.engine + "/api/agent", json: ["location": location, "data": []])
+        try StubWeb.answer(Self.engine + "/api/command", json: ["location": location, "data": []])
+        let catalog = Catalog(isMac: true)
+        catalog.api = workspace.api
+        await catalog.refresh()
+        let luna = ModelRef(id: "luna", providerID: "openai")
+        #expect(catalog.isUnavailable(luna))
+
+        let conversation = try #require(workspace.model(for: id))
+        conversation.draftText = "Summarize the release"
+        conversation.submitDraft(for: catalog.model(luna), queue: false, commands: [], unavailable: catalog.unavailable(luna))
+        #expect(conversation.draftText == "Summarize the release", "kept, to send once you can")
+        let said = try #require(conversation.failure)
+        #expect(said.contains("Luna") && said.contains("ChatGPT plan") && said.contains("Settings › Accounts"), "\(said)")
+        #expect(!StubWeb.asked.contains { $0.hasSuffix("/prompt") }, "nothing sent into the void")
+        // A "!" command needs no model, and runs.
+        conversation.draftText = "!ls"
+        conversation.submitDraft(for: nil, queue: false, commands: [], unavailable: catalog.unavailable(luna))
+        #expect(conversation.failure == nil)
+    }
+
     @Test func undoPutsItBackAndRedoTakesItOut() async throws {
         defer { done() }
         let sent: [String: Any] = ["id": "msg_sent", "type": "user", "time": ["created": 1], "text": "Refactor the parser"]
