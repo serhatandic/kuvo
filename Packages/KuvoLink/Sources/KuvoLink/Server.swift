@@ -112,6 +112,16 @@ public actor LinkServer {
         return true
     }
 
+    /// Sends `payload` to another host (a machine's bridge), sealed for its key alone, through the
+    /// relay; false with no relay connection to send it on. Nothing comes back: one that isn't
+    /// connected now doesn't get it (the relay says it's unreachable).
+    @discardableResult
+    public func mail(_ payload: Data, to remote: Data, at address: LinkAddress) -> Bool {
+        guard let relay, let sealed = try? Mail.seal(payload, from: key, to: remote) else { return false }
+        relay.send(.send(to: address, payload: sealed))
+        return true
+    }
+
     /// Ends the sessions of a phone that's no longer paired.
     public func forget(phone key: Data) {
         for session in sessions.values where session.phone.key == key { end(session, notify: true) }

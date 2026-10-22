@@ -312,6 +312,26 @@ private func collect(_ stream: LinkResponse) async throws -> (status: Int, heade
         #expect(runs.value == 1)
     }
 
+    /// A host mails another (the Mac, its phone list to a machine's bridge) through the relay,
+    /// sealed for that one's key alone, from its own.
+    @Test func aHostMailsAnotherSealedForItAlone() async throws {
+        let relay = MemoryRelay()
+        let host = TestHost(relay: relay, handle: echo)
+        let machineKey = LinkKey(), machineSecret = RelaySecret()
+        let machine = relay.connect(machineSecret)
+        let payload = Data(#"{"phones":[],"at":1}"#.utf8)
+        var sent = false
+        for _ in 0..<100 where !sent {
+            sent = await host.server.mail(payload, to: machineKey.publicBytes, at: machineSecret.address)
+            if !sent { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        #expect(sent)
+        var iterator = machine.messages.makeAsyncIterator()
+        guard case .deliver(_, let frame)? = await iterator.next() else { Issue.record("nothing came"); return }
+        #expect(try Mail.open(frame, to: machineKey, from: host.key.publicBytes) == payload)
+        #expect(throws: (any Error).self) { try Mail.open(frame, to: LinkKey(), from: host.key.publicBytes) }
+    }
+
     @Test func aQuietSessionToAHostThatLeftSaysSoWithoutWaiting() async throws {
         let relay = MemoryRelay()
         let host = TestHost(relay: relay, handle: echo)

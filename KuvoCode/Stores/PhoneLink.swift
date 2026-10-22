@@ -218,6 +218,7 @@ final class PhoneLink {
         save()
         if let key = Data(base64URL: phone.key) { Task { [server] in await server?.forget(phone: key) } }
         syncMachines()
+        Task { await tellMachines() }
     }
 
     // MARK: Machines
@@ -248,13 +249,16 @@ final class PhoneLink {
                 """), input: scriptFile)
 
             struct Setup: Encodable {
-                struct Phone: Encodable { var key: String; var name: String; var address: String? }
                 var relay: String
                 var name: String
-                var phones: [Phone]
+                var phones: [PhoneList.Phone]
+                /// This Mac's key, which a phone list it mails later must come from, and when this one's from.
+                var mac: String
+                var at: Int64
             }
             let settings = folder.appending(path: "setup.json")
-            try JSONEncoder().encode(Setup(relay: relay.absoluteString, name: machine.name, phones: phones.map { .init(key: $0.key, name: $0.name, address: $0.address) })).write(to: settings)
+            let list = phoneList
+            try JSONEncoder().encode(Setup(relay: relay.absoluteString, name: machine.name, phones: list.phones, mac: key.publicBytes.base64URL, at: list.at)).write(to: settings)
             let output = try await machine.connection.run(RemoteEngineInstaller.script("""
                 KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$E" "$K/bin/\(Bridge.fileName)" setup
                 """), input: settings)
@@ -279,10 +283,13 @@ final class PhoneLink {
     private func keepPresent() {
         presence?.cancel()
         presence = Task { [weak self] in
+            var minutes = 0
             while !Task.isCancelled {
                 if let self, status == .connected, phones.contains(where: { $0.address != nil }) {
                     for engine in readyMachines() where engine.isLive { await markPresent(on: engine.machine) }
                 }
+                if minutes % 15 == 1 { await self?.tellMachines() }
+                minutes += 1
                 try? await Task.sleep(for: .seconds(60))
             }
         }
@@ -297,6 +304,29 @@ final class PhoneLink {
     private func markPresent(on machine: Machine) async {
         let at = ContinuousClock.now
         if await RemoteServer.markPresent(MachineEngine.macID, on: machine.connection) { markedPresent[machine.id] = at }
+    }
+
+    /// The phones you've paired, as a machine's bridge takes them, and when (in milliseconds).
+    struct PhoneList: Encodable {
+        struct Phone: Encodable { var key: String; var name: String; var address: String? }
+        var phones: [Phone]
+        var at: Int64
+    }
+
+    private var phoneList: PhoneList {
+        PhoneList(phones: phones.map { .init(key: $0.key, name: $0.name, address: $0.address) }, at: Int64(Date.now.timeIntervalSince1970 * 1000))
+    }
+
+    /// Mails each of your machines' bridges the phones you've paired, through the relay, so one
+    /// you removed loses its way in there at once, whether this Mac can reach the machine itself
+    /// now or not: as phones change, as the relay answers, and every 15 minutes while it does
+    /// (a machine that was off gets it once it's back). Only this Mac's key is taken there.
+    func tellMachines() async {
+        guard let server, status == .connected, !machineHosts.isEmpty, let payload = try? JSONEncoder().encode(phoneList) else { return }
+        for host in machineHosts.values where host.anotherMac != true {
+            guard let key = Data(base64URL: host.key), let bytes = Data(base64URL: host.address), let address = LinkAddress(bytes: bytes) else { continue }
+            await server.mail(payload, to: key, at: address)
+        }
     }
 
     /// A machine you removed: phones stop being told about it.
@@ -470,6 +500,7 @@ final class PhoneLink {
         else { return false }
         phones.append(Phone(key: encoded, name: String(hello.name.prefix(100)), added: .now, address: address.text))
         save()
+        Task { await tellMachines() }
         self.pairing = nil
         syncMachines()
         log.info("Paired a phone")

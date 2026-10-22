@@ -22,7 +22,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Goes up with every change, so `setup` replaces a running bridge that's older.
-export const BRIDGE_VERSION = "0.9.5";
+export const BRIDGE_VERSION = "0.9.6";
 const K = process.env.KUVO_HOME || path.join(os.homedir(), ".kuvo-code");
 const RUN = path.join(K, "run");
 export const LINK_FILE = path.join(RUN, "link.json");
@@ -309,8 +309,9 @@ export class LinkHost {
   // { open, text, binary, end }) → a socket's { send, close } (PROTOCOL.md, "Sockets");
   // send(bytes) → to the relay; confirmed(phone) → its session proved its own: its first message
   // opened with the handshake's keys, which a replayed first handshake message can't do.
-  constructor({ key, hello, authorize, handle, connect, send, confirmed }) {
-    Object.assign(this, { key, hello, authorize, handle, connect, send, confirmed });
+  // mail(from, body) → a mail frame sent to this machine (its Mac's phone list).
+  constructor({ key, hello, authorize, handle, connect, send, confirmed, mail }) {
+    Object.assign(this, { key, hello, authorize, handle, connect, send, confirmed, mail });
     this.sessions = new Map();
   }
 
@@ -364,6 +365,9 @@ export class LinkHost {
       }
       case Frame.close:
         if (session) this.end(session, false);
+        return;
+      case Frame.mail:
+        return this.mail?.(from, parsed.body);
     }
   }
 
@@ -1826,6 +1830,41 @@ export function authorizePhone(key, hello, address) {
   return true;
 }
 
+// The phones you've paired with the Mac (from: "mac") as it lists them now, beside the ones
+// paired with this machine itself (from: "pair"), keeping when each was added and where it is.
+export function mergePhones(old, given) {
+  const known = new Map((old?.phones ?? []).map(phone => [phone.key, phone]));
+  const ADDRESS = /^[A-Za-z0-9_-]{22}$/;
+  const fromMac = (Array.isArray(given) ? given : []).filter(phone => typeof phone?.key === "string").map(phone => ({
+    key: phone.key,
+    name: String(phone.name ?? "").slice(0, 100),
+    added: known.get(phone.key)?.added ?? Math.floor(Date.now() / 1000),
+    from: "mac",
+    address: ADDRESS.test(phone.address ?? "") ? phone.address : known.get(phone.key)?.address,
+  }));
+  const own = (old?.phones ?? []).filter(phone => phone.from === "pair" && !fromMac.some(p => p.key === phone.key));
+  return [...fromMac, ...own];
+}
+
+// The Mac's phone list, mailed through the relay (sealed with its key, which setup gave): one you
+// removed there loses its way in here at once, though the Mac can't reach this machine itself.
+// Only a newer list than the last one counts.
+export function phonesFromMac(body, host) {
+  const link = readLink();
+  if (!link?.mac) return;
+  let given;
+  try {
+    given = JSON.parse(openOneWay(body, Buffer.from(link.key, "base64url"), Buffer.from(link.mac, "base64url")).payload.toString("utf8"));
+  } catch {
+    return;
+  }
+  if (!Array.isArray(given?.phones) || typeof given.at !== "number" || given.at <= (link.macAt ?? 0)) return;
+  link.phones = mergePhones(link, given.phones);
+  link.macAt = given.at;
+  writeLink(link);
+  host?.keepOnly(new Set(link.phones.map(phone => phone.key)));
+}
+
 // A phone's session proved its own: its notifications go where it is now.
 export function confirmPhone(phone) {
   const link = readLink();
@@ -1969,6 +2008,7 @@ async function run() {
       hello: { v: 1, kind: "machine", name: link.name || os.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
       authorize: authorizePhone,
       confirmed: confirmPhone,
+      mail: (_from, body) => phonesFromMac(body, host),
       handle: engineHandler(readEngineFile, { name: link.name || os.hostname() }),
       connect: engineConnect(readEngineFile),
       send: () => {},
@@ -2030,16 +2070,10 @@ async function setup() {
   const link = old ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
   link.relay = String(input.relay);
   link.name = String(input.name || link.name || os.hostname()).slice(0, 100);
-  const known = new Map((old?.phones ?? []).map(p => [p.key, p]));
-  const ADDRESS = /^[A-Za-z0-9_-]{22}$/;
-  const fromMac = phones.map(p => ({
-    key: p.key,
-    name: String(p.name ?? "").slice(0, 100),
-    added: known.get(p.key)?.added ?? Math.floor(Date.now() / 1000),
-    from: "mac",
-    address: ADDRESS.test(p.address ?? "") ? p.address : known.get(p.key)?.address,
-  }));
-  link.phones = [...fromMac, ...own.filter(phone => !fromMac.some(p => p.key === phone.key))];
+  link.phones = mergePhones(old, phones);
+  // The Mac's key, which a phone list it mails later must come from, and when this list is from.
+  if (typeof input.mac === "string") link.mac = input.mac;
+  if (typeof input.at === "number" && input.at > (link.macAt ?? 0)) link.macAt = input.at;
   writeLink(link);
   // A new relay or name needs a new connection, and a newer bridge replaces an older one.
   let runningVersion = null;

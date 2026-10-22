@@ -642,3 +642,31 @@ test("a Mac that said it's here in the last few minutes keeps the bridge quiet",
     fs.rmSync(folder, { recursive: true, force: true });
   }
 });
+
+test("a phone list the Mac mails through the relay is taken from it alone, a newer one only: a phone removed there loses its way in", () => {
+  const machine = link.newKey(), mac = link.newKey(), stranger = link.newKey();
+  fs.mkdirSync(path.join(home, "run"), { recursive: true });
+  link.writeLink({
+    secret: crypto.randomBytes(32).toString("base64url"), key: machine.toString("base64url"), relay: "wss://relay.test", name: "m",
+    mac: link.publicOf(mac).toString("base64url"), macAt: 1000,
+    phones: [{ key: "lost", name: "Lost iPhone", added: 1, from: "mac" }, { key: "own", name: "Paired here", added: 2, from: "pair" }],
+  });
+  const mail = (from, phones, at) => link.sealOneWay(Buffer.from(JSON.stringify({ phones, at })), from, link.publicOf(machine)).message;
+  const ended = [];
+  const host = { keepOnly: keys => ended.push([...keys].sort()) };
+  const keys = () => link.readLink().phones.map(phone => `${phone.from}:${phone.key}`);
+
+  link.phonesFromMac(mail(stranger, [], 2000), host);
+  link.phonesFromMac(mail(mac, [{ key: "new", name: "New iPhone" }], 900), host);
+  assert.deepEqual(keys(), ["mac:lost", "pair:own"], "not from the Mac, or older: nothing changes");
+  assert.deepEqual(ended, []);
+
+  link.phonesFromMac(mail(mac, [{ key: "new", name: "New iPhone" }], 2000), host);
+  assert.deepEqual(keys(), ["mac:new", "pair:own"], "the Mac's list now, and the machine's own pairing kept");
+  assert.deepEqual(ended, [["new", "own"]], "the removed phone's sessions end");
+  assert.equal(link.authorizePhone(Buffer.from("lost"), {}, undefined), false);
+  // The same mail again changes nothing.
+  link.phonesFromMac(mail(mac, [], 2000), host);
+  assert.deepEqual(keys(), ["mac:new", "pair:own"]);
+  fs.rmSync(path.join(home, "run", "link.json"));
+});

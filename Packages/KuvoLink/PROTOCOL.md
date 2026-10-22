@@ -104,6 +104,11 @@ Pushes and other messages for a device that may not be connected use
 `kuvo-link mail v1`: one handshake message carrying the payload. A host's push carries a
 notification, below.
 
+A host mails another host the same way, with a relay `send` of a mail frame (`kind` 5, session
+0): a Mac mails each of its machines' bridges the phones you've paired (`{"phones": [{key, name,
+address}], "at": <milliseconds>}`), so a phone you remove loses its way into every machine, reached
+or not. A bridge (from 0.9.6) takes it only from the key its setup named, and only a newer one.
+
 ## Notifications
 
 What the Mac shows as a notification goes to each paired phone too, as the relay's `push`
