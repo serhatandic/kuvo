@@ -826,8 +826,10 @@ final class BotGroups {
         // Its model can't run where it lives (its account signed out of): said, rather than
         // sent to an engine that drops it without a word.
         let catalog = bot.machine.flatMap { app.machines.engine($0)?.catalog } ?? app.catalog
-        if let model = bot.model ?? app.workspace.session(bot.sessionID)?.model, catalog.isUnavailable(model) {
-            note("\(bot.name) couldn’t answer: \(catalog.unavailable(model, on: bot.machine.map { machine in app.machines.list.first { $0.id == machine }?.name ?? machine }))", in: id)
+        let model = bot.model ?? app.workspace.session(bot.sessionID)?.model
+        let place = bot.machine.map { machine in app.machines.list.first { $0.id == machine }?.name ?? machine }
+        if let model, catalog.isUnavailable(model) {
+            note("\(bot.name) couldn’t answer: \(catalog.unavailable(model, on: place))", in: id)
             return .absent
         }
         guard let api = seatAPI(of: bot, in: group(id)) else {
@@ -857,7 +859,7 @@ final class BotGroups {
             let (text, error, steps) = try await reply(in: seat, after: promptID, since: sent, api: api)
             if text.isEmpty {
                 if let error {
-                    note("\(bot.name) couldn’t answer: \(error)", in: id)
+                    note("\(bot.name) couldn’t answer: \(catalog.plain(error, for: model, on: place))", in: id)
                     return .absent
                 }
                 return .passed
@@ -871,7 +873,7 @@ final class BotGroups {
         } catch {
             guard !Task.isCancelled else { return .absent }
             log.error("\(bot.id, privacy: .public)'s turn in \(id, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
-            note("\(bot.name) couldn’t answer: \(error.localizedDescription)", in: id)
+            note("\(bot.name) couldn’t answer: \(catalog.plain(error.localizedDescription, for: model, on: place))", in: id)
             return .absent
         }
     }

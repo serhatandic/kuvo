@@ -49,11 +49,12 @@ import Testing
         func conversation(_ seat: String) -> [[String: Any]] {
             lock.withLock {
                 guard let (prompt, text) = answered[seat] else { return [] }
-                return [
-                    ["id": prompt, "type": "user", "time": ["created": 1], "text": "(turn)"],
-                    ["id": prompt + "_reply", "type": "assistant", "agent": "build", "time": ["created": 2, "completed": 3],
-                     "model": ["id": "m", "providerID": "p"], "content": [["type": "text", "text": text]]],
-                ]
+                // A line "ERROR: …" is its provider turning the step down with those words.
+                let refused = text.hasPrefix("ERROR: ") ? String(text.dropFirst(7)) : nil
+                var reply: [String: Any] = ["id": prompt + "_reply", "type": "assistant", "agent": "build", "time": ["created": 2, "completed": 3],
+                                            "model": ["id": "m", "providerID": "p"], "content": refused == nil ? [["type": "text", "text": text]] : []]
+                if let refused { reply["error"] = ["type": "provider", "message": refused] }
+                return [["id": prompt, "type": "user", "time": ["created": 1], "text": "(turn)"], reply]
             }
         }
 
@@ -193,6 +194,17 @@ import Testing
         #expect(!seats.turns.contains { $0.bot == "Ben" }, "nothing sent to its seat")
         let note = try #require(app.groups.messages(in: group.id).first { $0.kind == .note })
         #expect(note.text.hasPrefix("Ben couldn’t answer: Luna needs a sign-in: sign in to Codex (your ChatGPT plan"), "\(note.text)")
+    }
+
+    /// A provider that turns a bot's request down for want of a sign-in is said in words that say
+    /// what to do, not in the provider's.
+    @Test func aRefusedSignInIsSaidPlainly() async throws {
+        defer { done() }
+        let (app, group, _) = try await start(lines: ["Ada": ["Morning!", "PASS"], "Ben": ["ERROR: Missing required Authorization header"]])
+        app.groups.send("Morning all", to: group.id)
+        try await talkedThrough(app, group)
+        let note = try #require(app.groups.messages(in: group.id).first { $0.kind == .note })
+        #expect(note.text.hasPrefix("Ben couldn’t answer: ") && note.text.contains("isn’t signed in: sign in to it again in Settings › Accounts"), "\(note.text)")
     }
 
     @Test func aBotYouNameSpeaksFirst() async throws {

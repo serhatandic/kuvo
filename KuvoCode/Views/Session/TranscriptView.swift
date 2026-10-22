@@ -1198,9 +1198,18 @@ private struct TurnEndView: View {
     }
 
     /// What went wrong; an ended sign-in said plainly, with the service's words after it.
+    /// A provider that turned the request down for want of a sign-in, whatever the engine calls it.
+    private var refused: Bool {
+        idle.error.map { $0.type == "provider.auth" || Catalog.isSignInRefusal($0.message) } == true
+    }
+
     private var message: String {
         guard let error = idle.error else { return "The run failed." }
-        guard signInEnded else { return error.message }
+        guard signInEnded else {
+            guard refused, error.type != "provider.auth" else { return error.message }
+            let there = RemoteFolder.machine(of: directory).map { " on \($0)" } ?? ""
+            return "This model’s account isn’t signed in\(there), so the request was refused (\(error.message)). Sign in to it again in Accounts, or choose another model."
+        }
         let ended = "This model's sign-in has ended and couldn't be renewed, so the request was refused (\(error.message))."
         // A machine signs in on its own, to its plans, or to a plan's coding agent there.
         if let machine = RemoteFolder.machine(of: directory) {
@@ -1217,7 +1226,7 @@ private struct TurnEndView: View {
                 HStack(spacing: 8) {
                     // The model's account to sign in to again: in Accounts, where this conversation
                     // runs (a machine signs in on its own).
-                    if idle.error?.type == "provider.auth" {
+                    if refused {
                         let machine = RemoteFolder.machine(of: directory)
                         Button(signInEnded ? "Sign In Again" : "Open Accounts", systemImage: "person.crop.circle") { app.openAccounts(on: machine) }
                             .buttonStyle(.glass)

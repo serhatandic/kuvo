@@ -217,6 +217,20 @@ final class Catalog {
         return "\(name) isn’t available\(there) now: choose another model."
     }
 
+    /// A provider's refusal that means it isn't signed in (a request sent without its credentials,
+    /// or ones it turned down), in words saying what to do, for `ref`'s provider (on the machine
+    /// named `on`, or its model's when it's not known); any other error as it was said.
+    func plain(_ error: String, for ref: ModelRef?, on machine: String? = nil) -> String {
+        guard Self.isSignInRefusal(error) else { return error }
+        let there = machine.map { " on \($0)" } ?? ""
+        return "\(ref.map { signInName($0.providerID) } ?? "Its model’s account") isn’t signed in\(there): sign in to it again in Settings › Accounts, or choose another model."
+    }
+
+    /// Whether a provider's error means it isn't signed in.
+    static func isSignInRefusal(_ error: String) -> Bool {
+        error.range(of: #"authorization header|unauthori[sz]ed|\b401\b|\b403\b|forbidden|invalid api key"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
     /// Whether the models `ref` would be among are known yet: the engine's, or the coding agents'
     /// (this Mac's, or the machine's beside its engine).
     private func isKnown(_ ref: ModelRef) -> Bool {
