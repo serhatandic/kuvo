@@ -376,7 +376,7 @@ itself. A host serves:
   `meeting` is `{next, every?, topic?}`: `next` in seconds since 1970, `every` as kuvo-wake writes
   it (`1d`, `weekdays`, `1w`…; null or left out for once). The computer the chat lives on sets it
   up as Edit Group Chat does (`BotGroup.Meeting.planned`, held to the agents bridge's
-  `planMeeting` by `Agents/test/groups-vectors.json`), on your clock: a repeating one whose time
+  `planMeeting` by `Agents/test/groups-vectors.json`), on your clock, to the minute: a repeating one whose time
   has passed comes at its next round, weekdays skip the weekend, a time of day (and a week's day)
   is kept from then on, and an empty topic gets the default. 400 `{"message"}` for a one-off whose
   time has passed or a repeat there isn't. The chat lists it as `meeting: {next, every, topic,

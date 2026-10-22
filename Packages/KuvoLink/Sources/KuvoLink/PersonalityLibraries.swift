@@ -48,6 +48,33 @@ public enum PersonalityLibraries {
     /// Removals noted, the newest kept.
     public static let mostRemovals = 500
 
+    /// One as every copy keeps it, as the bridge's `keptPersonality` does: an ID of one you made,
+    /// a name on one line (80 characters at most), words trimmed (2,000 at most), a symbol; nil
+    /// for what isn't one.
+    public static func cleaned(_ kept: Kept) -> Kept? {
+        guard kept.id.range(of: #"\Acustom\.[A-Za-z0-9._-]{1,80}\z"#, options: .regularExpression) != nil else { return nil }
+        let name = utf16Prefix(plain(kept.name), 80)
+        let description = utf16Prefix(kept.description.trimmingCharacters(in: .whitespacesAndNewlines), 2000)
+        guard !name.isEmpty, !description.isEmpty else { return nil }
+        let symbol = kept.symbol.isEmpty ? "person.crop.circle" : utf16Prefix(kept.symbol, 80)
+        return Kept(id: kept.id, name: name, description: description, symbol: symbol, updated: kept.updated)
+    }
+
+    /// A name as one line of plain text: what isn't text (control and direction marks) a space,
+    /// runs of space one.
+    public static func plain(_ text: String) -> String {
+        let marks = Set<Unicode.Scalar>((0x00...0x1F).compactMap(Unicode.Scalar.init) + [Unicode.Scalar(0x7F)!, "\u{200E}", "\u{200F}"]
+            + (0x202A...0x202E).compactMap(Unicode.Scalar.init) + (0x2066...0x2069).compactMap(Unicode.Scalar.init))
+        let spaced = String(String.UnicodeScalarView(text.unicodeScalars.map { marks.contains($0) ? " " : $0 }))
+        return spaced.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    /// At most `count` UTF-16 units, as JavaScript's `slice` cuts.
+    private static func utf16Prefix(_ text: String, _ count: Int) -> String {
+        guard text.utf16.count > count else { return text }
+        return String(decoding: Array(text.utf16.prefix(count)), as: UTF16.self)
+    }
+
     /// Libraries as one, in the order their personalities were first seen. Kuvo Code's presets,
     /// and one without a name or words, aren't in it.
     public static func merged(_ libraries: [Library]) -> Library {
@@ -80,7 +107,7 @@ public enum PersonalityLibraries {
             }
         }
         for library in libraries {
-            for kept in library.personalities where !kept.name.isEmpty && !kept.description.isEmpty { meet(.kept(kept), id: kept.id) }
+            for kept in library.personalities.compactMap(cleaned) { meet(.kept(kept), id: kept.id) }
             for removal in library.removed { meet(.gone(removal), id: removal.id) }
         }
         var met = Library()

@@ -163,7 +163,8 @@ import Testing
         #expect(made.status == 201)
         let id = try #require((made.json?["group"] as? [String: Any])?["id"] as? String)
         let meeting = try #require(app.groups.group(id)?.meeting)
-        #expect(meeting.next.timeIntervalSince1970 == nextWeek && meeting.every == "1w")
+        // To the minute.
+        #expect(meeting.next.timeIntervalSince1970 == (nextWeek / 60).rounded(.down) * 60 && meeting.every == "1w")
         #expect(meeting.topic == BotGroup.Meeting.defaultTopic)
         #expect(meeting.weekday == Calendar.current.component(.weekday, from: meeting.next))
 

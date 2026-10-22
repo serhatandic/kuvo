@@ -479,12 +479,17 @@ private struct KeyEntry: View {
 
     private func save() {
         let given = keys.map { (IntegrationKeys.variable(service.id, $0.name), values[$0.name]?.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        guard let machine = box.machine, let engine = app.machines.engine(machine) else {
+        guard let machine = box.machine else {
             guard given.allSatisfy({ IntegrationKeys.set($0.1, for: $0.0) }) else {
                 failed = "Couldn’t save it in your Keychain. Try again, or check Keychain Access."
                 return
             }
             done(true)
+            return
+        }
+        // A machine no longer added: nowhere to keep it (and never this Mac's Keychain).
+        guard let engine = app.machines.engine(machine) else {
+            failed = "\(machine) isn’t one of your machines any more."
             return
         }
         isSaving = true

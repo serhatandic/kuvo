@@ -83,6 +83,7 @@ final class EngineConfig {
     /// A machine's settings as they were just read some other way (as it's started).
     func took(_ read: [String: JSONValue]) {
         guard remote != nil else { return }
+        let first = !isLoaded
         reads += 1
         confirmed = read
         // What's on its way, in the order it was changed.
@@ -92,8 +93,24 @@ final class EngineConfig {
         // A change that didn't get there is said once it's shown as it is there; read again
         // after that, all's as it is.
         if keepsNotice { keepsNotice = false } else { notSaved = nil }
-        noteRules()
+        // Known now, rules or none: sessions there that waited for them take them.
+        if first {
+            rules = settings["permissions"]
+            onRulesChanged()
+        } else {
+            noteRules()
+        }
     }
+
+    /// Once what's been changed here has reached the machine (at once for this Mac's file): nil,
+    /// or why it didn't get there.
+    func settled() async -> String? {
+        guard remote != nil, isSending else { return remote == nil ? problem : notSaved }
+        await withCheckedContinuation { settling.append($0) }
+        return notSaved
+    }
+
+    @ObservationIgnored private var settling: [CheckedContinuation<Void, Never>] = []
 
     /// This Mac's, saved with a change (`AppModel.settingsSaved`).
     @ObservationIgnored var onSaved: () -> Void = {}
@@ -381,6 +398,9 @@ final class EngineConfig {
                 }
             }
             isSending = false
+            let waiting = settling
+            settling.removeAll()
+            for each in waiting { each.resume() }
         }
     }
 

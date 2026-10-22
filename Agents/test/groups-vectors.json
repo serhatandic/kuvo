@@ -16555,6 +16555,130 @@
       "zone" : "Europe/Istanbul"
     },
     {
+      "meeting" : {
+        "next" : 1793185200,
+        "topic" : "Standup"
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "Standup",
+      "zone" : "Europe/Istanbul"
+    },
+    {
+      "meeting" : {
+        "next" : 1793185200,
+        "topic" : "Our regular meeting: where things stand, and what's next."
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "  ",
+      "zone" : "Europe/Istanbul"
+    },
+    {
+      "every" : "1d",
+      "meeting" : {
+        "at" : 840,
+        "every" : "1d",
+        "next" : 1793185200,
+        "topic" : "Standup"
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "Standup",
+      "zone" : "Europe/Istanbul"
+    },
+    {
+      "every" : "1d",
+      "meeting" : {
+        "at" : 840,
+        "every" : "1d",
+        "next" : 1793185200,
+        "topic" : "Our regular meeting: where things stand, and what's next."
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "  ",
+      "zone" : "Europe/Istanbul"
+    },
+    {
+      "every" : "1w",
+      "meeting" : {
+        "at" : 840,
+        "every" : "1w",
+        "next" : 1793185200,
+        "topic" : "Standup",
+        "weekday" : 4
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "Standup",
+      "zone" : "Europe/Istanbul"
+    },
+    {
+      "every" : "1w",
+      "meeting" : {
+        "at" : 840,
+        "every" : "1w",
+        "next" : 1793185200,
+        "topic" : "Our regular meeting: where things stand, and what's next.",
+        "weekday" : 4
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "  ",
+      "zone" : "Europe/Istanbul"
+    },
+    {
+      "every" : "weekdays",
+      "meeting" : {
+        "at" : 840,
+        "every" : "weekdays",
+        "next" : 1793185200,
+        "topic" : "Standup"
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "Standup",
+      "zone" : "Europe/Istanbul"
+    },
+    {
+      "every" : "weekdays",
+      "meeting" : {
+        "at" : 840,
+        "every" : "weekdays",
+        "next" : 1793185200,
+        "topic" : "Our regular meeting: where things stand, and what's next."
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "  ",
+      "zone" : "Europe/Istanbul"
+    },
+    {
+      "every" : "2h",
+      "meeting" : {
+        "every" : "2h",
+        "next" : 1793185200,
+        "topic" : "Standup"
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "Standup",
+      "zone" : "Europe/Istanbul"
+    },
+    {
+      "every" : "2h",
+      "meeting" : {
+        "every" : "2h",
+        "next" : 1793185200,
+        "topic" : "Our regular meeting: where things stand, and what's next."
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "  ",
+      "zone" : "Europe/Istanbul"
+    },
+    {
       "meeting" : null,
       "next" : 1793178000,
       "now" : 1793181600,
@@ -17039,6 +17163,130 @@
       "zone" : "America/New_York"
     },
     {
+      "meeting" : {
+        "next" : 1793185200,
+        "topic" : "Standup"
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "Standup",
+      "zone" : "America/New_York"
+    },
+    {
+      "meeting" : {
+        "next" : 1793185200,
+        "topic" : "Our regular meeting: where things stand, and what's next."
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "  ",
+      "zone" : "America/New_York"
+    },
+    {
+      "every" : "1d",
+      "meeting" : {
+        "at" : 420,
+        "every" : "1d",
+        "next" : 1793185200,
+        "topic" : "Standup"
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "Standup",
+      "zone" : "America/New_York"
+    },
+    {
+      "every" : "1d",
+      "meeting" : {
+        "at" : 420,
+        "every" : "1d",
+        "next" : 1793185200,
+        "topic" : "Our regular meeting: where things stand, and what's next."
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "  ",
+      "zone" : "America/New_York"
+    },
+    {
+      "every" : "1w",
+      "meeting" : {
+        "at" : 420,
+        "every" : "1w",
+        "next" : 1793185200,
+        "topic" : "Standup",
+        "weekday" : 4
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "Standup",
+      "zone" : "America/New_York"
+    },
+    {
+      "every" : "1w",
+      "meeting" : {
+        "at" : 420,
+        "every" : "1w",
+        "next" : 1793185200,
+        "topic" : "Our regular meeting: where things stand, and what's next.",
+        "weekday" : 4
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "  ",
+      "zone" : "America/New_York"
+    },
+    {
+      "every" : "weekdays",
+      "meeting" : {
+        "at" : 420,
+        "every" : "weekdays",
+        "next" : 1793185200,
+        "topic" : "Standup"
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "Standup",
+      "zone" : "America/New_York"
+    },
+    {
+      "every" : "weekdays",
+      "meeting" : {
+        "at" : 420,
+        "every" : "weekdays",
+        "next" : 1793185200,
+        "topic" : "Our regular meeting: where things stand, and what's next."
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "  ",
+      "zone" : "America/New_York"
+    },
+    {
+      "every" : "2h",
+      "meeting" : {
+        "every" : "2h",
+        "next" : 1793185200,
+        "topic" : "Standup"
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "Standup",
+      "zone" : "America/New_York"
+    },
+    {
+      "every" : "2h",
+      "meeting" : {
+        "every" : "2h",
+        "next" : 1793185200,
+        "topic" : "Our regular meeting: where things stand, and what's next."
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "  ",
+      "zone" : "America/New_York"
+    },
+    {
       "meeting" : null,
       "next" : 1793178000,
       "now" : 1793181600,
@@ -17518,6 +17766,130 @@
         "topic" : "Our regular meeting: where things stand, and what's next."
       },
       "next" : 1793437200,
+      "now" : 1793181600,
+      "topic" : "  ",
+      "zone" : "Australia/Sydney"
+    },
+    {
+      "meeting" : {
+        "next" : 1793185200,
+        "topic" : "Standup"
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "Standup",
+      "zone" : "Australia/Sydney"
+    },
+    {
+      "meeting" : {
+        "next" : 1793185200,
+        "topic" : "Our regular meeting: where things stand, and what's next."
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "  ",
+      "zone" : "Australia/Sydney"
+    },
+    {
+      "every" : "1d",
+      "meeting" : {
+        "at" : 1320,
+        "every" : "1d",
+        "next" : 1793185200,
+        "topic" : "Standup"
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "Standup",
+      "zone" : "Australia/Sydney"
+    },
+    {
+      "every" : "1d",
+      "meeting" : {
+        "at" : 1320,
+        "every" : "1d",
+        "next" : 1793185200,
+        "topic" : "Our regular meeting: where things stand, and what's next."
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "  ",
+      "zone" : "Australia/Sydney"
+    },
+    {
+      "every" : "1w",
+      "meeting" : {
+        "at" : 1320,
+        "every" : "1w",
+        "next" : 1793185200,
+        "topic" : "Standup",
+        "weekday" : 4
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "Standup",
+      "zone" : "Australia/Sydney"
+    },
+    {
+      "every" : "1w",
+      "meeting" : {
+        "at" : 1320,
+        "every" : "1w",
+        "next" : 1793185200,
+        "topic" : "Our regular meeting: where things stand, and what's next.",
+        "weekday" : 4
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "  ",
+      "zone" : "Australia/Sydney"
+    },
+    {
+      "every" : "weekdays",
+      "meeting" : {
+        "at" : 1320,
+        "every" : "weekdays",
+        "next" : 1793185200,
+        "topic" : "Standup"
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "Standup",
+      "zone" : "Australia/Sydney"
+    },
+    {
+      "every" : "weekdays",
+      "meeting" : {
+        "at" : 1320,
+        "every" : "weekdays",
+        "next" : 1793185200,
+        "topic" : "Our regular meeting: where things stand, and what's next."
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "  ",
+      "zone" : "Australia/Sydney"
+    },
+    {
+      "every" : "2h",
+      "meeting" : {
+        "every" : "2h",
+        "next" : 1793185200,
+        "topic" : "Standup"
+      },
+      "next" : 1793185237,
+      "now" : 1793181600,
+      "topic" : "Standup",
+      "zone" : "Australia/Sydney"
+    },
+    {
+      "every" : "2h",
+      "meeting" : {
+        "every" : "2h",
+        "next" : 1793185200,
+        "topic" : "Our regular meeting: where things stand, and what's next."
+      },
+      "next" : 1793185237,
       "now" : 1793181600,
       "topic" : "  ",
       "zone" : "Australia/Sydney"

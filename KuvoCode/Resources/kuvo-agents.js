@@ -11481,7 +11481,7 @@ function planMeeting(plan, before, zone2, now = Date.now()) {
   const repeat = every === undefined ? undefined : parseRepeat(String(every));
   if (every !== undefined && !repeat)
     return `\u201C${every}\u201D isn't how often a meeting can come back.`;
-  const time = Math.round(plan.next) * 1000;
+  const time = Math.floor(plan.next / 60) * 60000;
   const kept2 = before && Date.parse(before.next) === time && (before.every ?? undefined) === every ? before : undefined;
   const at = repeat && keepsTimeOfDay(repeat) ? kept2?.at ?? minutesOf(time, zone2) : undefined;
   const weekday = repeat && keepsWeekday(repeat) ? kept2?.weekday ?? weekdayOf(time, zone2) : undefined;
@@ -13643,4 +13643,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Agents/src d0549bf856ab085a804c9cf6bdc92a3f8f3aaf63d913d1c5afe6bf9b8e2d5e0d
+// Built from Agents/src 01536317fb0982a1ef59d9b2ed467f5b89053dd1570ec83a5235fe7e966d20f7

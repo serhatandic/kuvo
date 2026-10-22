@@ -701,7 +701,9 @@ export function engineHandler(readEngine = readEngineFile, info = {}, readBridge
       if (route === "kuvo/keys") return yield* (method === "GET" ? json(200, { keys: boxKeyNames() }) : json(405, {}));
       const key = route.match(/^kuvo\/keys\/([^/]+)$/);
       if (key) {
-        const name = decodeURIComponent(key[1]);
+        let name = "";
+        try { name = decodeURIComponent(key[1]); } catch {}
+        if (!/^KUVO_KEY_[A-Za-z0-9_]+$/.test(name) || name.includes("__")) return yield* json(400, { message: "That isn't a key's name." });
         if (method === "GET") {
           const value = boxKey(name);
           return yield* (value == null ? json(404, {}) : json(200, { value }));
@@ -822,7 +824,9 @@ export function engineHandler(readEngine = readEngineFile, info = {}, readBridge
     // The personalities you make, this machine's copy of the library.
     const personality = route.match(/^kuvo\/personalities(?:\/([^/]+))?$/);
     if (personality) {
-      const [status, value] = answerPersonalities(request.method.toUpperCase(), personality[1] === undefined ? undefined : decodeURIComponent(personality[1]), parsed(request.body));
+      let id;
+      try { id = personality[1] === undefined ? undefined : decodeURIComponent(personality[1]); } catch { return yield* json(404, {}); }
+      const [status, value] = answerPersonalities(request.method.toUpperCase(), id, parsed(request.body));
       return yield* json(status, value);
     }
     if (route === "kuvo/bots/templates") {

@@ -77,7 +77,7 @@ final class Personalities {
             personality.updated = kept.updated ?? 0
             return personality
         }
-        removed = JSONFile.read([Removal].self, from: removedFile) ?? []
+        removed = (JSONFile.read([Removal].self, from: removedFile) ?? []).sorted { $0.removed > $1.removed }
     }
 
     var all: [Personality] { Self.presets + custom }
@@ -91,7 +91,11 @@ final class Personalities {
     private static var now: Double { (Date.now.timeIntervalSince1970 * 1000).rounded() }
 
     func add(name: String, description: String) -> Personality {
-        let personality = Personality(id: "custom." + UUID().uuidString.lowercased(), name: name, description: description, symbol: "person.crop.circle", updated: Self.now)
+        // As every copy keeps it (one shared without words, from a bot's file, says its name).
+        let id = "custom." + UUID().uuidString.lowercased()
+        let words = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = PersonalityLibraries.cleaned(.init(id: id, name: name, description: words.isEmpty ? name : words, symbol: "person.crop.circle", updated: Self.now))
+        let personality = Personality(id: id, name: cleaned?.name ?? name, description: cleaned?.description ?? description, symbol: "person.crop.circle", updated: Self.now)
         custom.append(personality)
         save()
         onChange()
@@ -111,7 +115,8 @@ final class Personalities {
     func delete(_ personality: Personality) {
         guard let kept = custom.first(where: { $0.id == personality.id }) else { return }
         custom.removeAll { $0.id == personality.id }
-        removed.append(Removal(id: personality.id, removed: max(Self.now, (kept.updated ?? 0) + 1)))
+        // Newest first, as every copy keeps them.
+        removed.insert(Removal(id: personality.id, removed: max(Self.now, (kept.updated ?? 0) + 1)), at: 0)
         save()
         onChange()
     }

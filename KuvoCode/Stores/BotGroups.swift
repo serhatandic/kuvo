@@ -55,6 +55,8 @@ struct BotGroup: Codable, Identifiable, Hashable {
         /// daylight saving or a new time zone did to its next time; a time picked anew is the one
         /// it keeps from then on. Nil for a one-off whose time has passed.
         static func planned(at time: Date, every: Wakes.Repeat?, topic: String, before: Meeting?, now: Date = .now, calendar: Calendar = .current) -> Meeting? {
+            // To the minute, as a machine's chats plan it.
+            let time = Date(timeIntervalSince1970: (time.timeIntervalSince1970 / 60).rounded(.down) * 60)
             let kept = before.flatMap { $0.next == time && $0.repeats == every ? $0 : nil }
             let at = every?.keepsTimeOfDay == true ? kept?.at ?? Wakes.minutes(of: time, calendar: calendar) : nil
             let weekday = every?.keepsWeekday == true ? kept?.weekday ?? calendar.component(.weekday, from: time) : nil

@@ -11,7 +11,7 @@ import Testing
 /// bridge's tests then say whether the machine's rules still match.
 @MainActor
 struct GroupRulesVectorsTests {
-    static let recorded = "c6e31a255c5871cdb30ce8dd26acff18337e1223a5007b9ce55fe8782b4f65a6"
+    static let recorded = "96529215b5825ceb30d90ff1e8f5d47c0f02d3e401a99d43da24c9da53869556"
 
     @Test func theMachinesChatsGoByTheseRules() throws {
         let data = try JSONSerialization.data(withJSONObject: Self.vectors(), options: [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes])
@@ -335,7 +335,9 @@ struct GroupRulesVectorsTests {
             var calendar = Calendar(identifier: .gregorian)
             calendar.timeZone = TimeZone(identifier: zone)!
             // Passed an hour ago, passed a week ago, an hour to come, on a Saturday to come.
-            let times = [now.addingTimeInterval(-3600), now.addingTimeInterval(-86_400 * 7 - 1800), now.addingTimeInterval(3600), iso.date(from: "2026-10-31T09:00:00Z")!]
+            // And one with seconds, as a picker started from now gives it.
+            let times = [now.addingTimeInterval(-3600), now.addingTimeInterval(-86_400 * 7 - 1800), now.addingTimeInterval(3600), iso.date(from: "2026-10-31T09:00:00Z")!,
+                         now.addingTimeInterval(3600 + 37)]
             for time in times {
                 for every in [nil, "1d", "1w", "weekdays", "2h"] as [String?] {
                     for topic in ["Standup", "  "] {

@@ -934,7 +934,8 @@ test("a machine that owns its settings has them read and changed from a phone, a
     fs.writeFileSync(path.join(folder, "keys", "KUVO_KEY_GITHUB_TOKEN__BOT_A"), "ghp_bot");
     assert.deepEqual((await answer(handle, "GET", "kuvo/keys")).json, { keys: ["KUVO_KEY_GITHUB_TOKEN"] });
     assert.deepEqual((await answer(handle, "GET", "kuvo/keys/KUVO_KEY_GITHUB_TOKEN")).json, { value: "ghp_1" });
-    assert.equal((await answer(handle, "GET", "kuvo/keys/KUVO_KEY_GITHUB_TOKEN__BOT_A")).status, 404);
+    assert.equal((await answer(handle, "GET", "kuvo/keys/KUVO_KEY_GITHUB_TOKEN__BOT_A")).status, 400);
+    assert.equal((await answer(handle, "GET", "kuvo/keys/%E0%A4%A")).status, 400, "a broken escape");
     assert.equal((await answer(handle, "PUT", "kuvo/keys/..%2Fopencode.json", JSON.stringify({ value: "x" }))).status, 400);
     assert.equal((await answer(handle, "PUT", "kuvo/keys/KUVO_KEY_GITHUB_TOKEN", JSON.stringify({ value: "" }))).status, 400);
     assert.equal((await answer(handle, "DELETE", "kuvo/keys/KUVO_KEY_GITHUB_TOKEN")).status, 200);

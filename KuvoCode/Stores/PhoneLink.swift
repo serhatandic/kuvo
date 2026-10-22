@@ -746,7 +746,8 @@ final class PhoneLink {
             return answerPersonalities(nil, request)
         case let path where path.hasPrefix("kuvo/personalities/"):
             return answerPersonalities(String(path.dropFirst("kuvo/personalities/".count)).removingPercentEncoding ?? "", request)
-        case "kuvo/keys" where request.method.uppercased() == "GET":
+        case "kuvo/keys":
+            guard request.method.uppercased() == "GET" else { return (405, Data()) }
             return (200, (try? JSONSerialization.data(withJSONObject: ["keys": IntegrationKeys.shared])) ?? Data("{}".utf8))
         case let path where path.hasPrefix("kuvo/keys/"):
             return answerKey(String(path.dropFirst("kuvo/keys/".count)).removingPercentEncoding ?? "", request)
@@ -811,7 +812,7 @@ final class PhoneLink {
     /// in your Keychain: GET its value, PUT `{"value": …}` to set it, DELETE to remove it. The
     /// engine reads it as it next reads its settings.
     private func answerKey(_ name: String, _ request: LinkRequest) -> (Int, Data) {
-        guard name.range(of: "^KUVO_KEY_[A-Za-z0-9_]+$", options: .regularExpression) != nil, !IntegrationKeys.isBots(name) else {
+        guard name.range(of: #"\AKUVO_KEY_[A-Za-z0-9_]+\z"#, options: .regularExpression) != nil, !IntegrationKeys.isBots(name) else {
             return (400, Self.message("That isn't a key's name."))
         }
         switch request.method.uppercased() {
@@ -870,7 +871,8 @@ final class PhoneLink {
             if changes.contains(where: { change in change.was.map { (config.value(at: change.path) ?? .null) != $0 } ?? false }) {
                 return (409, Self.message("It changed since you read it."))
             }
-            config.set(changes.map { (path: $0.path, value: $0.value == .null ? nil : $0.value) })
+            // A phone's, not one to offer other computers here: the phone offers its own.
+            config.set(changes.map { (path: $0.path, value: $0.value == .null ? nil : $0.value) }, noted: false)
             if let problem = config.problem { return (500, Self.message(problem)) }
         default:
             return (405, Data())

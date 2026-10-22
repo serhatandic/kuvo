@@ -3,16 +3,19 @@ import OpenCodeKit
 
 /// Making changes made on one computer's settings on another too, when you ask ("Also Apply
 /// to…"): each computer keeps its own settings, and nothing goes from one to another otherwise.
-/// A list (Settings › Permissions' rules, say) gets what was added to it and loses what was taken
-/// out, keeping the rest of the other computer's own; anything else is set as it is here. An
-/// integration's keys go along, from where this computer keeps them to where the other does.
+/// A list of rules (Settings › Permissions' rules and blocks, an agent's) gets what was added to
+/// it and loses what was taken out, keeping the rest of the other computer's own; anything else
+/// (another list, like a server's command, too) is set as it is here. An integration's keys go
+/// along, from where this computer keeps them to where the other does, unless it has its own.
 enum AlsoApply {
     enum Failure: LocalizedError {
         case unread(String)
+        case refused(String)
 
         var errorDescription: String? {
             switch self {
             case .unread(let name): "\(name)’s settings couldn’t be read."
+            case .refused(let why): why
             }
         }
     }
@@ -45,7 +48,12 @@ enum AlsoApply {
             if machine != nil, change.path.count >= 3, change.path[0] == "mcp", change.path[1] == "servers",
                Integrations.macOnly.contains(change.path[2]) || MCPCatalog.macOnly.contains(change.path[2]) { continue }
             var value = change.after.map { keysNamed($0, on: machine) }
-            if case .array(let before)? = change.before, case .array(let after)? = change.after {
+            // Rules: none is an empty list, so the first one added (or the last taken out) joins
+            // (or leaves) the other's, rather than standing in for them.
+            if isRules(change.path), change.before?.array != nil || change.after?.array != nil,
+               change.before == nil || change.before?.array != nil, change.after == nil || change.after?.array != nil {
+                let before = change.before?.array ?? []
+                let after = change.after?.array ?? []
                 let there = Self.value(at: change.path, in: settings)?.array ?? []
                 let removed = before.filter { !after.contains($0) }
                 let added = after.filter { !before.contains($0) }.map { keysNamed($0, on: machine) }
@@ -57,6 +65,13 @@ enum AlsoApply {
             settings = setting(value, at: change.path[...], in: settings)
         }
         return result
+    }
+
+    /// A list of rules, merged item by item: Settings › Permissions' rules and blocks, and an
+    /// agent's own rules.
+    static func isRules(_ path: [String]) -> Bool {
+        guard let last = path.last else { return false }
+        return last == "permissions" || last == "policies"
     }
 
     /// The keys `changes` name (integrations' shared keys, not a bot's own).
@@ -74,12 +89,16 @@ enum AlsoApply {
         }
         let made = translated(net(changes), onto: config.settings, to: target.machine)
         guard !made.isEmpty else { return }
-        // The keys first, so the settings that name them find them there.
+        // The keys first, so the settings that name them find them there; one the other computer
+        // has of its own (another account's token, say) stays.
         for name in keys(in: made) {
+            if let there = try await key(name, on: target), !there.isEmpty { continue }
             guard let value = try await key(name, on: source), !value.isEmpty else { continue }
             try await setKey(name, value, on: target)
         }
         config.set(made, noted: false)
+        // Applied once it's there, or why it isn't.
+        if let failure = await config.settled() { throw Failure.refused(failure) }
     }
 
     /// A key's value where `box` keeps it.

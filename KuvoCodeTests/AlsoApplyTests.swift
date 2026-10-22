@@ -43,6 +43,31 @@ import Testing
         #expect(made.first?.value == .array([Self.rule("docker *")]))
     }
 
+    /// The first rule here, or the last taken out: it joins or leaves the other computer's own,
+    /// never stands in for them.
+    @Test func theFirstRuleAndTheLastLeaveTheOthersOwn() throws {
+        let here = try config([:])
+        here.setItems([Self.rule("git push *")], at: ["permissions"])
+        let there: [String: JSONValue] = ["permissions": .array([Self.rule("docker *")])]
+        #expect(AlsoApply.translated(AlsoApply.net(here.changes), onto: there, to: "lab").first?.value == .array([Self.rule("docker *"), Self.rule("git push *")]))
+
+        let other = try config(["permissions": .array([Self.rule("git push *")])])
+        other.setItems([], at: ["permissions"])
+        let both: [String: JSONValue] = ["permissions": .array([Self.rule("docker *"), Self.rule("git push *")])]
+        #expect(AlsoApply.translated(AlsoApply.net(other.changes), onto: both, to: "lab").first?.value == .array([Self.rule("docker *")]))
+        // Its only one, the same: none there either.
+        #expect(AlsoApply.translated(AlsoApply.net(other.changes), onto: ["permissions": .array([Self.rule("git push *")])], to: "lab").first?.value == nil)
+    }
+
+    /// A list that isn't rules (a server's command) goes as it is here, in its order.
+    @Test func anotherListGoesAsItIs() throws {
+        let here = try config(["mcp": .object(["servers": .object(["tool": .object(["command": .array([.string("node"), .string("a.js"), .string("--stdio")])])])])])
+        here.set(.array([.string("node"), .string("b.js"), .string("--stdio")]), at: ["mcp", "servers", "tool", "command"])
+        let there: [String: JSONValue] = ["mcp": .object(["servers": .object(["tool": .object(["command": .array([.string("node"), .string("a.js"), .string("--stdio")])])])])]
+        let made = AlsoApply.translated(AlsoApply.net(here.changes), onto: there, to: "lab")
+        #expect(made.first?.value == .array([.string("node"), .string("b.js"), .string("--stdio")]))
+    }
+
     @Test func aChangeUndoneIsNothingToApply() throws {
         let here = try config(["snapshots": .bool(true)])
         here.set(.bool(false), at: ["snapshots"])

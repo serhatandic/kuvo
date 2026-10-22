@@ -161,7 +161,8 @@ export function planMeeting(
   const every = plan.every ?? undefined
   const repeat = every === undefined ? undefined : parseRepeat(String(every))
   if (every !== undefined && !repeat) return `“${every}” isn't how often a meeting can come back.`
-  const time = Math.round(plan.next) * 1000
+  // To the minute, as the Mac plans it.
+  const time = Math.floor(plan.next / 60) * 60_000
   const kept = before && Date.parse(before.next) === time && (before.every ?? undefined) === every ? before : undefined
   const at = repeat && keepsTimeOfDay(repeat) ? (kept?.at ?? minutesOf(time, zone)) : undefined
   const weekday = repeat && keepsWeekday(repeat) ? (kept?.weekday ?? weekdayOf(time, zone)) : undefined

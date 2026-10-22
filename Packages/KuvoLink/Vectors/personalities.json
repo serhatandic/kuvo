@@ -364,6 +364,53 @@
      }
     ]
    }
+  },
+  {
+   "name": "each copy keeps one the same way: a name on one line, words trimmed, a symbol; an id that isn't one of yours left out",
+   "libraries": [
+    {
+     "personalities": [
+      {
+       "id": "custom.a",
+       "name": "  Night \n Owl‎ ",
+       "description": "  Works late.  ",
+       "updated": 5
+      },
+      {
+       "id": "custom.bad id",
+       "name": "X",
+       "description": "Y",
+       "updated": 1
+      },
+      {
+       "id": "custom.b",
+       "name": "Calm",
+       "description": "Words.",
+       "symbol": "",
+       "updated": 2
+      }
+     ]
+    }
+   ],
+   "expected": {
+    "personalities": [
+     {
+      "id": "custom.a",
+      "name": "Night Owl",
+      "description": "Works late.",
+      "symbol": "person.crop.circle",
+      "updated": 5
+     },
+     {
+      "id": "custom.b",
+      "name": "Calm",
+      "description": "Words.",
+      "symbol": "person.crop.circle",
+      "updated": 2
+     }
+    ],
+    "removed": []
+   }
   }
  ]
 }
