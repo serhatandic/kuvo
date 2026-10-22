@@ -925,6 +925,21 @@ test("a machine that owns its settings has them read and changed from a phone, a
     assert.deepEqual(added.json.mcp.servers.context7, { codemode: false, url: "https://mcp.context7.com/mcp" });
     assert.equal((await answer(handle, "POST", "kuvo/mcp/catalog/chrome-devtools")).status, 404);
 
+    // Its integrations' keys: listed, read, set and removed, in its own keys' folder; a bot's own
+    // and anything that isn't a key's name, never.
+    assert.deepEqual((await answer(handle, "GET", "kuvo/keys")).json, { keys: [] });
+    assert.equal((await answer(handle, "PUT", "kuvo/keys/KUVO_KEY_GITHUB_TOKEN", JSON.stringify({ value: "ghp_1" }))).status, 200);
+    assert.equal(fs.readFileSync(path.join(folder, "keys", "KUVO_KEY_GITHUB_TOKEN"), "utf8"), "ghp_1");
+    assert.equal((fs.statSync(path.join(folder, "keys", "KUVO_KEY_GITHUB_TOKEN")).mode & 0o777), 0o600);
+    fs.writeFileSync(path.join(folder, "keys", "KUVO_KEY_GITHUB_TOKEN__BOT_A"), "ghp_bot");
+    assert.deepEqual((await answer(handle, "GET", "kuvo/keys")).json, { keys: ["KUVO_KEY_GITHUB_TOKEN"] });
+    assert.deepEqual((await answer(handle, "GET", "kuvo/keys/KUVO_KEY_GITHUB_TOKEN")).json, { value: "ghp_1" });
+    assert.equal((await answer(handle, "GET", "kuvo/keys/KUVO_KEY_GITHUB_TOKEN__BOT_A")).status, 404);
+    assert.equal((await answer(handle, "PUT", "kuvo/keys/..%2Fopencode.json", JSON.stringify({ value: "x" }))).status, 400);
+    assert.equal((await answer(handle, "PUT", "kuvo/keys/KUVO_KEY_GITHUB_TOKEN", JSON.stringify({ value: "" }))).status, 400);
+    assert.equal((await answer(handle, "DELETE", "kuvo/keys/KUVO_KEY_GITHUB_TOKEN")).status, 200);
+    assert.equal((await answer(handle, "GET", "kuvo/keys/KUVO_KEY_GITHUB_TOKEN")).status, 404);
+
     // A file with comments is left alone.
     fs.writeFileSync(file, "{ // mine\n}");
     assert.equal((await answer(handle, "GET", "kuvo/config")).status, 409);

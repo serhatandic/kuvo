@@ -91,6 +91,24 @@ import Testing
         #expect(try String(contentsOf: file, encoding: .utf8) == commented)
     }
 
+    /// This Mac's integrations' keys, from a phone: set, read, listed and removed in the Keychain,
+    /// and a bot's own or anything that isn't a key's name never touched.
+    @Test func integrationsKeysFromAPhone() async throws {
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let name = "KUVO_KEY_PHONETEST_TOKEN"
+        defer { IntegrationKeys.set(nil, for: name) }
+        #expect(try await ask("kuvo/keys/\(name)").status == 404)
+        #expect(try await ask("kuvo/keys/\(name)", method: "PUT", body: #"{"value": "ghp_phone"}"#).status == 200)
+        #expect(IntegrationKeys.value(name) == "ghp_phone")
+        #expect(try await ask("kuvo/keys/\(name)").json?["value"] as? String == "ghp_phone")
+        #expect((try await ask("kuvo/keys").json?["keys"] as? [String])?.contains(name) == true)
+        #expect(try await ask("kuvo/keys/\(name)__BOT_A", method: "PUT", body: #"{"value": "x"}"#).status == 400)
+        #expect(try await ask("kuvo/keys/HOME", method: "PUT", body: #"{"value": "x"}"#).status == 400)
+        #expect(try await ask("kuvo/keys/\(name)", method: "PUT", body: #"{"value": ""}"#).status == 400)
+        #expect(try await ask("kuvo/keys/\(name)", method: "DELETE").status == 200)
+        #expect(IntegrationKeys.value(name) == nil)
+    }
+
     @Test func popularServersAreAddedAsTheirAddButtonDoes() async throws {
         defer { try? FileManager.default.removeItem(at: folder) }
         let listed = try #require(try await ask("kuvo/mcp/catalog").json?["servers"] as? [[String: Any]])

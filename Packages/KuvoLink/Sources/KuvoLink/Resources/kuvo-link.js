@@ -23,7 +23,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Goes up with every change, so `setup` replaces a running bridge that's older.
-export const BRIDGE_VERSION = "0.9.11";
+export const BRIDGE_VERSION = "0.9.12";
 const K = process.env.KUVO_HOME || path.join(os.homedir(), ".kuvo-code");
 const RUN = path.join(K, "run");
 export const LINK_FILE = path.join(RUN, "link.json");
@@ -677,9 +677,8 @@ export function engineHandler(readEngine = readEngineFile, info = {}, readBridge
     }
     const json = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
     if (request.path.split("?")[0] === "kuvo/file") return yield* fileAt(request.path, json);
-    // Its settings come from the Mac that started its engine, which puts them back as it
-    // connects: changed there, they reach it.
-    if (/^kuvo\/(config|mcp\/catalog)(\/|\?|$)/.test(request.path)) {
+    // Its own settings, and its integrations' keys (PROTOCOL.md, "Settings per box").
+    if (/^kuvo\/(config|mcp\/catalog|keys)(\/|\?|$)/.test(request.path)) {
       // Its own, once Kuvo Code has made them so; until then, as the Mac that started it has them.
       if (!ownsSettings()) return yield* json(409, { message: "This machine's settings still come from your Mac. Connect it from Kuvo Code on your Mac once." });
       const route = request.path.split("?")[0];
@@ -699,6 +698,22 @@ export function engineHandler(readEngine = readEngineFile, info = {}, readBridge
       }
       const adding = route.match(/^kuvo\/mcp\/catalog\/([^/]+)$/);
       if (adding && method === "POST") return yield* answered(addFromCatalog(decodeURIComponent(adding[1])));
+      if (route === "kuvo/keys") return yield* (method === "GET" ? json(200, { keys: boxKeyNames() }) : json(405, {}));
+      const key = route.match(/^kuvo\/keys\/([^/]+)$/);
+      if (key) {
+        const name = decodeURIComponent(key[1]);
+        if (method === "GET") {
+          const value = boxKey(name);
+          return yield* (value == null ? json(404, {}) : json(200, { value }));
+        }
+        if (method === "PUT") {
+          const value = parsed(request.body)?.value;
+          if (typeof value !== "string" || !value) return yield* json(400, { message: "Send {\"value\": \"…\"}." });
+          return yield* answered(setBoxKey(name, value));
+        }
+        if (method === "DELETE") return yield* answered(setBoxKey(name, null));
+        return yield* json(405, {});
+      }
       return yield* json(404, {});
     }
     // The phones paired with this machine, and removing some (a lost one, say), from any phone
@@ -2215,6 +2230,19 @@ export function adoptBox(seed) {
     } catch {}
     return { status: "adopted", seeded, settings };
   }, { stale: 300_000, wait: 120_000 }));
+}
+
+// The box's own keys, by name (a bot's own, which its folder keeps, aren't among them).
+export function boxKeyNames(folder = BOX_KEYS) {
+  let names = [];
+  try { names = fs.readdirSync(folder); } catch {}
+  return names.filter(name => KEY_NAME.test(name) && !name.includes("__")).sort();
+}
+
+// One of them, as it's kept; null for one there isn't.
+export function boxKey(name, folder = BOX_KEYS) {
+  if (!KEY_NAME.test(String(name)) || String(name).includes("__")) return null;
+  try { return fs.readFileSync(path.join(folder, name), "utf8"); } catch { return null; }
 }
 
 // A key of the box's own, set (`value`) or removed (null): integrations' servers read it there.

@@ -26,6 +26,11 @@ nonisolated enum IntegrationKeys {
         variable.contains("__")
     }
 
+    /// The shared keys saved (not a bot's own), by variable.
+    static var shared: [String] {
+        names.filter { !isBots($0) }.sorted()
+    }
+
     /// A bot's own keys, as saved: each one's variable.
     static func variables(ofBot bot: String) -> [String] {
         variables(ofBot: bot, in: names)

@@ -320,6 +320,16 @@ itself. A host serves:
   api/experimental/mcp/<name>/connect`, a server's sign-in through `api/integration/<id>/connect/…`
   (its page comes back to `127.0.0.1:19876`: `kuvo/sign-in/return`), and the approvals saved for
   a project with `GET api/permission/saved?projectID=` and `DELETE api/permission/saved/<id>`.
+- `kuvo/keys`: the computer's own integrations' keys (`KUVO_KEY_<INTEGRATION>_<NAME>`, as its
+  settings name them; a bot's own aren't among them). `GET kuvo/keys` lists them, `{"keys":
+  [name]}`; `GET kuvo/keys/<name>` answers `{"value"}` (404 for none), `PUT` with `{"value"}`
+  sets one and `DELETE` removes it. On a Mac they're in its Keychain; on a machine (bridge 0.9.12
+  or later, once its settings are its own: `409 {"message"}` before) in `~/.kuvo-code/box/keys`.
+  The engine reads one as it next reads its settings, so set the key before adding what names it
+  (`kuvo/config`). An integration added on a machine names its keys
+  `{file:~/.kuvo-code/box/keys/<name>}` there; on a Mac, `{file:<its keys' folder>/<name>}`.
+  "Also Apply to…" on a phone is the same changes (`kuvo/config`) and keys made on each computer
+  you pick: a list gets what was added and loses what was taken out, keeping the other's own.
 - `POST kuvo/engine/restart`: the computer's engine starts over, as Settings › Engine's Restart
   does on a Mac; what's running in it stops. It answers `202 {}` first: the link goes down with
   the engine, and the computer is back once it answers again (`kuvo/info`). A machine's bridge

@@ -731,6 +731,10 @@ final class PhoneLink {
             return answerConfig(request)
         case "kuvo/mcp/catalog":
             return catalogJSON()
+        case "kuvo/keys" where request.method.uppercased() == "GET":
+            return (200, (try? JSONSerialization.data(withJSONObject: ["keys": IntegrationKeys.shared])) ?? Data("{}".utf8))
+        case let path where path.hasPrefix("kuvo/keys/"):
+            return answerKey(String(path.dropFirst("kuvo/keys/".count)).removingPercentEncoding ?? "", request)
         case let path where path.hasPrefix("kuvo/mcp/catalog/") && request.method.uppercased() == "POST":
             return addFromCatalog(String(path.dropFirst("kuvo/mcp/catalog/".count)))
         case "kuvo/engine/restart" where request.method.uppercased() == "POST":
@@ -749,8 +753,31 @@ final class PhoneLink {
 
     // MARK: Settings
 
-    /// `kuvo/config`: this Mac's engine settings, as Settings shows them (your machines get them
-    /// too, but for what only makes sense here). PATCH changes some, as Settings does, with
+    /// `kuvo/keys/<name>`: one of this Mac's integrations' keys (`KUVO_KEY_…`, not a bot's own),
+    /// in your Keychain: GET its value, PUT `{"value": …}` to set it, DELETE to remove it. The
+    /// engine reads it as it next reads its settings.
+    private func answerKey(_ name: String, _ request: LinkRequest) -> (Int, Data) {
+        guard name.range(of: "^KUVO_KEY_[A-Za-z0-9_]+$", options: .regularExpression) != nil, !IntegrationKeys.isBots(name) else {
+            return (400, Self.message("That isn't a key's name."))
+        }
+        switch request.method.uppercased() {
+        case "GET":
+            guard let value = IntegrationKeys.value(name) else { return (404, Data()) }
+            return (200, (try? JSONSerialization.data(withJSONObject: ["value": value])) ?? Data())
+        case "PUT":
+            guard let value = (try? JSONSerialization.jsonObject(with: request.body) as? [String: Any])?["value"] as? String, !value.isEmpty else {
+                return (400, Self.message("Send {\"value\": \"…\"}."))
+            }
+            return IntegrationKeys.set(value, for: name) ? (200, Data("{}".utf8)) : (500, Self.message("It couldn't be saved in the Keychain."))
+        case "DELETE":
+            return IntegrationKeys.set(nil, for: name) ? (200, Data("{}".utf8)) : (500, Self.message("It couldn't be removed from the Keychain."))
+        default:
+            return (405, Data())
+        }
+    }
+
+    /// `kuvo/config`: this Mac's engine settings, as Settings shows them, its own (each machine
+    /// has its own, from its bridge). PATCH changes some, as Settings does, with
     /// `{"changes": [{"path": [keys…], "value": …}]}` (null removes it), and answers with them all.
     /// A change can say what it read there (`"was"`, null for nothing): changed since, nothing is
     /// changed and it answers 409. A path goes through objects only; a list is sent whole.
