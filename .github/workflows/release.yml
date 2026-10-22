@@ -277,9 +277,15 @@ jobs:
             # so that release isn't left without one.
             latest="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
             for attempt in 1 2 3; do
-              gh release upload "$latest" dist/appcast.xml --repo "$GITHUB_REPOSITORY" --clobber || true
-              if gh release view "$latest" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qx appcast.xml; then break; fi
-              if [[ $attempt == 3 ]]; then echo "$latest is left without its update feed: upload dist/appcast.xml there by hand." >&2; exit 1; fi
+              if gh release upload "$latest" dist/appcast.xml --repo "$GITHUB_REPOSITORY" --clobber; then break; fi
+              if [[ $attempt == 3 ]]; then
+                if gh release view "$latest" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qx appcast.xml; then
+                  echo "$latest still has its old feed, without this beta: upload dist/appcast.xml there by hand." >&2
+                else
+                  echo "$latest is left without its update feed: upload dist/appcast.xml there by hand." >&2
+                fi
+                exit 1
+              fi
               sleep 10
             done
           fi

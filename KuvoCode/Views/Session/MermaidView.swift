@@ -258,6 +258,8 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
             Task { @MainActor in job.isCancelled = true }
         }
         if let outcome, case .drawn(let image) = outcome { kept.setObject(Kept(outcome), forKey: key as NSString, cost: Self.bytes(of: image)) }
+        // One Mermaid never finished isn't tried again (each try costs a web view its time).
+        if let outcome, case .failed(Self.tooLong) = outcome { kept.setObject(Kept(outcome), forKey: key as NSString, cost: 1) }
         return outcome
     }
 
@@ -292,7 +294,7 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
         // one. The next ones get a new web view, as its page may not even load again.
         guard let answer = await answer(to: job) else {
             replaceWeb()
-            return .failed("It took too long to draw.")
+            return .failed(Self.tooLong)
         }
         guard let result = answer else { return .failed("The page didn't answer.") }
         if let message = result.error { return .failed(message) }
@@ -311,9 +313,11 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
         let arguments: [String: Any] = ["code": job.source, "dark": job.dark]
         let once = Once()
         return await withCheckedContinuation { (continuation: CheckedContinuation<Answer??, Never>) in
-            Task { [web] in
-                let result = try? await web.callAsyncJavaScript("return await draw(code, dark)", arguments: arguments, in: nil, contentWorld: .page) as? [String: Any]
-                if once.claim() { continuation.resume(returning: .some(result.map { Answer(error: $0["error"] as? String, height: $0["height"] as? Double) })) }
+            // With a completion handler, not awaited: the call doesn't keep the web view, so one
+            // let go after the wait runs out closes, its stuck page with it (its late error is ignored).
+            web.callAsyncJavaScript("return await draw(code, dark)", arguments: arguments, in: nil, in: .page) { result in
+                let answer = (try? result.get()) as? [String: Any]
+                if once.claim() { continuation.resume(returning: .some(answer.map { Answer(error: $0["error"] as? String, height: $0["height"] as? Double) })) }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.patience) {
                 if once.claim() { continuation.resume(returning: nil) }
@@ -337,6 +341,7 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
     }
 
     private static let patience: TimeInterval = 10
+    private static let tooLong = "It took too long to draw."
 
     /// What a picture takes in memory: its pixels, four bytes each.
     private static func bytes(of image: NSImage) -> Int {
