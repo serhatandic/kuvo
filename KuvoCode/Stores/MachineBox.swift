@@ -20,15 +20,19 @@ enum MachineBox {
         var status: JSONValue?
         var seeded: Bool?
         var settings: [String: JSONValue]?
+        var own: Bool?
         var message: String?
     }
 
     enum Failure: LocalizedError {
         case refused(String)
+        /// It hasn't been started by a Kuvo Code with boxes yet: what it runs with isn't its own.
+        case notOwnYet
 
         var errorDescription: String? {
             switch self {
             case .refused(let message): message
+            case .notOwnYet: "Its settings become its own the next time Kuvo Code starts it."
             }
         }
     }
@@ -101,7 +105,9 @@ enum MachineBox {
 
     /// The machine's settings, as its file has them now.
     static func read(on connection: SSHConnection) async throws -> [String: JSONValue] {
-        try await run("read", input: nil, on: connection).settings ?? [:]
+        let answer = try await run("read", input: nil, on: connection)
+        guard answer.own != false else { throw Failure.notOwnYet }
+        return answer.settings ?? [:]
     }
 
     /// Changes some of the machine's settings, key by key (the phone's `PATCH kuvo/config`):
@@ -116,6 +122,19 @@ enum MachineBox {
     /// Sets one of the machine's own keys (an integration's), or removes it (nil).
     static func setKey(_ name: String, _ value: String?, on connection: SSHConnection) async throws {
         _ = try await run("key \(SSHConnection.quoted(name))", input: Data((value ?? "").utf8), on: connection)
+    }
+
+    /// A machine's settings for its Settings tab and its sessions' rules (`EngineConfig`).
+    struct Store: RemoteSettings {
+        let connection: SSHConnection
+
+        func read() async throws -> [String: JSONValue] {
+            try await MachineBox.read(on: connection)
+        }
+
+        func change(_ changes: [(path: [String], value: JSONValue?)]) async throws -> [String: JSONValue] {
+            try await MachineBox.change(changes, on: connection)
+        }
     }
 
     /// `kuvo-link.js box <arguments>` there, with `input` on its standard input, with whichever

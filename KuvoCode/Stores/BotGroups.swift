@@ -1442,7 +1442,7 @@ final class BotGroups {
     /// bot's own conversation once you say go, handed out after the wrap-up.
     private static func seatRules(for bot: Bot) -> [PermissionRule] {
         let approval = UserDefaults.standard.string(forKey: ToolApproval.key).flatMap(ToolApproval.init) ?? .approveAll
-        return seatRules(for: bot, askFirst: approval == .askFirst, denies: (EngineConfig.current?.permissionRules ?? []).filter { $0.effect == .deny })
+        return seatRules(for: bot, askFirst: approval == .askFirst, denies: EngineConfig.rules(on: bot.machine).filter { $0.effect == .deny })
     }
 
     /// What `seatRules` gives a seat, with Ask First on or not and what Settings › Permissions denies.

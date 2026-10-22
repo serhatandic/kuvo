@@ -346,7 +346,7 @@ struct DraftSessionView: View {
     @Environment(AppModel.self) private var app
     /// Picked in the composer; until then, the mode Settings starts new sessions in.
     @State private var pickedAgent: String?
-    private var agent: String { pickedAgent ?? catalog.startingAgent(chosen: app.engineConfig.value(at: ["default_agent"])?.string) }
+    private var agent: String { pickedAgent ?? catalog.startingAgent(chosen: EngineConfig.of(catalog.machine)?.value(at: ["default_agent"])?.string) }
     @AppStorage(ToolApproval.key) private var approval = ToolApproval.approveAll
     /// New sessions in a git repository get a worktree of their own (remembered).
     @AppStorage("newSessionWorktree") private var worktree = false

@@ -244,7 +244,7 @@ final class Bots {
         bot.jobInMemory = true
         bot.personality = personality
         let approval = UserDefaults.standard.string(forKey: ToolApproval.key).flatMap(ToolApproval.init) ?? .approveAll
-        let rules = approval.rules(settings: EngineConfig.current?.permissionRules ?? []) + Self.ownRules(for: bot)
+        let rules = approval.rules(settings: EngineConfig.rules(on: machine)) + Self.ownRules(for: bot)
         let catalog = machine.flatMap { app.machines.engine($0)?.catalog } ?? app.catalog
         // The one picked, if you can use it where it lives (on this Mac, a coding agent's too);
         // otherwise the last one used, or that engine's default. Before its models are known (just
@@ -838,7 +838,7 @@ final class Bots {
         guard let session = app?.workspace.session(bot.sessionID) else { return false }
         let rules = session.permissions ?? []
         // Its approval with Settings › Permissions as they are now, as a conversation that's open gets it.
-        let repaired = ToolApproval.refreshed(rules.filter { !Self.isOwnRule($0, of: bot) }, settings: app?.engineConfig.permissionRules ?? []) + Self.ownRules(for: bot)
+        let repaired = ToolApproval.refreshed(rules.filter { !Self.isOwnRule($0, of: bot) }, settings: EngineConfig.rules(on: bot.machine)) + Self.ownRules(for: bot)
         guard repaired != rules else { return true }
         return (try? await api.setPermissions(session: bot.sessionID, rules: repaired)) != nil
     }
@@ -921,7 +921,7 @@ final class Bots {
         app?.workspace.add(session)
         noteSessions()
         let rules = (session.permissions ?? []).filter { !Self.isOwnRule($0, of: old) && !Self.isOwnRule($0, of: bot) }
-        var done = (try? await api.setPermissions(session: bot.sessionID, rules: ToolApproval.refreshed(rules, settings: app?.engineConfig.permissionRules ?? []) + Self.ownRules(for: bot))) != nil
+        var done = (try? await api.setPermissions(session: bot.sessionID, rules: ToolApproval.refreshed(rules, settings: EngineConfig.rules(on: bot.machine)) + Self.ownRules(for: bot))) != nil
         done = (try? await sendInstructions(of: bot, api: api)) != nil && done
         done = (try? await writeSession(of: bot)) != nil && done
         // What didn't get there is tried again with the next check of bots' instructions.
@@ -1107,7 +1107,7 @@ extension Bots {
                 .map { .init(directory: RemoteFolder.parse($0.directory)?.path ?? $0.directory, name: $0.name) },
             instructions: Self.instructions(for: sample, personality: "⟦personality⟧"),
             projectNote: Self.projectNote, identityNote: Self.identityNote, memory: Self.blankMemory("⟦name⟧"), greeting: Self.greeting,
-            rules: approval.rules(settings: EngineConfig.current?.permissionRules ?? []),
+            rules: approval.rules(settings: EngineConfig.rules(on: machine)),
             timeZone: TimeZone.current.identifier, zoneinfo: WakeUps.zoneRules(TimeZone.current.identifier)?.base64EncodedString())
     }
 

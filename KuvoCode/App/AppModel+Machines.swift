@@ -73,6 +73,9 @@ extension AppModel {
         // Settings changed here (a mode, a rule): machines take them too, not only when they connect.
         engineConfig.onSaved = { [weak self] in self?.settingsSaved() }
         engineConfig.onRulesChanged = { [weak self] in self?.workspace.syncPermissions() }
+        // Each machine's settings are its own: its sessions, bots and group chats go by them.
+        EngineConfig.machine = { [weak self] machine in self?.machines.engine(machine)?.config }
+        EngineConfig.machines = { [weak self] in self?.machines.engines.values.map(\.config) ?? [] }
         workspace.onRunEnded = { [weak self] session in
             self?.bots.runEnded(session: session)
             // An ask its agent left in this Mac's browser has no one waiting for it now.
@@ -236,6 +239,16 @@ extension AppModel {
             if event.type == "credential.updated" { self?.nudgeSignIns(engine) }
         }
         engine.onReconnect = { [weak self] in _ = await self?.workspace.refresh(engine) }
+        // Its Settings › Permissions changed: its open sessions follow, and what its group chats
+        // and new bots there start with.
+        engine.config.onRulesChanged = { [weak self] in
+            guard let self else { return }
+            workspace.syncPermissions()
+            Task {
+                await self.machineGroups.giveSettings(to: machine)
+                await self.bots.writeKit(on: machine)
+            }
+        }
         // Its coding agents, beside its engine: their sessions as its engine's, their accounts,
         // models and Custom Auto lists (its own) in its catalog.
         engine.agents.onEvent = { [weak self, weak engine] event in

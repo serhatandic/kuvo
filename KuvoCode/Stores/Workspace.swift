@@ -686,7 +686,7 @@ final class Workspace {
         let directory = addFolder(directory)
         let folder = worktree ? try await makeWorktree(of: directory) : directory
         let extra = settings[directory]?.folders ?? []
-        let rules = ProjectFolders.permissions(approval.rules(settings: EngineConfig.current?.permissionRules ?? []), folders: extra)
+        let rules = ProjectFolders.permissions(approval.rules(settings: EngineConfig.rules(on: RemoteFolder.machine(of: directory))), folders: extra)
         let session: Session
         do {
             session = try await api.createSession(directory: folder, agent: agent, model: model, permissions: rules.isEmpty ? nil : rules)

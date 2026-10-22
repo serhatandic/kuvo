@@ -1,16 +1,31 @@
 import Foundation
 import OpenCodeKit
 
-/// The engine's settings file, `opencode.json` in its own config folder: what it reads as its
-/// global configuration, and reloads when the file changes. Settings edit it in place and keep
-/// whatever they don't show, so a hand-edited file loses nothing.
+/// A machine's settings, its own (`MachineBox`): read, and changed key by key, over SSH.
+protocol RemoteSettings {
+    func read() async throws -> [String: JSONValue]
+    /// The settings after the changes, with what changed elsewhere meanwhile.
+    func change(_ changes: [(path: [String], value: JSONValue?)]) async throws -> [String: JSONValue]
+}
+
+/// A computer's engine settings, each computer's own (a box of its own): this Mac's file,
+/// `opencode.json` in its engine's config folder, or a machine's, over SSH (`remote`). The engine
+/// reads them as its global configuration, and reloads them when they change. Settings edit them
+/// in place and keep whatever they don't show, so a hand-edited file loses nothing.
 @Observable
 final class EngineConfig {
     let file: URL
-    /// The file's settings; empty when there's no file yet.
+    /// The file's settings; empty when there's no file yet (or, a machine's, until they're read).
     private(set) var settings: [String: JSONValue] = [:]
     /// Why the file couldn't be read. It's left alone until it's fixed.
     private(set) var problem: String?
+    /// A machine's settings, read and changed there; nil for this Mac's file.
+    @ObservationIgnored let remote: RemoteSettings?
+    /// Read at least once: a machine's come once it's reached.
+    private(set) var isLoaded = false
+    /// A machine's change that didn't get there (it's shown as it is there again), until the
+    /// next one does.
+    private(set) var notSaved: String?
 
     /// Settings kept only here, never written anywhere: something being made (a new agent),
     /// filled in by the same controls, until it's created.
@@ -19,20 +34,58 @@ final class EngineConfig {
     init(file: URL) {
         self.file = file
         isDraft = false
+        remote = nil
         reload()
+        isLoaded = true
         Self.current = self
     }
 
     init(draft settings: [String: JSONValue]) {
         file = URL(filePath: "/dev/null")
         isDraft = true
+        remote = nil
         self.settings = settings
+        isLoaded = true
+    }
+
+    /// A machine's: read once it's reached (`took`, `reload`).
+    init(remote: RemoteSettings) {
+        file = URL(filePath: "/dev/null")
+        isDraft = false
+        self.remote = remote
     }
 
     /// This Mac's, for the places that make a session's rules.
     static weak var current: EngineConfig?
+    /// A machine's, by its name, while it's added; and every machine's.
+    static var machine: (String) -> EngineConfig? = { _ in nil }
+    static var machines: () -> [EngineConfig] = { [] }
 
-    /// Saved with a change: machines take it too (`AppModel.settingsSaved`).
+    /// The settings of the computer a session is on (nil: this Mac).
+    static func of(_ machine: String?) -> EngineConfig? {
+        guard let machine else { return current }
+        return Self.machine(machine)
+    }
+
+    /// Settings › Permissions' rules of the computer a session is on (nil: this Mac), from its
+    /// own settings. A machine's not read yet (it's read before its engine is reached, so only
+    /// just after it's added): this Mac's, which it started with.
+    static func rules(on machine: String?) -> [PermissionRule] {
+        if let config = of(machine), config.isLoaded { return config.permissionRules }
+        return current?.permissionRules ?? []
+    }
+
+    /// A machine's settings as they were just read some other way (as it's started).
+    func took(_ read: [String: JSONValue]) {
+        guard remote != nil else { return }
+        reads += 1
+        settings = Self.applying(pending + sent, to: read)
+        problem = nil
+        isLoaded = true
+        noteRules()
+    }
+
+    /// This Mac's, saved with a change (`AppModel.settingsSaved`).
     @ObservationIgnored var onSaved: () -> Void = {}
     /// Settings › Permissions' rules changed, wherever from (Settings, a phone, the file edited
     /// by hand): open sessions follow (`Workspace.syncPermissions`).
@@ -56,6 +109,7 @@ final class EngineConfig {
     /// it. A file Kuvo Code can't read is left alone; a new one (none yet, or deleted to start
     /// over) gets it again.
     func addDefaults() {
+        guard remote == nil else { return }
         reload()
         guard problem == nil else { return }
         let isNew = !FileManager.default.fileExists(atPath: file.path)
@@ -156,9 +210,25 @@ final class EngineConfig {
         return (try? JSONDecoder().decode([PermissionRule].self, from: data)) ?? []
     }
 
-    /// Reads the file again, after it was changed elsewhere.
+    /// Reads the file again, after it was changed elsewhere (a machine's, in a moment).
     func reload() {
         guard !isDraft else { return }
+        if let remote {
+            reads += 1
+            let read = reads
+            Task {
+                do {
+                    let found = try await remote.read()
+                    // One read or saved since knows better.
+                    guard read == reads else { return }
+                    took(found)
+                } catch {
+                    guard read == reads else { return }
+                    problem = "Its settings couldn't be read: \(error.localizedDescription)"
+                }
+            }
+            return
+        }
         guard let data = try? Data(contentsOf: file) else {
             settings = [:]
             problem = nil
@@ -186,7 +256,7 @@ final class EngineConfig {
     func set(_ value: JSONValue?, at path: [String]) {
         guard problem == nil, !path.isEmpty else { return }
         settings = Self.setting(value, at: path[...], in: settings)
-        save()
+        save([(path, value)])
     }
 
     /// Several changes at once, in one write: the engine reloads its settings once, not after
@@ -196,7 +266,7 @@ final class EngineConfig {
         for change in changes where !change.path.isEmpty {
             settings = Self.setting(change.value, at: change.path[...], in: settings)
         }
-        save()
+        save(changes.filter { !$0.path.isEmpty })
     }
 
     private static func setting(_ value: JSONValue?, at path: ArraySlice<String>, in object: [String: JSONValue]) -> [String: JSONValue] {
@@ -211,8 +281,52 @@ final class EngineConfig {
         return object
     }
 
-    private func save() {
+    private static func applying(_ changes: [(path: [String], value: JSONValue?)], to settings: [String: JSONValue]) -> [String: JSONValue] {
+        changes.reduce(settings) { setting($1.value, at: $1.path[...], in: $0) }
+    }
+
+    /// A machine's changes waiting to be sent, and those sent and not answered yet: what's read
+    /// meanwhile shows them as they'll be.
+    @ObservationIgnored private var pending: [(path: [String], value: JSONValue?)] = []
+    @ObservationIgnored private var sent: [(path: [String], value: JSONValue?)] = []
+    @ObservationIgnored private var isSending = false
+    /// Goes up with each read and each answer to a change, so an older read that comes back
+    /// later doesn't put back what was before.
+    @ObservationIgnored private var reads = 0
+
+    /// A machine's changes, sent in order, a batch at a time, key by key: what comes back is its
+    /// settings, with others' changes to other keys meanwhile.
+    private func send(_ changes: [(path: [String], value: JSONValue?)]) {
+        guard let remote, !changes.isEmpty else { return }
+        pending += changes
+        guard !isSending else { return }
+        isSending = true
+        Task {
+            while !pending.isEmpty {
+                sent = pending
+                pending.removeAll()
+                do {
+                    let after = try await remote.change(sent)
+                    sent.removeAll()
+                    reads += 1
+                    settings = Self.applying(pending, to: after)
+                    notSaved = nil
+                    noteRules()
+                } catch {
+                    // As it is there, rather than as it would have been.
+                    notSaved = "It couldn't be saved there: \(error.localizedDescription)"
+                    sent.removeAll()
+                    pending.removeAll()
+                    reload()
+                }
+            }
+            isSending = false
+        }
+    }
+
+    private func save(_ changes: [(path: [String], value: JSONValue?)] = []) {
         guard !isDraft else { return }
+        if remote != nil { return send(changes) }
         // No "$schema": opencode's published schema is still v1's, and would mark v2's keys
         // as errors in an editor.
         let document = settings

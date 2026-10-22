@@ -69,6 +69,9 @@ final class MachineEngine {
     /// that fails, the machine away, carries it to Try Again), or it's stopped or disconnected.
     var startWanted = false
     let catalog = Catalog()
+    /// Its engine's settings, its own (`MachineBox`): read as it's started, and again as they
+    /// change there.
+    let config: EngineConfig
     /// The coding agents there: the agents bridge beside its engine, through the same tunnel.
     let agents: OutsideAgents
     /// Its engine started with the agents bridge beside it (an older one didn't).
@@ -106,6 +109,7 @@ final class MachineEngine {
         agents = OutsideAgents(machine: machine.id)
         catalog.outsideAgents = agents
         catalog.machine = machine.id
+        config = EngineConfig(remote: MachineBox.Store(connection: machine.connection))
     }
 
     /// The machine as it's kept now: another address, or what it calls itself, learned.
@@ -346,6 +350,7 @@ final class MachineEngine {
             try await MachineBox.install(on: connection)
             var launch = launch
             let box = try await MachineBox.adopt(on: connection, seed: launch.seed)
+            config.took(box.settings)
             launch.boxEnvironment = launch.fromBox(box.settings)
             if box.seeded { seededNow = true }
             try check()
@@ -556,6 +561,8 @@ final class MachineEngine {
                     isLive = false
                     checkWhileDown(api)
                 case .event(let event):
+                    // Its settings changed there (from here, a phone, another Mac, by hand).
+                    if event.type == "config.updated" { config.reload() }
                     catalog.handle(event)
                     onEvent(event)
                 }

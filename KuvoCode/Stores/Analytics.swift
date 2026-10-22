@@ -370,7 +370,8 @@ final class Analytics {
         let provider = provider(id)
         guard provider != "other", provider != "none", let model else { return ["provider": provider] }
         let known = shared.catalog?.models.first { $0.providerID == id && $0.id == model }
-        let yours = EngineConfig.current?.value(at: ["providers", provider, "models", model]) != nil
+        // Set up on any of your computers, as each has its own settings.
+        let yours = ([EngineConfig.current].compactMap(\.self) + EngineConfig.machines()).contains { $0.value(at: ["providers", provider, "models", model]) != nil }
         return ["provider": provider, "model": known?.isPublished == true && !yours ? String(model.prefix(80)) : "custom"]
     }
 

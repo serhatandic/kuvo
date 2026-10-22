@@ -1409,7 +1409,7 @@ final class SessionModel {
         guard canReach else { return }
         // The rules for particular things (the project's folders, a bot's folder and its
         // wake-ups) stay, after the approval rules and what Settings › Permissions asks of them.
-        let settings = EngineConfig.current?.permissionRules ?? []
+        let settings = EngineConfig.rules(on: RemoteFolder.machine(of: session.location.directory))
         let rules = approval.rules(settings: settings) + (session.permissions ?? []).filter(ToolApproval.isParticular)
         session.permissions = rules
         Task {
@@ -1423,8 +1423,9 @@ final class SessionModel {
         // As the engine knows them: a machine's folders are plain paths there.
         let folders = projectFolders().map(api.enginePath)
         var current = session.permissions ?? []
-        // Its approval with Settings › Permissions as they are now, too.
-        var rules = ProjectFolders.permissions(ToolApproval.refreshed(current, settings: EngineConfig.current?.permissionRules ?? []), folders: folders)
+        // Its approval with Settings › Permissions as they are now on its computer, too.
+        let machine = RemoteFolder.machine(of: session.location.directory)
+        var rules = ProjectFolders.permissions(ToolApproval.refreshed(current, settings: EngineConfig.rules(on: machine)), folders: folders)
         guard rules != current else { return }
         do {
             try await api.setPermissions(session: id, rules: rules)
@@ -1432,7 +1433,7 @@ final class SessionModel {
             // last word is yours with the folders, not these from before it.
             for _ in 0..<3 where (session.permissions ?? []) != current {
                 current = session.permissions ?? []
-                rules = ProjectFolders.permissions(ToolApproval.refreshed(current, settings: EngineConfig.current?.permissionRules ?? []), folders: folders)
+                rules = ProjectFolders.permissions(ToolApproval.refreshed(current, settings: EngineConfig.rules(on: machine)), folders: folders)
                 try await api.setPermissions(session: id, rules: rules)
             }
             session.permissions = rules

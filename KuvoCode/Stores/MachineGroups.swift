@@ -430,11 +430,11 @@ final class MachineGroups {
     // MARK: Settings
 
     /// What every chat on a machine goes by, from this Mac: what each personality tells a bot,
-    /// who sets what about a bot, Ask First, what Settings › Permissions denies, your time zone.
+    /// who sets what about a bot, Ask First, what its Settings › Permissions deny, your time zone.
     func giveSettings(to machine: String) async {
         guard let api = api(machine) else { return }
         let approval = UserDefaults.standard.string(forKey: ToolApproval.key).flatMap(ToolApproval.init) ?? .approveAll
-        let denies = (EngineConfig.current?.permissionRules ?? []).filter { $0.effect == .deny }
+        let denies = EngineConfig.rules(on: machine).filter { $0.effect == .deny }
         let settings: [String: JSONValue] = [
             "personalities": .object(Dictionary(Personalities.shared.all.map { ($0.id, JSONValue.string($0.instruction)) }) { first, _ in first }),
             "identityNote": .string(Bots.identityNote),
