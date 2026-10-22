@@ -122,10 +122,17 @@ public actor LinkServer {
         return true
     }
 
-    /// Ends the sessions of a phone that's no longer paired.
+    /// Ends the sessions of a phone that's no longer paired, and one it's let in meanwhile.
     public func forget(phone key: Data) {
+        forgets += 1
+        forgotten[key] = forgets
         for session in sessions.values where session.phone.key == key { end(session, notify: true) }
     }
+
+    /// When each phone was last forgotten, counting forgets: one let in while it was asked whether
+    /// to (`authorize`) and forgotten meanwhile doesn't get its session.
+    private var forgotten: [Data: Int] = [:]
+    private var forgets = 0
 
     private func receive(_ frame: LinkFrame, from address: LinkAddress) async {
         let key = SessionKey(address: address, id: frame.session)
@@ -151,9 +158,11 @@ public actor LinkServer {
 
     private func handshake(_ message: Data, key: SessionKey) async {
         var responder = IKResponder(staticKey: self.key, prologue: Link.prologue)
+        let asked = forgets
         guard let payload = try? responder.readMessage1(message),
               let phoneHello = try? JSONDecoder().decode(PhoneHello.self, from: payload), phoneHello.v == Link.version,
               await authorize(responder.remoteStatic, key.address, phoneHello),
+              (forgotten[responder.remoteStatic] ?? 0) <= asked,
               let (reply, transport) = try? responder.writeMessage2(payload: JSONEncoder().encode(hello))
         else { return send(.close, key: key) }
         // One session per phone: a new one replaces what's left of the last.

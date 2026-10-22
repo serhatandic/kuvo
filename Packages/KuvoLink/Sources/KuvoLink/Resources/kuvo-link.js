@@ -22,7 +22,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Goes up with every change, so `setup` replaces a running bridge that's older.
-export const BRIDGE_VERSION = "0.9.7";
+export const BRIDGE_VERSION = "0.9.8";
 const K = process.env.KUVO_HOME || path.join(os.homedir(), ".kuvo-code");
 const RUN = path.join(K, "run");
 export const LINK_FILE = path.join(RUN, "link.json");
@@ -646,7 +646,7 @@ async function* forward(target, path, request, signal, allows) {
 }
 
 // The handler LinkHost runs for each request.
-export function engineHandler(readEngine = readEngineFile, info = {}, readBridge = readBridgeFile) {
+export function engineHandler(readEngine = readEngineFile, info = {}, readBridge = readBridgeFile, phonesChanged = () => {}) {
   // The agents' bridge, while it runs: its record, while the process it names is still it.
   const bridge = () => {
     try {
@@ -680,6 +680,24 @@ export function engineHandler(readEngine = readEngineFile, info = {}, readBridge
     // connects: changed there, they reach it.
     if (/^kuvo\/(config|mcp\/catalog)(\/|\?|$)/.test(request.path)) {
       return yield* json(409, { message: "This machine's settings come from your Mac. Change them there." });
+    }
+    // The phones paired with this machine, and removing some (a lost one, say), from any phone
+    // paired with it: what a removal takes off stays off (see `removePhones`).
+    if (request.path === "kuvo/phones") {
+      const link = readLink();
+      const asking = phone?.key?.toString("base64url");
+      return yield* json(200, {
+        phones: (link?.phones ?? []).map(each => ({ key: each.key, name: each.name, added: each.added ?? null, pairing: each.pairing ?? "", you: each.key === asking })),
+      });
+    }
+    if (request.path === "kuvo/phones/remove") {
+      if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
+      const given = parsed(request.body);
+      const changed = updateLink(link => link && removePhones(link, phone?.key?.toString("base64url"), given?.phones) ? link : null);
+      if (!changed) return yield* json(400, { message: "Only phones paired here can be removed, and never your Mac." });
+      // Once this answer is on its way: a phone that removed itself gets it too.
+      setTimeout(() => phonesChanged(readLink() ?? changed), 200);
+      return yield* json(200, {});
     }
     const control = request.path.match(/^kuvo\/engine\/(start|stop|restart)$/);
     if (control) {
@@ -1827,6 +1845,33 @@ export function writeLink(link) {
   else fs.rmSync(NEEDED_FILE, { force: true });
 }
 
+// One change to link.json at a time, here and from `setup` and `pair` (other processes): read,
+// changed and written under a lock (run/.link.lock), so none writes over another's (a removal,
+// say). `change` returns the link to write, or nothing to leave it. A lock left by one that was
+// cut off goes after ten seconds; one not had in three goes ahead all the same.
+const LOCK = path.join(RUN, ".link.lock");
+export function updateLink(change) {
+  fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
+  const nap = new Int32Array(new SharedArrayBuffer(4));
+  let held = false;
+  for (let i = 0; i < 300 && !held; i++) {
+    try {
+      fs.mkdirSync(LOCK);
+      held = true;
+    } catch {
+      try { if (Date.now() - fs.statSync(LOCK).mtimeMs > 10_000) fs.rmdirSync(LOCK); } catch {}
+      Atomics.wait(nap, 0, 0, 10);
+    }
+  }
+  try {
+    const changed = change(readLink());
+    if (changed) writeLink(changed);
+    return changed ?? null;
+  } finally {
+    if (held) try { fs.rmdirSync(LOCK); } catch {}
+  }
+}
+
 // Nothing to answer any more (the last phone gone, a pairing run out, no link.json): the keeper
 // starts this bridge no more, unless a pairing began meanwhile.
 export function noLongerNeeded() {
@@ -1838,65 +1883,177 @@ export function noLongerNeeded() {
 // where it is on the relay, for its notifications. Where a paired one is changes once its session
 // proves its own (confirmPhone): the first handshake message can be replayed from elsewhere.
 export function authorizePhone(key, hello, address) {
-  const link = readLink();
-  if (!link) return false;
   const encoded = key.toString("base64url");
-  const where = address?.toString("base64url");
-  if (link.phones?.some(phone => phone.key === encoded)) return true;
-  const pairing = link.pairing;
-  if (!pairing || !hello.pair || Date.now() > pairing.expires) return false;
-  const given = Buffer.from(String(hello.pair), "base64url");
-  const expected = Buffer.from(pairing.token, "base64url");
-  if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) return false;
-  link.phones = [...(link.phones ?? []), { key: encoded, name: String(hello.name ?? "").slice(0, 100), added: Math.floor(Date.now() / 1000), from: "pair", address: where }];
-  delete link.pairing;
-  writeLink(link);
+  if (!hello?.pair) return Boolean(readLink()?.phones?.some(phone => phone.key === encoded));
+  // Showing the token: a pairing of its own, paired before or not (one removed comes back).
+  let paired = false;
+  updateLink(link => {
+    const pairing = link?.pairing;
+    if (!pairing || Date.now() > pairing.expires) return null;
+    const given = Buffer.from(String(hello.pair), "base64url");
+    const expected = Buffer.from(pairing.token, "base64url");
+    if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) return null;
+    pairPhone(link, { key: encoded, name: String(hello.name ?? "").slice(0, 100), added: Math.floor(Date.now() / 1000), from: "pair", address: address?.toString("base64url"), pairing: newPairing() });
+    delete link.pairing;
+    paired = true;
+    return link;
+  });
+  return paired || Boolean(readLink()?.phones?.some(phone => phone.key === encoded));
+}
+
+// ---- Paired phones (PROTOCOL.md, "Paired phones") ----
+// A pairing adds a phone; a removal, from a phone on the list or a Mac that set this machine up,
+// takes one off for good (`removed`, with the pairing it ended): only a pairing of its own, with a
+// new pairing id, lets it back in, and nobody removes a Mac. Each Mac's list adds and removes only
+// the phones it listed. The Mac's are the same rules (PairedPhones in KuvoLink), and both are held
+// to Vectors/link.json.
+
+const KEY = /^[A-Za-z0-9_-]{43}$/;
+const PAIRING = /^[A-Za-z0-9_-]{0,32}$/;
+// At most so many in one removal, and so many removals kept (the oldest go first).
+const MOST_AT_ONCE = 16;
+const MOST_KEPT = 256;
+
+// The Macs that set this machine up (`setup`), whose lists and mail it takes.
+export const macsOf = link => [...new Set([...(Array.isArray(link?.macs) ? link.macs : []), ...(typeof link?.mac === "string" ? [link.mac] : [])])];
+
+// When a Mac's last list came (its own clock, milliseconds).
+const lastFrom = (link, mac) => link.macAts?.[mac] ?? (mac === link.mac ? link.macAt ?? 0 : 0);
+
+// A Mac this machine hasn't heard from in 30 days, by its own clock (gone, or its key made anew):
+// it no longer sets the list, and the phones it listed are as ones from before Macs were named,
+// which another Mac's list takes off, not for good. One back sets the machine up again. `keep`,
+// heard from now.
+const MAC_GONE_AFTER = 30 * 24 * 3600 * 1000;
+export function forgetOldMacs(link, keep, now = Date.now()) {
+  link.macSeen ??= {};
+  for (const mac of macsOf(link)) link.macSeen[mac] ??= now;
+  if (keep) link.macSeen[keep] = now;
+  const gone = macsOf(link).filter(mac => mac !== keep && now - link.macSeen[mac] > MAC_GONE_AFTER);
+  if (!gone.length) return;
+  link.macs = macsOf(link).filter(mac => !gone.includes(mac));
+  if (gone.includes(link.mac)) link.mac = keep;
+  for (const mac of gone) {
+    delete link.macSeen[mac];
+    if (link.macAts) delete link.macAts[mac];
+  }
+  for (const phone of link.phones ?? []) if (gone.includes(phone.mac)) delete phone.mac;
+}
+
+const removedAlready = (link, key, pairing) => (link.removed ?? []).some(r => r.key === key && r.pairing === pairing);
+
+function noteRemoved(link, key, pairing) {
+  link.removed ??= [];
+  if (!removedAlready(link, key, pairing)) link.removed = [...link.removed, { key, pairing }].slice(-MOST_KEPT);
+}
+
+// A phone's key, and its pairing if given, as a removal or a list names it: never a Mac's.
+const fits = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key)
+  && (entry.pairing == null || (typeof entry.pairing === "string" && PAIRING.test(entry.pairing)));
+
+// `key`'s pairing `pairing` (the one it has here, when not given) taken off: one paired again
+// since, with another pairing, stays.
+function takeOff(link, key, pairing) {
+  const current = (link.phones ?? []).find(phone => phone.key === key);
+  const which = pairing == null ? (current?.pairing ?? "") : String(pairing);
+  noteRemoved(link, key, which);
+  if (current && (current.pairing ?? "") === which) link.phones = link.phones.filter(phone => phone.key !== key);
+}
+
+// A new pairing id, made where a phone pairs.
+export const newPairing = () => crypto.randomBytes(12).toString("base64url");
+
+// A phone paired here (its pairing token): in, with a pairing of its own, which nothing removed.
+// What removed its others still keeps them out.
+export function pairPhone(link, phone) {
+  link.phones = [...(link.phones ?? []).filter(each => each.key !== phone.key), phone];
+}
+
+// Phones `by` removes ({key, pairing}): only a phone on the list, or a Mac, removes, and only
+// phones, a few at a time. False, changing nothing, otherwise.
+export function removePhones(link, by, entries) {
+  const macs = macsOf(link);
+  const allowed = new Set([...(link.phones ?? []).map(phone => phone.key), ...macs]);
+  if (!allowed.has(by) || !Array.isArray(entries) || !entries.length || entries.length > MOST_AT_ONCE) return false;
+  if (!entries.every(entry => fits(entry, macs))) return false;
+  for (const entry of entries) takeOff(link, entry.key, entry.pairing);
   return true;
 }
 
-// The phones you've paired with the Mac (from: "mac") as it lists them now, beside the ones
-// paired with this machine itself (from: "pair"), keeping when each was added and where it is.
-export function mergePhones(old, given) {
-  const known = new Map((old?.phones ?? []).map(phone => [phone.key, phone]));
+// The phones the Mac `by` has paired as it lists them now (from: "mac"), and the removals it heard
+// of, beside the ones paired with this machine itself (from: "pair") and other Macs', keeping when
+// each was added and where it is. One of its own it no longer lists is removed; one removed here
+// stays out, unless the Mac paired it again (another pairing). One from before Macs were named goes
+// off the list, not for good: another Mac may list it.
+export function takeMacList(link, given, removed, by = link.mac) {
+  const macs = macsOf(link);
+  const known = new Map((link.phones ?? []).map(phone => [phone.key, phone]));
   const ADDRESS = /^[A-Za-z0-9_-]{22}$/;
-  const fromMac = (Array.isArray(given) ? given : []).filter(phone => typeof phone?.key === "string").map(phone => ({
-    key: phone.key,
-    name: String(phone.name ?? "").slice(0, 100),
-    added: known.get(phone.key)?.added ?? Math.floor(Date.now() / 1000),
-    from: "mac",
-    address: ADDRESS.test(phone.address ?? "") ? phone.address : known.get(phone.key)?.address,
-  }));
-  const own = (old?.phones ?? []).filter(phone => phone.from === "pair" && !fromMac.some(p => p.key === phone.key));
-  return [...fromMac, ...own];
+  const listed = [];
+  for (const phone of Array.isArray(given) ? given : []) {
+    if (!fits(phone, macs) || listed.some(each => each.key === phone.key)) continue;
+    const pairing = phone.pairing ?? "";
+    if (removedAlready(link, phone.key, pairing)) continue;
+    listed.push({
+      key: phone.key,
+      name: String(phone.name ?? "").slice(0, 100),
+      added: known.get(phone.key)?.added ?? Math.floor(Date.now() / 1000),
+      from: "mac",
+      mac: by,
+      address: ADDRESS.test(phone.address ?? "") ? phone.address : known.get(phone.key)?.address,
+      pairing,
+    });
+  }
+  const keys = new Set(listed.map(phone => phone.key));
+  const kept = [];
+  for (const phone of link.phones ?? []) {
+    if (keys.has(phone.key)) continue;
+    if (phone.from === "pair" || (phone.mac != null && phone.mac !== by)) kept.push(phone);
+    else if (by != null && phone.mac === by) noteRemoved(link, phone.key, phone.pairing ?? "");
+  }
+  link.phones = [...listed, ...kept];
+  for (const entry of Array.isArray(removed) ? removed : []) {
+    if (fits(entry, macs)) takeOff(link, entry.key, entry.pairing ?? "");
+  }
 }
 
-// The Mac's phone list, mailed through the relay (sealed with its key, which setup gave): one you
-// removed there loses its way in here at once, though the Mac can't reach this machine itself.
-// Only a newer list than the last one counts.
+// A Mac's phone list, mailed through the relay (sealed with its key, which its setup gave): one
+// you removed there loses its way in here at once, though the Mac can't reach this machine
+// itself. Only a newer list from that Mac than its last one counts.
 export function phonesFromMac(body, host) {
-  const link = readLink();
-  if (!link?.mac) return;
-  let given;
-  try {
-    given = JSON.parse(openOneWay(body, Buffer.from(link.key, "base64url"), Buffer.from(link.mac, "base64url")).payload.toString("utf8"));
-  } catch {
-    return;
+  const found = readLink();
+  if (!found?.key) return;
+  let given, by;
+  for (const mac of macsOf(found)) {
+    try {
+      given = JSON.parse(openOneWay(body, Buffer.from(found.key, "base64url"), Buffer.from(mac, "base64url")).payload.toString("utf8"));
+      by = mac;
+      break;
+    } catch {}
   }
-  if (!Array.isArray(given?.phones) || typeof given.at !== "number" || given.at <= (link.macAt ?? 0)) return;
-  link.phones = mergePhones(link, given.phones);
-  link.macAt = given.at;
-  writeLink(link);
-  host?.keepOnly(new Set(link.phones.map(phone => phone.key)));
+  if (!by || !Array.isArray(given?.phones) || typeof given.at !== "number") return;
+  const changed = updateLink(link => {
+    if (!link) return null;
+    if (given.at <= lastFrom(link, by)) return null;
+    takeMacList(link, given.phones, given.removed, by);
+    link.macAts = { ...(link.macAts ?? {}), [by]: given.at };
+    forgetOldMacs(link, by);
+    return link;
+  });
+  if (changed) host?.keepOnly(new Set(changed.phones.map(phone => phone.key)));
 }
 
 // A phone's session proved its own: its notifications go where it is now.
 export function confirmPhone(phone) {
-  const link = readLink();
-  const known = link?.phones?.find(each => each.key === phone.key.toString("base64url"));
   const where = phone.address?.toString("base64url");
+  const known = readLink()?.phones?.find(each => each.key === phone.key.toString("base64url"));
   if (!known || !where || known.address === where) return;
-  known.address = where;
-  writeLink(link);
+  updateLink(link => {
+    const known = link?.phones?.find(each => each.key === phone.key.toString("base64url"));
+    if (!known || !where || known.address === where) return null;
+    known.address = where;
+    return link;
+  });
 }
 
 // ---- The relay connection ----
@@ -2050,7 +2207,7 @@ async function run() {
       authorize: authorizePhone,
       confirmed: confirmPhone,
       mail: (_from, body) => phonesFromMac(body, host),
-      handle: engineHandler(readEngineFile, { name: link.name || os.hostname() }),
+      handle: engineHandler(readEngineFile, { name: link.name || os.hostname() }, readBridgeFile, changed => host.keepOnly(new Set((changed.phones ?? []).map(phone => phone.key)))),
       connect: engineConnect(readEngineFile),
       send: () => {},
     });
@@ -2097,25 +2254,39 @@ async function setup() {
     console.error("setup takes JSON on stdin: {relay, name, phones: [{key, name, address}]}");
     process.exit(2);
   }
-  const phones = Array.isArray(input.phones) ? input.phones.filter(p => typeof p?.key === "string") : [];
+  const phones = Array.isArray(input.phones) ? input.phones : [];
+  const mac = typeof input.mac === "string" ? input.mac : undefined;
   const running = runningBridge();
   const old = readLink();
-  const own = (old?.phones ?? []).filter(phone => phone.from === "pair");
-  if (!phones.length && !own.length) {
-    if (old) writeLink({ ...old, phones: [] });
+  let link = null;
+  updateLink(current => {
+    const next = current ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
+    // The Mac's key, which a phone list it mails later must come from, and its list, unless one it
+    // sent later came first (by mail, as this was on its way).
+    const at = typeof input.at === "number" ? input.at : 0;
+    const by = mac ?? next.mac;
+    if (!by || at > lastFrom(next, by)) {
+      takeMacList(next, phones, input.removed, by);
+      if (by) next.macAts = { ...(next.macAts ?? {}), [by]: at };
+    }
+    if (mac) {
+      next.mac = mac;
+      next.macs = [...new Set([...macsOf(next), mac])];
+      forgetOldMacs(next, mac);
+    }
+    if (!next.phones.length) return current ? next : null;
+    next.relay = String(input.relay);
+    next.name = String(input.name || next.name || os.hostname()).slice(0, 100);
+    link = next;
+    return next;
+  });
+  // None paired any more (each removed for good, as one at a time would be): no bridge.
+  if (!link) {
     if (running) process.kill(running, "SIGTERM");
     forgetPhones();
     console.log("{}");
     return;
   }
-  const link = old ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
-  link.relay = String(input.relay);
-  link.name = String(input.name || link.name || os.hostname()).slice(0, 100);
-  link.phones = mergePhones(old, phones);
-  // The Mac's key, which a phone list it mails later must come from, and when this list is from.
-  if (typeof input.mac === "string") link.mac = input.mac;
-  if (typeof input.at === "number" && input.at > (link.macAt ?? 0)) link.macAt = input.at;
-  writeLink(link);
   // A new relay or name needs a new connection, and a newer bridge replaces an older one.
   let runningVersion = null;
   try { runningVersion = fs.readFileSync(VERSION_FILE, "utf8").trim(); } catch {}
@@ -2129,14 +2300,17 @@ async function setup() {
 }
 
 function pair(relay) {
-  const link = readLink() ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os.hostname(), phones: [] };
-  if (relay) link.relay = relay;
-  if (!link.relay) {
+  const link = updateLink(current => {
+    const next = current ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os.hostname(), phones: [] };
+    if (relay) next.relay = relay;
+    if (!next.relay) return null;
+    next.pairing = { token: crypto.randomBytes(16).toString("base64url"), expires: Date.now() + PAIRING_MINUTES * 60_000 };
+    return next;
+  });
+  if (!link) {
     console.error("Give the relay's address: kuvo-link.js pair wss://…");
     process.exit(1);
   }
-  link.pairing = { token: crypto.randomBytes(16).toString("base64url"), expires: Date.now() + PAIRING_MINUTES * 60_000 };
-  writeLink(link);
   const query = new URLSearchParams({
     v: "1",
     relay: link.relay,

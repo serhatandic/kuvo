@@ -64,6 +64,35 @@ import Testing
         }
     }
 
+    /// The Mac's side of the rules: pairing here and removing, up to the first step that's a
+    /// machine's alone (taking the Mac's list).
+    @Test func pairedPhones() {
+        for book in list("phoneBooks") {
+            let name = book["name"] as! String
+            let macs = Set(book["macs"] as! [String])
+            var phones = PairedPhones(phones: (book["phones"] as! [[String: Any]]).map {
+                .init(key: $0["key"] as! String, name: "", added: .now, pairing: $0["pairing"] as! String)
+            })
+            for step in book["steps"] as! [[String: Any]] {
+                var ok = true
+                switch step["op"] as! String {
+                case "pair": phones.pair(.init(key: step["key"] as! String, name: "", added: .now, pairing: step["pairing"] as! String))
+                case "remove":
+                    let entries = (step["phones"] as! [[String: Any]]).map { PairedPhones.Entry(key: $0["key"] as! String, pairing: $0["pairing"] as? String) }
+                    ok = phones.remove(entries, by: step["by"] as! String, macs: macs)
+                default: break
+                }
+                guard step["op"] as! String != "macList" else { break }
+                #expect(ok == step["ok"] as! Bool, "\(name): \(step["op"]!)")
+                let after = step["after"] as! [String: Any]
+                let expected = (after["phones"] as! [[String: Any]]).map { "\($0["key"]!)/\($0["pairing"]!)" }
+                #expect(phones.phones.map { "\($0.key)/\($0.pairing)" }.sorted() == expected, "\(name): \(step["op"]!)")
+                let removed = (after["removed"] as! [[String: Any]]).map { "\($0["key"]!)/\($0["pairing"]!)" }
+                #expect(phones.removed.map { "\($0.key)/\($0.pairing)" }.sorted() == removed, "\(name): \(step["op"]!)")
+            }
+        }
+    }
+
     @Test func sockets() {
         for item in list("sockets") {
             #expect(EngineRoutes.allowsSocket(item["path"] as! String) == item["allowed"] as! Bool, "\(item["path"]!)")

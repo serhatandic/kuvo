@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Writes link.json: addresses, relay messages, link frames and session messages, worked out
 here independently of the Swift and JavaScript implementations, which both check against it."""
-import hashlib, json, re, struct, unicodedata, urllib.parse
+import base64, hashlib, json, re, struct, unicodedata, urllib.parse
 
 def address(secret):
     return hashlib.sha256(b"kuvo-link address v1" + secret).digest()[:16]
@@ -218,5 +218,145 @@ assert loads("http://[::1]:8080/cb?code=x") and loads("http://127.0.0.1:19876?co
 assert not loads("http://127.0.0.1:19876/cb") and not loads("http://me@127.0.0.1:19876/cb?code=x") and not loads("http://127.0.0.1/cb?code=x")
 assert loads("http://127.0.0.1:19876/cb?code=a%2Fb&x=1") and not loads("http://127.0.0.1:19876/cb?code=a%2Fb&x=[1]") and not loads("http://127.0.0.1:19876/cb?code=50%")
 
+# A box's paired phones (PROTOCOL.md, "Paired phones"): a pairing adds one, and a removal, from a
+# phone on the list or a Mac that set the box up, takes its pairing off for good. Only a pairing of
+# its own (a new pairing id) lets a removed phone back in; nobody removes a Mac. Each Mac's list adds
+# and removes only the phones it listed. Worked out here, step by step, apart from the bridge's and
+# the Mac's.
+KEY = re.compile(r"[A-Za-z0-9_-]{43}")
+PAIRING = re.compile(r"[A-Za-z0-9_-]{0,32}")
+MOST_AT_ONCE, MOST_KEPT = 16, 256
+
+def k(name):
+    return base64.urlsafe_b64encode(hashlib.sha256(name.encode()).digest()).decode().rstrip("=")
+
+def removed_already(book, key, pairing):
+    return any(r == {"key": key, "pairing": pairing} for r in book["removed"])
+
+def note_removed(book, key, pairing):
+    if not removed_already(book, key, pairing):
+        book["removed"].append({"key": key, "pairing": pairing})
+        book["removed"] = book["removed"][-MOST_KEPT:]
+
+def take_off(book, key, pairing):
+    current = next((p for p in book["phones"] if p["key"] == key), None)
+    pairing = current["pairing"] if pairing is None and current else (pairing or "")
+    note_removed(book, key, pairing)
+    # One paired again since (another pairing) stays.
+    if current and current["pairing"] == pairing:
+        book["phones"] = [p for p in book["phones"] if p["key"] != key]
+
+def fits(entry, macs):
+    return KEY.fullmatch(entry.get("key") or "") and entry["key"] not in macs and PAIRING.fullmatch(entry.get("pairing") or "")
+
+def book_pair(book, step):
+    # A new pairing: what removed the phone's others still keeps them out.
+    book["phones"] = [p for p in book["phones"] if p["key"] != step["key"]] + [{"key": step["key"], "pairing": step["pairing"], "from": "pair"}]
+    return True
+
+def book_remove(book, step):
+    allowed = {p["key"] for p in book["phones"]} | set(book["macs"])
+    entries = step["phones"]
+    if step["by"] not in allowed or not entries or len(entries) > MOST_AT_ONCE or not all(fits(e, book["macs"]) for e in entries):
+        return False
+    for e in entries:
+        take_off(book, e["key"], e.get("pairing"))
+    return True
+
+def book_mac_list(book, step):
+    by = step["by"]
+    listed = []
+    for p in step["phones"]:
+        if not fits(p, book["macs"]) or any(l["key"] == p["key"] for l in listed) or removed_already(book, p["key"], p.get("pairing") or ""):
+            continue
+        listed.append({"key": p["key"], "pairing": p.get("pairing") or "", "from": "mac", "mac": by})
+    keys = {p["key"] for p in listed}
+    kept = []
+    for p in book["phones"]:
+        if p["key"] in keys:
+            continue
+        if p["from"] == "pair" or p.get("mac") not in (by, None):
+            kept.append(p)  # paired here, or listed by another Mac
+        elif p.get("mac") == by:
+            note_removed(book, p["key"], p["pairing"])  # this Mac's, no longer listed
+        # One from before Macs were named: off, but not for good (another Mac may list it).
+    book["phones"] = listed + kept
+    for r in step.get("removed", []):
+        if fits(r, book["macs"]):
+            take_off(book, r["key"], r.get("pairing") or "")
+    return True
+
+def phone(key, pairing, came="mac", mac=k("MAC")):
+    entry = {"key": k(key), "pairing": pairing, "from": came}
+    if came == "mac" and mac:
+        entry["mac"] = mac
+    return entry
+
+def e(key, pairing=None):
+    return {"key": k(key)} if pairing is None else {"key": k(key), "pairing": pairing}
+
+book_cases = [
+    ("a paired phone removes a lost one, which can't change anything after, nor come back with an old list",
+     [phone("P1", "a"), phone("P2", "b")],
+     [{"op": "remove", "by": k("P1"), "phones": [e("P2", "b")]},
+      {"op": "remove", "by": k("P2"), "phones": [e("P1", "a")]},
+      {"op": "macList", "by": k("MAC"), "phones": [e("P1", "a"), e("P2", "b")]}]),
+    ("nobody removes a Mac, nor does a stranger remove anyone, nor an empty removal, too many at once, or ones that aren't keys",
+     [phone("P1", "a"), phone("P2", "b")],
+     [{"op": "remove", "by": k("P1"), "phones": [{"key": k("MAC2"), "pairing": ""}, e("P2", "b")]},
+      {"op": "remove", "by": k("S"), "phones": [e("P1", "a")]},
+      {"op": "remove", "by": k("P1"), "phones": []},
+      {"op": "remove", "by": k("P1"), "phones": [e("X%d" % i) for i in range(MOST_AT_ONCE + 1)]},
+      {"op": "remove", "by": k("P1"), "phones": [{"key": "not a key"}]},
+      {"op": "remove", "by": k("P1"), "phones": [{"key": k("P2"), "pairing": "not a pairing!"}]}]),
+    ("pairing it again on the Mac lets a removed phone back in",
+     [phone("P1", "a"), phone("P2", "b")],
+     [{"op": "remove", "by": k("P1"), "phones": [e("P2", "b")]},
+      {"op": "macList", "by": k("MAC"), "phones": [e("P1", "a"), e("P2", "c")]}]),
+    ("pairing it here lets a removed phone back in",
+     [phone("P1", "a", "pair"), phone("P2", "b", "pair")],
+     [{"op": "remove", "by": k("P2"), "phones": [e("P1", "a")]},
+      {"op": "pair", "key": k("P1"), "pairing": "d"}]),
+    ("the Mac removes a phone by leaving it off its list, and passes on removals it heard of",
+     [phone("P1", "a"), phone("P2", "b"), phone("P3", "c", "pair")],
+     [{"op": "macList", "by": k("MAC"), "phones": [e("P1", "a")], "removed": [e("P3", "c")]}]),
+    ("a removal of an older pairing leaves the newer one; one of a phone not heard of yet keeps it out",
+     [phone("P1", "a"), phone("P2", "y")],
+     [{"op": "remove", "by": k("P1"), "phones": [e("P2", "x"), e("P9", "z")]},
+      {"op": "macList", "by": k("MAC"), "phones": [e("P1", "a"), e("P2", "y"), e("P9", "z")]},
+      {"op": "macList", "by": k("MAC"), "phones": [e("P1", "a"), e("P2", "y"), e("P9", "w")]}]),
+    ("a Mac removes any phone, and a phone itself; a removal without a pairing takes the one there",
+     [phone("P1", "a"), phone("P2", "b", "pair"), phone("P3", "c")],
+     [{"op": "remove", "by": k("MAC"), "phones": [e("P2")]},
+      {"op": "remove", "by": k("P3"), "phones": [e("P3", "c")]}]),
+    ("two Macs set up the same machine: each lists its own phones, and neither removes the other's",
+     [phone("P1", "a"), phone("P2", "b", mac=k("MAC2"))],
+     [{"op": "macList", "by": k("MAC"), "phones": [e("P1", "a")]},
+      {"op": "macList", "by": k("MAC2"), "phones": [e("P2", "b")]},
+      {"op": "macList", "by": k("MAC"), "phones": []},
+      {"op": "remove", "by": k("MAC2"), "phones": [{"key": k("MAC"), "pairing": ""}]}]),
+    ("ones from before Macs were named go off the list of the first Mac that doesn't list them, not for good",
+     [phone("P1", "", mac=None), phone("P2", "", mac=None)],
+     [{"op": "macList", "by": k("MAC"), "phones": [e("P1", "")]},
+      {"op": "macList", "by": k("MAC2"), "phones": [e("P2", "")]}]),
+]
+books = []
+for name, phones, steps in book_cases:
+    book = {"macs": [k("MAC"), k("MAC2")], "phones": [dict(p) for p in phones], "removed": []}
+    for step in steps:
+        step["ok"] = {"pair": book_pair, "remove": book_remove, "macList": book_mac_list}[step["op"]](book, step)
+        step["phones"] = step.get("phones", [])
+        step["after"] = {"phones": sorted(({"key": p["key"], "pairing": p["pairing"], "from": p["from"]} for p in book["phones"]), key=lambda p: p["key"]),
+                         "removed": sorted((dict(r) for r in book["removed"]), key=lambda r: (r["key"], r["pairing"]))}
+    books.append({"name": name, "macs": [k("MAC"), k("MAC2")], "phones": phones, "steps": steps})
+keys = lambda case, step: [p["key"] for p in books[case]["steps"][step]["after"]["phones"]]
+assert [s["ok"] for s in books[1]["steps"]] == [False] * 6
+assert keys(0, 2) == [k("P1")]
+assert sorted(keys(2, 1)) == sorted([k("P1"), k("P2")])
+assert sorted(keys(5, 1)) == sorted([k("P1"), k("P2")])
+assert sorted(keys(5, 2)) == sorted([k("P1"), k("P2"), k("P9")])
+assert sorted(keys(7, 1)) == sorted([k("P1"), k("P2")]) and keys(7, 2) == [k("P2")] and not books[7]["steps"][3]["ok"]
+assert keys(8, 0) == [k("P1")] and sorted(keys(8, 1)) == sorted([k("P1"), k("P2")]) and books[8]["steps"][1]["after"]["removed"] == []
+
 json.dump({"addresses": addresses, "relay": relay, "frames": frames, "messages": messages, "routes": routes, "sockets": sockets,
-           "agentRoutes": agent_routes, "signInReturns": returns}, open("link.json", "w"), indent=2)
+           "agentRoutes": agent_routes, "signInReturns": returns, "phoneBooks": books}, open("link.json", "w"), indent=2)

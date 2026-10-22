@@ -15,6 +15,8 @@ process.env.KUVO_HOME = home;
 after(() => fs.rmSync(home, { recursive: true, force: true }));
 const link = await import("../../Sources/KuvoLink/Resources/kuvo-link.js");
 
+// A phone's key as a phone has one (32 bytes, base64url), named for a test.
+const shaped = name => crypto.createHash("sha256").update(name).digest("base64url");
 const vectors = name => JSON.parse(fs.readFileSync(new URL(`../../Vectors/${name}`, import.meta.url), "utf8"));
 const hex = s => Buffer.from(s, "hex");
 
@@ -484,6 +486,7 @@ test("the self-test passes here", () => {
 
 test("setup keeps the machine's keys and its own phones, starts the bridge, and stops it with no phones left", async () => {
   const { spawnSync } = await import("node:child_process");
+  const [A, B, C] = ["A", "B", "C"].map(shaped);
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-setup-"));
   fs.mkdirSync(path.join(folder, "workspace"));
   const script = fileURLToPath(new URL("../../Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
@@ -494,7 +497,7 @@ test("setup keeps the machine's keys and its own phones, starts the bridge, and 
   const pidFile = path.join(folder, "run", "link.pid");
   try {
     // A relay nobody listens on: the bridge keeps trying, which is all this needs.
-    const first = setup({ relay: "ws://127.0.0.1:9", name: "test", phones: [{ key: "AAAA", name: "A" }] });
+    const first = setup({ relay: "ws://127.0.0.1:9", name: "test", phones: [{ key: A, name: "A" }] });
     assert.match(first.address, /^[A-Za-z0-9_-]{22}$/);
     // The file exists briefly before its PID is written; setup also needs its version file.
     let pid = 0;
@@ -511,17 +514,17 @@ test("setup keeps the machine's keys and its own phones, starts the bridge, and 
     process.kill(pid, 0);
 
     // Its keys stay; the phones are what the Mac says now; the same bridge carries on.
-    const second = setup({ relay: "ws://127.0.0.1:9", name: "test", phones: [{ key: "AAAA", name: "A" }, { key: "BBBB", name: "B" }] });
+    const second = setup({ relay: "ws://127.0.0.1:9", name: "test", phones: [{ key: A, name: "A" }, { key: B, name: "B" }] });
     assert.deepEqual(second, first);
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(folder, "run", "link.json"), "utf8")).phones.map(p => p.key), ["AAAA", "BBBB"]);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(folder, "run", "link.json"), "utf8")).phones.map(p => p.key), [A, B]);
     assert.equal(Number(fs.readFileSync(pidFile, "utf8")), pid);
 
     // A phone paired with the machine itself stays when the Mac's list changes.
     const linkFile = path.join(folder, "run", "link.json");
     const saved = JSON.parse(fs.readFileSync(linkFile, "utf8"));
-    fs.writeFileSync(linkFile, JSON.stringify({ ...saved, phones: [...saved.phones, { key: "CCCC", name: "C", added: 1, from: "pair" }] }));
-    setup({ relay: "ws://127.0.0.1:9", name: "test", phones: [{ key: "BBBB", name: "B" }] });
-    assert.deepEqual(JSON.parse(fs.readFileSync(linkFile, "utf8")).phones.map(p => p.key), ["BBBB", "CCCC"]);
+    fs.writeFileSync(linkFile, JSON.stringify({ ...saved, phones: [...saved.phones, { key: C, name: "C", added: 1, from: "pair" }] }));
+    setup({ relay: "ws://127.0.0.1:9", name: "test", phones: [{ key: B, name: "B" }] });
+    assert.deepEqual(JSON.parse(fs.readFileSync(linkFile, "utf8")).phones.map(p => p.key), [B, C]);
 
     // Nothing left to answer: the bridge stops, and the machine keeps its keys; no phone keeps
     // the engine up any more.
@@ -643,34 +646,46 @@ test("a Mac that said it's here in the last few minutes keeps the bridge quiet",
   }
 });
 
-test("a phone list the Mac mails through the relay is taken from it alone, a newer one only: a phone removed there loses its way in", () => {
-  const machine = link.newKey(), mac = link.newKey(), stranger = link.newKey();
+test("a phone list a Mac mails through the relay is taken from the Macs that set the machine up alone, a newer one only: a phone removed there loses its way in", () => {
+  const machine = link.newKey(), mac = link.newKey(), other = link.newKey(), stranger = link.newKey();
+  const [lost, fresh, own, others] = [0, 1, 2, 3].map(() => crypto.randomBytes(32));
+  const k = key => key.toString("base64url");
   fs.mkdirSync(path.join(home, "run"), { recursive: true });
   link.writeLink({
     secret: crypto.randomBytes(32).toString("base64url"), key: machine.toString("base64url"), relay: "wss://relay.test", name: "m",
-    mac: link.publicOf(mac).toString("base64url"), macAt: 1000,
-    phones: [{ key: "lost", name: "Lost iPhone", added: 1, from: "mac" }, { key: "own", name: "Paired here", added: 2, from: "pair" }],
+    mac: k(link.publicOf(mac)), macs: [k(link.publicOf(mac)), k(link.publicOf(other))], macAt: 1000,
+    phones: [{ key: k(lost), name: "Lost iPhone", added: 1, from: "mac", mac: k(link.publicOf(mac)) }, { key: k(own), name: "Paired here", added: 2, from: "pair" }],
   });
   const mail = (from, phones, at) => link.sealOneWay(Buffer.from(JSON.stringify({ phones, at })), from, link.publicOf(machine)).message;
   const ended = [];
-  const host = { keepOnly: keys => ended.push([...keys].sort()) };
-  const keys = () => link.readLink().phones.map(phone => `${phone.from}:${phone.key}`);
+  const host = { keepOnly: keys => ended.push(keys.size) };
+  const names = () => link.readLink().phones.map(phone => `${phone.from}:${phone.name}`);
 
   link.phonesFromMac(mail(stranger, [], 2000), host);
-  link.phonesFromMac(mail(mac, [{ key: "new", name: "New iPhone" }], 900), host);
-  assert.deepEqual(keys(), ["mac:lost", "pair:own"], "not from the Mac, or older: nothing changes");
+  link.phonesFromMac(mail(mac, [{ key: k(fresh), name: "New iPhone" }], 900), host);
+  assert.deepEqual(names(), ["mac:Lost iPhone", "pair:Paired here"], "not from a Mac of its own, or older: nothing changes");
   assert.deepEqual(ended, []);
 
-  link.phonesFromMac(mail(mac, [{ key: "new", name: "New iPhone" }], 2000), host);
-  assert.deepEqual(keys(), ["mac:new", "pair:own"], "the Mac's list now, and the machine's own pairing kept");
-  assert.deepEqual(ended, [["new", "own"]], "the removed phone's sessions end");
-  assert.equal(link.authorizePhone(Buffer.from("lost"), {}, undefined), false);
+  link.phonesFromMac(mail(mac, [{ key: k(fresh), name: "New iPhone" }], 2000), host);
+  assert.deepEqual(names(), ["mac:New iPhone", "pair:Paired here"], "the Mac's list now, and the machine's own pairing kept");
+  assert.deepEqual(ended, [2], "the removed phone's sessions end");
+  assert.equal(link.authorizePhone(lost, {}, undefined), false);
   // The same mail again changes nothing.
   link.phonesFromMac(mail(mac, [], 2000), host);
-  assert.deepEqual(keys(), ["mac:new", "pair:own"]);
+  assert.deepEqual(names(), ["mac:New iPhone", "pair:Paired here"]);
+  // The other Mac's list, by its own clock: its phones beside the first Mac's, which it leaves.
+  link.phonesFromMac(mail(other, [{ key: k(others), name: "Other iPhone" }], 500), host);
+  assert.deepEqual(names(), ["mac:Other iPhone", "mac:New iPhone", "pair:Paired here"]);
+
+  // A Mac not heard from in 30 days: its phones go off the next list of another, not for good.
+  const later = link.readLink();
+  link.forgetOldMacs(later, k(link.publicOf(mac)), Date.now() + 31 * 24 * 3600 * 1000);
+  link.takeMacList(later, [{ key: k(fresh), name: "New iPhone" }], [], k(link.publicOf(mac)));
+  assert.deepEqual(later.phones.map(phone => phone.name), ["New iPhone", "Paired here"]);
+  assert.deepEqual(link.macsOf(later), [k(link.publicOf(mac))]);
+  assert.equal(later.removed.some(entry => entry.key === k(others)), false);
   fs.rmSync(path.join(home, "run", "link.json"));
 });
-
 test("Start and Stop go through the box's tool, the bridge staying up; kuvo/info says whether it runs and whether it's stopped", async () => {
   const bin = path.join(home, "bin");
   fs.mkdirSync(bin, { recursive: true });
@@ -719,4 +734,65 @@ test("the box's keeper keeps the phone link up while a phone is paired, and the 
   for (let i = 0; i < 100 && !fs.existsSync(said); i++) await new Promise(r => setTimeout(r, 30));
   assert.equal(fs.readFileSync(said, "utf8").trim(), "box");
   for (const name of ["bin/kuvo-start", "run/keeper-started", "run/box.pid"]) fs.rmSync(path.join(home, name), { force: true });
+});
+
+test("paired phones, as the Mac has them too: removals stick, only a new pairing lets one back, and nobody removes the Mac (Vectors/link.json)", () => {
+  const byKey = (a, b) => (a.key + "/" + (a.pairing ?? "")).localeCompare(b.key + "/" + (b.pairing ?? ""));
+  const view = book => ({
+    phones: (book.phones ?? []).map(phone => ({ key: phone.key, pairing: phone.pairing ?? "", from: phone.from })).sort(byKey),
+    removed: (book.removed ?? []).map(entry => ({ key: entry.key, pairing: entry.pairing })).sort(byKey),
+  });
+  for (const book of vectors("link.json").phoneBooks) {
+    const state = { macs: book.macs, phones: book.phones.map(phone => ({ ...phone })), removed: [] };
+    for (const step of book.steps) {
+      let ok = true;
+      if (step.op === "pair") link.pairPhone(state, { key: step.key, pairing: step.pairing, from: "pair" });
+      else if (step.op === "remove") ok = link.removePhones(state, step.by, step.phones);
+      else link.takeMacList(state, step.phones, step.removed, step.by);
+      assert.equal(ok, step.ok, `${book.name}: ${step.op}`);
+      assert.deepEqual(view(state), step.after, `${book.name}: ${step.op}`);
+    }
+  }
+});
+
+test("a phone lists the phones paired with a machine and removes a lost one there, which loses its sessions and its way in, for good", async () => {
+  fs.mkdirSync(path.join(home, "run"), { recursive: true });
+  const mine = crypto.randomBytes(32), lost = crypto.randomBytes(32);
+  link.writeLink({
+    secret: "s", key: "k", relay: "wss://relay.test", mac: crypto.randomBytes(32).toString("base64url"),
+    phones: [{ key: mine.toString("base64url"), name: "Mine", added: 1, from: "mac", pairing: "a" }, { key: lost.toString("base64url"), name: "Lost", added: 2, from: "mac", pairing: "b" }],
+  });
+  const ended = [];
+  const handle = link.engineHandler(() => { throw new Error("none"); }, {}, () => null, changed => ended.push(changed.phones.map(phone => phone.name)));
+  const as = async (key, method, p, body) => {
+    const parts = [];
+    for await (const part of handle({ method, path: p, headers: {}, body: Buffer.from(body ?? "") }, { key }, undefined)) parts.push(part);
+    const text = Buffer.concat(parts.filter(part => part.body).map(part => part.body)).toString();
+    return { status: parts[0].head.status, json: text ? JSON.parse(text) : undefined };
+  };
+
+  const listed = await as(mine, "GET", "kuvo/phones");
+  assert.deepEqual(listed.json.phones.map(phone => [phone.name, phone.pairing, phone.you]), [["Mine", "a", true], ["Lost", "b", false]]);
+  assert.equal((await as(mine, "POST", "kuvo/phones/remove", JSON.stringify({ phones: [{ key: link.readLink().mac }] }))).status, 400, "never the Mac");
+  assert.equal((await as(mine, "GET", "kuvo/phones/remove")).status, 405);
+
+  assert.equal((await as(mine, "POST", "kuvo/phones/remove", JSON.stringify({ phones: [{ key: lost.toString("base64url"), pairing: "b" }] }))).status, 200);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.deepEqual(ended, [["Mine"]], "the lost one's sessions end, once the answer's on its way");
+  assert.equal(link.authorizePhone(lost, {}, undefined), false, "and it can't come in");
+  assert.equal((await as(lost, "POST", "kuvo/phones/remove", JSON.stringify({ phones: [{ key: mine.toString("base64url") }] }))).status, 400, "nor remove anyone");
+
+  // The Mac's list, mailed before it heard of the removal, doesn't bring it back.
+  const before = link.readLink();
+  link.takeMacList(before, [{ key: mine.toString("base64url"), name: "Mine", pairing: "a" }, { key: lost.toString("base64url"), name: "Lost", pairing: "b" }], []);
+  assert.deepEqual(before.phones.map(phone => phone.name), ["Mine"]);
+
+  // Pairing it again lets it back in, though its key is one the machine has.
+  const token = crypto.randomBytes(16).toString("base64url");
+  link.updateLink(current => ({ ...current, pairing: { token, expires: Date.now() + 60_000 } }));
+  assert.equal(link.authorizePhone(lost, { pair: token, name: "Found" }, undefined), true);
+  const found = link.readLink().phones.find(phone => phone.key === lost.toString("base64url"));
+  assert.ok(found && found.pairing && found.pairing !== "b", "a pairing of its own");
+  assert.deepEqual(link.readLink().removed, [{ key: lost.toString("base64url"), pairing: "b" }], "the old one still out");
+  fs.rmSync(path.join(home, "run", "link.json"), { force: true });
 });

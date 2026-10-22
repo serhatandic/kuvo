@@ -106,8 +106,10 @@ notification, below.
 
 A host mails another host the same way, with a relay `send` of a mail frame (`kind` 5, session
 0): a Mac mails each of its machines' bridges the phones you've paired (`{"phones": [{key, name,
-address}], "at": <milliseconds>}`), so a phone you remove loses its way into every machine, reached
-or not. A bridge (from 0.9.6) takes it only from the key its setup named, and only a newer one.
+address, pairing}], "removed": [{key, pairing}], "at": <milliseconds>}`), so a phone you remove
+loses its way into every machine, reached or not. A bridge (from 0.9.6) takes it only from the key
+its setup named, and only a newer one; from 0.9.8 from any Mac that set it up, each by its own
+`at`, as "Paired phones" says.
 
 ## Notifications
 
@@ -475,7 +477,10 @@ once.
 On a machine the bridge keeps its state in `~/.kuvo-code/run/link.json` (mode 600):
 
 ```json
-{"relay": "wss://…", "secret": "…", "key": "<static private key>", "phones": [{"key": "…", "name": "…", "added": 1760000000, "from": "mac", "address": "…"}]}
+{"relay": "wss://…", "secret": "…", "key": "<static private key>", "mac": "<the last Mac's static key>",
+ "macs": ["<each Mac that set it up>"], "macAts": {"<Mac>": <its last list's at>}, "macSeen": {"<Mac>": <when it came, here>},
+ "phones": [{"key": "…", "name": "…", "added": 1760000000, "from": "mac", "mac": "<the Mac that listed it>", "address": "…", "pairing": "…"}],
+ "removed": [{"key": "…", "pairing": "…"}]}
 ```
 
 The Mac sets the phones paired with it (`"from": "mac"`), so they reach the machine too,
@@ -485,6 +490,37 @@ what it knows, and the bridge notes it each time the phone comes in. The machine
 address. The bridge reads the file every 30 seconds: a phone taken off loses its sessions,
 and with no phones and no pairing waiting the bridge stops. The bridge notes when a phone last
 used the machine (`run/link.seen`).
+
+### Paired phones
+
+Each computer keeps the phones paired with it, and the ones removed, by the pairing they came in
+with (`pairing`, made where the phone paired, new each time). The same rules on a Mac and a
+machine's bridge (from 0.9.8), held to `Vectors/link.json` (`phoneBooks`):
+
+- A pairing adds a phone, with a pairing nothing removed (what removed its others still keeps
+  them out).
+- A phone paired with it, or a Mac (one that set it up, `macs`), removes phones, at most 16 at a
+  time, each a phone's key (32 bytes); a removal never names a Mac. What's removed stays removed,
+  its pairing noted (the last 256 kept): the phone can't come in or change anything, and no list
+  brings it back. Only a pairing of its own, with a new `pairing`, lets the phone in again, though
+  its key is one the computer has.
+- A removal of an older pairing than the one there leaves that one.
+- A Mac's list (its setup, its mail) counts only when newer than the last one from that Mac (by
+  its `at`). It adds the phones on it that aren't removed, removes the ones it listed before and no
+  longer lists, and the removals it carries; another Mac's phones stay. One from before Macs were
+  named (no `mac`) that a Mac doesn't list goes off, not for good. A Mac the machine hasn't heard
+  from in 30 days, by its own clock, no longer counts, and its phones are as ones from before Macs
+  were named; it counts again once it sets the machine up.
+
+On both, for a paired phone:
+
+- `kuvo/phones`: `{"phones": [{key, name, added, pairing, you}]}`, `added` in seconds since 1970,
+  `you` the one asking.
+- `POST kuvo/phones/remove` with `{"phones": [{key, pairing}]}` (`pairing` left out: the one
+  there): removes them there, itself too, and their sessions end, once the answer's on its way.
+  `200 {}`, or `400 {"message"}` when it names a Mac, nothing, too many or something that isn't a
+  phone's key, or the one asking isn't paired there. A removal goes to each computer the phone pairs with, Mac
+  and machines (`kuvo/hosts`); a Mac passes on the removals it has with its list.
 
 A machine keeps itself running (from 0.9.7): its keeper (`bin/kuvo-start keep`, `run/box.pid`)
 starts its engine again when it ends, unless it was stopped on purpose (`run/stopped`), and keeps

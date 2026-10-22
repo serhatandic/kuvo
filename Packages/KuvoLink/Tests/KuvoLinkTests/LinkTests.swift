@@ -289,6 +289,30 @@ private func collect(_ stream: LinkResponse) async throws -> (status: Int, heade
         await #expect(throws: LinkError.refused) { try await collect(client.send(LinkRequest(path: "api/info"), to: paired)) }
     }
 
+    /// Removed while the Mac was letting it in (asked whether to, and removed meanwhile, from a
+    /// phone say): it gets no session.
+    @Test func aPhoneRemovedWhileItsLetInIsTurnedAway() async throws {
+        let relay = MemoryRelay()
+        let hostKey = LinkKey(), hostSecret = RelaySecret()
+        let (asked, asking) = AsyncStream<Void>.makeStream()
+        let (answers, answering) = AsyncStream<Bool>.makeStream()
+        let server = LinkServer(key: hostKey, hello: HostHello(kind: .mac, name: "Test Mac", app: "0.0.1", engine: "2.0.30"), authorize: { _, _, _ in
+            asking.yield()
+            for await allowed in answers { return allowed }
+            return false
+        }, handle: echo)
+        let connection = relay.connect(hostSecret)
+        Task { await server.serve(connection) }
+        let key = LinkKey()
+        let client = LinkClient(relay: URL(string: "wss://relay.test")!, key: key, secret: RelaySecret(), name: "p", app: "0", connect: relay.connect)
+        let host = PairedHost(address: hostSecret.address, key: hostKey.publicBytes, name: "", kind: .mac)
+        let sending = Task { try await collect(client.send(LinkRequest(path: "api/info"), to: host)) }
+        for await _ in asked { break }
+        await server.forget(phone: key.publicBytes)
+        answering.yield(true)
+        await #expect(throws: LinkError.refused) { try await sending.value }
+    }
+
     /// The Mac's own connection to the relay drops and comes back (the network changed, the relay
     /// restarted): a paired phone carries on, on a new session, and what it sends runs once.
     @Test func aPhoneCarriesOnAfterTheMacsRelayConnectionComesBack() async throws {
