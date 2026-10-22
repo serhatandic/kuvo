@@ -53,13 +53,18 @@ export class SeatAPI {
 
   /** The name of `model`'s provider when it has a way to sign in and isn't signed in here (a
    * model there would only fail: the engine drops a message to it without a word); else nothing. */
-  /** The account `model` runs on: its provider's name, and whether it's one you sign in to that has no sign-in. */
+  /**
+   * The account `model` runs on: its provider's name, and whether it's signed out of, as the
+   * engine has it: not among the providers it has ready (signed in, or needing no sign-in, as
+   * OpenCode Zen's free models). Unknown while it lists none (still starting).
+   */
   async account(model: ModelRef): Promise<{ name: string; signedOut: boolean } | undefined> {
-    const listed: any[] = (await this.requester.request("GET", "/api/integration"))?.data
-    const provider = Array.isArray(listed) ? listed.find((each) => each?.id === model.providerID) : undefined
-    if (!provider) return undefined
-    const needsOne = Array.isArray(provider.methods) && provider.methods.length > 0
-    return { name: String(provider.name ?? provider.id), signedOut: needsOne && !(Array.isArray(provider.connections) && provider.connections.length > 0) }
+    const [providers, integrations] = await Promise.all([this.requester.request("GET", "/api/provider"), this.requester.request("GET", "/api/integration")])
+    const ready: unknown[] = Array.isArray(providers?.data) ? providers.data.map((each: any) => each?.id) : []
+    if (!ready.length) return undefined
+    const listed: any[] = Array.isArray(integrations?.data) ? integrations.data : []
+    const provider = listed.find((each) => each?.id === model.providerID)
+    return { name: String(provider?.name ?? model.providerID), signedOut: !ready.includes(model.providerID) }
   }
 
   async create(directory: string, title: string, agent: string | undefined, model: ModelRef | undefined, permissions: Rule[]): Promise<any> {

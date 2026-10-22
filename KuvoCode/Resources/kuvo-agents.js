@@ -12027,12 +12027,13 @@ class SeatAPI {
     return (await this.requester.request("GET", at(id)))?.data;
   }
   async account(model2) {
-    const listed2 = (await this.requester.request("GET", "/api/integration"))?.data;
-    const provider = Array.isArray(listed2) ? listed2.find((each) => each?.id === model2.providerID) : undefined;
-    if (!provider)
+    const [providers, integrations] = await Promise.all([this.requester.request("GET", "/api/provider"), this.requester.request("GET", "/api/integration")]);
+    const ready = Array.isArray(providers?.data) ? providers.data.map((each) => each?.id) : [];
+    if (!ready.length)
       return;
-    const needsOne = Array.isArray(provider.methods) && provider.methods.length > 0;
-    return { name: String(provider.name ?? provider.id), signedOut: needsOne && !(Array.isArray(provider.connections) && provider.connections.length > 0) };
+    const listed2 = Array.isArray(integrations?.data) ? integrations.data : [];
+    const provider = listed2.find((each) => each?.id === model2.providerID);
+    return { name: String(provider?.name ?? model2.providerID), signedOut: !ready.includes(model2.providerID) };
   }
   async create(directory, title, agent, model2, permissions) {
     const body = { title, location: { directory }, permissions };
@@ -13567,4 +13568,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Agents/src 35bfa1df37a775c45e1381d98c88c1a11da00872f3af88abda8096b785112acf
+// Built from Agents/src 4dc81a286feacbdc524853df92198cde077b5dc16778a578d9202a9b05ecd56e

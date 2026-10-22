@@ -31,8 +31,9 @@ class Engine {
   stuck = new Set<string>()
   /** A slow bot's thinking, shown with a file it reads, while it's at work. */
   working = new Map<string, string>()
-  /** The accounts the engine lists, and seats whose provider turns them down with `failing`'s words. */
+  /** The accounts the engine lists, those it has ready, and seats whose provider turns them down with `failing`'s words. */
   integrations: any[] = [{ id: "p", name: "Provider P", methods: [{ type: "key" }], connections: [{ id: "c" }] }]
+  providers: any[] = [{ id: "p" }]
   failing = new Map<string, string>()
   private busy = new Set<string>()
   private queued = new Map<string, { id: string }[]>()
@@ -70,6 +71,7 @@ class Engine {
       return ok({ id, title: body.title, model: body.model, location: body.location })
     }
     if (url.pathname === "/api/integration") return ok(this.integrations)
+    if (url.pathname === "/api/provider") return ok(this.providers)
     if (url.pathname === "/api/session/active") return ok(Object.fromEntries([...this.busy].map((id) => [id, { type: "busy" }])))
     const session = parts[2]
     const what = parts[3]
@@ -191,12 +193,25 @@ describe("a group chat on a machine", () => {
   test("a bot whose account was signed out of says so, rather than going without a word", async () => {
     const { groups } = runner()
     engine.integrations = [{ id: "p", name: "Provider P", methods: [{ type: "key" }], connections: [] }]
+    engine.providers = [{ id: "opencode" }]
     groups.put(group(), [], "active", false)
     groups.send("grp_team000001", "Anyone there?")
     await until(() => !groups.talk("grp_team000001").discussing && (groups.get("grp_team000001")?.messages.some((message) => message.kind === "note") ?? false))
     const notes = groups.get("grp_team000001")!.messages.filter((message) => message.kind === "note").map((message) => message.text)
     expect(notes[0]).toBe("Ada couldn’t answer: m needs a sign-in on this machine: sign in to Provider P in Settings › Accounts, or choose another model.")
     expect(engine.prompts().length).toBe(0)
+  })
+
+  test("a model that needs no sign-in (OpenCode Zen's free ones) answers, with nothing connected", async () => {
+    const { groups } = runner()
+    // Zen's account has ways to sign in, none made, and the engine has it ready all the same.
+    engine.integrations = [{ id: "p", name: "OpenCode Zen", methods: [{ type: "key" }, { type: "oauth" }], connections: [] }]
+    engine.providers = [{ id: "p" }]
+    engine.lines = { Ada: ["Hello!", "PASS"], Ben: ["PASS"] }
+    groups.put(group(), [], "active", false)
+    groups.send("grp_team000001", "Anyone there?")
+    await until(() => !groups.talk("grp_team000001").discussing && (groups.get("grp_team000001")?.messages.some((message) => message.author === "bot_ada") ?? false))
+    expect(groups.get("grp_team000001")!.messages.some((message) => message.kind === "note")).toBe(false)
   })
 
   test("a provider that turns a bot's sign-in down is said in words that say what to do", async () => {
