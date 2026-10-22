@@ -72,6 +72,7 @@ test("addresses, relay messages, frames and messages match the vectors", () => {
   for (const r of v.routes) assert.equal(link.allowed(r.path, r.method ?? "GET"), r.allowed, `${r.path} ${r.method ?? "GET"}`);
   for (const r of v.sockets) assert.equal(link.socketAllowed(r.path), r.allowed, r.path);
   for (const r of v.agentRoutes) assert.equal(link.agentsAllowed(r.path, r.method ?? "GET"), r.allowed, `agents: ${r.path} ${r.method ?? "GET"}`);
+  for (const r of v.signInReturns) assert.equal(link.signInReturn(r.url), r.loads ?? null, r.url);
   for (const m of v.messages) {
     assert.equal(link.encodeMessage(m.head, hex(m.body)).toString("hex"), m.bytes);
     assert.deepEqual(link.decodeMessage(hex(m.bytes)), { head: m.head, body: hex(m.body) });
@@ -245,6 +246,65 @@ test("requests go to the engine with its password, all of its API; paths that ar
   phone.send({ t: "cancel", id: 9 });
   for (let i = 0; i < 50 && !engine.asked.some(a => a.closed === "/api/event"); i++) await new Promise(r => setTimeout(r, 20));
   assert.ok(engine.asked.some(a => a.closed === "/api/event"));
+});
+
+// What a phone's request gets from the handler, read whole.
+async function answer(handle, method, p, body) {
+  const parts = [];
+  for await (const part of handle({ method, path: p, headers: {}, body: Buffer.from(body ?? "") }, {}, undefined)) parts.push(part);
+  const text = Buffer.concat(parts.filter(part => part.body).map(part => part.body)).toString();
+  return { status: parts[0].head.status, json: text ? JSON.parse(text) : undefined };
+}
+
+test("a sign-in that returns to the machine is loaded there, at its own address only, without following it further", async t => {
+  const asked = [];
+  const server = http.createServer((request, response) => {
+    asked.push(request.url);
+    response.writeHead(302, { location: "http://example.com/done" });
+    response.end();
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const handle = link.engineHandler(() => ({ port: 1, password: "p" }));
+  const port = server.address().port;
+  const loaded = await answer(handle, "POST", "kuvo/sign-in/return", JSON.stringify({ url: `http://127.0.0.1:${port}/mcp/oauth/callback?code=c&state=s#_=_` }));
+  assert.deepEqual([loaded.status, loaded.json], [200, { status: 302 }]);
+  assert.deepEqual(asked, ["/mcp/oauth/callback?code=c&state=s"]);
+  for (const url of ["http://example.com:80/cb?code=c", `http://127.0.0.1:${port}/cb`, `https://127.0.0.1:${port}/cb?code=c`]) {
+    assert.equal((await answer(handle, "POST", "kuvo/sign-in/return", JSON.stringify({ url }))).status, 400, url);
+  }
+  assert.equal(asked.length, 1);
+  // Nothing there to take it.
+  const closed = http.createServer();
+  await new Promise(resolve => closed.listen(0, "127.0.0.1", resolve));
+  const gone = closed.address().port;
+  await new Promise(resolve => closed.close(resolve));
+  assert.equal((await answer(handle, "POST", "kuvo/sign-in/return", JSON.stringify({ url: `http://127.0.0.1:${gone}/cb?code=c` }))).status, 502);
+  assert.equal((await answer(handle, "GET", "kuvo/sign-in/return")).status, 405);
+});
+
+test("a machine's settings are changed on its Mac; its engine restarts as it was started", async () => {
+  const handle = link.engineHandler(() => ({ pid: 999999, port: 1, password: "p" }));
+  for (const p of ["kuvo/config", "kuvo/mcp/catalog", "kuvo/mcp/catalog/linear"]) {
+    const answered = await answer(handle, p.endsWith("linear") ? "POST" : "GET", p);
+    assert.equal(answered.status, 409, p);
+    assert.match(answered.json.message, /Mac/);
+  }
+  // Never started from a Mac here (no record of how): it says to.
+  assert.equal((await answer(handle, "POST", "kuvo/engine/restart")).status, 409);
+  assert.equal((await answer(link.engineHandler(() => { throw new Error("none"); }), "POST", "kuvo/engine/restart")).status, 409);
+  // Started from a Mac: `kuvo-start` starts it again, once the answer's out.
+  const bin = path.join(home, "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  fs.mkdirSync(path.join(home, "run"), { recursive: true });
+  fs.writeFileSync(path.join(home, "run", "launch.env"), "PATH=/usr/bin\n");
+  const started = path.join(home, "run", "started-again");
+  fs.writeFileSync(path.join(bin, "kuvo-start"), `#!/bin/sh\ntouch "${started}"\n`);
+  assert.equal((await answer(handle, "POST", "kuvo/engine/restart")).status, 202);
+  for (let i = 0; i < 100 && !fs.existsSync(started); i++) await new Promise(r => setTimeout(r, 50));
+  assert.ok(fs.existsSync(started));
+  assert.equal((await answer(handle, "GET", "kuvo/engine/restart")).status, 405);
+  for (const name of ["bin/kuvo-start", "run/launch.env", "run/started-again"]) fs.rmSync(path.join(home, name));
 });
 
 test("plan accounts: listed, signed in to and switched from a phone", async t => {

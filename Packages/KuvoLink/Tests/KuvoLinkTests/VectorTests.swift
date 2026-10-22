@@ -58,6 +58,12 @@ import Testing
         }
     }
 
+    @Test func signInReturns() {
+        for item in list("signInReturns") {
+            #expect(EngineRoutes.signInReturn(item["url"] as! String)?.absoluteString == item["loads"] as? String, "\(item["url"]!)")
+        }
+    }
+
     @Test func sockets() {
         for item in list("sockets") {
             #expect(EngineRoutes.allowsSocket(item["path"] as! String) == item["allowed"] as! Bool, "\(item["path"]!)")

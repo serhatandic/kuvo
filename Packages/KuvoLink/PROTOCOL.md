@@ -256,8 +256,8 @@ itself. A host serves:
     (its URL, `mode`, and `acceptsCode`); `GET …/connect/oauth/<attempt>` for its status; `POST
     …/connect/oauth/<attempt>/complete {code}` for one that ends on a code; `DELETE
     …/connect/oauth/<attempt>` to give up. A page that sends the browser back to `localhost` on
-    the computer (GitLab's, Poe's, ChatGPT's) can't finish from a phone on a machine: offer it on
-    the Mac. Device codes (Copilot, OpenCode Console, SuperGrok) and keys work from anywhere.
+    the computer (GitLab's, Poe's, ChatGPT's) finishes there with `kuvo/sign-in/return` (below).
+    Device codes (Copilot, OpenCode Console, SuperGrok) and keys work from anywhere.
   - Its sign-ins: `GET api/credential` (with what each is signed in with), or `GET
     kuvo/accounts/credentials` → `{credentials: [{id, integrationID, label, active}]}`, the list
     alone; `POST api/credential/<id>/activate` uses one; `DELETE api/credential/<id>` removes one.
@@ -267,7 +267,48 @@ itself. A host serves:
     and keys on the Mac, and the copies on your machines.
   What a phone may ask an engine for is the same on both (`Vectors/link.json`, `routes`).
 - On a Mac, `kuvo/hosts`: the machines this phone may reach directly, with their addresses
-  and static keys, so pairing once with the Mac reaches them all.
+  and static keys, so pairing once with the Mac reaches them all; each with `machine`, its id
+  (as a bot's `machine`), and `anotherMac`: its engine is another Mac's, which gives it its
+  settings, so this Mac's (`kuvo/config`) don't reach it.
+- `POST kuvo/sign-in/return` with `{"url"}`: where a sign-in's page sent the browser back to the
+  computer (`http://127.0.0.1:<port>/…?code=…`: a plan's that finishes there, an MCP server's at
+  `127.0.0.1:19876`, a coding agent's), which a phone can't load. The computer loads it, as the
+  browser would have: only its own address (127.0.0.1, localhost or [::1], over http, at a port,
+  with a query; a fragment is left off), and no further than it answers (a redirect isn't
+  followed). `200 {"status"}` with the status it got: 2xx or 3xx, it took it; `400 {"message"}`
+  for an address that isn't one; `502 {"message"}` when nothing there answered (start the
+  sign-in again). Send it to the computer the sign-in is on: a Mac for its own, a machine's
+  bridge (from 0.9.0) for the machine's, the engine's and the coding agents'. The same check on
+  both (`Vectors/link.json`, `signInReturns`).
+- On a Mac, `kuvo/config`: the engine's settings as Settings has them, the whole document (the
+  same that `opencode.json` holds); your machines get them too (but for what only makes sense on
+  the Mac), so a machine's settings are changed here. `PATCH kuvo/config` with `{"changes":
+  [{"path": ["mcp", "servers", "linear", "disabled"], "value": true}, …]}` changes some, as
+  Settings does (a `null` value removes the key, and a level that isn't there is made), and
+  answers with the whole document; machines take it a few seconds later, and a change to the
+  rules reaches open sessions. A change can say what it read at its path (`"was"`, `null` for
+  nothing): changed since, nothing is changed and it answers `409 {"message"}`, so read again.
+  `409 {"message"}` too while the file can't be read (it has comments, say): it's changed by
+  hand then. Settings › Permissions keeps its choices and rules under `permissions` (a list of
+  `{action, resource, effect}`, effect `allow`, `ask` or `deny`) and its blocks under `policies`. A machine's bridge (from
+  0.9.0) answers `kuvo/config` and `kuvo/mcp/catalog` with `409 {"message"}`: its Mac changes them.
+- On a Mac, `kuvo/mcp/catalog`: Settings › MCP Servers' popular servers, `{"servers": [{id,
+  title, summary, access, added, integration, macOnly}]}`: `access` is `signIn`, `open` or
+  `local`; `integration` when Integrations added it (it's kept there, with its sign-in: don't turn
+  it off or remove it); `macOnly` for one that uses the Mac's own apps (Chrome DevTools), which
+  never reaches your machines, so leave it out of a machine's list. `POST kuvo/mcp/catalog/<id>`
+  adds one as its Add button does and answers with the settings, as `kuvo/config`; turn one off
+  or remove it through `kuvo/config` (`mcp.servers.<name>`). The rest is the engine's: each
+  server's status from `GET api/mcp`, connecting again with `POST
+  api/experimental/mcp/<name>/connect`, a server's sign-in through `api/integration/<id>/connect/…`
+  (its page comes back to `127.0.0.1:19876`: `kuvo/sign-in/return`), and the approvals saved for
+  a project with `GET api/permission/saved?projectID=` and `DELETE api/permission/saved/<id>`.
+- `POST kuvo/engine/restart`: the computer's engine starts over, as Settings › Engine's Restart
+  does on a Mac; what's running in it stops. It answers `202 {}` first: the link goes down with
+  the engine, and the computer is back once it answers again (`kuvo/info`). A machine's bridge
+  (from 0.9.0) starts its engine over as it was last started (with its coding agents' bridge and
+  the link's), and a Mac connected to it goes on with the new one; one never started from a Mac
+  answers `409 {"message"}`.
 - `kuvo/bots`: bots by their session, with their name, look and job, whether their wake-ups
   are paused, the next one (`wakes`, left out when none waits), how many things each watches,
   `machine` (the machine it lives on, left out for the Mac), and `agents`: its conversation is
@@ -323,7 +364,9 @@ itself. A host serves:
   While a bot talks, one chat's events carry `activity`, what it's doing, its last step:
   `{"kind": "tool", "call"}` (a tool call as a message's `steps` hold them, without its output),
   `{"kind": "thinking", "text"}` (the line its thinking is on) or `{"kind": "writing"}`. Show
-  them under who's talking, so a long turn doesn't look stuck.
+  them under who's talking, so a long turn doesn't look stuck. A line of one chat's events whose
+  messages are as they were leaves `messages` out (only who's talking or what they're doing
+  changed): keep the ones you have. The first line always has them (a machine's bridge from 0.9.0).
   A bot's message with `report` (a task's id) is it reporting back on its part. Times are
   seconds since 1970.
   A Mac lists all of yours: its own, and those that live on your machines (whose bots all live

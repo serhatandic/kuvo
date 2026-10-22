@@ -28,6 +28,17 @@ public enum EngineRoutes {
         return parts.joined(separator: "/") + (query.map { String(path[$0...]) } ?? "")
     }
 
+    /// Where a sign-in's page sent the browser back to the computer, for the computer to load
+    /// (`kuvo/sign-in/return`): only its own address (127.0.0.1, localhost, [::1]) over http, at a
+    /// port, with what the page sent back (a query), written plainly. What's loaded is the address
+    /// without its fragment, which a browser doesn't send; nil for anything else.
+    public static func signInReturn(_ url: String) -> URL? {
+        guard url.utf8.count <= 8192, url.unicodeScalars.allSatisfy({ ("!"..."~").contains($0) && $0 != "\\" }),
+              let match = url.wholeMatch(of: #/(http://(?:127\.0\.0\.1|localhost|\[::1\]):([1-9][0-9]{0,4})(?:/[^?#]*)?\?[^#]+)(?:#.*)?/#),
+              let port = Int(match.2), port <= 65535 else { return nil }
+        return URL(string: String(match.1))
+    }
+
     /// The sockets a phone may open: a terminal's.
     public static func allowsSocket(_ path: String) -> Bool {
         staysInProject(path) && path.prefixMatch(of: #/api/pty/[^/?]+/connect(\?|$)/#) != nil

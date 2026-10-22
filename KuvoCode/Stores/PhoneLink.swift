@@ -71,6 +71,12 @@ final class PhoneLink {
     @ObservationIgnored var forgetSignIn: (String) -> Bool = { _ in false }
     /// Whether a group chat is on its way to another computer; set by AppModel.
     @ObservationIgnored var isMoving: (String) -> Bool = { Moves.isFrozen($0) }
+    /// This Mac's engine settings, for `kuvo/config` and `kuvo/mcp/catalog`; set by AppModel.
+    @ObservationIgnored weak var engineConfig: EngineConfig?
+    /// Starts this Mac's engine over, as Settings › Engine's Restart does; set by AppModel.
+    @ObservationIgnored var restartEngine: () -> Void = {}
+    /// Whether a machine's engine is another Mac's, whose settings come from that Mac; set by AppModel.
+    @ObservationIgnored var isAnotherMacs: (String) -> Bool = { _ in false }
 
     struct MachineHost: Codable, Hashable {
         var name: String
@@ -336,7 +342,19 @@ final class PhoneLink {
         }
         if request.path == "kuvo/asks/events" { return Self.following { link?.asksJSON() } }
         if request.path == "kuvo/groups/events" { return Self.following { link?.groupsJSON() } }
-        if let id = Self.groupID(in: request.path, then: "events") { return Self.following { link?.groupJSON(id) } }
+        if let id = Self.groupID(in: request.path, then: "events") { return Self.followingGroup(id, link: link) }
+        // A sign-in's page that sent the browser back to this Mac, loaded here.
+        if request.path == "kuvo/sign-in/return" {
+            return AsyncThrowingStream { continuation in
+                let task = Task {
+                    let (status, body) = request.method.uppercased() == "POST" ? await Self.loadSignInReturn(request.body) : (405, Data())
+                    continuation.yield(.head(status: status, headers: ["content-type": "application/json"]))
+                    continuation.yield(.body(body))
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        }
         if request.path == "kuvo/usage/events" { return Self.following { link?.usageJSON() } }
         // What a phone does in a group chat: one on a machine answers once the machine has.
         if request.path.hasPrefix("kuvo/groups/"), request.method.uppercased() == "POST" {
@@ -495,7 +513,12 @@ final class PhoneLink {
             var integrations = Dictionary(uniqueKeysWithValues: Integrations.all.map { ($0.id, $0.title) })
         }
         struct Hosts: Encodable {
-            struct Host: Encodable { var kind = "machine"; var name: String; var address: String; var key: String; var relay: String }
+            /// `machine`: its id, as bots name theirs. `anotherMac`: its engine is another Mac's,
+            /// which gives it its settings, so this Mac's (`kuvo/config`) don't reach it.
+            struct Host: Encodable {
+                var kind = "machine"; var name: String; var address: String; var key: String; var relay: String
+                var machine: String; var anotherMac: Bool
+            }
             var hosts: [Host]
         }
         let encoder = JSONEncoder()
@@ -537,7 +560,9 @@ final class PhoneLink {
             }
             return (200, (try? encoder.encode(Named(agents: entries))) ?? Data())
         case "kuvo/hosts":
-            let hosts = machineHosts.values.sorted { $0.name < $1.name }.map { Hosts.Host(name: $0.name, address: $0.address, key: $0.key, relay: relay.absoluteString) }
+            let hosts = machineHosts.sorted { $0.value.name < $1.value.name }.map { id, host in
+                Hosts.Host(name: host.name, address: host.address, key: host.key, relay: relay.absoluteString, machine: id, anotherMac: isAnotherMacs(id))
+            }
             return (200, (try? encoder.encode(Hosts(hosts: hosts))) ?? Data())
         case "kuvo/asks":
             return (200, asksJSON())
@@ -574,9 +599,136 @@ final class PhoneLink {
             return UsageMenuBar.shared.refreshAll() ? (200, Data("{}".utf8)) : (404, Data())
         case let path where path.hasPrefix("kuvo/asks/") && request.method == "POST":
             return answerAsk(String(path.dropFirst("kuvo/asks/".count)), with: request.body)
+        case "kuvo/config":
+            return answerConfig(request)
+        case "kuvo/mcp/catalog":
+            return catalogJSON()
+        case let path where path.hasPrefix("kuvo/mcp/catalog/") && request.method.uppercased() == "POST":
+            return addFromCatalog(String(path.dropFirst("kuvo/mcp/catalog/".count)))
+        case "kuvo/engine/restart" where request.method.uppercased() == "POST":
+            // Answered first: the restart takes the link down with the engine, and the phone sees
+            // this Mac come back (`kuvo/info` answers again).
+            let restart = restartEngine
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                restart()
+            }
+            return (202, Data("{}".utf8))
         default:
             return (404, Data())
         }
+    }
+
+    // MARK: Settings
+
+    /// `kuvo/config`: this Mac's engine settings, as Settings shows them (your machines get them
+    /// too, but for what only makes sense here). PATCH changes some, as Settings does, with
+    /// `{"changes": [{"path": [keys…], "value": …}]}` (null removes it), and answers with them all.
+    /// A change can say what it read there (`"was"`, null for nothing): changed since, nothing is
+    /// changed and it answers 409.
+    private func answerConfig(_ request: LinkRequest) -> (Int, Data) {
+        guard let config = engineConfig else { return (503, Data()) }
+        // As the file is now, edited elsewhere or not.
+        config.reload()
+        if let problem = config.problem { return (409, Self.message("The engine's settings file can't be changed from here: \(problem)")) }
+        switch request.method.uppercased() {
+        case "GET":
+            break
+        case "PATCH":
+            struct Change: Decodable {
+                var path: [String]
+                var value: JSONValue
+                /// Absent: not checked; `.null`: nothing was there.
+                var was: JSONValue?
+
+                enum CodingKeys: String, CodingKey { case path, value, was }
+                init(from decoder: Decoder) throws {
+                    let container = try decoder.container(keyedBy: CodingKeys.self)
+                    path = try container.decode([String].self, forKey: .path)
+                    value = try container.decode(JSONValue.self, forKey: .value)
+                    was = container.contains(.was) ? try container.decode(JSONValue.self, forKey: .was) : nil
+                }
+            }
+            struct Given: Decodable { var changes: [Change] }
+            guard let changes = (try? JSONDecoder().decode(Given.self, from: request.body))?.changes, (1...100).contains(changes.count),
+                  changes.allSatisfy({ (1...16).contains($0.path.count) && $0.path.allSatisfy { !$0.isEmpty && $0.count <= 200 } })
+            else { return (400, Self.message("Send {\"changes\": [{\"path\": [keys…], \"value\": …}]}.")) }
+            if changes.contains(where: { change in change.was.map { (config.value(at: change.path) ?? .null) != $0 } ?? false }) {
+                return (409, Self.message("It changed since you read it."))
+            }
+            config.set(changes.map { (path: $0.path, value: $0.value == .null ? nil : $0.value) })
+            if let problem = config.problem { return (500, Self.message(problem)) }
+        default:
+            return (405, Data())
+        }
+        return (200, Self.settingsJSON(config.settings))
+    }
+
+    private static func settingsJSON(_ settings: [String: JSONValue]) -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return (try? encoder.encode(settings)) ?? Data("{}".utf8)
+    }
+
+    nonisolated private static func message(_ text: String) -> Data {
+        (try? JSONEncoder().encode(["message": text])) ?? Data()
+    }
+
+    /// `kuvo/mcp/catalog`: Settings › MCP Servers' popular servers, each with whether it's added
+    /// (`integration` too when Integrations added it, and keeps it there), and `macOnly` for one
+    /// that runs on this Mac alone (its Chrome), which never reaches your machines.
+    private func catalogJSON() -> (Int, Data) {
+        guard let config = engineConfig else { return (503, Data()) }
+        struct Listed: Encodable {
+            struct Entry: Encodable {
+                var id: String, title: String, summary: String, access: String
+                var added: Bool, integration: Bool, macOnly: Bool
+            }
+            var servers: [Entry]
+        }
+        config.reload()
+        let entries = MCPCatalog.servers.map { server in
+            let added = config.value(at: MCPSettings.path + [server.id]) != nil
+            let access = switch server.access {
+            case .signIn: "signIn"
+            case .open: "open"
+            case .local: "local"
+            }
+            return Listed.Entry(id: server.id, title: server.title, summary: server.summary, access: access, added: added,
+                                integration: added && Integrations.service(server.id) != nil, macOnly: MCPCatalog.macOnly.contains(server.id))
+        }
+        return (200, (try? JSONEncoder().encode(Listed(servers: entries))) ?? Data())
+    }
+
+    /// `POST kuvo/mcp/catalog/<id>`: adds one of them, as its Add button does, and answers with
+    /// the settings (as `kuvo/config`). One already added stays as it is.
+    private func addFromCatalog(_ id: String) -> (Int, Data) {
+        guard let config = engineConfig else { return (503, Data()) }
+        guard let server = MCPCatalog.servers.first(where: { $0.id == id }) else { return (404, Data()) }
+        config.reload()
+        if let problem = config.problem { return (409, Self.message("The engine's settings file can't be changed from here: \(problem)")) }
+        if config.value(at: MCPSettings.path + [server.id]) == nil { MCPCatalog.add(server, to: config) }
+        if let problem = config.problem { return (500, Self.message(problem)) }
+        return (200, Self.settingsJSON(config.settings))
+    }
+
+    /// `POST kuvo/sign-in/return` with `{"url"}`: where a sign-in's page sent the browser back
+    /// to this Mac (an MCP server's, or a plan's that finishes here), which a phone can't load,
+    /// loaded here, as the browser would have. Only this Mac's own address
+    /// (`EngineRoutes.signInReturn`), and no further than it answers (a redirect isn't followed).
+    /// Answers with the status it got (`{"status"}`): 2xx or 3xx, it took it.
+    nonisolated private static func loadSignInReturn(_ body: Data) async -> (Int, Data) {
+        struct Given: Decodable { var url: String }
+        guard let given = try? JSONDecoder().decode(Given.self, from: body), let url = EngineRoutes.signInReturn(given.url) else {
+            return (400, message("That isn't an address a sign-in returns to on this computer."))
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        guard let (_, response) = try? await URLSession.shared.data(for: request, delegate: StaysThere()),
+              let status = (response as? HTTPURLResponse)?.statusCode else {
+            return (502, message("Nothing on this computer took it. Start the sign-in again."))
+        }
+        return (200, (try? JSONEncoder().encode(["status": status])) ?? Data())
     }
 
     // MARK: Accounts
@@ -780,8 +932,19 @@ final class PhoneLink {
     /// One chat as it reads now: its latest messages (with what each bot did on its turn), who's
     /// talking, and whether it's under way or paused. Nil once the chat's gone.
     private func groupJSON(_ id: String) -> Data? {
+        groupLines(id)?.whole
+    }
+
+    /// One chat's line, whole and without its messages (`state`), for `followingGroup`.
+    struct GroupLines: Equatable {
+        var messages: Data
+        var state: Data
+        /// `state` with its `messages` first.
+        var whole: Data { Data(#"{"messages":"#.utf8) + messages + Data(",".utf8) + state.dropFirst() }
+    }
+
+    private func groupLines(_ id: String) -> GroupLines? {
         struct Chat: Encodable {
-            var messages: [GroupMessage]
             var speaking: String?
             var discussing: Bool
             var paused: Bool
@@ -790,10 +953,11 @@ final class PhoneLink {
             var activity: [GroupActivity]?
         }
         guard let groups, groups.group(id) != nil else { return nil }
-        let chat = Chat(messages: Array(groups.messages(in: id).suffix(300)), speaking: groups.speaking[id],
-                        discussing: groups.discussing.contains(id), paused: groups.paused.contains(id), moving: isMoving(id),
-                        activity: groups.activity[id])
-        return try? Self.groupEncoder.encode(chat)
+        let chat = Chat(speaking: groups.speaking[id], discussing: groups.discussing.contains(id), paused: groups.paused.contains(id),
+                        moving: isMoving(id), activity: groups.activity[id])
+        guard let messages = try? Self.groupEncoder.encode(Array(groups.messages(in: id).suffix(300))),
+              let state = try? Self.groupEncoder.encode(chat) else { return nil }
+        return GroupLines(messages: messages, state: state)
     }
 
     /// What a phone does in a chat, as in the window: writes to it (`{"text"}`), stops it, lets it
@@ -936,6 +1100,33 @@ final class PhoneLink {
         }
     }
 
+    /// One chat's events (`kuvo/groups/<id>/events`), as `following` sends them, but a line whose
+    /// messages are as they were (who's talking, or what they're doing, changed) leaves them out,
+    /// and the phone keeps the ones it has.
+    nonisolated private static func followingGroup(_ id: String, link: PhoneLink?) -> AsyncThrowingStream<LinkResponsePart, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task { @MainActor in
+                guard link?.groupLines(id) != nil else {
+                    continuation.yield(.head(status: 404, headers: [:]))
+                    continuation.finish()
+                    return
+                }
+                continuation.yield(.head(status: 200, headers: ["content-type": "application/x-ndjson"]))
+                var last: GroupLines?
+                while !Task.isCancelled {
+                    guard let now = link?.groupLines(id) else { break }
+                    if now != last {
+                        continuation.yield(.body((now.messages == last?.messages ? now.state : now.whole) + Data("\n".utf8)))
+                        last = now
+                    }
+                    await changed { link?.groupLines(id)?.whole }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     /// Returns once what `current` reads changes, or after half a minute.
     private static func changed(_ current: @escaping @MainActor () -> Data?) async {
         final class Once: @unchecked Sendable {
@@ -998,3 +1189,11 @@ final class PhoneLink {
     }
 }
 
+/// Stops at the first answer an address gives, rather than following where it sends the browser
+/// next (`kuvo/sign-in/return`).
+nonisolated private final class StaysThere: NSObject, URLSessionTaskDelegate, Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}

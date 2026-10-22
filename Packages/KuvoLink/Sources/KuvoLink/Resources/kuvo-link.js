@@ -22,7 +22,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Goes up with every change, so `setup` replaces a running bridge that's older.
-export const BRIDGE_VERSION = "0.8.1";
+export const BRIDGE_VERSION = "0.9.0";
 const K = process.env.KUVO_HOME || path.join(os.homedir(), ".kuvo-code");
 const RUN = path.join(K, "run");
 export const LINK_FILE = path.join(RUN, "link.json");
@@ -560,6 +560,17 @@ export const routedPath = path => {
 export const agentsAllowed = (path, method = "GET") =>
   allowed(path, method) && !/^api\/kuvo\/(engine|groups)(\/|\?|$)/.test(routedPath(path));
 
+// Where a sign-in's page sent the browser back to this machine, for it to load
+// (`kuvo/sign-in/return`), as the Mac's EngineRoutes.signInReturn: only its own address
+// (127.0.0.1, localhost, [::1]) over http, at a port, with what the page sent back (a query),
+// written plainly. The address without its fragment, which a browser doesn't send; null otherwise.
+const RETURN = /^(http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):([1-9][0-9]{0,4})(?:\/[^?#]*)?\?[^#]+)(?:#.*)?$/;
+export const signInReturn = url => {
+  if (typeof url !== "string" || Buffer.byteLength(url) > 8192 || !/^[!-~]*$/.test(url) || url.includes("\\")) return null;
+  const match = url.match(RETURN);
+  return match && Number(match[2]) <= 65535 ? match[1] : null;
+};
+
 const readEngineFile = () => JSON.parse(fs.readFileSync(ENGINE_FILE, "utf8"));
 // The coding agents' bridge beside the engine, when it runs: its port and password.
 const readBridgeFile = () => JSON.parse(fs.readFileSync(BRIDGE_FILE, "utf8"));
@@ -630,6 +641,21 @@ export function engineHandler(readEngine = readEngineFile, info = {}, readBridge
       yield { head: { status: 200, headers: { "content-type": "application/json" } } };
       yield { body: Buffer.from(JSON.stringify({ kind: "machine", bridge: BRIDGE_VERSION, engine: engine.version ?? null, agents: Boolean(bridge()), ...info })) };
       return;
+    }
+    const json = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
+    // Its settings come from the Mac that started its engine, which puts them back as it
+    // connects: changed there, they reach it.
+    if (/^kuvo\/(config|mcp\/catalog)(\/|\?|$)/.test(request.path)) {
+      return yield* json(409, { message: "This machine's settings come from your Mac. Change them there." });
+    }
+    if (request.path === "kuvo/engine/restart") {
+      if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
+      const { status, message } = restartEngine(readEngine);
+      return yield* json(status, message ? { message } : {});
+    }
+    if (request.path === "kuvo/sign-in/return") {
+      if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
+      return yield* loadSignInReturn(request.body, signal);
     }
     // The coding agents' sessions, accounts and Auto, through their bridge, as the engine's go
     // to it; never where the engine is, nor an agent's update.
@@ -722,6 +748,69 @@ export function engineHandler(readEngine = readEngineFile, info = {}, readBridge
     }
     return yield* forward(engine, request.path, request, signal, allowed);
   };
+}
+
+// `kuvo/engine/restart`: the engine here starts over as it was last started (`bin/kuvo-start`, as
+// after the machine restarts), with its agents' bridge and this bridge; what runs in it stops.
+// Answered first (202), as the restart takes this bridge down too: the phone sees the machine come
+// back as `kuvo/info` answers again. A Mac connected to it finds the new one and goes on with it.
+function restartEngine(readEngine) {
+  let engine;
+  try {
+    engine = readEngine();
+  } catch {
+    return { status: 409, message: "The engine isn't running here. Start it from your Mac." };
+  }
+  const start = path.join(K, "bin", "kuvo-start");
+  // Started from a Mac, which keeps how (`run/launch.env`).
+  if (!fs.existsSync(start) || !fs.existsSync(path.join(RUN, "launch.env"))) return { status: 409, message: "Restart it from your Mac." };
+  const workspace = path.join(K, "workspace");
+  setTimeout(() => {
+    // On its own, as it outlives this bridge: stops the engine (only it, not whatever has its
+    // number now), then starts it.
+    const script = `pid=$1
+if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && grep -q "$3/engine/" "/proc/$pid/cmdline" 2>/dev/null; then
+  kill "$pid"; i=0
+  while kill -0 "$pid" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  kill -9 "$pid" 2>/dev/null
+fi
+exec sh "$2"`;
+    try {
+      const child = spawn("sh", ["-c", script, "restart", String(engine.pid ?? ""), start, K], {
+        detached: true, stdio: "ignore", cwd: fs.existsSync(workspace) ? workspace : K,
+      });
+      child.unref();
+    } catch {}
+  }, 500);
+  return { status: 202 };
+}
+
+// `kuvo/sign-in/return` with {"url"}: where a sign-in's page sent the browser back to this
+// machine (an MCP server's, or a coding agent's), which a phone can't load, loaded here as the
+// browser would have: only this machine's own address (`signInReturn`), and no further than it
+// answers (a redirect isn't followed). Answers with the status it got: 2xx or 3xx, it took it.
+async function* loadSignInReturn(body, signal) {
+  const json = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
+  let given = {};
+  try {
+    given = JSON.parse(Buffer.from(body ?? []).toString("utf8") || "{}");
+  } catch {}
+  const url = signInReturn(given?.url);
+  if (!url) return yield* json(400, { message: "That isn't an address a sign-in returns to on this computer." });
+  const stop = new AbortController();
+  const timer = setTimeout(() => stop.abort(), 15_000);
+  const cancel = () => stop.abort();
+  signal?.addEventListener("abort", cancel);
+  try {
+    const response = await fetch(url, { redirect: "manual", signal: stop.signal });
+    await response.arrayBuffer().catch(() => {});
+    return yield* json(200, { status: response.status });
+  } catch {
+    return yield* json(502, { message: "Nothing on this computer took it. Start the sign-in again." });
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", cancel);
+  }
 }
 
 // Stops a command the engine runs for an agent: SIGTERM to its process group, here on the
@@ -1030,12 +1119,18 @@ async function* answerGroups(target, id, action, request, signal) {
     if (!now) return yield* json(404, {});
     if (!action) return yield* json(200, now);
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+    // One chat's lines leave out its messages when they're as they were (who's talking, or
+    // what they're doing, changed): the phone keeps the ones it has.
     let last = "";
+    let lastMessages = null;
     while (!signal?.aborted && now) {
       const line = JSON.stringify(now);
       if (line !== last) {
-        yield { body: Buffer.from(line + "\n") };
+        const messages = id ? JSON.stringify(now.messages) : null;
+        const { messages: _, ...state } = now;
+        yield { body: Buffer.from((id && messages === lastMessages ? JSON.stringify(state) : line) + "\n") };
         last = line;
+        lastMessages = messages;
       }
       await new Promise(done => setTimeout(done, 1000));
       if (signal?.aborted) break;

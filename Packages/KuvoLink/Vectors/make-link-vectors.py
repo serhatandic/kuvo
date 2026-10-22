@@ -168,5 +168,44 @@ assert not phone_may("api/session/../credential") and not phone_may("kuvo/info")
 assert not agents_may("api/kuvo/engine") and not agents_may("api/kuvo/%65ngine") and not agents_may("api/kuvo/groups/x")
 assert agents_may("api/integration/claude-code/update") and agents_may("api/kuvo/auto")
 
+# Where a sign-in's page sends the browser back to the computer (`kuvo/sign-in/return`), which
+# the phone hands it to load there: only this computer's own address (127.0.0.1, localhost, [::1])
+# over http, at a port, with what the page sent back (a query), written plainly and in lowercase. What's loaded is
+# the address without a fragment, which the browser wouldn't send.
+returns = [{"url": u} for u in [
+    "http://127.0.0.1:19876/mcp/oauth/callback?code=abc&state=xyz", "http://localhost:1455/auth/callback?code=a.b-c_d~e&state=1",
+    "http://[::1]:8080/cb?code=x", "http://127.0.0.1:19876/?code=x", "http://127.0.0.1:19876?code=x", "http://127.0.0.1:65535/cb?error=access_denied",
+    "http://127.0.0.1:19876/cb?code=x#_=_", "http://127.0.0.1:19876/cb?code=%2F%3D", "http://127.0.0.1:1/cb?code=x",
+    "http://127.0.0.1:19876/cb", "http://127.0.0.1:19876/cb?", "http://127.0.0.1/cb?code=x", "http://127.0.0.1:0/cb?code=x",
+    "http://127.0.0.1:65536/cb?code=x", "http://127.0.0.1:019876/cb?code=x", "https://127.0.0.1:19876/cb?code=x", "HTTP://127.0.0.1:19876/cb?code=x",
+    "http://LOCALHOST:19876/cb?code=x", "http://127.0.0.2:19876/cb?code=x", "http://example.com:19876/cb?code=x",
+    "http://127.0.0.1.example.com:19876/cb?code=x", "http://localhost.example.com:80/cb?code=x", "http://me@127.0.0.1:19876/cb?code=x",
+    "http://127.0.0.1:19876@example.com/cb?code=x", "http://127.0.0.1:19876\\@example.com/cb?code=x", "http://127.0.0.1:19876/cb?code=a b",
+    "http://127.0.0.1:19876/cb?code=x\n", " http://127.0.0.1:19876/cb?code=x", "http://127.0.0.1:19876/cb?code=x ", "http://127.0.0.1:19876/c\\b?code=x",
+    "http://127.0.0.1:19876/cb?code=\u00e9", "http://0x7f000001:19876/cb?code=x", "http://2130706433:19876/cb?code=x", "http://[::ffff:127.0.0.1]:19876/cb?code=x",
+    "http://127.0.0.1:19876#?code=x", "http://127.0.0.1:19876/cb#x?code=y", "//127.0.0.1:19876/cb?code=x", "127.0.0.1:19876/cb?code=x", "",
+    "http://127.0.0.1:1/cb?code=x#", "http://127.0.0.1:19876/a@b?code=x", "http://127.0.0.1:19876/cb?#x",
+    "http://127.0.0.1:19876/cb?code=x" + "a" * 8200,
+]]
+
+def loads(url):
+    # Worked out apart from the bridge's and the Mac's pattern: split as URL parsers do, then held
+    # to the rule above.
+    if len(url) > 8192 or any(not ("!" <= c <= "~") or c == "\\" for c in url) or not url.startswith("http://"):
+        return None
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "http" or "@" in parts.netloc or not parts.query:
+        return None
+    host, _, port = parts.netloc.rpartition(":")
+    if host not in ("127.0.0.1", "localhost", "[::1]") or not re.fullmatch(r"[1-9][0-9]{0,4}", port) or int(port) > 65535:
+        return None
+    return urllib.parse.urlunsplit(("http", parts.netloc, parts.path, parts.query, ""))
+
+for item in returns:
+    item["loads"] = loads(item["url"])
+assert loads("http://127.0.0.1:19876/cb?code=x#_=_") == "http://127.0.0.1:19876/cb?code=x"
+assert loads("http://[::1]:8080/cb?code=x") and loads("http://127.0.0.1:19876?code=x") == "http://127.0.0.1:19876?code=x"
+assert not loads("http://127.0.0.1:19876/cb") and not loads("http://me@127.0.0.1:19876/cb?code=x") and not loads("http://127.0.0.1/cb?code=x")
+
 json.dump({"addresses": addresses, "relay": relay, "frames": frames, "messages": messages, "routes": routes, "sockets": sockets,
-           "agentRoutes": agent_routes}, open("link.json", "w"), indent=2)
+           "agentRoutes": agent_routes, "signInReturns": returns}, open("link.json", "w"), indent=2)

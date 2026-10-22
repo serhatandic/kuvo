@@ -71,7 +71,7 @@ async function fakeRunner() {
     });
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  return { asked, port: server.address().port, close: () => { server.closeAllConnections(); server.close(); } };
+  return { asked, state, port: server.address().port, close: () => { server.closeAllConnections(); server.close(); } };
 }
 
 test("a machine's group chats, as a Mac lists and sends its own", async t => {
@@ -119,6 +119,27 @@ test("a machine's group chats, as a Mac lists and sends its own", async t => {
   // One moving: what you'd do waits, as on a Mac.
   assert.equal((await ask(handle, "POST", "kuvo/groups/grp_moving0001/undo", { body: '{"message":"gm_1"}' })).status, 409);
   assert.equal((await ask(handle, "POST", "kuvo/groups/grp_moving0001", { body: '{"text":"Go"}' })).status, 409);
+});
+
+test("a chat's next line leaves out its messages when only who's talking or what they do changed", async t => {
+  const runner = await fakeRunner();
+  t.after(runner.close);
+  const named = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "kuvo-agents"], { stdio: "ignore" });
+  t.after(() => named.kill());
+  const handle = link.engineHandler(() => ({ port: 1, password: "engine", version: "2.0.32" }), { name: "box" }, () => ({ pid: named.pid, port: runner.port, password: "agents" }));
+  const abort = new AbortController();
+  const lines = [];
+  for await (const part of handle({ method: "GET", path: "kuvo/groups/grp_box0000001/events", headers: {}, body: Buffer.alloc(0) }, {}, abort.signal)) {
+    if (!part.body) continue;
+    lines.push(JSON.parse(part.body.toString()));
+    if (lines.length === 1) runner.state.activity = [{ kind: "thinking", text: "Checking the tag" }];
+    if (lines.length === 2) break;
+  }
+  abort.abort();
+  assert.equal(lines[0].messages.length, 4);
+  assert.equal(lines[1].messages, undefined, "the phone keeps the ones it has");
+  assert.deepEqual(lines[1].activity, [{ kind: "thinking", text: "Checking the tag" }]);
+  assert.equal(lines[1].speaking, "bot_lb");
 });
 
 test("a bridge there but not answering now is asked again, not taken as having no group chats", async t => {

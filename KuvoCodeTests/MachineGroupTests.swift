@@ -176,13 +176,26 @@ import Testing
     }
 
     /// What a bot on a machine does on its turn, as the machine says it: shown under who's
-    /// talking, gone when it's done.
+    /// talking, gone when it's done. A phone following the chat gets its messages once, then
+    /// only what changed while they stay as they were.
     @Test func whatABotDoesShowsWhileItTalks() async throws {
         defer { Self.clean(); mac.stop() }
         try saveBots([("bot_pal", "Pal", "box"), ("bot_lb", "Lokum Builder", "box")])
         held.add(Self.group("grp_box0000001", members: ["bot_pal", "bot_lb"]), messages: [Self.said])
         let app = app()
         await app.machineGroups.connected("box")
+        let link = PhoneLink()
+        link.groups = app.chats
+        var lines: [[String: Any]] = []
+        let following = Task { @MainActor in
+            for try await part in PhoneLink.respond(to: LinkRequest(path: "kuvo/groups/grp_box0000001/events"), link: link,
+                                                    engine: URL(string: mac.url + "/")!, password: nil, agents: nil) {
+                if case .body(let data) = part, let line = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { lines.append(line) }
+            }
+        }
+        defer { following.cancel() }
+        try await eventually { lines.count == 1 }
+        #expect((lines.first?["messages"] as? [Any])?.count == 1)
         let group = Self.group("grp_box0000001", members: ["bot_pal", "bot_lb"])
         let read: [String: Any] = ["kind": "tool", "call": ["type": "tool", "id": "call_1", "name": "read",
                                                             "state": ["status": "completed", "input": ["path": "notes.txt"], "content": []]]]
@@ -193,6 +206,9 @@ import Testing
         #expect(shown.count == 2)
         if case .step(let call) = shown[0] { #expect(call.name == "read") } else { Issue.record("not the step") }
         #expect(shown[1] == .thinking("Checking the build"))
+        try await eventually { lines.count == 2 }
+        #expect(lines.count == 2 && lines[1]["messages"] == nil, "the phone keeps the ones it has")
+        #expect((lines.last?["activity"] as? [Any])?.count == 2 && lines.last?["speaking"] as? String == "bot_lb")
         app.machineGroups.handle(try bridge.event("kuvo.group.updated", ["id": "grp_box0000001", "group": group, "status": "active",
                                                                           "state": ["discussing": false, "paused": false]]), machine: "box")
         #expect(app.chats.activity["grp_box0000001"] == nil)

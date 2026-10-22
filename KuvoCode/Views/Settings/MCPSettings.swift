@@ -77,7 +77,7 @@ struct MCPSettings: View {
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         } else {
-                            Button("Add") { add(server) }
+                            Button("Add") { MCPCatalog.add(server, to: config) }
                                 .accessibilityLabel("Add \(server.title)")
                         }
                         }
@@ -185,16 +185,6 @@ struct MCPSettings: View {
 
     private func refresh() async {
         live = await MCPStatus.read(app.api) ?? []
-    }
-
-    private func add(_ server: MCPCatalog.Server) {
-        var settings = server.settings
-        if case .object(var object) = settings, object["codemode"] == nil {
-            object["codemode"] = .bool(false)
-            settings = .object(object)
-        }
-        config.set(settings, at: Self.path + [server.id])
-        Analytics.shared.track("mcp_server_added", ["catalog": server.id])
     }
 
     private func removePending() {

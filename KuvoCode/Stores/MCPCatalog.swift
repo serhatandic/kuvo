@@ -50,6 +50,18 @@ nonisolated enum MCPCatalog {
         "CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS": "1",
     ]
 
+    /// Adds `server` to the engine's settings, as Settings › MCP Servers' Add does (and a phone):
+    /// its tools as they are, not through Code Mode, unless its settings say otherwise.
+    @MainActor static func add(_ server: Server, to config: EngineConfig) {
+        var settings = server.settings
+        if case .object(var object) = settings, object["codemode"] == nil {
+            object["codemode"] = .bool(false)
+            settings = .object(object)
+        }
+        config.set(settings, at: MCPSettings.path + [server.id])
+        Analytics.shared.track("mcp_server_added", ["catalog": server.id])
+    }
+
     /// Servers that use this Mac's own apps (its Chrome), left out of machines' settings.
     static let macOnly = ["chrome-devtools"]
 
