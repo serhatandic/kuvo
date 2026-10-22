@@ -171,6 +171,8 @@ final class AppModel {
 
     /// The engine this Mac runs (KUVO_OPENCODE_BINARY's, or the one installed), once it has started.
     private(set) var engineBinary: URL?
+    /// When the engine running now came up, for a phone to tell it from the one before a restart.
+    @ObservationIgnored private(set) var engineStarted: Date?
 
     /// A macOS prompt is on screen, like "would like to access files in your Desktop folder":
     /// those come from UserNotificationCenter, whose windows show only while it asks.
@@ -317,6 +319,7 @@ final class AppModel {
             workspace.runsOnAgents(groups.agentSeatIDs.union(machineGroups.agentSeatIDs))
             workspace.seats = groups.seatIDs.union(machineGroups.seatIDs)
             usage.api = api
+            engineStarted = .now
             engine = .ready
             #if DEBUG
             E2E.note(server.endpoint)
@@ -338,6 +341,7 @@ final class AppModel {
             }
             phoneLink.isMoving = { [weak self] id in self?.moves.underWay[id] != nil || Moves.isFrozen(id) }
             phoneLink.engineConfig = engineConfig
+            phoneLink.engineStarted = { [weak self] in self?.engineStarted }
             phoneLink.restartEngine = { [weak self] in Task { await self?.restart() } }
             phoneLink.start(endpoint: server.endpoint)
             Analytics.shared.trackOnce("engine_ready", ["seconds": Int((SuspendingClock.now - began).components.seconds), "downloaded": downloaded])

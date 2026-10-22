@@ -193,7 +193,9 @@ itself. A host serves:
   Answers `200 {"stopped": "signal"}` or `200 {"stopped": "removed"}`, or `404 {}` when no such
   command runs. A machine's bridge does it there (from 0.5.1), with the Mac closed too.
 - `kuvo/info`: what the host is and runs, and whether its coding agents' bridge is up
-  (`agents`; a machine's bridge says so from 0.6.0); a Mac also names its folder of chats
+  (`agents`; a machine's bridge says so from 0.6.0), and `started`, when the engine running now
+  came up, in seconds since 1970 (null while none runs; a machine's bridge from 0.9.2): a restart
+  changes it, so a phone tells the new engine from the old; a Mac also names its folder of chats
   (conversations of no project), and `integrations`, each integration's name by its MCP server's
   (`{"microsoft-365": "Outlook and Microsoft 365", …}`), for a card when one asks something.
 - `kuvo/agents/api/…`: the coding agents you already have (Claude Code, Codex, Cursor, Grok,

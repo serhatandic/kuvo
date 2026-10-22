@@ -117,6 +117,10 @@ import Testing
 
     @Test func theEngineStartsOverOnceTheAnswerIsOut() async throws {
         defer { try? FileManager.default.removeItem(at: folder) }
+        // When the engine running now came up, which the phone watches change.
+        let up = Date(timeIntervalSince1970: 1_792_660_000)
+        link.engineStarted = { up }
+        #expect(try await ask("kuvo/info").json?["started"] as? Double == up.timeIntervalSince1970)
         var restarted = false
         link.restartEngine = { restarted = true }
         #expect(try await ask("kuvo/engine/restart", method: "POST").status == 202)

@@ -316,6 +316,21 @@ test("a machine's settings are changed on its Mac; its engine restarts as it was
   for (const name of ["bin/kuvo-start", "bin/kuvo-launch", "run/launch.env", "run/started-again"]) fs.rmSync(path.join(home, name));
 });
 
+test("kuvo/info says when the engine running now came up, which a restart changes", async () => {
+  fs.mkdirSync(path.join(home, "run"), { recursive: true });
+  const record = path.join(home, "run", "engine.json");
+  fs.writeFileSync(record, JSON.stringify({ pid: 4242, port: 1, password: "p", version: "2.0.32" }));
+  const then = new Date("2026-10-22T10:00:00Z");
+  fs.utimesSync(record, then, then);
+  const handle = link.engineHandler(() => JSON.parse(fs.readFileSync(record, "utf8")));
+  const info = await answer(handle, "GET", "kuvo/info");
+  assert.equal(info.json.started, then.getTime() / 1000);
+  assert.equal(info.json.engine, "2.0.32");
+  // None running: none started.
+  assert.equal((await answer(link.engineHandler(() => { throw new Error("none"); }), "GET", "kuvo/info")).json.started, null);
+  fs.rmSync(record);
+});
+
 test("plan accounts: listed, signed in to and switched from a phone", async t => {
   const engine = await fakeEngine();
   t.after(engine.close);

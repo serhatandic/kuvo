@@ -75,6 +75,8 @@ final class PhoneLink {
     @ObservationIgnored weak var engineConfig: EngineConfig?
     /// Starts this Mac's engine over, as Settings › Engine's Restart does; set by AppModel.
     @ObservationIgnored var restartEngine: () -> Void = {}
+    /// When the engine running now came up, for `kuvo/info`; set by AppModel.
+    @ObservationIgnored var engineStarted: () -> Date? = { nil }
 
     struct MachineHost: Codable, Hashable {
         var name: String
@@ -527,6 +529,8 @@ final class PhoneLink {
         struct Info: Encodable {
             var kind = "mac"; var name: String; var app: String; var engine: String; var chats: String
             var agents = false
+            /// When the engine running now came up, in seconds since 1970: a restart changes it.
+            var started: Double?
             /// Integrations' names by their MCP server's, for what a server asks.
             var integrations = Dictionary(uniqueKeysWithValues: Integrations.all.map { ($0.id, $0.title) })
         }
@@ -545,6 +549,7 @@ final class PhoneLink {
         case "kuvo/info":
             var info = Info(name: Self.computerName, app: AppInfo.version, engine: OpenCodeEngine.version, chats: Workspace.chatsFolder)
             info.agents = agents?.api != nil
+            info.started = engineStarted()?.timeIntervalSince1970
             return (200, (try? encoder.encode(info)) ?? Data())
         case "kuvo/bots":
             // Each bot by its session (here or on a machine): its name, look and job, and what
