@@ -1,4 +1,5 @@
 import Foundation
+import OpenCodeKit
 import Testing
 @testable import KuvoCode
 
@@ -28,6 +29,20 @@ import Testing
         let (data, response) = try await session.data(for: request)
         let http = response as! HTTPURLResponse
         return (http.statusCode, try? JSONSerialization.jsonObject(with: data), http.allHeaderFields)
+    }
+
+    /// "Take a screenshot and show it to me": the agent says show, and the picture is in the
+    /// conversation, as one it made; one it took to see the page for itself stays in its step.
+    @Test func aScreenshotYouAskedToSeeShowsInTheConversation() throws {
+        let screenshot = try #require(BrowserTools.definitions.first { $0["name"] as? String == "browser_screenshot" })
+        #expect(((screenshot["inputSchema"] as? [String: Any])?["properties"] as? [String: Any])?["show"] != nil)
+        func call(_ input: [String: Any]) throws -> Message.ToolCall {
+            let json: [String: Any] = ["type": "tool", "id": "call_1", "name": "kuvo-browser_browser_screenshot",
+                                       "state": ["status": "completed", "input": input, "content": [["type": "file", "uri": "data:image/png;base64,iVBORw0KGgo=", "mime": "image/png"]]]]
+            return try JSONDecoder().decode(Message.ToolCall.self, from: JSONSerialization.data(withJSONObject: json))
+        }
+        #expect(MadePictureRow.isMade(try call(["show": true])))
+        #expect(!MadePictureRow.isMade(try call([:])))
     }
 
     @Test func onlyOnThisMac() async throws {

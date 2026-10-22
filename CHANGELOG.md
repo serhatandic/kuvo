@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Ask the agent for a screenshot of the page it's browsing and it shows in the conversation, not only inside its browser step.
 - With Cursor, a subagent still at work when you press Stop shows as stopped in its session, rather than finished, and how full the context is no longer counts Cursor's thinking twice.
 
 ## 0.7.1

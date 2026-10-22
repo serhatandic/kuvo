@@ -266,7 +266,12 @@ struct MadePictureRow: View {
     @Environment(AppModel.self) private var app
 
     static func isMade(_ call: Message.ToolCall) -> Bool {
-        call.name == "generate_image" || isShownFile(call)
+        call.name == "generate_image" || isShownFile(call) || isShownPage(call)
+    }
+
+    /// A screenshot of the page the agent took to show you (browser_screenshot's show).
+    static func isShownPage(_ call: Message.ToolCall) -> Bool {
+        call.name == "kuvo-browser_browser_screenshot" && call.state.input?["show"]?.bool == true
     }
 
     static func isShownFile(_ call: Message.ToolCall) -> Bool {
@@ -312,16 +317,16 @@ struct MadePictureRow: View {
         case .completed(_, let output, _):
             let items = StepPictures.items(in: output, step: call.id)
             if items.isEmpty {
-                line("Made an image, but it isn't where it said", symbol: "photo")
+                line(Self.isShownPage(call) ? "Took a screenshot, but it didn't come back" : "Made an image, but it isn't where it said", symbol: "photo")
             } else {
                 StepPictures(items: items, height: 420, maxWidth: 560)
             }
         case .failed(_, let error, _, _):
-            line("Couldn't make the image: \(error.message)", symbol: "exclamationmark.triangle")
+            line((Self.isShownPage(call) ? "Couldn't take the screenshot: " : "Couldn't make the image: ") + error.message, symbol: "exclamationmark.triangle")
         default:
             HStack(spacing: 8) {
                 Spinner(size: 12)
-                Text("Making an image…")
+                Text(Self.isShownPage(call) ? "Taking a screenshot…" : "Making an image…")
                     .foregroundStyle(.secondary)
             }
         }
