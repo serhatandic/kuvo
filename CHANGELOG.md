@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- With Cursor, a subagent still at work when you press Stop shows as stopped in its session, rather than finished, and how full the context is no longer counts Cursor's thinking twice.
+
 ## 0.7.1
 
 - A message to a conversation or a bot whose model you're no longer signed in to says so right away, naming the account to sign in to, and stays in the composer, rather than going unanswered without a word. In a group chat, that bot says so and the others carry on, on your Mac or on a machine.

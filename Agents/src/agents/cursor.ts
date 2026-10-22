@@ -407,10 +407,18 @@ class CursorThread implements Thread {
       const usage = active.usage ?? result?.usage
       // Tools its SDK didn't tell (it reports only the kinds it knows): said, so they aren't a mystery.
       if (active.listed > active.told) turn.notice(`Cursor used ${active.listed - active.told} more ${active.listed - active.told === 1 ? "tool" : "tools"} than it reports to Kuvo Code.`)
-      for (const lane of active.subagents.values()) lane.run.end(result?.status === "error" ? "interrupted" : "succeeded")
+      // Subagents still at work when it was stopped (or failed) were stopped with it.
+      const cut = hooks.signal.aborted || result?.status === "cancelled" || result?.status === "error"
+      for (const lane of active.subagents.values()) lane.run.end(cut ? "interrupted" : "succeeded")
       turn.endStep({
+        // (Its thinking is part of what it wrote, as Cursor counts it: told apart, counted once.)
         tokens: usage
-          ? { input: usage.inputTokens ?? 0, output: usage.outputTokens ?? 0, reasoning: usage.reasoningTokens ?? 0, cache: { read: usage.cacheReadTokens ?? 0, write: usage.cacheWriteTokens ?? 0 } }
+          ? {
+              input: usage.inputTokens ?? 0,
+              output: Math.max(0, (usage.outputTokens ?? 0) - (usage.reasoningTokens ?? 0)),
+              reasoning: usage.reasoningTokens ?? 0,
+              cache: { read: usage.cacheReadTokens ?? 0, write: usage.cacheWriteTokens ?? 0 },
+            }
           : undefined,
       })
       if (hooks.signal.aborted || result?.status === "cancelled") return { outcome: "interrupted" }
