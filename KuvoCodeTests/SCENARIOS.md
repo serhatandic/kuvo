@@ -8,7 +8,9 @@ fixed (❌→✅ there) gets a test here when it can be tried this way.
 
 Each suite's comment says what it tries; this is where each scenario stands. Scenarios that are
 about what a model answers or does (B1–B4, D1, D2, E1–E3, E5, E7, most of L1–L49) are the
-end-to-end runs' alone, as are those that need a real machine over SSH (F9, L46, L47).
+end-to-end runs' alone, as are those that need a real machine over SSH (L47; F9 and L46 in part,
+below: what runs on the machine is tried here with its scripts, a stand-in engine and stand-ins
+for Linux's tools).
 
 | Scenario | Suites | Not guarded yet |
 | --- | --- | --- |
@@ -60,6 +62,13 @@ end-to-end runs' alone, as are those that need a real machine over SSH (F9, L46,
 | I2 A project on a machine | MachineFoldersTests, AttachmentRoutesTests, SignInSyncTests, MachineSignOutTests | |
 | I3 A machine that's away | MachineAwayTests | |
 | I4 What machines share with this Mac, and what's their own | MachineSettingsTests, CustomAutoPlacesTests, SignInSyncTests | a connected machine's engine starting over with new settings (needs SSH) |
+| F9, L46 A bot on a machine works and wakes while the Mac's app is closed; the machine restarting brings its engine back | OpenCodeKit's MachineWakeUpsTests (kuvo-wake, each minute: a due one reaches its bot once, one the engine couldn't take is tried again) and RebootTests (kuvo-start from the crontab, the watchdog: what keeps the engine up, a day without the app stops it); the bridge's bots tests (Packages/KuvoLink/Tests/Bridge) | the real crontab and restart (the end-to-end runs) |
+| Group chats on a machine, run there with the Mac closed | MachineGroupTests; Agents' groups and groups-runner tests (the coding agents' bridge runs them); the bridge's groups tests | |
+| Move to Computer: a bot, a chat or a group chat goes whole and carries on there; one cut short is taken back or finished | MoveTests, MachineGroupTests | over real SSH (the end-to-end runs) |
+| A conversation or bot on a model whose account you signed out of says so, rather than going unanswered, on the Mac and a machine | ComposerReturnsTests, GroupChatTests; Agents' groups-runner, sessions and bridge tests | |
+| The phone link: what a phone reads and does on the Mac (its prompts, marked as from the phone; group chats, wake-ups, the agent's cards, settings, accounts, files, new bots and group chats) and on a machine with the Mac closed | PhoneSettingsTests, PhoneAccountsTests, PhoneFilesTests, PhoneBotsTests, PhoneAwareTests, GroupChatTests, WakeUpsTests, BrowserAsksTests, MachineGroupTests; KuvoLink's LinkTests and EngineRoutesTests, and the bridge's tests | which machines a phone may reach (`kuvo/hosts`: bridges installed over SSH), the usage panel's route, the relay over the network (LiveLinkTests, by hand) |
+| A sign-in that finishes on another device: its page opened on the phone, its return loaded on the Mac or the machine | PhoneSettingsTests, PhoneAccountsTests; the bridge's tests; Agents' bridge tests (a coding agent's sign-in for another device) | the providers' own pages |
+| An agent shows you a file in the conversation (show_file), on the Mac and a phone | PhoneAwareTests (the tool's checks), PhoneFilesTests (the phone fetching it) | how it shows (UI) |
 | J1 The network goes away mid-reply | NetworkDropTests | |
 | J3 The engine stops; the app brings it back | EngineRestartTests | |
 | J4 A huge file, a binary file in the changes; a command that prints a lot | ChangesDiscardTests, ChangesBinaryTests, CommandOutputTests | how much output the engine keeps (its own) |
