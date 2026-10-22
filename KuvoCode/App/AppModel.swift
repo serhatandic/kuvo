@@ -339,7 +339,6 @@ final class AppModel {
             phoneLink.isMoving = { [weak self] id in self?.moves.underWay[id] != nil || Moves.isFrozen(id) }
             phoneLink.engineConfig = engineConfig
             phoneLink.restartEngine = { [weak self] in Task { await self?.restart() } }
-            phoneLink.isAnotherMacs = { [weak self] id in self?.machines.engine(id)?.isAnotherMacsEngine ?? false }
             phoneLink.start(endpoint: server.endpoint)
             Analytics.shared.trackOnce("engine_ready", ["seconds": Int((SuspendingClock.now - began).components.seconds), "downloaded": downloaded])
             listen(to: api)

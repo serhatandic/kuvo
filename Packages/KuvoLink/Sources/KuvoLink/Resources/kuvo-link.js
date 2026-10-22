@@ -22,7 +22,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Goes up with every change, so `setup` replaces a running bridge that's older.
-export const BRIDGE_VERSION = "0.9.0";
+export const BRIDGE_VERSION = "0.9.1";
 const K = process.env.KUVO_HOME || path.join(os.homedir(), ".kuvo-code");
 const RUN = path.join(K, "run");
 export const LINK_FILE = path.join(RUN, "link.json");
@@ -563,8 +563,9 @@ export const agentsAllowed = (path, method = "GET") =>
 // Where a sign-in's page sent the browser back to this machine, for it to load
 // (`kuvo/sign-in/return`), as the Mac's EngineRoutes.signInReturn: only its own address
 // (127.0.0.1, localhost, [::1]) over http, at a port, with what the page sent back (a query),
-// written plainly. The address without its fragment, which a browser doesn't send; null otherwise.
-const RETURN = /^(http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):([1-9][0-9]{0,4})(?:\/[^?#]*)?\?[^#]+)(?:#.*)?$/;
+// written plainly, in the characters an address may hold as it is (so it's loaded exactly as
+// written). The address without its fragment, which a browser doesn't send; null otherwise.
+const RETURN = /^(http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):([1-9][0-9]{0,4})(?:\/(?:[A-Za-z0-9\-._~!$&'()*+,;=:@/]|%[0-9A-Fa-f]{2})*)?\?(?:[A-Za-z0-9\-._~!$&'()*+,;=:@/?]|%[0-9A-Fa-f]{2})+)(?:#.*)?$/;
 export const signInReturn = url => {
   if (typeof url !== "string" || Buffer.byteLength(url) > 8192 || !/^[!-~]*$/.test(url) || url.includes("\\")) return null;
   const match = url.match(RETURN);
@@ -762,8 +763,15 @@ function restartEngine(readEngine) {
     return { status: 409, message: "The engine isn't running here. Start it from your Mac." };
   }
   const start = path.join(K, "bin", "kuvo-start");
-  // Started from a Mac, which keeps how (`run/launch.env`).
-  if (!fs.existsSync(start) || !fs.existsSync(path.join(RUN, "launch.env"))) return { status: 409, message: "Restart it from your Mac." };
+  // Started from a Mac, which keeps how (`run/launch.env`) and what starts it (`bin/kuvo-launch`).
+  if (![start, path.join(K, "bin", "kuvo-launch"), path.join(RUN, "launch.env")].every(file => fs.existsSync(file))) {
+    return { status: 409, message: "Restart it from your Mac." };
+  }
+  // As after the machine restarts: not with what runs this bridge (the engine's runtime as Bun),
+  // which would make `opencode serve` a script to look for.
+  const environment = { ...process.env };
+  delete environment.BUN_BE_BUN;
+  delete environment.BUN_RUNTIME_TRANSPILER_CACHE_PATH;
   const workspace = path.join(K, "workspace");
   setTimeout(() => {
     // On its own, as it outlives this bridge: stops the engine (only it, not whatever has its
@@ -777,7 +785,7 @@ fi
 exec sh "$2"`;
     try {
       const child = spawn("sh", ["-c", script, "restart", String(engine.pid ?? ""), start, K], {
-        detached: true, stdio: "ignore", cwd: fs.existsSync(workspace) ? workspace : K,
+        detached: true, stdio: "ignore", cwd: fs.existsSync(workspace) ? workspace : K, env: environment,
       });
       child.unref();
     } catch {}

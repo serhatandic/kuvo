@@ -255,6 +255,53 @@ struct LiveRemoteEngineTests {
         _ = try await connection.run("pkill -f '[/]\\.kuvo-code-test/' || true; rm -rf \"$HOME/.kuvo-code-test\"")
     }
 
+    /// A phone's restart, as the machine's bridge does it (`kuvo/engine/restart` in kuvo-link.js,
+    /// run as the bridge runs, by the engine's runtime as Bun): the engine stops and starts again
+    /// as after a restart, as itself, never as Bun.
+    @Test func aPhonesRestartThroughTheBridgeBringsItBack() async throws {
+        let cache = FileManager.default.temporaryDirectory.appending(path: "opencodekit-remote-cache")
+        defer { try? FileManager.default.removeItem(at: cache) }
+        try await RemoteEngineInstaller(connection: connection, cache: cache).install()
+        try await RemoteServer.stop(on: connection)
+        let first = try await RemoteServer.launch(on: connection, environment: [:], notes: ["mac": "test-mac", "settings": "abc"])
+
+        let bridge = URL(filePath: #filePath).deletingLastPathComponent().appending(path: "../../../KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js").standardizedFileURL
+        let runner = FileManager.default.temporaryDirectory.appending(path: "restart-\(UUID().uuidString).mjs")
+        defer { try? FileManager.default.removeItem(at: runner) }
+        try Data("""
+            const link = await import(process.env.KUVO_HOME + "/bin/kuvo-link.js");
+            for await (const part of link.engineHandler()({ method: "POST", path: "kuvo/engine/restart", headers: {}, body: Buffer.alloc(0) }, {}, undefined)) {
+              if (part.head) console.log(part.head.status);
+            }
+            await new Promise(done => setTimeout(done, 1500));
+            """.utf8).write(to: runner)
+        _ = try await connection.run("cat >\"$HOME/.kuvo-code-test/bin/kuvo-link.js\"", input: bridge)
+        _ = try await connection.run("cat >\"$HOME/.kuvo-code-test/bin/restart.mjs\"", input: runner)
+        let answered = try await connection.run("""
+            K="$HOME/.kuvo-code-test"; cd "$K/workspace" && KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/\(OpenCodeEngine.version)/opencode" "$K/bin/restart.mjs"
+            """)
+        #expect(answered.trimmingCharacters(in: .whitespacesAndNewlines) == "202")
+
+        var again: RemoteServer.Engine?
+        for _ in 0..<60 {
+            try await Task.sleep(for: .milliseconds(500))
+            if let found = try await RemoteServer.running(on: connection), found.pid != first.pid { again = found; break }
+        }
+        let back = try #require(again, "started again")
+        #expect(back.notes == ["mac": "test-mac", "settings": "abc"], "the Mac knows it as its own")
+        let server = try await RemoteServer.attach(to: back, on: connection)
+        struct Info: Decodable { var version: String }
+        let client = HTTPClient(endpoint: server.endpoint)
+        #expect((try? await client.send(client.request("GET", "api/info"), as: Info.self)) != nil, "it answers as the engine")
+        server.disconnect()
+        let environment = try await connection.run("tr '\\0' '\\n' </proc/\(back.pid)/environ")
+        #expect(!environment.contains("BUN_BE_BUN"))
+        #expect(try await connection.run("kill -0 \(first.pid) 2>/dev/null && echo alive || true").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+        try await RemoteServer.stop(on: connection)
+        _ = try await connection.run("pkill -f '[/]\\.kuvo-code-test/' || true; rm -rf \"$HOME/.kuvo-code-test\"")
+    }
+
     /// The crontab line that starts it after a restart: added once, beside what's there; a crontab
     /// that can't be read is left as it is; taken out with the machine, the rest kept. Against a
     /// stand-in `crontab` in a folder of the test's own, never the machine's.

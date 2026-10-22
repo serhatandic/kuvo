@@ -299,12 +299,21 @@ test("a machine's settings are changed on its Mac; its engine restarts as it was
   fs.mkdirSync(path.join(home, "run"), { recursive: true });
   fs.writeFileSync(path.join(home, "run", "launch.env"), "PATH=/usr/bin\n");
   const started = path.join(home, "run", "started-again");
-  fs.writeFileSync(path.join(bin, "kuvo-start"), `#!/bin/sh\ntouch "${started}"\n`);
-  assert.equal((await answer(handle, "POST", "kuvo/engine/restart")).status, 202);
-  for (let i = 0; i < 100 && !fs.existsSync(started); i++) await new Promise(r => setTimeout(r, 50));
-  assert.ok(fs.existsSync(started));
+  fs.writeFileSync(path.join(bin, "kuvo-start"), `#!/bin/sh\necho "bun=\${BUN_BE_BUN-}" >"${started}"\n`);
+  // Without what starts the engine (`kuvo-launch`), nothing is stopped.
+  assert.equal((await answer(handle, "POST", "kuvo/engine/restart")).status, 409);
+  fs.writeFileSync(path.join(bin, "kuvo-launch"), "#!/bin/sh\n");
+  // The bridge runs as Bun; the engine it starts again mustn't.
+  process.env.BUN_BE_BUN = "1";
+  try {
+    assert.equal((await answer(handle, "POST", "kuvo/engine/restart")).status, 202);
+    for (let i = 0; i < 100 && !fs.existsSync(started); i++) await new Promise(r => setTimeout(r, 50));
+  } finally {
+    delete process.env.BUN_BE_BUN;
+  }
+  assert.equal(fs.readFileSync(started, "utf8").trim(), "bun=");
   assert.equal((await answer(handle, "GET", "kuvo/engine/restart")).status, 405);
-  for (const name of ["bin/kuvo-start", "run/launch.env", "run/started-again"]) fs.rmSync(path.join(home, name));
+  for (const name of ["bin/kuvo-start", "bin/kuvo-launch", "run/launch.env", "run/started-again"]) fs.rmSync(path.join(home, name));
 });
 
 test("plan accounts: listed, signed in to and switched from a phone", async t => {

@@ -586,7 +586,7 @@ public final class RemoteServer: @unchecked Sendable {
         export KUVO_BOTS="$K/bots" KUVO_WAKES="$K/wakes"
         cd "$K/workspace"
         touch "$R/attached"
-        env -u KUVO_AGENTS_PASSWORD setsid "$K/engine/\(OpenCodeEngine.version)/opencode" serve --port "$port" --hostname 127.0.0.1 >"$R/engine.log" 2>&1 </dev/null &
+        env -u KUVO_AGENTS_PASSWORD -u BUN_BE_BUN setsid "$K/engine/\(OpenCodeEngine.version)/opencode" serve --port "$port" --hostname 127.0.0.1 >"$R/engine.log" 2>&1 </dev/null &
         pid=$!
         i=0
         until grep -q "server listening" "$R/engine.log" 2>/dev/null; do

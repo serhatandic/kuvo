@@ -75,13 +75,14 @@ final class PhoneLink {
     @ObservationIgnored weak var engineConfig: EngineConfig?
     /// Starts this Mac's engine over, as Settings › Engine's Restart does; set by AppModel.
     @ObservationIgnored var restartEngine: () -> Void = {}
-    /// Whether a machine's engine is another Mac's, whose settings come from that Mac; set by AppModel.
-    @ObservationIgnored var isAnotherMacs: (String) -> Bool = { _ in false }
 
     struct MachineHost: Codable, Hashable {
         var name: String
         var address: String
         var key: String
+        /// Its engine is another Mac's, which gives it its settings, as it was when it last
+        /// connected (nil from before this was kept).
+        var anotherMac: Bool?
     }
 
     /// What's kept in phone-link.json.
@@ -250,7 +251,7 @@ final class PhoneLink {
             struct Answer: Decodable { var address: String?; var key: String? }
             let answer = try? JSONDecoder().decode(Answer.self, from: Data(output.utf8))
             if let address = answer?.address, let key = answer?.key {
-                machineHosts[machine.id] = MachineHost(name: machine.name, address: address, key: key)
+                machineHosts[machine.id] = MachineHost(name: machine.name, address: address, key: key, anotherMac: engine.isAnotherMacsEngine)
             } else {
                 machineHosts[machine.id] = nil
             }
@@ -531,7 +532,8 @@ final class PhoneLink {
         }
         struct Hosts: Encodable {
             /// `machine`: its id, as bots name theirs. `anotherMac`: its engine is another Mac's,
-            /// which gives it its settings, so this Mac's (`kuvo/config`) don't reach it.
+            /// which gives it its settings, so this Mac's (`kuvo/config`) don't reach it (as it
+            /// was when it last connected).
             struct Host: Encodable {
                 var kind = "machine"; var name: String; var address: String; var key: String; var relay: String
                 var machine: String; var anotherMac: Bool
@@ -578,7 +580,7 @@ final class PhoneLink {
             return (200, (try? encoder.encode(Named(agents: entries))) ?? Data())
         case "kuvo/hosts":
             let hosts = machineHosts.sorted { $0.value.name < $1.value.name }.map { id, host in
-                Hosts.Host(name: host.name, address: host.address, key: host.key, relay: relay.absoluteString, machine: id, anotherMac: isAnotherMacs(id))
+                Hosts.Host(name: host.name, address: host.address, key: host.key, relay: relay.absoluteString, machine: id, anotherMac: host.anotherMac ?? false)
             }
             return (200, (try? encoder.encode(Hosts(hosts: hosts))) ?? Data())
         case "kuvo/asks":
@@ -642,7 +644,7 @@ final class PhoneLink {
     /// too, but for what only makes sense here). PATCH changes some, as Settings does, with
     /// `{"changes": [{"path": [keys…], "value": …}]}` (null removes it), and answers with them all.
     /// A change can say what it read there (`"was"`, null for nothing): changed since, nothing is
-    /// changed and it answers 409.
+    /// changed and it answers 409. A path goes through objects only; a list is sent whole.
     private func answerConfig(_ request: LinkRequest) -> (Int, Data) {
         guard let config = engineConfig else { return (503, Data()) }
         // As the file is now, edited elsewhere or not.
@@ -670,6 +672,11 @@ final class PhoneLink {
             guard let changes = (try? JSONDecoder().decode(Given.self, from: request.body))?.changes, (1...100).contains(changes.count),
                   changes.allSatisfy({ (1...16).contains($0.path.count) && $0.path.allSatisfy { !$0.isEmpty && $0.count <= 200 } })
             else { return (400, Self.message("Send {\"changes\": [{\"path\": [keys…], \"value\": …}]}.")) }
+            // Keys go through objects only: one through a list or a plain value would replace it
+            // whole (every permission rule, for "permissions", "0"). A list is sent whole.
+            if changes.contains(where: { change in (1..<change.path.count).contains { config.value(at: Array(change.path[..<$0])).map { $0.object == nil } ?? false } }) {
+                return (400, Self.message("A path goes through objects only; send a list whole, at its own path."))
+            }
             if changes.contains(where: { change in change.was.map { (config.value(at: change.path) ?? .null) != $0 } ?? false }) {
                 return (409, Self.message("It changed since you read it."))
             }

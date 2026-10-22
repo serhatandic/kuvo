@@ -170,8 +170,9 @@ assert agents_may("api/integration/claude-code/update") and agents_may("api/kuvo
 
 # Where a sign-in's page sends the browser back to the computer (`kuvo/sign-in/return`), which
 # the phone hands it to load there: only this computer's own address (127.0.0.1, localhost, [::1])
-# over http, at a port, with what the page sent back (a query), written plainly and in lowercase. What's loaded is
-# the address without a fragment, which the browser wouldn't send.
+# over http, at a port, with what the page sent back (a query), written plainly and in lowercase,
+# in the characters an address may have as it is (RFC 3986), so nothing re-encodes it on the way.
+# What's loaded is the address without a fragment, which the browser wouldn't send.
 returns = [{"url": u} for u in [
     "http://127.0.0.1:19876/mcp/oauth/callback?code=abc&state=xyz", "http://localhost:1455/auth/callback?code=a.b-c_d~e&state=1",
     "http://[::1]:8080/cb?code=x", "http://127.0.0.1:19876/?code=x", "http://127.0.0.1:19876?code=x", "http://127.0.0.1:65535/cb?error=access_denied",
@@ -185,6 +186,12 @@ returns = [{"url": u} for u in [
     "http://127.0.0.1:19876/cb?code=\u00e9", "http://0x7f000001:19876/cb?code=x", "http://2130706433:19876/cb?code=x", "http://[::ffff:127.0.0.1]:19876/cb?code=x",
     "http://127.0.0.1:19876#?code=x", "http://127.0.0.1:19876/cb#x?code=y", "//127.0.0.1:19876/cb?code=x", "127.0.0.1:19876/cb?code=x", "",
     "http://127.0.0.1:1/cb?code=x#", "http://127.0.0.1:19876/a@b?code=x", "http://127.0.0.1:19876/cb?#x",
+    # Only what an address may hold as it is: a `%` with two hex digits after it, no brackets or
+    # quotes past the host, which a URL parser would encode (and a `%2F` with them, again).
+    "http://127.0.0.1:19876/cb?code=a%2Fb&x=[1]", "http://127.0.0.1:19876/cb?code=a%2Fb&x=1", "http://127.0.0.1:19876/cb?code=50%",
+    "http://127.0.0.1:19876/cb?code=%zz", "http://127.0.0.1:19876/cb?code=a|b", "http://127.0.0.1:19876/cb?code={x}", "http://127.0.0.1:19876/cb?code=a^b",
+    "http://127.0.0.1:19876/cb?code=`x`", "http://127.0.0.1:19876/cb?code=\"x\"", "http://127.0.0.1:19876/cb?code=<x>", "http://127.0.0.1:19876/c[b]?code=x",
+    "http://127.0.0.1:19876/cb?code=a'b(c)*!$,;:@/?~", "http://127.0.0.1:19876/cb?code=x#frag|ment[1]", "http://127.0.0.1:19876/cb%7C?code=x",
     "http://127.0.0.1:19876/cb?code=x" + "a" * 8200,
 ]]
 
@@ -196,6 +203,9 @@ def loads(url):
     parts = urllib.parse.urlsplit(url)
     if parts.scheme != "http" or "@" in parts.netloc or not parts.query:
         return None
+    plain = lambda text: re.fullmatch(r"(?:[A-Za-z0-9\-._~!$&'()*+,;=:@/?]|%[0-9A-Fa-f]{2})*", text) is not None
+    if not plain(parts.path) or not plain(parts.query):
+        return None
     host, _, port = parts.netloc.rpartition(":")
     if host not in ("127.0.0.1", "localhost", "[::1]") or not re.fullmatch(r"[1-9][0-9]{0,4}", port) or int(port) > 65535:
         return None
@@ -206,6 +216,7 @@ for item in returns:
 assert loads("http://127.0.0.1:19876/cb?code=x#_=_") == "http://127.0.0.1:19876/cb?code=x"
 assert loads("http://[::1]:8080/cb?code=x") and loads("http://127.0.0.1:19876?code=x") == "http://127.0.0.1:19876?code=x"
 assert not loads("http://127.0.0.1:19876/cb") and not loads("http://me@127.0.0.1:19876/cb?code=x") and not loads("http://127.0.0.1/cb?code=x")
+assert loads("http://127.0.0.1:19876/cb?code=a%2Fb&x=1") and not loads("http://127.0.0.1:19876/cb?code=a%2Fb&x=[1]") and not loads("http://127.0.0.1:19876/cb?code=50%")
 
 json.dump({"addresses": addresses, "relay": relay, "frames": frames, "messages": messages, "routes": routes, "sockets": sockets,
            "agentRoutes": agent_routes, "signInReturns": returns}, open("link.json", "w"), indent=2)

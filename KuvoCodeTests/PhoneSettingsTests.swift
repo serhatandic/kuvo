@@ -75,6 +75,11 @@ import Testing
         #expect(try await ask("kuvo/config", method: "PATCH", body: #"{"changes": [{"path": ["model"], "value": "a/b", "was": null}]}"#).status == 200)
         #expect(try onDisk()["model"] as? String == "a/b")
 
+        // Through a list or a value: refused, the rules kept (a list is sent whole).
+        for through in [#"["permissions", "0"]"#, #"["permissions", "0", "effect"]"#, #"["model", "x"]"#] {
+            #expect(try await ask("kuvo/config", method: "PATCH", body: #"{"changes": [{"path": \#(through), "value": null}]}"#).status == 400, "\(through)")
+        }
+        #expect(config.permissionRules.count == 1)
         for bad in [#"{"changes": []}"#, #"{"changes": [{"path": [], "value": 1}]}"#, #"{"changes": [{"path": ["model"]}]}"#, "nope"] {
             #expect(try await ask("kuvo/config", method: "PATCH", body: bad).status == 400, "\(bad)")
         }

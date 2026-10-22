@@ -269,7 +269,7 @@ itself. A host serves:
 - On a Mac, `kuvo/hosts`: the machines this phone may reach directly, with their addresses
   and static keys, so pairing once with the Mac reaches them all; each with `machine`, its id
   (as a bot's `machine`), and `anotherMac`: its engine is another Mac's, which gives it its
-  settings, so this Mac's (`kuvo/config`) don't reach it.
+  settings, so this Mac's (`kuvo/config`) don't reach it (as it was when it last connected).
 - `POST kuvo/sign-in/return` with `{"url"}`: where a sign-in's page sent the browser back to the
   computer (`http://127.0.0.1:<port>/…?code=…`: a plan's that finishes there, an MCP server's at
   `127.0.0.1:19876`, a coding agent's), which a phone can't load. The computer loads it, as the
@@ -284,7 +284,8 @@ itself. A host serves:
   same that `opencode.json` holds); your machines get them too (but for what only makes sense on
   the Mac), so a machine's settings are changed here. `PATCH kuvo/config` with `{"changes":
   [{"path": ["mcp", "servers", "linear", "disabled"], "value": true}, …]}` changes some, as
-  Settings does (a `null` value removes the key, and a level that isn't there is made), and
+  Settings does (a `null` value removes the key, and a level that isn't there is made; a path
+  goes through objects only, so a list is sent whole, at its own path: 400 otherwise), and
   answers with the whole document; machines take it a few seconds later, and a change to the
   rules reaches open sessions. A change can say what it read at its path (`"was"`, `null` for
   nothing): changed since, nothing is changed and it answers `409 {"message"}`, so read again.
