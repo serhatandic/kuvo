@@ -53,7 +53,9 @@ public struct SSHConnection: Sendable, Hashable, Codable {
     /// alone; `%C` is a hash of the host and user.)
     static var sharing: [String] {
         let folder = "/tmp/kuvo-ssh-\(getuid())"
-        try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        // Made private in one step (a umask only takes bits away): made, then narrowed, it would
+        // look shared to a connection asking at the same moment, which would then go without it.
+        _ = mkdir(folder, 0o700)
         // Only a folder that's really this user's alone: one another account made first could
         // hold a socket of its own, which ssh would hand what it sends (launch secrets on stdin).
         var info = stat()
