@@ -603,7 +603,7 @@ public final class RemoteServer: @unchecked Sendable {
         if [ -f "$R/link.json" ] && [ -f "$K/bin/kuvo-link.js" ]; then
           KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 setsid "$K/engine/\(OpenCodeEngine.version)/opencode" "$K/bin/kuvo-link.js" run >"$R/link.log" 2>&1 </dev/null &
         fi
-        setsid sh -c 'i=0; while kill -0 "$1" 2>/dev/null; do sleep 60; grep -q "\\"pid\\":$1," "$2/engine.json" 2>/dev/null || break; "$3/bin/kuvo-wake" fire "$3/bots" "$2/engine.json" 2>/dev/null; i=$((i + 1)); [ $((i % 10)) -eq 0 ] || continue; { ls "$3"/bots/*/wakes/* || ls -d "$3"/bots/*/watches/*/ || ls "$3"/wakes/*/wakes/* || ls -d "$3"/wakes/*/watches/*/ || ls "$3"/groups/*/awake; } >/dev/null 2>&1 && continue; [ -n "$(find "$2/attached" -mmin +1440 2>/dev/null)" ] && { kill "$1"; rm -f "$2/engine.json"; }; done' watchdog "$pid" "$R" "$K" >/dev/null 2>&1 </dev/null &
+        setsid sh -c 'i=0; while kill -0 "$1" 2>/dev/null; do sleep 60; grep -q "\\"pid\\":$1," "$2/engine.json" 2>/dev/null || break; "$3/bin/kuvo-wake" fire "$3/bots" "$2/engine.json" 2>/dev/null; i=$((i + 1)); [ $((i % 10)) -eq 0 ] || continue; \(waiting(in: "\"$3\"")) && continue; [ -n "$(find "$2/attached" -mmin +1440 2>/dev/null)" ] && { kill "$1"; rm -f "$2/engine.json"; }; done' watchdog "$pid" "$R" "$K" >/dev/null 2>&1 </dev/null &
         \(boot ? "" : startAgainScript)
         echo "$pid${aport:+ $aport}"
         """
@@ -787,9 +787,16 @@ public final class RemoteServer: @unchecked Sendable {
     /// (its `awake` mark), or a phone paired with the machine that used it in the last week
     /// (its link notes when, in `run/link.seen`), to reach it with this Mac closed. `first` runs
     /// before, either way.
+    /// What keeps a machine's engine up without the app (the watchdog's and `stopNow`'s test): a
+    /// bot's or a session's wake-up or watch waiting, or a group chat at work (`awake`). Shell
+    /// that succeeds when one is; `folder` is Kuvo Code's, as the shell writes it.
+    static func waiting(in folder: String) -> String {
+        "{ ls \(folder)/bots/*/wakes/* || ls -d \(folder)/bots/*/watches/*/ || ls \(folder)/wakes/*/wakes/* || ls -d \(folder)/wakes/*/watches/*/ || ls \(folder)/groups/*/awake; } >/dev/null 2>&1"
+    }
+
     public static func stopNow(on connection: SSHConnection, timeout: TimeInterval = 3, unlessWaking: Bool = false, first: String = "") {
         let root = "\"$HOME/\(RemoteEngineInstaller.root)\""
-        let waiting = "{ ls \(root)/bots/*/wakes/* || ls -d \(root)/bots/*/watches/*/ || ls \(root)/wakes/*/wakes/* || ls -d \(root)/wakes/*/watches/*/ || ls \(root)/groups/*/awake; } >/dev/null 2>&1 && exit 0\n"
+        let waiting = Self.waiting(in: root) + " && exit 0\n"
             + "[ -n \"$(find \(root)/run/link.seen -mtime -7 2>/dev/null)\" ] && exit 0\n"
         runNow(first + (unlessWaking ? waiting : "") + stopScript, on: connection, timeout: timeout)
     }
