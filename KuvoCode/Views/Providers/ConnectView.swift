@@ -560,7 +560,7 @@ struct ConnectView: View {
                 case .complete: finish(method: "oauth"); return
                 case .failed:
                     noteFailure(method: "oauth", Analytics.trouble(status: nil, status.message ?? ""))
-                    step = .failed(status.message ?? "Signing in didn't work.")
+                    step = .failed(Self.failure(status.message))
                     return
                 case .expired:
                     noteFailure(method: "oauth", "timeout")
@@ -569,6 +569,17 @@ struct ConnectView: View {
                 }
             }
         }
+    }
+
+    /// Why a sign-in page's answer didn't sign you in, in words rather than the OAuth error it
+    /// came back with (as the phone says it).
+    static func failure(_ message: String?) -> String {
+        guard let message, !message.isEmpty else { return "Signing in didn't work." }
+        let said = message.lowercased()
+        if said.contains("access_denied") { return "The sign-in was turned down on its page. Try again to sign in." }
+        if said.contains("server_error") || said.contains("temporarily_unavailable") { return "The service couldn't sign you in just now. Try again in a moment." }
+        if said.contains("state mismatch") || said.contains("state_mismatch") { return "That page was from an earlier sign-in. Try again to sign in." }
+        return message
     }
 
     private func complete(_ attempt: OAuthAttempt) {
