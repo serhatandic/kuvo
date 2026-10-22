@@ -272,7 +272,7 @@ private struct GroupMessageRow: View, Equatable {
                         StepsRow(blocks: steps.map(Message.Content.tool), isLive: false, directory: author?.directory ?? "")
                             .padding(.bottom, 2)
                     }
-                    MarkdownText(text: message.text, agents: MessageMentions.agents(namedIn: message.text))
+                    MarkdownText(text: message.text, agents: MarkdownText.agents(namedIn: message.text))
                     ForEach((message.steps ?? []).filter { WidgetCard.isWidget($0) || MadePictureRow.isMade($0) }) { call in
                         Group {
                             if MadePictureRow.isMade(call) { MadePictureRow(call: call) } else { WidgetCard(call: call, send: answerAgent) }

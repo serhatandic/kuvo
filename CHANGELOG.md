@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A bot's reply that names another agent with &, like &Finance, shows its face and colored name, as your own messages do, in conversations and in the cards for messages between agents.
 - A loader beside text, like a message card's "Waiting for its answer", sits in line with the words rather than below them.
 ## 0.7.0
 

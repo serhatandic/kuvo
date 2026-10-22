@@ -1003,11 +1003,18 @@ struct WritingText: View {
 
     var body: some View {
         // Still being written: a code block it ends in is colored once it's done.
-        MarkdownText(text: isWriting ? writing?.text(row: row, part: part) ?? text : text, folders: folders, isWriting: isWriting)
+        let shown = isWriting ? writing?.text(row: row, part: part) ?? text : text
+        MarkdownText(text: shown, folders: folders, agents: MarkdownText.agents(namedIn: shown), isWriting: isWriting)
     }
 }
 
 struct MarkdownText: View {
+    /// The agents `text` names with "&" (a bot's face and color, as in your messages); none
+    /// without an "&", so most replies aren't looked through.
+    static func agents(namedIn text: String) -> [MessageMentions.Agent] {
+        text.contains(AgentReferences.trigger) ? MessageMentions.agents(namedIn: text) : []
+    }
+
     let text: String
     /// The project's folders: file names written as code in them become links.
     var folders: () -> [String] = { [] }
@@ -1528,7 +1535,7 @@ private struct AgentSentRow: View {
             }
         } content: {
             if !text.isEmpty {
-                MarkdownText(text: text)
+                MarkdownText(text: text, agents: MarkdownText.agents(namedIn: text))
                     .padding(.leading, 24)
             }
             // What it answered, when it was waited for.
@@ -1538,7 +1545,7 @@ private struct AgentSentRow: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(.leading, 24)
-                MarkdownText(text: answer)
+                MarkdownText(text: answer, agents: MarkdownText.agents(namedIn: answer))
                     .padding(.leading, 24)
             }
         }
@@ -1663,7 +1670,7 @@ private struct AgentMessageRow: View {
                     .help("Open \(from)'s conversation")
             }
         } content: {
-            MarkdownText(text: text)
+            MarkdownText(text: text, agents: MarkdownText.agents(namedIn: text))
                 .padding(.leading, 24)
         }
     }
