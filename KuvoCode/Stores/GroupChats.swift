@@ -16,6 +16,8 @@ final class GroupChats {
 
     /// One that lives on a machine: not this Mac's (while both have it, as it moves, this Mac's is the one).
     private func onMachine(_ id: String) -> Bool { machines.has(id) && mac.group(id) == nil }
+    /// The machine a group chat lives on; nil for this Mac's.
+    func machine(of id: String) -> String? { onMachine(id) ? machines.chats.first { $0.group.id == id }?.machine : nil }
     private var machineChats: [MachineGroups.Chat] { machines.chats.filter { mac.group($0.group.id) == nil } }
 
     var list: [BotGroup] { mac.list + machineChats.map(\.group) }
