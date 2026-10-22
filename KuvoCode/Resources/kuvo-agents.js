@@ -12033,7 +12033,7 @@ class SeatAPI {
       return;
     const listed2 = Array.isArray(integrations?.data) ? integrations.data : [];
     const provider = listed2.find((each) => each?.id === model2.providerID);
-    return { name: String(provider?.name ?? model2.providerID), signedOut: !ready.includes(model2.providerID) };
+    return { name: String(provider?.name ?? model2.providerID), signedOut: provider !== undefined && !ready.includes(model2.providerID) };
   }
   async create(directory, title, agent, model2, permissions) {
     const body = { title, location: { directory }, permissions };
@@ -13568,4 +13568,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Agents/src 4dc81a286feacbdc524853df92198cde077b5dc16778a578d9202a9b05ecd56e
+// Built from Agents/src ccb941b48087242f33384959c561587789d8ade53fe8a035a9229ba590708e49

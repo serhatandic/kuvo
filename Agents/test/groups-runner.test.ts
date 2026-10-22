@@ -214,6 +214,17 @@ describe("a group chat on a machine", () => {
     expect(groups.get("grp_team000001")!.messages.some((message) => message.kind === "note")).toBe(false)
   })
 
+  test("a provider of the project's own settings, which the engine lists only there, isn't taken for signed out", async () => {
+    const { groups } = runner()
+    engine.integrations = []
+    engine.providers = [{ id: "opencode" }]
+    engine.lines = { Ada: ["Hello!", "PASS"], Ben: ["PASS"] }
+    groups.put(group(), [], "active", false)
+    groups.send("grp_team000001", "Anyone there?")
+    await until(() => !groups.talk("grp_team000001").discussing && (groups.get("grp_team000001")?.messages.some((message) => message.author === "bot_ada") ?? false))
+    expect(groups.get("grp_team000001")!.messages.some((message) => message.kind === "note")).toBe(false)
+  })
+
   test("a provider that turns a bot's sign-in down is said in words that say what to do", async () => {
     const { groups } = runner()
     engine.failing.set("Ada", "Missing required Authorization header")

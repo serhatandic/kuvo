@@ -51,12 +51,12 @@ export class SeatAPI {
     return (await this.requester.request("GET", at(id)))?.data
   }
 
-  /** The name of `model`'s provider when it has a way to sign in and isn't signed in here (a
-   * model there would only fail: the engine drops a message to it without a word); else nothing. */
   /**
    * The account `model` runs on: its provider's name, and whether it's signed out of, as the
-   * engine has it: not among the providers it has ready (signed in, or needing no sign-in, as
-   * OpenCode Zen's free models). Unknown while it lists none (still starting).
+   * engine has it: one of its accounts, not among the providers it has ready (signed in, or
+   * needing no sign-in, as OpenCode Zen's free models). A provider of a project's own settings,
+   * which the engine lists only in that project, isn't one. Unknown while it lists none (still
+   * starting).
    */
   async account(model: ModelRef): Promise<{ name: string; signedOut: boolean } | undefined> {
     const [providers, integrations] = await Promise.all([this.requester.request("GET", "/api/provider"), this.requester.request("GET", "/api/integration")])
@@ -64,7 +64,7 @@ export class SeatAPI {
     if (!ready.length) return undefined
     const listed: any[] = Array.isArray(integrations?.data) ? integrations.data : []
     const provider = listed.find((each) => each?.id === model.providerID)
-    return { name: String(provider?.name ?? model.providerID), signedOut: !ready.includes(model.providerID) }
+    return { name: String(provider?.name ?? model.providerID), signedOut: provider !== undefined && !ready.includes(model.providerID) }
   }
 
   async create(directory: string, title: string, agent: string | undefined, model: ModelRef | undefined, permissions: Rule[]): Promise<any> {
