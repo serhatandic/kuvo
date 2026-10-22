@@ -200,7 +200,9 @@ itself. A host serves:
 - `kuvo/info`: what the host is and runs, and whether its coding agents' bridge is up
   (`agents`; a machine's bridge says so from 0.6.0), and `started`, when the engine running now
   came up, in seconds since 1970 (null while none runs; a machine's bridge from 0.9.2): a restart
-  changes it, so a phone tells the new engine from the old; a Mac also names its folder of chats
+  changes it, so a phone tells the new engine from the old. A machine's bridge (from 0.9.7) also
+  says whether its engine is `running`, and whether it's `stopped` on purpose (it stays down until
+  it's started, from a Mac or a phone); a Mac also names its folder of chats
   (conversations of no project), and `integrations`, each integration's name by its MCP server's
   (`{"microsoft-365": "Outlook and Microsoft 365", …}`), for a card when one asks something.
 - `kuvo/agents/api/…`: the coding agents you already have (Claude Code, Codex, Cursor, Grok,
@@ -314,9 +316,16 @@ itself. A host serves:
 - `POST kuvo/engine/restart`: the computer's engine starts over, as Settings › Engine's Restart
   does on a Mac; what's running in it stops. It answers `202 {}` first: the link goes down with
   the engine, and the computer is back once it answers again (`kuvo/info`). A machine's bridge
-  (from 0.9.0) starts its engine over as it was last started (with its coding agents' bridge and
-  the link's), and a Mac connected to it goes on with the new one; one never started from a Mac
-  answers `409 {"message"}`.
+  (from 0.9.0) starts its engine over as it was last started (with its coding agents' bridge), and
+  a Mac connected to it goes on with the new one; from 0.9.7 the link stays up meanwhile. One
+  never started from a Mac answers `409 {"message"}`.
+- `POST kuvo/engine/stop` and `POST kuvo/engine/start` (a machine's bridge, from 0.9.7): Stop
+  ends the machine's engine and its coding agents' bridge, and it stays down, through restarts of
+  the machine too, until Start; meanwhile the link answers and the routes that need the engine
+  answer 503. Stop answers `200 {}` once it's down (`202 {}` when a start under way holds it up
+  past a minute: it's down once that's done), or `503 {"message"}`; Start answers `202 {}`
+  and the engine is up once `kuvo/info` says `running`; it answers `409 {"message"}` on a machine
+  never started from a Mac, as restart does.
 - `kuvo/bots`: bots by their session, with their `id` (`bot_…`, as group chats name their
   members; a machine's bridge from 0.9.4), their name, look and job, whether their wake-ups
   are paused, the next one (`wakes`, left out when none waits), how many things each watches,
@@ -474,9 +483,11 @@ and takes a phone off when you unpair; phones paired with the machine itself (`"
 stay. `address` is the phone's on the relay, where its notifications go: the Mac passes on
 what it knows, and the bridge notes it each time the phone comes in. The machine's keys stay when no phones are left, so pairing again gives the same
 address. The bridge reads the file every 30 seconds: a phone taken off loses its sessions,
-and with no phones and no pairing waiting the bridge stops. From 0.6.0 the bridge notes when a
-phone last used the machine (`run/link.seen`): while one has in the last week, the engine
-stays up for it, rather than its watchdog stopping it after a day without the Mac, and a Mac
-quitting leaves it running too; so the machine's sessions and bots are there when the phone
-asks. A phone lost, or unpaired somewhere the machine doesn't hear of, stops keeping it a week
-after it was last used.
+and with no phones and no pairing waiting the bridge stops. The bridge notes when a phone last
+used the machine (`run/link.seen`).
+
+A machine keeps itself running (from 0.9.7): its keeper (`bin/kuvo-start keep`, `run/box.pid`)
+starts its engine again when it ends, unless it was stopped on purpose (`run/stopped`), and keeps
+the bridge running while a phone is paired or a pairing waits (`run/link.needed`, which the
+bridge writes). The bridge stays up while the engine is down, and starts the keeper when it
+isn't running. A Mac quitting or disconnecting leaves all of it running.

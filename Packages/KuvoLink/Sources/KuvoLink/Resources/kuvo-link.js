@@ -22,7 +22,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Goes up with every change, so `setup` replaces a running bridge that's older.
-export const BRIDGE_VERSION = "0.9.6";
+export const BRIDGE_VERSION = "0.9.7";
 const K = process.env.KUVO_HOME || path.join(os.homedir(), ".kuvo-code");
 const RUN = path.join(K, "run");
 export const LINK_FILE = path.join(RUN, "link.json");
@@ -30,6 +30,8 @@ const ENGINE_FILE = path.join(RUN, "engine.json");
 // The coding agents' bridge beside the engine (kuvo-agents.js): its port and password.
 const BRIDGE_FILE = path.join(RUN, "bridge.json");
 const PID_FILE = path.join(RUN, "link.pid");
+// While it's there, the box's keeper keeps this bridge running (`bin/kuvo-start keep`).
+const NEEDED_FILE = path.join(RUN, "link.needed");
 const VERSION_FILE = path.join(RUN, "link.version");
 const PAIRING_MINUTES = 10;
 
@@ -665,8 +667,11 @@ export function engineHandler(readEngine = readEngineFile, info = {}, readBridge
       // a restart changes it.
       let started = null;
       if (engine.pid) try { started = fs.statSync(ENGINE_FILE).mtimeMs / 1000; } catch {}
+      // Whether it runs now, and whether it's stopped on purpose (until it's started, from anywhere).
+      const running = Boolean(engine.pid && runs(engine.pid, `${K}/engine/`));
+      const stopped = fs.existsSync(path.join(RUN, "stopped"));
       yield { head: { status: 200, headers: { "content-type": "application/json" } } };
-      yield { body: Buffer.from(JSON.stringify({ kind: "machine", bridge: BRIDGE_VERSION, engine: engine.version ?? null, started, agents: Boolean(bridge()), ...info })) };
+      yield { body: Buffer.from(JSON.stringify({ kind: "machine", bridge: BRIDGE_VERSION, engine: engine.version ?? null, started, running, stopped, agents: Boolean(bridge()), ...info })) };
       return;
     }
     const json = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
@@ -676,9 +681,10 @@ export function engineHandler(readEngine = readEngineFile, info = {}, readBridge
     if (/^kuvo\/(config|mcp\/catalog)(\/|\?|$)/.test(request.path)) {
       return yield* json(409, { message: "This machine's settings come from your Mac. Change them there." });
     }
-    if (request.path === "kuvo/engine/restart") {
+    const control = request.path.match(/^kuvo\/engine\/(start|stop|restart)$/);
+    if (control) {
       if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
-      const { status, message } = restartEngine(readEngine);
+      const { status, message } = await engineControl(control[1]);
       return yield* json(status, message ? { message } : {});
     }
     if (request.path === "kuvo/sign-in/return") {
@@ -796,45 +802,53 @@ export function engineHandler(readEngine = readEngineFile, info = {}, readBridge
   };
 }
 
-// `kuvo/engine/restart`: the engine here starts over as it was last started (`bin/kuvo-start`, as
-// after the machine restarts), with its agents' bridge and this bridge; what runs in it stops.
-// Answered first (202), as the restart takes this bridge down too: the phone sees the machine come
-// back as `kuvo/info` answers again. A Mac connected to it finds the new one and goes on with it.
-function restartEngine(readEngine) {
-  let engine;
-  try {
-    engine = readEngine();
-  } catch {
-    return { status: 409, message: "The engine isn't running here. Start it from your Mac." };
-  }
+// The engine here started, stopped or started over by the box's own tool (`bin/kuvo-start`, as
+// the Mac has it do): `start` after a stop, `stop` until it's started again (from anywhere), and
+// `restart`. This bridge stays up through each. A start or restart is answered at once (202), and
+// the phone sees it come up as `kuvo/info` says (`running`, `started`); a stop once it's done.
+export async function engineControl(command) {
   const start = path.join(K, "bin", "kuvo-start");
-  // Started from a Mac, which keeps how (`run/launch.env`) and what starts it (`bin/kuvo-launch`).
-  if (![start, path.join(K, "bin", "kuvo-launch"), path.join(RUN, "launch.env")].every(file => fs.existsSync(file))) {
-    return { status: 409, message: "Restart it from your Mac." };
+  if (!fs.existsSync(start)) return { status: 409, message: "Kuvo Code hasn't set this machine up yet." };
+  // Started from a Mac once, which keeps how (`run/launch.env`) and what starts it (`bin/kuvo-launch`).
+  if (command !== "stop" && ![path.join(K, "bin", "kuvo-launch"), path.join(RUN, "launch.env")].every(file => fs.existsSync(file))) {
+    return { status: 409, message: "Start it once from Kuvo Code on your Mac." };
   }
-  // As after the machine restarts: not with what runs this bridge (the engine's runtime as Bun),
-  // which would make `opencode serve` a script to look for.
+  // Not with what runs this bridge (the engine's runtime as Bun), which would make `opencode
+  // serve` a script to look for.
   const environment = { ...process.env };
   delete environment.BUN_BE_BUN;
   delete environment.BUN_RUNTIME_TRANSPILER_CACHE_PATH;
   const workspace = path.join(K, "workspace");
-  setTimeout(() => {
-    // On its own, as it outlives this bridge: stops the engine (only it, not whatever has its
-    // number now), then starts it.
-    const script = `pid=$1
-if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && grep -q "$3/engine/" "/proc/$pid/cmdline" 2>/dev/null; then
-  kill "$pid"; i=0
-  while kill -0 "$pid" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
-  kill -9 "$pid" 2>/dev/null
-fi
-exec sh "$2"`;
+  const options = { cwd: fs.existsSync(workspace) ? workspace : K, env: environment };
+  if (command === "stop") {
+    // Answered once it's down; one that takes over a minute (a start under way, which it waits
+    // for) goes on by itself, never cut off halfway.
+    let child;
     try {
-      const child = spawn("sh", ["-c", script, "restart", String(engine.pid ?? ""), start, K], {
-        detached: true, stdio: "ignore", cwd: fs.existsSync(workspace) ? workspace : K, env: environment,
-      });
+      child = spawn("sh", [start, "stop"], { ...options, detached: true, stdio: ["ignore", "ignore", "pipe"] });
+    } catch {
+      return { status: 503, message: "It couldn't be stopped." };
+    }
+    let said = "";
+    child.stderr.on("data", data => { said += data; });
+    const status = await new Promise(resolve => {
+      const timer = setTimeout(() => resolve(null), 60_000);
+      child.on("exit", code => { clearTimeout(timer); resolve(code); });
+      child.on("error", () => { clearTimeout(timer); resolve(-1); });
+    });
+    if (status === null) {
+      child.stderr.destroy();
       child.unref();
-    } catch {}
-  }, 500);
+      return { status: 202 };
+    }
+    return status === 0 ? { status: 200 } : { status: 503, message: said.trim() || "It couldn't be stopped." };
+  }
+  try {
+    const child = spawn("sh", [start, command], { ...options, detached: true, stdio: "ignore" });
+    child.unref();
+  } catch {
+    return { status: 503, message: "It couldn't be started." };
+  }
   return { status: 202 };
 }
 
@@ -1808,6 +1822,16 @@ export function writeLink(link) {
   const temporary = `${LINK_FILE}.${process.pid}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(link, null, 2), { mode: 0o600 });
   fs.renameSync(temporary, LINK_FILE);
+  // For the box's keeper, which keeps this bridge running while it's needed.
+  if (needed(link)) fs.writeFileSync(NEEDED_FILE, "", { mode: 0o600 });
+  else fs.rmSync(NEEDED_FILE, { force: true });
+}
+
+// Nothing to answer any more (the last phone gone, a pairing run out, no link.json): the keeper
+// starts this bridge no more, unless a pairing began meanwhile.
+export function noLongerNeeded() {
+  try { fs.rmSync(NEEDED_FILE, { force: true }); } catch {}
+  if (needed(readLink())) try { fs.writeFileSync(NEEDED_FILE, "", { mode: 0o600 }); } catch {}
 }
 
 // Lets in phones in link.json, and a new one showing the pairing token (once, in time), noting
@@ -1949,6 +1973,22 @@ function runs(pid, name) {
 // Another bridge.
 const isBridge = pid => pid !== process.pid && runs(pid, "kuvo-link.js");
 
+// The box's keeper (`bin/kuvo-start`), started again if it went: it keeps the engine and this
+// bridge running.
+export function keepKeeper() {
+  const start = path.join(K, "bin", "kuvo-start");
+  if (!fs.existsSync(start)) return;
+  let keeper = null;
+  try { keeper = Number(fs.readFileSync(path.join(RUN, "box.pid"), "utf8")); } catch {}
+  if (keeper && runs(keeper, "kuvo-start")) return;
+  const environment = { ...process.env };
+  delete environment.BUN_BE_BUN;
+  delete environment.BUN_RUNTIME_TRANSPILER_CACHE_PATH;
+  try {
+    spawn("sh", [start], { cwd: K, env: environment, detached: true, stdio: "ignore" }).unref();
+  } catch {}
+}
+
 // Something to answer: a paired phone, or a pairing code waiting.
 const needed = link => Boolean(link && ((link.phones ?? []).length || (link.pairing && Date.now() < link.pairing.expires)));
 
@@ -1968,21 +2008,21 @@ async function run() {
   process.on("SIGTERM", cleanUp);
   process.on("SIGINT", cleanUp);
 
-  // Stops with the engine, when nothing's paired any more, or when another bridge took over;
-  // phones removed since lose what they have open.
+  // Stops when nothing's paired any more, or when another bridge took over; up while the engine
+  // is down too, so a phone can start it. Phones removed since lose what they have open, and the
+  // box's keeper, if it went, starts again (it keeps this bridge, and the engine, running).
   let current = null;
   setInterval(() => {
-    let engine;
-    try { engine = readEngineFile(); } catch {}
     let owner = null;
     try { owner = Number(fs.readFileSync(PID_FILE, "utf8")); } catch {}
     const link = readLink();
-    if (!needed(link)) forgetPhones();
-    if (!engine || !alive(engine.pid) || !needed(link) || owner !== process.pid) return cleanUp();
+    if (!needed(link)) {
+      forgetPhones();
+      noLongerNeeded();
+    }
+    if (!needed(link) || owner !== process.pid) return cleanUp();
     current?.keepOnly(new Set((link.phones ?? []).map(phone => phone.key)));
-    // A phone that used it in the last week counts as the app: the engine stays up for it,
-    // rather than stopping after a day without the Mac.
-    if (phoneSeenLately()) touchAttached();
+    keepKeeper();
   }, 30_000);
 
   // Your phones' notifications, on whichever relay connection is up.
@@ -1999,6 +2039,7 @@ async function run() {
     const link = readLink();
     if (!needed(link)) {
       forgetPhones();
+      noLongerNeeded();
       return cleanUp();
     }
     let engine = {};

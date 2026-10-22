@@ -670,3 +670,53 @@ test("a phone list the Mac mails through the relay is taken from it alone, a new
   assert.deepEqual(keys(), ["mac:new", "pair:own"]);
   fs.rmSync(path.join(home, "run", "link.json"));
 });
+
+test("Start and Stop go through the box's tool, the bridge staying up; kuvo/info says whether it runs and whether it's stopped", async () => {
+  const bin = path.join(home, "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  fs.mkdirSync(path.join(home, "run"), { recursive: true });
+  const said = path.join(home, "run", "box-said");
+  fs.writeFileSync(path.join(bin, "kuvo-start"), `#!/bin/sh\necho "\${1:-box} bun=\${BUN_BE_BUN-}" >>"${said}"\n[ "$1" = stop ] && touch "${path.join(home, "run", "stopped")}"\nexit 0\n`);
+  const handle = link.engineHandler(() => { throw new Error("none"); });
+  // Never started from a Mac: there's nothing to start it as.
+  assert.equal((await answer(handle, "POST", "kuvo/engine/start")).status, 409);
+  fs.writeFileSync(path.join(bin, "kuvo-launch"), "#!/bin/sh\n");
+  fs.writeFileSync(path.join(home, "run", "launch.env"), "PATH=/usr/bin\n");
+  assert.equal((await answer(handle, "POST", "kuvo/engine/stop")).status, 200);
+  let info = await answer(handle, "GET", "kuvo/info");
+  assert.equal(info.json.running, false);
+  assert.equal(info.json.stopped, true);
+  assert.equal((await answer(handle, "POST", "kuvo/engine/start")).status, 202);
+  for (let i = 0; i < 100 && !fs.readFileSync(said, "utf8").includes("start"); i++) await new Promise(r => setTimeout(r, 30));
+  assert.deepEqual(fs.readFileSync(said, "utf8").trim().split("\n"), ["stop bun=", "start bun="]);
+  assert.equal((await answer(handle, "GET", "kuvo/engine/start")).status, 405);
+  for (const name of ["bin/kuvo-start", "bin/kuvo-launch", "run/launch.env", "run/box-said", "run/stopped"]) fs.rmSync(path.join(home, name), { force: true });
+});
+
+test("the box's keeper keeps the phone link up while a phone is paired, and the link starts the keeper again if it went", async () => {
+  fs.mkdirSync(path.join(home, "run"), { recursive: true });
+  const flag = path.join(home, "run", "link.needed");
+  link.writeLink({ secret: "s", key: "k", relay: "wss://relay.test", phones: [{ key: "p", name: "Phone", from: "mac", added: 1 }] });
+  assert.equal(fs.existsSync(flag), true);
+  link.writeLink({ secret: "s", key: "k", relay: "wss://relay.test", phones: [] });
+  assert.equal(fs.existsSync(flag), false);
+  // A pairing run out with no phone paired: the bridge ends, and the keeper starts it no more.
+  link.writeLink({ secret: "s", key: "k", relay: "wss://relay.test", phones: [], pairing: { token: "t", expires: Date.now() + 60_000 } });
+  assert.equal(fs.existsSync(flag), true);
+  const ran = link.readLink();
+  ran.pairing.expires = Date.now() - 1;
+  fs.writeFileSync(link.LINK_FILE, JSON.stringify(ran));
+  link.noLongerNeeded();
+  assert.equal(fs.existsSync(flag), false);
+  fs.rmSync(path.join(home, "run", "link.json"), { force: true });
+
+  const bin = path.join(home, "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  const said = path.join(home, "run", "keeper-started");
+  fs.writeFileSync(path.join(bin, "kuvo-start"), `#!/bin/sh\necho "\${1:-box}" >"${said}"\n`);
+  fs.writeFileSync(path.join(home, "run", "box.pid"), "999999");
+  link.keepKeeper();
+  for (let i = 0; i < 100 && !fs.existsSync(said); i++) await new Promise(r => setTimeout(r, 30));
+  assert.equal(fs.readFileSync(said, "utf8").trim(), "box");
+  for (const name of ["bin/kuvo-start", "run/keeper-started", "run/box.pid"]) fs.rmSync(path.join(home, name), { force: true });
+});
