@@ -4,7 +4,7 @@ What changed in each release, for people using Kuvo Code. Add changes people wou
 Unreleased, in plain words about what they'll see, as part of the change itself. Before a
 release, Unreleased is renamed to the version; the release notes come from that section.
 
-## Unreleased
+## 0.7.2
 
 - Edit Bot shows the model a bot really talks on: when the one picked for it belongs to an account you've signed out of, its conversation's model, rather than "Choose a Model".
 - With Claude Code in Build, a plan it makes on its own for a big task no longer leaves it stuck planning: it carries on building once its plan is done.
