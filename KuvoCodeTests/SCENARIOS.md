@@ -25,10 +25,11 @@ for Linux's tools).
 | B8 A session in a worktree, merged back | WorktreeSessionTests, GitBranchesTests | |
 | B9 Plan first, then Build It | AgentAsksTests | |
 | B10 Ask First: allow once, always, deny | ComposerReturnsTests, ProjectFoldersTests, PermissionCardsTests, AlwaysAllowedTests | |
-| B11, L38 The agent asks questions, answered in the card | AgentAsksTests | |
+| B11, L38 The agent asks questions, answered in the card or skipped | AgentAsksTests | |
 | B12 Queue while it works, Stop, Resume | ComposerReturnsTests, QueueTests | |
 | B13 Two sessions at once, each with its own asks | AgentAsksTests | |
 | B14 Switch model mid-conversation, or elsewhere, to a coding agent too | SessionsTests, MoveToAgentsTests | |
+| The coding agents (Claude Code, Codex, Cursor, Grok, Antigravity): a turn's replies and steps, Stop, permissions in each mode (Ask First, Approve All, Plan, your Blocks), its usage and how full its context is | Agents/test: claude, codex, cursor and acp tests, each with a stand-in for the agent's program | the agents' own programs and accounts (the end-to-end runs) |
 | B16 Find in a long conversation | ConversationFindTests | |
 | B19 A subagent at work, in the background too | SubagentsAtWorkTests | |
 | B17 A folder that isn't a git repository | SessionEditsTests | |
@@ -39,7 +40,7 @@ for Linux's tools).
 | C5, C6 Files in the panel; the agent shows one; agents' tabs tidied | FileLinksTests, PanelTabsTests, ProjectFilesTests, BrowserHistoryTests, AgentTabsTests | |
 | D3 A reply with a widget shows as one | | how a reply's steps become rows is the transcript view's own (no seam outside it); the bridge naming coding agents' show_widget is in Agents/test |
 | D4 A chat moved into a project | SessionLifecycleTests | |
-| E, B15 The agent's browser | BrowserToolServerTests | |
+| E, B15, L36 The agent's browser; a screenshot you ask to see, in the conversation | BrowserToolServerTests | |
 | E2, L31 It fills in a form | BrowserFormTests | |
 | E3, E7, L22 It uploads a file to a site | BrowserUploadTests | a machine's browser's upload (its Chrome, on the machine) |
 | L25 The page saved as a PDF to share | PagePDFTests | |
@@ -66,7 +67,7 @@ for Linux's tools).
 | Group chats on a machine, run there with the Mac closed | MachineGroupTests; Agents' groups and groups-runner tests (the coding agents' bridge runs them); the bridge's groups tests | |
 | Move to Computer: a bot, a chat or a group chat goes whole and carries on there; one cut short is taken back or finished | MoveTests, MachineGroupTests | over real SSH (the end-to-end runs) |
 | A conversation or bot on a model whose account you signed out of says so, rather than going unanswered, on the Mac and a machine | ComposerReturnsTests, GroupChatTests; Agents' groups-runner, sessions and bridge tests | |
-| The phone link: what a phone reads and does on the Mac (its prompts, marked as from the phone; group chats, wake-ups, the agent's cards, settings, accounts, files, new bots and group chats) and on a machine with the Mac closed | PhoneSettingsTests, PhoneAccountsTests, PhoneFilesTests, PhoneBotsTests, PhoneAwareTests, GroupChatTests, WakeUpsTests, BrowserAsksTests, MachineGroupTests; KuvoLink's LinkTests and EngineRoutesTests, and the bridge's tests | which machines a phone may reach (`kuvo/hosts`: bridges installed over SSH), the usage panel's route, the relay over the network (LiveLinkTests, by hand) |
+| The phone link: what a phone reads and does on the Mac (its prompts, marked as from the phone; group chats, wake-ups, the agent's cards, settings, accounts, files, new bots and group chats) and on a machine with the Mac closed | PhoneSettingsTests, PhoneAccountsTests, PhoneFilesTests, PhoneBotsTests, PhoneAwareTests, GroupChatTests, WakeUpsTests, BrowserAsksTests, MachineGroupTests; KuvoLink's LinkTests (pairing, removing a phone, the Mac starting again or its relay connection coming back) and EngineRoutesTests, and the bridge's tests | which machines a phone may reach (`kuvo/hosts`: bridges installed over SSH), the usage panel's route, the relay over the network (LiveLinkTests, by hand) |
 | A sign-in that finishes on another device: its page opened on the phone, its return loaded on the Mac or the machine | PhoneSettingsTests, PhoneAccountsTests; the bridge's tests; Agents' bridge tests (a coding agent's sign-in for another device) | the providers' own pages |
 | An agent shows you a file in the conversation (show_file), on the Mac and a phone | PhoneAwareTests (the tool's checks), PhoneFilesTests (the phone fetching it) | how it shows (UI) |
 | J1 The network goes away mid-reply | NetworkDropTests | |
