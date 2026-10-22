@@ -23,6 +23,10 @@ struct Spinner: View {
             }
         }
         .frame(width: size, height: size)
+        // Beside text, on its middle: in a row lined up on text's baseline, an AppKit view's top
+        // goes there, which hung it below the line (a card's "To Finance", measured 7 pt low).
+        .alignmentGuide(.firstTextBaseline) { $0.height * 0.9 }
+        .alignmentGuide(.lastTextBaseline) { $0.height * 0.9 }
         .accessibilityLabel("Working")
     }
 
