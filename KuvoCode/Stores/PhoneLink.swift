@@ -369,6 +369,17 @@ final class PhoneLink {
             }
         }
         if request.path.split(separator: "?").first == "kuvo/file" { return Self.file(request.path) }
+        // A new bot or group chat, as New Bot and New Group Chat make them.
+        if request.method.uppercased() == "POST", request.path == "kuvo/bots" || request.path == "kuvo/groups" {
+            return AsyncThrowingStream { continuation in
+                Task { @MainActor in
+                    let (status, body) = await (request.path == "kuvo/bots" ? link?.makeBot(request.body) : link?.makeGroup(request.body)) ?? (503, Data())
+                    continuation.yield(.head(status: status, headers: ["content-type": "application/json"]))
+                    continuation.yield(.body(body))
+                    continuation.finish()
+                }
+            }
+        }
         if request.path == "kuvo/asks/events" { return Self.following { link?.asksJSON() } }
         if request.path == "kuvo/groups/events" { return Self.following { link?.groupsJSON() } }
         if let id = Self.groupID(in: request.path, then: "events") { return Self.followingGroup(id, link: link) }
@@ -561,27 +572,9 @@ final class PhoneLink {
             info.started = engineStarted()?.timeIntervalSince1970
             return (200, (try? encoder.encode(info)) ?? Data())
         case "kuvo/bots":
-            // Each bot by its session (here or on a machine): its name, look and job, and what
-            // the Mac knows of it that its session doesn't say: paused, when it next wakes (in
-            // seconds since 1970), how many things it watches.
-            struct Listed: Encodable {
-                struct Entry: Encodable {
-                    var id: String, session: String, name: String, look: BotLook, machine: String?, job: String
-                    var paused: Bool, wakes: Double?, watching: Int
-                    /// Its conversation is with the coding agents: read through `kuvo/agents/api/…`.
-                    var agents: Bool
-                }
-                var bots: [Entry]
-            }
-            let entries = (bots?.list ?? []).map { bot in
-                Listed.Entry(
-                    id: bot.id, session: bot.sessionID, name: bot.name, look: bot.look, machine: bot.machine, job: bot.job,
-                    paused: bots?.paused.contains(bot.id) == true,
-                    wakes: bots?.wakes[bot.id]?.map(\.due).min()?.timeIntervalSince1970,
-                    watching: bots?.watches[bot.id]?.count ?? 0,
-                    agents: bot.agents == true)
-            }
-            return (200, (try? encoder.encode(Listed(bots: entries))) ?? Data())
+            return (200, (try? encoder.encode(["bots": (bots?.list ?? []).map(entry)])) ?? Data())
+        case "kuvo/bots/templates":
+            return (200, templatesJSON())
         case "kuvo/named":
             // Who "&" can name in a message: every bot, and the recent sessions with a name.
             struct Named: Encodable {
@@ -976,35 +969,36 @@ final class PhoneLink {
     /// Your group chats as the sidebar lists them: who's in each, who's talking, whether it
     /// waits on you to keep going, and the last thing said.
     private func groupsJSON() -> Data {
-        struct Listed: Encodable {
-            struct Group: Encodable {
-                var id: String
-                var name: String
-                var purpose: String?
-                var members: [GroupMember]
-                var speaking: String?
-                var discussing: Bool
-                var paused: Bool
-                var unread: Bool
-                var last: GroupMessage?
-                var meeting: BotGroup.Meeting?
-                /// The machine it lives on (its bots' too), by id as bots name theirs; none for this Mac.
-                var machine: String?
-                /// On its way to another computer: what would change it waits until it's there.
-                var moving: Bool
-            }
-            var groups: [Group]
-        }
+        struct Listed: Encodable { var groups: [GroupEntry] }
         guard let groups else { return Data(#"{"groups":[]}"#.utf8) }
-        let listed = groups.list.map { group in
-            var last = groups.messages(in: group.id).last { $0.kind != .note }
-            last?.steps = nil
-            return Listed.Group(id: group.id, name: group.name, purpose: group.purpose, members: members(of: group),
-                                speaking: groups.speaking[group.id], discussing: groups.discussing.contains(group.id),
-                                paused: groups.paused.contains(group.id), unread: groups.isUnread(group), last: last, meeting: group.meeting,
-                                machine: groups.machine(of: group.id), moving: isMoving(group.id))
-        }
-        return (try? Self.groupEncoder.encode(Listed(groups: listed))) ?? Data()
+        return (try? Self.groupEncoder.encode(Listed(groups: groups.list.map { entry($0, in: groups) }))) ?? Data()
+    }
+
+    /// A chat as `kuvo/groups` lists it.
+    private struct GroupEntry: Encodable {
+        var id: String
+        var name: String
+        var purpose: String?
+        var members: [GroupMember]
+        var speaking: String?
+        var discussing: Bool
+        var paused: Bool
+        var unread: Bool
+        var last: GroupMessage?
+        var meeting: BotGroup.Meeting?
+        /// The machine it lives on (its bots' too), by id as bots name theirs; none for this Mac.
+        var machine: String?
+        /// On its way to another computer: what would change it waits until it's there.
+        var moving: Bool
+    }
+
+    private func entry(_ group: BotGroup, in groups: GroupChats) -> GroupEntry {
+        var last = groups.messages(in: group.id).last { $0.kind != .note }
+        last?.steps = nil
+        return GroupEntry(id: group.id, name: group.name, purpose: group.purpose, members: members(of: group),
+                          speaking: groups.speaking[group.id], discussing: groups.discussing.contains(group.id),
+                          paused: groups.paused.contains(group.id), unread: groups.isUnread(group), last: last, meeting: group.meeting,
+                          machine: groups.machine(of: group.id), moving: isMoving(group.id))
     }
 
     /// One chat as it reads now: its latest messages (with what each bot did on its turn), who's
@@ -1036,6 +1030,136 @@ final class PhoneLink {
         guard let messages = try? Self.groupEncoder.encode(Array(groups.messages(in: id).suffix(300))),
               let state = try? Self.groupEncoder.encode(chat) else { return nil }
         return GroupLines(messages: messages, state: state)
+    }
+
+    // MARK: Making bots and group chats
+
+    /// A bot as `kuvo/bots` lists it: by its session (here or on a machine), with its name, look
+    /// and job, and what the Mac knows of it that its session doesn't say: paused, when it next
+    /// wakes (in seconds since 1970), how many things it watches.
+    struct BotEntry: Encodable {
+        var id: String, session: String, name: String, look: BotLook, machine: String?, job: String
+        var paused: Bool, wakes: Double?, watching: Int
+        /// Its conversation is with the coding agents: read through `kuvo/agents/api/…`.
+        var agents: Bool
+    }
+
+    private func entry(_ bot: Bot) -> BotEntry {
+        BotEntry(id: bot.id, session: bot.sessionID, name: bot.name, look: bot.look, machine: bot.machine, job: bot.job,
+                 paused: bots?.paused.contains(bot.id) == true,
+                 wakes: bots?.wakes[bot.id]?.map(\.due).min()?.timeIntervalSince1970,
+                 watching: bots?.watches[bot.id]?.count ?? 0,
+                 agents: bot.agents == true)
+    }
+
+    /// `kuvo/bots/templates`: what New Bot offers: its templates, the personalities (yours too),
+    /// the looks, the model it starts with in each place (this Mac, `mac`, and each machine by
+    /// id), and your projects, by where they are.
+    private func templatesJSON() -> Data {
+        struct Template: Encodable {
+            var id: String, name: String, job: String, instructions: String, look: BotLook, personality: String?, wantsProject: Bool
+        }
+        struct Listed: Encodable {
+            struct Personality: Encodable { var id: String, name: String, description: String, custom: Bool }
+            struct Looks: Encodable { var colors: [String], shapes: [String], faces: [String] }
+            struct Project: Encodable { var directory: String, name: String, machine: String? }
+            var templates: [Template]
+            var personalities: [Personality]
+            var looks: Looks
+            var startingModel: [String: ModelRef?]
+            var projects: [Project]
+        }
+        let app = bots?.app
+        var starting: [String: ModelRef?] = ["mac": app?.catalog.startingModel(LastModel.current, scope: .on(machine: nil))]
+        for machine in app?.machines.list ?? [] {
+            starting[machine.id] = app?.machines.engine(machine.id)?.catalog.startingModel(LastModel.current, scope: .on(machine: machine.id)) ?? nil
+        }
+        let listed = Listed(
+            templates: BotTemplate.all.map { Template(id: $0.id, name: $0.name, job: $0.job, instructions: $0.instructions, look: $0.look, personality: $0.personality, wantsProject: $0.wantsProject) },
+            personalities: Personalities.shared.all.map { .init(id: $0.id, name: $0.name, description: $0.description, custom: $0.isCustom) },
+            looks: .init(colors: BotLook.Tint.allCases.map(\.rawValue), shapes: BotLook.Form.allCases.map(\.rawValue), faces: BotLook.Face.allCases.map(\.rawValue)),
+            startingModel: starting,
+            projects: (workspace?.projects ?? []).map { .init(directory: $0.directory, name: $0.name, machine: RemoteFolder.machine(of: $0.directory)) })
+        return (try? JSONEncoder().encode(listed)) ?? Data()
+    }
+
+    /// `POST kuvo/bots`: a bot made as New Bot makes it, `{name, look?, personality?, model?,
+    /// machine?, project?, template?}`. A project on a machine makes it there. From a template it
+    /// waits for you, with the template's job as `firstMessage` for your composer; otherwise it
+    /// writes first. Answers 201 `{bot, firstMessage}`; 400 for what's missing or unknown, 409
+    /// while its machine isn't connected, 422 for a model that can't run there, 503 when it
+    /// couldn't be made.
+    func makeBot(_ body: Data) async -> (Int, Data) {
+        struct Given: Decodable {
+            var name: String?, look: BotLook?, personality: String?, model: ModelRef?, machine: String?, project: String?, template: String?
+        }
+        guard let bots, let app = bots.app else { return (503, Self.message("Bots aren’t ready yet. Try again in a moment.")) }
+        guard let given = try? JSONDecoder().decode(Given.self, from: body) else { return (400, Self.message("That isn’t a bot to make.")) }
+        let name = Bots.oneLine(given.name ?? "")
+        guard !name.isEmpty else { return (400, Self.message("A bot needs a name.")) }
+        var template: BotTemplate?
+        if let id = given.template {
+            guard let found = BotTemplate.all.first(where: { $0.id == id }) else { return (400, Self.message("There’s no template “\(id)”.")) }
+            template = found
+        }
+        let personality = given.personality ?? template?.personality
+        if let personality, Personalities.shared.personality(personality) == nil { return (400, Self.message("There’s no personality “\(personality)”.")) }
+        // Where it lives: its project's computer, or the one picked.
+        var machine = given.machine
+        if let project = given.project {
+            guard let found = workspace?.projects.first(where: { $0.directory == project }) else { return (400, Self.message("That project isn’t in Kuvo Code.")) }
+            machine = RemoteFolder.machine(of: found.directory)
+        }
+        let place = machine.map { id in app.machines.list.first { $0.id == id }?.name ?? id }
+        if let machine {
+            guard app.machines.list.contains(where: { $0.id == machine }) else { return (400, Self.message("There’s no machine “\(machine)”.")) }
+            guard app.machines.engine(machine)?.isReady == true else { return (409, Self.message("\(place ?? machine) isn’t connected. Connect to it, then try again.")) }
+        } else if app.workspace.api == nil {
+            return (503, Self.message("The engine isn’t running."))
+        }
+        let catalog = machine.flatMap { app.machines.engine($0)?.catalog } ?? app.catalog
+        if let model = given.model {
+            guard ModelScope.on(machine: machine).allows(model.providerID) else { return (422, Self.message("That model can’t run on \(place ?? "this Mac"): choose another.")) }
+            if catalog.isUnavailable(model) { return (422, Self.message(catalog.unavailable(model, on: place))) }
+        }
+        do {
+            let bot = try await bots.create(name: name, look: given.look ?? template?.look ?? .random(), personality: personality, model: given.model, machine: machine, project: given.project)
+            let first = template.map { BotTemplate.firstMessage(job: $0.job, instructions: $0.instructions) }
+            if first == nil { Task { await bots.greet(bot) } }
+            struct Made: Encodable {
+                var bot: BotEntry
+                var firstMessage: String?
+                func encode(to encoder: Encoder) throws {
+                    var container = encoder.container(keyedBy: CodingKeys.self)
+                    try container.encode(bot, forKey: .bot)
+                    try container.encode(firstMessage, forKey: .firstMessage)
+                }
+                enum CodingKeys: String, CodingKey { case bot, firstMessage }
+            }
+            return (201, (try? JSONEncoder().encode(Made(bot: entry(bot), firstMessage: first))) ?? Data())
+        } catch Bots.Failure.notConnected(let machineName) {
+            return (409, Self.message("\(machineName) isn’t connected. Connect to it, then try again."))
+        } catch {
+            return (503, Self.message(error.localizedDescription))
+        }
+    }
+
+    /// `POST kuvo/groups`: a group chat made as New Group Chat makes it, on this Mac, `{name,
+    /// members, purpose?}` (members by bot id). Answers 201 `{group}`, as `kuvo/groups` lists it;
+    /// 400 without a name or two bots, 404 for a bot that isn't there.
+    func makeGroup(_ body: Data) async -> (Int, Data) {
+        struct Given: Decodable { var name: String?, members: [String]?, purpose: String? }
+        guard let groups, let bots else { return (503, Self.message("Group chats aren’t ready yet. Try again in a moment.")) }
+        guard let given = try? JSONDecoder().decode(Given.self, from: body) else { return (400, Self.message("That isn’t a group chat to make.")) }
+        let name = Bots.oneLine(given.name ?? "")
+        guard !name.isEmpty else { return (400, Self.message("A group chat needs a name.")) }
+        var members: [String] = []
+        for id in given.members ?? [] where !members.contains(id) { members.append(id) }
+        guard members.count >= 2 else { return (400, Self.message("A group chat needs at least two bots.")) }
+        if let missing = members.first(where: { bots.bot($0) == nil }) { return (404, Self.message("There’s no bot “\(missing)”.")) }
+        let purpose = given.purpose?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let group = groups.create(name: name, purpose: purpose?.isEmpty == false ? purpose : nil, members: members)
+        return (201, (try? Self.groupEncoder.encode(["group": entry(group, in: groups)])) ?? Data())
     }
 
     /// What a phone does in a chat, as in the window: writes to it (`{"text"}`), stops it, lets it

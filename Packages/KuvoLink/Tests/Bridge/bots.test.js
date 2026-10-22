@@ -101,7 +101,13 @@ test("kuvo/bots lists the machine's described bots, each as its folder is now", 
     job: "Watches the build", paused: true, wakes: 1792000100, watching: 1, agents: true,
   });
   assert.equal("wakes" in answer.json.bots[0], false, "none waiting: left out, as the Mac leaves it out");
-  assert.equal((await ask(handle, "POST", "kuvo/bots")).status, 405);
+  // Made from the Mac, which keeps their list.
+  for (const [method, route] of [["POST", "kuvo/bots"], ["GET", "kuvo/bots/templates"], ["POST", "kuvo/groups"]]) {
+    const refused = await ask(handle, method, route);
+    assert.equal(refused.status, 409, route);
+    assert.equal(refused.json.message, "Make it from your Mac; it can live here.");
+  }
+  assert.equal((await ask(handle, "PUT", "kuvo/bots")).status, 405);
 });
 
 test("kuvo/wakes reads a bot's or a session's wake-ups, watches and pause", async () => {

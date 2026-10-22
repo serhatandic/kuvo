@@ -322,6 +322,28 @@ itself. A host serves:
   closed too: their name, look and job as the Mac last wrote them there (`bot.json`, which the
   Mac writes when they change and each time it connects; one it hasn't written yet isn't
   listed). For a machine's bot, its machine's list is the newer while it answers.
+- On a Mac, making a bot as New Bot does. `GET kuvo/bots/templates` is what New Bot offers:
+  `{"templates": [{id, name, job, instructions, look, personality, wantsProject}],
+  "personalities": [{id, name, description, custom}], "looks": {colors, shapes, faces},
+  "startingModel": {"mac": {providerID, id, variant} | null, "<machine id>": … | null},
+  "projects": [{directory, name, machine}]}`. A template's `personality` and a project's
+  `machine` (null for the Mac) are left out when there's none. `startingModel`'s keys are the
+  places a bot can live (the Mac and each machine), each with the model New Bot starts with
+  there. `POST kuvo/bots` with `{name, look?, personality?, model?, machine?, project?,
+  template?}` makes one: `personality` by id (`preset.*`, or `custom.*` for one you made);
+  without `look` or `personality`, the template's, or a random look; without `model`, that
+  place's starting model; a `project` on a machine makes it there (`machine` is then ignored).
+  It answers `201 {"bot": <as kuvo/bots lists one>, "firstMessage"}`: from a template, the bot
+  waits, and `firstMessage` is its job for your composer, to edit and send; otherwise it's null
+  and the bot writes first. Errors are `{"message"}`: 400 for a missing name or an unknown
+  template, personality, machine or project; 409 while its machine isn't connected; 422 for a
+  model that can't run there (its account isn't signed in there); 503 when it couldn't be made.
+- On a Mac, `POST kuvo/groups` with `{name, members, purpose?}` (members by bot `id`, at least
+  two) makes a group chat on the Mac, as New Group Chat does: `201 {"group": <as kuvo/groups
+  lists one>}`, 400 `{"message"}` without a name or two bots, 404 `{"message"}` for a bot that
+  isn't there. Moving it to a machine is the Mac's Move to Computer. A machine's bridge (from
+  0.9.4) answers these three with `409 {"message": "Make it from your Mac; it can live here."}`:
+  the Mac keeps the list of bots and chats.
 - On a Mac, `kuvo/named`: who you can name with `&` in a message, as the Mac's composer
   offers them: `{"agents": [{session, name, kind, machine, project, about}]}`, every bot
   (`kind: "bot"`, `about` its job) then the latest sessions with a title (`kind: "session"`,

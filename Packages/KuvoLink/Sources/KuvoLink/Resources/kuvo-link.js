@@ -702,6 +702,11 @@ export function engineHandler(readEngine = readEngineFile, info = {}, readBridge
       yield { body: Buffer.from(JSON.stringify({ credentials: listed })) };
       return;
     }
+    // New bots and chats are the Mac's to make (it keeps their list); one can live here.
+    const route = request.path.split("?")[0];
+    if (route === "kuvo/bots/templates" || (request.method.toUpperCase() === "POST" && (route === "kuvo/bots" || route === "kuvo/groups"))) {
+      return yield* json(409, { message: "Make it from your Mac; it can live here." });
+    }
     // The group chats that live here, as the Mac answers its own (`kuvo/groups`), from the
     // coding agents' bridge, which runs them.
     const group = request.path.split("?")[0].match(GROUP_ROUTE);
