@@ -11,21 +11,27 @@ import Testing
 @MainActor
 @Suite(.serialized) struct PhoneAwareTests {
     let engine = StubEngine(port: 47995)
+    /// The coding agents' bridge, beside it.
+    let bridge = StubEngine(port: 47994, alongside: true)
     let link = PhoneLink()
 
     init() {
         engine.on("POST", "/api/session/ses_1/prompt", json: [:])
+        bridge.on("POST", "/api/session/ses_2/prompt", json: [:])
     }
 
-    private func send(_ text: String) async throws -> String? {
+    private func send(_ text: String, to path: String = "api/session/ses_1/prompt") async throws -> String? {
         let body = try JSONSerialization.data(withJSONObject: ["id": "msg_1", "text": text])
-        let request = LinkRequest(method: "POST", path: "api/session/ses_1/prompt", headers: ["content-type": "application/json"], body: body)
-        for try await _ in PhoneLink.respond(to: request, link: link, engine: URL(string: "http://127.0.0.1:47995/")!, password: nil, agents: nil) {}
-        return engine.requests("POST", "/api/session/ses_1/prompt").last?.body["text"] as? String
+        let request = LinkRequest(method: "POST", path: path, headers: ["content-type": "application/json"], body: body)
+        let agents = OutsideAgents.Address()
+        agents.endpoint = ServerEndpoint(url: URL(string: "http://127.0.0.1:47994")!, password: "agents")
+        for try await _ in PhoneLink.respond(to: request, link: link, engine: URL(string: "http://127.0.0.1:47995/")!, password: nil, agents: agents) {}
+        let stub = path.hasPrefix("kuvo/agents/") ? bridge : engine
+        return stub.requests("POST", "/" + path.replacingOccurrences(of: "kuvo/agents/", with: "")).last?.body["text"] as? String
     }
 
     @Test func whatAPhoneSendsSaysSoAndYourBubbleDoesnt() async throws {
-        defer { engine.stop() }
+        defer { engine.stop(); bridge.stop() }
         let sent = try #require(try await send("What's in the report?"))
         #expect(sent.hasPrefix("What's in the report?\n\n<from-phone>\n\(FromPhone.heading)\n"))
         #expect(sent.hasSuffix("</from-phone>") && sent.contains("show_file"))
@@ -36,17 +42,20 @@ import Testing
         #expect(FromPhone.adding(to: sent) == sent)
         // Words that only talk about the block keep it.
         #expect(!FromPhone.isFromPhone("What does <from-phone> mean?"))
+        // To a conversation with a coding agent too, through its bridge.
+        let toAgent = try #require(try await send("Run the tests", to: "kuvo/agents/api/session/ses_2/prompt"))
+        #expect(toAgent.hasPrefix("Run the tests\n\n<from-phone>\n") && FromPhone.isFromPhone(toAgent))
     }
 
     /// A machine's bridge, with the Mac closed, says it in the same words.
     @Test func aMachineSaysItTheSameWay() throws {
-        defer { engine.stop() }
+        defer { engine.stop(); bridge.stop() }
         let script = try String(decoding: Bridge.script, as: UTF8.self)
         #expect(script.contains(#"["<from-phone>", "\#(FromPhone.heading)", "\#(FromPhone.advice)", "</from-phone>"]"#))
     }
 
     @Test func showFileChecksItsAFile() throws {
-        defer { engine.stop() }
+        defer { engine.stop(); bridge.stop() }
         let folder = AppInfo.testRoot.appending(path: "PhoneAware/\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
