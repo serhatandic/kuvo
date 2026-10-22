@@ -21,7 +21,7 @@ struct FieldMentions: ViewModifier {
 }
 
 /// Styles the field editor of a field with `FieldMentions`, and takes its faces away when the
-/// editor moves on to another field.
+/// editor moves on to another field. Backspace right after a name there deletes the whole name.
 @MainActor final class FieldMentionStyle {
     static let shared = FieldMentionStyle()
 
@@ -31,9 +31,17 @@ struct FieldMentions: ViewModifier {
     }
 
     private var observers: [NSObjectProtocol] = []
+    private var keys: Any?
 
     private func start() {
         guard observers.isEmpty else { return }
+        // Backspace (with no modifier: ⌥ and ⌘ take a word or the line), before the field has it.
+        keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 51, event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function]).isEmpty {
+                MainActor.assumeIsolated { FieldMentionStyle.shared.selectNameBeforeCaret() }
+            }
+            return event
+        }
         let center = NotificationCenter.default
         // Into a field: its editor's caret is set.
         observers.append(center.addObserver(forName: NSTextView.didChangeSelectionNotification, object: nil, queue: .main) { note in
@@ -132,6 +140,22 @@ struct FieldMentions: ViewModifier {
             face.frame = NSRect(x: rect.minX, y: rect.midY - size / 2, width: size, height: size)
             editor.addSubview(face)
         }
+    }
+
+    /// Backspace right after a name "&" made, in a field with `FieldMentions`: the whole name is
+    /// selected, so the key takes it away at once, as one thing.
+    private func selectNameBeforeCaret() {
+        guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isFieldEditor, !editor.hasMarkedText() else { return }
+        let text = editor.string
+        guard text.contains(AgentReferences.trigger), texts.values.contains(text) else { return }
+        let references = MessageMentions.agents(namedIn: text).map(\.reference)
+        if let name = Self.name(endingAt: editor.selectedRange(), in: text, references: references) { editor.setSelectedRange(name) }
+    }
+
+    /// The name that ends where the caret is (nothing selected), whole.
+    static func name(endingAt caret: NSRange, in text: String, references: [AgentReferences.Reference]) -> NSRange? {
+        guard caret.length == 0 else { return nil }
+        return AgentReferences.find(in: text, references: references).lazy.map { NSRange($0.range, in: text) }.first { $0.upperBound == caret.location }
     }
 
     /// A conversation's mark, as in a sent message.
