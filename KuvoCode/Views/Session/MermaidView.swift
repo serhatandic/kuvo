@@ -16,6 +16,8 @@ final class MermaidView: NSView {
     private let toggle = ReplyChipButton(title: "Code", symbol: "curlybraces", widest: "Diagram")
 
     private var shown: (source: String, dark: Bool)?
+    /// The look the code was last shown in.
+    private var shownStyle: ReplyDocument.Style?
     private var error: String?
     private var showsCode = false
     /// How tall the diagram is, as it was drawn.
@@ -57,8 +59,16 @@ final class MermaidView: NSView {
     }
 
     func show(source: String, style: ReplyDocument.Style) {
-        guard shown?.source != source || shown?.dark != style.dark else { return }
         let sourceChanged = shown?.source != source
+        let redraws = sourceChanged || shown?.dark != style.dark
+        // Another text size or typeface: the code shows in it, and the diagram stays as it is.
+        guard redraws || shownStyle != style else { return }
+        shownStyle = style
+        guard redraws else {
+            code.show(code: source, language: "mermaid", marks: [], style: style)
+            changed()
+            return
+        }
         shown = (source, style.dark)
         if sourceChanged {
             error = nil
@@ -121,7 +131,8 @@ final class MermaidView: NSView {
 
     func height(for width: CGFloat) -> CGFloat {
         if isShowingCode {
-            return Self.bar + problemHeight(for: width) + code.height(for: width)
+            // What's wrong is at the top, in the button bar's place.
+            return (error != nil ? 0 : Self.bar) + problemHeight(for: width) + code.height(for: width)
         }
         return Self.bar + (diagramHeight > 0 ? diagramHeight : Self.placeholder)
     }
@@ -199,6 +210,8 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
         web = WKWebView(frame: NSRect(x: 0, y: 0, width: 600, height: 400), configuration: configuration)
         super.init()
         kept.countLimit = 60
+        // Tall, wide pictures add up: about 64 MB of them at most.
+        kept.totalCostLimit = 64 << 20
         web.setValue(false, forKey: "drawsBackground")
         web.navigationDelegate = self
         load()
@@ -229,7 +242,7 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
         } onCancel: {
             Task { @MainActor in job.isCancelled = true }
         }
-        if let outcome, case .drawn = outcome { kept.setObject(Kept(outcome), forKey: key as NSString) }
+        if let outcome, case .drawn(let image) = outcome { kept.setObject(Kept(outcome), forKey: key as NSString, cost: Self.bytes(of: image)) }
         return outcome
     }
 
@@ -253,11 +266,15 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
         }
         guard isLoaded else { return .failed("Mermaid didn't load.") }
         web.frame = NSRect(x: 0, y: 0, width: job.width, height: 400)
-        let arguments: [String: Any] = ["code": job.source, "dark": job.dark]
-        let answer = try? await web.callAsyncJavaScript("return await draw(code, dark)", arguments: arguments, in: nil, contentWorld: .page)
-        guard let result = answer as? [String: Any] else { return .failed("The page didn't answer.") }
-        if let message = result["error"] as? String { return .failed(message) }
-        guard let height = (result["height"] as? Double).map({ CGFloat($0) }), height > 0 else { return .failed("It has nothing to show.") }
+        // Given up on after a while: a diagram Mermaid never finishes would hold up every other
+        // one. The page is loaded again, which stops it.
+        guard let answer = await answer(to: job) else {
+            load()
+            return .failed("It took too long to draw.")
+        }
+        guard let result = answer else { return .failed("The page didn't answer.") }
+        if let message = result.error { return .failed(message) }
+        guard let height = result.height.map({ CGFloat($0) }), height > 0 else { return .failed("It has nothing to show.") }
         web.frame.size.height = height
         let configuration = WKSnapshotConfiguration()
         configuration.rect = CGRect(x: 0, y: 0, width: job.width, height: height)
@@ -267,7 +284,53 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
         return .drawn(image)
     }
 
+    /// What the page said of `job`, or nil if it didn't answer in time.
+    private func answer(to job: Job) async -> Answer?? {
+        let arguments: [String: Any] = ["code": job.source, "dark": job.dark]
+        let once = Once()
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Answer??, Never>) in
+            Task { [web] in
+                let result = try? await web.callAsyncJavaScript("return await draw(code, dark)", arguments: arguments, in: nil, contentWorld: .page) as? [String: Any]
+                if once.claim() { continuation.resume(returning: .some(result.map { Answer(error: $0["error"] as? String, height: $0["height"] as? Double) })) }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.patience) {
+                if once.claim() { continuation.resume(returning: nil) }
+            }
+        }
+    }
+
+    private struct Answer: Sendable {
+        var error: String?
+        var height: Double?
+    }
+
+    /// The first of two ways to finish (the answer, or the wait running out) to get there.
+    private final class Once {
+        private var done = false
+        func claim() -> Bool {
+            guard !done else { return false }
+            done = true
+            return true
+        }
+    }
+
+    private static let patience: TimeInterval = 10
+
+    /// What a picture takes in memory: its pixels, four bytes each.
+    private static func bytes(of image: NSImage) -> Int {
+        if let pixels = image.representations.first, pixels.pixelsWide > 0 { return pixels.pixelsWide * pixels.pixelsHigh * 4 }
+        return Int(image.size.width * image.size.height * 16)
+    }
+
     // MARK: WKNavigationDelegate
+
+    /// Its own page only: a diagram that tried to go elsewhere (a link, a script) goes nowhere, so
+    /// no diagram's code could be sent on to a page on the web.
+    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        let page = Bundle.main.url(forResource: "mermaid-page", withExtension: "html")?.resolvingSymlinksInPath()
+        let asked = action.request.url.flatMap { $0.isFileURL ? $0.resolvingSymlinksInPath() : nil }
+        decisionHandler(asked != nil && asked == page ? .allow : .cancel)
+    }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         isLoaded = true

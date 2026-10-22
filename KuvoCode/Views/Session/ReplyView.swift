@@ -84,7 +84,11 @@ final class ReplyPieceView: NSView {
 
     var openURL: (URL) -> Bool = { _ in false }
     var cardIsFocused = true {
-        didSet { if cardIsFocused != oldValue { for case let code as ReplyCodeView in segmentViews { code.cardIsFocused = cardIsFocused } } }
+        didSet {
+            guard cardIsFocused != oldValue else { return }
+            for case let code as ReplyCodeView in segmentViews { code.cardIsFocused = cardIsFocused }
+            for case let diagram as MermaidView in segmentViews { diagram.cardIsFocused = cardIsFocused }
+        }
     }
     /// What it shows: the Markdown, its look, and what else the parser draws into it (Find's
     /// marks, a group chat's faces), which change it as much as the words do.
