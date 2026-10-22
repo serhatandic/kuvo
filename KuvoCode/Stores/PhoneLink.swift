@@ -731,6 +731,10 @@ final class PhoneLink {
             return answerConfig(request)
         case "kuvo/mcp/catalog":
             return catalogJSON()
+        case "kuvo/personalities":
+            return answerPersonalities(nil, request)
+        case let path where path.hasPrefix("kuvo/personalities/"):
+            return answerPersonalities(String(path.dropFirst("kuvo/personalities/".count)).removingPercentEncoding ?? "", request)
         case "kuvo/keys" where request.method.uppercased() == "GET":
             return (200, (try? JSONSerialization.data(withJSONObject: ["keys": IntegrationKeys.shared])) ?? Data("{}".utf8))
         case let path where path.hasPrefix("kuvo/keys/"):
@@ -748,6 +752,45 @@ final class PhoneLink {
             return (202, Data("{}".utf8))
         default:
             return (404, Data())
+        }
+    }
+
+    // MARK: Personalities
+
+    /// `kuvo/personalities`: the personalities you made, this Mac's copy of the library (each
+    /// computer keeps one, and they meet as this Mac connects to a machine). GET lists them;
+    /// POST `{name, description}` makes one; PATCH `kuvo/personalities/<id>` changes its name or
+    /// description, and DELETE removes it. As a machine's bridge answers them.
+    private func answerPersonalities(_ id: String?, _ request: LinkRequest) -> (Int, Data) {
+        struct Listed: Encodable { var personalities: [Personality] }
+        let store = Personalities.shared
+        let body = (try? JSONSerialization.jsonObject(with: request.body) as? [String: Any]) ?? [:]
+        let encoded = { (value: any Encodable) in (try? JSONEncoder().encode(value)) ?? Data("{}".utf8) }
+        let plain = { (key: String) in (body[key] as? String).map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") } }
+        let incomplete = Self.message("A personality needs a name and a description.")
+        switch (request.method.uppercased(), id) {
+        case ("GET", nil):
+            return (200, encoded(Listed(personalities: store.custom)))
+        case ("POST", nil):
+            guard let name = plain("name"), !name.isEmpty, let description = (body["description"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !description.isEmpty else { return (400, incomplete) }
+            return (200, encoded(store.add(name: String(name.prefix(80)), description: String(description.prefix(2000)))))
+        case ("PATCH", let id?):
+            guard var personality = store.custom.first(where: { $0.id == id }) else { return (404, Data()) }
+            if let name = plain("name") { personality.name = String(name.prefix(80)) }
+            if let description = (body["description"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) { personality.description = String(description.prefix(2000)) }
+            guard !personality.name.isEmpty, !personality.description.isEmpty else { return (400, incomplete) }
+            store.update(personality)
+            let bots = bots
+            Task { await bots?.personalityChanged(id) }
+            return (200, encoded(store.personality(id) ?? personality))
+        case ("DELETE", let id?):
+            guard let personality = store.custom.first(where: { $0.id == id }) else { return (404, Data()) }
+            store.delete(personality)
+            let bots = bots
+            Task { await bots?.personalityChanged(id) }
+            return (200, Data("{}".utf8))
+        default:
+            return (405, Data())
         }
     }
 

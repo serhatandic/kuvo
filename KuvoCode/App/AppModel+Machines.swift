@@ -78,6 +78,8 @@ extension AppModel {
         // Each machine's settings are its own: its sessions, bots and group chats go by them.
         EngineConfig.machine = { [weak self] machine in self?.machines.engine(machine)?.config }
         EngineConfig.machines = { [weak self] in self?.machines.engines.values.map(\.config) ?? [] }
+        // Your personalities, one library on every computer.
+        Personalities.shared.onChange = { [weak self] in self?.personalitiesChanged() }
         workspace.onRunEnded = { [weak self] session in
             self?.bots.runEnded(session: session)
             // An ask its agent left in this Mac's browser has no one waiting for it now.
@@ -334,6 +336,8 @@ extension AppModel {
         if live(engine) { await BotKeys.applyAll(on: engine.machine.id, app: self) }
         // Bots it made while this Mac was away, taken in; and what it needs to make them itself.
         if live(engine) { await bots.adoptMade(on: engine.machine.id) }
+        // Your personalities, its copy and this Mac's met, before its kit says what they are.
+        if live(engine) { await syncPersonalities(with: engine) }
         if live(engine) { await bots.writeKit(on: engine.machine.id) }
         // What its bots are, in their folders there, for what runs there without this Mac.
         if live(engine) { await bots.describeAll(on: engine.machine.id) }
@@ -529,6 +533,32 @@ extension AppModel {
             // Machines keep their own settings (`MachineBox`): this Mac's stay here. What their
             // group chats go by (Ask First, what's denied).
             machineGroups.settingsChanged()
+        }
+    }
+
+    /// This Mac's copy of your personalities met with `engine`'s machine's: both end up as one
+    /// (see `Personalities`). One that changed here goes to the other machines too, and bots with
+    /// it hear its new words.
+    func syncPersonalities(with engine: MachineEngine) async {
+        guard live(engine), let met = try? await MachineBox.personalities(Personalities.shared.library, on: engine.machine.connection) else { return }
+        let changed = Personalities.shared.take(met)
+        guard !changed.isEmpty else { return }
+        personalitiesChanged(except: engine.machine.id)
+        for id in changed { await bots.personalityChanged(id) }
+    }
+
+    /// Your personalities changed here (made, changed or removed, or taken from one machine): the
+    /// machines connected now take them, with what their bots and group chats are told.
+    func personalitiesChanged(except machine: String? = nil) {
+        for engine in machines.engines.values where engine.machine.id != machine && engine.isReady {
+            engine.personalitiesSync?.cancel()
+            engine.personalitiesSync = Task { [weak self, weak engine] in
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, let engine, !Task.isCancelled, self.live(engine) else { return }
+                await self.syncPersonalities(with: engine)
+                await self.bots.writeKit(on: engine.machine.id)
+                await self.machineGroups.giveSettings(to: engine.machine.id)
+            }
         }
     }
 

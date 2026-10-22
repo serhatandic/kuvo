@@ -23,7 +23,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Goes up with every change, so `setup` replaces a running bridge that's older.
-export const BRIDGE_VERSION = "0.9.12";
+export const BRIDGE_VERSION = "0.9.13";
 const K = process.env.KUVO_HOME || path.join(os.homedir(), ".kuvo-code");
 const RUN = path.join(K, "run");
 export const LINK_FILE = path.join(RUN, "link.json");
@@ -819,6 +819,12 @@ export function engineHandler(readEngine = readEngineFile, info = {}, readBridge
     // New bots and group chats, made here as New Bot and New Group Chat make them on the Mac,
     // which takes them in when it next connects.
     const route = request.path.split("?")[0];
+    // The personalities you make, this machine's copy of the library.
+    const personality = route.match(/^kuvo\/personalities(?:\/([^/]+))?$/);
+    if (personality) {
+      const [status, value] = answerPersonalities(request.method.toUpperCase(), personality[1] === undefined ? undefined : decodeURIComponent(personality[1]), parsed(request.body));
+      return yield* json(status, value);
+    }
     if (route === "kuvo/bots/templates") {
       const kit = readKit();
       if (!kit) return yield* json(409, { message: "Connect to this machine from your Mac once, then try again." });
@@ -1435,7 +1441,7 @@ const plainName = text => String(text ?? "").replace(/[\u0000-\u001f\u007f\u200e
 export function botTemplates(kit, machine) {
   return {
     templates: kit.templates.map(({ firstMessage: _, ...template }) => template),
-    personalities: kit.personalities.map(({ instruction: _, ...personality }) => personality),
+    personalities: botPersonalities(kit).map(({ instruction: _, ...personality }) => personality),
     looks: kit.looks,
     startingModel: { [machine || "machine"]: kit.startingModel ?? null },
     projects: (kit.projects ?? []).map(project => ({ ...project, machine: machine || undefined })),
@@ -1477,7 +1483,7 @@ export async function makeBot(given, readEngine, readBridge, machine, signal) {
     if (!template) return no(400, `There’s no template “${given.template}”.`);
   }
   const personalityID = given.personality ?? template?.personality;
-  const personality = personalityID ? kit.personalities.find(each => each.id === personalityID) : undefined;
+  const personality = personalityID ? botPersonalities(kit).find(each => each.id === personalityID) : undefined;
   if (personalityID && !personality) return no(400, `There’s no personality “${personalityID}”.`);
   const project = given.project ?? undefined;
   if (project !== undefined && !(kit.projects ?? []).some(each => each.directory === project)) return no(400, "That project isn’t in Kuvo Code.");
@@ -2055,6 +2061,123 @@ async function watchAsks(tell) {
     } catch {}
     await sleep(2000);
   }
+}
+
+// ---- Personalities you make (PROTOCOL.md, "Personalities") ----
+// One library on every computer: each keeps its copy, and copies meet as a Mac connects (or as a
+// phone changes each): per personality, the newest change wins, a removal too, which stays noted
+// so no copy brings it back. Kuvo Code's own presets aren't in it; they come with the kit.
+
+const PERSONALITIES_FILE = path.join(K, "bots", "personalities.json");
+const PERSONALITIES_LOCK = path.join(RUN, ".personalities.lock");
+const PERSONALITY_ID = /^custom\.[A-Za-z0-9._-]{1,80}$/;
+// Removals noted, the newest kept.
+const MOST_REMOVALS = 500;
+
+const changedAt = entry => Number(entry?.removed ?? entry?.updated ?? 0) || 0;
+const isRemoval = entry => entry?.removed !== undefined;
+
+// One personality as kept: what's needed, plain and of a sane length; null for what isn't one.
+function keptPersonality(entry) {
+  if (!isObject(entry) || !PERSONALITY_ID.test(String(entry.id))) return null;
+  if (isRemoval(entry)) return Number.isFinite(Number(entry.removed)) ? { id: entry.id, removed: Number(entry.removed) } : null;
+  const name = plainName(entry.name).slice(0, 80);
+  const description = String(entry.description ?? "").trim().slice(0, 2000);
+  if (!name || !description) return null;
+  return { id: entry.id, name, description, symbol: typeof entry.symbol === "string" && entry.symbol ? entry.symbol.slice(0, 80) : "person.crop.circle", updated: Number(entry.updated) || 0 };
+}
+
+// The newer of two takes of one personality: a removal over a change made at the same moment,
+// else the one whose words sort last, so every copy picks the same.
+function newerTake(a, b) {
+  const at = changedAt(a), bt = changedAt(b);
+  if (at !== bt) return at > bt ? a : b;
+  if (isRemoval(a) !== isRemoval(b)) return isRemoval(a) ? a : b;
+  return `${a.name ?? ""}\n${a.description ?? ""}` >= `${b.name ?? ""}\n${b.description ?? ""}` ? a : b;
+}
+
+// Libraries as one: `{personalities, removed}`, in the order they were first seen.
+export function mergePersonalities(...libraries) {
+  const byID = new Map();
+  for (const library of libraries) {
+    for (const entry of [...(Array.isArray(library?.personalities) ? library.personalities : []), ...(Array.isArray(library?.removed) ? library.removed : [])]) {
+      const kept = keptPersonality(entry);
+      if (!kept) continue;
+      const had = byID.get(kept.id);
+      byID.set(kept.id, had ? newerTake(had, kept) : kept);
+    }
+  }
+  const all = [...byID.values()];
+  return {
+    personalities: all.filter(entry => !isRemoval(entry)),
+    removed: all.filter(isRemoval).sort((a, b) => b.removed - a.removed).slice(0, MOST_REMOVALS),
+  };
+}
+
+export function readPersonalities(file = PERSONALITIES_FILE) {
+  try {
+    return mergePersonalities(JSON.parse(fs.readFileSync(file, "utf8")));
+  } catch {
+    return { personalities: [], removed: [] };
+  }
+}
+
+// Changes this computer's copy under its lock: `change` gets it and gives it back changed.
+export function changePersonalities(change, file = PERSONALITIES_FILE, lock = PERSONALITIES_LOCK) {
+  return locked(lock, () => {
+    const library = mergePersonalities(change(readPersonalities(file)));
+    writePrivate(file, JSON.stringify({ kuvo: 1, ...library }, null, 2) + "\n");
+    return library;
+  });
+}
+
+// What a phone asks of the library (`kuvo/personalities`): `[status, value]`.
+export function answerPersonalities(method, id, body, file = PERSONALITIES_FILE, lock = PERSONALITIES_LOCK) {
+  const now = Date.now();
+  if (id === undefined) {
+    if (method === "GET") return [200, { personalities: readPersonalities(file).personalities }];
+    if (method !== "POST") return [405, {}];
+    const made = keptPersonality({ id: `custom.${crypto.randomUUID().toLowerCase()}`, name: body?.name, description: body?.description, updated: now });
+    if (!made) return [400, { message: "A personality needs a name and a description." }];
+    changePersonalities(library => ({ ...library, personalities: [...library.personalities, made] }), file, lock);
+    return [200, made];
+  }
+  if (!PERSONALITY_ID.test(id)) return [404, {}];
+  let found = null;
+  if (method === "PATCH") {
+    let refused = false;
+    changePersonalities(library => {
+      const kept = library.personalities.find(each => each.id === id);
+      if (!kept) return library;
+      const changed = keptPersonality({ ...kept, name: body?.name ?? kept.name, description: body?.description ?? kept.description, updated: Math.max(now, kept.updated + 1) });
+      if (!changed) { refused = true; return library; }
+      found = changed;
+      return { ...library, personalities: library.personalities.map(each => each.id === id ? changed : each) };
+    }, file, lock);
+    if (refused) return [400, { message: "A personality needs a name and a description." }];
+    return found ? [200, found] : [404, {}];
+  }
+  if (method === "DELETE") {
+    changePersonalities(library => {
+      const kept = library.personalities.find(each => each.id === id);
+      if (!kept) return library;
+      found = kept;
+      return { personalities: library.personalities.filter(each => each.id !== id), removed: [...library.removed, { id, removed: Math.max(now, kept.updated + 1) }] };
+    }, file, lock);
+    return found ? [200, {}] : [404, {}];
+  }
+  return [405, {}];
+}
+
+// The personalities a bot made here can have: the kit's presets, then the library's, each with
+// what the bot is told (`personalityWords`, as the Mac words it).
+export function botPersonalities(kit, library = readPersonalities()) {
+  const words = typeof kit.personalityWords === "string" ? kit.personalityWords : "Your personality: ⟦name⟧. ⟦description⟧";
+  const told = each => words.replaceAll("⟦name⟧", each.name).replaceAll("⟦description⟧", each.description);
+  const presets = kit.personalities.filter(each => !each.custom);
+  // A kit from before the library: its own, until the library has them.
+  const older = kit.personalities.filter(each => each.custom && !library.personalities.some(mine => mine.id === each.id) && !library.removed.some(gone => gone.id === each.id));
+  return [...presets, ...older, ...library.personalities.map(each => ({ id: each.id, name: each.name, description: each.description, custom: true, instruction: told(each) }))];
 }
 
 // ---- This machine's own settings (PROTOCOL.md, "kuvo/config") ----
@@ -2751,8 +2874,14 @@ async function box(command) {
       const value = await input();
       return say(setBoxKey(name, value.length ? value : null));
     }
+    case "personalities": {
+      // A Mac's copy met with this one's: both end up as one.
+      let given = null;
+      try { given = JSON.parse((await input()) || "null"); } catch {}
+      return say({ status: 200, ...changePersonalities(library => mergePersonalities(library, given)) });
+    }
     default:
-      console.error("Usage: kuvo-link.js box adopt | read | change | key <name>");
+      console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | personalities");
       process.exit(2);
   }
 }

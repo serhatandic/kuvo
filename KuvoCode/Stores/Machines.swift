@@ -89,6 +89,8 @@ final class MachineEngine {
     @ObservationIgnored var signInTurn: Task<Void, Never>?
     /// Starts it over with this Mac's settings once they've changed (`AppModel.keepSettingsCurrent`).
     @ObservationIgnored var settingsUpdate: Task<Void, Never>?
+    /// Your personalities met with its copy, a moment after one changes elsewhere.
+    @ObservationIgnored var personalitiesSync: Task<Void, Never>?
     /// Keeps its agents' list of everyone current, and brings their messages for agents
     /// elsewhere (`AgentMail`).
     @ObservationIgnored var agentSync: Task<Void, Never>?

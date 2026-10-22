@@ -1009,3 +1009,40 @@ test("a machine's settings become its own once: what it runs with now, its Mac's
     fs.rmSync(path.join(home, "box"), { recursive: true, force: true });
   }
 });
+
+test("personalities' libraries meet as the vectors say", () => {
+  for (const each of vectors("personalities.json").cases) {
+    assert.deepEqual(link.mergePersonalities(...each.libraries), each.expected, each.name);
+  }
+});
+
+test("a phone makes, changes and removes personalities in a machine's library; a bot made there can have them, told as the Mac words it", () => {
+  const file = path.join(home, "bots", "personalities-test.json");
+  const lock = path.join(home, "run", ".personalities-test.lock");
+  try {
+    assert.deepEqual(link.answerPersonalities("GET", undefined, undefined, file, lock), [200, { personalities: [] }]);
+    const [made, personality] = link.answerPersonalities("POST", undefined, { name: " Night  Owl ", description: "Works late, writes short." }, file, lock);
+    assert.equal(made, 200);
+    assert.match(personality.id, /^custom\./);
+    assert.equal(personality.name, "Night Owl");
+    assert.equal((fs.statSync(file).mode & 0o777), 0o600);
+    assert.equal(link.answerPersonalities("POST", undefined, { name: "No words" }, file, lock)[0], 400);
+    const [changed, after] = link.answerPersonalities("PATCH", personality.id, { description: "Works late." }, file, lock);
+    assert.equal(changed, 200);
+    assert.equal(after.description, "Works late.");
+    assert.ok(after.updated > personality.updated || after.updated === personality.updated + 1);
+    const kit = { personalities: [{ id: "preset.calm", name: "Calm", description: "Calm.", custom: false, instruction: "Be calm." }], personalityWords: "Your personality: ⟦name⟧. ⟦description⟧ Show it." };
+    const offered = link.botPersonalities(kit, link.readPersonalities(file));
+    assert.deepEqual(offered.map(each => each.id), ["preset.calm", personality.id]);
+    assert.equal(offered[1].instruction, "Your personality: Night Owl. Works late. Show it.");
+    // Removed: gone from the list, noted, and an older copy met with it doesn't bring it back.
+    assert.deepEqual(link.answerPersonalities("DELETE", personality.id, undefined, file, lock), [200, {}]);
+    assert.equal(link.answerPersonalities("DELETE", personality.id, undefined, file, lock)[0], 404);
+    const met = link.changePersonalities(library => link.mergePersonalities(library, { personalities: [personality] }), file, lock);
+    assert.deepEqual(met.personalities, []);
+    assert.equal(met.removed[0].id, personality.id);
+    assert.equal(link.answerPersonalities("PATCH", "preset.calm", { name: "x" }, file, lock)[0], 404);
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
+});

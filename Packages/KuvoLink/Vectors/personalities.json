@@ -1,0 +1,369 @@
+{
+ "about": "Personalities' libraries met (mergePersonalities in kuvo-link.js, Personalities.merged on the Mac): per personality the newest change wins, a removal over a change at the same moment, then the words that sort last; removals stay noted, newest first.",
+ "cases": [
+  {
+   "name": "the newest change wins",
+   "libraries": [
+    {
+     "personalities": [
+      {
+       "id": "custom.a",
+       "name": "Calm",
+       "description": "Old words.",
+       "symbol": "person.crop.circle",
+       "updated": 10
+      }
+     ]
+    },
+    {
+     "personalities": [
+      {
+       "id": "custom.a",
+       "name": "Calm",
+       "description": "New words.",
+       "symbol": "person.crop.circle",
+       "updated": 20
+      }
+     ]
+    }
+   ],
+   "expected": {
+    "personalities": [
+     {
+      "id": "custom.a",
+      "name": "Calm",
+      "description": "New words.",
+      "symbol": "person.crop.circle",
+      "updated": 20
+     }
+    ],
+    "removed": []
+   }
+  },
+  {
+   "name": "a newer removal wins, and stays noted",
+   "libraries": [
+    {
+     "personalities": [
+      {
+       "id": "custom.a",
+       "name": "Calm",
+       "description": "Words.",
+       "symbol": "person.crop.circle",
+       "updated": 20
+      }
+     ]
+    },
+    {
+     "removed": [
+      {
+       "id": "custom.a",
+       "removed": 30
+      }
+     ]
+    }
+   ],
+   "expected": {
+    "personalities": [],
+    "removed": [
+     {
+      "id": "custom.a",
+      "removed": 30
+     }
+    ]
+   }
+  },
+  {
+   "name": "an older copy doesn't bring a removed one back",
+   "libraries": [
+    {
+     "removed": [
+      {
+       "id": "custom.a",
+       "removed": 30
+      }
+     ]
+    },
+    {
+     "personalities": [
+      {
+       "id": "custom.a",
+       "name": "Calm",
+       "description": "Words.",
+       "symbol": "person.crop.circle",
+       "updated": 20
+      }
+     ]
+    }
+   ],
+   "expected": {
+    "personalities": [],
+    "removed": [
+     {
+      "id": "custom.a",
+      "removed": 30
+     }
+    ]
+   }
+  },
+  {
+   "name": "a change made after the removal brings it back",
+   "libraries": [
+    {
+     "removed": [
+      {
+       "id": "custom.a",
+       "removed": 30
+      }
+     ]
+    },
+    {
+     "personalities": [
+      {
+       "id": "custom.a",
+       "name": "Calm",
+       "description": "Changed since.",
+       "symbol": "person.crop.circle",
+       "updated": 40
+      }
+     ]
+    }
+   ],
+   "expected": {
+    "personalities": [
+     {
+      "id": "custom.a",
+      "name": "Calm",
+      "description": "Changed since.",
+      "symbol": "person.crop.circle",
+      "updated": 40
+     }
+    ],
+    "removed": []
+   }
+  },
+  {
+   "name": "at the same moment, the removal",
+   "libraries": [
+    {
+     "personalities": [
+      {
+       "id": "custom.a",
+       "name": "Calm",
+       "description": "Words.",
+       "symbol": "person.crop.circle",
+       "updated": 20
+      }
+     ]
+    },
+    {
+     "removed": [
+      {
+       "id": "custom.a",
+       "removed": 20
+      }
+     ]
+    }
+   ],
+   "expected": {
+    "personalities": [],
+    "removed": [
+     {
+      "id": "custom.a",
+      "removed": 20
+     }
+    ]
+   }
+  },
+  {
+   "name": "two changes at the same moment: the words that sort last, whichever comes first",
+   "libraries": [
+    {
+     "personalities": [
+      {
+       "id": "custom.a",
+       "name": "Beta",
+       "description": "Words.",
+       "symbol": "person.crop.circle",
+       "updated": 20
+      }
+     ]
+    },
+    {
+     "personalities": [
+      {
+       "id": "custom.a",
+       "name": "Alpha",
+       "description": "Words.",
+       "symbol": "person.crop.circle",
+       "updated": 20
+      }
+     ]
+    }
+   ],
+   "expected": {
+    "personalities": [
+     {
+      "id": "custom.a",
+      "name": "Beta",
+      "description": "Words.",
+      "symbol": "person.crop.circle",
+      "updated": 20
+     }
+    ],
+    "removed": []
+   }
+  },
+  {
+   "name": "the same, the other way round",
+   "libraries": [
+    {
+     "personalities": [
+      {
+       "id": "custom.a",
+       "name": "Alpha",
+       "description": "Words.",
+       "symbol": "person.crop.circle",
+       "updated": 20
+      }
+     ]
+    },
+    {
+     "personalities": [
+      {
+       "id": "custom.a",
+       "name": "Beta",
+       "description": "Words.",
+       "symbol": "person.crop.circle",
+       "updated": 20
+      }
+     ]
+    }
+   ],
+   "expected": {
+    "personalities": [
+     {
+      "id": "custom.a",
+      "name": "Beta",
+      "description": "Words.",
+      "symbol": "person.crop.circle",
+      "updated": 20
+     }
+    ],
+    "removed": []
+   }
+  },
+  {
+   "name": "each copy's own, in the order first seen; Kuvo Code's presets and what isn't one left out",
+   "libraries": [
+    {
+     "personalities": [
+      {
+       "id": "custom.b",
+       "name": "Bold",
+       "description": "Says it.",
+       "symbol": "person.crop.circle",
+       "updated": 5
+      },
+      {
+       "id": "preset.straight",
+       "name": "Straight Shooter",
+       "description": "Direct.",
+       "updated": 1
+      },
+      {
+       "id": "custom.c",
+       "name": "No words",
+       "updated": 3
+      }
+     ]
+    },
+    {
+     "personalities": [
+      {
+       "id": "custom.a",
+       "name": "Calm",
+       "description": "Words.",
+       "symbol": "person.crop.circle",
+       "updated": 7
+      },
+      {
+       "id": "custom.d",
+       "name": "Kind",
+       "description": "Gentle.",
+       "updated": 2
+      }
+     ]
+    }
+   ],
+   "expected": {
+    "personalities": [
+     {
+      "id": "custom.b",
+      "name": "Bold",
+      "description": "Says it.",
+      "symbol": "person.crop.circle",
+      "updated": 5
+     },
+     {
+      "id": "custom.a",
+      "name": "Calm",
+      "description": "Words.",
+      "symbol": "person.crop.circle",
+      "updated": 7
+     },
+     {
+      "id": "custom.d",
+      "name": "Kind",
+      "description": "Gentle.",
+      "symbol": "person.crop.circle",
+      "updated": 2
+     }
+    ],
+    "removed": []
+   }
+  },
+  {
+   "name": "removals, newest first",
+   "libraries": [
+    {
+     "removed": [
+      {
+       "id": "custom.x",
+       "removed": 10
+      },
+      {
+       "id": "custom.y",
+       "removed": 30
+      }
+     ]
+    },
+    {
+     "removed": [
+      {
+       "id": "custom.z",
+       "removed": 20
+      }
+     ]
+    }
+   ],
+   "expected": {
+    "personalities": [],
+    "removed": [
+     {
+      "id": "custom.y",
+      "removed": 30
+     },
+     {
+      "id": "custom.z",
+      "removed": 20
+     },
+     {
+      "id": "custom.x",
+      "removed": 10
+     }
+    ]
+   }
+  }
+ ]
+}

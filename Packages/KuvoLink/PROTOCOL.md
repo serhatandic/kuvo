@@ -524,6 +524,29 @@ then on a Mac's start sends none of its own, and a machine's settings are change
 bridge's script, the same way from a Mac (`kuvo-link.js box read | change | key`, over SSH) and
 from a phone (`kuvo/config`), one change at a time under `run/.config.lock`.
 
+### Personalities
+
+The personalities you make are one library on every computer: each keeps its copy (a Mac in
+its data folder, a machine in `~/.kuvo-code/bots/personalities.json`, from bridge 0.9.13), and
+copies meet as a Mac connects to a machine (`kuvo-link.js box personalities`, over SSH) or as a
+personality changes on the Mac. Per personality, the newest change wins (`updated`, milliseconds
+since 1970, made newer than the change before it whatever the clock says); a removal over a change
+at the same moment, then the words that sort last; a removal stays noted (`removed`, the last
+500), so no copy brings it back. Held to `Vectors/personalities.json` (KuvoLink's
+`PersonalityLibraries`, the bridge's `mergePersonalities`). Kuvo Code's own presets (`preset.…`)
+aren't in it.
+
+- `GET kuvo/personalities`: `{"personalities": [{id, name, description, symbol, updated}]}`, the
+  ones you made, on the computer asked.
+- `POST kuvo/personalities` with `{name, description}` makes one (`custom.<uuid>`) and answers
+  with it; 400 without both.
+- `PATCH kuvo/personalities/<id>` with `{name?, description?}` changes one and answers with it;
+  `DELETE` removes it. 404 for one that isn't there, or a preset.
+
+A change on one computer reaches the others as the Mac next meets them; to have it everywhere at
+once, make it on each computer you reach. A bot made on a machine can have one there at once: its
+`kuvo/bots/templates` lists them, told as the Mac words them (the kit's `personalityWords`).
+
 ### Paired phones
 
 Each computer keeps the phones paired with it, and the ones removed, by the pairing they came in

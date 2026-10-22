@@ -21,6 +21,8 @@ enum MachineBox {
         var seeded: Bool?
         var settings: [String: JSONValue]?
         var own: Bool?
+        var personalities: [Personality]?
+        var removed: [Personalities.Removal]?
         var message: String?
     }
 
@@ -117,6 +119,13 @@ enum MachineBox {
         struct Changes: Encodable { var changes: [Change] }
         let body = Changes(changes: changes.map { Change(path: $0.path, value: $0.value ?? .null) })
         return try await run("change", input: try JSONEncoder().encode(body), on: connection).settings ?? [:]
+    }
+
+    /// This Mac's copy of your personalities met with the machine's (the tool's
+    /// `mergePersonalities`): both, as one, which the machine keeps too.
+    static func personalities(_ library: Personalities.Library, on connection: SSHConnection) async throws -> Personalities.Library {
+        let answer = try await run("personalities", input: try JSONEncoder().encode(library), on: connection)
+        return Personalities.Library(personalities: answer.personalities ?? [], removed: answer.removed ?? [])
     }
 
     /// Sets one of the machine's own keys (an integration's), or removes it (nil).

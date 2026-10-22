@@ -1077,6 +1077,8 @@ extension Bots {
         var kuvo = 1
         var templates: [Template]
         var personalities: [Personality]
+        /// What a bot is told of a personality made there, by its name and description.
+        var personalityWords = KuvoCode.Personality.words
         var looks: Looks
         var startingModel: ModelRef?
         var projects: [Project]
