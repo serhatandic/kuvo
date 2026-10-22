@@ -1,0 +1,227 @@
+import Foundation
+import Testing
+@testable import OpenCodeKit
+
+/// Wake-ups on a machine with the Mac closed: every minute its watchdog runs `kuvo-wake fire`,
+/// which sends what's due to each bot's or session's conversation, once, on the engine or, for a
+/// coding agent's, on the agents bridge. A repeat comes back at its next time, and isn't queued
+/// again while the last one waits; a paused bot's wait; a session the engine no longer has goes
+/// to the trash, and a subagent's go to the conversation that started it. Run with this Mac's
+/// sh (and dash), with a stand-in `curl` for the engine and the bridge, answering from files.
+@Suite struct MachineWakeUpsTests {
+    let k: URL
+    var bots: URL { k.appending(path: "bots") }
+    var sessions: URL { k.appending(path: "wakes") }
+
+    static let enginePort = 41001
+    static let bridgePort = 41002
+
+    init() throws {
+        k = FileManager.default.temporaryDirectory.appending(path: "machine-wakes-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: k.appending(path: "run"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: k.appending(path: "answers"), withIntermediateDirectories: true)
+        let installed = try sh(Wakes.installScript)
+        #expect(installed.status == 0, "\(installed.output)")
+        try write(k.appending(path: "run/engine.json"), #"{"pid":1,"port":\#(Self.enginePort),"password":"engine-pass","version":"x","notes":{},"agents":{"port":9,"password":"nested"}}"#)
+        // The engine or the bridge, behind curl: answers what's in `answers` (by port, method and
+        // path; 404 for the rest), and notes each request with what it sent.
+        let bin = k.appending(path: "testbin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try write(bin.appending(path: "curl"), #"""
+            #!/bin/sh
+            cat >/dev/null
+            url= body= method=GET write= fail=
+            while [ $# -gt 0 ]; do
+              case "$1" in
+                --data-binary) method=POST; body=$2; shift ;;
+                -w) write=$2; shift ;;
+                -H|-K|-m|--noproxy) shift ;;
+                -*f*) fail=1 ;;
+                http://*) url=$1 ;;
+              esac
+              shift
+            done
+            rest=${url#http://127.0.0.1:}; port=${rest%%/*}; path=${rest#*/}
+            printf '%s %s %s %s\n' "$port" "$method" "$path" "$body" >>"$K/requests"
+            key=$(printf '%s %s %s' "$port" "$method" "$path" | tr '/ ?' '___')
+            # A prompt is taken, unless an answer says otherwise; the rest isn't there.
+            code=404; out=
+            case "$method $path" in "POST "*/prompt) code=200; out='{}' ;; esac
+            if [ -f "$K/answers/$key" ]; then out=$(cat "$K/answers/$key"); code=$(cat "$K/answers/$key.code" 2>/dev/null || echo 200); fi
+            if [ -n "$fail" ] && [ "$code" -ge 400 ]; then exit 22; fi
+            printf '%s' "$out"
+            case "$write" in *http_code*) printf '\n%s' "$code" ;; esac
+            exit 0
+            """#, executable: true)
+    }
+
+    private func cleanUp() { try? FileManager.default.removeItem(at: k) }
+
+    private func write(_ file: URL, _ text: String, executable: Bool = false) throws {
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(text.utf8).write(to: file)
+        if executable { try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path) }
+    }
+
+    @discardableResult
+    private func sh(_ script: String, shell: String = "/bin/sh") throws -> (status: Int32, output: String) {
+        let process = Process()
+        process.executableURL = URL(filePath: shell)
+        process.arguments = ["-c", script]
+        process.currentDirectoryURL = k
+        process.environment = ["PATH": "\(k.path)/testbin:/usr/bin:/bin", "K": k.path, "TZ": "UTC"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+    }
+
+    /// One minute of the watchdog's: the wake-ups that are due, sent.
+    private func fire(shell: String = "/bin/sh") throws {
+        let fired = try sh(#""$K/bin/kuvo-wake" fire "$K/bots" "$K/run/engine.json""#, shell: shell)
+        #expect(fired.status == 0, "\(fired.output)")
+    }
+
+    /// What `port` answers `method path` with.
+    private func answer(_ port: Int, _ method: String, _ path: String, _ body: String, code: Int = 200) throws {
+        let key = "\(port) \(method) \(path)".map { "/ ?".contains($0) ? "_" : String($0) }.joined()
+        try write(k.appending(path: "answers/\(key)"), body)
+        try write(k.appending(path: "answers/\(key).code"), "\(code)")
+    }
+
+    /// The prompts sent, as `port session text`.
+    private func prompts() -> [String] {
+        let log = (try? String(contentsOf: k.appending(path: "requests"), encoding: .utf8)) ?? ""
+        return log.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: " ", maxSplits: 3).map(String.init)
+            guard parts.count == 4, parts[1] == "POST", parts[2].hasSuffix("/prompt") else { return nil }
+            let session = parts[2].split(separator: "/")[2]
+            let text = (try? JSONSerialization.jsonObject(with: Data(parts[3].utf8)) as? [String: Any])?["text"] as? String ?? "?"
+            return "\(parts[0]) \(session) \(text)"
+        }
+    }
+
+    /// A bot's (or, in `wakes`, a session's) folder for `session`, with a wake-up due `due` seconds
+    /// from now, repeating `every` ("" for once).
+    @discardableResult
+    private func folder(_ name: String, in parent: URL? = nil, session: String, wake note: String? = nil, due: Int = -60, every: String = "") throws -> URL {
+        let folder = (parent ?? bots).appending(path: name)
+        try write(folder.appending(path: "session"), session)
+        if let note {
+            let at = Int(Date.now.timeIntervalSince1970) + due
+            try write(folder.appending(path: "wakes/\(at)-abcd\(every.isEmpty ? "" : "-" + every)"), note)
+        }
+        return folder
+    }
+
+    private func wakes(of folder: URL) -> [String] {
+        (try? FileManager.default.contentsOfDirectory(atPath: folder.appending(path: "wakes").path).sorted()) ?? []
+    }
+
+    @Test(arguments: WakesTests.shells)
+    func aDueWakeUpReachesItsBotOnceAndOneNotDueWaits(_ shell: String) throws {
+        defer { cleanUp() }
+        let bot = try folder("bot_a", session: "ses_a", wake: "Check whether CI passed")
+        let later = try folder("bot_b", session: "ses_b", wake: "Tomorrow's report", due: 3600)
+        try fire(shell: shell)
+        #expect(prompts() == ["\(Self.enginePort) ses_a [Wake-up] Check whether CI passed"], "\(shell)")
+        #expect(wakes(of: bot).isEmpty, "sent once, and done")
+        #expect(wakes(of: later).count == 1, "not due yet")
+        // The next minute: nothing again.
+        try fire(shell: shell)
+        #expect(prompts().count == 1)
+    }
+
+    @Test func oneTheEngineCouldntTakeIsTriedAgainTheNextMinute() throws {
+        defer { cleanUp() }
+        let bot = try folder("bot_a", session: "ses_a", wake: "Check the build")
+        try answer(Self.enginePort, "POST", "api/session/ses_a/prompt", #"{"error":"busy"}"#, code: 503)
+        try fire()
+        #expect(prompts().count == 1)
+        #expect(wakes(of: bot).count == 1, "kept")
+        try FileManager.default.removeItem(at: k.appending(path: "answers"))
+        try fire()
+        #expect(prompts().count == 2)
+        #expect(wakes(of: bot).isEmpty, "sent")
+    }
+
+    @Test func aRepeatComesBackAtItsNextTimeAndIsntQueuedTwice() throws {
+        defer { cleanUp() }
+        let bot = try folder("bot_a", session: "ses_a", wake: "Standup", every: "1d")
+        try fire()
+        #expect(prompts() == ["\(Self.enginePort) ses_a [Wake-up] Standup"])
+        let next = try #require(wakes(of: bot).first)
+        let due = try #require(Int(next.split(separator: "-")[0]))
+        #expect(due > Int(Date.now.timeIntervalSince1970) + 3600 * 20, "tomorrow, at the same time")
+        #expect(next.hasSuffix("-abcd-1d") || next.contains("-abcd-"), "its letters kept")
+
+        // Due again while the last one still waits in its queue (the bot busy): moved on, not sent.
+        try FileManager.default.moveItem(at: bot.appending(path: "wakes/\(next)"), to: bot.appending(path: "wakes/\(Int(Date.now.timeIntervalSince1970) - 60)-abcd-1d"))
+        try answer(Self.enginePort, "GET", "api/session/ses_a/inbox", #"[{"text":"[Wake-up] Standup"}]"#)
+        try fire()
+        #expect(prompts().count == 1, "not queued a second time")
+        #expect(wakes(of: bot).count == 1 && Int(wakes(of: bot)[0].split(separator: "-")[0])! > Int(Date.now.timeIntervalSince1970))
+    }
+
+    @Test func aPausedBotsWakeUpsWait() throws {
+        defer { cleanUp() }
+        let bot = try folder("bot_a", session: "ses_a", wake: "Check the build")
+        try write(bot.appending(path: "paused"), "")
+        try fire()
+        #expect(prompts().isEmpty)
+        #expect(wakes(of: bot).count == 1)
+        // A bot on its way to another computer is paused the same way.
+        try write(bot.appending(path: "paused"), "moving")
+        try fire()
+        #expect(prompts().isEmpty)
+    }
+
+    @Test func aCodingAgentsConversationIsWokenOnItsBridge() throws {
+        defer { cleanUp() }
+        try write(k.appending(path: "run/bridge.json"), #"{"pid":2,"port":\#(Self.bridgePort),"password":"bridge-pass"}"#)
+        let bot = try folder("bot_a", session: "ses_agent", wake: "Look at the PR")
+        try write(bot.appending(path: "via"), "bridge")
+        try fire()
+        #expect(prompts() == ["\(Self.bridgePort) ses_agent [Wake-up] Look at the PR"])
+    }
+
+    @Test func aSessionTheEngineNoLongerHasGoesToTheTrash() throws {
+        defer { cleanUp() }
+        let gone = try folder("ses_gone", in: sessions, session: "ses_gone", wake: "Follow up")
+        try answer(Self.enginePort, "GET", "api/session/ses_gone", #"{"name":"NotFound"}"#, code: 404)
+        try fire()
+        #expect(prompts().isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: gone.path))
+        let trash = try FileManager.default.contentsOfDirectory(atPath: k.appending(path: "trash").path)
+        #expect(trash.count == 1 && trash[0].hasPrefix("wakes-ses_gone-"), "kept, not lost")
+    }
+
+    @Test func aSessionTheBridgeHasIsWokenThereFromNowOn() throws {
+        defer { cleanUp() }
+        try write(k.appending(path: "run/bridge.json"), #"{"pid":2,"port":\#(Self.bridgePort),"password":"bridge-pass"}"#)
+        let moved = try folder("ses_moved", in: sessions, session: "ses_moved", wake: "Carry on")
+        // Moved to the coding agents since: the engine doesn't have it, the bridge does.
+        try answer(Self.enginePort, "GET", "api/session/ses_moved", "{}", code: 404)
+        try answer(Self.bridgePort, "GET", "api/session/ses_moved", #"{"id":"ses_moved"}"#)
+        try fire()
+        #expect(prompts() == ["\(Self.bridgePort) ses_moved [Wake-up] Carry on"])
+        #expect(try String(contentsOf: moved.appending(path: "via"), encoding: .utf8) == "bridge")
+    }
+
+    @Test func aSubagentsWakeUpsGoToTheConversationThatStartedIt() throws {
+        defer { cleanUp() }
+        let child = try folder("ses_child", in: sessions, session: "ses_child", wake: "Report back")
+        try answer(Self.enginePort, "GET", "api/session/ses_child", #"{"id":"ses_child","parentID":"ses_parent","location":{"directory":"/home/me/app"}}"#)
+        try answer(Self.enginePort, "GET", "api/session/ses_parent", #"{"id":"ses_parent","location":{"directory":"/home/me/app"}}"#)
+        try fire()
+        #expect(!FileManager.default.fileExists(atPath: child.path))
+        let parent = sessions.appending(path: "ses_parent")
+        #expect(try String(contentsOf: parent.appending(path: "session"), encoding: .utf8) == "ses_parent")
+        #expect(wakes(of: parent).count + prompts().count >= 1, "its wake-up went along")
+        // The next minute it's the parent's, and sent there.
+        try fire()
+        #expect(prompts() == ["\(Self.enginePort) ses_parent [Wake-up] Report back"])
+    }
+}
