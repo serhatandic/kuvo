@@ -22,7 +22,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Goes up with every change, so `setup` replaces a running bridge that's older.
-export const BRIDGE_VERSION = "0.9.2";
+export const BRIDGE_VERSION = "0.9.3";
 const K = process.env.KUVO_HOME || path.join(os.homedir(), ".kuvo-code");
 const RUN = path.join(K, "run");
 export const LINK_FILE = path.join(RUN, "link.json");
@@ -1286,6 +1286,11 @@ async function* answerWakes(session, action, request, readEngine, bridge, signal
   }
   if (method !== "POST") return yield* json(405, {});
   if (!folder) return yield* json(404, {});
+  // On its way to another computer (a move holds its wake-ups, as the Mac's Moves.hold): nothing
+  // reaches it or changes here until it's there, as on the Mac.
+  if ((textOf(path.join(folder, "paused")) ?? "").trim() === "moving") {
+    return yield* json(409, { message: "It's moving to another computer. Try again once it's there." });
+  }
   let given = {};
   try {
     given = JSON.parse(Buffer.from(request.body ?? []).toString("utf8") || "{}") ?? {};

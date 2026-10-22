@@ -1043,6 +1043,13 @@ final class PhoneLink {
     /// `POST kuvo/wakes/<session>/cancel` with `{"wake": "<id>"}` or `{"watch": "<letters>"}`
     /// cancels one, and `…/now` with `{"wake": "<id>"}` sends one now (one that repeats still
     /// comes back at its time), as the bar over the Mac's composer does. Times are seconds since 1970.
+    /// A wake-up that couldn't go or be taken back: 409 while its conversation is on its way to
+    /// another computer (as a machine's bridge says it), else 503.
+    nonisolated private static func status(of error: any Error) -> Int {
+        if case .moving? = error as? Moves.Failure { return 409 }
+        return 503
+    }
+
     private func answerWakes(_ request: LinkRequest) async -> (Int, Data) {
         let parts = request.path.split(separator: "?").first?.split(separator: "/").map(String.init) ?? []
         guard parts.count >= 3, let session = parts[2].removingPercentEncoding, let app = AgentMail.shared.app,
@@ -1056,7 +1063,7 @@ final class PhoneLink {
             guard let id = (try? JSONDecoder().decode(Given.self, from: request.body))?.wake,
                   let wake = wakeUps.wakes[owner.key]?.first(where: { $0.id == id || $0.letters == id }) else { return (404, Data("{}".utf8)) }
             do { try await wakeUps.wakeNow(wake, of: owner) } catch {
-                return (503, (try? JSONEncoder().encode(["message": error.localizedDescription])) ?? Data())
+                return (Self.status(of: error), (try? JSONEncoder().encode(["message": error.localizedDescription])) ?? Data())
             }
             return (200, Data("{}".utf8))
         }
@@ -1072,7 +1079,7 @@ final class PhoneLink {
                     return (404, Data("{}".utf8))
                 }
             } catch {
-                return (503, (try? JSONEncoder().encode(["message": error.localizedDescription])) ?? Data())
+                return (Self.status(of: error), (try? JSONEncoder().encode(["message": error.localizedDescription])) ?? Data())
             }
             return (200, Data("{}".utf8))
         }

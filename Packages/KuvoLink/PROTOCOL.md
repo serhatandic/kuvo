@@ -338,8 +338,9 @@ itself. A host serves:
   since 1970, `every` like `1d` or null; paused while it's archived). `POST
   kuvo/wakes/<session>/cancel` with `{"wake": "<id>"}` or `{"watch": "<letters>"}` cancels one;
   `POST kuvo/wakes/<session>/now` with `{"wake": "<id>"}` sends it now (one that repeats still
-  comes back at its time). Both answer `200 {}`, `404 {}` when there's no such one, or `503
-  {"message"}` when it couldn't go. A Mac answers for its sessions and its machines'; a
+  comes back at its time). Both answer `200 {}`, `404 {}` when there's no such one, `409
+  {"message"}` while its conversation is on its way to another computer (a machine's bridge
+  from 0.9.3), or `503 {"message"}` when it couldn't go. A Mac answers for its sessions and its machines'; a
   machine's bridge (from 0.6.0) for its own sessions and bots, with the Mac closed too (a
   session that keeps none answers an empty list). A wake-up reaches the conversation as a
   message starting with `[Wake-up] `. `GET kuvo/wakes` lists every session with a wake-up or a

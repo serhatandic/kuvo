@@ -211,3 +211,25 @@ test("Wake Up Now for one that runs with the coding agents goes to their bridge;
   assert.ok(bridge.asked.some(each => each.url === "/api/session/ses_bot_scout00001/prompt" && each.auth === `Basic ${Buffer.from("opencode:agents").toString("base64")}`));
   assert.equal(bridge.asked.some(each => each.url === "/api/mcp"), false, "their tools aren't the engine's to wait for");
 });
+
+test("a bot on its way to another computer isn't woken or changed from a phone until it's there", async t => {
+  const engine = await fakeEngine();
+  t.after(engine.close);
+  const scout = bot("bot_scout00001");
+  write(path.join(scout, "wakes", "1792000500-AbC123"), "check the build");
+  // What a move writes while it holds the bot's wake-ups.
+  write(path.join(scout, "paused"), "moving");
+  const handle = link.engineHandler(() => ({ pid: process.pid, port: engine.port, password: "s3cret" }), {});
+
+  for (const action of ["now", "cancel"]) {
+    const answered = await ask(handle, "POST", `kuvo/wakes/ses_bot_scout00001/${action}`, { wake: "AbC123" });
+    assert.equal(answered.status, 409, action);
+    assert.match(answered.json.message, /moving/i, action);
+  }
+  assert.equal(engine.asked.some(each => each.url.endsWith("/prompt")), false, "nothing sent to a conversation on its way");
+  assert.deepEqual(fs.readdirSync(path.join(scout, "wakes")), ["1792000500-AbC123"], "nothing taken away");
+
+  // Paused by you instead: Wake Up Now still sends it, as on the Mac.
+  write(path.join(scout, "paused"), "");
+  assert.equal((await ask(handle, "POST", "kuvo/wakes/ses_bot_scout00001/now", { wake: "AbC123" })).status, 200);
+});
