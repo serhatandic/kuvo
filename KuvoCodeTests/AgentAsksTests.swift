@@ -49,6 +49,22 @@ import Testing
         #expect(workspace.waitingCount == 0)
     }
 
+    /// A question you skip: the engine is told, so the agent carries on knowing you didn't answer,
+    /// rather than waiting on you; once it has, the card goes and nothing waits on the Dock.
+    @Test func aQuestionYouSkipIsSaid() async throws {
+        defer { engine.stop() }
+        await start(["ses_a"])
+        engine.on("DELETE", "/api/session/ses_a/form/frm_db", json: [:])
+        let model = try #require(workspace.model(for: "ses_a"))
+        workspace.handle(try engine.event("form.created", session: "ses_a", ["form": question]))
+        model.dismiss(try #require(model.forms.first))
+        try await eventually { !engine.requests("DELETE", "/api/session/ses_a/form/frm_db").isEmpty }
+        #expect(engine.requests("POST", "/api/session/ses_a/form/frm_db/reply").isEmpty, "no answer made up for you")
+        workspace.handle(try engine.event("form.replied", session: "ses_a", ["id": "frm_db", "sessionID": "ses_a"]))
+        #expect(model.forms.isEmpty)
+        #expect(workspace.waitingCount == 0)
+    }
+
     /// Two sessions at work at once, each asking: each conversation shows only its own, the Dock
     /// counts both, and answering one leaves the other waiting.
     @Test func twoSessionsEachWithItsOwnAsks() async throws {
