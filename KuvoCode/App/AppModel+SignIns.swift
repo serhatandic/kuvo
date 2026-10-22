@@ -219,14 +219,13 @@ extension AppModel {
         for folder in workspace.openFolders(on: machine) { try? await api.connectMCP(server, directory: folder) }
     }
 
-    /// Signs out of `integration` (a server's or an account's, which engines name alike) on this
-    /// Mac. Each machine keeps its own: an account's, signed out in that machine's tab in
-    /// Settings; an integration's, which this Mac no longer has to give it.
-    func forgetSignIn(_ integration: String) {
-        guard let mac = api else { return }
+    /// Signs out of `integration` (a server's or an account's, which engines name alike) on one
+    /// computer: this Mac, or a machine, in its tab in Settings. Each keeps its own.
+    func forgetSignIn(_ integration: String, on box: SidebarBox = .mac) {
+        guard let api = api(for: box) else { return }
         Task {
-            guard let entries = try? await mac.credentialEntries() else { return }
-            for entry in entries where entry.integrationID == integration { try? await mac.removeCredential(entry.id) }
+            guard let entries = try? await api.credentialEntries() else { return }
+            for entry in entries where entry.integrationID == integration { try? await api.removeCredential(entry.id) }
         }
     }
 

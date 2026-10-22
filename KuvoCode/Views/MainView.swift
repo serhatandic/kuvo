@@ -1110,14 +1110,16 @@ struct MainView: View {
         return names.isEmpty ? nil : names.joined(separator: ", ")
     }
 
-    /// Settings' tabs: its pages, and the sites you're signing in to; the last one left stays.
+    /// Settings' tabs: its pages (a machine's by its name), and the sites you're signing in to;
+    /// the last one left stays.
     private var settingsTabItems: [TabItem] {
         let tabs = app.settingsTabs
         let closes = tabs.tabs.count > 1
         return tabs.tabs.compactMap { tab -> TabItem? in
             switch tab.kind {
             case .page(let page):
-                return TabItem(id: tab.id, title: page.title, logo: nil, status: .idle, symbol: page.symbol, closes: closes, isPreview: tab.id == tabs.previewTab)
+                let title = tab.box.machine == nil ? page.title : "\(page.title) · \(app.name(of: tab.box))"
+                return TabItem(id: tab.id, title: title, logo: nil, status: .idle, symbol: page.symbol, closes: closes, isPreview: tab.id == tabs.previewTab)
             case .site(let id):
                 guard let site = tabs.site(id) else { return nil }
                 return TabItem(id: tab.id, title: site.service.title, logo: nil, status: .idle, symbol: site.service.symbol, closes: closes)
@@ -1130,6 +1132,12 @@ struct MainView: View {
             guard let id else { return }
             withAnimation(.ui) { app.settingsTabs.select(id) }
         })
+    }
+
+    /// A page of Settings as the demo variables name it: `permissions`, or `permissions@<machine>`.
+    private static func demoPage(_ text: String) -> (SettingsPage?, SidebarBox) {
+        let parts = text.split(separator: "@", maxSplits: 1).map(String.init)
+        return (SettingsPage(rawValue: parts[0]), parts.count > 1 ? .machine(parts[1]) : .mac)
     }
 
     /// The title bar keeps its row with the tab bar; without it, the cards reach the top, in
@@ -1630,10 +1638,12 @@ struct MainView: View {
         if workspace.isLoaded, let list = environment["KUVO_DEMO_NEW_PROJECT"] {
             openProjectEditor(ProjectEditorRequest(project: nil, folders: list.split(separator: ",").map(String.init)))
         }
-        // KUVO_DEMO_SETTINGS=<page> opens Settings on that page, by its SettingsPage name: general,
-        // appearance, storage, accounts, agents, mcp, git, browser, passwords and so on.
+        // KUVO_DEMO_SETTINGS=<page>[@<machine>] opens Settings on that page, by its SettingsPage
+        // name: general, appearance, storage, accounts, agents, mcp, git, browser, passwords and so
+        // on; with a machine, that machine's.
         if workspace.isLoaded, let tab = environment["KUVO_DEMO_SETTINGS"] {
-            app.openSettings(SettingsPage(rawValue: tab))
+            let (page, box) = Self.demoPage(tab)
+            app.openSettings(page, on: box)
         }
         guard workspace.isLoaded, !Self.ranDemo else { return }
         Self.ranDemo = true
@@ -1641,7 +1651,9 @@ struct MainView: View {
         // the first page (KUVO_DEMO_SETTINGS) stays in view.
         if let pages = environment["KUVO_DEMO_SETTINGS_TABS"] {
             let shown = app.settingsTabs.selectedID
-            for page in pages.split(separator: ",").compactMap({ SettingsPage(rawValue: String($0)) }) { app.settingsTabs.show(page, inNewTab: true) }
+            for (page, box) in pages.split(separator: ",").map({ Self.demoPage(String($0)) }) {
+                if let page { app.settingsTabs.show(page, on: box, inNewTab: true) }
+            }
             app.settingsTabs.select(shown)
         }
         // KUVO_DEMO_WELCOME: no tabs, so the welcome card shows.

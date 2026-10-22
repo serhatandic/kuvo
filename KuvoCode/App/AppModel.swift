@@ -72,18 +72,9 @@ final class AppModel {
     @ObservationIgnored private var isStarting = false
     /// Settings fill the main window in place of the sessions while this is on.
     var showsSettings = false
-    /// Whose coding agents Settings › Accounts shows: this Mac's (nil), or a machine's (each signs
-    /// in to them on its own), picked in the menu next to Coding Agents. The rest of the page is
-    /// this Mac's accounts, which your machines get a copy of.
-    var accountsPlace: String?
-    /// Whose Custom Auto lists Settings › Custom Auto shows: this Mac's (nil), or a machine's. Each
-    /// has its own, made from the models it has.
-    var autoPlace: String?
-
-    /// Settings › Accounts, showing `machine`'s sign-ins (nil: this Mac's).
+    /// Settings › Accounts of `machine` (nil: this Mac): each computer signs in on its own.
     func openAccounts(on machine: String?) {
-        accountsPlace = machine
-        openSettings(.accounts)
+        openSettings(.accounts, on: SidebarBox(machine: machine))
     }
 
     /// A conversation carried on with the coding agents (`Workspace.moveToAgents`): a bot's goes on
@@ -95,17 +86,17 @@ final class AppModel {
         return false
     }
 
-    /// Settings › Custom Auto, showing `machine`'s lists (nil: this Mac's).
+    /// Settings › Custom Auto of `machine` (nil: this Mac): each has its own lists.
     func openAuto(on machine: String?) {
-        autoPlace = machine
-        openSettings(.auto)
+        openSettings(.auto, on: SidebarBox(machine: machine))
     }
     /// Settings' tabs: the page, and the sites you're signing in to.
     let settingsTabs = SettingsTabs()
 
-    /// Shows Settings in the main window, on `page` if one is given (otherwise the last one open).
-    func openSettings(_ page: SettingsPage? = nil) {
-        if let page { settingsTabs.show(page) }
+    /// Shows Settings in the main window, on `page` of `box` if one is given (otherwise the last
+    /// one open).
+    func openSettings(_ page: SettingsPage? = nil, on box: SidebarBox = .mac) {
+        if let page { settingsTabs.show(page, on: box) }
         if page == .accounts { Analytics.shared.onboardingStep("accounts") }
         #if DEBUG
         let background = ProcessInfo.processInfo.environment["KUVO_DEMO_BACKGROUND"] != nil

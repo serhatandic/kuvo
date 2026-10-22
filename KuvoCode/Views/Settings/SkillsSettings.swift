@@ -6,6 +6,7 @@ import SwiftUI
 /// and catalogs to read them from.
 struct SkillsSettings: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     /// Nil until the engine has listed them.
     @State private var skills: [Skill]?
     @State private var installed: [String: SkillLibrary.Source] = [:]
@@ -19,7 +20,7 @@ struct SkillsSettings: View {
     /// What the list is narrowed to.
     @State private var search = ""
 
-    private var config: EngineConfig { app.engineConfig }
+    private var config: EngineConfig { app.config(for: box) }
     private var folder: URL { app.skillsFolder }
 
     /// The skills, narrowed to what's searched for.
@@ -164,7 +165,7 @@ struct SkillsSettings: View {
         installed = SkillLibrary.installed(in: folder)
         // The engine notices a new folder within a moment.
         try? await Task.sleep(for: .milliseconds(500))
-        skills = ((try? await app.api?.skills()) ?? []).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        skills = ((try? await app.api(for: box)?.skills()) ?? []).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     /// One you wrote here, rather than added from GitHub or found elsewhere.

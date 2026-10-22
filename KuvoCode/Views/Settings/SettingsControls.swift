@@ -40,11 +40,12 @@ struct ConfigTextField: View {
     /// written in it, so all of it shows.
     var multiline = false
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     @Environment(\.editedConfig) private var edited
     @State private var field = SettingField()
     @FocusState private var isFocused: Bool
 
-    private var config: EngineConfig { edited ?? app.engineConfig }
+    private var config: EngineConfig { edited ?? app.config(for: box) }
 
     var body: some View {
         if multiline {
@@ -85,11 +86,12 @@ struct ConfigNumberField: View {
     let path: [String]
     var prompt = "Default"
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     @Environment(\.editedConfig) private var edited
     @State private var field = SettingField()
     @FocusState private var isFocused: Bool
 
-    private var config: EngineConfig { edited ?? app.engineConfig }
+    private var config: EngineConfig { edited ?? app.config(for: box) }
 
     var body: some View {
         let stored = config.value(at: path)?.int.map(String.init) ?? ""
@@ -124,11 +126,12 @@ struct ConfigTextEditor: View {
     /// Grey words in it while it's empty, like a text field's.
     var prompt = ""
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     @Environment(\.editedConfig) private var edited
     @State private var field = SettingField()
     @FocusState private var isFocused: Bool
 
-    private var config: EngineConfig { edited ?? app.engineConfig }
+    private var config: EngineConfig { edited ?? app.config(for: box) }
 
     var body: some View {
         let stored = config.value(at: path)?.string ?? ""
@@ -187,10 +190,11 @@ struct ConfigModelPicker: View {
     let path: [String]
     var defaultTitle = "Default"
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     @Environment(Catalog.self) private var catalog
     @Environment(\.editedConfig) private var edited
 
-    private var config: EngineConfig { edited ?? app.engineConfig }
+    private var config: EngineConfig { edited ?? app.config(for: box) }
 
     var body: some View {
         LabeledContent(title) { picker.labelsHidden().fixedSize() }
@@ -222,15 +226,16 @@ struct ConfigStringList: View {
     let path: [String]
     let prompt: String
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     @State private var newItem = ""
 
     var body: some View {
-        let value = app.engineConfig.value(at: path)
+        let value = app.config(for: box).value(at: path)
         if let value, value.array == nil {
             Text("Set up by hand in the settings file.")
                 .foregroundStyle(.secondary)
         } else {
-            let items = app.engineConfig.items(path)
+            let items = app.config(for: box).items(path)
             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                 HStack {
                     Text(item.string ?? item["package"]?.string ?? "Set up in the settings file")
@@ -242,7 +247,7 @@ struct ConfigStringList: View {
                     Button {
                         var items = items
                         items.remove(at: index)
-                        app.engineConfig.setItems(items, at: path)
+                        app.config(for: box).setItems(items, at: path)
                     } label: {
                         Image(systemName: "minus.circle.fill")
                     }
@@ -255,7 +260,7 @@ struct ConfigStringList: View {
                 .onSubmit {
                     let item = newItem.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !item.isEmpty, !items.contains(.string(item)) else { return }
-                    app.engineConfig.setItems(items + [.string(item)], at: path)
+                    app.config(for: box).setItems(items + [.string(item)], at: path)
                     newItem = ""
                 }
         }
@@ -270,25 +275,26 @@ struct ConfigKeyValueList: View {
     var keyPrompt = "Name"
     var valuePrompt = "Value"
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     @State private var newKey = ""
     @State private var newValue = ""
     /// The kind of what the list is in (an MCP server's "local" or "remote") as it appeared: one
     /// switched since has put these aside, and what a row still holds isn't written into the other.
     @State private var kind: JSONValue?
 
-    private var kindNow: JSONValue? { app.engineConfig.value(at: Array(path.dropLast()) + ["type"]) }
+    private var kindNow: JSONValue? { app.config(for: box).value(at: Array(path.dropLast()) + ["type"]) }
 
     /// The names' column, the same in every row so the values line up.
     static let keyWidth: CGFloat = 210
 
     var body: some View {
-        let items = (app.engineConfig.value(at: path)?.object ?? [:]).compactMapValues(\.string).sorted { $0.key < $1.key }
+        let items = (app.config(for: box).value(at: path)?.object ?? [:]).compactMapValues(\.string).sorted { $0.key < $1.key }
         ForEach(items, id: \.key) { item in
             KeyValueRow(key: item.key, value: item.value, prompt: valuePrompt) { value in
                 guard kindNow == kind else { return }
-                app.engineConfig.set(.string(value), at: path + [item.key])
+                app.config(for: box).set(.string(value), at: path + [item.key])
             } remove: {
-                app.engineConfig.set(nil, at: path + [item.key])
+                app.config(for: box).set(nil, at: path + [item.key])
             }
         }
         HStack {
@@ -310,7 +316,7 @@ struct ConfigKeyValueList: View {
     private func add() {
         let key = newKey.trimmingCharacters(in: .whitespaces)
         guard !key.isEmpty, kindNow == kind else { return }
-        app.engineConfig.set(.string(newValue), at: path + [key])
+        app.config(for: box).set(.string(newValue), at: path + [key])
         newKey = ""
         newValue = ""
     }
@@ -369,24 +375,40 @@ private struct KeyValueRow: View {
     }
 }
 
-/// When the settings file can't be used: why, and a way to open it.
+/// When the settings file can't be used: why, and a way to open it; and a machine's change that
+/// didn't get there.
 struct ConfigProblem: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
 
     var body: some View {
-        if let problem = app.engineConfig.problem {
+        let config = app.config(for: box)
+        if let problem = config.problem {
             Section {
                 Label {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("The engine's settings file can't be changed here")
+                        Text(config.remote == nil ? "The engine's settings file can't be changed here" : "\(app.name(of: box))’s settings can't be changed here")
                         Text(problem).foregroundStyle(.secondary)
                     }
                 } icon: {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 }
                 HStack {
-                    Button("Open Settings File") { NSWorkspace.shared.open(app.engineConfig.file) }
-                    Button("Try Again") { app.engineConfig.reload() }
+                    if config.remote == nil {
+                        Button("Open Settings File") { NSWorkspace.shared.open(config.file) }
+                    }
+                    Button("Try Again") { config.reload() }
+                }
+            }
+        } else if let failure = config.notSaved {
+            Section {
+                Label {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Your last change didn’t reach \(app.name(of: box))")
+                        Text(failure).foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 }
             }
         }

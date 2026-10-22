@@ -30,6 +30,57 @@ enum SidebarBox: Hashable, Identifiable {
     var symbol: String { machine == nil ? "laptopcomputer" : "server.rack" }
 }
 
+extension EnvironmentValues {
+    /// Rows mark what's on a machine: in search results, which cover every computer, not on a
+    /// computer's own page.
+    @Entry var marksMachines = true
+}
+
+/// How the sidebars' computers are switched besides the swipe (Settings › Appearance): a dock of
+/// their icons below the pages, or their names above them.
+enum BoxSwitcher: String, CaseIterable {
+    case dock, track
+    static let key = "sidebar.boxSwitcher"
+}
+
+/// The top of a box's page: its name (the dock shows none), and a machine that isn't connected,
+/// with what it's doing and the way to connect it or start its engine.
+struct BoxHeading: View {
+    let box: SidebarBox
+    let switcher: BoxSwitcher
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        if switcher == .dock {
+            HStack(spacing: 6) {
+                Image(systemName: box.symbol)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text(app.name(of: box))
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 2)
+            .padding(.bottom, 4)
+        }
+        if let engine = app.machines.engine(box.machine), !engine.isReady {
+            HStack(spacing: 8) {
+                MachineStatus(engine: engine)
+                Spacer(minLength: 0)
+                if !engine.connection.isUnderWay {
+                    Button(engine.isStopped ? "Start" : "Connect") { app.connectOrStart(engine) }
+                        .buttonStyle(.glass)
+                        .controlSize(.small)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+        }
+    }
+}
+
 /// Where the sidebar's two-finger swipes go: the page's offset, read only by the track that
 /// slides, so a swipe moves the pages without building them again.
 @Observable final class BoxPagerMotion {

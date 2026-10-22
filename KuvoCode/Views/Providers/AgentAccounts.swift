@@ -45,7 +45,6 @@ struct SubscriptionsSection: View {
                 }
                 Spacer(minLength: 12)
                 if shows == .agents {
-                    AccountsPlaceMenu()
                     // You installed one or signed in to one elsewhere: asked anew (so is
                     // everything when you come back to the app).
                     Button {
@@ -612,9 +611,8 @@ private struct PlanAccountRow: View {
         }
     }
 
-    /// The last of your accounts with it goes from your machines too, when they have a copy of it
-    /// (GitHub Copilot's); with others left, the machines get the one in use next (the sync knows
-    /// which account each machine's copy was made of). On a machine, its own goes.
+    /// Removes the account from the computer it's on: with it the last, that computer is signed
+    /// out of the plan.
     private func remove() {
         guard let id = connection.credentialID else { return }
         let accounts = plan.connections.filter { $0.type == "credential" }

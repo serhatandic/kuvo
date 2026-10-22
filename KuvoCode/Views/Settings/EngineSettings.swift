@@ -5,6 +5,7 @@ import SwiftUI
 /// limits, files it ignores, plugins, and its settings file.
 struct EngineSettings: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     @State private var shells: [ShellOption] = []
     @State private var searchProviders: [WebSearchProvider] = []
     @State private var plugins: [PluginInfo] = []
@@ -12,7 +13,11 @@ struct EngineSettings: View {
     @State private var addingKey: IntegrationRef?
     @Environment(Catalog.self) private var catalog
 
-    private var config: EngineConfig { app.engineConfig }
+    private var config: EngineConfig { app.config(for: box) }
+    /// The machine's, on a machine's tab.
+    private var machine: MachineEngine? { app.machines.engine(box.machine) }
+    /// Its engine is running and answering, here or there.
+    private var isReady: Bool { machine.map { $0.isReady && $0.isLive } ?? (app.engine == .ready) }
 
     var body: some View {
         ScrollingSettingsForm {
@@ -21,16 +26,31 @@ struct EngineSettings: View {
                 // The dot carries the color; the words stay readable.
                 LabeledContent("Status") {
                     HStack(spacing: 12) {
-                        switch app.engine {
-                        case .ready: StatusText(app.isLive ? "Running" : "Reconnecting", color: app.isLive ? .green : .orange)
-                        case .failed: StatusText("Stopped", color: .red)
-                        default: Text("Starting…")
+                        if let machine {
+                            MachineStatus(engine: machine)
+                                .fixedSize()
+                            switch machine.state {
+                            case .ready: Button("Restart") { app.restartEngine(machine) }
+                            case .preparing where machine.isStopped: Button("Start") { app.startEngine(machine) }
+                            case .failed, .preparing: Button("Connect") { app.connect(machine) }
+                            default: EmptyView()
+                            }
+                        } else {
+                            switch app.engine {
+                            case .ready: StatusText(app.isLive ? "Running" : "Reconnecting", color: app.isLive ? .green : .orange)
+                            case .failed: StatusText("Stopped", color: .red)
+                            default: Text("Starting…")
+                            }
+                            Button("Restart") { Task { await app.restart() } }
                         }
-                        Button("Restart") { Task { await app.restart() } }
                     }
                 }
-                LabeledContent("Data folder") {
-                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([AppInfo.supportDirectory]) }
+                if let machine {
+                    LabeledContent("Data folder", value: "~/\(RemoteEngineInstaller.root) on \(machine.machine.name)")
+                } else {
+                    LabeledContent("Data folder") {
+                        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([AppInfo.supportDirectory]) }
+                    }
                 }
             } footer: {
                 Text("Sessions, accounts and settings are kept in the data folder, separate from any opencode you have installed.")
@@ -151,17 +171,24 @@ struct EngineSettings: View {
             } header: {
                 Text("Plugins")
             } footer: {
-                Text("Plugins add tools and change how the engine works. They run code on your Mac, so add only ones you trust.")
+                Text(box.machine == nil
+                    ? "Plugins add tools and change how the engine works. They run code on your Mac, so add only ones you trust."
+                    : "Plugins add tools and change how the engine works. They run code on \(app.name(of: box)), so add only ones you trust.")
                     .foregroundStyle(.secondary)
             }
 
             Section {
-                LabeledContent("Settings file") {
-                    HStack {
-                        Button("Open") { NSWorkspace.shared.open(config.file) }
-                            .disabled(!FileManager.default.fileExists(atPath: config.file.path))
-                        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([config.file]) }
-                            .disabled(!FileManager.default.fileExists(atPath: config.file.path))
+                if let machine {
+                    LabeledContent("Settings file", value: "~/\(RemoteEngineInstaller.root)/box/opencode.json on \(machine.machine.name)")
+                        .textSelection(.enabled)
+                } else {
+                    LabeledContent("Settings file") {
+                        HStack {
+                            Button("Open") { NSWorkspace.shared.open(config.file) }
+                                .disabled(!FileManager.default.fileExists(atPath: config.file.path))
+                            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([config.file]) }
+                                .disabled(!FileManager.default.fileExists(atPath: config.file.path))
+                        }
                     }
                 }
             } footer: {
@@ -173,8 +200,8 @@ struct EngineSettings: View {
             ConnectDetail(integrationID: ref.id, note: "The agent can search the web with it now.") { addingKey = nil }
         }
         // Again once the engine is ready: opened while it starts, or after Restart.
-        .task(id: app.engine == .ready) {
-            guard let api = app.api else { return }
+        .task(id: isReady) {
+            guard let api = app.api(for: box) else { return }
             shells = (try? await api.shells()) ?? []
             searchProviders = (try? await api.webSearchProviders()) ?? []
             plugins = (try? await api.plugins()) ?? []
@@ -189,13 +216,13 @@ struct EngineSettings: View {
         return ids.compactMap { id in catalog.integrations.first { $0.id == id } }
     }
 
-    /// Removes a service's stored keys, so a wrong one can be added again: here, and the copies on
-    /// your machines.
+    /// Removes a service's stored keys from this computer's engine, so a wrong one can be added
+    /// again.
     private func removeKeys(_ ids: [String], of integration: String) {
-        guard let api = app.api else { return }
+        guard let api = app.api(for: box) else { return }
         Task {
             for id in ids { try? await api.removeCredential(id) }
-            app.forgetSignIn(integration)
+            app.forgetSignIn(integration, on: box)
             await catalog.refresh()
         }
     }

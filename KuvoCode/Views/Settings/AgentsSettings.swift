@@ -5,6 +5,7 @@ import SwiftUI
 /// subagents), and your own, each with its instructions, model and permissions.
 struct AgentsSettings: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     @Environment(Catalog.self) private var catalog
     @State private var editing: AgentEdit?
     /// What to remove once its sheet has closed (and its fields are done saving).
@@ -12,7 +13,7 @@ struct AgentsSettings: View {
     /// Claude Code's agents, to bring over.
     @State private var claudeAgents: [ClaudeAgents.Agent] = []
 
-    private var config: EngineConfig { app.engineConfig }
+    private var config: EngineConfig { app.config(for: box) }
 
     /// The engine's own agents that people see; the hidden ones (titles, summaries) aren't
     /// listed, but their models can be set above.
@@ -146,7 +147,7 @@ struct AgentsSettings: View {
         self.removal = nil
         // Once the closing editor's fields have saved what you typed last, or they'd write it
         // back into a half-made entry.
-        let config = app.engineConfig
+        let config = app.config(for: box)
         DispatchQueue.main.async { config.set(nil, at: removal) }
     }
 }
@@ -170,6 +171,7 @@ private struct AgentEditor: View {
     /// Removes this entry, once it's closed.
     let remove: ([String]) -> Void
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     @Environment(Catalog.self) private var catalog
     @State private var newName = ""
     @State private var confirmsRemoval = false
@@ -187,7 +189,7 @@ private struct AgentEditor: View {
         _draft = State(initialValue: id == nil ? EngineConfig(draft: ["agents": .object(["new": .object(["mode": .string("primary")])])]) : nil)
     }
 
-    private var config: EngineConfig { draft ?? app.engineConfig }
+    private var config: EngineConfig { draft ?? app.config(for: box) }
     private var path: [String] { id.map { ["agents", $0] } ?? Self.draftPath }
 
     private var name: String {
@@ -206,14 +208,14 @@ private struct AgentEditor: View {
     /// Why the name you typed can't be used, if it can't.
     private var problem: String? {
         // Nothing would be written: the instructions you write would be lost.
-        if let broken = app.engineConfig.problem { return "The engine's settings file can't be changed here: \(broken)" }
+        if let broken = app.config(for: box).problem { return "The engine's settings file can't be changed here: \(broken)" }
         if newID.isEmpty {
             return newName.trimmingCharacters(in: .whitespaces).isEmpty ? nil : "A name needs a letter or a number."
         }
         // Not one the engine already has: that would change it instead.
         // Bug Hunter and bug hunter would be told apart only by their case.
         let name = newID.lowercased()
-        let configured = (app.engineConfig.value(at: ["agents"])?.object ?? [:]).keys
+        let configured = (app.config(for: box).value(at: ["agents"])?.object ?? [:]).keys
         let isTaken = configured.contains { $0.lowercased() == name } || catalog.agents.contains { $0.id.lowercased() == name || $0.name.lowercased() == name }
             || AgentsSettings.builtIn.contains(name) || AgentsSettings.hiddenBuiltIn.contains(name)
         return isTaken ? "There's an agent called \(newID) already." : nil
@@ -245,7 +247,7 @@ private struct AgentEditor: View {
             .environment(\.editedConfig, draft)
         } footer: {
             SettingsEditorButtons(create: id == nil ? "Create Agent" : nil, canCreate: !newID.isEmpty && problem == nil && !rulesProblem, onCreate: create,
-                                  remove: id.flatMap { app.engineConfig.value(at: ["agents", $0]) } != nil ? (isBuiltIn ? "Reset to Built-In…" : "Delete Agent…") : nil,
+                                  remove: id.flatMap { app.config(for: box).value(at: ["agents", $0]) } != nil ? (isBuiltIn ? "Reset to Built-In…" : "Delete Agent…") : nil,
                                   onRemove: { confirmsRemoval = true }, done: done)
         }
         .settingsDetailTitle(name)
@@ -346,7 +348,7 @@ private struct AgentEditor: View {
             PermissionRule(action: $0.action, resource: $0.resource.trimmingCharacters(in: .whitespacesAndNewlines), effect: $0.effect).json
         }
         agent["permissions"] = rules.isEmpty ? nil : .array(rules)
-        app.engineConfig.set(.object(agent), at: ["agents", newID])
+        app.config(for: box).set(.object(agent), at: ["agents", newID])
         Analytics.shared.track("agent_created")
         done()
     }

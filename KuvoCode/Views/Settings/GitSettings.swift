@@ -54,19 +54,20 @@ private struct InstructionsEditor: View {
     }
 }
 
-/// Worktrees: where they go, and the ones sessions have, with what each takes.
+/// Worktrees: where they go, and the ones sessions have, with what each takes, on each computer.
 struct WorktreesSettings: View {
     @Environment(Workspace.self) private var workspace
+    @Environment(\.settingsBox) private var box
     @State private var sizes: [String: Int64] = [:]
     @State private var removing: Workspace.Worktree?
     @State private var failure: String?
 
-    /// One row per worktree (several session folders can share one), this Mac's.
+    /// One row per worktree (several session folders can share one), this computer's.
     private var trees: [(folder: String, tree: Workspace.Worktree)] {
         var seen = Set<String>()
         return workspace.worktrees
             .sorted { $0.value.root < $1.value.root }
-            .filter { !RemoteFolder.isRemote($0.value.root) && seen.insert($0.value.root).inserted }
+            .filter { RemoteFolder.machine(of: $0.value.root) == box.machine && seen.insert($0.value.root).inserted }
             .map { ($0.key, $0.value) }
     }
 
@@ -93,13 +94,15 @@ struct WorktreesSettings: View {
                                     .foregroundStyle(.secondary)
                                     .monospacedDigit()
                             }
-                            Button {
-                                NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: item.tree.root)])
-                            } label: {
-                                Image(systemName: "folder")
+                            if box.machine == nil {
+                                Button {
+                                    NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: item.tree.root)])
+                                } label: {
+                                    Image(systemName: "folder")
+                                }
+                                .buttonStyle(IconButtonStyle(width: 28, height: 24))
+                                .help("Show in Finder")
                             }
-                            .buttonStyle(IconButtonStyle(width: 28, height: 24))
-                            .help("Show in Finder")
                             Button("Remove…") { removing = item.tree }
                         }
                     } label: {
@@ -119,7 +122,8 @@ struct WorktreesSettings: View {
             }
         }
         .task(id: trees.map(\.tree.root)) {
-            let roots = trees.map(\.tree.root)
+            // A machine's take room there, not here.
+            let roots = box.machine == nil ? trees.map(\.tree.root) : []
             sizes = await Task.detached {
                 Dictionary(uniqueKeysWithValues: roots.map { ($0, StorageReport.size(of: URL(filePath: $0))) })
             }.value

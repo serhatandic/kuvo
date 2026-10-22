@@ -223,7 +223,9 @@ final class EngineConfig {
                     guard read == reads else { return }
                     took(found)
                 } catch {
-                    guard read == reads else { return }
+                    // Read before: kept as they were until the next read (a change there is
+                    // said again), rather than shut for a moment's trouble with the connection.
+                    guard read == reads, !isLoaded else { return }
                     problem = "Its settings couldn't be read: \(error.localizedDescription)"
                 }
             }

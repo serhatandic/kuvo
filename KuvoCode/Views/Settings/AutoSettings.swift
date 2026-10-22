@@ -5,13 +5,13 @@ import SwiftUI
 /// bugfixes, one for features, each to go through in order when one reaches a usage limit. A
 /// session on Auto runs each message on the first of its list that isn't held back, and goes on
 /// with the next, with what was done, when one reaches its limit partway. This Mac and each
-/// machine have lists of their own, made from the models each has, picked at the top.
+/// machine have lists of their own, made from the models each has, each in its own tab.
 struct AutoSettings: View {
     @Environment(AppModel.self) private var app
-    @Environment(Catalog.self) private var macCatalog
+    @Environment(\.settingsBox) private var box
 
-    /// The machine whose lists show (nil: this Mac's).
-    private var engine: MachineEngine? { app.autoPlace.flatMap { app.machines.engine($0) } }
+    /// The machine whose lists these are, on a machine's tab.
+    private var engine: MachineEngine? { app.machines.engine(box.machine) }
 
     /// Where a list was picked to edit, in a session's model menu (or made there): "" for this
     /// Mac, else a machine's ID; nil for none.
@@ -22,12 +22,11 @@ struct AutoSettings: View {
 
     var body: some View {
         AutoLists(engine: engine)
-            .environment(engine?.catalog ?? macCatalog)
-            .id(app.autoPlace ?? "")
-            // That place's lists, whichever showed before.
+            // That place's lists, in its tab.
             .onChange(of: focusPlace, initial: true) { _, place in
                 guard let place else { return }
-                app.autoPlace = place.isEmpty ? nil : place
+                let wanted = SidebarBox(machine: place.isEmpty ? nil : place)
+                if wanted != box { app.settingsTabs.show(.auto, on: wanted) }
             }
     }
 }
@@ -47,20 +46,8 @@ private struct AutoLists: View {
     private var lists: [AutoList.Named] { agents.auto.all }
 
     var body: some View {
-        @Bindable var app = app
         ScrollViewReader { proxy in
             ScrollingSettingsForm {
-                if !app.machines.list.isEmpty {
-                    Section {
-                        LabeledContent {
-                            PlaceMenu(title: "Custom Auto On", selection: $app.autoPlace,
-                                      help: "This Mac and each machine have their own lists, made from the models each has.")
-                        } label: {
-                            Text("Lists On")
-                            Text(engine.map { "\($0.machine.name)’s own, for its sessions, chats and bots, from the models it has." } ?? "This Mac’s own. Each machine has lists of its own, made from its models.")
-                        }
-                    }
-                }
                 if agents.api == nil {
                     Section {
                         Text(unavailable)

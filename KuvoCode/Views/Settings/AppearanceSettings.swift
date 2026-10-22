@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// Appearance: light or dark, the accent color, the window, and how messages read, with a
-/// preview of a conversation in what's chosen.
+/// Appearance: light or dark, the accent color, the window, how messages read, with a preview of
+/// a conversation in what's chosen, and how the sidebar switches between your computers.
 struct AppearanceSettings: View {
     @AppStorage(Appearance.key) private var mode = Appearance.system
     @AppStorage(Look.accentKey) private var accent = Look.Accent.system.rawValue
@@ -10,6 +10,7 @@ struct AppearanceSettings: View {
     @AppStorage(Look.textSizeKey) private var textSize = 14.0
     @AppStorage(Look.fontKey) private var typeface = Look.Typeface.system
     @AppStorage(StepsDetail.key) private var steps = StepsDetail.summary
+    @AppStorage(BoxSwitcher.key) private var switcher = BoxSwitcher.dock
 
     private var modes: some View {
         ForEach(Appearance.allCases, id: \.self) { option in
@@ -86,6 +87,25 @@ struct AppearanceSettings: View {
             }
 
             Section {
+                LabeledContent {
+                    Picker("Switch computers with", selection: $switcher) {
+                        Text("Icons").tag(BoxSwitcher.dock)
+                        Text("Names").tag(BoxSwitcher.track)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                } label: {
+                    Text("Switch computers with")
+                    Text(switcher == .dock
+                        ? "With machines, the sidebar has a page for each computer: their icons below it switch, as two fingers swiping do."
+                        : "With machines, the sidebar has a page for each computer: their names above it switch, as two fingers swiping do.")
+                }
+            } header: {
+                Text("Sidebar")
+            }
+
+            Section {
                 HStack {
                     Spacer()
                     Button("Reset to Defaults") {
@@ -95,8 +115,9 @@ struct AppearanceSettings: View {
                         textSize = 14
                         typeface = .system
                         steps = .summary
+                        switcher = .dock
                     }
-                    .disabled(mode == .system && accent == Look.Accent.system.rawValue && window == .glass && textSize == 14 && typeface == .system && steps == .summary)
+                    .disabled(mode == .system && accent == Look.Accent.system.rawValue && window == .glass && textSize == 14 && typeface == .system && steps == .summary && switcher == .dock)
                 }
             }
         }

@@ -1,7 +1,8 @@
 import Foundation
 
-/// Settings' tabs, in the title bar, as the sessions have theirs: each a page of Settings, or a
-/// site you're signing in to for the agent (Settings › Integrations). A page you open comes in the
+/// Settings' tabs, in the title bar, as the sessions have theirs: each a page of Settings on one
+/// computer (this Mac, or a machine: each has its own settings), or a site you're signing in to
+/// for the agent (Settings › Integrations). A page you open comes in the
 /// preview tab, as VS Code's: the one you haven't done anything in yet, which the next page you
 /// open takes the place of; doing something in it (a click, typing) keeps it, and the next page
 /// gets a tab of its own. A page that's open already has its tab come forward; ⌘-click, or Open
@@ -54,10 +55,16 @@ final class SettingsTabs {
 
         let id: String
         var kind: Kind
+        /// The computer it's about: this Mac, or a machine, with its own settings.
+        var box: SidebarBox = .mac
 
         var page: SettingsPage? {
             if case .page(let page) = kind { return page }
             return nil
+        }
+
+        func shows(_ page: SettingsPage, on box: SidebarBox) -> Bool {
+            self.page == page && self.box == box
         }
     }
 
@@ -72,26 +79,46 @@ final class SettingsTabs {
     /// next page you open (or searching finds) takes the place of.
     private(set) var previewTab: String?
 
+    /// The pages' tabs, for the next time: `[{"page": …, "box": …}]` (before boxes, the pages'
+    /// names between commas).
     private static let tabsKey = "settings.tabs"
-    /// Which of the pages' tabs is the preview tab, for the next time: its page, and which of that
-    /// page's tabs it is ("general#1", the second General tab).
+    /// Which of the pages' tabs is the preview tab, for the next time: its place among them (before
+    /// boxes, its page and which of that page's tabs it was, "general#1").
     private static let previewKey = "settings.previewTab"
+    /// Which of them is in view: its place among them (before boxes, its page, in `storageKey`).
+    private static let selectedKey = "settings.selectedTab"
+
+    private struct Saved: Codable {
+        var page: String
+        var box: String?
+    }
 
     init() {
         let defaults = UserDefaults.standard
-        // Only pages Settings still lists (Phone goes while the phone link is off).
-        let shown = SettingsPage.shown
-        let pages = (defaults.string(forKey: Self.tabsKey) ?? "").split(separator: ",").compactMap { SettingsPage(rawValue: String($0)) }.filter(shown.contains)
-        let current = defaults.string(forKey: SettingsPage.storageKey).flatMap(SettingsPage.init).flatMap { shown.contains($0) ? $0 : nil } ?? pages.first ?? .general
-        tabs = (pages.isEmpty ? [current] : pages).map { Tab(id: UUID().uuidString, kind: .page($0)) }
-        let selected = tabs.first { $0.page == current } ?? tabs[0]
+        // Only pages Settings still lists (Phone goes while the phone link is off), each where it
+        // can be (a machine's own pages on a machine).
+        let text = defaults.string(forKey: Self.tabsKey) ?? ""
+        let saved: [(page: SettingsPage, box: SidebarBox)] = if text.hasPrefix("[") {
+            ((try? JSONDecoder().decode([Saved].self, from: Data(text.utf8))) ?? []).compactMap { saved in
+                SettingsPage(rawValue: saved.page).map { ($0, saved.box.map(SidebarBox.init(id:)) ?? .mac) }
+            }
+        } else {
+            text.split(separator: ",").compactMap { SettingsPage(rawValue: String($0)) }.map { ($0, .mac) }
+        }
+        let kept = saved.filter { $0.page.isShown(on: $0.box) }
+        let current = defaults.string(forKey: SettingsPage.storageKey).flatMap(SettingsPage.init).flatMap { SettingsPage.shown.contains($0) ? $0 : nil } ?? kept.first?.page ?? .general
+        tabs = (kept.isEmpty ? [(current, .mac)] : kept).map { Tab(id: UUID().uuidString, kind: .page($0.page), box: $0.box) }
+        let place = defaults.object(forKey: Self.selectedKey) as? Int
+        let selected = place.flatMap { tabs.indices.contains($0) && kept.count == saved.count ? tabs[$0] : nil } ?? tabs.first { $0.shows(current, on: .mac) } ?? tabs[0]
         selectedID = selected.id
         lastPageTab = selected.id
         // The first time, the page Settings opens on is one you've only looked at.
-        if pages.isEmpty {
+        if kept.isEmpty {
             previewTab = selected.id
-        } else if let saved = defaults.string(forKey: Self.previewKey) {
-            let parts = saved.split(separator: "#", maxSplits: 1)
+        } else if let index = defaults.object(forKey: Self.previewKey) as? Int {
+            if tabs.indices.contains(index), kept.count == saved.count { previewTab = tabs[index].id }
+        } else if let older = defaults.string(forKey: Self.previewKey) {
+            let parts = older.split(separator: "#", maxSplits: 1)
             let same = tabs.filter { $0.page == SettingsPage(rawValue: String(parts[0])) }
             let index = parts.count > 1 ? Int(parts[1]) ?? 0 : 0
             if index < same.count { previewTab = same[index].id }
@@ -110,7 +137,16 @@ final class SettingsTabs {
 
     /// The page the sidebar shows: the one in view, or the one you were on before a site's tab.
     var page: SettingsPage {
-        selected?.page ?? tabs.first { $0.id == lastPageTab }?.page ?? tabs.lazy.compactMap(\.page).first ?? .general
+        pageTab?.page ?? .general
+    }
+
+    /// The computer that page is about.
+    var box: SidebarBox {
+        pageTab?.box ?? .mac
+    }
+
+    private var pageTab: Tab? {
+        selected?.page != nil ? selected : tabs.first { $0.id == lastPageTab } ?? tabs.first { $0.page != nil }
     }
 
     func select(_ id: String) {
@@ -120,47 +156,61 @@ final class SettingsTabs {
         save()
     }
 
-    /// Shows `page`: its tab, if it's open; else in the preview tab, unless `isBusy` says it has
-    /// something open in its page's place (an editor, with what you typed), which stays; else in
-    /// a new preview tab, beside the one in view. `inNewTab` (⌘-click) opens one more, kept.
-    /// Without the tab bar, there's one page at a time: `page` takes the place of the one in view.
-    func show(_ page: SettingsPage, inNewTab: Bool = false, isBusy: (String) -> Bool = { _ in false }) {
+    /// Shows `page` on `box`: its tab, if it's open; else in the preview tab, unless `isBusy` says
+    /// it has something open in its page's place (an editor, with what you typed), which stays;
+    /// else in a new preview tab, beside the one in view. `inNewTab` (⌘-click) opens one more,
+    /// kept. Without the tab bar, there's one page at a time: `page` takes the place of the one in
+    /// view. A page a machine doesn't have (one of the app's own) is this Mac's.
+    func show(_ page: SettingsPage, on box: SidebarBox = .mac, inNewTab: Bool = false, isBusy: (String) -> Bool = { _ in false }) {
+        let box = page.isShown(on: box) ? box : .mac
         if !TabBar.isShown {
-            replace(with: page)
+            replace(with: page, on: box)
         } else if inNewTab {
-            insert(Tab(id: UUID().uuidString, kind: .page(page)))
+            insert(Tab(id: UUID().uuidString, kind: .page(page), box: box))
         } else {
-            preview(page, isBusy: isBusy)
+            preview(page, on: box, isBusy: isBusy)
         }
-        Analytics.shared.track("settings_opened", ["tab": page.rawValue])
+        Analytics.shared.track("settings_opened", ["tab": page.rawValue, "machine": box.machine != nil])
     }
 
     /// `page` as `show` has it, without counting it as opened: what searching finds first.
-    func preview(_ page: SettingsPage, isBusy: (String) -> Bool = { _ in false }) {
+    func preview(_ page: SettingsPage, on box: SidebarBox = .mac, isBusy: (String) -> Bool = { _ in false }) {
+        let box = page.isShown(on: box) ? box : .mac
         if !TabBar.isShown {
-            replace(with: page)
-        } else if let open = tabs.first(where: { $0.page == page }) {
+            replace(with: page, on: box)
+        } else if let open = tabs.first(where: { $0.shows(page, on: box) }) {
             select(open.id)
         } else if let id = previewTab, !isBusy(id), let index = tabs.firstIndex(where: { $0.id == id && $0.page != nil }) {
             tabs[index].kind = .page(page)
+            tabs[index].box = box
             select(id)
         } else {
-            insert(Tab(id: UUID().uuidString, kind: .page(page)))
+            insert(Tab(id: UUID().uuidString, kind: .page(page), box: box))
             previewTab = selectedID
             save()
         }
     }
 
     /// `page` in the tab in view, or in the page's tab when a site's is in view.
-    private func replace(with page: SettingsPage) {
-        if let open = tabs.first(where: { $0.page == page }) {
+    private func replace(with page: SettingsPage, on box: SidebarBox) {
+        if let open = tabs.first(where: { $0.shows(page, on: box) }) {
             select(open.id)
         } else if let index = tabs.firstIndex(where: { $0.id == (selected?.page != nil ? selectedID : lastPageTab) }) {
             tabs[index].kind = .page(page)
+            tabs[index].box = box
             select(tabs[index].id)
         } else {
-            insert(Tab(id: UUID().uuidString, kind: .page(page)))
+            insert(Tab(id: UUID().uuidString, kind: .page(page), box: box))
         }
+    }
+
+    /// The tabs of machines that aren't added any more close (one of this Mac's takes the place
+    /// of the last).
+    func closeTabs(notOn added: Set<String>, machines: Machines) {
+        let gone = tabs.filter { $0.box.machine.map { !added.contains($0) } ?? false }
+        guard !gone.isEmpty else { return }
+        if gone.count == tabs.count { insert(Tab(id: UUID().uuidString, kind: .page(.machines))) }
+        for tab in gone { close(tab.id, machines: machines) }
     }
 
     /// Something was done in the tab in view (a click, typing): it's no longer a preview, and
@@ -214,7 +264,7 @@ final class SettingsTabs {
 
     /// Leaving Settings: the sites you were signing in to close.
     func closeSites(machines: Machines) {
-        if !tabs.contains(where: { $0.page != nil }) { insert(Tab(id: UUID().uuidString, kind: .page(page))) }
+        if !tabs.contains(where: { $0.page != nil }) { insert(Tab(id: UUID().uuidString, kind: .page(page), box: box)) }
         for tab in tabs where tab.page == nil { close(tab.id, machines: machines) }
     }
 
@@ -229,14 +279,15 @@ final class SettingsTabs {
         if tabs.indices.contains(index) { select(tabs[index].id) }
     }
 
-    /// The pages' tabs, for the next time, and the page in view, as Settings has always kept it.
+    /// The pages' tabs, for the next time, with the one in view and the preview, and the page in
+    /// view, as Settings has always kept it.
     private func save() {
         let defaults = UserDefaults.standard
-        defaults.set(tabs.compactMap(\.page?.rawValue).joined(separator: ","), forKey: Self.tabsKey)
+        let pages = tabs.filter { $0.page != nil }
+        let saved = pages.compactMap { tab in tab.page.map { Saved(page: $0.rawValue, box: tab.box.machine) } }
+        defaults.set((try? JSONEncoder().encode(saved)).map { String(decoding: $0, as: UTF8.self) } ?? "", forKey: Self.tabsKey)
         defaults.set(page.rawValue, forKey: SettingsPage.storageKey)
-        let preview = tabs.first { $0.id == previewTab }?.page.map { page in
-            "\(page.rawValue)#\(tabs.prefix { $0.id != previewTab }.count { $0.page == page })"
-        }
-        defaults.set(preview, forKey: Self.previewKey)
+        defaults.set(pages.firstIndex { $0.id == pageTab?.id }, forKey: Self.selectedKey)
+        defaults.set(pages.firstIndex { $0.id == previewTab }, forKey: Self.previewKey)
     }
 }

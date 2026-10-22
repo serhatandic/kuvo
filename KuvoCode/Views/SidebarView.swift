@@ -150,6 +150,8 @@ struct SidebarView: View {
             AccountsRow(showProviders: showProviders)
                 .padding(.top, 6)
         }
+        // Rows mark what's on a machine only in search results, which cover every computer.
+        .environment(\.marksMachines, !search.isEmpty)
         #if DEBUG
         // KUVO_DEMO_BOX: the box in view (`mac`, or a machine's name), once what was open has
         // opened (it brings its own box first).
@@ -238,21 +240,11 @@ struct SidebarView: View {
 
     // MARK: Boxes
 
-    /// How the sidebar's boxes are switched besides the swipe. (Two to choose from, for now.)
-    enum BoxSwitcher { case dock, track }
-
-    private var boxSwitcher: BoxSwitcher {
-        #if DEBUG
-        // KUVO_DEMO_BOX_SWITCHER=track: the boxes by name above the pages, not a dock below them.
-        if ProcessInfo.processInfo.environment["KUVO_DEMO_BOX_SWITCHER"] == "track" { return .track }
-        #endif
-        return .dock
-    }
+    /// How the boxes are switched besides the swipe (Settings › Appearance).
+    @AppStorage(BoxSwitcher.key) private var boxSwitcher = BoxSwitcher.dock
 
     /// This Mac, then your machines, each a page of its own.
-    private var boxes: [SidebarBox] {
-        [.mac] + app.machines.list.map { .machine($0.id) }
-    }
+    private var boxes: [SidebarBox] { app.boxes }
 
     /// The box in view: the one last picked, while it's still there.
     private var box: SidebarBox {
@@ -264,10 +256,7 @@ struct SidebarView: View {
         Binding { box } set: { boxID = $0.id }
     }
 
-    private func boxName(_ box: SidebarBox) -> String {
-        guard let machine = box.machine else { return PhoneLink.computerName }
-        return app.machines.list.first { $0.id == machine }?.name ?? machine
-    }
+    private func boxName(_ box: SidebarBox) -> String { app.name(of: box) }
 
     /// A machine's connection, for its mark; none for this Mac.
     private func boxConnection(_ box: SidebarBox) -> MachineEngine.Connection? {
@@ -287,7 +276,7 @@ struct SidebarView: View {
 
     /// One box's page: what's on that computer.
     @ViewBuilder private func page(_ box: SidebarBox) -> some View {
-        if boxes.count > 1 { boxHeading(box) }
+        if boxes.count > 1 { BoxHeading(box: box, switcher: boxSwitcher) }
         let pinned = pinned(on: box)
         if !pinned.isEmpty {
             SectionHeader(title: "Pinned", isFolded: folded("pinned")) { EmptyView() }
@@ -339,37 +328,6 @@ struct SidebarView: View {
 
     /// A page's name, where the dock shows none (the track names them), and for a machine that
     /// isn't connected, where it is and the way back.
-    @ViewBuilder private func boxHeading(_ box: SidebarBox) -> some View {
-        let engine = app.machines.engine(box.machine)
-        if boxSwitcher == .dock {
-            HStack(spacing: 6) {
-                Image(systemName: box.symbol)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Text(boxName(box))
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 2)
-            .padding(.bottom, 4)
-        }
-        if let engine, !engine.isReady {
-            HStack(spacing: 8) {
-                MachineStatus(engine: engine)
-                Spacer(minLength: 0)
-                if !engine.connection.isUnderWay {
-                    Button(engine.isStopped ? "Start" : "Connect") { app.connectOrStart(engine) }
-                        .buttonStyle(.glass)
-                        .controlSize(.small)
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-        }
-    }
-
     /// Bots, and the group chats they're in, on `box`.
     @ViewBuilder private func botsSection(_ box: SidebarBox) -> some View {
         let botsHere = bots.list.filter { SidebarBox(machine: $0.machine) == box }
@@ -759,7 +717,7 @@ struct SidebarView: View {
                     if let destination = app.moves.underWay[session.id] {
                         Spinner(size: 12)
                             .help("Moving to \(destination ?? "this Mac")…")
-                    } else if Workspace.isChat(session.location.directory), let machine = RemoteFolder.machine(of: session.location.directory) {
+                    } else if !search.isEmpty, Workspace.isChat(session.location.directory), let machine = RemoteFolder.machine(of: session.location.directory) {
                         Image(systemName: "server.rack")
                             .font(.system(size: 10))
                             .foregroundStyle(.tertiary)
@@ -1053,6 +1011,8 @@ private struct ProjectRow: View {
     @State private var isHovering = false
     @Environment(AppModel.self) private var app
 
+    @Environment(\.marksMachines) private var marksMachines
+
     /// The machine the project is on, when it's not this Mac.
     private var machine: MachineEngine? {
         app.machines.engine(RemoteFolder.machine(of: project.directory))
@@ -1068,7 +1028,7 @@ private struct ProjectRow: View {
                     .font(.system(size: 14))
                     .lineLimit(1)
                     .layoutPriority(1)
-                if let machine {
+                if let machine, marksMachines {
                     MachineLabel(engine: machine)
                 }
                 Spacer(minLength: 6)
@@ -1157,6 +1117,7 @@ private struct GroupRow: View {
     let group: BotGroup
     let isSelected: Bool
     let action: () -> Void
+    @Environment(\.marksMachines) private var marksMachines
     @Environment(Bots.self) private var bots
     @Environment(GroupChats.self) private var groups
     @Environment(AppModel.self) private var app
@@ -1182,7 +1143,7 @@ private struct GroupRow: View {
         } trailing: {
             HStack(spacing: 6) {
                 // One that lives on a machine, which talks there while this Mac is off.
-                if let machine {
+                if let machine, marksMachines {
                     Image(systemName: "server.rack")
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
@@ -1252,6 +1213,7 @@ private struct BotRow: View {
     @Environment(Workspace.self) private var workspace
     @Environment(Bots.self) private var bots
     @Environment(AppModel.self) private var app
+    @Environment(\.marksMachines) private var marksMachines
     @State private var isHovering = false
 
     private var session: Session? { workspace.session(bot.sessionID) }
@@ -1260,7 +1222,7 @@ private struct BotRow: View {
         FaceRow(title: bot.name, isUnread: session?.isUnread == true, isSelected: isSelected, action: action) {
             BotAvatar(look: bot.look, size: 28, mood: bots.mood(of: bot, in: workspace), noticed: isHovering, animates: animates)
                 .overlay(alignment: .bottomTrailing) {
-                    if let machine = bot.machine { MachineBadge(machine: machine).offset(x: 4, y: 3) }
+                    if let machine = bot.machine, marksMachines { MachineBadge(machine: machine).offset(x: 4, y: 3) }
                 }
         } subtitle: {
             status

@@ -11,6 +11,8 @@ extension AppModel {
         if let root = ProcessInfo.processInfo.environment["KUVO_DEMO_MACHINE_ROOT"], !root.isEmpty { RemoteEngineInstaller.root = root }
         #endif
         workspace.machines = Set(machines.list.map(\.id))
+        // Settings' tabs of a machine removed (from another copy of the app, say) close.
+        settingsTabs.closeTabs(notOn: Set(machines.list.map(\.id)), machines: machines)
         // An agent on a machine browses with the machine's browser: the panel shows it, as it
         // shows its own browser for an agent here.
         workspace.onMachineBrowsing = { [weak self] machine, session in self?.utilities.revealMachineBrowser(machine, for: session) }
@@ -206,6 +208,16 @@ extension AppModel {
         workspace.forget(engine.machine.id)
         engine.startWanted = true
         connect(engine)
+    }
+
+    /// Starts a machine's engine over (its Settings › Engine), and connects to it again.
+    func restartEngine(_ engine: MachineEngine) {
+        engine.disconnect()
+        workspace.forget(engine.machine.id)
+        Task {
+            _ = try? await RemoteServer.restartEngine(on: engine.machine.connection)
+            connect(engine)
+        }
     }
 
     /// What Connect does where you pick a machine: one stopped on purpose starts (Start).
@@ -416,6 +428,8 @@ extension AppModel {
         workspace.machines = Set(machines.list.map(\.id))
         workspace.forget(id, forGood: true)
         machineGroups.forget(machine: id)
+        // Its pages in Settings.
+        settingsTabs.closeTabs(notOn: Set(machines.list.map(\.id)), machines: machines)
         Task { await moves.machineRemoved(id) }
     }
 

@@ -992,6 +992,14 @@ public final class RemoteServer: @unchecked Sendable {
         return (try? await connection.run("sh \"$HOME/\(RemoteEngineInstaller.root)/bin/kuvo-start\" start")) != nil
     }
 
+    /// Starts the machine's engine over, as it was last started there (Restart). False when it
+    /// didn't come up.
+    @discardableResult
+    public static func restartEngine(on connection: SSHConnection) async throws -> Bool {
+        try await installBoot(on: connection)
+        return (try? await connection.run("sh \"$HOME/\(RemoteEngineInstaller.root)/bin/kuvo-start\" restart")) != nil
+    }
+
     /// Stops everything there without waiting more than `timeout`, for when the app quits (a demo
     /// or test copy's machine, which leaves nothing running). `first` runs before.
     public static func stopNow(on connection: SSHConnection, timeout: TimeInterval = 3, first: String = "") {

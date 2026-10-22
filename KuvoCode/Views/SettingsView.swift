@@ -4,7 +4,9 @@ import SwiftUI
 
 /// Settings, in the main window in place of the sessions: a sidebar of pages in groups, with a
 /// search field, on the window's glass where the sessions' sidebar was, and the open page in a
-/// card beside it, under its title, the way a session shows.
+/// card beside it, under its title, the way a session shows. Each computer (this Mac, each
+/// machine) has its own settings: the sidebar pages through them as the sessions' does, and each
+/// tab is a page of one of them.
 struct SettingsView: View {
     /// The sessions' sidebar width, so the window keeps its shape.
     var sidebarWidth: CGFloat = 280
@@ -28,10 +30,12 @@ struct SettingsView: View {
     var body: some View {
         HStack(spacing: 0) {
             // A tab with an editor open keeps it, and what's typed in it.
-            SettingsSidebar(selection: Binding(get: { tabs.page }, set: { page in withAnimation(.ui) { tabs.show(page) { navigators[$0]?.detail != nil } } }), search: $search) { page in
-                withAnimation(.ui) { tabs.show(page, inNewTab: true) }
-            } preview: { page in
-                withAnimation(.ui) { tabs.preview(page) { navigators[$0]?.detail != nil } }
+            SettingsSidebar(page: tabs.page, box: tabs.box, search: $search) { page, box in
+                withAnimation(.ui) { tabs.show(page, on: box) { navigators[$0]?.detail != nil } }
+            } openInNewTab: { page, box in
+                withAnimation(.ui) { tabs.show(page, on: box, inNewTab: true) }
+            } preview: { page, box in
+                withAnimation(.ui) { tabs.preview(page, on: box) { navigators[$0]?.detail != nil } }
             }
                 .padding(.top, topInset)
                 .frame(width: sidebarWidth)
@@ -44,17 +48,17 @@ struct SettingsView: View {
                     Group {
                         switch tab.kind {
                         case .page(let page):
-                            let navigator = navigators[tab.id, page]
+                            let navigator = navigators[tab.id, page, tab.box]
                             VStack(alignment: .leading, spacing: 0) {
-                                SettingsPageHeader(page: page, navigator: navigator)
-                                page.content
+                                SettingsPageHeader(page: page, box: tab.box, navigator: navigator)
+                                BoxPage(page: page, box: tab.box)
                                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                                     .environment(\.settingsNavigator, navigator)
                             }
                             .frame(maxWidth: SettingsMetrics.columnWidth)
                             .modifier(SettingsColumnInset())
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .id(page)
+                            .id("\(page.rawValue)@\(tab.box.id)")
                         case .site(let id):
                             // A site you're signing in to: the whole card is its.
                             if let site = tabs.site(id) {
@@ -103,14 +107,15 @@ struct SettingsView: View {
 
 /// Each Settings tab's navigator, made the first time the tab's drawn.
 private final class SettingsNavigators {
-    private var byTab: [String: (page: SettingsPage, navigator: SettingsNavigator)] = [:]
+    private var byTab: [String: (page: SettingsPage, box: SidebarBox, navigator: SettingsNavigator)] = [:]
 
-    /// The tab's navigator, for the page it's on: a tab that searching moves to another page
-    /// starts afresh, as its page does, with no way back to what the last page had open.
-    subscript(tab: String, page: SettingsPage) -> SettingsNavigator {
-        if let kept = byTab[tab], kept.page == page { return kept.navigator }
+    /// The tab's navigator, for the page it's on: a tab that searching moves to another page (or
+    /// another computer's) starts afresh, as its page does, with no way back to what the last page
+    /// had open.
+    subscript(tab: String, page: SettingsPage, box: SidebarBox) -> SettingsNavigator {
+        if let kept = byTab[tab], kept.page == page, kept.box == box { return kept.navigator }
         let navigator = SettingsNavigator()
-        byTab[tab] = (page, navigator)
+        byTab[tab] = (page, box, navigator)
         return navigator
     }
 
@@ -156,6 +161,19 @@ enum SettingsPage: String, CaseIterable, Identifiable {
     /// The pages Settings lists: Phone only while the phone link is switched on.
     static var shown: [SettingsPage] {
         allCases.filter { $0 != .phone || PhoneLink.isEnabled }
+    }
+
+    /// The pages each computer has of its own, a machine as this Mac: its engine's settings, its
+    /// accounts and its models. The rest are the app's, on this Mac.
+    static let boxPages: [SettingsPage] = [.accounts, .auto, .agents, .permissions, .commands, .mcp, .engine, .worktrees]
+
+    /// The pages Settings lists for `box`.
+    static func shown(on box: SidebarBox) -> [SettingsPage] {
+        box.machine == nil ? shown : shown.filter(boxPages.contains)
+    }
+
+    func isShown(on box: SidebarBox) -> Bool {
+        Self.shown(on: box).contains(self)
     }
 
     enum Group: String, CaseIterable {
@@ -270,7 +288,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
     var keywords: String {
         switch self {
         case .general: "tab bar updates editor open files with startup"
-        case .appearance: "dark light mode theme accent color font text size glass solid window"
+        case .appearance: "dark light mode theme accent color font text size glass solid window sidebar computers machines switch dock swipe"
         case .notifications: "alerts sound dock badge"
         case .phone: "iphone mobile pair qr relay companion"
         case .shortcuts: "keys keyboard hotkeys"
@@ -332,16 +350,31 @@ enum SettingsPage: String, CaseIterable, Identifiable {
     }
 }
 
-/// The pages, by group, with a search field that narrows them down: drawn like the sessions'
-/// sidebar it stands in for, its rows lined up under the window's buttons.
+/// The pages, by group, with a search field that finds them on every computer: drawn like the
+/// sessions' sidebar it stands in for, its rows lined up under the window's buttons. With
+/// machines, each computer's pages are a page of the sidebar of their own, switched as the
+/// sessions' are, and the one in view follows the tab in view.
 private struct SettingsSidebar: View {
-    @Binding var selection: SettingsPage
+    /// The page in view, and the computer it's about.
+    let page: SettingsPage
+    let box: SidebarBox
     @Binding var search: String
+    let open: (SettingsPage, SidebarBox) -> Void
     /// ⌘-click, or Open in New Tab: the page in one more tab, even with one open already.
-    let openInNewTab: (SettingsPage) -> Void
+    let openInNewTab: (SettingsPage, SidebarBox) -> Void
     /// What searching finds first, in the tab searching keeps for it.
-    let preview: (SettingsPage) -> Void
+    let preview: (SettingsPage, SidebarBox) -> Void
+    @Environment(AppModel.self) private var app
     @AppStorage(TabBar.showsKey) private var showsTabBar = TabBar.showsByDefault
+    @AppStorage(BoxSwitcher.key) private var switcher = BoxSwitcher.dock
+    /// The computer whose pages are in view: the tab's, until you switch to another.
+    @State private var shownBox = SidebarBox.mac
+
+    private var boxes: [SidebarBox] { app.boxes }
+
+    private var shownBinding: Binding<SidebarBox> {
+        Binding { boxes.contains(shownBox) ? shownBox : .mac } set: { shownBox = $0 }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
@@ -350,78 +383,141 @@ private struct SettingsSidebar: View {
                 .padding(.horizontal, 10)
                 .frame(height: SidebarMetrics.rowHeight)
             SidebarSearchRow(text: $search)
-            ScrollViewReader { reader in
+            if switcher == .track, boxes.count > 1, search.isEmpty {
+                BoxNameTrack(boxes: boxes, selected: shownBinding, name: app.name(of:), connection: connection)
+                    .padding(.top, 8)
+                    .padding(.bottom, 2)
+            }
+            if !search.isEmpty {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 1) {
-                        let pages = SettingsPage.shown.filter { $0.matches(search) }
-                        if pages.isEmpty {
-                            Text("No Results")
-                                .font(.system(size: 13))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                        }
-                        ForEach(SettingsPage.Group.allCases, id: \.self) { group in
-                            let members = pages.filter { $0.group == group }
-                            if !members.isEmpty {
-                                Text(group.rawValue)
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                    .frame(height: 22)
-                                    .padding(.leading, 10)
-                                    .padding(.top, group == pages.first?.group ? 8 : 16)
-                                    .padding(.bottom, 4)
-                                ForEach(members) { page in
-                                    Button {
-                                        if NSEvent.modifierFlags.contains(.command) { openInNewTab(page) } else { selection = page }
-                                    } label: {
-                                        HStack(spacing: 10) {
-                                            Image(systemName: page.symbol)
-                                                .font(.system(size: 14))
-                                                .foregroundStyle(.secondary)
-                                                .frame(width: SidebarMetrics.iconWidth)
-                                            Text(page.title)
-                                                .font(.system(size: 14))
-                                                .lineLimit(1)
-                                            Spacer(minLength: 0)
-                                        }
-                                        .padding(.horizontal, 10)
-                                        .frame(height: SidebarMetrics.rowHeight)
-                                        .modifier(RowHighlight(isSelected: page == selection))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .clickablePointer()
-                                    .contextMenu {
-                                        // Without the tab bar, one page at a time.
-                                        if showsTabBar {
-                                            Button("Open in New Tab") { openInNewTab(page) }
-                                        }
-                                    }
-                                    .id(page)
-                                }
-                            }
-                        }
-                    }
-                    .padding(.bottom, 12)
+                    results
+                        .padding(.bottom, 12)
                 }
                 .scrollIndicators(.never)
                 .fadingScrollEdges()
-                // The page in view is always in sight: opened from elsewhere (a link, ⌘K), or as
-                // Settings open on it.
-                .onChange(of: selection, initial: true) { _, page in
-                    Task {
-                        await Task.yield()
-                        withAnimation(.ui) { reader.scrollTo(page) }
-                    }
+            } else if boxes.count > 1 {
+                BoxPager(boxes: boxes, selected: shownBinding) { box in
+                    pages(of: box)
                 }
+            } else {
+                pages(of: .mac)
             }
-            // Searching opens the first page it finds.
-            .onChange(of: search) {
-                let pages = SettingsPage.shown.filter { $0.matches(search) }
-                if !search.isEmpty, !pages.contains(selection), let first = pages.first { preview(first) }
+            if switcher == .dock, boxes.count > 1, search.isEmpty {
+                BoxDock(boxes: boxes, selected: shownBinding, name: app.name(of:), connection: connection)
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 8)
             }
         }
         .padding(.top, 10)
+        // A tab on another computer: its pages slide in, so what's in view has its row in sight.
+        .onChange(of: box, initial: true) { old, box in
+            guard box != shownBox else { return }
+            if old == box { shownBox = box } else { withAnimation(.spring(response: 0.38, dampingFraction: 0.9)) { shownBox = box } }
+        }
+        // Searching opens the first page it finds: on the computer in view, if it has one.
+        .onChange(of: search) {
+            guard !search.isEmpty else { return }
+            let found = boxes.map { ($0, SettingsPage.shown(on: $0).filter { $0.matches(search) }) }
+            let here = found.first { $0.0 == shownBox && !$0.1.isEmpty } ?? found.first { !$0.1.isEmpty }
+            if let (box, pages) = here, !(box == self.box && pages.contains(page)), let first = pages.first { preview(first, box) }
+        }
+    }
+
+    private func connection(_ box: SidebarBox) -> MachineEngine.Connection? {
+        app.machines.engine(box.machine)?.connection
+    }
+
+    /// One computer's pages, by group.
+    private func pages(of box: SidebarBox) -> some View {
+        ScrollViewReader { reader in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 1) {
+                    if boxes.count > 1 { BoxHeading(box: box, switcher: switcher) }
+                    let pages = SettingsPage.shown(on: box)
+                    ForEach(SettingsPage.Group.allCases, id: \.self) { group in
+                        let members = pages.filter { $0.group == group }
+                        if !members.isEmpty {
+                            groupTitle(group.rawValue, first: group == pages.first?.group)
+                            ForEach(members) { page in
+                                row(page, on: box)
+                            }
+                        }
+                    }
+                }
+                .padding(.bottom, 12)
+            }
+            .scrollIndicators(.never)
+            .fadingScrollEdges()
+            // The page in view is always in sight: opened from elsewhere (a link, ⌘K), or as
+            // Settings open on it.
+            .onChange(of: page, initial: true) { _, page in
+                guard box == self.box else { return }
+                Task {
+                    await Task.yield()
+                    withAnimation(.ui) { reader.scrollTo(page) }
+                }
+            }
+        }
+    }
+
+    /// What searching finds, on each computer.
+    @ViewBuilder private var results: some View {
+        let found = boxes.map { box in (box, SettingsPage.shown(on: box).filter { $0.matches(search) }) }.filter { !$0.1.isEmpty }
+        VStack(alignment: .leading, spacing: 1) {
+            if found.isEmpty {
+                Text("No Results")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+            }
+            ForEach(found, id: \.0) { box, pages in
+                if boxes.count > 1 { groupTitle(app.name(of: box), first: box == found.first?.0) }
+                ForEach(pages) { page in
+                    row(page, on: box)
+                }
+            }
+        }
+    }
+
+    private func groupTitle(_ title: String, first: Bool) -> some View {
+        Text(title)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .frame(height: 22)
+            .padding(.leading, 10)
+            .padding(.top, first ? 8 : 16)
+            .padding(.bottom, 4)
+    }
+
+    private func row(_ page: SettingsPage, on box: SidebarBox) -> some View {
+        Button {
+            if NSEvent.modifierFlags.contains(.command) { openInNewTab(page, box) } else { open(page, box) }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: page.symbol)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                    .frame(width: SidebarMetrics.iconWidth)
+                Text(page.title)
+                    .font(.system(size: 14))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: SidebarMetrics.rowHeight)
+            .modifier(RowHighlight(isSelected: page == self.page && box == self.box))
+        }
+        .buttonStyle(.plain)
+        .clickablePointer()
+        .contextMenu {
+            // Without the tab bar, one page at a time.
+            if showsTabBar {
+                Button("Open in New Tab") { openInNewTab(page, box) }
+            }
+        }
+        .id(page)
     }
 }
 
@@ -429,11 +525,20 @@ private struct SettingsSidebar: View {
 /// place, its name under the way back to the page.
 private struct SettingsPageHeader: View {
     let page: SettingsPage
+    let box: SidebarBox
     let navigator: SettingsNavigator
     @Environment(\.settingsInset) private var inset
+    @Environment(AppModel.self) private var app
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // With machines, whose settings these are: each computer has its own.
+            if app.boxes.count > 1, navigator.detail == nil, SettingsPage.boxPages.contains(page) {
+                Label(app.name(of: box), systemImage: box.symbol)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
             if let detail = navigator.detail {
                 Button {
                     navigator.back()
@@ -465,6 +570,81 @@ private struct SettingsPageHeader: View {
         .padding(.horizontal, inset)
         .padding(.top, 26)
         .padding(.bottom, 4)
+    }
+}
+
+/// A page of one computer's settings: with its settings, models, engine and coding agents in
+/// the environment. A machine's are read from it as its page opens; until then, or while it
+/// can't be reached, the page says so, with the way to connect it or start its engine.
+private struct BoxPage: View {
+    let page: SettingsPage
+    let box: SidebarBox
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        Group {
+            if let machine = box.machine {
+                if let engine = app.machines.engine(machine) {
+                    if engine.config.isLoaded {
+                        content
+                    } else {
+                        Unread(engine: engine)
+                    }
+                } else {
+                    ContentUnavailableView("This Machine Was Removed", systemImage: "server.rack")
+                }
+            } else {
+                content
+            }
+        }
+    }
+
+    private var content: some View {
+        page.content
+            .environment(\.settingsBox, box)
+            .environment(app.catalog(for: box))
+            .environment(\.agentsBridge, box.machine == nil ? nil : app.agents(for: box))
+    }
+
+    /// A machine's settings, not read yet: read now, or why they can't be.
+    private struct Unread: View {
+        let engine: MachineEngine
+        @Environment(AppModel.self) private var app
+
+        var body: some View {
+            VStack(spacing: 14) {
+                if let problem = engine.config.problem {
+                    Image(systemName: "server.rack")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.secondary)
+                    Text("\(engine.machine.name)’s settings can’t be read")
+                        .font(.system(size: 15, weight: .semibold))
+                    Text(problem)
+                        .settingsText()
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 420)
+                    HStack(spacing: 10) {
+                        Button("Try Again") { engine.config.reload() }
+                        if !engine.isReady, !engine.connection.isUnderWay {
+                            Button(engine.isStopped ? "Start" : "Connect") { app.connectOrStart(engine) }
+                        }
+                    }
+                } else {
+                    Spinner()
+                    Text("Reading \(engine.machine.name)’s settings…")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.bottom, 60)
+            // Read as the page opens, and again once it's reached.
+            .task(id: engine.isReady) {
+                if !engine.config.isLoaded, engine.config.problem == nil || engine.isReady { engine.config.reload() }
+            }
+        }
     }
 }
 

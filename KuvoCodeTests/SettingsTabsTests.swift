@@ -6,12 +6,14 @@ import Testing
 /// page takes the place of; doing something in a page keeps its tab, and the next page gets one
 /// of its own; a page that's open already comes forward; ⌘-click opens one more, kept; a page with
 /// something open in it (an editor, with what you typed) isn't replaced. The tabs, the page in
-/// view and which is the preview are there the next time Settings opens.
+/// view and which is the preview are there the next time Settings opens. Each computer has its
+/// own settings: a machine's page is a tab of its own, beside this Mac's, and goes when the
+/// machine does; the app's own pages are this Mac's.
 @MainActor
 @Suite(.serialized) struct SettingsTabsTests {
     init() {
         TestEnvironment.prepare()
-        for key in ["settings.tabs", "settings.previewTab", SettingsPage.storageKey] { UserDefaults.standard.removeObject(forKey: key) }
+        for key in ["settings.tabs", "settings.previewTab", "settings.selectedTab", SettingsPage.storageKey] { UserDefaults.standard.removeObject(forKey: key) }
         // Tabs are for the tab bar, which you turn on.
         UserDefaults.standard.set(true, forKey: TabBar.showsKey)
     }
@@ -90,5 +92,66 @@ import Testing
         #expect(tabs.page == .git, "the neighbor, as browsers do")
         tabs.closeOthers(than: nil, machines: machines)
         #expect(tabs.tabs.count == 1, "one is always left")
+    }
+
+    private func places(_ tabs: SettingsTabs) -> [String] {
+        tabs.tabs.map { "\($0.page?.rawValue ?? "site")@\($0.box.id)" }
+    }
+
+    @Test func aMachinesPageIsATabOfItsOwnBesideThisMacs() {
+        let tabs = SettingsTabs()
+        tabs.show(.permissions)
+        tabs.keepSelected()
+        tabs.show(.permissions, on: .machine("me@lab"))
+        #expect(places(tabs) == ["permissions@mac", "permissions@me@lab"], "the same page, each computer's")
+        #expect(tabs.page == .permissions && tabs.box == .machine("me@lab"))
+        tabs.keepSelected()
+        tabs.show(.permissions)
+        #expect(tabs.box == .mac, "this Mac's comes forward, no second tab")
+        #expect(tabs.tabs.count == 2)
+
+        // A page only this Mac has (the app's own) asked for on a machine: this Mac's.
+        tabs.show(.appearance, on: .machine("me@lab"))
+        #expect(tabs.page == .appearance && tabs.box == .mac)
+    }
+
+    @Test func theyComeBackWithTheirComputers() {
+        let tabs = SettingsTabs()
+        tabs.show(.agents, on: .machine("lab"))
+        tabs.keepSelected()
+        tabs.show(.engine)
+        tabs.keepSelected()
+        tabs.show(.mcp, on: .machine("lab"))
+        tabs.select(tabs.tabs[1].id)
+        let again = SettingsTabs()
+        #expect(places(again) == ["agents@lab", "engine@mac", "mcp@lab"])
+        #expect(again.page == .engine && again.box == .mac, "on the tab you were on")
+        again.show(.commands, on: .machine("lab"))
+        #expect(places(again) == ["agents@lab", "engine@mac", "commands@lab"], "and the last was still only a preview")
+    }
+
+    /// As an older version kept them: the pages' names, between commas.
+    @Test func tabsKeptBeforeComputersHadTheirOwnStillOpen() {
+        UserDefaults.standard.set("accounts,storage", forKey: "settings.tabs")
+        UserDefaults.standard.set(SettingsPage.storage.rawValue, forKey: SettingsPage.storageKey)
+        UserDefaults.standard.set("storage#0", forKey: "settings.previewTab")
+        let tabs = SettingsTabs()
+        #expect(places(tabs) == ["accounts@mac", "storage@mac"])
+        #expect(tabs.page == .storage)
+        tabs.show(.browser)
+        #expect(places(tabs) == ["accounts@mac", "browser@mac"], "Storage was only a preview")
+    }
+
+    @Test func aMachineRemovedTakesItsTabs() {
+        let tabs = SettingsTabs()
+        tabs.show(.agents, on: .machine("lab"))
+        tabs.keepSelected()
+        tabs.show(.permissions, on: .machine("other"))
+        tabs.keepSelected()
+        let machines = Machines()
+        tabs.closeTabs(notOn: ["other"], machines: machines)
+        #expect(places(tabs) == ["permissions@other"])
+        tabs.closeTabs(notOn: [], machines: machines)
+        #expect(places(tabs) == ["machines@mac"], "one of this Mac's takes the last one's place")
     }
 }

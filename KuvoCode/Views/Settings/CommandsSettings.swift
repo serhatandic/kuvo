@@ -4,6 +4,7 @@ import SwiftUI
 /// Slash commands: prompts you use often, run by typing "/" and their name in the composer.
 struct CommandsSettings: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     @Environment(Catalog.self) private var catalog
     @State private var editing: CommandEdit?
     /// What to remove once its sheet has closed (and its fields are done saving).
@@ -11,7 +12,7 @@ struct CommandsSettings: View {
     /// Claude Code's commands, to bring over.
     @State private var claudeCommands: [ClaudeCommands.Command] = []
 
-    private var config: EngineConfig { app.engineConfig }
+    private var config: EngineConfig { app.config(for: box) }
     static let path = ["commands"]
 
     private var names: [String] { (config.value(at: Self.path)?.object?.keys).map { $0.sorted() } ?? [] }
@@ -124,7 +125,7 @@ struct CommandsSettings: View {
         self.removal = nil
         // Once the closing editor's fields have saved what you typed last, or they'd write it
         // back into a half-made entry.
-        let config = app.engineConfig
+        let config = app.config(for: box)
         DispatchQueue.main.async { config.set(nil, at: removal) }
     }
 }
@@ -144,11 +145,12 @@ private struct CommandEditor: View {
     /// Removes this entry, once it's closed.
     let remove: ([String]) -> Void
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     @Environment(Catalog.self) private var catalog
     @State private var newName = ""
     @State private var confirmsRemoval = false
 
-    private var config: EngineConfig { app.engineConfig }
+    private var config: EngineConfig { app.config(for: box) }
     private var title: String { name.map { "/" + $0 } ?? "New Command" }
 
     /// The name you typed, without spaces around it or a "/" in front.

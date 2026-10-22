@@ -5,6 +5,7 @@ import SwiftUI
 /// particular commands or files, approvals saved with "Always", and blocks nothing overrides.
 struct PermissionsSettings: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     @Environment(Workspace.self) private var workspace
     @State private var saved: [Saved] = []
 
@@ -15,7 +16,7 @@ struct PermissionsSettings: View {
         var id: String { (engine?.machine.id ?? "") + "/" + permission.id }
     }
 
-    private var config: EngineConfig { app.engineConfig }
+    private var config: EngineConfig { app.config(for: box) }
     private static let path = ["permissions"]
 
     /// The kinds of action, with what they cover; each is a rule for every resource ("*").
@@ -75,7 +76,7 @@ struct PermissionsSettings: View {
                             Text("\(Self.title(of: permission.action)): \(permission.resource)")
                                 .lineLimit(2)
                                 .truncationMode(.middle)
-                            Text(projectName(permission.projectID) + (item.engine.map { " · on \($0.machine.name)" } ?? ""))
+                            Text(projectName(permission.projectID))
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
@@ -84,7 +85,7 @@ struct PermissionsSettings: View {
                             Task {
                                 // From the engine that keeps it (a machine's, not this Mac's, also
                                 // while it's away: then it stays, and shows again).
-                                try? await (item.engine.map(\.api) ?? app.api)?.removeSavedPermission(permission.id)
+                                try? await (item.engine.map(\.api) ?? app.api(for: box))?.removeSavedPermission(permission.id)
                                 await loadSaved()
                             }
                         } label: {
@@ -109,10 +110,9 @@ struct PermissionsSettings: View {
         }
         .task {
             // Engine 2.0.29 moved blocks out of `experimental`; bring any set there along.
-            let old = app.engineConfig.items(["experimental", "policies"])
+            let old = config.items(["experimental", "policies"])
             if !old.isEmpty {
-                app.engineConfig.setItems(app.engineConfig.items(["policies"]) + old, at: ["policies"])
-                app.engineConfig.set(nil, at: ["experimental", "policies"])
+                config.set([(["policies"], .array(config.items(["policies"]) + old)), (["experimental", "policies"], nil)])
             }
             await loadSaved()
         }
@@ -124,13 +124,10 @@ struct PermissionsSettings: View {
         ("integration.use", "MCP server, skill or plugin"),
     ]
 
-    /// This Mac's engine's approvals, then each connected machine's: Always in a session on a
-    /// machine saves it there.
+    /// This computer's engine's approvals: Always in a session saves it in the engine of the
+    /// computer it's on.
     private func loadSaved() async {
-        var engines: [(api: OpenCodeAPI, engine: MachineEngine?)] = app.api.map { [($0, nil)] } ?? []
-        for engine in app.machines.engines.values.sorted(by: { $0.machine.name < $1.machine.name }) where engine.isReady {
-            if let api = engine.api { engines.append((api, engine)) }
-        }
+        let engines: [(api: OpenCodeAPI, engine: MachineEngine?)] = app.api(for: box).map { [($0, app.machines.engine(box.machine))] } ?? []
         saved = await Self.saved(from: engines, sessions: workspace.sessions) { saved = $0 }
     }
 
@@ -171,9 +168,10 @@ struct ActionChoices: View {
     /// chose, else the engine's default for it.
     var agent: String? = nil
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     @Environment(\.editedConfig) private var edited
 
-    private var config: EngineConfig { edited ?? app.engineConfig }
+    private var config: EngineConfig { edited ?? app.config(for: box) }
 
     var body: some View {
         ForEach(PermissionsSettings.actions, id: \.id) { action in
@@ -198,7 +196,7 @@ struct ActionChoices: View {
     /// engine's default.
     private func inherited(_ action: String) -> PermissionRule.Effect {
         if agent != nil || path != ["permissions"],
-           let global = app.engineConfig.items(["permissions"]).compactMap(\.rule).last(where: { $0.action == action && $0.resource == "*" }) {
+           let global = app.config(for: box).items(["permissions"]).compactMap(\.rule).last(where: { $0.action == action && $0.resource == "*" }) {
             return global.effect
         }
         return PermissionsSettings.engineDefault(action, agent: agent)
@@ -254,6 +252,7 @@ struct RulesEditor: View {
     /// What a new rule's pattern field says while it's empty; nil for the action's own example.
     var prompt: String?
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     @Environment(\.editedConfig) private var edited
     /// Rules being added, until each has a pattern: a half-made rule never changes what the
     /// agent may do.
@@ -269,7 +268,7 @@ struct RulesEditor: View {
     /// Where a draft's new rules wait, in front of their path: `[pendingKey] + path`.
     static let pendingKey = "pendingRules"
 
-    private var config: EngineConfig { edited ?? app.engineConfig }
+    private var config: EngineConfig { edited ?? app.config(for: box) }
 
     /// Why a rule can't be saved as it is, if it can't.
     static func problem(of rule: PermissionRule, hiding: Set<String>) -> String? {
