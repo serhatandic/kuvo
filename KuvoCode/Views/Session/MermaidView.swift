@@ -227,6 +227,10 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
     private func replaceWeb() {
         web.navigationDelegate = nil
         web.stopLoading()
+        // Its page's process ends with it: a stuck script keeps it running after the view is let
+        // go, and WebKit has no public way to end it (checked for, in case it goes).
+        let end = NSSelectorFromString("_killWebContentProcessAndResetState")
+        if web.responds(to: end) { _ = web.perform(end) }
         web = Self.makeWeb()
         web.navigationDelegate = self
         load()
@@ -246,7 +250,7 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
     func render(_ source: String, dark: Bool, width: CGFloat) async -> Outcome? {
         let width = width.rounded()
         let key = "\(dark ? 1 : 0)|\(Int(width))|" + source
-        if let hit = kept.object(forKey: key as NSString) { return hit.outcome }
+        if let hit = kept.object(forKey: key as NSString) ?? kept.object(forKey: Self.slowKey(source)) { return hit.outcome }
         let job = Job(source: source, dark: dark, width: width)
         let outcome: Outcome? = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
@@ -258,8 +262,8 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
             Task { @MainActor in job.isCancelled = true }
         }
         if let outcome, case .drawn(let image) = outcome { kept.setObject(Kept(outcome), forKey: key as NSString, cost: Self.bytes(of: image)) }
-        // One Mermaid never finished isn't tried again (each try costs a web view its time).
-        if let outcome, case .failed(Self.tooLong) = outcome { kept.setObject(Kept(outcome), forKey: key as NSString, cost: 1) }
+        // One Mermaid never finished isn't tried again, at any width (each try costs its wait).
+        if let outcome, case .failed(Self.tooLong) = outcome { kept.setObject(Kept(outcome), forKey: Self.slowKey(source), cost: 1) }
         return outcome
     }
 
@@ -314,7 +318,8 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
         let once = Once()
         return await withCheckedContinuation { (continuation: CheckedContinuation<Answer??, Never>) in
             // With a completion handler, not awaited: the call doesn't keep the web view, so one
-            // let go after the wait runs out closes, its stuck page with it (its late error is ignored).
+            // let go after the wait runs out goes (`replaceWeb` ends its page's process; the
+            // late error that brings is ignored).
             web.callAsyncJavaScript("return await draw(code, dark)", arguments: arguments, in: nil, in: .page) { result in
                 let answer = (try? result.get()) as? [String: Any]
                 if once.claim() { continuation.resume(returning: .some(answer.map { Answer(error: $0["error"] as? String, height: $0["height"] as? Double) })) }
@@ -342,6 +347,7 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
 
     private static let patience: TimeInterval = 10
     private static let tooLong = "It took too long to draw."
+    private static func slowKey(_ source: String) -> NSString { ("slow|" + source) as NSString }
 
     /// What a picture takes in memory: its pixels, four bytes each.
     private static func bytes(of image: NSImage) -> Int {
