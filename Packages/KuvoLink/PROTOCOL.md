@@ -295,22 +295,23 @@ itself. A host serves:
   sign-in again). Send it to the computer the sign-in is on: a Mac for its own, a machine's
   bridge (from 0.9.0) for the machine's, the engine's and the coding agents'. The same check on
   both (`Vectors/link.json`, `signInReturns`).
-- On a Mac, `kuvo/config`: the engine's settings as Settings has them, the whole document (the
-  same that `opencode.json` holds); your machines get them too (but for what only makes sense on
-  the Mac), so a machine's settings are changed here. `PATCH kuvo/config` with `{"changes":
+- `kuvo/config`: the computer's own engine settings as Settings has them, the whole document
+  (the same that its `opencode.json` holds). Each computer keeps its own ("Settings per box"):
+  change a machine's on the machine's bridge, never through the Mac. `PATCH kuvo/config` with `{"changes":
   [{"path": ["mcp", "servers", "linear", "disabled"], "value": true}, …]}` changes some, as
   Settings does (a `null` value removes the key, and a level that isn't there is made; a path
   goes through objects only, so a list is sent whole, at its own path: 400 otherwise), and
-  answers with the whole document; machines take it a few seconds later, and a change to the
-  rules reaches open sessions. A change can say what it read at its path (`"was"`, `null` for
+  answers with the whole document; the computer's engine takes it at once, and on a Mac a change
+  to the rules reaches open sessions. A change can say what it read at its path (`"was"`, `null` for
   nothing): changed since, nothing is changed and it answers `409 {"message"}`, so read again.
   `409 {"message"}` too while the file can't be read (it has comments, say): it's changed by
   hand then. Settings › Permissions keeps its choices and rules under `permissions` (a list of
   `{action, resource, effect}`, effect `allow`, `ask` or `deny`) and its blocks under `policies`. A machine's bridge (from
-  0.9.0) answers `kuvo/config` and `kuvo/mcp/catalog` with `409 {"message"}`: its Mac changes them.
+  0.9.11) answers `kuvo/config` and `kuvo/mcp/catalog` for the machine's own; before a Mac on
+  0.9.11 or later made them its own, and on older bridges, `409 {"message"}`.
 - On a Mac, `kuvo/mcp/catalog`: Settings › MCP Servers' popular servers, `{"servers": [{id,
-  title, summary, access, added, integration, macOnly}]}`: `access` is `signIn`, `open` or
-  `local`; `integration` when Integrations added it (it's kept there, with its sign-in: don't turn
+  title, summary, access, added, integration, macOnly}]}` (a machine's bridge, from 0.9.11, for
+  the machine, without `macOnly` ones): `access` is `signIn`, `open` or `local`; `integration` when Integrations added it (it's kept there, with its sign-in: don't turn
   it off or remove it); `macOnly` for one that uses the Mac's own apps (Chrome DevTools), which
   never reaches your machines, so leave it out of a machine's list. `POST kuvo/mcp/catalog/<id>`
   adds one as its Add button does and answers with the settings, as `kuvo/config`; turn one off
@@ -500,6 +501,18 @@ what it knows, and the bridge notes it each time the phone comes in. The machine
 address. The bridge reads the file every 30 seconds: a phone taken off loses its sessions,
 and with no phones and no pairing waiting the bridge stops. The bridge notes when a phone last
 used the machine (`run/link.seen`).
+
+### Settings per box
+
+Each computer keeps its own engine settings and keys; nothing copies them between computers but
+you. A machine's are in `~/.kuvo-code/box` (`opencode.json`, and `keys/` for integrations' keys,
+which its settings name as `{file:~/.kuvo-code/box/keys/…}`), which its engine reads
+(`OPENCODE_CONFIG`) and reloads as they change; no older Kuvo Code writes there. A Mac makes them
+the machine's own the first time it connects (from 0.9.11): what the machine runs with then (the
+settings an older Mac's start left) goes in its box, or, on a machine with none, the Mac's. From
+then on a Mac's start sends none of its own, and a machine's settings are changed through its
+bridge's script, the same way from a Mac (`kuvo-link.js box read | change | key`, over SSH) and
+from a phone (`kuvo/config`), one change at a time under `run/.config.lock`.
 
 ### Paired phones
 

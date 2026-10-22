@@ -23,7 +23,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Goes up with every change, so `setup` replaces a running bridge that's older.
-export const BRIDGE_VERSION = "0.9.10";
+export const BRIDGE_VERSION = "0.9.11";
 const K = process.env.KUVO_HOME || path.join(os.homedir(), ".kuvo-code");
 const RUN = path.join(K, "run");
 export const LINK_FILE = path.join(RUN, "link.json");
@@ -680,7 +680,26 @@ export function engineHandler(readEngine = readEngineFile, info = {}, readBridge
     // Its settings come from the Mac that started its engine, which puts them back as it
     // connects: changed there, they reach it.
     if (/^kuvo\/(config|mcp\/catalog)(\/|\?|$)/.test(request.path)) {
-      return yield* json(409, { message: "This machine's settings come from your Mac. Change them there." });
+      // Its own, once Kuvo Code has made them so; until then, as the Mac that started it has them.
+      if (!ownsSettings()) return yield* json(409, { message: "This machine's settings still come from your Mac. Connect it from Kuvo Code on your Mac once." });
+      const route = request.path.split("?")[0];
+      const method = request.method.toUpperCase();
+      const answered = ({ status, settings, message }) => json(status, message ? { message } : settings ?? {});
+      if (route === "kuvo/config") {
+        if (method === "GET") {
+          const { settings, problem } = readSettings();
+          return yield* (problem ? json(409, { message: `The engine's settings file can't be changed from here: ${problem}` }) : json(200, settings));
+        }
+        if (method === "PATCH") return yield* answered(changeSettings(parsed(request.body)?.changes));
+        return yield* json(405, {});
+      }
+      if (route === "kuvo/mcp/catalog") {
+        if (method !== "GET") return yield* json(405, {});
+        return yield* json(200, mcpCatalog(readSettings().settings ?? {}));
+      }
+      const adding = route.match(/^kuvo\/mcp\/catalog\/([^/]+)$/);
+      if (adding && method === "POST") return yield* answered(addFromCatalog(decodeURIComponent(adding[1])));
+      return yield* json(404, {});
     }
     // The phones paired with this machine, and removing some (a lost one, say), from any phone
     // paired with it: what a removal takes off stays off (see `removePhones`).
@@ -2023,6 +2042,216 @@ async function watchAsks(tell) {
   }
 }
 
+// ---- This machine's own settings (PROTOCOL.md, "kuvo/config") ----
+// The engine's settings file here, which the engine reloads when it changes: this machine's own,
+// once Kuvo Code has made it so (`.kuvo-own` beside it), changed from a phone or a Mac by the
+// rules the Mac's own follows (`PhoneLink.answerConfig`). Each computer keeps its own; nothing
+// copies them between computers but you. Writes take `run/.config.lock`, as the Mac's do here.
+
+// The box's own settings and keys, in a folder of their own (`box`), which no older Kuvo Code
+// writes: the engine reads the file (`OPENCODE_CONFIG`, over the global one) and reloads it when it
+// changes. Before a Mac made them the machine's own (`adoptBox`), its Mac's.
+const BOX = path.join(K, "box");
+const CONFIG_FILE = path.join(BOX, "opencode.json");
+const BOX_KEYS = path.join(BOX, "keys");
+const OWN_MARK = CONFIG_FILE;
+const CONFIG_LOCK = path.join(RUN, ".config.lock");
+// What a Mac's start used to write: its settings in the global file, the rest beside its keys.
+const GLOBAL_FILE = path.join(K, "config", "opencode", "opencode.json");
+const MAC_SETTINGS = path.join(K, "keys", "settings.json");
+const MAC_KEYS = path.join(K, "keys");
+const LAUNCH_LOCK = path.join(RUN, ".launching");
+// Settings › MCP Servers' popular servers, as the Mac lists them, which it puts here as it connects.
+const CATALOG_FILE = path.join(K, "bin", "mcp-catalog.json");
+const SERVERS = ["mcp", "servers"];
+
+export const ownsSettings = (mark = OWN_MARK) => fs.existsSync(mark);
+
+const isObject = value => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+const sortedKeys = value => Array.isArray(value) ? value.map(sortedKeys)
+  : isObject(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sortedKeys(value[key])])) : value;
+
+// The file's settings: {settings}, or {problem} for one that isn't plain JSON (left alone).
+export function readSettings(file = CONFIG_FILE) {
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return { settings: {} };
+  }
+  try {
+    const parsed = text.trim() ? JSON.parse(text) : {};
+    if (!isObject(parsed)) throw new Error("not an object");
+    return { settings: parsed };
+  } catch {
+    return { problem: "It isn't plain JSON, so Kuvo Code leaves it alone. (Comments aren't supported here.)" };
+  }
+}
+
+const valueAt = (object, keys) => keys.reduce((current, key) => isObject(current) ? current[key] : undefined, object);
+
+// `object` with `value` at `keys` (nil removes it, and an object it leaves empty).
+function settingAt(object, keys, value) {
+  const [key, ...rest] = keys;
+  const next = { ...object };
+  if (!rest.length) {
+    if (value === null || value === undefined) delete next[key]; else next[key] = value;
+    return next;
+  }
+  const inner = settingAt(isObject(next[key]) ? next[key] : {}, rest, value);
+  if (Object.keys(inner).length) next[key] = inner; else delete next[key];
+  return next;
+}
+
+// `PATCH kuvo/config`'s changes ({path, value, was?}), made in one write: {status, settings} or
+// {status, message}, as the Mac answers.
+export function changeSettings(changes, file = CONFIG_FILE, lock = CONFIG_LOCK) {
+  const fits = Array.isArray(changes) && changes.length >= 1 && changes.length <= 100 && changes.every(change =>
+    Array.isArray(change?.path) && change.path.length >= 1 && change.path.length <= 16
+    && change.path.every(key => typeof key === "string" && key.length >= 1 && key.length <= 200) && "value" in change);
+  if (!fits) return { status: 400, message: "Send {\"changes\": [{\"path\": [keys…], \"value\": …}]}." };
+  return locked(lock, () => {
+    const { settings, problem } = readSettings(file);
+    if (problem) return { status: 409, message: `The engine's settings file can't be changed from here: ${problem}` };
+    // Keys go through objects only: one through a list or a plain value would replace it whole.
+    if (changes.some(change => change.path.slice(0, -1).some((_, at) => {
+      const above = valueAt(settings, change.path.slice(0, at + 1));
+      return above !== undefined && !isObject(above);
+    }))) return { status: 400, message: "A path goes through objects only; send a list whole, at its own path." };
+    if (changes.some(change => "was" in change && sortedJSON(valueAt(settings, change.path) ?? null) !== sortedJSON(change.was))) {
+      return { status: 409, message: "It changed since you read it." };
+    }
+    let next = settings;
+    for (const change of changes) next = settingAt(next, change.path, change.value);
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+      const temporary = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(temporary, JSON.stringify(sortedKeys(next), null, 2) + "\n", { mode: 0o600 });
+      fs.renameSync(temporary, file);
+    } catch (error) {
+      return { status: 500, message: `It couldn't be saved: ${error.message}` };
+    }
+    return { status: 200, settings: next };
+  });
+}
+
+// Objects merged key by key, `over` winning; a list or a plain value is replaced whole.
+export function deepMerged(under, over) {
+  if (!isObject(under) || !isObject(over)) return over === undefined ? under : over;
+  const merged = { ...under };
+  for (const [key, value] of Object.entries(over)) merged[key] = key in under ? deepMerged(under[key], value) : value;
+  return merged;
+}
+
+// The box's folder as its settings name it: "~/.kuvo-code", as the Mac's start wrote key paths.
+const home = os.homedir();
+const shownRoot = K.startsWith(home + "/") ? "~" + K.slice(home.length) : K;
+
+// Key paths the Mac's start wrote (`<root>/keys/KUVO_KEY_…`), as the box keeps its keys now.
+function boxKeyPaths(value) {
+  if (typeof value === "string") {
+    return value.split(`{file:${shownRoot}/keys/KUVO_KEY_`).join(`{file:${shownRoot}/box/keys/KUVO_KEY_`)
+      .split(`{file:${K}/keys/KUVO_KEY_`).join(`{file:${shownRoot}/box/keys/KUVO_KEY_`);
+  }
+  if (Array.isArray(value)) return value.map(boxKeyPaths);
+  if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, boxKeyPaths(inner)]));
+  return value;
+}
+
+const KEY_NAME = /^KUVO_KEY_[A-Za-z0-9_]+$/;
+
+function writePrivate(file, text) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, text, { mode: 0o600 });
+  fs.renameSync(temporary, file);
+}
+
+// Makes the machine's settings its own, once (a box of its own: PROTOCOL.md, "Settings per box"):
+// what it runs with now, as its Mac's start left them (the global file under the Mac's own, which
+// wins), with the keys beside them, goes in its box; or, on a machine with none, `seed` ({settings,
+// keys}: the Mac's, as it would have sent them). The launch's lines for them go, so no start writes
+// them back. An engine running now keeps reading what it started with, untouched; the next start
+// reads the box, and clears what's below it (`global-adopted` says the global file came in whole).
+// Under the launch's lock and the settings' own, so no start or change comes between.
+// {status: "own" | "adopted", seeded, settings}.
+export function adoptBox(seed) {
+  return locked(LAUNCH_LOCK, () => locked(CONFIG_LOCK, () => {
+    if (fs.existsSync(CONFIG_FILE)) return { status: "own", settings: readSettings().settings ?? {} };
+    const global = readSettings(GLOBAL_FILE);
+    const mac = readSettings(MAC_SETTINGS);
+    const before = deepMerged(global.settings ?? {}, mac.settings ?? {});
+    const seeded = !Object.keys(before).length && isObject(seed?.settings);
+    const settings = boxKeyPaths(seeded ? seed.settings : before);
+    fs.mkdirSync(BOX_KEYS, { recursive: true, mode: 0o700 });
+    fs.chmodSync(BOX, 0o700);
+    if (seeded) {
+      for (const [name, value] of Object.entries(isObject(seed.keys) ? seed.keys : {})) {
+        if (KEY_NAME.test(name) && typeof value === "string") writePrivate(path.join(BOX_KEYS, name), value);
+      }
+    } else {
+      // The shared keys; a bot's own (`…__<bot>`) stay where its folder names them.
+      let names = [];
+      try { names = fs.readdirSync(MAC_KEYS); } catch {}
+      for (const name of names) {
+        if (!KEY_NAME.test(name) || name.includes("__")) continue;
+        try { writePrivate(path.join(BOX_KEYS, name), fs.readFileSync(path.join(MAC_KEYS, name), "utf8")); } catch {}
+      }
+    }
+    // What it was made from, kept beside it.
+    const kept = path.join(BOX, "adopted-from");
+    fs.mkdirSync(kept, { recursive: true, mode: 0o700 });
+    for (const [file, name] of [[GLOBAL_FILE, "opencode.json"], [MAC_SETTINGS, "settings.json"]]) {
+      try { writePrivate(path.join(kept, name), fs.readFileSync(file, "utf8")); } catch {}
+    }
+    writePrivate(CONFIG_FILE, JSON.stringify(sortedKeys(settings), null, 2) + "\n");
+    // The global file came in whole: the next start empties it (one you edited by hand, with
+    // comments, it leaves as it is).
+    if (!global.problem) writePrivate(path.join(BOX, "global-adopted"), "");
+    const launchEnv = path.join(RUN, "launch.env");
+    try {
+      const lines = fs.readFileSync(launchEnv, "utf8").split("\n").filter(line => !/^KUVO_(PRIVATE_)?SETTINGS=/.test(line));
+      writePrivate(launchEnv, lines.join("\n"));
+    } catch {}
+    return { status: "adopted", seeded, settings };
+  }, { stale: 300_000, wait: 120_000 }));
+}
+
+// A key of the box's own, set (`value`) or removed (null): integrations' servers read it there.
+export function setBoxKey(name, value) {
+  if (!KEY_NAME.test(String(name)) || String(name).includes("__")) return { status: 400, message: "That isn't a key's name." };
+  return locked(CONFIG_LOCK, () => {
+    if (value == null) fs.rmSync(path.join(BOX_KEYS, name), { force: true });
+    else writePrivate(path.join(BOX_KEYS, name), String(value));
+    return { status: 200 };
+  });
+}
+
+// The popular servers, as this machine has them: those that use the Mac's own apps left out.
+export function mcpCatalog(settings, file = CATALOG_FILE) {
+  let servers = [];
+  try { servers = JSON.parse(fs.readFileSync(file, "utf8")).servers ?? []; } catch {}
+  return {
+    servers: servers.filter(server => typeof server?.id === "string" && !server.macOnly).map(server => {
+      const added = valueAt(settings, [...SERVERS, server.id]) !== undefined;
+      return { id: server.id, title: String(server.title ?? ""), summary: String(server.summary ?? ""), access: String(server.access ?? "open"),
+        added, integration: added && Boolean(server.integration), macOnly: false };
+    }),
+  };
+}
+
+// One of them added, as its Add button does on the Mac; one already there stays as it is.
+export function addFromCatalog(id, file = CONFIG_FILE, catalog = CATALOG_FILE, lock = CONFIG_LOCK) {
+  let servers = [];
+  try { servers = JSON.parse(fs.readFileSync(catalog, "utf8")).servers ?? []; } catch {}
+  const server = servers.find(each => each?.id === id && !each.macOnly);
+  if (!server || !isObject(server.settings)) return { status: 404 };
+  const { settings, problem } = readSettings(file);
+  if (problem) return { status: 409, message: `The engine's settings file can't be changed from here: ${problem}` };
+  if (valueAt(settings, [...SERVERS, id]) !== undefined) return { status: 200, settings };
+  return changeSettings([{ path: [...SERVERS, id], value: { codemode: false, ...server.settings } }], file, lock);
+}
+
 // ---- State ----
 
 export function readLink() {
@@ -2049,24 +2278,33 @@ export function writeLink(link) {
 // cut off goes after ten seconds; one not had in three goes ahead all the same.
 const LOCK = path.join(RUN, ".link.lock");
 export function updateLink(change) {
-  fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
+  return locked(LOCK, () => {
+    const changed = change(readLink());
+    if (changed) writeLink(changed);
+    return changed ?? null;
+  });
+}
+
+// `work` done holding `lock` (a folder, made while it's held): one process at a time. A lock left by
+// one that was cut off goes after `stale` ms (ten seconds); one not had in `wait` ms (three) goes
+// ahead all the same.
+function locked(lock, work, { stale = 10_000, wait = 3_000 } = {}) {
+  fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
   const nap = new Int32Array(new SharedArrayBuffer(4));
   let held = false;
-  for (let i = 0; i < 300 && !held; i++) {
+  for (let i = 0; i < wait / 10 && !held; i++) {
     try {
-      fs.mkdirSync(LOCK);
+      fs.mkdirSync(lock);
       held = true;
     } catch {
-      try { if (Date.now() - fs.statSync(LOCK).mtimeMs > 10_000) fs.rmdirSync(LOCK); } catch {}
+      try { if (Date.now() - fs.statSync(lock).mtimeMs > stale) fs.rmdirSync(lock); } catch {}
       Atomics.wait(nap, 0, 0, 10);
     }
   }
   try {
-    const changed = change(readLink());
-    if (changed) writeLink(changed);
-    return changed ?? null;
+    return work();
   } finally {
-    if (held) try { fs.rmdirSync(LOCK); } catch {}
+    if (held) try { fs.rmdirSync(lock); } catch {}
   }
 }
 
@@ -2455,6 +2693,42 @@ function startBridge() {
 // leaving it) and phones paired with the machine itself, starts the bridge or restarts it (on
 // another relay, or a newer one), and prints the machine's address and public key for the Mac
 // to tell your phones. Nothing left to answer: the bridge stops, and the keys stay.
+// `kuvo-link.js box <command>`: a Mac's way to a machine's own settings, over SSH, the same way a
+// phone's goes (one answer, JSON, on stdout). `adopt` (a seed on stdin), `read`, `change`
+// ({changes} on stdin), `key <name>` (its value on stdin; none removes it).
+async function box(command) {
+  const input = async () => {
+    const chunks = [];
+    for await (const chunk of process.stdin) chunks.push(chunk);
+    return Buffer.concat(chunks).toString("utf8");
+  };
+  const say = value => console.log(JSON.stringify(value));
+  switch (command) {
+    case "adopt": {
+      let seed = null;
+      try { seed = JSON.parse((await input()) || "null"); } catch {}
+      return say(adoptBox(seed));
+    }
+    case "read": {
+      const { settings, problem } = readSettings();
+      return say(problem ? { status: 409, message: problem } : { status: 200, settings, own: ownsSettings() });
+    }
+    case "change": {
+      let given = {};
+      try { given = JSON.parse(await input()); } catch {}
+      return say(ownsSettings() ? changeSettings(given?.changes) : { status: 409, message: "This machine's settings aren't its own yet." });
+    }
+    case "key": {
+      const name = process.argv[4];
+      const value = await input();
+      return say(setBoxKey(name, value.length ? value : null));
+    }
+    default:
+      console.error("Usage: kuvo-link.js box adopt | read | change | key <name>");
+      process.exit(2);
+  }
+}
+
 async function setup() {
   let input;
   try {
@@ -2556,6 +2830,7 @@ if (main) {
   if (mode === "run") await run();
   else if (mode === "setup") await setup();
   else if (mode === "pair") pair(argument);
+  else if (mode === "box") await box(argument);
   else if (mode === "selftest") {
     const ok = selftest();
     console.log(ok ? "ok" : "failed");

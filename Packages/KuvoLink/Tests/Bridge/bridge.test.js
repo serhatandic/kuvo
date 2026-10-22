@@ -286,7 +286,7 @@ test("a sign-in that returns to the machine is loaded there, at its own address 
   assert.equal((await answer(handle, "GET", "kuvo/sign-in/return")).status, 405);
 });
 
-test("a machine's settings are changed on its Mac; its engine restarts as it was started", async () => {
+test("a machine whose settings still come from its Mac says so; its engine restarts as it was started", async () => {
   const handle = link.engineHandler(() => ({ pid: 999999, port: 1, password: "p" }));
   for (const p of ["kuvo/config", "kuvo/mcp/catalog", "kuvo/mcp/catalog/linear"]) {
     const answered = await answer(handle, p.endsWith("linear") ? "POST" : "GET", p);
@@ -880,4 +880,117 @@ test("a group chat that lives on a machine tells your phones its news, as the Ma
   assert.equal(done.subtitle, "Ada finished its part");
   assert.equal(done.body.length, 220);
   assert.equal(link.groupNotice({ type: "kuvo.group.done", data: {} }), null);
+});
+
+test("a machine that owns its settings has them read and changed from a phone, as the Mac's are: key by key, a change that read something else turned away", async () => {
+  const folder = path.join(home, "box");
+  fs.mkdirSync(folder, { recursive: true });
+  const file = path.join(folder, "opencode.json");
+  fs.writeFileSync(file, JSON.stringify({ model: "anthropic/sonnet", permissions: [{ action: "shell", resource: "*", effect: "ask" }], mcp: { servers: { linear: { url: "https://mcp.linear.app" } } } }));
+  fs.mkdirSync(path.join(home, "bin"), { recursive: true });
+  fs.writeFileSync(path.join(home, "bin", "mcp-catalog.json"), JSON.stringify({ servers: [
+    { id: "linear", title: "Linear", summary: "Issues", access: "signIn", integration: true, settings: { url: "https://mcp.linear.app" } },
+    { id: "context7", title: "Context7", summary: "Docs", access: "open", settings: { url: "https://mcp.context7.com/mcp" } },
+    { id: "chrome-devtools", title: "Chrome DevTools", summary: "Chrome", access: "local", macOnly: true, settings: { command: ["npx"] } },
+  ] }));
+  try {
+    const handle = link.engineHandler(() => { throw new Error("none"); });
+    assert.equal((await answer(handle, "GET", "kuvo/config")).json.model, "anthropic/sonnet");
+
+    const patched = await answer(handle, "PATCH", "kuvo/config", JSON.stringify({ changes: [
+      { path: ["model"], value: "openai/gpt-6", was: "anthropic/sonnet" },
+      { path: ["mcp", "servers", "linear", "disabled"], value: true },
+    ] }));
+    assert.equal(patched.status, 200);
+    assert.equal(patched.json.model, "openai/gpt-6");
+    assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).mcp.servers.linear.disabled, true, "written to its own file");
+    assert.equal((fs.statSync(file).mode & 0o777), 0o600);
+
+    // Read before that change: turned away, nothing changed.
+    const stale = await answer(handle, "PATCH", "kuvo/config", JSON.stringify({ changes: [{ path: ["model"], value: "x/y", was: "anthropic/sonnet" }] }));
+    assert.equal(stale.status, 409);
+    assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).model, "openai/gpt-6");
+    // Through a list: sent whole instead.
+    assert.equal((await answer(handle, "PATCH", "kuvo/config", JSON.stringify({ changes: [{ path: ["permissions", "0", "effect"], value: "deny" }] }))).status, 400);
+    assert.equal((await answer(handle, "PATCH", "kuvo/config", JSON.stringify({ changes: [] }))).status, 400);
+    // Removing a key, and the object it leaves empty.
+    await answer(handle, "PATCH", "kuvo/config", JSON.stringify({ changes: [{ path: ["mcp", "servers", "linear"], value: null }] }));
+    assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).mcp, undefined);
+
+    // Popular servers: the Mac's own apps' left out; adding one writes it as the Mac's Add does.
+    const catalog = await answer(handle, "GET", "kuvo/mcp/catalog");
+    assert.deepEqual(catalog.json.servers.map(server => [server.id, server.added]), [["linear", false], ["context7", false]]);
+    const added = await answer(handle, "POST", "kuvo/mcp/catalog/context7");
+    assert.equal(added.status, 200);
+    assert.deepEqual(added.json.mcp.servers.context7, { codemode: false, url: "https://mcp.context7.com/mcp" });
+    assert.equal((await answer(handle, "POST", "kuvo/mcp/catalog/chrome-devtools")).status, 404);
+
+    // A file with comments is left alone.
+    fs.writeFileSync(file, "{ // mine\n}");
+    assert.equal((await answer(handle, "GET", "kuvo/config")).status, 409);
+  } finally {
+    fs.rmSync(path.join(home, "box"), { recursive: true, force: true });
+    fs.rmSync(path.join(home, "bin", "mcp-catalog.json"), { force: true });
+  }
+});
+
+test("a machine's settings become its own once: what it runs with now, its Mac's over the global file, with its keys, in a box no older start writes", () => {
+  const global = path.join(home, "config", "opencode", "opencode.json");
+  const keys = path.join(home, "keys");
+  fs.mkdirSync(path.dirname(global), { recursive: true });
+  fs.mkdirSync(keys, { recursive: true });
+  fs.mkdirSync(path.join(home, "run"), { recursive: true });
+  const reference = name => `{file:${home}/keys/${name}}`;
+  fs.writeFileSync(global, JSON.stringify({ websearch: { provider: "exa" }, mcp: { servers: { linear: { url: "https://mcp.linear.app", headers: { Authorization: reference("KUVO_KEY_LINEAR_TOKEN") } } } } }));
+  fs.writeFileSync(path.join(keys, "settings.json"), JSON.stringify({ model: "anthropic/sonnet", websearch: { provider: "tavily" }, permissions: [{ action: "shell", resource: "*", effect: "ask" }], mcp: { servers: { context7: { url: "https://mcp.context7.com/mcp" } } } }));
+  fs.writeFileSync(path.join(keys, "KUVO_KEY_LINEAR_TOKEN"), "lin-secret");
+  fs.writeFileSync(path.join(keys, "KUVO_KEY_NOTION_TOKEN__bot_1"), "bot-secret");
+  fs.writeFileSync(path.join(home, "run", "launch.env"), "PATH=/usr/bin\nKUVO_SETTINGS={\"websearch\":{}}\nKUVO_TZ=Europe/Istanbul\n");
+  try {
+    const adopted = link.adoptBox(null);
+    assert.equal(adopted.status, "adopted");
+    assert.equal(adopted.seeded, false);
+    const own = JSON.parse(fs.readFileSync(path.join(home, "box", "opencode.json"), "utf8"));
+    assert.deepEqual(adopted.settings, own);
+    assert.equal(own.model, "anthropic/sonnet");
+    assert.equal(own.websearch.provider, "tavily", "the Mac's own settings win, as they did");
+    assert.deepEqual(Object.keys(own.mcp.servers).sort(), ["context7", "linear"], "both files' servers");
+    assert.equal(own.mcp.servers.linear.headers.Authorization, `{file:${home}/box/keys/KUVO_KEY_LINEAR_TOKEN}`, "its key where the box keeps it");
+    assert.equal(fs.readFileSync(path.join(home, "box", "keys", "KUVO_KEY_LINEAR_TOKEN"), "utf8"), "lin-secret");
+    assert.equal(fs.existsSync(path.join(home, "box", "keys", "KUVO_KEY_NOTION_TOKEN__bot_1")), false, "a bot's own stays with the bot");
+    // What runs now reads what it started with, untouched; the next start clears it.
+    assert.match(fs.readFileSync(global, "utf8"), /linear/);
+    assert.equal(fs.existsSync(path.join(keys, "settings.json")), true);
+    assert.equal(fs.existsSync(path.join(home, "box", "global-adopted")), true);
+    assert.equal(fs.readFileSync(path.join(home, "run", "launch.env"), "utf8"), "PATH=/usr/bin\nKUVO_TZ=Europe/Istanbul\n", "no start writes them back");
+    assert.ok(fs.existsSync(path.join(home, "box", "adopted-from", "settings.json")), "what it was made from, kept");
+    assert.equal((fs.statSync(path.join(home, "box")).mode & 0o777), 0o700);
+    // Once: again, nothing changes.
+    fs.writeFileSync(path.join(keys, "settings.json"), JSON.stringify({ model: "x/y" }));
+    assert.equal(link.adoptBox(null).status, "own");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(home, "box", "opencode.json"), "utf8")).model, "anthropic/sonnet");
+  } finally {
+    for (const name of ["box", "config", "keys", "run/launch.env"]) fs.rmSync(path.join(home, name), { recursive: true, force: true });
+  }
+
+  // A machine with nothing yet: the Mac's, as it would have sent them.
+  try {
+    const seed = { settings: { model: "openai/gpt-6", mcp: { servers: { linear: { headers: { Authorization: reference("KUVO_KEY_LINEAR_TOKEN") } } } } }, keys: { KUVO_KEY_LINEAR_TOKEN: "seeded", nope: "x" } };
+    const seeded = link.adoptBox(seed);
+    assert.equal(seeded.status, "adopted");
+    assert.equal(seeded.seeded, true);
+    const own = JSON.parse(fs.readFileSync(path.join(home, "box", "opencode.json"), "utf8"));
+    assert.equal(own.model, "openai/gpt-6");
+    assert.equal(own.mcp.servers.linear.headers.Authorization, `{file:${home}/box/keys/KUVO_KEY_LINEAR_TOKEN}`);
+    assert.equal(fs.readFileSync(path.join(home, "box", "keys", "KUVO_KEY_LINEAR_TOKEN"), "utf8"), "seeded");
+    assert.deepEqual(fs.readdirSync(path.join(home, "box", "keys")), ["KUVO_KEY_LINEAR_TOKEN"]);
+    // Its own keys, set and taken away.
+    assert.equal(link.setBoxKey("KUVO_KEY_GITHUB_TOKEN", "gh").status, 200);
+    assert.equal(fs.readFileSync(path.join(home, "box", "keys", "KUVO_KEY_GITHUB_TOKEN"), "utf8"), "gh");
+    assert.equal(link.setBoxKey("KUVO_KEY_GITHUB_TOKEN", null).status, 200);
+    assert.equal(fs.existsSync(path.join(home, "box", "keys", "KUVO_KEY_GITHUB_TOKEN")), false);
+    assert.equal(link.setBoxKey("../settings", "x").status, 400);
+  } finally {
+    fs.rmSync(path.join(home, "box"), { recursive: true, force: true });
+  }
 });
