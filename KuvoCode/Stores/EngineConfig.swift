@@ -267,18 +267,47 @@ final class EngineConfig {
     /// empty), then saves.
     func set(_ value: JSONValue?, at path: [String]) {
         guard problem == nil, isLoaded, !path.isEmpty else { return }
+        note(path, from: self.value(at: path), to: value)
         settings = Self.setting(value, at: path[...], in: settings)
         save([(path, value)])
     }
 
     /// Several changes at once, in one write: the engine reloads its settings once, not after
-    /// each of them.
-    func set(_ changes: [(path: [String], value: JSONValue?)]) {
+    /// each of them. `noted`: false for those made on another computer first ("Also Apply to…").
+    func set(_ changes: [(path: [String], value: JSONValue?)], noted: Bool = true) {
         guard problem == nil, isLoaded else { return }
         for change in changes where !change.path.isEmpty {
+            if noted { note(change.path, from: value(at: change.path), to: change.value) }
             settings = Self.setting(change.value, at: change.path[...], in: settings)
         }
         save(changes.filter { !$0.path.isEmpty })
+    }
+
+    /// A change made here (in Settings, not by another computer or a phone), what it was before
+    /// and after: for making it on other computers too ("Also Apply to…").
+    struct Change: Identifiable, Equatable {
+        let id: Int
+        let path: [String]
+        let before: JSONValue?
+        let after: JSONValue?
+    }
+
+    /// The changes made here, the last hundred.
+    private(set) var changes: [Change] = []
+    @ObservationIgnored private var changeCount = 0
+
+    #if DEBUG
+    /// A change, noted without being made: for screenshots of "Also Apply to…".
+    func noteForDemo(_ path: [String], to after: JSONValue?) {
+        note(path, from: value(at: path), to: after)
+    }
+    #endif
+
+    private func note(_ path: [String], from before: JSONValue?, to after: JSONValue?) {
+        guard !isDraft, before != after else { return }
+        changeCount += 1
+        changes.append(Change(id: changeCount, path: path, before: before, after: after))
+        if changes.count > 100 { changes.removeFirst(changes.count - 100) }
     }
 
     private static func setting(_ value: JSONValue?, at path: ArraySlice<String>, in object: [String: JSONValue]) -> [String: JSONValue] {

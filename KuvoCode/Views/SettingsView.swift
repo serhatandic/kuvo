@@ -604,6 +604,11 @@ private struct BoxPage: View {
             .environment(\.settingsBox, box)
             .environment(app.catalog(for: box))
             .environment(\.agentsBridge, box.machine == nil ? nil : app.agents(for: box))
+            // With other computers: a change here can be made there too. (Above the page's foot,
+            // which scrolls up from under it.)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if app.boxes.count > 1 { AlsoApplyBar(box: box) }
+            }
     }
 
     /// A machine's settings, not read yet: read now, or why they can't be.
@@ -644,6 +649,120 @@ private struct BoxPage: View {
             .task(id: engine.isReady) {
                 if !engine.config.isLoaded, engine.config.problem == nil || engine.isReady { engine.config.reload() }
             }
+        }
+    }
+}
+
+/// After you change something on one computer's page, with others to change too: the way to
+/// make the same change on them ("Also Apply to…"), quiet, at the page's foot, until you're done
+/// with it. Each computer keeps its own settings, and this is the one way a change goes to another.
+private struct AlsoApplyBar: View {
+    let box: SidebarBox
+    @Environment(AppModel.self) private var app
+    /// The changes already dealt with (or made before the page opened), by the last one's number.
+    @State private var seen: Int?
+    @State private var applying: String?
+    @State private var applied: String?
+    @State private var failure: String?
+
+    private var config: EngineConfig { app.config(for: box) }
+    private var fresh: [EngineConfig.Change] { config.changes.filter { $0.id > (seen ?? .max) } }
+    private var others: [SidebarBox] { app.boxes.filter { $0 != box } }
+
+    var body: some View {
+        // Always there (with nothing in it, no room), so it notes what was there as it opened.
+        VStack(spacing: 0) {
+            if applied != nil || applying != nil || failure != nil || !AlsoApply.net(fresh).isEmpty {
+                HStack(spacing: 12) {
+                    if let applying {
+                        Spinner(size: 13)
+                        Text("Applying to \(applying)…")
+                            .font(.system(size: 13))
+                    } else if let applied {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Text("Also applied on \(applied)")
+                            .font(.system(size: 13))
+                    } else {
+                        Image(systemName: box.symbol)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Changed on \(app.name(of: box)) only")
+                                .font(.system(size: 13, weight: .medium))
+                                .lineLimit(1)
+                            Text(failure ?? "Each computer keeps its own settings.")
+                                .font(.system(size: 12))
+                                .foregroundStyle(failure == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.red))
+                                .lineLimit(2)
+                        }
+                        Spacer(minLength: 8)
+                        Menu("Also Apply to…") {
+                            ForEach(others) { other in
+                                Button { apply(to: [other]) } label: {
+                                    Label(app.name(of: other), systemImage: other.symbol)
+                                }
+                            }
+                            if others.count > 1 {
+                                Divider()
+                                Button("Every Computer") { apply(to: others) }
+                            }
+                        }
+                        .fixedSize()
+                        Button("Done") { withAnimation(.ui) { dismiss() } }
+                    }
+                }
+                .padding(.leading, 16)
+                .padding(.trailing, 10)
+                .padding(.vertical, 8)
+                .frame(maxWidth: 560)
+                .glassEffect(.regular, in: .rect(cornerRadius: 16))
+                .padding(.horizontal, 20)
+                .padding(.bottom, 16)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.ui, value: fresh.map(\.id))
+        .animation(.ui, value: applied)
+        .onAppear {
+            if seen == nil { seen = config.changes.last?.id ?? 0 }
+            #if DEBUG
+            // KUVO_DEMO_ALSO_APPLY: a change on this page, as if made (nothing's saved).
+            if ProcessInfo.processInfo.environment["KUVO_DEMO_ALSO_APPLY"] != nil, fresh.isEmpty {
+                config.noteForDemo(["snapshots"], to: .bool(config.value(at: ["snapshots"])?.bool == false))
+            }
+            #endif
+        }
+    }
+
+    private func dismiss() {
+        seen = config.changes.last?.id ?? seen
+        failure = nil
+    }
+
+    private func apply(to targets: [SidebarBox]) {
+        let changes = fresh
+        guard let last = changes.last?.id else { return }
+        failure = nil
+        Task {
+            var done: [String] = []
+            for target in targets {
+                let name = app.name(of: target)
+                applying = name
+                do {
+                    try await AlsoApply.apply(changes, from: box, to: target, app: app)
+                    done.append(name)
+                } catch {
+                    failure = "Not applied on \(name): \(error.localizedDescription)"
+                }
+            }
+            applying = nil
+            Analytics.shared.track("settings_also_applied", ["computers": done.count])
+            guard failure == nil else { return }
+            seen = max(seen ?? 0, last)
+            applied = done.joined(separator: ", ")
+            try? await Task.sleep(for: .seconds(2.5))
+            withAnimation(.ui) { applied = nil }
         }
     }
 }
