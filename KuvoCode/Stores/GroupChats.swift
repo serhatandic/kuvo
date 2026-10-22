@@ -99,10 +99,15 @@ final class GroupChats {
     }
 
     func update(_ edited: BotGroup) async {
+        do { try await change(edited) } catch { Modal.show(error) }
+    }
+
+    /// As `update`, for a change from elsewhere (a phone): what stops it is said there, not here.
+    func change(_ edited: BotGroup) async throws {
         // Moving: what you changed would be left behind.
-        guard !Moves.isFrozen(edited.id) else { return Modal.show(Moves.Failure.moving) }
+        guard !Moves.isFrozen(edited.id) else { throw Moves.Failure.moving }
         guard onMachine(edited.id) else { return await mac.update(edited) }
-        do { try await machines.update(edited) } catch { Modal.show(error) }
+        try await machines.update(edited)
     }
 
     func delete(_ group: BotGroup) async {

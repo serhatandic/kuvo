@@ -492,6 +492,17 @@ final class PhoneLink {
             }
         }
         if request.path == "kuvo/usage/events" { return Self.following { link?.usageJSON() } }
+        // A chat's name, purpose, bots or meeting changed, as Edit Group Chat changes them.
+        if request.path.hasPrefix("kuvo/groups/"), request.method.uppercased() == "PATCH" {
+            return AsyncThrowingStream { continuation in
+                Task { @MainActor in
+                    let (status, body) = await link?.changeGroup(String(request.path.dropFirst("kuvo/groups/".count)), with: request.body) ?? (503, Data())
+                    continuation.yield(.head(status: status, headers: ["content-type": "application/json"]))
+                    continuation.yield(.body(body))
+                    continuation.finish()
+                }
+            }
+        }
         // What a phone does in a group chat: one on a machine answers once the machine has.
         if request.path.hasPrefix("kuvo/groups/"), request.method.uppercased() == "POST" {
             return AsyncThrowingStream { continuation in
@@ -1316,11 +1327,38 @@ final class PhoneLink {
         }
     }
 
+    /// A meeting as a phone sends it: `{next, every, topic}`, `next` in seconds since 1970 and
+    /// `every` as kuvo-wake writes it (`1d`, `weekdays`, `1w`…; null for once).
+    struct GivenMeeting: Decodable {
+        var next: Double
+        var every: String?
+        var topic: String?
+
+        /// As Edit Group Chat sets it up (`BotGroup.Meeting.planned`), or why it can't be.
+        func planned(before: BotGroup.Meeting?) -> Result<BotGroup.Meeting, PhoneLink.Refusal> {
+            var repeats: Wakes.Repeat?
+            if let every {
+                guard let parsed = Wakes.Repeat(every) else { return .failure(.init("“\(every)” isn’t how often a meeting can come back.")) }
+                repeats = parsed
+            }
+            guard let meeting = BotGroup.Meeting.planned(at: Date(timeIntervalSince1970: next), every: repeats, topic: topic ?? "", before: before) else {
+                return .failure(.init("That time has passed. Pick one to come."))
+            }
+            return .success(meeting)
+        }
+    }
+
+    struct Refusal: Error {
+        var message: String
+        init(_ message: String) { self.message = message }
+    }
+
     /// `POST kuvo/groups`: a group chat made as New Group Chat makes it, on this Mac, `{name,
-    /// members, purpose?}` (members by bot id). Answers 201 `{group}`, as `kuvo/groups` lists it;
-    /// 400 without a name or two bots, 404 for a bot that isn't there.
+    /// members, purpose?, meeting?}` (members by bot id; a meeting as `GivenMeeting`). Answers 201
+    /// `{group}`, as `kuvo/groups` lists it; 400 without a name or two bots, or for a meeting that
+    /// can't be, 404 for a bot that isn't there.
     func makeGroup(_ body: Data) async -> (Int, Data) {
-        struct Given: Decodable { var name: String?, members: [String]?, purpose: String? }
+        struct Given: Decodable { var name: String?, members: [String]?, purpose: String?, meeting: GivenMeeting? }
         guard let groups, let bots else { return (503, Self.message("Group chats aren’t ready yet. Try again in a moment.")) }
         guard let given = try? JSONDecoder().decode(Given.self, from: body) else { return (400, Self.message("That isn’t a group chat to make.")) }
         let name = Bots.oneLine(given.name ?? "")
@@ -1329,9 +1367,70 @@ final class PhoneLink {
         for id in given.members ?? [] where !members.contains(id) { members.append(id) }
         guard members.count >= 2 else { return (400, Self.message("A group chat needs at least two bots.")) }
         if let missing = members.first(where: { bots.bot($0) == nil }) { return (404, Self.message("There’s no bot “\(missing)”.")) }
+        var meeting: BotGroup.Meeting?
+        if let given = given.meeting {
+            switch given.planned(before: nil) {
+            case .success(let planned): meeting = planned
+            case .failure(let refusal): return (400, Self.message(refusal.message))
+            }
+        }
         let purpose = given.purpose?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let group = groups.create(name: name, purpose: purpose?.isEmpty == false ? purpose : nil, members: members)
+        let group = groups.create(name: name, purpose: purpose?.isEmpty == false ? purpose : nil, members: members, meeting: meeting)
         return (201, (try? Self.groupEncoder.encode(["group": entry(group, in: groups)])) ?? Data())
+    }
+
+    /// `PATCH kuvo/groups/<id>`: its name, purpose, bots or meeting changed, as Edit Group Chat
+    /// changes them: `{name?, purpose?, members?, meeting?}`, a meeting as `GivenMeeting` (null
+    /// for none, an empty purpose for none). Answers 200 `{group}`, as `kuvo/groups` lists it;
+    /// 404 for no such chat, 400 for what can't be, 409 while it moves.
+    func changeGroup(_ id: String, with body: Data) async -> (Int, Data) {
+        guard let groups, let bots else { return (503, Self.message("Group chats aren’t ready yet. Try again in a moment.")) }
+        guard !id.contains("/"), var group = groups.group(id) else { return (404, Data()) }
+        guard let fields = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return (400, Self.message("That isn’t a change to a group chat.")) }
+        if fields["name"] != nil {
+            let name = Bots.oneLine(fields["name"] as? String ?? "")
+            guard !name.isEmpty else { return (400, Self.message("A group chat needs a name.")) }
+            group.name = name
+        }
+        if fields["purpose"] != nil {
+            let purpose = (fields["purpose"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            group.purpose = purpose.isEmpty ? nil : purpose
+        }
+        if let given = fields["members"] {
+            guard let list = given as? [String] else { return (400, Self.message("Those aren’t bots.")) }
+            var members: [String] = []
+            for member in list where !members.contains(member) { members.append(member) }
+            guard members.count >= 2 else { return (400, Self.message("A group chat needs at least two bots.")) }
+            if let missing = members.first(where: { bots.bot($0) == nil }) { return (404, Self.message("There’s no bot “\(missing)”.")) }
+            // One that lives on a machine has only bots that live there.
+            let machine = groups.machine(of: id)
+            if let stranger = members.first(where: { bots.bot($0)?.machine != machine }) {
+                return (400, Self.message("\(bots.bot(stranger)?.name ?? "That bot") doesn’t live where this chat does."))
+            }
+            group.members = members
+        }
+        if let given = fields["meeting"] {
+            if given is NSNull {
+                group.meeting = nil
+            } else {
+                guard let data = try? JSONSerialization.data(withJSONObject: given), let meeting = try? JSONDecoder().decode(GivenMeeting.self, from: data) else {
+                    return (400, Self.message("That isn’t a meeting."))
+                }
+                switch meeting.planned(before: group.meeting) {
+                case .success(let planned): group.meeting = planned
+                case .failure(let refusal): return (400, Self.message(refusal.message))
+                }
+            }
+        }
+        do {
+            try await groups.change(group)
+        } catch Moves.Failure.moving {
+            return (409, Self.message("That chat is moving. Try again once it’s there."))
+        } catch {
+            return (503, Self.message(error.localizedDescription))
+        }
+        guard let changed = groups.group(id) else { return (404, Data()) }
+        return (200, (try? Self.groupEncoder.encode(["group": entry(changed, in: groups)])) ?? Data())
     }
 
     /// What a phone does in a chat, as in the window: writes to it (`{"text"}`), stops it, lets it

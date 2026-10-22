@@ -369,10 +369,24 @@ itself. A host serves:
   and the bot writes first. Errors are `{"message"}`: 400 for a missing name or an unknown
   template, personality, machine or project; 409 while its machine isn't connected; 422 for a
   model that can't run there (its account isn't signed in there); 503 when it couldn't be made.
-- On a Mac, `POST kuvo/groups` with `{name, members, purpose?}` (members by bot `id`, at least
-  two) makes a group chat on the Mac, as New Group Chat does: `201 {"group": <as kuvo/groups
-  lists one>}`, 400 `{"message"}` without a name or two bots, 404 `{"message"}` for a bot that
-  isn't there. Moving it to a machine is the Mac's Move to Computer.
+- On a Mac, `POST kuvo/groups` with `{name, members, purpose?, meeting?}` (members by bot `id`,
+  at least two) makes a group chat on the Mac, as New Group Chat does: `201 {"group": <as
+  kuvo/groups lists one>}`, 400 `{"message"}` without a name or two bots, 404 `{"message"}` for
+  a bot that isn't there. Moving it to a machine is the Mac's Move to Computer.
+  `meeting` is `{next, every?, topic?}`: `next` in seconds since 1970, `every` as kuvo-wake writes
+  it (`1d`, `weekdays`, `1w`…; null or left out for once). The computer the chat lives on sets it
+  up as Edit Group Chat does (`BotGroup.Meeting.planned`, held to the agents bridge's
+  `planMeeting` by `Agents/test/groups-vectors.json`), on your clock: a repeating one whose time
+  has passed comes at its next round, weekdays skip the weekend, a time of day (and a week's day)
+  is kept from then on, and an empty topic gets the default. 400 `{"message"}` for a one-off whose
+  time has passed or a repeat there isn't. The chat lists it as `meeting: {next, every, topic,
+  at, weekday}`.
+- `PATCH kuvo/groups/<id>` with any of `{name, purpose, members, meeting}` changes the chat as
+  Edit Group Chat does (an empty `purpose` is none, `meeting: null` none): `200 {"group"}`, 400
+  `{"message"}` for what can't be (no name, fewer than two bots, a bot that doesn't live where
+  the chat does, a meeting as above), 404 for no such chat or bot, 409 while it moves. A Mac
+  answers it for every chat it lists, a machine's bridge (from 0.9.14) for those that live there;
+  `kuvo/groups/events` says what changed at once.
 - A machine's bridge (from 0.9.5) answers the same three, with the Mac closed too: what New Bot
   offers there (`startingModel` has one key, the machine's name as its bots' `machine` has it,
   and `projects` are its own); a bot made there, with its folder, conversation and instructions,

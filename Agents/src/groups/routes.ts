@@ -3,6 +3,7 @@
 
 import type { GroupRunner } from "./runner"
 import { isGroup, isMeeting, isMessages, version, type GroupStore } from "./store"
+import { planMeeting } from "./time"
 
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } })
 const error = (status: number, message: string) => json({ message }, status)
@@ -45,6 +46,17 @@ export async function groupRoutes(runner: GroupRunner | undefined, store: GroupS
     }
     if (method === "PATCH") {
       const edits = await body()
+      // A meeting as a phone sets it up (`meetingPlan`): worked out here, on your clock.
+      if (edits && "meetingPlan" in edits) {
+        if (edits.meetingPlan === null) {
+          edits.meeting = null
+        } else {
+          const planned = planMeeting(edits.meetingPlan, runner.get(id)?.group.meeting, store.settings()?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone)
+          if (typeof planned === "string") return error(400, planned)
+          edits.meeting = planned
+        }
+        delete edits.meetingPlan
+      }
       // One moving: nothing changes but that you've looked at it (what changed would be left behind).
       if (runner.get(id)?.status === "held" && Object.keys(edits ?? {}).some((key) => key !== "viewed")) return error(409, "That chat is moving.")
       if (edits?.meeting !== undefined && edits.meeting !== null && !isMeeting(edits.meeting)) return error(400, "That isn't a meeting.")

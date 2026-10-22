@@ -148,4 +148,43 @@ import Testing
         #expect(unknown.status == 404 && message(unknown) == "There’s no bot “bot_gone000001”.")
         #expect(app.groups.list.count == 1)
     }
+
+    /// A group chat made and changed from a phone, its meeting set up as Edit Group Chat sets it
+    /// up: a weekly one at a time to come, kept; one that comes back, its time passed, on to its
+    /// next round; a one-off past, or a repeat there isn't, refused.
+    @Test func aGroupChatsMeetingFromAPhone() async throws {
+        defer { done() }
+        await app.workspace.refresh()
+        let ada = try await app.bots.create(name: "Ada", look: .random(), model: nil, machine: nil, project: nil)
+        let ben = try await app.bots.create(name: "Ben", look: .random(), model: nil, machine: nil, project: nil)
+        let nextWeek = Date.now.addingTimeInterval(86_400 * 7).timeIntervalSince1970.rounded()
+        let made = try await ask("kuvo/groups", method: "POST", body: ["name": "Standup", "members": [ada.id, ben.id],
+                                                                      "meeting": ["next": nextWeek, "every": "1w", "topic": " "]])
+        #expect(made.status == 201)
+        let id = try #require((made.json?["group"] as? [String: Any])?["id"] as? String)
+        let meeting = try #require(app.groups.group(id)?.meeting)
+        #expect(meeting.next.timeIntervalSince1970 == nextWeek && meeting.every == "1w")
+        #expect(meeting.topic == BotGroup.Meeting.defaultTopic)
+        #expect(meeting.weekday == Calendar.current.component(.weekday, from: meeting.next))
+
+        let past = Date.now.addingTimeInterval(-3600).timeIntervalSince1970
+        #expect(try await ask("kuvo/groups", method: "POST", body: ["name": "Late", "members": [ada.id, ben.id], "meeting": ["next": past]]).status == 400)
+        #expect(try await ask("kuvo/groups", method: "POST", body: ["name": "Odd", "members": [ada.id, ben.id], "meeting": ["next": nextWeek, "every": "1y"]]).status == 400)
+        #expect(app.groups.list.count == 1)
+
+        // Changed: a daily one whose time passed comes back at its next round; the name and
+        // purpose go with it, and an empty purpose is none.
+        let changed = try await ask("kuvo/groups/\(id)", method: "PATCH", body: ["name": "Daily", "purpose": "Ship", "meeting": ["next": past, "every": "1d", "topic": "Where are we?"]])
+        #expect(changed.status == 200)
+        #expect((changed.json?["group"] as? [String: Any])?["name"] as? String == "Daily")
+        let daily = try #require(app.groups.group(id)?.meeting)
+        #expect(daily.next > .now && daily.every == "1d" && daily.topic == "Where are we?")
+        #expect(app.groups.group(id)?.purpose == "Ship")
+        #expect(try await ask("kuvo/groups/\(id)", method: "PATCH", body: ["purpose": "", "meeting": NSNull()]).status == 200)
+        #expect(app.groups.group(id)?.meeting == nil && app.groups.group(id)?.purpose == nil)
+
+        #expect(try await ask("kuvo/groups/\(id)", method: "PATCH", body: ["members": [ada.id]]).status == 400)
+        #expect(try await ask("kuvo/groups/\(id)", method: "PATCH", body: ["name": " "]).status == 400)
+        #expect(try await ask("kuvo/groups/grp_none000001", method: "PATCH", body: ["name": "X"]).status == 404)
+    }
 }

@@ -277,6 +277,23 @@ async function makingEngine(ready = ["opencode"]) {
         return reply({ data: given });
       }
       if (request.method === "GET" && request.url === "/api/kuvo/groups") return reply({ data: [...chats.values()].map(chat => ({ group: chat.group, status: chat.status, state: {} })) });
+      // As the agents bridge plans a meeting: here, one at a time to come, kept as given.
+      if (request.method === "PATCH" && request.url.startsWith("/api/kuvo/groups/")) {
+        const chat = chats.get(request.url.split("/").pop());
+        if (!chat) return reply({ message: "No such chat." }, 404);
+        const { meetingPlan, ...edits } = given;
+        if (meetingPlan !== undefined) {
+          if (meetingPlan !== null && meetingPlan.next * 1000 <= Date.now()) return reply({ message: "That time has passed. Pick one to come." }, 400);
+          edits.meeting = meetingPlan === null ? undefined : { next: new Date(meetingPlan.next * 1000).toISOString().replace(/\.\d{3}Z$/, "Z"), topic: meetingPlan.topic || "Our regular meeting", ...(meetingPlan.every ? { every: meetingPlan.every } : {}) };
+        }
+        Object.assign(chat.group, edits);
+        if (edits.purpose === null) delete chat.group.purpose;
+        return reply({ data: chat });
+      }
+      if (request.method === "DELETE" && request.url.startsWith("/api/kuvo/groups/")) {
+        chats.delete(request.url.split("/").pop());
+        return reply({});
+      }
       reply({});
     });
   });
@@ -376,6 +393,36 @@ test("with the Mac closed, a group chat of this machine's bots is made here and 
     const unknown = await ask(handle, "POST", "kuvo/groups", { name: "Who", members: ["bot_ada0000001", "bot_gone000001"] });
     assert.equal(unknown.status, 404);
     assert.equal(unknown.json.message, "There’s no bot “bot_gone000001”.");
+  } finally {
+    agents.close();
+  }
+});
+
+test("with the Mac closed, a group chat's meeting is set up here, by the bridge that runs it, and the chat changed from a phone", async () => {
+  bot("bot_ada0000001", { name: "Ada" });
+  bot("bot_ben0000001", { name: "Ben" });
+  const agents = await makingEngine();
+  try {
+    const handle = link.engineHandler(() => { throw new Error("not needed"); }, { name: "my-server" }, () => ({ port: agents.port, password: "p", pid: process.pid }));
+    const nextWeek = Math.round(Date.now() / 1000) + 86_400 * 7;
+    const made = await ask(handle, "POST", "kuvo/groups", { name: "Standup", members: ["bot_ada0000001", "bot_ben0000001"], meeting: { next: nextWeek, every: "1w", topic: "Weekly" } });
+    assert.equal(made.status, 201, JSON.stringify(made.json));
+    const id = made.json.group.id;
+    assert.deepEqual(agents.asked.find(each => each.method === "PATCH").body, { meetingPlan: { next: nextWeek, every: "1w", topic: "Weekly" } });
+    // One the bridge says can't be: the chat doesn't stay either.
+    const late = await ask(handle, "POST", "kuvo/groups", { name: "Late", members: ["bot_ada0000001", "bot_ben0000001"], meeting: { next: 1000 } });
+    assert.equal(late.status, 400);
+    assert.equal(late.json.message, "That time has passed. Pick one to come.");
+    assert.ok(agents.asked.some(each => each.method === "DELETE"));
+
+    const changed = await ask(handle, "PATCH", `kuvo/groups/${id}`, { name: " Daily ", purpose: "", meeting: null });
+    assert.equal(changed.status, 200, JSON.stringify(changed.json));
+    assert.equal(changed.json.group.name, "Daily");
+    assert.deepEqual(agents.asked.filter(each => each.method === "PATCH").at(-1).body, { name: "Daily", purpose: null, meetingPlan: null });
+    assert.equal((await ask(handle, "PATCH", `kuvo/groups/${id}`, { members: ["bot_ada0000001"] })).status, 400);
+    assert.equal((await ask(handle, "PATCH", `kuvo/groups/${id}`, { members: ["bot_ada0000001", "bot_gone000001"] })).status, 404);
+    assert.equal((await ask(handle, "PATCH", `kuvo/groups/${id}`, { name: "  " })).status, 400);
+    assert.equal((await ask(handle, "PATCH", "kuvo/groups/grp_none000001", { name: "X" })).status, 404);
   } finally {
     agents.close();
   }

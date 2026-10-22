@@ -61,15 +61,9 @@ struct GroupEditor: View {
     /// to its next time; a time picked here is the one it keeps from then on.
     private var meeting: BotGroup.Meeting? {
         guard meets else { return nil }
-        let calendar = Calendar.current
-        let before = group?.meeting.flatMap { $0.next == meetsAt && $0.repeats == meetsEvery ? $0 : nil }
-        let at = meetsEvery?.keepsTimeOfDay == true ? before?.at ?? Wakes.minutes(of: meetsAt, calendar: calendar) : nil
-        let weekday = meetsEvery?.keepsWeekday == true ? before?.weekday ?? calendar.component(.weekday, from: meetsAt) : nil
-        var next = meetsAt
-        if next <= .now, let every = meetsEvery { next = every.next(after: next, now: .now, at: at, weekday: weekday, calendar: calendar) }
-        while meetsEvery == .weekdays, Wakes.isWeekend(next, calendar: calendar), let day = calendar.date(byAdding: .day, value: 1, to: next) { next = day }
-        let topic = topic.trimmingCharacters(in: .whitespacesAndNewlines)
-        return BotGroup.Meeting(next: next, every: meetsEvery?.text, topic: topic.isEmpty ? "Our regular meeting: where things stand, and what's next." : topic, at: at, weekday: weekday)
+        // A one-off whose time has passed: as picked, so Save stays off and says why.
+        return BotGroup.Meeting.planned(at: meetsAt, every: meetsEvery, topic: topic, before: group?.meeting)
+            ?? BotGroup.Meeting(next: meetsAt, every: nil, topic: topic, at: nil, weekday: nil)
     }
 
     private var isNew: Bool { group == nil }

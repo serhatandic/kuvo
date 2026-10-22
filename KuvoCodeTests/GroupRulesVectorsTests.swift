@@ -11,7 +11,7 @@ import Testing
 /// bridge's tests then say whether the machine's rules still match.
 @MainActor
 struct GroupRulesVectorsTests {
-    static let recorded = "101b2f5c7cdba23a1f87a511665fc4166b2b21b7184d9a348792e608366113c1"
+    static let recorded = "c6e31a255c5871cdb30ce8dd26acff18337e1223a5007b9ce55fe8782b4f65a6"
 
     @Test func theMachinesChatsGoByTheseRules() throws {
         let data = try JSONSerialization.data(withJSONObject: Self.vectors(), options: [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes])
@@ -50,6 +50,7 @@ struct GroupRulesVectorsTests {
                 return ["memory": text, "line": job?.line ?? NSNull(), "section": job?.section ?? NSNull()] as [String: Any]
             },
             "next": repeatCases(),
+            "planMeeting": planCases(),
         ]
     }
 
@@ -321,6 +322,48 @@ struct GroupRulesVectorsTests {
                 }
             }
         }
+        return cases
+    }
+
+    /// A meeting as you set it up (Edit Group Chat, a phone): `BotGroup.Meeting.planned`, as a
+    /// machine's chats plan one from a phone.
+    static func planCases() -> [[String: Any]] {
+        var cases: [[String: Any]] = []
+        let iso = ISO8601DateFormatter()
+        let now = iso.date(from: "2026-10-28T10:00:00Z")!
+        for zone in ["Europe/Istanbul", "America/New_York", "Australia/Sydney"] {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(identifier: zone)!
+            // Passed an hour ago, passed a week ago, an hour to come, on a Saturday to come.
+            let times = [now.addingTimeInterval(-3600), now.addingTimeInterval(-86_400 * 7 - 1800), now.addingTimeInterval(3600), iso.date(from: "2026-10-31T09:00:00Z")!]
+            for time in times {
+                for every in [nil, "1d", "1w", "weekdays", "2h"] as [String?] {
+                    for topic in ["Standup", "  "] {
+                        let planned = BotGroup.Meeting.planned(at: time, every: every.flatMap(Wakes.Repeat.init), topic: topic, before: nil, now: now, calendar: calendar)
+                        var entry: [String: Any] = ["zone": zone, "now": Int(now.timeIntervalSince1970), "next": Int(time.timeIntervalSince1970), "topic": topic]
+                        if let every { entry["every"] = every }
+                        if let planned {
+                            var meeting: [String: Any] = ["next": Int(planned.next.timeIntervalSince1970), "topic": planned.topic]
+                            if let every = planned.every { meeting["every"] = every }
+                            if let at = planned.at { meeting["at"] = at }
+                            if let weekday = planned.weekday { meeting["weekday"] = weekday }
+                            entry["meeting"] = meeting
+                        } else {
+                            entry["meeting"] = NSNull()
+                        }
+                        cases.append(entry)
+                    }
+                }
+            }
+        }
+        // Its time and repeat as they were: the time of day and day of the week it kept stay.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Istanbul")!
+        let before = BotGroup.Meeting(next: iso.date(from: "2026-10-21T06:00:00Z")!, every: "1w", topic: "Weekly", at: 540, weekday: 4)
+        let kept = BotGroup.Meeting.planned(at: before.next, every: .weeks(1), topic: "Weekly", before: before, now: now, calendar: calendar)!
+        cases.append(["zone": "Europe/Istanbul", "now": Int(now.timeIntervalSince1970), "next": Int(before.next.timeIntervalSince1970), "topic": "Weekly", "every": "1w",
+                      "before": ["next": "2026-10-21T06:00:00Z", "every": "1w", "at": 540, "weekday": 4],
+                      "meeting": ["next": Int(kept.next.timeIntervalSince1970), "topic": kept.topic, "every": "1w", "at": kept.at!, "weekday": kept.weekday!]])
         return cases
     }
 }

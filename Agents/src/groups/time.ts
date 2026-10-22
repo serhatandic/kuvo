@@ -135,3 +135,50 @@ export function next(every: Repeat, due: number, now: number, zone: string, at?:
   }
   return now + days * 86_400_000
 }
+
+/** The day of the week `time` is on `zone`'s calendar (1 is Sunday). */
+export function weekdayOf(time: number, zone: string): number {
+  return local(time, zone).weekday
+}
+
+/** What a meeting's topic is when you give none, as the Mac's. */
+export const defaultTopic = "Our regular meeting: where things stand, and what's next."
+
+/**
+ * A meeting as you set it up (a phone, as Edit Group Chat on the Mac does: `BotGroup.Meeting.planned`):
+ * at `next` (seconds since 1970), repeating `every` (null for once), about `topic`. Its next time
+ * is after now: a repeating one's next round if `next` has passed; on weekdays, a weekday. With its
+ * time and repeat as `before` had them, it keeps the time of day (and a week's day) it had; a time
+ * picked anew is the one it keeps from then on. A string says why it can't be.
+ */
+export function planMeeting(
+  plan: { next: number; every?: string | null; topic?: string },
+  before: { next: string; every?: string; at?: number; weekday?: number } | undefined,
+  zone: string,
+  now = Date.now(),
+): { next: string; every?: string; topic: string; at?: number; weekday?: number } | string {
+  if (typeof plan?.next !== "number" || !Number.isFinite(plan.next)) return "That isn't a meeting."
+  const every = plan.every ?? undefined
+  const repeat = every === undefined ? undefined : parseRepeat(String(every))
+  if (every !== undefined && !repeat) return `“${every}” isn't how often a meeting can come back.`
+  const time = Math.round(plan.next) * 1000
+  const kept = before && Date.parse(before.next) === time && (before.every ?? undefined) === every ? before : undefined
+  const at = repeat && keepsTimeOfDay(repeat) ? (kept?.at ?? minutesOf(time, zone)) : undefined
+  const weekday = repeat && keepsWeekday(repeat) ? (kept?.weekday ?? weekdayOf(time, zone)) : undefined
+  let when = time
+  if (when <= now && repeat) when = next(repeat, when, now, zone, at, weekday)
+  for (let tries = 0; repeat?.kind === "weekdays" && isWeekend(when, zone) && tries < 7; tries++) {
+    const day = plusDays(local(when, zone), 1)
+    const clock = local(when, zone)
+    when = moment(day.year, day.month, day.day, clock.hour, clock.minute, zone)
+  }
+  if (when <= now) return "That time has passed. Pick one to come."
+  const topic = String(plan.topic ?? "").trim() || defaultTopic
+  return {
+    next: new Date(when).toISOString().replace(/\.\d{3}Z$/, "Z"),
+    ...(every !== undefined ? { every } : {}),
+    topic,
+    ...(at !== undefined ? { at } : {}),
+    ...(weekday !== undefined ? { weekday } : {}),
+  }
+}

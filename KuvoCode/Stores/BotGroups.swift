@@ -44,6 +44,27 @@ struct BotGroup: Codable, Identifiable, Hashable {
         var weekday: Int?
 
         var repeats: Wakes.Repeat? { every.flatMap(Wakes.Repeat.init) }
+
+        /// What a meeting's topic is when you give it none.
+        static let defaultTopic = "Our regular meeting: where things stand, and what's next."
+
+        /// A meeting as you set it up (Edit Group Chat, or a phone): at `time`, repeating `every`
+        /// (nil for once), about `topic`. Its next time is after now: a repeating one's next
+        /// round, if `time` has passed; on weekdays, a weekday. With its time and repeat as
+        /// `before` had them, it keeps the time of day (and a week's day) it had, whatever
+        /// daylight saving or a new time zone did to its next time; a time picked anew is the one
+        /// it keeps from then on. Nil for a one-off whose time has passed.
+        static func planned(at time: Date, every: Wakes.Repeat?, topic: String, before: Meeting?, now: Date = .now, calendar: Calendar = .current) -> Meeting? {
+            let kept = before.flatMap { $0.next == time && $0.repeats == every ? $0 : nil }
+            let at = every?.keepsTimeOfDay == true ? kept?.at ?? Wakes.minutes(of: time, calendar: calendar) : nil
+            let weekday = every?.keepsWeekday == true ? kept?.weekday ?? calendar.component(.weekday, from: time) : nil
+            var next = time
+            if next <= now, let every { next = every.next(after: next, now: now, at: at, weekday: weekday, calendar: calendar) }
+            while every == .weekdays, Wakes.isWeekend(next, calendar: calendar), let day = calendar.date(byAdding: .day, value: 1, to: next) { next = day }
+            guard next > now else { return nil }
+            let topic = topic.trimmingCharacters(in: .whitespacesAndNewlines)
+            return Meeting(next: next, every: every?.text, topic: topic.isEmpty ? defaultTopic : topic, at: at, weekday: weekday)
+        }
     }
 }
 

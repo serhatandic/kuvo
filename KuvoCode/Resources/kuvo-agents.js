@@ -11367,6 +11367,144 @@ class GroupStore {
   }
 }
 
+// Agents/src/groups/time.ts
+function parseRepeat(text2) {
+  if (text2 === "weekdays")
+    return { kind: "weekdays" };
+  const unit = text2.slice(-1);
+  const digits = text2.slice(0, -1);
+  if (!/^[1-9][0-9]*$/.test(digits) || text2.length > 7)
+    return;
+  const count = Number(digits);
+  if (unit === "m" && count >= 5 && count <= 525600)
+    return { kind: "minutes", count };
+  if (unit === "h" && count <= 8760)
+    return { kind: "hours", count };
+  if (unit === "d" && count <= 366)
+    return { kind: "days", count };
+  if (unit === "w" && count <= 52)
+    return { kind: "weeks", count };
+  return;
+}
+var keepsTimeOfDay = (every) => every.kind === "days" || every.kind === "weeks" || every.kind === "weekdays";
+var keepsWeekday = (every) => every.kind === "weeks";
+var formats = new Map;
+var weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+function local(time, zone2) {
+  let format = formats.get(zone2);
+  if (!format) {
+    format = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone2,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      weekday: "short"
+    });
+    formats.set(zone2, format);
+  }
+  const parts2 = {};
+  for (const part of format.formatToParts(new Date(time)))
+    parts2[part.type] = part.value;
+  return {
+    year: Number(parts2.year),
+    month: Number(parts2.month),
+    day: Number(parts2.day),
+    hour: Number(parts2.hour) % 24,
+    minute: Number(parts2.minute),
+    weekday: weekdays.indexOf(parts2.weekday) + 1
+  };
+}
+function offset(time, zone2) {
+  const at = local(time, zone2);
+  const wall = Date.UTC(at.year, at.month - 1, at.day, at.hour, at.minute);
+  return wall - Math.floor(time / 60000) * 60000;
+}
+function moment(year, month, day, hour, minute, zone2) {
+  const wall = Date.UTC(year, month - 1, day, hour, minute);
+  const before = wall - offset(wall - 86400000, zone2);
+  const after = wall - offset(wall + 86400000, zone2);
+  const reads = (time) => {
+    const at = local(time, zone2);
+    return Date.UTC(at.year, at.month - 1, at.day, at.hour, at.minute) === wall;
+  };
+  const fits = [before, after].filter(reads);
+  if (fits.length > 0)
+    return Math.min(...fits);
+  return before;
+}
+function plusDays(date, days) {
+  const shifted = new Date(Date.UTC(date.year, date.month - 1, date.day + days));
+  return { year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() + 1, day: shifted.getUTCDate() };
+}
+var daysBetween = (from, to) => Math.round((Date.UTC(to.year, to.month - 1, to.day) - Date.UTC(from.year, from.month - 1, from.day)) / 86400000);
+function minutesOf(time, zone2) {
+  const at = local(time, zone2);
+  return at.hour * 60 + at.minute;
+}
+function isWeekend(time, zone2) {
+  const day = local(time, zone2).weekday;
+  return day === 1 || day === 7;
+}
+function next(every, due, now, zone2, at, weekday) {
+  if (every.kind === "minutes" || every.kind === "hours") {
+    const period = every.count * (every.kind === "hours" ? 3600000 : 60000);
+    return due + (Math.floor((now - due) / period) + 1) * period;
+  }
+  const days = every.kind === "days" ? every.count : every.kind === "weeks" ? every.count * 7 : 1;
+  const minutes = at ?? minutesOf(due, zone2);
+  let first = local(due, zone2);
+  if (keepsWeekday(every) && weekday !== undefined) {
+    const shift = (weekday - local(due, zone2).weekday + 7) % 7;
+    first = plusDays(first, shift > 3 ? shift - 7 : shift);
+  }
+  const missed = daysBetween(first, local(now, zone2));
+  let periods = Math.max(1, Math.trunc(missed / days));
+  for (let tries = 0;tries < 400; tries++, periods++) {
+    const day = plusDays(first, periods * days);
+    const time = moment(day.year, day.month, day.day, Math.floor(minutes / 60), minutes % 60, zone2);
+    if (time > now && (every.kind !== "weekdays" || !isWeekend(time, zone2)))
+      return time;
+  }
+  return now + days * 86400000;
+}
+function weekdayOf(time, zone2) {
+  return local(time, zone2).weekday;
+}
+var defaultTopic = "Our regular meeting: where things stand, and what's next.";
+function planMeeting(plan, before, zone2, now = Date.now()) {
+  if (typeof plan?.next !== "number" || !Number.isFinite(plan.next))
+    return "That isn't a meeting.";
+  const every = plan.every ?? undefined;
+  const repeat = every === undefined ? undefined : parseRepeat(String(every));
+  if (every !== undefined && !repeat)
+    return `\u201C${every}\u201D isn't how often a meeting can come back.`;
+  const time = Math.round(plan.next) * 1000;
+  const kept2 = before && Date.parse(before.next) === time && (before.every ?? undefined) === every ? before : undefined;
+  const at = repeat && keepsTimeOfDay(repeat) ? kept2?.at ?? minutesOf(time, zone2) : undefined;
+  const weekday = repeat && keepsWeekday(repeat) ? kept2?.weekday ?? weekdayOf(time, zone2) : undefined;
+  let when = time;
+  if (when <= now && repeat)
+    when = next(repeat, when, now, zone2, at, weekday);
+  for (let tries = 0;repeat?.kind === "weekdays" && isWeekend(when, zone2) && tries < 7; tries++) {
+    const day = plusDays(local(when, zone2), 1);
+    const clock = local(when, zone2);
+    when = moment(day.year, day.month, day.day, clock.hour, clock.minute, zone2);
+  }
+  if (when <= now)
+    return "That time has passed. Pick one to come.";
+  const topic = String(plan.topic ?? "").trim() || defaultTopic;
+  return {
+    next: new Date(when).toISOString().replace(/\.\d{3}Z$/, "Z"),
+    ...every !== undefined ? { every } : {},
+    topic,
+    ...at !== undefined ? { at } : {},
+    ...weekday !== undefined ? { weekday } : {}
+  };
+}
+
 // Agents/src/groups/routes.ts
 var json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 var error = (status, message) => json({ message }, status);
@@ -11412,6 +11550,17 @@ async function groupRoutes(runner, store, method, parts2, body) {
     }
     if (method === "PATCH") {
       const edits2 = await body();
+      if (edits2 && "meetingPlan" in edits2) {
+        if (edits2.meetingPlan === null) {
+          edits2.meeting = null;
+        } else {
+          const planned = planMeeting(edits2.meetingPlan, runner.get(id)?.group.meeting, store.settings()?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
+          if (typeof planned === "string")
+            return error(400, planned);
+          edits2.meeting = planned;
+        }
+        delete edits2.meetingPlan;
+      }
       if (runner.get(id)?.status === "held" && Object.keys(edits2 ?? {}).some((key) => key !== "viewed"))
         return error(409, "That chat is moving.");
       if (edits2?.meeting !== undefined && edits2.meeting !== null && !isMeeting(edits2.meeting))
@@ -11565,8 +11714,8 @@ function page(items2, url) {
   const data = items2.slice(start, start + limit2);
   const order = cursor?.split(":", 1)[0] ?? url.searchParams.get("order") ?? "desc";
   const filter = url.searchParams.get("parentID") ?? cursor?.split(":")[2];
-  const next = start + limit2 < items2.length && data.length ? `${order}:${data[data.length - 1].id}${filter ? `:${filter}` : ""}` : undefined;
-  return { data, cursor: { next } };
+  const next2 = start + limit2 < items2.length && data.length ? `${order}:${data[data.length - 1].id}${filter ? `:${filter}` : ""}` : undefined;
+  return { data, cursor: { next: next2 } };
 }
 function handler(context) {
   const expected = "Basic " + Buffer.from(`opencode:${context.password}`).toString("base64");
@@ -12122,110 +12271,6 @@ class SeatAPI {
   async dismiss(id, form, message) {
     await this.requester.request("DELETE", `${at(id)}/form/${encodeURIComponent(form)}?message=${encodeURIComponent(message)}`);
   }
-}
-
-// Agents/src/groups/time.ts
-function parseRepeat(text2) {
-  if (text2 === "weekdays")
-    return { kind: "weekdays" };
-  const unit = text2.slice(-1);
-  const digits = text2.slice(0, -1);
-  if (!/^[1-9][0-9]*$/.test(digits) || text2.length > 7)
-    return;
-  const count = Number(digits);
-  if (unit === "m" && count >= 5 && count <= 525600)
-    return { kind: "minutes", count };
-  if (unit === "h" && count <= 8760)
-    return { kind: "hours", count };
-  if (unit === "d" && count <= 366)
-    return { kind: "days", count };
-  if (unit === "w" && count <= 52)
-    return { kind: "weeks", count };
-  return;
-}
-var keepsTimeOfDay = (every) => every.kind === "days" || every.kind === "weeks" || every.kind === "weekdays";
-var keepsWeekday = (every) => every.kind === "weeks";
-var formats = new Map;
-var weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-function local(time, zone2) {
-  let format = formats.get(zone2);
-  if (!format) {
-    format = new Intl.DateTimeFormat("en-US", {
-      timeZone: zone2,
-      hourCycle: "h23",
-      year: "numeric",
-      month: "numeric",
-      day: "numeric",
-      hour: "numeric",
-      minute: "numeric",
-      weekday: "short"
-    });
-    formats.set(zone2, format);
-  }
-  const parts2 = {};
-  for (const part of format.formatToParts(new Date(time)))
-    parts2[part.type] = part.value;
-  return {
-    year: Number(parts2.year),
-    month: Number(parts2.month),
-    day: Number(parts2.day),
-    hour: Number(parts2.hour) % 24,
-    minute: Number(parts2.minute),
-    weekday: weekdays.indexOf(parts2.weekday) + 1
-  };
-}
-function offset(time, zone2) {
-  const at2 = local(time, zone2);
-  const wall = Date.UTC(at2.year, at2.month - 1, at2.day, at2.hour, at2.minute);
-  return wall - Math.floor(time / 60000) * 60000;
-}
-function moment(year, month, day, hour, minute, zone2) {
-  const wall = Date.UTC(year, month - 1, day, hour, minute);
-  const before = wall - offset(wall - 86400000, zone2);
-  const after = wall - offset(wall + 86400000, zone2);
-  const reads = (time) => {
-    const at2 = local(time, zone2);
-    return Date.UTC(at2.year, at2.month - 1, at2.day, at2.hour, at2.minute) === wall;
-  };
-  const fits = [before, after].filter(reads);
-  if (fits.length > 0)
-    return Math.min(...fits);
-  return before;
-}
-function plusDays(date, days) {
-  const shifted = new Date(Date.UTC(date.year, date.month - 1, date.day + days));
-  return { year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() + 1, day: shifted.getUTCDate() };
-}
-var daysBetween = (from, to) => Math.round((Date.UTC(to.year, to.month - 1, to.day) - Date.UTC(from.year, from.month - 1, from.day)) / 86400000);
-function minutesOf(time, zone2) {
-  const at2 = local(time, zone2);
-  return at2.hour * 60 + at2.minute;
-}
-function isWeekend(time, zone2) {
-  const day = local(time, zone2).weekday;
-  return day === 1 || day === 7;
-}
-function next(every, due, now, zone2, at2, weekday) {
-  if (every.kind === "minutes" || every.kind === "hours") {
-    const period = every.count * (every.kind === "hours" ? 3600000 : 60000);
-    return due + (Math.floor((now - due) / period) + 1) * period;
-  }
-  const days = every.kind === "days" ? every.count : every.kind === "weeks" ? every.count * 7 : 1;
-  const minutes = at2 ?? minutesOf(due, zone2);
-  let first = local(due, zone2);
-  if (keepsWeekday(every) && weekday !== undefined) {
-    const shift = (weekday - local(due, zone2).weekday + 7) % 7;
-    first = plusDays(first, shift > 3 ? shift - 7 : shift);
-  }
-  const missed = daysBetween(first, local(now, zone2));
-  let periods = Math.max(1, Math.trunc(missed / days));
-  for (let tries = 0;tries < 400; tries++, periods++) {
-    const day = plusDays(first, periods * days);
-    const time = moment(day.year, day.month, day.day, Math.floor(minutes / 60), minutes % 60, zone2);
-    if (time > now && (every.kind !== "weekdays" || !isWeekend(time, zone2)))
-      return time;
-  }
-  return now + days * 86400000;
 }
 
 // Agents/src/groups/runner.ts
@@ -13165,7 +13210,7 @@ class GroupRunner {
           if (keepsTimeOfDay(every) && typeof updated.at !== "number")
             updated.at = minutesOf(due, zone2);
           if (keepsWeekday(every) && typeof updated.weekday !== "number")
-            updated.weekday = weekdayOf(due, zone2);
+            updated.weekday = weekdayOf2(due, zone2);
           const at2 = keepsTimeOfDay(every) ? updated.at : undefined;
           const weekday = keepsWeekday(every) ? updated.weekday : undefined;
           let next2 = next(every, due, now, zone2, at2, weekday);
@@ -13471,7 +13516,7 @@ function usableZone(zone2) {
     return own;
   }
 }
-var weekdayOf = (time, zone2) => {
+var weekdayOf2 = (time, zone2) => {
   const name = new Intl.DateTimeFormat("en-US", { timeZone: zone2, weekday: "short" }).format(new Date(time));
   return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(name) + 1;
 };
@@ -13598,4 +13643,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Agents/src dd16105b7d1e3d51bcdc08dbeb27f1f8fe18b5701d4344a3b6a592479be81fd1
+// Built from Agents/src d0549bf856ab085a804c9cf6bdc92a3f8f3aaf63d913d1c5afe6bf9b8e2d5e0d

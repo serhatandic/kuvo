@@ -19,7 +19,7 @@ import {
   type GroupTask,
   type SeatBot,
 } from "../src/groups/rules"
-import { next, parseRepeat } from "../src/groups/time"
+import { next, parseRepeat, planMeeting } from "../src/groups/time"
 
 // What the Mac's group chat rules say (KuvoCodeTests/GroupRulesVectorsTests, written by
 // scripts/group-vectors.sh): a group chat that lives on a machine goes by the same.
@@ -107,6 +107,19 @@ describe("a group chat on a machine goes by the Mac's rules", () => {
       const job = jobInMemory(vector.memory)
       expect([vector.memory, job?.line ?? null, job?.section ?? null]).toEqual([vector.memory, vector.line, vector.section])
     }
+  })
+
+  test("a meeting as you set it up, as the Mac plans it", () => {
+    const wrong: string[] = []
+    for (const vector of vectors.planMeeting) {
+      const planned = planMeeting({ next: vector.next, every: vector.every ?? null, topic: vector.topic }, vector.before, vector.zone, vector.now * 1000)
+      const found = typeof planned === "string" ? null : { ...planned, next: Date.parse(planned.next) / 1000 }
+      if (JSON.stringify(found) !== JSON.stringify(vector.meeting === null ? null : { next: vector.meeting.next, ...(vector.meeting.every ? { every: vector.meeting.every } : {}), topic: vector.meeting.topic, ...(vector.meeting.at !== undefined ? { at: vector.meeting.at } : {}), ...(vector.meeting.weekday !== undefined ? { weekday: vector.meeting.weekday } : {}) })) {
+        wrong.push(`${vector.zone} ${vector.every ?? "once"} at ${new Date(vector.next * 1000).toISOString()}: ${JSON.stringify(found)}, not ${JSON.stringify(vector.meeting)}`)
+      }
+    }
+    expect(vectors.planMeeting.length).toBeGreaterThan(10)
+    expect(wrong.slice(0, 10)).toEqual([])
   })
 
   test("when a repeating meeting comes back", () => {

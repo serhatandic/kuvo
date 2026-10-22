@@ -23,7 +23,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Goes up with every change, so `setup` replaces a running bridge that's older.
-export const BRIDGE_VERSION = "0.9.13";
+export const BRIDGE_VERSION = "0.9.14";
 const K = process.env.KUVO_HOME || path.join(os.homedir(), ".kuvo-code");
 const RUN = path.join(K, "run");
 export const LINK_FILE = path.join(RUN, "link.json");
@@ -1297,6 +1297,33 @@ async function* answerGroups(target, id, action, request, signal) {
     }
     return;
   }
+  // Its name, purpose, bots or meeting changed, as Edit Group Chat changes them: a meeting
+  // as you set it up, worked out by the bridge that runs it, on your clock.
+  if (method === "PATCH" && id && !action) {
+    const given = parsed(request.body);
+    if (!isObject(given)) return yield* json(400, { message: "That isn’t a change to a group chat." });
+    const edits = {};
+    if ("name" in given) {
+      const name = plainName(given.name);
+      if (!name) return yield* json(400, { message: "A group chat needs a name." });
+      edits.name = name;
+    }
+    if ("purpose" in given) edits.purpose = typeof given.purpose === "string" && given.purpose.trim() ? given.purpose.trim() : null;
+    if ("members" in given) {
+      if (!Array.isArray(given.members) || !given.members.every(each => typeof each === "string")) return yield* json(400, { message: "Those aren’t bots." });
+      const members = [...new Set(given.members)];
+      if (members.length < 2) return yield* json(400, { message: "A group chat needs at least two bots." });
+      const here = new Set(listBots().map(bot => bot.id));
+      const missing = members.find(member => !here.has(member));
+      if (missing) return yield* json(404, { message: `There’s no bot “${missing}”.` });
+      edits.members = members;
+    }
+    if ("meeting" in given) edits.meetingPlan = given.meeting;
+    const asked = await askGroups(target, "PATCH", `/${id}`, edits, signal).catch(error => ({ status: 503, value: { message: String(error?.message ?? error) } }));
+    if (asked.status !== 200) return yield* json(asked.status === 400 || asked.status === 404 || asked.status === 409 ? asked.status : 503, { message: asked.value?.message ?? "The group chat couldn’t be changed." });
+    const listed = await groupsList(target, signal).catch(() => null);
+    return yield* json(200, { group: listed?.groups.find(each => each.id === id) ?? null });
+  }
   if (method !== "POST" || !id || action === "events") return yield* json(405, {});
   let given = {};
   try {
@@ -1558,6 +1585,15 @@ export async function makeGroup(given, target, signal) {
   const group = { id, name, ...(purpose ? { purpose } : {}), members, seats: {}, heard: {}, created: now, viewed: now };
   const { status, value } = await askGroups(target, "PUT", `/${id}`, { group, messages: [], status: "active" }, signal).catch(error => ({ status: 503, value: { message: String(error?.message ?? error) } }));
   if (status !== 200) return no(status === 409 ? 409 : 503, value?.message ?? "The group chat couldn’t be made.");
+  // Its meeting, worked out by the bridge that runs it, on your clock; one that can't be, and
+  // the chat with it, doesn't stay.
+  if (given.meeting !== undefined && given.meeting !== null) {
+    const planned = await askGroups(target, "PATCH", `/${id}`, { meetingPlan: given.meeting }, signal).catch(error => ({ status: 503, value: { message: String(error?.message ?? error) } }));
+    if (planned.status !== 200) {
+      await askGroups(target, "DELETE", `/${id}`, undefined, signal).catch(() => {});
+      return no(planned.status === 400 ? 400 : 503, planned.value?.message ?? "Its meeting couldn’t be set.");
+    }
+  }
   const listed = await groupsList(target, signal).catch(() => null);
   return { status: 201, value: { group: listed?.groups.find(each => each.id === id) ?? null } };
 }
