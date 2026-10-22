@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- With Grok and Antigravity, what a session has cost counts each turn once, rather than adding up the agent's running total every time it reports it, and pressing Stop while it waits on a permission shows that step as stopped, not declined.
 - With Codex, a file it creates or deletes shows its lines in the conversation and on its permission card, rather than +0 and the file's bare text, and a turn's token count includes every step, not only those just before its words.
 - A bot in a group chat talks on the model its own conversation is on when the one picked for it belongs to an account you've signed out of (Edit Bot shows no model for it then), rather than saying it needs a sign-in for a model you aren't using.
 - Ask the agent for a screenshot of the page it's browsing and it shows in the conversation, not only inside its browser step.

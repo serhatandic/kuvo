@@ -1,16 +1,20 @@
-// An ACP agent (as Grok and Antigravity speak it), faked: what it sends shows, nothing lost.
+// An ACP agent (as Grok and Antigravity speak it), faked: what it sends shows, nothing lost; what
+// it asks is answered as the session's rules and modes say; Stop stops it; what it costs is counted.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AcpThread, acpTiming } from "../src/acp"
 import type { Agent } from "../src/agent"
+import { AntigravityAgent } from "../src/agents/antigravity"
+import { GrokAgent } from "../src/agents/grok"
 import { Auto } from "../src/auto"
 import { subscribe } from "../src/events"
 import type { Roster } from "../src/roster"
 import { Sessions } from "../src/sessions"
 import { Store } from "../src/store"
+import type { PermissionRule } from "../src/wire"
 
 const base = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-acp-test-"))
 afterAll(() => rmSync(base, { recursive: true, force: true }))
@@ -23,15 +27,51 @@ beforeEach(() => {
 })
 afterEach(() => sessions?.closeAll())
 
-/** An ACP agent whose prompt sends `updates` (each `[sessionId, update]`), then, after the answer, `later`. */
-function agentSaying(updates: [string, any][], later: [string, any][] = [], request?: any, options: { afterReply?: [string, any][]; fileSystem?: boolean; noteContext?: (model: string, size: number) => void } = {}): Agent {
-  const script = join(root, "agent.js")
+interface Script {
+  /** What it does once what it asked last is answered (in place of saying what it was answered). */
+  afterReply?: [string, any][]
+  /** How its first prompt ends, once it has said all and been answered: `end_turn` unless said. */
+  stopReason?: string
+  /** Its first prompt goes on until it's told to stop (`session/cancel`), which ends it as cancelled. */
+  hangs?: boolean
+  /** What each prompt after the first says, before it ends it (over all its processes: one started again goes on). */
+  next?: [string, any][]
+  /** More of the session it makes or loads (Antigravity's settings). */
+  setup?: Record<string, unknown>
+  /** Requests it turns down with an error: by method, and what their params hold. */
+  refuses?: { method: string; params?: Record<string, unknown> }[]
+}
+
+/**
+ * An ACP agent, as a script, whose prompt sends `updates` (each `[sessionId, update]`), asks what
+ * `request` asks (one, or several in turn), then, after the answer, sends `later`. Everything it's
+ * sent is written down, and how each of its processes was started (see `received`).
+ */
+function fakeAcp(updates: [string, any][], later: [string, any][] = [], request?: any, script: Script = {}): string {
+  const path = join(root, "agent.js")
+  const log = join(root, "received.jsonl")
+  const requests = request === undefined ? [] : Array.isArray(request) ? request : [request]
+  const prompts = [
+    { updates, requests, afterReply: script.afterReply, stopReason: script.stopReason ?? "end_turn", hangs: script.hangs ?? false },
+    ...(script.next ? [{ updates: script.next, requests: [], stopReason: "end_turn", hangs: false }] : []),
+  ]
   writeFileSync(
-    script,
-    `let buffer = ""
+    path,
+    `const { appendFileSync, readFileSync } = require("node:fs")
+const log = (entry) => appendFileSync(${JSON.stringify(log)}, JSON.stringify(entry) + "\\n")
+log({ argv: process.argv.slice(2) })
+let buffer = ""
 const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\\n")
 const update = (sessionId, value) => send({ method: "session/update", params: { sessionId, update: value } })
-let prompt
+const prompts = ${JSON.stringify(prompts)}
+const setup = ${JSON.stringify({ sessionId: "s1", ...script.setup })}
+const refuses = ${JSON.stringify(script.refuses ?? [])}
+const later = ${JSON.stringify(later)}
+/** How many prompts it had before this one, in any of its processes. */
+const before = () => readFileSync(${JSON.stringify(log)}, "utf8").split("\\n").filter((line) => line && JSON.parse(line).method === "session/prompt").length - 1
+let prompt, turn, asked = 0, stopped = false
+const ask = () => send({ id: 900 + asked, method: turn.requests[asked].method, params: turn.requests[asked].params })
+const end = () => turn.hangs || send({ id: prompt, result: { stopReason: turn.stopReason } })
 process.stdin.on("data", (chunk) => {
   buffer += chunk
   let at
@@ -40,24 +80,49 @@ process.stdin.on("data", (chunk) => {
     buffer = buffer.slice(at + 1)
     if (!line.trim()) continue
     const message = JSON.parse(line)
-    if (message.method === "initialize") send({ id: message.id, result: { protocolVersion: 1, authMethods: [] } })
-    else if (message.method === "session/new") send({ id: message.id, result: { sessionId: "s1" } })
+    log(message)
+    if (refuses.some((refused) => refused.method === message.method && Object.entries(refused.params ?? {}).every(([key, value]) => message.params?.[key] === value))) send({ id: message.id, error: { code: -32603, message: "Refused." } })
+    else if (message.method === "initialize") send({ id: message.id, result: { protocolVersion: 1, authMethods: [], agentCapabilities: { loadSession: true } } })
+    else if (message.method === "session/new" || message.method === "session/load") send({ id: message.id, result: setup })
     else if (message.method === "session/prompt") {
       prompt = message.id
-      for (const [sessionId, value] of ${JSON.stringify(updates)}) update(sessionId, value)
-      if (${JSON.stringify(Boolean(request))}) send({ id: 900, method: ${JSON.stringify(request?.method ?? "")}, params: ${JSON.stringify(request?.params ?? {})} })
-      else send({ id: prompt, result: { stopReason: "end_turn" } })
-    } else if (message.id === 900) {
-      const after = ${JSON.stringify(options.afterReply ?? null)}
-      if (after) for (const [sessionId, value] of after) update(sessionId, value)
+      turn = prompts[Math.min(before(), prompts.length - 1)]
+      asked = 0
+      stopped = false
+      for (const [sessionId, value] of turn.updates) update(sessionId, value)
+      if (turn.requests.length) ask()
+      else end()
+      if (later.length) setTimeout(() => { for (const [sessionId, value] of later) update(sessionId, value) }, 300)
+    } else if (message.method === "session/cancel") {
+      stopped = true
+      send({ id: prompt, result: { stopReason: "cancelled" } })
+    } else if (message.id >= 900 && message.id < 1000 && !message.method) {
+      // What it asked, answered: it says what it got (or does what it's to do then), and asks the next or ends. (Stopped: nothing.)
+      if (stopped) continue
+      asked++
+      const last = asked >= turn.requests.length
+      if (last && turn.afterReply) for (const [sessionId, value] of turn.afterReply) update(sessionId, value)
       else update("s1", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Got " + JSON.stringify(message.result) } })
-      send({ id: prompt, result: { stopReason: "end_turn" } })
+      if (last) end()
+      else ask()
     } else if (message.id !== undefined) send({ id: message.id, result: {} })
-    if (message.method === "session/prompt" && ${JSON.stringify(later.length > 0)}) setTimeout(() => { for (const [sessionId, value] of ${JSON.stringify(later)}) update(sessionId, value) }, 300)
   }
 })
 `,
   )
+  return path
+}
+
+/** The script as a program, run with what it's given (Grok's `grok`, Antigravity's server). */
+function program(script: string, path: string): string {
+  writeFileSync(path, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`)
+  chmodSync(path, 0o755)
+  return path
+}
+
+/** An ACP agent (no agent's own ways) whose prompt goes as `fakeAcp` says; its command's argument is the mode it's started for. */
+function agentSaying(updates: [string, any][], later: [string, any][] = [], request?: any, options: Script & { fileSystem?: boolean; noteContext?: (model: string, size: number) => void } = {}): Agent {
+  const script = fakeAcp(updates, later, request, options)
   return {
     id: "grok",
     providerID: "acp",
@@ -66,25 +131,112 @@ process.stdin.on("data", (chunk) => {
     methods: () => [],
     account: async () => ({ installed: true, signedIn: true }),
     models: async () => [],
-    thread: (session, state) => new AcpThread({ fileSystem: options.fileSystem ?? false, authMethod: () => undefined, command: async () => ({ argv: [process.execPath, script], cwd: root }), selectModel: async () => {}, noteContext: options.noteContext }, session, state, "Agent"),
+    thread: (session, state) => new AcpThread({ fileSystem: options.fileSystem ?? false, authMethod: () => undefined, command: async (mode) => ({ argv: [process.execPath, script, JSON.stringify(mode)], cwd: root }), selectModel: async () => {}, noteContext: options.noteContext }, session, state, "Agent"),
   }
 }
 
-async function run(agent: Agent, idles = 1) {
-  sessions = new Sessions(new Store(join(root, "sessions")), { find: (provider: string | undefined) => (provider === "acp" ? agent : undefined) } as unknown as Roster, new Auto(root))
-  const id = sessions.create({ model: { providerID: "acp", id: "one" }, location: { directory: root } }).id
-  sessions.prompt(id, { id: "msg_acp_test_00001", text: "go", files: [], delivery: "steer" })
-  const start = Date.now()
-  while (sessions.messages(id).filter((message) => message.type === "idle").length < idles || sessions.active().includes(id)) {
-    if (Date.now() - start > 30_000) throw new Error("timed out")
+/** Grok, with the fake for its CLI. */
+class TestGrok extends GrokAgent {
+  constructor(
+    private readonly launcher: string,
+    home: string,
+  ) {
+    super({ home, temporary: home, deps: {} as any })
+  }
+  override executable() {
+    return this.launcher
+  }
+  override async installedProgram() {
+    return this.launcher
+  }
+  override async account() {
+    return { installed: true, signedIn: true }
+  }
+}
+
+/** Antigravity, with the fake in place of Google's agent, as if downloaded. */
+class TestAntigravity extends AntigravityAgent {
+  constructor(script: string, home: string) {
+    super({ home, temporary: join(home, "temporary"), deps: {} as any })
+    const folder = (this as any).folder as string
+    mkdirSync(folder, { recursive: true })
+    program(script, join(folder, "agy_acp_server.par"))
+    writeFileSync(join(folder, ".complete"), "{}")
+  }
+  override async account() {
+    return { installed: true, signedIn: true }
+  }
+}
+
+let sent = 0
+
+/** A session on `agent` (with its rules, or its agent: "plan"), and your first message to it. */
+function start(agent: Agent, options: { permissions?: PermissionRule[]; agent?: string } = {}) {
+  sessions?.closeAll()
+  sessions = new Sessions(new Store(join(root, "sessions")), { find: (provider: string | undefined) => (provider === agent.providerID ? agent : undefined) } as unknown as Roster, new Auto(root))
+  return another(agent, options)
+}
+
+/** Another session on the same agent, and your first message to it. */
+function another(agent: Agent, options: { permissions?: PermissionRule[]; agent?: string } = {}) {
+  const id = sessions.create({ title: "ACP", model: { providerID: agent.providerID, id: "one" }, location: { directory: root }, ...options }).id
+  send(id)
+  return id
+}
+
+/** Your message to a session. */
+function send(id: string, text = "go") {
+  sessions.prompt(id, { id: `msg_acp_test_${String(++sent).padStart(5, "0")}`, text, files: [], delivery: "steer" })
+}
+
+async function until(condition: () => boolean, ms = 30_000) {
+  const began = Date.now()
+  while (!condition()) {
+    if (Date.now() - began > ms) throw new Error("timed out")
     await Bun.sleep(20)
   }
+}
+
+/** Once a session's `idles` turns are over. */
+async function settled(id: string, idles = 1) {
+  await until(() => sessions.messages(id).filter((message) => message.type === "idle").length >= idles && !sessions.active().includes(id))
   return id
+}
+
+async function run(agent: Agent, idles = 1, options: { permissions?: PermissionRule[]; agent?: string } = {}) {
+  return settled(start(agent, options), idles)
 }
 
 const tools = (id: string) => sessions.messages(id).flatMap((message: any) => (message.type === "assistant" ? message.content.filter((content: any) => content.type === "tool") : []))
 const words = (id: string) => sessions.messages(id).flatMap((message: any) => (message.type === "assistant" ? message.content.filter((content: any) => content.type === "text").map((content: any) => content.text) : [])).join("")
 const notices = (id: string) => sessions.messages(id).flatMap((message: any) => (message.type === "synthetic" ? [message.text] : []))
+const steps = (id: string) => sessions.messages(id).filter((message) => message.type === "assistant") as any[]
+const ended = (id: string) => sessions.messages(id).at(-1) as any
+
+/** What the agent was sent, in order, and how each of its processes was started (`{ argv }`). */
+function received(): any[] {
+  try {
+    return readFileSync(join(root, "received.jsonl"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
+  } catch {
+    return []
+  }
+}
+/** What it heard back to what it asked, in order. */
+const answers = () => received().filter((message) => message.id >= 900 && message.id < 1000 && !message.method).map((message) => message.result?.outcome ?? message.error)
+const prompts = () => received().filter((message) => message.method === "session/prompt")
+/** How its processes were started: the arguments each was given. */
+const launches = () => received().filter((message) => message.argv).map((message) => message.argv as string[])
+
+/** The events of one kind for a session, from now until `stop`. */
+function watch(type: string) {
+  const seen: any[] = []
+  const stop = subscribe((event: any) => {
+    if (event.type === type) seen.push(event.data)
+  })
+  return { of: (id: string) => seen.filter((data) => data?.sessionID === id), stop }
+}
+
+const said = (text: string): [string, any] => ["s1", { sessionUpdate: "agent_message_chunk", content: { type: "text", text } }]
 
 describe("ACP agents, nothing dropped", () => {
   test("pictures it sends and its tools bring back, a link, an error's words, and a kind this bridge doesn't know", async () => {
@@ -222,4 +374,229 @@ describe("ACP agents, nothing dropped", () => {
     expect(notices(id)).toContain("Agent carried on by itself.")
     acpTiming.ownQuiet = 20_000
   }, 20_000)
+})
+
+// MARK: What it asks
+
+/** What an ACP agent offers when it asks (Grok's and Antigravity's four). */
+const offered = [
+  { optionId: "allow-once", name: "Allow", kind: "allow_once" },
+  { optionId: "allow-always", name: "Always allow", kind: "allow_always" },
+  { optionId: "reject-once", name: "Reject", kind: "reject_once" },
+  { optionId: "reject-always", name: "Always reject", kind: "reject_always" },
+]
+const command = (toolCallId: string, line: string): [string, any] => ["s1", { sessionUpdate: "tool_call", toolCallId, title: `Run \`${line}\``, kind: "execute", status: "pending", rawInput: { command: line } }]
+const edit = (toolCallId: string, path: string): [string, any] => ["s1", { sessionUpdate: "tool_call", toolCallId, title: "Edit notes.txt", kind: "edit", status: "pending", locations: [{ path }], rawInput: { path }, content: [{ type: "diff", path, oldText: "old\n", newText: "new\n" }] }]
+const asking = (toolCallId: string) => ({ method: "session/request_permission", params: { sessionId: "s1", toolCall: { toolCallId }, options: offered } })
+const askFirst: PermissionRule[] = [
+  { action: "shell", resource: "*", effect: "ask" },
+  { action: "edit", resource: "*", effect: "ask" },
+]
+
+describe("What ACP agents ask", () => {
+  test("a command it asks to run waits for you, on its step; Allow Once reaches it as the allow-once it offered, and it runs", async () => {
+    const ran: [string, any] = ["s1", { sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed", content: [{ type: "content", content: { type: "text", text: "removed build/" } }] }]
+    const id = start(agentSaying([command("t1", "rm -rf build")], [], asking("t1"), { afterReply: [ran] }), { permissions: askFirst })
+    await until(() => sessions.permissions(id).length > 0)
+    const [ask] = sessions.permissions(id)
+    expect(ask).toMatchObject({ action: "shell", resources: ["rm -rf build"], source: { type: "tool", id: "t1" } })
+    sessions.replyPermission(id, ask.id, "once")
+    await settled(id)
+    expect(answers()).toEqual([{ outcome: "selected", optionId: "allow-once" }])
+    expect(tools(id)[0]).toMatchObject({ name: "shell", state: { status: "completed", input: { command: "rm -rf build" }, content: [{ type: "text", text: "removed build/" }] } })
+    expect(ended(id)).toMatchObject({ type: "idle", outcome: "succeeded" })
+  })
+
+  test("an edit it asks to make shows its change; No reaches it as its reject-once, the step shows it declined, and it isn't told to carry on", async () => {
+    const file = join(root, "notes.txt")
+    const id = start(agentSaying([edit("e1", file)], [], asking("e1"), { afterReply: [said("Okay, I'll leave it.")] }), { permissions: askFirst })
+    await until(() => sessions.permissions(id).length > 0)
+    const [ask] = sessions.permissions(id)
+    expect(ask).toMatchObject({ action: "edit", resources: [file], metadata: { files: [{ file, additions: 1, deletions: 1 }] } })
+    sessions.replyPermission(id, ask.id, "reject")
+    await settled(id)
+    expect(answers()).toEqual([{ outcome: "selected", optionId: "reject-once" }])
+    expect(tools(id)[0]).toMatchObject({ id: "e1", name: "edit", state: { status: "error", error: { message: "Declined." } } })
+    expect(words(id)).toContain("Okay, I'll leave it.")
+    expect(prompts()).toHaveLength(1)
+  })
+
+  test("Always: the same again in this session isn't asked, and the agent hears allow-once each time (the always is Kuvo Code's to keep, not the agent's)", async () => {
+    const asked = watch("permission.asked")
+    try {
+      const id = start(agentSaying([command("t1", "npm test"), command("t2", "npm test")], [], [asking("t1"), asking("t2")]), { permissions: askFirst })
+      await until(() => sessions.permissions(id).length > 0)
+      sessions.replyPermission(id, sessions.permissions(id)[0].id, "always")
+      await settled(id)
+      expect(asked.of(id)).toHaveLength(1)
+      expect(answers()).toEqual([
+        { outcome: "selected", optionId: "allow-once" },
+        { outcome: "selected", optionId: "allow-once" },
+      ])
+    } finally {
+      asked.stop()
+    }
+  })
+
+  test("Approve All: it's started approving all, and what it asks anyway is answered for you", async () => {
+    const asked = watch("permission.asked")
+    try {
+      const id = await run(agentSaying([command("t1", "npm test")], [], asking("t1")))
+      expect(launches().map(([mode]) => JSON.parse(mode))).toEqual([{ approvesAll: true, plan: false }])
+      expect(asked.of(id)).toHaveLength(0)
+      expect(answers()).toEqual([{ outcome: "selected", optionId: "allow-once" }])
+    } finally {
+      asked.stop()
+    }
+  })
+
+  test("Plan mode: it's started planning; an edit it asks for is refused without asking you, and, stopped by that, it's told why and carries on to the end", async () => {
+    const asked = watch("permission.asked")
+    try {
+      const file = join(root, "notes.txt")
+      const id = await run(agentSaying([edit("e1", file)], [], asking("e1"), { stopReason: "cancelled", next: [said("Here's the plan instead.")] }), 1, { agent: "plan" })
+      expect(launches().map(([mode]) => JSON.parse(mode))).toEqual([{ approvesAll: false, plan: true }])
+      expect(asked.of(id)).toHaveLength(0)
+      expect(answers()).toEqual([{ outcome: "selected", optionId: "reject-once" }])
+      const [, carryOn] = prompts()
+      expect(carryOn.params.prompt[0].text).toContain(`Kuvo Code didn't allow editing ${file}`)
+      expect(words(id)).toContain("Here's the plan instead.")
+      expect(tools(id)[0]).toMatchObject({ id: "e1", state: { status: "error" } })
+      expect(ended(id)).toMatchObject({ type: "idle", outcome: "succeeded" })
+    } finally {
+      asked.stop()
+    }
+  })
+
+  test("Grok is started approving all, asking first or planning, as the session is; a change starts it again on its conversation", async () => {
+    const grok = new TestGrok(program(fakeAcp([said("Done.")]), join(root, "grok")), root)
+    const id = await run(grok)
+    sessions.update(id, { permissions: askFirst })
+    send(id)
+    await settled(id, 2)
+    await settled(another(grok, { agent: "plan" }))
+    expect(launches()).toEqual([
+      ["agent", "--always-approve", "stdio"],
+      ["--permission-mode", "default", "agent", "stdio"],
+      ["--permission-mode", "plan", "agent", "stdio"],
+    ])
+    expect(received().filter((message) => message.method === "session/load").map((message) => message.params.sessionId)).toEqual(["s1"])
+    expect(words(id)).toBe("Done.Done.")
+  })
+
+  test("Antigravity is put in its yolo mode for Approve All and its plan mode for Plan; a session to ask first that it can't be made to ask in doesn't start", async () => {
+    const modes = { id: "mode", name: "Mode", category: "mode", type: "select", currentValue: "default", options: ["default", "yolo", "plan"].map((value) => ({ value, name: value })) }
+    const setTo = () => received().filter((message) => message.method === "session/set_config_option" && message.params.configId === "mode").map((message) => message.params.value)
+    await run(new TestAntigravity(fakeAcp([said("Done.")], [], undefined, { setup: { configOptions: [modes] } }), root))
+    expect(setTo()).toEqual(["yolo"])
+    root = mkdtempSync(join(base, "case-"))
+    await run(new TestAntigravity(fakeAcp([said("Done.")], [], undefined, { setup: { configOptions: [modes] } }), root), 1, { agent: "plan" })
+    expect(setTo()).toEqual(["plan"])
+    // Its conversation left running without asking (an Approve All session's), and it won't change.
+    root = mkdtempSync(join(base, "case-"))
+    const stuck = fakeAcp([said("Done.")], [], undefined, { setup: { configOptions: [{ ...modes, currentValue: "yolo" }] }, refuses: [{ method: "session/set_config_option", params: { configId: "mode", value: "default" } }] })
+    const id = await run(new TestAntigravity(stuck, root), 1, { permissions: askFirst })
+    expect(prompts()).toHaveLength(0)
+    expect(ended(id)).toMatchObject({ type: "idle", outcome: "failed", error: { message: expect.stringContaining("Antigravity couldn't be set to ask before it acts") } })
+  })
+})
+
+// MARK: Stop
+
+describe("Stopping an ACP agent", () => {
+  test("Stop mid-turn: Grok is told to cancel, the turn ends stopped with its words kept and its command stopped; the next message starts it again, on its conversation", async () => {
+    const running: [string, any] = ["s1", { sessionUpdate: "tool_call", toolCallId: "t1", title: "Run `npm run dev`", kind: "execute", status: "in_progress", rawInput: { command: "npm run dev" } }]
+    const grok = new TestGrok(program(fakeAcp([said("Starting the server."), running], [], undefined, { hangs: true, next: [said("Back.")] }), join(root, "grok")), root)
+    const id = start(grok)
+    await until(() => tools(id).length > 0)
+    expect(await sessions.interrupt(id)).toBe(true)
+    await settled(id)
+    expect(received().filter((message) => message.method === "session/cancel").map((message) => message.params)).toEqual([{ sessionId: "s1" }])
+    expect(ended(id)).toMatchObject({ type: "idle", outcome: "interrupted" })
+    expect(words(id)).toBe("Starting the server.")
+    expect(tools(id)[0]).toMatchObject({ name: "shell", state: { status: "error", error: { message: "Stopped." } } })
+    send(id)
+    await settled(id, 2)
+    expect(words(id)).toBe("Starting the server.Back.")
+    expect(launches()).toHaveLength(2)
+    expect(received().filter((message) => message.method === "session/load").map((message) => message.params.sessionId)).toEqual(["s1"])
+    expect(ended(id)).toMatchObject({ type: "idle", outcome: "succeeded" })
+  })
+
+  test("Stop while it waits on your answer: the ask goes, it's told to cancel, and then what it asked is answered as cancelled (not as a no)", async () => {
+    const id = start(agentSaying([command("t1", "rm -rf build")], [], asking("t1")), { permissions: askFirst })
+    await until(() => sessions.permissions(id).length > 0)
+    expect(await sessions.interrupt(id)).toBe(true)
+    await settled(id)
+    expect(sessions.permissions(id)).toEqual([])
+    await until(() => answers().length > 0)
+    expect(answers()).toEqual([{ outcome: "cancelled" }])
+    const order = received().map((message) => (message.method === "session/cancel" ? "cancel" : message.id === 900 ? "answer" : undefined)).filter(Boolean)
+    expect(order).toEqual(["cancel", "answer"])
+    expect(ended(id)).toMatchObject({ type: "idle", outcome: "interrupted" })
+    expect(tools(id)[0]).toMatchObject({ name: "shell", state: { status: "error", error: { message: "Stopped." } } })
+  })
+})
+
+// MARK: Its reply and steps
+
+describe("An ACP agent's reply", () => {
+  test("its thinking, its words, a command with its output as it comes and its result, and what it says after: in steps, as the engine's", async () => {
+    const progress = watch("session.tool.progress")
+    try {
+      const id = await run(
+        agentSaying([
+          ["s1", { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "The tests first." } }],
+          said("Running "),
+          said("the tests."),
+          ["s1", { sessionUpdate: "tool_call", toolCallId: "t1", title: "Run `npm test`", kind: "execute", status: "pending", rawInput: { command: "npm test" } }],
+          ["s1", { sessionUpdate: "tool_call_update", toolCallId: "t1", status: "in_progress", content: [{ type: "content", content: { type: "text", text: "3 passing" } }] }],
+          ["s1", { sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed", rawOutput: { exit_code: 0 }, content: [{ type: "content", content: { type: "text", text: "3 passing\n0 failing" } }] }],
+          said("All 3 pass."),
+        ]),
+      )
+      const [first, second] = steps(id)
+      expect(steps(id)).toHaveLength(2)
+      expect(first.content).toMatchObject([
+        { type: "reasoning", text: "The tests first." },
+        { type: "text", text: "Running the tests." },
+        { type: "tool", name: "shell", state: { status: "completed", input: { command: "npm test" }, content: [{ type: "text", text: "3 passing\n0 failing" }], metadata: { exit: 0 } } },
+      ])
+      expect(second.content).toMatchObject([{ type: "text", text: "All 3 pass." }])
+      expect(progress.of(id).map((data) => data.metadata.output)).toEqual(["3 passing"])
+      expect(ended(id)).toMatchObject({ type: "idle", outcome: "succeeded" })
+    } finally {
+      progress.stop()
+    }
+  })
+
+  test("an edit shows its change; its to-do list is one list, brought up to date, done as the turn ends", async () => {
+    const file = join(root, "a.txt")
+    const id = await run(
+      agentSaying([
+        ["s1", { sessionUpdate: "plan", entries: [{ content: "Edit a.txt", status: "in_progress", priority: "high" }, { content: "Run the tests", status: "pending", priority: "medium" }] }],
+        ["s1", { sessionUpdate: "tool_call", toolCallId: "e1", title: "Edit a.txt", kind: "edit", status: "completed", locations: [{ path: file }], content: [{ type: "diff", path: file, oldText: "one\n", newText: "two\n" }] }],
+        ["s1", { sessionUpdate: "plan", entries: [{ content: "Edit a.txt", status: "completed", priority: "high" }, { content: "Run the tests", status: "in_progress", priority: "medium" }] }],
+        said("Edited."),
+      ]),
+    )
+    expect(tools(id)).toHaveLength(2)
+    const [todos, change] = tools(id)
+    expect(todos).toMatchObject({ name: "todowrite", state: { status: "completed", input: { todos: [{ content: "Edit a.txt", status: "completed" }, { content: "Run the tests", status: "in_progress" }] } } })
+    expect(change).toMatchObject({ name: "edit", state: { status: "completed", input: { path: file }, metadata: { files: [{ file, additions: 1, deletions: 1, status: "modified" }] } } })
+    expect(words(id)).toBe("Edited.")
+  })
+})
+
+// MARK: Usage
+
+describe("What an ACP agent costs", () => {
+  test("as it says it (what its conversation has cost so far): each turn adds what's new, once", async () => {
+    const cost = (amount: number): [string, any] => ["s1", { sessionUpdate: "usage_update", used: 1_000, size: 200_000, cost: { amount, currency: "USD" } }]
+    const id = await run(agentSaying([said("One."), cost(0.02), said("Two."), cost(0.05)], [], undefined, { next: [said("Three."), cost(0.08)] }))
+    expect(sessions.get(id).cost).toBeCloseTo(0.05, 6)
+    send(id)
+    await settled(id, 2)
+    expect(sessions.get(id).cost).toBeCloseTo(0.08, 6)
+  })
 })

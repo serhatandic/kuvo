@@ -571,7 +571,7 @@ export class AcpThread implements Thread {
         if (typeof update.used === "number") active.used = update.used
         if (typeof update.size === "number") this.flavor.noteContext?.(turn.currentModel.id, update.size)
         // What it cost, when it says (in dollars).
-        if (typeof update.cost?.amount === "number" && (update.cost.currency ?? "USD") === "USD") turn.addUsage(undefined, update.cost.amount)
+        if (typeof update.cost?.amount === "number" && (update.cost.currency ?? "USD") === "USD") this.cost(turn, update.cost.amount)
         return
       case "current_mode_update":
         if (this.setup && update.currentModeId) this.setup.kuvoMode = update.currentModeId
@@ -736,6 +736,18 @@ export class AcpThread implements Thread {
     return active.used === undefined ? undefined : { input: active.used, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
   }
 
+  /**
+   * What the conversation has cost so far, as the agent says (ACP's cost is the session's whole,
+   * said again as it grows): what's new since it last said is this turn's. (Less than before: a
+   * conversation it started counting again.)
+   */
+  private cost(turn: Turn, total: number) {
+    const kept = this.state.acpCost as { session?: string; amount?: number } | undefined
+    const before = kept?.session === this.sessionID ? (kept?.amount ?? 0) : 0
+    this.state.acpCost = { session: this.sessionID, amount: total }
+    turn.addUsage(undefined, total >= before ? total - before : total)
+  }
+
   private tool(active: Active, update: any) {
     const turn = active.turn
     const id = update.toolCallId
@@ -839,6 +851,9 @@ export class AcpThread implements Thread {
         // Refused by your settings, not by you: the agent stops for any no, and is told to carry on.
         const automatic = active.hooks.check(ask) === "deny"
         const decision: Decision = await active.hooks.permission(ask)
+        // Stopped meanwhile: told to cancel, it hears its ask was cancelled (as ACP has it), not
+        // that you said no; the step shows stopped, not declined.
+        if (active.hooks.signal.aborted) return { outcome: { outcome: "cancelled" } }
         if (decision === "reject") {
           // A no of yours stops it, as you meant (none of your settings' before it is told now).
           active.refused = automatic ? refusedWhat(ask.action, ask.resources) : undefined
