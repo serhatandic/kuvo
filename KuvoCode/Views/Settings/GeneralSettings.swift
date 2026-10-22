@@ -16,6 +16,7 @@ struct GeneralSettings: View {
     @State private var importing: ImportRequest?
     @State private var reading = false
     @State private var importNote: String?
+    @State private var openAtLogin = OpenAtLogin()
 
     var body: some View {
         ScrollingSettingsForm {
@@ -40,6 +41,12 @@ struct GeneralSettings: View {
                 .disabled(!showsTabBar)
             }
             Section("While Agents Work") {
+                Toggle(isOn: Binding(get: { openAtLogin.isOn }, set: { openAtLogin.set($0) })) {
+                    Text("Open at login, in the background")
+                    Text(openAtLogin.failure ?? "Your bots and sessions on this Mac keep working from the moment you log in, without the window.")
+                }
+                .help("Kuvo Code opens when you log in, without its window, and stays in the menu bar. Open it to see the window.")
+                .onAppear { openAtLogin.refresh() }
                 Toggle(isOn: $keepsAwake) {
                     Text("Keep this Mac awake")
                     Text("While an agent or a bot works. The display can still sleep.")

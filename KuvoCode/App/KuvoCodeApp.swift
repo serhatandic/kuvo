@@ -41,7 +41,8 @@ struct KuvoCodeApp: App {
                 .environment(delegate.model.bots)
                 .environment(delegate.model.chats)
                 .environment(delegate.updates)
-                .task { await delegate.model.start() }
+                // The engine starts with the app (AppDelegate), not with this window: closing the
+                // window, at login say, would cancel a start made here.
         }
         .defaultSize(width: 1180, height: 760)
         .windowToolbarStyle(.unified)
@@ -60,6 +61,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // This Mac's box, at work from launch: at login, in the background, without the window,
+        // which goes as soon as it's there (it opens with the app); opening Kuvo Code brings it.
+        model.startedAtLogin = Self.launchedAtLogin
+        Task { [model] in await model.start() }
+        if model.startedAtLogin {
+            for delay in [0.0, 0.2, 0.6, 1.5] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    for window in NSApp.windows where window.identifier?.rawValue == "main" && window.isVisible { window.close() }
+                }
+            }
+        }
         Notifier.shared.start()
         FieldScrolling.start()
         // Agents' sign-in on their own, allowed before it kept its account: that account now.
@@ -97,6 +109,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         #endif
+    }
+
+    /// Whether macOS opened it as a login item (Open at Login). Only readable as it finishes
+    /// launching, while the event that opened it is the one at hand.
+    private static var launchedAtLogin: Bool {
+        #if DEBUG
+        // KUVO_DEMO_LOGIN: as if opened at login.
+        if ProcessInfo.processInfo.environment["KUVO_DEMO_LOGIN"] != nil { return true }
+        #endif
+        guard let event = NSAppleEventManager.shared().currentAppleEvent, event.eventID == kAEOpenApplication else { return false }
+        return event.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
     }
 
     func applicationWillTerminate(_ notification: Notification) {

@@ -65,6 +65,11 @@ final class AppModel {
     var skillsFolder: URL { engineFolders.configFile.deletingLastPathComponent().appending(path: "skills") }
     /// Brings the main window back (set by the window itself; the usage menu's "Open Kuvo Code").
     var openMainWindow: (() -> Void)?
+    /// Opened at login (Open at Login): this Mac's box runs in the background, its engine, bots and
+    /// phone link at work, and the window waits until you open Kuvo Code.
+    var startedAtLogin = false
+    /// A start under way, from launch or from the window: one at a time.
+    @ObservationIgnored private var isStarting = false
     /// Settings fill the main window in place of the sessions while this is on.
     var showsSettings = false
     /// Whose coding agents Settings › Accounts shows: this Mac's (nil), or a machine's (each signs
@@ -185,13 +190,18 @@ final class AppModel {
         EngineInstaller(root: AppInfo.supportDirectory.appending(path: "engine"))
     }
 
-    /// Downloads the engine if needed, starts it, and connects the stores.
+    /// Downloads the engine if needed, starts it, and connects the stores. At launch, whether or
+    /// not the window opens (this Mac is a box of its own, at work in the background too).
     func start() async {
         // Already on its way (restart stops it first).
         switch engine {
         case .ready, .starting, .downloading: return
         case .preparing, .failed: break
         }
+        // Asked twice before the first got as far as saying so (launch, and the window opening).
+        guard !isStarting else { return }
+        isStarting = true
+        defer { isStarting = false }
         // What you keep here, up to date with this version (once, after an update), before the
         // engine starts.
         await calibration.run(self)
