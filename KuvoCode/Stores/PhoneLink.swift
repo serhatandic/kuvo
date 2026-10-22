@@ -6,6 +6,7 @@ import OpenCodeKit
 import os
 import UsageKit
 import Security
+import UniformTypeIdentifiers
 import SystemConfiguration
 
 /// Kuvo Code for iPhone's way in: this Mac answers the phones you've paired, through the relay,
@@ -367,6 +368,7 @@ final class PhoneLink {
                 EngineRoutes.forward($0, to: base, password: bridge.password, allowing: { EngineRoutes.allowsAgents($0, method: $1) })
             }
         }
+        if request.path.split(separator: "?").first == "kuvo/file" { return Self.file(request.path) }
         if request.path == "kuvo/asks/events" { return Self.following { link?.asksJSON() } }
         if request.path == "kuvo/groups/events" { return Self.following { link?.groupsJSON() } }
         if let id = Self.groupID(in: request.path, then: "events") { return Self.followingGroup(id, link: link) }
@@ -564,7 +566,7 @@ final class PhoneLink {
             // seconds since 1970), how many things it watches.
             struct Listed: Encodable {
                 struct Entry: Encodable {
-                    var session: String, name: String, look: BotLook, machine: String?, job: String
+                    var id: String, session: String, name: String, look: BotLook, machine: String?, job: String
                     var paused: Bool, wakes: Double?, watching: Int
                     /// Its conversation is with the coding agents: read through `kuvo/agents/api/…`.
                     var agents: Bool
@@ -573,7 +575,7 @@ final class PhoneLink {
             }
             let entries = (bots?.list ?? []).map { bot in
                 Listed.Entry(
-                    session: bot.sessionID, name: bot.name, look: bot.look, machine: bot.machine, job: bot.job,
+                    id: bot.id, session: bot.sessionID, name: bot.name, look: bot.look, machine: bot.machine, job: bot.job,
                     paused: bots?.paused.contains(bot.id) == true,
                     wakes: bots?.wakes[bot.id]?.map(\.due).min()?.timeIntervalSince1970,
                     watching: bots?.watches[bot.id]?.count ?? 0,
@@ -708,6 +710,46 @@ final class PhoneLink {
 
     nonisolated private static func message(_ text: String) -> Data {
         (try? JSONEncoder().encode(["message": text])) ?? Data()
+    }
+
+    // MARK: Files
+
+    /// The biggest file `kuvo/file` sends.
+    nonisolated static let fileLimit = 25 * 1024 * 1024
+
+    /// `kuvo/file?uri=<file:// URI>`: a file on this Mac, as an agent's reply or tool names it: its
+    /// bytes with its type; 404 with a `message` for one that isn't there (or isn't a file), 413
+    /// over `fileLimit`.
+    nonisolated static func file(_ path: String) -> AsyncThrowingStream<LinkResponsePart, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task.detached {
+                let (status, type, body) = readFile(path)
+                continuation.yield(.head(status: status, headers: ["content-type": type]))
+                // In pieces, as the engine's bodies go.
+                var start = body.startIndex
+                while start < body.endIndex, !Task.isCancelled {
+                    let end = body.index(start, offsetBy: 32 * 1024, limitedBy: body.endIndex) ?? body.endIndex
+                    continuation.yield(.body(body.subdata(in: start..<end)))
+                    start = end
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    nonisolated static func readFile(_ path: String) -> (status: Int, type: String, body: Data) {
+        let json = "application/json"
+        guard let uri = URLComponents(string: path)?.queryItems?.first(where: { $0.name == "uri" })?.value,
+              let url = URL(string: uri), url.isFileURL else {
+            return (400, json, message("That isn’t a file:// address."))
+        }
+        let file = url.resolvingSymlinksInPath()
+        let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard values?.isRegularFile == true else { return (404, json, message("That file isn’t there anymore.")) }
+        guard (values?.fileSize ?? 0) <= fileLimit else { return (413, json, message("That file is too big to open here.")) }
+        guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { return (404, json, message("That file isn’t there anymore.")) }
+        return (200, UTType(filenameExtension: file.pathExtension)?.preferredMIMEType ?? "application/octet-stream", data)
     }
 
     /// `kuvo/mcp/catalog`: Settings › MCP Servers' popular servers, each with whether it's added

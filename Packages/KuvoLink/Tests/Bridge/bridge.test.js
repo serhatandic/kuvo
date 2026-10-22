@@ -7,7 +7,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // The bridge keeps its state in KUVO_HOME, so give it a folder of its own before loading it.
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-test-"));
@@ -314,6 +314,33 @@ test("a machine's settings are changed on its Mac; its engine restarts as it was
   assert.equal(fs.readFileSync(started, "utf8").trim(), "bun=");
   assert.equal((await answer(handle, "GET", "kuvo/engine/restart")).status, 405);
   for (const name of ["bin/kuvo-start", "bin/kuvo-launch", "run/launch.env", "run/started-again"]) fs.rmSync(path.join(home, name));
+});
+
+test("kuvo/file sends a file on the machine by its file:// address, with its type", async () => {
+  const handle = link.engineHandler(() => ({}));
+  const folder = fs.mkdtempSync(path.join(home, "files-"));
+  const picture = path.join(folder, "a chart #1.png");
+  const bytes = crypto.randomBytes(100 * 1024);
+  fs.writeFileSync(picture, bytes);
+  const ask = async uri => {
+    const parts = [];
+    for await (const part of handle({ method: "GET", path: `kuvo/file?uri=${encodeURIComponent(uri)}`, headers: {}, body: Buffer.alloc(0) }, {}, undefined)) parts.push(part);
+    return { head: parts[0].head, body: Buffer.concat(parts.filter(part => part.body).map(part => part.body)) };
+  };
+  const sent = await ask(pathToFileURL(picture).href);
+  assert.equal(sent.head.status, 200);
+  assert.equal(sent.head.headers["content-type"], "image/png");
+  assert.ok(sent.body.equals(bytes));
+  const gone = await ask(pathToFileURL(path.join(folder, "gone.png")).href);
+  assert.equal(gone.head.status, 404);
+  assert.ok(JSON.parse(gone.body).message);
+  assert.equal((await ask(pathToFileURL(folder).href)).head.status, 404, "a folder isn't a file");
+  assert.equal((await ask("https://example.com/a.png")).head.status, 400);
+  const big = path.join(folder, "big.bin");
+  fs.writeFileSync(big, "");
+  fs.truncateSync(big, link.FILE_LIMIT + 1);
+  assert.equal((await ask(pathToFileURL(big).href)).head.status, 413);
+  fs.rmSync(folder, { recursive: true });
 });
 
 test("kuvo/info says when the engine running now came up, which a restart changes", async () => {

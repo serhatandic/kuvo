@@ -312,7 +312,8 @@ itself. A host serves:
   (from 0.9.0) starts its engine over as it was last started (with its coding agents' bridge and
   the link's), and a Mac connected to it goes on with the new one; one never started from a Mac
   answers `409 {"message"}`.
-- `kuvo/bots`: bots by their session, with their name, look and job, whether their wake-ups
+- `kuvo/bots`: bots by their session, with their `id` (`bot_…`, as group chats name their
+  members; a machine's bridge from 0.9.4), their name, look and job, whether their wake-ups
   are paused, the next one (`wakes`, left out when none waits), how many things each watches,
   `machine` (the machine it lives on, left out for the Mac), and `agents`: its conversation is
   with the coding agents, so it's read and written through `kuvo/agents/api/…` (a group chat's
@@ -382,6 +383,12 @@ itself. A host serves:
   live on it, with the Mac closed too: the coding agents' bridge there runs them (503 while it
   isn't up or isn't answering: ask again; 404 only when none run there). One moving between computers isn't listed
   where it's going until it's there. Moving one is on the Mac (Move to Computer), not the phone.
+- `kuvo/file?uri=<file:// URI>`: a file on that computer that an agent's reply or tool names
+  (a picture it made, a file it shows you), by its `file://` address, percent-encoded as a query
+  value: `200` with its bytes and `content-type` (from its extension; `application/octet-stream`
+  when unknown), `404 {"message"}` for one that isn't there or isn't a file, `413 {"message"}`
+  over 25 MB, `400 {"message"}` for an address that isn't `file://`. A Mac answers for its own
+  files; a machine's bridge (from 0.9.4) for the machine's, with the Mac closed too.
 - On a Mac, `kuvo/usage`: the menu bar's usage panel as its Bars view lists it (each provider's
   name, plan, brand color, mark as a PNG to tint, notice, whether it's outdated, and its lines as
   UsageKit writes them), whether a refresh is under way and when the last one ended;

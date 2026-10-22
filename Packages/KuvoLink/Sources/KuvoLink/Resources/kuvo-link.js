@@ -22,7 +22,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Goes up with every change, so `setup` replaces a running bridge that's older.
-export const BRIDGE_VERSION = "0.9.3";
+export const BRIDGE_VERSION = "0.9.4";
 const K = process.env.KUVO_HOME || path.join(os.homedir(), ".kuvo-code");
 const RUN = path.join(K, "run");
 export const LINK_FILE = path.join(RUN, "link.json");
@@ -648,6 +648,7 @@ export function engineHandler(readEngine = readEngineFile, info = {}, readBridge
       return;
     }
     const json = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
+    if (request.path.split("?")[0] === "kuvo/file") return yield* fileAt(request.path, json);
     // Its settings come from the Mac that started its engine, which puts them back as it
     // connects: changed there, they reach it.
     if (/^kuvo\/(config|mcp\/catalog)(\/|\?|$)/.test(request.path)) {
@@ -1187,6 +1188,39 @@ async function* answerGroups(target, id, action, request, signal) {
 // there but not answering now (503: ask again), or no such chat or message (404).
 const failed = status => (status === 409 ? 409 : status >= 500 ? 503 : 404);
 
+// The biggest file `kuvo/file` sends.
+export const FILE_LIMIT = 25 * 1024 * 1024;
+
+const TYPES = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", heic: "image/heic",
+  svg: "image/svg+xml", pdf: "application/pdf", mp4: "video/mp4", mov: "video/quicktime", mp3: "audio/mpeg",
+  wav: "audio/wav", txt: "text/plain", md: "text/markdown", csv: "text/csv", json: "application/json",
+  html: "text/html", css: "text/css", js: "text/javascript",
+};
+
+// `kuvo/file?uri=<file:// URI>`: a file on this machine, as an agent's reply or tool names it:
+// its bytes with its type; 404 with a message for one that isn't there (or isn't a file), 413
+// over FILE_LIMIT.
+async function* fileAt(requestPath, json) {
+  const query = requestPath.includes("?") ? requestPath.slice(requestPath.indexOf("?") + 1) : "";
+  const uri = new URLSearchParams(query).get("uri");
+  let file;
+  try {
+    file = uri ? fileURLToPath(uri) : undefined;
+  } catch {}
+  if (!file) return yield* json(400, { message: "That isn’t a file:// address." });
+  let stat;
+  try {
+    stat = fs.statSync(file);
+  } catch {}
+  if (!stat?.isFile()) return yield* json(404, { message: "That file isn’t there anymore." });
+  if (stat.size > FILE_LIMIT) return yield* json(413, { message: "That file is too big to open here." });
+  const type = TYPES[path.extname(file).slice(1).toLowerCase()] ?? "application/octet-stream";
+  yield { head: { status: 200, headers: { "content-type": type, "content-length": String(stat.size) } } };
+  // In pieces, as the engine's bodies go.
+  for await (const piece of fs.createReadStream(file, { highWaterMark: 32 * 1024 })) yield { body: piece };
+}
+
 // This machine's bots, as the Mac lists them in `kuvo/bots`: each by its session, with its name,
 // look and job as the app last described it, and what its folder says now (paused, its next
 // wake-up, how many things it watches, whether it runs with the coding agents). One without a
@@ -1208,6 +1242,7 @@ export function listBots(machine) {
     bots.push({
       created: String(described.created ?? ""),
       bot: {
+        id,
         session,
         name: described.name,
         look: described.look,

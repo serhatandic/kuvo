@@ -97,7 +97,7 @@ test("kuvo/bots lists the machine's described bots, each as its folder is now", 
   assert.equal(answer.status, 200);
   assert.deepEqual(answer.json.bots.map(each => each.name), ["First", "Scout"], "described ones, in the order they were made");
   assert.deepEqual(answer.json.bots[1], {
-    session: "ses_bot_scout00001", name: "Scout", look: { color: "sky", shape: "round", face: "calm" }, machine: "my-server",
+    id: "bot_scout00001", session: "ses_bot_scout00001", name: "Scout", look: { color: "sky", shape: "round", face: "calm" }, machine: "my-server",
     job: "Watches the build", paused: true, wakes: 1792000100, watching: 1, agents: true,
   });
   assert.equal("wakes" in answer.json.bots[0], false, "none waiting: left out, as the Mac leaves it out");
