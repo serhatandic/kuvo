@@ -196,23 +196,38 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
         init(_ outcome: Outcome) { self.outcome = outcome }
     }
 
-    private let web: WKWebView
+    private var web: WKWebView
     private var isLoaded = false
     private var loadFailed = false
-    private var loadWaiters: [CheckedContinuation<Void, Never>] = []
+    private var loadWaiters: [() -> Void] = []
     private var jobs: [Job] = []
     private var isWorking = false
     private let kept = NSCache<NSString, Kept>()
 
     private override init() {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
-        web = WKWebView(frame: NSRect(x: 0, y: 0, width: 600, height: 400), configuration: configuration)
+        web = Self.makeWeb()
         super.init()
         kept.countLimit = 60
         // Tall, wide pictures add up: about 64 MB of them at most.
         kept.totalCostLimit = 64 << 20
+        web.navigationDelegate = self
+        load()
+    }
+
+    private static func makeWeb() -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 600, height: 400), configuration: configuration)
         web.setValue(false, forKey: "drawsBackground")
+        return web
+    }
+
+    /// A new web view for the next diagrams: one whose page is stuck (a diagram Mermaid never
+    /// finishes keeps its script busy) can't even load its page again.
+    private func replaceWeb() {
+        web.navigationDelegate = nil
+        web.stopLoading()
+        web = Self.makeWeb()
         web.navigationDelegate = self
         load()
     }
@@ -262,14 +277,21 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
 
     private func draw(_ job: Job) async -> Outcome {
         if !isLoaded, !loadFailed {
-            await withCheckedContinuation { loadWaiters.append($0) }
+            // As long as a diagram may take, then the page is taken as stuck.
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let once = Once()
+                let resume = { if once.claim() { continuation.resume() } }
+                loadWaiters.append(resume)
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.patience) { resume() }
+            }
+            if !isLoaded, !loadFailed { replaceWeb() }
         }
         guard isLoaded else { return .failed("Mermaid didn't load.") }
         web.frame = NSRect(x: 0, y: 0, width: job.width, height: 400)
         // Given up on after a while: a diagram Mermaid never finishes would hold up every other
-        // one. The page is loaded again, which stops it.
+        // one. The next ones get a new web view, as its page may not even load again.
         guard let answer = await answer(to: job) else {
-            load()
+            replaceWeb()
             return .failed("It took too long to draw.")
         }
         guard let result = answer else { return .failed("The page didn't answer.") }
@@ -355,6 +377,6 @@ final class MermaidRenderer: NSObject, WKNavigationDelegate {
     private func resumeWaiters() {
         let waiting = loadWaiters
         loadWaiters = []
-        for waiter in waiting { waiter.resume() }
+        for waiter in waiting { waiter() }
     }
 }
