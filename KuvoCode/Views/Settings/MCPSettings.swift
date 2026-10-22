@@ -123,7 +123,6 @@ struct MCPSettings: View {
                 Task {
                     if let api = app.api(for: box) { for server in live where server.integrationID == ref.id { await app.reconnect(server.name, api: api, machine: box.machine) } }
                     await refresh()
-                    app.syncSignIns()
                 }
             }
         }

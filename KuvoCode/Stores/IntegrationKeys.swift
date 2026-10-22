@@ -1,4 +1,5 @@
 import Foundation
+import OpenCodeKit
 import Security
 
 /// Keys you bring for integrations that take one (a bot token, an API key), kept in your Keychain.
@@ -47,6 +48,13 @@ nonisolated enum IntegrationKeys {
     /// How this Mac's engine settings name a key: the file it's read from.
     static func reference(_ variable: String) -> String {
         "{file:\(folder.path)/\(variable)}"
+    }
+
+    /// How a computer's engine settings name a key: this Mac's (nil) as above; a machine's, in its
+    /// own keys' folder there (`MachineBox.setKey`).
+    static func reference(_ variable: String, on machine: String?) -> String {
+        guard machine != nil else { return reference(variable) }
+        return "{file:~/\(RemoteEngineInstaller.root)/box/keys/\(variable)}"
     }
 
     /// Every key you saved, each in its file for the engine to read as it starts, and no others.

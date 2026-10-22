@@ -165,7 +165,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 
     /// The pages each computer has of its own, a machine as this Mac: its engine's settings, its
     /// accounts and its models. The rest are the app's, on this Mac.
-    static let boxPages: [SettingsPage] = [.accounts, .auto, .agents, .permissions, .commands, .mcp, .engine, .worktrees]
+    static let boxPages: [SettingsPage] = [.accounts, .auto, .agents, .permissions, .commands, .skills, .integrations, .mcp, .engine, .worktrees]
 
     /// The pages Settings lists for `box`.
     static func shown(on box: SidebarBox) -> [SettingsPage] {

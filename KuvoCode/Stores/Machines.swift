@@ -675,11 +675,10 @@ final class Machines {
     }
 
     /// Drops the clean-ups marked `mark` (whatever they were for came back), on every machine.
-    func dropWaiting(marked mark: String) {
-        for (machine, scripts) in Self.waiting {
-            let kept = scripts.filter { !$0.hasPrefix(mark) }
-            if kept.count != scripts.count { setWaiting(kept, on: machine) }
-        }
+    func dropWaiting(marked mark: String, on machine: String) {
+        guard let scripts = Self.waiting[machine] else { return }
+        let kept = scripts.filter { !$0.hasPrefix(mark) }
+        if kept.count != scripts.count { setWaiting(kept, on: machine) }
     }
 
     private func setWaiting(_ scripts: [String], on machine: String) {

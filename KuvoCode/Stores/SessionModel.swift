@@ -1422,9 +1422,11 @@ final class SessionModel {
     func syncFolders() async {
         // As the engine knows them: a machine's folders are plain paths there.
         let folders = projectFolders().map(api.enginePath)
+        let machine = RemoteFolder.machine(of: session.location.directory)
+        // Its computer's rules not known yet: once they are (they're read as it's reached).
+        guard EngineConfig.knowsRules(on: machine) else { return }
         var current = session.permissions ?? []
         // Its approval with Settings › Permissions as they are now on its computer, too.
-        let machine = RemoteFolder.machine(of: session.location.directory)
         var rules = ProjectFolders.permissions(ToolApproval.refreshed(current, settings: EngineConfig.rules(on: machine)), folders: folders)
         guard rules != current else { return }
         do {

@@ -401,6 +401,8 @@ extension AppModel {
         phoneLink.forget(machine: address)
         workspace.machines = Set(machines.list.map(\.id))
         workspace.fold(address, into: machine)
+        // Settings' tabs of the name that went.
+        settingsTabs.closeTabs(notOn: Set(machines.list.map(\.id)), machines: machines)
         bots.fold(address, into: machine)
         AgentMail.shared.fold(address, into: machine)
         moves.fold(address, into: machine)

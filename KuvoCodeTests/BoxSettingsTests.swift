@@ -14,7 +14,12 @@ import Testing
     @MainActor final class Box: RemoteSettings {
         var settings: [String: JSONValue]
         var refusesChanges = false
+        var refusesReads = false
         var changes: [[[String]]] = []
+        /// Changes wait here until let go.
+        var holdsChanges = false
+        private var heldChanges: [CheckedContinuation<Void, Never>] = []
+        var waitingChanges: Int { heldChanges.count }
         /// Reads wait here until let go, answering with the file as it was when they were asked.
         var holdsReads = false
         private var held: [CheckedContinuation<Void, Never>] = []
@@ -22,16 +27,24 @@ import Testing
         init(_ settings: [String: JSONValue]) { self.settings = settings }
 
         func read() async throws -> [String: JSONValue] {
+            if refusesReads { throw MachineBox.Failure.refused("ssh: connect to host box port 22: Connection refused") }
             let asked = settings
             if holdsReads { await withCheckedContinuation { held.append($0) } }
             return asked
         }
 
         func change(_ changes: [(path: [String], value: JSONValue?)]) async throws -> [String: JSONValue] {
+            if holdsChanges { await withCheckedContinuation { heldChanges.append($0) } }
             if refusesChanges { throw MachineBox.Failure.refused("ssh: connect to host box port 22: Connection refused") }
             self.changes.append(changes.map(\.path))
             for change in changes { settings = Self.setting(change.value, at: change.path[...], in: settings) }
             return settings
+        }
+
+        func letChangesGo() {
+            holdsChanges = false
+            heldChanges.forEach { $0.resume() }
+            heldChanges.removeAll()
         }
 
         func letReadsGo() {
@@ -106,6 +119,45 @@ import Testing
         box.letReadsGo()
         try await Task.sleep(for: .milliseconds(100))
         #expect(config.value(at: ["model"]) == .string("anthropic/sonnet"))
+    }
+
+    /// Two changes on their way, and a read in between (the engine said its settings changed):
+    /// the later change is what shows, and what's there in the end.
+    @Test func changesOnTheirWayKeepTheirOrder() async throws {
+        let box = Box(["permissions": .array([])])
+        let config = EngineConfig(remote: box)
+        config.took(box.settings)
+        box.holdsChanges = true
+        config.set(.array([Self.rule("a *")]), at: ["permissions"])
+        try await eventually { box.waitingChanges == 1 }
+        config.set(.array([Self.rule("b *")]), at: ["permissions"])
+        // The read comes back before either change is answered.
+        config.took(box.settings)
+        #expect(config.permissionRules.map(\.resource) == ["b *"])
+        box.letChangesGo()
+        try await eventually { box.changes.count == 2 }
+        try await eventually { config.permissionRules.map(\.resource) == ["b *"] && box.settings["permissions"] == .array([Self.rule("b *")]) }
+        #expect(config.permissionRules.map(\.resource) == ["b *"])
+    }
+
+    /// The machine out of reach: a change shows as it is there at once (reading it again fails
+    /// too), and the next one is still sent.
+    @Test func aChangeThatFailsWhileAwayShowsAsItIsThereAndTheNextGoes() async throws {
+        let box = Box(["model": .string("openai/luna"), "small_model": .string("openai/mini")])
+        let config = EngineConfig(remote: box)
+        config.took(box.settings)
+        box.refusesChanges = true
+        box.refusesReads = true
+        config.set(.string("anthropic/sonnet"), at: ["model"])
+        try await eventually { config.notSaved != nil }
+        #expect(config.value(at: ["model"]) == .string("openai/luna"))
+        #expect(config.problem == nil, "still read, still yours to change")
+        box.refusesChanges = false
+        box.refusesReads = false
+        config.set(.string("anthropic/haiku"), at: ["small_model"])
+        try await eventually { box.settings["small_model"] == .string("anthropic/haiku") }
+        try await eventually { config.notSaved == nil }
+        #expect(config.value(at: ["model"]) == .string("openai/luna"))
     }
 
     @Test func aMachineThatCantBeReachedSaysSo() async throws {

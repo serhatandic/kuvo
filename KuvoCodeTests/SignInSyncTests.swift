@@ -104,4 +104,39 @@ import Testing
         #expect(machine.stored("gitlab").map(\.secret) == ["glrt_machine"])
         #expect(UserDefaults.standard.dictionary(forKey: "machineSignOuts") == nil)
     }
+
+    private func linear(_ account: String, refresh: String, expires: Double = 1) -> [String: Any] {
+        ["type": "oauth", "access": "a", "refresh": refresh, "expires": expires, "metadata": ["accountID": account]]
+    }
+
+    /// An integration's sign-in is each computer's own: one the machine signed in to as another
+    /// account stays, and a machine without one signs in there (a new machine starts with this
+    /// Mac's, once). A copy of the same account on both stays one sign-in, the newer winning.
+    @Test func anIntegrationsSignInIsEachComputersOwn() async {
+        defer { done() }
+        mac.serve("linear", integration: "mcp_linear")
+        machine.serve("linear", integration: "mcp_linear")
+        mac.store("mcp_linear", value: linear("personal", refresh: "rt_mac"))
+        // None there: it isn't given this Mac's.
+        await sync()
+        #expect(machine.stored("mcp_linear").isEmpty)
+        // Its own, as another account: that stays.
+        machine.store("mcp_linear", value: linear("work", refresh: "rt_work", expires: 5))
+        await sync()
+        #expect(machine.stored("mcp_linear").map(\.secret) == ["rt_work"])
+        #expect(mac.stored("mcp_linear").map(\.secret) == ["rt_mac"])
+    }
+
+    @Test func aNewMachineStartsWithThisMacsIntegrationSignIns() async {
+        defer { done() }
+        mac.serve("linear", integration: "mcp_linear")
+        machine.serve("linear", integration: "mcp_linear")
+        mac.store("mcp_linear", value: linear("personal", refresh: "rt_mac"))
+        await sync(accounts: true)
+        #expect(machine.stored("mcp_linear").map(\.secret) == ["rt_mac"])
+        // Renewed there later (a new refresh token): the same account, so it comes back here.
+        machine.store("mcp_linear", value: linear("personal", refresh: "rt_renewed", expires: 9))
+        await sync()
+        #expect(mac.stored("mcp_linear").contains { $0.active && $0.secret == "rt_renewed" })
+    }
 }

@@ -2,12 +2,13 @@ import Foundation
 import OpenCodeKit
 
 extension AppModel {
-    /// The integrations you signed in to here (Notion, Linear…) and on a machine stay one sign-in:
-    /// copied between this Mac's engine and a machine's, the newer one winning (a service may hand
-    /// out a new refresh token each time it's used, and the other copy then stops working). The
-    /// older copy goes, so they don't pile up. Your accounts (API keys, sign-ins like GitHub
-    /// Copilot's) are each computer's own, in its own tab in Settings: a new machine starts with
-    /// this Mac's, once (`MachineEngine.seededNow`), and that's all. Sign-outs it hasn't taken yet
+    /// Each computer signs in to integrations (Notion, Linear…) on its own, in its own tab in
+    /// Settings. A new machine starts with this Mac's sign-ins and accounts, once
+    /// (`MachineEngine.seededNow`); after that, only a copy of the same account on both stays one
+    /// sign-in, the newer one winning (a service may hand out a new refresh token each time it's
+    /// used, and the other copy then stops working), and the older copy goes, so they don't pile
+    /// up. A machine's sign-in to another account, or none, is its own. Your accounts (API keys,
+    /// sign-ins like GitHub Copilot's) are each computer's own. Sign-outs it hasn't taken yet
     /// (from before computers kept their own) go first.
     ///
     /// Once after another with each machine (two at once would each copy the same sign-in), and
@@ -48,6 +49,8 @@ extension AppModel {
             guard let local = server.integrationID, let match = there.first(where: { $0.name == server.name }), let far = match.integrationID,
                   let mine = ours.first(where: { $0.integrationID == local && $0.active && $0.isOAuth }) else { continue }
             let yours = theirs.first { $0.integrationID == far && $0.active && $0.isOAuth }
+            // The machine's own (another account, or none: it signs in there), unless it's new.
+            guard copyingAccounts || yours.map({ Self.isSameAccount(mine, $0, copy: Self.copy(on: machine, of: far), byLabel: true) }) == true else { continue }
             switch await exchange(mine, yours, here: local, there: far, mac: mac, remote: remote, machine: machine, ours: ours) {
             case true?: await reconnect(match.name, api: remote, machine: machine)
             case false?: await reconnect(server.name, api: mac, machine: nil)

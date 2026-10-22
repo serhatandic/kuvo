@@ -1,9 +1,9 @@
 import OpenCodeKit
 import SwiftUI
 
-/// Skills: instructions and scripts the agent loads when a task calls for them. The ones it
-/// has, each can be turned off; popular collections on GitHub to add more from; other folders
-/// and catalogs to read them from.
+/// Skills: instructions and scripts the agent loads when a task calls for them, on each computer
+/// (each has its own). The ones it has, each can be turned off; popular collections on GitHub to
+/// add more from; other folders and catalogs to read them from.
 struct SkillsSettings: View {
     @Environment(AppModel.self) private var app
     @Environment(\.settingsBox) private var box
@@ -19,9 +19,11 @@ struct SkillsSettings: View {
     @State private var writing: SkillDraft?
     /// What the list is narrowed to.
     @State private var search = ""
+    /// The skills folder as the engine names skills in it (a machine's, once asked).
+    @State private var folderPath: String?
 
     private var config: EngineConfig { app.config(for: box) }
-    private var folder: URL { app.skillsFolder }
+    private var place: SkillsPlace { app.skills(on: box) }
 
     /// The skills, narrowed to what's searched for.
     private var shown: [Skill] {
@@ -86,7 +88,7 @@ struct SkillsSettings: View {
             } header: {
                 Text("Skills the Agent Can Use")
             } footer: {
-                Text("The agent loads a skill when a task calls for it. Skills in ~/.claude/skills and ~/.agents/skills, and in a project's .opencode/skills, are found on their own.")
+                Text("The agent loads a skill when a task calls for it. Skills in ~/.claude/skills and ~/.agents/skills\(box.machine == nil ? "" : " on \(app.name(of: box))"), and in a project's .opencode/skills, are found on their own.")
                     .foregroundStyle(.secondary)
             }
 
@@ -147,13 +149,13 @@ struct SkillsSettings: View {
         }
         .task(id: config.settings) { await refresh() }
         .settingsDetail(item: $writing, title: { $0.name ?? "New Skill" }) { draft in
-            SkillEditor(name: draft.name, folder: folder, taken: Set((skills ?? []).map(\.id))) {
+            SkillEditor(name: draft.name, place: place, taken: Set((skills ?? []).map(\.id))) {
                 writing = nil
                 Task { await refresh() }
             }
         }
         .settingsDetail(item: $browsing, title: { $0.title }) { repository in
-            RepositorySkills(repository: repository, folder: folder) {
+            RepositorySkills(repository: repository, place: place) {
                 Task { await refresh() }
             } done: {
                 browsing = nil
@@ -162,15 +164,22 @@ struct SkillsSettings: View {
     }
 
     private func refresh() async {
-        installed = SkillLibrary.installed(in: folder)
+        if folderPath == nil { folderPath = await place.path() }
+        installed = await place.installed()
         // The engine notices a new folder within a moment.
         try? await Task.sleep(for: .milliseconds(500))
         skills = ((try? await app.api(for: box)?.skills()) ?? []).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    /// In the skills folder here.
+    private func isHere(_ path: String?) -> Bool {
+        guard let path, let folderPath else { return false }
+        return path.hasPrefix(folderPath + "/")
+    }
+
     /// One you wrote here, rather than added from GitHub or found elsewhere.
     private func isYours(_ skill: Skill) -> Bool {
-        installed[skill.id] == nil && skill.path?.hasPrefix(folder.path + "/") == true
+        installed[skill.id] == nil && isHere(skill.path)
     }
 
     /// Where a skill comes from, when that's short to say: built in, added here, or the GitHub
@@ -179,7 +188,7 @@ struct SkillsSettings: View {
         if let source = installed[skill.id] { return source.repository }
         guard let path = skill.path else { return nil }
         if path.hasPrefix("/builtin/") { return "Built in" }
-        if path.hasPrefix(folder.path + "/") { return "Added here" }
+        if isHere(path) { return "Added here" }
         return nil
     }
 
@@ -206,8 +215,11 @@ struct SkillsSettings: View {
     }
 
     private func remove(_ id: String) {
-        try? FileManager.default.moveToTrash(folder.appending(path: id))
-        Task { await refresh() }
+        let place = place
+        Task {
+            try? await place.remove(id)
+            await refresh()
+        }
     }
 
     private func openRepository() {
@@ -243,7 +255,7 @@ private struct SkillDraft: Identifiable {
 private struct SkillEditor: View {
     /// Nil for a new skill.
     let name: String?
-    let folder: URL
+    let place: SkillsPlace
     /// Names other skills have.
     let taken: Set<String>
     let done: () -> Void
@@ -253,17 +265,22 @@ private struct SkillEditor: View {
     @State private var instructions = ""
     @State private var failure: String?
     @State private var confirmsRemoval = false
+    @State private var isSaving = false
+    /// Its SKILL.md as it was read, whose header saving keeps.
+    @State private var existing: String?
 
     private var id: String { name ?? SkillFile.name(from: newName) }
-    private var file: URL { folder.appending(path: id).appending(path: "SKILL.md") }
     private var canSave: Bool {
-        !id.isEmpty && !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (name != nil || !isTaken)
+        !id.isEmpty && !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (name != nil || !isTaken) && !isSaving
     }
 
-    /// A new skill's name is one there is already: in the engine's list, or as a folder here
-    /// (while the list loads, or when it couldn't be read), which saving would write over.
+    /// A new skill's name is one there is already: in the engine's list, or (on this Mac) as a
+    /// folder here, while the list loads or when it couldn't be read, which saving would write
+    /// over. (A machine's folder is looked at as it's saved.)
     private var isTaken: Bool {
-        taken.contains(id) || FileManager.default.fileExists(atPath: folder.appending(path: id).path)
+        if taken.contains(id) { return true }
+        if case .mac(let folder) = place { return FileManager.default.fileExists(atPath: folder.appending(path: id).path) }
+        return false
     }
 
     /// What's under a new skill's name: the name it's saved as when that isn't what you typed,
@@ -318,22 +335,29 @@ private struct SkillEditor: View {
                 EditorFooter(primary: name == nil ? "Create Skill" : "Save", canDoPrimary: canSave, onPrimary: save, onCancel: done) {
                     if name != nil {
                         EditorFooterRemove(title: "Delete Skill…") { confirmsRemoval = true }
-                        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([file]) }
-                            .buttonStyle(.glass)
+                        if case .mac(let folder) = place {
+                            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([folder.appending(path: id).appending(path: "SKILL.md")]) }
+                                .buttonStyle(.glass)
+                        }
                     }
                 }
             }
         }
-        .onAppear(perform: load)
+        .task { await load() }
         .confirmationDialog("Delete \(id)?", isPresented: $confirmsRemoval) {
             Button("Delete", role: .destructive, action: delete)
         } message: {
-            Text("Its folder, with anything else in it, goes to the Trash.")
+            if case .mac = place {
+                Text("Its folder, with anything else in it, goes to the Trash.")
+            } else {
+                Text("Its folder, with anything else in it, is put away in Kuvo Code’s trash there.")
+            }
         }
     }
 
-    private func load() {
-        guard name != nil, let text = try? String(contentsOf: file, encoding: .utf8) else { return }
+    private func load() async {
+        guard let name, let text = await place.read(name) else { return }
+        existing = text
         let parsed = SkillFile.parse(text)
         summary = parsed.description
         instructions = parsed.body
@@ -344,24 +368,36 @@ private struct SkillEditor: View {
             failure = "There's a skill called \(id) already."
             return
         }
-        do {
-            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-            // A skill's own file keeps whatever else its header has.
-            let existing = name == nil ? nil : try? String(contentsOf: file, encoding: .utf8)
-            try SkillFile.text(name: id, description: summary, body: instructions, replacing: existing).write(to: file, atomically: true, encoding: .utf8)
-            if name == nil { Analytics.shared.track("skill_written") }
-            done()
-        } catch {
-            failure = error.localizedDescription
+        let id = id, isNew = name == nil
+        // A skill's own file keeps whatever else its header has.
+        let text = SkillFile.text(name: id, description: summary, body: instructions, replacing: isNew ? nil : existing)
+        isSaving = true
+        failure = nil
+        Task {
+            defer { isSaving = false }
+            do {
+                if isNew, await place.exists(id) {
+                    failure = "There's a skill called \(id) already."
+                    return
+                }
+                try await place.write(id, text)
+                if isNew { Analytics.shared.track("skill_written") }
+                done()
+            } catch {
+                failure = error.localizedDescription
+            }
         }
     }
 
     private func delete() {
-        do {
-            try FileManager.default.moveToTrash(file.deletingLastPathComponent())
-            done()
-        } catch {
-            failure = error.localizedDescription
+        let id = id
+        Task {
+            do {
+                try await place.remove(id)
+                done()
+            } catch {
+                failure = error.localizedDescription
+            }
         }
     }
 }
@@ -424,7 +460,7 @@ nonisolated enum SkillFile {
 /// A repository's skills, each with what it says it does, to add or remove.
 private struct RepositorySkills: View {
     let repository: SkillLibrary.Repository
-    let folder: URL
+    let place: SkillsPlace
     let changed: () -> Void
     let done: () -> Void
     @State private var skills: [SkillLibrary.RemoteSkill]?
@@ -483,8 +519,11 @@ private struct RepositorySkills: View {
                         RemoteSkillRow(skill: skill, installed: installed[skill.name], isWorking: working == skill.id) {
                             confirming = skill
                         } remove: {
-                            try? FileManager.default.moveToTrash(folder.appending(path: skill.name))
-                            reload()
+                            let place = place
+                            Task {
+                                try? await place.remove(skill.name)
+                                await reload()
+                            }
                         }
                     }
                 }
@@ -500,7 +539,7 @@ private struct RepositorySkills: View {
             EditorFooter(primary: "Done", onPrimary: done)
         }
         .task {
-            reload()
+            await reload()
             do {
                 let listing = try await SkillLibrary.skills(in: repository)
                 skills = listing.skills
@@ -532,21 +571,22 @@ private struct RepositorySkills: View {
         return "From \(skill.repository.id):\n\n" + lines.joined(separator: "\n") + note
     }
 
-    private func reload() {
-        installed = SkillLibrary.installed(in: folder)
+    private func reload() async {
+        installed = await place.installed()
         changed()
     }
 
     private func install(_ skill: SkillLibrary.RemoteSkill) {
         working = skill.id
+        let place = place
         Task {
             defer { working = nil }
             do {
-                try await SkillLibrary.install(skill, into: folder)
+                try await place.install(skill)
                 // The collection by name when it's one of the listed ones, else just that it was another.
                 let listed = SkillLibrary.repositories.contains(skill.repository)
                 Analytics.shared.track("skill_added", ["collection": listed ? "\(skill.repository.owner)/\(skill.repository.name)" : "other"])
-                reload()
+                await reload()
             } catch {
                 installFailure = error.localizedDescription
             }

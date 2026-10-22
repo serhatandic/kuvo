@@ -10,6 +10,7 @@ nonisolated final class FakeEngine: @unchecked Sendable {
     private let lock = NSLock()
     private var credentials: [[String: Any]] = []
     private var integrations: [[String: Any]]
+    private var servers: [[String: Any]] = []
     private var next = 1
 
     /// An engine on `port` offering `accounts` (integration IDs).
@@ -20,6 +21,11 @@ nonisolated final class FakeEngine: @unchecked Sendable {
         StubWeb.handle(url + "/api/") { [weak self] request, body in
             self?.answer(request, body) ?? StubWeb.Answer(status: 503)
         }
+    }
+
+    /// An integration's MCP server it runs, connected, signing in through `integration`.
+    func serve(_ name: String, integration: String) {
+        lock.withLock { servers.append(["name": name, "integrationID": integration, "status": ["status": "connected"]]) }
     }
 
     /// A credential as the engine stores it; its ID.
@@ -71,7 +77,7 @@ nonisolated final class FakeEngine: @unchecked Sendable {
             case ("GET", "/api/integration"):
                 return StubWeb.json(["location": location, "data": integrations])
             case ("GET", "/api/mcp"):
-                return StubWeb.json(["location": location, "data": []])
+                return StubWeb.json(["location": location, "data": servers])
             default:
                 return StubWeb.Answer(status: 404)
             }

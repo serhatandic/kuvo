@@ -175,19 +175,32 @@ nonisolated enum SkillLibrary {
     @concurrent static func install(_ skill: RemoteSkill, into folder: URL) async throws {
         let destination = folder.appending(path: skill.name)
         if FileManager.default.fileExists(atPath: destination.path) { throw Failure.taken(skill.name) }
-        let staging = FileManager.default.temporaryDirectory.appending(path: "skill-\(UUID().uuidString)")
+        let staging = try await stage(skill)
         defer { try? FileManager.default.removeItem(at: staging) }
-        for file in skill.files {
-            let (data, response) = try await URLSession.shared.data(from: rawURL(skill.repository, file))
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw Failure.notFound(file) }
-            let target = staging.appending(path: skill.relative(file))
-            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: target)
-        }
-        let source = ["repository": skill.repository.id, "path": skill.path, "branch": skill.repository.branch]
-        try JSONSerialization.data(withJSONObject: source, options: [.prettyPrinted, .sortedKeys]).write(to: staging.appending(path: sourceFile))
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try FileManager.default.moveItem(at: staging, to: destination)
+    }
+
+    /// A skill's files, with the note of where they came from, in a temporary folder of their
+    /// own (the caller's to remove), ready to go where it's installed.
+    @concurrent static func stage(_ skill: RemoteSkill) async throws -> URL {
+        let staging = FileManager.default.temporaryDirectory.appending(path: "skill-\(UUID().uuidString)")
+        do {
+            for file in skill.files {
+                let (data, response) = try await URLSession.shared.data(from: rawURL(skill.repository, file))
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw Failure.notFound(file) }
+                let target = staging.appending(path: skill.relative(file))
+                try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: target)
+            }
+            let source = ["repository": skill.repository.id, "path": skill.path, "branch": skill.repository.branch]
+            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: source, options: [.prettyPrinted, .sortedKeys]).write(to: staging.appending(path: sourceFile))
+            return staging
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+            throw error
+        }
     }
 
     /// Skills installed from GitHub, by their folder's name, with where they came from.

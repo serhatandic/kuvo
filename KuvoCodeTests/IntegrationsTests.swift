@@ -57,6 +57,22 @@ import Testing
         #expect(!machine.contains(IntegrationKeys.folder.path))
     }
 
+    /// Added on a machine's own page: its keys are read from that machine's own keys' folder, which
+    /// its settings name, never this Mac's; and integrations that use a Mac's own apps aren't
+    /// offered there.
+    @Test func addedOnAMachineItReadsItsKeysThere() throws {
+        for service in withKeys where !Integrations.macOnly.contains(service.id) {
+            let settings = text(Integrations.settings(for: service, on: "lab"))
+            #expect(!settings.contains(IntegrationKeys.folder.path), "\(service.id) names this Mac's folder")
+            for name in Integrations.keyNames(in: try #require(Integrations.settings(for: service, on: "lab"))) {
+                let reference = IntegrationKeys.reference(name, on: "lab")
+                #expect(reference == "{file:~/.kuvo-code/box/keys/\(name)}" || reference.contains("/box/keys/\(name)}"))
+                #expect(settings.contains(reference) || settings.contains(reference.replacingOccurrences(of: "/", with: "\\/")))
+            }
+        }
+        #expect(!Integrations.macOnly.isEmpty)
+    }
+
     /// One added when keys were named in the engine's environment: named by their files now, and
     /// bringing it up to date again changes nothing.
     @Test func anOlderOneIsBroughtUpToDate() throws {

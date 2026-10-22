@@ -2,21 +2,27 @@ import OpenCodeKit
 import SwiftUI
 
 /// Integrations: your mail and calendar, chats, socials, code and work tools, for the agent and
-/// your bots. Each the best way it has: its maker's own server (connect, and sign in once), a key
-/// you bring, or the site in the panel's browser.
+/// your bots, on each computer (each has its own, with its own keys and sign-ins). Each the best
+/// way it has: its maker's own server (connect, and sign in once), a key you bring, or the site in
+/// the panel's browser.
 struct IntegrationsSettings: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     @State private var live: [MCPServer] = []
     @State private var signingIn: IntegrationRef?
     @State private var addingKey: KeyRequest?
     /// The sign-ins the engine keeps, by integration: a server can answer without one (Google's
     /// do), then turn every call down.
     @State private var signedIn: Set<String> = []
-    /// Each connected machine's MCP servers, by machine.
-    @State private var remote: [String: [MCPServer]] = [:]
     @State private var removing: Integrations.Service?
 
-    private var config: EngineConfig { app.engineConfig }
+    private var config: EngineConfig { app.config(for: box) }
+    private var api: OpenCodeAPI? { app.api(for: box) }
+
+    /// Those this computer can run: a machine, not those that use a Mac's own apps.
+    private var offered: [Integrations.Service] {
+        box.machine == nil ? Integrations.all : Integrations.all.filter { !Integrations.macOnly.contains($0.id) }
+    }
 
     /// Each kind, in order. KUVO_DEMO_INTEGRATION_KINDS=<kinds>: only those, for screenshots.
     private static var kinds: [Integrations.Kind] {
@@ -30,16 +36,11 @@ struct IntegrationsSettings: View {
 
     var body: some View {
         list
-        .modifier(LiveMCPServers(servers: $live, api: { app.api }, change: config.settings))
+        .modifier(LiveMCPServers(servers: $live, api: { app.api(for: box) }, change: config.settings))
         .task(id: live) { await readSignIns() }
         .task {
-            // The machines' servers, as their engines say.
+            // Where sites are signed in, as their browsers' cookies say.
             while !Task.isCancelled {
-                var read: [String: [MCPServer]] = [:]
-                for engine in app.machines.engines.values where engine.isReady {
-                    if let servers = try? await engine.api?.mcpServers() { read[engine.machine.id] = servers }
-                }
-                remote = read
                 await SiteSignIns.shared.refresh(app)
                 try? await Task.sleep(for: .seconds(4))
             }
@@ -56,7 +57,7 @@ struct IntegrationsSettings: View {
                config.value(at: MCPSettings.path + [id]) == nil { add(service) }
             // KUVO_DEMO_SIGN_IN_SITE=<id>: signing in to that service on its site, in the sheet.
             if let id = ProcessInfo.processInfo.environment["KUVO_DEMO_SIGN_IN_SITE"], let service = Integrations.service(id) {
-                app.settingsTabs.open(service)
+                app.settingsTabs.open(service, on: box)
             }
             // KUVO_DEMO_CONNECTED=<id>: its sign-in, on its last step.
             if let id = ProcessInfo.processInfo.environment["KUVO_DEMO_CONNECTED"], let service = Integrations.service(id) {
@@ -68,10 +69,9 @@ struct IntegrationsSettings: View {
             ConnectDetail(integrationID: ref.id, name: ref.service?.title, symbol: ref.service?.symbol, note: ref.service == nil ? "The agent can use it now." : "", highlights: highlights(ref.service)) {
                 signingIn = nil
                 Task {
-                    if let api = app.api { for server in live where server.integrationID == ref.id { await app.reconnect(server.name, api: api, machine: nil) } }
+                    if let api { for server in live where server.integrationID == ref.id { await app.reconnect(server.name, api: api, machine: box.machine) } }
                     await refresh()
                     await readSignIns()
-                    app.syncSignIns()
                 }
             }
         }
@@ -79,16 +79,14 @@ struct IntegrationsSettings: View {
             KeyEntry(service: request.service) { saved in
                 addingKey = nil
                 guard saved else { return }
-                // This Mac's engine reads the key from its file as it reads its settings again,
-                // which adding the integration has it do: its server connects again once it has.
+                // The engine reads the key from its file as it reads its settings again, which
+                // adding the integration has it do: its server connects again once it has.
                 add(request.service)
                 Task {
                     try? await Task.sleep(for: .seconds(2))
-                    if let api = app.api { await app.reconnect(request.service.id, api: api, machine: nil) }
+                    if let api { await app.reconnect(request.service.id, api: api, machine: box.machine) }
                     await refresh()
                 }
-                // Machines take keys as their engines start: each starts again once nothing's at work there.
-                app.renewEngines(mac: false)
             }
         }
     }
@@ -99,7 +97,7 @@ struct IntegrationsSettings: View {
             ConfigProblem()
             ForEach(Self.kinds, id: \.self) { kind in
                 Section(kind.rawValue) {
-                    ForEach(Integrations.all.filter { $0.kind == kind }) { service in
+                    ForEach(offered.filter { $0.kind == kind }) { service in
                         row(service)
                     }
                 }
@@ -132,8 +130,8 @@ struct IntegrationsSettings: View {
             HStack {
                 switch service.way {
                 case .browser:
-                    Button(SiteSignIns.shared.isSignedIn(service.id, on: nil) == true ? "Open…" : "Sign In…") { withAnimation(.ui) { app.settingsTabs.open(service) } }
-                        .help("Sign in to \(service.title) in the browser the agent and your bots use, on this Mac or one of your machines")
+                    Button(SiteSignIns.shared.isSignedIn(service.id, on: box.machine) == true ? "Open…" : "Sign In…") { withAnimation(.ui) { app.settingsTabs.open(service, on: box) } }
+                        .help("Sign in to \(service.title) in the browser the agent and your bots use on \(box.machine == nil ? "this Mac" : app.name(of: box))")
                 default:
                     if !added {
                         if case .officialApp = service.way {
@@ -178,53 +176,26 @@ struct IntegrationsSettings: View {
         }
     }
 
-    /// How it's doing on this Mac, then on each machine connected now that runs it.
+    /// How it's doing on this computer.
     private func places(_ service: Integrations.Service) -> [Place] {
         let server = live.first { $0.name == service.id }
         var here = Place.state(server)
         if here == .connected, needsSignIn(service, server) { here = .needsSignIn }
-        // Microsoft 365's sign-in is one for all, copied between this Mac and the machines.
-        let waits = waitsForCode(service)
-        if here == .connected, waits { here = .waitsForCode }
-        var places = [Place(name: "this Mac", machine: nil, state: here)]
-        guard !Integrations.macOnly.contains(service.id) else { return places }
-        for engine in app.machines.list.compactMap({ app.machines.engine($0.id) }) where engine.isReady {
-            guard let servers = remote[engine.machine.id] else { continue }
-            var there = Place.state(servers.first { $0.name == service.id })
-            if there == .connected, waits { there = .waitsForCode }
-            places.append(Place(name: engine.machine.name, machine: engine.machine.id, state: there))
-        }
-        return places
+        if here == .connected, waitsForCode(service) { here = .waitsForCode }
+        return [Place(name: app.name(of: box), machine: box.machine, state: here)]
     }
 
-    /// Where a service the agent uses on its site is signed in, as far as its cookies tell.
+    /// Whether a service the agent uses on its site is signed in on this computer, as far as its
+    /// browser's cookies tell.
     private func siteSignIns(_ service: Integrations.Service) -> [Place] {
-        guard case .browser = service.way else { return [] }
-        let signIns = SiteSignIns.shared
-        var places: [Place] = []
-        if let here = signIns.isSignedIn(service.id, on: nil) {
-            places.append(Place(name: "this Mac", machine: nil, state: here ? .signedIn : .signedOut))
-        }
-        for engine in app.machines.list.compactMap({ app.machines.engine($0.id) }) {
-            if let there = signIns.isSignedIn(service.id, on: engine.machine.id) {
-                places.append(Place(name: engine.machine.name, machine: engine.machine.id, state: there ? .signedIn : .signedOut))
-            }
-        }
-        // Only here known, with machines: say it's here.
-        if places.count == 1, places[0].machine == nil, !app.machines.list.isEmpty { places[0].namesPlace = true }
-        return places
+        guard case .browser = service.way, let signedIn = SiteSignIns.shared.isSignedIn(service.id, on: box.machine) else { return [] }
+        return [Place(name: app.name(of: box), machine: box.machine, state: signedIn ? .signedIn : .signedOut)]
     }
 
-    /// Connects it again, on this Mac and the machines among `places`.
+    /// Connects it again on this computer.
     private func reconnect(_ service: Integrations.Service, where places: [Place]) {
         Task {
-            for place in places {
-                if let machine = place.machine {
-                    if let api = app.machines.engine(machine)?.api { await app.reconnect(service.id, api: api, machine: machine) }
-                } else if let api = app.api {
-                    await app.reconnect(service.id, api: api, machine: nil)
-                }
-            }
+            if let api { await app.reconnect(service.id, api: api, machine: box.machine) }
             await refresh()
         }
     }
@@ -232,11 +203,7 @@ struct IntegrationsSettings: View {
     /// What signing in to it gives you, for the sheet's last step.
     private func highlights(_ service: Integrations.Service?) -> [ConnectView.Highlight] {
         guard let service else { return [] }
-        var lines = [ConnectView.Highlight(symbol: "text.bubble", title: "Just ask", detail: "The agent and your bots use \(service.title)'s own tools when you mention it, not its website.")]
-        if !app.machines.list.isEmpty {
-            lines.append(.init(symbol: "server.rack", title: "On your machines too", detail: "Sessions and bots there use this sign-in, kept in step with this Mac."))
-        }
-        return lines
+        return [ConnectView.Highlight(symbol: "text.bubble", title: "Just ask", detail: "The agent and your bots use \(service.title)'s own tools when you mention it, not its website.")]
     }
 
     /// Whether it waits for you to sign in: as its server says, or, answering without a sign-in,
@@ -253,13 +220,13 @@ struct IntegrationsSettings: View {
     }
 
     private func readSignIns() async {
-        guard let entries = try? await app.api?.credentialEntries() else { return }
+        guard let entries = try? await api?.credentialEntries() else { return }
         signedIn = Set(entries.filter { $0.active && $0.isOAuth }.map(\.integrationID))
     }
 
-    /// Microsoft 365, without its sign-in yet.
+    /// Microsoft 365, without its sign-in yet (on this Mac: a machine's isn't looked at).
     private func waitsForCode(_ service: Integrations.Service) -> Bool {
-        guard let files = Integrations.signInFiles[service.id], let first = files.first else { return false }
+        guard box.machine == nil, let files = Integrations.signInFiles[service.id], let first = files.first else { return false }
         return !FileManager.default.fileExists(atPath: AppInfo.supportDirectory.appending(path: "integrations/\(service.id)/\(first)").path)
     }
 
@@ -284,14 +251,11 @@ struct IntegrationsSettings: View {
         // Added already (a new key or app for it): as you set it up (turned off, Code Mode, headers
         // you added), written again so the engine reads its keys again.
         let existing = config.value(at: path)
-        guard let settings = existing ?? Integrations.settings(for: service) else { return }
+        guard let settings = existing ?? Integrations.settings(for: service, on: box.machine) else { return }
         config.set(settings, at: path)
-        // Back again: what its removal left to do on a machine out of reach isn't done.
-        app.machines.dropWaiting(marked: Machines.integrationMark(service.id))
-        if existing == nil { Analytics.shared.track("integration_added", ["integration": service.id]) }
-        // One that needs a key waits for it (saving it renews them).
-        // Machines' engines take their settings when they start (this Mac's reads the file).
-        if Integrations.keys(of: service.way).isEmpty, !Integrations.macOnly.contains(service.id) { app.renewEngines(mac: false) }
+        // Back again: what its removal left to do on this machine, out of reach then, isn't done.
+        if let machine = box.machine { app.machines.dropWaiting(marked: Machines.integrationMark(service.id), on: machine) }
+        if existing == nil { Analytics.shared.track("integration_added", ["integration": service.id, "machine": box.machine != nil]) }
     }
 
     /// Out of the engine's settings, with its keys, its sign-in and what its server kept.
@@ -303,18 +267,19 @@ struct IntegrationsSettings: View {
             // Its sign-in as the engine has it now (the page's last look may have missed it), asked
             // before it leaves the settings, and then the server with it.
             var signIn = listed
-            if signIn == nil, let api = app.api { signIn = (try? await api.mcpServers())?.first { $0.name == service.id }?.integrationID }
+            if signIn == nil, let api { signIn = (try? await api.mcpServers())?.first { $0.name == service.id }?.integrationID }
             removeEntry(service)
-            if let signIn { app.forgetSignIn(signIn) }
+            if let signIn { app.forgetSignIn(signIn, on: box) }
         }
     }
 
+    /// Out of this computer's settings, with its keys there and what its server kept there.
     private func removeEntry(_ service: Integrations.Service) {
         config.set(nil, at: MCPSettings.path + [service.id])
-        for key in Integrations.keys(of: service.way) { IntegrationKeys.set(nil, for: IntegrationKeys.variable(service.id, key.name)) }
-        // Bots with keys of their own for it stop using it too: their keys go, and their
+        let variables = Integrations.keys(of: service.way).map { IntegrationKeys.variable(service.id, $0.name) }
+        // Bots here with keys of their own for it stop using it too: their keys go, and their
         // folders' settings stop naming its server.
-        let bots = app.bots.list
+        let bots = app.bots.list.filter { $0.machine == box.machine }
         Task {
             for bot in bots {
                 let theirs = Set(Integrations.keys(of: service.way).map { IntegrationKeys.variable(service.id, $0.name, bot: bot.id) })
@@ -322,26 +287,25 @@ struct IntegrationsSettings: View {
                 if !theirs.isDisjoint(with: held) { await BotKeys.remove(service, bot: bot, app: app) }
             }
         }
-        // What its server kept: its own folder (and the file it once kept), here and on the
-        // machines that are connected.
-        for name in [service.id, "\(service.id).json"] { try? FileManager.default.removeItem(at: AppInfo.supportDirectory.appending(path: "integrations/\(name)")) }
-        let kept = "\"$HOME/\(RemoteEngineInstaller.root)/integrations/\(service.id)\""
-        for engine in app.machines.engines.values {
-            let machine = engine.machine.id
-            // One out of reach: the next time it answers.
-            let later = Machines.integrationMark(service.id) + "rm -rf \(kept)"
-            guard engine.isReady else { app.machines.runLater(later, on: machine); continue }
-            // One that drops meanwhile: the next time it answers, as for one away.
-            Task {
-                let done = await Task.detached { RemoteShell.run("rm -rf \(kept)", on: machine) != nil }.value
-                if !done { app.machines.runLater(later, on: machine) }
-            }
+        guard let machine = box.machine else {
+            for variable in variables { IntegrationKeys.set(nil, for: variable) }
+            // What its server kept: its own folder (and the file it once kept).
+            for name in [service.id, "\(service.id).json"] { try? FileManager.default.removeItem(at: AppInfo.supportDirectory.appending(path: "integrations/\(name)")) }
+            return
         }
-        if !Integrations.macOnly.contains(service.id) { app.renewEngines(mac: false) }
+        // On the machine: its keys and what its server kept there, now or the next time it answers.
+        let root = "\"$HOME/\(RemoteEngineInstaller.root)"
+        let script = (["rm -rf \(root)/integrations/\(service.id)\""] + variables.map { "rm -f \(root)/box/keys/\($0)\"" }).joined(separator: "; ")
+        let later = Machines.integrationMark(service.id) + script
+        guard app.machines.engine(machine)?.isReady == true else { app.machines.runLater(later, on: machine); return }
+        Task {
+            let done = await Task.detached { RemoteShell.run(script, on: machine) != nil }.value
+            if !done { app.machines.runLater(later, on: machine) }
+        }
     }
 
     private func refresh() async {
-        live = await MCPStatus.read(app.api) ?? []
+        live = await MCPStatus.read(api) ?? []
     }
 }
 
@@ -436,12 +400,16 @@ private struct KeyRequest: Identifiable {
     var id: String { service.id }
 }
 
-/// The keys an integration needs, typed or pasted, for your Keychain: in the page's place.
+/// The keys an integration needs, typed or pasted, for this computer: this Mac's Keychain, or a
+/// machine's own keys' folder: in the page's place.
 private struct KeyEntry: View {
     let service: Integrations.Service
     let done: (Bool) -> Void
+    @Environment(AppModel.self) private var app
+    @Environment(\.settingsBox) private var box
     @State private var values: [String: String] = [:]
-    @State private var failed = false
+    @State private var failed: String?
+    @State private var isSaving = false
 
     private var keys: [Integrations.Key] { Integrations.keys(of: service.way) }
 
@@ -457,14 +425,19 @@ private struct KeyEntry: View {
     private var explanation: String {
         switch service.way {
         case .officialApp:
-            "\(service.title)'s own server signs in only through an app registered with it. Make one in its developer console, with this redirect URL, then paste its ID and secret: \(Integrations.redirect). They stay in your Keychain; then you sign in."
+            "\(service.title)'s own server signs in only through an app registered with it. Make one in its developer console, with this redirect URL, then paste its ID and secret: \(Integrations.redirect). They stay \(kept); then you sign in."
         case .officialToken:
-            "It goes to \(service.title)'s own server with your token, which stays in your Keychain and reaches the engine only while it runs."
+            "It goes to \(service.title)'s own server with your token, which stays \(kept)\(box.machine == nil ? " and reaches the engine only while it runs" : "")."
         case .package(_, _, _, let by, _, _):
-            "It runs \(by), an open-source MCP server, with your key. The key stays in your Keychain and reaches the engine only while it runs."
+            "It runs \(by), an open-source MCP server, with your key. The key stays \(kept)\(box.machine == nil ? " and reaches the engine only while it runs" : "")."
         default:
             ""
         }
+    }
+
+    /// Where the keys are kept: in your Keychain, or in a folder only you can read on the machine.
+    private var kept: String {
+        box.machine == nil ? "in your Keychain" : "on \(app.name(of: box)), in a folder only you can read"
     }
 
     private var isComplete: Bool {
@@ -481,8 +454,8 @@ private struct KeyEntry: View {
                 }
             } footer: {
                 VStack(alignment: .leading, spacing: 6) {
-                    if failed {
-                        Text("Couldn’t save it in your Keychain. Try again, or check Keychain Access.")
+                    if let failed {
+                        Text(failed)
                             .foregroundStyle(.red)
                     }
                     Text(explanation)
@@ -495,21 +468,35 @@ private struct KeyEntry: View {
                 }
             }
         } footer: {
-            EditorFooter(primary: "Save", canDoPrimary: isComplete, onPrimary: save, onCancel: { done(false) })
+            EditorFooter(primary: "Save", canDoPrimary: isComplete && !isSaving, onPrimary: save, onCancel: { done(false) })
         }
         .onAppear {
+            // This Mac's, to change; a machine's stay there.
+            guard box.machine == nil else { return }
             for key in keys { values[key.name] = IntegrationKeys.value(IntegrationKeys.variable(service.id, key.name)) ?? "" }
         }
     }
 
     private func save() {
-        let saved = keys.allSatisfy { key in
-            IntegrationKeys.set(values[key.name]?.trimmingCharacters(in: .whitespacesAndNewlines), for: IntegrationKeys.variable(service.id, key.name))
-        }
-        guard saved else {
-            failed = true
+        let given = keys.map { (IntegrationKeys.variable(service.id, $0.name), values[$0.name]?.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        guard let machine = box.machine, let engine = app.machines.engine(machine) else {
+            guard given.allSatisfy({ IntegrationKeys.set($0.1, for: $0.0) }) else {
+                failed = "Couldn’t save it in your Keychain. Try again, or check Keychain Access."
+                return
+            }
+            done(true)
             return
         }
-        done(true)
+        isSaving = true
+        failed = nil
+        Task {
+            do {
+                for (variable, value) in given { try await MachineBox.setKey(variable, value, on: engine.machine.connection) }
+                done(true)
+            } catch {
+                failed = "Couldn’t save it on \(engine.machine.name): \(error.localizedDescription)"
+            }
+            isSaving = false
+        }
     }
 }

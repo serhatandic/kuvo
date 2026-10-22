@@ -3,10 +3,11 @@ import OpenCodeKit
 
 extension AppModel {
     /// Integrations whose servers keep their sign-in in files of their own (Outlook's, from its
-    /// code sign-in), in the integration's folder: those files go between this Mac and a machine
-    /// together, the side whose sign-in (the first file) is newer winning, so signing in on one
-    /// does for both. Each copy keeps the time it was changed, so the two settle rather than going
-    /// back and forth.
+    /// code sign-in), in the integration's folder: for one this Mac and a machine both have, those
+    /// files go between them together, the side whose sign-in (the first file) is newer winning,
+    /// so a sign-in that renews itself, copied there before each computer had its own, keeps
+    /// working on both. Each copy keeps the time it was changed, so the two settle rather than
+    /// going back and forth.
     func syncSignInFiles(with engine: MachineEngine) async {
         // In its turn with the other copying of sign-ins (and a machine being signed out of), and
         // only to one still added.
@@ -22,8 +23,9 @@ extension AppModel {
 
     private func copySignInFiles(with engine: MachineEngine) async {
         let machine = engine.machine.id
-        // Those added in Settings.
-        let added = Set(engineConfig.value(at: MCPSettings.path)?.object?.keys.map(\.self) ?? [])
+        // Those added on both.
+        let here = Set(engineConfig.value(at: MCPSettings.path)?.object?.keys.map(\.self) ?? [])
+        let added = here.intersection(engine.config.value(at: MCPSettings.path)?.object?.keys.map(\.self) ?? [])
         for (id, names) in Integrations.signInFiles where added.contains(id) {
             // Each file here and there, the sign-in first.
             let files = names.map { name in

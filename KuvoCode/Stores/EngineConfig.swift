@@ -68,20 +68,30 @@ final class EngineConfig {
     }
 
     /// Settings › Permissions' rules of the computer a session is on (nil: this Mac), from its
-    /// own settings. A machine's not read yet (it's read before its engine is reached, so only
-    /// just after it's added): this Mac's, which it started with.
+    /// own settings: none for a machine not read yet (it's read before its engine is reached, so
+    /// only just after it's added), whose sessions wait for them (`knowsRules`).
     static func rules(on machine: String?) -> [PermissionRule] {
-        if let config = of(machine), config.isLoaded { return config.permissionRules }
-        return current?.permissionRules ?? []
+        guard let config = of(machine), config.isLoaded else { return [] }
+        return config.permissionRules
+    }
+
+    /// The computer's rules are known: this Mac's always, a machine's once read.
+    static func knowsRules(on machine: String?) -> Bool {
+        of(machine)?.isLoaded == true
     }
 
     /// A machine's settings as they were just read some other way (as it's started).
     func took(_ read: [String: JSONValue]) {
         guard remote != nil else { return }
         reads += 1
-        settings = Self.applying(pending + sent, to: read)
+        confirmed = read
+        // What's on its way, in the order it was changed.
+        settings = Self.applying(sent + pending, to: read)
         problem = nil
         isLoaded = true
+        // A change that didn't get there is said once it's shown as it is there; read again
+        // after that, all's as it is.
+        if keepsNotice { keepsNotice = false } else { notSaved = nil }
         noteRules()
     }
 
@@ -256,7 +266,7 @@ final class EngineConfig {
     /// Sets the value at a path of keys, or removes it with nil (and any object it leaves
     /// empty), then saves.
     func set(_ value: JSONValue?, at path: [String]) {
-        guard problem == nil, !path.isEmpty else { return }
+        guard problem == nil, isLoaded, !path.isEmpty else { return }
         settings = Self.setting(value, at: path[...], in: settings)
         save([(path, value)])
     }
@@ -264,7 +274,7 @@ final class EngineConfig {
     /// Several changes at once, in one write: the engine reloads its settings once, not after
     /// each of them.
     func set(_ changes: [(path: [String], value: JSONValue?)]) {
-        guard problem == nil else { return }
+        guard problem == nil, isLoaded else { return }
         for change in changes where !change.path.isEmpty {
             settings = Self.setting(change.value, at: change.path[...], in: settings)
         }
@@ -287,17 +297,28 @@ final class EngineConfig {
         changes.reduce(settings) { setting($1.value, at: $1.path[...], in: $0) }
     }
 
+    private static func value(at path: [String], in settings: [String: JSONValue]) -> JSONValue? {
+        var current: JSONValue? = .object(settings)
+        for key in path { current = current?[key] }
+        return current
+    }
+
     /// A machine's changes waiting to be sent, and those sent and not answered yet: what's read
     /// meanwhile shows them as they'll be.
     @ObservationIgnored private var pending: [(path: [String], value: JSONValue?)] = []
     @ObservationIgnored private var sent: [(path: [String], value: JSONValue?)] = []
     @ObservationIgnored private var isSending = false
+    /// A machine's settings as it last said they are (read, or answered with a change).
+    @ObservationIgnored private var confirmed: [String: JSONValue] = [:]
     /// Goes up with each read and each answer to a change, so an older read that comes back
     /// later doesn't put back what was before.
     @ObservationIgnored private var reads = 0
+    /// The read after a change that didn't get there keeps saying so.
+    @ObservationIgnored private var keepsNotice = false
 
     /// A machine's changes, sent in order, a batch at a time, key by key: what comes back is its
-    /// settings, with others' changes to other keys meanwhile.
+    /// settings, with others' changes to other keys meanwhile. One that doesn't get there shows
+    /// as it is there at once; those after it are still sent.
     private func send(_ changes: [(path: [String], value: JSONValue?)]) {
         guard let remote, !changes.isEmpty else { return }
         pending += changes
@@ -307,18 +328,24 @@ final class EngineConfig {
             while !pending.isEmpty {
                 sent = pending
                 pending.removeAll()
+                let asked = reads
                 do {
                     let after = try await remote.change(sent)
+                    // Read since (a phone's change to another key, say): that stays, with what
+                    // this change made of its own keys.
+                    confirmed = reads == asked ? after : Self.applying(sent.map { ($0.path, Self.value(at: $0.path, in: after)) }, to: confirmed)
                     sent.removeAll()
                     reads += 1
-                    settings = Self.applying(pending, to: after)
+                    settings = Self.applying(pending, to: confirmed)
                     notSaved = nil
                     noteRules()
                 } catch {
-                    // As it is there, rather than as it would have been.
                     notSaved = "It couldn't be saved there: \(error.localizedDescription)"
                     sent.removeAll()
-                    pending.removeAll()
+                    // As it is there, rather than as it would have been, and read again.
+                    settings = Self.applying(pending, to: confirmed)
+                    noteRules()
+                    keepsNotice = true
                     reload()
                 }
             }

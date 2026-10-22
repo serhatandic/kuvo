@@ -221,13 +221,16 @@ final class SettingsTabs {
         save()
     }
 
-    /// Signs in to `service` in a tab of its own (the one there is, if it's open).
-    func open(_ service: Integrations.Service) {
+    /// Signs in to `service` in a tab of its own (the one there is, if it's open), in the browser
+    /// of the computer `box` is.
+    func open(_ service: Integrations.Service, on box: SidebarBox = .mac) {
         if let tab = tabs.first(where: { $0.kind == .site(service.id) }) {
+            sites[service.id]?.place = box.machine ?? ""
             select(tab.id)
             return
         }
         let site = Site(service: service)
+        site.place = box.machine ?? ""
         site.pages.open(service.site)
         sites[service.id] = site
         insert(Tab(id: UUID().uuidString, kind: .site(service.id)))

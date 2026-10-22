@@ -67,9 +67,10 @@ nonisolated enum Integrations {
     /// engine's Code Mode, the agent sees only a short list of them under one tool, and went to
     /// the service's site in the browser instead.
     /// With `bot`, the settings that bot's folder has, naming its own keys rather than the shared ones.
-    static func settings(for service: Service, bot: String? = nil) -> JSONValue? {
+    /// On a machine (`machine`), its keys are named where that machine keeps them.
+    static func settings(for service: Service, bot: String? = nil, on machine: String? = nil) -> JSONValue? {
         let variable = { (name: String) in bot.map { IntegrationKeys.variable(service.id, name, bot: $0) } ?? IntegrationKeys.variable(service.id, name) }
-        guard case .object(var settings) = server(for: service, variable: variable) else { return nil }
+        guard case .object(var settings) = server(for: service, variable: variable, machine: machine) else { return nil }
         settings["codemode"] = .bool(false)
         return .object(settings)
     }
@@ -156,15 +157,15 @@ nonisolated enum Integrations {
     }
 
     /// `variable` names a key's variable (the shared key's, or a bot's own).
-    private static func server(for service: Service, variable: @escaping (String) -> String) -> JSONValue? {
-        let env = { (name: String) in JSONValue.string(IntegrationKeys.reference(variable(name))) }
+    private static func server(for service: Service, variable: @escaping (String) -> String, machine: String?) -> JSONValue? {
+        let env = { (name: String) in JSONValue.string(IntegrationKeys.reference(variable(name), on: machine)) }
         switch service.way {
         case .official(let url):
             return .object(["type": .string("remote"), "url": .string(url)])
         case .officialToken(let url, let key, _):
             return .object([
                 "type": .string("remote"), "url": .string(url), "oauth": .bool(false),
-                "headers": .object(["Authorization": .string("Bearer " + IntegrationKeys.reference(variable(key.name)))]),
+                "headers": .object(["Authorization": .string("Bearer " + IntegrationKeys.reference(variable(key.name), on: machine))]),
             ])
         case .officialApp(let url, _):
             return .object([
@@ -186,8 +187,7 @@ nonisolated enum Integrations {
         }
     }
 
-    /// Integrations that only work on this Mac, left out of machines' settings: those that use
-    /// its apps. (Those you sign in to go too: the sign-in is copied, see `syncSignIns`.)
+    /// Integrations that only work on this Mac, which machines don't offer: those that use its apps.
     static var macOnly: [String] {
         all.compactMap { service in
             if case .package(_, _, _, _, _, true) = service.way { return service.id }
