@@ -1666,6 +1666,15 @@ export class Sessions {
       turnAway()
       return { outcome: "failed", error: { type: "agent", message: "This model's agent isn't available: sign in to it in Settings › Accounts, or pick another model." } }
     }
+    // Its account signed out of, where a request on it would be dropped without a word: said.
+    if (!input.adopt && (await Promise.race([agent.signedOut?.().catch(() => false), Bun.sleep(10_000).then(() => false)]))) {
+      turnAway()
+      const machine = onMachine ? process.env.KUVO_MACHINE_NAME || "this machine" : undefined
+      const message = machine
+        ? `${agent.name} isn't signed in on ${machine}, where this conversation runs (each machine signs in on its own). Sign in to it there in Settings › Accounts, with ${machine} picked, or pick another model.`
+        : `${agent.name} isn't signed in. Sign in to it in Settings › Accounts, or pick another model.`
+      return { outcome: "failed", error: { type: "provider.auth", message } }
+    }
     if (signal.aborted) {
       turnAway()
       return { outcome: "interrupted" }

@@ -397,6 +397,15 @@ export function compose(task: GroupTask, chat: Group, wrapUp: GroupMessage, from
   )
 }
 
+/**
+ * A provider's refusal that means it isn't signed in (a request sent without its credentials, or
+ * ones it turned down), in words saying what to do, for `provider`; any other error as it was said.
+ */
+export function plainError(error: string, provider?: string): string {
+  if (!/authorization header|unauthori[sz]ed|\b401\b|\b403\b|forbidden|invalid api key/i.test(error)) return error
+  return `${provider ?? "Its account"} isn’t signed in on this machine: sign in to it again in Settings › Accounts, or choose another model.`
+}
+
 // MARK: Reading a seat's answer
 
 /**

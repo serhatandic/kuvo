@@ -761,7 +761,7 @@ ${directory}`;
         return;
       }
     }
-    return { ready: this.catalog.ready.has(providerID2), models: this.catalog.models.filter((model2) => model2.providerID === providerID2) };
+    return { ready: this.catalog.ready.has(providerID2), models: this.catalog.models.filter((model2) => model2.providerID === providerID2), listed: true };
   }
   listen(sessionID, listener) {
     let set = this.listeners.get(sessionID);
@@ -862,6 +862,12 @@ class EngineAgent {
   async account() {
     const offered = await this.link.offered(this.providerID);
     return { installed: true, signedIn: this.link.ready && (offered?.ready ?? true) };
+  }
+  async signedOut() {
+    const offered = await this.link.offered(this.providerID).catch(() => {
+      return;
+    });
+    return offered?.listed === true && !offered.ready;
   }
   async models() {
     return (await this.link.offered(this.providerID))?.models ?? [];
@@ -9995,6 +10001,12 @@ ${text.slice(0, 4000)}
       turnAway();
       return { outcome: "failed", error: { type: "agent", message: "This model's agent isn't available: sign in to it in Settings \u203A Accounts, or pick another model." } };
     }
+    if (!input.adopt && await Promise.race([agent.signedOut?.().catch(() => false), Bun.sleep(1e4).then(() => false)])) {
+      turnAway();
+      const machine = onMachine ? process.env.KUVO_MACHINE_NAME || "this machine" : undefined;
+      const message = machine ? `${agent.name} isn't signed in on ${machine}, where this conversation runs (each machine signs in on its own). Sign in to it there in Settings \u203A Accounts, with ${machine} picked, or pick another model.` : `${agent.name} isn't signed in. Sign in to it in Settings \u203A Accounts, or pick another model.`;
+      return { outcome: "failed", error: { type: "provider.auth", message } };
+    }
     if (signal.aborted) {
       turnAway();
       return { outcome: "interrupted" };
@@ -10945,6 +10957,11 @@ The parts before yours are done. What they reported:
   return text + `
 
 Do your part here, with all your tools, as you would any task from the user. When it's done, end with a few lines on what you did and anything left over. That last message of yours goes to the chat as your report on its own, so don't send it anywhere; the others' parts start from it.`;
+}
+function plainError(error, provider) {
+  if (!/authorization header|unauthori[sz]ed|\b401\b|\b403\b|forbidden|invalid api key/i.test(error))
+    return error;
+  return `${provider ?? "Its account"} isn\u2019t signed in on this machine: sign in to it again in Settings \u203A Accounts, or choose another model.`;
 }
 function said2(messages) {
   const found = [];
@@ -12004,6 +12021,14 @@ class SeatAPI {
   async session(id) {
     return (await this.requester.request("GET", at(id)))?.data;
   }
+  async account(model2) {
+    const listed2 = (await this.requester.request("GET", "/api/integration"))?.data;
+    const provider = Array.isArray(listed2) ? listed2.find((each) => each?.id === model2.providerID) : undefined;
+    if (!provider)
+      return;
+    const needsOne = Array.isArray(provider.methods) && provider.methods.length > 0;
+    return { name: String(provider.name ?? provider.id), signedOut: needsOne && !(Array.isArray(provider.connections) && provider.connections.length > 0) };
+  }
   async create(directory, title, agent, model2, permissions) {
     const body = { title, location: { directory }, permissions };
     if (agent)
@@ -12608,6 +12633,7 @@ class GroupRunner {
         throw new Cancelled;
     };
     const left = () => !this.chat(id)?.group.members.includes(botID);
+    let provider;
     try {
       const kept2 = this.chat(id);
       if (!kept2)
@@ -12617,6 +12643,18 @@ class GroupRunner {
       if (!first) {
         this.note(`${bot.name} couldn\u2019t answer: the coding agents aren\u2019t running.`, id);
         return "absent";
+      }
+      const model2 = await this.model(bot);
+      if (model2 && !runsWithAgents(model2)) {
+        const account = await new SeatAPI(this.context.engine).account(model2).catch(() => {
+          return;
+        });
+        going();
+        provider = account?.name;
+        if (account?.signedOut) {
+          this.note(`${bot.name} couldn\u2019t answer: ${model2.id} needs a sign-in on this machine: sign in to ${account.name} in Settings \u203A Accounts, or choose another model.`, id);
+          return "absent";
+        }
       }
       const seat = await this.seat(bot, id, first);
       going();
@@ -12661,7 +12699,7 @@ class GroupRunner {
       going();
       if (!reply.text) {
         if (reply.error) {
-          this.note(`${bot.name} couldn\u2019t answer: ${reply.error}`, id);
+          this.note(`${bot.name} couldn\u2019t answer: ${plainError(reply.error, provider)}`, id);
           return "absent";
         }
         return "passed";
@@ -12674,7 +12712,7 @@ class GroupRunner {
       if (signal.aborted || error3 instanceof Cancelled || left())
         return "absent";
       console.error(`${botID}'s turn in ${id} failed:`, reason2(error3));
-      this.note(`${bot.name} couldn\u2019t answer: ${reason2(error3)}`, id);
+      this.note(`${bot.name} couldn\u2019t answer: ${plainError(reason2(error3), provider)}`, id);
       return "absent";
     } finally {
       if (live.speaking === botID && live.run === run2) {
@@ -13524,4 +13562,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Agents/src d7aec6bbbfdd0776a6227db97f9b610ef11e4c16e65f0a2b8a9da2c0e38fe54a
+// Built from Agents/src 3fb5d470bf13e4c6769f86f2759b7cd00fc9b229232f84974c088e105ed5dd0e

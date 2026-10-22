@@ -33,6 +33,7 @@ import {
   type GroupMessage,
   type GroupTask,
   type Meeting,
+  plainError,
 } from "./rules"
 import type { GroupStore, Kept, MachineBot, Status } from "./store"
 import { keepsTimeOfDay, keepsWeekday, minutesOf, next as nextTime, parseRepeat } from "./time"
@@ -531,6 +532,8 @@ export class GroupRunner {
     }
     // Taken out of the chat as it spoke: it leaves quietly.
     const left = () => !this.chat(id)?.group.members.includes(botID)
+    // Its model's provider, named in what it says when that turns it down.
+    let provider: string | undefined
     try {
       const kept = this.chat(id)
       if (!kept) return "absent"
@@ -539,6 +542,18 @@ export class GroupRunner {
       if (!first) {
         this.note(`${bot.name} couldn’t answer: the coding agents aren’t running.`, id)
         return "absent"
+      }
+      // Its model can't run here (its account signed out of): said, rather than sent to an
+      // engine that drops it without a word.
+      const model = await this.model(bot)
+      if (model && !runsWithAgents(model)) {
+        const account = await new SeatAPI(this.context.engine).account(model).catch(() => undefined)
+        going()
+        provider = account?.name
+        if (account?.signedOut) {
+          this.note(`${bot.name} couldn’t answer: ${model.id} needs a sign-in on this machine: sign in to ${account.name} in Settings › Accounts, or choose another model.`, id)
+          return "absent"
+        }
       }
       const seat = await this.seat(bot, id, first)
       going()
@@ -581,7 +596,7 @@ export class GroupRunner {
       going()
       if (!reply.text) {
         if (reply.error) {
-          this.note(`${bot.name} couldn’t answer: ${reply.error}`, id)
+          this.note(`${bot.name} couldn’t answer: ${plainError(reply.error, provider)}`, id)
           return "absent"
         }
         return "passed"
@@ -595,7 +610,7 @@ export class GroupRunner {
     } catch (error) {
       if (signal.aborted || error instanceof Cancelled || left()) return "absent"
       console.error(`${botID}'s turn in ${id} failed:`, reason(error))
-      this.note(`${bot.name} couldn’t answer: ${reason(error)}`, id)
+      this.note(`${bot.name} couldn’t answer: ${plainError(reason(error), provider)}`, id)
       return "absent"
     } finally {
       if (live.speaking === botID && live.run === run) {

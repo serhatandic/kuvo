@@ -37,6 +37,8 @@ class FakeAgent implements Agent {
   id = "fake"
   instance = { id: "default" }
   signedIn = true
+  /** Its models run where a request it can't send is dropped (the engine's), and it's signed out of. */
+  dropsSignedOut?: boolean
   script: Script = replies
   runs: { text: string; model: string; state: Record<string, unknown> }[] = []
   threads: FakeThread[] = []
@@ -54,6 +56,9 @@ class FakeAgent implements Agent {
   }
   async models() {
     return []
+  }
+  async signedOut() {
+    return this.dropsSignedOut === true
   }
   thread(_session: unknown, state: Record<string, unknown>): Thread {
     const thread = new FakeThread(this, state)
@@ -264,6 +269,16 @@ describe("what's waiting", () => {
     await Bun.sleep(30)
     expect(a.runs).toHaveLength(1)
     expect(idles(id)[0].error?.message).toBe("broke")
+  })
+
+  test("a model whose account you signed out of, where it'd be dropped without a word, says so and keeps nothing waiting", async () => {
+    a.dropsSignedOut = true
+    const id = create()
+    send(id, "hello")
+    await settled(id, 1)
+    expect(a.runs).toHaveLength(0)
+    expect(idles(id)[0].outcome).toBe("failed")
+    expect(idles(id)[0].error).toEqual({ type: "provider.auth", message: "Alpha isn't signed in. Sign in to it in Settings › Accounts, or pick another model." })
   })
 
   test("a message sent twice goes once", async () => {

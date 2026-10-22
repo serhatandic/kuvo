@@ -12,7 +12,7 @@ import { messageID, newID } from "../src/ids"
 import { compareVersions, homebrewKeg, npmGlobalPrefix, versionIn } from "../src/maintenance"
 import { evaluate, matches } from "../src/rules"
 import { handover } from "../src/handover"
-import { EngineLink } from "../src/engine"
+import { EngineAgent, EngineLink } from "../src/engine"
 import { generatedImages } from "../src/agents/antigravity"
 import { kuvoToolName, loadKuvoTools, setToolServer } from "../src/kuvotools"
 import { pictureData, pictureFile, withPictures } from "../src/pictures"
@@ -419,6 +419,33 @@ describe("a command line's commands", () => {
     const heredoc = commands("cat > notes <<'EOF'\ngit push\nEOF\necho hi")
     expect(heredoc).not.toContain("git push")
     expect(heredoc).toContain("echo hi")
+  })
+})
+
+describe("the engine's models", () => {
+  test("one is signed out of only when the engine lists its providers without it; an engine not up, or listing none yet, isn't known", async () => {
+    let providers: { id: string }[] = []
+    const server = Bun.serve({
+      port: 0,
+      fetch(request) {
+        const path = new URL(request.url).pathname
+        if (path === "/api/provider") return Response.json({ data: providers })
+        if (path === "/api/model") return Response.json({ data: [] })
+        return new Response("", { status: 404 })
+      },
+    })
+    const link = new EngineLink()
+    try {
+      expect(await new EngineAgent(link, "openai").signedOut()).toBe(false)
+      link.configure(`http://127.0.0.1:${server.port}`, "pw")
+      expect(await new EngineAgent(link, "openai").signedOut()).toBe(false)
+      providers = [{ id: "opencode" }]
+      expect(await new EngineAgent(link, "openai").signedOut()).toBe(true)
+      expect(await new EngineAgent(link, "opencode").signedOut()).toBe(false)
+    } finally {
+      link.configure(undefined, undefined)
+      server.stop(true)
+    }
   })
 })
 

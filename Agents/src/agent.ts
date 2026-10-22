@@ -219,6 +219,11 @@ export interface Agent {
   signInWithKey?(key: string): Promise<void>
   signOut?(): Promise<void>
   models(): Promise<Model[]>
+  /**
+   * Known to be signed out of, for an agent whose models run somewhere that drops a request it
+   * can't send without a word (the engine): said first, rather than sent. Unknown is not.
+   */
+  signedOut?(): Promise<boolean>
   /** Forgets the models it listed: the account changed. */
   forgetModels?(): void
   /** The account it runs as: the agent's own sign-in, or one you added (with a folder of its own). */

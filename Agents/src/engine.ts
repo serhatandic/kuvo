@@ -212,7 +212,7 @@ export class EngineLink {
   }
 
   /** Whether a provider is ready to use now, and its models; nothing known when the engine isn't. */
-  async offered(providerID: string): Promise<{ ready: boolean; models: Model[] } | undefined> {
+  async offered(providerID: string): Promise<{ ready: boolean; models: Model[]; listed?: boolean } | undefined> {
     if (!this.url) return undefined
     if (!this.catalog || Date.now() - this.catalog.at > 60_000) {
       try {
@@ -225,7 +225,8 @@ export class EngineLink {
         return undefined
       }
     }
-    return { ready: this.catalog.ready.has(providerID), models: this.catalog.models.filter((model) => model.providerID === providerID) }
+    // `listed`: from the providers the engine listed, so one not among them isn't signed in.
+    return { ready: this.catalog.ready.has(providerID), models: this.catalog.models.filter((model) => model.providerID === providerID), listed: true }
   }
 
   listen(sessionID: string, listener: Listener): () => void {
@@ -322,6 +323,12 @@ export class EngineAgent implements Agent {
   async account() {
     const offered = await this.link.offered(this.providerID)
     return { installed: true, signedIn: this.link.ready && (offered?.ready ?? true) }
+  }
+
+  /** Not among the providers the engine listed as ready: a request on it, the engine drops. */
+  async signedOut() {
+    const offered = await this.link.offered(this.providerID).catch(() => undefined)
+    return offered?.listed === true && !offered.ready
   }
 
   /** Its models as the engine lists them (for Auto to pass by one it doesn't offer). */

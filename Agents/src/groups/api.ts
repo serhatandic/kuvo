@@ -51,6 +51,17 @@ export class SeatAPI {
     return (await this.requester.request("GET", at(id)))?.data
   }
 
+  /** The name of `model`'s provider when it has a way to sign in and isn't signed in here (a
+   * model there would only fail: the engine drops a message to it without a word); else nothing. */
+  /** The account `model` runs on: its provider's name, and whether it's one you sign in to that has no sign-in. */
+  async account(model: ModelRef): Promise<{ name: string; signedOut: boolean } | undefined> {
+    const listed: any[] = (await this.requester.request("GET", "/api/integration"))?.data
+    const provider = Array.isArray(listed) ? listed.find((each) => each?.id === model.providerID) : undefined
+    if (!provider) return undefined
+    const needsOne = Array.isArray(provider.methods) && provider.methods.length > 0
+    return { name: String(provider.name ?? provider.id), signedOut: needsOne && !(Array.isArray(provider.connections) && provider.connections.length > 0) }
+  }
+
   async create(directory: string, title: string, agent: string | undefined, model: ModelRef | undefined, permissions: Rule[]): Promise<any> {
     const body: Record<string, unknown> = { title, location: { directory }, permissions }
     if (agent) body.agent = agent
