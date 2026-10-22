@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A Markdown file's rendered view in Files draws ```` ```mermaid ```` blocks as diagrams (flowcharts, Gantt charts, sequence diagrams and the rest), in light or dark, offline. A button shows a diagram's code, and one Mermaid can't read shows as code with what's wrong.
 - The context ring of a Cursor session counts the last request Cursor reports, rather than all of a reply's requests added up.
 
 ## 0.6.6
