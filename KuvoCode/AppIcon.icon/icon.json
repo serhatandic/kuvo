@@ -1,28 +1,44 @@
 {
-  "fill": {
-    "linear-gradient": [
-      "display-p3:0.106,0.094,0.180,1.00000",
-      "display-p3:0.035,0.031,0.071,1.00000"
-    ],
-    "orientation": {
-      "start": {
-        "x": 0.5,
-        "y": 0
-      },
-      "stop": {
-        "x": 0.5,
-        "y": 1
+  "fill-specializations": [
+    {
+      "value": {
+        "solid": "srgb:0.94510,0.92941,0.89804,1.00000"
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "solid": "srgb:0.09020,0.08627,0.10588,1.00000"
       }
     }
-  },
+  ],
   "groups": [
     {
-      "name": "Cursor",
+      "name": "Team",
       "layers": [
         {
-          "image-name": "cursor.svg",
-          "name": "cursor",
-          "glass": true,
+          "image-name": "team.svg",
+          "name": "team",
+          "glass": false,
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "srgb:0.09020,0.08627,0.10588,1.00000"
+              }
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "srgb:0.94510,0.92941,0.89804,1.00000"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "srgb:1.00000,1.00000,1.00000,1.00000"
+              }
+            }
+          ],
           "position": {
             "scale": 1,
             "translation-in-points": [
@@ -33,42 +49,15 @@
         }
       ],
       "shadow": {
-        "kind": "neutral",
-        "opacity": 0.5
+        "kind": "none",
+        "opacity": 0
       },
       "translucency": {
         "enabled": false,
-        "value": 0.0
+        "value": 0
       },
-      "lighting": "individual",
-      "specular": true
-    },
-    {
-      "name": "Chevron",
-      "layers": [
-        {
-          "image-name": "chevron.svg",
-          "name": "chevron",
-          "glass": true,
-          "position": {
-            "scale": 1,
-            "translation-in-points": [
-              0,
-              0
-            ]
-          }
-        }
-      ],
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.5
-      },
-      "translucency": {
-        "enabled": true,
-        "value": 0.35
-      },
-      "lighting": "individual",
-      "specular": true
+      "lighting": "combined",
+      "specular": false
     }
   ],
   "supported-platforms": {
