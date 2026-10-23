@@ -2,10 +2,10 @@
 """Generates KuvoCode/AppIcon.icon, the app icon in Icon Composer's format.
 
 The icon is the team: Kuvo Code's five bot shapes (round, squircle, pebble, gem and bloom, as
-BotAvatar.swift draws them) standing together at the bottom of the tile, each with two small
-eyes, all looking up the same way. It's one flat shape with the gaps between the bots and their
-eyes cut out, so Icon Composer colours it per appearance: ink on cream in light mode, cream on
-ink in dark mode, and white in the clear and tinted styles. No glass, shine or shadow. Xcode
+BotAvatar.swift draws them) standing together at the bottom of the tile, each in a bot colour
+and with two small eyes, all looking up the same way. The tile is cream in light mode and ink in
+dark mode; the bots keep their colours, with thin gaps between them. Each bot is its own flat
+layer, so macOS derives the clear and tinted styles from them. No glass, shine or shadow. Xcode
 compiles the file with the app.
 
 It also renders the README's docs/images/icon.png with Icon Composer's ictool, and, given their
@@ -30,23 +30,35 @@ OUT = os.path.join(ROOT, "KuvoCode", "AppIcon.icon")
 README_ICON = os.path.join(ROOT, "docs", "images", "icon.png")
 ICTOOL = "/Applications/Xcode.app/Contents/Applications/Icon Composer.app/Contents/Executables/ictool"
 
-CREAM, INK, WHITE = "#F1EDE5", "#17161B", "#FFFFFF"
+CREAM, INK = "#F1EDE5", "#17161B"
 
-# The team, back to front: shape, centre, size, turn in degrees, on Icon Composer's 1024-point
-# canvas. The three in front run off the bottom edge.
+# The bots' colours, as BotLook.Tint has them, and the eyes BotFace draws on them: light on the
+# deep ones, dark on the rest.
+TINTS = {
+    "mint": (0.37, 0.78, 0.72), "sky": (0.31, 0.61, 0.96), "indigo": (0.36, 0.36, 0.94),
+    "violet": (0.54, 0.36, 0.96), "pink": (0.93, 0.44, 0.71), "coral": (0.95, 0.45, 0.36),
+    "orange": (0.96, 0.60, 0.24), "amber": (0.95, 0.76, 0.31), "lime": (0.55, 0.80, 0.31),
+    "graphite": (0.43, 0.45, 0.50),
+}
+DEEP = {"indigo", "violet", "graphite"}
+DARK_EYES, LIGHT_EYES = "#18191F", "#F7F5F0"
+
+# The team, back to front: shape, colour, centre, size, turn in degrees, on Icon Composer's
+# 1024-point canvas. The three in front run off the bottom edge. Their colours are those of the
+# bots on the website's banners: Sage, Lookout, Keeper and Tally, and a sky pebble.
 TEAM = [
-    ("bloom", 320, 520, 360, -6),
-    ("gem", 712, 510, 360, 8),
-    ("pebble", 140, 830, 420, -4),
-    ("squircle", 884, 830, 430, 4),
-    ("round", 512, 800, 440, 0),
+    ("bloom", "violet", 320, 520, 360, -6),
+    ("gem", "amber", 712, 510, 360, 8),
+    ("pebble", "sky", 140, 830, 420, -4),
+    ("squircle", "mint", 884, 830, 430, 4),
+    ("round", "coral", 512, 800, 440, 0),
 ]
-GAP = 14                      # paper between one bot and the one in front of it
+GAP = 14                      # tile showing between one bot and the one in front of it
 EYES = 0.66                   # their faces, as a share of the app's
 LOOK = (0.09, -0.11)          # where they all look: right and up, as a share of their size
 
 # The shapes are drawn as signed distances (negative inside) on a grid twice the canvas, then
-# traced into a path.
+# traced into paths.
 SS = 2
 N = 1024 * SS
 _gy, _gx = np.mgrid[0:N, 0:N].astype(np.float64)
@@ -125,14 +137,19 @@ def eyes(shape, x, y, s):
 
 
 def team():
-    """Signed distance of the whole mark: each bot clears a gap behind it, then its eyes are cut out."""
-    d = np.full((N, N), 1e9)
-    for shape, cx, cy, s, deg in TEAM:
+    """Signed distances of what shows of each bot, back to front: (shape, colour, its body with
+    its eyes cut out and a gap cleared for every bot in front, its eyes)."""
+    placed = []
+    for shape, tint, cx, cy, s, deg in TEAM:
         x, y = frame(cx, cy, deg)
-        own = body(shape, x, y, s)
-        d = np.minimum(np.maximum(d, GAP - own), own)
-        d = np.maximum(d, -eyes(shape, x - LOOK[0] * s, y - LOOK[1] * s, s * EYES))
-    return d
+        placed.append((shape, tint, body(shape, x, y, s), eyes(shape, x - LOOK[0] * s, y - LOOK[1] * s, s * EYES)))
+    parts = []
+    for i, (shape, tint, own, face) in enumerate(placed):
+        shown = own
+        for _, _, front, _ in placed[i + 1:]:
+            shown = np.maximum(shown, GAP - front)
+        parts.append((shape, tint, np.maximum(shown, -face), np.maximum(face, shown)))
+    return parts
 
 
 def sample(field, px, py):
@@ -172,19 +189,41 @@ def path_data(paths, scale=1.0):
     return " ".join("M" + " L".join(f"{x * scale:.2f},{y * scale:.2f}".replace(".00", "") for x, y in p) + "Z" for p in paths)
 
 
-def color(hex_color):
-    r, g, b = (int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5))
+def hex_color(rgb):
+    return "#" + "".join(f"{round(v * 255):02X}" for v in rgb)
+
+
+def color(hex_value):
+    r, g, b = (int(hex_value[i:i + 2], 16) / 255 for i in (1, 3, 5))
     return f"srgb:{r:.5f},{g:.5f},{b:.5f},1.00000"
 
 
-def write_icon(path, mark, platform):
-    """An Icon Composer document: the cream or ink tile and the team on it, recoloured per appearance."""
+def layers():
+    """The icon's flat layers, back to front: (name, colour, outline paths). One per bot, then the
+    eyes, dark and light."""
+    out, dark, light = [], [], []
+    for shape, tint, shown, face in team():
+        out.append((shape, hex_color(TINTS[tint]), trace(shown)))
+        (light if tint in DEEP else dark).extend(trace(face))
+    out.append(("eyes", DARK_EYES, dark))
+    if light:
+        out.append(("light eyes", LIGHT_EYES, light))
+    return out
+
+
+def write_icon(path, parts, platform):
+    """An Icon Composer document: the cream or ink tile and the team on it, a layer for each part."""
     if os.path.exists(path):
         shutil.rmtree(path)
     os.makedirs(os.path.join(path, "Assets"))
-    with open(os.path.join(path, "Assets", "team.svg"), "w") as f:
-        f.write('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">'
-                f'<path d="{mark}" fill="{INK}" fill-rule="evenodd"/></svg>\n')
+    entries = []
+    for name, fill, paths in reversed(parts):       # Icon Composer lists the front first
+        image = name.replace(" ", "-") + ".svg"
+        with open(os.path.join(path, "Assets", image), "w") as f:
+            f.write('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">'
+                    f'<path d="{path_data(paths)}" fill="{fill}" fill-rule="evenodd"/></svg>\n')
+        entries.append({"image-name": image, "name": name, "glass": False,
+                        "position": {"scale": 1, "translation-in-points": [0, 0]}})
     icon = {
         "fill-specializations": [
             {"value": {"solid": color(CREAM)}},
@@ -192,17 +231,7 @@ def write_icon(path, mark, platform):
         ],
         "groups": [{
             "name": "Team",
-            "layers": [{
-                "image-name": "team.svg",
-                "name": "team",
-                "glass": False,
-                "fill-specializations": [
-                    {"value": {"solid": color(INK)}},
-                    {"appearance": "dark", "value": {"solid": color(CREAM)}},
-                    {"appearance": "tinted", "value": {"solid": color(WHITE)}},
-                ],
-                "position": {"scale": 1, "translation-in-points": [0, 0]},
-            }],
+            "layers": entries,
             "shadow": {"kind": "none", "opacity": 0},
             "translucency": {"enabled": False, "value": 0},
             "lighting": "combined",
@@ -226,17 +255,18 @@ def render(icon, out, size, platform="macOS", margin=0):
     print("Wrote", os.path.normpath(out))
 
 
-def write_web(web, paths, phone_icon):
-    """The website's favicon (light or dark with the system, like the app's icon) and touch icon."""
+def write_web(web, parts, phone_icon):
+    """The website's favicon (its tile light or dark with the system, like the app's icon) and touch icon."""
     svg = os.path.join(web, "public", "code", "icon.svg")
     with open(svg, "w") as f:
         f.write('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">\n'
-                f'  <style>.tile{{fill:{CREAM}}}.team{{fill:{INK}}}'
-                f'@media (prefers-color-scheme: dark){{.tile{{fill:{INK}}}.team{{fill:{CREAM}}}}}</style>\n'
+                f'  <style>.tile{{fill:{CREAM}}}@media (prefers-color-scheme: dark){{.tile{{fill:{INK}}}}}</style>\n'
                 '  <clipPath id="tile"><rect width="64" height="64" rx="14.5"/></clipPath>\n'
                 '  <rect class="tile" width="64" height="64" rx="14.5"/>\n'
-                f'  <path class="team" clip-path="url(#tile)" fill-rule="evenodd" d="{path_data(paths, 1 / 16)}"/>\n'
-                '</svg>\n')
+                '  <g clip-path="url(#tile)" fill-rule="evenodd">\n')
+        for _, fill, paths in parts:
+            f.write(f'    <path fill="{fill}" d="{path_data(paths, 1 / 16)}"/>\n')
+        f.write('  </g>\n</svg>\n')
     print("Wrote", os.path.normpath(svg))
     render(phone_icon, os.path.join(web, "public", "code", "apple-touch-icon.png"), 180, platform="iOS")
 
@@ -246,16 +276,15 @@ if __name__ == "__main__":
     args.add_argument("--phone", help="the iPhone app's AppIcon.icon, to write its copy")
     args.add_argument("--web", help="the kuvo-web checkout, to write its icon.svg and apple-touch-icon.png")
     args = args.parse_args()
-    paths = trace(team())
-    mark = path_data(paths)
-    write_icon(OUT, mark, "macOS")
+    parts = layers()
+    write_icon(OUT, parts, "macOS")
     render(OUT, README_ICON, 256, margin=25)    # macOS's icon grid: the tile is 824 of 1024 points
     if args.phone:
-        write_icon(args.phone, mark, "iOS")
+        write_icon(args.phone, parts, "iOS")
     if args.web:
         with tempfile.TemporaryDirectory() as scratch:
             # the touch icon is drawn as the iPhone draws the icon
             phone = args.phone or os.path.join(scratch, "AppIcon.icon")
             if not args.phone:
-                write_icon(phone, mark, "iOS")
-            write_web(args.web, paths, phone)
+                write_icon(phone, parts, "iOS")
+            write_web(args.web, parts, phone)
