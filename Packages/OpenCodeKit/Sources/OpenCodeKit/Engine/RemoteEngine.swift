@@ -187,6 +187,10 @@ public struct RemoteEngineInstaller: Sendable {
     /// for testing can take another, so its engine there is its own; set before connecting.
     nonisolated(unsafe) public static var root = ".kuvo-code"
 
+    /// The newest engine's runtime there, by version, as a shell expression (a box that updated
+    /// itself, or another Mac's, may have only that one).
+    public static let newestEngine = #"$K/engine/$(for d in "$K"/engine/*/; do [ -x "${d}opencode" ] && basename "$d"; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)/opencode"#
+
     var remoteExecutable: String { "$HOME/\(Self.root)/engine/\(OpenCodeEngine.version)/opencode" }
 
     /// Gives the engine folders of its own in `~/.kuvo-code` (`$K`), for everything it runs there,
@@ -206,11 +210,13 @@ public struct RemoteEngineInstaller: Sendable {
     }
 
     /// `command` as the engine's own helpers run on the machine: with its folders in `$K` (and
-    /// the XDG folders pointed there), from its workspace, its runtime at `$E`.
+    /// the XDG folders pointed there), from its workspace, its runtime at `$E`: this version's,
+    /// or the newest there (a box that updated itself, or another Mac's, may have only that).
     public static func script(_ command: String) -> String {
         """
         \(folders)
         E="$K/engine/\(OpenCodeEngine.version)/opencode"
+        [ -x "$E" ] || E="\(newestEngine)"
         mkdir -p "$K/bin" "$K/run" && chmod 700 "$K/run"
         cd "$K/workspace" || exit 1
         \(command)
@@ -272,6 +278,45 @@ public struct RemoteEngineInstaller: Sendable {
             try? fm.removeItem(at: cache.appending(path: entry))
         }
         return file
+    }
+}
+
+/// Which Kuvo Code put a box's files there (`bin/box-version`): a Mac as it set the box up, or the
+/// box as it updated itself. A Mac never puts its own over a newer one's: it uses what's there as
+/// it is, so a box that updated itself, or another Mac's, isn't taken back to an older version.
+public enum BoxVersion {
+    /// This app's version (digits and dots). Set by the app before connecting.
+    nonisolated(unsafe) public static var mine = "0" {
+        didSet { if mine.isEmpty || mine.contains(where: { !$0.isASCII || (!$0.isNumber && $0 != ".") }) { mine = "0" } }
+    }
+
+    /// Whether a box's `version` is newer than this app's.
+    public static func isNewer(_ version: String?) -> Bool {
+        guard let version, !version.isEmpty else { return false }
+        return version.compare(mine, options: .numeric) == .orderedDescending
+    }
+
+    /// For a script that puts this app's files on the machine: if the box there is newer, it reads
+    /// what it was given and stops, writing nothing.
+    public static var guardScript: String {
+        """
+        kuvo_box=$(cat "$HOME/\(RemoteEngineInstaller.root)/bin/box-version" 2>/dev/null | tr -cd '0-9.')
+        if [ -n "$kuvo_box" ] && [ "$kuvo_box" != "\(mine)" ] && [ "$(printf '%s\\n%s\\n' "$kuvo_box" "\(mine)" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" = "$kuvo_box" ]; then cat >/dev/null; exit 0; fi
+        """
+    }
+
+    /// The box's version, if a Kuvo Code that marks it put its files there.
+    public static func read(on connection: SSHConnection) async throws -> String? {
+        let text = try await connection.run("cat \"$HOME/\(RemoteEngineInstaller.root)/bin/box-version\" 2>/dev/null | tr -cd '0-9.'; true")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
+    /// Marks the box as this app's, once what it put there runs (not over a newer one's).
+    public static func mark(on connection: SSHConnection) async throws {
+        try await connection.run(guardScript + "\n" + """
+            B="$HOME/\(RemoteEngineInstaller.root)/bin"; mkdir -p "$B" && printf '%s' "\(mine)" >"$B/box-version.new" && mv -f "$B/box-version.new" "$B/box-version"
+            """)
     }
 }
 
@@ -698,7 +743,7 @@ public final class RemoteServer: @unchecked Sendable {
         let input = FileManager.default.temporaryDirectory.appending(path: "kuvo-boot-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: input) }
         try Data((files.map { $0.0 + "\t" + Data($0.1.utf8).base64EncodedString() }.joined(separator: "\n") + "\n").utf8).write(to: input)
-        try await connection.run("""
+        try await connection.run(BoxVersion.guardScript + "\n" + """
             B="$HOME/\(RemoteEngineInstaller.root)/bin"; mkdir -p "$B" || exit 1
             t="$(printf '\\t')"
             while IFS="$t" read -r name body; do

@@ -306,6 +306,7 @@ test("a box tells its peers its agents as they change, and every ten minutes", a
 test("a machine a Mac removed no longer counts that Mac: its peers and lists go, another Mac's stay", () => {
   const other = box("mac");
   fresh({ macs: [mac.pub, other.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] }, [other.pub]: { at: 1, peers: [other.peer] } },
+    tolerant: { [mac.pub]: true, [other.pub]: true },
     phones: [{ key: k(crypto.randomBytes(32)), name: "Phone", added: 1, from: "mac", mac: mac.pub }] });
   fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [second.pub]: { at: 1, list: [] }, [other.pub]: { at: 1, list: [] } }));
   assert.equal(link.leave(stranger.pub), false, "not one of its Macs: nothing changes");
@@ -315,5 +316,6 @@ test("a machine a Mac removed no longer counts that Mac: its peers and lists go,
   assert.equal(after.mac, other.pub);
   assert.deepEqual(link.peersOf(after).map(peer => peer.name), ["mac"]);
   assert.equal(after.phones[0].mac, undefined, "its phones are as ones from before Macs were named");
+  assert.deepEqual(after.tolerant, { [other.pub]: true });
   assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(run, "peer-agents.json"), "utf8"))), [other.pub]);
 });

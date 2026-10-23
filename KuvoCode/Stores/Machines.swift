@@ -68,6 +68,9 @@ final class MachineEngine {
     /// Start was pressed here: the next connection starts it if it's stopped, until one does (one
     /// that fails, the machine away, carries it to Try Again), or it's stopped or disconnected.
     var startWanted = false
+    /// The box there was set up by a newer Kuvo Code than this app (`BoxVersion`): its engine and
+    /// files are left as they are.
+    private(set) var boxIsNewer = false
     let catalog = Catalog()
     /// Its engine's settings, its own (`MachineBox`): read as it's started, and again as they
     /// change there.
@@ -306,9 +309,13 @@ final class MachineEngine {
             await reach()
             try check()
             let connection = machine.connection
+            // A box a newer Kuvo Code set up (it updated itself, or another Mac's newer app did):
+            // what's there runs as it is, and nothing of this app's goes over it.
+            boxIsNewer = BoxVersion.isNewer(try? await BoxVersion.read(on: connection))
+            try check()
             // The box's own tool and keeper first, which what follows counts on.
             try await RemoteServer.installBoot(on: connection)
-            let found = try await RemoteServer.find(on: connection)
+            var found = try await RemoteServer.find(on: connection)
             try check()
             let starting = startWanted
             if found == .stopped, !starting {
@@ -318,9 +325,19 @@ final class MachineEngine {
                 return
             }
             isStopped = false
+            // A newer box's engine isn't running: its own keeper starts the one it has.
+            if boxIsNewer, found.engine == nil {
+                if found == .stopped { try await RemoteServer.startEngine(on: connection) }
+                for _ in 0..<15 where found.engine == nil {
+                    try await Task.sleep(for: .seconds(2))
+                    try check()
+                    found = try await RemoteServer.find(on: connection)
+                }
+                guard found.engine != nil else { throw NewerBox() }
+            }
             var engine = found.engine
             let isNewer = engine.map { $0.version.compare(OpenCodeEngine.version, options: .numeric) == .orderedDescending } ?? false
-            var updates = engine?.version != OpenCodeEngine.version && !(isNewer && engine.map(isAnotherMacs) == true)
+            var updates = !boxIsNewer && engine?.version != OpenCodeEngine.version && !(isNewer && engine.map(isAnotherMacs) == true)
             // An engine of another version still at work (a session left running when the app
             // quit or updated): kept, with its work, until a connection finds it with none.
             var busy: RemoteServer?
@@ -373,7 +390,7 @@ final class MachineEngine {
             attached = server
             try check()
             let api = OpenCodeAPI(endpoint: server.endpoint, folderPrefix: RemoteFolder.prefix(for: machine.id))
-            if server.engine.notes["settings"] != launch.fingerprint, !isAnotherMacs(server.engine), (try? await api.activeSessions())?.isEmpty == true {
+            if !boxIsNewer, server.engine.notes["settings"] != launch.fingerprint, !isAnotherMacs(server.engine), (try? await api.activeSessions())?.isEmpty == true {
                 // Started with older settings, and nothing to interrupt: start it over.
                 try check()
                 server.disconnect()
@@ -383,6 +400,8 @@ final class MachineEngine {
                 try check()
             }
             try check()
+            // What this app put there runs: the box is this version's.
+            if !boxIsNewer { try? await BoxVersion.mark(on: connection) }
             self.server = server
             let current = OpenCodeAPI(endpoint: server.endpoint, folderPrefix: RemoteFolder.prefix(for: machine.id))
             self.api = current
@@ -422,6 +441,11 @@ final class MachineEngine {
 
     private struct Superseded: Error {}
 
+    /// A newer box whose engine didn't come up by itself: this app won't start an older one there.
+    struct NewerBox: LocalizedError {
+        var errorDescription: String? { "This machine has a newer Kuvo Code than this Mac, and its engine didn't start. Update Kuvo Code on this Mac to start it from here." }
+    }
+
     private func launchEngine(_ launch: Launch, replace: Int? = nil, starting: Bool = false) async throws -> RemoteServer.Engine {
         try await RemoteServer.launch(on: machine.connection, environment: launch.environment.merging(launch.boxEnvironment) { $1 }, notes: ["settings": launch.fingerprint, "mac": Self.macID],
                                       withAgents: launch.agents != nil, replace: replace, start: starting)
@@ -444,7 +468,7 @@ final class MachineEngine {
         let file = FileManager.default.temporaryDirectory.appending(path: "kuvo-agents-\(UUID().uuidString).js")
         try Data(bridge.text.utf8).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
-        try await connection.run("""
+        try await connection.run(BoxVersion.guardScript + "\n" + """
             set -e
             mkdir -p "$HOME/\(RemoteEngineInstaller.root)/bin"
             cat >"\(path).new"

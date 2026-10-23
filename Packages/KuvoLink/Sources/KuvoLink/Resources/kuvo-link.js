@@ -2564,6 +2564,7 @@ export function forgetOldMacs(link, keep, now = Date.now()) {
     delete link.macSeen[mac];
     if (link.macAts) delete link.macAts[mac];
     if (link.peersFrom) delete link.peersFrom[mac];
+    if (link.tolerant) delete link.tolerant[mac];
   }
   for (const phone of link.phones ?? []) if (gone.includes(phone.mac)) delete phone.mac;
 }
@@ -3520,6 +3521,9 @@ async function setup() {
       if (Array.isArray(input.peers)) takePeers(next, mac, input.peers, typeof input.peersAt === "number" ? input.peersAt : at);
     }
     if (typeof input.id === "string") next.id = input.id.slice(0, 200);
+    // A Mac that never puts its own files over a newer box's: once every Mac it sees is one, the
+    // box may update itself (PROTOCOL.md, "Updates").
+    if (mac && input.tolerates === 1) next.tolerant = { ...(next.tolerant ?? {}), [mac]: true };
     if (!next.phones.length && !peersOf(next).length) return current ? next : null;
     next.relay = String(input.relay);
     next.name = String(input.name || next.name || os.hostname()).slice(0, 100);
@@ -3559,7 +3563,7 @@ export function leave(mac) {
       if (link.macs.length) link.mac = link.macs[0];
       else delete link.mac;
     }
-    for (const field of ["macSeen", "macAts", "peersFrom"]) if (link[field]) delete link[field][mac];
+    for (const field of ["macSeen", "macAts", "peersFrom", "tolerant"]) if (link[field]) delete link[field][mac];
     for (const phone of link.phones ?? []) if (phone.mac === mac) delete phone.mac;
     return link;
   });

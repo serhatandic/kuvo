@@ -454,7 +454,7 @@ extension MachineBrowserInstaller {
         let file = FileManager.default.temporaryDirectory.appending(path: "kuvo-browser-\(UUID().uuidString).js")
         try Data(helper.text.utf8).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
-        try await connection.run("""
+        try await connection.run(BoxVersion.guardScript + "\n" + """
             set -e
             mkdir -p "$HOME/\(RemoteEngineInstaller.root)/bin"
             cat >"\(helperPath).new"
@@ -468,7 +468,7 @@ extension MachineBrowserInstaller {
     static func command(_ mode: String) -> String {
         """
         K="$HOME/\(RemoteEngineInstaller.root)"; E="$K/engine/\(OpenCodeEngine.version)/opencode"; \
-        [ -x "$E" ] || E=$(ls -d "$K"/engine/*/opencode 2>/dev/null | tail -n 1); \
+        [ -x "$E" ] || E="\(RemoteEngineInstaller.newestEngine)"; \
         XDG_DATA_HOME="$K/data" XDG_CONFIG_HOME="$K/config" XDG_STATE_HOME="$K/state" XDG_CACHE_HOME="$K/cache" \
         BUN_INSTALL="$K/cache/bun" KUVO_HOME="$K" KUVO_LANG="\(languages)" BUN_BE_BUN=1 exec "$E" "\(helperPath)" \(mode)
         """

@@ -15,6 +15,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A machine's sessions, bots and group chats go by that machine's own permissions, not this Mac's.
 - The personalities you write for bots are on all your computers: one you make, change or delete on one reaches the others as Kuvo Code connects to them.
 - Agents on your machines write to agents on your other machines, and wait for their answers, with your Mac off too: your computers reach each other through Kuvo Code's relay.
+- A machine another Mac set up with a newer Kuvo Code is used as it is, rather than taken back to older versions.
 
 ## 0.7.2
 

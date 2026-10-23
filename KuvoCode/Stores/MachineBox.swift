@@ -76,7 +76,7 @@ enum MachineBox {
         let file = FileManager.default.temporaryDirectory.appending(path: "kuvo-catalog-\(UUID().uuidString).json")
         try data.write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
-        try await connection.run(RemoteEngineInstaller.script("""
+        try await connection.run(BoxVersion.guardScript + "\n" + RemoteEngineInstaller.script("""
             f="$K/bin/mcp-catalog.json"
             if [ "$(sha256sum "$f" 2>/dev/null | cut -c1-64)" = "\(hash)" ]; then cat >/dev/null; else cat >"$f.new" && mv -f "$f.new" "$f"; fi
             """), input: file)
@@ -88,7 +88,7 @@ enum MachineBox {
         let file = FileManager.default.temporaryDirectory.appending(path: "kuvo-box-\(UUID().uuidString).js")
         try script.write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
-        try await connection.run(RemoteEngineInstaller.script("""
+        try await connection.run(BoxVersion.guardScript + "\n" + RemoteEngineInstaller.script("""
             f="$K/bin/\(Bridge.fileName)"
             if [ "$(sha256sum "$f" 2>/dev/null | cut -c1-64)" = "\(hash)" ]; then cat >/dev/null; else cat >"$f.new" && chmod 600 "$f.new" && mv -f "$f.new" "$f"; fi
             """), input: file)

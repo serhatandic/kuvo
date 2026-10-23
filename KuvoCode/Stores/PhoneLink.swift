@@ -332,7 +332,7 @@ final class PhoneLink {
             let hash = SHA256.hash(data: script).map { String(format: "%02x", $0) }.joined()
             let scriptFile = folder.appending(path: Bridge.fileName)
             try script.write(to: scriptFile)
-            try await machine.connection.run(RemoteEngineInstaller.script("""
+            try await machine.connection.run(BoxVersion.guardScript + "\n" + RemoteEngineInstaller.script("""
                 f="$K/bin/\(Bridge.fileName)"
                 if [ "$(sha256sum "$f" 2>/dev/null | cut -c1-64)" = "\(hash)" ]; then cat >/dev/null; else cat >"$f.new" && mv -f "$f.new" "$f"; fi
                 """), input: scriptFile)
@@ -351,6 +351,9 @@ final class PhoneLink {
                 var peersAt: Int64
                 /// The machine's name here, for its agents to say where they are.
                 var id: String
+                /// This Mac never puts its own files over a newer box's (`BoxVersion`): the box may
+                /// update itself once every Mac it sees does.
+                var tolerates = 1
             }
             let settings = folder.appending(path: "setup.json")
             let list = phoneList

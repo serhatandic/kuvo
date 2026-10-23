@@ -169,6 +169,23 @@ connection.
 - `kuvo-link.js leave <mac>`: run when that Mac removes the machine. It stops counting that Mac,
   forgets the peers only it named and what they told it, and leaves other Macs' lists alone.
 
+### Updates
+
+A box's files say which Kuvo Code put them there: `~/.kuvo-code/bin/box-version`. It holds that
+app's version, written by a Mac after it sets the box up, or by the box when it updates itself.
+- **Older or unmarked box**: a Mac installs its own engine, bridge, helpers, agents bridge and
+  keeper, as before, then writes its version.
+- **Newer box**: a Mac leaves everything as it is.
+  - Every script that would write one of its files reads what it was given and stops.
+  - It connects to the engine running there, and doesn't start it over for its own settings.
+  - If that engine isn't running, the box's keeper starts the one it has.
+  - A script's runtime `$E` is the Mac's engine version when it's there, else the newest there,
+    by version.
+- **Setup**: a Mac that does this says so with `"tolerates": 1`. The bridge keeps it per Mac
+  (`tolerant`), and drops it with that Mac.
+- **Self-update** (to come) happens only while every Mac the box has seen in the last 30 days
+  tolerates it, so no Mac takes the box back to an older version.
+
 ## Notifications
 
 What the Mac shows as a notification goes to each paired phone too, as the relay's `push`

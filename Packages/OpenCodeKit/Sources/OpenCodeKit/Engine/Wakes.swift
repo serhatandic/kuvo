@@ -309,7 +309,7 @@ public enum Wakes {
     #if os(macOS)
     /// Puts `kuvo-wake` on the machine, for an engine started before it was there.
     public static func install(on connection: SSHConnection) async throws {
-        try await connection.run(RemoteEngineInstaller.folders + "\n" + installScript)
+        try await connection.run(BoxVersion.guardScript + "\n" + RemoteEngineInstaller.folders + "\n" + installScript)
     }
     #endif
 
