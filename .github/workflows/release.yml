@@ -27,7 +27,10 @@ name: Release
 #
 # Every release also needs SPARKLE_PRIVATE_KEY, the EdDSA key that signs the
 # update feed (appcast.xml). Installed copies of Kuvo Code only accept updates
-# signed with it. scripts/set-update-key.sh uploads it; the signing and
+# signed with it. With KUVO_BOX_SIGNING_KEY (an Ed25519 key, PEM) it also
+# publishes what remote machines run, for them to update themselves with
+# (boxes.json and box-<version>.tar.gz); machines take only what's signed with a
+# key pinned in kuvo-link.js (UPDATE_KEYS). scripts/set-update-key.sh uploads it; the signing and
 # notarization secrets come from scripts/set-signing-secrets.sh and
 # scripts/set-notary-secrets.sh.
 #
@@ -110,6 +113,7 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
       SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+      KUVO_BOX_SIGNING_KEY: ${{ secrets.KUVO_BOX_SIGNING_KEY }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -226,6 +230,21 @@ jobs:
           fi
           python3 ./scripts/merge-appcast.py "$RUNNER_TEMP/item.xml" "$RUNNER_TEMP/current/appcast.xml" > dist/appcast.xml
           cat dist/appcast.xml
+
+      - name: Package the box release
+        # What machines run, for them to update themselves with (Packages/KuvoLink/PROTOCOL.md,
+        # "Updates"): the files this version puts on every machine, packed, and boxes.json, a
+        # manifest naming the pack and the engine's Linux builds, signed. Without the key, there's
+        # none, and machines update only as a Mac connects.
+        if: env.KUVO_BOX_SIGNING_KEY != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          "build/Kuvo Code.app/Contents/MacOS/Kuvo Code" --write-box-files "$RUNNER_TEMP/box"
+          test "$(cat "$RUNNER_TEMP/box/bin/box-version")" = "$VERSION"
+          COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata --uid 0 --gid 0 -czf "dist/box-$VERSION.tar.gz" -C "$RUNNER_TEMP/box" .
+          node scripts/sign-box.mjs "$VERSION" "dist/box-$VERSION.tar.gz" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/box-$VERSION.tar.gz" "$RUNNER_TEMP/box/box.json" > dist/boxes.json
 
       - name: Upload the dry-run build
         if: github.event_name == 'workflow_dispatch'

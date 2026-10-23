@@ -47,7 +47,7 @@ enum MachineBox {
     }
 
     /// The popular servers as the tool reads them (`mcp-catalog.json`), written when they change.
-    @MainActor private static func catalogJSON() -> Data {
+    @MainActor static func catalogJSON() -> Data {
         struct Listed: Encodable {
             struct Server: Encodable {
                 var id: String, title: String, summary: String, access: String

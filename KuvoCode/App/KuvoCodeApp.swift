@@ -7,6 +7,18 @@ import UsageKit
 @main
 enum Launch {
     static func main() {
+        // `--write-box-files <folder>`: what a machine runs, as a release for boxes to update
+        // themselves with (the release workflow), and nothing else.
+        if let index = CommandLine.arguments.firstIndex(of: "--write-box-files"), CommandLine.arguments.indices.contains(index + 1) {
+            let folder = URL(filePath: CommandLine.arguments[index + 1])
+            do {
+                try MainActor.assumeIsolated { try BoxRelease.write(to: folder) }
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data("Couldn't write the box's files: \(error.localizedDescription)\n".utf8))
+                exit(1)
+            }
+        }
         if AppInfo.isHostingTests {
             // Only as a copy of its own (scripts/test-app.sh): as the app itself, the tests would
             // read and change your settings and reach your machines.
