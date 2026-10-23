@@ -244,6 +244,13 @@ test("a stopped box, or one whose version isn't known, doesn't update; a lock wh
   // doesn't update itself for a while, and says why; its version mark stays.
   const own = path.join(os.homedir(), ".kuvo-code");
   assert.equal(link.checkDrift(), false);
+  // Not while an update tries what it put there (its version changes then).
+  fs.writeFileSync(path.join(home, "run", "update-trial"), "0.11.0");
+  fs.writeFileSync(path.join(home, "bin", "box-version"), "0.11.0");
+  assert.equal(link.checkDrift(), false);
+  assert.ok(fs.existsSync(path.join(home, "updates", "installed.json")), "what it installed is still noted");
+  fs.writeFileSync(path.join(home, "bin", "box-version"), "0.10.0");
+  fs.rmSync(path.join(home, "run", "update-trial"));
   fs.writeFileSync(path.join(home, "bin", "kuvo-link.js"), "// an older Mac's link\n");
   fs.writeFileSync(path.join(home, "run", "mac-installing"), "");
   assert.equal(link.checkDrift(), false, "not while a Mac says it puts its files in place");

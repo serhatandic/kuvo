@@ -3678,6 +3678,8 @@ export function noteOlderMacs() {
 // says why. Its version mark stays, so no other older Mac takes it further back.
 export function checkDrift(now = Date.now()) {
   const record = path.join(UPDATES, "installed.json"), pending = path.join(RUN, "update-drift");
+  // Not while the box updates itself, or tries what it updated to: its files and version change then.
+  if (isUpdating() || fs.existsSync(UPDATE_TRIAL)) return false;
   let installed = null;
   try { installed = JSON.parse(fs.readFileSync(record, "utf8")); } catch { return false; }
   // A Mac marked it since (its own files, as they should be).
