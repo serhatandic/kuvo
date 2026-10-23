@@ -142,12 +142,25 @@ final class Moves {
             for session in record.sessions { away[session] = .some(place) }
         }
         app?.workspace.movedAway = away
+        // Your machines hear where moved conversations live now.
+        if let app { Task { await app.phoneLink.tellMachines() } }
         Self.pending = Set(records.filter { record in
             record.kind == .bot && record.stage == .switched && underWay[record.id] == nil && app?.bots.bot(record.id).map { $0.machine == record.from } == true
         }.flatMap { [$0.id] + $0.sessions })
     }
 
     func isMoving(_ id: String) -> Bool { underWay[id] != nil }
+
+    /// Where each conversation being moved lives now (nil: this Mac), until its move is done: the
+    /// computer it left may still list it.
+    var livePlaces: [String: String?] {
+        var places: [String: String?] = [:]
+        for record in records {
+            let live = record.stage == .switched ? record.to : record.from
+            for session in record.sessions { places[session] = .some(live) }
+        }
+        return places
+    }
     /// A move of it cut short, still to be finished or taken back.
     func isPending(_ id: String) -> Bool { records.contains { $0.id == id } }
 

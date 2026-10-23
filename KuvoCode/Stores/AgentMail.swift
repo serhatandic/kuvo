@@ -47,8 +47,9 @@ final class AgentMail {
     fileprivate var tried: [String: Date] = [:]
     /// Conversations waiting for a letter's answer, by letter, with the machine it went to.
     fileprivate var answers: [String: (machine: String, waiting: CheckedContinuation<Answer, Never>)] = [:]
-    /// What each machine was last told of this Mac's agents, and when.
-    fileprivate var announcedTo: [String: (data: Data, at: Date)] = [:]
+    /// What each machine was last told of this Mac's agents, and when, and which went (the first
+    /// of them, when not all fit in a mail).
+    fileprivate var announcedTo: [String: (data: Data, at: Date, told: Set<String>)] = [:]
     /// Letters from machines being delivered now: one that comes again meanwhile waits for that one.
     fileprivate var delivering: Set<String> = []
 
@@ -113,7 +114,8 @@ final class AgentMail {
 
     /// What the receiving agent reads: who it's from and how to answer, then the message.
     static func compose(from name: String, session: String, text: String, waits: Bool) -> String {
-        let answer = waits ? "They're waiting for your reply: just answer, in your words." : "To answer, use send_message to \(session)."
+        let answer = waits ? "They're waiting for your reply: just answer, in your words."
+            : session == "unknown" ? "It can't be answered: who sent it isn't known." : "To answer, use send_message to \(session)."
         return opening + name + " · " + session + "] (\(answer))\n\n" + text
     }
 
@@ -173,6 +175,16 @@ final class AgentMail {
     /// reached through it, only by mail).
     private func isAway(_ agent: Agent) -> Bool {
         agent.machine.map { app?.machines.engine($0)?.isReady != true } ?? false
+    }
+
+    /// A conversation known here by its address that the list doesn't name (older than the latest
+    /// it names): one an agent could be, not a subagent's, a group chat's seat, nor one put away.
+    private func addressed(_ wanted: String) -> Agent? {
+        guard wanted.hasPrefix("ses_"), let app, let session = app.workspace.session(wanted), session.parentID == nil,
+              !Workspace.isArchived(session), !app.workspace.seats.contains(wanted) else { return nil }
+        let directory = session.location.directory
+        return Agent(session: wanted, name: session.title ?? "New session", kind: app.bots.bot(forSession: wanted) == nil ? "session" : "bot",
+                     machine: RemoteFolder.machine(of: directory), project: app.workspace.projectName(directory))
     }
 
     /// The agent a conversation is, by its session.
@@ -269,6 +281,7 @@ final class AgentMail {
         var wanted = wanted.trimmingCharacters(in: .whitespaces)
         if wanted.hasPrefix(String(AgentReferences.trigger)), !agents.contains(where: { $0.name == wanted }) { wanted.removeFirst() }
         let matches = agents.filter { $0.session == wanted } .nilIfEmpty
+            ?? addressed(wanted).map { [$0] }
             ?? agents.filter { $0.name.compare(wanted, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }
         guard let target = matches.first else {
             // Part of a name ("Release" for "Release notes"): those it could be.
@@ -605,16 +618,18 @@ final class AgentMail {
     private func collectOnce(from engine: MachineEngine) async {
         let machine = engine.machine.id
         let folder = "\"$HOME/\(RemoteEngineInstaller.root)/run/outbox\""
-        // Each as its file's name, when it was written and its letter (on one line, as it's
-        // written), between tabs.
-        let script = "cd \(folder) 2>/dev/null || exit 0; for f in *.json; do [ -f \"$f\" ] || continue; printf '%s\\t%s\\t' \"$f\" \"$(stat -c %Y \"$f\" 2>/dev/null || echo 0)\"; tr -d '\\n' <\"$f\"; printf '\\n'; done"
+        // Each taken first (renamed `.mac-…`, so a machine's link that takes back what it left
+        // for this Mac doesn't send it too), then as its file's name, when it was written and its
+        // letter (on one line, as it's written), between tabs.
+        let script = "cd \(folder) 2>/dev/null || exit 0; for f in *.json; do [ -f \"$f\" ] && mv -f \"$f\" \".mac-$f\"; done; for f in .mac-*.json; do [ -f \"$f\" ] || continue; printf '%s\\t%s\\t' \"$f\" \"$(stat -c %Y \"$f\" 2>/dev/null || echo 0)\"; tr -d '\\n' <\"$f\"; printf '\\n'; done"
         guard let output = await Task.detached(operation: { RemoteShell.run(script, on: machine) }).value else { return }
         struct Letter: Decodable { var from: String?; var name: String?; var to: String; var text: String; var wait: Bool?; var via: String? }
-        var done: [String] = []
+        var done: [String] = [], taken: [String] = []
         for line in String(decoding: output, as: UTF8.self).split(separator: "\n") {
             let fields = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
             guard fields.count == 3 else { continue }
             let file = String(fields[0])
+            taken.append(file)
             let written = Date(timeIntervalSince1970: Double(fields[1]) ?? 0)
             guard let letter = try? JSONDecoder().decode(Letter.self, from: Data(fields[2].utf8)) else {
                 log.error("A message from \(machine, privacy: .public) couldn't be read")
@@ -640,9 +655,13 @@ final class AgentMail {
                 log.error("A message from \(machine, privacy: .public) didn't go yet: \(why, privacy: .public)")
             }
         }
-        guard !done.isEmpty else { return }
-        let names = done.map(SSHConnection.quoted).joined(separator: " ")
-        _ = await Task.detached(operation: { RemoteShell.run("cd \(folder) && rm -f -- \(names)", on: machine) }).value
+        // Those that didn't go back where they were, for next time (or another Mac, or the link).
+        let back = taken.filter { !done.contains($0) && $0.hasPrefix(".mac-") }
+            .map { "mv -f -- \(SSHConnection.quoted($0)) \(SSHConnection.quoted(String($0.dropFirst(5))))" }
+        let removed = done.isEmpty ? [] : ["rm -f -- " + done.map(SSHConnection.quoted).joined(separator: " ")]
+        guard !(back + removed).isEmpty else { return }
+        let tidy = (["cd \(folder) || exit 0"] + removed + back).joined(separator: "; ")
+        _ = await Task.detached(operation: { RemoteShell.run(tidy, on: machine) }).value
     }
 }
 
@@ -738,7 +757,9 @@ extension AgentMail {
     /// Whether `session` is listed by a machine other than `machine`, or is this Mac's own: then
     /// `machine` listing it too proves nothing (it could be claiming another's).
     func listedElsewhere(_ session: String, than machine: String) -> Bool {
-        announced.contains { $0.key != machine && $0.value.list.contains { $0.session == session } }
+        // Moved from there: what it still says of it is stale until it's let go.
+        if let left = app?.workspace.movedAway[session], left == machine { return true }
+        return announced.contains { $0.key != machine && $0.value.list.contains { $0.session == session } }
             || app?.workspace.session(session).map { RemoteFolder.machine(of: $0.location.directory) != machine } == true
             || app?.bots.bot(forSession: session).map { $0.machine != machine } == true
     }
@@ -790,7 +811,16 @@ extension AgentMail {
             noteSeen(id)
             return say(["delivered": ["id": id, "ok": true]])
         }
-        guard announcedList().contains(where: { $0.session == to }) else { return no("There's no such agent here.", false) }
+        // To a conversation here an agent could be: this Mac's, or one of a machine this Mac speaks
+        // for (not a subagent's, a group chat's seat, nor one put away). Not known while this
+        // Mac's sessions load: it comes again.
+        guard let app else { return }
+        guard to.hasPrefix("ses_") else { return no("That isn't a letter.", false) }
+        guard let session = app.workspace.session(to) else { return no(app.workspace.isLoaded ? "There's no such conversation here." : "Its computer is just starting.", !app.workspace.isLoaded) }
+        guard session.parentID == nil, !Workspace.isArchived(session), !app.workspace.seats.contains(to),
+              RemoteFolder.machine(of: session.location.directory).map({ !app.phoneLink.talksToPeers($0) }) ?? true else {
+            return no("That conversation doesn't take messages.", false)
+        }
         delivering.insert(id)
         defer { delivering.remove(id) }
         let wantsAnswer = letter["wait"] as? Bool == true
@@ -859,13 +889,18 @@ extension AgentMail {
             await send(letter)
             return .done("On its way to \(target.name) on \(machine). Its answer, if it writes one, comes to you as a message.")
         }
-        let answer = await withCheckedContinuation { continuation in
-            answers[letter.id] = (machine, continuation)
-            Task { [weak self] in await self?.send(letter) }
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(660))
-                self?.gaveUp(letter.id)
+        let answer = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                answers[letter.id] = (machine, continuation)
+                Task { [weak self] in await self?.send(letter) }
+                Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(660))
+                    self?.gaveUp(letter.id)
+                }
             }
+        } onCancel: {
+            // Its turn stopped: an answer that comes later reaches the conversation as a message.
+            Task { @MainActor [weak self] in self?.gaveUp(letter.id) }
         }
         switch answer {
         case .text(let reply?): return .done("\(target.name) answered:\n\n" + reply)
@@ -965,8 +1000,7 @@ extension AgentMail {
 
     /// Whether `machine` was last told `session` is one of this Mac's agents.
     private func toldOf(_ session: String, to machine: String) -> Bool {
-        guard let data = announcedTo[machine]?.data, let told = try? JSONDecoder().decode([Told].self, from: data) else { return false }
-        return told.contains { $0.session == session }
+        announcedTo[machine]?.told.contains(session) == true
     }
 
     /// This Mac's agents, as your machines whose link talks to other computers hear them
@@ -982,7 +1016,7 @@ extension AgentMail {
             for count in [list.count, list.count / 2, list.count / 4] where count > 0 || list.isEmpty {
                 guard let encoded = try? JSONSerialization.jsonObject(with: JSONEncoder().encode(Array(list.prefix(count)))) else { break }
                 let mailed = await app.phoneLink.mail(["agents": ["at": Self.now, "list": encoded], "at": Self.now], to: machine)
-                if mailed == .sent { announcedTo[machine] = (data, now) }
+                if mailed == .sent { announcedTo[machine] = (data, now, Set(list.prefix(count).map(\.session))) }
                 if mailed != .tooBig { break }
             }
         }

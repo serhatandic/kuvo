@@ -191,6 +191,10 @@ final class PhoneLink {
     /// own, without the phone link, makes no connection.
     var relayWanted: Bool { Self.isEnabled || hasMachines() }
 
+    /// Where each conversation being moved lives now (nil: this Mac), by machine. Set by the app
+    /// (`Moves.livePlaces`).
+    @ObservationIgnored var movedSessions: () -> [String: String?] = { [:] }
+
     /// Mail from one of your machines (PROTOCOL.md, "Peers"), opened: which machine, and what it
     /// said. Set by the app (AgentMail).
     @ObservationIgnored var onMail: (_ machine: String, _ payload: [String: Any]) -> Void = { _, _ in }
@@ -351,6 +355,8 @@ final class PhoneLink {
                 var peersAt: Int64
                 /// The machine's name here, for its agents to say where they are.
                 var id: String
+                /// Conversations being moved, by the computer they live on now.
+                var moved: [Moved]
                 /// This Mac never puts its own files over a newer box's (`BoxVersion`): the box may
                 /// update itself once every Mac it sees does.
                 var tolerates = 1
@@ -360,7 +366,7 @@ final class PhoneLink {
             // Your phones only while the phone link is on.
             try JSONEncoder().encode(Setup(relay: relay.absoluteString, name: machine.name, phones: Self.isEnabled ? list.phones : nil, removed: Self.isEnabled ? list.removed : nil,
                                            mac: key.publicBytes.base64URL, at: list.at,
-                                           peers: peers(for: machine.id), peersAt: list.at, id: machine.id)).write(to: settings)
+                                           peers: peers(for: machine.id), peersAt: list.at, id: machine.id, moved: moved)).write(to: settings)
             let output = try await machine.connection.run(RemoteEngineInstaller.script("""
                 KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$E" "$K/bin/\(Bridge.fileName)" setup
                 """), input: settings)
@@ -427,6 +433,21 @@ final class PhoneLink {
                   at: Int64(Date.now.timeIntervalSince1970 * 1000))
     }
 
+    /// A conversation being moved, and the key of the computer it lives on now (PROTOCOL.md,
+    /// "Peers"): the one it left may still list it.
+    struct Moved: Encodable {
+        var session: String
+        var key: String
+    }
+
+    private var moved: [Moved] {
+        movedSessions().compactMap { session, place in
+            // On this Mac, or a machine whose link talks to other computers (others' aren't peers).
+            let live: String? = if let place { machineHosts[place]?.peers == true ? machineHosts[place]?.key : nil } else { key.publicBytes.base64URL }
+            return live.map { Moved(session: session, key: $0) }
+        }.sorted { $0.session < $1.session }
+    }
+
     /// One of your other computers, as a machine's bridge keeps it (PROTOCOL.md, "Peers").
     struct Peer: Encodable {
         var key: String
@@ -462,12 +483,13 @@ final class PhoneLink {
             var at: Int64
             var peers: [Peer]
             var ask: String?
+            var moved: [Moved]
         }
         let list = phoneList
         for (machine, host) in machineHosts where host.anotherMac != true {
             guard let key = Data(base64URL: host.key), let bytes = Data(base64URL: host.address), let address = LinkAddress(bytes: bytes),
                   let payload = try? JSONEncoder().encode(Told(phones: Self.isEnabled ? list.phones : nil, removed: Self.isEnabled ? list.removed : nil, at: list.at, peers: peers(for: machine),
-                                                               ask: ask ? "agents" : nil))
+                                                               ask: ask ? "agents" : nil, moved: moved))
             else { continue }
             if await server.mail(payload, to: key, at: address) != .sent { log.error("Couldn’t mail a machine’s bridge your phones") }
         }
@@ -533,8 +555,9 @@ final class PhoneLink {
                     await self?.tellMachines(ask: true)
                 }
                 await server.serve(connection)
-                // Gone: nothing goes by mail until it's back.
-                status = .connecting
+                // Gone: nothing goes by mail until it's back (unless this was stopped, or another
+                // connection took over meanwhile).
+                if !Task.isCancelled, self.server === server { status = .connecting }
             } catch {
                 status = .failed("Can’t reach the relay at \(relay.host() ?? relay.absoluteString).")
             }

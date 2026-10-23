@@ -89,8 +89,13 @@ import Testing
 
         await AgentMail.shared.mailed(letter(from: "ses_imposter"), from: "peerbox")
         await AgentMail.shared.mailed(letter(from: "ses_faraway"), from: "elsewhere")
-        #expect(Array(prompts.all.dropFirst()) == [AgentMail.compose(from: "an agent on peerbox", session: "unknown", text: "The API's deployed.", waits: false),
-                                                  AgentMail.compose(from: "an agent on elsewhere", session: "unknown", text: "The API's deployed.", waits: false)])
+        // One of this Mac's own, claimed by a machine: not taken for it.
+        await AgentMail.shared.mailed(["agents": ["at": Self.now + 1, "list": [["session": "ses_faraway", "name": "API", "kind": "session"],
+                                                                                ["session": here, "name": "Release notes", "kind": "session"]]]], from: "peerbox")
+        await AgentMail.shared.mailed(letter(from: here), from: "peerbox")
+        let unknown = AgentMail.compose(from: "an agent on peerbox", session: "unknown", text: "The API's deployed.", waits: false)
+        #expect(Array(prompts.all.dropFirst()) == [unknown, AgentMail.compose(from: "an agent on elsewhere", session: "unknown", text: "The API's deployed.", waits: false), unknown])
+        #expect(unknown.contains("It can't be answered"))
         AgentMail.shared.machineRemoved("peerbox")
     }
 

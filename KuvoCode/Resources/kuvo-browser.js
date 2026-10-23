@@ -1834,11 +1834,11 @@ function findAgent(wanted, agents, from, here) {
 }
 
 function composeMail(name, session, words, waits) {
-  const answer = waits ? "They're waiting for your reply: just answer, in your words." : `To answer, use send_message to ${session}.`;
+  const answer = waits ? "They're waiting for your reply: just answer, in your words." : session === "unknown" ? "It can't be answered: who sent it isn't known." : `To answer, use send_message to ${session}.`;
   return `[Message from ${name} · ${session}] (${answer})\n\n${words}`;
 }
 
-async function mail(name, args, from) {
+async function mail(name, args, from, cancelled = () => false) {
   // A subagent writes, reads and starts sessions as its conversation, as on the Mac.
   from = await rootSession(from);
   const directory = readJSON(path.join(K, "run", "agents.json")) ?? { machine: null, agents: [] };
@@ -1879,7 +1879,7 @@ async function mail(name, args, from) {
     fs.renameSync(file + ".new", file);
     if (!byLink) return text(`Left for ${target.name}: it goes on as soon as Kuvo Code on the user's Mac is connected (at once, if it is)${waits ? "; across machines there's no waiting for the answer, which comes to you as a message" : ""}.`);
     if (!waits) return text(`On its way to ${target.name}. Its answer, if it writes one, comes to you as a message.`);
-    const answer = await letterAnswer(id);
+    const answer = await letterAnswer(id, cancelled);
     if (answer?.failed) return text(`It didn't reach ${target.name}: ${answer.failed}`, true);
     if (answer?.note) return text(answer.note);
     return text(answer?.text ? `${target.name} answered:\n\n` + answer.text : `${target.name} hasn't answered yet. It may still write back with send_message.`);
@@ -1907,21 +1907,28 @@ async function rootSession(session) {
 /// its answer, why it didn't get there, or why no answer will come; null when nothing came in
 /// eleven minutes. Given up on, the letter goes on without waiting, and an answer that comes later
 /// reaches this conversation as a message (`<id>.gaveup`, for the link).
-async function letterAnswer(id) {
+async function letterAnswer(id, cancelled = () => false) {
   const replies = path.join(K, "run", "replies");
   const file = path.join(replies, id + ".json");
+  // Still waiting, as the link sees it: an answer that comes once this isn't (its turn stopped,
+  // this ended) comes as a message instead.
+  const alive = path.join(replies, id + ".alive");
   const began = Date.now();
-  while (Date.now() - began < 660_000) {
-    await sleep(2000);
-    const answer = readJSON(file);
-    if (!answer) continue;
-    fs.rmSync(file, { force: true });
-    return answer;
-  }
   try {
     fs.mkdirSync(replies, { recursive: true, mode: 0o700 });
+    while (Date.now() - began < 660_000 && !cancelled()) {
+      fs.writeFileSync(alive, "", { mode: 0o600 });
+      await sleep(2000);
+      const answer = readJSON(file);
+      if (!answer) continue;
+      fs.rmSync(file, { force: true });
+      return answer;
+    }
     fs.writeFileSync(path.join(replies, id + ".gaveup"), "", { mode: 0o600 });
-  } catch {}
+  } catch {
+  } finally {
+    fs.rmSync(alive, { force: true });
+  }
   return null;
 }
 
@@ -2696,7 +2703,7 @@ async function mcp() {
           return;
         }
         if (params.name === "list_agents" || params.name === "send_message" || params.name === "read_conversation" || params.name === "start_session") {
-          mail(params.name, params.arguments || {}, call.session).then(reply, (error) => reply(text(error instanceof ToolError ? error.message : String(error), true)));
+          mail(params.name, params.arguments || {}, call.session, () => call.cancelled).then(reply, (error) => reply(text(error instanceof ToolError ? error.message : String(error), true)));
           return;
         }
         // An added integration's site: to its tools instead, with no browser needed.
