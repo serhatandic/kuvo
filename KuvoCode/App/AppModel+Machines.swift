@@ -40,6 +40,18 @@ extension AppModel {
         BrowserTools.isInView = { [weak self] session in self?.utilities.isInView(session) ?? false }
         // Agents writing to each other, here and on machines.
         AgentMail.shared.app = self
+        // And with machines this Mac isn't connected to, by mail through the relay.
+        phoneLink.onMail = { machine, payload in
+            Task { await AgentMail.shared.mailed(payload, from: machine) }
+        }
+        if mailTick == nil {
+            mailTick = Task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(60))
+                    await AgentMail.shared.tick()
+                }
+            }
+        }
         BrowserTools.mail = { name, arguments, caller in await AgentMail.shared.call(name, arguments: arguments, caller: caller) }
         // A conversation at work, or waiting for you, keeps its tabs (see `Utilities.tidyAgentTabs`).
         utilities.isBusy = { [weak self] id in
@@ -148,6 +160,8 @@ extension AppModel {
         let engine = machines.add(destination)
         workspace.machines = Set(machines.list.map(\.id))
         connect(engine)
+        // The first one: this Mac meets it at the relay.
+        phoneLink.machinesChanged()
         return engine
     }
 
@@ -436,6 +450,8 @@ extension AppModel {
         machineGroups.forget(machine: id)
         // Its pages in Settings.
         settingsTabs.closeTabs(notOn: Set(machines.list.map(\.id)), machines: machines)
+        // Your others stop counting it among their peers; the last gone, no relay for it.
+        phoneLink.machinesChanged()
         Task { await moves.machineRemoved(id) }
     }
 

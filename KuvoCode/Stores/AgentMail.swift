@@ -38,6 +38,17 @@ final class AgentMail {
     private static var waitingFile: URL { AppInfo.supportDirectory.appending(path: "agent-messages.json") }
     private var waiting: [Waiting] = JSONFile.read([Waiting].self, from: AgentMail.waitingFile) ?? []
 
+    /// What each machine whose link talks to your other computers said its agents are, the newest
+    /// (by mail, `mailed`).
+    fileprivate var announced: [String: (at: Double, list: [Told])] = [:]
+    /// Letters this Mac sent by mail, until each is there (kept across launches).
+    fileprivate var mailing: [Mailing] = JSONFile.read([Mailing].self, from: AgentMail.mailingFile) ?? []
+    fileprivate var tried: [String: Date] = [:]
+    /// Conversations waiting for a letter's answer, by letter, with the machine it went to.
+    fileprivate var answers: [String: (machine: String, waiting: CheckedContinuation<Answer, Never>)] = [:]
+    /// What each machine was last told of this Mac's agents, and when.
+    fileprivate var announcedTo: [String: (data: Data, at: Date)] = [:]
+
     /// Delivers what waited for `engine`'s machine, now it's back, straight to its engine (its
     /// session needn't be among the latest the list names). Each leaves the list once it's there:
     /// one that doesn't get there (the machine went again) waits for the next time, unless its
@@ -141,6 +152,14 @@ final class AgentMail {
             let directory = session.location.directory
             agents.append(Agent(session: session.id, name: session.title ?? "New session", kind: "session",
                                 machine: RemoteFolder.machine(of: directory), project: workspace.projectName(directory)))
+        }
+        // Machines this Mac isn't connected to now: their agents as they last said (by mail).
+        var listed = Set(agents.map(\.session))
+        for (machine, told) in announced.sorted(by: { $0.key < $1.key }) where app.machines.engine(machine)?.isReady != true {
+            for agent in told.list where !listed.contains(agent.session) {
+                listed.insert(agent.session)
+                agents.append(Agent(session: agent.session, name: agent.name, kind: agent.kind, machine: machine, project: agent.project, about: agent.about))
+            }
         }
         return agents
     }
@@ -254,7 +273,10 @@ final class AgentMail {
 
     /// `limitKey`: what the few-at-a-time limit counts by, when not the caller (a machine's
     /// letters, whose sender anything there could claim).
-    private func deliver(from caller: String?, name: String, to: String, text: String, waits: Bool, limitKey: String? = nil) async -> Outcome {
+    /// `prompted`: once it's in the conversation (before any answer); `answered`: its answer (nil
+    /// for none), when waiting for one. `mailed`: it came by mail, and isn't mailed on.
+    private func deliver(from caller: String?, name: String, to: String, text: String, waits: Bool, limitKey: String? = nil, mailed: Bool = false,
+                         prompted: (() -> Void)? = nil, answered: ((String?) -> Void)? = nil) async -> Outcome {
         let target: Agent
         switch find(to, caller: caller) {
         case .found(let found): target = found
@@ -273,6 +295,11 @@ final class AgentMail {
         }
         let counted = Date.now
         sent[key] = lately + [counted]
+        // Its machine isn't connected to this Mac, but its link talks to your other computers:
+        // by mail, through the relay.
+        if !mailed, let app, app.workspace.api(forSession: target.session) == nil, let machine = target.machine, app.phoneLink.reachesByMail(machine) {
+            return await mailLetter(from: caller, name: name, to: target, machine: machine, text: text, waits: waits)
+        }
         guard let app, let api = app.workspace.api(forSession: target.session) else {
             // Its machine is away: it goes when it's back.
             guard let machine = target.machine else {
@@ -295,10 +322,11 @@ final class AgentMail {
             return .failed("It didn't reach \(target.name): \(error.localizedDescription)")
         }
         Analytics.shared.track("agent_message_sent", ["waits": waits, "bot": target.kind == "bot"])
+        prompted?()
         guard waits else { return .done("Sent to \(target.name). Its answer, if it writes one, comes to you as a message.") }
-        if let reply = await reply(in: target.session, to: id, known: known ?? [], api: api) {
-            return .done("\(target.name) answered:\n\n" + reply)
-        }
+        let reply = await reply(in: target.session, to: id, known: known ?? [], api: api)
+        answered?(reply)
+        if let reply { return .done("\(target.name) answered:\n\n" + reply) }
         return .done("\(target.name) hasn't answered yet. It may still write back with send_message.")
     }
 
@@ -509,9 +537,11 @@ final class AgentMail {
         var agents: [Agent]
     }
 
-    /// Puts the list of everyone on `engine`'s machine, for its agents, when it's changed.
+    /// Puts the list of everyone on `engine`'s machine, for its agents, when it's changed. (One
+    /// whose link talks to your other computers makes its own, from what each tells it.)
     func share(with engine: MachineEngine) async {
         let machine = engine.machine.id
+        guard app?.phoneLink.talksToPeers(machine) != true else { return }
         // Sorted: JSONEncoder writes a struct's keys in another order almost every time, and an
         // unchanged list would go again each minute.
         let encoder = JSONEncoder()
@@ -557,7 +587,7 @@ final class AgentMail {
         // written), between tabs.
         let script = "cd \(folder) 2>/dev/null || exit 0; for f in *.json; do [ -f \"$f\" ] || continue; printf '%s\\t%s\\t' \"$f\" \"$(stat -c %Y \"$f\" 2>/dev/null || echo 0)\"; tr -d '\\n' <\"$f\"; printf '\\n'; done"
         guard let output = await Task.detached(operation: { RemoteShell.run(script, on: machine) }).value else { return }
-        struct Letter: Decodable { var from: String?; var name: String?; var to: String; var text: String; var wait: Bool? }
+        struct Letter: Decodable { var from: String?; var name: String?; var to: String; var text: String; var wait: Bool?; var via: String? }
         var done: [String] = []
         for line in String(decoding: output, as: UTF8.self).split(separator: "\n") {
             let fields = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
@@ -569,6 +599,8 @@ final class AgentMail {
                 done.append(file)
                 continue
             }
+            // The machine's link's to send, by mail: not this Mac's.
+            if letter.via == "link" { continue }
             // Anything on the machine can write a letter, so who it's from is taken only from an
             // agent that is there; else it's "an agent on" it. Counted by the machine.
             let sender = letter.from.flatMap { from in directory().first { $0.session == from && $0.machine == machine } }
@@ -589,6 +621,233 @@ final class AgentMail {
         guard !done.isEmpty else { return }
         let names = done.map(SSHConnection.quoted).joined(separator: " ")
         _ = await Task.detached(operation: { RemoteShell.run("cd \(folder) && rm -f -- \(names)", on: machine) }).value
+    }
+}
+
+// MARK: - Your other computers, by mail (PROTOCOL.md, "Peers")
+
+extension AgentMail {
+    /// An agent as a machine tells it (its own, by mail): no `machine`, which is the one that told.
+    struct Told: Codable {
+        var session: String
+        var name: String
+        var kind: String
+        var project: String?
+        var about: String?
+        /// For the agents this Mac speaks for (on machines whose link doesn't talk to other
+        /// computers yet): where each is.
+        var machine: String?
+    }
+
+    /// A letter this Mac sent by mail, until its machine says it has it.
+    struct Mailing: Codable, Equatable {
+        var id: String
+        var from: String?
+        var name: String
+        var to: String
+        var toName: String
+        var machine: String
+        var text: String
+        var wait: Bool
+        var at: Double
+    }
+
+    static let mailingFile = AppInfo.supportDirectory.appending(path: "agent-letters.json")
+    static let seenFile = AppInfo.supportDirectory.appending(path: "agent-letters-seen.json")
+    private static let letterLife: Double = 86_400_000
+    private static let letterMemory: Double = 2 * 86_400_000
+
+    private static var now: Double { (Date.now.timeIntervalSince1970 * 1000).rounded() }
+
+    /// A machine's mail, through the relay: its agents, a letter for one here, how one this Mac
+    /// sent went, or its answer.
+    func mailed(_ payload: [String: Any], from machine: String) async {
+        if let agents = payload["agents"] as? [String: Any] { takeAgents(agents, from: machine) }
+        if let letter = payload["letter"] as? [String: Any] { await takeLetter(letter, from: machine) }
+        // How a letter went, and its answer: only from the machine it went to.
+        if let delivered = payload["delivered"] as? [String: Any], let id = delivered["id"] as? String, mailing.contains(where: { $0.id == id && $0.machine == machine }) {
+            letterWent(id, ok: delivered["ok"] as? Bool == true, why: delivered["why"] as? String)
+        }
+        if let answer = payload["reply"] as? [String: Any], let id = answer["id"] as? String, answers[id]?.machine == machine {
+            letterAnswered(id, text: answer["text"] as? String)
+        }
+    }
+
+    private func takeAgents(_ given: [String: Any], from machine: String) {
+        guard let at = given["at"] as? Double, at > (announced[machine]?.at ?? 0), let list = given["list"] as? [[String: Any]],
+              let data = try? JSONSerialization.data(withJSONObject: list), let told = try? JSONDecoder().decode([Told].self, from: data) else { return }
+        let fits = told.filter { $0.session.hasPrefix("ses_") && ($0.kind == "bot" || $0.kind == "session") }.prefix(120)
+        announced[machine] = (at, fits.map { Told(session: $0.session, name: String($0.name.prefix(200)), kind: $0.kind, project: $0.project, about: $0.about, machine: nil) })
+    }
+
+    /// A letter from one of a machine's agents, for one here: checked (from one of that machine's
+    /// own agents, not too old, not seen before), delivered, said to be there, and answered.
+    private func takeLetter(_ letter: [String: Any], from machine: String) async {
+        guard let id = letter["id"] as? String, id.range(of: #"\A[A-Za-z0-9_-]{6,80}\z"#, options: .regularExpression) != nil else { return }
+        let say: ([String: Any]) -> Void = { [weak self] message in
+            Task { _ = await self?.app?.phoneLink.mail(message.merging(["at": Self.now]) { $1 }, to: machine) }
+        }
+        let no: (String) -> Void = { why in say(["delivered": ["id": id, "ok": false, "why": why]]) }
+        guard let at = letter["at"] as? Double, abs(Self.now - at) < Self.letterLife else { return no("It's too old to deliver.") }
+        guard let to = letter["to"] as? String, let text = letter["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return no("That isn't a letter.") }
+        // From one of that machine's own agents, as it told them (anything there could claim another's name).
+        let from = letter["from"] as? String
+        let sender = announced[machine]?.list.first { $0.session == from } .map(\.name)
+            ?? directory().first { $0.session == from && $0.machine == machine }?.name
+        guard let sender else { return no("Its sender isn't one of that computer's agents here.") }
+        guard !seen(id) else { return say(["delivered": ["id": id, "ok": true]]) }
+        let waits = letter["wait"] as? Bool == true
+        var acknowledged = false, answered = false
+        let outcome = await deliver(from: from, name: (letter["name"] as? String).map { String($0.prefix(200)) } ?? sender, to: to, text: String(text.prefix(32_000)), waits: waits,
+                                    limitKey: "machine:" + machine, mailed: true, prompted: {
+            acknowledged = true
+            say(["delivered": ["id": id, "ok": true]])
+        }, answered: { answer in
+            answered = true
+            say(["reply": ["id": id, "text": answer.map { Self.prefix(String($0.prefix(8000)), bytes: 24_000) } as Any? ?? NSNull()]])
+        })
+        switch outcome {
+        case .done:
+            if !acknowledged { say(["delivered": ["id": id, "ok": true]]) }
+            // Waiting for its machine to be back: no answer to wait for now.
+            if waits && !answered { say(["reply": ["id": id, "text": NSNull()]]) }
+        case .unknown(let why), .refused(let why), .limited(let why), .failed(let why):
+            forget(id)
+            no(why)
+        }
+    }
+
+    /// Whether letter `id` came already (two days' worth remembered); notes it.
+    private func seen(_ id: String) -> Bool {
+        var seen = JSONFile.read([String: Double].self, from: Self.seenFile) ?? [:]
+        let now = Self.now
+        seen = seen.filter { now - $0.value < Self.letterMemory }
+        let was = seen[id] != nil
+        seen[id] = seen[id] ?? now
+        JSONFile.write(seen, to: Self.seenFile)
+        return was
+    }
+
+    /// Not delivered after all: it can come again.
+    private func forget(_ id: String) {
+        var seen = JSONFile.read([String: Double].self, from: Self.seenFile) ?? [:]
+        guard seen.removeValue(forKey: id) != nil else { return }
+        JSONFile.write(seen, to: Self.seenFile)
+    }
+
+    // MARK: Letters this Mac sends by mail
+
+    /// A letter for an agent on a machine this Mac isn't connected to, whose link talks to your
+    /// other computers: sent now, and each minute until it's there; with `waits`, its answer.
+    private func mailLetter(from caller: String?, name: String, to target: Agent, machine: String, text: String, waits: Bool) async -> Outcome {
+        let letter = Mailing(id: "mac" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased(), from: caller, name: name, to: target.session,
+                             toName: target.name, machine: machine, text: String(text.prefix(32_000)), wait: waits, at: Self.now)
+        mailing.append(letter)
+        saveMailing()
+        await send(letter)
+        Analytics.shared.track("agent_message_sent", ["waits": waits, "bot": target.kind == "bot", "mailed": true])
+        guard waits else { return .done("On its way to \(target.name) on \(machine). Its answer, if it writes one, comes to you as a message.") }
+        let answer = await withCheckedContinuation { continuation in
+            answers[letter.id] = (machine, continuation)
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(660))
+                self?.letterAnswered(letter.id, text: nil, timedOut: true)
+            }
+        }
+        switch answer {
+        case .text(let reply?): return .done("\(target.name) answered:\n\n" + reply)
+        case .failed(let why): return .failed("It didn't reach \(target.name): \(why)")
+        default: return .done("\(target.name) hasn't answered yet. It may still write back with send_message.")
+        }
+    }
+
+    enum Answer { case text(String?), failed(String) }
+
+    /// Mails it, its words cut to fit what the relay takes (UTF-8, and escaped as JSON, they can
+    /// be several times as many bytes as characters), as a machine's bridge does (`letterMail`).
+    private func send(_ letter: Mailing) async {
+        guard let app else { return }
+        tried[letter.id] = .now
+        for most in [24_000, 6000, 2000] {
+            let sent = ["id": letter.id, "from": letter.from as Any? ?? NSNull(), "name": letter.name, "to": letter.to, "text": Self.prefix(letter.text, bytes: most),
+                        "wait": letter.wait, "at": letter.at] as [String: Any]
+            if await app.phoneLink.mail(["letter": sent, "at": Self.now], to: letter.machine) { return }
+            // Not connected now: it goes next time.
+            guard app.phoneLink.reachesByMail(letter.machine) else { return }
+        }
+        letterWent(letter.id, ok: false, why: "It's too long to send.")
+    }
+
+    /// As much of `text` as fits in `bytes` of UTF-8, whole characters.
+    static func prefix(_ text: String, bytes: Int) -> String {
+        var count = 0
+        var end = text.startIndex
+        for index in text.indices {
+            count += text[index].utf8.count
+            if count > bytes { break }
+            end = text.index(after: index)
+        }
+        return String(text[..<end])
+    }
+
+    private func letterWent(_ id: String, ok: Bool, why: String?) {
+        guard let index = mailing.firstIndex(where: { $0.id == id }) else { return }
+        let letter = mailing.remove(at: index)
+        saveMailing()
+        if !ok {
+            log.error("A message for \(letter.machine, privacy: .public) didn't go: \(why ?? "", privacy: .public)")
+            answers.removeValue(forKey: id)?.waiting.resume(returning: .failed(why ?? "It wasn't delivered."))
+        }
+    }
+
+    private func letterAnswered(_ id: String, text: String?, timedOut: Bool = false) {
+        guard let waiting = answers.removeValue(forKey: id)?.waiting else { return }
+        waiting.resume(returning: .text(timedOut ? nil : text))
+    }
+
+    private func saveMailing() {
+        if mailing.isEmpty { try? FileManager.default.removeItem(at: Self.mailingFile) } else { JSONFile.write(mailing, to: Self.mailingFile) }
+    }
+
+    /// Each minute: letters not there yet, again (two days at most), and this Mac's agents told to
+    /// your machines whose link talks to other computers, as they change (and every ten minutes).
+    func tick() async {
+        guard let app else { return }
+        let now = Self.now
+        for letter in mailing {
+            if now - letter.at > Self.letterMemory {
+                letterWent(letter.id, ok: false, why: "Its machine couldn't be reached.")
+                continue
+            }
+            guard app.phoneLink.reachesByMail(letter.machine), Date.now.timeIntervalSince(tried[letter.id] ?? .distantPast) >= 55 else { continue }
+            await send(letter)
+        }
+        await announce()
+    }
+
+    /// This Mac's agents, as your machines whose link talks to other computers hear them: its own,
+    /// and those of machines it speaks for (whose link doesn't yet).
+    private func announce() async {
+        guard let app else { return }
+        let list = directory().filter { $0.machine == nil || !app.phoneLink.talksToPeers($0.machine!) }
+            .filter { agent in agent.machine == nil || announced[agent.machine!] == nil }
+            .prefix(120)
+            .map { Told(session: $0.session, name: String($0.name.prefix(200)), kind: $0.kind, project: $0.project.map { String($0.prefix(200)) },
+                        about: $0.about.map { String($0.prefix(500)) }, machine: $0.machine) }
+        guard let data = try? JSONEncoder().encode(list) else { return }
+        let now = Date.now
+        for machine in app.machines.list.map(\.id) where app.phoneLink.reachesByMail(machine) {
+            if let last = announcedTo[machine], last.data == data, now.timeIntervalSince(last.at) < 600 { continue }
+            // As many as fit in one mail: the first (bots, then the latest sessions) first.
+            for count in [list.count, list.count / 2, list.count / 4] where count > 0 || list.isEmpty {
+                guard let encoded = try? JSONSerialization.jsonObject(with: JSONEncoder().encode(Array(list.prefix(count)))) else { break }
+                if await app.phoneLink.mail(["agents": ["at": Self.now, "list": encoded], "at": Self.now], to: machine) {
+                    announcedTo[machine] = (data, now)
+                    break
+                }
+                guard app.phoneLink.reachesByMail(machine) else { break }
+            }
+        }
     }
 }
 

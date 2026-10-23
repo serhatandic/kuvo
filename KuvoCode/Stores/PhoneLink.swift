@@ -21,9 +21,9 @@ final class PhoneLink {
         UserDefaults.standard.bool(forKey: "phoneLink") || ProcessInfo.processInfo.environment["KUVO_DEMO_PHONE"] != nil
     }
 
-    /// Where the relay is until there's a public one. `defaults write run.kuvo.code
-    /// phoneLink.relay wss://…` points elsewhere.
-    static let defaultRelay = URL(string: "ws://127.0.0.1:8790")!
+    /// The relay your computers and phones meet at. `defaults write run.kuvo.code phoneLink.relay
+    /// wss://…` points elsewhere (a relay of your own, or one for tests).
+    static let defaultRelay = URL(string: "wss://kuvolink.porigam.com.tr")!
     static let pairingTime: Duration = .seconds(600)
 
     /// A paired phone: its key, name, when it paired, where it is and its pairing.
@@ -82,6 +82,9 @@ final class PhoneLink {
         /// Its engine is another Mac's, which gives it its settings, as it was when it last
         /// connected (nil from before this was kept).
         var anotherMac: Bool?
+        /// Its bridge talks to your other computers itself (PROTOCOL.md, "Peers"): it takes their
+        /// lists and letters by mail.
+        var peers: Bool?
     }
 
     /// What's kept in phone-link.json.
@@ -145,18 +148,29 @@ final class PhoneLink {
         if let identity { self.identity = identity }
     }
 
+    /// The Keychain wouldn't give out this Mac's key or secret this launch.
+    private static var unreadable = false
+
+    /// This Mac's own key and secret, as your phones and machines know them (not a stand-in).
+    private var hasIdentity: Bool {
+        _ = identity
+        return !Self.unreadable
+    }
+
     private static func loadIdentity() -> (key: LinkKey, secret: RelaySecret) {
         (kept("key", read: { try? LinkKey(rawRepresentation: $0) }, make: LinkKey.init, bytes: \.rawRepresentation),
          kept("secret", read: RelaySecret.init(bytes:), make: RelaySecret.init, bytes: \.bytes))
     }
 
     /// One of them from the Keychain, made the first time. One the Keychain won't give out (you
-    /// said no when it asked) isn't replaced: phones won't reach this Mac until it's opened again.
+    /// said no when it asked) isn't replaced, and the link stays off (`unreadable`): your phones
+    /// and other computers would take a stand-in for another Mac. It's tried again next launch.
     private static func kept<T>(_ account: String, read: (Data) -> T?, make: () -> T, bytes: (T) -> Data) -> T {
         do {
             if let data = try keychain(account), let value = read(data) { return value }
         } catch {
             Logger(subsystem: "run.kuvo.code", category: "phone").error("Couldn’t read the phone link’s \(account, privacy: .public) from the Keychain: \(error.localizedDescription, privacy: .public)")
+            unreadable = true
             return make()
         }
         let value = make()
@@ -169,10 +183,23 @@ final class PhoneLink {
         (SCDynamicStoreCopyComputerName(nil, nil) as String?) ?? "Mac"
     }
 
-    /// Starts answering phones, through this Mac's engine at `endpoint`, once it's ready.
+    /// Whether you have machines: with them, this Mac meets them at the relay (and they each
+    /// other), phone or not. Set by the app.
+    @ObservationIgnored var hasMachines: () -> Bool = { false }
+
+    /// This Mac connects to the relay: for your phones, or for your other computers. A Mac on its
+    /// own, without the phone link, makes no connection.
+    var relayWanted: Bool { Self.isEnabled || hasMachines() }
+
+    /// Mail from one of your machines (PROTOCOL.md, "Peers"), opened: which machine, and what it
+    /// said. Set by the app (AgentMail).
+    @ObservationIgnored var onMail: (_ machine: String, _ payload: [String: Any]) -> Void = { _, _ in }
+
+    /// Starts answering phones and your machines, through this Mac's engine at `endpoint`, once
+    /// it's ready.
     func start(endpoint: ServerEndpoint) {
         self.endpoint = endpoint
-        guard Self.isEnabled, running == nil else { return }
+        guard relayWanted, running == nil, hasIdentity else { return }
         server = makeServer(endpoint: endpoint)
         running = Task { await run() }
         keepPresent()
@@ -215,6 +242,18 @@ final class PhoneLink {
         guard let endpoint else { return }
         stop()
         start(endpoint: endpoint)
+    }
+
+    /// A machine added or removed: with the first, this Mac meets it at the relay; with the last
+    /// gone (and no phone link), it stops. The others hear who their peers are now.
+    func machinesChanged() {
+        if relayWanted, running == nil, let endpoint {
+            start(endpoint: endpoint)
+        } else if !relayWanted, running != nil {
+            stop()
+        }
+        syncMachines()
+        Task { await tellMachines() }
     }
 
     /// Shows a pairing link (as a QR code) for a phone to scan.
@@ -283,7 +322,7 @@ final class PhoneLink {
     /// The machine keeps its own keys and tells this Mac only its address and public key. With
     /// no phones, the bridge stops there.
     func sync(_ engine: MachineEngine) async {
-        guard Self.isEnabled, engine.isReady else { return }
+        guard relayWanted, engine.isReady, hasIdentity else { return }
         let machine = engine.machine
         let folder = FileManager.default.temporaryDirectory.appending(path: Bundle.main.bundleIdentifier ?? "run.kuvo.code").appending(path: "phone-link-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -306,21 +345,34 @@ final class PhoneLink {
                 /// This Mac's key, which a phone list it mails later must come from, and when this one's from.
                 var mac: String
                 var at: Int64
+                /// Your other computers: this Mac and your other machines (PROTOCOL.md, "Peers").
+                var peers: [Peer]
+                var peersAt: Int64
+                /// The machine's name here, for its agents to say where they are.
+                var id: String
             }
             let settings = folder.appending(path: "setup.json")
             let list = phoneList
-            try JSONEncoder().encode(Setup(relay: relay.absoluteString, name: machine.name, phones: list.phones, removed: list.removed, mac: key.publicBytes.base64URL, at: list.at)).write(to: settings)
+            // Only your phones while the phone link is on.
+            let phonesHere = Self.isEnabled ? list.phones : []
+            try JSONEncoder().encode(Setup(relay: relay.absoluteString, name: machine.name, phones: phonesHere, removed: list.removed, mac: key.publicBytes.base64URL, at: list.at,
+                                           peers: peers(for: machine.id), peersAt: list.at, id: machine.id)).write(to: settings)
             let output = try await machine.connection.run(RemoteEngineInstaller.script("""
                 KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$E" "$K/bin/\(Bridge.fileName)" setup
                 """), input: settings)
-            struct Answer: Decodable { var address: String?; var key: String? }
+            struct Answer: Decodable { var address: String?; var key: String?; var peers: Bool? }
             let answer = try? JSONDecoder().decode(Answer.self, from: Data(output.utf8))
+            let before = machineHosts[machine.id]
             if let address = answer?.address, let key = answer?.key {
-                machineHosts[machine.id] = MachineHost(name: machine.name, address: address, key: key, anotherMac: engine.isAnotherMacsEngine)
+                machineHosts[machine.id] = MachineHost(name: machine.name, address: address, key: key, anotherMac: engine.isAnotherMacsEngine, peers: answer?.peers)
             } else {
                 machineHosts[machine.id] = nil
             }
             save()
+            // A machine new here (or at a new address, or newly talking to other computers): your
+            // others hear it's one of theirs.
+            let now = machineHosts[machine.id]
+            if now?.address != before?.address || now?.key != before?.key || now?.peers != before?.peers { Task { await tellMachines() } }
             // Here from the start, not from the next minute: the bridge leaves this machine's news to this Mac.
             if status == .connected, phones.contains(where: { $0.address != nil }) { await markPresent(on: machine) }
         } catch {
@@ -371,15 +423,75 @@ final class PhoneLink {
                   at: Int64(Date.now.timeIntervalSince1970 * 1000))
     }
 
-    /// Mails each of your machines' bridges the phones you've paired, through the relay, so one
-    /// you removed loses its way in there at once, whether this Mac can reach the machine itself
-    /// now or not: as phones change, as the relay answers, and every 15 minutes while it does
-    /// (a machine that was off gets it once it's back). Only this Mac's key is taken there.
+    /// One of your other computers, as a machine's bridge keeps it (PROTOCOL.md, "Peers").
+    struct Peer: Encodable {
+        var key: String
+        var address: String
+        var name: String
+        var kind: String
+        /// A machine's name here, for the agents of each to say where they are.
+        var id: String?
+    }
+
+    /// `machine`'s peers: this Mac, and your other machines this Mac set up whose bridge talks to
+    /// other computers (an older one's agents are this Mac's to speak for).
+    private func peers(for machine: String) -> [Peer] {
+        let me = Peer(key: key.publicBytes.base64URL, address: secret.address.bytes.base64URL, name: Self.computerName, kind: "mac", id: nil)
+        return [me] + machineHosts.filter { $0.key != machine && $0.value.anotherMac != true && $0.value.peers == true }
+            .sorted { $0.key < $1.key }
+            .map { Peer(key: $0.value.key, address: $0.value.address, name: $0.value.name, kind: "machine", id: $0.key) }
+    }
+
+    /// Mails each of your machines' bridges the phones you've paired and its peers, through the
+    /// relay, so one you removed loses its way in there at once, whether this Mac can reach the
+    /// machine itself now or not: as phones or machines change, as the relay answers, and every
+    /// 15 minutes while it does (a machine that was off gets it once it's back). Only this Mac's
+    /// key is taken there.
     func tellMachines() async {
-        guard let server, status == .connected, !machineHosts.isEmpty, let payload = try? JSONEncoder().encode(phoneList) else { return }
-        for host in machineHosts.values where host.anotherMac != true {
-            guard let key = Data(base64URL: host.key), let bytes = Data(base64URL: host.address), let address = LinkAddress(bytes: bytes) else { continue }
+        guard let server, status == .connected, !machineHosts.isEmpty else { return }
+        struct Told: Encodable {
+            var phones: [PhoneList.Phone]
+            var removed: [PairedPhones.Removal]
+            var at: Int64
+            var peers: [Peer]
+        }
+        let list = phoneList
+        for (machine, host) in machineHosts where host.anotherMac != true {
+            guard let key = Data(base64URL: host.key), let bytes = Data(base64URL: host.address), let address = LinkAddress(bytes: bytes),
+                  let payload = try? JSONEncoder().encode(Told(phones: Self.isEnabled ? list.phones : [], removed: list.removed, at: list.at, peers: peers(for: machine)))
+            else { continue }
             if !(await server.mail(payload, to: key, at: address)) { log.error("Couldn’t mail a machine’s bridge your phones") }
+        }
+    }
+
+    /// Mails `payload` to one of your machines' bridges (one that talks to other computers
+    /// itself); false when it can't go now (no relay connection, or it isn't such a machine).
+    func mail(_ payload: [String: Any], to machine: String) async -> Bool {
+        guard let server, status == .connected, let host = machineHosts[machine], host.peers == true, host.anotherMac != true,
+              let key = Data(base64URL: host.key), let bytes = Data(base64URL: host.address), let address = LinkAddress(bytes: bytes),
+              let data = try? JSONSerialization.data(withJSONObject: payload) else { return false }
+        return await server.mail(data, to: key, at: address)
+    }
+
+    /// Whether `machine`'s bridge talks to your other computers itself (it makes its own list of
+    /// agents, and sends its agents' letters).
+    func talksToPeers(_ machine: String) -> Bool {
+        machineHosts[machine]?.peers == true && machineHosts[machine]?.anotherMac != true
+    }
+
+    /// Whether `machine`'s bridge talks to your other computers itself, and this Mac meets it at
+    /// the relay now.
+    func reachesByMail(_ machine: String) -> Bool {
+        status == .connected && machineHosts[machine]?.peers == true && machineHosts[machine]?.anotherMac != true
+    }
+
+    /// A mail frame from the relay: opened with the key of one of your machines, or dropped.
+    private func mailed(_ frame: Data) {
+        for (machine, host) in machineHosts where host.anotherMac != true {
+            guard let remote = Data(base64URL: host.key), let opened = try? Mail.open(frame, to: key, from: remote) else { continue }
+            guard let payload = try? JSONSerialization.jsonObject(with: opened) as? [String: Any] else { return }
+            onMail(machine, payload)
+            return
         }
     }
 
@@ -399,6 +511,11 @@ final class PhoneLink {
                 let connection = try await WebSocketRelay.connect(to: relay, secret: secret)
                 status = .connected
                 attempt = 0
+                // Your machines hear who's here, as soon as there's a way to tell them.
+                Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(500))
+                    await self?.tellMachines()
+                }
                 await server.serve(connection)
             } catch {
                 status = .failed("Can’t reach the relay at \(relay.host() ?? relay.absoluteString).")
@@ -431,6 +548,8 @@ final class PhoneLink {
             }
         } confirmed: { [weak self] phone in
             Task { @MainActor in self?.confirmed(phone) }
+        } mailed: { [weak self] frame, _ in
+            Task { @MainActor in self?.mailed(frame) }
         }
     }
 
@@ -568,6 +687,8 @@ final class PhoneLink {
 
     /// Lets in a phone you've paired, or one showing the pairing link's token (once, in time).
     private func authorize(_ key: Data, _ address: LinkAddress, _ hello: PhoneHello) -> Bool {
+        // Met at the relay only for your machines: no phone comes in.
+        guard Self.isEnabled else { return false }
         let encoded = key.base64URL
         // Where a paired one's notifications go changes once its session proves its own (see
         // `confirmed`): the first handshake message can be replayed from another address.

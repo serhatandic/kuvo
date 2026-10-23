@@ -14,6 +14,7 @@
 // The app writes this file to the machine, with the browsing scripts and tools filled in below.
 
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -1862,13 +1863,23 @@ async function mail(name, args, from) {
   mailSent.set(key, [...lately, Date.now()]);
   const sender = agents.find((agent) => agent.session === from)?.name ?? (here ? `an agent on ${here}` : "an agent on a machine");
   if ((target.machine ?? null) !== here) {
-    // Elsewhere: for the Mac to take on.
-    const outbox = path.join(K, "run", "outbox");
+    // Elsewhere: this machine's link sends it to the computer its agent is on, when it knows
+    // that one (one of your other computers told it so); otherwise the Mac takes it on. Whose it
+    // is to send is decided once, here, by where it's left: the link's in `outbox/sending`, which
+    // no Mac collects, the Mac's in `outbox`.
+    const told = readJSON(path.join(K, "run", "peer-agents.json")) ?? {};
+    const byLink = Object.values(told).some((peer) => (peer?.list ?? []).some((agent) => agent.session === target.session));
+    const outbox = path.join(K, "run", "outbox", ...(byLink ? ["sending"] : []));
     fs.mkdirSync(outbox, { recursive: true, mode: 0o700 });
-    const file = path.join(outbox, messageID() + ".json");
-    fs.writeFileSync(file + ".new", JSON.stringify({ from, name: sender, to: target.session, text: words }), { mode: 0o600 });
+    const id = byLink ? "ltr_" + crypto.randomBytes(16).toString("base64url") : messageID();
+    const file = path.join(outbox, id + ".json");
+    fs.writeFileSync(file + ".new", JSON.stringify({ from, name: sender, to: target.session, text: words, wait: waits && byLink, at: Date.now(), ...(byLink ? { via: "link" } : {}) }), { mode: 0o600 });
     fs.renameSync(file + ".new", file);
-    return text(`Left for ${target.name}: it goes on as soon as Kuvo Code on the user's Mac is connected (at once, if it is)${waits ? "; across machines there's no waiting for the answer, which comes to you as a message" : ""}.`);
+    if (!byLink) return text(`Left for ${target.name}: it goes on as soon as Kuvo Code on the user's Mac is connected (at once, if it is)${waits ? "; across machines there's no waiting for the answer, which comes to you as a message" : ""}.`);
+    if (!waits) return text(`On its way to ${target.name}. Its answer, if it writes one, comes to you as a message.`);
+    const answer = await letterAnswer(id);
+    if (answer?.failed) return text(`It didn't reach ${target.name}: ${answer.failed}`, true);
+    return text(answer?.text ? `${target.name} answered:\n\n` + answer.text : `${target.name} hasn't answered yet. It may still write back with send_message.`);
   }
   const id = messageID();
   const place = await placeOf(target.session);
@@ -1876,6 +1887,21 @@ async function mail(name, args, from) {
   if (!waits) return text(`Sent to ${target.name}. Its answer, if it writes one, comes to you as a message.`);
   const answer = await replyTo(target.session, id, place);
   return text(answer ? `${target.name} answered:\n\n` + answer : `${target.name} hasn't answered yet. It may still write back with send_message.`);
+}
+
+/// How a letter to another computer went, as this machine's link writes it (`run/replies/<id>.json`):
+/// its answer, or why it didn't get there; null when nothing came in eleven minutes.
+async function letterAnswer(id) {
+  const file = path.join(K, "run", "replies", id + ".json");
+  const began = Date.now();
+  while (Date.now() - began < 660_000) {
+    await sleep(2000);
+    const answer = readJSON(file);
+    if (!answer) continue;
+    fs.rmSync(file, { force: true });
+    return answer;
+  }
+  return null;
 }
 
 /// Another agent's conversation, as read_conversation on the Mac gives it: one on this machine, from

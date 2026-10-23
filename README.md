@@ -104,15 +104,14 @@ side panel and the usage menu.
   sends the same engine version's Linux build, downloaded and checked on the
   Mac, to `~/.kuvo-code` there, runs it on the machine's localhost only, and
   talks to it through an SSH tunnel, which closes with the app however it ends.
-  The engine outlives the connection, so a
-  task carries on while the Mac is off; it stops when the app quits with
-  nothing running, or after a day without the app, unless a bot's wake-up or
-  watch is waiting, which it sends or runs when it's due, or a group chat there
-  is talking, working or has a meeting set. Your settings and
-  integrations' keys reach it in files only you can read, kept there, never in
-  its environment. After the machine restarts, a line in your crontab there
-  starts the engine again as the app last started it, so the machine works on
-  its own.
+  The engine runs on its own, with or without
+  the app, so a task, a bot's wake-ups and group chats carry on while the Mac is
+  off, and it starts again by itself after a crash; after the machine restarts,
+  a line in your crontab there starts it again as the app last started it. Each
+  machine keeps its own settings and integrations' keys, in files only you can
+  read, never in its environment. Your Mac and machines reach each other
+  through Kuvo Code's relay, end to end encrypted, so agents on one write to
+  agents on another with the Mac off too.
 - **The agent's browser tools** are served by the app on `127.0.0.1`, with a
   new port and token each launch. They read a page the way
   [browser-use](https://github.com/browser-use/browser-use) does, as numbered

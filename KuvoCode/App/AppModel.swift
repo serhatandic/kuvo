@@ -149,6 +149,8 @@ final class AppModel {
     private var launch = UUID()
     /// The Mac waking from sleep, watched once for the machines (see `startMachines`).
     @ObservationIgnored var wakeWatch: (any NSObjectProtocol)?
+    /// Each minute: agents' letters by mail, again until they're there, and this Mac's agents told.
+    @ObservationIgnored var mailTick: Task<Void, Never>?
     /// This launch started the engine over once already for getting stuck starting.
     @ObservationIgnored var restartedStuckEngine = false
     private let log = Logger(subsystem: "run.kuvo.code", category: "engine")
@@ -326,6 +328,8 @@ final class AppModel {
             E2E.note(server.endpoint)
             #endif
             phoneLink.readyMachines = { [weak self] in self?.machines.engines.values.filter(\.isReady) ?? [] }
+            // With machines, this Mac meets them at the relay, phone or not.
+            phoneLink.hasMachines = { [weak self] in !(self?.machines.list.isEmpty ?? true) }
             phoneLink.bots = bots
             phoneLink.wakeUps = wakeUps
             phoneLink.browserAsks = browserAsks

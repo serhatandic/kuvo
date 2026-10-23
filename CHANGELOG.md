@@ -14,6 +14,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - With machines, the sidebar has a page for each computer, with its bots, chats and projects: swipe with two fingers between them, or click one below the sidebar (or above it, as names: Settings › Appearance › Switch computers with). It follows the tab you're on, and search covers every computer.
 - A machine's sessions, bots and group chats go by that machine's own permissions, not this Mac's.
 - The personalities you write for bots are on all your computers: one you make, change or delete on one reaches the others as Kuvo Code connects to them.
+- Agents on your machines write to agents on your other machines, and wait for their answers, with your Mac off too: your computers reach each other through Kuvo Code's relay.
 
 ## 0.7.2
 

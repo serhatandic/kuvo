@@ -786,7 +786,10 @@ final class Machines {
     }
 
     private static var leftovers: String {
+        // Its bridge stops counting your other computers among its peers (PROTOCOL.md, "Peers").
         """
+        L=$(ls -d "$K"/engine/*/opencode 2>/dev/null | tail -n 1)
+        if [ -x "$L" ] && [ -f "$K/bin/kuvo-link.js" ]; then KUVO_HOME="$K" BUN_BE_BUN=1 "$L" "$K/bin/kuvo-link.js" leave >/dev/null 2>&1 || true; fi
         rm -rf "$K/keys" "$K/box/keys"
         rm -f "$K/run/launch.env" "$K/run/launch.notes" "$K/bin/kuvo-start" "$K/bin/kuvo-launch" "$K/bin/.kuvo-boot"
         \(RemoteServer.rebootCrontabRemoval)
