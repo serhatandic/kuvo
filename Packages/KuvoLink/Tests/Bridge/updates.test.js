@@ -281,6 +281,12 @@ test("a stopped box, or one whose version isn't known, doesn't update; a lock wh
   assert.equal(link.noteOlderMacs(), true);
   assert.match(link.updatesBlocked({}, Date.now(), own), /older Kuvo Code/);
   fs.rmSync(path.join(home, "run", "attached"));
+  // One a Mac's mark saw (and hid, marking the box), noted all the same.
+  fs.rmSync(path.join(home, "run", "launchers.json"), { force: true });
+  fs.writeFileSync(path.join(home, "run", "older-mac"), "");
+  assert.equal(link.noteOlderMacs(), true);
+  assert.match(link.updatesBlocked({}, Date.now(), own), /older Kuvo Code/);
+  fs.rmSync(path.join(home, "run", "older-mac"));
   fs.rmSync(path.join(home, "run", "launchers.json"), { force: true });
 });
 

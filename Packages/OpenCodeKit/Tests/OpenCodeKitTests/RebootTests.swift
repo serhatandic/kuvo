@@ -38,7 +38,7 @@ import Testing
         try FileManager.default.createDirectory(at: engine.deletingLastPathComponent(), withIntermediateDirectories: true)
         try write(engine, """
             #!/bin/sh
-            case "$1" in *kuvo-link.js) echo $$ >"$KUVO_HOME/run/link.pid"; env | sort >"$HOME/link.env"; while :; do /bin/sleep 1; done ;; esac
+            case "$1" in *kuvo-link.js) env | sort >"$HOME/link.env"; echo $$ >"$KUVO_HOME/run/link.pid"; while :; do /bin/sleep 1; done ;; esac
             env | sort >"$HOME/engine-$$.env"
             echo "server listening on http://127.0.0.1:$3"
             while :; do /bin/sleep 1; done
@@ -327,21 +327,29 @@ import Testing
         #expect(keeper == box, "the same keeper, with the new script")
     }
 
-    /// An older Kuvo Code on a Mac (0.7 and before) puts its own `kuvo-start` there as it starts
-    /// the engine, one that only starts it after a restart: the keeper carries on, and puts itself
-    /// back (that Mac's mark left as it is, so it doesn't put its own there again).
+    /// An older Kuvo Code on a Mac (0.7 and before) puts its own `kuvo-start` and `kuvo-launch` there
+    /// as it starts the engine, a script that only starts it after a restart and a launcher that
+    /// knows neither Stop nor the box's settings: the keeper carries on, and puts both back (that
+    /// Mac's mark left as it is, so it doesn't put its own there again).
     @Test func anOlderMacsScriptLeavesTheKeeperKeeping() throws {
         defer { cleanUp() }
         try start()
         until { keeper != nil && running() != nil }
         let box = try #require(keeper)
-        let script = root.appending(path: "bin/kuvo-start"), mark = root.appending(path: "bin/.kuvo-boot")
+        let script = root.appending(path: "bin/kuvo-start"), launcher = root.appending(path: "bin/kuvo-launch"), mark = root.appending(path: "bin/.kuvo-boot")
         #expect(try String(contentsOf: root.appending(path: "bin/.kuvo-start-keeper"), encoding: .utf8) == RemoteServer.bootScript)
+        #expect(try String(contentsOf: root.appending(path: "bin/.kuvo-launch-keeper"), encoding: .utf8) == RemoteServer.bootLaunchScript)
+        try write(launcher, "#!/bin/sh\n# an older Mac's launcher\nexit 1\n", executable: true)
         try write(script, "#!/bin/sh\n# Kuvo Code: starts its engine on this machine again after a restart.\nexit 0\n", executable: true)
         try write(mark, "older")
         until { (try? String(contentsOf: script, encoding: .utf8)) == RemoteServer.bootScript }
         #expect(try String(contentsOf: script, encoding: .utf8) == RemoteServer.bootScript)
+        #expect(try String(contentsOf: launcher, encoding: .utf8) == RemoteServer.bootLaunchScript)
         #expect(try String(contentsOf: mark, encoding: .utf8) == "older")
+        // Its mark untouched too: put there without one, it's seen all the same.
+        try write(script, "#!/bin/sh\nexit 0\n", executable: true)
+        until { (try? String(contentsOf: script, encoding: .utf8)) == RemoteServer.bootScript }
+        #expect(try String(contentsOf: script, encoding: .utf8) == RemoteServer.bootScript)
         let before = rounds()
         until { rounds() >= before + 2 }
         #expect(keeper == box)
@@ -385,6 +393,10 @@ import Testing
         until { text() == "the box's\n" }
         #expect(text() == "the box's\n")
         #expect(FileManager.default.isExecutableFile(atPath: tool.path))
+        // One gone comes back too.
+        try FileManager.default.removeItem(at: tool)
+        until { text() == "the box's\n" }
+        #expect(text() == "the box's\n")
     }
 
     /// An older Kuvo Code on a Mac (0.7 and before) doesn't know Stop: connecting to a stopped box,

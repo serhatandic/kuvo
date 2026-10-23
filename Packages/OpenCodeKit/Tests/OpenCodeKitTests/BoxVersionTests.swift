@@ -51,9 +51,10 @@ import Testing
         #expect(try installs(over: "0.7.2", mine: "0.8.0-beta.1"))
     }
 
-    /// A Mac marks the box as its version once what it put there runs: its tools this version's,
-    /// and kept as the box's own (`bin/.own`, with their times), for the keeper to put back after
-    /// an older Mac's visit. Not over a newer box.
+    /// A Mac marks the box as its version once what it put there runs: its tools this version's
+    /// (`kuvo-npx` only with this version's engine there, which it runs), and kept as the box's own
+    /// (`bin/.own`, with their times), for the keeper to put back after an older Mac's visit. An
+    /// older Mac's visit since the last mark is noted for the box. Not over a newer box.
     @Test func aMarkKeepsTheBoxsOwnTools() throws {
         defer { try? FileManager.default.removeItem(at: home) }
         let run = home.appending(path: RemoteEngineInstaller.root).appending(path: "run")
@@ -63,6 +64,10 @@ import Testing
         try Data("// kuvo-browser older\n".utf8).write(to: bin.appending(path: "kuvo-browser.js"))
         try Data("an older Mac's\n".utf8).write(to: bin.appending(path: "kuvo-wake"))
         try Data().write(to: run.appending(path: "mac-installing"))
+        let engine = home.appending(path: RemoteEngineInstaller.root).appending(path: "engine/\(OpenCodeEngine.version)/opencode")
+        try FileManager.default.createDirectory(at: engine.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("#!/bin/sh\n".utf8).write(to: engine)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: engine.path)
         let mark = { (mine: String) throws -> Int32 in
             let before = BoxVersion.mine
             BoxVersion.mine = mine
@@ -85,6 +90,24 @@ import Testing
         #expect(wake == Wakes.script + "\n", "this version's, not what an older Mac left")
         #expect(try String(contentsOf: bin.appending(path: "kuvo-wake"), encoding: .utf8) == wake)
         #expect(FileManager.default.fileExists(atPath: own.appending(path: "kuvo-npx").path))
+        #expect(!FileManager.default.fileExists(atPath: run.appending(path: "older-mac").path), "a box no Kuvo Code marked yet: no older Mac to note")
+        // Without this version's engine there (one of another version kept at work), its kuvo-npx
+        // isn't put there, and the box's stays its own.
+        let npx = bin.appending(path: "kuvo-npx")
+        try Data("# the box's npx\n".utf8).write(to: npx)
+        try Data("# the box's npx\n".utf8).write(to: own.appending(path: "kuvo-npx"))
+        try FileManager.default.removeItem(at: engine)
+        #expect(try mark("0.8.0") == 0)
+        #expect(try String(contentsOf: npx, encoding: .utf8) == "# the box's npx\n")
+        #expect(try String(contentsOf: own.appending(path: "kuvo-npx"), encoding: .utf8) == "# the box's npx\n")
+        // An older Mac here since: noted with its time, before the mark hides it.
+        let attached = run.appending(path: "attached")
+        try Data().write(to: attached)
+        let visit = Date.now.addingTimeInterval(60)
+        try FileManager.default.setAttributes([.modificationDate: visit], ofItemAtPath: attached.path)
+        #expect(try mark("0.8.0") == 0)
+        let noted = try FileManager.default.attributesOfItem(atPath: run.appending(path: "older-mac").path)[.modificationDate] as? Date
+        #expect(noted.map { abs($0.timeIntervalSince(visit)) < 1 } == true)
         #expect(!FileManager.default.fileExists(atPath: own.appending(path: "kuvo-browser.js").path), "an older Mac's, put there meanwhile, isn't kept")
         let times = { (url: URL) in try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date }
         #expect(try times(own.appending(path: "kuvo-agents.js")) == times(bin.appending(path: "kuvo-agents.js")))

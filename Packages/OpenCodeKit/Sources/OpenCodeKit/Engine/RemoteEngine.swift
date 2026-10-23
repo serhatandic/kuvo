@@ -364,6 +364,8 @@ public enum BoxVersion {
     static func markScript(marks: [String: String]) -> String {
         let keep = ownTools.map { tool in
             let kept = "cp -p \"$B/\(tool)\" \"$O/.\(tool).new\" && mv -f \"$O/.\(tool).new\" \"$O/\(tool)\" || exit 1"
+            // Put there by this script only with this version's engine there, which it runs.
+            if tool == "kuvo-npx" { return "if [ -n \"$npx\" ]; then \(kept); fi" }
             guard let mark = marks[tool].map(SSHConnection.quoted) else {
                 return "if [ -f \"$B/\(tool)\" ]; then \(kept); else rm -f \"$O/\(tool)\"; fi"
             }
@@ -374,8 +376,16 @@ public enum BoxVersion {
             fi
             """
         }.joined(separator: "\n")
-        return guardScript + "\n" + RemoteEngineInstaller.folders + "\n" + Wakes.installScript + "\n" + Launcher.installScript + "\n" + """
+        return guardScript + "\n" + RemoteEngineInstaller.folders + "\n" + Wakes.installScript + "\n" + """
+        npx=
+        if [ -x "$K/engine/\(OpenCodeEngine.version)/opencode" ]; then
+        \(Launcher.installScript)
+        npx=1
+        fi
         B="$K/bin"; O="$B/.own"; mkdir -p "$O" || exit 1
+        # An older Mac here since the box was last marked: noted for the box (its updates), which
+        # the mark that follows would hide.
+        if [ -f "$B/box-version" ] && [ "$K/run/attached" -nt "$B/box-version" ]; then touch -r "$K/run/attached" "$K/run/older-mac"; fi
         ours() { [ "$(head -n 1 "$1")" = "$2" ] || [ "$(tail -n 1 "$1")" = "$2" ]; }
         \(keep)
         printf '%s' "\(mine)" >"$B/box-version.new" && mv -f "$B/box-version.new" "$B/box-version" && rm -f "$K/run/mac-installing"
@@ -708,18 +718,22 @@ public final class RemoteServer: @unchecked Sendable {
         keep)
           echo $$ >"$R/box.pid"
           boot=$(cat "$K/bin/.kuvo-boot" 2>/dev/null)
-          # A copy of itself, which it runs its starts from and puts back as kuvo-start when an
-          # older Kuvo Code on a Mac (0.7 and before) put its own there, one that only starts the
-          # engine after a restart. (The phone link starts the keeper from it then, too.)
+          # A copy of itself and of its launcher, which it runs its starts from and puts back when an
+          # older Kuvo Code on a Mac (0.7 and before) put its own there as it started the engine:
+          # a kuvo-start that only starts the engine after a restart, and a launcher that knows
+          # neither Stop nor the box's settings. (The phone link starts the keeper from it then.)
           me="$K/bin/.kuvo-start-keeper"
           if [ "$0" != "$me" ]; then
             cp -f "$0" "$me.new" 2>/dev/null && mv -f "$me.new" "$me" || me=$0
+            [ "$me" = "$0" ] || { cp -f "$K/bin/kuvo-launch" "$K/bin/.kuvo-launch-keeper.new" && mv -f "$K/bin/.kuvo-launch-keeper.new" "$K/bin/.kuvo-launch-keeper"; } 2>/dev/null
           fi
-          # Whether kuvo-start is a keeper; an older Mac's is replaced (one removed stays removed).
+          # Whether kuvo-start is a keeper; an older Mac's is replaced, with the launcher it put there
+          # (one removed stays removed).
           mine() {
             grep -q '^keep)' "$K/bin/kuvo-start" 2>/dev/null && return 0
             if [ -f "$K/bin/kuvo-start" ] && [ "$me" != "$K/bin/kuvo-start" ]; then
-              { cp -f "$me" "$K/bin/.kuvo-start.new" && chmod 700 "$K/bin/.kuvo-start.new" && mv -f "$K/bin/.kuvo-start.new" "$K/bin/kuvo-start"; } 2>/dev/null
+              { [ ! -f "$K/bin/.kuvo-launch-keeper" ] || { cp -f "$K/bin/.kuvo-launch-keeper" "$K/bin/.kuvo-launch.new" && chmod 700 "$K/bin/.kuvo-launch.new" && mv -f "$K/bin/.kuvo-launch.new" "$K/bin/kuvo-launch"; }
+                cp -f "$me" "$K/bin/.kuvo-start.new" && chmod 700 "$K/bin/.kuvo-start.new" && mv -f "$K/bin/.kuvo-start.new" "$K/bin/kuvo-start"; } 2>/dev/null
             fi
             return 1
           }
@@ -729,9 +743,11 @@ public final class RemoteServer: @unchecked Sendable {
           fails=0; next=0; started=; round=0
           while :; do
             [ -f "$K/bin/kuvo-start" ] && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
-            # Its script replaced: a newer keeper carries on; an older Mac's gets this one back.
-            if [ "$(cat "$K/bin/.kuvo-boot" 2>/dev/null)" != "$boot" ]; then
-              mine && exec sh "$K/bin/kuvo-start" keep
+            # Its script replaced: a newer keeper carries on; an older Mac's gets this one back (its
+            # mark left as it is, so that Mac doesn't put its own there again).
+            if mine; then
+              [ "$(cat "$K/bin/.kuvo-boot" 2>/dev/null)" = "$boot" ] || exec sh "$K/bin/kuvo-start" keep
+            else
               boot=$(cat "$K/bin/.kuvo-boot" 2>/dev/null)
             fi
             # An older Kuvo Code on a Mac (which touches run/attached as it connects) put its own
@@ -741,7 +757,7 @@ public final class RemoteServer: @unchecked Sendable {
             if [ -d "$K/bin/.own" ] && [ "$R/attached" -nt "$K/bin/box-version" ] && [ ! -d "$R/.updating" ] && [ -z "$(find "$R/mac-installing" -mmin -60 2>/dev/null)" ]; then
               for f in "$K"/bin/.own/*; do
                 n=${f##*/}; t="$K/bin/$n"
-                [ -f "$f" ] && { [ "$f" -nt "$t" ] || [ "$t" -nt "$f" ]; } || continue
+                [ -f "$f" ] && { [ ! -f "$t" ] || [ "$f" -nt "$t" ] || [ "$t" -nt "$f" ]; } || continue
                 if cmp -s "$f" "$t"; then touch -r "$f" "$t"; else cp -p "$f" "$K/bin/.$n.new" && mv -f "$K/bin/.$n.new" "$t"; fi
               done 2>/dev/null
             fi

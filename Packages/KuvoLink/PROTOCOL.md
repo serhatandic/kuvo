@@ -206,16 +206,20 @@ always did. The box keeps working as itself:
 - **Its tools**: an older Mac touches `run/attached` as it connects. Once that's newer than
   `bin/box-version`, the keeper puts each tool in `bin/.own` back where it differs, but not while
   a Mac installs (`run/mac-installing`, an hour at most) or the box updates itself.
-- **Its keeper**: an older Mac's `kuvo-start` only starts the engine after a restart. The keeper
-  keeps a copy of itself (`bin/.kuvo-start-keeper`), runs its starts from it, and puts it back as
-  `kuvo-start` when the one there has no `keep)` case. The bridge starts the keeper from the copy
-  then too. The keeper stops the watchdogs an older Mac's start brings.
+- **Its keeper**: an older Mac's `kuvo-start` only starts the engine after a restart, and its
+  `kuvo-launch` knows neither Stop nor the box's settings. The keeper keeps a copy of both
+  (`bin/.kuvo-start-keeper`, `bin/.kuvo-launch-keeper`), runs its starts from them, and puts them
+  back whenever the `kuvo-start` there has no `keep)` case (checked each round), leaving
+  `.kuvo-boot` as that Mac wrote it. The bridge starts the keeper from the copy then too. The
+  keeper stops the watchdogs an older Mac's start brings.
 - **Its engine**: an older Mac doesn't know Stop, so it starts one over `run/stopped`. Running,
   it isn't stopped any longer: the keeper takes `run/stopped` away, under the start lock. An
   engine without `notes.box` is an older Mac's, with that Mac's settings: a Mac that marks boxes
   starts it over once nothing runs, so the box's settings apply again.
 - `run/attached` from before the box was last marked doesn't count as an older Mac: that was
-  most likely the same Mac before it updated.
+  most likely the same Mac before it updated. A Mac marking the box after an older Mac's visit
+  notes it first (`run/older-mac`, with the visit's time), so the mark doesn't hide it.
+- Marking, a Mac puts its `kuvo-npx` there only with its own engine version there, which it runs.
 
 **A box updating itself** (bridge 0.9.18). It takes only what a key pinned in `kuvo-link.js`
 (`UPDATE_KEYS`) signed; `scripts/set-box-key.sh` makes that key.

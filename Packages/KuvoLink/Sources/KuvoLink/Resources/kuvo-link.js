@@ -3564,6 +3564,7 @@ export async function update({ now = false, keys = UPDATE_KEYS, url = UPDATE_URL
       fs.chmodSync(own, fs.statSync(from).mode & 0o777);
       files.push(`bin/.own/${tool}`);
     }
+    files.splice(0, files.length, ...installOrder(files));
 
     // Its engine, unless it's here already.
     const engineFolder = path.join(K, "engine", manifest.engine);
@@ -3684,8 +3685,11 @@ export function noteOlderMacs() {
   try {
     at = fs.statSync(path.join(RUN, "attached")).mtimeMs;
     marked = fs.statSync(path.join(K, "bin", "box-version")).mtimeMs;
-  } catch { return false; }
-  if (at <= marked || Date.now() - at > MAC_MEMORY) return false;
+  } catch {}
+  if (at <= marked) at = 0;
+  // One a Mac's mark saw since the last check (`run/older-mac`), which marking hides.
+  try { at = Math.max(at, fs.statSync(path.join(RUN, "older-mac")).mtimeMs); } catch {}
+  if (!at || Date.now() - at > MAC_MEMORY) return false;
   noteOlderMac(at);
   return true;
 }
