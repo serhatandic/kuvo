@@ -4,8 +4,8 @@
 # app's update key); it uploads it as KUVO_BOX_SIGNING_KEY for the release workflow; and it prints
 # the public key, which kuvo-link.js pins (UPDATE_KEYS). From then on, every release signs what
 # machines run by itself. Run it again on a new Mac, or if the secret is lost: it uploads the same
-# key from your keychain.
-#   scripts/set-box-key.sh
+# key from your keychain. Given a key file you made with openssl, it keeps that one instead.
+#   scripts/set-box-key.sh [key.pem]
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -13,6 +13,11 @@ REPO=${REPO:-serhatandic/kuvo-code}
 SERVICE="Kuvo Code box signing key"
 ACCOUNT=kuvo-box
 PINS=Packages/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js
+GIVEN=${1:-}
+if [ -n "$GIVEN" ] && [ ! -f "$GIVEN" ]; then
+    echo "There's no key file at $GIVEN." >&2
+    exit 1
+fi
 
 if ! command -v gh >/dev/null 2>&1; then
     echo "GitHub's command line tool isn't installed: brew install gh, then gh auth login." >&2
@@ -29,9 +34,23 @@ trap 'rm -rf "$TMP"' EXIT
 
 if KEY=$(security find-generic-password -s "$SERVICE" -a "$ACCOUNT" -w 2>/dev/null); then
     printf '%s' "$KEY" | base64 -d > "$TMP/key.pem"
+    if [ -n "$GIVEN" ] && ! cmp -s "$GIVEN" "$TMP/key.pem"; then
+        echo "Your keychain has another box signing key already. Nothing was changed." >&2
+        exit 1
+    fi
     echo "Using the box signing key in your keychain."
 else
-    if ! openssl genpkey -algorithm ed25519 -out "$TMP/key.pem" 2>/dev/null; then
+    if [ -n "$GIVEN" ]; then
+        if ! openssl pkey -in "$GIVEN" -noout -text 2>/dev/null | head -n 1 | grep -qi "ED25519"; then
+            echo "$GIVEN isn't an Ed25519 private key. Nothing was changed." >&2
+            exit 1
+        fi
+        cp "$GIVEN" "$TMP/key.pem"
+    elif grep -q 'UPDATE_KEYS = \["' "$PINS"; then
+        # A new key wouldn't be the one machines trust.
+        echo "kuvo-link.js pins a key that isn't in your keychain: give its .pem file (scripts/set-box-key.sh path/to/key.pem). Nothing was changed." >&2
+        exit 1
+    elif ! openssl genpkey -algorithm ed25519 -out "$TMP/key.pem" 2>/dev/null; then
         echo "This openssl can't make Ed25519 keys: brew install openssl, then this again." >&2
         exit 1
     fi
@@ -43,7 +62,11 @@ else
         echo "The key couldn't be kept in your keychain. Nothing was uploaded." >&2
         exit 1
     fi
-    echo "Made a box signing key and kept it in your login keychain, as \"$SERVICE\"."
+    if [ -n "$GIVEN" ]; then
+        echo "Kept $(basename "$GIVEN") in your login keychain, as \"$SERVICE\". You can delete the file now."
+    else
+        echo "Made a box signing key and kept it in your login keychain, as \"$SERVICE\"."
+    fi
 fi
 
 PUBLIC=$(openssl pkey -in "$TMP/key.pem" -pubout -outform DER | tail -c 32 | base64)

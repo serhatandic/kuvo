@@ -233,6 +233,7 @@ import Testing
         try start()
         until { running() != nil }
         let engine = try #require(running())
+        FileManager.default.createFile(atPath: run.appending(path: "attached").path, contents: nil)
         try FileManager.default.setAttributes([.modificationDate: Date.now.addingTimeInterval(-25 * 3600)], ofItemAtPath: run.appending(path: "attached").path)
         // More than ten of its wake-up rounds go by: the watchdog used to stop it then.
         until { rounds() >= 12 }

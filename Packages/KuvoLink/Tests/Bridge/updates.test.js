@@ -240,15 +240,43 @@ test("a stopped box, or one whose version isn't known, doesn't update; a lock wh
   engines.add(read(engineFile).pid);
   assert.equal(link.confirmUpdate(), true);
 
-  // An older Mac puts its own link back: the box notices, its version isn't what it says any more,
-  // and it doesn't update itself for a while.
+  // An older Mac puts its own link back: seen twice (not a Mac's install under way), the box
+  // doesn't update itself for a while, and says why; its version mark stays.
+  const own = path.join(os.homedir(), ".kuvo-code");
   assert.equal(link.checkDrift(), false);
   fs.writeFileSync(path.join(home, "bin", "kuvo-link.js"), "// an older Mac's link\n");
-  assert.equal(link.checkDrift(), true);
-  assert.equal(fs.existsSync(path.join(home, "bin", "box-version")), false);
-  assert.match(link.updatesBlocked({}, Date.now(), path.join(os.homedir(), ".kuvo-code")), /older Kuvo Code/);
+  fs.writeFileSync(path.join(home, "run", "mac-installing"), "");
+  assert.equal(link.checkDrift(), false, "not while a Mac says it puts its files in place");
+  fs.rmSync(path.join(home, "run", "mac-installing"));
+  assert.equal(link.checkDrift(), false, "seen once");
+  assert.equal(link.checkDrift(), true, "seen again");
+  assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.10.0");
+  assert.match(link.updatesBlocked({}, Date.now(), own), /older Kuvo Code/);
   assert.match(read(path.join(home, "run", "update.json")).last.message, /older Kuvo Code/);
   fs.rmSync(path.join(home, "run", "launchers.json"), { force: true });
+
+  // An older Mac connecting (it touches run/attached; this version never does) holds updates back.
+  assert.equal(link.noteOlderMacs(), false);
+  fs.writeFileSync(path.join(home, "run", "attached"), "");
+  assert.equal(link.noteOlderMacs(), true);
+  assert.match(link.updatesBlocked({}, Date.now(), own), /older Kuvo Code/);
+  fs.rmSync(path.join(home, "run", "attached"));
+  fs.rmSync(path.join(home, "run", "launchers.json"), { force: true });
+});
+
+test("an engine that won't stop changes nothing; no release for machines yet is nothing newer", async () => {
+  await machine();
+  release();
+  const keeperFile = path.join(home, "bin", "kuvo-start");
+  write(keeperFile, keeper("1.0.0").replace(/^stop\) .*$/m, "stop) exit 4 ;;"), 0o700);
+  const outcome = await update();
+  assert.match(outcome.message, /couldn't be stopped/);
+  assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.9.0");
+  assert.equal(fs.existsSync(path.join(home, "updates", "rollback")), false);
+  assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), false);
+  assert.equal(read(engineFile).version, "1.0.0");
+  served = {};
+  assert.deepEqual(await update(), { result: "current", version: "0.9.0" });
 });
 
 test("a release that isn't what it says, an older one, or one too new for the night changes nothing", async () => {
@@ -277,9 +305,11 @@ test("kuvo/update says how the box stands, and turns updating by itself off", as
   };
   const status = await ask("GET");
   assert.equal(status.status, 200);
-  assert.deepEqual([status.json.setUp, status.json.auto, status.json.version, status.json.engine], [false, true, "0.9.0", "1.0.0"]);
+  assert.deepEqual([status.json.setUp, status.json.auto, status.json.version, status.json.engine], [true, true, "0.9.0", "1.0.0"]);
   assert.equal((await ask("PATCH", { auto: false })).json.auto, false);
   assert.equal(link.updateSettings().auto, false);
   assert.equal((await ask("PATCH", { auto: "no" })).status, 400);
-  assert.equal((await ask("POST", { now: true })).status, 409, "not set up: no keys pinned");
+  const now = await ask("POST", { now: true });
+  assert.equal(now.status, 409, "a test's folder, not a machine's own");
+  assert.match(now.json.message, /own Kuvo Code folder/);
 });

@@ -197,8 +197,8 @@ app's version, written by a Mac after it sets the box up, or by the box when it 
   `tolerantIDs[macID]`, set again at each setup, and notes in `run/launchers.json` which Mac
   started the engine (from `run/engine.json`'s `notes.mac`).
 
-**A box updating itself** (bridge 0.9.18). It's off until a release key is pinned in
-`kuvo-link.js` (`UPDATE_KEYS`).
+**A box updating itself** (bridge 0.9.18). It takes only what a key pinned in `kuvo-link.js`
+(`UPDATE_KEYS`) signed; `scripts/set-box-key.sh` makes that key.
 - **What a release is**: `boxes.json` from `https://github.com/serhatandic/kuvo-code/releases/latest/download/`,
   `{manifest, signature, key}`. The manifest is `{kuvo: "box/1", version, released, engine,
   linux: {x86_64|aarch64: {url, integrity}}, pack: {url, sha256, size}}`. The signature is
@@ -214,27 +214,40 @@ app's version, written by a Mac after it sets the box up, or by the box when it 
     isn't known;
   - to a version that isn't newer;
   - while a conversation works there or a browser ask waits;
-  - while a Mac that started the engine in the last 30 days isn't in `tolerantIDs` as `true`.
+  - while a Mac that started the engine in the last 30 days isn't in `tolerantIDs` as `true`;
+  - while an older Mac connected in the last 30 days. Kuvo Code 0.7 and before touches
+    `run/attached` each time it connects, and later versions never do.
+  - When the newest release has no `boxes.json` (one from before machines updated themselves), it's
+    "current", not a failure.
 - **How**:
   1. It checks the pack's SHA-256, each file's, and the engine's npm `integrity`.
   2. It tries the new engine (`--version`), the new bridge with it (`selftest`), and the new
      keeper (`sh -n`).
-  3. It stops the engine, and goes on only once it has stopped. It keeps each file it replaces,
-     and the engine's data (`opencode.db` with its `-wal` and `-shm`) when the engine version
-     changes, in `updates/rollback`, with `restore.sh`. That script checks each step and keeps what
-     was kept until it's all back; it puts the database back without the new engine's journal.
-  4. It writes `run/update-trial` and swaps file by file: `bin/box-version` first, `bin/.kuvo-boot`
-     last. Then it starts again. One update at a time, by its process (`run/.updating/pid`); while
-     it runs, `setup` doesn't restart the bridge, and `restore.sh` doesn't run from the keeper.
+  3. With another engine version, it first checks there's room to keep the engine's data. It keeps
+     each file it replaces in `updates/rollback`, writes `restore.sh` and `run/update-trial`, and
+     only then stops the engine. It goes on only once the engine has stopped; if it can't stop it,
+     nothing has changed, and it starts the engine again. With another engine version, it keeps
+     the engine's data (`opencode.db` with its `-wal` and `-shm`) whole or not at all
+     (`data.partial`, renamed once copied).
+     - `restore.sh` checks each step and keeps what was kept until it's all back.
+     - It moves the database back (same disk, no room needed), without the new engine's journal,
+       and only once it was kept.
+  4. It swaps file by file: `bin/box-version` first, `bin/.kuvo-boot` last. Then it starts again.
+     One update runs at a time, by its process (`run/.updating/pid`, the link's). While it runs,
+     `setup` doesn't restart the bridge, and the keeper doesn't run `restore.sh`.
   5. Once the engine answers as the new version (and the coding agents' bridge, if it ran), the
      old bridge goes and the keeper starts the new one. The new bridge confirms the update after
      the relay's welcome or three minutes: what was kept, and other engines, go.
   6. If the new version doesn't come up, `restore.sh` puts back what was there. The keeper runs
-     it too when `run/update-trial` is twenty minutes old. Without a bridge to start again (no
-     phones, no peers), `kuvo-link.js update` confirms it itself.
+     it too when `run/update-trial` is twenty minutes old, five minutes apart (`run/update-restore`).
+     After six failed tries it gives up and starts what's there. Without a bridge to start again
+     (no phones, no peers), `kuvo-link.js update` confirms it itself.
   7. It notes what it installed (`updates/installed.json`). Each night it checks the files against
-     that note. If an older Mac put its own files back, the box drops its version mark (a Mac sets
-     it up again) and doesn't update itself for 30 days.
+     that note. A Mac notes `run/mac-installing` while it puts its files in place, and marking the
+     box clears it. Drift seen on two checks, and not while a Mac is installing, means an older Mac
+     put its own files back. The box then keeps its version mark, so no other older Mac takes it
+     further back, says why, and doesn't update itself for 30 days.
+  - What the new engine did during a trial that's rolled back is lost with it.
   - The coding agents' own data (`agents`) isn't kept for a rollback.
 - **State**: `run/update.json` holds `{latest, checked, last: {at, result, message?, from?, to?},
   running?, trial?, night?}`.

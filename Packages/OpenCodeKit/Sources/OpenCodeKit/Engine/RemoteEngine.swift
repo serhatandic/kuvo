@@ -337,10 +337,16 @@ public enum BoxVersion {
         return text.isEmpty ? nil : text
     }
 
+    /// Notes there that this app puts its files in place now (`run/mac-installing`), so the box
+    /// doesn't take them for an older Mac's, put back over what it updated itself to.
+    public static func installing(on connection: SSHConnection) async throws {
+        try await connection.run("R=\"$HOME/\(RemoteEngineInstaller.root)/run\"; mkdir -p \"$R\" && touch \"$R/mac-installing\"")
+    }
+
     /// Marks the box as this app's, once what it put there runs (not over a newer one's).
     public static func mark(on connection: SSHConnection) async throws {
         try await connection.run(guardScript + "\n" + """
-            B="$HOME/\(RemoteEngineInstaller.root)/bin"; mkdir -p "$B" && printf '%s' "\(mine)" >"$B/box-version.new" && mv -f "$B/box-version.new" "$B/box-version"
+            B="$HOME/\(RemoteEngineInstaller.root)/bin"; mkdir -p "$B" && printf '%s' "\(mine)" >"$B/box-version.new" && mv -f "$B/box-version.new" "$B/box-version" && rm -f "$HOME/\(RemoteEngineInstaller.root)/run/mac-installing"
             """)
     }
 }
@@ -461,7 +467,6 @@ public final class RemoteServer: @unchecked Sendable {
             [ -f "$K/bin/kuvo-start" ] && sh "$K/bin/kuvo-start" box >/dev/null 2>&1
             pid=$(sed -n 's/^{"pid":\\([0-9]*\\),.*/\\1/p' "$R/engine.json" 2>/dev/null)
             if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && grep -q opencode "/proc/$pid/cmdline" 2>/dev/null; then
-              touch "$R/attached"
               cat "$R/engine.json"
             elif [ -f "$R/stopped" ]; then
               echo stopped
@@ -691,9 +696,19 @@ public final class RemoteServer: @unchecked Sendable {
             fi
             # An update whose new link never said it's well (it doesn't start, the machine went
             # down halfway): after twenty minutes, back to what was there (PROTOCOL.md, "Updates").
+            # Five minutes between tries; after six, it gives up and starts what's there.
             if [ -f "$R/update-trial" ] && [ -f "$K/updates/rollback/restore.sh" ]; then
               tried=$(stat -c %Y "$R/update-trial" 2>/dev/null || echo "$now")
-              [ $((now - tried)) -gt 1200 ] && sh "$K/updates/rollback/restore.sh" >/dev/null 2>&1
+              last=$(stat -c %Y "$R/update-restore" 2>/dev/null || echo 0)
+              tries=$(cat "$R/update-restore" 2>/dev/null || echo 0)
+              if [ $((now - tried)) -gt 1200 ] && [ $((now - last)) -gt 300 ]; then
+                if [ "$tries" -lt 6 ]; then
+                  echo $((tries + 1)) >"$R/update-restore"
+                  sh "$K/updates/rollback/restore.sh" >/dev/null 2>&1 && rm -f "$R/update-restore"
+                else
+                  rm -f "$R/update-trial" "$R/update-restore" "$R/stopped"
+                fi
+              fi
             fi
             # The phone link, while a phone is paired with it or a pairing's open.
             if [ -f "$R/link.needed" ] && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && ! is "$(cat "$R/link.pid" 2>/dev/null)" kuvo-link; then
@@ -865,7 +880,6 @@ public final class RemoteServer: @unchecked Sendable {
         # Bots' and sessions' folders under this root, for `kuvo-wake` (its default is the app's own root).
         export KUVO_BOTS="$K/bots" KUVO_WAKES="$K/wakes"
         cd "$K/workspace"
-        touch "$R/attached"
         env -u KUVO_AGENTS_PASSWORD -u BUN_BE_BUN setsid "$K/engine/$V/opencode" serve --port "$port" --hostname 127.0.0.1 >"$R/engine.log" 2>&1 </dev/null &
         pid=$!
         i=0

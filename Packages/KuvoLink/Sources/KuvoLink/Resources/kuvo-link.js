@@ -1061,17 +1061,6 @@ export function engineConnect(readEngine = readEngineFile) {
   };
 }
 
-// The engine's watchdog stops it after a day without the app; a phone counts as the app.
-let touched = 0;
-function touchAttached() {
-  if (Date.now() - touched < 5 * 60_000) return;
-  touched = Date.now();
-  try {
-    const now = new Date();
-    fs.utimesSync(path.join(RUN, "attached"), now, now);
-  } catch {}
-}
-
 // When a phone last used this machine, in `run/link.seen`: while one has in the last week, the
 // engine stays up for it (the bridge's timer, and the Mac leaving it running as it quits), so the
 // machine's sessions and bots are there whenever it asks; a phone lost or unpaired elsewhere
@@ -1080,7 +1069,6 @@ export const SEEN_FILE = path.join(RUN, "link.seen");
 export const KEEP_FOR = 7 * 24 * 60 * 60_000;
 let seen = 0;
 function phoneHere() {
-  touchAttached();
   if (Date.now() - seen < 5 * 60_000) return;
   seen = Date.now();
   try {
@@ -3280,8 +3268,9 @@ export function confirmPhone(phone) {
 // starts again; if that doesn't come up well, or the new bridge never says it's well (the keeper
 // waits twenty minutes), it goes back to what it had.
 
-// The releases' public keys (scripts/sign-box.mjs), base64: with none, no box updates itself.
-export const UPDATE_KEYS = [];
+// The releases' public keys (scripts/set-box-key.sh, scripts/sign-box.mjs), base64: with none, no
+// box updates itself.
+export const UPDATE_KEYS = ["iLSFoygG8wg+r2yj+/qnoMHpZIhPKRNLlf9vpEKmx0A="];
 const UPDATE_URL = "https://github.com/serhatandic/kuvo-code/releases/latest/download/boxes.json";
 const UPDATE_SETTINGS = path.join(BOX, "update.json");
 const UPDATE_STATE = path.join(RUN, "update.json");
@@ -3418,7 +3407,7 @@ export function isUpdating() {
   if (!fs.existsSync(UPDATE_LOCK)) return false;
   let pid = null;
   try { pid = Number(fs.readFileSync(path.join(UPDATE_LOCK, "pid"), "utf8")); } catch {}
-  if (pid) return alive(pid);
+  if (pid) return runs(pid, "kuvo-link");
   // Just made, its process not written yet.
   try { return Date.now() - fs.statSync(UPDATE_LOCK).mtimeMs < 60_000; } catch { return false; }
 }
@@ -3445,7 +3434,8 @@ function keepForRollback(files, withData) {
   const lines = [
     "#!/bin/sh",
     `K=${quote(K)}; B=${quote(ROLLBACK)}`,
-    `p=$(cat "$K/run/.updating/pid" 2>/dev/null); [ -n "$p" ] && [ "$p" != "\${KUVO_UPDATER:-}" ] && kill -0 "$p" 2>/dev/null && exit 0`,
+    `p=$(cat "$K/run/.updating/pid" 2>/dev/null)`,
+    `if [ -n "$p" ] && [ "$p" != "\${KUVO_UPDATER:-}" ] && kill -0 "$p" 2>/dev/null && { [ ! -d /proc ] || grep -q kuvo-link "/proc/$p/cmdline" 2>/dev/null; }; then exit 0; fi`,
     `sh "$K/bin/kuvo-start" stop >/dev/null 2>&1 || exit 1`,
   ];
   for (const file of files) {
@@ -3460,26 +3450,39 @@ function keepForRollback(files, withData) {
     }
   }
   if (withData) {
-    // The database with its own journal and index (none, when it was closed cleanly): never the
-    // new engine's beside the old database.
+    // The database as it was kept, moved back (on the same disk: no room needed), with its own
+    // journal and index (none, when it was closed cleanly), never the new engine's beside it. Only
+    // once it was kept (the update may have stopped before).
     lines.push(
       `D="$K/data/opencode"`,
-      `for n in opencode.db opencode.db-wal opencode.db-shm; do if [ -f "$B/data/$n" ]; then cp -p "$B/data/$n" "$D/$n.new" || exit 1; fi; done`,
-      `rm -f "$D/opencode.db-wal" "$D/opencode.db-shm"`,
-      `for n in opencode.db opencode.db-wal opencode.db-shm; do if [ -f "$D/$n.new" ]; then mv -f "$D/$n.new" "$D/$n" || exit 1; fi; done`,
+      `if [ -f "$B/data/opencode.db" ]; then`,
+      `  rm -f "$D/opencode.db-wal" "$D/opencode.db-shm" || exit 1`,
+      `  for n in opencode.db opencode.db-wal opencode.db-shm; do if [ -f "$B/data/$n" ]; then mv -f "$B/data/$n" "$D/$n" || exit 1; fi; done`,
+      `fi`,
     );
   }
-  lines.push(`sh "$K/bin/kuvo-start" start >/dev/null 2>&1`, `rm -f "$K/run/update-trial"`, `rm -rf "$B"`);
+  lines.push(`sh "$K/bin/kuvo-start" start >/dev/null 2>&1`, `rm -f "$K/run/update-trial" "$K/run/update-restore"`, `rm -rf "$B"`);
   writePrivate(path.join(ROLLBACK, "restore.sh"), lines.join("\n") + "\n");
 }
 
-// The engine's data as it is, the engine stopped, beside what's put back.
+// The engine's data as it is, the engine stopped, beside what's put back: whole or not at all (a
+// copy cut short is never put back).
 function keepData() {
-  const folder = path.join(K, "data", "opencode");
-  fs.mkdirSync(path.join(ROLLBACK, "data"), { recursive: true, mode: 0o700 });
+  const folder = path.join(K, "data", "opencode"), partial = path.join(ROLLBACK, "data.partial");
+  fs.rmSync(partial, { recursive: true, force: true });
+  fs.mkdirSync(partial, { recursive: true, mode: 0o700 });
   for (const name of ["opencode.db", "opencode.db-wal", "opencode.db-shm"]) {
-    if (fs.existsSync(path.join(folder, name))) fs.copyFileSync(path.join(folder, name), path.join(ROLLBACK, "data", name));
+    if (fs.existsSync(path.join(folder, name))) fs.copyFileSync(path.join(folder, name), path.join(partial, name));
   }
+  fs.renameSync(partial, path.join(ROLLBACK, "data"));
+}
+
+// Whether there's room to keep the engine's data beside it, with some to spare.
+function roomForData() {
+  let size = 0;
+  for (const name of ["opencode.db", "opencode.db-wal"]) try { size += fs.statSync(path.join(K, "data", "opencode", name)).size; } catch {}
+  const free = ran("df", ["-Pk", K]).output.split("\n").pop()?.trim().split(/\s+/)[3];
+  return !free || Number(free) * 1024 > size * 1.1 + 200_000_000;
 }
 
 // Whether the engine came up as `version` and answers, and the coding agents' bridge with it when
@@ -3515,10 +3518,18 @@ export async function update({ now = false, keys = UPDATE_KEYS, url = UPDATE_URL
   const before = boxVersion();
   if (!before) return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
   if (!takeUpdateLock()) return { result: "busy", message: "It's updating already." };
-  let trial = false, stopped = false, stage = null;
+  let trial = false, stopped = false, swapped = false, stage = null;
   try {
     step("checking");
-    const manifest = verifyBoxes((await fetched(url, 1_000_000, 30_000)).toString("utf8"), keys);
+    let released;
+    try {
+      released = await fetched(url, 1_000_000, 30_000);
+    } catch (error) {
+      // The newest release has none for machines (one from before them): nothing newer for it.
+      if (/answered 404/.test(String(error?.message))) return { result: "current", version: before };
+      throw error;
+    }
+    const manifest = verifyBoxes(released.toString("utf8"), keys);
     noteUpdate({ latest: manifest.version, checked: clock() });
     if (!newerVersion(manifest.version, before)) return { result: "current", version: before };
     if (!now && clock() - (Date.parse(manifest.released) || clock()) < RELEASE_AGE) return { result: "waiting", version: manifest.version, message: "It takes a release a few days after it's out." };
@@ -3574,14 +3585,18 @@ export async function update({ now = false, keys = UPDATE_KEYS, url = UPDATE_URL
     try { previous = readEngineFile(); } catch {}
     const withAgents = Boolean(previous?.agentsPort) && fs.existsSync(path.join(stage, "files", "bin", "kuvo-agents.js"));
     const otherEngine = previous?.version !== manifest.engine;
-    stopped = true;
-    const stop = ran("sh", [path.join(K, "bin", "kuvo-start"), "stop"], {}, 300_000);
-    if (stop.status !== 0 || (previous?.pid && alive(previous.pid))) throw new Error("Its engine couldn't be stopped to update it.");
+    if (otherEngine && !roomForData()) throw new Error("There isn't room on it to keep its data while it updates.");
+    // What's there kept, and how to put it back, before the engine stops: a stop the update
+    // doesn't get past (the machine going down) is put back too, its engine started again.
     keepForRollback(files, otherEngine);
-    if (otherEngine) keepData();
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock() }, running: null });
     fs.writeFileSync(UPDATE_TRIAL, manifest.version, { mode: 0o600 });
     trial = true;
+    stopped = true;
+    const stop = ran("sh", [path.join(K, "bin", "kuvo-start"), "stop"], {}, 300_000);
+    if (stop.status !== 0 || (previous?.pid && alive(previous.pid))) throw new Error("Its engine couldn't be stopped to update it.");
+    if (otherEngine) keepData();
+    swapped = true;
     if (staged) {
       fs.mkdirSync(engineFolder, { recursive: true, mode: 0o700 });
       fs.renameSync(staged, path.join(engineFolder, "opencode"));
@@ -3604,12 +3619,17 @@ export async function update({ now = false, keys = UPDATE_KEYS, url = UPDATE_URL
     const message = String(error?.message ?? error).slice(0, 300);
     // Room first: what was downloaded goes before anything's put back.
     if (stage) fs.rmSync(stage, { recursive: true, force: true });
-    if (trial) {
+    if (swapped) {
       ran("sh", [path.join(ROLLBACK, "restore.sh")], { KUVO_UPDATER: String(process.pid) }, 600_000);
-      noteUpdate({ trial: null });
-    } else if (stopped) {
-      ran("sh", [path.join(K, "bin", "kuvo-start"), "start"]);
+    } else {
+      // Nothing changed: what was kept goes, and the engine starts again if it was stopped.
+      if (trial) {
+        fs.rmSync(UPDATE_TRIAL, { force: true });
+        fs.rmSync(ROLLBACK, { recursive: true, force: true });
+      }
+      if (stopped) ran("sh", [path.join(K, "bin", "kuvo-start"), "start"]);
     }
+    if (trial) noteUpdate({ trial: null });
     noteUpdate({ last: { at: clock(), result: "failed", message, from: before } });
     return { result: "failed", message };
   } finally {
@@ -3632,28 +3652,54 @@ export function confirmUpdate(clock = Date.now) {
   return true;
 }
 
+// An older Mac (Kuvo Code 0.7 and before) to hold updates back for, from now: it would put back
+// its own files.
+function noteOlderMac(at) {
+  let launchers = {};
+  try { launchers = JSON.parse(fs.readFileSync(LAUNCHERS, "utf8")) ?? {}; } catch {}
+  if ((launchers["an older Mac"] ?? 0) >= at) return;
+  launchers["an older Mac"] = at;
+  try { writePrivate(LAUNCHERS, JSON.stringify(launchers)); } catch {}
+}
+
+// An older Kuvo Code on a Mac touches `run/attached` each time it connects, and this one never
+// does: one that did lately holds this box's updates back (it would put back its own files).
+export function noteOlderMacs() {
+  let at = 0;
+  try { at = fs.statSync(path.join(RUN, "attached")).mtimeMs; } catch { return false; }
+  if (Date.now() - at > MAC_MEMORY) return false;
+  noteOlderMac(at);
+  return true;
+}
+
 // Whether a Mac that doesn't leave a newer box as it is (an older Kuvo Code) put its own files back
-// since the box updated itself: then the box's version isn't what it says (it's unmarked, for a Mac
-// to set it up again), and it doesn't update itself for a while, as that Mac would undo it.
+// since the box updated itself (seen twice, ten minutes apart, and not while a Mac says it puts its
+// files in place): then the box doesn't update itself for a while, as that Mac would undo it, and
+// says why. Its version mark stays, so no other older Mac takes it further back.
 export function checkDrift(now = Date.now()) {
-  const record = path.join(UPDATES, "installed.json");
+  const record = path.join(UPDATES, "installed.json"), pending = path.join(RUN, "update-drift");
   let installed = null;
   try { installed = JSON.parse(fs.readFileSync(record, "utf8")); } catch { return false; }
   // A Mac marked it since (its own files, as they should be).
   if (installed?.version !== boxVersion() || !isObject(installed.files)) {
     fs.rmSync(record, { force: true });
+    fs.rmSync(pending, { force: true });
     return false;
   }
   const changed = Object.entries(installed.files).some(([file, sha]) => {
     try { return hexSHA256(fs.readFileSync(path.join(K, file))) !== sha; } catch { return true; }
   });
-  if (!changed || isUpdating()) return false;
-  fs.rmSync(path.join(K, "bin", "box-version"), { force: true });
-  fs.rmSync(record, { force: true });
-  let launchers = {};
-  try { launchers = JSON.parse(fs.readFileSync(LAUNCHERS, "utf8")) ?? {}; } catch {}
-  launchers["an older Mac"] = now;
-  try { writePrivate(LAUNCHERS, JSON.stringify(launchers)); } catch {}
+  let installing = 0;
+  try { installing = fs.statSync(path.join(RUN, "mac-installing")).mtimeMs; } catch {}
+  if (!changed || isUpdating() || now - installing < 3600_000) {
+    fs.rmSync(pending, { force: true });
+    return false;
+  }
+  if (textOf(pending)?.trim() !== installed.version) {
+    try { writePrivate(pending, installed.version); } catch {}
+    return false;
+  }
+  noteOlderMac(now);
   noteUpdate({ last: { at: now, result: "failed", message: "An older Kuvo Code on a Mac put its own files back here: update Kuvo Code on your Macs." } });
   return true;
 }
@@ -3867,6 +3913,7 @@ async function run() {
   setTimeout(() => { try { confirmUpdate(); } catch {} }, 180_000);
   const nightly = () => {
     noteLauncher();
+    noteOlderMacs();
     try { checkDrift(); } catch {}
     const night = updateNight();
     if (!night || !updateSettings().auto || updateState().night === night || !UPDATE_KEYS.length) return;

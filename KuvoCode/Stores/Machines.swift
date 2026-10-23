@@ -315,6 +315,8 @@ final class MachineEngine {
             // what's there runs as it is, and nothing of this app's goes over it.
             boxIsNewer = BoxVersion.isNewer(try await BoxVersion.read(on: connection))
             try check()
+            // What follows puts this app's files there: the box doesn't take them for an older Mac's.
+            if !boxIsNewer { try? await BoxVersion.installing(on: connection) }
             // The box's own tool and keeper first, which what follows counts on.
             try await RemoteServer.installBoot(on: connection)
             var found = try await RemoteServer.find(on: connection)
