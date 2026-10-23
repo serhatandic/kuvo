@@ -27,7 +27,9 @@ enum BoxRelease {
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: link.path)
         try MachineBox.catalogJSON().write(to: bin.appending(path: "mcp-catalog.json"))
         try Data(MachineBrowserInstaller.helper.text.utf8).write(to: bin.appending(path: "kuvo-browser.js"))
-        if let agents = MachineEngine.agentsBridge { try Data(agents.text.utf8).write(to: bin.appending(path: "kuvo-agents.js")) }
+        // Never a release without it: a box would keep its old one beside a new engine.
+        guard let agents = MachineEngine.agentsBridge else { throw CocoaError(.fileNoSuchFile) }
+        try Data(agents.text.utf8).write(to: bin.appending(path: "kuvo-agents.js"))
         try Data(AppInfo.version.utf8).write(to: bin.appending(path: "box-version"))
         var files: [String: String] = [:]
         let base = folder.standardizedFileURL.path + "/"

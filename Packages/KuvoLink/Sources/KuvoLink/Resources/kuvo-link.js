@@ -3403,38 +3403,77 @@ async function fetched(url, most, timeout) {
 
 const hexSHA256 = data => crypto.createHash("sha256").update(data).digest("hex");
 
-// `command` with `args`, in the box's folder, its environment the bridge's: its exit status and output.
-function ran(command, args, env = {}) {
-  const result = spawnSync(command, args, { cwd: K, env: { ...process.env, ...env }, encoding: "utf8", timeout: 120_000 });
+// `command` with `args`, in the box's folder, its environment the bridge's: its exit status and
+// output, within `timeout` ms.
+function ran(command, args, env = {}, timeout = 120_000) {
+  const result = spawnSync(command, args, { cwd: K, env: { ...process.env, ...env }, encoding: "utf8", timeout });
   return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
 }
 
 const quote = text => `'${String(text).replace(/'/g, `'\\''`)}'`;
 
-// Keeps what's there now of each of a release's files, and the engine's data when another engine
-// version comes, with a script that puts them back (`restore.sh`, run by the bridge, or by the
-// keeper once the update's trial runs out).
-function keepForRollback(files, keepData) {
+// An update under way, by its process (`run/.updating/pid`): one at a time, and one whose process
+// went isn't one.
+export function isUpdating() {
+  if (!fs.existsSync(UPDATE_LOCK)) return false;
+  let pid = null;
+  try { pid = Number(fs.readFileSync(path.join(UPDATE_LOCK, "pid"), "utf8")); } catch {}
+  if (pid) return alive(pid);
+  // Just made, its process not written yet.
+  try { return Date.now() - fs.statSync(UPDATE_LOCK).mtimeMs < 60_000; } catch { return false; }
+}
+
+function takeUpdateLock() {
+  try {
+    fs.mkdirSync(UPDATE_LOCK);
+  } catch {
+    if (isUpdating()) return false;
+    fs.rmSync(UPDATE_LOCK, { recursive: true, force: true });
+    try { fs.mkdirSync(UPDATE_LOCK); } catch { return false; }
+  }
+  fs.writeFileSync(path.join(UPDATE_LOCK, "pid"), String(process.pid), { mode: 0o600 });
+  return true;
+}
+
+// Keeps what's there now of each of a release's files, and with another engine version the
+// engine's data (stopped), with `restore.sh`, which puts them back: run by the update when the new
+// version doesn't come up, or by the keeper once the update's trial runs out (not while an update
+// runs). Each step checked: one that fails leaves what was kept, for the next try.
+function keepForRollback(files, withData) {
   fs.rmSync(ROLLBACK, { recursive: true, force: true });
   fs.mkdirSync(path.join(ROLLBACK, "files"), { recursive: true, mode: 0o700 });
-  const lines = ["#!/bin/sh", `K=${quote(K)}; B=${quote(ROLLBACK)}`, `sh "$K/bin/kuvo-start" stop >/dev/null 2>&1`];
+  const lines = [
+    "#!/bin/sh",
+    `K=${quote(K)}; B=${quote(ROLLBACK)}`,
+    `p=$(cat "$K/run/.updating/pid" 2>/dev/null); [ -n "$p" ] && [ "$p" != "\${KUVO_UPDATER:-}" ] && kill -0 "$p" 2>/dev/null && exit 0`,
+    `sh "$K/bin/kuvo-start" stop >/dev/null 2>&1 || exit 1`,
+  ];
   for (const file of files) {
     const from = path.join(K, file);
     if (fs.existsSync(from)) {
       fs.mkdirSync(path.dirname(path.join(ROLLBACK, "files", file)), { recursive: true, mode: 0o700 });
       fs.copyFileSync(from, path.join(ROLLBACK, "files", file));
       fs.chmodSync(path.join(ROLLBACK, "files", file), fs.statSync(from).mode & 0o777);
-      lines.push(`cp -p "$B/files/"${quote(file)} "$K/"${quote(file)}.new && mv -f "$K/"${quote(file)}.new "$K/"${quote(file)}`);
+      lines.push(`cp -p "$B/files/"${quote(file)} "$K/"${quote(file)}.new && mv -f "$K/"${quote(file)}.new "$K/"${quote(file)} || exit 1`);
     } else {
-      lines.push(`rm -f "$K/"${quote(file)}`);
+      lines.push(`rm -f "$K/"${quote(file)} || exit 1`);
     }
   }
-  if (keepData) lines.push(`[ -d "$B/data" ] && for f in "$B/data/"*; do [ -f "$f" ] && cp -p "$f" "$K/data/opencode/$(basename "$f")"; done`);
+  if (withData) {
+    // The database with its own journal and index (none, when it was closed cleanly): never the
+    // new engine's beside the old database.
+    lines.push(
+      `D="$K/data/opencode"`,
+      `for n in opencode.db opencode.db-wal opencode.db-shm; do if [ -f "$B/data/$n" ]; then cp -p "$B/data/$n" "$D/$n.new" || exit 1; fi; done`,
+      `rm -f "$D/opencode.db-wal" "$D/opencode.db-shm"`,
+      `for n in opencode.db opencode.db-wal opencode.db-shm; do if [ -f "$D/$n.new" ]; then mv -f "$D/$n.new" "$D/$n" || exit 1; fi; done`,
+    );
+  }
   lines.push(`sh "$K/bin/kuvo-start" start >/dev/null 2>&1`, `rm -f "$K/run/update-trial"`, `rm -rf "$B"`);
   writePrivate(path.join(ROLLBACK, "restore.sh"), lines.join("\n") + "\n");
 }
 
-// The engine's data, kept beside what's put back (its files, stopped).
+// The engine's data as it is, the engine stopped, beside what's put back.
 function keepData() {
   const folder = path.join(K, "data", "opencode");
   fs.mkdirSync(path.join(ROLLBACK, "data"), { recursive: true, mode: 0o700 });
@@ -3461,6 +3500,10 @@ async function cameUp(version, withAgents, timeout = 120_000, readEngine = readE
   return false;
 }
 
+// The order files go in: its version first (a Mac connecting meanwhile leaves the box as it is),
+// the keeper's mark last (the keeper starts its new script only once the script is there).
+const installOrder = files => [...files].sort((a, b) => (a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1));
+
 // Updates the box to the newest release, when it's newer: `now` (Update Now) takes it whatever its
 // age. What happened: `{result: "updated" | "current" | "waiting" | "busy" | "off" | "blocked" |
 // "failed", version?, message?}`; once "updated", the bridge goes for the keeper to start the new
@@ -3468,17 +3511,11 @@ async function cameUp(version, withAgents, timeout = 120_000, readEngine = readE
 export async function update({ now = false, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, upWithin = 120_000 } = {}) {
   if (!keys.length) return { result: "off", message: "Updates aren't set up for this machine yet." };
   if (blocked) return { result: "blocked", message: blocked };
-  try {
-    fs.mkdirSync(UPDATE_LOCK);
-  } catch {
-    let since = 0;
-    try { since = fs.statSync(UPDATE_LOCK).mtimeMs; } catch {}
-    if (clock() - since < 3600_000) return { result: "busy", message: "It's updating already." };
-    fs.rmSync(UPDATE_LOCK, { recursive: true, force: true });
-    fs.mkdirSync(UPDATE_LOCK);
-  }
-  let trial = false;
+  if (fs.existsSync(path.join(RUN, "stopped"))) return { result: "blocked", message: "Its engine is stopped: start it to update it." };
   const before = boxVersion();
+  if (!before) return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
+  if (!takeUpdateLock()) return { result: "busy", message: "It's updating already." };
+  let trial = false, stopped = false, stage = null;
   try {
     step("checking");
     const manifest = verifyBoxes((await fetched(url, 1_000_000, 30_000)).toString("utf8"), keys);
@@ -3488,7 +3525,7 @@ export async function update({ now = false, keys = UPDATE_KEYS, url = UPDATE_URL
     if (await boxBusy()) return { result: "busy", message: "Something is running there now." };
 
     step("downloading");
-    const stage = path.join(UPDATES, manifest.version);
+    stage = path.join(UPDATES, manifest.version);
     fs.rmSync(stage, { recursive: true, force: true });
     fs.mkdirSync(path.join(stage, "files"), { recursive: true, mode: 0o700 });
     const pack = await fetched(manifest.pack.url, 100_000_000, 300_000);
@@ -3497,7 +3534,7 @@ export async function update({ now = false, keys = UPDATE_KEYS, url = UPDATE_URL
     if (ran("tar", ["xzf", path.join(stage, "pack.tgz"), "-C", path.join(stage, "files")]).status !== 0) throw new Error("The release's files couldn't be unpacked.");
     const box = JSON.parse(fs.readFileSync(path.join(stage, "files", "box.json"), "utf8"));
     if (box?.version !== manifest.version || box.engine !== manifest.engine || !isObject(box.files)) throw new Error("The release's files aren't what it says.");
-    const files = Object.keys(box.files).sort();
+    const files = installOrder(Object.keys(box.files));
     for (const file of files) {
       if (!BOX_FILE.test(file) || file.split("/").includes("..")) throw new Error("The release names a file outside the box.");
       if (hexSHA256(fs.readFileSync(path.join(stage, "files", file))) !== box.files[file]) throw new Error("The release's files aren't what it says.");
@@ -3530,18 +3567,21 @@ export async function update({ now = false, keys = UPDATE_KEYS, url = UPDATE_URL
     if (ran("sh", ["-n", path.join(stage, "files", "bin", "kuvo-start")]).status !== 0) throw new Error("The new keeper doesn't read.");
     if (!now && await boxBusy()) return { result: "busy", message: "Something is running there now." };
 
-    // What's there kept, then the new in its place, one file at a time, and started again.
+    // Stopped, for sure, before anything's copied; what's there kept; then the new in its place,
+    // one file at a time, and started again.
     step("installing");
     let previous = {};
     try { previous = readEngineFile(); } catch {}
     const withAgents = Boolean(previous?.agentsPort) && fs.existsSync(path.join(stage, "files", "bin", "kuvo-agents.js"));
     const otherEngine = previous?.version !== manifest.engine;
+    stopped = true;
+    const stop = ran("sh", [path.join(K, "bin", "kuvo-start"), "stop"], {}, 300_000);
+    if (stop.status !== 0 || (previous?.pid && alive(previous.pid))) throw new Error("Its engine couldn't be stopped to update it.");
     keepForRollback(files, otherEngine);
-    noteUpdate({ trial: { from: before, to: manifest.version, at: clock() }, running: null });
-    trial = true;
-    fs.writeFileSync(UPDATE_TRIAL, manifest.version, { mode: 0o600 });
-    ran("sh", [path.join(K, "bin", "kuvo-start"), "stop"]);
     if (otherEngine) keepData();
+    noteUpdate({ trial: { from: before, to: manifest.version, at: clock() }, running: null });
+    fs.writeFileSync(UPDATE_TRIAL, manifest.version, { mode: 0o600 });
+    trial = true;
     if (staged) {
       fs.mkdirSync(engineFolder, { recursive: true, mode: 0o700 });
       fs.renameSync(staged, path.join(engineFolder, "opencode"));
@@ -3556,19 +3596,25 @@ export async function update({ now = false, keys = UPDATE_KEYS, url = UPDATE_URL
     ran("sh", [path.join(K, "bin", "kuvo-start"), "start"]);
     step("starting");
     if (!(await cameUp(manifest.engine, withAgents, upWithin))) throw new Error("The new version didn't come up.");
+    // What it put there, for telling later whether an older Mac put its own back (`checkDrift`).
+    writePrivate(path.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, files: box.files }));
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), healthy: true } });
     return { result: "updated", version: manifest.version };
   } catch (error) {
     const message = String(error?.message ?? error).slice(0, 300);
+    // Room first: what was downloaded goes before anything's put back.
+    if (stage) fs.rmSync(stage, { recursive: true, force: true });
     if (trial) {
-      ran("sh", [path.join(ROLLBACK, "restore.sh")]);
+      ran("sh", [path.join(ROLLBACK, "restore.sh")], { KUVO_UPDATER: String(process.pid) }, 600_000);
       noteUpdate({ trial: null });
+    } else if (stopped) {
+      ran("sh", [path.join(K, "bin", "kuvo-start"), "start"]);
     }
     noteUpdate({ last: { at: clock(), result: "failed", message, from: before } });
     return { result: "failed", message };
   } finally {
+    for (const name of listOf(UPDATES)) if (name !== "rollback" && name !== "installed.json") fs.rmSync(path.join(UPDATES, name), { recursive: true, force: true });
     fs.rmSync(UPDATE_LOCK, { recursive: true, force: true });
-    for (const name of listOf(UPDATES)) if (name !== "rollback") fs.rmSync(path.join(UPDATES, name), { recursive: true, force: true });
   }
 }
 
@@ -3576,13 +3622,39 @@ export async function update({ now = false, keys = UPDATE_KEYS, url = UPDATE_URL
 // engines but this one.
 export function confirmUpdate(clock = Date.now) {
   const state = updateState();
-  if (!state.trial?.healthy || boxVersion() !== state.trial.to) return false;
+  if (!state.trial?.healthy || boxVersion() !== state.trial.to || isUpdating()) return false;
   let engine = null;
   try { engine = readEngineFile()?.version; } catch {}
   fs.rmSync(UPDATE_TRIAL, { force: true });
   fs.rmSync(ROLLBACK, { recursive: true, force: true });
   if (engine) for (const name of listOf(path.join(K, "engine"))) if (name !== engine && !name.startsWith(".")) fs.rmSync(path.join(K, "engine", name), { recursive: true, force: true });
   noteUpdate({ trial: null, last: { at: clock(), result: "updated", from: state.trial.from, to: state.trial.to } });
+  return true;
+}
+
+// Whether a Mac that doesn't leave a newer box as it is (an older Kuvo Code) put its own files back
+// since the box updated itself: then the box's version isn't what it says (it's unmarked, for a Mac
+// to set it up again), and it doesn't update itself for a while, as that Mac would undo it.
+export function checkDrift(now = Date.now()) {
+  const record = path.join(UPDATES, "installed.json");
+  let installed = null;
+  try { installed = JSON.parse(fs.readFileSync(record, "utf8")); } catch { return false; }
+  // A Mac marked it since (its own files, as they should be).
+  if (installed?.version !== boxVersion() || !isObject(installed.files)) {
+    fs.rmSync(record, { force: true });
+    return false;
+  }
+  const changed = Object.entries(installed.files).some(([file, sha]) => {
+    try { return hexSHA256(fs.readFileSync(path.join(K, file))) !== sha; } catch { return true; }
+  });
+  if (!changed || isUpdating()) return false;
+  fs.rmSync(path.join(K, "bin", "box-version"), { force: true });
+  fs.rmSync(record, { force: true });
+  let launchers = {};
+  try { launchers = JSON.parse(fs.readFileSync(LAUNCHERS, "utf8")) ?? {}; } catch {}
+  launchers["an older Mac"] = now;
+  try { writePrivate(LAUNCHERS, JSON.stringify(launchers)); } catch {}
+  noteUpdate({ last: { at: now, result: "failed", message: "An older Kuvo Code on a Mac put its own files back here: update Kuvo Code on your Macs." } });
   return true;
 }
 
@@ -3612,7 +3684,7 @@ export function updateStatus() {
     engine,
     latest: state.latest ?? null,
     last: state.last ?? null,
-    updating: fs.existsSync(UPDATE_LOCK) ? state.running ?? "checking" : null,
+    updating: isUpdating() ? state.running ?? "checking" : null,
     blocked: updatesBlocked(),
   };
 }
@@ -3621,7 +3693,7 @@ export function updateStatus() {
 // once it's "updated", the bridge goes, for the keeper to start the new one.
 let updating = null;
 export function startUpdate(options = {}) {
-  if (updating || fs.existsSync(UPDATE_LOCK)) return null;
+  if (updating || isUpdating()) return null;
   updating = update({ ...options, step: running => noteUpdate({ running }) })
     .then(outcome => {
       noteUpdate({ running: null, ...(outcome.result === "updated" ? {} : { last: { at: Date.now(), ...outcome } }) });
@@ -3795,6 +3867,7 @@ async function run() {
   setTimeout(() => { try { confirmUpdate(); } catch {} }, 180_000);
   const nightly = () => {
     noteLauncher();
+    try { checkDrift(); } catch {}
     const night = updateNight();
     if (!night || !updateSettings().auto || updateState().night === night || !UPDATE_KEYS.length) return;
     startUpdate({})?.then(outcome => { if (outcome && outcome.result !== "busy") noteUpdate({ night }); });
@@ -3906,7 +3979,7 @@ async function box(command) {
       if (!UPDATE_KEYS.length) return say({ status: 409, message: "Updates aren't set up for this machine yet." });
       const blocked = updatesBlocked();
       if (blocked) return say({ status: 409, message: blocked });
-      if (fs.existsSync(UPDATE_LOCK)) return say({ status: 409, message: "It's updating already." });
+      if (isUpdating()) return say({ status: 409, message: "It's updating already." });
       spawn(process.execPath, [fileURLToPath(import.meta.url), "update", "--now"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
       return say({ status: 202, ...updateStatus(), updating: "checking" });
     }
@@ -3987,8 +4060,12 @@ async function setup() {
   let runningVersion = null;
   try { runningVersion = fs.readFileSync(VERSION_FILE, "utf8").trim(); } catch {}
   const restart = old?.relay !== link.relay || old?.name !== link.name || runningVersion !== BRIDGE_VERSION;
-  if (running && restart) process.kill(running, "SIGTERM");
-  if (!running || restart) startBridge();
+  // Not while the box updates itself: the bridge running it would end, and the keeper starts the
+  // new one once it's done.
+  if (!isUpdating()) {
+    if (running && restart) process.kill(running, "SIGTERM");
+    if (!running || restart) startBridge();
+  }
   console.log(JSON.stringify({
     address: addressOf(Buffer.from(link.secret, "base64url")).toString("base64url"),
     key: publicOf(Buffer.from(link.key, "base64url")).toString("base64url"),
@@ -4085,6 +4162,8 @@ if (main) {
     if (outcome.result === "updated") {
       const pid = runningBridge();
       if (pid) process.kill(pid, "SIGTERM");
+      // No bridge to start again (nothing for it to answer): the new version came up, so it's done.
+      if (!needed(readLink())) confirmUpdate();
     }
     console.log(JSON.stringify(outcome));
   }

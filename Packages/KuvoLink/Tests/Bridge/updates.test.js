@@ -43,12 +43,14 @@ const engineBinary = version => `#!/bin/sh
 case "$1" in --version) echo ${version}; exit 0 ;; *.js) exec node "$@" ;; esac
 exec node "$FAKE_ENGINE" ${version} "$KUVO_HOME"
 `;
-// The keeper: stops the engine, or starts this version's (one that `breaks` starts none).
+// The keeper: stops the engine (waiting until it's gone, as the real one does), or starts this
+// version's. One that `breaks` starts none, and leaves the journal a new engine would (WAL) beside
+// the database.
 const keeper = (version, breaks = false) => `#!/bin/sh
 K="$KUVO_HOME"; R="$K/run"
 case "$1" in
-stop) touch "$R/stopped"; pid=$(sed -n 's/.*"pid":\\([0-9]*\\).*/\\1/p' "$R/engine.json" 2>/dev/null); [ -n "$pid" ] && kill "$pid" 2>/dev/null; rm -f "$R/engine.json" ;;
-start) rm -f "$R/stopped"; ${breaks ? "exit 0" : `"$K/engine/${version}/opencode" serve >/dev/null 2>&1 &`} ;;
+stop) touch "$R/stopped"; pid=$(sed -n 's/.*"pid":\\([0-9]*\\).*/\\1/p' "$R/engine.json" 2>/dev/null); if [ -n "$pid" ]; then kill "$pid" 2>/dev/null; while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done; fi; rm -f "$R/engine.json" ;;
+start) rm -f "$R/stopped"; ${breaks ? `mkdir -p "$K/data/opencode"; echo "the new engine's journal" > "$K/data/opencode/opencode.db-wal"` : `"$K/engine/${version}/opencode" serve >/dev/null 2>&1 &`} ;;
 esac
 `;
 
@@ -83,6 +85,7 @@ async function machine() {
   write(path.join(home, "bin", "kuvo-start"), keeper("1.0.0"), 0o700);
   write(path.join(home, "bin", "kuvo-link.js"), "// the old link\n", 0o600);
   write(path.join(home, "engine", "1.0.0", "opencode"), engineBinary("1.0.0"), 0o755);
+  write(path.join(home, "data", "opencode", "opencode.db"), "the old engine's data");
   spawnSync("sh", [path.join(home, "bin", "kuvo-start"), "start"], { env: process.env });
   await waitFor(() => fs.existsSync(engineFile), "the old engine runs");
   engines.add(read(engineFile).pid);
@@ -187,7 +190,7 @@ test("a box updates to a newer release: its engine and files swapped, started ag
   engines.add(read(engineFile).pid);
   assert.ok(fs.existsSync(path.join(home, "updates", "rollback", "restore.sh")));
   assert.ok(fs.existsSync(path.join(home, "run", "update-trial")));
-  assert.equal(fs.readdirSync(path.join(home, "updates")).join(), "rollback", "what was downloaded goes");
+  assert.equal(fs.readdirSync(path.join(home, "updates")).sort().join(), "installed.json,rollback", "what was downloaded goes; what it put there is noted");
 
   // The new link, well: what was kept, and the old engine, go.
   assert.equal(link.confirmUpdate(), true);
@@ -215,6 +218,37 @@ test("a new version that doesn't come up is taken back: the files, the box's ver
   assert.equal(fs.existsSync(path.join(home, "updates", "rollback")), false);
   assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), false);
   assert.equal(read(path.join(home, "run", "update.json")).last.result, "failed");
+  // The old engine's data as it was, without the new engine's journal beside it.
+  assert.equal(fs.readFileSync(path.join(home, "data", "opencode", "opencode.db"), "utf8"), "the old engine's data");
+  assert.equal(fs.existsSync(path.join(home, "data", "opencode", "opencode.db-wal")), false);
+});
+
+test("a stopped box, or one whose version isn't known, doesn't update; a lock whose process went doesn't hold one", async () => {
+  await machine();
+  release();
+  fs.writeFileSync(path.join(home, "run", "stopped"), "");
+  assert.match((await update()).message, /stopped/);
+  fs.rmSync(path.join(home, "run", "stopped"));
+  fs.rmSync(path.join(home, "bin", "box-version"));
+  assert.match((await update()).message, /version isn't known/);
+  write(path.join(home, "bin", "box-version"), "0.9.0");
+  fs.mkdirSync(path.join(home, "run", ".updating"));
+  fs.writeFileSync(path.join(home, "run", ".updating", "pid"), "999999");
+  assert.equal(link.isUpdating(), false);
+  assert.equal((await update()).result, "updated");
+  await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.1.0", "the new engine runs");
+  engines.add(read(engineFile).pid);
+  assert.equal(link.confirmUpdate(), true);
+
+  // An older Mac puts its own link back: the box notices, its version isn't what it says any more,
+  // and it doesn't update itself for a while.
+  assert.equal(link.checkDrift(), false);
+  fs.writeFileSync(path.join(home, "bin", "kuvo-link.js"), "// an older Mac's link\n");
+  assert.equal(link.checkDrift(), true);
+  assert.equal(fs.existsSync(path.join(home, "bin", "box-version")), false);
+  assert.match(link.updatesBlocked({}, Date.now(), path.join(os.homedir(), ".kuvo-code")), /older Kuvo Code/);
+  assert.match(read(path.join(home, "run", "update.json")).last.message, /older Kuvo Code/);
+  fs.rmSync(path.join(home, "run", "launchers.json"), { force: true });
 });
 
 test("a release that isn't what it says, an older one, or one too new for the night changes nothing", async () => {
