@@ -55,6 +55,13 @@ prerelease, and only copies with **Settings › General › Get beta updates** o
 are offered it. Its build version is `X.Y.ZbN` (`scripts/build-version.sh`),
 which Sparkle orders before the release.
 
+A release also carries what remote machines run, for them to update themselves
+with, once the `KUVO_BOX_SIGNING_KEY` secret (an Ed25519 key) is set: the app
+writes those files (`"Kuvo Code" --write-box-files <folder>`), and
+`scripts/sign-box.mjs` signs `boxes.json`, which names them. Machines take only
+what a key pinned in `kuvo-link.js` (`UPDATE_KEYS`) signed; see
+`Packages/KuvoLink/PROTOCOL.md`, "Updates".
+
 Builds are signed ad hoc, so macOS treats every build as a new app and asks for
 privacy permissions (like access to Desktop) again. To keep one identity
 between builds, copy `Config/Signing.local.xcconfig.example` to
