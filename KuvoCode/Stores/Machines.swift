@@ -311,7 +311,7 @@ final class MachineEngine {
             let connection = machine.connection
             // A box a newer Kuvo Code set up (it updated itself, or another Mac's newer app did):
             // what's there runs as it is, and nothing of this app's goes over it.
-            boxIsNewer = BoxVersion.isNewer(try? await BoxVersion.read(on: connection))
+            boxIsNewer = BoxVersion.isNewer(try await BoxVersion.read(on: connection))
             try check()
             // The box's own tool and keeper first, which what follows counts on.
             try await RemoteServer.installBoot(on: connection)
@@ -371,9 +371,12 @@ final class MachineEngine {
             let box = try await MachineBox.adopt(on: connection, seed: launch.seed)
             config.took(box.settings)
             // As Kuvo Code brings this Mac's up to date as its engine starts: its integrations as
-            // they're set up now, its servers' tools plain tools.
-            Integrations.upgrade(config, on: machine.id)
-            MCPSettings.upgrade(config)
+            // they're set up now, its servers' tools plain tools (not a newer box's, which knows
+            // newer ones).
+            if !boxIsNewer {
+                Integrations.upgrade(config, on: machine.id)
+                MCPSettings.upgrade(config)
+            }
             launch.boxEnvironment = launch.fromBox(config.settings)
             if box.seeded { seededNow = true }
             try check()

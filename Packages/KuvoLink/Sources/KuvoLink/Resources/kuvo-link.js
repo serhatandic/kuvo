@@ -3115,7 +3115,8 @@ export function letterWent(sender, { id, ok, why, retry, answer }) {
 }
 
 // The answer to letter `id`, from the box it went to, for the tool waiting for it here: true when
-// one still waits (it notes it does, `<id>.alive`, as it looks); else it comes as a message.
+// one still waits (it notes it does, `<id>.alive`, every two seconds as it looks); else it comes
+// as a message.
 function answered(sender, id, text, now = Date.now()) {
   const waiting = path.join(REPLIES, `${id}.wait`);
   let letter = null;
@@ -3124,7 +3125,7 @@ function answered(sender, id, text, now = Date.now()) {
   fs.rmSync(waiting, { force: true });
   let alive = 0;
   try { alive = fs.statSync(path.join(REPLIES, `${id}.alive`)).mtimeMs; } catch {}
-  if (now - alive > 30_000) return false;
+  if (now - alive > 10_000) return false;
   reply(id, { text: String(text).slice(0, 8000) });
   return true;
 }
@@ -3151,16 +3152,14 @@ export function sendOutbox(host, link = readLink(), now = Date.now(), offline = 
   const peers = peersOf(link);
   const told = readPeerAgents(undefined, undefined, link);
   const moved = movedOf(link);
-  // The relay back: letters given to the Mac it hasn't been here to take since come back.
+  // The relay back: letters given to the Mac it hasn't taken come back. (Not one a Mac took to
+  // deliver, `.mac-…`: each goes one way, by whichever renames it first.)
   if (!offline) {
-    let attached = 0;
-    try { attached = fs.statSync(path.join(RUN, "attached")).mtimeMs; } catch {}
-    // (Not one the Mac took to deliver, `.mac-…`: each goes one way, by whichever renames it first.)
     for (const name of listOf(OUTBOX)) {
       if (!name.endsWith(".json") || name.startsWith(".")) continue;
       try {
         const letter = JSON.parse(fs.readFileSync(path.join(OUTBOX, name), "utf8"));
-        if (typeof letter?.handed !== "number" || attached > letter.handed) continue;
+        if (typeof letter?.handed !== "number") continue;
         fs.mkdirSync(SENDING, { recursive: true, mode: 0o700 });
         fs.renameSync(path.join(OUTBOX, name), path.join(SENDING, name));
       } catch {}

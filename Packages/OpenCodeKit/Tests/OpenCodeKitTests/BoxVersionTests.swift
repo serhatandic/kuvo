@@ -43,6 +43,12 @@ import Testing
         #expect(try !installs(over: "0.10.0", mine: "0.9.3"), "by number, not as text")
         #expect(try installs(over: "0.9.3", mine: "0.10.0"))
         #expect(try installs(over: "garbage", mine: "0.8.0"), "a marker that isn't a version marks nothing")
+        // A beta comes before its release, and after the release before it.
+        #expect(try !installs(over: "0.8.0", mine: "0.8.0-beta.1"))
+        #expect(try installs(over: "0.8.0-beta.1", mine: "0.8.0"))
+        #expect(try installs(over: "0.8.0-beta.1", mine: "0.8.0-beta.2"))
+        #expect(try !installs(over: "0.8.0-beta.2", mine: "0.8.0-beta.1"))
+        #expect(try installs(over: "0.7.2", mine: "0.8.0-beta.1"))
     }
 
     @Test func versionsCompareByNumber() {
@@ -53,7 +59,13 @@ import Testing
         #expect(!BoxVersion.isNewer("0.9.3"))
         #expect(!BoxVersion.isNewer("0.9.2"))
         #expect(!BoxVersion.isNewer(nil))
+        BoxVersion.mine = "0.8.0-beta.2"
+        #expect(BoxVersion.isNewer("0.8.0"))
+        #expect(BoxVersion.isNewer("0.8.0-beta.3"))
+        #expect(!BoxVersion.isNewer("0.8.0-beta.1"))
+        #expect(!BoxVersion.isNewer("0.7.9"))
+        #expect(!BoxVersion.isNewer("not a version"))
         BoxVersion.mine = "0.8.0; rm -rf ~"
-        #expect(BoxVersion.mine == "0", "only digits and dots go into a script")
+        #expect(BoxVersion.mine == "0", "only a version goes into a script")
     }
 }

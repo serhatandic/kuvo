@@ -618,10 +618,11 @@ final class AgentMail {
     private func collectOnce(from engine: MachineEngine) async {
         let machine = engine.machine.id
         let folder = "\"$HOME/\(RemoteEngineInstaller.root)/run/outbox\""
-        // Each taken first (renamed `.mac-…`, so a machine's link that takes back what it left
-        // for this Mac doesn't send it too), then as its file's name, when it was written and its
-        // letter (on one line, as it's written), between tabs.
-        let script = "cd \(folder) 2>/dev/null || exit 0; for f in *.json; do [ -f \"$f\" ] && mv -f \"$f\" \".mac-$f\"; done; for f in .mac-*.json; do [ -f \"$f\" ] || continue; printf '%s\\t%s\\t' \"$f\" \"$(stat -c %Y \"$f\" 2>/dev/null || echo 0)\"; tr -d '\\n' <\"$f\"; printf '\\n'; done"
+        // Each taken first (renamed `.mac-<this Mac>-…`, so neither a machine's link that takes
+        // back what it left for a Mac nor another Mac delivers it too), then as its file's name,
+        // when it was written and its letter (on one line, as it's written), between tabs.
+        let mine = ".mac-\(MachineEngine.macID)-"
+        let script = "cd \(folder) 2>/dev/null || exit 0; for f in *.json; do [ -f \"$f\" ] && mv -f \"$f\" \"\(mine)$f\"; done; for f in \(mine)*.json; do [ -f \"$f\" ] || continue; printf '%s\\t%s\\t' \"$f\" \"$(stat -c %Y \"$f\" 2>/dev/null || echo 0)\"; tr -d '\\n' <\"$f\"; printf '\\n'; done"
         guard let output = await Task.detached(operation: { RemoteShell.run(script, on: machine) }).value else { return }
         struct Letter: Decodable { var from: String?; var name: String?; var to: String; var text: String; var wait: Bool?; var via: String? }
         var done: [String] = [], taken: [String] = []
@@ -656,8 +657,8 @@ final class AgentMail {
             }
         }
         // Those that didn't go back where they were, for next time (or another Mac, or the link).
-        let back = taken.filter { !done.contains($0) && $0.hasPrefix(".mac-") }
-            .map { "mv -f -- \(SSHConnection.quoted($0)) \(SSHConnection.quoted(String($0.dropFirst(5))))" }
+        let back = taken.filter { !done.contains($0) && $0.hasPrefix(mine) }
+            .map { "mv -f -- \(SSHConnection.quoted($0)) \(SSHConnection.quoted(String($0.dropFirst(mine.count))))" }
         let removed = done.isEmpty ? [] : ["rm -f -- " + done.map(SSHConnection.quoted).joined(separator: " ")]
         guard !(back + removed).isEmpty else { return }
         let tidy = (["cd \(folder) || exit 0"] + removed + back).joined(separator: "; ")
@@ -817,9 +818,13 @@ extension AgentMail {
         guard let app else { return }
         guard to.hasPrefix("ses_") else { return no("That isn't a letter.", false) }
         guard let session = app.workspace.session(to) else { return no(app.workspace.isLoaded ? "There's no such conversation here." : "Its computer is just starting.", !app.workspace.isLoaded) }
-        guard session.parentID == nil, !Workspace.isArchived(session), !app.workspace.seats.contains(to),
-              RemoteFolder.machine(of: session.location.directory).map({ !app.phoneLink.talksToPeers($0) }) ?? true else {
+        guard session.parentID == nil, !Workspace.isArchived(session), !app.workspace.seats.contains(to) else {
             return no("That conversation doesn't take messages.", false)
+        }
+        // On a machine that talks to your other computers itself now: its own list reaches them
+        // soon, and the letter goes there then.
+        if let machine = RemoteFolder.machine(of: session.location.directory), app.phoneLink.talksToPeers(machine) {
+            return no("Its computer takes its own letters now.", true)
         }
         delivering.insert(id)
         defer { delivering.remove(id) }

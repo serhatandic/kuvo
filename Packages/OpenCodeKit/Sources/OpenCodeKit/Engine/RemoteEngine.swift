@@ -285,29 +285,54 @@ public struct RemoteEngineInstaller: Sendable {
 /// box as it updated itself. A Mac never puts its own over a newer one's: it uses what's there as
 /// it is, so a box that updated itself, or another Mac's, isn't taken back to an older version.
 public enum BoxVersion {
-    /// This app's version (digits and dots). Set by the app before connecting.
+    /// This app's version: X.Y.Z, or X.Y.Z-beta.N for a beta (which comes before X.Y.Z). Set by
+    /// the app before connecting; anything else is "0".
     nonisolated(unsafe) public static var mine = "0" {
-        didSet { if mine.isEmpty || mine.contains(where: { !$0.isASCII || (!$0.isNumber && $0 != ".") }) { mine = "0" } }
+        didSet { if order(mine) == nil { mine = "0" } }
+    }
+
+    /// A version as versions are ordered: its numbers, then its beta's (none, for a release, comes
+    /// after every beta of it).
+    static func order(_ version: String) -> [Int]? {
+        let parts = version.split(separator: "-", maxSplits: 1)
+        let numbers = parts[0].split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
+        guard numbers.count == 3, numbers.allSatisfy({ $0 != nil }) else { return version == "0" ? [0, 0, 0, Int.max] : nil }
+        guard parts.count == 2 else { return numbers.compactMap(\.self) + [Int.max] }
+        guard parts[1].hasPrefix("beta."), let beta = Int(parts[1].dropFirst(5)) else { return nil }
+        return numbers.compactMap(\.self) + [beta]
     }
 
     /// Whether a box's `version` is newer than this app's.
     public static func isNewer(_ version: String?) -> Bool {
-        guard let version, !version.isEmpty else { return false }
-        return version.compare(mine, options: .numeric) == .orderedDescending
+        guard let version, let theirs = order(version), let ours = order(mine) else { return false }
+        return theirs.lexicographicallyPrecedes(ours) == false && theirs != ours
+    }
+
+    /// Shell: `kuvo_newer` is true when the box at `$HOME/<root>` was set up by a newer Kuvo Code
+    /// than this app (a beta before its release, by number as `order`).
+    static var newerTest: String {
+        """
+        kuvo_order() { case "$1" in *-beta.*) printf '%s.%s' "${1%-beta.*}" "${1##*-beta.}" ;; *) printf '%s.999999999' "$1" ;; esac; }
+        kuvo_box=$(cat "$HOME/\(RemoteEngineInstaller.root)/bin/box-version" 2>/dev/null | tr -cd '0-9a-z.-')
+        case "$kuvo_box" in [0-9]*.[0-9]*.[0-9]*) ;; *) kuvo_box= ;; esac
+        kuvo_newer() { [ -n "$kuvo_box" ] && [ "$kuvo_box" != "\(mine)" ] && [ "$(printf '%s\\n%s\\n' "$(kuvo_order "$kuvo_box")" "$(kuvo_order "\(mine)")" | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -n 1)" = "$(kuvo_order "$kuvo_box")" ]; }
+        """
     }
 
     /// For a script that puts this app's files on the machine: if the box there is newer, it reads
     /// what it was given and stops, writing nothing.
     public static var guardScript: String {
-        """
-        kuvo_box=$(cat "$HOME/\(RemoteEngineInstaller.root)/bin/box-version" 2>/dev/null | tr -cd '0-9.')
-        if [ -n "$kuvo_box" ] && [ "$kuvo_box" != "\(mine)" ] && [ "$(printf '%s\\n%s\\n' "$kuvo_box" "\(mine)" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" = "$kuvo_box" ]; then cat >/dev/null; exit 0; fi
-        """
+        newerTest + "\nif kuvo_newer; then cat >/dev/null; exit 0; fi"
+    }
+
+    /// For a script that starts this app's engine there: on a newer box, it fails, starting nothing.
+    public static var refuseScript: String {
+        newerTest + "\nif kuvo_newer; then echo 'This machine has a newer Kuvo Code than this Mac.' >&2; exit 75; fi"
     }
 
     /// The box's version, if a Kuvo Code that marks it put its files there.
     public static func read(on connection: SSHConnection) async throws -> String? {
-        let text = try await connection.run("cat \"$HOME/\(RemoteEngineInstaller.root)/bin/box-version\" 2>/dev/null | tr -cd '0-9.'; true")
+        let text = try await connection.run("cat \"$HOME/\(RemoteEngineInstaller.root)/bin/box-version\" 2>/dev/null | tr -cd '0-9a-z.-'; true")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? nil : text
     }
@@ -497,7 +522,8 @@ public final class RemoteServer: @unchecked Sendable {
             defer { try? FileManager.default.removeItem(at: input) }
             do {
                 // Its process, and the agents bridge's port when it had to take another.
-                let said = try await connection.run(launchScript, input: input).trimmingCharacters(in: .whitespacesAndNewlines)
+                // Never this app's engine over a newer box's (`BoxVersion`).
+                let said = try await connection.run(BoxVersion.refuseScript + "\n" + launchScript, input: input).trimmingCharacters(in: .whitespacesAndNewlines)
                 let parts = said.split(separator: " ").map(String.init)
                 guard let pid = parts.first.flatMap({ Int($0) }) else { throw RemoteEngineError.unreadableHandshake(said) }
                 engine.pid = pid
@@ -509,6 +535,8 @@ public final class RemoteServer: @unchecked Sendable {
                 lastError = RemoteEngineError.timedOut
             } catch RemoteEngineError.ssh(let status, _) where status == 6 {
                 throw RemoteEngineError.stopped
+            } catch RemoteEngineError.ssh(let status, let message) where status == 75 {
+                throw RemoteEngineError.exited(status: status, output: message.trimmingCharacters(in: .whitespacesAndNewlines))
             } catch RemoteEngineError.ssh(let status, let message) where status == 3 && message.localizedCaseInsensitiveContains("in use") {
                 lastError = RemoteEngineError.exited(status: status, output: message)
             } catch RemoteEngineError.ssh(let status, let message) where status == 3 {
@@ -735,9 +763,14 @@ public final class RemoteServer: @unchecked Sendable {
 
     /// Puts `kuvo-launch` and `kuvo-start` in the machine's `bin` (unless it has these ones
     /// already), apart from the launch, whose command line has a size limit.
-    public static func installBoot(on connection: SSHConnection) async throws {
+    /// The keeper and its launcher, by their names in `bin`, and what `.kuvo-boot` says of them.
+    static var bootFiles: (files: [(name: String, text: String)], hash: String) {
         let files = [("kuvo-launch", bootLaunchScript), ("kuvo-start", bootScript)]
-        let hash = SHA256.hash(data: Data(files.map { $0.0 + "\n" + $0.1 }.joined(separator: "\n").utf8)).map { String(format: "%02x", $0) }.joined()
+        return (files, SHA256.hash(data: Data(files.map { $0.0 + "\n" + $0.1 }.joined(separator: "\n").utf8)).map { String(format: "%02x", $0) }.joined())
+    }
+
+    public static func installBoot(on connection: SSHConnection) async throws {
+        let (files, hash) = bootFiles
         let marker = "\"$HOME/\(RemoteEngineInstaller.root)/bin/.kuvo-boot\""
         if try await connection.run("cat \(marker) 2>/dev/null || true").trimmingCharacters(in: .whitespacesAndNewlines) == hash { return }
         let input = FileManager.default.temporaryDirectory.appending(path: "kuvo-boot-\(UUID().uuidString)")

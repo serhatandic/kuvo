@@ -9,9 +9,9 @@ extension AppModel {
         // KUVO_DEMO_MACHINE_ROOT: a folder of its own on machines (like .kuvo-code-demo), so a demo
         // copy's engine and browser there never touch the ones your own copy of the app runs.
         if let root = ProcessInfo.processInfo.environment["KUVO_DEMO_MACHINE_ROOT"], !root.isEmpty { RemoteEngineInstaller.root = root }
+        #endif
         // A box a newer Kuvo Code set up is left as it is (`BoxVersion`).
         BoxVersion.mine = AppInfo.version
-        #endif
         workspace.machines = Set(machines.list.map(\.id))
         // Settings' tabs of a machine removed (from another copy of the app, say) close.
         settingsTabs.closeTabs(notOn: Set(machines.list.map(\.id)), machines: machines)
