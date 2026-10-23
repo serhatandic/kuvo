@@ -785,11 +785,21 @@ final class Machines {
         """
     }
 
+    /// This Mac's key on your machines' bridges (`PhoneLink.macKey`), for a machine you remove to
+    /// stop counting it among its Macs. Set by the app.
+    static var linkKey: () -> String? = { nil }
+
     private static var leftovers: String {
-        // Its bridge stops counting your other computers among its peers (PROTOCOL.md, "Peers").
-        """
-        L=$(ls -d "$K"/engine/*/opencode 2>/dev/null | tail -n 1)
-        if [ -x "$L" ] && [ -f "$K/bin/kuvo-link.js" ]; then KUVO_HOME="$K" BUN_BE_BUN=1 "$L" "$K/bin/kuvo-link.js" leave >/dev/null 2>&1 || true; fi
+        // Its bridge no longer counts this Mac among its Macs, nor the peers it gave (PROTOCOL.md,
+        // "Peers"); another Mac's stay.
+        let leave = linkKey().map { key in
+            """
+            L=$(ls -d "$K"/engine/*/opencode 2>/dev/null | tail -n 1)
+            if [ -x "$L" ] && [ -f "$K/bin/kuvo-link.js" ]; then (cd "$K" && KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$L" "$K/bin/kuvo-link.js" leave '\(key)') >/dev/null 2>&1 || true; fi
+
+            """
+        } ?? ""
+        return leave + """
         rm -rf "$K/keys" "$K/box/keys"
         rm -f "$K/run/launch.env" "$K/run/launch.notes" "$K/bin/kuvo-start" "$K/bin/kuvo-launch" "$K/bin/.kuvo-boot"
         \(RemoteServer.rebootCrontabRemoval)

@@ -330,6 +330,7 @@ final class AppModel {
             phoneLink.readyMachines = { [weak self] in self?.machines.engines.values.filter(\.isReady) ?? [] }
             // With machines, this Mac meets them at the relay, phone or not.
             phoneLink.hasMachines = { [weak self] in !(self?.machines.list.isEmpty ?? true) }
+            Machines.linkKey = { [weak self] in self?.phoneLink.macKey }
             phoneLink.bots = bots
             phoneLink.wakeUps = wakeUps
             phoneLink.browserAsks = browserAsks

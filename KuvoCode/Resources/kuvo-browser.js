@@ -1839,6 +1839,8 @@ function composeMail(name, session, words, waits) {
 }
 
 async function mail(name, args, from) {
+  // A subagent writes, reads and starts sessions as its conversation, as on the Mac.
+  from = await rootSession(from);
   const directory = readJSON(path.join(K, "run", "agents.json")) ?? { machine: null, agents: [] };
   const agents = directory.agents ?? [];
   const here = directory.machine ?? null;
@@ -1879,6 +1881,7 @@ async function mail(name, args, from) {
     if (!waits) return text(`On its way to ${target.name}. Its answer, if it writes one, comes to you as a message.`);
     const answer = await letterAnswer(id);
     if (answer?.failed) return text(`It didn't reach ${target.name}: ${answer.failed}`, true);
+    if (answer?.note) return text(answer.note);
     return text(answer?.text ? `${target.name} answered:\n\n` + answer.text : `${target.name} hasn't answered yet. It may still write back with send_message.`);
   }
   const id = messageID();
@@ -1889,10 +1892,24 @@ async function mail(name, args, from) {
   return text(answer ? `${target.name} answered:\n\n` + answer : `${target.name} hasn't answered yet. It may still write back with send_message.`);
 }
 
+/// The conversation a session works for: itself, or a subagent's, the one that started it.
+async function rootSession(session) {
+  let id = session;
+  for (let step = 0; id && step < 6; step++) {
+    const found = (await findSession(id))?.data ?? null;
+    if (!found?.parentID) break;
+    id = found.parentID;
+  }
+  return id ?? session;
+}
+
 /// How a letter to another computer went, as this machine's link writes it (`run/replies/<id>.json`):
-/// its answer, or why it didn't get there; null when nothing came in eleven minutes.
+/// its answer, why it didn't get there, or why no answer will come; null when nothing came in
+/// eleven minutes. Given up on, the letter goes on without waiting, and an answer that comes later
+/// reaches this conversation as a message (`<id>.gaveup`, for the link).
 async function letterAnswer(id) {
-  const file = path.join(K, "run", "replies", id + ".json");
+  const replies = path.join(K, "run", "replies");
+  const file = path.join(replies, id + ".json");
   const began = Date.now();
   while (Date.now() - began < 660_000) {
     await sleep(2000);
@@ -1901,6 +1918,10 @@ async function letterAnswer(id) {
     fs.rmSync(file, { force: true });
     return answer;
   }
+  try {
+    fs.mkdirSync(replies, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(replies, id + ".gaveup"), "", { mode: 0o600 });
+  } catch {}
   return null;
 }
 

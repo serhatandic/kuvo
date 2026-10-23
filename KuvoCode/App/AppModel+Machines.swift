@@ -325,6 +325,15 @@ extension AppModel {
     }
 
     private func start(_ engine: MachineEngine) async {
+        #if DEBUG
+        // KUVO_DEMO_DISCONNECT=<machine>: left as Disconnect leaves it, running on its own: this
+        // copy reaches it only through the relay.
+        if ProcessInfo.processInfo.environment["KUVO_DEMO_DISCONNECT"] == engine.machine.id {
+            engine.startWanted = false
+            print("KUVO_DEMO_DISCONNECT left \(engine.machine.id) alone")
+            return
+        }
+        #endif
         // It takes this Mac's accounts and settings, so this Mac's engine comes first.
         for _ in 0..<240 where api == nil { try? await Task.sleep(for: .milliseconds(250)) }
         // Removed a moment ago and added again: after the removal there has finished.
@@ -445,6 +454,7 @@ extension AppModel {
         utilities.closeMachineBrowser(id)
         machines.remove(id)
         phoneLink.forget(machine: id)
+        AgentMail.shared.machineRemoved(id)
         workspace.machines = Set(machines.list.map(\.id))
         workspace.forget(id, forGood: true)
         machineGroups.forget(machine: id)

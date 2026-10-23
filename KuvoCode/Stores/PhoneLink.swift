@@ -340,8 +340,9 @@ final class PhoneLink {
             struct Setup: Encodable {
                 var relay: String
                 var name: String
-                var phones: [PhoneList.Phone]
-                var removed: [PairedPhones.Removal]
+                /// With the phone link off, none: the machine keeps the phones it has.
+                var phones: [PhoneList.Phone]?
+                var removed: [PairedPhones.Removal]?
                 /// This Mac's key, which a phone list it mails later must come from, and when this one's from.
                 var mac: String
                 var at: Int64
@@ -353,9 +354,9 @@ final class PhoneLink {
             }
             let settings = folder.appending(path: "setup.json")
             let list = phoneList
-            // Only your phones while the phone link is on.
-            let phonesHere = Self.isEnabled ? list.phones : []
-            try JSONEncoder().encode(Setup(relay: relay.absoluteString, name: machine.name, phones: phonesHere, removed: list.removed, mac: key.publicBytes.base64URL, at: list.at,
+            // Your phones only while the phone link is on.
+            try JSONEncoder().encode(Setup(relay: relay.absoluteString, name: machine.name, phones: Self.isEnabled ? list.phones : nil, removed: Self.isEnabled ? list.removed : nil,
+                                           mac: key.publicBytes.base64URL, at: list.at,
                                            peers: peers(for: machine.id), peersAt: list.at, id: machine.id)).write(to: settings)
             let output = try await machine.connection.run(RemoteEngineInstaller.script("""
                 KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$E" "$K/bin/\(Bridge.fileName)" setup
@@ -447,30 +448,41 @@ final class PhoneLink {
     /// machine itself now or not: as phones or machines change, as the relay answers, and every
     /// 15 minutes while it does (a machine that was off gets it once it's back). Only this Mac's
     /// key is taken there.
-    func tellMachines() async {
+    /// `ask`: this Mac just met the relay, and may have missed what they said: each tells it its
+    /// agents again (PROTOCOL.md, "Peers").
+    func tellMachines(ask: Bool = false) async {
         guard let server, status == .connected, !machineHosts.isEmpty else { return }
         struct Told: Encodable {
-            var phones: [PhoneList.Phone]
-            var removed: [PairedPhones.Removal]
+            /// With the phone link off, none: the machine keeps the phones it has.
+            var phones: [PhoneList.Phone]?
+            var removed: [PairedPhones.Removal]?
             var at: Int64
             var peers: [Peer]
+            var ask: String?
         }
         let list = phoneList
         for (machine, host) in machineHosts where host.anotherMac != true {
             guard let key = Data(base64URL: host.key), let bytes = Data(base64URL: host.address), let address = LinkAddress(bytes: bytes),
-                  let payload = try? JSONEncoder().encode(Told(phones: Self.isEnabled ? list.phones : [], removed: list.removed, at: list.at, peers: peers(for: machine)))
+                  let payload = try? JSONEncoder().encode(Told(phones: Self.isEnabled ? list.phones : nil, removed: Self.isEnabled ? list.removed : nil, at: list.at, peers: peers(for: machine),
+                                                               ask: ask ? "agents" : nil))
             else { continue }
-            if !(await server.mail(payload, to: key, at: address)) { log.error("Couldn’t mail a machine’s bridge your phones") }
+            if await server.mail(payload, to: key, at: address) != .sent { log.error("Couldn’t mail a machine’s bridge your phones") }
         }
     }
 
     /// Mails `payload` to one of your machines' bridges (one that talks to other computers
-    /// itself); false when it can't go now (no relay connection, or it isn't such a machine).
-    func mail(_ payload: [String: Any], to machine: String) async -> Bool {
+    /// itself): `offline` when it can't go now (no relay connection, or it isn't such a machine),
+    /// `tooBig` for one the relay won't take.
+    func mail(_ payload: [String: Any], to machine: String) async -> LinkServer.MailOutcome {
         guard let server, status == .connected, let host = machineHosts[machine], host.peers == true, host.anotherMac != true,
-              let key = Data(base64URL: host.key), let bytes = Data(base64URL: host.address), let address = LinkAddress(bytes: bytes),
-              let data = try? JSONSerialization.data(withJSONObject: payload) else { return false }
+              let key = Data(base64URL: host.key), let bytes = Data(base64URL: host.address), let address = LinkAddress(bytes: bytes) else { return .offline }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return .tooBig }
         return await server.mail(data, to: key, at: address)
+    }
+
+    /// This Mac's public key, as your machines know it (none while the Keychain won't give it out).
+    var macKey: String? {
+        hasIdentity ? key.publicBytes.base64URL : nil
     }
 
     /// Whether `machine`'s bridge talks to your other computers itself (it makes its own list of
@@ -511,12 +523,15 @@ final class PhoneLink {
                 let connection = try await WebSocketRelay.connect(to: relay, secret: secret)
                 status = .connected
                 attempt = 0
-                // Your machines hear who's here, as soon as there's a way to tell them.
+                // Your machines hear who's here, as soon as there's a way to tell them, and tell
+                // their agents again (what they said meanwhile didn't come).
                 Task { [weak self] in
                     try? await Task.sleep(for: .milliseconds(500))
-                    await self?.tellMachines()
+                    await self?.tellMachines(ask: true)
                 }
                 await server.serve(connection)
+                // Gone: nothing goes by mail until it's back.
+                status = .connecting
             } catch {
                 status = .failed("Can’t reach the relay at \(relay.host() ?? relay.absoluteString).")
             }
