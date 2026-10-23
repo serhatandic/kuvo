@@ -272,9 +272,12 @@ final class MachineEngine {
         return id
     }()
 
-    /// This Mac started the engine running there with other settings than `launch`'s.
+    /// This Mac started the engine running there with other settings than `launch`'s, or an older
+    /// Mac did, with its own.
     func isBehind(_ launch: Launch) -> Bool {
-        guard let engine = server?.engine, !isAnotherMacs(engine) else { return false }
+        guard let engine = server?.engine else { return false }
+        if isOlderMacs(engine) { return !boxIsNewer }
+        guard !isAnotherMacs(engine) else { return false }
         return engine.notes["settings"] != launch.fingerprint
     }
 
@@ -285,6 +288,13 @@ final class MachineEngine {
 
     private func isAnotherMacs(_ engine: RemoteServer.Engine) -> Bool {
         engine.notes["mac"].map { $0 != Self.macID } ?? false
+    }
+
+    /// Started by a Kuvo Code from before boxes kept their own settings (0.7 and before, on this
+    /// Mac or another), with that Mac's: replaced as this Mac's own older ones are, once nothing's
+    /// running, so the box's run.
+    private func isOlderMacs(_ engine: RemoteServer.Engine) -> Bool {
+        engine.notes["box"] == nil
     }
 
     /// Connects to the machine's engine: the one already running there (from an earlier launch,
@@ -323,6 +333,7 @@ final class MachineEngine {
             try check()
             let starting = startWanted
             if found == .stopped, !starting {
+                if !boxIsNewer { try? await BoxVersion.notInstalling(on: connection) }
                 isStopped = true
                 state = .preparing
                 watchWhileStopped()
@@ -397,8 +408,8 @@ final class MachineEngine {
             attached = server
             try check()
             let api = OpenCodeAPI(endpoint: server.endpoint, folderPrefix: RemoteFolder.prefix(for: machine.id))
-            if !boxIsNewer, server.engine.notes["settings"] != launch.fingerprint, !isAnotherMacs(server.engine), (try? await api.activeSessions())?.isEmpty == true {
-                // Started with older settings, and nothing to interrupt: start it over.
+            if !boxIsNewer, isOlderMacs(server.engine) || server.engine.notes["settings"] != launch.fingerprint && !isAnotherMacs(server.engine), (try? await api.activeSessions())?.isEmpty == true {
+                // Started with older settings (or an older Mac's), and nothing to interrupt: start it over.
                 try check()
                 server.disconnect()
                 attached = nil
@@ -408,7 +419,11 @@ final class MachineEngine {
             }
             try check()
             // What this app put there runs: the box is this version's.
-            if !boxIsNewer { try? await BoxVersion.mark(on: connection) }
+            if !boxIsNewer {
+                var marks = ["kuvo-browser.js": "// kuvo-browser \(launch.helper.hash)"]
+                if let agents = launch.agents { marks["kuvo-agents.js"] = "// kuvo-agents \(agents.hash)" }
+                try? await BoxVersion.mark(on: connection, marks: marks)
+            }
             self.server = server
             let current = OpenCodeAPI(endpoint: server.endpoint, folderPrefix: RemoteFolder.prefix(for: machine.id))
             self.api = current
@@ -454,7 +469,7 @@ final class MachineEngine {
     }
 
     private func launchEngine(_ launch: Launch, replace: Int? = nil, starting: Bool = false) async throws -> RemoteServer.Engine {
-        try await RemoteServer.launch(on: machine.connection, environment: launch.environment.merging(launch.boxEnvironment) { $1 }, notes: ["settings": launch.fingerprint, "mac": Self.macID],
+        try await RemoteServer.launch(on: machine.connection, environment: launch.environment.merging(launch.boxEnvironment) { $1 }, notes: ["settings": launch.fingerprint, "mac": Self.macID, "box": BoxVersion.mine],
                                       withAgents: launch.agents != nil, replace: replace, start: starting)
     }
 
@@ -832,7 +847,7 @@ final class Machines {
         } ?? ""
         return leave + """
         rm -rf "$K/keys" "$K/box/keys"
-        rm -f "$K/run/launch.env" "$K/run/launch.notes" "$K/bin/kuvo-start" "$K/bin/kuvo-launch" "$K/bin/.kuvo-boot"
+        rm -f "$K/run/launch.env" "$K/run/launch.notes" "$K/bin/kuvo-start" "$K/bin/.kuvo-start-keeper" "$K/bin/kuvo-launch" "$K/bin/.kuvo-boot"
         \(RemoteServer.rebootCrontabRemoval)
         """
     }

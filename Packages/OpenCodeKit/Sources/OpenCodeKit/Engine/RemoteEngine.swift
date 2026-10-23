@@ -343,11 +343,43 @@ public enum BoxVersion {
         try await connection.run("R=\"$HOME/\(RemoteEngineInstaller.root)/run\"; mkdir -p \"$R\" && touch \"$R/mac-installing\"")
     }
 
-    /// Marks the box as this app's, once what it put there runs (not over a newer one's).
-    public static func mark(on connection: SSHConnection) async throws {
-        try await connection.run(guardScript + "\n" + """
-            B="$HOME/\(RemoteEngineInstaller.root)/bin"; mkdir -p "$B" && printf '%s' "\(mine)" >"$B/box-version.new" && mv -f "$B/box-version.new" "$B/box-version" && rm -f "$HOME/\(RemoteEngineInstaller.root)/run/mac-installing"
-            """)
+    /// Takes `installing`'s note back, for a connect that ends before it puts its files in place.
+    public static func notInstalling(on connection: SSHConnection) async throws {
+        try await connection.run("rm -f \"$HOME/\(RemoteEngineInstaller.root)/run/mac-installing\"")
+    }
+
+    /// The box's tools that an older Kuvo Code on a Mac (0.7 and before) puts its own over as it
+    /// connects. The box keeps copies of its own (`bin/.own`), which its keeper puts back.
+    public static let ownTools = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"]
+
+    /// Marks the box as this app's, once what it put there runs (not over a newer one's): its tools
+    /// this version's (`kuvo-wake` and `kuvo-npx` are put there otherwise only as an engine starts),
+    /// and kept as the box's own. `marks`: the line this app's own of a tool it put there before
+    /// carries (its first or last). One that doesn't, an older Mac's put there meanwhile, isn't
+    /// kept: the box's own goes back instead, when it's this app's.
+    public static func mark(on connection: SSHConnection, marks: [String: String] = [:]) async throws {
+        try await connection.run(markScript(marks: marks))
+    }
+
+    static func markScript(marks: [String: String]) -> String {
+        let keep = ownTools.map { tool in
+            let kept = "cp -p \"$B/\(tool)\" \"$O/.\(tool).new\" && mv -f \"$O/.\(tool).new\" \"$O/\(tool)\" || exit 1"
+            guard let mark = marks[tool].map(SSHConnection.quoted) else {
+                return "if [ -f \"$B/\(tool)\" ]; then \(kept); else rm -f \"$O/\(tool)\"; fi"
+            }
+            return """
+            if [ ! -f "$B/\(tool)" ]; then rm -f "$O/\(tool)"
+            elif ours "$B/\(tool)" \(mark); then \(kept)
+            elif [ -f "$O/\(tool)" ] && ours "$O/\(tool)" \(mark); then cp -p "$O/\(tool)" "$B/.\(tool).new" && mv -f "$B/.\(tool).new" "$B/\(tool)"
+            fi
+            """
+        }.joined(separator: "\n")
+        return guardScript + "\n" + RemoteEngineInstaller.folders + "\n" + Wakes.installScript + "\n" + Launcher.installScript + "\n" + """
+        B="$K/bin"; O="$B/.own"; mkdir -p "$O" || exit 1
+        ours() { [ "$(head -n 1 "$1")" = "$2" ] || [ "$(tail -n 1 "$1")" = "$2" ]; }
+        \(keep)
+        printf '%s' "\(mine)" >"$B/box-version.new" && mv -f "$B/box-version.new" "$B/box-version" && rm -f "$K/run/mac-installing"
+        """
     }
 }
 
@@ -670,18 +702,56 @@ public final class RemoteServer: @unchecked Sendable {
           [ -f "$K/bin/kuvo-start" ] || exit 0
           is "$(cat "$R/box.pid" 2>/dev/null)" kuvo-start && exit 0
           cd "$K" || exit 0
-          env -i HOME="$HOME" PATH="$PATH" setsid sh "$K/bin/kuvo-start" keep </dev/null >/dev/null 2>&1 &
+          # This script (kuvo-start, or the copy below), as the keeper.
+          env -i HOME="$HOME" PATH="$PATH" setsid sh "$0" keep </dev/null >/dev/null 2>&1 &
           ;;
         keep)
           echo $$ >"$R/box.pid"
           boot=$(cat "$K/bin/.kuvo-boot" 2>/dev/null)
+          # A copy of itself, which it runs its starts from and puts back as kuvo-start when an
+          # older Kuvo Code on a Mac (0.7 and before) put its own there, one that only starts the
+          # engine after a restart. (The phone link starts the keeper from it then, too.)
+          me="$K/bin/.kuvo-start-keeper"
+          if [ "$0" != "$me" ]; then
+            cp -f "$0" "$me.new" 2>/dev/null && mv -f "$me.new" "$me" || me=$0
+          fi
+          # Whether kuvo-start is a keeper; an older Mac's is replaced (one removed stays removed).
+          mine() {
+            grep -q '^keep)' "$K/bin/kuvo-start" 2>/dev/null && return 0
+            if [ -f "$K/bin/kuvo-start" ] && [ "$me" != "$K/bin/kuvo-start" ]; then
+              { cp -f "$me" "$K/bin/.kuvo-start.new" && chmod 700 "$K/bin/.kuvo-start.new" && mv -f "$K/bin/.kuvo-start.new" "$K/bin/kuvo-start"; } 2>/dev/null
+            fi
+            return 1
+          }
+          mine
           # The watchdogs engines had before, one each: this keeper does their work now.
           pkill -f "watchdog [0-9]+ $R" 2>/dev/null
           fails=0; next=0; started=; round=0
           while :; do
             [ -f "$K/bin/kuvo-start" ] && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
-            # Its script replaced: the new one carries on.
-            [ "$(cat "$K/bin/.kuvo-boot" 2>/dev/null)" = "$boot" ] || exec sh "$K/bin/kuvo-start" keep
+            # Its script replaced: a newer keeper carries on; an older Mac's gets this one back.
+            if [ "$(cat "$K/bin/.kuvo-boot" 2>/dev/null)" != "$boot" ]; then
+              mine && exec sh "$K/bin/kuvo-start" keep
+              boot=$(cat "$K/bin/.kuvo-boot" 2>/dev/null)
+            fi
+            # An older Kuvo Code on a Mac (which touches run/attached as it connects) put its own
+            # tools over the box's since the box was last marked: the box's back, as the Kuvo Code
+            # that marked it put them there (bin/.own). Not while a Mac puts its files in place, or
+            # the box updates itself.
+            if [ -d "$K/bin/.own" ] && [ "$R/attached" -nt "$K/bin/box-version" ] && [ ! -d "$R/.updating" ] && [ -z "$(find "$R/mac-installing" -mmin -60 2>/dev/null)" ]; then
+              for f in "$K"/bin/.own/*; do
+                n=${f##*/}; t="$K/bin/$n"
+                [ -f "$f" ] && { [ "$f" -nt "$t" ] || [ "$t" -nt "$f" ]; } || continue
+                if cmp -s "$f" "$t"; then touch -r "$f" "$t"; else cp -p "$f" "$K/bin/.$n.new" && mv -f "$K/bin/.$n.new" "$t"; fi
+              done 2>/dev/null
+            fi
+            # Running though stopped: an older Kuvo Code on a Mac, which doesn't know Stop, started
+            # it as it connected. It runs, so it isn't stopped (under the lock, so a stop under way
+            # finishes first).
+            if [ -f "$R/stopped" ] && up && lock 1; then
+              up && rm -f "$R/stopped"
+              rmdir "$R/.launching" 2>/dev/null
+            fi
             now=$(date +%s)
             if ! up && [ ! -f "$R/stopped" ] && [ -f "$R/launch.env" ] && [ "$now" -ge "$next" ]; then
               # Down: one this started that ran under ten minutes counts as failing, and makes it
@@ -689,7 +759,7 @@ public final class RemoteServer: @unchecked Sendable {
               if [ -n "$started" ]; then
                 if [ $((now - started)) -lt 600 ]; then fails=$((fails + 1)); else fails=0; fi
               fi
-              sh "$K/bin/kuvo-start" engine >/dev/null 2>&1
+              sh "$me" engine >/dev/null 2>&1
               if up; then started=$now; else started=; fails=$((fails + 1)); fi
               case $fails in 0) wait=0 ;; 1) wait=15 ;; 2) wait=30 ;; 3) wait=60 ;; 4) wait=120 ;; 5) wait=300 ;; *) wait=600 ;; esac
               next=$((now + wait))
@@ -718,6 +788,9 @@ public final class RemoteServer: @unchecked Sendable {
             # beside this loop, which a slow watch never holds up, one round at a time.
             round=$((round + 1))
             if [ $((round % 4)) -eq 0 ] && up && ! is "${waking-}" kuvo-wake; then
+              # (Not beside the watchdog an older Mac's start brings, which would also stop the
+              # engine after a day without that Mac.)
+              pkill -f "watchdog [0-9]+ $R" 2>/dev/null
               (environment; cd "$K/workspace" 2>/dev/null || cd "$K"; exec "$K/bin/kuvo-wake" fire "$K/bots" "$R/engine.json") >/dev/null 2>&1 </dev/null &
               waking=$!
             fi

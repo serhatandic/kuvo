@@ -184,7 +184,11 @@ connection.
 A box's files say which Kuvo Code put them there: `~/.kuvo-code/bin/box-version`. It holds that
 app's version, written by a Mac after it sets the box up, or by the box when it updates itself.
 - **Older or unmarked box**: a Mac installs its own engine, bridge, helpers, agents bridge and
-  keeper, as before, then writes its version.
+  keeper, as before, then writes its version. Marking it, it also keeps copies of the box's tools
+  (`kuvo-agents.js`, `kuvo-browser.js`, `kuvo-wake`, `kuvo-npx`) in `bin/.own`, only those that
+  carry its own first or last line (`// kuvo-browser <hash>`, `// kuvo-agents <hash>`); one that
+  doesn't (an older Mac's, put there meanwhile) gives way to the copy, when the copy is its own.
+  Its engine launches note `"box": <version>`.
 - **Newer box**: a Mac leaves everything as it is.
   - Every script that would write one of its files reads what it was given and stops.
   - It connects to the engine running there, and doesn't start it over for its own settings.
@@ -196,6 +200,22 @@ app's version, written by a Mac after it sets the box up, or by the box when it 
 - **Setup** also sends the Mac's ID (`macID`, as its engine launches name it). The bridge keeps
   `tolerantIDs[macID]`, set again at each setup, and notes in `run/launchers.json` which Mac
   started the engine (from `run/engine.json`'s `notes.mac`).
+
+**An older Mac** (Kuvo Code 0.7 and before) still connects, and puts its own files there as it
+always did. The box keeps working as itself:
+- **Its tools**: an older Mac touches `run/attached` as it connects. Once that's newer than
+  `bin/box-version`, the keeper puts each tool in `bin/.own` back where it differs, but not while
+  a Mac installs (`run/mac-installing`, an hour at most) or the box updates itself.
+- **Its keeper**: an older Mac's `kuvo-start` only starts the engine after a restart. The keeper
+  keeps a copy of itself (`bin/.kuvo-start-keeper`), runs its starts from it, and puts it back as
+  `kuvo-start` when the one there has no `keep)` case. The bridge starts the keeper from the copy
+  then too. The keeper stops the watchdogs an older Mac's start brings.
+- **Its engine**: an older Mac doesn't know Stop, so it starts one over `run/stopped`. Running,
+  it isn't stopped any longer: the keeper takes `run/stopped` away, under the start lock. An
+  engine without `notes.box` is an older Mac's, with that Mac's settings: a Mac that marks boxes
+  starts it over once nothing runs, so the box's settings apply again.
+- `run/attached` from before the box was last marked doesn't count as an older Mac: that was
+  most likely the same Mac before it updated.
 
 **A box updating itself** (bridge 0.9.18). It takes only what a key pinned in `kuvo-link.js`
 (`UPDATE_KEYS`) signed; `scripts/set-box-key.sh` makes that key.
@@ -215,8 +235,8 @@ app's version, written by a Mac after it sets the box up, or by the box when it 
   - to a version that isn't newer;
   - while a conversation works there or a browser ask waits;
   - while a Mac that started the engine in the last 30 days isn't in `tolerantIDs` as `true`;
-  - while an older Mac connected in the last 30 days. Kuvo Code 0.7 and before touches
-    `run/attached` each time it connects, and later versions never do.
+  - while an older Mac connected in the last 30 days, since the box was last marked. Kuvo Code
+    0.7 and before touches `run/attached` each time it connects, and later versions never do.
   - When the newest release has no `boxes.json` (one from before machines updated themselves), it's
     "current", not a failure.
 - **How**:
@@ -232,7 +252,8 @@ app's version, written by a Mac after it sets the box up, or by the box when it 
      - `restore.sh` checks each step and keeps what was kept until it's all back.
      - It moves the database back (same disk, no room needed), without the new engine's journal,
        and only once it was kept.
-  4. It swaps file by file: `bin/box-version` first, `bin/.kuvo-boot` last. Then it starts again.
+  4. It swaps file by file: `bin/box-version` first, `bin/.kuvo-boot` last, with copies of the
+     release's tools in `bin/.own` (kept for a rollback as the rest is). Then it starts again.
      One update runs at a time, by its process (`run/.updating/pid`, the link's). While it runs,
      `setup` doesn't restart the bridge, and the keeper doesn't run `restore.sh`.
   5. Once the engine answers as the new version (and the coding agents' bridge, if it ran), the

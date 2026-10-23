@@ -3503,6 +3503,10 @@ async function cameUp(version, withAgents, timeout = 120_000, readEngine = readE
   return false;
 }
 
+// The box's tools that an older Kuvo Code on a Mac (0.7 and before) puts its own over as it
+// connects: the box keeps copies of its own (`bin/.own`), which its keeper puts back.
+const OWN_TOOLS = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"];
+
 // The order files go in: its version first (a Mac connecting meanwhile leaves the box as it is),
 // the keeper's mark last (the keeper starts its new script only once the script is there).
 const installOrder = files => [...files].sort((a, b) => (a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1));
@@ -3551,6 +3555,15 @@ export async function update({ now = false, keys = UPDATE_KEYS, url = UPDATE_URL
       if (hexSHA256(fs.readFileSync(path.join(stage, "files", file))) !== box.files[file]) throw new Error("The release's files aren't what it says.");
     }
     if (!files.includes("bin/box-version") || fs.readFileSync(path.join(stage, "files", "bin", "box-version"), "utf8").trim() !== manifest.version) throw new Error("The release's files aren't what it says.");
+    // Its tools kept as the box's own too (and put back with the rest, if it goes back).
+    for (const tool of OWN_TOOLS) {
+      if (!files.includes(`bin/${tool}`)) continue;
+      const from = path.join(stage, "files", "bin", tool), own = path.join(stage, "files", "bin", ".own", tool);
+      fs.mkdirSync(path.dirname(own), { recursive: true, mode: 0o700 });
+      fs.copyFileSync(from, own);
+      fs.chmodSync(own, fs.statSync(from).mode & 0o777);
+      files.push(`bin/.own/${tool}`);
+    }
 
     // Its engine, unless it's here already.
     const engineFolder = path.join(K, "engine", manifest.engine);
@@ -3840,8 +3853,13 @@ const isBridge = pid => pid !== process.pid && runs(pid, "kuvo-link.js");
 // The box's keeper (`bin/kuvo-start`), started again if it went: it keeps the engine and this
 // bridge running.
 export function keepKeeper() {
-  const start = path.join(K, "bin", "kuvo-start");
+  let start = path.join(K, "bin", "kuvo-start");
   if (!fs.existsSync(start)) return;
+  // An older Kuvo Code on a Mac (0.7 and before) put its own kuvo-start here, which only starts
+  // the engine after a restart: the box's keeper, from the copy it keeps of itself (which puts
+  // itself back).
+  const copy = path.join(K, "bin", ".kuvo-start-keeper");
+  if (!/\nkeep\)/.test(textOf(start) ?? "") && fs.existsSync(copy)) start = copy;
   let keeper = null;
   try { keeper = Number(fs.readFileSync(path.join(RUN, "box.pid"), "utf8")); } catch {}
   if (keeper && runs(keeper, "kuvo-start")) return;

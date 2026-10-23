@@ -311,6 +311,104 @@ import Testing
         #expect(engine.version == "1.9.0")
     }
 
+    /// Kuvo Code updated: the keeper running hands over to its new script.
+    @Test func aNewScriptTakesOverTheKeeping() throws {
+        defer { cleanUp() }
+        try start()
+        until { keeper != nil && running() != nil }
+        let box = try #require(keeper)
+        let script = RemoteServer.bootScript.replacingOccurrences(of: "\nkeep)\n", with: "\nkeep)\n  touch \"$HOME/handed\"\n")
+        #expect(script != RemoteServer.bootScript)
+        try write(root.appending(path: "bin/kuvo-start"), script, executable: true)
+        try write(root.appending(path: "bin/.kuvo-boot"), "2")
+        let handed = home.appending(path: "handed")
+        until { FileManager.default.fileExists(atPath: handed.path) }
+        #expect(FileManager.default.fileExists(atPath: handed.path))
+        #expect(keeper == box, "the same keeper, with the new script")
+    }
+
+    /// An older Kuvo Code on a Mac (0.7 and before) puts its own `kuvo-start` there as it starts
+    /// the engine, one that only starts it after a restart: the keeper carries on, and puts itself
+    /// back (that Mac's mark left as it is, so it doesn't put its own there again).
+    @Test func anOlderMacsScriptLeavesTheKeeperKeeping() throws {
+        defer { cleanUp() }
+        try start()
+        until { keeper != nil && running() != nil }
+        let box = try #require(keeper)
+        let script = root.appending(path: "bin/kuvo-start"), mark = root.appending(path: "bin/.kuvo-boot")
+        #expect(try String(contentsOf: root.appending(path: "bin/.kuvo-start-keeper"), encoding: .utf8) == RemoteServer.bootScript)
+        try write(script, "#!/bin/sh\n# Kuvo Code: starts its engine on this machine again after a restart.\nexit 0\n", executable: true)
+        try write(mark, "older")
+        until { (try? String(contentsOf: script, encoding: .utf8)) == RemoteServer.bootScript }
+        #expect(try String(contentsOf: script, encoding: .utf8) == RemoteServer.bootScript)
+        #expect(try String(contentsOf: mark, encoding: .utf8) == "older")
+        let before = rounds()
+        until { rounds() >= before + 2 }
+        #expect(keeper == box)
+        // Still keeping it: a crash comes back.
+        let engine = try #require(running())
+        kill(pid_t(engine.pid), SIGKILL)
+        until { running().map { $0.pid != engine.pid } ?? false }
+        #expect(running().map { $0.pid != engine.pid } == true)
+        #expect(keeper == box)
+    }
+
+    /// An older Kuvo Code on a Mac (0.7 and before, which touches `run/attached` as it connects)
+    /// puts its own tools over the box's: the keeper puts the box's back, as the Kuvo Code that
+    /// marked the box last put them there (`bin/.own`); not while a Mac puts its files in place,
+    /// and not a Mac's of this version or newer (no older Mac since the box was marked).
+    @Test func anOlderMacsToolsGiveWayToTheBoxs() throws {
+        defer { cleanUp() }
+        let bin = root.appending(path: "bin"), tool = bin.appending(path: "kuvo-npx"), own = bin.appending(path: ".own/kuvo-npx")
+        try FileManager.default.createDirectory(at: own.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try write(tool, "the box's\n", executable: true)
+        try write(own, "the box's\n", executable: true)
+        try write(bin.appending(path: "box-version"), "0.8.0")
+        let earlier = Date.now.addingTimeInterval(-600)
+        for file in [tool, own, bin.appending(path: "box-version")] {
+            try FileManager.default.setAttributes([.modificationDate: earlier], ofItemAtPath: file.path)
+        }
+        let text = { (try? String(contentsOf: tool, encoding: .utf8)) ?? "" }
+        let someRounds = { let before = self.rounds(); self.until { self.rounds() >= before + 2 } }
+        try start()
+        until { keeper != nil && running() != nil }
+        try write(tool, "a Mac's of this version\n", executable: true)
+        someRounds()
+        #expect(text() == "a Mac's of this version\n")
+        // An older Mac connects while a Mac puts its files in place: not yet.
+        try write(run.appending(path: "mac-installing"), "")
+        try write(run.appending(path: "attached"), "")
+        try write(tool, "an older Mac's\n", executable: true)
+        someRounds()
+        #expect(text() == "an older Mac's\n")
+        try FileManager.default.removeItem(at: run.appending(path: "mac-installing"))
+        until { text() == "the box's\n" }
+        #expect(text() == "the box's\n")
+        #expect(FileManager.default.isExecutableFile(atPath: tool.path))
+    }
+
+    /// An older Kuvo Code on a Mac (0.7 and before) doesn't know Stop: connecting to a stopped box,
+    /// it starts the engine itself. Running, it isn't stopped any longer: kept as any engine is.
+    @Test func anEngineAnOlderMacStartedOverAStopIsntStopped() throws {
+        defer { cleanUp() }
+        try start()
+        until { running() != nil }
+        let stopped = run.appending(path: "stopped")
+        try write(stopped, "")
+        until { !FileManager.default.fileExists(atPath: stopped.path) }
+        #expect(!FileManager.default.fileExists(atPath: stopped.path))
+        let engine = try #require(running())
+        kill(pid_t(engine.pid), SIGKILL)
+        until { running().map { $0.pid != engine.pid } ?? false }
+        #expect(running().map { $0.pid != engine.pid } == true)
+        // A Stop still stops it, and it stays stopped.
+        #expect(try start("stop") == 0)
+        let before = rounds()
+        until { rounds() >= before + 2 || running() == nil }
+        usleep(300_000)
+        #expect(running() == nil && FileManager.default.fileExists(atPath: stopped.path))
+    }
+
     @Test func theKeeperGoesWithItsScript() throws {
         defer { cleanUp() }
         try start()

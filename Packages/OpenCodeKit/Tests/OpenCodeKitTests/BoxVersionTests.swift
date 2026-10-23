@@ -51,6 +51,61 @@ import Testing
         #expect(try installs(over: "0.7.2", mine: "0.8.0-beta.1"))
     }
 
+    /// A Mac marks the box as its version once what it put there runs: its tools this version's,
+    /// and kept as the box's own (`bin/.own`, with their times), for the keeper to put back after
+    /// an older Mac's visit. Not over a newer box.
+    @Test func aMarkKeepsTheBoxsOwnTools() throws {
+        defer { try? FileManager.default.removeItem(at: home) }
+        let run = home.appending(path: RemoteEngineInstaller.root).appending(path: "run")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true)
+        try Data("// this app's agents\n".utf8).write(to: bin.appending(path: "kuvo-agents.js"))
+        try Data("// kuvo-browser older\n".utf8).write(to: bin.appending(path: "kuvo-browser.js"))
+        try Data("an older Mac's\n".utf8).write(to: bin.appending(path: "kuvo-wake"))
+        try Data().write(to: run.appending(path: "mac-installing"))
+        let mark = { (mine: String) throws -> Int32 in
+            let before = BoxVersion.mine
+            BoxVersion.mine = mine
+            defer { BoxVersion.mine = before }
+            let process = Process()
+            process.executableURL = URL(filePath: "/bin/sh")
+            process.arguments = ["-c", BoxVersion.markScript(marks: ["kuvo-agents.js": "// this app's agents", "kuvo-browser.js": "// kuvo-browser mine"])]
+            process.environment = ["HOME": self.home.path, "PATH": "/usr/bin:/bin"]
+            process.standardInput = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus
+        }
+        #expect(try mark("0.8.0") == 0)
+        #expect(try String(contentsOf: bin.appending(path: "box-version"), encoding: .utf8) == "0.8.0")
+        #expect(!FileManager.default.fileExists(atPath: run.appending(path: "mac-installing").path))
+        let own = bin.appending(path: ".own")
+        #expect(try String(contentsOf: own.appending(path: "kuvo-agents.js"), encoding: .utf8) == "// this app's agents\n")
+        let wake = try String(contentsOf: own.appending(path: "kuvo-wake"), encoding: .utf8)
+        #expect(wake == Wakes.script + "\n", "this version's, not what an older Mac left")
+        #expect(try String(contentsOf: bin.appending(path: "kuvo-wake"), encoding: .utf8) == wake)
+        #expect(FileManager.default.fileExists(atPath: own.appending(path: "kuvo-npx").path))
+        #expect(!FileManager.default.fileExists(atPath: own.appending(path: "kuvo-browser.js").path), "an older Mac's, put there meanwhile, isn't kept")
+        let times = { (url: URL) in try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date }
+        #expect(try times(own.appending(path: "kuvo-agents.js")) == times(bin.appending(path: "kuvo-agents.js")))
+        // This app's kept from before: back in its place.
+        try Data("// kuvo-browser mine\n".utf8).write(to: own.appending(path: "kuvo-browser.js"))
+        #expect(try mark("0.8.0") == 0)
+        #expect(try String(contentsOf: bin.appending(path: "kuvo-browser.js"), encoding: .utf8) == "// kuvo-browser mine\n")
+        // None there: none kept.
+        try FileManager.default.removeItem(at: bin.appending(path: "kuvo-agents.js"))
+        #expect(try mark("0.8.0") == 0)
+        #expect(!FileManager.default.fileExists(atPath: own.appending(path: "kuvo-agents.js").path))
+        try Data("// this app's agents\n".utf8).write(to: bin.appending(path: "kuvo-agents.js"))
+        #expect(try mark("0.8.0") == 0)
+        // Over a newer box, nothing.
+        try Data("0.9.0".utf8).write(to: bin.appending(path: "box-version"))
+        try Data("// a newer box's agents\n".utf8).write(to: bin.appending(path: "kuvo-agents.js"))
+        #expect(try mark("0.8.0") == 0)
+        #expect(try String(contentsOf: bin.appending(path: "box-version"), encoding: .utf8) == "0.9.0")
+        #expect(try String(contentsOf: own.appending(path: "kuvo-agents.js"), encoding: .utf8) == "// this app's agents\n")
+    }
+
     @Test func versionsCompareByNumber() {
         let before = BoxVersion.mine
         defer { BoxVersion.mine = before }

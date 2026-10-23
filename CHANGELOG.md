@@ -16,6 +16,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The personalities you write for bots are on all your computers: one you make, change or delete on one reaches the others as Kuvo Code connects to them.
 - Agents on your machines write to agents on your other machines, and wait for their answers, with your Mac off too: your computers reach each other through Kuvo Code's relay.
 - A machine another Mac set up with a newer Kuvo Code is used as it is, rather than taken back to older versions.
+- A Mac with an older Kuvo Code can still use a machine a newer one set up: the machine keeps its own tools, keeps running by itself, and goes back to its own settings once nothing runs there.
 - Each machine keeps Kuvo Code up to date by itself: at night, while nothing runs there, a few days after a release, going back to what it had if the new version doesn't start. Turn it off, or update now, on the machine's Engine page in Settings.
 
 ## 0.7.2

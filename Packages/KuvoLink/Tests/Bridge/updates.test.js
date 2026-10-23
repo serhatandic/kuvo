@@ -84,6 +84,8 @@ async function machine() {
   write(path.join(home, "bin", "box-version"), "0.9.0");
   write(path.join(home, "bin", "kuvo-start"), keeper("1.0.0"), 0o700);
   write(path.join(home, "bin", "kuvo-link.js"), "// the old link\n", 0o600);
+  write(path.join(home, "bin", "kuvo-wake"), "# the old wake-ups\n", 0o755);
+  write(path.join(home, "bin", ".own", "kuvo-wake"), "# the old wake-ups\n", 0o755);
   write(path.join(home, "engine", "1.0.0", "opencode"), engineBinary("1.0.0"), 0o755);
   write(path.join(home, "data", "opencode", "opencode.db"), "the old engine's data");
   spawnSync("sh", [path.join(home, "bin", "kuvo-start"), "start"], { env: process.env });
@@ -109,8 +111,9 @@ function release({ version = "0.10.0", released = new Date(Date.now() - 10 * 86_
   write(path.join(files, "bin", "box-version"), version);
   write(path.join(files, "bin", "kuvo-start"), keeper("1.1.0", breaks), 0o700);
   write(path.join(files, "bin", "kuvo-link.js"), fs.readFileSync(script, "utf8"), 0o600);
+  write(path.join(files, "bin", "kuvo-wake"), "# the new wake-ups\n", 0o755);
   const box = { version, engine: "1.1.0", files: {} };
-  for (const file of ["bin/box-version", "bin/kuvo-start", "bin/kuvo-link.js"]) box.files[file] = sha256(fs.readFileSync(path.join(files, file)));
+  for (const file of ["bin/box-version", "bin/kuvo-start", "bin/kuvo-link.js", "bin/kuvo-wake"]) box.files[file] = sha256(fs.readFileSync(path.join(files, file)));
   write(path.join(files, "box.json"), JSON.stringify(box));
   const pack = path.join(scratch, `pack-${crypto.randomUUID()}.tgz`);
   spawnSync("tar", ["czf", pack, "-C", files, "."], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
@@ -186,6 +189,9 @@ test("a box updates to a newer release: its engine and files swapped, started ag
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.10.0");
   assert.match(fs.readFileSync(path.join(home, "bin", "kuvo-start"), "utf8"), /engine\/1\.1\.0/);
   assert.equal((fs.statSync(path.join(home, "bin", "kuvo-link.js")).mode & 0o777), 0o600, "with its own mode");
+  // Its tools kept as the box's own too, for its keeper to put back after an older Mac's visit.
+  assert.equal(fs.readFileSync(path.join(home, "bin", ".own", "kuvo-wake"), "utf8"), "# the new wake-ups\n");
+  assert.equal((fs.statSync(path.join(home, "bin", ".own", "kuvo-wake")).mode & 0o777), 0o755);
   await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.1.0", "the new engine runs");
   engines.add(read(engineFile).pid);
   assert.ok(fs.existsSync(path.join(home, "updates", "rollback", "restore.sh")));
@@ -212,6 +218,7 @@ test("a new version that doesn't come up is taken back: the files, the box's ver
   assert.match(outcome.message, /didn't come up/);
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.9.0");
   assert.equal(fs.readFileSync(path.join(home, "bin", "kuvo-link.js"), "utf8"), "// the old link\n");
+  assert.equal(fs.readFileSync(path.join(home, "bin", ".own", "kuvo-wake"), "utf8"), "# the old wake-ups\n", "the box's own tools as they were");
   assert.match(fs.readFileSync(path.join(home, "bin", "kuvo-start"), "utf8"), /engine\/1\.0\.0/);
   await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.0.0", "the old engine runs again");
   engines.add(read(engineFile).pid);

@@ -739,7 +739,15 @@ test("the box's keeper keeps the phone link up while a phone is paired, and the 
   link.keepKeeper();
   for (let i = 0; i < 100 && !fs.existsSync(said); i++) await new Promise(r => setTimeout(r, 30));
   assert.equal(fs.readFileSync(said, "utf8").trim(), "box");
-  for (const name of ["bin/kuvo-start", "run/keeper-started", "run/box.pid"]) fs.rmSync(path.join(home, name), { force: true });
+  fs.rmSync(said);
+  // An older Kuvo Code on a Mac put its own kuvo-start there, which only starts the engine after a
+  // restart: the keeper starts from the copy it keeps of itself.
+  fs.writeFileSync(path.join(bin, "kuvo-start"), `#!/bin/sh\necho older >"${said}"\n`);
+  fs.writeFileSync(path.join(bin, ".kuvo-start-keeper"), `#!/bin/sh\ncase "\${1:-box}" in\nbox)\n  echo copy >"${said}"\n  ;;\nkeep)\n  ;;\nesac\n`);
+  link.keepKeeper();
+  for (let i = 0; i < 100 && !fs.existsSync(said); i++) await new Promise(r => setTimeout(r, 30));
+  assert.equal(fs.readFileSync(said, "utf8").trim(), "copy");
+  for (const name of ["bin/kuvo-start", "bin/.kuvo-start-keeper", "run/keeper-started", "run/box.pid"]) fs.rmSync(path.join(home, name), { force: true });
 });
 
 test("paired phones, as the Mac has them too: removals stick, only a new pairing lets one back, and nobody removes the Mac (Vectors/link.json)", () => {
