@@ -108,6 +108,23 @@ import Testing
         #expect(AlsoApply.translated(AlsoApply.net(here.changes), onto: [:], to: nil).count == 1)
     }
 
+    /// A server's switch turned off here, on a computer without that server: nothing made there
+    /// with only the switch. Where it's there, it goes; a whole server added goes anywhere.
+    @Test func aServersFieldGoesOnlyWhereItIs() throws {
+        let server: JSONValue = .object(["type": .string("local"), "command": .array([.string("x")])])
+        let here = try config(["mcp": .object(["servers": .object(["tools": server])])])
+        here.set(.bool(true), at: ["mcp", "servers", "tools", "disabled"])
+        #expect(AlsoApply.translated(AlsoApply.net(here.changes), onto: [:], to: "lab").isEmpty)
+        let there: [String: JSONValue] = ["mcp": .object(["servers": .object(["tools": server])])]
+        #expect(AlsoApply.translated(AlsoApply.net(here.changes), onto: there, to: "lab").map(\.path) == [["mcp", "servers", "tools", "disabled"]])
+        let adding = try config([:])
+        adding.set(server, at: ["mcp", "servers", "tools"])
+        #expect(AlsoApply.translated(AlsoApply.net(adding.changes), onto: [:], to: "lab").count == 1)
+        let agent = try config(["agent": .object(["review": .object(["model": .string("a/b")])])])
+        agent.set(.string("c/d"), at: ["agent", "review", "model"])
+        #expect(AlsoApply.translated(AlsoApply.net(agent.changes), onto: [:], to: "lab").isEmpty)
+    }
+
     @Test func whatsAppliedIsntOfferedBack() throws {
         let there = try config([:])
         there.set([(["model"], .string("anthropic/sonnet"))], noted: false)

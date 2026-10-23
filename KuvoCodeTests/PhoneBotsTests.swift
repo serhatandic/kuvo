@@ -186,6 +186,8 @@ import Testing
 
         #expect(try await ask("kuvo/groups/\(id)", method: "PATCH", body: ["members": [ada.id]]).status == 400)
         #expect(try await ask("kuvo/groups/\(id)", method: "PATCH", body: ["name": " "]).status == 400)
-        #expect(try await ask("kuvo/groups/grp_none000001", method: "PATCH", body: ["name": "X"]).status == 404)
+        // One that isn't there says so, apart from an older Mac's answer to a route it doesn't know.
+        let gone = try await ask("kuvo/groups/grp_none000001", method: "PATCH", body: ["name": "X"])
+        #expect(gone.status == 404 && gone.json?["message"] as? String == "That group chat isn’t there any more.")
     }
 }

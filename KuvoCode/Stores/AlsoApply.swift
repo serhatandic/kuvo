@@ -47,6 +47,9 @@ enum AlsoApply {
             // Integrations that use a Mac's own apps stay on Macs.
             if machine != nil, change.path.count >= 3, change.path[0] == "mcp", change.path[1] == "servers",
                Integrations.macOnly.contains(change.path[2]) || MCPCatalog.macOnly.contains(change.path[2]) { continue }
+            // A field of a server, agent or command the target doesn't have: none made there with
+            // only that (adding or removing a whole one still goes).
+            if let entry = Self.entry(of: change.path), Self.value(at: entry, in: settings) == nil { continue }
             var value = change.after.map { keysNamed($0, on: machine) }
             // Rules: none is an empty list, so the first one added (or the last taken out) joins
             // (or leaves) the other's, rather than standing in for them.
@@ -65,6 +68,15 @@ enum AlsoApply {
             settings = setting(value, at: change.path[...], in: settings)
         }
         return result
+    }
+
+    /// The named entry (an MCP server, an agent, a command) `path` is a field of, when it's one.
+    static func entry(of path: [String]) -> [String]? {
+        switch path.first {
+        case "mcp" where path.count >= 4 && path[1] == "servers": Array(path.prefix(3))
+        case "agent", "command": path.count >= 3 ? Array(path.prefix(2)) : nil
+        default: nil
+        }
     }
 
     /// A list of rules, merged item by item: Settings › Permissions' rules and blocks, and an
