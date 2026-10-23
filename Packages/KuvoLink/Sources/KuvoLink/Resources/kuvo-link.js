@@ -3663,11 +3663,16 @@ function noteOlderMac(at) {
 }
 
 // An older Kuvo Code on a Mac touches `run/attached` each time it connects, and this one never
-// does: one that did lately holds this box's updates back (it would put back its own files).
+// does: one that did lately holds this box's updates back (it would put back its own files). Not
+// a touch from before a Kuvo Code that marks the box last put its files there: that was most
+// likely the same Mac before it updated, and an older one still around touches it again.
 export function noteOlderMacs() {
-  let at = 0;
-  try { at = fs.statSync(path.join(RUN, "attached")).mtimeMs; } catch { return false; }
-  if (Date.now() - at > MAC_MEMORY) return false;
+  let at = 0, marked = 0;
+  try {
+    at = fs.statSync(path.join(RUN, "attached")).mtimeMs;
+    marked = fs.statSync(path.join(K, "bin", "box-version")).mtimeMs;
+  } catch { return false; }
+  if (at <= marked || Date.now() - at > MAC_MEMORY) return false;
   noteOlderMac(at);
   return true;
 }

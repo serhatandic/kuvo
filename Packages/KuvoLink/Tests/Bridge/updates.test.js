@@ -263,8 +263,14 @@ test("a stopped box, or one whose version isn't known, doesn't update; a lock wh
   fs.rmSync(path.join(home, "run", "launchers.json"), { force: true });
 
   // An older Mac connecting (it touches run/attached; this version never does) holds updates back.
+  // One from before this version put its files there doesn't: that Mac, before it updated.
+  const attached = path.join(home, "run", "attached"), mark = path.join(home, "bin", "box-version");
   assert.equal(link.noteOlderMacs(), false);
-  fs.writeFileSync(path.join(home, "run", "attached"), "");
+  fs.writeFileSync(attached, "");
+  fs.utimesSync(mark, new Date(), new Date(Date.now() + 1000));
+  assert.equal(link.noteOlderMacs(), false, "touched before the box was marked");
+  assert.equal(link.updatesBlocked({}, Date.now(), own), null);
+  fs.utimesSync(mark, new Date(), new Date(Date.now() - 60_000));
   assert.equal(link.noteOlderMacs(), true);
   assert.match(link.updatesBlocked({}, Date.now(), own), /older Kuvo Code/);
   fs.rmSync(path.join(home, "run", "attached"));
