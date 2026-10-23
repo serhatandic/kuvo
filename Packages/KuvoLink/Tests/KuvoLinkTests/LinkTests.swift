@@ -356,6 +356,32 @@ private func collect(_ stream: LinkResponse) async throws -> (status: Int, heade
         #expect(throws: (any Error).self) { try Mail.open(frame, to: LinkKey(), from: host.key.publicBytes) }
     }
 
+    /// Your other computers mail each other (PROTOCOL.md, "Peers"): mail that comes is handed on,
+    /// with where it's from; mail too big for the relay (which would close the connection for
+    /// it) isn't sent.
+    @Test func mailBetweenHostsIsHandedOnAndOneTooBigIsntSent() async throws {
+        let relay = MemoryRelay()
+        let sender = TestHost(relay: relay, handle: echo)
+        let key = LinkKey(), secret = RelaySecret()
+        let came = AsyncStream<(Data, LinkAddress)>.makeStream()
+        let receiver = LinkServer(key: key, hello: HostHello(kind: .machine, name: "lokum", app: "0.0.1", engine: "2.0.30"),
+                                  authorize: { _, _, _ in false }, handle: echo, mailed: { frame, from in came.continuation.yield((frame, from)) })
+        let connection = relay.connect(secret)
+        Task { await receiver.serve(connection) }
+        let payload = Data(#"{"letter":{"id":"ltr_1"},"at":1}"#.utf8)
+        var sent = false
+        for _ in 0..<100 where !sent {
+            sent = await sender.server.mail(payload, to: key.publicBytes, at: secret.address)
+            if !sent { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        #expect(sent)
+        var iterator = came.stream.makeAsyncIterator()
+        let (frame, from) = try #require(await iterator.next())
+        #expect(from == sender.secret.address)
+        #expect(try Mail.open(frame, to: key, from: sender.key.publicBytes) == payload)
+        #expect(await sender.server.mail(Data(repeating: 0x61, count: RelayMessage.maxPayload), to: key.publicBytes, at: secret.address) == false)
+    }
+
     @Test func aQuietSessionToAHostThatLeftSaysSoWithoutWaiting() async throws {
         let relay = MemoryRelay()
         let host = TestHost(relay: relay, handle: echo)

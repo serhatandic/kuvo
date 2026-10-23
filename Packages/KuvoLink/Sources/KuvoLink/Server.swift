@@ -22,6 +22,9 @@ public actor LinkServer {
     /// A phone's session proved its own: its first message opened with the keys of the handshake,
     /// which a replayed first handshake message can't do. Where it is now (for its notifications).
     public typealias Confirmed = @Sendable (Phone) -> Void
+    /// A mail frame from another host (PROTOCOL.md, "Mail"), whole, and where it came from: the
+    /// host opens it with the keys it takes mail from.
+    public typealias Mailed = @Sendable (_ frame: Data, _ from: LinkAddress) -> Void
 
     let key: LinkKey
     let hello: HostHello
@@ -30,6 +33,7 @@ public actor LinkServer {
     let connect: Connect?
     let pushed: Pushed?
     let confirmed: Confirmed?
+    let mailed: Mailed?
     private var relay: (any RelayTransport)?
     private var sessions: [SessionKey: Session] = [:]
 
@@ -56,7 +60,7 @@ public actor LinkServer {
         }
     }
 
-    public init(key: LinkKey, hello: HostHello, authorize: @escaping Authorize, handle: @escaping Handle, connect: Connect? = nil, pushed: Pushed? = nil, confirmed: Confirmed? = nil) {
+    public init(key: LinkKey, hello: HostHello, authorize: @escaping Authorize, handle: @escaping Handle, connect: Connect? = nil, pushed: Pushed? = nil, confirmed: Confirmed? = nil, mailed: Mailed? = nil) {
         self.key = key
         self.hello = hello
         self.authorize = authorize
@@ -64,6 +68,7 @@ public actor LinkServer {
         self.connect = connect
         self.pushed = pushed
         self.confirmed = confirmed
+        self.mailed = mailed
     }
 
     /// Serves over `relay` until it closes. Sessions on an earlier connection end.
@@ -117,7 +122,8 @@ public actor LinkServer {
     /// connected now doesn't get it (the relay says it's unreachable).
     @discardableResult
     public func mail(_ payload: Data, to remote: Data, at address: LinkAddress) -> Bool {
-        guard let relay, let sealed = try? Mail.seal(payload, from: key, to: remote) else { return false }
+        // One the relay won't take (it would close this connection for it) isn't sent.
+        guard let relay, let sealed = try? Mail.seal(payload, from: key, to: remote), sealed.count <= RelayMessage.maxPayload else { return false }
         relay.send(.send(to: address, payload: sealed))
         return true
     }
@@ -151,7 +157,9 @@ public actor LinkServer {
             receive(message, in: session)
         case .close:
             if let session = sessions[key] { end(session, notify: false) }
-        case .handshake2, .mail:
+        case .mail:
+            mailed?(frame.data, address)
+        case .handshake2:
             break
         }
     }

@@ -109,7 +109,41 @@ A host mails another host the same way, with a relay `send` of a mail frame (`ki
 address, pairing}], "removed": [{key, pairing}], "at": <milliseconds>}`), so a phone you remove
 loses its way into every machine, reached or not. A bridge (from 0.9.6) takes it only from the key
 its setup named, and only a newer one; from 0.9.8 from any Mac that set it up, each by its own
-`at`, as "Paired phones" says.
+`at`, as "Paired phones" says. From 0.9.15 the same mail carries the machine's peers, and peers
+mail each other, as "Peers" says.
+
+### Peers
+
+Your computers talk to each other over the relay, Mac or not (bridge 0.9.15). A Mac connects to
+the relay when the phone link is on or it has at least one machine; a Mac on its own makes no
+connection.
+
+- **Who**: a Mac tells each of its machines its peers in setup and in its mail, `"peers": [{key,
+  address, name, kind: "mac"|"machine", id?}]` with `"peersAt"` (setup) or the mail's `at`: itself,
+  and its other machines whose bridge said `"peers": true` in setup's answer. `id` is the
+  machine's name on that Mac. A machine keeps each Mac's list (`peersFrom`), a newer one replacing
+  that Mac's last, and takes lists only from its Macs. Its peers are every list's, itself left
+  out. Its bridge runs while it has peers or phones. Setup also gives the machine's `id`.
+- **Mail**: a box opens mail from its Macs and its peers, and drops the rest. Every mail has `at`
+  (milliseconds). A sealed mail frame is at most 65,600 bytes, and one larger isn't sent: letters'
+  words and lists are cut to fit.
+- **Agents**: `{"agents": {"at", "list": [{session, name, kind: "bot"|"session", project?,
+  about?, machine?}]}}`, a box's bots and its 40 latest titled sessions, when they change and
+  every ten minutes. Each keeps the newest from each peer. A machine's bridge writes
+  `run/agents.json` (what `list_agents` reads there) from its own and its peers'. A Mac also
+  lists the agents of its machines whose bridge doesn't talk to peers, each with its `machine`,
+  and takes their letters on over SSH.
+- **Letters**: `{"letter": {id, from, name, to, text, wait, at}}` goes to the box that listed
+  `to`. The receiver drops one older than a day, takes it only from one of the sending box's own
+  agents, delivers each `id` once (ids remembered two days) and at most 20 in ten minutes from a
+  box. It answers `{"delivered": {id, ok, why?}}`. With `wait`, it then watches for an answer for
+  ten minutes and sends `{"reply": {id, text|null}}`. A sender takes `delivered` and `reply` only
+  from the box it sent to. Until `delivered` comes, it sends again each minute, for two days.
+- **On a machine**: `send_message` leaves a letter for a peer's agent in `run/outbox/sending/<id>.json`,
+  which the bridge sends, and others in `run/outbox` for the Mac to collect over SSH. A waiting
+  tool reads `run/replies/<id>.json`, `{text}` or `{failed}`.
+- `kuvo-link.js leave`: run when a Mac removes the machine. It forgets its peers and what they
+  told it.
 
 ## Notifications
 
