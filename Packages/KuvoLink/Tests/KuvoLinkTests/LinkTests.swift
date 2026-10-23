@@ -346,7 +346,7 @@ private func collect(_ stream: LinkResponse) async throws -> (status: Int, heade
         let payload = Data(#"{"phones":[],"at":1}"#.utf8)
         var sent = false
         for _ in 0..<100 where !sent {
-            sent = await host.server.mail(payload, to: machineKey.publicBytes, at: machineSecret.address)
+            sent = await host.server.mail(payload, to: machineKey.publicBytes, at: machineSecret.address) == .sent
             if !sent { try await Task.sleep(for: .milliseconds(10)) }
         }
         #expect(sent)
@@ -371,7 +371,7 @@ private func collect(_ stream: LinkResponse) async throws -> (status: Int, heade
         let payload = Data(#"{"letter":{"id":"ltr_1"},"at":1}"#.utf8)
         var sent = false
         for _ in 0..<100 where !sent {
-            sent = await sender.server.mail(payload, to: key.publicBytes, at: secret.address)
+            sent = await sender.server.mail(payload, to: key.publicBytes, at: secret.address) == .sent
             if !sent { try await Task.sleep(for: .milliseconds(10)) }
         }
         #expect(sent)
@@ -379,7 +379,7 @@ private func collect(_ stream: LinkResponse) async throws -> (status: Int, heade
         let (frame, from) = try #require(await iterator.next())
         #expect(from == sender.secret.address)
         #expect(try Mail.open(frame, to: key, from: sender.key.publicBytes) == payload)
-        #expect(await sender.server.mail(Data(repeating: 0x61, count: RelayMessage.maxPayload), to: key.publicBytes, at: secret.address) == false)
+        #expect(await sender.server.mail(Data(repeating: 0x61, count: RelayMessage.maxPayload), to: key.publicBytes, at: secret.address) == .tooBig)
     }
 
     @Test func aQuietSessionToAHostThatLeftSaysSoWithoutWaiting() async throws {

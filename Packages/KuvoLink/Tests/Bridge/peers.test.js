@@ -71,13 +71,32 @@ test("each box's agents: a newer list kept, and list_agents here names each by w
     machine: "lokum",
     agents: [
       { session: "ses_h1", name: "Here", kind: "session", machine: "lokum" },
-      { session: "ses_b1", name: "API", kind: "session", machine: "second" },
       { session: "ses_m1", name: "Release", kind: "bot" },
       { session: "ses_o1", name: "Old one", kind: "session", machine: "old" },
+      // Listed by the Mac and a machine: the Mac's word.
+      { session: "ses_b1", name: "Again", kind: "session" },
     ],
   });
   assert.equal(link.peerOf("ses_o1", [second.peer, mac.peer], told)?.name, "mac", "one a Mac speaks for goes through it");
+  assert.equal(link.composeAgents([], "lokum", [second.peer], told).agents.find(each => each.session === "ses_b1")?.machine, "second");
   assert.equal(link.peerOf("ses_nobody", [second.peer, mac.peer], told), null);
+
+  // One machine claiming another's session: neither's, so letters for it go nowhere, and it isn't listed.
+  assert.equal(link.takeAgents(stranger.peer, { at: 1, list: [agent("ses_b1", "Not API")] }, file, lock), true);
+  const claimed = link.readPeerAgents(file);
+  assert.equal(link.peerOf("ses_b1", [second.peer, stranger.peer, mac.peer], claimed)?.name, "mac", "the Mac lists it too: the Mac's word");
+  assert.equal(link.takeAgents(stranger.peer, { at: 2, list: [agent("ses_b2", "Claimed")] }, file, lock), true);
+  assert.equal(link.takeAgents(second.peer, { at: 6, list: [agent("ses_b2", "Mine")] }, file, lock), true);
+  const both = link.readPeerAgents(file);
+  assert.equal(link.peerOf("ses_b2", [second.peer, stranger.peer], both), null);
+  assert.equal(link.composeAgents([], "lokum", [second.peer, stranger.peer], both).agents.some(each => each.session === "ses_b2"), false);
+
+  // The Mac's list over SSH, for when the relay can't be reached: taken when it's newer than its mail.
+  const macFile = path.join(run, "mac.json");
+  fs.writeFileSync(macFile, JSON.stringify({ key: mac.pub, at: 2, list: [agent("ses_m2", "Over SSH")] }));
+  assert.deepEqual(link.readPeerAgents(file, macFile, link.readLink())[mac.pub].list.map(each => each.name), ["Over SSH"]);
+  fs.writeFileSync(macFile, JSON.stringify({ key: stranger.pub, at: 9, list: [agent("ses_x", "Not a Mac")] }));
+  assert.equal(link.readPeerAgents(file, macFile, link.readLink())[stranger.pub].list[0].name, "Claimed", "only a Mac's");
 });
 
 // An engine with one session, for letters to reach: its prompts, and an answer once it's done.
@@ -90,6 +109,7 @@ async function engine(t) {
     request.on("end", () => {
       const json = value => { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
       if (request.headers.authorization !== `Basic ${Buffer.from("opencode:pw").toString("base64")}`) { response.writeHead(401); return response.end(); }
+      if (request.url.startsWith("/api/session?")) return json({ data: [] });
       if (request.url === "/api/session/ses_target") return json({ id: "ses_target" });
       if (request.url === "/api/session/ses_target/prompt" && request.method === "POST") {
         prompts.push(JSON.parse(body));
@@ -110,42 +130,63 @@ async function engine(t) {
   return { prompts, target: { port: server.address().port, password: "pw" } };
 }
 
-test("a letter from a peer: from one of that box's agents, not too old, delivered once, said to be there, and with wait, answered", async t => {
+test("a letter from a peer: delivered once, said to be there, by its sender's own name; one it can't verify comes from an agent there, with no way back; with wait, answered by a letter", async t => {
   fresh();
   const { prompts, target } = await engine(t);
+  const peers = [mac.peer, second.peer, stranger.peer];
   const told = { [second.pub]: { at: 1, list: [{ session: "ses_sender", name: "API", kind: "session" }] } };
-  const said = [];
-  const send = (peer, message) => said.push({ to: peer.key, ...message });
-  const letter = extra => ({ id: "ltr_" + crypto.randomBytes(6).toString("hex"), from: "ses_sender", name: "API", to: "ses_target", text: "Can you check the build?", at: Date.now(), ...extra });
+  const said = [], answers = [];
+  const take = (from, letter, extra = {}) => link.takeLetter(from, letter, { send: (peer, message) => said.push({ to: peer.key, ...message }), targets: [target],
+    ours: async session => session === "ses_target", answer: each => answers.push(each), told, peers, wait: 10, ...extra });
+  const letter = extra => ({ id: "ltr_" + crypto.randomBytes(6).toString("hex"), from: "ses_sender", to: "ses_target", text: "Can you check the build?", at: Date.now(), ...extra });
 
-  await link.takeLetter(second.peer, letter({ from: "ses_someone_else" }), send, [target], told);
-  await link.takeLetter(second.peer, letter({ at: Date.now() - 2 * 86_400_000 }), send, [target], told);
-  await link.takeLetter(stranger.peer, letter(), send, [target], told);
-  assert.deepEqual(said.map(each => each.delivered.ok), [false, false, false]);
+  await take(second.peer, letter({ at: Date.now() - 2 * 86_400_000 }));
+  await take(second.peer, letter({ to: "ses_not_ours" }));
+  assert.deepEqual(said.map(each => [each.delivered.ok, each.delivered.retry]), [[false, undefined], [false, undefined]]);
   assert.equal(prompts.length, 0);
 
+  // Its sender as that box named it, waiting: delivered, said to be there, answered by a letter back.
   said.length = 0;
-  const waiting = letter({ wait: true });
-  await link.takeLetter(second.peer, waiting, send, [target], told);
+  const waiting = letter({ wait: true, name: "The user" });
+  await take(second.peer, waiting);
   assert.equal(prompts.length, 1);
-  assert.equal(prompts[0].text, link.composeLetter("API", "ses_sender", "Can you check the build?", true));
-  assert.equal(prompts[0].delivery, "steer");
-  assert.deepEqual(said, [{ to: second.pub, delivered: { id: waiting.id, ok: true } }, { to: second.pub, reply: { id: waiting.id, text: "On it." } }]);
+  assert.equal(prompts[0].text, link.composeLetter("API", "ses_sender", "Can you check the build?", true), "the name that box gave its agent, not the letter's");
+  assert.deepEqual(said, [{ to: second.pub, delivered: { id: waiting.id, ok: true } }]);
+  assert.deepEqual(answers, [{ from: "ses_target", to: "ses_sender", text: "On it.", answers: waiting.id, peer: second.pub }]);
 
-  // The same letter again (the relay replayed it, or it was sent again): there already.
+  // Again (the relay replayed it, or its ack was lost): there already, not delivered twice.
   said.length = 0;
-  await link.takeLetter(second.peer, waiting, send, [target], told);
+  await take(second.peer, waiting);
   assert.equal(prompts.length, 1);
   assert.deepEqual(said, [{ to: second.pub, delivered: { id: waiting.id, ok: true } }]);
 
-  // A few at a time from each box.
+  // From something there that isn't one of its listed agents (a new session, say), or naming
+  // another box's agent: an agent on that box, with no address to answer; one waiting hears no
+  // answer's coming.
   said.length = 0;
-  for (let i = 0; i < 20; i++) await link.takeLetter(second.peer, letter(), send, [target], told);
-  assert.equal(said.filter(each => each.delivered.ok).length, 19, "twenty in ten minutes, the one delivered before counted");
-  assert.match(said.at(-1).delivered.why, /a lot of messages/);
+  const unlisted = letter({ from: "ses_unlisted", wait: true });
+  await take(second.peer, unlisted);
+  assert.equal(prompts.at(-1).text, link.composeLetter("an agent on second", "unknown", "Can you check the build?", false));
+  assert.deepEqual(said, [{ to: second.pub, delivered: { id: unlisted.id, ok: true, answer: false, why: "Its answer can't come back to you: it doesn't know who you are." } }]);
+  await take(stranger.peer, letter());
+  assert.equal(prompts.at(-1).text, link.composeLetter("an agent on stranger", "unknown", "Can you check the build?", false), "the sender is second's, not stranger's");
+
+  // The engine restarting: not delivered, to try again, and not taken for seen.
+  said.length = 0;
+  const later = letter();
+  await take(second.peer, later, { targets: [{ port: 9, password: "pw" }] });
+  assert.deepEqual([said[0].delivered.ok, said[0].delivered.retry], [false, true]);
+  await take(second.peer, later);
+  assert.equal(prompts.at(-1).text, link.composeLetter("API", "ses_sender", "Can you check the build?", false), "delivered when it comes again");
+
+  // A few at a time from each box: the rest to try again later.
+  said.length = 0;
+  for (let i = 0; i < 18; i++) await take(second.peer, letter());
+  assert.equal(said.filter(each => each.delivered.ok).length, 15, "twenty in ten minutes, the five before counted");
+  assert.equal(said.at(-1).delivered.retry, true);
 });
 
-test("this box's letters go to the box their agent is on, again each minute until it says it has them, cut to fit; only that box's word counts", () => {
+test("this box's letters go to the box their agent is on, again each minute until it says it has them, cut to fit; only that box's word counts; an answer goes to the tool waiting, or as a message once it gave up", async () => {
   fresh({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
   fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [second.pub]: { at: 1, kind: "machine", list: [{ session: "ses_target", name: "API", kind: "session" }] } }));
   const sending = path.join(run, "outbox", "sending");
@@ -160,6 +201,8 @@ test("this box's letters go to the box their agent is on, again each minute unti
   const host = { send: bytes => sent.push(bytes) };
 
   link.sendOutbox(host, link.readLink(), now);
+  assert.equal(sent.length, 0, "its sender is told of to that box first");
+  link.sendOutbox(host, link.readLink(), now + 3000);
   assert.equal(sent.length, 1);
   const { address, payload } = opened(sent[0], second);
   assert.equal(address, second.address);
@@ -170,10 +213,14 @@ test("this box's letters go to the box their agent is on, again each minute unti
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(run, "replies", "ltr_nobody.json"), "utf8")), { failed: "Its agent couldn't be reached." });
   assert.ok(fs.existsSync(path.join(run, "outbox", "msg_mac.json")));
 
-  link.sendOutbox(host, link.readLink(), now + 1000);
+  link.sendOutbox(host, link.readLink(), now + 4000);
   assert.equal(sent.length, 1, "not again within the minute");
-  link.sendOutbox(host, link.readLink(), now + 61_000);
+  link.sendOutbox(host, link.readLink(), now + 64_000);
   assert.equal(sent.length, 2, "again after a minute");
+  // Not now (its engine restarting): kept, and tried again.
+  link.letterWent(second.peer, { id: "ltr_waits", ok: false, why: "It answered 503.", retry: true });
+  link.sendOutbox(host, link.readLink(), now + 125_000);
+  assert.equal(sent.length, 3);
 
   // How it went: only from the box it went to.
   link.letterWent(stranger.peer, { id: "ltr_waits", ok: true });
@@ -183,19 +230,48 @@ test("this box's letters go to the box their agent is on, again each minute unti
   assert.equal(fs.existsSync(path.join(sending, "ltr_waits.json")), false);
   assert.ok(fs.existsSync(path.join(run, "replies", "ltr_waits.wait")), "its answer awaited");
   link.sendOutbox(host, link.readLink(), now + 200_000);
-  assert.equal(sent.length, 2, "there: not sent again");
+  assert.equal(sent.length, 3, "there: not sent again");
 
-  link.letterAnswered(stranger.peer, { id: "ltr_waits", text: "Forged." });
+  // Its answer, a letter from that box: to the waiting tool (from anyone else, not).
+  const said = [];
+  const answer = (from, extra = {}) => link.takeLetter(from, { id: "ltr_" + crypto.randomBytes(6).toString("hex"), from: "ses_target", to: "ses_here", text: "Done.", at: now, answers: "ltr_waits", ...extra },
+    { send: (peer, message) => said.push(message), targets: [], ours: async () => false, told: link.readPeerAgents(), peers: link.peersOf(link.readLink()), now });
+  await answer(stranger.peer);
   assert.equal(fs.existsSync(path.join(run, "replies", "ltr_waits.json")), false);
-  link.letterAnswered(second.peer, { id: "ltr_waits", text: "Done." });
+  await answer(second.peer);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(run, "replies", "ltr_waits.json"), "utf8")), { text: "Done." });
   assert.equal(fs.existsSync(path.join(run, "replies", "ltr_waits.wait")), false);
+  assert.equal(said.at(-1).delivered.ok, true);
+
+  // A tool that gave up waiting: its letter goes on without waiting.
+  write("ltr_slow", { to: "ses_target", text: "Hi", wait: true });
+  fs.writeFileSync(path.join(run, "replies", "ltr_slow.gaveup"), "");
+  link.sendOutbox(host, link.readLink(), now + 300_000);
+  link.sendOutbox(host, link.readLink(), now + 303_000);
+  assert.equal(opened(sent.at(-1), second).payload.letter.id, "ltr_slow");
+  assert.equal(opened(sent.at(-1), second).payload.letter.wait, false);
+  assert.equal(fs.existsSync(path.join(run, "replies", "ltr_slow.gaveup")), false);
+
+  // There, but no answer's coming: the waiting tool hears why.
+  write("ltr_noanswer", { to: "ses_target", text: "Hi", wait: true, sentTo: second.pub });
+  link.letterWent(second.peer, { id: "ltr_noanswer", ok: true, answer: false, why: "Its machine is away." });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(run, "replies", "ltr_noanswer.json"), "utf8")), { note: "Its machine is away." });
 
   // One not there in two days goes, its tool told.
   write("ltr_old", { to: "ses_target", text: "Hi", wait: true, at: now - 3 * 86_400_000 });
   link.sendOutbox(host, link.readLink(), now);
   assert.equal(fs.existsSync(path.join(sending, "ltr_old.json")), false);
-  assert.equal(sent.length, 2);
+
+  // No relay for a while: letters not yet sent go to the Mac, which takes them on over SSH; its
+  // tool hears so. One already sent stays (it may have got there).
+  write("ltr_stuck", { to: "ses_target", text: "Hi", wait: true });
+  const before = sent.length;
+  link.sendOutbox(host, link.readLink(), now + 400_000, 6 * 60_000);
+  assert.equal(sent.length, before);
+  assert.equal(fs.existsSync(path.join(sending, "ltr_stuck.json")), false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(run, "outbox", "ltr_stuck.json"), "utf8")).wait, false);
+  assert.match(JSON.parse(fs.readFileSync(path.join(run, "replies", "ltr_stuck.json"), "utf8")).note, /through your Mac/);
+  assert.ok(fs.existsSync(path.join(sending, "ltr_slow.json")), "sent already: it stays for the relay");
 });
 
 test("a box tells its peers its agents as they change, and every ten minutes", async t => {
@@ -214,15 +290,30 @@ test("a box tells its peers its agents as they change, and every ten minutes", a
   await link.announce(host, readEngine, link.readLink(), now + 601_000);
   assert.equal(sent.length, 4);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(run, "agents.json"), "utf8")), { machine: "lokum", agents: [] });
+
+  // A peer that just connected may have missed it (the relay keeps nothing): it asks, and is told
+  // again at the next round; this box, just connected itself, tells each and asks them.
+  link.peerMail(second.peer, { ask: "agents", at: now });
+  await link.announce(host, readEngine, link.readLink(), now + 602_000);
+  assert.equal(sent.length, 5);
+  assert.equal(to(sent[4]), second);
+  assert.equal(opened(sent[4], second).payload.ask, undefined, "an answer doesn't ask back");
+  await link.announce(host, readEngine, link.readLink(), now + 603_000, true);
+  assert.equal(sent.length, 7);
+  assert.equal(opened(sent[6], to(sent[6])).payload.ask, "agents");
 });
 
-test("a machine a Mac removed leaves its peers, and forgets what they told it", () => {
-  fresh({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
-  fs.writeFileSync(path.join(run, "peer-agents.json"), "{}");
-  fs.writeFileSync(path.join(run, "agents.json"), "{}");
-  link.leave();
-  assert.deepEqual(link.peersOf(link.readLink()), []);
-  assert.equal(link.readLink().peersFrom, undefined);
-  assert.equal(fs.existsSync(path.join(run, "peer-agents.json")), false);
-  assert.equal(fs.existsSync(path.join(run, "agents.json")), false);
+test("a machine a Mac removed no longer counts that Mac: its peers and lists go, another Mac's stay", () => {
+  const other = box("mac");
+  fresh({ macs: [mac.pub, other.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] }, [other.pub]: { at: 1, peers: [other.peer] } },
+    phones: [{ key: k(crypto.randomBytes(32)), name: "Phone", added: 1, from: "mac", mac: mac.pub }] });
+  fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [second.pub]: { at: 1, list: [] }, [other.pub]: { at: 1, list: [] } }));
+  assert.equal(link.leave(stranger.pub), false, "not one of its Macs: nothing changes");
+  assert.equal(link.leave(mac.pub), true);
+  const after = link.readLink();
+  assert.deepEqual(link.macsOf(after), [other.pub]);
+  assert.equal(after.mac, other.pub);
+  assert.deepEqual(link.peersOf(after).map(peer => peer.name), ["mac"]);
+  assert.equal(after.phones[0].mac, undefined, "its phones are as ones from before Macs were named");
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(run, "peer-agents.json"), "utf8"))), [other.pub]);
 });

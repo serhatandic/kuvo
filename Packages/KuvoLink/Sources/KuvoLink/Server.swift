@@ -117,15 +117,20 @@ public actor LinkServer {
         return true
     }
 
+    /// How a mail went: on its way, not now (no relay connection), or too big for the relay.
+    public enum MailOutcome: Sendable, Equatable {
+        case sent, offline, tooBig
+    }
+
     /// Sends `payload` to another host (a machine's bridge), sealed for its key alone, through the
-    /// relay; false with no relay connection to send it on. Nothing comes back: one that isn't
-    /// connected now doesn't get it (the relay says it's unreachable).
+    /// relay. Nothing comes back: one that isn't connected now doesn't get it (the relay says it's
+    /// unreachable). One the relay won't take (it would close this connection for it) isn't sent.
     @discardableResult
-    public func mail(_ payload: Data, to remote: Data, at address: LinkAddress) -> Bool {
-        // One the relay won't take (it would close this connection for it) isn't sent.
-        guard let relay, let sealed = try? Mail.seal(payload, from: key, to: remote), sealed.count <= RelayMessage.maxPayload else { return false }
+    public func mail(_ payload: Data, to remote: Data, at address: LinkAddress) -> MailOutcome {
+        guard let relay else { return .offline }
+        guard let sealed = try? Mail.seal(payload, from: key, to: remote), sealed.count <= RelayMessage.maxPayload else { return .tooBig }
         relay.send(.send(to: address, payload: sealed))
-        return true
+        return .sent
     }
 
     /// Ends the sessions of a phone that's no longer paired, and one it's let in meanwhile.
