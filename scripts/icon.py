@@ -8,8 +8,9 @@ dark mode; the bots keep their colours, with thin gaps between them. Each bot is
 layer, so macOS derives the clear and tinted styles from them. No glass, shine or shadow. Xcode
 compiles the file with the app.
 
-It also renders the README's docs/images/icon.png with Icon Composer's ictool, and, given their
-paths, writes the iPhone app's copy and the website's icon.svg and apple-touch-icon.png:
+It also renders the README's docs/images/icon.png, the dark one, with Icon Composer's ictool,
+and, given their paths, writes the iPhone app's copy and the website's icon.svg and
+apple-touch-icon.png:
 
     python3 scripts/icon.py [--phone ../kuvo-code-ios/KuvoCodeMobile/AppIcon.icon] [--web ../kuvo-web]
 
@@ -44,14 +45,15 @@ DEEP = {"indigo", "violet", "graphite"}
 DARK_EYES, LIGHT_EYES = "#18191F", "#F7F5F0"
 
 # The team, back to front: shape, colour, centre, size, turn in degrees, on Icon Composer's
-# 1024-point canvas. The three in front run off the bottom edge. Their colours are those of the
-# bots on the website's banners: Sage, Lookout, Keeper and Tally, and a sky pebble.
+# 1024-point canvas. They fill the tile to about an eighth from its top, and the three in front
+# run off the bottom edge, every face still whole. Their colours are those of the bots on the
+# website's banners: Sage, Lookout, Keeper and Tally, and a sky pebble.
 TEAM = [
-    ("bloom", "violet", 320, 520, 360, -6),
-    ("gem", "amber", 712, 510, 360, 8),
-    ("pebble", "sky", 140, 830, 420, -4),
-    ("squircle", "mint", 884, 830, 430, 4),
-    ("round", "coral", 512, 800, 440, 0),
+    ("bloom", "violet", 320, 369, 468, -6),
+    ("gem", "amber", 712, 356, 468, 8),
+    ("pebble", "sky", 86, 776, 546, -4),
+    ("squircle", "mint", 864, 772, 559, 4),
+    ("round", "coral", 518, 733, 572, 0),
 ]
 GAP = 14                      # tile showing between one bot and the one in front of it
 EYES = 0.66                   # their faces, as a share of the app's
@@ -244,10 +246,10 @@ def write_icon(path, parts, platform):
     print("Wrote", os.path.normpath(path))
 
 
-def render(icon, out, size, platform="macOS", margin=0):
-    """Icon Composer's own rendering of the icon in light mode, with an empty margin round it."""
+def render(icon, out, size, platform="macOS", margin=0, rendition="Default"):
+    """Icon Composer's own rendering of the icon (light mode, or Dark), with an empty margin round it."""
     subprocess.run([ICTOOL, icon, "--export-image", "--output-file", out, "--platform", platform,
-                    "--rendition", "Default", "--width", str(size - 2 * margin), "--height", str(size - 2 * margin),
+                    "--rendition", rendition, "--width", str(size - 2 * margin), "--height", str(size - 2 * margin),
                     "--scale", "1"], check=True, capture_output=True)
     if margin:
         image = cv2.imread(out, cv2.IMREAD_UNCHANGED)
@@ -278,7 +280,8 @@ if __name__ == "__main__":
     args = args.parse_args()
     parts = layers()
     write_icon(OUT, parts, "macOS")
-    render(OUT, README_ICON, 256, margin=25)    # macOS's icon grid: the tile is 824 of 1024 points
+    # the README's, dark; with macOS's icon grid, where the tile is 824 of 1024 points
+    render(OUT, README_ICON, 256, margin=25, rendition="Dark")
     if args.phone:
         write_icon(args.phone, parts, "iOS")
     if args.web:
