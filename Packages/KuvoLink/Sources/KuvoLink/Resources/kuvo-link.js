@@ -23,7 +23,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Goes up with every change, so `setup` replaces a running bridge that's older.
-export const BRIDGE_VERSION = "0.9.16";
+export const BRIDGE_VERSION = "0.9.17";
 const K = process.env.KUVO_HOME || path.join(os.homedir(), ".kuvo-code");
 const RUN = path.join(K, "run");
 export const LINK_FILE = path.join(RUN, "link.json");
@@ -2668,7 +2668,7 @@ export function takeFromMac(given, by, host) {
       link.macAts = { ...(link.macAts ?? {}), [by]: given.at };
       took = true;
     }
-    if (Array.isArray(given.peers)) took = takePeers(link, by, given.peers, given.at) || took;
+    if (Array.isArray(given.peers)) took = takePeers(link, by, given.peers, given.at, given.moved) || took;
     if (!took) return null;
     forgetOldMacs(link, by);
     return link;
@@ -2685,12 +2685,26 @@ const MOST_PEERS = 64;
 const fitsPeer = peer => isObject(peer) && typeof peer.key === "string" && /^[A-Za-z0-9_-]{43}$/.test(peer.key)
   && typeof peer.address === "string" && /^[A-Za-z0-9_-]{22}$/.test(peer.address) && (peer.kind === "mac" || peer.kind === "machine");
 
-export function takePeers(link, by, peers, at) {
+export function takePeers(link, by, peers, at, moved = []) {
   if (!Array.isArray(peers) || typeof at !== "number") return false;
   link.peersFrom ??= {};
   if (at <= (link.peersFrom[by]?.at ?? 0)) return false;
-  link.peersFrom[by] = { at, peers: peers.filter(fitsPeer).slice(0, MOST_PEERS).map(({ key, address, name, kind, id }) => ({ key, address, kind, name: plainName(name).slice(0, 100), ...(typeof id === "string" ? { id: id.slice(0, 200) } : {}) })) };
+  link.peersFrom[by] = { at, peers: peers.filter(fitsPeer).slice(0, MOST_PEERS).map(({ key, address, name, kind, id }) => ({ key, address, kind, name: plainName(name).slice(0, 100), ...(typeof id === "string" ? { id: id.slice(0, 200) } : {}) })),
+    moved: (Array.isArray(moved) ? moved : []).filter(each => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && /^[A-Za-z0-9_-]{43}$/.test(each.key))
+      .slice(0, 500).map(({ session, key }) => ({ session, key })) };
   return true;
+}
+
+// Conversations a Mac moved from one box to another, by where each lives now (its box's key): the
+// box it left may still list it, until it's back to let it go.
+export function movedOf(link) {
+  const macs = new Set(macsOf(link));
+  const moved = new Map();
+  for (const [mac, given] of Object.entries(link?.peersFrom ?? {})) {
+    if (!macs.has(mac)) continue;
+    for (const { session, key } of given?.moved ?? []) moved.set(session, key);
+  }
+  return moved;
 }
 
 // This box's peers now: from each of its Macs' lists, itself left out.
@@ -2791,9 +2805,11 @@ export function readPeerAgents(file = PEER_AGENTS_FILE, macFile = MAC_AGENTS_FIL
   return all;
 }
 
-// The box a session is on, among the peers: the one that lists it. One listed by more than one
-// is a Mac's when a Mac lists it, else nobody's (one of them could be claiming another's).
-export function peerOf(session, peers, told) {
+// The box a session is on, among the peers: the one a Mac says it moved to, else the one that
+// lists it. One listed by more than one is a Mac's when a Mac lists it, else nobody's (one of them
+// could be claiming another's).
+export function peerOf(session, peers, told, moved = new Map()) {
+  if (moved.has(session)) return peers.find(peer => peer.key === moved.get(session)) ?? null;
   const listing = peers.filter(peer => (told[peer.key]?.list ?? []).some(agent => agent.session === session));
   if (listing.length <= 1) return listing[0] ?? null;
   const macs = listing.filter(peer => peer.kind === "mac");
@@ -2803,12 +2819,12 @@ export function peerOf(session, peers, told) {
 // Everyone, for list_agents here: this box's own (`machine` its name on its Macs), then each peer's
 // it alone lists (`peerOf`): a machine's by its name; a Mac's its own (none), and the agents of
 // machines it speaks for (those whose link doesn't talk to other computers yet), by theirs.
-export function composeAgents(own, ownID, peers, told) {
+export function composeAgents(own, ownID, peers, told, moved = new Map()) {
   const agents = own.map(agent => ({ ...keptAgent({ ...agent, machine: undefined }), ...(ownID ? { machine: ownID } : {}) }));
   const seen = new Set(agents.map(agent => agent.session));
   for (const peer of peers) {
     for (const agent of told[peer.key]?.list ?? []) {
-      if (seen.has(agent.session) || peerOf(agent.session, peers, told)?.key !== peer.key) continue;
+      if (seen.has(agent.session) || peerOf(agent.session, peers, told, moved)?.key !== peer.key) continue;
       seen.add(agent.session);
       const { machine, ...rest } = agent;
       agents.push(peer.kind === "machine" ? { ...rest, ...(peer.id ? { machine: peer.id } : {}) } : { ...rest, ...(machine ? { machine } : {}) });
@@ -2873,17 +2889,18 @@ function tooMany(key, now = Date.now()) {
 
 // What the receiving agent reads, as the Mac and kuvo-browser.js word it (AgentMail.compose).
 export const composeLetter = (name, session, words, waits) =>
-  `[Message from ${name} · ${session}] (${waits ? "They're waiting for your reply: just answer, in your words." : `To answer, use send_message to ${session}.`})\n\n${words}`;
+  `[Message from ${name} · ${session}] (${waits ? "They're waiting for your reply: just answer, in your words." : session === "unknown" ? "It can't be answered: who sent it isn't known." : `To answer, use send_message to ${session}.`})\n\n${words}`;
 
-// A session here, where it runs: the engine's or the coding agents' bridge's, by asking each.
-// Null when each says there's no such session; it throws when one can't be asked (try again later).
+// A session here, where it runs: the engine's or the coding agents' bridge's, by asking each, and
+// what it is. Null when each says there's no such session; it throws when one can't be asked (try
+// again later).
 async function placeOfSession(session, targets) {
   if (!targets.length) throw new Error("Its engine isn't running.");
   let unsure = null;
   for (const target of targets) {
     try {
       const response = await fetch(`http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}`, { headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` }, signal: AbortSignal.timeout(10_000) });
-      if (response.ok) return target;
+      if (response.ok) return { target, data: (await response.json().catch(() => null))?.data ?? {} };
       if (response.status !== 404) unsure = new Error(`It answered ${response.status}.`);
     } catch (error) {
       unsure = error;
@@ -2932,36 +2949,39 @@ async function answerTo(target, session, id, wait = 2000) {
 
 // A letter from a peer: delivered once, said to be there (or why not, and whether to try again),
 // and with `wait`, answered by a letter back. Who it's from is the sending box's own agent, by the
-// name that box gave it, only when that box alone lists it; otherwise "an agent on" that box, with
-// no address to answer (anything there could claim another's). It goes only to one of this box's
-// own agents (`ours`); an answer (`answers`) to a letter a tool here waits for goes to that tool.
-// `send(peer, payload)` mails the peer; `answer(letter)` sends this box's answer back.
-export async function takeLetter(sender, letter, { send, targets, ours, answer = () => {}, told = readPeerAgents(), peers = peersOf(readLink()), now = Date.now(), wait } = {}) {
+// name that box gave it, only when that box alone lists it and it isn't one of this box's own;
+// otherwise "an agent on" that box, with no address to answer (anything there could claim
+// another's). It goes to a conversation here that an agent could be (not a subagent's, a group
+// chat's seat, nor one put away); an answer (`answers`) to a letter a tool here waits for goes to
+// that tool. `send(peer, payload)` mails the peer; `answer(letter)` sends this box's answer back.
+export async function takeLetter(sender, letter, { send, targets, answer = () => {}, told = readPeerAgents(), peers = peersOf(readLink()), moved = movedOf(readLink()), now = Date.now(), wait } = {}) {
   if (!isObject(letter) || typeof letter.id !== "string" || !LETTER_ID.test(letter.id)) return;
   const { id } = letter;
   const no = (why, again = false) => send(sender, { delivered: { id, ok: false, why, ...(again ? { retry: true } : {}) } });
   if (typeof letter.at !== "number" || Math.abs(now - letter.at) > LETTER_LIFE) return no("It's too old to deliver.");
-  if (typeof letter.to !== "string" || typeof letter.text !== "string" || !letter.text.trim()) return no("That isn't a letter.");
+  if (typeof letter.to !== "string" || !/^ses_[A-Za-z0-9]{1,60}$/.test(letter.to) || typeof letter.text !== "string" || !letter.text.trim()) return no("That isn't a letter.");
   if (delivering.has(id)) return;
   if (seenAlready(id, now)) return send(sender, { delivered: { id, ok: true } });
   // An answer a tool here waits for (from the box its letter went to): to it.
-  if (typeof letter.answers === "string" && LETTER_ID.test(letter.answers) && answered(sender, letter.answers, letter.text)) {
+  if (typeof letter.answers === "string" && LETTER_ID.test(letter.answers) && answered(sender, letter.answers, letter.text, now)) {
     noteSeen(id, now);
     return send(sender, { delivered: { id, ok: true } });
   }
   if (tooMany(sender.key, now)) return no("It's sent a lot of messages in the last few minutes.", true);
-  const fromAgent = peerOf(letter.from, peers, told)?.key === sender.key ? (told[sender.key]?.list ?? []).find(agent => agent.session === letter.from) : null;
-  const name = fromAgent?.name ?? `an agent on ${plainName(sender.name) || "another computer"}`;
-  const from = fromAgent ? letter.from : "unknown";
-  if (!(await ours(letter.to))) return no("There's no such agent here.");
   delivering.add(id);
-  let place, prompt;
+  let place, prompt, fromAgent = null;
   try {
     place = await placeOfSession(letter.to, targets);
     if (!place) return no("There's no such conversation here.");
+    const kuvo = place.data?.metadata?.kuvo ?? {};
+    if (place.data?.parentID || kuvo.seat || kuvo.archived || place.data?.time?.archived) return no("That conversation doesn't take messages.");
+    // Its sender: that box's own agent, as it named it; one of this box's own claimed from there isn't.
+    const listed = peerOf(letter.from, peers, told, moved)?.key === sender.key ? (told[sender.key]?.list ?? []).find(agent => agent.session === letter.from) : null;
+    if (listed && !(await placeOfSession(letter.from, targets).catch(() => ({})))) fromAgent = listed;
+    const name = fromAgent?.name ?? `an agent on ${plainName(sender.name) || "another computer"}`;
     prompt = messageID();
     const waits = letter.wait === true && Boolean(fromAgent);
-    await asked(place, "POST", `api/session/${encodeURIComponent(letter.to)}/prompt`, { id: prompt, text: composeLetter(name, from, letter.text.slice(0, LETTER_TEXT), waits), delivery: "steer" });
+    await asked(place.target, "POST", `api/session/${encodeURIComponent(letter.to)}/prompt`, { id: prompt, text: composeLetter(name, fromAgent ? letter.from : "unknown", letter.text.slice(0, LETTER_TEXT), waits), delivery: "steer" });
   } catch (error) {
     return no(`It didn't reach it: ${String(error?.message ?? error)}`, true);
   } finally {
@@ -2972,7 +2992,7 @@ export async function takeLetter(sender, letter, { send, targets, ours, answer =
   if (letter.wait === true && !fromAgent) return send(sender, { delivered: { id, ok: true, answer: false, why: "Its answer can't come back to you: it doesn't know who you are." } });
   send(sender, { delivered: { id, ok: true } });
   if (letter.wait !== true) return;
-  const text = await answerTo(place, letter.to, prompt, wait);
+  const text = await answerTo(place.target, letter.to, prompt, wait);
   if (text) answer({ from: letter.to, to: letter.from, text, answers: id, peer: sender.key });
 }
 
@@ -2989,11 +3009,7 @@ export function peerMail(sender, payload, host, targets = () => []) {
   // It's just connected, and may have missed what this box told it (the relay keeps nothing):
   // told again at the next round.
   if (payload.ask === "agents") toldPeers.delete(sender.key);
-  if (isObject(payload.letter)) {
-    const ours = async session => (ownList ?? []).some(agent => agent.session === session)
-      || ((await refreshOwn(readEngineFile)) ?? []).some(agent => agent.session === session);
-    takeLetter(sender, payload.letter, { send, targets: targets(), ours, answer: leaveAnswer }).catch(() => {});
-  }
+  if (isObject(payload.letter)) takeLetter(sender, payload.letter, { send, targets: targets(), answer: leaveAnswer }).catch(() => {});
   if (isObject(payload.delivered) && typeof payload.delivered.id === "string") letterWent(sender, payload.delivered);
 }
 
@@ -3003,7 +3019,7 @@ let ownMachine = null;
 
 // Writes `run/agents.json`: this box's agents and its peers'.
 export function writeAgents(link = readLink()) {
-  const composed = composeAgents(ownList ?? [], ownMachine ?? link?.id ?? null, peersOf(link), readPeerAgents(undefined, undefined, link));
+  const composed = composeAgents(ownList ?? [], ownMachine ?? link?.id ?? null, peersOf(link), readPeerAgents(undefined, undefined, link), movedOf(link));
   try {
     const text = JSON.stringify(composed);
     if (textOf(AGENTS_FILE) !== text) writePrivate(AGENTS_FILE, text);
@@ -3032,15 +3048,16 @@ export async function announce(host, readEngine, link = readLink(), now = Date.n
     const last = toldPeers.get(peer.key);
     if (!ask && last && last.json === json && now - last.at < 600_000) continue;
     // As many as fit in one mail: the first (bots, then the latest sessions) first.
-    let bytes = null;
+    let bytes = null, sent = [];
     for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
-      bytes = mailFor(peer, { agents: { at: now, list: ownList.slice(0, count) }, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
+      sent = ownList.slice(0, count);
+      bytes = mailFor(peer, { agents: { at: now, list: sent }, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
       if (bytes) break;
     }
     if (!bytes) continue;
     try {
       host.send(bytes);
-      toldPeers.set(peer.key, { json, at: now, sessions: new Set(ownList.map(agent => agent.session)) });
+      toldPeers.set(peer.key, { json, at: now, sessions: new Set(sent.map(agent => agent.session)) });
     } catch {}
   }
 }
@@ -3098,14 +3115,17 @@ export function letterWent(sender, { id, ok, why, retry, answer }) {
 }
 
 // The answer to letter `id`, from the box it went to, for the tool waiting for it here: true when
-// one waits (else it comes as a message).
-function answered(sender, id, text) {
+// one still waits (it notes it does, `<id>.alive`, as it looks); else it comes as a message.
+function answered(sender, id, text, now = Date.now()) {
   const waiting = path.join(REPLIES, `${id}.wait`);
   let letter = null;
   try { letter = JSON.parse(fs.readFileSync(waiting, "utf8")); } catch { return false; }
   if (letter?.sentTo !== sender.key) return false;
-  reply(id, { text: String(text).slice(0, 8000) });
   fs.rmSync(waiting, { force: true });
+  let alive = 0;
+  try { alive = fs.statSync(path.join(REPLIES, `${id}.alive`)).mtimeMs; } catch {}
+  if (now - alive > 30_000) return false;
+  reply(id, { text: String(text).slice(0, 8000) });
   return true;
 }
 
@@ -3130,6 +3150,22 @@ export function sendOutbox(host, link = readLink(), now = Date.now(), offline = 
   if (!link?.key) return;
   const peers = peersOf(link);
   const told = readPeerAgents(undefined, undefined, link);
+  const moved = movedOf(link);
+  // The relay back: letters given to the Mac it hasn't been here to take since come back.
+  if (!offline) {
+    let attached = 0;
+    try { attached = fs.statSync(path.join(RUN, "attached")).mtimeMs; } catch {}
+    // (Not one the Mac took to deliver, `.mac-…`: each goes one way, by whichever renames it first.)
+    for (const name of listOf(OUTBOX)) {
+      if (!name.endsWith(".json") || name.startsWith(".")) continue;
+      try {
+        const letter = JSON.parse(fs.readFileSync(path.join(OUTBOX, name), "utf8"));
+        if (typeof letter?.handed !== "number" || attached > letter.handed) continue;
+        fs.mkdirSync(SENDING, { recursive: true, mode: 0o700 });
+        fs.renameSync(path.join(OUTBOX, name), path.join(SENDING, name));
+      } catch {}
+    }
+  }
   for (const name of listOf(REPLIES)) {
     if (!name.endsWith(".gaveup")) continue;
     const id = name.slice(0, -7);
@@ -3147,17 +3183,19 @@ export function sendOutbox(host, link = readLink(), now = Date.now(), offline = 
     try { letter = JSON.parse(fs.readFileSync(file, "utf8")); } catch { continue; }
     listed.add(id);
     const made = typeof letter.at === "number" ? letter.at : now;
-    const peer = typeof letter.peer === "string" ? peers.find(each => each.key === letter.peer) ?? null : peerOf(letter.to, peers, told);
-    if (!peer || now - made > LETTER_MEMORY) {
+    const peer = typeof letter.peer === "string" ? peers.find(each => each.key === letter.peer) ?? null : peerOf(letter.to, peers, told, moved);
+    if (now - made > LETTER_MEMORY) {
       fs.rmSync(file, { force: true });
       if (letter.wait === true) reply(id, { failed: "Its agent couldn't be reached." });
       continue;
     }
+    // No box lists its agent now (lists change as boxes come and go): it waits.
+    if (!peer) continue;
     // No relay for a while: one never sent goes to the Mac, which takes it on over SSH.
     if (offline > RELAY_GONE_AFTER && !letter.sentTo && !letter.answers) {
       try {
         const { via, sentTo, peer: _, ...rest } = letter;
-        writePrivate(path.join(OUTBOX, `${id}.json`), JSON.stringify({ ...rest, wait: false }));
+        writePrivate(path.join(OUTBOX, `${id}.json`), JSON.stringify({ ...rest, wait: false, handed: now }));
         fs.rmSync(file, { force: true });
         if (letter.wait === true) reply(id, { note: "Your other computers can't be reached through the relay now: it goes through your Mac instead, and its answer comes to you as a message." });
       } catch {}
@@ -3518,7 +3556,7 @@ async function setup() {
       next.macs = [...new Set([...macsOf(next), mac])];
       forgetOldMacs(next, mac);
       // Its peers: itself and its other machines.
-      if (Array.isArray(input.peers)) takePeers(next, mac, input.peers, typeof input.peersAt === "number" ? input.peersAt : at);
+      if (Array.isArray(input.peers)) takePeers(next, mac, input.peers, typeof input.peersAt === "number" ? input.peersAt : at, input.moved);
     }
     if (typeof input.id === "string") next.id = input.id.slice(0, 200);
     // A Mac that never puts its own files over a newer box's: once every Mac it sees is one, the

@@ -109,12 +109,12 @@ A host mails another host the same way, with a relay `send` of a mail frame (`ki
 address, pairing}], "removed": [{key, pairing}], "at": <milliseconds>}`), so a phone you remove
 loses its way into every machine, reached or not. A bridge (from 0.9.6) takes it only from the key
 its setup named, and only a newer one; from 0.9.8 from any Mac that set it up, each by its own
-`at`, as "Paired phones" says. From 0.9.16 the same mail carries the machine's peers, and peers
+`at`, as "Paired phones" says. From 0.9.17 the same mail carries the machine's peers, and peers
 mail each other, as "Peers" says.
 
 ### Peers
 
-Your computers talk to each other over the relay, Mac or not (bridge 0.9.16). A Mac connects to
+Your computers talk to each other over the relay, Mac or not (bridge 0.9.17). A Mac connects to
 the relay when the phone link is on or it has at least one machine; a Mac on its own makes no
 connection.
 
@@ -123,33 +123,37 @@ connection.
   and its other machines whose bridge said `"peers": true` in setup's answer. `id` is the
   machine's name on that Mac. A machine keeps each Mac's list (`peersFrom`), a newer one replacing
   that Mac's last, and takes lists only from its Macs. Its peers are every list's, itself left
-  out. Its bridge runs while it has peers or phones. Setup also gives the machine's `id`. With the
+  out. Its bridge runs while it has peers or phones. Setup also gives the machine's `id`, and both
+  carry `moved: [{session, key}]`: conversations being moved, by the key of the computer each
+  lives on now (the one it left may still list it until it's let go). With the
   phone link off, a Mac's setup and mail leave out `phones` and `removed`, and the machine keeps
   the phones it has.
 - **Mail**: a box opens mail from its Macs and its peers, and drops the rest. Every mail has `at`
   (milliseconds). A sealed mail frame is at most 65,600 bytes, and one larger isn't sent: letters'
   words and lists are cut to fit.
 - **Agents**: `{"agents": {"at", "list": [{session, name, kind: "bot"|"session", project?,
-  about?, machine?}]}}`. A box sends its bots and its 40 latest titled sessions (its engine's and
-  its coding agents') when they change and every ten minutes. Each box keeps the newest list from
+  about?, machine?}]}}`. A box sends its bots and its 40 latest sessions (its engine's and its
+  coding agents') when they change and every ten minutes. Each box keeps the newest list from
   each peer. The relay keeps nothing, so a box that has just connected adds `"ask": "agents"` to
   what it sends first (its agents; a Mac's list), and whoever gets it tells that box its agents
   again within a minute.
   - A machine's bridge writes `run/agents.json` (what `list_agents` reads there) from its own
     agents and its peers', relay or not.
-  - A session listed by more than one peer is the Mac's when a Mac lists it, and otherwise
-    nobody's.
+  - A moved session is the computer's a Mac says it lives on. A session listed by more than one
+    peer is the Mac's when a Mac lists it, and otherwise nobody's.
   - A Mac also lists the agents of its machines whose bridge doesn't talk to peers, each with its
     `machine`, and takes their letters on over SSH.
   - A Mac connected over SSH writes its list to `run/mac-agents.json` (`{key, at, list}`), which
     the bridge takes when it's newer than the Mac's mail.
 - **Letters**: `{"letter": {id, from, to, text, wait, at, answers?}}` goes to the box that listed
   `to`.
-  - **Checks**: the receiver drops a letter older than a day. It delivers only to agents it
-    announced, each `id` once (ids remembered two days, noted once delivered), and at most 20 in
-    ten minutes from a box.
+  - **Checks**: the receiver drops a letter older than a day. It delivers each `id` once (ids
+    remembered two days, noted once delivered), at most 20 in ten minutes from a box, and only
+    to a conversation an agent could be. A subagent's, a group chat's seat or one put away doesn't
+    take letters. One it can't look up now (its engine starting) is answered `retry`.
   - **Sender**: it names the sender as the sending box named that agent, when that box alone
-    lists `from`. Otherwise the letter is from "an agent on <box>", with no address to answer.
+    lists `from` and it isn't one of the receiver's own conversations. Otherwise the letter is from
+    "an agent on <box>", with no address to answer.
   - **`delivered`**: it answers `{"delivered": {id, ok, why?, retry?, answer?}}`. `retry`: not
     now (an engine restarting, too many lately), so the sender tries again. `answer: false`: there,
     but no answer will come (its sender couldn't be verified, or its machine is away).
@@ -158,14 +162,20 @@ connection.
     tool; otherwise it reaches the sender's conversation as a message.
   - **Sender side**: a sender takes `delivered` only from the box it sent to, and an answer for a
     waiting tool only from that box. Until `delivered` comes, it sends again each minute, for two
-    days.
+    days, and a letter whose agent no box lists now waits. Before a letter goes, its sender is
+    told of to that box, if it wasn't.
 - **On a machine**: `send_message` leaves a letter for a peer's agent in
   `run/outbox/sending/<id>.json`, which the bridge sends, and others in `run/outbox` for the Mac
   to collect over SSH.
   - A subagent writes as its conversation.
-  - A waiting tool reads `run/replies/<id>.json` (`{text}`, `{failed}` or `{note}`). After eleven
-    minutes it leaves `<id>.gaveup`, and its letter goes on without waiting.
-  - With no relay for five minutes, letters not yet sent move to `run/outbox` for the Mac.
+  - A waiting tool reads `run/replies/<id>.json` (`{text}`, `{failed}` or `{note}`), and touches
+    `<id>.alive` as it looks. An answer that comes once it isn't is delivered as a message.
+  - After eleven minutes, or its turn stopped, the tool leaves `<id>.gaveup`, and its letter goes on
+    without waiting.
+  - With no relay for five minutes, letters not yet sent move to `run/outbox` for the Mac, marked
+    `handed`. Once the relay is back, those the Mac hasn't connected to take since come back.
+  - The Mac takes each letter in `run/outbox` by renaming it `.mac-<name>` before it reads it,
+    and puts back the ones it couldn't deliver, so a letter goes one way only.
 - `kuvo-link.js leave <mac>`: run when that Mac removes the machine. It stops counting that Mac,
   forgets the peers only it named and what they told it, and leaves other Macs' lists alone.
 

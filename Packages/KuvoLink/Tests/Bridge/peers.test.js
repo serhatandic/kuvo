@@ -110,7 +110,9 @@ async function engine(t) {
       const json = value => { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
       if (request.headers.authorization !== `Basic ${Buffer.from("opencode:pw").toString("base64")}`) { response.writeHead(401); return response.end(); }
       if (request.url.startsWith("/api/session?")) return json({ data: [] });
-      if (request.url === "/api/session/ses_target") return json({ id: "ses_target" });
+      if (request.url === "/api/session/ses_target") return json({ data: { id: "ses_target" } });
+      if (request.url === "/api/session/ses_child") return json({ data: { id: "ses_child", parentID: "ses_target" } });
+      if (request.url === "/api/session/ses_mine") return json({ data: { id: "ses_mine" } });
       if (request.url === "/api/session/ses_target/prompt" && request.method === "POST") {
         prompts.push(JSON.parse(body));
         busy = 1;
@@ -137,12 +139,14 @@ test("a letter from a peer: delivered once, said to be there, by its sender's ow
   const told = { [second.pub]: { at: 1, list: [{ session: "ses_sender", name: "API", kind: "session" }] } };
   const said = [], answers = [];
   const take = (from, letter, extra = {}) => link.takeLetter(from, letter, { send: (peer, message) => said.push({ to: peer.key, ...message }), targets: [target],
-    ours: async session => session === "ses_target", answer: each => answers.push(each), told, peers, wait: 10, ...extra });
+    answer: each => answers.push(each), told, peers, wait: 10, ...extra });
   const letter = extra => ({ id: "ltr_" + crypto.randomBytes(6).toString("hex"), from: "ses_sender", to: "ses_target", text: "Can you check the build?", at: Date.now(), ...extra });
 
   await take(second.peer, letter({ at: Date.now() - 2 * 86_400_000 }));
-  await take(second.peer, letter({ to: "ses_not_ours" }));
-  assert.deepEqual(said.map(each => [each.delivered.ok, each.delivered.retry]), [[false, undefined], [false, undefined]]);
+  await take(second.peer, letter({ to: "ses_not_here" }));
+  await take(second.peer, letter({ to: "ses_child" }));
+  assert.deepEqual(said.map(each => [each.delivered.ok, each.delivered.retry]), [[false, undefined], [false, undefined], [false, undefined]]);
+  assert.equal(said[2].delivered.why, "That conversation doesn't take messages.", "a subagent's");
   assert.equal(prompts.length, 0);
 
   // Its sender as that box named it, waiting: delivered, said to be there, answered by a letter back.
@@ -170,6 +174,13 @@ test("a letter from a peer: delivered once, said to be there, by its sender's ow
   assert.deepEqual(said, [{ to: second.pub, delivered: { id: unlisted.id, ok: true, answer: false, why: "Its answer can't come back to you: it doesn't know who you are." } }]);
   await take(stranger.peer, letter());
   assert.equal(prompts.at(-1).text, link.composeLetter("an agent on stranger", "unknown", "Can you check the build?", false), "the sender is second's, not stranger's");
+  assert.match(prompts.at(-1).text, /It can't be answered/);
+  // One of this box's own, claimed from there: not taken for it.
+  await take(second.peer, letter({ from: "ses_mine" }), { told: { [second.pub]: { at: 1, list: [{ session: "ses_mine", name: "Reviewer", kind: "session" }] } } });
+  assert.equal(prompts.at(-1).text, link.composeLetter("an agent on second", "unknown", "Can you check the build?", false));
+  // A Mac moved ses_sender to stranger: stranger's word now, second's list stale.
+  await take(stranger.peer, letter(), { moved: new Map([["ses_sender", stranger.pub]]), told: { [second.pub]: told[second.pub], [stranger.pub]: { at: 2, list: [{ session: "ses_sender", name: "API, moved", kind: "session" }] } } });
+  assert.equal(prompts.at(-1).text, link.composeLetter("API, moved", "ses_sender", "Can you check the build?", false));
 
   // The engine restarting: not delivered, to try again, and not taken for seen.
   said.length = 0;
@@ -182,7 +193,7 @@ test("a letter from a peer: delivered once, said to be there, by its sender's ow
   // A few at a time from each box: the rest to try again later.
   said.length = 0;
   for (let i = 0; i < 18; i++) await take(second.peer, letter());
-  assert.equal(said.filter(each => each.delivered.ok).length, 15, "twenty in ten minutes, the five before counted");
+  assert.equal(said.filter(each => each.delivered.ok).length, 14, "twenty in ten minutes, the six before counted");
   assert.equal(said.at(-1).delivered.retry, true);
 });
 
@@ -210,7 +221,8 @@ test("this box's letters go to the box their agent is on, again each minute unti
   assert.equal(payload.letter.wait, true);
   assert.ok(payload.letter.text.length > 0 && Buffer.byteLength(payload.letter.text) <= 24_000 && "é".repeat(40_000).startsWith(payload.letter.text), "its words cut to fit, whole characters");
   assert.ok(sent[0].length <= 65_600 + 17);
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(run, "replies", "ltr_nobody.json"), "utf8")), { failed: "Its agent couldn't be reached." });
+  assert.equal(fs.existsSync(path.join(run, "replies", "ltr_nobody.json")), false, "no box lists its agent now: it waits");
+  assert.ok(fs.existsSync(path.join(sending, "ltr_nobody.json")));
   assert.ok(fs.existsSync(path.join(run, "outbox", "msg_mac.json")));
 
   link.sendOutbox(host, link.readLink(), now + 4000);
@@ -235,13 +247,27 @@ test("this box's letters go to the box their agent is on, again each minute unti
   // Its answer, a letter from that box: to the waiting tool (from anyone else, not).
   const said = [];
   const answer = (from, extra = {}) => link.takeLetter(from, { id: "ltr_" + crypto.randomBytes(6).toString("hex"), from: "ses_target", to: "ses_here", text: "Done.", at: now, answers: "ltr_waits", ...extra },
-    { send: (peer, message) => said.push(message), targets: [], ours: async () => false, told: link.readPeerAgents(), peers: link.peersOf(link.readLink()), now });
+    { send: (peer, message) => said.push(message), targets: [], told: link.readPeerAgents(), peers: link.peersOf(link.readLink()), now });
   await answer(stranger.peer);
   assert.equal(fs.existsSync(path.join(run, "replies", "ltr_waits.json")), false);
+  // The tool still waiting (it notes so as it looks).
+  fs.writeFileSync(path.join(run, "replies", "ltr_waits.alive"), "");
   await answer(second.peer);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(run, "replies", "ltr_waits.json"), "utf8")), { text: "Done." });
   assert.equal(fs.existsSync(path.join(run, "replies", "ltr_waits.wait")), false);
   assert.equal(said.at(-1).delivered.ok, true);
+
+  // A tool that ended without saying so (its engine restarted): its answer isn't left for nobody,
+  // it's delivered as a message (here, to try again: no engine in this test).
+  write("ltr_orphan", { to: "ses_target", text: "Hi", wait: true, sentTo: second.pub });
+  link.letterWent(second.peer, { id: "ltr_orphan", ok: true });
+  const stale = new Date(now - 60_000);
+  fs.writeFileSync(path.join(run, "replies", "ltr_orphan.alive"), "");
+  fs.utimesSync(path.join(run, "replies", "ltr_orphan.alive"), stale, stale);
+  said.length = 0;
+  await answer(second.peer, { answers: "ltr_orphan" });
+  assert.equal(fs.existsSync(path.join(run, "replies", "ltr_orphan.json")), false);
+  assert.equal(said.at(-1).delivered.retry, true);
 
   // A tool that gave up waiting: its letter goes on without waiting.
   write("ltr_slow", { to: "ses_target", text: "Hi", wait: true });
@@ -272,6 +298,14 @@ test("this box's letters go to the box their agent is on, again each minute unti
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(run, "outbox", "ltr_stuck.json"), "utf8")).wait, false);
   assert.match(JSON.parse(fs.readFileSync(path.join(run, "replies", "ltr_stuck.json"), "utf8")).note, /through your Mac/);
   assert.ok(fs.existsSync(path.join(sending, "ltr_slow.json")), "sent already: it stays for the relay");
+
+  // The relay back, and the Mac not here since: it comes back to this link. One the Mac took
+  // (`.mac-…`) stays the Mac's.
+  fs.renameSync(path.join(run, "outbox", "msg_mac.json"), path.join(run, "outbox", ".mac-msg_mac.json"));
+  link.sendOutbox(host, link.readLink(), now + 500_000);
+  assert.ok(fs.existsSync(path.join(sending, "ltr_stuck.json")));
+  assert.equal(fs.existsSync(path.join(run, "outbox", "ltr_stuck.json")), false);
+  assert.ok(fs.existsSync(path.join(run, "outbox", ".mac-msg_mac.json")));
 });
 
 test("a box tells its peers its agents as they change, and every ten minutes", async t => {
