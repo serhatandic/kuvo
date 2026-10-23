@@ -689,6 +689,12 @@ public final class RemoteServer: @unchecked Sendable {
               case $fails in 0) wait=0 ;; 1) wait=15 ;; 2) wait=30 ;; 3) wait=60 ;; 4) wait=120 ;; 5) wait=300 ;; *) wait=600 ;; esac
               next=$((now + wait))
             fi
+            # An update whose new link never said it's well (it doesn't start, the machine went
+            # down halfway): after twenty minutes, back to what was there (PROTOCOL.md, "Updates").
+            if [ -f "$R/update-trial" ] && [ -f "$K/updates/rollback/restore.sh" ]; then
+              tried=$(stat -c %Y "$R/update-trial" 2>/dev/null || echo "$now")
+              [ $((now - tried)) -gt 1200 ] && sh "$K/updates/rollback/restore.sh" >/dev/null 2>&1
+            fi
             # The phone link, while a phone is paired with it or a pairing's open.
             if [ -f "$R/link.needed" ] && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && ! is "$(cat "$R/link.pid" 2>/dev/null)" kuvo-link; then
               (environment; cd "$K/workspace" 2>/dev/null || cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 setsid "$K/engine/$V/opencode" "$K/bin/kuvo-link.js" run >"$R/link.log" 2>&1 </dev/null &)

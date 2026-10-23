@@ -146,9 +146,51 @@ enum MachineBox {
         }
     }
 
+    // MARK: Updates (PROTOCOL.md, "Updates")
+
+    /// How a machine's own updates stand: whether they're set up (a release key pinned), whether
+    /// it updates by itself, its version and engine, the newest heard of, how the last went, what
+    /// it's doing now, and why it can't, when it can't.
+    struct UpdateStatus: Decodable, Equatable {
+        struct Last: Decodable, Equatable {
+            var at: Double?
+            var result: String
+            var message: String?
+            var to: String?
+            var version: String?
+        }
+        var setUp: Bool
+        var auto: Bool
+        var version: String?
+        var engine: String?
+        var latest: String?
+        var last: Last?
+        var updating: String?
+        var blocked: String?
+    }
+
+    static func updateStatus(on connection: SSHConnection) async throws -> UpdateStatus {
+        try JSONDecoder().decode(UpdateStatus.self, from: try await answer("update-status", input: nil, on: connection))
+    }
+
+    /// Turns updating by itself on or off.
+    static func setAutoUpdate(_ auto: Bool, on connection: SSHConnection) async throws -> UpdateStatus {
+        try JSONDecoder().decode(UpdateStatus.self, from: try await answer("update-auto", input: Data((auto ? "true" : "false").utf8), on: connection))
+    }
+
+    /// Update Now: it starts there, on its own; how it goes shows in `updateStatus`.
+    static func updateNow(on connection: SSHConnection) async throws -> UpdateStatus {
+        try JSONDecoder().decode(UpdateStatus.self, from: try await answer("update-now", input: nil, on: connection))
+    }
+
     /// `kuvo-link.js box <arguments>` there, with `input` on its standard input, with whichever
     /// engine runtime the machine has (this version's, or the one at work there).
     private static func run(_ arguments: String, input: Data?, on connection: SSHConnection) async throws -> Answer {
+        try JSONDecoder().decode(Answer.self, from: try await answer(arguments, input: input, on: connection))
+    }
+
+    /// What `kuvo-link.js box <arguments>` answered (its last line, JSON), or why not.
+    private static func answer(_ arguments: String, input: Data?, on connection: SSHConnection) async throws -> Data {
         let file = FileManager.default.temporaryDirectory.appending(path: "kuvo-box-\(UUID().uuidString)")
         FileManager.default.createFile(atPath: file.path, contents: input ?? Data(), attributes: [.posixPermissions: 0o600])
         defer { try? FileManager.default.removeItem(at: file) }
@@ -156,9 +198,9 @@ enum MachineBox {
             [ -x "$E" ] || E=$(for d in "$K"/engine/*/; do [ -x "${d}opencode" ] && printf '%s\\n' "${d}opencode"; done | tail -n 1)
             KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$E" "$K/bin/\(Bridge.fileName)" box \(arguments)
             """), input: file)
-        let line = output.split(separator: "\n").last.map(String.init) ?? ""
-        guard let answer = try? JSONDecoder().decode(Answer.self, from: Data(line.utf8)) else { throw Failure.refused("The machine's settings couldn't be read: \(output.prefix(200))") }
+        let line = Data((output.split(separator: "\n").last.map(String.init) ?? "").utf8)
+        guard let answer = try? JSONDecoder().decode(Answer.self, from: line) else { throw Failure.refused("The machine's settings couldn't be read: \(output.prefix(200))") }
         if case .number(let status)? = answer.status, status >= 400 { throw Failure.refused(answer.message ?? "The machine said no (\(Int(status))).") }
-        return answer
+        return line
     }
 }

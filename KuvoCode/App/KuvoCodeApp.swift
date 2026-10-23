@@ -11,6 +11,10 @@ enum Launch {
         // themselves with (the release workflow), and nothing else.
         if let index = CommandLine.arguments.firstIndex(of: "--write-box-files"), CommandLine.arguments.indices.contains(index + 1) {
             let folder = URL(filePath: CommandLine.arguments[index + 1])
+            #if DEBUG
+            // For a demo copy's folder on machines (a test of updates there), not ~/.kuvo-code.
+            if let root = ProcessInfo.processInfo.environment["KUVO_DEMO_MACHINE_ROOT"], !root.isEmpty { RemoteEngineInstaller.root = root }
+            #endif
             do {
                 try MainActor.assumeIsolated { try BoxRelease.write(to: folder) }
                 exit(0)

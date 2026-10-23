@@ -193,8 +193,51 @@ app's version, written by a Mac after it sets the box up, or by the box when it 
     by version.
 - **Setup**: a Mac that does this says so with `"tolerates": 1`. The bridge keeps it per Mac
   (`tolerant`), and drops it with that Mac.
-- **Self-update** (to come) happens only while every Mac the box has seen in the last 30 days
-  tolerates it, so no Mac takes the box back to an older version.
+- **Setup** also sends the Mac's ID (`macID`, as its engine launches name it). The bridge keeps
+  `tolerantIDs[macID]`, set again at each setup, and notes in `run/launchers.json` which Mac
+  started the engine (from `run/engine.json`'s `notes.mac`).
+
+**A box updating itself** (bridge 0.9.18). It's off until a release key is pinned in
+`kuvo-link.js` (`UPDATE_KEYS`).
+- **What a release is**: `boxes.json` from `https://github.com/serhatandic/kuvo-code/releases/latest/download/`,
+  `{manifest, signature, key}`. The manifest is `{kuvo: "box/1", version, released, engine,
+  linux: {x86_64|aarch64: {url, integrity}}, pack: {url, sha256, size}}`. The signature is
+  Ed25519 over `"kuvo-box v1\n"` and the manifest's bytes, by a pinned key
+  (`scripts/sign-box.mjs`). The pack holds `box.json` (each file's SHA-256) and the files, laid
+  out as `~/.kuvo-code`.
+- **When**: the night's window, 02:00 to 05:00 in `KUVO_TZ`, once a night, with
+  `box/update.json`'s `auto` on (the default), for a release at least three days old. Or now
+  (Update Now), whatever its age.
+- **Never**:
+  - in another folder than `~/.kuvo-code`;
+  - to a version that isn't newer;
+  - while a conversation works there or a browser ask waits;
+  - while a Mac that started the engine in the last 30 days isn't in `tolerantIDs` as `true`.
+- **How**:
+  1. It checks the pack's SHA-256, each file's, and the engine's npm `integrity`.
+  2. It tries the new engine (`--version`), the new bridge with it (`selftest`), and the new
+     keeper (`sh -n`).
+  3. It keeps each file it replaces, and the engine's data when the engine version changes, in
+     `updates/rollback`, with `restore.sh`.
+  4. It writes `run/update-trial`, stops the engine, swaps file by file, and starts again.
+  5. Once the engine answers as the new version (and the coding agents' bridge, if it ran), the
+     old bridge goes and the keeper starts the new one. The new bridge confirms the update after
+     the relay's welcome or three minutes: what was kept, and other engines, go.
+  6. If the new version doesn't come up, `restore.sh` puts back what was there. The keeper runs
+     it too when `run/update-trial` is twenty minutes old.
+- **State**: `run/update.json` holds `{latest, checked, last: {at, result, message?, from?, to?},
+  running?, trial?, night?}`.
+- `kuvo/update`:
+  - `GET` answers `{setUp, auto, version, engine, latest, last, updating, blocked}`.
+    `updating` is the step under way (`checking`, `downloading`, `downloading the engine`,
+    `checking it`, `installing`, `starting`) or null. `blocked` is why it can't update, or null.
+  - `PATCH {auto: bool}` turns updating by itself on or off.
+  - `POST {now: true}` starts one: 202 with the status, or 409 `{message}` when it's not set up,
+    is blocked, or is updating already.
+  - A Mac does the same over SSH with `kuvo-link.js box update-status`, `update-auto`
+    (`true`/`false` on stdin) and `update-now`.
+- `kuvo-link.js update [--now]` updates from a shell. Only in a test's folder, it also takes
+  `--url <boxes.json> --key <public key>`.
 
 ## Notifications
 

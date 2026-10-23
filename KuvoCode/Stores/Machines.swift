@@ -177,6 +177,8 @@ final class MachineEngine {
     }
 
     var isReady: Bool { state == .ready }
+    /// The engine's version running there (a newer box's may be newer than this app's).
+    var engineVersion: String? { server?.engine.version }
 
     /// Where its connection is, as every view says it.
     enum Connection: Equatable {

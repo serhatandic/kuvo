@@ -360,6 +360,8 @@ final class PhoneLink {
                 /// This Mac never puts its own files over a newer box's (`BoxVersion`): the box may
                 /// update itself once every Mac it sees does.
                 var tolerates = 1
+                /// This Mac's ID, as its engine launches there name it.
+                var macID = MachineEngine.macID
             }
             let settings = folder.appending(path: "setup.json")
             let list = phoneList
