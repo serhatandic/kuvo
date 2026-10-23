@@ -7,17 +7,19 @@
 # key from your keychain. Given a key file you made with openssl, it keeps that one instead.
 #   scripts/set-box-key.sh [key.pem]
 set -eu
+# The key file as you named it, from the folder you ran this in.
+GIVEN=${1:-}
+case "$GIVEN" in "" | /*) ;; *) GIVEN="$PWD/$GIVEN" ;; esac
+if [ -n "$GIVEN" ] && [ ! -f "$GIVEN" ]; then
+    echo "There's no key file at $GIVEN." >&2
+    exit 1
+fi
 cd "$(dirname "$0")/.."
 
 REPO=${REPO:-serhatandic/kuvo-code}
 SERVICE="Kuvo Code box signing key"
 ACCOUNT=kuvo-box
 PINS=Packages/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js
-GIVEN=${1:-}
-if [ -n "$GIVEN" ] && [ ! -f "$GIVEN" ]; then
-    echo "There's no key file at $GIVEN." >&2
-    exit 1
-fi
 
 if ! command -v gh >/dev/null 2>&1; then
     echo "GitHub's command line tool isn't installed: brew install gh, then gh auth login." >&2
