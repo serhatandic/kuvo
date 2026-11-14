@@ -1013,7 +1013,8 @@ async function host() {
       if (p.input !== undefined) {
         const url = String(p.input).trim();
         if (/^(javascript|data|blob):/i.test(url)) throw Error("That address cannot be opened here.");
-        if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^(https?|file|about):/i.test(url)) send(client, { method: "Kuvo.external", params: { targetId: target, url } });
+        const hostPort = /^(?:[a-z0-9.-]+|\[[0-9a-f:]+\]):[0-9]+(?:[/?#]|$)/i.test(url);
+        if (!hostPort && /^[a-z][a-z0-9+.-]*:/i.test(url) && !/^(https?|file|about):/i.test(url)) send(client, { method: "Kuvo.external", params: { targetId: target, url } });
         else await ownCall("Page.navigate", { url: destination(url) ?? "about:blank" }, session);
       } else if (p.back || p.forward) {
         const h = await ownCall("Page.getNavigationHistory", {}, session);

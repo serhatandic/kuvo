@@ -135,3 +135,12 @@ test("Page events that change no page facts do not spend relay messages", async 
   await call(c, "Browser.getVersion");
   assert.equal(c.heard.all.filter(m => m.method === "Kuvo.pages").length, before);
 });
+
+test("localhost and ordinary hosts with ports navigate inside the page", async () => {
+  const { c, chrome } = await page();
+  for (const input of ["localhost:3000", "example.com:8080"]) await call(c, "Kuvo.go", { targetId: "P", input });
+  const urls = chrome.all.filter(m => m.method === "Page.navigate").map(m => m.params.url);
+  assert.ok(urls.includes("http://localhost:3000"));
+  assert.ok(urls.includes("https://example.com:8080"));
+  assert.equal(c.heard.all.filter(m => m.method === "Kuvo.external").length, 0);
+});
