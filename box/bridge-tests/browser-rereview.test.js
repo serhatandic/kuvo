@@ -183,3 +183,17 @@ test("re-review S5: oversize lowers pixel scale before quality, then recovers a 
   assert.ok(recovered.scale > 1 && recovered.scale <= 2);
   assert.equal(recovered.quality, 75);
 });
+
+test("re-review S6: raw zoom metrics and picture limits are not clamped to a 2160-high layout", async t => {
+  const h = await page(t);
+  h.answer("Page.captureScreenshot", () => ({ data: "anBlZw==" }));
+  await call(h.c, "Kuvo.viewing");
+  await call(h.c, "Emulation.setDeviceMetricsOverride", { width: 3000, height: 4800, deviceScaleFactor: 1 }, "raw");
+  const metrics = h.chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").at(-1);
+  assert.deepEqual([metrics.params.width, metrics.params.height], [3000, 4800]);
+  await call(h.c, "Page.startScreencast", { maxWidth: 3000, maxHeight: 4800 }, "raw");
+  await capture(h);
+  const frame = h.c.heard.all.find(m => m.method === "Page.screencastFrame");
+  assert.deepEqual([frame.params.metadata.deviceWidth, frame.params.metadata.deviceHeight], [3000, 4800]);
+  assert.equal(h.chrome.all.find(m => m.method === "Page.captureScreenshot").params.clip.scale, 1);
+});

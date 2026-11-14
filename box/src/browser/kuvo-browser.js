@@ -1046,8 +1046,8 @@ async function host() {
       const metrics = client.rawMetrics?.get(target) ?? sizes.get(target) ?? sizeFor({});
       // Raw screencast maxima limit picture pixels, never the page's CSS layout or DPR.
       client.view = target && targets.has(target) ? raw
-        ? { targetId: target, ...metrics, width: finite(p.maxWidth, metrics.width, 1, 7680),
-            height: finite(p.maxHeight, metrics.height, 1, 4320), scale: 1,
+        ? { targetId: target, ...metrics, width: finite(p.maxWidth, metrics.width, 1, Infinity),
+            height: finite(p.maxHeight, metrics.height, 1, Infinity), scale: 1,
             quality: finite(p.quality, 75, 1, 100), maxFps: 60 }
         : { targetId: target, ...sizeFor(p) } : null;
       if (client.view) {
@@ -1068,7 +1068,10 @@ async function host() {
       const previous = client.rawMetrics?.get(target) ?? sizes.get(target) ?? sizeFor({});
       const size = message.method === "Emulation.setPageScaleFactor"
         ? { ...previous, zoom: finite(p.pageScaleFactor, 1, .25, 5) }
-        : { ...sizeFor({ ...p, scale: p.deviceScaleFactor }), scale: finite(p.deviceScaleFactor, previous.scale, .25, 8) };
+        : { ...sizeFor({ ...p, scale: p.deviceScaleFactor }),
+            width: finite(p.width, previous.width, 1, Infinity),
+            height: finite(p.height, previous.height, 1, Infinity),
+            scale: finite(p.deviceScaleFactor, previous.scale, .25, Infinity) };
       client.rawMetrics ??= new Map();
       client.rawMetrics.set(target, size);
       if (!client.viewer) agentSizes.set(target, size);
