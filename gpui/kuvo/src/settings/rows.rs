@@ -483,7 +483,9 @@ fn permissions(facts: &Facts) -> Vec<Block> {
             let control = facts.busy("row-sandbox").unwrap_or_else(|| match sandbox.button() {
                 Some((label, SandboxDoes::Route { method, path })) => Control::Buttons(vec![(label, Act::SandboxAction { method, path })]),
                 Some((label, SandboxDoes::Help)) => Control::Buttons(vec![(label, Act::Open(SANDBOX_HELP))]),
-                // (The system's own pane: only where this app runs on a Mac.)
+                // (The system's own pane: only where this app runs on a Mac, and right only while the
+                // window shows this computer's own box, as it does today. Left to move: the box
+                // naming the page a `help` opens, and whose Software Update a `softwareUpdate` is.)
                 Some((label, SandboxDoes::SoftwareUpdate)) if cfg!(target_os = "macos") => Control::Buttons(vec![(label, Act::Open(SOFTWARE_UPDATE))]),
                 _ => Control::Text(if sandbox.on { "On".into() } else { "Off".into() }),
             });

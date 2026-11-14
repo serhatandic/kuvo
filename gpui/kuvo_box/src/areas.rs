@@ -170,13 +170,17 @@ pub struct Computers {
 
 // MARK: Plan limits
 
-/// How close a share is to its limit, as the box says it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+/// How close a share is to its limit, as the box says it. A word a newer box names that this
+/// doesn't know (or none) is `Unknown`, drawn quiet: the window stays, uncoloured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
     Calm,
     Near,
     Over,
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 /// One of an account's two rings, as the box picks it (`limits.rings`): the window it shows, its
@@ -188,6 +192,7 @@ pub struct Ring {
     pub used: f32,
     #[serde(default, rename = "resetsAt")]
     pub resets_at: Option<f64>,
+    #[serde(default)]
     pub level: Level,
 }
 
@@ -216,6 +221,7 @@ pub struct LimitWindow {
     #[serde(default)]
     pub name: Option<String>,
     /// How close it is to its limit, in the box's word.
+    #[serde(default)]
     pub level: Level,
 }
 
@@ -441,6 +447,9 @@ mod tests {
         let row: Account = serde_json::from_str(r#"{"service":"claude","label":"Work","windows":[{"id":"five_hour","used":0.4,"read":1,"source":"usage","level":"calm","span":"short"},{"id":"newer"}],"rings":{"short":{"window":"five_hour","used":0.4,"level":"calm"}}}"#).unwrap();
         assert_eq!(row.windows.len(), 1);
         assert_eq!(row.windows[0].level, Level::Calm);
+        // A level a newer box names keeps its window, uncoloured.
+        let newer: Account = serde_json::from_str(r#"{"service":"claude","windows":[{"id":"w","used":0.4,"level":"dire"}],"rings":{"short":{"window":"w","used":0.4,"level":"dire"}}}"#).unwrap();
+        assert_eq!((newer.windows.len(), newer.windows[0].level, newer.rings.short.map(|ring| ring.level)), (1, Level::Unknown, Some(Level::Unknown)));
     }
 
     /// Held to KuvoClient's `LimitsAccount.title` and `LimitsWindow.title`.
@@ -473,9 +482,12 @@ mod tests {
         assert!(none.rings(0.).is_empty());
         let started_over = row(r#"{"service":"codex","rings":{"short":{"window":"five","used":0.5,"resetsAt":10,"level":"calm"},"long":{"window":"week","used":0.2,"level":"calm"}}}"#);
         assert_eq!(started_over.rings(20.), vec![(0., Level::Calm), (0.2, Level::Calm)], "one that started over keeps its place, empty");
-        // A ring a newer box says in a way this can't read leaves the account, with its other ring.
+        // A level a newer box names keeps its ring, uncoloured; a ring this can't read at all
+        // leaves the account, with its other ring.
         let newer = row(r#"{"service":"claude","rings":{"short":{"window":"x","used":0.3,"level":"dire"},"long":{"window":"week","used":0.2,"level":"calm"}}}"#);
-        assert_eq!(newer.rings(0.), vec![(0.2, Level::Calm)]);
+        assert_eq!(newer.rings(0.), vec![(0.3, Level::Unknown), (0.2, Level::Calm)]);
+        let unread = row(r#"{"service":"claude","rings":{"short":{"window":"x","used":"most"},"long":{"window":"week","used":0.2,"level":"calm"}}}"#);
+        assert_eq!(unread.rings(0.), vec![(0.2, Level::Calm)]);
     }
 
     #[test]

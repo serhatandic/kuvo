@@ -378,3 +378,20 @@ fn every_ask_the_box_words_is_read_and_one_amiss_spoils_none_of_the_rest() {
         }
     }
 }
+
+/// One item of "Needs you", or a project's sum, that a newer box says in a way this can't read
+/// leaves the rest of the list as it is: the sidebar never loses every session to one bad item.
+#[test]
+fn a_needs_you_item_this_cant_read_leaves_the_list() {
+    let line: Line = serde_json::from_value(serde_json::json!({
+        "at": "1", "full": true,
+        "sessions": { "ses_a": { "kind": "project", "project": "/p", "directory": "/p", "created": 1, "updated": 2, "asked": 3 } },
+        "projects": { "/p": { "asking": "one", "working": 1 } },
+        "needsYou": [{ "asks": "words" }, { "session": "ses_a", "asks": { "kind": "newer", "summary": "asks for a thing" } }],
+    }))
+    .expect("the line is read");
+    assert_eq!(line.needs_you.len(), 1);
+    assert_eq!((line.needs_you[0].session.as_str(), line.needs_you[0].asks.summary.as_str()), ("ses_a", "asks for a thing"));
+    assert_eq!((line.projects["/p"].asking, line.projects["/p"].working), (0, 1));
+    assert_eq!(line.sessions.len(), 1);
+}

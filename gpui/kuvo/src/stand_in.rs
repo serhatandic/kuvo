@@ -129,8 +129,13 @@ impl StandIn {
 
     /// An empty box: no projects, no sessions.
     pub fn empty(replies: Replies) -> StandIn {
-        let areas = areas::Areas { empty: true };
+        let areas = areas::Areas { empty: true, ..areas::Areas::default() };
         StandIn { inner: Arc::new(Inner { state: Mutex::new(State { at: 1, next: 1, areas, ..State::default() }), replies }) }
+    }
+
+    /// Whether its list of computers can be read (else 503, as a box that isn't answering).
+    pub fn computers_readable(&self, readable: bool) {
+        self.state().areas.computers_down = !readable;
     }
 
     /// Every sign-in under way ends so (the box's words for a failure: `message`, the engine's).

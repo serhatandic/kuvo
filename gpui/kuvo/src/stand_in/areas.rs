@@ -13,6 +13,8 @@ use super::{DAY, HOUR, MINUTE};
 pub struct Areas {
     /// A first run: no bots, chats, other computers or accounts.
     pub empty: bool,
+    /// Its list of computers can't be read now (503).
+    pub computers_down: bool,
 }
 
 /// Its answer to `method route`, if it's one of the areas' routes. `needing`: how many of its
@@ -20,6 +22,9 @@ pub struct Areas {
 pub fn answer(areas: Areas, method: &str, route: &str, now: f64, needing: usize) -> Option<(u16, Value)> {
     if method != "GET" {
         return None;
+    }
+    if route == "kuvo/computers" && areas.computers_down {
+        return Some((503, json!({ "message": "The box isn’t answering." })));
     }
     let answer = match route {
         "kuvo/bots" => json!({ "bots": if areas.empty { Vec::new() } else { bots(now) } }),

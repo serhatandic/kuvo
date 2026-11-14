@@ -373,12 +373,15 @@ impl AreaView {
     fn computer_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut rows = vec![SectionHeader::new("computers", "Your Computers").into_any_element()];
         let computers = match &self.computers {
+            // (The computer this window shows is known without the list: its row stays.)
             Reading::NotYet => {
+                rows.push(self.this_row(cx));
                 rows.push(quiet("Loading your computers…", true, cx));
                 return rows;
             }
             Reading::Failed(why) => {
-                rows.push(quiet(&format!("Your computers couldn’t be read: {why}"), false, cx));
+                rows.push(self.this_row(cx));
+                rows.push(quiet(&format!("Your other computers couldn’t be read: {why}"), false, cx));
                 return rows;
             }
             Reading::Ready(computers) => computers,
@@ -392,6 +395,13 @@ impl AreaView {
         rows
     }
 
+    /// The row of the computer this window shows, while the box's list isn't read: the window
+    /// knows which it is.
+    fn this_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let this = Computer { key: String::new(), name: self.this_box.to_string(), kind: "mac".into(), here: true, id: None, shared: false, reach: "connected".into(), version: None, engine: None, system: None, via: "here".into(), through: None, working: 0, limits: Vec::new() };
+        self.computer_row(&this, cx)
+    }
+
     fn computer_row(&self, computer: &Computer, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         // The one this window shows is picked as "this", by the window's own name for it.
@@ -401,8 +411,9 @@ impl AreaView {
             "connected" => c.success,
             "connecting" => c.warning,
             // Known by another computer's word alone: this box can't say whether it's reached.
-            "unknown" => c.text_faint,
-            _ => c.danger,
+            "away" => c.danger,
+            // Anything else (a word a newer box names): no claim of this app's about it.
+            _ => c.text_faint,
         };
         let (hover, selected_bg) = (c.hover, c.selected_card);
         let selector = format!("computer-{id}");
@@ -474,7 +485,9 @@ pub fn computer_line(computer: &Computer) -> String {
         "connecting" => "Connecting…".into(),
         // The box knows it only by another computer's word (`via: peer`): it says who, never that it's away.
         "unknown" => computer.through.as_ref().map(|through| format!("Known through {through}")).unwrap_or_else(|| "Known through another computer".into()),
-        _ => "Can’t be reached".into(),
+        "away" => "Can’t be reached".into(),
+        // A word a newer box names: what it runs, with no claim about its reach.
+        _ => computer.system.clone().unwrap_or_default(),
     }
 }
 

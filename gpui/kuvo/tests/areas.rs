@@ -273,6 +273,29 @@ fn computers_lists_yours_as_the_box_does_with_shared_machines_apart(cx: &mut Tes
     assert_eq!(title(&workspace, cx).as_deref(), Some("devbox"));
 }
 
+/// While the box's list can't be read, the computer this window shows is still there: the window
+/// knows which it is.
+#[gpui::test]
+fn computers_keeps_this_one_while_the_list_cant_be_read(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.computers_readable(false);
+    let (_workspace, cx) = open(cx, stand_in);
+    click(cx, "rail-computers");
+    assert!(bounds(cx, "computer-this").is_some());
+    assert!(bounds(cx, "computer-key_devbox").is_none());
+}
+
+/// The title bar's switcher names your other computers as the box lists them; this window's first.
+#[gpui::test]
+fn the_switcher_lists_your_other_computers_as_the_box_does(cx: &mut TestAppContext) {
+    let (_workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    click(cx, "computer-switcher");
+    let devbox = bounds(cx, "menu-item-devbox").expect("devbox");
+    let studio = bounds(cx, "menu-item-studio-mini").expect("one that's away");
+    assert!(devbox.top() < studio.top());
+    assert!(bounds(cx, "menu-item-Show Computers").is_some());
+}
+
 #[gpui::test]
 fn a_box_alone_lists_itself_and_no_shared_machines(cx: &mut TestAppContext) {
     let (_workspace, cx) = open(cx, StandIn::empty(Replies::Never));

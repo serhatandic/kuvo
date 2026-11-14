@@ -249,6 +249,8 @@ pub fn level_color(level: Level, cx: &App) -> Hsla {
         Level::Over => c.danger,
         Level::Near => c.warning,
         Level::Calm => c.success,
+        // A word this app doesn't know: quiet, never a colour of its own choosing.
+        Level::Unknown => c.text_muted,
     }
 }
 

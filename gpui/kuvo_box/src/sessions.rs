@@ -96,10 +96,17 @@ pub struct Project {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated: Option<f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "count")]
     pub asking: usize,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "count")]
     pub working: usize,
+}
+
+/// A count as the box says it; one a newer box says in a way this can't read is none, not the
+/// whole list lost.
+fn count<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<usize, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.as_u64().map(|count| count as usize).unwrap_or(0))
 }
 
 /// What a session waiting on you asks, in a few words: its kind (`permission`, `question`,
@@ -135,7 +142,7 @@ pub struct Line {
     pub projects: HashMap<String, Project>,
     /// The sessions waiting on you that the lists show, the one that asked last first: whole in
     /// every line.
-    #[serde(default, rename = "needsYou")]
+    #[serde(default, rename = "needsYou", deserialize_with = "crate::accounts::readable")]
     pub needs_you: Vec<NeedsYou>,
     /// What the box couldn't read yet (`bridge`): its sessions are as last read.
     #[serde(default)]
