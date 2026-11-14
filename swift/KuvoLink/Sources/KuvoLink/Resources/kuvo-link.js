@@ -9543,7 +9543,7 @@ function browserView(events, relay = false, run = RUN, key = socketKey) {
         length.writeUInt32BE(header.length);
         const frame = Buffer.concat([length, header, jpeg]);
         if (relay && (frame.length > 60000 || !frameBudget(1, Date.now(), 80))) {
-          socket.write(JSON.stringify({ method: "Kuvo.frameAck", params: { frameId: meta.frameId } }) + `
+          socket.write(JSON.stringify({ method: frame.length > 60000 ? "Kuvo.frameDropped" : "Kuvo.frameAck", params: { frameId: meta.frameId, ...frame.length > 60000 ? { reason: "oversize" } : {} } }) + `
 `);
           continue;
         }
@@ -42838,7 +42838,7 @@ import fs138 from "node:fs";
 import path145 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "debca226bf88";
+var BRIDGE_VERSION = "2a4313e72397";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";

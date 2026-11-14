@@ -97,7 +97,7 @@ test("relay pictures are binary and excess or oversized frames are dropped at th
           });
           socket.write(lines.map(m => JSON.stringify(m) + "\n").join(""));
         }
-        if (message.method === "Kuvo.frameAck") {
+        if (["Kuvo.frameAck", "Kuvo.frameDropped"].includes(message.method)) {
           acknowledgements.push(message.params.frameId);
           if (message.params.frameId === 103) complete();
         }

@@ -52,7 +52,7 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
         const frame = Buffer.concat([length, header, jpeg]);
         // Binary fits one relay message; oversize pictures are dropped and credited locally.
         if ((relay && (frame.length > 60000 || !frameBudget(1, Date.now(), 80)))) {
-          socket.write(JSON.stringify({ method: "Kuvo.frameAck", params: { frameId: meta.frameId } }) + "\n");
+          socket.write(JSON.stringify({ method: frame.length > 60000 ? "Kuvo.frameDropped" : "Kuvo.frameAck", params: { frameId: meta.frameId, ...(frame.length > 60000 ? { reason: "oversize" } : {}) } }) + "\n");
           continue;
         }
         events.binary(frame);

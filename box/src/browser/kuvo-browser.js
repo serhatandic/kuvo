@@ -954,6 +954,16 @@ async function host() {
     const p = message.params ?? {}, target = Object.hasOwn(p, "targetId") ? p.targetId : attachedTo.get(message.sessionId) ?? client.view?.targetId;
     const session = own.get(target);
     const reply = result => message.id !== undefined && send(client, { id: message.id, result: result ?? {}, ...(message.sessionId ? { sessionId: message.sessionId } : {}) });
+    if (message.method === "Kuvo.frameDropped") {
+      if (client.inflight?.delete(p.frameId) && p.reason === "oversize" && client.view) {
+        const v = client.view;
+        if (v.quality > 10) v.quality = Math.max(10, v.quality - 10);
+        else v.scale = Math.max(.125, v.scale * .75);
+        client.lastImage = null;
+        send(client, { method: "Kuvo.viewQuality", params: { targetId: v.targetId, quality: v.quality, scale: v.scale, reason: "oversize" } });
+      }
+      reply(); return true;
+    }
     if (message.method === "Kuvo.frameAck" || message.method === "Page.screencastFrameAck") {
       client.inflight?.delete(p.frameId ?? p.sessionId); reply(); return true;
     }
