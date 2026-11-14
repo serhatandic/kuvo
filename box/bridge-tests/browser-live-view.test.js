@@ -6,7 +6,8 @@ import { browserHost } from "./browser-host-stand-in.js";
 const { chrome, event, client, answer } = await browserHost();
 answer("Page.getNavigationHistory", () => ({ currentIndex: 0, entries: [{ id: 1 }] }));
 answer("Target.attachToTarget", () => ({ sessionId: "agent" }));
-answer("Page.captureScreenshot", () => ({ data: Buffer.from("jpeg").toString("base64") }));
+let image = 0;
+answer("Page.captureScreenshot", () => ({ data: Buffer.from("jpeg" + ++image).toString("base64") }));
 const call = async (c, id, method, params = {}, sessionId) => {
   c.send({ id, method, params, ...(sessionId ? { sessionId } : {}) });
   return c.heard.until(m => m.id === id);

@@ -898,7 +898,7 @@ async function host() {
     broadcast({ method: "Kuvo.viewport", params: { targetId: target, ...size, by } });
   };
   let frameNumber = 0;
-  const capturing = new Set();
+  const capturing = new Set(), frameClasses = new Map();
   setInterval(() => {
     const groups = new Map();
     for (const c of clients) {
@@ -909,7 +909,9 @@ async function host() {
       groups.get(key).push(c);
     }
     for (const [key, group] of groups) {
-      if (capturing.has(key)) continue;
+      if (!frameClasses.has(key)) frameClasses.set(key, framePolicy());
+      const policy = frameClasses.get(key);
+      if (capturing.has(key) || !policy.due(Date.now())) continue;
       const v = group[0].view, now = Date.now();
       const ready = group.filter(c => now - (c.lastFrame ?? 0) >= 1000 / c.view.maxFps);
       if (!ready.length) continue;
@@ -926,8 +928,11 @@ async function host() {
         return { ...result, scrollX, scrollY };
       })().then(result => {
         if (!result?.data) return;
+        const digest = JSON.stringify([key, result.data, result.scrollX, result.scrollY]);
+        policy.captured(digest, Date.now(), Math.max(...ready.map(c => c.view?.maxFps ?? 15)));
         for (const c of ready) {
-          if (c.closed || c.view?.targetId !== v.targetId || c.inflight?.size >= 2) continue;
+          if (c.closed || c.view?.targetId !== v.targetId || c.inflight?.size >= 2 || c.lastImage === digest) continue;
+          c.lastImage = digest;
           c.inflight ??= new Set();
           const id = ++frameNumber;
           c.inflight.add(id); c.lastFrame = now;
@@ -1002,6 +1007,7 @@ async function host() {
     }
     if (message.method === "Kuvo.input") {
       if (!session) throw Error("That page is closed.");
+      for (const policy of frameClasses.values()) policy.dirty();
       if (client.view) await resize(target, client.view, "viewer");
       const { kind, targetId, ...data } = p;
       if (Array.isArray(data.modifiers)) data.modifiers = data.modifiers.reduce((bits, key) => bits | ({ alt: 1, control: 2, meta: 4, shift: 8 }[key] ?? 0), 0);

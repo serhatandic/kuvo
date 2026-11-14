@@ -1,5 +1,21 @@
-// kuvo-browser 26629bf00fcd17fb
+// kuvo-browser 5c9222d5db1d8bf4
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
+// One capture class's clock and digest; pure so its backoff is tested without sleeps.
+export function framePolicy() {
+  let digest = null, quiet = 0, nextAt = 0;
+  return {
+    due(now) { return now >= nextAt; },
+    dirty() { nextAt = 0; quiet = 0; },
+    captured(image, now, fps) {
+      const changed = image !== digest;
+      digest = image;
+      quiet = changed ? 0 : quiet + 1;
+      nextAt = now + (changed ? 1000 / fps : Math.min(2000, 125 * 2 ** Math.min(quiet, 4)));
+      return changed;
+    },
+  };
+}
+
 // Kuvo Code's browser on a machine: a Chromium kept running there, which the agent browses with
 // and the app shows live in its panel. The engine's own runtime runs it, so the machine needs
 // nothing else:
@@ -85,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "e419b9cf6dca";
+const KEEPER = "a255447ce959";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -900,7 +916,7 @@ async function host() {
     broadcast({ method: "Kuvo.viewport", params: { targetId: target, ...size, by } });
   };
   let frameNumber = 0;
-  const capturing = new Set();
+  const capturing = new Set(), frameClasses = new Map();
   setInterval(() => {
     const groups = new Map();
     for (const c of clients) {
@@ -911,7 +927,9 @@ async function host() {
       groups.get(key).push(c);
     }
     for (const [key, group] of groups) {
-      if (capturing.has(key)) continue;
+      if (!frameClasses.has(key)) frameClasses.set(key, framePolicy());
+      const policy = frameClasses.get(key);
+      if (capturing.has(key) || !policy.due(Date.now())) continue;
       const v = group[0].view, now = Date.now();
       const ready = group.filter(c => now - (c.lastFrame ?? 0) >= 1000 / c.view.maxFps);
       if (!ready.length) continue;
@@ -928,8 +946,11 @@ async function host() {
         return { ...result, scrollX, scrollY };
       })().then(result => {
         if (!result?.data) return;
+        const digest = JSON.stringify([key, result.data, result.scrollX, result.scrollY]);
+        policy.captured(digest, Date.now(), Math.max(...ready.map(c => c.view?.maxFps ?? 15)));
         for (const c of ready) {
-          if (c.closed || c.view?.targetId !== v.targetId || c.inflight?.size >= 2) continue;
+          if (c.closed || c.view?.targetId !== v.targetId || c.inflight?.size >= 2 || c.lastImage === digest) continue;
+          c.lastImage = digest;
           c.inflight ??= new Set();
           const id = ++frameNumber;
           c.inflight.add(id); c.lastFrame = now;
@@ -1004,6 +1025,7 @@ async function host() {
     }
     if (message.method === "Kuvo.input") {
       if (!session) throw Error("That page is closed.");
+      for (const policy of frameClasses.values()) policy.dirty();
       if (client.view) await resize(target, client.view, "viewer");
       const { kind, targetId, ...data } = p;
       if (Array.isArray(data.modifiers)) data.modifiers = data.modifiers.reduce((bits, key) => bits | ({ alt: 1, control: 2, meta: 4, shift: 8 }[key] ?? 0), 0);
