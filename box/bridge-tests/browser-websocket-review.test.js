@@ -94,3 +94,22 @@ test("a 50 MiB WebSocket upload arriving in small TCP chunks is forwarded intact
   assert.equal(received.length, payload.length);
   assert.equal(received.compare(payload), 0);
 });
+
+test("re-review S7: a serve viewer that stops draining text is closed at a bounded backlog", async () => {
+  const { EventEmitter } = await import("node:events");
+  const server = new EventEmitter(), socket = new EventEmitter();
+  const writes = [];
+  let closed = 0, events;
+  Object.assign(socket, { writableLength: 0, destroyed: false, write(data) { writes.push(data); }, end() {}, destroy() { this.destroyed = true; } });
+  viewUpgrade(server, "secret", e => { events = e; return { send() {}, close() { closed++; } }; });
+  server.emit("upgrade", { method: "GET", url: "/kuvo/browser/view", headers: {
+    authorization: "Basic " + Buffer.from("opencode:secret").toString("base64"),
+    "sec-websocket-version": "13", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==", upgrade: "websocket", connection: "Upgrade",
+  } }, socket, Buffer.alloc(0));
+  events.open();
+  socket.writableLength = 5 * 1024 * 1024;
+  events.text(Buffer.from('{"id":7,"result":{}}\n'));
+  assert.equal(socket.destroyed, true);
+  assert.equal(closed, 1);
+  assert.equal(writes.length, 1);
+});

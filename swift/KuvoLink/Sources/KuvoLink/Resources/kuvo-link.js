@@ -42915,7 +42915,7 @@ import fs138 from "node:fs";
 import path145 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "7926528f586d";
+var BRIDGE_VERSION = "dd28fe39562a";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -54760,6 +54760,10 @@ Connection: close\r
         return false;
       if (opcode === 2 && socket.writableLength > 256000)
         return false;
+      if (opcode === 1 && socket.writableLength + data.length > 4 * 1024 * 1024) {
+        finish();
+        return false;
+      }
       const header = Buffer.alloc(data.length < 126 ? 2 : data.length <= 65535 ? 4 : 10);
       header[0] = 128 | opcode;
       if (header.length === 2)

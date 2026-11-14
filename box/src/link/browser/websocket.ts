@@ -25,6 +25,7 @@ export function viewUpgrade(server: http.Server, password: string, connect: (eve
     const write = (opcode: number, data: Buffer) => {
       if (!opened || socket.destroyed) return false;
       if (opcode === 2 && socket.writableLength > 256000) return false;
+      if (opcode === 1 && socket.writableLength + data.length > 4 * 1024 * 1024) { finish(); return false; }
       const header = Buffer.alloc(data.length < 126 ? 2 : data.length <= 65535 ? 4 : 10);
       header[0] = 0x80 | opcode;
       if (header.length === 2) header[1] = data.length;
