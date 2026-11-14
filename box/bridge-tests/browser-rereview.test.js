@@ -350,3 +350,22 @@ test("round3 S4: congestion drops double their retry delay and a displayed frame
   await h.advance(100); await settle(h);
   assert.equal(captures(h), before + 1, "a real display acknowledgement resets the congestion history");
 });
+
+test("round3 NIT: page-scoped errors preserve the Chrome refusal and distinguish a timeout", async t => {
+  const h = await page(t);
+  await call(h.c, "Kuvo.viewing");
+  h.answer("Emulation.setDeviceMetricsOverride", () => ({ __error: { message: "Unsupported viewport for this target" } }));
+  const refusal = await call(h.c, "Emulation.setDeviceMetricsOverride", { width: 900, height: 700, deviceScaleFactor: 2 }, "raw");
+  assert.equal(refusal.sessionId, "raw");
+  assert.match(refusal.error.message, /Unsupported viewport for this target/);
+  assert.doesNotMatch(refusal.error.message, /timed out/i);
+  h.answer("Emulation.setDeviceMetricsOverride", () => new Promise(() => {}));
+  const id = next++;
+  h.c.send({ id, method: "Emulation.setDeviceMetricsOverride", params: { width: 901, height: 701, deviceScaleFactor: 2 }, sessionId: "raw" });
+  await settle({ ...h, c: await h.client() });
+  await h.advance(10001);
+  const timeout = await h.c.heard.until(m => m.id === id);
+  assert.equal(timeout.sessionId, "raw");
+  assert.match(timeout.error.message, /timed out/i);
+  assert.doesNotMatch(timeout.error.message, /refused/i);
+});

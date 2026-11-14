@@ -841,21 +841,22 @@ async function host() {
     toChrome({ id, method, params });
   };
   // The same, for its answer: its result, or null when Chrome refused it.
-  const ownCall = (method, params = {}, sessionId) => new Promise((resolve) => {
+  const ownCall = (method, params = {}, sessionId, required = false) => new Promise((resolve, reject) => {
     const id = next++;
-    const deadline = setTimeout(() => { pending.delete(id); resolve(null); }, 10_000);
+    const deadline = setTimeout(() => {
+      pending.delete(id);
+      if (required) reject(Error("Chrome call timed out: " + method));
+      else resolve(null);
+    }, 10_000);
     deadline.unref?.();
     pending.set(id, { internal: true, answered: (message) => {
       clearTimeout(deadline);
-      resolve(message.error ? null : message.result ?? {});
+      if (message.error && required) reject(Error("Chrome refused " + method + ": " + String(message.error.message ?? "Unknown error")));
+      else resolve(message.error ? null : message.result ?? {});
     } });
     toChrome({ id, method, params, ...(sessionId ? { sessionId } : {}) });
   });
-  const requiredCall = async (...args) => {
-    const result = await ownCall(...args);
-    if (result === null) throw Error("Chrome refused or timed out: " + args[0]);
-    return result;
-  };
+  const requiredCall = (method, params = {}, sessionId) => ownCall(method, params, sessionId, true);
   const setActive = (targetId, by, session) => {
     if (active === targetId) return;
     active = targetId;
@@ -1172,7 +1173,7 @@ async function host() {
         for (const f of files) fs.writeFileSync(path.join(dir, f.name), f.data, { mode: 0o600 });
         const chooser = choosers.get(target);
         if (!chooser) throw Error("No file chooser.");
-        if (await requiredCall("DOM.setFileInputFiles", { files: files.map(f => path.join(dir, f.name)), backendNodeId: chooser.backendNodeId }, session) === null) throw Error("Chrome refused the selected files.");
+        await requiredCall("DOM.setFileInputFiles", { files: files.map(f => path.join(dir, f.name)), backendNodeId: chooser.backendNodeId }, session);
         choosers.delete(target);
         if (!uploads.has(target)) uploads.set(target, new Set());
         uploads.get(target).add(dir);
@@ -1594,7 +1595,7 @@ async function host() {
       }
       if (typeof message.method !== "string") return;
       try { if (await live(client, message)) return; }
-      catch (error) { if (message.id !== undefined) send(client, { id: message.id, error: { message: error.message } }); return; }
+      catch (error) { if (message.id !== undefined) send(client, { id: message.id, error: { message: error.message }, ...(message.sessionId ? { sessionId: message.sessionId } : {}) }); return; }
       switch (message.method) {
         case "Kuvo.viewing":
           // A Mac showing the browser: someone who can answer asks.
