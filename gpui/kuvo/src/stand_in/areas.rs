@@ -1,5 +1,5 @@
 //! What the stand-in box says of the rail's areas, in a box's own shapes (PROTOCOL.md): its bots,
-//! each with what it's doing now, and group chats; the Work Queue's view with its counts; your
+//! each with what it's doing now, and group chats; your
 //! computers; the accounts' limits, each row with its rings and every window its level; and how
 //! many things wait on you. As a box does, it counts, levels and picks the rings itself: the app
 //! draws what it says.
@@ -28,14 +28,6 @@ pub fn answer(areas: Areas, method: &str, route: &str, now: f64, needing: usize,
     }
     let answer = match route {
         "kuvo/groups" => json!({ "groups": if areas.empty { Vec::new() } else { groups(now) } }),
-        "kuvo/work-queue" => {
-            let counts = if areas.empty {
-                json!({ "inProgress": 0, "categories": { "next": 0, "later": 0, "cat_design": 0, "parked": 0, "done": 0 }, "sources": {}, "computers": { "": 0 }, "removed": 0 })
-            } else {
-                json!({ "inProgress": 2, "categories": { "next": 6, "later": 6, "cat_design": 3, "parked": 4, "done": 31 }, "sources": { "github": 9 }, "computers": { "": 38, "key_devbox": 12 }, "removed": 3 })
-            };
-            json!({ "owner": "all", "categories": categories(), "items": [], "owners": [], "removed": [], "computers": [], "counts": counts })
-        }
         "kuvo/computers" => json!({ "computers": computers(areas.empty) }),
         "kuvo/agents/api/kuvo/limits" => json!({ "data": { "accounts": [], "services": ["claude", "codex", "copilot", "grok", "openrouter"], "rows": if areas.empty { Vec::new() } else { accounts(now) } } }),
         "kuvo/waiting" => json!({ "sessions": needing, "bots": bots_asking, "queue": 0 }),
@@ -59,16 +51,6 @@ fn groups(now: f64) -> Vec<Value> {
     vec![
         json!({ "id": "grp_launch", "name": "Launch crew", "members": [], "discussing": false, "paused": false, "unread": true, "last": { "id": "m1", "text": "Shipped.", "time": now - HOUR, "kind": "message" } }),
         json!({ "id": "grp_design", "name": "Design review", "members": [], "discussing": false, "paused": false, "unread": false, "last": { "id": "m2", "text": "Agreed.", "time": now - 2.0 * DAY, "kind": "message" } }),
-    ]
-}
-
-fn categories() -> Vec<Value> {
-    vec![
-        json!({ "id": "next", "name": "Next", "builtIn": true }),
-        json!({ "id": "later", "name": "Later", "builtIn": true }),
-        json!({ "id": "cat_design", "name": "Design", "builtIn": false }),
-        json!({ "id": "parked", "name": "Parked", "builtIn": true }),
-        json!({ "id": "done", "name": "Done", "builtIn": true }),
     ]
 }
 

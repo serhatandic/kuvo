@@ -82,9 +82,9 @@ fn only_the_area_on_screen_asks_the_box(cx: &mut TestAppContext) {
     assert!(stand_in.seen_at("GET", "kuvo/bots").is_empty());
     assert!(stand_in.seen_at("GET", "kuvo/work-queue").is_empty());
     click(cx, "rail-queue");
-    // The Work Queue's view with its counts, across your computers, at a glance.
+    // The Work Queue's view with its counts, across your computers: whole, as the queue itself shows.
     let asked: Vec<String> = stand_in.seen_at("GET", "kuvo/work-queue").into_iter().map(|seen| seen.path).collect();
-    assert_eq!(asked, vec!["kuvo/work-queue?owner=all&counts=1&glance=1".to_owned()]);
+    assert_eq!(asked, vec!["kuvo/work-queue?owner=all&counts=1".to_owned()]);
     assert!(stand_in.seen_at("GET", "kuvo/bots").is_empty());
 }
 

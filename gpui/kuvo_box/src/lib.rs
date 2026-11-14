@@ -37,6 +37,7 @@ pub mod settings;
 pub mod ssh;
 pub mod transport;
 pub mod typed;
+pub mod work_queue;
 
 pub use client::{BoxClient, Draft, Sent, WorkCounts};
 pub use parts::{Delivery, Parts, Sending};
