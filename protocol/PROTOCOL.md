@@ -433,8 +433,9 @@ connection.
   your own computers, for resets, Always Allow and usage totals, only within one setup (#701; "Plan
   limits", "Across your computers", Whose), and `computer` (`{version?, engine?, system?,
   working}`: Kuvo Code's version there, its engine's, its system as people know it, and how many
-  of its sessions are at work, for `kuvo/computers`, "Computers"; told again at once as it starts
-  or stops working at all, else with the rest). A box sends its bots and its 40 latest
+  of its sessions are at work, for `kuvo/computers`, "Computers"; only to a peer that's one of
+  your own computers, #701, and never by a shared machine; told again at its next round, within a
+  minute, as it starts or stops working at all, else with the rest). A box sends its bots and its 40 latest
   sessions (its engine's and its coding agents') when they change and every ten minutes. Each box
   keeps the newest list from each peer. The relay keeps nothing, so a box that has just connected adds `"ask": "agents"` to
   what it sends first (its agents; a Mac's digest), and whoever gets it tells that box its agents
@@ -1437,7 +1438,8 @@ sessions").
   `pinned?`, `archived?`, `running?`, `asked?` (since when it's waited on you, ms, as "A session at a
   glance" says it), `away?` (this copy isn't the box's own: moved away, or on its way here, "Moves"),
   `bot?` (`sessions.needsYou`: the bot it is, by its id: whose conversation it is, as `kuvo/bots`
-  lists it, else the one it works for, "Work"'s `kuvo.by.bot`; never on a `subagent`).
+  lists it, else the one it works for, "Work"'s `kuvo.by.bot`, which may live on another
+  computer; never on a `subagent`).
   A kind a client doesn't know shows nowhere.
 - `kind`, in this order: `subagent` (it has a `parentID`); `seat` (`kuvo.seat`, a bot's seat in a
   group chat); `hidden` (`kuvo.engineFor` or `kuvo.reviewPart`: a run its session or review shows);
@@ -1459,7 +1461,7 @@ sessions").
   asks, in the box's words, written to follow the session's or its project's name ("asks to run a
   command", "asks to edit 3 files", "asks to edit App.swift", "has a question for you", "asks to
   run a command outside the sandbox", "asks for something from the vault"; "waits on you" where
-  the box heard no more). `kind`: `permission`, `question`, `sandbox`, `vault` or `other`; a client
+  the box heard no more; a file's name or an action's own words are cut at 60 characters). `kind`: `permission`, `question`, `sandbox`, `vault` or `other`; a client
   shows `summary` as it is, whatever the kind. A client draws "Needs you" from it, in its order,
   and works out neither who waits nor what for. A bot's own conversation isn't here: it's its
   bot's (`now` in `kuvo/bots`).
@@ -1481,19 +1483,25 @@ sessions").
 
 ### Computers
 
-Your computers as one list (`computers`, #711), the same from any box, a Mac's or a machine's, with
-no client connected: a client's Computers area and its switcher draw it, and ask no Mac for it
-(`kuvo/machines` names only what a Mac's app connects to over SSH).
+Your computers as one list (`computers`, #711), from any box, a Mac's or a machine's, with no
+client connected: a client's Computers area and its switcher draw it, and ask no Mac for it
+(`kuvo/machines` names only what a Mac's app connects to over SSH). Each box lists what it knows:
+its peers in full, and the boxes they vouch for by name only (`reach: "unknown"`), so a Mac says
+more of its machines than of your other Mac, and a machine more of its Macs than of their other
+machines; a client that wants every computer's facts asks the box that has it as a peer.
 
 - `GET kuvo/computers` → `{computers: [computer…]}`: the box that answers first (`here: true`),
-  then its peers by name ("Peers"), then the boxes those vouch for ("Plan limits", Who). Each:
+  then its peers by name ("Peers"), then the boxes those vouch for ("Plan limits", Who). A
+  machine Macs of different setups share lists itself alone (as `kuvo/setup` refuses there: the
+  others aren't all one person's computers). Each:
   - `key` (its box's public key; `""` for the box itself while it has none), `name`, `kind`
     (`mac` or `machine`), `id?` (a machine's name on its Mac);
   - `shared`: a machine set up by Macs that aren't all in one setup ("Your setup");
   - `reach`: `connected` (the box itself; a peer heard from in the last half hour), `connecting`
-    (a peer not heard from yet since this box knew of it) or `away` (the relay said it isn't
-    there, `run/peer-reach.json`, or nothing came from it for half an hour; and every box known
-    only by a peer's word);
+    (a peer not heard from yet since this box knew of it), `away` (the relay said it isn't
+    there, `run/peer-reach.json`, or nothing came from it for half an hour) or `unknown` (a box
+    known only by a peer's word: this box can't say). As this box last heard: one that's itself
+    off the relay still says `connected` of a peer heard in the last half hour;
   - `version?`, `engine?`, `system?`: Kuvo Code's version there, its engine's, and its system as
     people know it ("macOS 15.1", "Ubuntu 24.04.1 LTS"), as that box said them with its agents
     (`agents.computer`, "Peers"); left out for one that hasn't said (a box from before this, one
@@ -1502,7 +1510,8 @@ no client connected: a client's Computers area and its switcher draw it, and ask
     `peer` (by another computer's word alone, `through` that one's name);
   - `working`: how many of its sessions are at work (conversations, not their subagents, never
     one that waits on you), its own from its session list, a peer's as it last said (`0` for one
-    that's away: nothing there can be seen at work now);
+    that's away or unknown, and for one that isn't one of your own computers, which says none:
+    nothing there can be seen at work now);
   - `limits`: the services whose plan limits it reads (`claude`, `codex`…), as the answering
     box's limits rows say (`rows[].boxes`); `[]` while its coding agents' bridge doesn't run.
   `405` for anything but `GET`.
@@ -1520,9 +1529,10 @@ How many things wait on you in each area, across the box (`waiting`, #711), for 
 the same number and counts nothing.
 
 - `GET kuvo/waiting` → `{sessions, bots, queue}`: `sessions`, those "Needs you" lists (`needsYou`
-  in `kuvo/sessions/list`); `bots`, the bots here with a session waiting on you (`now.asking`,
-  below); `queue`, the Work Queue's items here (not Done, not deleted) that a session linked to
-  them waits on you for. All zero while the engine can't be read. `405` for anything but `GET`.
+  in `kuvo/sessions/list`); `bots`, the bots that live here with a session waiting on you
+  (`now.asking`, below; a session here working for a bot on another computer is that computer's
+  to count); `queue`, the Work Queue's items here (not Done, not deleted) that a session linked to
+  them (not archived, this box's own copy) waits on you for. All zero while the engine can't be read. `405` for anything but `GET`.
 - `GET kuvo/waiting/events` (ndjson): the same now, and a line each time it changes (an ask comes
   or is answered, a bot or an item changes); through `box route` it answers its first line, and a
   client asks again as that box's session list changes.
@@ -3314,7 +3324,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     `api/integration/<id>/connect/oauth` does, and answers what that answered (`attemptID`, `url`,
     `instructions`, `mode`, `acceptsCode?`) with `userCode`, the code its page asks for, apart,
     where it has one: as the bridge says it, else from the page's address (`user_code`), else from
-    its instructions (a code like `ABCD-1234`, or what follows the last "code:"), as the engine
+    its instructions (what follows the last "code:" where that's one word, its full stop left
+    off; else a code like `ABCD-1234` standing by itself, never part of a longer word), as the engine
     leaves it for its own plans (GitHub Copilot, OpenCode, SuperGrok). `400 {"message"}` without
     an account or a way in, `405` for anything but `POST`, `503` while its place isn't running,
     `504` when it didn't answer in two minutes, else its place's own refusal. A client starts

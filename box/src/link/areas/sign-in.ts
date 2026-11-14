@@ -79,8 +79,8 @@ const AGENT_SERVICES = new Set(["claude", "codex", "grok", "cursor", "antigravit
 
 /** The code a device sign-in's page asks for ("Enter code: ABCD-1234"), where its attempt has one:
  * as it says it (`userCode`, the coding agents' bridge's), else from its page's address
- * (`user_code`), else from its instructions (a code like ABCD-1234, or what follows the last
- * "code:"), as the engine leaves it for its own plans (Copilot, OpenCode, SuperGrok). */
+ * (`user_code`), else from its instructions (what follows the last "code:", where that's one
+ * word, else a code like ABCD-1234 standing by itself), as the engine leaves it for its own plans (Copilot, OpenCode, SuperGrok). */
 export function userCodeOf(said: { userCode?: unknown; url?: unknown; instructions?: unknown } | null | undefined): string | undefined {
   if (typeof said?.userCode === "string" && said.userCode) return said.userCode;
   if (typeof said?.url === "string") {
@@ -90,12 +90,12 @@ export function userCodeOf(said: { userCode?: unknown; url?: unknown; instructio
     } catch {}
   }
   const instructions = typeof said?.instructions === "string" ? said.instructions : "";
-  const shaped = instructions.match(/[A-Z0-9]{4}-[A-Z0-9]{4,5}/)?.[0];
-  if (shaped) return shaped;
+  // What follows the last "code:", where that's one word (its full stop left off); else a code
+  // by its shape, whole (never part of a longer word: "GITHUB-COPILOT" isn't one).
   const at = instructions.toLowerCase().lastIndexOf("code:");
-  if (at < 0) return undefined;
-  const code = instructions.slice(at + "code:".length).trim();
-  return code && !/\s/.test(code) ? code : undefined;
+  const after = at < 0 ? "" : instructions.slice(at + "code:".length).trim().replace(/[.,;:!]+$/, "");
+  if (after && !/\s/.test(after) && after.length <= 40) return after;
+  return instructions.match(/(?<![A-Za-z0-9-])[A-Z0-9]{4}-[A-Z0-9]{4,5}(?![A-Za-z0-9-])/)?.[0];
 }
 
 /** A way to sign in, as a client offers it: the engine's own (`type`, `id`, `form`, as a client

@@ -1109,6 +1109,37 @@
     "url": "",
     "instructions": "Paste the authorization code: it's shown on the page"
    }
+  },
+  {
+   "about": "a longer code after \"code:\" is whole, never cut to a shape",
+   "attempt": {
+    "url": "",
+    "instructions": "Enter code: ABCDE-12345"
+   },
+   "userCode": "ABCDE-12345"
+  },
+  {
+   "about": "its full stop isn't part of it",
+   "attempt": {
+    "url": "",
+    "instructions": "Enter code: abcd-efgh."
+   },
+   "userCode": "abcd-efgh"
+  },
+  {
+   "about": "a hyphenated word in capitals isn't a code",
+   "attempt": {
+    "url": "",
+    "instructions": "Use GITHUB-COPILOT to continue in your browser"
+   }
+  },
+  {
+   "about": "nor part of an address, where a code follows",
+   "attempt": {
+    "url": "",
+    "instructions": "Open https://example.test/OAUTH-DEVICE and enter code: 1234"
+   },
+   "userCode": "1234"
   }
  ]
 }

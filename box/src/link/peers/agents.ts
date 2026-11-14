@@ -23,6 +23,7 @@ import { mailFor, movedOf, peersOf } from "./known";
 import { tellSeatPeers } from "./seats";
 import { followedSetup } from "../setup/record";
 import { ownComputer } from "../areas/computers";
+import { isApart } from "./apart";
 import { sharedMachine } from "../setup/settle";
 import type { BotKit } from "../bots/kit";
 import type { DigestEntry } from "../documents/work";
@@ -163,8 +164,11 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
   const where = { ...(setup ? { setup } : {}), ...(sharedMachine(link) ? { shared: true as const } : {}) };
   // And what it is and runs, and how many of its sessions are at work ("Computers"): told again
   // at once as it starts or stops working at all, else with the rest (every ten minutes).
-  const computer = ownComputer();
-  const json = JSON.stringify([ownList, moved, boxes, where, { ...computer, working: computer.working > 0 }]);
+  // Only between your own computers: a machine Macs of different setups share tells none, and no
+  // box tells a peer that isn't one of yours (`isApart`).
+  const computer = sharedMachine(link) ? null : ownComputer();
+  const told = computer ? readPeerAgents() : {};
+  const json = JSON.stringify([ownList, moved, boxes, where, computer && { ...computer, working: computer.working > 0 }]);
   let have: DigestEntry[] | false | null = null;
   for (const peer of peersOf(link)) {
     const last = toldPeers.get(peer.key);
@@ -176,7 +180,7 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
     let bytes: Buffer | null = null, sent: ListedAgent[] = [];
     for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
       sent = ownList.slice(0, count);
-      bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter(box => box.key !== peer.key), ...where, computer }, ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
+      bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter(box => box.key !== peer.key), ...where, ...(computer && !isApart(peer.key, link, told) ? { computer } : {}) }, ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
       if (bytes) break;
     }
     if (!bytes) continue;

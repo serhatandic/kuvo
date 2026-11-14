@@ -17,7 +17,7 @@ import { IS_MAC, LINK_FILE, MAC_APP_VERSION, MAC_ENGINE_VERSION } from "../home"
 import { keptList, listFollowers, listNow } from "../lists/sessions";
 import { PEER_AGENTS_FILE, readPeerAgents, vouchedOf } from "../peers/directory";
 import { ownKey, peersOf } from "../peers/known";
-import { awaySince, PEER_REACH } from "../peers/reach";
+import { awaySince, PEER_REACH, readReach } from "../peers/reach";
 import { sharedMachine } from "../setup/settle";
 import { macLink, readLink } from "../state";
 import { boxVersion } from "../updates/update";
@@ -108,10 +108,14 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     ...ownComputer(),
     limits: limits.get("here") ?? (own ? limits.get(own) : undefined) ?? [],
   }];
+  // A machine Macs of different setups share lists itself alone: the others there aren't all one
+  // person's computers (as `kuvo/setup` refuses there).
+  if (sharedMachine(link)) return computers;
   const peers = peersOf(link);
+  const reach = readReach();
   for (const peer of byName(peers)) {
     const said = told[peer.key];
-    const away = awaySince(peer.key) !== null || (said?.heard !== undefined && now - said.heard > HEARD_LATELY);
+    const away = awaySince(peer.key, reach) !== null || (said?.heard !== undefined && now - said.heard > HEARD_LATELY);
     computers.push({
       key: peer.key,
       name: peer.name,
@@ -126,10 +130,10 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     });
   }
   // The boxes a peer vouches for (another Mac's, beside a machine two Macs share): known by that
-  // peer's word alone, for plan limits, so nothing is said of what they run.
+  // peer's word alone, for plan limits, so nothing is known of what they run or whether they answer.
   for (const box of byName(vouchedOf(link, told))) {
     const through = peers.find(peer => told[peer.key]?.boxes?.some(each => each.key === box.key));
-    computers.push({ key: box.key, name: box.name, kind: box.kind, shared: false, reach: "away", via: "peer", ...(through ? { through: through.name } : {}), working: 0, limits: limits.get(box.key) ?? [] });
+    computers.push({ key: box.key, name: box.name, kind: box.kind, shared: false, reach: "unknown", via: "peer", ...(through ? { through: through.name } : {}), working: 0, limits: limits.get(box.key) ?? [] });
   }
   return computers;
 }

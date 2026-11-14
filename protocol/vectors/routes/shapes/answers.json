@@ -3108,6 +3108,9 @@
            },
            {
             "literal": "away"
+           },
+           {
+            "literal": "unknown"
            }
           ]
          },
@@ -3179,6 +3182,9 @@
            },
            {
             "literal": "away"
+           },
+           {
+            "literal": "unknown"
            }
           ]
          },

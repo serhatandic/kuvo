@@ -34,12 +34,14 @@ export interface AskWords {
   summary: string;
 }
 
+/** `text`, 60 characters of it at most: a summary is a few words, whatever a tool names. */
+const cut = (text: string, most: number): string => (text.length > most ? text.slice(0, most - 1) + "…" : text);
 const lastPart = (file: string): string => file.replace(/\/+$/, "").split("/").pop() || file;
 
 /** A permission in a few words, by what it would do (as its card's title goes by it, `permissionTitle`). */
 export function permissionWords(action: unknown, resources: unknown): AskWords {
   const files = Array.isArray(resources) ? resources.filter((each): each is string => typeof each === "string") : [];
-  const what = files.length > 1 ? `${files.length} files` : files.length === 1 ? lastPart(files[0]!) : "a file";
+  const what = files.length > 1 ? `${files.length} files` : files.length === 1 ? cut(lastPart(files[0]!), 60) : "a file";
   const summary = (() => {
     switch (action) {
       case "edit": case "patch": case "write": return `asks to edit ${what}`;
@@ -48,7 +50,7 @@ export function permissionWords(action: unknown, resources: unknown): AskWords {
       case "external_directory": return "asks to work outside the project";
       case "subagent": return "asks to start an agent";
       case "webfetch": return "asks to fetch a page";
-      default: return typeof action === "string" && action ? `asks to ${action.replaceAll("_", " ")}` : "asks for your OK";
+      default: return typeof action === "string" && action ? `asks to ${cut(action.replaceAll("_", " "), 60)}` : "asks for your OK";
     }
   })();
   return { kind: "permission", summary };

@@ -248,13 +248,13 @@ export type Found = Infer<typeof FOUND>;
 /** One of your computers, as a box knows it (`kuvo/computers`, PROTOCOL.md "Computers"): its key
  * (`""` for the box itself while it has none), name and kind; `here`, the box that answered; `id`,
  * a machine's name on its Mac; whether it's a machine Macs of different setups share; whether it's
- * heard from (`connected`), not yet (`connecting`) or not lately (`away`); Kuvo Code's version
+ * heard from (`connected`), not yet (`connecting`), not lately (`away`), or not this box's to say (`unknown`: one known by a peer's word alone); Kuvo Code's version
  * there, its engine's and its system, as it said them; how this box knows it (`here`, itself;
  * `relay`, a peer it talks to; `peer`, by another computer's word alone, `through` that one); how
  * many of its sessions are at work; and the services whose plan limits it reads. */
 export const LISTED_COMPUTER = object({
   key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
-  shared: bool, reach: words("connected", "connecting", "away"),
+  shared: bool, reach: words("connected", "connecting", "away", "unknown"),
   "version?": string, "engine?": string, "system?": string,
   via: words("here", "relay", "peer"), "through?": string,
   working: number, limits: list(string),

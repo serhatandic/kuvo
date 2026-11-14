@@ -308,9 +308,11 @@ export function answerFrom(list: Kept, since: string | null): SessionList {
   const pending = list.pending?.length ? { pending: list.pending } : {};
   // (A file from before "Needs you" says none of what each asks until it's worked out again.)
   const needs = list.needsYou ?? needsYou(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])));
-  if (whole) return { at: cursorOf(list), full: true, sessions, projects: list.projects, needsYou: needs, ...pending };
+  // (And its projects' sums as none, where that file had none.)
+  const projects = Object.fromEntries(Object.entries(list.projects).map(([folder, project]) => [folder, { ...project, asking: project.asking ?? 0, working: project.working ?? 0 }]));
+  if (whole) return { at: cursorOf(list), full: true, sessions, projects, needsYou: needs, ...pending };
   const gone = Object.entries(list.gone).filter(([, entry]) => entry.seq > from!.seq).map(([id]) => id).sort();
-  return { at: cursorOf(list), sessions, ...(gone.length ? { gone } : {}), projects: list.projects, needsYou: needs, ...pending };
+  return { at: cursorOf(list), sessions, ...(gone.length ? { gone } : {}), projects, needsYou: needs, ...pending };
 }
 
 // MARK: The long-running process's list

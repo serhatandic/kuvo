@@ -5,9 +5,10 @@
 
 import { botsNow } from "../lists/rule";
 import { keepsList, keptList, listFollowers, listNow, type Kept } from "../lists/sessions";
-import { botFollowers } from "../bots/here";
+import path from "node:path";
+import { botFollowers, botHere } from "../bots/here";
 import { followed, followersOf } from "../follow";
-import { allItems, queueFollowers } from "../work-queue/store";
+import { allItems, queueFollowers, WORK_QUEUE } from "../work-queue/store";
 import type { BotNow, SessionFacts, WaitingOnYou } from "../../shared/routes/sessions";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
@@ -21,17 +22,23 @@ export function botsNowHere(list: Kept | null = keptList()): Record<string, BotN
   return botsNow(factsOf(list));
 }
 
-/** What waits on you, as `list` has it. */
+/** What waits on you, as `list` has it: of the bots, only those that live here (a session here may
+ * work for a bot on another computer, which is that computer's to count). */
 export function waitingOf(list: Kept | null): WaitingOnYou {
   const facts = factsOf(list);
-  const asking = new Set(Object.entries(facts).filter(([, each]) => each.asked !== undefined).map(([id]) => id));
+  // (As "Needs you" counts them: not archived, this box's own copy.)
+  const asking = new Set(Object.entries(facts).filter(([, each]) => each.asked !== undefined && !each.archived && !each.away).map(([id]) => id));
   return {
     sessions: (list?.needsYou ?? []).length,
-    bots: Object.values(botsNow(facts)).filter(now => now.asking > 0).length,
-    // (The queues are read only while something waits at all: this is asked as the list changes.)
+    bots: Object.entries(botsNow(facts)).filter(([id, now]) => now.asking > 0 && botHere(id) !== null).length,
+    // (The queues are read only while something waits at all.)
     queue: asking.size ? allItems().filter(item => !item.removed && item.category !== "done" && item.sessions.some(linked => asking.has(linked.session))).length : 0,
   };
 }
+
+/** What of the list this counts from: looked at again only when it changed (the list changes with
+ * every step of a run). */
+const countedFrom = (list: Kept | null): string => JSON.stringify([list?.needsYou ?? [], botsNow(factsOf(list))]);
 
 export async function* waitingRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, signal, json } = context;
@@ -43,5 +50,20 @@ export async function* waitingRoute(context: RouteContext, match: RegExpMatchArr
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
   // (Followed only where the list is kept: elsewhere its first line, as `box route` answers.)
   if (!keepsList()) return yield { body: Buffer.from(JSON.stringify(waitingOf(list)) + "\n") };
-  return yield* followed(() => waitingOf(keptList()), followersOf(listFollowers, queueFollowers, botFollowers), signal);
+  // A line as what it counts from changes: the list's "Needs you" and its bots' sessions, the
+  // queues (this process's changes, and their files for another's), and the bots.
+  const changed = new Set<() => void>();
+  let last = countedFrom(keptList());
+  const listTold = () => {
+    const now = countedFrom(keptList());
+    if (now === last) return;
+    last = now;
+    for (const tell of changed) tell();
+  };
+  listFollowers.add(listTold);
+  try {
+    return yield* followed(() => waitingOf(keptList()), followersOf(changed, queueFollowers, botFollowers), signal, { folders: [path.join(WORK_QUEUE, "queues")], recursive: false });
+  } finally {
+    listFollowers.delete(listTold);
+  }
 }

@@ -79,11 +79,12 @@ export function takeAgents(sender: { key: string; kind: "mac" | "machine"; id?: 
       }
       return false;
     }
+    const computer = keptComputer(given.computer);
     all[sender.key] = { at: given.at as number, heard: Date.now(), kind: sender.kind, ...(sender.id ? { id: sender.id } : {}), list: (given.list as unknown[]).filter(fitsAgent).slice(0, MOST_AGENTS).map(keptAgent),
       ...(Array.isArray(given.features) ? { features: keptFeatures(given.features) } : {}), ...(Array.isArray(given.moved) ? { moved: keptMoved(given.moved) } : {}),
       ...(Array.isArray(given.boxes) ? { boxes: keptBoxes(given.boxes) } : {}),
       ...(typeof given.setup === "string" && SETUP_ID.test(given.setup) ? { setup: given.setup } : {}), ...(given.shared === true ? { shared: true as const } : {}),
-      ...(keptComputer(given.computer) ? { computer: keptComputer(given.computer)! } : {}) };
+      ...(computer ? { computer } : {}) };
     writePrivate(file, JSON.stringify(all));
     return true;
   });

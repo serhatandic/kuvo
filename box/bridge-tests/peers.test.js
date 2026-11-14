@@ -593,6 +593,33 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   ({ body } = await ask());
   assert.deepEqual([body.computers[2].reach, body.computers[2].working, body.computers[2].system], ["away", 0, "Ubuntu 24.04.1 LTS"]);
   assert.equal((await ask("POST")).status, 405);
+
+  // What a peer says of itself is kept only at a size it would have.
+  assert.deepEqual(link.keptComputer({ version: "v".repeat(41), engine: 7, system: "s".repeat(81), working: -3 }), { working: 0 });
+  assert.deepEqual(link.keptComputer({ version: "1.0.0", working: 1e9 }), { version: "1.0.0", working: 0 });
+  assert.equal(link.keptComputer("mac"), undefined);
+  // Not heard from for half an hour: away.
+  const kept = JSON.parse(fs.readFileSync(path.join(run, "peer-agents.json"), "utf8"));
+  kept[second.pub].heard = Date.now() - 31 * 60_000;
+  fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify(kept));
+  fs.rmSync(path.join(run, "peer-reach.json"));
+  ({ body } = await ask());
+  assert.equal(body.computers[2].reach, "away");
+
+  // A machine Macs of different setups share lists itself alone, and tells no one what it runs:
+  // the others there aren't all one person's computers.
+  const other = box("mac");
+  fresh({ macs: [mac.pub, other.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  ({ body } = await ask());
+  assert.deepEqual(body.computers.map(each => [each.name, each.shared]), [["devbox", true]]);
+  const shared = [];
+  await link.announce({ send: bytes => shared.push(bytes) }, () => target, link.readLink(), Date.now(), true);
+  assert.ok(shared.length > 0);
+  for (const bytes of shared) {
+    const to = [mac, second].find(each => k(bytes.subarray(1, 17)) === each.address);
+    const agents = opened(bytes, to).payload.agents;
+    assert.deepEqual([agents.shared, agents.computer], [true, undefined]);
+  }
 });
 
 test("a box tells its peers the setup it follows, or that it's a machine two people's Macs share, so they count it as one of your own computers only within one setup (#701)", async t => {
