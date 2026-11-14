@@ -49,3 +49,9 @@ worktree `~/.kuvo-code/data/opencode/worktree/c5e2b5/tidy-otter`. Never merged t
   Bun tests on lokum (43), KuvoClient package, phone compile + WorkQueueListTests 11 + DemoMacTests 3 + WorkItemChipsTests 5 + Release build.
 - kuvo-web `docs/674` committed (48e475d), not pushed: the page's "Opening it" still describes the pre-1.0 Mac app's panel.
 - Left: commit gpui once its helper's follow-up is in (run cargo test/clippy), second review's findings, final report.
+
+## After the second and the desktop reviews
+- Box: told mail carries `category`/`categories` for an older box; Parked label made where an item brings it; `overdue` is the box's; all checks green at 0d0503650 (216 bridge, 43 Bun here and on lokum).
+- KuvoClient b3dfd2c7e: `overdue`; phone compile, 3 classes and Release green.
+- Desktop: a20f68fc8 committed; the helper is applying the desktop review's fixes (overdue from the box, source kinds, sessions kept across a change, queued picks, stale search, flat chips, agent marks, title weight, stand-in faithfulness).
+- Left from reviews, not done: clients don't read `fromLabel`/`toLabel` yet; events of items an older box hands in keep raw category ids; a queue file damaged by a power cut after the copy isn't restored from it; told-file shape for an older box has no test; queue_import's `status`/`label` undescribed (tool budget).
