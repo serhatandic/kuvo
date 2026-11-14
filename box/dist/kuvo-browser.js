@@ -1,4 +1,4 @@
-// kuvo-browser e0ce0e8cd5a24bdc
+// kuvo-browser 28358b55c3c89a36
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -102,7 +102,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "bdf69c1597ce";
+const KEEPER = "73e0433f009a";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -1046,8 +1046,10 @@ async function host() {
   };
   const stopRawView = (client, sessionId) => {
     if (!client || client.rawView !== sessionId) return;
+    const targetId = client.view?.targetId;
     client.view = null;
     client.rawView = null;
+    restoreAfterIdle(targetId);
     client.lastImage = null;
     client.inflight?.clear();
     client.frameInfo?.clear();
@@ -1102,6 +1104,7 @@ async function host() {
       client.retryAt = undefined;
       client.retryDelay = 0;
       const raw = message.method === "Page.startScreencast";
+      const previousViewTarget = client.view?.targetId;
       client.rawView = raw ? message.sessionId : null;
       const metrics = client.rawMetrics?.get(target) ?? sizes.get(target) ?? sizeFor({});
       // Raw screencast maxima limit picture pixels, never the page's CSS layout or DPR.
@@ -1110,6 +1113,7 @@ async function host() {
             height: finite(p.maxHeight, metrics.height, 1, Infinity), scale: 1,
             quality: finite(p.quality, 75, 1, 100), maxFps: 60 }
         : { targetId: target, ...sizeFor(p) } : null;
+      if (previousViewTarget && previousViewTarget !== client.view?.targetId) restoreAfterIdle(previousViewTarget);
       if (client.view) {
         client.viewOrder = ++viewOrder;
         wakePage(target);
@@ -1564,6 +1568,7 @@ async function host() {
       client.closed = true;
       if (!client.keyed) return;
       clients.delete(client);
+      if (client.view?.targetId) restoreAfterIdle(client.view.targetId);
       if (client.status?.working && client.status.targetId) restoreAfterIdle(client.status.targetId);
       for (const sessionId of client.sessions) {
         owners.delete(sessionId);

@@ -418,3 +418,18 @@ test("round3 NIT: a raw viewer with no metrics does not claim a default layout",
   await call(viewer, "Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 }, "raw");
   assert.equal(h.chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").at(-1).params.width, 1600);
 });
+
+for (const leave of ["unsubscribe", "disconnect"]) {
+  test("round3 NIT: the remaining viewer regains its size after the latest viewer leaves by " + leave, async t => {
+    const h = await page(t);
+    const first = await h.client(); await first.heard.until(m => m.method === "Kuvo.hello");
+    await call(first, "Kuvo.view", { targetId: "P", width: 393, height: 660 });
+    const last = await h.client(); await last.heard.until(m => m.method === "Kuvo.hello");
+    await call(last, "Kuvo.view", { targetId: "P", width: 900, height: 700 });
+    if (leave === "unsubscribe") await call(last, "Kuvo.view", { targetId: null });
+    else { await last.close(); await settle(h); }
+    await h.advance(5001); await settle(h);
+    const size = h.chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").at(-1).params;
+    assert.deepEqual([size.width, size.height], [393, 660]);
+  });
+}

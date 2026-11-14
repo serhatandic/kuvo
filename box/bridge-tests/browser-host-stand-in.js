@@ -155,7 +155,7 @@ process.on("message", message => {
     const send = (message) => socket.write(JSON.stringify(message) + "\n");
     // Kuvo Code's own, which knows the box's socket key: it gives it first.
     send({ method: "Kuvo.key", params: { key: socketKey } });
-    return { heard, send };
+    return { heard, send, close: () => new Promise(resolve => { socket.once("close", resolve); socket.destroy(); }) };
   }
 
   /** Chrome's answer to each call of `method` from now on. */
