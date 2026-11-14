@@ -34,7 +34,7 @@ test("raw MachineBrowser metrics retain DPR and zoom; screencast limits only the
   assert.equal(metrics.length, 1);
   assert.deepEqual([metrics[0].params.width, metrics[0].params.height, metrics[0].params.deviceScaleFactor], [500, 350, 4]);
   assert.ok(chrome.all.some(m => m.method === "Emulation.setFocusEmulationEnabled"));
-  assert.ok(chrome.all.some(m => m.method === "Page.captureScreenshot" && m.params.quality === 75 && m.params.clip.scale === 2));
+  assert.ok(chrome.all.some(m => m.method === "Page.captureScreenshot" && m.params.quality === 75 && m.params.clip.scale === .5));
   await call(c, "Page.stopScreencast", {}, "raw");
 });
 
@@ -192,4 +192,18 @@ test("watching a new view does not claim the client can answer browser asks", as
   const legacy = await client();
   assert.equal((await legacy.heard.until(m => m.method === "Kuvo.hello")).params.viewers, 1);
   await call(c, "Kuvo.view", { targetId: null });
+});
+
+test("a 1x phone picture compensates for an agent page at DPR 2", async () => {
+  const { c: agent, client, answer, chrome } = await page();
+  answer("Page.captureScreenshot", () => ({ data: "anBlZw==" }));
+  await call(agent, "Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 2 }, "raw");
+  await call(agent, "Kuvo.setStatus", { targetId: "P", working: true });
+  const phone = await client(); await phone.heard.until(m => m.method === "Kuvo.hello");
+  await call(phone, "Kuvo.view", { targetId: "P", width: 393, height: 660 });
+  const frame = await phone.heard.until(m => m.method === "Kuvo.frame");
+  assert.deepEqual([frame.params.width, frame.params.height], [393, 246]);
+  const capture = chrome.all.find(m => m.method === "Page.captureScreenshot");
+  assert.equal(capture.params.clip.scale, 393 / 1280 / 2);
+  await call(phone, "Kuvo.view", { targetId: null });
 });

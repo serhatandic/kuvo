@@ -1,4 +1,4 @@
-// kuvo-browser bde55898dd1426bb
+// kuvo-browser 41f93064d41c1b8b
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -101,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "adfeb33cd505";
+const KEEPER = "0f3e43905b92";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -942,14 +942,14 @@ async function host() {
       if (!ready.length) continue;
       capturing.add(key);
       // clip.scale changes only the picture; a viewer never changes an agent's layout.
-      const size = sizes.get(v.targetId) ?? { width: 1280, height: 800 };
+      const size = sizes.get(v.targetId) ?? { width: 1280, height: 800, scale: 2 };
       const scale = Math.min(v.width / size.width, v.height / size.height) * v.scale;
       (async () => {
         const metrics = await ownCall("Page.getLayoutMetrics", {}, own.get(v.targetId));
         const viewport = metrics?.cssVisualViewport ?? metrics?.visualViewport ?? {};
         const scrollX = viewport.pageX ?? 0, scrollY = viewport.pageY ?? 0;
         const result = await ownCall("Page.captureScreenshot", { format: "jpeg", quality: v.quality, captureBeyondViewport: false,
-        clip: { x: scrollX, y: scrollY, width: size.width, height: size.height, scale } }, own.get(v.targetId));
+        clip: { x: scrollX, y: scrollY, width: size.width, height: size.height, scale: scale / size.scale } }, own.get(v.targetId));
         return { ...result, scrollX, scrollY };
       })().then(result => {
         if (!result?.data) return;

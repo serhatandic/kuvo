@@ -924,14 +924,14 @@ async function host() {
       if (!ready.length) continue;
       capturing.add(key);
       // clip.scale changes only the picture; a viewer never changes an agent's layout.
-      const size = sizes.get(v.targetId) ?? { width: 1280, height: 800 };
+      const size = sizes.get(v.targetId) ?? { width: 1280, height: 800, scale: 2 };
       const scale = Math.min(v.width / size.width, v.height / size.height) * v.scale;
       (async () => {
         const metrics = await ownCall("Page.getLayoutMetrics", {}, own.get(v.targetId));
         const viewport = metrics?.cssVisualViewport ?? metrics?.visualViewport ?? {};
         const scrollX = viewport.pageX ?? 0, scrollY = viewport.pageY ?? 0;
         const result = await ownCall("Page.captureScreenshot", { format: "jpeg", quality: v.quality, captureBeyondViewport: false,
-        clip: { x: scrollX, y: scrollY, width: size.width, height: size.height, scale } }, own.get(v.targetId));
+        clip: { x: scrollX, y: scrollY, width: size.width, height: size.height, scale: scale / size.scale } }, own.get(v.targetId));
         return { ...result, scrollX, scrollY };
       })().then(result => {
         if (!result?.data) return;
