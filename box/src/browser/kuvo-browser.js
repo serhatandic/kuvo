@@ -1040,6 +1040,7 @@ async function host() {
     if (message.method === "Kuvo.view" || message.method === "Page.startScreencast") {
       client.viewer = true; client.inflight ??= new Set();
       client.viewRevision = (client.viewRevision ?? 0) + 1;
+      client.lastImage = null;
       client.recoverAt = undefined;
       const raw = message.method === "Page.startScreencast";
       client.rawView = raw ? message.sessionId : null;
@@ -1052,6 +1053,7 @@ async function host() {
         : { targetId: target, ...sizeFor(p) } : null;
       if (client.view) {
         client.viewOrder = ++viewOrder;
+        wakePage(target);
         setActive(target, "user");
         if (!raw) {
           if (client.view.width <= 600) { client.view.scale = 1; client.view.quality = Math.min(50, client.view.quality); }

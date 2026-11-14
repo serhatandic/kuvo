@@ -197,3 +197,16 @@ test("re-review S6: raw zoom metrics and picture limits are not clamped to a 216
   assert.deepEqual([frame.params.metadata.deviceWidth, frame.params.metadata.deviceHeight], [3000, 4800]);
   assert.equal(h.chrome.all.find(m => m.method === "Page.captureScreenshot").params.clip.scale, 1);
 });
+
+test("a reopened still view gets its first picture even when its JPEG has not changed", async t => {
+  const h = await page(t);
+  h.answer("Page.captureScreenshot", () => ({ data: "anBlZw==" }));
+  await call(h.c, "Kuvo.view", { targetId: "P", width: 393, height: 660 });
+  await capture(h);
+  const first = h.c.heard.all.find(m => m.method === "Kuvo.frame");
+  await call(h.c, "Kuvo.frameAck", { frameId: first.params.frameId });
+  await call(h.c, "Kuvo.view", { targetId: null });
+  await call(h.c, "Kuvo.view", { targetId: "P", width: 393, height: 660 });
+  await h.advance(100); await settle(h);
+  assert.equal(h.c.heard.all.filter(m => m.method === "Kuvo.frame").length, 2);
+});
