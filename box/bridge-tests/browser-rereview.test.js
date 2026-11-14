@@ -460,3 +460,28 @@ test("round3 NIT: raw screencast maxima never upscale beyond the page's device p
   const shot = h.chrome.all.find(m => m.method === "Page.captureScreenshot");
   assert.equal(shot.params.clip.scale, 1, "picture maxima are limits, not a request to invent pixels");
 });
+
+test("round3 MUST: a new tool cannot race an idle restoration already awaiting Chrome", async t => {
+  const h = await page(t);
+  const viewer = await h.client(); await viewer.heard.until(m => m.method === "Kuvo.hello");
+  await call(viewer, "Kuvo.view", { targetId: "P", width: 393, height: 660 });
+  await call(h.c, "Kuvo.setStatus", { targetId: "P", working: true });
+  await call(h.c, "Kuvo.setStatus", { working: false });
+  let release, first = true;
+  h.answer("Emulation.setDeviceMetricsOverride", () => {
+    if (!first) return {};
+    first = false;
+    return new Promise(resolve => { release = resolve; });
+  });
+  const before = h.chrome.all.length;
+  await h.advance(5001);
+  await h.chrome.until(m => m.method === "Emulation.setDeviceMetricsOverride" && h.chrome.all.indexOf(m) >= before);
+  const id = next++;
+  h.c.send({ id, method: "Kuvo.setStatus", params: { targetId: "P", working: true } });
+  await settle({ ...h, c: await h.client() });
+  assert.equal(h.chrome.all.slice(before).filter(m => m.method === "Emulation.setDeviceMetricsOverride").length, 1,
+    "geometry changes to one page must not overlap");
+  release({});
+  await h.c.heard.until(m => m.id === id);
+  assert.equal(h.chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").at(-1).params.width, 1280);
+});

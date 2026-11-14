@@ -907,21 +907,30 @@ async function host() {
     scale: finite(p.scale, 1, 1, 2), quality: Math.round(finite(p.quality, 75, 20, 90)),
     maxFps: finite(p.maxFps, 15, 1, 15), zoom: finite(p.zoom, 1, .25, 5),
   });
-  const resize = async (target, size, by) => {
-    if (!own.has(target) || (by === "viewer" && workingIn(target))) return;
-    const previous = sizes.get(target);
-    if (previous?.by === by && ["width", "height", "scale", "zoom"].every(key => (previous[key] ?? 1) === (size[key] ?? 1))) return;
-    const change = {};
-    resizing.set(target, change);
-    try {
-      await requiredCall("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: size.scale, mobile: false }, own.get(target));
-      sizes.set(target, { ...size, zoom: previous?.zoom ?? 1, by });
-      await requiredCall("Emulation.setPageScaleFactor", { pageScaleFactor: size.zoom ?? 1 }, own.get(target));
-      sizes.set(target, { ...size, by });
-      broadcast({ method: "Kuvo.viewport", params: { targetId: target, ...size, by } });
-    } finally {
-      if (resizing.get(target) === change) resizing.delete(target);
-    }
+  const resizeQueues = new Map();
+  const resize = (target, size, by) => {
+    const work = async () => {
+      if (!own.has(target) || (by === "viewer" && workingIn(target))) return;
+      const previous = sizes.get(target);
+      if (previous?.by === by && ["width", "height", "scale", "zoom"].every(key => (previous[key] ?? 1) === (size[key] ?? 1))) return;
+      const change = {};
+      resizing.set(target, change);
+      try {
+        await requiredCall("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: size.scale, mobile: false }, own.get(target));
+        sizes.set(target, { ...size, zoom: previous?.zoom ?? 1, by });
+        await requiredCall("Emulation.setPageScaleFactor", { pageScaleFactor: size.zoom ?? 1 }, own.get(target));
+        sizes.set(target, { ...size, by });
+        broadcast({ method: "Kuvo.viewport", params: { targetId: target, ...size, by } });
+      } finally {
+        if (resizing.get(target) === change) resizing.delete(target);
+      }
+    };
+    const queued = (resizeQueues.get(target) ?? Promise.resolve()).catch(() => {}).then(work);
+    resizeQueues.set(target, queued);
+    void queued.finally(() => {
+      if (resizeQueues.get(target) === queued) resizeQueues.delete(target);
+    }).catch(() => {});
+    return queued;
   };
   let viewOrder = 0;
   const nativeSize = () => ({ ...sizeFor({}), scale: 2 });

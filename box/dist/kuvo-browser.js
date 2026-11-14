@@ -1,4 +1,4 @@
-// kuvo-browser 55cdc26fd1ad37b7
+// kuvo-browser 9de05b6925575ae5
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -102,7 +102,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "5782f804f2ee";
+const KEEPER = "925938ae9121";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -926,21 +926,30 @@ async function host() {
     scale: finite(p.scale, 1, 1, 2), quality: Math.round(finite(p.quality, 75, 20, 90)),
     maxFps: finite(p.maxFps, 15, 1, 15), zoom: finite(p.zoom, 1, .25, 5),
   });
-  const resize = async (target, size, by) => {
-    if (!own.has(target) || (by === "viewer" && workingIn(target))) return;
-    const previous = sizes.get(target);
-    if (previous?.by === by && ["width", "height", "scale", "zoom"].every(key => (previous[key] ?? 1) === (size[key] ?? 1))) return;
-    const change = {};
-    resizing.set(target, change);
-    try {
-      await requiredCall("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: size.scale, mobile: false }, own.get(target));
-      sizes.set(target, { ...size, zoom: previous?.zoom ?? 1, by });
-      await requiredCall("Emulation.setPageScaleFactor", { pageScaleFactor: size.zoom ?? 1 }, own.get(target));
-      sizes.set(target, { ...size, by });
-      broadcast({ method: "Kuvo.viewport", params: { targetId: target, ...size, by } });
-    } finally {
-      if (resizing.get(target) === change) resizing.delete(target);
-    }
+  const resizeQueues = new Map();
+  const resize = (target, size, by) => {
+    const work = async () => {
+      if (!own.has(target) || (by === "viewer" && workingIn(target))) return;
+      const previous = sizes.get(target);
+      if (previous?.by === by && ["width", "height", "scale", "zoom"].every(key => (previous[key] ?? 1) === (size[key] ?? 1))) return;
+      const change = {};
+      resizing.set(target, change);
+      try {
+        await requiredCall("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: size.scale, mobile: false }, own.get(target));
+        sizes.set(target, { ...size, zoom: previous?.zoom ?? 1, by });
+        await requiredCall("Emulation.setPageScaleFactor", { pageScaleFactor: size.zoom ?? 1 }, own.get(target));
+        sizes.set(target, { ...size, by });
+        broadcast({ method: "Kuvo.viewport", params: { targetId: target, ...size, by } });
+      } finally {
+        if (resizing.get(target) === change) resizing.delete(target);
+      }
+    };
+    const queued = (resizeQueues.get(target) ?? Promise.resolve()).catch(() => {}).then(work);
+    resizeQueues.set(target, queued);
+    void queued.finally(() => {
+      if (resizeQueues.get(target) === queued) resizeQueues.delete(target);
+    }).catch(() => {});
+    return queued;
   };
   let viewOrder = 0;
   const nativeSize = () => ({ ...sizeFor({}), scale: 2 });
