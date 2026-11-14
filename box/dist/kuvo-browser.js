@@ -1,4 +1,4 @@
-// kuvo-browser 23c54e563d5ba2ca
+// kuvo-browser c74150c62455d81c
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -101,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "3312e03a9cb3";
+const KEEPER = "451fcc97f535";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -989,6 +989,13 @@ async function host() {
     for (const dir of uploads.get(target) ?? []) fs.rmSync(dir, { recursive: true, force: true });
     uploads.delete(target);
   };
+  const stopRawView = (client, sessionId) => {
+    if (!client || client.rawView !== sessionId) return;
+    client.view = null;
+    client.rawView = null;
+    client.lastImage = null;
+    client.inflight?.clear();
+  };
   const live = async (client, message) => {
     const p = message.params ?? {}, target = Object.hasOwn(p, "targetId") ? p.targetId : attachedTo.get(message.sessionId) ?? client.view?.targetId;
     const session = own.get(target);
@@ -1029,7 +1036,8 @@ async function host() {
       }
       reply(); return true;
     }
-    if (message.method === "Page.stopScreencast") { client.view = null; reply(); return true; }
+    if (message.method === "Page.stopScreencast") { stopRawView(client, message.sessionId); reply(); return true; }
+    if (message.method === "Target.detachFromTarget") stopRawView(client, p.sessionId);
     if (message.method.startsWith("Emulation.") && /DeviceMetrics|PageScaleFactor|VisibleSize/.test(message.method)) {
       const previous = client.rawMetrics?.get(target) ?? sizes.get(target) ?? sizeFor({});
       const size = message.method === "Emulation.setPageScaleFactor"
@@ -1314,6 +1322,7 @@ async function host() {
     if (message.method === "Target.detachedFromTarget") {
       frameTargets.delete(message.params.sessionId);
       const owner = owners.get(message.params.sessionId);
+      stopRawView(owner, message.params.sessionId);
       owner?.sessions.delete(message.params.sessionId);
       owners.delete(message.params.sessionId);
       attachedTo.delete(message.params.sessionId);

@@ -127,3 +127,22 @@ test("re-review S2: a view client can answer the dialog that is holding its inpu
   assert.ok(!(await h.c.heard.until(m => m.id === id)).error);
   await h.c.heard.until(m => m.id === input);
 });
+
+for (const way of ["request", "event"]) {
+  test("re-review S3: detaching a raw viewer stops its captures via " + way, async t => {
+    const h = await page(t);
+    let image = 0;
+    h.answer("Page.captureScreenshot", () => ({ data: Buffer.from("frame" + ++image).toString("base64") }));
+    await call(h.c, "Kuvo.viewing");
+    await call(h.c, "Page.startScreencast", { maxWidth: 900, maxHeight: 700 }, "raw");
+    await capture(h);
+    const frame = h.c.heard.all.find(m => m.method === "Page.screencastFrame");
+    await call(h.c, "Page.screencastFrameAck", { sessionId: frame.params.sessionId }, "raw");
+    if (way === "request") await call(h.c, "Target.detachFromTarget", { sessionId: "raw" });
+    else h.event("Target.detachedFromTarget", { sessionId: "raw" });
+    await settle(h);
+    const before = captures(h);
+    await h.advance(2200); await settle(h);
+    assert.equal(captures(h), before, "the detached page must consume no capture work");
+  });
+}

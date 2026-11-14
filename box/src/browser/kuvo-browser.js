@@ -971,6 +971,13 @@ async function host() {
     for (const dir of uploads.get(target) ?? []) fs.rmSync(dir, { recursive: true, force: true });
     uploads.delete(target);
   };
+  const stopRawView = (client, sessionId) => {
+    if (!client || client.rawView !== sessionId) return;
+    client.view = null;
+    client.rawView = null;
+    client.lastImage = null;
+    client.inflight?.clear();
+  };
   const live = async (client, message) => {
     const p = message.params ?? {}, target = Object.hasOwn(p, "targetId") ? p.targetId : attachedTo.get(message.sessionId) ?? client.view?.targetId;
     const session = own.get(target);
@@ -1011,7 +1018,8 @@ async function host() {
       }
       reply(); return true;
     }
-    if (message.method === "Page.stopScreencast") { client.view = null; reply(); return true; }
+    if (message.method === "Page.stopScreencast") { stopRawView(client, message.sessionId); reply(); return true; }
+    if (message.method === "Target.detachFromTarget") stopRawView(client, p.sessionId);
     if (message.method.startsWith("Emulation.") && /DeviceMetrics|PageScaleFactor|VisibleSize/.test(message.method)) {
       const previous = client.rawMetrics?.get(target) ?? sizes.get(target) ?? sizeFor({});
       const size = message.method === "Emulation.setPageScaleFactor"
@@ -1296,6 +1304,7 @@ async function host() {
     if (message.method === "Target.detachedFromTarget") {
       frameTargets.delete(message.params.sessionId);
       const owner = owners.get(message.params.sessionId);
+      stopRawView(owner, message.params.sessionId);
       owner?.sessions.delete(message.params.sessionId);
       owners.delete(message.params.sessionId);
       attachedTo.delete(message.params.sessionId);
