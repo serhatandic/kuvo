@@ -173,3 +173,11 @@ test("a later navigation cannot overtake an input waiting for Chrome", async () 
   assert.ok(chrome.all.some(m => m.method === "Page.navigate"));
   assert.ok(c.heard.all.findIndex(m => m.id === first) < c.heard.all.findIndex(m => m.id === second));
 });
+
+test("navigation frame names cannot replace the tab title supplied by Chrome target info", async () => {
+  const { c, event } = await page();
+  event("Page.frameNavigated", { frame: { id: "P", url: "https://example.com/new", name: "window-name" } }, "own");
+  await c.heard.until(m => m.method === "Kuvo.pages" && m.params.pages.some(p => p.url.endsWith("/new")));
+  const result = await call(c, "Kuvo.pages");
+  assert.equal(result.result.pages[0].title, "Title");
+});

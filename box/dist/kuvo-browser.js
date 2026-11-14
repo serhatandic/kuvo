@@ -1,4 +1,4 @@
-// kuvo-browser 5846384a296d4e4c
+// kuvo-browser cf6fc898f541f2b3
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -101,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "fcdbc95728ab";
+const KEEPER = "c322746a7eb3";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -1394,7 +1394,7 @@ async function host() {
     if (page && isOwn(message.sessionId)) {
       if (message.method === "Page.frameNavigated" && !message.params.frame.parentId) {
         clearUploads(page);
-        addresses.set(page, message.params.frame.url); titles.set(page, message.params.frame.name ?? titles.get(page) ?? "");
+        addresses.set(page, message.params.frame.url);
         ownCall("Page.getNavigationHistory", {}, message.sessionId).then(h => { if (h) histories.set(page, h); announcePages(); });
       }
       if (message.method === "Page.frameStartedLoading" && message.params.frameId === page) loading.add(page);

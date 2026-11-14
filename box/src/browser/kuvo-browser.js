@@ -1376,7 +1376,7 @@ async function host() {
     if (page && isOwn(message.sessionId)) {
       if (message.method === "Page.frameNavigated" && !message.params.frame.parentId) {
         clearUploads(page);
-        addresses.set(page, message.params.frame.url); titles.set(page, message.params.frame.name ?? titles.get(page) ?? "");
+        addresses.set(page, message.params.frame.url);
         ownCall("Page.getNavigationHistory", {}, message.sessionId).then(h => { if (h) histories.set(page, h); announcePages(); });
       }
       if (message.method === "Page.frameStartedLoading" && message.params.frameId === page) loading.add(page);
