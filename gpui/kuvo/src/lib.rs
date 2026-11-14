@@ -9,6 +9,7 @@
 pub mod area;
 pub mod areas;
 pub mod ask_card;
+pub mod bots;
 pub mod composer;
 pub mod conversation;
 pub mod entries;

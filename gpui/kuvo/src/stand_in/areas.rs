@@ -19,7 +19,7 @@ pub struct Areas {
 
 /// Its answer to `method route`, if it's one of the areas' routes. `needing`: how many of its
 /// sessions "Needs you" lists.
-pub fn answer(areas: Areas, method: &str, route: &str, now: f64, needing: usize) -> Option<(u16, Value)> {
+pub fn answer(areas: Areas, method: &str, route: &str, now: f64, needing: usize, bots_asking: usize) -> Option<(u16, Value)> {
     if method != "GET" {
         return None;
     }
@@ -27,7 +27,6 @@ pub fn answer(areas: Areas, method: &str, route: &str, now: f64, needing: usize)
         return Some((503, json!({ "message": "The box isn’t answering." })));
     }
     let answer = match route {
-        "kuvo/bots" => json!({ "bots": if areas.empty { Vec::new() } else { bots(now) } }),
         "kuvo/groups" => json!({ "groups": if areas.empty { Vec::new() } else { groups(now) } }),
         "kuvo/work-queue" => {
             let counts = if areas.empty {
@@ -39,7 +38,7 @@ pub fn answer(areas: Areas, method: &str, route: &str, now: f64, needing: usize)
         }
         "kuvo/computers" => json!({ "computers": computers(areas.empty) }),
         "kuvo/agents/api/kuvo/limits" => json!({ "data": { "accounts": [], "services": ["claude", "codex", "copilot", "grok", "openrouter"], "rows": if areas.empty { Vec::new() } else { accounts(now) } } }),
-        "kuvo/waiting" => json!({ "sessions": needing, "bots": if areas.empty { 0 } else { bots(now).iter().filter(|bot| bot["now"]["asking"].as_u64().unwrap_or(0) > 0).count() }, "queue": 0 }),
+        "kuvo/waiting" => json!({ "sessions": needing, "bots": bots_asking, "queue": 0 }),
         _ => return None,
     };
     Some((200, answer))
@@ -54,25 +53,6 @@ pub fn asks_of(session: &str) -> Value {
         _ => ("other", "waits on you"),
     };
     json!({ "kind": kind, "summary": summary })
-}
-
-fn bots(at: f64) -> Vec<Value> {
-    let bot = |id: &str, name: &str, color: &str, shape: &str, job: &str, now: Value| {
-        json!({
-            "id": id, "session": format!("ses_{}", id.trim_start_matches("bot_")), "name": name,
-            "look": { "color": color, "shape": shape, "face": "calm" },
-            "job": job, "jobDetails": "", "paused": false, "watching": 0, "agents": false,
-            "folder": format!("{}/.kuvo-code/bots/{}", super::HOME, id.trim_start_matches("bot_")),
-            "now": now,
-        })
-    };
-    vec![
-        bot("bot_mira", "Mira", "sky", "round", "Looks after the website", json!({ "working": 1, "asking": 1 })),
-        bot("bot_inbox", "Inbox Helper", "coral", "squircle", "Drafts replies to support mail", json!({ "working": 0, "asking": 1 })),
-        // One with no session listed (its row shows its job), and one whose newest finished.
-        bot("bot_release", "Release Captain", "lime", "pebble", "Ships a beta every Friday", json!({ "working": 0, "asking": 0 })),
-        bot("bot_docs", "Docs Keeper", "violet", "gem", "Keeps the docs matching the code", json!({ "working": 0, "asking": 0, "finished": at - 3.0 * HOUR })),
-    ]
 }
 
 fn groups(now: f64) -> Vec<Value> {

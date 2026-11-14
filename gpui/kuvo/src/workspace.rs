@@ -1,7 +1,8 @@
 //! The window: the title bar across the top; under it the rail, and beside the rail one raised
 //! panel holding the open area's sidebar and its main view (OpenBot's layout). In Sessions the main
 //! view is the conversation open or, for a new one, the landing view, with the side panel beside it;
-//! the other areas' pages aren't in the app yet. In a narrow window the area's sidebar folds away.
+//! in Bots, a bot's page or its own conversation; the Work Queue's and Computers' pages aren't in
+//! the app yet. In a narrow window the area's sidebar folds away.
 
 use std::collections::{HashMap, HashSet};
 
@@ -19,10 +20,13 @@ use kuvo_box::sessions::project_name;
 use kuvo_box::areas::{Computer, Waiting};
 use kuvo_box::follow::Followed;
 use kuvo_box::{BoxClient, BoxInfo, Listing, Where};
-use kuvo_ui::{ActiveTheme, StyledType, TextField, TextFieldEvent, Theme, TypeSize, theme::radius};
+use kuvo_ui::{
+    ActiveTheme, Button, ButtonSize, IconName, StyledType, TextField, TextFieldEvent, Theme, TypeSize,
+    theme::{radius, space},
+};
 
 use crate::area::{Area, Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowQueue, ShowSessions, ShowSettings, ShowUsage};
-use crate::areas::{AreaView, Picked, Reading};
+use crate::areas::{AreaView, Go, Picked, Reading};
 use crate::composer::{Composer, ComposerEvent, Target};
 use crate::conversation::ConversationView;
 use crate::rail::{self, Rings};
@@ -46,6 +50,15 @@ pub enum Nav {
     Session(String),
     /// Another area, and the row picked in it (none: its own page).
     Area(Area, Option<String>),
+    /// A bot's own conversation, in Bots (whichever session the box says is its conversation then).
+    BotChat { bot: String },
+}
+
+/// A bot's own conversation, shown in Bots in its page's place.
+struct BotChat {
+    bot: String,
+    session: String,
+    view: Entity<ConversationView>,
 }
 
 /// How the session lists stand.
@@ -124,6 +137,10 @@ pub struct Workspace {
     area: Area,
     areas: Vec<(Area, Entity<AreaView>)>,
     rings: Entity<Rings>,
+    /// The bot's conversation last opened in Bots (kept while its page shows), and whether it's
+    /// what Bots shows now.
+    bot_chat: Option<BotChat>,
+    in_bot_chat: bool,
     /// How many things wait on you in each area, as the box counts them (`kuvo/waiting`): followed
     /// where its box streams, else read again as its session list changes.
     waiting: Waiting,
@@ -163,7 +180,17 @@ impl Workspace {
             }
         });
         let areas = areas::views(&client, live, cx);
-        let area_subscriptions = areas.iter().map(|(_, view)| cx.subscribe(view, |this: &mut Workspace, view, _: &Picked, cx| this.area_picked(&view, cx))).collect();
+        let mut area_subscriptions: Vec<Subscription> = areas.iter().map(|(_, view)| cx.subscribe(view, |this: &mut Workspace, view, _: &Picked, cx| this.area_picked(&view, cx))).collect();
+        area_subscriptions.extend(areas.iter().map(|(_, view)| {
+            cx.subscribe_in(view, window, |this: &mut Workspace, _, go: &Go, window, cx| match go {
+                Go::BotChat { bot, session, draft } => this.open_bot_chat(bot, session, draft.as_deref(), window, cx),
+                Go::Session(session) => this.open_session_now(session, window, cx),
+            })
+        }));
+        // The Bots list as it's read again (a bot's conversation may be another session by then).
+        if let Some((_, bots)) = areas.iter().find(|(area, _)| *area == Area::Bots) {
+            area_subscriptions.push(cx.observe_in(bots, window, |this: &mut Workspace, _, window, cx| this.bots_changed(window, cx)));
+        }
         let rings = cx.new(|cx| Rings::new(client.clone(), live, cx));
         let mut workspace = Workspace {
             client: client.clone(),
@@ -199,6 +226,8 @@ impl Workspace {
             area: Area::Sessions,
             areas,
             rings,
+            bot_chat: None,
+            in_bot_chat: false,
             waiting: Waiting::default(),
             waiting_task: None,
             waiting_again: false,
@@ -294,8 +323,16 @@ impl Workspace {
     #[cfg(feature = "stand-in")]
     pub fn open_read_at_once(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.open_session(session, window, cx);
-        let client = self.client.clone();
         if let Some(view) = self.conversation().cloned() {
+            self.read_conversation_at_once(&view, session, cx);
+        }
+    }
+
+    /// Reads `session` into `view` at once, on this thread, as its follows would hand it.
+    #[cfg(feature = "stand-in")]
+    fn read_conversation_at_once(&self, view: &Entity<ConversationView>, session: &str, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        {
             let update = match crate::conversation::read_now(&client, session) {
                 Ok(conversation) => kuvo_box::ConversationUpdate::Conversation(conversation),
                 Err(kuvo_box::Error::Refused(refusal)) if refusal.status == 404 => kuvo_box::ConversationUpdate::Gone(refusal),
@@ -501,6 +538,102 @@ impl Workspace {
         self.open = Open::Conversation { view, session: session.to_owned() };
         self.place_panel(cx);
         cx.notify();
+    }
+
+    /// Opens a session's conversation, read as the window reads (in tests and shots, at once).
+    pub fn open_session_now(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(feature = "stand-in")]
+        if !self.live {
+            self.open_read_at_once(session, window, cx);
+            return;
+        }
+        self.open_session(session, window, cx);
+    }
+
+    // MARK: A bot's conversation
+
+    /// The bot whose conversation Bots shows now, and the conversation.
+    pub fn bot_chat(&self) -> Option<(&str, &Entity<ConversationView>)> {
+        self.bot_chat.as_ref().filter(|_| self.in_bot_chat && self.area == Area::Bots).map(|chat| (chat.bot.as_str(), &chat.view))
+    }
+
+    /// Opens a bot's own conversation in Bots, in its page's place, its row still picked; `draft`
+    /// goes in its composer where nothing's written there (a new bot's job, to edit and send).
+    pub fn open_bot_chat(&mut self, bot: &str, session: &str, draft: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        self.area = Area::Bots;
+        self.bring_out_sidebar(window);
+        if let Some(view) = self.area_view(Area::Bots).cloned() {
+            view.update(cx, |view, cx| view.select(Some(format!("bot:{bot}")), cx));
+        }
+        self.record(Nav::BotChat { bot: bot.to_owned() });
+        self.in_bot_chat = true;
+        let composer = self.composer_for(session, window, cx);
+        if self.bot_chat.as_ref().is_none_or(|chat| chat.session != session) {
+            let (client, live) = (self.client.clone(), self.live);
+            let view = cx.new(|cx| ConversationView::new(client, session.to_owned(), composer.clone(), live, cx));
+            #[cfg(feature = "stand-in")]
+            if !self.live {
+                self.read_conversation_at_once(&view, session, cx);
+            }
+            self.bot_chat = Some(BotChat { bot: bot.to_owned(), session: session.to_owned(), view });
+        }
+        if let Some(draft) = draft
+            && composer.read(cx).field().read(cx).text().is_empty()
+        {
+            composer.update(cx, |composer, cx| composer.restore(draft, &[], cx));
+        }
+        self.show_composer_on_screen(cx);
+        if let Some(chat) = &self.bot_chat {
+            window.focus(&chat.view.focus_handle(cx), cx);
+        }
+        cx.notify();
+    }
+
+    /// The session the box lists as `bot`'s own conversation now.
+    fn bot_session(&self, bot: &str, cx: &App) -> Option<String> {
+        match self.area_view(Area::Bots)?.read(cx).bots() {
+            Reading::Ready(bots) => bots.bots.iter().find(|each| each.id == bot).map(|each| each.session.clone()),
+            _ => None,
+        }
+    }
+
+    /// The box's bots were read again: a conversation shown for a bot whose conversation is
+    /// another session now (a coding agent's model carried it on) goes to that one.
+    fn bots_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(chat) = &self.bot_chat else { return };
+        let (bot, session) = (chat.bot.clone(), chat.session.clone());
+        match self.bot_session(&bot, cx) {
+            Some(now) if now != session => {
+                if self.bot_chat().is_some() {
+                    self.open_bot_chat(&bot, &now, None, window, cx);
+                } else {
+                    // (Not on screen: made again the next time it's opened.)
+                    self.bot_chat = None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// From a bot's conversation back to its page.
+    pub fn close_bot_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(bot) = self.bot_chat().map(|(bot, _)| bot.to_owned()) else { return };
+        self.in_bot_chat = false;
+        self.record(Nav::Area(Area::Bots, Some(format!("bot:{bot}"))));
+        self.show_composer_on_screen(cx);
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Marks the composer on screen now as the one shown: a bot's conversation's in Bots, the open
+    /// conversation's or the landing view's in Sessions, none elsewhere.
+    fn show_composer_on_screen(&mut self, cx: &mut Context<Self>) {
+        let shown = match self.area {
+            Area::Bots => self.bot_chat().map(|(_, view)| view.read(cx).composer().clone()),
+            Area::Sessions => Some(self.conversation().map_or_else(|| self.landing.clone(), |view| view.read(cx).composer().clone())),
+            _ => None,
+        };
+        self.show_composer(shown.as_ref(), cx);
     }
 
     /// `session`'s composer: the one it had, with its draft (its model read again, as it may have
@@ -951,17 +1084,26 @@ impl Workspace {
             _ => {
                 if let Some(view) = self.area_view(area).cloned() {
                     let picked = view.read(cx).selected().map(str::to_owned);
-                    self.record(Nav::Area(area, picked));
+                    // (Bots comes back to the conversation it showed, as Sessions does.)
+                    match self.bot_chat().map(|(bot, _)| bot.to_owned()) {
+                        Some(bot) => self.record(Nav::BotChat { bot }),
+                        None => self.record(Nav::Area(area, picked)),
+                    }
                     view.update(cx, |view, cx| view.shown(cx));
                 }
                 // Computers opens on the list as it is now, where it isn't followed.
                 if area == Area::Computers && self._computers_follow.is_none() {
                     self.read_computers(cx);
                 }
-                // The keyboard stays in the window, where the areas' keys are.
-                window.focus(&self.focus, cx);
+                // The keyboard stays in the window, where the areas' keys are (in a bot's
+                // conversation, in it).
+                match self.bot_chat() {
+                    Some((_, view)) => window.focus(&view.focus_handle(cx), cx),
+                    None => window.focus(&self.focus, cx),
+                }
             }
         }
+        self.show_composer_on_screen(cx);
         cx.notify();
     }
 
@@ -1012,6 +1154,11 @@ impl Workspace {
 
     fn area_picked(&mut self, view: &Entity<AreaView>, cx: &mut Context<Self>) {
         let (area, picked) = view.read_with(cx, |view, _| (view.area(), view.selected().map(str::to_owned)));
+        // A row picked in Bots shows its page (a bot's own row, from its conversation, too).
+        if area == Area::Bots {
+            self.in_bot_chat = false;
+            self.show_composer_on_screen(cx);
+        }
         self.record(Nav::Area(area, picked));
         cx.notify();
     }
@@ -1121,7 +1268,18 @@ impl Workspace {
         let forward = at > self.at;
         let here = self.history[self.at].clone();
         // (Gone: deleted, or no longer shown, as an archived one.)
-        let gone = |nav: &Nav, this: &Self| matches!(nav, Nav::Session(session) if this.listing.is_read() && kuvo_box::sessions::place(this.listing.facts(session)).is_none() && !this.started.contains_key(session));
+        // (A bot's conversation goes with its bot: one the box's list no longer has.)
+        let bots: Option<Vec<String>> = self.area_view(Area::Bots).and_then(|view| match view.read(cx).bots() {
+            Reading::Ready(bots) => Some(bots.bots.iter().map(|bot| bot.id.clone()).collect()),
+            _ => None,
+        });
+        let gone = |nav: &Nav, this: &Self| match nav {
+            Nav::Session(session) => this.listing.is_read() && kuvo_box::sessions::place(this.listing.facts(session)).is_none() && !this.started.contains_key(session),
+            Nav::BotChat { bot } => bots.as_ref().is_some_and(|bots| !bots.contains(bot)),
+            // (Its page goes with it too.)
+            Nav::Area(Area::Bots, Some(key)) => key.strip_prefix("bot:").is_some_and(|bot| bots.as_ref().is_some_and(|bots| !bots.iter().any(|each| each == bot))),
+            _ => false,
+        };
         let mut kept: Vec<Nav> = Vec::with_capacity(self.history.len());
         let mut target = None;
         let mut current = 0;
@@ -1162,15 +1320,58 @@ impl Workspace {
             Nav::Landing => self.new_session(None, window, cx),
             Nav::Session(session) => self.open_session(session, window, cx),
             Nav::Area(area, picked) => {
+                if *area == Area::Bots {
+                    self.in_bot_chat = false;
+                }
                 if let Some(view) = self.area_view(*area).cloned() {
                     view.update(cx, |view, cx| view.select(picked.clone(), cx));
                 }
                 self.show_area(*area, window, cx);
             }
+            // Its conversation as the box lists it now (a change of model may have given it a new one).
+            Nav::BotChat { bot } => match self.bot_session(bot, cx) {
+                Some(session) => self.open_bot_chat(bot, &session, None, window, cx),
+                None => {
+                    self.in_bot_chat = false;
+                    if let Some(view) = self.area_view(Area::Bots).cloned() {
+                        view.update(cx, |view, cx| view.select(Some(format!("bot:{bot}")), cx));
+                    }
+                    self.show_area(Area::Bots, window, cx);
+                }
+            },
         }
         self.history = history;
         self.at = at;
         cx.notify();
+    }
+
+    /// A bot's conversation in Bots: a strip saying whose it is, with the way back to its page,
+    /// over the conversation.
+    fn bot_chat_view(&self, bot: &str, chat: &Entity<ConversationView>, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let listed = self.area_view(Area::Bots).and_then(|view| match view.read(cx).bots() {
+            Reading::Ready(bots) => bots.bots.iter().find(|each| each.id == bot).cloned(),
+            _ => None,
+        });
+        let now = self.now();
+        let strip = div()
+            .debug_selector(|| "bot-chat-strip".into())
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(space::S2)
+            .h(px(44.))
+            .px(space::S3)
+            .border_b_1()
+            .border_color(c.border)
+            .child(Button::icon_only("bot-chat-back", IconName::ArrowLeft, "Back to its page").ghost().size(ButtonSize::Small).tooltip("Its page").on_click(cx.listener(|this, _, window, cx| this.close_bot_chat(window, cx))))
+            .children(listed.as_ref().map(|bot| areas::bot_face(&bot.look, px(22.))))
+            .children(listed.as_ref().map(|bot| div().flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child(bot.name.clone())))
+            .children(listed.as_ref().map(|bot| {
+                let words = areas::doing(&bot.now, now).unwrap_or_else(|| bot.job.clone());
+                div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(words)
+            }));
+        div().debug_selector(|| "bot-chat".into()).size_full().flex().flex_col().child(strip).child(div().flex_1().min_h_0().child(chat.clone())).into_any_element()
     }
 
     /// The main view's title and what's beside it, as the title bar shows them: a conversation's
@@ -1228,9 +1429,11 @@ impl Render for Workspace {
 
         let sessions = self.area == Area::Sessions;
         let content: AnyElement = match (&self.open, self.area_view(self.area)) {
-            (_, Some(view)) if !sessions => match view.read(cx).settings() {
-                Some(settings) => settings.clone().into_any_element(),
-                None => areas::placeholder(self.area, view.read(cx).title(), cx),
+            (_, Some(view)) if !sessions => match (self.bot_chat(), view.read(cx).settings(), view.read(cx).main()) {
+                (Some((bot, chat)), _, _) => self.bot_chat_view(bot, chat, cx),
+                (None, Some(settings), _) => settings.clone().into_any_element(),
+                (None, None, Some(main)) => main.into_any_element(),
+                (None, None, None) => areas::placeholder(self.area, view.read(cx).title(), cx),
             },
             (Open::Conversation { view, .. }, _) => view.clone().into_any_element(),
             _ => landing::render(self, window, cx),

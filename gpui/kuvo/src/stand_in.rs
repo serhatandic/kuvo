@@ -18,6 +18,7 @@ use std::time::Duration;
 pub use crate::time::now_ms;
 
 pub mod areas;
+pub mod bots;
 pub mod git;
 pub mod settings;
 
@@ -107,6 +108,8 @@ struct State {
     made: Option<f64>,
     /// Its accounts, sign-ins and settings.
     settings: settings::Settings,
+    /// Its bots.
+    bots: bots::Bots,
 }
 
 pub const NAME: &str = "Stand-in Mac";
@@ -163,6 +166,37 @@ impl StandIn {
 
     pub fn set_sandbox(&self, sandbox: Value) {
         self.state().settings.set_sandbox(sandbox);
+    }
+
+    /// Whether its bots can be read (`kuvo/bots` answers `503` while not).
+    pub fn bots_readable(&self, readable: bool) {
+        self.state().bots.down = !readable;
+    }
+
+    /// Whether it can say what it holds for other computers (`held` and `refused` are left out of
+    /// `kuvo/bots` while it can't check its seals).
+    pub fn bots_held_sayable(&self, sayable: bool) {
+        self.state().bots.unsealed = !sayable;
+    }
+
+    /// Whether a bot can be made or changed (`503` while not, as with its engine stopped).
+    pub fn bots_changeable(&self, changeable: bool) {
+        self.state().bots.stopped = !changeable;
+    }
+
+    /// `bot` moves to `computer`: it no longer lists here, and a change to it is held for there.
+    pub fn move_bot(&self, bot: &str, computer: &str) {
+        let mut state = self.state();
+        state.bots.move_away(bot, computer);
+        state.sync_bots();
+    }
+
+    /// What `computer` refused of an edit held for `bot`, in its words.
+    pub fn refuse_bot_edit(&self, bot: &str, computer: &str, message: &str) {
+        let mut state = self.state();
+        let at = state.made.unwrap_or_else(now_ms);
+        state.bots.held.retain(|held| held["bot"] != json!(bot));
+        state.bots.refused.push(json!({ "bot": bot, "box": format!("key_{computer}"), "computer": computer, "message": message, "at": at }));
     }
 
     /// Sign-ins under way are forgotten, as by an engine that started over.
@@ -339,6 +373,8 @@ impl StandIn {
             facts["directory"] = json!(git::dark_mode_tree());
         }
         state.git = Some(git::Git::new());
+        state.bots = bots::Bots::sample(now);
+        state.sync_bots();
     }
 }
 
@@ -516,7 +552,28 @@ impl State {
 
     /// One of the areas' answers (`kuvo/waiting`, `kuvo/computers`…), as it is now.
     fn area(&self, method: &str, route: &str) -> Option<(u16, Value)> {
-        areas::answer(self.areas, method, route, self.made.unwrap_or_else(now_ms), self.needs_you().len())
+        areas::answer(self.areas, method, route, self.made.unwrap_or_else(now_ms), self.needs_you().len(), self.bots.asking())
+    }
+
+    /// Each bot's own conversation is one of the box's sessions (kind `bot`, which the lists show
+    /// nowhere), and goes with its bot.
+    fn sync_bots(&mut self) {
+        let now = self.made.unwrap_or_else(now_ms);
+        let theirs: Vec<(String, String, String)> = self.bots.bots.iter().filter_map(|bot| Some((bot["session"].as_str()?.to_owned(), bot["name"].as_str()?.to_owned(), bot["folder"].as_str()?.to_owned()))).collect();
+        let before = self.sessions.len();
+        self.sessions.retain(|id, facts| facts["kind"] != json!("bot") || theirs.iter().any(|(session, _, _)| session == id));
+        let mut changed = self.sessions.len() != before;
+        for (session, name, folder) in theirs {
+            if !self.sessions.contains_key(&session) {
+                self.sessions.insert(session.clone(), json!({ "kind": "bot", "directory": folder, "title": name, "created": now, "updated": now }));
+                self.models.insert(session.clone(), json!({ "providerID": "anthropic", "id": "claude-opus-5-5", "variant": "high" }));
+                self.messages.insert(session.clone(), bots::conversation(&session, now).unwrap_or_default());
+                changed = true;
+            }
+        }
+        if changed {
+            self.list_changed();
+        }
     }
 
     /// A conversation's asks, or its queue, as its follower reads them.
@@ -729,6 +786,12 @@ impl StandIn {
             return answer(status, value);
         }
         let body = request.body.clone().unwrap_or(Value::Null);
+        let projects: Vec<(String, String)> = state.projects.iter().map(|(directory, project)| (directory.clone(), project["name"].as_str().unwrap_or_default().to_owned())).collect();
+        let now = state.made.unwrap_or_else(now_ms);
+        if let Some((status, value)) = state.bots.answer(method, route, &|name| query(path, name).map(decoded), &body, &projects, now) {
+            state.sync_bots();
+            return answer(status, value);
+        }
         if let Some((status, value)) = state.settings.answer(method, route, &|name| query(path, name).map(decoded), &body) {
             return answer(status, value);
         }

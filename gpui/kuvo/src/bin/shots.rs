@@ -10,6 +10,7 @@ use kuvo::area::Area;
 use kuvo::panel::Tab;
 use kuvo_box::git::Group;
 use kuvo::stand_in::{Replies, StandIn};
+use kuvo::bots::{Act as BotAct, BotsView};
 use kuvo::settings::{Act, SettingsView, sign_in::SignIn};
 use kuvo::{Workspace, bind_keys};
 use kuvo_box::accounts::Side;
@@ -74,6 +75,22 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "area-narrow", width: 760., height: 760., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "area-narrow-open", width: 760., height: 760., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sessions_out) },
     Screen { slug: "area-first-run", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    // Bots (`kuvo/src/bots`): a bot's page, its conversation, New Bot, each sheet, a bot waiting
+    // for another computer, a narrow window and the first run.
+    Screen { slug: "bot-page", width: 1280., height: 1180., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "bot-quiet", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_quiet) },
+    Screen { slug: "bot-chat", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_chat) },
+    Screen { slug: "bot-new", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_new) },
+    Screen { slug: "bot-new-refused", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_new_refused) },
+    Screen { slug: "bot-rename", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_rename) },
+    Screen { slug: "bot-job", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_job) },
+    Screen { slug: "bot-look", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_look) },
+    Screen { slug: "bot-delete", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_delete) },
+    Screen { slug: "bot-held", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_held) },
+    Screen { slug: "bot-waiting", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_waiting) },
+    Screen { slug: "bot-none", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
+    Screen { slug: "bot-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_narrow) },
+    Screen { slug: "bot-first-run", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     // Settings (`kuvo/src/settings`): each section, the search, a section not in this app yet, and
     // each step of signing in.
     Screen { slug: "settings-general", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(general) },
@@ -108,6 +125,62 @@ fn pick(workspace: &mut Workspace, area: Area, key: &str, window: &mut Window, c
 
 fn bots(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Bots, "bot:bot_mira", window, cx);
+}
+
+/// Bots' page view.
+fn bots_page(workspace: &Workspace, cx: &Context<Workspace>) -> gpui::Entity<BotsView> {
+    workspace.area_view(Area::Bots).and_then(|view| view.read(cx).page().cloned()).expect("Bots")
+}
+/// A bot with nothing under way and no sessions.
+fn bot_quiet(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Bots, "bot:bot_release", window, cx);
+}
+fn bot_chat(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_area(Area::Bots, window, cx);
+    workspace.open_bot_chat("bot_mira", "ses_mira", None, window, cx);
+}
+/// New Bot, a template picked.
+fn bot_new(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Bots, "new", window, cx);
+    bots_page(workspace, cx).update(cx, |page, cx| page.act(BotAct::PickTemplate(Some("inbox".into())), cx));
+}
+/// New Bot, turned down by the box (no name).
+fn bot_new_refused(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Bots, "new", window, cx);
+    bots_page(workspace, cx).update(cx, |page, cx| page.act(BotAct::Create, cx));
+}
+fn bot_rename(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bots(workspace, window, cx);
+    bots_page(workspace, cx).update(cx, |page, cx| page.act(BotAct::Rename, cx));
+}
+fn bot_job(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bots(workspace, window, cx);
+    bots_page(workspace, cx).update(cx, |page, cx| page.act(BotAct::EditJob, cx));
+}
+fn bot_look(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bots(workspace, window, cx);
+    bots_page(workspace, cx).update(cx, |page, cx| page.act(BotAct::EditLook, cx));
+}
+fn bot_delete(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bots(workspace, window, cx);
+    bots_page(workspace, cx).update(cx, |page, cx| page.act(BotAct::Delete, cx));
+}
+/// A bot that lives on a computer that's away, with what the box holds for it.
+fn bot_held(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Bots, "elsewhere:bot_scout", window, cx);
+}
+/// A change a computer turned down, in the box's words.
+fn bot_waiting(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Bots, "elsewhere:bot_scout", window, cx);
+}
+/// Nothing picked.
+fn bot_none(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_area(Area::Bots, window, cx);
+}
+/// A bot's page in a narrow window (its sidebar folded away).
+fn bot_narrow(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bots(workspace, window, cx);
+    workspace.rail_pressed(Area::Bots, window, cx);
 }
 
 fn queue(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -304,6 +377,10 @@ fn main() -> anyhow::Result<()> {
             let mut second = kuvo::stand_in::redis_permission();
             second["id"] = serde_json::json!("per_push");
             stand_in.set_asks("ses_limits", vec![kuvo::stand_in::redis_permission(), second]);
+            // One computer turned down a change held for it, in its words.
+            if screen.slug == "bot-waiting" {
+                stand_in.refuse_bot_edit("bot_scout", "studio-mini", "studio-mini has no personality “Ship’s Cook”.");
+            }
             let client = BoxClient::new(stand_in);
             let window = cx.open_window(size(px(screen.width), px(screen.height)), |window, cx| cx.new(|cx| Workspace::new(client, false, window, cx)))?;
             let any = window.into();

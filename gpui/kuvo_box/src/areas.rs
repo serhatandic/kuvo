@@ -56,6 +56,21 @@ pub struct Bot {
     /// What it's doing now.
     #[serde(default)]
     pub now: BotNow,
+    /// All of its job (`job` is its line).
+    #[serde(default, rename = "jobDetails")]
+    pub job_details: String,
+    /// Its personality, by id; none: the model's own way.
+    #[serde(default)]
+    pub personality: Option<String>,
+    /// The model it runs on, where the box says one.
+    #[serde(default, deserialize_with = "lenient")]
+    pub model: Option<crate::typed::ModelRef>,
+    /// The project it works in, as the box names it; none: a folder of its own.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Its conversation is with the coding agents.
+    #[serde(default)]
+    pub agents: bool,
 }
 
 /// The last thing said in a group chat.
