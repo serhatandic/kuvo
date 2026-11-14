@@ -197,3 +197,10 @@ test("Mac-kind boxes do not advertise a keeper live view before their own browse
   assert.equal(macFeatures().includes("browser"), false);
   assert.equal(macFeatures().includes("browser.data"), true);
 });
+
+test("opening a view socket never registers it as an ask-answering legacy viewer", async t => {
+  const h = await keeperView(t);
+  h.view.send(Buffer.from('{"id":19,"method":"Kuvo.pages","params":{}}\n'));
+  await h.commands.until(m => m.id === 19);
+  assert.equal(h.commands.all.some(m => m.method === "Kuvo.viewing"), false);
+});

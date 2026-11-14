@@ -1,4 +1,4 @@
-// kuvo-browser cf6fc898f541f2b3
+// kuvo-browser bde55898dd1426bb
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -101,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "c322746a7eb3";
+const KEEPER = "adfeb33cd505";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -837,7 +837,7 @@ async function host() {
   const send = (client, message) => {
     if (!client.closed) client.socket.write((typeof message === "string" ? message : JSON.stringify(message)) + "\n");
   };
-  const viewers = () => [...clients].filter((client) => client.viewer && !client.closed).length;
+  const viewers = () => [...clients].filter((client) => client.canAnswer && !client.closed).length;
   const everyStatus = () => {
     const working = [...clients].filter((client) => client.status?.working && !client.closed);
     return {
@@ -1491,6 +1491,7 @@ async function host() {
         case "Kuvo.viewing":
           // A Mac showing the browser: someone who can answer asks.
           client.viewer = true;
+          client.canAnswer = true;
           broadcast({ method: "Kuvo.viewers", params: { count: viewers() } });
           return message.id !== undefined && send(client, { id: message.id, result: {} });
         case "Kuvo.getActive":

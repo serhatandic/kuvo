@@ -181,3 +181,15 @@ test("navigation frame names cannot replace the tab title supplied by Chrome tar
   const result = await call(c, "Kuvo.pages");
   assert.equal(result.result.pages[0].title, "Title");
 });
+
+test("watching a new view does not claim the client can answer browser asks", async () => {
+  const { c, client } = await page();
+  await call(c, "Kuvo.view", { targetId: "P", width: 393, height: 660 });
+  const observer = await client();
+  const hello = await observer.heard.until(m => m.method === "Kuvo.hello");
+  assert.equal(hello.params.viewers, 0);
+  await call(c, "Kuvo.viewing");
+  const legacy = await client();
+  assert.equal((await legacy.heard.until(m => m.method === "Kuvo.hello")).params.viewers, 1);
+  await call(c, "Kuvo.view", { targetId: null });
+});

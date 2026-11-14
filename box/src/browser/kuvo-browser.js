@@ -819,7 +819,7 @@ async function host() {
   const send = (client, message) => {
     if (!client.closed) client.socket.write((typeof message === "string" ? message : JSON.stringify(message)) + "\n");
   };
-  const viewers = () => [...clients].filter((client) => client.viewer && !client.closed).length;
+  const viewers = () => [...clients].filter((client) => client.canAnswer && !client.closed).length;
   const everyStatus = () => {
     const working = [...clients].filter((client) => client.status?.working && !client.closed);
     return {
@@ -1473,6 +1473,7 @@ async function host() {
         case "Kuvo.viewing":
           // A Mac showing the browser: someone who can answer asks.
           client.viewer = true;
+          client.canAnswer = true;
           broadcast({ method: "Kuvo.viewers", params: { count: viewers() } });
           return message.id !== undefined && send(client, { id: message.id, result: {} });
         case "Kuvo.getActive":

@@ -42,7 +42,7 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
       if (!opened) {
         if (message.method !== "Kuvo.hello") return end(new Error("Browser refused connection."));
         opened = true; events.open();
-        socket.write(JSON.stringify({ method: "Kuvo.viewing" }) + "\n");
+
       }
       if (message.method === "Kuvo.frame") {
         const { data, ...meta } = message.params;

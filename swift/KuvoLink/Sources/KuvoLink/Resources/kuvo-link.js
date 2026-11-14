@@ -9606,8 +9606,6 @@ function browserView(events, relay = false, run = RUN, key = socketKey, options 
             return end(new Error("Browser refused connection."));
           opened = true;
           events.open();
-          socket.write(JSON.stringify({ method: "Kuvo.viewing" }) + `
-`);
         }
         if (message.method === "Kuvo.frame") {
           const { data, ...meta } = message.params;
@@ -42916,7 +42914,7 @@ import fs138 from "node:fs";
 import path145 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "677e0584240e";
+var BRIDGE_VERSION = "6e81b00d292c";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
