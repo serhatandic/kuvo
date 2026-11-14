@@ -23,6 +23,9 @@ pub struct Queue {
     /// It takes no item added or rewritten by a client (as every box today): the feature is left
     /// out of its `features`, and the routes aren't there.
     pub read_only: bool,
+    /// What it says a category counts, where a test says otherwise than its items do (a box
+    /// counts across what a view may not list whole).
+    pub counted: Vec<(String, usize)>,
 }
 
 const DEVBOX: (&str, &str, &str) = ("key_devbox", "devbox", "machine");
@@ -176,6 +179,9 @@ impl Queue {
         let mut categories = serde_json::Map::new();
         for category in &self.categories {
             categories.insert(category["id"].as_str().unwrap_or_default().to_owned(), json!(self.items.iter().filter(|item| item["category"] == category["id"]).count()));
+        }
+        for (category, count) in &self.counted {
+            categories.insert(category.clone(), json!(count));
         }
         let on = |key: &str| self.items.iter().filter(|item| item["computer"]["key"].as_str().unwrap_or("") == key).count();
         let github = self.items.iter().filter(|item| item["source"]["kind"] == json!("github")).count();

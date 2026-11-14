@@ -133,13 +133,6 @@ pub struct QueueCounts {
     pub removed: usize,
 }
 
-/// The Work Queue's categories, in the box's order, and its counts.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct WorkQueue {
-    pub categories: Vec<Category>,
-    pub counts: QueueCounts,
-}
-
 // MARK: Computers
 
 /// One of your computers, as a box knows it (`kuvo/computers`).
@@ -408,19 +401,6 @@ impl BoxClient {
         Ok(answer.groups.into_iter().filter_map(|group| serde_json::from_value(group).ok()).collect())
     }
 
-    /// The Work Queue's categories, in the box's order, and its counts across your computers. Read
-    /// at a glance: nothing is fetched from GitHub for a count.
-    pub fn work_queue(&self) -> Result<WorkQueue> {
-        #[derive(Deserialize)]
-        struct Answer {
-            #[serde(default)]
-            categories: Vec<Category>,
-            #[serde(default)]
-            counts: QueueCounts,
-        }
-        let answer: Answer = self.get("kuvo/work-queue?owner=all&counts=1&glance=1")?;
-        Ok(WorkQueue { categories: answer.categories, counts: answer.counts })
-    }
 
     /// Your computers as one list, the box that answers first.
     pub fn computers(&self) -> Result<Vec<Computer>> {

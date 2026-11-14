@@ -2,7 +2,7 @@
 
 ## Done
 
-Notes: `notes/screens-queue.md` (with the Zed study). Scenarios: `kuvo/tests/queue.rs` (14, real
+Notes: `notes/screens-queue.md` (with the Zed study). Scenarios: `kuvo/tests/queue.rs` (19, real
 clicks and keys against the stand-in), unit tests in `kuvo_box/src/work_queue.rs` and
 `kuvo/src/queue/mod.rs`. Shots: `shots/screens-queue-*-{light,dark}.png` (17 screens);
 `screens-area-queue` rendered again.
@@ -24,7 +24,8 @@ clicks and keys against the stand-in), unit tests in `kuvo_box/src/work_queue.rs
    (`POST kuvo/work-queue/categories {add | rename, to | remove}`).
 4. **Adding an item and editing its title and description** are drawn and tested against two
    routes no box has yet (below): New Item and Edit… show only where the box's `features` name
-   `work-queue.edit`. Against today's box neither shows, and the queue's foot says who adds items.
+   `work-queue.edit`. Against today's box neither shows: the + is there, off, saying why when rested
+   on, and the queue's foot says who adds items.
 5. `kuvo_box::work_queue`: typed reads and sends for all of the above.
 6. The stand-in box answers these in the box's shapes (`kuvo/src/stand_in/queue.rs`): its queue is
    state (moved, done, deleted, restored, added, rewritten, categories), with an item on a
@@ -43,17 +44,43 @@ doesn't do; the rest are #674's direction (category chips, dynamic categories, n
 | Done as a state, not a category (and "In progress", Parked: decisions below). | `state` on each item (`open`, `done`, more later) and `POST …/items/<item>/state`; or keep the move. | `kuvo/src/queue/mod.rs` (`DONE`). Done is the protocol's `done` category: folded, checked, and Mark Done is a move there. |
 | No built-in categories: every one renamed and removed like any other, none made by default. | `builtIn` gone (or false for all) in `kuvo/work-queue/categories`; `{rename}` and `{remove}` taking any. | `kuvo/src/queue/page.rs` (`list_head`). Rename and Remove are offered for those the box says aren't `builtIn`. |
 | A category's colour. | `color` on each of `categories` (one of the looks' names). | `kuvo/src/areas.rs` (`category_color`): the built-in four by id (KuvoClient's rule, there before), one colour for every custom one. |
+| What may be done to each item, so nothing is offered that the box will refuse. | `can: {finish, move, edit, delete}` on each item of `kuvo/work-queue` and `…/items/<id>`. | `kuvo/src/queue/page.rs` (`move_targets`). Two things are drawn from the box's facts: `closesOn` hides Mark Done and Done as a target (as the protocol says); a deleted item is offered only Restore. Everything else is offered and the box's refusal drawn: Edit… on a GitHub issue, anything on an item whose computer is away or that's on its way to another. |
 | A search of what items say and their notes. | `GET kuvo/work-queue?owner=all&q=<words>` → the same view, narrowed (with its counts). | `kuvo/src/queue/mod.rs` (`takes`). The search finds titles and numbers only (the list carries no descriptions). |
 
 Not marked in code, for the box session to weigh with these:
 - **More than one chip on an item** (decision below): `categories: [ids]` beside `category`. The row
   and the page draw one chip from `category` (or `doneAs`).
-- **What may be done to an item, said per item** (`can: {finish, move, edit, delete}`), so nothing
-  is offered that the box will refuse: today only `closesOn` says so (Mark Done and Done as a
-  target are hidden by it); Edit… on a GitHub issue, and anything on an item whose computer is
-  away, are offered and refused in the box's words.
 - **Counts for a narrowed view**: with the search or a filter on, the list shows no counts (the
   box counted the whole view; the app counts nothing).
+
+## Review
+
+One reviewer pass; the MUST and every SHOULD fixed, each with a scenario (written after the fix,
+not run against the code before it):
+- **MUST:** rules about what may be done to an item sat in the app unmarked (no move for one on
+  its way elsewhere, none out of Done for a GitHub issue, no new item into Done). The two the
+  protocol doesn't state are gone (the box refuses, in its words); what's left is in one place
+  (`move_targets`, `can_finish`), marked `BOX-NEEDED` and listed above.
+- A refusal that came after you'd gone to another item showed over that item's page: it shows
+  over the list or its own item's page only
+  (`live::a_refusal_that_comes_after_youve_gone_shows_over_no_other_items_page`).
+- A change the box took, whose re-read then failed, drew the item back where it was: the sidebar's
+  copy takes what the box answered first (`a_change_whose_reread_fails_keeps_what_the_box_answered`).
+- Nothing ran the page the app's way: three `live::` scenarios do (an item read after you've gone
+  on, the refusal above, a sheet's answer).
+- Two assertions read the stand-in's counts, not what's drawn: the count drawn is asserted now, and
+  with a box whose count differs from its list (`every_count_drawn_is_the_boxs_never_the_apps`).
+- A sheet's save could be dropped by a later sheet's, and its answer taken by a sheet reopened:
+  each opening has its own number, and its answer is its own (`live::a_sheets_answer_is_its_own_openings`).
+- NITs fixed: a move to where an item already is asks nothing; Remove Category waits for its
+  answer; a filter is the same filter whatever its computer is called now; the bar shows wherever
+  the box gives a share; the old glance-only reader (`BoxClient::work_queue`) is gone; a test's
+  name; the sentence for a box that takes no writing is also on the + itself.
+- NITs left: leaving a page drops a sheet's typed text, unasked (Bots' too); an item whose
+  category the box doesn't list isn't drawn under All (the protocol says the box prevents it); the
+  GitHub filter takes `github-pr` too (the box counts sources by `github`); on an item's page no
+  sidebar row is picked; in a narrow window the tabs are cut at the search with nothing saying
+  they scroll.
 
 ## Left
 

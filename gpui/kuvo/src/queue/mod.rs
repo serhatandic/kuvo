@@ -83,6 +83,16 @@ impl Filter {
         }
     }
 
+    /// Whether it's the same filter as `other`, whatever its computer or owner is called now.
+    pub fn same(&self, other: &Filter) -> bool {
+        match (self, other) {
+            (Filter::Computer { key, .. }, Filter::Computer { key: other, .. }) => key == other,
+            (Filter::Source(kind), Filter::Source(other)) => kind == other,
+            (Filter::Owner { owner, .. }, Filter::Owner { owner: other, .. }) => owner == other,
+            _ => false,
+        }
+    }
+
     fn kind(&self) -> u8 {
         match self {
             Filter::Computer { .. } => 0,
@@ -94,6 +104,7 @@ impl Filter {
     fn takes(&self, item: &Item) -> bool {
         match self {
             Filter::Computer { key, .. } => item.computer.as_ref().map_or("", |computer| computer.key.as_str()) == key,
+            // (The box counts its sources by kind, `github`: a pull request's `github-pr` is one of them.)
             Filter::Source(kind) => item.source.as_ref().is_some_and(|source| source.kind.starts_with(kind.as_str())),
             Filter::Owner { owner, .. } => &item.owner == owner,
         }
@@ -201,6 +212,8 @@ pub struct QueueView {
     sheet: Option<Sheet>,
     saving: bool,
     sheet_error: Option<String>,
+    /// Which opening of a sheet this is: an answer is its own opening's, never a later one's.
+    sheet_opened: u64,
     /// The sheets' fields, made once: an item's title and description, a category's name.
     title: Entity<TextField>,
     body: Entity<TextField>,
@@ -270,6 +283,7 @@ impl QueueView {
             sheet: None,
             saving: false,
             sheet_error: None,
+            sheet_opened: 0,
             title,
             body,
             name,
@@ -445,6 +459,16 @@ impl QueueView {
         }
         let said = self.queue()?;
         said.items.iter().chain(&said.removed).find(|item| item.id == id)
+    }
+
+    /// An item as the box's view lists it.
+    fn item_listed(&self, id: &str) -> Option<&Item> {
+        self.queue()?.items.iter().find(|item| item.id == id)
+    }
+
+    /// The box's view as it's drawn now (with what a change answered since it was read).
+    pub fn said(&self) -> &Reading<QueueSaid> {
+        &self.said
     }
 
     fn scope_name(&self, scope: &Scope) -> String {
@@ -691,7 +715,7 @@ impl QueueView {
                 self.folds.insert(key, !folded);
             }
             Act::AddFilter(filter) => {
-                if !self.filters.contains(&filter) {
+                if !self.filters.iter().any(|each| each.same(&filter)) {
                     self.filters.push(filter);
                     self.list.scroll_to(gpui::ListOffset::default());
                 }
@@ -703,6 +727,10 @@ impl QueueView {
             }
             Act::ClearFilters => self.filters.clear(),
             Act::Move { item, category } => {
+                // (To where it is already: nothing to ask.)
+                if self.item_listed(&item).is_some_and(|listed| listed.category == category) {
+                    return;
+                }
                 let asked = item.clone();
                 self.change(&item, move |client| client.move_work_item(&asked, &category), cx);
             }
@@ -722,7 +750,7 @@ impl QueueView {
                 self.body.update(cx, |field, cx| field.set_text("", cx));
                 // Into the category shown, where one is; else the box's choice.
                 self.form_category = match &self.scope {
-                    Scope::Category(id) if id != DONE => Some(id.clone()),
+                    Scope::Category(id) => Some(id.clone()),
                     _ => None,
                 };
                 self.open_sheet(Sheet::New, Some(self.title.focus_handle(cx)));
@@ -752,12 +780,20 @@ impl QueueView {
                 self.open_sheet(Sheet::RenameCategory(id), Some(self.name.focus_handle(cx)));
             }
             Act::RemoveCategory(id) => {
+                // (One at a time: a second press waits for the box's answer.)
+                let key = format!("category:{id}");
+                if self.busy.contains(&key) {
+                    return;
+                }
+                self.busy.push(key.clone());
                 self.problem = None;
                 let asked = id.clone();
                 self.run(
                     format!("category-{id}"),
                     move |client| client.remove_category(&asked),
-                    move |this, removed, cx| match removed {
+                    move |this, removed, cx| {
+                        this.busy.retain(|busy| busy != &key);
+                        match removed {
                         Ok(categories) => {
                             this.took_categories(categories, cx);
                             // Its list is gone with it: back to the whole queue.
@@ -767,6 +803,7 @@ impl QueueView {
                         }
                         // Why not (something's still in it), in the box's words.
                         Err(error) => this.problem = Some(said(&error)),
+                        }
                     },
                     cx,
                 );
@@ -791,7 +828,10 @@ impl QueueView {
                 this.busy.retain(|busy| busy != &id);
                 match answer {
                     Ok(now) => this.took(now, cx),
-                    Err(error) => this.problem = Some(said(&error)),
+                    // Why not, over the list or its own page; over another item's page, nothing
+                    // is said (nothing changed, and it wouldn't say of what).
+                    Err(error) if matches!(&this.shown, Shown::List(_)) || this.shown == Shown::Item(id.clone()) => this.problem = Some(said(&error)),
+                    Err(_) => {}
                 }
             },
             cx,
@@ -842,6 +882,7 @@ impl QueueView {
     }
 
     fn open_sheet(&mut self, sheet: Sheet, focus: Option<FocusHandle>) {
+        self.sheet_opened += 1;
         self.sheet = Some(sheet);
         self.sheet_error = None;
         self.saving = false;
@@ -869,8 +910,8 @@ impl QueueView {
         }
     }
 
-    /// The sheet's Save: sent to the box as written (what an item or a category may be called is
-    /// the box's to say), the sheet staying until it answers.
+    /// The sheet's Save: sent to the box as written, less the space around it (what an item or a
+    /// category may be called is the box's to say), the sheet staying until it answers.
     pub fn save_sheet(&mut self, cx: &mut Context<Self>) {
         if self.saving {
             return;
@@ -880,14 +921,14 @@ impl QueueView {
         self.sheet_error = None;
         let (title, body, name) = (self.title.read(cx).text().trim().to_owned(), self.body.read(cx).text().trim().to_owned(), self.name.read(cx).text().trim().to_owned());
         let category = self.form_category.clone();
-        let (sent, page) = (sheet.clone(), self.shown.clone());
-        let sent_from = sent.clone();
+        let (sent, opened) = (sheet.clone(), self.sheet_opened);
         enum Answer {
             Item(Box<kuvo_box::Result<Item>>),
             Categories(kuvo_box::Result<Vec<Category>>),
         }
+        // (Under its own name: a later sheet's save never drops this one's answer.)
         self.run(
-            "sheet",
+            format!("sheet-{opened}"),
             move |client| match &sheet {
                 Sheet::New => Answer::Item(Box::new(client.add_work_item(&NewItem { title, body, category }))),
                 Sheet::Edit(item) => Answer::Item(Box::new(client.edit_work_item(item, &title, &body))),
@@ -896,8 +937,7 @@ impl QueueView {
             },
             move |this, answer, cx| {
                 // The sheet it was sent from, still open where it was: it closes, or says why not.
-                let sent = sent_from;
-                let its_sheet = this.shown == page && this.sheet.as_ref() == Some(&sent);
+                let its_sheet = this.sheet.is_some() && this.sheet_opened == opened;
                 if its_sheet {
                     this.saving = false;
                 }

@@ -57,7 +57,9 @@ and what the Bots note read of modals and forms (`notes/screens-bots.md`).
 - Search and filters only choose which of the box's items show (as the sidebar's search of loaded
   rows does); they change nothing and ask nothing.
 - What may be done to an item is the box's to say: `closesOn` hides Mark Done and Done as a place
-  to move to; everything else is offered and the box's refusal is drawn in its words.
+  to move to, and a deleted item is offered only Restore (`move_targets`, marked `BOX-NEEDED`);
+  everything else is offered and the box's refusal is drawn in its words, over the list or that
+  item's own page.
 - After every change the view is read again: an item's place, the counts and the categories are
   the box's.
 

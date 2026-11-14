@@ -151,7 +151,14 @@ impl AreaView {
                             cx.emit(Picked);
                         }
                         // The view as the box says it now (what a change answered shows meanwhile).
-                        QueueEvent::Changed => this.read_list(cx),
+                        QueueEvent::Changed => {
+                            // What the box answered is what's known now: a read that fails after
+                            // it keeps that, not what was read before the change.
+                            if let Some(page) = &this.queue_page {
+                                this.queue = page.read(cx).said().clone();
+                            }
+                            this.read_list(cx);
+                        }
                     }),
                     cx.observe(page, |_, _, cx| cx.notify()),
                 ]

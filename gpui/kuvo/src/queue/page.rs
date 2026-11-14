@@ -155,7 +155,7 @@ impl QueueView {
                             .child(if key == DELETED { Icon::new(IconName::Trash).color(c.icon).into_any_element() } else { div().size(px(8.)).flex_none().rounded(radius::PILL).bg(category_color(&key, cx)).into_any_element() })
                             .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child(name))
                             .children(count.map(|count| {
-                                let selector = format!("group-{key}-count");
+                                let selector = format!("group-{key}-count-{count}");
                                 div().debug_selector(move || selector).text_ui(TypeSize::Caption).text_color(c.text_faint).child(count.to_string())
                             })),
                     )
@@ -292,7 +292,7 @@ impl QueueView {
         let id = item.id.clone();
         // What's being done on it now, as the box says: its progress note, else the session at work.
         let doing = item.progress.as_ref().and_then(|progress| progress.note.clone()).filter(|note| !note.is_empty()).or_else(|| item.sessions.iter().find(|session| session.working).map(|session| session.title.clone())).filter(|_| item.in_progress);
-        let value = item.progress.as_ref().and_then(|progress| progress.value).filter(|_| item.category != DONE);
+        let value = item.progress.as_ref().and_then(|progress| progress.value);
         let ago = (item.updated.at > 0.).then(|| crate::time::ago(item.removed.as_ref().map_or(item.updated.at, |removed| removed.at), self.now()));
         let (selector, title_selector, chip_selector) = (format!("item-{id}"), format!("item-{id}-title"), format!("item-{id}-chip"));
         let open = Act::Open(id.clone());
@@ -361,25 +361,41 @@ impl QueueView {
             .into_any_element()
     }
 
+    // BOX-NEEDED: what may be done to each item, said by the box (`can: {finish, move, edit,
+    // delete}` on an item, `kuvo/work-queue`). Until then two things are drawn from its facts: one
+    // whose Done is someone else's (`closesOn`) is offered no Done, as the protocol says; a deleted
+    // one is offered only Restore. Everything else is offered, and the box's refusal is drawn.
+    /// The categories an item may be moved to, as the box lists them.
+    fn move_targets(&self, item: &Item) -> Vec<MenuItemSpec> {
+        if item.removed.is_some() {
+            return Vec::new();
+        }
+        self.categories()
+            .iter()
+            .filter(|category| !(item.closes_on.is_some() && category.id == DONE))
+            .map(|category| MenuItemSpec::Entry { label: category.name.clone(), icon: None, checked: category.id == item.category, danger: false, act: Act::Move { item: item.id.clone(), category: category.id.clone() } })
+            .collect()
+    }
+
+    /// Whether Mark Done is offered: where the box keeps a Done, it isn't there, and Done isn't
+    /// someone else's.
+    fn can_finish(&self, item: &Item) -> bool {
+        item.removed.is_none() && item.category != DONE && item.closes_on.is_none() && self.categories().iter().any(|category| category.id == DONE)
+    }
+
     /// What you do to an item, as a menu's entries: mark it done, move it to another of the box's
     /// categories, delete it.
     fn item_entries(&self, item: &Item) -> Vec<MenuItemSpec> {
         let mut entries = Vec::new();
-        let done = item.category == DONE;
-        // (Done that's someone else's, `closesOn`, is never a place to move it to or from.)
-        let outside = item.closes_on.is_some();
-        let fixed = item.handing.is_some() || item.removed.is_some();
-        if !fixed {
-            if !done && !outside && self.categories().iter().any(|category| category.id == DONE) {
-                entries.push(MenuItemSpec::Entry { label: "Mark Done".into(), icon: Some(IconName::Check), checked: false, danger: false, act: Act::Move { item: item.id.clone(), category: DONE.into() } });
-                entries.push(MenuItemSpec::Separator);
-            }
-            let targets: Vec<_> = self.categories().iter().filter(|category| !(outside && (category.id == DONE || done))).collect();
-            if !targets.is_empty() {
-                entries.push(MenuItemSpec::Header("Move to".into()));
-                entries.extend(targets.into_iter().map(|category| MenuItemSpec::Entry { label: category.name.clone(), icon: None, checked: category.id == item.category, danger: false, act: Act::Move { item: item.id.clone(), category: category.id.clone() } }));
-                entries.push(MenuItemSpec::Separator);
-            }
+        if self.can_finish(item) {
+            entries.push(MenuItemSpec::Entry { label: "Mark Done".into(), icon: Some(IconName::Check), checked: false, danger: false, act: Act::Move { item: item.id.clone(), category: DONE.into() } });
+            entries.push(MenuItemSpec::Separator);
+        }
+        let targets = self.move_targets(item);
+        if !targets.is_empty() {
+            entries.push(MenuItemSpec::Header("Move to".into()));
+            entries.extend(targets);
+            entries.push(MenuItemSpec::Separator);
         }
         if item.removed.is_none() {
             entries.push(MenuItemSpec::Entry { label: "Delete".into(), icon: Some(IconName::Trash), checked: false, danger: true, act: Act::Delete(item.id.clone()) });
@@ -401,7 +417,6 @@ impl QueueView {
         let c = cx.theme().colors.clone();
         let this = cx.entity().downgrade();
         let done = item.category == DONE;
-        let fixed = item.handing.is_some() || item.removed.is_some();
         let state: Option<(AnyElement, &str)> = if busy {
             Some((spinner("head-busy", IconSize::Nav, c.text_muted).into_any_element(), "Saving…"))
         } else if item.in_progress {
@@ -411,18 +426,10 @@ impl QueueView {
         } else {
             None
         };
-        let can_finish = !fixed && !done && item.closes_on.is_none() && self.categories().iter().any(|category| category.id == DONE);
+        let can_finish = self.can_finish(&item);
         let finish = Act::Move { item: item.id.clone(), category: DONE.into() };
-        // Its category, as a menu of the box's categories where it can be moved.
-        let moves: Vec<MenuItemSpec> = if fixed {
-            Vec::new()
-        } else {
-            self.categories()
-                .iter()
-                .filter(|each| !(item.closes_on.is_some() && (each.id == DONE || done)))
-                .map(|each| MenuItemSpec::Entry { label: each.name.clone(), icon: None, checked: each.id == item.category, danger: false, act: Act::Move { item: item.id.clone(), category: each.id.clone() } })
-                .collect()
-        };
+        // Its category, as a menu of the box's categories.
+        let moves = self.move_targets(&item);
         let chip = category_chip(&item.category, if category.is_empty() { "No category".into() } else { category }, cx);
         let category_control: AnyElement = if moves.is_empty() {
             div().debug_selector(|| "item-category".into()).child(chip).into_any_element()
@@ -463,7 +470,7 @@ impl QueueView {
                         d.child(div().debug_selector(|| "item-finish".into()).child(Button::new("item-finish", "Mark Done").icon(IconName::Check).size(ButtonSize::Small).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.act(finish.clone(), cx)))))
                     })
                     // (What an item says is a client's to change only where the box takes it.)
-                    .when(self.writes && !fixed && self.whole().is_some_and(|whole| !whole.told), |d| {
+                    .when(self.writes && item.removed.is_none() && self.whole().is_some_and(|whole| !whole.told), |d| {
                         d.child(div().debug_selector(|| "item-edit".into()).child(Button::new("item-edit", "Edit…").icon(IconName::Pencil).size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.act(Act::Edit, cx)))))
                     })
                     .children(more),
@@ -616,7 +623,7 @@ impl QueueView {
             for (header, filters) in offered {
                 entries.push(MenuItemSpec::Header(header));
                 for filter in filters {
-                    let on = self.filters.iter().position(|each| each == &filter);
+                    let on = self.filters.iter().position(|each| each.same(&filter));
                     let label = match &filter {
                         super::Filter::Computer { name, .. } | super::Filter::Owner { name, .. } => name.clone(),
                         super::Filter::Source(kind) => source_name(kind),
@@ -685,6 +692,11 @@ impl QueueView {
                         .child(more)
                         .when(self.writes, |d| {
                             d.child(div().debug_selector(|| "queue-new".into()).child(Button::icon_only("queue-new", IconName::Plus, "New Item").primary().size(ButtonSize::Small).tooltip("New Item").on_click(cx.listener(|this, _, _, cx| this.act(Act::New, cx)))))
+                        })
+                        // A box that takes no item from a client: the + is there, off, and says why
+                        // where it's looked for.
+                        .when(!self.writes && self.queue().is_some(), |d| {
+                            d.child(div().debug_selector(|| "queue-new-off".into()).child(Button::icon_only("queue-new-off", IconName::Plus, "New Item").size(ButtonSize::Small).disabled(true).tooltip(format!("Agents add items on {}. Adding one from here isn’t in Kuvo Code there yet.", self.this_box))))
                         }),
                 )
                 .children(chips),
@@ -703,7 +715,7 @@ impl QueueView {
                 // Where it goes: one of the box's categories, or the box's own choice.
                 let picked = self.form_category.clone();
                 let shown = picked.as_ref().and_then(|id| self.category_name(id)).unwrap_or_else(|| "Chosen for you".into());
-                let entries: Vec<MenuItemSpec> = self.categories().iter().filter(|category| category.id != DONE).map(|category| MenuItemSpec::Entry { label: category.name.clone(), icon: None, checked: picked.as_ref() == Some(&category.id), danger: false, act: Act::FormCategory(category.id.clone()) }).collect();
+                let entries: Vec<MenuItemSpec> = self.categories().iter().map(|category| MenuItemSpec::Entry { label: category.name.clone(), icon: None, checked: picked.as_ref() == Some(&category.id), danger: false, act: Act::FormCategory(category.id.clone()) }).collect();
                 let trigger = div()
                     .id("sheet-category")
                     .debug_selector(|| "sheet-category".into())

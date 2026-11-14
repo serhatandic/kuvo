@@ -92,7 +92,7 @@ fn the_queue_lists_the_boxs_items_under_its_categories_with_done_folded(cx: &mut
     // Each item wears its category as a chip; one at work spins.
     assert!(shown(cx, "item-wqi_231-chip") && shown(cx, "item-working-wqi_231") && !shown(cx, "item-working-wqi_234"));
     // The counts are the box's.
-    assert!(shown(cx, "group-next-count") && shown(cx, "group-done-count"));
+    assert!(shown(cx, "group-next-count-6") && shown(cx, "group-done-count-12"));
 
     // Done is folded until it's opened; so is what's deleted.
     assert!(!shown(cx, "item-wqi_251") && !shown(cx, "item-wqi_262"));
@@ -142,7 +142,7 @@ fn the_search_and_the_filters_narrow_what_shows(cx: &mut TestAppContext) {
     click(cx, "queue-search");
     cx.simulate_input("DOCS");
     assert!(shown(cx, "item-wqi_239") && shown(cx, "item-wqi_252") && !shown(cx, "item-wqi_231"));
-    assert!(!shown(cx, "group-later-count"));
+    assert!(!shown(cx, "group-later-count-6") && shown(cx, "group-later"));
     // A number finds its item.
     cx.simulate_keystrokes("cmd-a backspace");
     cx.simulate_input("#234");
@@ -151,7 +151,7 @@ fn the_search_and_the_filters_narrow_what_shows(cx: &mut TestAppContext) {
     assert!(shown(cx, "queue-empty"));
     // Escape clears it.
     cx.simulate_keystrokes("escape");
-    assert!(shown(cx, "item-wqi_231") && shown(cx, "group-later-count"));
+    assert!(shown(cx, "item-wqi_231") && shown(cx, "group-later-count-6"));
 
     // A filter the box's view offers, on as a chip to take off.
     click(cx, "queue-filter");
@@ -240,8 +240,8 @@ fn moving_an_item_and_marking_it_done_go_through_the_box(cx: &mut TestAppContext
     assert_eq!(item_said(&stand_in, "wqi_234")["category"], "later");
     // It's drawn where the box puts it: under Later, after what was there.
     assert!(top(cx, "item-wqi_234") > top(cx, "item-wqi_242") && top(cx, "item-wqi_234") < top(cx, "group-cat_design"));
-    // The counts are read again from the box.
-    assert_eq!(said(&stand_in, "kuvo/work-queue?owner=all&counts=1")["counts"]["categories"], json!({ "next": 5, "later": 7, "cat_design": 3, "parked": 4, "done": 12 }));
+    // The counts drawn are the box's, read again after the change.
+    assert!(shown(cx, "group-next-count-5") && shown(cx, "group-later-count-7") && !shown(cx, "group-next-count-6"));
 
     // From its page: its category is a menu of the box's categories.
     click(cx, "item-wqi_234");
@@ -282,7 +282,7 @@ fn deleting_an_item_and_bringing_it_back(cx: &mut TestAppContext) {
     click(cx, "menu-item-Delete");
     assert_eq!(stand_in.seen_at("DELETE", "kuvo/work-queue/items/wqi_235").len(), 1);
     assert!(!shown(cx, "item-wqi_235"), "gone from its category");
-    assert_eq!(said(&stand_in, "kuvo/work-queue?owner=all&counts=1")["counts"]["removed"], 2);
+    assert!(shown(cx, "group-deleted-count-2") && shown(cx, "group-next-count-5"), "counted again by the box");
 
     // It's kept under Deleted, folded, with the way back.
     click(cx, "group-deleted");
@@ -367,7 +367,10 @@ fn a_box_that_takes_no_writing_offers_none(cx: &mut TestAppContext) {
     stand_in.queue_writable(false);
     let (_workspace, page, cx) = queue(cx, &stand_in);
     assert!(!page.read_with(cx, |page, _| page.writes()));
-    assert!(!shown(cx, "queue-new"));
+    // The + is there, off (it says why where it's looked for), and opens nothing.
+    assert!(!shown(cx, "queue-new") && shown(cx, "queue-new-off"));
+    click(cx, "queue-new-off");
+    assert_eq!(page.read_with(cx, |page, _| page.sheet().cloned()), None);
     // Said plainly, at the queue's foot.
     click(cx, "group-next");
     click(cx, "group-later");
@@ -428,7 +431,7 @@ fn categories_are_made_renamed_and_removed_through_the_box(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-fn a_queue_that_cant_be_read_says_so_and_an_empty_one_says_that(cx: &mut TestAppContext) {
+fn a_queue_that_cant_be_read_says_so_and_is_read_again(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.queue_readable(false);
     let (_workspace, _page, cx) = queue(cx, &stand_in);
@@ -447,4 +450,127 @@ fn a_box_with_no_items_says_so(cx: &mut TestAppContext) {
     assert!(shown(cx, "queue-empty") && shown(cx, "tab-next") && !shown(cx, "group-next") && !shown(cx, "group-deleted"));
     // Nothing to filter by: no filter is offered.
     assert!(!shown(cx, "queue-filter"));
+}
+
+#[gpui::test]
+fn every_count_drawn_is_the_boxs_never_the_apps(cx: &mut TestAppContext) {
+    // A box counts what a view may not list whole: where its count and its list differ, the count
+    // drawn is the box's.
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.count_category("next", 41);
+    let (_workspace, _page, cx) = queue(cx, &stand_in);
+    assert!(shown(cx, "group-next-count-41") && !shown(cx, "group-next-count-6"));
+    assert!(shown(cx, "group-later-count-6"));
+}
+
+#[gpui::test]
+fn a_change_whose_reread_fails_keeps_what_the_box_answered(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_workspace, _page, cx) = queue(cx, &stand_in);
+    // The box takes the move, then can't be read: the item stays where the box put it.
+    stand_in.queue_readable(false);
+    click(cx, "item-wqi_234-more");
+    click(cx, "menu-item-Later");
+    assert_eq!(item_said(&stand_in, "wqi_234")["category"], "later");
+    assert!(top(cx, "item-wqi_234") > top(cx, "group-later"), "under Later, as the box answered");
+}
+
+/// The page as the app runs it: what it asks of the box is answered off the window's thread, so an
+/// answer can come after you've gone elsewhere.
+mod live {
+    use super::*;
+    use gpui::{AppContext as _, Context, IntoElement, ParentElement, Render, Styled, Window, div};
+    use kuvo::areas::Reading;
+    use kuvo::queue::Act;
+
+    struct Host {
+        page: Entity<QueueView>,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.page.clone())
+        }
+    }
+
+    fn host<'a>(cx: &'a mut TestAppContext, stand_in: &StandIn) -> (Entity<QueueView>, &'a mut VisualTestContext) {
+        cx.update(|cx| {
+            Theme::init(Appearance::Light, cx);
+            kuvo::bind_keys(cx);
+        });
+        let client = BoxClient::new(stand_in.clone());
+        let said = client.work_queue_view().expect("the stand-in's queue");
+        let (host, cx) = cx.add_window_view(|_, cx| Host { page: cx.new(|cx| QueueView::new(client, true, cx)) });
+        let page = host.read_with(cx, |host, _| host.page.clone());
+        cx.simulate_resize(size(px(1280.), px(1600.)));
+        page.update(cx, |page, cx| {
+            page.set_now(NOW);
+            page.set_writes(true, cx);
+            page.set_said(Reading::Ready(said), cx);
+        });
+        cx.run_until_parked();
+        (page, cx)
+    }
+
+    #[gpui::test]
+    fn an_item_read_after_youve_gone_to_another_is_never_drawn_as_that_one(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (page, cx) = host(cx, &stand_in);
+        // One opened, and before the box answers, another.
+        page.update(cx, |page, cx| {
+            page.show(Some("item:wqi_231"), cx);
+            page.show(Some("item:wqi_234"), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(page.read_with(cx, |page, _| page.whole().map(|whole| whole.item.id.clone())), Some("wqi_234".into()));
+        assert!(shown(cx, "item-no-body") && !shown(cx, "item-progress"), "the second one's page, with none of the first's");
+    }
+
+    #[gpui::test]
+    fn a_refusal_that_comes_after_youve_gone_shows_over_no_other_items_page(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (page, cx) = host(cx, &stand_in);
+        page.update(cx, |page, cx| page.show(Some("item:wqi_242"), cx));
+        cx.run_until_parked();
+        // Mark Done on one whose computer isn't answering, pressed twice, then on to another item
+        // before the box says so.
+        page.update(cx, |page, cx| {
+            page.act(Act::Move { item: "wqi_242".into(), category: "done".into() }, cx);
+            page.act(Act::Move { item: "wqi_242".into(), category: "done".into() }, cx);
+            page.show(Some("item:wqi_234"), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(stand_in.seen_at("POST", "kuvo/work-queue/items/wqi_242/move").len(), 1, "one at a time for an item");
+        assert!(!shown(cx, "queue-problem") && shown(cx, "item-finish"));
+        // Nothing was left busy: its own change still goes.
+        click(cx, "item-finish");
+        assert_eq!(item_said(&stand_in, "wqi_234")["category"], "done");
+    }
+
+    #[gpui::test]
+    fn a_sheets_answer_is_its_own_openings(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (page, cx) = host(cx, &stand_in);
+        // New Item saved, and before the box answers: on to a category, and New Category opened and
+        // saved too.
+        page.update(cx, |page, cx| page.act(Act::New, cx));
+        cx.run_until_parked();
+        cx.simulate_input("A status page");
+        page.update(cx, |page, cx| {
+            page.save_sheet(cx);
+            page.show(Some("category:later"), cx);
+            page.act(Act::NewCategory, cx);
+        });
+        cx.run_until_parked();
+        // The item was added and is in the list, and the sheet open now is still open, untouched.
+        assert_eq!(bodies(&stand_in, "POST", "kuvo/work-queue/items").len(), 1);
+        assert!(page.read_with(cx, |page, _| matches!(page.said(), Reading::Ready(said) if said.items.iter().any(|item| item.title == "A status page"))));
+        assert_eq!(page.read_with(cx, |page, _| page.sheet().cloned()), Some(Sheet::NewCategory));
+        assert!(!shown(cx, "sheet-error"));
+        // It saves as itself (nothing was left saving).
+        cx.simulate_input("Bugs");
+        cx.simulate_keystrokes("enter");
+        assert_eq!(bodies(&stand_in, "POST", "kuvo/work-queue/categories"), vec![json!({ "add": "Bugs" })]);
+        assert!(!shown(cx, "queue-sheet"));
+    }
 }

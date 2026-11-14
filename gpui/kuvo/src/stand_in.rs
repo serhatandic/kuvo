@@ -146,6 +146,11 @@ impl StandIn {
         self.state().queue.down = !readable;
     }
 
+    /// What it says `category` counts, whatever its items are.
+    pub fn count_category(&self, category: &str, count: usize) {
+        self.state().queue.counted.push((category.to_owned(), count));
+    }
+
     /// Whether it takes an item added or rewritten by a client (no box does yet: the routes are
     /// proposed), and says so in its features.
     pub fn queue_writable(&self, writable: bool) {
