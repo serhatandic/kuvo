@@ -20,3 +20,22 @@ worktree `~/.kuvo-code/data/opencode/worktree/c5e2b5/tidy-otter`. Never merged t
 ## Other repos
 - kuvo-web: worktree `~/.kuvo-code/tmp/opencode/kuvo-web-674`, branch `docs/674`.
 - Phone: see the final report.
+
+## State (2026-11-14, late)
+- Box: done and committed (statuses, labels, migrate, POST/PATCH, can, q, tools, forward PATCH guarded by `work-queue.edit`).
+- New tests: `box/bridge-tests/work-queue-statuses.test.js` (12, all fail on main's built box: proof taken),
+  `box/test/work-queue-migrate.test.ts` (3; run on lokum with `scripts/lokum-box-check.sh <worktree> 674 test/work-queue-migrate.test.ts`: 2 passed there before the third was added).
+- KuvoClient: decodes `status`→`category`, `statuses`→`categories` (In progress left out: its own section), `inProgress` = status in-progress;
+  priority/labels/assignee/due/can added; names both apps build against unchanged (the retired Mac app wasn't compiled by this session).
+- Phone: worktree `~/.kuvo-code/tmp/kuvo-674/phone` (branch `kuvo/674-work-queue-model`), `kuvo-ai` beside it is a symlink to the kuvo-ai worktree.
+  Compile check (batch dir `~/.kuvo-code/tmp/batch-674`), WorkQueueListTests 11, WorkItemChipsTests 5, DemoMacTests 3, Release build: all pass.
+- Helpers (in the kuvo-ai worktree, uncommitted until they report): existing bridge tests → new model; gpui desktop app switch.
+- kuvo-web: `docs/674` in `~/.kuvo-code/tmp/opencode/kuvo-web-674`: model section drafted, UI paragraphs still to match the desktop app.
+
+## Decisions waiting on the user (with recommendations)
+1. Whose queue a client-added item goes in: `owner` given → that; a bot assignee → the bot's; else `usr_you` (new owner kind "you"). Recommended: keep.
+2. Assigning an item from `usr_you` to a bot hands it to the bot's queue; assigning one already in a conversation's queue is only a fact. Recommended: keep.
+3. `working: true` makes Todo/Backlog/Waiting → In progress; `working: false` leaves the status. Recommended: keep.
+4. Removing a label takes it off every item (no "in use" refusal); clients ask first.
+5. Phone: In progress isn't a Move To target (its own section); adding items and labels on the phone come later.
+6. The retired Swift Mac app's New/Rename/Remove Category and its move call the removed routes: it can't be edited; say so in release notes or ship with 1.0 only.
