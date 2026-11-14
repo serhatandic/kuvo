@@ -15,7 +15,7 @@ import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, writePrivate } from "../files";
 import { RUN } from "../home";
-import { categoryBefore, colorBefore, fromCategory, isClosed, PARKED_LABEL, standing } from "./statuses";
+import { colorBefore, fromCategory, isClosed, PARKED_LABEL } from "./statuses";
 
 const WORK_QUEUE = path.join(RUN, "work-queue");
 const QUEUES = path.join(WORK_QUEUE, "queues");
@@ -45,18 +45,11 @@ const queueFiles = (folder: string): string[] => {
 };
 
 /** An item as it was kept under a category, said anew (in place): its status, its labels, and the
- * statuses its events name. One marked as being worked on (a session linked to it whose last word
- * was that it started) is In progress. `name` gives a custom category's name. */
-export function migrateItem(item: Record<string, unknown>, name: (category: string) => string | undefined): void {
-  // (One with a status already is left, but where a box from before statuses moved it since.)
-  if (typeof item.status === "string") {
-    const stands = standing(item, name);
-    if (stands.status === item.status) return;
-    item.status = stands.status;
-    item.labels = stands.labels;
-    item.category = categoryBefore(stands);
-    return;
-  }
+ * statuses its events name. `name` gives a custom category's name. Whether a session linked to it
+ * had said it started on it (and not that it stopped): it's In progress only if that session is
+ * really at work, which the box can say once its engine answers (`settleStarted`). */
+export function migrateItem(item: Record<string, unknown>, name: (category: string) => string | undefined): boolean {
+  if (typeof item.status === "string") return false;
   const to = (category: unknown) => fromCategory(category, typeof category === "string" ? name(category) : undefined);
   const { status, label } = to(item.category);
   const sessions = (Array.isArray(item.sessions) ? item.sessions : []).flatMap(each => (isObject(each) && typeof each.session === "string" ? [each.session] : []));
@@ -74,10 +67,10 @@ export function migrateItem(item: Record<string, unknown>, name: (category: stri
       if (now.label) each[`${side}Label`] = now.label;
     }
   }
-  item.status = working ? "in-progress" : status;
+  item.status = status;
   item.labels = label ? [label] : [];
-  // (What a box from before statuses still reads it under: `asKept`, store.ts.)
-  item.category = categoryBefore({ status: item.status as string, labels: item.labels as string[] });
+  delete item.category;
+  return working;
 }
 
 // Where the old categories stood, for the order items keep within a status: Next, Later, the custom
@@ -129,13 +122,14 @@ function migrate(): void {
   // Every item as it was, by its id: its status and labels now, and where it stood (its category's
   // place, then its own), which is the order it keeps among those of its status.
   const was: { id: string; category: unknown; order: number; said: Record<string, unknown> }[] = [];
+  const started: string[] = [];
   for (const name of queueFiles(path.join(BEFORE, "queues"))) {
     const queue = jsonOf(path.join(BEFORE, "queues", name));
     if (!isObject(queue) || !Array.isArray(queue.items)) continue;
     for (const each of queue.items) {
       if (!isObject(each) || typeof each.id !== "string" || typeof each.status === "string") continue;
       const said = structuredClone(each);
-      migrateItem(said, id => names.get(id));
+      if (migrateItem(said, id => names.get(id))) started.push(each.id);
       was.push({ id: each.id, category: each.category, order: typeof each.order === "number" && Number.isFinite(each.order) ? each.order : 0, said });
     }
   }
@@ -177,14 +171,7 @@ function migrate(): void {
     if (!isObject(queue) || !Array.isArray(queue.items)) continue;
     let changed = false;
     queue.items = queue.items.map(each => {
-      if (!isObject(each)) return each;
-      if (typeof each.status === "string") {
-        // (Moved over already: left, but where a box from before statuses moved it since.)
-        const before = each.status;
-        migrateItem(each, id => names.get(id));
-        if (each.status !== before) changed = true;
-        return each;
-      }
+      if (!isObject(each) || typeof each.status === "string") return each;
       changed = true;
       // (Said anew from what it holds now; its place, from where everything stood before.)
       migrateItem(each, id => names.get(id));
@@ -196,7 +183,23 @@ function migrate(): void {
   }
   // (The categories are in the copy, and labels now: the file nothing reads any more goes.)
   fs.rmSync(CATEGORIES_FILE, { force: true });
-  writePrivate(MODEL_FILE, JSON.stringify({ model: MODEL, at: Date.now() }));
+  // (`started`: the items a session had said it was on, to be In progress if it's at work now.)
+  writePrivate(MODEL_FILE, JSON.stringify({ model: MODEL, at: Date.now(), ...(started.length ? { started } : {}) }));
+}
+
+/** The items a session had said it was working on when they were moved over (`started`), still to
+ * be looked at; none once they have been. */
+export function startedThen(): string[] {
+  const kept = jsonOf(MODEL_FILE);
+  return isObject(kept) && Array.isArray(kept.started) ? kept.started.filter((each): each is string => typeof each === "string") : [];
+}
+
+/** They've been looked at: said so, for good. */
+export function forgetStarted(): void {
+  const kept = jsonOf(MODEL_FILE);
+  if (!isObject(kept) || kept.started === undefined) return;
+  const { started: _, ...rest } = kept;
+  writePrivate(MODEL_FILE, JSON.stringify(rest));
 }
 
 /** The items here kept with statuses, from now on: moved over from categories where they weren't

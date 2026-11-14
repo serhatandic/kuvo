@@ -12,8 +12,6 @@ const { WORK_QUEUE, allItems, changeQueues, Refusal } = await import("../src/lin
 const { addLabel } = await import("../src/link/work-queue/labels")
 const { forgetMigrated } = await import("../src/link/work-queue/migrate")
 const { labels } = await import("../src/link/work-queue/labels")
-const { itemOf } = await import("../src/link/work-queue/store")
-const { keepTold, readTold, toldOf } = await import("../src/link/work-queue/told")
 
 const before = path.join(WORK_QUEUE, "before-statuses")
 const fresh = () => {
@@ -74,34 +72,12 @@ test("a run cut off after the copy, one queue written, ends as an uninterrupted 
     expect(fs.readFileSync(path.join(WORK_QUEUE, "queues", "ses_b.json"), "utf8")).toBe(whole)
     // The first change after it is kept with statuses, and nothing is moved over twice.
     changeQueues(book => { book.find({ number: 1 })!.status = "in-review" })
-    // (Every item kept is still one to a box from before statuses, which reads it by a category.)
-    for (const name of ["ses_a.json", "ses_b.json"]) {
-      for (const each of JSON.parse(fs.readFileSync(path.join(WORK_QUEUE, "queues", name), "utf8")).items) expect(each.category).toMatch(/^(next|later|parked|done)$/)
-    }
     forgetMigrated()
     expect(stands()[1]).toEqual(["in-review", [], 1])
     expect(JSON.parse(fs.readFileSync(path.join(before, "queues", "ses_a.json"), "utf8")).items[0].category).toBe("next")
   } finally {
     fs.rmSync(copy, { recursive: true, force: true })
   }
-})
-
-test("an item a computer from before statuses hands, moves or tells is said anew as it comes, never dropped", () => {
-  // As a hand-off or a move brings it whole.
-  const whole = itemOf(item(21, "cat_security-privacy", { doneAt: undefined }), "ses_a")!
-  expect([whole.status, whole.labels, whole.title, whole.notes.length, whole.number]).toEqual(["todo", ["cat_security-privacy"], "Item 21", 1, 21])
-  expect((whole as unknown as Record<string, unknown>).category).toBeUndefined()
-  expect(itemOf(item(22, "parked"), "ses_a")!.status).toBe("backlog")
-  expect(itemOf(item(23, "cat_waiting-on-you"), "ses_a")!.status).toBe("needs-you")
-  expect(itemOf(item(24, "done", { doneAt: 5 }), "ses_a")).toMatchObject({ status: "done", doneAt: 5 })
-  // As it tells its queue: summaries under categories, its custom ones beside them.
-  const summary = (n: number, category: string) => ({ id: `wqi_${String(n).padStart(20, "0")}`, number: n, owner: "ses_far", title: `Far ${n}`, category, order: n, inProgress: false, sessions: [], noteCount: 0, fileCount: 0, linkCount: 0, created: { at: 1, by: { user: true } }, updated: { at: 2, by: { user: true } } })
-  const told = toldOf({ id: "wqt_0123456789abcdef", at: 5, kind: "mac", items: [summary(31, "next"), summary(32, "later"), summary(33, "cat_features")], owners: [], categories: [{ id: "cat_features", name: "Features" }] }, 10)!
-  expect(told.items.map(each => [each.number, each.status, each.labels, each.priority])).toEqual([[31, "todo", [], "normal"], [32, "backlog", [], "normal"], [33, "todo", ["cat_features"], "normal"]])
-  // Its custom categories are labels here, by the names it gave them; never a primary's list to take.
-  expect(told.labels).toEqual([{ id: "cat_features", name: "Features", color: expect.stringMatching(/^(orange|pink|indigo|mint|coral|amber)$/) }])
-  expect(told.beforeLabels).toBe(true)
-  expect(toldOf({ id: "wqt_0123456789abcdef", at: 5, kind: "mac", items: [], owners: [], labels: [{ id: "lbl_bug", name: "Bug", color: "coral" }] }, 10)!.beforeLabels).toBeUndefined()
 })
 
 test("where the copy can't be made, items still read (each said anew) and nothing is changed until it can", () => {
@@ -123,18 +99,3 @@ test("where the copy can't be made, items still read (each said anew) and nothin
   expect(labels().map(each => each.name)).toEqual(["Tests & tooling", "Edge cases", "Parked"])
 })
 
-test("what a computer told is kept so a box from before statuses still reads it, and read back here without that", () => {
-  const key = "k".repeat(43)
-  const item = { id: "wqi_00000000000000000041", number: 41, owner: "ses_far", title: "Far", status: "backlog", order: 1, priority: "high", labels: ["lbl_parked"], sessions: [], noteCount: 0, fileCount: 0, linkCount: 0, created: { at: 1, by: { user: true } }, updated: { at: 2, by: { user: true } } }
-  const told = toldOf({ id: "wqt_0123456789abcdef", at: 5, kind: "mac", items: [item, { ...item, id: "wqi_00000000000000000042", number: 42, status: "done", labels: [] }], owners: [], labels: [{ id: "lbl_parked", name: "Parked", color: "graphite" }] }, 10)!
-  expect(keepTold(key, told, 20)).toBe(true)
-  const file = path.join(WORK_QUEUE, "peers", `${key}.json`)
-  const kept = JSON.parse(fs.readFileSync(fs.existsSync(file) ? file : path.join(WORK_QUEUE, "told", `${key}.json`), "utf8"))
-  // As such a box reads it: `categories`, and each item under a category it knows.
-  expect(kept.categories).toEqual([])
-  expect(kept.items.map((each: { number: number; category: string }) => [each.number, each.category])).toEqual([[41, "parked"], [42, "done"]])
-  // As this box reads it: by status, with neither.
-  const read = readTold(key)!
-  expect(read.items.map(each => [each.number, each.status, "category" in each])).toEqual([[41, "backlog", false], [42, "done", false]])
-  expect("categories" in read).toBe(false)
-})

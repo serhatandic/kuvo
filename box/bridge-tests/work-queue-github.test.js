@@ -187,6 +187,14 @@ test("GitHub's word on screen: read again only once it's due, closed is Done (it
   const moved = await route("PATCH", `kuvo/work-queue/items/${item.id}`, { status: "todo" });
   assert.equal(moved.status, 400);
   assert.equal(moved.body.message, 'gh:kuvo-test/app#12 "Upload retries drop the name" is closed on GitHub, so it\'s Done: it\'s back where it stood once it\'s reopened there.');
+  // Nothing else of it is set here meanwhile either, as its `can` says: not its priority, labels,
+  // who it's for, its due day or its place.
+  const closedNow = (await view("ses_lead")).items.find(each => each.id === item.id);
+  assert.deepEqual([closedNow.can.set, closedNow.can.assign, closedNow.can.close, closedNow.can.edit, closedNow.can.delete], [false, false, false, false, true]);
+  for (const body of [{ priority: "high" }, { labels: [] }, { assignee: null }, { due: "2026-12-01" }, { top: true }]) {
+    const refused = await route("PATCH", `kuvo/work-queue/items/${item.id}`, body);
+    assert.deepEqual([refused.status, refused.body.message], [400, moved.body.message], JSON.stringify(body));
+  }
   // Agents read what was last read, and never ask GitHub themselves.
   ageReads();
   assert.match((await tool("queue_list", { done: true })).text, /Done:\n- gh:kuvo-test\/app#12 "Upload retries drop the name" · closed on GitHub/);

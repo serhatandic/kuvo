@@ -258,13 +258,7 @@ function keepDone(key: string, done: Done, now: number): void {
  * answered; one asked again is answered as it was, never done twice. */
 export async function takeAct(sender: MailSender, given: unknown, reply: (payload: Record<string, unknown>) => void, run: (act: Act) => Promise<Acted>, now = Date.now()): Promise<void> {
   const act = actOf(given);
-  if (!act) {
-    // COMPAT(0.7 queue-categories): a box from before statuses hands on its client's move between categories, which this one no longer takes: answered so, in words, rather than left to time out. Goes 3 months after 0.8.0.
-    if (isObject(given) && typeof given.id === "string" && ID.test(given.id) && given.method === "POST" && given.action === "move" && peersOf(readLink()).some(each => each.key === sender.key)) {
-      reply({ acted: { id: given.id, status: 409, value: { message: `${ownName()} keeps its Work Queue with statuses now: update the computer you're on, then move it.` } } });
-    }
-    return;
-  }
+  if (!act) return;
   const link = readLink();
   // (Only from one of your computers that's still a peer.)
   const peer = peersOf(link).find(each => each.key === sender.key);

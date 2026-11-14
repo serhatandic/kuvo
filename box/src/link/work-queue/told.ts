@@ -11,7 +11,7 @@ import { cut, plainName } from "../../shared/text";
 import { listOf, locked, writePrivate } from "../files";
 import { KEY } from "../peers/known";
 import { assigneeOf, dayOf, ITEM_ID, OWNER, WORK_QUEUE, whoOf as keptWho, type Who } from "./store";
-import { categoryBefore, fromCategory, PRIORITY_ID, STATUS_ID } from "./statuses";
+import { PRIORITY_ID, STATUS_ID } from "./statuses";
 import { LABEL_ID, labelOf, MOST_LABELS, type Label } from "./labels";
 import type { ItemSummary, OwnerFacts } from "./view";
 
@@ -40,9 +40,6 @@ export interface Told extends Numbering {
   items: ToldItem[];
   owners: OwnerFacts[];
   labels: Label[];
-  /** From a box that told categories (before statuses): its `labels` are what those became, never
-   * a primary's list for the boxes that number from it. */
-  beforeLabels?: boolean;
 }
 
 /** How many items a computer tells at most, and of its Done ones. */
@@ -65,11 +62,9 @@ const stamp = (value: unknown) => (isObject(value) ? { at: time(value.at), by: w
 export function toldItemOf(given: unknown, latest = Infinity): ToldItem | null {
   if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.owner !== "string" || !OWNER.test(given.owner)) return null;
   const title = words(given.title, 200);
-  // Where it stands: a status this box knows, else Todo.
-  // COMPAT(0.7 queue-categories): one told under a category by a box from before statuses, said anew. Goes 3 months after 0.8.0.
-  const before = typeof given.status === "string" ? null : fromCategory(given.category);
-  const status = before ? before.status : STATUS_ID.test(given.status as string) ? given.status as string : "todo";
-  const labels = before ? (before.label ? [before.label] : []) : (Array.isArray(given.labels) ? given.labels : []).filter((each): each is string => typeof each === "string" && LABEL_ID.test(each)).slice(0, 20);
+  // (Where it stands: a status this box knows, else Todo.)
+  const status = typeof given.status === "string" && STATUS_ID.test(given.status) ? given.status : "todo";
+  const labels = (Array.isArray(given.labels) ? given.labels : []).filter((each): each is string => typeof each === "string" && LABEL_ID.test(each)).slice(0, 20);
   const assignee = assigneeOf(given.assignee);
   const progress = isObject(given.progress)
     ? { ...(typeof given.progress.value === "number" && given.progress.value >= 0 && given.progress.value <= 1 ? { value: given.progress.value } : {}), ...(typeof given.progress.note === "string" ? { note: words(given.progress.note, 300) } : {}) }
@@ -86,7 +81,7 @@ export function toldItemOf(given: unknown, latest = Infinity): ToldItem | null {
   const seen = source && isObject(given.seen) && typeof given.seen.state === "string" && /^[a-z_]{1,20}$/.test(given.seen.state)
     // (Never later than when it was told, nor than now: a clock set ahead there wins no read here.)
     ? { state: given.seen.state, at: Math.min(time(given.seen.at), latest), ...(typeof given.seen.checked === "number" ? { checked: Math.min(time(given.seen.checked), latest) } : {}), ...(given.seen.gone === true ? { gone: true } : {}) } : undefined;
-  const keptIn = seen && typeof given.keptIn === "string" ? (STATUS_ID.test(given.keptIn) ? given.keptIn : fromCategory(given.keptIn).status) : undefined;
+  const keptIn = seen && typeof given.keptIn === "string" && STATUS_ID.test(given.keptIn) ? given.keptIn : undefined;
   return {
     id: given.id,
     ...(whole(given.number) ? { number: whole(given.number) } : {}),
@@ -135,15 +130,15 @@ export function numberingOf(given: Record<string, unknown>): Numbering {
 /** What a computer told, as it came, cleaned: null for what isn't. */
 export function toldOf(given: unknown, now = Date.now()): Omit<Told, "heard"> | null {
   if (!isObject(given) || typeof given.id !== "string" || !/^wqt_[A-Za-z0-9_-]{8,40}$/.test(given.id) || typeof given.at !== "number" || !Array.isArray(given.items)) return null;
+  // (Only from a box that keeps statuses and labels: what another says of its queue isn't read as
+  // an empty list of labels, which would take a primary's off every item here.)
+  if (!Array.isArray(given.labels)) return null;
   const seen = new Set<string>();
   const latest = Math.min(given.at, now);
   const items = given.items.slice(0, MOST_TOLD).map(each => toldItemOf(each, latest)).filter((each): each is ToldItem => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
   const owners = (Array.isArray(given.owners) ? given.owners : []).slice(0, MOST_TOLD).map(ownerOf).filter((each): each is OwnerFacts => each !== null);
-  // COMPAT(0.7 queue-categories): a box from before statuses tells its custom categories (`categories`), labels here, named as it named them. Goes 3 months after 0.8.0.
-  const before = Array.isArray(given.labels) ? [] : Array.isArray(given.categories) ? given.categories : [];
-  // (A box with statuses says `categories: []` too, for such a box: `labels` says which it is.)
-  const labels = [...(Array.isArray(given.labels) ? given.labels : []), ...before].slice(0, MOST_LABELS).map(labelOf).filter((each): each is Label => each !== null);
-  return { id: given.id, at: Math.min(given.at, now), items, owners, labels, ...numberingOf(given), ...(Array.isArray(given.labels) ? {} : { beforeLabels: true }) };
+  const labels = (Array.isArray(given.labels) ? given.labels : []).slice(0, MOST_LABELS).map(labelOf).filter((each): each is Label => each !== null);
+  return { id: given.id, at: Math.min(given.at, now), items, owners, labels, ...numberingOf(given) };
 }
 
 /** What the computer `key` last told, or null. */
@@ -152,34 +147,12 @@ export function readTold(key: string): Told | null {
   try {
     const kept = JSON.parse(fs.readFileSync(fileOf(key), "utf8"));
     if (!isObject(kept) || typeof kept.at !== "number" || !Array.isArray(kept.items)) return null;
-    // COMPAT(0.7 queue-categories): what was kept of a box that told categories, before this one took statuses, read again as it came. Goes 3 months after 0.8.0.
-    if (!Array.isArray(kept.labels)) {
-      const again = toldOf(kept, Infinity);
-      return again ? { ...again, heard: typeof kept.heard === "number" ? kept.heard : 0 } : null;
-    }
-    // (Without what's kept only for a box from before statuses to read, `asToldKept`.)
-    const { categories: _, ...told } = kept;
-    // (One such a box put there itself, with no status: read as it came.)
-    const items: unknown[] = [];
-    for (const each of kept.items) {
-      if (!isObject(each)) continue;
-      if (typeof each.status !== "string") {
-        const again = toldItemOf(each);
-        if (again) items.push(again);
-        continue;
-      }
-      const { category: __, ...item } = each;
-      items.push(item);
-    }
-    return { ...told, items } as unknown as Told;
+    if (!Array.isArray(kept.labels)) return null;
+    return kept as unknown as Told;
   } catch {
     return null;
   }
 }
-
-// What a computer told, as it goes to disk.
-// COMPAT(0.7 queue-categories): with `categories` and each item's `category`, as a box from before statuses reads them (a released Mac puts its own box over this one for a while), so its views of your other computers still answer; this box reads neither. Goes 3 months after 0.8.0.
-const asToldKept = (told: Told): Told & { categories: never[] } => ({ ...told, items: told.items.map(item => ({ ...item, category: categoryBefore(item) })), categories: [] });
 
 // (One process at a time changes what's kept: the link takes what's told, a route patches it.)
 const LOCK = path.join(WORK_QUEUE, ".told.lock");
@@ -193,7 +166,7 @@ export function keepTold(key: string, told: Omit<Told, "heard">, now = Date.now(
     // Older than what's kept: mail come late, unless it's a good while older (its clock was set
     // back), when it's the newer word after all.
     if (kept && kept.at > told.at && kept.at - told.at < 600_000 && kept.id !== told.id) return false;
-    writePrivate(fileOf(key), JSON.stringify(asToldKept({ ...told, heard: now } satisfies Told)));
+    writePrivate(fileOf(key), JSON.stringify({ ...told, heard: now } satisfies Told));
     return true;
   });
 }
@@ -217,7 +190,7 @@ export function patchTold(key: string, id: string, item: unknown, deleted: boole
       const others = kept.items.filter(each => each.id !== id);
       const items = deleted ? others
         : [...others, before ? { ...before, ...fresh, sessions: before.sessions, ...(before.progress ? { progress: before.progress } : {}), ...(before.handedFrom ? { handedFrom: before.handedFrom } : {}) } : fresh];
-      writePrivate(fileOf(key), JSON.stringify(asToldKept({ ...kept, items })));
+      writePrivate(fileOf(key), JSON.stringify({ ...kept, items }));
     });
   } catch {}
 }

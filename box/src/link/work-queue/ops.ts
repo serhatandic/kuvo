@@ -15,7 +15,7 @@ import { isClosed, priorityNamed, PRIORITIES, statusName, statusNamed, STATUSES 
 import { assigneeFor } from "./assignees";
 import { takeNumber, type Primary } from "./numbers";
 import {
-  dayOf, FILES, filesOf, matching, MOST_BODY, MOST_EVENTS, MOST_FILE, MOST_FILES, MOST_ITEMS, MOST_LINKS, MOST_NOTE, MOST_NOTES, MOST_TITLE, newItemID, noteHanded, placeBeside, placeIn, Refusal,
+  changeQueues, dayOf, FILES, filesOf, matching, MOST_BODY, MOST_EVENTS, MOST_FILE, MOST_FILES, MOST_ITEMS, MOST_LINKS, MOST_NOTE, MOST_NOTES, MOST_TITLE, newItemID, noteHanded, placeBeside, placeIn, Refusal,
   type Book, type Item, type ItemEvent, type KeptFile, type Source, type Who,
 } from "./store";
 import { nameOf, refOf } from "./view";
@@ -291,6 +291,13 @@ export function intoTodo(item: Item, from: string, now: number): void {
   noteEvent(item, { at: now, by: THE_BOX, kind: "moved", from, to: "todo" });
 }
 
+/** A label taken off every item here (it's being removed): those deleted too. */
+export function stripLabel(id: string): void {
+  changeQueues(book => {
+    for (const item of book.items()) if (item.labels.includes(id)) item.labels = item.labels.filter(each => each !== id);
+  });
+}
+
 /** What an add or a change gives: the fields, as the tools name them. */
 export interface Fields {
   title?: unknown;
@@ -366,6 +373,15 @@ export function addItem(book: Book, owner: string, fields: Fields, acting: Actin
 // Done asked of an issue or a pull request: GitHub's to say.
 const refuseDone = (name: string): never => refuse(`${name} is Done or Canceled once it's closed on GitHub (or, a pull request, merged): close it there, or let the pull request that fixes it close it.`);
 
+/** An issue or a pull request GitHub has closed (or that's gone from it) stands as Done until it's
+ * open there again: where it stands isn't set here meanwhile (nor, from a client, anything else of
+ * it: `can.set`). */
+export function refuseClosedThere(item: Item): void {
+  if (item.source && doneByRead(seenOf(item.source))) refuse(seenOf(item.source)!.gone
+    ? `${nameOf(item)} is gone from GitHub (or gh here can no longer see it), so it's Done: it's back where it stood once GitHub shows it again.`
+    : `${nameOf(item)} is closed on GitHub, so it's Done: it's back where it stood once it's reopened there.`);
+}
+
 /** `item` changed as `fields` say. */
 export function changeItem(book: Book, item: Item, fields: Fields, acting: Acting, { added = false }: { added?: boolean } = {}): void {
   const { who, now } = acting;
@@ -382,9 +398,7 @@ export function changeItem(book: Book, item: Item, fields: Fields, acting: Actin
     const status = statusFor(fields.status);
     // (An issue's or a pull request's Done is GitHub's: never set, nor left, here.)
     if (item.source && isClosed(status)) refuseDone(nameOf(item));
-    if (item.source && doneByRead(seenOf(item.source))) refuse(seenOf(item.source)!.gone
-      ? `${nameOf(item)} is gone from GitHub (or gh here can no longer see it), so it's Done: it's back where it stood once GitHub shows it again.`
-      : `${nameOf(item)} is closed on GitHub, so it's Done: it's back where it stood once it's reopened there.`);
+    refuseClosedThere(item);
     if (status !== item.status) {
       item.status = status;
       item.order = placeIn(book.items().filter(each => each.id !== item.id), status, { top: fields.top === true });

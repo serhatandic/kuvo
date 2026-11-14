@@ -138,11 +138,6 @@ const told = (number, owner, extra = {}) => ({
   id: `wqi_${String(number).padStart(20, "0")}`, number, owner, title: `Item ${number}`, status: "todo", order: number, priority: "normal", labels: [], sessions: [], noteCount: 0, fileCount: 0, linkCount: 0,
   created: { at: 1000, by: { session: owner, name: "Far" } }, updated: { at: 2000, by: { session: owner, name: "Far" } }, ...extra,
 });
-// The same, as a box that kept categories tells it (0.5 to 0.7).
-const toldBefore = (number, owner, extra = {}) => {
-  const { status: _, priority: __, labels: ___, ...item } = told(number, owner);
-  return { ...item, category: "next", inProgress: false, ...extra };
-};
 const telling = (items, extra = {}) => ({ told: { id: `wqt_${crypto.randomBytes(9).toString("base64url")}`, at: Date.now(), kind: "machine", since: 5000, items, owners: [{ owner: "ses_far", kind: "session", title: "Far away" }], labels: [], ...extra } });
 
 beforeEach(() => {
@@ -181,7 +176,7 @@ test("what your other computers told shows in the All view and a lead's view, wi
   assert.equal(far.progress.note, "Writing the test");
   assert.deepEqual([far.status, far.priority, far.labels], ["in-progress", "high", ["lbl_tests"]], "where it stands, as lab said");
   assert.deepEqual(lead.labels, [{ id: "lbl_tests", name: "Tests", color: "mint" }], "a label only lab has is listed for its items");
-  assert.deepEqual(far.can, { edit: false, set: false, close: false, delete: false, restore: false, why: "lab runs an older Kuvo Code: update it to change this from here." }, "lab takes no change from another box yet, and the box says why");
+  assert.deepEqual(far.can, { edit: false, set: false, assign: false, close: false, delete: false, restore: false, why: "lab runs an older Kuvo Code: update it to change this from here." }, "lab takes no change from another box yet, and the box says why");
   assert.equal(lead.owners.find(each => each.owner === "ses_far")?.title, "Far away");
   const all = await view("all");
   assert.deepEqual(new Set(all.items.map(item => item.number)), new Set([100, 500, 501, 502]));
@@ -241,21 +236,6 @@ test("what your other computers told shows in the All view and a lead's view, wi
   assert.equal((await view("all")).items.some(item => item.number === 600), false);
 });
 
-test("what a box that kept categories tells is said anew here: where each item stands as a status, its custom category a label", async () => {
-  // (As 0.5 to 0.7 told: `category` and `inProgress` on each item, `categories` beside them.)
-  const before = telling([toldBefore(900, "ses_far"), toldBefore(901, "ses_far", { category: "later" }), toldBefore(902, "ses_far", { category: "parked" }), toldBefore(903, "ses_far", { category: "done", doneAt: 3000 }), toldBefore(904, "ses_far", { category: "cat_design" })]);
-  delete before.told.labels;
-  before.told.categories = [{ id: "cat_design", name: "Design" }];
-  receive(lab, { workQueue: before });
-  sent.length = 0;
-  const all = await view("all");
-  assert.deepEqual(Object.fromEntries(all.items.map(item => [item.number, item.status])), { 900: "todo", 901: "backlog", 902: "backlog", 903: "done", 904: "todo" });
-  assert.ok(all.items.every(item => item.priority === "normal" && !("category" in item) && !("inProgress" in item)));
-  // Its custom category is a label, by its id (PROTOCOL.md, "From categories").
-  assert.deepEqual(all.items.find(item => item.number === 904).labels, ["cat_design"]);
-  assert.ok(all.labels.some(each => each.id === "cat_design"), "and the view lists it");
-});
-
 test("an item on another computer linked to a session here shows in that session's view, and its agent can't change it", async () => {
   // Lab's lead put ses_child (here) on its item: lab tells it with ses_child among its sessions.
   receive(lab, { workQueue: telling([told(700, "ses_far", { sessions: [{ session: "ses_child", title: "Sign-in", working: false }] }), told(701, "ses_far")]) });
@@ -283,7 +263,7 @@ test("a computer that isn't answering: its items show as it last told them, none
   const item = away.items.find(each => each.number === 500);
   assert.deepEqual(item.sessions.map(each => each.working), [false], "nothing on a computer that's off can be seen at work");
   assert.equal(item.status, "in-progress", "its status is as lab set it: nothing works that out");
-  assert.deepEqual(item.can, { edit: false, set: false, close: false, delete: false, restore: false, why: "lab isn't answering now (it may be asleep, off or offline): it can be changed once it's back." }, "and nothing may be done to it, the box saying why");
+  assert.deepEqual(item.can, { edit: false, set: false, assign: false, close: false, delete: false, restore: false, why: "lab isn't answering now (it may be asleep, off or offline): it can be changed once it's back." }, "and nothing may be done to it, the box saying why");
   assert.equal(item.progress.note, "Writing the test", "what it said is kept");
   assert.deepEqual(away.computers.map(each => [each.name, each.away]), [["lab", since]]);
   assert.equal((await route("GET", "kuvo/work-queue/refs?refs=500")).body.refs["500"].status, "in-progress", "its chip says where it stands");
@@ -693,14 +673,6 @@ test("what happened to an item goes with it to another computer, as its notes do
   assert.deepEqual((await route("GET", "kuvo/work-queue/labels")).body.labels, [{ id: "lbl_far", name: "Far", color: "sky" }]);
   assert.deepEqual(landed.events.slice(0, 2), far);
   assert.deepEqual(landed.events.slice(2).map(({ at: _, ...event }) => event), [{ by: { source: "kuvo", name: "Kuvo Code" }, kind: "moved", from: "triage", to: "todo" }]);
-  // One from a box that kept categories is said anew as it comes: Later is Backlog; its custom
-  // category, come with it, is a label on a Todo item.
-  await takeFrom(lab, { hand: { id: "wqh_fromlab00000006", to: "ses_child", from: "ses_farlead", by: { session: "ses_farlead", name: "Far lead" }, at: Date.now(), item: toldBefore(704, "ses_farlead", { id: "wqi_handedfromlab0000006", category: "later", body: "", notes: [], files: [], links: [], handed: [] }), files: [] } });
-  await takeFrom(lab, { hand: { id: "wqh_fromlab00000007", to: "ses_child", from: "ses_farlead", by: { session: "ses_farlead", name: "Far lead" }, at: Date.now(), item: toldBefore(705, "ses_farlead", { id: "wqi_handedfromlab0000007", category: "cat_farcat", body: "", notes: [], files: [], links: [], handed: [] }), files: [], categories: [{ id: "cat_farcat", name: "Far cat" }] } });
-  const before = async number => (await route("GET", `kuvo/work-queue/items/${number}`)).body.item;
-  assert.deepEqual([(await before(704)).status, (await before(704)).labels], ["backlog", []]);
-  assert.deepEqual([(await before(705)).status, (await before(705)).labels], ["todo", ["cat_farcat"]]);
-  assert.deepEqual((await route("GET", "kuvo/work-queue/labels")).body.labels.map(each => [each.id, each.name]), [["lbl_far", "Far"], ["cat_farcat", "Far cat"]]);
 });
 
 test("an item handed here without a number takes one as it arrives", async () => {
@@ -760,22 +732,33 @@ test("a change from a client tells your other computers sooner, never more often
   assert.equal(mailTo(lab).length, 0);
 });
 
-test("the primary's labels are this box's: added, renamed, recoloured and removed as it says; one still in use here, and one only this box has, stay", async () => {
+test("the primary's labels are this box's: added, renamed, recoloured and removed as it says, one it removes coming off every item here; this box changes none of them, and keeps its own", async () => {
   write(path.join(queues, "numbers.json"), { primary: mac.pub, leases: [[100, 149]] });
   const names = async () => (await route("GET", "kuvo/work-queue/labels")).body.labels.map(each => `${each.id}=${each.name}`);
   receive(mac, { workQueue: telling([], { kind: "mac", labels: [{ id: "lbl_design", name: "Design", color: "sky" }, { id: "lbl_review", name: "Review", color: "mint" }, { id: "lbl_used", name: "Used", color: "pink" }] }) });
   assert.deepEqual(await names(), ["lbl_design=Design", "lbl_review=Review", "lbl_used=Used"]);
   await tool("queue_labels", { add: "Mine" }, "ses_lead");
   await tool("queue_add", { title: "In use", labels: ["Used"] }, "ses_lead");
+  await tool("queue_update", { item: 100, labels: ["Used", "Mine"] }, "ses_lead");
+  // A label that's the primary's is changed and removed there: here it's refused, saying so, by
+  // you and by an agent alike, and stays as it is.
+  const words = change => `Used is one of the labels this computer takes from your first computer (the one that gives the Work Queue its numbers). ${change} it there, and it's ${change === "Remove" ? "gone" : "changed"} here too.`;
+  assert.deepEqual((await route("POST", "kuvo/work-queue/labels", { remove: "Used" })).body, { message: words("Remove") });
+  assert.deepEqual((await route("POST", "kuvo/work-queue/labels", { change: "Used", name: "Used up" })).body, { message: words("Change") });
+  assert.deepEqual(await tool("queue_labels", { remove: "Used" }, "ses_lead"), { isError: true, text: words("Remove") });
+  assert.deepEqual((await view("ses_lead")).items[0].labels, ["lbl_used", "lbl_mine"]);
+  // The primary removes it (and Design), and renames another: gone here with its word, off every
+  // item that had it; this box's own label stays, on the item too.
   receive(mac, { workQueue: telling([], { kind: "mac", labels: [{ id: "lbl_review", name: "Reviewing", color: "violet" }] }) });
-  assert.deepEqual(await names(), ["lbl_review=Reviewing", "lbl_used=Used", "lbl_mine=Mine"]);
+  assert.deepEqual(await names(), ["lbl_review=Reviewing", "lbl_mine=Mine"]);
   assert.equal((await route("GET", "kuvo/work-queue/labels")).body.labels[0].color, "violet", "its colours too");
+  assert.deepEqual((await view("ses_lead")).items[0].labels, ["lbl_mine"]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(queues, "queues", "ses_lead.json"), "utf8")).items[0].labels, ["lbl_mine"], "as it's kept, not only as it's shown");
+  // Its own it removes as ever.
+  assert.equal((await route("POST", "kuvo/work-queue/labels", { remove: "Mine" })).status, 200);
+  await tool("queue_labels", { add: "Mine" }, "ses_lead");
   // Not from another computer than the primary.
   receive(lab, { workQueue: telling([], { labels: [{ id: "lbl_labs", name: "Lab's", color: "coral" }] }) });
-  assert.deepEqual(await names(), ["lbl_review=Reviewing", "lbl_used=Used", "lbl_mine=Mine"]);
-  // Off every item here, the one the primary removed goes with its next word.
-  await tool("queue_update", { item: 100, labels: [] }, "ses_lead");
-  receive(mac, { workQueue: telling([], { kind: "mac", labels: [{ id: "lbl_review", name: "Reviewing", color: "violet" }] }) });
   assert.deepEqual(await names(), ["lbl_review=Reviewing", "lbl_mine=Mine"]);
   // A primary reached through a peer: its list as that peer tells it.
   const first = box("mac", "Old Mac");
@@ -1318,9 +1301,7 @@ test("closed and gone issues are among the latest Done told to your other comput
   // A hundred Done before either, in the same queue.
   const file = path.join(queues, "queues", "ses_lead.json");
   const whole = read(file);
-  // (Each as this box keeps one: without the category it also writes for a box from before
-  // statuses, which goes by an item's status, as it's written again.)
-  const { source: _, category: ___, ...plain } = whole.items.find(item => item.source?.ref === "gh:kuvo-test/app#13");
+  const { source: _, ...plain } = whole.items.find(item => item.source?.ref === "gh:kuvo-test/app#13");
   const before = Date.parse("2026-11-01T00:00:00Z");
   whole.items.push(...Array.from({ length: 100 }, (__, index) => ({ ...plain, id: `wqi_done${String(index).padStart(16, "0")}`, title: `Done ${index}`, status: "done", doneAt: before, number: 5000 + index, order: 5000 + index })));
   write(file, whole);
@@ -1328,8 +1309,6 @@ test("closed and gone issues are among the latest Done told to your other comput
   const told = mailTo(lab).flatMap(mail => mail.workQueue?.told?.items ?? []);
   assert.deepEqual(told.map(item => item.source?.ref).filter(Boolean).sort(), ["gh:kuvo-test/app#12", "gh:kuvo-test/app#13"]);
   assert.equal(told.length, 100, "the latest hundred Done");
-  // (Each also under the category a box from before statuses reads it by: Done there too, not Next.)
-  assert.deepEqual([...new Set(told.map(item => `${item.status} ${item.category}`))], ["done done"]);
 });
 
 test("an issue another computer told of, never read here and moved since, is found by the id its item knows: at once where that computer found it gone or elsewhere, else once it's missing where it was", async () => {

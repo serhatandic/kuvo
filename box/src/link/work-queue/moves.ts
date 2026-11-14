@@ -6,11 +6,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
-import { keepLabel, keepParked, labels } from "./labels";
-import { PARKED_LABEL } from "./statuses";
+import { keepLabel, labels } from "./labels";
 import { statusNamed } from "./statuses";
 import { intoTodo } from "./ops";
-import { asKept, changeQueues, FILE_NAME, filesOf, itemOf, OWNER, readKeptQueue, readQueueSettingAside, type Item } from "./store";
+import { changeQueues, FILE_NAME, filesOf, itemOf, OWNER, readKeptQueue, readQueueSettingAside, type Item } from "./store";
 
 /** What a move carries: each owner's items, the labels they have, and which items
  * have files (packed beside `move.json`, in `work-queue/<item>/`). */
@@ -27,7 +26,7 @@ export function packWorkQueues(owners: readonly string[]): CarriedQueues | null 
   if (!items.length) return null;
   const used = new Set(items.flatMap(item => item.labels));
   return {
-    items: items.map(asKept),
+    items,
     labels: labels().filter(each => used.has(each.id)),
     withFiles: items.filter(item => item.files.length && fs.existsSync(filesOf(item.id))).map(item => item.id),
   };
@@ -52,17 +51,14 @@ export const filesSize = (carried: CarriedQueues | undefined): number => (carrie
 /** What came with a move put in place: the items of `owners` it brought (any other owner's left
  * out, and each checked as one read from this box's own files), their files from
  * `opened/work-queue`, and the labels they have (one this box can't keep is left off; Todo for
- * a status it doesn't know). One from a box that kept categories comes as `itemOf` says it anew,
- * its custom category a label. */
+ * a status it doesn't know). */
 export function placeWorkQueues(carried: unknown, owners: readonly string[], opened: string | null): void {
   if (!isObject(carried) || !Array.isArray(carried.items)) return;
   const allowed = new Set(owners);
   const items = carried.items.flatMap(each => (isObject(each) && typeof each.owner === "string" && allowed.has(each.owner) ? [itemOf(each, each.owner)] : [])).filter((each): each is Item => each !== null);
   if (!items.length) return;
-  // COMPAT(0.7 queue-categories): a move from a box that kept categories brings its custom ones (`categories`), labels now. Goes 3 months after 0.8.0.
   const carriedLabels = new Set(items.flatMap(item => item.labels));
-  for (const each of [...(Array.isArray(carried.labels) ? carried.labels : []), ...(Array.isArray(carried.categories) ? carried.categories : [])]) if (isObject(each) && carriedLabels.has(String(each.id))) keepLabel(each);
-  if (carriedLabels.has(PARKED_LABEL)) keepParked();
+  for (const each of Array.isArray(carried.labels) ? carried.labels : []) if (isObject(each) && carriedLabels.has(String(each.id))) keepLabel(each);
   const here = new Set(labels().map(each => each.id));
   for (const item of items) {
     item.labels = item.labels.filter(each => here.has(each));

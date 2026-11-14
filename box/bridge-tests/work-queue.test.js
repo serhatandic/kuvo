@@ -1341,14 +1341,6 @@ test("what happened to an item goes with it when a move carries its queue", asyn
   assert.deepEqual([landed.status, landed.labels], ["todo", []]);
   assert.deepEqual(landed.events.at(-1).by, { source: "kuvo", name: "Kuvo Code" });
   assert.deepEqual([landed.events.at(-1).from, landed.events.at(-1).to], ["triage", "todo"]);
-  // One from a box that kept categories is said anew as it comes: Later is Backlog, and its custom
-  // category, come with it, a label.
-  link.forgetWorkQueues(["ses_scout"]);
-  const { status: _, labels: __, ...old } = carried.items[0];
-  link.placeWorkQueues({ items: [{ ...old, category: "cat_design" }, { ...old, id: "wqi_BBBBBBBBBBBBBBBBBBBB", number: 2, category: "later" }], categories: [{ id: "cat_design", name: "Design" }] }, ["ses_scout"], null);
-  const anew = await view("ses_scout");
-  assert.deepEqual(anew.items.map(item => [item.number, item.status, item.labels]), [[1, "todo", ["cat_design"]], [2, "backlog", []]]);
-  assert.deepEqual(anew.labels.map(each => [each.id, each.name]), [["cat_design", "Design"]]);
 });
 
 test("a client follows a queue: a line now, and one when it changes (another process's change too) or a linked session starts work", async () => {

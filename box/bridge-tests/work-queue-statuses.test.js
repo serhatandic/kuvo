@@ -160,8 +160,9 @@ test("items kept under categories move over to statuses and labels once, with no
   assert.deepEqual(stands(8), ["backlog", ["cat_edge-cases"]]);
   assert.deepEqual(stands(9), ["todo", ["cat_security-privacy"]]);
   assert.deepEqual(stands(14), ["todo", ["cat_features"]]);
-  // One marked as being worked on is In progress; one whose session stopped isn't.
-  assert.deepEqual(stands(10), ["in-progress", []]);
+  // One a session had said it was on stands where its category put it, until the box can say
+  // whether that session is at work (below); one whose session stopped, for good.
+  assert.deepEqual(stands(10), ["todo", []]);
   assert.deepEqual(stands(11), ["backlog", []]);
   assert.deepEqual(stands(12), ["todo", []], "a deleted one too, where it's kept for bringing back");
   assert.equal(seen.removed.length, 1);
@@ -181,8 +182,7 @@ test("items kept under categories move over to statuses and labels once, with no
   for (const was of [...before.lead, ...before.child]) {
     const now = kept.find(each => each.id === was.id);
     assert.deepEqual(held(now), held(was), `#${was.number}`);
-    // (And under a category a box from before statuses still reads: it never takes one for no item.)
-    assert.equal(now.category, now.status === "done" ? "done" : now.status === "backlog" ? (now.labels.includes("lbl_parked") ? "parked" : "later") : "next", `#${was.number}`);
+    assert.equal(now.category, undefined, `#${was.number}`);
   }
   // What happened to it stays, its moves naming statuses.
   assert.deepEqual(kept.find(each => each.number === 10).events, [{ at: 55, by: YOU, kind: "moved", from: "backlog", to: "todo", top: true }, { at: 60, by: LEAD, kind: "started" }]);
@@ -191,11 +191,11 @@ test("items kept under categories move over to statuses and labels once, with no
   // Items keep their order: within a status, by the category they came from (Next, Later, the
   // custom ones as listed, Parked), then their place there.
   const order = status => seen.items.filter(item => item.status === status).map(item => item.number);
-  assert.deepEqual(order("todo"), [13, 1, 5, 9, 14]);
+  assert.deepEqual(order("todo"), [13, 10, 1, 5, 9, 14]);
   assert.deepEqual(order("backlog"), [2, 11, 7, 8, 4]);
   // The statuses, in the order a client shows them, the closed ones last.
   assert.deepEqual(seen.statuses.map(each => [each.id, each.closed]), [["needs-you", false], ["in-review", false], ["in-progress", false], ["waiting", false], ["todo", false], ["backlog", false], ["done", true], ["canceled", true]]);
-  assert.deepEqual(seen.items.map(item => item.status).filter((each, index, all) => each !== all[index - 1]), ["needs-you", "in-progress", "todo", "backlog", "done"]);
+  assert.deepEqual(seen.items.map(item => item.status).filter((each, index, all) => each !== all[index - 1]), ["needs-you", "todo", "backlog", "done"]);
 
   // What was kept before is beside it, whole, byte for byte.
   for (const [name, text] of Object.entries(before.files)) assert.equal(fs.readFileSync(path.join(queues, "before-statuses", name), "utf8"), text, name);
@@ -203,6 +203,31 @@ test("items kept under categories move over to statuses and labels once, with no
   assert.equal(fs.existsSync(path.join(queues, "categories.json")), false);
   // Numbers go on from where they were.
   assert.equal(read("numbers.json").next, 15);
+});
+
+test("an item a session had said it was on is In progress only if that session is at work once the box can say, and that's looked at once", async () => {
+  keptBefore();
+  // A second one, whose session isn't at work any more.
+  const kept = read("queues/ses_child.json");
+  kept.items.push(old(15, "later", { owner: "ses_child", sessions: [{ session: "ses_child", since: 60 }], events: [{ at: 60, by: { session: "ses_child", name: "Sign-in" }, kind: "started" }] }));
+  write(path.join(queues, "queues", "ses_child.json"), JSON.stringify(kept));
+  const stands = async number => (await view("all")).items.find(item => item.number === number).status;
+  assert.deepEqual([await stands(10), await stands(15)], ["todo", "backlog"]);
+  // The engine can't say yet: nothing is decided, and it's asked again.
+  link.forgetQueueSettled();
+  await link.settleQueueStarted(async () => { throw new Error("the engine isn't answering"); });
+  assert.deepEqual(read("model.json").started.sort(), [id(10), id(15)]);
+  // It can: the lead is at work, the other session isn't.
+  await link.settleQueueStarted(async () => new Set(["ses_lead"]));
+  assert.deepEqual([await stands(10), await stands(15)], ["in-progress", "backlog"]);
+  assert.equal(read("model.json").started, undefined);
+  const moved = (await ok("GET", "kuvo/work-queue/items/10")).item.events.at(-1);
+  assert.deepEqual([moved.kind, moved.from, moved.to, moved.by.name], ["moved", "todo", "in-progress", "Kuvo Code"]);
+  // Never again: a status is only ever set from then on.
+  await ok("PATCH", "kuvo/work-queue/items/10", { status: "todo" });
+  link.forgetQueueSettled();
+  await link.settleQueueStarted(async () => new Set(["ses_lead", "ses_child"]));
+  assert.deepEqual([await stands(10), await stands(15)], ["todo", "backlog"]);
 });
 
 test("a move over cut off midway is carried on to the same end, from the same copy", async () => {
@@ -268,33 +293,6 @@ test("it's one way and once: what you change after isn't moved again, and the co
   for (const [name, text] of Object.entries(before.files)) assert.equal(fs.readFileSync(path.join(queues, "before-statuses", name), "utf8"), text, name);
 });
 
-test("what a box from before statuses does to an item meanwhile isn't undone: it reads it by its category, and its move is the later word", async () => {
-  keptBefore();
-  await view("all");
-  await ok("PATCH", "kuvo/work-queue/items/1", { status: "in-review" });
-  // A released Mac puts its own box over this one for a while. It reads every item (each says a
-  // category it knows), keeps `status` as a field it doesn't know, and changes only `category`.
-  const kept = read("queues/ses_lead.json");
-  for (const each of kept.items) assert.match(each.category, /^(next|later|parked|done)$/, `#${each.number}`);
-  const byOld = (number, change) => Object.assign(kept.items.find(each => each.number === number), change);
-  byOld(2, { category: "done", doneAt: 99 });   // marked Done there
-  byOld(3, { category: "next", doneAt: undefined });   // out of Done
-  byOld(5, { category: "later" });   // Architecture's, moved to Later
-  write(path.join(queues, "queues", "ses_lead.json"), JSON.stringify(kept));
-  let seen = await view("ses_lead");
-  const stands = number => { const item = seen.items.find(each => each.number === number); return [item.status, item.labels, item.doneAt]; };
-  assert.deepEqual(stands(2), ["done", [], 99]);
-  assert.deepEqual(stands(3), ["todo", [], undefined]);
-  assert.deepEqual(stands(5), ["backlog", ["cat_architecture"], undefined]);
-  assert.deepEqual(stands(1), ["in-review", [], undefined], "one it left alone stands as this box said");
-  assert.deepEqual(stands(4), ["backlog", ["lbl_parked"], undefined]);
-  // The next change here keeps it so.
-  await ok("PATCH", "kuvo/work-queue/items/4", { priority: "low" });
-  assert.deepEqual(read("queues/ses_lead.json").items.filter(each => [2, 3, 5].includes(each.number)).map(each => [each.number, each.status, each.category]), [[2, "done", "done"], [3, "todo", "next"], [5, "backlog", "later"]]);
-  seen = await view("ses_lead");
-  assert.deepEqual(stands(2), ["done", [], 99]);
-});
-
 test("its mark of being done lost, nothing is moved over twice and a label you removed stays removed", async () => {
   const before = keptBefore();
   await view("all");
@@ -358,7 +356,7 @@ test("you add an item from a client: Todo and Normal unless said, numbered as an
   const plain = (await ok("POST", "kuvo/work-queue/items", { title: "  Mine,\n plainly  " })).item;
   assert.deepEqual([plain.number, plain.title, plain.status, plain.priority, plain.labels, plain.owner, plain.assignee, plain.due], [2, "Mine, plainly", "todo", "normal", [], "usr_you", undefined, undefined]);
   assert.deepEqual(plain.created.by, { user: true });
-  assert.deepEqual(plain.can, { edit: true, set: true, close: true, delete: true, restore: false });
+  assert.deepEqual(plain.can, { edit: true, set: true, assign: true, close: true, delete: true, restore: false });
   const full = (await ok("POST", "kuvo/work-queue/items", { title: "Fix the crash", body: "It **crashes**.", status: "Backlog", priority: "urgent", labels: ["Bug"], assignee: { kind: "agent", id: "codex-cli" }, due: "2026-12-01" })).item;
   assert.deepEqual([full.number, full.status, full.priority, full.labels, full.assignee, full.due, full.owner], [3, "backlog", "urgent", ["lbl_bug"], { kind: "agent", id: "codex-cli", name: "Codex" }, "2026-12-01", "usr_you"]);
   assert.equal((await ok("GET", `kuvo/work-queue/items/${full.id}`)).item.body, "It **crashes**.");
@@ -372,7 +370,9 @@ test("you add an item from a client: Todo and Normal unless said, numbered as an
   // Your own queue is in the All view, and no agent's.
   const all = await view("all");
   assert.deepEqual(all.items.map(item => item.number), [1, 2, 4, 5, 3]);
-  assert.deepEqual(all.owners.find(each => each.owner === "usr_you"), { owner: "usr_you", kind: "you", title: null });
+  assert.deepEqual(all.owners.find(each => each.owner === "usr_you"), { owner: "usr_you", kind: "you", title: "Your own" });
+  // The day it is on the box, for what a client counts days from.
+  assert.match(all.today, /^\d{4}-\d{2}-\d{2}$/);
   assert.deepEqual((await view("usr_you")).items.map(item => item.number), [2, 3]);
   assert.doesNotMatch((await tool("queue_list", {}, "ses_lead")).text, /Mine, plainly/);
   // Who an item may be for: this box's bots, then the coding agents.
@@ -467,10 +467,10 @@ test("the box says what may be done to each item, and refuses the rest", async (
   write(path.join(queues, "queues", "ses_lead.json"), JSON.stringify(kept));
   const seen = await view("ses_lead");
   const can = title => [...seen.items, ...seen.removed].find(item => item.title === title).can;
-  assert.deepEqual(can("Plain"), { edit: true, set: true, close: true, delete: true, restore: false });
-  assert.deepEqual(can("To delete"), { edit: false, set: false, close: false, delete: false, restore: true, why: "It's deleted: bring it back to change it." });
-  assert.deepEqual(can("Item 3"), { edit: false, set: true, close: false, delete: true, restore: false, why: "Its title, its description and closing it are GitHub's." });
-  assert.deepEqual(can("Item 4"), { edit: false, set: false, close: false, delete: true, restore: false, why: "It's on its way to Far on another computer: it can be changed there once it's arrived." });
+  assert.deepEqual(can("Plain"), { edit: true, set: true, assign: true, close: true, delete: true, restore: false });
+  assert.deepEqual(can("To delete"), { edit: false, set: false, assign: false, close: false, delete: false, restore: true, why: "It's deleted: bring it back to change it." });
+  assert.deepEqual(can("Item 3"), { edit: false, set: true, assign: true, close: false, delete: true, restore: false, why: "Its title, its description and closing it are GitHub's." });
+  assert.deepEqual(can("Item 4"), { edit: false, set: false, assign: false, close: false, delete: true, restore: false, why: "It's on its way to Far on another computer: it can be changed there once it's arrived." });
   assert.deepEqual((await ok("GET", `kuvo/work-queue/items/${id(3)}`)).item.can, can("Item 3"), "an item whole says the same");
 
   // What it says can't be done is refused.
@@ -514,6 +514,34 @@ test("a search finds words in titles, descriptions and notes, and its counts are
   assert.deepEqual([none.items.length, none.counts.open, none.counts.statuses.todo], [0, 0, 0]);
   // A lead's own view is searched the same.
   assert.deepEqual((await view("ses_child", "&q=cron")).items.map(item => item.number), [3]);
+});
+
+test("a view filtered by computer, source, owner or label lists only those, and its counts are of what it lists", async () => {
+  await ok("POST", "kuvo/work-queue/labels", { add: "Bug" });
+  await ok("POST", "kuvo/work-queue/labels", { add: "Docs" });
+  await tool("queue_add", { title: "Lead's bug", labels: ["Bug"] }, "ses_lead");
+  await tool("queue_add", { title: "Lead's docs", labels: ["Docs"], status: "backlog" }, "ses_lead");
+  await tool("queue_add", { title: "Child's plain" }, "ses_child");
+  await ok("POST", "kuvo/work-queue/items", { title: "Mine, a bug", labels: ["Bug"] });
+  const kept = read("queues/ses_lead.json");
+  kept.items.push({ id: id(9), owner: "ses_lead", title: "An issue", body: "", status: "todo", order: 9, labels: [], notes: [], files: [], links: [], sessions: [], created: { at: 1, by: LEAD }, updated: { at: 1, by: LEAD }, source: { kind: "github-issue", ref: "gh:kuvo/api#12", url: "https://github.com/kuvo/api/issues/12", host: "github.com", id: "I_1" } });
+  write(path.join(queues, "queues", "ses_lead.json"), JSON.stringify(kept));
+  const titles = async more => (await view("all", more)).items.map(item => item.title).sort();
+  assert.deepEqual(await titles("&labels=lbl_bug"), ["Lead's bug", "Mine, a bug"]);
+  assert.deepEqual(await titles("&labels=lbl_bug,lbl_docs"), ["Lead's bug", "Lead's docs", "Mine, a bug"], "one of a kind widens");
+  assert.deepEqual(await titles("&labels=lbl_bug&owners=usr_you"), ["Mine, a bug"], "another kind narrows");
+  assert.deepEqual(await titles("&labels=none"), ["An issue", "Child's plain"]);
+  assert.deepEqual(await titles("&owners=ses_child,usr_you"), ["Child's plain", "Mine, a bug"]);
+  assert.deepEqual(await titles("&sources=none&owners=ses_lead"), ["Lead's bug", "Lead's docs"]);
+  assert.equal((await titles("&computers=")).length, 5, "this box's own");
+  assert.deepEqual(await titles("&computers=some-other-key"), []);
+  const issues = await view("all", "&counts=1&sources=" + (await view("all")).items.find(item => item.title === "An issue").source.kind);
+  assert.deepEqual(issues.items.map(item => item.title), ["An issue"]);
+  // Its counts are of what it lists, with the search too; and it says the filters back.
+  const found = await view("all", "&counts=1&labels=lbl_bug,lbl_docs&q=lead");
+  assert.deepEqual(found.filters, { labels: ["lbl_bug", "lbl_docs"] });
+  assert.deepEqual([found.counts.open, found.counts.statuses.todo, found.counts.statuses.backlog, found.counts.labels.lbl_bug, found.counts.labels.lbl_docs], [2, 1, 1, 1, 1]);
+  assert.equal((await view("all", "&counts=1")).filters, undefined);
 });
 
 test("labels: none built in; you and your agents make, rename, recolour and remove them, several on an item", async () => {

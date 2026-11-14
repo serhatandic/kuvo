@@ -15,7 +15,7 @@ import { isClosed, PRIORITIES, priorityName, statusName, statusNamed, STATUSES }
 import { assigneeNamed } from "./assignees";
 import { importItems, importWords, givenItems } from "./import";
 import { numberWaiting, primaryOf } from "./numbers";
-import { addItem, applyFileOps, changeItem, handItem, linkSession, linkSource, Refusal, refuseHanding, refuseMoving, removeItem, restoreItem, stageFiles, startWork, stopWork, unlinkSessions, type Acting, type Fields, type FilePlaces } from "./ops";
+import { addItem, applyFileOps, stripLabel, changeItem, handItem, linkSession, linkSource, Refusal, refuseHanding, refuseMoving, removeItem, restoreItem, stageFiles, startWork, stopWork, unlinkSessions, type Acting, type Fields, type FilePlaces } from "./ops";
 import { allItems, byUser, changeQueues, matching, MOST_BODY, whoWords, type Book, type Item, type Who } from "./store";
 import { canonicalOf, readIssue, seenOf, sourceOf, withSeen, type IssueRead } from "./github";
 import { issueAt, refText, sameSource, sourceKey, sourceKeyOf, type IssueAt } from "./sources";
@@ -48,7 +48,7 @@ const LINKS = { type: "array", items: { type: "string" }, description: "Web link
 const FILES = { type: "array", items: { type: "string" }, description: "Full paths of files to keep with it (in the body: ![](name))." };
 const PROGRESS = { type: ["number", "null"], description: "0 to 1, where it can be counted." };
 const PROGRESS_NOTE = { type: ["string", "null"], description: "What's being done now, briefly." };
-const WORKING = { type: "boolean", description: "true: you're on it now (Todo, Backlog or Waiting becomes In progress). false: you stopped (set its status)." };
+const WORKING = { type: "boolean", description: "true: you're on it now (Todo, Backlog or Waiting becomes In progress). false: you stopped; its status doesn't change unless you give status too." };
 const NAMES = { type: "array", items: { type: "string" } };
 
 /** The tools, as a tool server lists them. */
@@ -148,8 +148,8 @@ export const QUEUE_TOOLS = [
         number: { type: "integer" },
         title: { type: "string" },
         body: { type: "string" },
-        status: { type: "string" },
-        label: { type: "string" },
+        status: { type: "string", description: "Todo if not given." },
+        label: { type: "string", description: "One existing label's name." },
         done: { type: "boolean", description: "Done, whatever status says." },
       }, required: ["number", "title"] } },
     }, required: ["items"], additionalProperties: false },
@@ -487,13 +487,6 @@ async function handTarget(given: unknown, caller: QueueCaller, targets: Target[]
 
 // A conversation's name as another computer listed it.
 const peerName = (session: string): string | null => Object.values(readPeerAgents()).flatMap(told => told.list ?? []).find(agent => agent.session === session)?.name ?? null;
-
-/** A label taken off every item here (it's being removed): those deleted too. */
-export function stripLabel(id: string): void {
-  changeQueues(book => {
-    for (const item of book.items()) if (item.labels.includes(id)) item.labels = item.labels.filter(each => each !== id);
-  });
-}
 
 // Where an item stands as a list shows it: its status (Done while GitHub says its issue or pull
 // request is closed), and its title (GitHub's, as last read).

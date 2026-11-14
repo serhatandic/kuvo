@@ -8,7 +8,7 @@ import { ownName } from "../letters/start";
 import { callOffHanding, refuseLiveElsewhere, twinOf } from "./hand";
 import { readSeen } from "./github";
 import { numberWaiting, primaryOf } from "./numbers";
-import { addItem, changeItem, handItem, refuseHanding, refuseMoving, removeItem, restoreItem, type Fields } from "./ops";
+import { addItem, changeItem, handItem, refuseClosedThere, refuseHanding, refuseMoving, removeItem, restoreItem, type Fields } from "./ops";
 import { assignable, assigneeFor, botSession } from "./assignees";
 import { frozen } from "../moves/records";
 import { allItems, changeQueues, FILE_NAME, filesOf, matching, MOST_HANDED_FILES, OWNER, Refusal, YOURS, type Book, type Item, type ItemRef } from "./store";
@@ -111,6 +111,8 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
     const fields = fieldsOf(given);
     if ([fields.before, fields.after].some(each => each !== undefined && refOf(each) === null)) throw new Refusal("There's no item like that to put it beside.");
     if (item.source && (fields.title !== undefined || fields.body !== undefined)) throw new Refusal(`${nameOf(item)} takes its title and description from GitHub: change them there.`);
+    // (An issue GitHub closed stands as it is until it's reopened there: nothing of it is set here.)
+    refuseClosedThere(item);
     changeItem(book, item, fields, { who: YOU, now, fileOps: [] });
     // (One of your own given to a bot here goes into that bot's queue, where its agent sees it.)
     const to = item.owner === YOURS && fields.assignee !== undefined ? botSession(item.assignee) : null;

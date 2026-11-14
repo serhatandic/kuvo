@@ -15064,6 +15064,23 @@
         "priority": "string"
        }
       },
+      "today": "string",
+      "filters?": {
+       "object": {
+        "computers?": {
+         "list": "string"
+        },
+        "sources?": {
+         "list": "string"
+        },
+        "owners?": {
+         "list": "string"
+        },
+        "labels?": {
+         "list": "string"
+        }
+       }
+      },
       "items": {
        "list": {
         "object": {
@@ -15101,6 +15118,7 @@
           "object": {
            "edit": "bool",
            "set": "bool",
+           "assign": "bool",
            "close": "bool",
            "delete": "bool",
            "restore": "bool",
@@ -15341,6 +15359,7 @@
           "object": {
            "edit": "bool",
            "set": "bool",
+           "assign": "bool",
            "close": "bool",
            "delete": "bool",
            "restore": "bool",
@@ -15612,6 +15631,23 @@
         "priority": "string"
        }
       },
+      "today": "string",
+      "filters?": {
+       "object": {
+        "computers?": {
+         "list": "string"
+        },
+        "sources?": {
+         "list": "string"
+        },
+        "owners?": {
+         "list": "string"
+        },
+        "labels?": {
+         "list": "string"
+        }
+       }
+      },
       "items": {
        "list": {
         "object": {
@@ -15649,6 +15685,7 @@
           "object": {
            "edit": "bool",
            "set": "bool",
+           "assign": "bool",
            "close": "bool",
            "delete": "bool",
            "restore": "bool",
@@ -15889,6 +15926,7 @@
           "object": {
            "edit": "bool",
            "set": "bool",
+           "assign": "bool",
            "close": "bool",
            "delete": "bool",
            "restore": "bool",
@@ -16337,6 +16375,7 @@
          "object": {
           "edit": "bool",
           "set": "bool",
+          "assign": "bool",
           "close": "bool",
           "delete": "bool",
           "restore": "bool",
@@ -16566,6 +16605,7 @@
          "object": {
           "edit": "bool",
           "set": "bool",
+          "assign": "bool",
           "close": "bool",
           "delete": "bool",
           "restore": "bool",
@@ -16957,6 +16997,7 @@
          "object": {
           "edit": "bool",
           "set": "bool",
+          "assign": "bool",
           "close": "bool",
           "delete": "bool",
           "restore": "bool",
@@ -17212,6 +17253,7 @@
          "object": {
           "edit": "bool",
           "set": "bool",
+          "assign": "bool",
           "close": "bool",
           "delete": "bool",
           "restore": "bool",
@@ -17467,6 +17509,7 @@
          "object": {
           "edit": "bool",
           "set": "bool",
+          "assign": "bool",
           "close": "bool",
           "delete": "bool",
           "restore": "bool",

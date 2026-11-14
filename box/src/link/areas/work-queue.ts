@@ -11,10 +11,10 @@ import { watchFolders } from "../follow";
 import { targetsOf } from "../letters/tools";
 import { atWorkNow } from "../work/background";
 import { provedRequest } from "./vault";
-import { addLabel, changeLabel, keepParked, labels, LABELS_FILE, removeLabel, type Label } from "../work-queue/labels";
-import { isClosed, PARKED_LABEL, PRIORITIES, statusName, STATUSES } from "../work-queue/statuses";
+import { addLabel, changeLabel, labels, LABELS_FILE, removeLabel, type Label } from "../work-queue/labels";
+import { isClosed, PRIORITIES, statusName, STATUSES } from "../work-queue/statuses";
 import { assignable } from "../work-queue/assignees";
-import { stripLabel } from "../work-queue/tools";
+import { stripLabel } from "../work-queue/ops";
 import { frozen } from "../moves/records";
 import { sharedMachine } from "../setup/settle";
 import { importItems, importWords, parseBacklog, readBacklogFiles } from "../work-queue/import";
@@ -29,7 +29,7 @@ import type { QueueCounts } from "../../shared/routes/work-queue";
 import { allItems, changeQueues, matching, OWNER, queueFollowers, readAll, WORK_QUEUE, type Item } from "../work-queue/store";
 import { readSeen, SEEN_FILE } from "../work-queue/github";
 import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/tools";
-import { canOf, overdueOf, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, summaryOf, type Facts, type ItemSummary } from "../work-queue/view";
+import { canOf, overdueOf, todayHere, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, summaryOf, type Facts, type ItemSummary } from "../work-queue/view";
 import { forwardAct, takesChanges, type Acted } from "../work-queue/forward";
 import { actHere, addHere, fileOf, GITHUB_WAIT, withCan } from "../work-queue/acts";
 import type { AnswerPiece, RouteContext } from "../server/context";
@@ -65,7 +65,24 @@ function says(q: string, item: { title: string; number?: number; source?: { ref:
  * only by their owner's side), whose each is, and what's deleted among them. `all` is every item
  * on the box, whoever's it is. With `q`, only those its words are in. Its issues and pull requests
  * are read from GitHub where that's due, waiting `wait` ms at most (null: not read, as last read). */
-export async function viewOf(owner: string, targets: Target[], facts?: Facts, signal?: AbortSignal, cache?: Map<string, unknown>, wait: number | null = GITHUB_WAIT, q = "") {
+/** The filters a view is asked with (`computers`, `sources`, `owners`, `labels`: lists): an item
+ * shows when, for each kind asked, it's one of those named. A computer by its key (`""`, or its own
+ * key, for the box asked); a source by its kind (`none` for an item that's no outside source's); an
+ * owner by its key; a label by its id (`none` for an item with no label). */
+export interface Filters { computers?: string[]; sources?: string[]; owners?: string[]; labels?: string[] }
+
+/** The filters in a request's query, as taken: each a list separated by commas, 50 at most. */
+export function filtersOf(query: URLSearchParams): Filters {
+  const filters: Filters = {};
+  for (const kind of ["computers", "sources", "owners", "labels"] as const) {
+    if (!query.has(kind)) continue;
+    // (An empty name is the box asked, among computers; nothing, among the rest.)
+    filters[kind] = [...new Set((query.get(kind) ?? "").split(",").map(each => each.trim()).filter(each => each.length <= 100 && (each || kind === "computers")))].slice(0, 50);
+  }
+  return filters;
+}
+
+export async function viewOf(owner: string, targets: Target[], facts?: Facts, signal?: AbortSignal, cache?: Map<string, unknown>, wait: number | null = GITHUB_WAIT, q = "", filters: Filters = {}) {
   const known = facts ?? await factsOf(targets, signal);
   const overseen = owner === ALL ? new Set<string>() : overseenBy(owner, known.all);
   const here = allItems();
@@ -80,8 +97,6 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
   const elsewhere = itemsElsewhere(owner, readLink(), new Set(here.filter(item => !item.removed).map(item => item.id)), new Set(here.filter(item => item.removed).map(item => item.id)), { linked: true });
   const named = new Set(owners.map(each => each.owner));
   // The labels: this box's, then those only another computer has.
-  // (Parked, where a box from before statuses parked an item in this folder and it was never made here.)
-  if (here.some(item => item.labels.includes(PARKED_LABEL)) && !labels().some(each => each.id === PARKED_LABEL)) keepParked();
   const own = labels();
   const shown: Label[] = [...own, ...elsewhere.labels.filter(each => !own.some(mine => mine.id === each.id))];
   const names = new Map(shown.map(each => [each.id, each.name]));
@@ -105,6 +120,12 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
   // what a client does from another box.)
   const away = new Set(elsewhere.computers.filter(each => each.away !== undefined).map(each => each.key));
   const older = new Set(elsewhere.computers.filter(each => !takesChanges(each.key)).map(each => each.key));
+  const ownKeyHere = (() => { const link = readLink(); return (link && ownKey(link)) || ""; })();
+  const kept = (item: { owner: string; labels: string[]; source?: { kind: string }; computer?: { key: string } }) =>
+    (!filters.computers || filters.computers.some(each => (item.computer ? each === item.computer.key : each === "" || each === ownKeyHere)))
+    && (!filters.sources || filters.sources.includes(item.source?.kind ?? "none"))
+    && (!filters.owners || filters.owners.includes(item.owner))
+    && (!filters.labels || (item.labels.length ? item.labels.some(each => filters.labels!.includes(each)) : filters.labels.includes("none")));
   const found = (item: Parameters<typeof says>[1]) => !q || says(q, item, names);
   return {
     owner,
@@ -113,14 +134,16 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
     labels: shown,
     assignees: who,
     new: { status: "todo", priority: "normal" },
+    today: todayHere(),
     items: byPlace([
-      ...all.filter(item => !item.removed && found(item)).map(summary),
-      ...elsewhere.items.filter(found).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...(overdueOf(item) ? { overdue: true } : {}), labels: item.labels.filter(each => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), older: older.has(item.computer.key), apart: shared }) })),
+      ...all.filter(item => !item.removed && found(item)).map(summary).filter(kept),
+      ...elsewhere.items.filter(item => found(item) && kept(item)).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...(overdueOf(item) ? { overdue: true } : {}), labels: item.labels.filter(each => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), older: older.has(item.computer.key), apart: shared }) })),
     ]),
     owners: [...owners, ...elsewhere.owners.filter(each => !named.has(each.owner))],
-    removed: all.filter(item => item.removed && found(item)).sort((a, b) => b.removed!.at - a.removed!.at).map(summary),
+    removed: all.filter(item => item.removed && found(item)).sort((a, b) => b.removed!.at - a.removed!.at).map(summary).filter(kept),
     computers: elsewhere.computers,
     ...(q ? { q } : {}),
+    ...(Object.keys(filters).length ? { filters } : {}),
   };
 }
 
@@ -266,9 +289,11 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     const counts = queryOf(request).get("counts") === "1";
     // (Only what these words are in: a search, `q`.)
     const q = (queryOf(request).get("q") ?? "").trim().slice(0, 200);
-    if (part === undefined) return yield* json(200, withCounts(await viewOf(owner, targets, undefined, signal ?? undefined, undefined, glance ? null : GITHUB_WAIT, q), counts));
+    // (And only those of these computers, sources, owners or labels: its filters.)
+    const filters = filtersOf(queryOf(request));
+    if (part === undefined) return yield* json(200, withCounts(await viewOf(owner, targets, undefined, signal ?? undefined, undefined, glance ? null : GITHUB_WAIT, q, filters), counts));
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followView(owner, targets, signal ?? undefined, glance, counts, q);
+    return yield* followView(owner, targets, signal ?? undefined, glance, counts, q, filters);
   }
 
   // One item.
@@ -341,7 +366,7 @@ const answered = (answer: Acted, json: RouteContext["json"]) => json(answer.stat
 // An owner's view, a line now and one each time it changes: a change to the queues (here, or by
 // another process: its files), or a session linked to one of its items starting or stopping work
 // (looked at every few seconds).
-async function* followView(owner: string, targets: Target[], signal?: AbortSignal, glance = false, counts = false, q = ""): AsyncGenerator<AnswerPiece> {
+async function* followView(owner: string, targets: Target[], signal?: AbortSignal, glance = false, counts = false, q = "", filters: Filters = {}): AsyncGenerator<AnswerPiece> {
   let wake: (() => void) | null = null;
   let dirty = true;
   const told = () => {
@@ -379,7 +404,7 @@ async function* followView(owner: string, targets: Target[], signal?: AbortSigna
       }
       dirty = false;
       // (GitHub isn't waited for: what it says comes as a line of its own once it's read.)
-      const line = JSON.stringify(withCounts(await viewOf(owner, targets, facts, signal, titles, glance ? null : 0, q), counts));
+      const line = JSON.stringify(withCounts(await viewOf(owner, targets, facts, signal, titles, glance ? null : 0, q, filters), counts));
       if (line !== last) {
         yield { body: Buffer.from(line + "\n") };
         last = line;

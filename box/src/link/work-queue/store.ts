@@ -15,7 +15,7 @@ import { listOf, locked, textOf, writePrivate } from "../files";
 import { RUN } from "../home";
 import { sourceKeyOf } from "./sources";
 import { migrateOnce } from "./migrate";
-import { categoryBefore, PRIORITY_ID, standing } from "./statuses";
+import { fromCategory, PRIORITY_ID } from "./statuses";
 
 export const WORK_QUEUE = path.join(RUN, "work-queue");
 const QUEUES = path.join(WORK_QUEUE, "queues");
@@ -192,9 +192,10 @@ const eventKept = (each: Record<string, unknown>): boolean =>
  * box doesn't know (a newer box's) are kept as they are, so writing it here doesn't drop them. */
 export function itemOf(given: unknown, owner: string): Item | null {
   if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.title !== "string") return null;
-  // COMPAT(0.7 queue-categories): one under a category, as a box from before statuses hands or moves it (this box's own moved over in `migrate.ts`), said anew, never dropped; and one such a box moved since (it changes only `category`), where that put it. Goes 3 months after 0.8.0.
-  const stands = standing(given);
-  const labels = stands.labels.slice(0, 20);
+  // (One still under a category, read before this box could move its items over to statuses,
+  // `migrate.ts`: said anew as it's read, never dropped.)
+  const before = typeof given.status === "string" && given.status ? null : fromCategory(given.category);
+  const labels = before ? (before.label ? [before.label] : []) : [...new Set((Array.isArray(given.labels) ? given.labels : []).filter((each): each is string => typeof each === "string" && /^(?:lbl|cat)_[a-z0-9-]{1,40}$/.test(each)))].slice(0, 20);
   const created = isObject(given.created) && typeof given.created.at === "number" ? { at: given.created.at, by: whoOf(given.created.by) ?? { user: true } as Who } : { at: 0, by: { user: true } as Who };
   const updated = isObject(given.updated) && typeof given.updated.at === "number" ? { at: given.updated.at, by: whoOf(given.updated.by) ?? created.by } : created;
   const list = <T>(value: unknown, keep: (each: Record<string, unknown>) => boolean): T[] => (Array.isArray(value) ? value.filter(each => isObject(each) && keep(each)) as T[] : []);
@@ -206,7 +207,7 @@ export function itemOf(given: unknown, owner: string): Item | null {
     owner,
     title: given.title,
     body: typeof given.body === "string" ? given.body : "",
-    status: stands.status.slice(0, 40),
+    status: before ? before.status : (given.status as string).slice(0, 40),
     order: typeof given.order === "number" && Number.isFinite(given.order) ? given.order : 0,
     ...(typeof given.priority === "string" && PRIORITY_ID.test(given.priority) && given.priority !== "normal" ? { priority: given.priority } : {}),
     labels,
@@ -261,10 +262,6 @@ export function migratedToChange(): void {
     throw new Refusal(`The Work Queue's items couldn't be moved over to statuses on this computer (${why}), so nothing was changed. Check ${WORK_QUEUE} (is the disk full?), then try again.`);
   }
 }
-
-// An item as it goes to disk, or to another computer whole (a hand-off, a move).
-// COMPAT(0.7 queue-categories): with the category a box from before statuses reads it under, so one that reads this folder for a while (a released Mac puts its own box over this one as it connects), or takes the item, never drops it for having none; this box reads only its status. Goes 3 months after 0.8.0.
-export const asKept = (item: Item): Item & { category: string } => ({ ...item, category: categoryBefore(item) });
 
 /** A queue file that's there but isn't one (cut short, changed by hand): `aside` true. Or one that
  * can't be read just now (too many files open, a disk error): left where it is. */
@@ -456,7 +453,7 @@ export class Book {
     for (const [owner, queue] of changed) {
       any = true;
       if (!queue.items.length) fs.rmSync(fileOf(owner), { force: true });
-      else writePrivate(fileOf(owner), JSON.stringify({ owner, items: queue.items.map(asKept) }));
+      else writePrivate(fileOf(owner), JSON.stringify({ owner, items: queue.items }));
       this.before.set(owner, JSON.stringify(queue.items));
     }
     return any;

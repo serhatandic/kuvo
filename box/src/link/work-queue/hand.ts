@@ -19,12 +19,11 @@ import { frozen } from "../moves/records";
 import { peersOf, removedBoxes } from "../peers/known";
 import { awaySince } from "../peers/reach";
 import { readLink } from "../state";
-import { keepLabel, keepParked, labels } from "./labels";
-import { PARKED_LABEL } from "./statuses";
+import { keepLabel, labels } from "./labels";
 import { isClosed, statusNamed } from "./statuses";
 import { intoTodo, linkSession } from "./ops";
 import {
-  allItems, asKept, changeQueues, FILE_NAME, filesOf, itemOf, MOST_FILE, MOST_HANDED_FILES, MOST_ITEMS, noteHanded, OWNER, placeIn, Refusal, WORK_QUEUE, whoOf,
+  allItems, changeQueues, FILE_NAME, filesOf, itemOf, MOST_FILE, MOST_HANDED_FILES, MOST_ITEMS, noteHanded, OWNER, placeIn, Refusal, WORK_QUEUE, whoOf,
   type Book, type Item, type Who,
 } from "./store";
 import { mailsFor } from "./parts";
@@ -76,7 +75,7 @@ function handPayload(item: Item): Record<string, unknown> {
     }
   });
   const has = labels().filter(each => item.labels.includes(each.id));
-  return { hand: { id: handing!.id, to: handing!.to, from: item.owner, by: handing!.by, at: handing!.at, item: asKept(rest as Item), files, ...(has.length ? { labels: has } : {}) } };
+  return { hand: { id: handing!.id, to: handing!.to, from: item.owner, by: handing!.by, at: handing!.at, item: rest, files, ...(has.length ? { labels: has } : {}) } };
 }
 
 // The items on their way to another computer, as last read: read again when the queues change, and
@@ -279,9 +278,7 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
   });
   item.files = item.files.filter(file => files.some(each => each.name === file.name));
   // (Its labels this box doesn't have yet come with it; one it can't keep is left off.)
-  // COMPAT(0.7 queue-categories): a hand-off from a box that kept categories brings its custom one (`categories`), a label now. Goes 3 months after 0.8.0.
-  for (const each of [...(Array.isArray(given.labels) ? given.labels : []), ...(Array.isArray(given.categories) ? given.categories : [])]) if (isObject(each) && item.labels.includes(String(each.id))) keepLabel(each);
-  if (item.labels.includes(PARKED_LABEL)) keepParked();
+  for (const each of Array.isArray(given.labels) ? given.labels : []) if (isObject(each) && item.labels.includes(String(each.id))) keepLabel(each);
   const labelsHere = new Set(labels().map(each => each.id));
   item.labels = item.labels.filter(each => labelsHere.has(each));
   const kept = whoOf(given.by) ?? { name: "someone else" };

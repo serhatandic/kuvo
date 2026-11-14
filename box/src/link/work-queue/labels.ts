@@ -7,7 +7,6 @@ import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, textOf, writePrivate } from "../files";
 import { migratedToChange, noteQueuesChanged, Refusal, WORK_QUEUE } from "./store";
-import { colorBefore, PARKED_LABEL } from "./statuses";
 
 export const LABELS_FILE = path.join(WORK_QUEUE, "labels.json");
 const LOCK = path.join(WORK_QUEUE, ".labels.lock");
@@ -25,12 +24,11 @@ export interface Label { id: string; name: string; color: string }
 /** A label's id: one made here (`lbl_…`), or a custom category's from before labels (`cat_…`). */
 export const LABEL_ID = /^(?:lbl|cat)_[a-z0-9-]{1,40}$/;
 
-/** A label as it was kept or came from another computer, or null for what isn't one. One with no
- * colour said is a custom category from a box before labels: in the colour it was drawn in. */
+/** A label as it was kept or came from another computer, or null for what isn't one. */
 export function labelOf(given: unknown): Label | null {
   if (!isObject(given) || typeof given.id !== "string" || !LABEL_ID.test(given.id) || typeof given.name !== "string") return null;
   const name = plainName(given.name).slice(0, MOST_NAME) || given.id.slice(4);
-  return { id: given.id, name, color: typeof given.color === "string" && COLOR.has(given.color) ? given.color : given.color === undefined && given.id.startsWith("cat_") ? colorBefore(given.id) : "graphite" };
+  return { id: given.id, name, color: typeof given.color === "string" && COLOR.has(given.color) ? given.color : "graphite" };
 }
 
 // The labels as they're kept, in order; and which of them came from the primary
@@ -121,6 +119,7 @@ export function changeLabel(which: unknown, { name, color }: { name?: unknown; c
   return change(kept => {
     const found = labelNamed(which, kept.labels);
     if (!found) return { refused: `There's no label ${String(which ?? "")}.` };
+    if (kept.fromPrimary.includes(found.id)) return { refused: thePrimarys(found.name, "Change") };
     const taken = named !== undefined ? labelNamed(named, kept.labels) : null;
     if (taken && taken.id !== found.id) return { refused: `There's a label called ${named} already.` };
     if (named !== undefined) found.name = named;
@@ -129,10 +128,19 @@ export function changeLabel(which: unknown, { name, color }: { name?: unknown; c
   });
 }
 
-/** A label removed: taken off every item here first (`strip`, by its id). */
+// A label this box took from the computer it numbers from: that one's to change or remove, since
+// its list comes back here as it tells it (a change made here would be undone at its next word).
+const thePrimarys = (name: string, change: "Change" | "Remove"): string =>
+  `${name} is one of the labels this computer takes from your first computer (the one that gives the Work Queue its numbers). ${change} it there, and it's ${change === "Remove" ? "gone" : "changed"} here too.`;
+
+/** A label removed: taken off every item here first (`strip`, by its id), then off the list. Two
+ * steps, under two locks (the queues', then the labels'): one cut off between them leaves a label
+ * no item has, still listed, which removing it again finishes; never an item with a label that's
+ * gone. */
 export function removeLabel(which: unknown, strip: (id: string) => void): LabelOutcome {
   const found = labelNamed(which);
   if (!found) return { refused: `There's no label ${String(which ?? "")}.` };
+  if (readKept().fromPrimary.includes(found.id)) return { refused: thePrimarys(found.name, "Remove") };
   try {
     strip(found.id);
   } catch (error) {
@@ -162,28 +170,30 @@ export function keepLabel(given: unknown): boolean {
   });
 }
 
-/** The label Parked here, where an item that carries it comes (from a box that kept categories) to
- * a box that never made it. */
-export const keepParked = (): boolean => keepLabel({ id: PARKED_LABEL, name: "Parked", color: "graphite" });
-
 /** The labels of the primary this box numbers from, as it told them: its list, in its order, names,
- * colours and all, is this box's; one it removed goes here too, once no item here has it (`used`:
- * how many do). Those only this box has (made here) stay, after them. */
-export function takePrimaryLabels(given: Label[], used: (id: string) => number): void {
+ * colours and all, is this box's; one it removed goes here too, taken off every item here first
+ * (`strip`), as it went there. Those only this box has (made here) stay, after them (`used`: how
+ * many items have one, for which of them go past the most there may be). */
+export function takePrimaryLabels(given: Label[], used: (id: string) => number, strip: (id: string) => void): void {
   const theirs = given.slice(0, MOST_LABELS);
   const ids = new Set(theirs.map(each => each.id));
   const worked = (kept: { labels: Label[]; fromPrimary: string[] }) => {
-    const left = kept.labels.filter(each => !ids.has(each.id) && (!kept.fromPrimary.includes(each.id) || used(each.id) > 0));
+    const left = kept.labels.filter(each => !ids.has(each.id) && !kept.fromPrimary.includes(each.id));
     // (Past the most there may be, this box's own unused ones go, the last first; never one in use.)
     const all = [...theirs, ...left];
     for (let index = all.length - 1; index >= theirs.length && all.length > MOST_LABELS; index--) if (!used(all[index].id)) all.splice(index, 1);
-    // (One it removed that's still in use here stays the primary's, to go once nothing has it.)
-    const fromPrimary = all.filter(each => ids.has(each.id) || kept.fromPrimary.includes(each.id)).map(each => each.id);
-    return { labels: all, fromPrimary };
+    return { labels: all, fromPrimary: theirs.map(each => each.id) };
   };
   const same = (a: { labels: Label[]; fromPrimary: string[] }, b: { labels: Label[]; fromPrimary: string[] }) => JSON.stringify(a) === JSON.stringify(b);
   const before = readKept();
   if (same(worked(before), before)) return;
+  // (Off the items first, as a removal here goes: never an item with a label that's gone.)
+  try {
+    for (const id of before.fromPrimary) if (!ids.has(id)) strip(id);
+  } catch (error) {
+    if (error instanceof Refusal) return;
+    throw error;
+  }
   change(kept => {
     const now = worked(kept);
     if (same(now, kept)) return { refused: "" };
