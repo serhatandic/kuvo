@@ -310,7 +310,7 @@ async function indexEntryOf(root: string, name: string): Promise<string | undefi
 /** Why a discard of `file` mustn't go now, or null: a "new file" the last commit has (an agent
  * committed it since), or one that changed since it was listed (its `stamp`, as `kuvo/git/files`
  * gave it), whose later changes the discard would throw away. */
-export async function staleDiscard(root: string, file: { path: string; oldPath?: string; status: Status }, stamp: string | undefined): Promise<string | null> {
+export async function staleDiscard(root: string, file: { path: string; oldPath?: string; status: Status }, stamp: string): Promise<string | null> {
   const name = file.path.replace(/\/$/, "");
   // Committed since: the last commit and the index both have it. (Only the commit: taken out of git
   // with `git rm --cached`, a new file again, which goes to the Trash as one.)
@@ -320,7 +320,7 @@ export async function staleDiscard(root: string, file: { path: string; oldPath?:
   }
   // Its index entry read as the list reads it, so the two stamps can match.
   const now = stampOf(root, name, await indexEntryOf(root, name)) + (file.oldPath ? `|${stampOf(root, file.oldPath, undefined)}` : "");
-  if (stamp !== undefined && now !== stamp) {
+  if (now !== stamp) {
     return `${name} changed since it was listed. Look at it again before you discard it.`;
   }
   return null;
@@ -1107,7 +1107,12 @@ export async function* changesRoute(context: RouteContext): AsyncGenerator<Answe
     const status = (body.status ?? "modified") as Status;
     if (!root || !name || old === null || !STATUSES.includes(status)) return yield* json(400, { message: "Name a repository and a file in it." });
     if (route === "kuvo/git/discard") {
-      const stale = await staleDiscard(root, { path: name, ...(old ? { oldPath: old } : {}), status }, typeof body.stamp === "string" ? body.stamp : undefined);
+      // Never without what the file was when it was listed (`kuvo/git/files`' `stamp`): a discard
+      // that can't be told from a stale one would throw away what an agent wrote since.
+      if (typeof body.stamp !== "string" || !body.stamp) {
+        return yield* json(409, { message: `${name} wasn’t discarded: this app didn’t say what the file was when it listed it, so changes made since could be lost. Update the app, then try again.` });
+      }
+      const stale = await staleDiscard(root, { path: name, ...(old ? { oldPath: old } : {}), status }, body.stamp);
       if (stale) return yield* json(409, { message: stale });
     }
     const failed = await perform(route.slice("kuvo/git/".length) as "stage" | "unstage" | "discard", root, { path: name, oldPath: old, status }, scope);

@@ -1,7 +1,7 @@
 import "./safety"
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ask, follow } from "./route-answer"
@@ -248,8 +248,8 @@ test("a Files panel's folder leaves out version control's own folder, and says w
   expect(gone.json.reason).toBe("No such folder")
 })
 
-const discard = async (file: any, stamp = file.stamp) =>
-  ask(handler, "POST", "kuvo/git/discard", { root: file.root, path: file.path, status: file.status, scope: file.scope, ...(stamp ? { stamp } : {}) })
+const discard = async (file: any) =>
+  ask(handler, "POST", "kuvo/git/discard", { root: file.root, path: file.path, status: file.status, scope: file.scope, stamp: file.stamp })
 
 test("what a commit takes is said for the whole repository, a staged file outside the folder counted", async () => {
   const top = repository("inside")
@@ -389,8 +389,9 @@ test("a discard is refused once its file changed since it was listed, and a new 
   git(top, "add", "notes.txt")
   git(top, "commit", "-q", "-m", "Notes")
   writeFileSync(join(top, "README.md"), "# App\nOne edit.\nThe agent's later edit.\n")
-  const trashed = await discard(note, undefined)
+  const trashed = await discard(note)
   expect(trashed.status).toBe(409)
+  expect(trashed.json.message).toContain("is in the last commit now")
   expect(readFileSync(join(top, "notes.txt"), "utf8")).toBe("mine\n")
   const edited = await discard(readme)
   expect(edited.status).toBe(409)
@@ -488,8 +489,9 @@ test("discarding a staged move never overwrites a file written at its old path s
     const refused = await ask(handler, "POST", "kuvo/git/discard", { root: top, path: listed.path, oldPath: listed.oldPath, status: "renamed", scope: "staged", stamp: listed.stamp })
     expect(refused.status).toBe(409)
     expect(readFileSync(join(top, "app", "old.ts"), "utf8")).toBe("agent work\n")
-    // Without a stamp (as the Mac asks): the move goes back, and the new file goes to the Trash first.
-    expect((await ask(handler, "POST", "kuvo/git/discard", { root: top, path: listed.path, oldPath: listed.oldPath, status: "renamed", scope: "staged" })).status).toBe(200)
+    // Listed again, the new file seen: the move goes back, and the new file goes to the Trash first.
+    const seen = (await files(top)).files.find((file: any) => file.status === "renamed")
+    expect((await ask(handler, "POST", "kuvo/git/discard", { root: top, path: listed.path, oldPath: listed.oldPath, status: "renamed", scope: "staged", stamp: seen.stamp })).status).toBe(200)
     expect(readFileSync(join(top, "app", "old.ts"), "utf8")).toBe("export const old = 1\n")
     expect(spawnSync("grep", ["-rl", "agent work", trash], { encoding: "utf8" }).stdout.trim()).not.toBe("")
   } finally {
@@ -545,8 +547,33 @@ test("a copy left after git rm --cached is a new file to discard, not one commit
     const listed = (await files(top)).files
     const copy = { ...listed.find((file: any) => file.group === "untracked"), root: top }
     expect([copy.path, copy.discard]).toEqual(["README.md", "trash"])
-    // As the Mac asks, with no stamp.
-    expect((await discard(copy, undefined)).status).toBe(200)
+    expect((await discard(copy)).status).toBe(200)
+  } finally {
+    delete process.env.KUVO_CHANGES_TRASH
+  }
+})
+
+test("a discard that doesn't say what the file was when it was listed is refused, and nothing is touched", async () => {
+  const top = repository("no-stamp")
+  process.env.KUVO_CHANGES_TRASH = join(box, "trash-no-stamp")
+  try {
+    writeFileSync(join(top, "README.md"), "# App\nThe agent's edit.\n")
+    writeFileSync(join(top, "notes.txt"), "mine\n")
+    const listed = (await files(top)).files.map((file: any) => ({ ...file, root: top }))
+    for (const row of listed) {
+      for (const stamp of [undefined, "", 7]) {
+        const refused = await ask(handler, "POST", "kuvo/git/discard", { root: top, path: row.path, status: row.status, scope: row.scope, ...(stamp === undefined ? {} : { stamp }) })
+        expect(refused.status).toBe(409)
+        expect(refused.json.message).toBe(`${row.path} wasn’t discarded: this app didn’t say what the file was when it listed it, so changes made since could be lost. Update the app, then try again.`)
+      }
+    }
+    expect(readFileSync(join(top, "README.md"), "utf8")).toBe("# App\nThe agent's edit.\n")
+    expect(readFileSync(join(top, "notes.txt"), "utf8")).toBe("mine\n")
+    expect(existsSync(join(box, "trash-no-stamp"))).toBe(false)
+    // With the stamp each was listed with, they go.
+    for (const row of listed) expect((await discard(row)).status).toBe(200)
+    expect(readFileSync(join(top, "README.md"), "utf8")).toBe("# App\n")
+    expect(existsSync(join(top, "notes.txt"))).toBe(false)
   } finally {
     delete process.env.KUVO_CHANGES_TRASH
   }

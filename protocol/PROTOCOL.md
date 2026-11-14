@@ -3802,11 +3802,12 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     binary file has none; new files aren't read). `500 {"message"}` when git couldn't say. A box without
     it (no `git.changes.count`): read `kuvo/git/changes` and count.
   - `POST kuvo/git/stage`, `…/unstage` or `…/discard` with `{"root", "path", "oldPath"?, "status":
-    "added|deleted|modified|renamed", "scope"?}` → `200 {}`, or `422 {"message"}` with what went
+    "added|deleted|modified|renamed", "scope"?, "stamp"}` (`stamp` a discard's alone) → `200 {}`, or `422 {"message"}` with what went
     wrong. `path` as `kuvo/git/changes` lists it: a repository inside this one may end in "/"
-    ("web/", bridge 0.9.95). A discard is refused, `409 {"message"}`, for an `added` file the last
-    commit has (committed since it was listed), and with `"stamp"` (`kuvo/git/files`' for the file)
-    for one that changed since: what came later is never thrown away. A staged deletion of a file
+    ("web/", bridge 0.9.95). A discard takes `"stamp"` too, `kuvo/git/files`' for the file, and is refused, `409 {"message"}`,
+    without one (#718: every client lists from `kuvo/git/files` and sends back what it was shown),
+    for an `added` file the last commit has (committed since it was listed), and for one that
+    changed since its stamp: what came later is never thrown away. A staged deletion of a file
     still on disk sends what's there to the Trash before the last commit's comes back. Discard follows the scope (in `unstaged` only what isn't staged, otherwise back to the
     last commit); a new file, and anything in the way of one coming back (a folder where a file
     was, a file where a folder was), goes to the Trash on a Mac and to `~/.kuvo-code/trash`

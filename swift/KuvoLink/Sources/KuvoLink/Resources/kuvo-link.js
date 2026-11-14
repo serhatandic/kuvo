@@ -38551,7 +38551,7 @@ async function staleDiscard(root, file, stamp) {
     return `${name} is in the last commit now, so it isn’t a new file any more. Look at it again before you discard it.`;
   }
   const now = stampOf(root, name, await indexEntryOf(root, name)) + (file.oldPath ? `|${stampOf(root, file.oldPath, undefined)}` : "");
-  if (stamp !== undefined && now !== stamp) {
+  if (now !== stamp) {
     return `${name} changed since it was listed. Look at it again before you discard it.`;
   }
   return null;
@@ -39247,7 +39247,10 @@ async function* changesRoute(context) {
     if (!root || !name || old === null || !STATUSES.includes(status))
       return yield* json(400, { message: "Name a repository and a file in it." });
     if (route === "kuvo/git/discard") {
-      const stale = await staleDiscard(root, { path: name, ...old ? { oldPath: old } : {}, status }, typeof body.stamp === "string" ? body.stamp : undefined);
+      if (typeof body.stamp !== "string" || !body.stamp) {
+        return yield* json(409, { message: `${name} wasn’t discarded: this app didn’t say what the file was when it listed it, so changes made since could be lost. Update the app, then try again.` });
+      }
+      const stale = await staleDiscard(root, { path: name, ...old ? { oldPath: old } : {}, status }, body.stamp);
       if (stale)
         return yield* json(409, { message: stale });
     }
@@ -42772,7 +42775,7 @@ import fs138 from "node:fs";
 import path144 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "01b177a40afd";
+var BRIDGE_VERSION = "88d811dc1578";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
