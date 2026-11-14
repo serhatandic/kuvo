@@ -1440,7 +1440,9 @@ async function host() {
       if (client.viewer) broadcast({ method: "Kuvo.viewers", params: { count: viewers() } });
       if (!client.quiet && ![...clients].some((each) => !each.quiet)) idleSoon();
     });
-    lines(socket, async (text) => {
+    let serial = Promise.resolve();
+    lines(socket, text => {
+      serial = serial.then(async () => {
       let message;
       try {
         message = JSON.parse(text);
@@ -1566,6 +1568,8 @@ async function host() {
       const forward = { id, method: message.method, params: message.method === "Input.dispatchKeyEvent" ? keyForHere(message.params ?? {}) : message.params ?? {} };
       if (message.sessionId) forward.sessionId = message.sessionId;
       toChrome(forward);
+      });
+      serial = serial.catch(() => socket.destroy());
     }, "\n", (held) => !client.keyed && held > 4096 && (refuse(), true));
   });
   server.on("error", (error) => fail("failed", "The browser couldn't listen for Kuvo Code: " + error.message));

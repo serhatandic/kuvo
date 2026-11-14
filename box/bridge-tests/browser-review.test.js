@@ -156,3 +156,20 @@ test("an agent resumes at its own remembered size after an idle phone view resiz
   assert.deepEqual([restored.params.width, restored.params.height], [1280, 800]);
   await call(phone, "Kuvo.view", { targetId: null });
 });
+
+test("a later navigation cannot overtake an input waiting for Chrome", async () => {
+  const { c, answer, chrome, client } = await page();
+  let release;
+  answer("Input.insertText", () => new Promise(resolve => { release = resolve; }));
+  const first = next++, second = next++;
+  c.send({ id: first, method: "Kuvo.input", params: { targetId: "P", kind: "text", text: "finish first" } });
+  c.send({ id: second, method: "Kuvo.go", params: { targetId: "P", input: "https://example.com/later" } });
+  await chrome.until(m => m.method === "Input.insertText");
+  const observer = await client(); await observer.heard.until(m => m.method === "Kuvo.hello");
+  await call(observer, "Browser.getVersion");
+  assert.equal(chrome.all.some(m => m.method === "Page.navigate"), false);
+  release({});
+  await c.heard.until(m => m.id === second);
+  assert.ok(chrome.all.some(m => m.method === "Page.navigate"));
+  assert.ok(c.heard.all.findIndex(m => m.id === first) < c.heard.all.findIndex(m => m.id === second));
+});
