@@ -9118,6 +9118,15 @@ before connects (the box notes one: `run/attached`).
   they move to the new one, answer `404`, which a client says as "haven't moved to this version
   yet", asking no program the old way.)
   <!-- compat: 0.7 update-answer -->
+- **Work Queue items under categories** (#674): a box from before statuses (0.5 to 0.8.0-beta.1)
+  that hasn't updated yet still hands on an item, carries a conversation's queue in a move, and
+  tells of its queue with `category` (and `categories`, its custom ones) in place of `status` and
+  `labels`. A box with `work-queue.edit` reads each as it comes ("The Work Queue", From
+  categories): its status from its category, a custom category as a label under its own id (named
+  as that box named it, where it came with a hand-off or a move). It sends such a box nothing in
+  the old shape, and no client's change to an item it keeps (`PATCH`: 409). (The box's own items
+  moving over once, as it updates, isn't for released Macs: it stays.)
+  <!-- compat: 0.7 queue-categories -->
 
 **This Mac's own group chats, from 0.5 to 0.8.0-beta.1.** Those Macs ran their group chats in the
 app (`groups.json`, each chat's messages in `groups/<id>.json`). A Mac with this version moves

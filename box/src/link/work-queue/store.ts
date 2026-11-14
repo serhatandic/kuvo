@@ -192,7 +192,7 @@ const eventKept = (each: Record<string, unknown>): boolean =>
  * box doesn't know (a newer box's) are kept as they are, so writing it here doesn't drop them. */
 export function itemOf(given: unknown, owner: string): Item | null {
   if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.title !== "string") return null;
-  // (One kept under a category, by a box from before statuses: said anew, never dropped.)
+  // COMPAT(0.7 queue-categories): one under a category, as a box from before statuses hands or moves it (this box's own moved over in `migrate.ts`): said anew, never dropped. Goes 3 months after 0.8.0.
   const before = typeof given.status === "string" && given.status ? null : fromCategory(given.category);
   const labels = before ? (before.label ? [before.label] : []) : [...new Set((Array.isArray(given.labels) ? given.labels : []).filter((each): each is string => typeof each === "string" && /^(?:lbl|cat)_[a-z0-9-]{1,40}$/.test(each)))].slice(0, 20);
   const created = isObject(given.created) && typeof given.created.at === "number" ? { at: given.created.at, by: whoOf(given.created.by) ?? { user: true } as Who } : { at: 0, by: { user: true } as Who };

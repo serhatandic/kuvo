@@ -278,7 +278,7 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
   });
   item.files = item.files.filter(file => files.some(each => each.name === file.name));
   // (Its labels this box doesn't have yet come with it; one it can't keep is left off.)
-  // (From a box that kept categories: its custom one, a label now.)
+  // COMPAT(0.7 queue-categories): a hand-off from a box that kept categories brings its custom one (`categories`), a label now. Goes 3 months after 0.8.0.
   for (const each of [...(Array.isArray(given.labels) ? given.labels : []), ...(Array.isArray(given.categories) ? given.categories : [])]) keepLabel(each);
   const labelsHere = new Set(labels().map(each => each.id));
   item.labels = item.labels.filter(each => labelsHere.has(each));

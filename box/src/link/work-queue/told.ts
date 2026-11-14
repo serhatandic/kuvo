@@ -62,8 +62,8 @@ const stamp = (value: unknown) => (isObject(value) ? { at: time(value.at), by: w
 export function toldItemOf(given: unknown, latest = Infinity): ToldItem | null {
   if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.owner !== "string" || !OWNER.test(given.owner)) return null;
   const title = words(given.title, 200);
-  // (Where it stands: a status this box knows, else Todo; one told by a box that kept categories,
-  // said anew.)
+  // Where it stands: a status this box knows, else Todo.
+  // COMPAT(0.7 queue-categories): one told under a category by a box from before statuses, said anew. Goes 3 months after 0.8.0.
   const before = typeof given.status === "string" ? null : fromCategory(given.category);
   const status = before ? before.status : STATUS_ID.test(given.status as string) ? given.status as string : "todo";
   const labels = before ? (before.label ? [before.label] : []) : (Array.isArray(given.labels) ? given.labels : []).filter((each): each is string => typeof each === "string" && LABEL_ID.test(each)).slice(0, 20);
@@ -146,7 +146,7 @@ export function readTold(key: string): Told | null {
   try {
     const kept = JSON.parse(fs.readFileSync(fileOf(key), "utf8"));
     if (!isObject(kept) || typeof kept.at !== "number" || !Array.isArray(kept.items)) return null;
-    // (What was kept of a box that told categories, before this one took statuses: read again as it came.)
+    // COMPAT(0.7 queue-categories): what was kept of a box that told categories, before this one took statuses, read again as it came. Goes 3 months after 0.8.0.
     if (!Array.isArray(kept.labels)) {
       const again = toldOf(kept, Infinity);
       return again ? { ...again, heard: typeof kept.heard === "number" ? kept.heard : 0 } : null;

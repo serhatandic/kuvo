@@ -58,6 +58,7 @@ export function placeWorkQueues(carried: unknown, owners: readonly string[], ope
   const allowed = new Set(owners);
   const items = carried.items.flatMap(each => (isObject(each) && typeof each.owner === "string" && allowed.has(each.owner) ? [itemOf(each, each.owner)] : [])).filter((each): each is Item => each !== null);
   if (!items.length) return;
+  // COMPAT(0.7 queue-categories): a move from a box that kept categories brings its custom ones (`categories`), labels now. Goes 3 months after 0.8.0.
   for (const each of [...(Array.isArray(carried.labels) ? carried.labels : []), ...(Array.isArray(carried.categories) ? carried.categories : [])]) keepLabel(each);
   const here = new Set(labels().map(each => each.id));
   for (const item of items) {
