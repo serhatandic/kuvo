@@ -14,7 +14,7 @@ use gpui::{
 };
 use kuvo_box::BoxClient;
 use kuvo_box::areas::{Bot, BotNow, Computer, Group, Look, WorkQueue};
-use kuvo_box::bots::{BotsSaid, Held, Refused};
+use kuvo_box::bots::{BotsSaid, Elsewhere, Held, Refused};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconSize, StyledType, TypeSize,
     row::{NavRow, SectionHeader},
@@ -23,7 +23,7 @@ use kuvo_ui::{
 };
 
 use crate::area::Area;
-use crate::bots::{BotsEvent, BotsView, elsewhere_name};
+use crate::bots::{BotsEvent, BotsView, There, bots_there};
 use crate::settings::{Pick, SettingsView};
 use crate::time;
 
@@ -39,6 +39,8 @@ pub enum Reading<T> {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Bots {
     pub bots: Vec<Bot>,
+    /// The bots that live on your other computers, as each last told the box (`kuvo/bots`).
+    pub elsewhere: Vec<Elsewhere>,
     /// What the box holds for your other computers, and what they refused (`kuvo/bots`).
     pub held: Vec<Held>,
     pub refused: Vec<Refused>,
@@ -48,16 +50,10 @@ pub struct Bots {
 }
 
 impl Bots {
-    /// The bots that live on other computers, known here by what's held for them or was refused:
-    /// each one's id and that computer's name, in the box's order.
-    pub fn elsewhere(&self) -> Vec<(&str, &str)> {
-        let mut ids: Vec<(&str, &str)> = Vec::new();
-        for (bot, computer) in self.held.iter().map(|held| (held.bot.as_str(), held.computer.as_str())).chain(self.refused.iter().map(|refused| (refused.bot.as_str(), refused.computer.as_str()))) {
-            if !self.bots.iter().any(|listed| listed.id == bot) && !ids.iter().any(|(id, _)| *id == bot) {
-                ids.push((bot, computer));
-            }
-        }
-        ids
+    /// The bots that live on your other computers, as they're drawn: those the box lists, in its
+    /// order, then any it only holds an edit for or heard a refusal of.
+    pub fn there(&self) -> Vec<There> {
+        bots_there(&self.elsewhere, &self.held, &self.refused, &self.bots)
     }
 }
 
@@ -239,7 +235,7 @@ impl AreaView {
                 let said = match &self.bots {
                     Reading::NotYet => Reading::NotYet,
                     Reading::Failed(why) => Reading::Failed(why.clone()),
-                    Reading::Ready(bots) => Reading::Ready(BotsSaid { bots: bots.bots.clone(), held: bots.held.clone(), refused: bots.refused.clone(), held_unsaid: bots.held_unsaid }),
+                    Reading::Ready(bots) => Reading::Ready(BotsSaid { bots: bots.bots.clone(), elsewhere: bots.elsewhere.clone(), held: bots.held.clone(), refused: bots.refused.clone(), held_unsaid: bots.held_unsaid }),
                 };
                 if let Some(page) = &self.page {
                     page.update(cx, |page, cx| page.set_said(said, cx));
@@ -291,7 +287,7 @@ impl AreaView {
         let (kind, id) = key.split_once(':').unwrap_or(("", key));
         let named = match kind {
             "bot" => ready(&self.bots).and_then(|bots| bots.bots.iter().find(|bot| bot.id == id).map(|bot| bot.name.clone())),
-            "elsewhere" => ready(&self.bots).and_then(|bots| bots.elsewhere().into_iter().find(|(bot, _)| *bot == id).map(|(bot, computer)| elsewhere_name(bots.held.iter().find(|held| held.bot == bot), computer))),
+            "elsewhere" => ready(&self.bots).and_then(|bots| bots.there().into_iter().find(|there| there.id == id).map(|there| there.name)),
             _ if key == "new" => Some("New Bot".into()),
             "group" => ready(&self.bots).and_then(|bots| bots.groups.iter().find(|group| group.id == id).map(|group| group.name.clone())),
             "category" => ready(&self.queue).and_then(|queue| queue.categories.iter().find(|category| category.id == id).map(|category| category.name.clone())),
@@ -319,7 +315,7 @@ fn read(area: Area, client: &BoxClient) -> Read {
         Area::Bots => Read::Bots(client.bots_said().map(|said| {
             // Group chats come from the same box; a box whose chats can't be read still lists its bots.
             let groups = client.groups().unwrap_or_default();
-            Bots { bots: said.bots, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups }
+            Bots { bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups }
         })),
         Area::Queue => Read::Queue(client.work_queue()),
         _ => Read::Nothing,
@@ -444,20 +440,26 @@ impl AreaView {
                     .into_any_element(),
             );
         }
-        // Bots that live on your other computers, known here by what the box holds for them.
-        let elsewhere = bots.elsewhere();
+        // The bots that live on your other computers, as the box says each last told it.
+        let elsewhere = bots.there();
         if !elsewhere.is_empty() {
             rows.push(SectionHeader::new("elsewhere", "On Other Computers").into_any_element());
-            for (bot, computer) in elsewhere {
-                let held = bots.held.iter().find(|held| held.bot == bot);
-                let key = format!("elsewhere:{bot}");
+            for there in elsewhere {
+                let key = format!("elsewhere:{}", there.id);
                 let selected = self.is_selected(&key);
                 let (hover, selected_bg) = (c.hover, c.selected_card);
-                let selector = format!("elsewhere-{bot}");
-                let computer = crate::bots::computer_name(computer);
-                let line = if held.is_some() { format!("Waiting for {computer}") } else { format!("{computer} didn’t take a change") };
-                let face = match held.and_then(Held::look) {
-                    Some(look) => bot_face(&look, px(28.)),
+                let selector = format!("elsewhere-{}", there.id);
+                let computer = there.computer.as_str();
+                // What waits for it or was refused, else where it lives.
+                let line = if there.waiting {
+                    format!("Waiting for {computer}")
+                } else if there.refused {
+                    format!("{computer} didn’t take a change")
+                } else {
+                    format!("On {computer}")
+                };
+                let face = match &there.look {
+                    Some(look) => bot_face(look, px(28.)),
                     None => div().flex().flex_none().items_center().justify_center().size(px(28.)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(kuvo_ui::IconName::Bot).color(c.icon)).into_any_element(),
                 };
                 rows.push(
@@ -482,7 +484,7 @@ impl AreaView {
                                 .min_w_0()
                                 .flex()
                                 .flex_col()
-                                .child(div().truncate().text_ui(TypeSize::Body).text_color(c.text).child(elsewhere_name(held, computer)))
+                                .child(div().truncate().text_ui(TypeSize::Body).text_color(c.text).child(there.name.clone()))
                                 .child(div().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(line)),
                         )
                         .into_any_element(),

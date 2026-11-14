@@ -87,6 +87,8 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "bot-look", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_look) },
     Screen { slug: "bot-delete", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_delete) },
     Screen { slug: "bot-held", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_held) },
+    Screen { slug: "bot-elsewhere", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_elsewhere) },
+    Screen { slug: "bot-elsewhere-delete", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_elsewhere_delete) },
     Screen { slug: "bot-waiting", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_waiting) },
     Screen { slug: "bot-none", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     Screen { slug: "bot-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_narrow) },
@@ -172,6 +174,15 @@ fn bot_held(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
 /// A change a computer turned down, in the box's words.
 fn bot_waiting(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Bots, "elsewhere:bot_scout", window, cx);
+}
+/// A bot that lives on another of your computers, as the box lists it, with nothing waiting.
+fn bot_elsewhere(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Bots, "elsewhere:bot_wren", window, cx);
+}
+/// Deleting it: what that computer's delete takes with it, in the box's words.
+fn bot_elsewhere_delete(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bot_elsewhere(workspace, window, cx);
+    bots_page(workspace, cx).update(cx, |page, cx| page.act(BotAct::Delete, cx));
 }
 /// Nothing picked.
 fn bot_none(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {

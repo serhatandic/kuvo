@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use crate::areas::{Bot, Look};
+use crate::areas::{Bot, DeleteLine, Look, readable};
 use crate::client::{BoxClient, decode};
 use crate::error::{Error, Refusal, Result};
 use crate::transport::Request;
@@ -23,6 +23,12 @@ pub struct Held {
     /// The name of the computer it waits for, as the box that holds it knows it.
     #[serde(default)]
     pub computer: String,
+    /// The bot's name and look, as its computer last told the box (`bots.elsewhere`); none for a
+    /// bot no computer of yours ever listed to it.
+    #[serde(default, rename = "name")]
+    pub bot_name: Option<String>,
+    #[serde(default, rename = "look", deserialize_with = "lenient")]
+    pub bot_look: Option<Look>,
     /// Each field as `PATCH` takes it, the last given of each.
     #[serde(default)]
     pub change: Option<Map<String, Value>>,
@@ -48,7 +54,7 @@ impl Held {
     /// The fields what's held changes, in Edit Bot's order (others a newer box names, after).
     pub fn fields(&self) -> Vec<String> {
         let Some(change) = &self.change else { return Vec::new() };
-        let known = ["name", "look", "job", "personality", "model"];
+        let known = ["name", "look", "job", "personality", "model", "effort"];
         let mut fields: Vec<String> = known.iter().filter(|field| change.contains_key(**field)).map(|field| (*field).to_owned()).collect();
         fields.extend(change.keys().filter(|field| !known.contains(&field.as_str())).cloned());
         fields
@@ -61,16 +67,43 @@ pub struct Refused {
     pub bot: String,
     #[serde(default)]
     pub computer: String,
+    /// The bot's name and look, as a held edit has them.
+    #[serde(default, rename = "name")]
+    pub bot_name: Option<String>,
+    #[serde(default, rename = "look", deserialize_with = "lenient")]
+    pub bot_look: Option<Look>,
     pub message: String,
     #[serde(default)]
     pub at: Option<f64>,
 }
 
-/// What `kuvo/bots` says: the bots that live on the box, and what it holds for (and heard back
-/// from) your other computers.
+/// A bot that lives on another of your computers, as that computer last told the box asked
+/// (`bots.elsewhere`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Elsewhere {
+    pub id: String,
+    #[serde(default)]
+    pub session: String,
+    pub name: String,
+    #[serde(default, deserialize_with = "lenient")]
+    pub look: Option<Look>,
+    /// What it does, in a few words; empty where its computer said none.
+    #[serde(default)]
+    pub job: String,
+    /// The name of the computer it lives on, as the box asked knows it.
+    #[serde(default)]
+    pub computer: String,
+    /// What deleting it takes with it there, in the box's words.
+    #[serde(default, deserialize_with = "readable")]
+    pub deletes: Vec<DeleteLine>,
+}
+
+/// What `kuvo/bots` says: the bots that live on the box, those that live on your other computers,
+/// and what it holds for (and heard back from) those computers.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct BotsSaid {
     pub bots: Vec<Bot>,
+    pub elsewhere: Vec<Elsewhere>,
     pub held: Vec<Held>,
     pub refused: Vec<Refused>,
     /// The box couldn't say what it holds just now (it leaves `held` and `refused` out while it
@@ -190,6 +223,8 @@ pub struct BotChange {
     /// `Some(None)`: the model's own way.
     pub personality: Option<Option<String>>,
     pub model: Option<ModelRef>,
+    /// The effort its model runs at (`bots.effort`); `Some(None)`: the model's own.
+    pub effort: Option<Option<String>>,
     /// Its line and its details, the whole job.
     pub job: Option<(String, String)>,
 }
@@ -209,6 +244,9 @@ impl BotChange {
         if let Some(model) = &self.model {
             body.insert("model".into(), json!(model));
         }
+        if let Some(effort) = &self.effort {
+            body.insert("effort".into(), json!(effort));
+        }
         if let Some((line, details)) = &self.job {
             body.insert("job".into(), json!({ "line": line, "details": details }));
         }
@@ -226,7 +264,7 @@ pub enum Outcome {
     /// Done where the bot lives: the bot as it is now (none: deleted, or it no longer lists here).
     Done(Option<Box<Bot>>),
     /// Taken, and held for the computer it lives on (`202`).
-    Held(Held),
+    Held(Box<Held>),
 }
 
 /// How one of a bot's sessions stands, in the box's word. One a newer box names is `Other`.
@@ -266,12 +304,6 @@ pub struct Work {
     pub sessions: Vec<WorkSession>,
 }
 
-/// A list's items this can read: one it can't is left out, not all of them.
-fn readable<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(deserializer: D) -> std::result::Result<Vec<T>, D::Error> {
-    let values = Vec::<Value>::deserialize(deserializer)?;
-    Ok(values.into_iter().filter_map(|value| serde_json::from_value(value).ok()).collect())
-}
-
 /// A value a newer box may say in a way this doesn't know: none.
 fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(deserializer: D) -> std::result::Result<Option<T>, D::Error> {
     let value = Option::<Value>::deserialize(deserializer)?;
@@ -280,7 +312,7 @@ fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(des
 
 /// What a `kuvo/bots` answer says. `held` and `refused` left out: not known now, not none.
 fn said(answer: &Value) -> BotsSaid {
-    BotsSaid { bots: read_all(answer.get("bots")), held: read_all(answer.get("held")), refused: read_all(answer.get("refused")), held_unsaid: answer.get("held").is_none() }
+    BotsSaid { bots: read_all(answer.get("bots")), elsewhere: read_all(answer.get("elsewhere")), held: read_all(answer.get("held")), refused: read_all(answer.get("refused")), held_unsaid: answer.get("held").is_none() }
 }
 
 fn read_all<T: serde::de::DeserializeOwned>(values: Option<&Value>) -> Vec<T> {
@@ -345,7 +377,7 @@ impl BoxClient {
         }
         let answer: Answer = decode(&response)?;
         Ok(match (response.status, answer.held) {
-            (202, Some(held)) => Outcome::Held(held),
+            (202, Some(held)) => Outcome::Held(Box::new(held)),
             _ => Outcome::Done(answer.bot.map(Box::new)),
         })
     }
@@ -364,11 +396,31 @@ mod tests {
     fn whats_held_and_refused_reads_as_the_box_says_it() {
         let held: Held = serde_json::from_str(r#"{"bot":"bot_scout","box":"key_studio","computer":"studio-mini","change":{"name":"Scout II","look":{"color":"amber","shape":"gem","face":"wink"},"mood":"new"},"since":5}"#).unwrap();
         assert_eq!((held.name(), held.look().map(|look| look.color), held.delete), (Some("Scout II"), Some("amber".into()), false));
+        assert_eq!((held.bot_name.as_deref(), &held.bot_look), (None, &None), "a bot no computer listed to the box: neither");
         assert_eq!(held.fields(), vec!["name", "look", "mood"], "Edit Bot's order, then what a newer box names");
         let delete: Held = serde_json::from_str(r#"{"bot":"bot_scout","box":"","computer":"old-box","delete":true,"since":5}"#).unwrap();
         assert!(delete.delete && delete.fields().is_empty());
         let refused: Refused = serde_json::from_str(r#"{"bot":"bot_scout","box":"k","computer":"studio-mini","message":"studio-mini has no personality “Dry Wit”.","at":9}"#).unwrap();
         assert_eq!(refused.message, "studio-mini has no personality “Dry Wit”.");
+    }
+
+    /// PROTOCOL.md, `kuvo/bots`: what deleting a bot takes with it, the bots of your other
+    /// computers, and who a held edit is for, each as the box says it.
+    #[test]
+    fn deletes_and_the_bots_elsewhere_read_as_the_box_says_them() {
+        let look = json!({ "color": "amber", "shape": "gem", "face": "wink" });
+        let deletes = json!([{ "what": "folder", "words": "Its folder goes to the Trash." }, { "what": "a newer box's", "words": "Something new.", "kept": true }, { "what": "no words" }]);
+        let said = said(&json!({
+            "bots": [{ "id": "bot_mira", "session": "ses_mira", "name": "Mira", "look": look, "deletes": deletes }],
+            "elsewhere": [{ "id": "bot_scout", "session": "ses_scout", "name": "Scout", "look": look, "job": "Watches CI", "box": "k", "computer": "studio-mini", "kind": "mac", "heard": 5, "deletes": deletes }, { "id": "bot_wren", "session": "ses_wren", "name": "Wren", "look": "striped", "box": "k2", "computer": "lab", "kind": "machine", "deletes": [] }],
+            "held": [{ "bot": "bot_scout", "box": "k", "computer": "studio-mini", "name": "Scout", "look": look, "delete": true, "since": 5 }],
+            "refused": [{ "bot": "bot_wren", "box": "k2", "computer": "lab", "name": "Wren", "message": "No.", "at": 9 }],
+        }));
+        let lines: Vec<(&str, bool)> = said.bots[0].deletes.iter().map(|line| (line.words.as_str(), line.kept)).collect();
+        assert_eq!(lines, vec![("Its folder goes to the Trash.", false), ("Something new.", true)], "a line without words is left out; one of a kind this doesn't know is a line all the same");
+        assert_eq!(said.elsewhere.iter().map(|bot| (bot.name.as_str(), bot.computer.as_str(), bot.job.as_str(), bot.look.is_some(), bot.deletes.len())).collect::<Vec<_>>(), vec![("Scout", "studio-mini", "Watches CI", true, 2), ("Wren", "lab", "", false, 0)]);
+        assert_eq!((said.held[0].bot_name.as_deref(), said.held[0].bot_look.as_ref().map(|look| look.color.as_str())), (Some("Scout"), Some("amber")));
+        assert_eq!((said.refused[0].bot_name.as_deref(), &said.refused[0].bot_look), (Some("Wren"), &None));
     }
 
     /// PROTOCOL.md, "Held for another computer": neither is there while the box can't check its
@@ -391,6 +443,8 @@ mod tests {
         assert_eq!(BotChange { job: Some(("Ships betas".into(), String::new())), ..BotChange::default() }.body(), json!({ "job": { "line": "Ships betas", "details": "" } }));
         let model = ModelRef { provider_id: "anthropic".into(), id: "claude-opus-5-5".into(), variant: None };
         assert_eq!(BotChange { model: Some(model), ..BotChange::default() }.body(), json!({ "model": { "providerID": "anthropic", "id": "claude-opus-5-5" } }));
+        assert_eq!(BotChange { effort: Some(Some("high".into())), ..BotChange::default() }.body(), json!({ "effort": "high" }));
+        assert_eq!(BotChange { effort: Some(None), ..BotChange::default() }.body(), json!({ "effort": null }), "null: the model's own");
     }
 
     #[test]

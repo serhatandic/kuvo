@@ -8,6 +8,9 @@
 /// What this client uses with no way around it on a box that hasn't it.
 pub const REQUIRED: &[&str] = &[
     "agent-tools.own",
+    "bots.deletes",
+    "bots.effort",
+    "bots.elsewhere",
     "bots.held",
     "bots.now",
     "computers",
