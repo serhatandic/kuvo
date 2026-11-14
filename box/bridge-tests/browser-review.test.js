@@ -90,3 +90,11 @@ test("an oversized relay picture lowers the next class quality and tells that vi
   await chrome.until(m => m.method === "Page.captureScreenshot" && m.params.quality === 40);
   await call(c, "Kuvo.view", { targetId: null });
 });
+
+test("upload data must be base64 text, not an attacker-controlled array-like allocation", async () => {
+  const { c, chrome } = await page();
+  const result = await call(c, "Kuvo.upload", { targetId: "P", files: [{ name: "bad", data: { length: 300000000 } }] });
+  assert.match(result.error.message, /base64 text/);
+  assert.equal(chrome.all.filter(m => m.method === "DOM.setFileInputFiles").length, 0);
+  assert.ok(!(await call(c, "Browser.getVersion")).error);
+});
