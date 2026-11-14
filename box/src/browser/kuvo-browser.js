@@ -890,6 +890,8 @@ async function host() {
   });
   const resize = async (target, size, by) => {
     if (!own.has(target) || (by === "viewer" && workingIn(target))) return;
+    const previous = sizes.get(target);
+    if (previous?.by === by && ["width", "height", "scale", "zoom"].every(key => (previous[key] ?? 1) === (size[key] ?? 1))) return;
     sizes.set(target, { ...size, by });
     await ownCall("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: size.scale, mobile: false }, own.get(target));
     await ownCall("Emulation.setPageScaleFactor", { pageScaleFactor: size.zoom ?? 1 }, own.get(target));

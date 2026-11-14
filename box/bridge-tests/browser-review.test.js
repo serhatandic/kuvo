@@ -37,3 +37,13 @@ test("raw MachineBrowser metrics retain DPR and zoom; screencast limits only the
   assert.ok(chrome.all.some(m => m.method === "Page.captureScreenshot" && m.params.quality === 75 && m.params.clip.scale === 2));
   await call(c, "Page.stopScreencast", {}, "raw");
 });
+
+test("mouse movement does not resize an unchanged viewer page or rebroadcast its viewport", async () => {
+  const { c, chrome } = await page();
+  await call(c, "Kuvo.view", { targetId: "P", width: 393, height: 660 });
+  const before = chrome.all.filter(m => m.method.startsWith("Emulation.")).length;
+  const facts = c.heard.all.filter(m => m.method === "Kuvo.viewport").length;
+  for (let i = 0; i < 10; i++) await call(c, "Kuvo.input", { targetId: "P", kind: "mouse", type: "mouseMoved", x: i, y: i });
+  assert.equal(chrome.all.filter(m => m.method.startsWith("Emulation.")).length, before);
+  assert.equal(c.heard.all.filter(m => m.method === "Kuvo.viewport").length, facts);
+});
