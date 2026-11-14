@@ -913,3 +913,60 @@ describe("plan_limits, an agent's read of them", () => {
     expect((await planLimitsTool(null)).isError).toBe(true)
   })
 })
+
+describe("an account's rings (#711)", () => {
+  const { limitRows } = require("../../src/agents/limits-rows") as typeof import("../../src/agents/limits-rows")
+  const rowOf = (service: string, windows: any[]) =>
+    limitRows([{ key: "k", name: "mac", here: true, away: false, accounts: [{ provider: service, service, windows: windows.map((window) => ({ read: 1, source: "usage", ...window })) } as any] }])[0]!
+
+  test("Claude's rows say its two rings, the session and the week, each with how close it is, on the route and its event", async () => {
+    ClaudeAgent.keychain = true
+    const { heardWindows } = await import("../../src/agents/agents/claude-limits")
+    const own = new TestClaude(home)
+    signIn(home, "default", "token-own")
+    const limits = new Limits(() => agentAccounts([own]), undefined, clock.now)
+    const told: any[] = []
+    const stop = subscribe((each) => each.type === "kuvo.limits.updated" && told.push(each.data))
+    await limits.refresh()
+    clock.pass(60_000)
+    for (const window of heardWindows({ status: "allowed", rateLimitType: "five_hour", utilization: 0.93, unifiedWindows: { five_hour: { utilization: 0.93, resetsAt: 1_794_200_000 }, seven_day: { utilization: 0.72, resetsAt: 1_794_600_000 }, seven_day_overage_included: { utilization: 0.99, resetsAt: 1_794_600_000 } } })) own.limits.heard!(window)
+    await limits.refresh()
+    clock.pass(60 * 60_000)
+    await limits.tick()
+    stop()
+
+    const { rows } = (await route(limits)) as any
+    expect(rows).toHaveLength(1)
+    expect(rows[0].rings).toEqual({
+      short: { window: "five_hour", used: 0.93, resetsAt: 1_794_200_000_000, level: "over" },
+      long: { window: "seven_day", used: 0.72, resetsAt: 1_794_600_000_000, level: "near" },
+    })
+    // Every window says its level; only the two rings say a span (a model's own week is neither).
+    expect(rows[0].windows.map((window: any) => [window.id, window.span, window.level])).toEqual([["five_hour", "short", "over"], ["seven_day", "long", "near"], ["seven_day_fable", undefined, "over"]])
+    expect(told.at(-1).rows[0].rings).toEqual(rows[0].rings)
+    // The box's own list (what peers are told) stays as read: the rings are the rows'.
+    expect(told.at(-1).accounts[0].windows[0].level).toBeUndefined()
+  })
+
+  test("a plan with one window has one ring, and one with none has none", () => {
+    expect(rowOf("grok", [{ id: "weekly", used: 0.2, minutes: 10_080, resetsAt: 5 }]).rings).toEqual({ long: { window: "weekly", used: 0.2, resetsAt: 5, level: "calm" } })
+    expect(rowOf("claude", [{ id: "five_hour", used: 0.5, minutes: 300 }]).rings).toEqual({ short: { window: "five_hour", used: 0.5, level: "calm" } })
+    // No length said (OpenRouter's key limit): its one limit is the long ring.
+    expect(rowOf("openrouter", [{ id: "key", used: 0.7, name: "Key limit" }]).rings).toEqual({ long: { window: "key", used: 0.7, level: "near" } })
+    expect(rowOf("ollama", []).rings).toEqual({})
+  })
+
+  test("the box picks which of a maker's windows is each ring", () => {
+    const spans = (service: string, windows: any[]) => Object.fromEntries(Object.entries(rowOf(service, windows).rings).map(([span, ring]) => [span, ring!.window]))
+    // Codex: its own names for them, and a model's windows beside the plan's.
+    expect(spans("codex", [{ id: "spark_primary", used: 0.9, minutes: 300, model: "Spark" }, { id: "primary", used: 0.1, minutes: 300 }, { id: "secondary", used: 0.2, minutes: 10_080 }])).toEqual({ short: "primary", long: "secondary" })
+    // Z.ai: what it counts apart (web searches) is no ring beside its session and week.
+    expect(spans("zai", [{ id: "web_search", used: 0.9, name: "Web searches" }, { id: "session", used: 0.1, minutes: 300 }, { id: "weekly", used: 0.2, minutes: 10_080 }])).toEqual({ short: "session", long: "weekly" })
+    // Copilot: a month's counts only; the first is its ring.
+    expect(spans("copilot", [{ id: "premium", used: 0.4, minutes: 43_200, name: "Premium requests" }, { id: "chat", used: 0.1, minutes: 43_200, name: "Chat" }])).toEqual({ long: "premium" })
+    // A plan with a session, a week and a month: the longest is the long ring.
+    expect(spans("opencode", [{ id: "session", used: 0.1, minutes: 300 }, { id: "weekly", used: 0.2, minutes: 10_080 }, { id: "monthly", used: 0.3, minutes: 43_200 }])).toEqual({ short: "session", long: "monthly" })
+    // Antigravity: every window is a model's; the first model's stand for the plan.
+    expect(spans("antigravity", [{ id: "gemini", used: 0.1, minutes: 300, model: "Gemini Pro" }, { id: "gemini_week", used: 0.2, minutes: 10_080, model: "Gemini Pro" }, { id: "claude", used: 0.9, minutes: 300, model: "Claude" }])).toEqual({ short: "gemini", long: "gemini_week" })
+  })
+})

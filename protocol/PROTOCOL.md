@@ -4540,6 +4540,18 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     of their `read`, never live, however recent. A row a box can't say who it is (no `identity`) is
     never merged by its numbers: two accounts can read alike (a personal plan and a team's, each
     at 12%).
+  - **Rings and levels** (`limits.rings`, #711): in a row (never in `accounts`, nor in what peers
+    are told), each window adds `level`, how close it is to its limit in the box's word, the same
+    in every client: `calm`, `near` (70% used or more) or `over` (90% or more); and the row adds
+    `rings` `{short?, long?}`, the two circles a client draws for the account, each `{window, used,
+    resetsAt?, level}` (`window`, that window's `id`), with `span: short|long` on those two windows.
+    The box picks them: among the whole plan's windows (not a model's own; its plainly timed ones
+    before those named for what they count, "Web searches"), the shortest under a day is `short` (a
+    5-hour session) and the longest of a day or more `long` (the week, the month), the first listed
+    where two are as long. A plan with one window has one ring (`long`, where it states no
+    length); one with none, `rings: {}`. Where every window is a model's (Antigravity), the first
+    model's stand for the plan. A client colours by `level` and never by a threshold of its own,
+    and draws a ring whose `resetsAt` has passed empty, in its place (as a window).
 - Listing them (KuvoClient's `UsageListing.listing`, as the Mac and the phone do): one box's `rows`
   as they are, merging nothing (the Mac: its own box's; the phone: the first box in its list of
   your computers that states accounts, a machine's on Linux too), refreshed

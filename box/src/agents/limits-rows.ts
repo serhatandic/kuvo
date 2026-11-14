@@ -38,8 +38,30 @@ export interface LimitRowBox {
   away?: true
 }
 
+/** How close a share is to its limit, the same word in every client: `near` from 70% used, `over` from 90%. */
+export type LimitLevel = "calm" | "near" | "over"
+/** Which of an account's two rings a window is: its short limit (a 5-hour session) or its long one (the week, the month). */
+export type LimitSpan = "short" | "long"
+
+/** A window as a row states it: with how close it is, and which ring it is, where it's one. */
+export interface RowWindow extends LimitWindow {
+  level: LimitLevel
+  span?: LimitSpan
+}
+
+/** One of an account's rings: its window (by `id`), how much of it is gone, when it starts over, and how close that is. */
+export interface LimitRing {
+  window: string
+  used: number
+  resetsAt?: number
+  level: LimitLevel
+}
+
 /** One account across your computers: its newest reading, and every computer it's signed in on. */
 export interface LimitRow extends AccountLimits {
+  windows: RowWindow[]
+  /** Its two rings, the short limit and the long one; one alone where its plan has one window; none where it has none. */
+  rings: { short?: LimitRing; long?: LimitRing }
   /** The same for the account on every box: `<service>#<identity>`, or `<box key>/<provider>` for one that can't say who it is. */
   id: string
   boxes: LimitRowBox[]
@@ -67,7 +89,7 @@ export function limitRows(boxes: LimitsBox[]): LimitRow[] {
   }
   return groups.map(({ id, members }) => {
     const row: LimitRow = {
-      ...merged(members),
+      ...ringed(merged(members)),
       id,
       boxes: members.map(({ box, account }) => ({
         key: box.key,
@@ -85,6 +107,52 @@ export function limitRows(boxes: LimitsBox[]): LimitRow[] {
     withResetsOn(row, members)
     return row
   })
+}
+
+export const levelOf = (used: number): LimitLevel => (used >= 0.9 ? "over" : used >= 0.7 ? "near" : "calm")
+
+const DAY = 24 * 60
+
+/**
+ * Which of an account's windows are its rings (PROTOCOL.md, "Plan limits", `rings`): among the
+ * whole plan's windows (not one model's; its plainly timed ones before those named for what they
+ * count, "Premium requests"), the shortest under a day is `short`, and the longest of a day or
+ * more `long`, the first listed where two are as long. A plan that states no length has its first
+ * window as `long`. Where every window is a model's (Antigravity), the first model's stand for
+ * the plan.
+ */
+export function spansOf(windows: LimitWindow[]): Map<LimitWindow, LimitSpan> {
+  const spans = new Map<LimitWindow, LimitSpan>()
+  if (!windows.length) return spans
+  const plan = windows.filter((window) => !window.model)
+  const first = windows[0]!.model?.toLowerCase()
+  const whole = plan.length ? plan : windows.filter((window) => window.model?.toLowerCase() === first)
+  const pool = whole.some((window) => !window.name) ? whole.filter((window) => !window.name) : whole
+  let short: LimitWindow | undefined
+  let long: LimitWindow | undefined
+  for (const window of pool) {
+    if (!window.minutes) continue
+    if (window.minutes < DAY) {
+      if (!short || window.minutes < short.minutes!) short = window
+    } else if (!long || window.minutes > long.minutes!) long = window
+  }
+  if (!short && !long) long = pool[0]
+  if (short) spans.set(short, "short")
+  if (long) spans.set(long, "long")
+  return spans
+}
+
+/** An account as a row states it: each window with its level and which ring it is, and the rings themselves. */
+function ringed(account: AccountLimits): AccountLimits & Pick<LimitRow, "windows" | "rings"> {
+  const spans = spansOf(account.windows)
+  const rings: LimitRow["rings"] = {}
+  const windows = account.windows.map((window) => {
+    const level = levelOf(window.used)
+    const span = spans.get(window)
+    if (span) rings[span] = { window: window.id, used: window.used, ...(window.resetsAt ? { resetsAt: window.resetsAt } : {}), level }
+    return { ...window, level, ...(span ? { span } : {}) }
+  })
+  return { ...account, windows, rings }
 }
 
 /**
