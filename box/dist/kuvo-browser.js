@@ -1,4 +1,4 @@
-// kuvo-browser 089103426da0d206
+// kuvo-browser 3e1831ddd9b16202
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -101,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "7868aef1dc50";
+const KEEPER = "e7d6031c6833";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -898,7 +898,13 @@ async function host() {
     working: everyStatus().pages.includes(targetId), held: held.has(targetId),
     ...(dialogs.has(targetId) ? { dialog: dialogs.get(targetId) } : {}),
   })) });
-  const announcePages = () => broadcast({ method: "Kuvo.pages", params: pages() });
+  let lastPages = null;
+  const announcePages = () => {
+    const params = pages(), digest = JSON.stringify(params);
+    if (lastPages === digest) return;
+    lastPages = digest;
+    broadcast({ method: "Kuvo.pages", params });
+  };
   const workingIn = target => [...clients].some(c => c.status?.working && c.status.targetId === target);
   const finite = (n, fallback, min, max) => Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
   const sizeFor = p => ({

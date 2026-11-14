@@ -880,7 +880,13 @@ async function host() {
     working: everyStatus().pages.includes(targetId), held: held.has(targetId),
     ...(dialogs.has(targetId) ? { dialog: dialogs.get(targetId) } : {}),
   })) });
-  const announcePages = () => broadcast({ method: "Kuvo.pages", params: pages() });
+  let lastPages = null;
+  const announcePages = () => {
+    const params = pages(), digest = JSON.stringify(params);
+    if (lastPages === digest) return;
+    lastPages = digest;
+    broadcast({ method: "Kuvo.pages", params });
+  };
   const workingIn = target => [...clients].some(c => c.status?.working && c.status.targetId === target);
   const finite = (n, fallback, min, max) => Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
   const sizeFor = p => ({

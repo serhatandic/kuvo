@@ -125,3 +125,13 @@ test("page-initiated external URLs name their page and reach only that page's vi
   assert.equal(observer.heard.all.filter(m => m.method === "Kuvo.external").length, 0);
   await call(c, "Kuvo.view", { targetId: null });
 });
+
+test("Page events that change no page facts do not spend relay messages", async () => {
+  const { c, event } = await page();
+  event("Page.domContentEventFired", {}, "own");
+  await call(c, "Browser.getVersion");
+  const before = c.heard.all.filter(m => m.method === "Kuvo.pages").length;
+  for (let i = 0; i < 10; i++) event("Page.domContentEventFired", {}, "own");
+  await call(c, "Browser.getVersion");
+  assert.equal(c.heard.all.filter(m => m.method === "Kuvo.pages").length, before);
+});
