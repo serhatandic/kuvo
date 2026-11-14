@@ -278,7 +278,8 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
   });
   item.files = item.files.filter(file => files.some(each => each.name === file.name));
   // (Its labels this box doesn't have yet come with it; one it can't keep is left off.)
-  for (const each of Array.isArray(given.labels) ? given.labels : []) keepLabel(each);
+  // (From a box that kept categories: its custom one, a label now.)
+  for (const each of [...(Array.isArray(given.labels) ? given.labels : []), ...(Array.isArray(given.categories) ? given.categories : [])]) keepLabel(each);
   const labelsHere = new Set(labels().map(each => each.id));
   item.labels = item.labels.filter(each => labelsHere.has(each));
   const kept = whoOf(given.by) ?? { name: "someone else" };

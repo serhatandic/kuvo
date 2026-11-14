@@ -25587,7 +25587,7 @@ async function handArrived(sender, given, reply, places, now = Date.now()) {
     return bytes.length <= MOST_FILE ? [{ name: each.name, bytes }] : [];
   });
   item.files = item.files.filter((file) => files.some((each) => each.name === file.name));
-  for (const each of Array.isArray(given.labels) ? given.labels : [])
+  for (const each of [...Array.isArray(given.labels) ? given.labels : [], ...Array.isArray(given.categories) ? given.categories : []])
     keepLabel(each);
   const labelsHere = new Set(labels().map((each) => each.id));
   item.labels = item.labels.filter((each) => labelsHere.has(each));
@@ -43653,7 +43653,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f65b3993e9a7";
+var BRIDGE_VERSION = "64a168a90771";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -52033,7 +52033,8 @@ async function run4(name, args, caller, targets, signal) {
     case "queue_add": {
       refuseMoving([caller.owner]);
       const issue = args.issue !== undefined ? await issueFor(args.issue, caller, overseen) : null;
-      const fields = issue ? { ...args, title: issue.read.title } : args;
+      const starting = args.working === true && !caller.seat && args.status === undefined;
+      const fields = { ...args, ...issue ? { title: issue.read.title } : {}, ...starting ? { status: "in-progress" } : {} };
       const item = withFiles(args, caller, acting, () => change4((book) => {
         if (issue)
           refuseTaken(book.items(), issue.at, caller, overseen, undefined, issue.read.id);

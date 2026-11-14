@@ -279,7 +279,9 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       refuseMoving([caller.owner]);
       // (An issue or a pull request: read from GitHub first, outside the queue's lock.)
       const issue = args.issue !== undefined ? await issueFor(args.issue, caller, overseen) : null;
-      const fields = issue ? { ...args, title: issue.read.title } : args;
+      // (One added as its agent starts on it is In progress from the start, unless it says where it stands.)
+      const starting = args.working === true && !caller.seat && args.status === undefined;
+      const fields = { ...args, ...(issue ? { title: issue.read.title } : {}), ...(starting ? { status: "in-progress" } : {}) };
       const item = withFiles(args, caller, acting, () => change(book => {
         if (issue) refuseTaken(book.items(), issue.at, caller, overseen, undefined, issue.read.id);
         const made = addItem(book, caller.owner, fields as Fields, acting, primaryOf(), issue ? sourceOf(issue.at, issue.read) : undefined);

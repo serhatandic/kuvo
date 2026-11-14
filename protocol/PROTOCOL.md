@@ -5674,7 +5674,7 @@ once; one on another computer that takes the Work Queue's mail, by address or a 
 bring back yours; one on its way to another computer has its hand-off called off), `queue_labels` (list them, or one change: `add` with `color?`, `rename` with `to`, `recolor` with `color`, `remove`), `queue_import` (items an agent read from
 an old backlog, with their numbers; each `status?`, `label?`, `done?`). `queue_add` and `queue_update` take `status`, `priority`,
 `labels` (all of them, by name), `assignee` (a bot's or a coding agent's name; null for no one)
-and `due`; a new item is Todo and Normal unless said. `working: true` links the caller and makes a
+and `due`; a new item is Todo and Normal unless said (In progress, added with `working: true`). `working: true` links the caller and makes a
 Todo, Backlog or Waiting item In progress (unless the same call sets its status); `working:
 false` unlinks it and leaves its status as it is. `queue_list` lists by status, the open ones
 unless `done`, and takes `status`, `label` and `query` (words in titles, descriptions and notes). `item` is a number (`#243` or `243`), the id of one that has

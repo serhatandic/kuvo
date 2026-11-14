@@ -348,7 +348,7 @@ test("you change what an item says and where it stands; only what's sent changes
   item = (await ok("PATCH", "kuvo/work-queue/items/1", { status: "done" })).item;
   assert.equal(item.status, "done");
   const whole = (await ok("GET", "kuvo/work-queue/items/1")).item;
-  assert.deepEqual(whole.events.map(each => [each.kind, each.from, each.to]), [["moved", "todo", "in-progress"], ["started", undefined, undefined], ["moved", "in-progress", "canceled"], ["moved", "canceled", "needs-you"], ["done", undefined, undefined]]);
+  assert.deepEqual(whole.events.map(each => [each.kind, each.from, each.to]), [["started", undefined, undefined], ["moved", "in-progress", "canceled"], ["moved", "canceled", "needs-you"], ["done", undefined, undefined]]);
 
   // Its place among those of its status.
   await ok("PATCH", "kuvo/work-queue/items/3", { before: 2 });
