@@ -1,9 +1,8 @@
-//! What the stand-in box says of the rail's areas: its bots and group chats, the Work Queue's
-//! categories, the machines it runs sessions on, the accounts' limits, and what waits on you.
-//!
-//! It also says what #711 is to add to the box (each marked `BOX-NEEDED` where the app reads it):
-//! what a bot is doing now, the queue's counts, each limit's level, and `kuvo/waiting`. With
-//! [`Areas::before_711`] it answers as a box does today, without them.
+//! What the stand-in box says of the rail's areas, in a box's own shapes (PROTOCOL.md): its bots,
+//! each with what it's doing now, and group chats; the Work Queue's view with its counts; your
+//! computers; the accounts' limits, each row with its rings and every window its level; and how
+//! many things wait on you. As a box does, it counts, levels and picks the rings itself: the app
+//! draws what it says.
 
 use serde_json::{Value, json};
 
@@ -12,73 +11,67 @@ use super::{DAY, HOUR, MINUTE};
 /// How the stand-in answers for the areas.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Areas {
-    /// As a box from before #711: none of what it's to add.
-    pub before_711: bool,
-    /// A first run: no bots, chats, machines or accounts.
+    /// A first run: no bots, chats, other computers or accounts.
     pub empty: bool,
+    /// Its list of computers can't be read now (503).
+    pub computers_down: bool,
 }
 
-/// Its answer to `method route`, if it's one of the areas' routes. `asked`: its sessions waiting on
-/// you, each with since when (ms), as its list says them.
-pub fn answer(areas: Areas, method: &str, route: &str, now: f64, asked: &[(String, f64)]) -> Option<(u16, Value)> {
+/// Its answer to `method route`, if it's one of the areas' routes. `needing`: how many of its
+/// sessions "Needs you" lists.
+pub fn answer(areas: Areas, method: &str, route: &str, now: f64, needing: usize) -> Option<(u16, Value)> {
     if method != "GET" {
         return None;
     }
-    let full = !areas.before_711;
+    if route == "kuvo/computers" && areas.computers_down {
+        return Some((503, json!({ "message": "The box isn’t answering." })));
+    }
     let answer = match route {
-        "kuvo/bots" => json!({ "bots": if areas.empty { Vec::new() } else { bots(full) } }),
+        "kuvo/bots" => json!({ "bots": if areas.empty { Vec::new() } else { bots(now) } }),
         "kuvo/groups" => json!({ "groups": if areas.empty { Vec::new() } else { groups(now) } }),
-        "kuvo/work-queue/categories" => {
-            let mut queue = json!({ "categories": categories() });
-            if full {
-                queue["counts"] = if areas.empty {
-                    json!({ "inProgress": 0, "categories": {} })
-                } else {
-                    json!({ "inProgress": 2, "categories": { "next": 6, "later": 6, "cat_design": 3, "parked": 4, "done": 31 } })
-                };
-            }
-            queue
+        "kuvo/work-queue" => {
+            let counts = if areas.empty {
+                json!({ "inProgress": 0, "categories": { "next": 0, "later": 0, "cat_design": 0, "parked": 0, "done": 0 }, "sources": {}, "computers": { "": 0 }, "removed": 0 })
+            } else {
+                json!({ "inProgress": 2, "categories": { "next": 6, "later": 6, "cat_design": 3, "parked": 4, "done": 31 }, "sources": { "github": 9 }, "computers": { "": 38, "key_devbox": 12 }, "removed": 3 })
+            };
+            json!({ "owner": "all", "categories": categories(), "items": [], "owners": [], "removed": [], "computers": [], "counts": counts })
         }
-        "kuvo/machines" => json!({ "machines": if areas.empty { Vec::new() } else { machines() }, "hosts": [] }),
-        "kuvo/agents/api/kuvo/limits" => json!({ "data": { "accounts": [], "services": ["claude", "codex", "copilot", "grok", "openrouter"], "rows": if areas.empty { Vec::new() } else { accounts(now, full) } } }),
-        "kuvo/waiting" if full => {
-            let mut waiting: Vec<&(String, f64)> = asked.iter().collect();
-            waiting.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            let needs: Vec<Value> = waiting.iter().map(|(session, _)| json!({ "session": session, "asks": asks_of(session) })).collect();
-            json!({ "sessions": needs.len(), "bots": if areas.empty { 0 } else { 2 }, "queue": 0, "needsYou": needs })
-        }
+        "kuvo/computers" => json!({ "computers": computers(areas.empty) }),
+        "kuvo/agents/api/kuvo/limits" => json!({ "data": { "accounts": [], "services": ["claude", "codex", "copilot", "grok", "openrouter"], "rows": if areas.empty { Vec::new() } else { accounts(now) } } }),
+        "kuvo/waiting" => json!({ "sessions": needing, "bots": if areas.empty { 0 } else { bots(now).iter().filter(|bot| bot["now"]["asking"].as_u64().unwrap_or(0) > 0).count() }, "queue": 0 }),
         _ => return None,
     };
     Some((200, answer))
 }
 
-/// What a session waiting on you asks, as the box words it.
-fn asks_of(session: &str) -> &'static str {
-    match session {
-        "ses_limits" => "asks to run a command",
-        "ses_cms" => "has a question for you",
-        _ => "waits on you",
-    }
+/// What a session waiting on you asks, as the box words it: its kind, and a few words written to
+/// follow a name.
+pub fn asks_of(session: &str) -> Value {
+    let (kind, summary) = match session {
+        "ses_limits" => ("permission", "asks to run a command"),
+        "ses_cms" => ("question", "has a question for you"),
+        _ => ("other", "waits on you"),
+    };
+    json!({ "kind": kind, "summary": summary })
 }
 
-fn bots(full: bool) -> Vec<Value> {
+fn bots(at: f64) -> Vec<Value> {
     let bot = |id: &str, name: &str, color: &str, shape: &str, job: &str, now: Value| {
-        let mut bot = json!({
+        json!({
             "id": id, "session": format!("ses_{}", id.trim_start_matches("bot_")), "name": name,
             "look": { "color": color, "shape": shape, "face": "calm" },
             "job": job, "jobDetails": "", "paused": false, "watching": 0, "agents": false,
             "folder": format!("{}/.kuvo-code/bots/{}", super::HOME, id.trim_start_matches("bot_")),
-        });
-        if full {
-            bot["now"] = now;
-        }
-        bot
+            "now": now,
+        })
     };
     vec![
         bot("bot_mira", "Mira", "sky", "round", "Looks after the website", json!({ "working": 1, "asking": 1 })),
         bot("bot_inbox", "Inbox Helper", "coral", "squircle", "Drafts replies to support mail", json!({ "working": 0, "asking": 1 })),
+        // One with no session listed (its row shows its job), and one whose newest finished.
         bot("bot_release", "Release Captain", "lime", "pebble", "Ships a beta every Friday", json!({ "working": 0, "asking": 0 })),
-        bot("bot_docs", "Docs Keeper", "violet", "gem", "Keeps the docs matching the code", json!({ "working": 0, "asking": 0 })),
+        bot("bot_docs", "Docs Keeper", "violet", "gem", "Keeps the docs matching the code", json!({ "working": 0, "asking": 0, "finished": at - 3.0 * HOUR })),
     ]
 }
 
@@ -99,14 +92,24 @@ fn categories() -> Vec<Value> {
     ]
 }
 
-fn machines() -> Vec<Value> {
-    vec![
-        json!({ "id": "devbox", "name": "devbox", "otherAddresses": [], "connection": "connected", "status": "Connected · Ubuntu 24.04" }),
-        json!({ "id": "studio", "name": "studio-mini", "otherAddresses": [], "connection": "failed", "status": "Can’t be reached", "failure": "No route to host" }),
-    ]
+/// Your computers, the stand-in itself first: a machine at work, a Mac that's away, and a
+/// machine shared with another setup.
+fn computers(alone: bool) -> Vec<Value> {
+    let mut computers = vec![json!({
+        "key": "key_stand_in", "name": super::NAME, "kind": "mac", "here": true, "shared": false, "reach": "connected",
+        "version": "1.0.0", "engine": "2.3.0", "system": "macOS 15.1", "via": "here", "working": 1, "limits": ["claude", "codex", "copilot", "grok", "openrouter"],
+    })];
+    if !alone {
+        computers.extend([
+            json!({ "key": "key_devbox", "name": "devbox", "kind": "machine", "id": "devbox", "shared": false, "reach": "connected", "version": "1.0.0", "engine": "2.3.0", "system": "Ubuntu 24.04.1 LTS", "via": "relay", "working": 2, "limits": ["claude"] }),
+            json!({ "key": "key_studio", "name": "studio-mini", "kind": "mac", "shared": false, "reach": "away", "version": "1.0.0", "engine": "2.3.0", "system": "macOS 15.1", "via": "relay", "working": 0, "limits": [] }),
+            json!({ "key": "key_build", "name": "build-box", "kind": "machine", "id": "build-box", "shared": true, "apart": true, "reach": "connected", "system": "Debian 12", "via": "relay", "working": 0, "limits": [] }),
+        ]);
+    }
+    computers
 }
 
-fn accounts(now: f64, full: bool) -> Vec<Value> {
+fn accounts(now: f64) -> Vec<Value> {
     let window = |id: &str, used: f64, resets: f64, minutes: Option<u32>, model: Option<&str>, name: Option<&str>| {
         let mut window = json!({ "id": id, "used": used, "resetsAt": now + resets, "read": now - MINUTE, "source": "usage" });
         if let Some(minutes) = minutes {
@@ -118,19 +121,26 @@ fn accounts(now: f64, full: bool) -> Vec<Value> {
         if let Some(name) = name {
             window["name"] = json!(name);
         }
-        if full {
-            window["level"] = json!(level(used));
-            // #711's span: the 5-hour window outside, the week inside; others (a model's, credits) none.
-            match minutes {
-                Some(300) if model.is_none() => window["span"] = json!("short"),
-                Some(10080) if model.is_none() => window["span"] = json!("long"),
-                _ => {}
-            }
-        }
+        window["level"] = json!(level(used));
         window
     };
-    let row = |service: &str, agent: Option<&str>, label: &str, plan: &str, windows: Vec<Value>| {
-        let mut row = json!({ "service": service, "label": label, "plan": plan, "windows": windows, "checked": now - MINUTE });
+    // The box picks a row's rings: among the whole plan's windows, the shortest under a day is
+    // `short` and the longest of a day or more `long`; a plan's only window that states no length
+    // is `long`.
+    let row = |service: &str, agent: Option<&str>, label: &str, plan: &str, mut windows: Vec<Value>| {
+        let whole: Vec<usize> = (0..windows.len()).filter(|ix| windows[*ix].get("model").is_none()).collect();
+        let minutes = |ix: &usize| windows[*ix]["minutes"].as_u64();
+        let short = whole.iter().copied().filter(|ix| minutes(ix).is_some_and(|minutes| minutes < 1440)).min_by_key(|ix| minutes(ix));
+        let long = whole.iter().copied().filter(|ix| minutes(ix).is_some_and(|minutes| minutes >= 1440)).max_by_key(|ix| minutes(ix)).or_else(|| (short.is_none() && whole.len() == 1).then(|| whole[0]));
+        let mut rings = json!({});
+        for (span, ix) in [("short", short), ("long", long)] {
+            if let Some(ix) = ix {
+                windows[ix]["span"] = json!(span);
+                let window = &windows[ix];
+                rings[span] = json!({ "window": window["id"], "used": window["used"], "resetsAt": window["resetsAt"], "level": window["level"] });
+            }
+        }
+        let mut row = json!({ "service": service, "label": label, "plan": plan, "windows": windows, "rings": rings, "checked": now - MINUTE });
         if let Some(agent) = agent {
             row["agent"] = json!(agent);
         }

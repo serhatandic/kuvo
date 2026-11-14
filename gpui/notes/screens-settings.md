@@ -57,7 +57,8 @@ Read (GPL-3.0, behaviour only): `crates/settings_ui/src/settings_ui.rs` (`Settin
 
 The box's facts, drawn: the coding agents' accounts (`kuvo/agents/api/integration`), then the
 engine's plans and providers signed in (or ended), then the rest to add, each in its side's order,
-with the box's ways in (`kuvo/sign-in/accounts`). Sign In only where the box offers a way;
+with the box's ways in (`kuvo/sign-in/accounts`). Only those the box says Accounts lists
+(`listed`) show, each with the box's mark (`service`; its first letter where it names none). Sign In only where the box offers a way;
 Install where the agent isn't installed; Sign In Again where a sign-in ended (the agent's
 `signInEnded`, or `kuvo/accounts/ended`); Disconnect (`kuvo/accounts/<id>/forget`, asked first)
 where this box keeps a key or sign-in; an agent's menu has Sign In Again…, Sign Out (where it
@@ -66,7 +67,8 @@ where this box keeps a key or sign-in; an agent's menu has Sign In Again…, Sig
 The sheet (the Mac's `ConnectView` steps): the box's ways in order, legacy ones under "Other ways
 to sign in", "Or set … in your shell profile"; one way alone starts at once. A key: masked field,
 the way's form, Connect, and the engine's refusal under the field. Credentials on the computer: the
-form, then connect. In the browser: the page opens, a device code is shown and copied, "Paste a
+form, then connect. In the browser (started through the box, `kuvo/sign-in/start`): the page
+opens, the device code the box says apart (`userCode`) is shown and copied, "Paste a
 Code" where it may end on one (`acceptsCode`), the status asked about once a second
 (`kuvo/sign-in/status`) until it's done or the box's `failure` words; Cancel gives it up on the
 engine; ten unanswered asks give up.

@@ -18,6 +18,7 @@ import { frozen } from "../moves/records";
 import { attentionGiven } from "../notices/hold";
 import { macSign, readLink, updateLink } from "../state";
 import { announce, toldPeers, writeAgents } from "./agents";
+import { saysApart } from "./apart";
 import { takeAgents, vouchedOf } from "./directory";
 import { forgetOldMacs, macsOf, mailFor, openMail, peersOf, takeLegacyPeers } from "./known";
 import { bridgeAsk, takeLimits, takeSeat } from "./seats";
@@ -43,7 +44,9 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
     if (bytes) try { host?.send(bytes); } catch {}
   };
   if (isObject(payload.agents)) {
-    if (takeAgents(sender, payload.agents)) writeAgents();
+    // (What it runs is kept only from one of your own computers: PROTOCOL.md, "Computers".)
+    const agents = saysApart(sender.key, payload.agents) ? { ...payload.agents, computer: undefined } : payload.agents;
+    if (takeAgents(sender, agents)) writeAgents();
   }
   // Documents (PROTOCOL.md, "Documents"): given, in parts, or a digest of what it has.
   if (isObject(payload.docs)) receiveDocs(sender, payload.docs as DocsMail, host).catch(() => {});

@@ -7,7 +7,10 @@
   "answer (box/test/session-lists.test.ts checks them); `expect.sidebar` is what a client shows from them (KuvoClient's SessionListsTests):",
   "pinned and chats newest first; projects by their newest session shown, ties by name (Finder order: case-insensitive, numbers by value), the",
   "name its list gives else its folder's last part; sessions in a project newest first. Written by hand from the Mac's rule as it was before",
-  "the box said it (Workspace.makeProjects, 2026-11-13); change both together."
+  "the box said it (Workspace.makeProjects, 2026-11-13); change both together.",
+  "`box.asks` is what each one waiting asks, in the box's words, and `box.botOf` the bot each bot's conversation is; `expect.needsYou` is the",
+  "list's \"Needs you\" (the one that asked last first), `expect.projects[].asking`/`working` each project's sums (one asking isn't counted at work),",
+  "and `expect.bots` what each bot is doing now (`now` in `kuvo/bots`), all from the facts (#711)."
  ],
  "cases": [
   {
@@ -55,7 +58,13 @@
     "asked": {
      "ses_chat1": 1050
     },
-    "away": []
+    "away": [],
+    "asks": {
+     "ses_chat1": {
+      "kind": "question",
+      "summary": "has a question for you"
+     }
+    }
    },
    "sessions": [
     {
@@ -496,31 +505,54 @@
      }
     },
     "projects": {
-     "/home/me/alpha": {},
-     "/home/me/api": {
-      "updated": 2001
+     "/home/me/alpha": {
+      "asking": 0,
+      "working": 0
      },
-     "/home/me/.kuvo-code/chats": {},
+     "/home/me/api": {
+      "updated": 2001,
+      "asking": 0,
+      "working": 0
+     },
+     "/home/me/.kuvo-code/chats": {
+      "asking": 0,
+      "working": 0
+     },
      "/home/me/api/sub": {
-      "updated": 650
+      "updated": 650,
+      "asking": 0,
+      "working": 0
      },
      "/home/me/notes": {
-      "updated": 1000
+      "updated": 1000,
+      "asking": 0,
+      "working": 0
      },
      "/home/me/old": {
-      "updated": 100
+      "updated": 100,
+      "asking": 0,
+      "working": 0
      },
      "/home/me/web": {
       "name": "Website",
-      "updated": 1000
+      "updated": 1000,
+      "asking": 0,
+      "working": 1
      },
      "/home/me/web10": {
-      "updated": 200
+      "updated": 200,
+      "asking": 0,
+      "working": 0
      },
      "/home/me/web2": {
-      "updated": 200
+      "updated": 200,
+      "asking": 0,
+      "working": 0
      },
-     "/home/me/zeta": {}
+     "/home/me/zeta": {
+      "asking": 0,
+      "working": 0
+     }
     },
     "sidebar": {
      "pinned": [
@@ -590,7 +622,17 @@
        "sessions": []
       }
      ]
-    }
+    },
+    "needsYou": [
+     {
+      "session": "ses_chat1",
+      "asks": {
+       "kind": "question",
+       "summary": "has a question for you"
+      }
+     }
+    ],
+    "bots": {}
    }
   },
   {
@@ -632,7 +674,395 @@
     },
     "projects": {
      "/home/me/web": {
-      "updated": 50
+      "updated": 50,
+      "asking": 0,
+      "working": 0
+     }
+    },
+    "needsYou": [],
+    "bots": {}
+   }
+  },
+  {
+   "name": "what waits on you: \"Needs you\" newest ask first with what each asks, each project's sums, each session's bot and what each bot is doing now",
+   "box": {
+    "chats": "/home/me/.kuvo-code/chats",
+    "bots": "/home/me/.kuvo-code/bots",
+    "botSessions": [
+     "ses_mira",
+     "ses_idle"
+    ],
+    "botOf": {
+     "ses_mira": "bot_mira",
+     "ses_idle": "bot_idle"
+    },
+    "filed": {},
+    "projects": [
+     {
+      "directory": "/home/me/web",
+      "name": "Website"
+     },
+     {
+      "directory": "/home/me/api"
+     }
+    ],
+    "running": [
+     "ses_run",
+     "ses_ask_new",
+     "ses_work1",
+     "ses_sub"
+    ],
+    "asked": {
+     "ses_ask_old": 100,
+     "ses_ask_new": 300,
+     "ses_chat": 200,
+     "ses_archived": 400,
+     "ses_away": 500,
+     "ses_work2": 250,
+     "ses_mira": 260
+    },
+    "asks": {
+     "ses_ask_old": {
+      "kind": "permission",
+      "summary": "asks to edit 3 files"
+     },
+     "ses_ask_new": {
+      "kind": "permission",
+      "summary": "asks to run a command"
+     },
+     "ses_chat": {
+      "kind": "question",
+      "summary": "has a question for you"
+     },
+     "ses_work2": {
+      "kind": "sandbox",
+      "summary": "asks to run a command outside the sandbox"
+     }
+    },
+    "away": [
+     "ses_away"
+    ]
+   },
+   "sessions": [
+    {
+     "id": "ses_run",
+     "location": {
+      "directory": "/home/me/web"
+     },
+     "time": {
+      "created": 990,
+      "updated": 1000
+     }
+    },
+    {
+     "id": "ses_ask_old",
+     "location": {
+      "directory": "/home/me/web"
+     },
+     "time": {
+      "created": 890,
+      "updated": 900
+     }
+    },
+    {
+     "id": "ses_ask_new",
+     "location": {
+      "directory": "/home/me/api"
+     },
+     "time": {
+      "created": 790,
+      "updated": 800
+     }
+    },
+    {
+     "id": "ses_archived",
+     "location": {
+      "directory": "/home/me/api"
+     },
+     "time": {
+      "created": 690,
+      "updated": 700
+     },
+     "metadata": {
+      "kuvo.archived": true
+     }
+    },
+    {
+     "id": "ses_away",
+     "location": {
+      "directory": "/home/me/api"
+     },
+     "time": {
+      "created": 640,
+      "updated": 650
+     }
+    },
+    {
+     "id": "ses_chat",
+     "location": {
+      "directory": "/home/me/.kuvo-code/chats"
+     },
+     "time": {
+      "created": 590,
+      "updated": 600
+     }
+    },
+    {
+     "id": "ses_mira",
+     "location": {
+      "directory": "/home/me/.kuvo-code/bots/bot_mira/workspace"
+     },
+     "time": {
+      "created": 490,
+      "updated": 500
+     }
+    },
+    {
+     "id": "ses_idle",
+     "location": {
+      "directory": "/home/me/.kuvo-code/bots/bot_idle/workspace"
+     },
+     "time": {
+      "created": 440,
+      "updated": 450
+     }
+    },
+    {
+     "id": "ses_work1",
+     "location": {
+      "directory": "/home/me/web"
+     },
+     "time": {
+      "created": 390,
+      "updated": 400
+     },
+     "metadata": {
+      "kuvo": {
+       "startedBy": "ses_mira",
+       "by": {
+        "bot": "bot_mira",
+        "name": "Mira"
+       },
+       "depth": 1
+      }
+     }
+    },
+    {
+     "id": "ses_work2",
+     "location": {
+      "directory": "/home/me/web"
+     },
+     "time": {
+      "created": 340,
+      "updated": 350
+     },
+     "metadata": {
+      "kuvo": {
+       "startedBy": "ses_mira",
+       "by": {
+        "bot": "bot_mira",
+        "name": "Mira"
+       },
+       "depth": 1
+      }
+     }
+    },
+    {
+     "id": "ses_done",
+     "location": {
+      "directory": "/home/me/api"
+     },
+     "time": {
+      "created": 290,
+      "updated": 300
+     },
+     "metadata": {
+      "kuvo": {
+       "startedBy": "ses_mira",
+       "by": {
+        "bot": "bot_idle",
+        "name": "Mira"
+       },
+       "depth": 1
+      }
+     }
+    },
+    {
+     "id": "ses_sub",
+     "location": {
+      "directory": "/home/me/web"
+     },
+     "time": {
+      "created": 240,
+      "updated": 250
+     },
+     "parentID": "ses_work1",
+     "metadata": {
+      "kuvo": {
+       "startedBy": "ses_mira",
+       "by": {
+        "bot": "bot_mira",
+        "name": "Mira"
+       },
+       "depth": 1
+      }
+     }
+    }
+   ],
+   "expect": {
+    "sessions": {
+     "ses_run": {
+      "kind": "project",
+      "project": "/home/me/web",
+      "directory": "/home/me/web",
+      "created": 990,
+      "updated": 1000,
+      "running": true
+     },
+     "ses_ask_old": {
+      "kind": "project",
+      "project": "/home/me/web",
+      "directory": "/home/me/web",
+      "created": 890,
+      "updated": 900,
+      "asked": 100
+     },
+     "ses_ask_new": {
+      "kind": "project",
+      "project": "/home/me/api",
+      "directory": "/home/me/api",
+      "created": 790,
+      "updated": 800,
+      "running": true,
+      "asked": 300
+     },
+     "ses_archived": {
+      "kind": "project",
+      "project": "/home/me/api",
+      "directory": "/home/me/api",
+      "created": 690,
+      "updated": 700,
+      "archived": true,
+      "asked": 400
+     },
+     "ses_away": {
+      "kind": "project",
+      "project": "/home/me/api",
+      "directory": "/home/me/api",
+      "created": 640,
+      "updated": 650,
+      "asked": 500,
+      "away": true
+     },
+     "ses_chat": {
+      "kind": "chat",
+      "directory": "/home/me/.kuvo-code/chats",
+      "created": 590,
+      "updated": 600,
+      "asked": 200
+     },
+     "ses_mira": {
+      "kind": "bot",
+      "directory": "/home/me/.kuvo-code/bots/bot_mira/workspace",
+      "created": 490,
+      "updated": 500,
+      "asked": 260,
+      "bot": "bot_mira"
+     },
+     "ses_idle": {
+      "kind": "bot",
+      "directory": "/home/me/.kuvo-code/bots/bot_idle/workspace",
+      "created": 440,
+      "updated": 450,
+      "bot": "bot_idle"
+     },
+     "ses_work1": {
+      "kind": "project",
+      "project": "/home/me/web",
+      "directory": "/home/me/web",
+      "created": 390,
+      "updated": 400,
+      "running": true,
+      "bot": "bot_mira"
+     },
+     "ses_work2": {
+      "kind": "project",
+      "project": "/home/me/web",
+      "directory": "/home/me/web",
+      "created": 340,
+      "updated": 350,
+      "asked": 250,
+      "bot": "bot_mira"
+     },
+     "ses_done": {
+      "kind": "project",
+      "project": "/home/me/api",
+      "directory": "/home/me/api",
+      "created": 290,
+      "updated": 300,
+      "bot": "bot_idle"
+     },
+     "ses_sub": {
+      "kind": "subagent",
+      "directory": "/home/me/web",
+      "created": 240,
+      "updated": 250,
+      "parent": "ses_work1",
+      "running": true
+     }
+    },
+    "projects": {
+     "/home/me/web": {
+      "name": "Website",
+      "updated": 1000,
+      "asking": 2,
+      "working": 2
+     },
+     "/home/me/api": {
+      "updated": 800,
+      "asking": 1,
+      "working": 0
+     }
+    },
+    "needsYou": [
+     {
+      "session": "ses_ask_new",
+      "asks": {
+       "kind": "permission",
+       "summary": "asks to run a command"
+      }
+     },
+     {
+      "session": "ses_work2",
+      "asks": {
+       "kind": "sandbox",
+       "summary": "asks to run a command outside the sandbox"
+      }
+     },
+     {
+      "session": "ses_chat",
+      "asks": {
+       "kind": "question",
+       "summary": "has a question for you"
+      }
+     },
+     {
+      "session": "ses_ask_old",
+      "asks": {
+       "kind": "permission",
+       "summary": "asks to edit 3 files"
+      }
+     }
+    ],
+    "bots": {
+     "bot_mira": {
+      "working": 1,
+      "asking": 2
+     },
+     "bot_idle": {
+      "working": 0,
+      "asking": 0,
+      "finished": 450
      }
     }
    }

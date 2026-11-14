@@ -196,6 +196,29 @@ test("an item is In progress while a session linked to it is at work, and Done u
   assert.equal(typeof item.doneAt, "number");
 });
 
+// The Work Queue's sidebar (#711): its counts come with the view, so no client adds them up.
+test("with counts=1, the All view counts its items in progress, by category, source and computer, and what's deleted", async () => {
+  await tool("queue_add", { title: "At it now", working: true }, "ses_lead");
+  await tool("queue_add", { title: "Next up" }, "ses_other");
+  await tool("queue_add", { title: "Some day", category: "later" }, "ses_other");
+  await tool("queue_add", { title: "Shipped", category: "done" }, "ses_lead");
+  await tool("queue_add", { title: "Dropped" }, "ses_lead");
+  assert.equal((await route("DELETE", "kuvo/work-queue/items/5")).status, 200);
+  active = new Set(["ses_lead"]);
+
+  const all = (await route("GET", "kuvo/work-queue?owner=all&counts=1")).body;
+  // (Every category of the view, one with nothing in it too; this box's own items under its key,
+  // "" while it has none; no outside source's item here.)
+  assert.deepEqual(all.counts, { inProgress: 1, categories: { next: 2, later: 1, parked: 0, done: 1 }, sources: {}, computers: { "": 4 }, removed: 1 });
+  assert.equal(all.items.length, 4, "the view itself is as it was");
+  // One owner's view counts its own; without counts=1, none are sent.
+  assert.deepEqual((await route("GET", "kuvo/work-queue?owner=ses_other&counts=1")).body.counts, { inProgress: 0, categories: { next: 1, later: 1, parked: 0, done: 0 }, sources: {}, computers: { "": 2 }, removed: 0 });
+  assert.equal((await view("all")).counts, undefined);
+  // Its events say them too (through `box route`: its first line).
+  const followed = await spawnRoute("GET", "kuvo/work-queue/events?owner=all&counts=1&glance=1");
+  assert.equal(JSON.parse(followed.raw.split("\n")[0]).counts.categories.next, 2);
+});
+
 test("a session is linked to three items at most: linking a fourth drops its oldest link", async () => {
   for (const title of ["One", "Two", "Three", "Four"]) await tool("queue_add", { title, working: true }, "ses_lead");
   const items = (await view("ses_lead")).items;

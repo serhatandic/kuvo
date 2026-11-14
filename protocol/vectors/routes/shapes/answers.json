@@ -2319,6 +2319,13 @@
             }
            ]
           }
+         },
+         "now?": {
+          "object": {
+           "working": "number",
+           "asking": "number",
+           "finished?": "number"
+          }
          }
         }
        }
@@ -2479,6 +2486,13 @@
             "literal": "cloneProject"
            }
           ]
+         }
+        },
+        "now?": {
+         "object": {
+          "working": "number",
+          "asking": "number",
+          "finished?": "number"
          }
         }
        }
@@ -2783,6 +2797,13 @@
              }
             ]
            }
+          },
+          "now?": {
+           "object": {
+            "working": "number",
+            "asking": "number",
+            "finished?": "number"
+           }
           }
          }
         },
@@ -2965,6 +2986,13 @@
              }
             ]
            }
+          },
+          "now?": {
+           "object": {
+            "working": "number",
+            "asking": "number",
+            "finished?": "number"
+           }
           }
          }
         },
@@ -3042,6 +3070,160 @@
    "answers": {
     "200": {
      "object": {}
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/computers",
+   "answers": {
+    "200": {
+     "object": {
+      "computers": {
+       "list": {
+        "object": {
+         "key": "string",
+         "name": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "mac"
+           },
+           {
+            "literal": "machine"
+           }
+          ]
+         },
+         "here?": {
+          "literal": true
+         },
+         "id?": "string",
+         "shared": "bool",
+         "apart?": {
+          "literal": true
+         },
+         "reach": {
+          "oneOf": [
+           {
+            "literal": "connected"
+           },
+           {
+            "literal": "connecting"
+           },
+           {
+            "literal": "away"
+           },
+           {
+            "literal": "unknown"
+           }
+          ]
+         },
+         "version?": "string",
+         "engine?": "string",
+         "system?": "string",
+         "via": {
+          "oneOf": [
+           {
+            "literal": "here"
+           },
+           {
+            "literal": "relay"
+           },
+           {
+            "literal": "peer"
+           }
+          ]
+         },
+         "through?": "string",
+         "working": "number",
+         "limits": {
+          "list": "string"
+         }
+        }
+       }
+      }
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/computers/events",
+   "answers": {
+    "200": {
+     "object": {
+      "computers": {
+       "list": {
+        "object": {
+         "key": "string",
+         "name": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "mac"
+           },
+           {
+            "literal": "machine"
+           }
+          ]
+         },
+         "here?": {
+          "literal": true
+         },
+         "id?": "string",
+         "shared": "bool",
+         "apart?": {
+          "literal": true
+         },
+         "reach": {
+          "oneOf": [
+           {
+            "literal": "connected"
+           },
+           {
+            "literal": "connecting"
+           },
+           {
+            "literal": "away"
+           },
+           {
+            "literal": "unknown"
+           }
+          ]
+         },
+         "version?": "string",
+         "engine?": "string",
+         "system?": "string",
+         "via": {
+          "oneOf": [
+           {
+            "literal": "here"
+           },
+           {
+            "literal": "relay"
+           },
+           {
+            "literal": "peer"
+           }
+          ]
+         },
+         "through?": "string",
+         "working": "number",
+         "limits": {
+          "list": "string"
+         }
+        }
+       }
+      }
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
     }
    }
   },
@@ -3140,6 +3322,9 @@
             "literal": "bots.make"
            },
            {
+            "literal": "bots.now"
+           },
+           {
             "literal": "box.app"
            },
            {
@@ -3186,6 +3371,9 @@
            },
            {
             "literal": "claude-code"
+           },
+           {
+            "literal": "computers"
            },
            {
             "literal": "config"
@@ -3290,6 +3478,9 @@
             "literal": "limits.resets"
            },
            {
+            "literal": "limits.rings"
+           },
+           {
             "literal": "mcp.catalog"
            },
            {
@@ -3386,6 +3577,9 @@
             "literal": "sandbox.reviews.whole"
            },
            {
+            "literal": "sandbox.words"
+           },
+           {
             "literal": "search"
            },
            {
@@ -3413,6 +3607,9 @@
             "literal": "sessions.move"
            },
            {
+            "literal": "sessions.needsYou"
+           },
+           {
             "literal": "sessions.start"
            },
            {
@@ -3426,6 +3623,12 @@
            },
            {
             "literal": "shell.stop"
+           },
+           {
+            "literal": "sign-in.accounts.kinds"
+           },
+           {
+            "literal": "sign-in.codes"
            },
            {
             "literal": "sign-in.methods"
@@ -3461,6 +3664,9 @@
             "literal": "vault.same"
            },
            {
+            "literal": "waiting"
+           },
+           {
             "literal": "wakes"
            },
            {
@@ -3474,6 +3680,9 @@
            },
            {
             "literal": "work-queue"
+           },
+           {
+            "literal": "work-queue.counts"
            },
            {
             "literal": "work-queue.elsewhere"
@@ -3662,6 +3871,9 @@
             "literal": "bots.make"
            },
            {
+            "literal": "bots.now"
+           },
+           {
             "literal": "box.app"
            },
            {
@@ -3708,6 +3920,9 @@
            },
            {
             "literal": "claude-code"
+           },
+           {
+            "literal": "computers"
            },
            {
             "literal": "config"
@@ -3812,6 +4027,9 @@
             "literal": "limits.resets"
            },
            {
+            "literal": "limits.rings"
+           },
+           {
             "literal": "mcp.catalog"
            },
            {
@@ -3908,6 +4126,9 @@
             "literal": "sandbox.reviews.whole"
            },
            {
+            "literal": "sandbox.words"
+           },
+           {
             "literal": "search"
            },
            {
@@ -3935,6 +4156,9 @@
             "literal": "sessions.move"
            },
            {
+            "literal": "sessions.needsYou"
+           },
+           {
             "literal": "sessions.start"
            },
            {
@@ -3948,6 +4172,12 @@
            },
            {
             "literal": "shell.stop"
+           },
+           {
+            "literal": "sign-in.accounts.kinds"
+           },
+           {
+            "literal": "sign-in.codes"
            },
            {
             "literal": "sign-in.methods"
@@ -3983,6 +4213,9 @@
             "literal": "vault.same"
            },
            {
+            "literal": "waiting"
+           },
+           {
             "literal": "wakes"
            },
            {
@@ -3996,6 +4229,9 @@
            },
            {
             "literal": "work-queue"
+           },
+           {
+            "literal": "work-queue.counts"
            },
            {
             "literal": "work-queue.elsewhere"
@@ -8376,7 +8612,25 @@
          "environment": {
           "list": "string"
          },
-         "hint": "string"
+         "hint": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "provider"
+           },
+           {
+            "literal": "search"
+           },
+           {
+            "literal": "mcp"
+           },
+           {
+            "literal": "agentDuplicate"
+           }
+          ]
+         },
+         "listed": "bool",
+         "service?": "string"
         }
        }
       }
@@ -8395,6 +8649,42 @@
       "instructions?": "string",
       "userCode?": "string",
       "failure?": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/sign-in/start",
+   "answers": {
+    "200": {
+     "object": {
+      "attemptID?": "string",
+      "url?": "string",
+      "instructions?": "string",
+      "mode?": "string",
+      "acceptsCode?": "bool",
+      "userCode?": "string",
+      "time?": "any"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "502": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "504": {
+     "object": {
+      "message": "string"
      }
     }
    }
@@ -8663,6 +8953,7 @@
        ]
       },
       "route?": "string",
+      "actionLabel?": "string",
       "needs?": "string",
       "check?": {
        "oneOf": [
@@ -8768,6 +9059,7 @@
        ]
       },
       "route?": "string",
+      "actionLabel?": "string",
       "needs?": "string",
       "check?": {
        "oneOf": [
@@ -8873,6 +9165,7 @@
        ]
       },
       "route?": "string",
+      "actionLabel?": "string",
       "needs?": "string",
       "check?": {
        "oneOf": [
@@ -9773,7 +10066,8 @@
          "archived?": "bool",
          "running?": "bool",
          "asked?": "number",
-         "away?": "bool"
+         "away?": "bool",
+         "bot?": "string"
         }
        }
       },
@@ -9784,7 +10078,40 @@
        "map": {
         "object": {
          "name?": "string",
-         "updated?": "number"
+         "updated?": "number",
+         "asking": "number",
+         "working": "number"
+        }
+       }
+      },
+      "needsYou": {
+       "list": {
+        "object": {
+         "session": "string",
+         "asks": {
+          "object": {
+           "kind": {
+            "oneOf": [
+             {
+              "literal": "permission"
+             },
+             {
+              "literal": "question"
+             },
+             {
+              "literal": "sandbox"
+             },
+             {
+              "literal": "vault"
+             },
+             {
+              "literal": "other"
+             }
+            ]
+           },
+           "summary": "string"
+          }
+         }
         }
        }
       },
@@ -9847,7 +10174,8 @@
          "archived?": "bool",
          "running?": "bool",
          "asked?": "number",
-         "away?": "bool"
+         "away?": "bool",
+         "bot?": "string"
         }
        }
       },
@@ -9858,7 +10186,40 @@
        "map": {
         "object": {
          "name?": "string",
-         "updated?": "number"
+         "updated?": "number",
+         "asking": "number",
+         "working": "number"
+        }
+       }
+      },
+      "needsYou": {
+       "list": {
+        "object": {
+         "session": "string",
+         "asks": {
+          "object": {
+           "kind": {
+            "oneOf": [
+             {
+              "literal": "permission"
+             },
+             {
+              "literal": "question"
+             },
+             {
+              "literal": "sandbox"
+             },
+             {
+              "literal": "vault"
+             },
+             {
+              "literal": "other"
+             }
+            ]
+           },
+           "summary": "string"
+          }
+         }
         }
        }
       },
@@ -9873,6 +10234,40 @@
      }
     },
     "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/waiting",
+   "answers": {
+    "200": {
+     "object": {
+      "sessions": "number",
+      "bots": "number",
+      "queue": "number"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/waiting/events",
+   "answers": {
+    "200": {
+     "object": {
+      "sessions": "number",
+      "bots": "number",
+      "queue": "number"
+     }
+    },
+    "405": {
      "object": {
       "message": "string"
      }
@@ -14223,6 +14618,21 @@
          "away?": "number"
         }
        }
+      },
+      "counts?": {
+       "object": {
+        "inProgress": "number",
+        "categories": {
+         "map": "number"
+        },
+        "sources": {
+         "map": "number"
+        },
+        "computers": {
+         "map": "number"
+        },
+        "removed": "number"
+       }
       }
      }
     }
@@ -14639,6 +15049,21 @@
          "at": "number",
          "away?": "number"
         }
+       }
+      },
+      "counts?": {
+       "object": {
+        "inProgress": "number",
+        "categories": {
+         "map": "number"
+        },
+        "sources": {
+         "map": "number"
+        },
+        "computers": {
+         "map": "number"
+        },
+        "removed": "number"
        }
       }
      }

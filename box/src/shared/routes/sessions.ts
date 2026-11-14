@@ -208,11 +208,25 @@ export const SESSION_FACTS = object({
   "running?": bool,
   "asked?": number,
   "away?": bool,
+  "bot?": string,
 });
 
 /** A project the lists show: its name where it isn't its folder's, and when its newest session
  * listed in it changed (none for one with none). */
-export const LISTED_PROJECT = object({ "name?": string, "updated?": number });
+export const LISTED_PROJECT = object({ "name?": string, "updated?": number, asking: number, working: number });
+
+/** What a session waiting on you asks, in a few words: its kind, and the box's words for it, written
+ * to follow the session's or its project's name ("asks to run a command"). A client shows `summary`
+ * as it is, and one of a kind it doesn't know the same way. */
+export const ASKS_WORDS = object({ kind: words("permission", "question", "sandbox", "vault", "other"), summary: string });
+/** A session waiting on you, as "Needs you" lists it. */
+export const NEEDS_YOU = object({ session: string, asks: ASKS_WORDS });
+/** What a bot is doing now: how many of its sessions are at work, how many wait on you, and, with
+ * neither, when the newest of them last changed (ms). */
+export const BOT_NOW = object({ working: number, asking: number, "finished?": number });
+/** What waits on you in each area, across the box (`kuvo/waiting`): the sessions "Needs you" lists,
+ * the bots with a session waiting, and the Work Queue's items a session linked to them waits for. */
+export const WAITING_ON_YOU = object({ sessions: number, bots: number, queue: number });
 
 /** The list (`kuvo/sessions/list`): where it's at (`since` resumes from it), whether it's whole
  * (`full`) or only what changed since, the sessions by id, those gone since, its projects, and the
@@ -223,12 +237,16 @@ export const SESSION_LIST = object({
   sessions: map(SESSION_FACTS),
   "gone?": list(string),
   projects: map(LISTED_PROJECT),
+  needsYou: list(NEEDS_YOU),
   "pending?": list(string),
 });
 
 export type SessionKind = (typeof SESSION_KINDS)[number];
 export type SessionFacts = Infer<typeof SESSION_FACTS>;
 export type ListedProject = Infer<typeof LISTED_PROJECT>;
+export type NeedsYou = Infer<typeof NEEDS_YOU>;
+export type BotNow = Infer<typeof BOT_NOW>;
+export type WaitingOnYou = Infer<typeof WAITING_ON_YOU>;
 export type SessionList = Infer<typeof SESSION_LIST>;
 
 export type Glance = Infer<typeof GLANCE>;
@@ -247,6 +265,8 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "GET kuvo/sessions/glance/events", answers: { 200: GLANCES, 400: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/sessions/list", answers: { 200: SESSION_LIST, 405: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/sessions/list/events", answers: { 200: SESSION_LIST, 405: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED } },
+  { route: "GET kuvo/waiting/events", answers: { 200: WAITING_ON_YOU, 405: REFUSED } },
   { route: "GET kuvo/sessions/models", answers: { 200: SESSION_MODELS, 400: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/models/offered", answers: { 200: MODELS_OFFERED, 503: REFUSED } },
   { route: "GET kuvo/sessions/:id/queue", answers: { 200: QUEUE_READ } },

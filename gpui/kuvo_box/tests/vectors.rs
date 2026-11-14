@@ -35,6 +35,35 @@ fn every_case_of_the_box_answer_is_read_whole() {
     }
 }
 
+/// "Needs you" and each project's sums are the box's: read as it says them, in its order, with
+/// nothing counted or sorted here.
+#[test]
+fn needs_you_and_each_projects_sums_are_read_as_the_box_says_them() {
+    let vectors = vectors("session-lists.json");
+    let (mut asking, mut needing) = (0, 0);
+    for case in vectors["cases"].as_array().unwrap() {
+        let expect = &case["expect"];
+        let line: Line = serde_json::from_value(serde_json::json!({ "at": "1", "full": true, "sessions": expect["sessions"], "projects": expect["projects"], "needsYou": expect["needsYou"] })).unwrap();
+        let mut listing = Listing::new();
+        listing.take(line);
+        let said: Vec<(String, String, String)> = expect["needsYou"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|needs| (needs["session"].as_str().unwrap().to_owned(), needs["asks"]["kind"].as_str().unwrap().to_owned(), needs["asks"]["summary"].as_str().unwrap().to_owned()))
+            .collect();
+        let read: Vec<(String, String, String)> = listing.needs_you().iter().map(|needs| (needs.session.clone(), needs.asks.kind.clone(), needs.asks.summary.clone())).collect();
+        assert_eq!(read, said, "{}", case["name"]);
+        needing += read.len();
+        for (directory, project) in expect["projects"].as_object().into_iter().flatten() {
+            let read = &listing.projects()[directory];
+            assert_eq!((read.asking as u64, read.working as u64), (project["asking"].as_u64().unwrap(), project["working"].as_u64().unwrap()), "{}: {directory}", case["name"]);
+            asking += read.asking;
+        }
+    }
+    assert!(needing > 0 && asking > 0, "a case with a session waiting on you");
+}
+
 /// (Times are numbers: 590 and 590.0 are the same.)
 fn numbers_as_floats(value: Value) -> Value {
     match value {
@@ -348,4 +377,21 @@ fn every_ask_the_box_words_is_read_and_one_amiss_spoils_none_of_the_rest() {
             assert!(read >= 2, "without {field}, one ask spoiled the others: {asks:?}");
         }
     }
+}
+
+/// One item of "Needs you", or a project's sum, that a newer box says in a way this can't read
+/// leaves the rest of the list as it is: the sidebar never loses every session to one bad item.
+#[test]
+fn a_needs_you_item_this_cant_read_leaves_the_list() {
+    let line: Line = serde_json::from_value(serde_json::json!({
+        "at": "1", "full": true,
+        "sessions": { "ses_a": { "kind": "project", "project": "/p", "directory": "/p", "created": 1, "updated": 2, "asked": 3 } },
+        "projects": { "/p": { "asking": "one", "working": 1 } },
+        "needsYou": [{ "asks": "words" }, { "session": "ses_a", "asks": { "kind": "newer", "summary": "asks for a thing" } }],
+    }))
+    .expect("the line is read");
+    assert_eq!(line.needs_you.len(), 1);
+    assert_eq!((line.needs_you[0].session.as_str(), line.needs_you[0].asks.summary.as_str()), ("ses_a", "asks for a thing"));
+    assert_eq!((line.projects["/p"].asking, line.projects["/p"].working), (0, 1));
+    assert_eq!(line.sessions.len(), 1);
 }

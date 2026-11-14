@@ -80,10 +80,12 @@ reached would say so there, as Zed's "Disconnected" (not drawn in these drafts).
 - OpenBot's rings are always in their provider's colour; ours show how close the account is to its
   limit, as the brief asks.
 
-## Left for the box (`grep -rn BOX-NEEDED gpui/`)
+## Left for the box
 
-Every place a draft draws what the box doesn't say yet has a `// BOX-NEEDED:` comment naming what
-the box should say and where. None is built; the box sessions take them.
+Nothing: what the drafts drew ahead of the box (what waits on you, "Needs you", a project's sums,
+what a bot is doing, the queue's counts, your computers, the rings' shares and levels) the box
+says now (#711), and the app draws it from there. The drafts keep their constant data, each place
+naming the box's route in a comment.
 
 ## The phone
 

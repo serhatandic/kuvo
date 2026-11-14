@@ -245,7 +245,27 @@ export type Credentials = Infer<typeof CREDENTIALS>;
 export type ModelsRefreshed = Infer<typeof MODELS_REFRESHED>;
 export type Found = Infer<typeof FOUND>;
 
+/** One of your computers, as a box knows it (`kuvo/computers`, PROTOCOL.md "Computers"): its key
+ * (`""` for the box itself while it has none), name and kind; `here`, the box that answered; `id`,
+ * a machine's name on its Mac; whether it's a machine Macs of different setups share; `apart`, it
+ * isn't one of your own computers (such a machine, or a box of another setup); whether it's
+ * heard from (`connected`), not yet (`connecting`), not lately (`away`), or not this box's to say (`unknown`: one known by a peer's word alone); Kuvo Code's version
+ * there, its engine's and its system, as it said them; how this box knows it (`here`, itself;
+ * `relay`, a peer it talks to; `peer`, by another computer's word alone, `through` that one); how
+ * many of its sessions are at work; and the services whose plan limits it reads. */
+export const LISTED_COMPUTER = object({
+  key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
+  shared: bool, "apart?": literal(true), reach: words("connected", "connecting", "away", "unknown"),
+  "version?": string, "engine?": string, "system?": string,
+  via: words("here", "relay", "peer"), "through?": string,
+  working: number, limits: list(string),
+});
+export const COMPUTERS = object({ computers: list(LISTED_COMPUTER) });
+export type ListedComputer = Infer<typeof LISTED_COMPUTER>;
+
 export const BOX_ROUTES: RouteShape[] = [
+  { route: "GET kuvo/computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
+  { route: "GET kuvo/computers/events", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
   { route: "GET kuvo/info", answers: { 200: INFO } },
   { route: "GET kuvo/update", answers: { 200: UPDATE } },
   { route: "POST kuvo/update", answers: { 202: UPDATE } },

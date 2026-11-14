@@ -13,6 +13,7 @@ use kuvo_ui::{
 };
 
 use crate::area::{Area, Back, Forward, ShowComputers};
+use crate::areas::{Reading, computer_line};
 use crate::workspace::{BoxState, Workspace};
 use crate::{NewSession, rail, sidebar};
 
@@ -124,24 +125,32 @@ fn computer_switcher(workspace: &Workspace, cx: &App) -> AnyElement {
     let shown: gpui::SharedString = if name.chars().count() > 18 { format!("{}…", name.chars().take(17).collect::<String>()).into() } else { name.clone() };
     let trigger = Button::new("computer-switcher", shown).ghost().size(ButtonSize::Small).icon(IconName::Computer).icon_after(IconName::ChevronDown);
     let menu_name = name.clone();
+    // Your other computers, as the box lists them (`kuvo/computers`), each with how it's reached.
+    // The app shows this Mac's box only: they're listed, and switching to one isn't built yet.
+    let others: Vec<(String, bool, String)> = match workspace.computers() {
+        Reading::Ready(computers) => computers.iter().filter(|computer| !computer.here).map(|computer| (computer.name.clone(), computer.is_mac(), computer_line(computer))).collect(),
+        _ => Vec::new(),
+    };
     div()
         .flex()
         .items_center()
         .gap(space::S1)
         .child(
             PopoverMenu::new("computer-menu", trigger, move |_, cx| {
-                let (name, said) = (menu_name.clone(), said.clone());
+                let (name, said, others) = (menu_name.clone(), said.clone(), others.clone());
                 cx.new(|cx| {
                     let mut entry = MenuEntry::new(name).icon(IconName::Computer).checked(true);
                     if let Some(said) = said {
                         entry = entry.detail(said);
                     }
-                    // BOX-NEEDED: your computers to switch between, and whether each is reached, `GET kuvo/computers` (#711); and the app reaching a machine's box at all (it reaches this Mac's only).
-                    Menu::new(cx)
-                        .width(px(280.))
-                        .header("Shown in This Window")
-                        .entry(entry)
-                        .separator()
+                    let mut menu = Menu::new(cx).width(px(280.)).header("Shown in This Window").entry(entry);
+                    if !others.is_empty() {
+                        menu = menu.header("Your Other Computers");
+                        for (name, mac, line) in others {
+                            menu = menu.entry(MenuEntry::new(name).icon(if mac { IconName::Computer } else { IconName::Terminal }).detail(line).disabled(true));
+                        }
+                    }
+                    menu.separator()
                         .entry(MenuEntry::new("Switching to another computer").detail("not in this app yet").disabled(true))
                         .entry(MenuEntry::new("Show Computers").shortcut("⌃4").on_select(|window, cx| window.dispatch_action(Box::new(ShowComputers), cx)))
                 })

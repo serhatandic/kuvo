@@ -41,6 +41,8 @@ export interface FenceState {
   action?: FenceAction;
   /** The box's route that does it, where there's one. */
   route?: string;
+  /** The words of the button that does `action`, for every client to show alike ("Try Again"). */
+  actionLabel?: string;
   /** What this computer needs first (`kernel`): "Linux 5.13". */
   needs?: string;
   /** Which part of the check failed (`checkFailed`). */
@@ -119,8 +121,47 @@ let checked: Checked = { able: false, passed: false, why: "It hasn't been checke
 let failures = 0;
 let lastProfiles = "";
 
-/** Whether the sandbox is on here: read each time from what the box knows, without waiting. */
+/** Why it isn't on, for a reason whose check left no words of its own: every reason has a sentence. */
+const WHY: Record<FenceReason, string> = {
+  kernel: "This Linux can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on).",
+  namespaces: "This machine doesn't let commands have a namespace of their own.",
+  macos: "macOS's sandbox isn't on this Mac.",
+  engineMissing: "The engine isn't installed here yet.",
+  checking: "It's being checked.",
+  checkFailed: "Its check failed.",
+  plugin: "Its plugin for the engine was changed or removed.",
+  engineDown: "The engine isn't running.",
+  waiting: "Waiting for the engine to load it.",
+};
+
+/** The button's words for what you can do about a reason (`action`), the same in every client: an
+ * ellipsis where the client asks or goes somewhere first (a restart that stops what agents are
+ * doing, the docs, the system's settings). */
+export function actionLabel(action: FenceAction, reason?: FenceReason): string {
+  switch (action) {
+    case "retry": return reason === "engineMissing" ? "Check Again" : "Try Again";
+    case "fix": return "Fix It";
+    // (With no engine running there's nothing to stop: it restarts without asking.)
+    case "restartEngine": return reason === "engineDown" ? "Restart Engine" : "Restart Engine…";
+    case "help": return "How to Check…";
+    case "softwareUpdate": return "Software Update…";
+  }
+}
+
+/** Whether the sandbox is on here, in the box's words: `why` for every reason it isn't, and the
+ * words of the button for what you can do about it (PROTOCOL.md, "Sandbox", `sandbox.words`). */
 export function fenceState(): FenceState {
+  const state = fenceNow();
+  if (state.on) return state;
+  return {
+    ...state,
+    ...(state.reason && !state.why ? { why: WHY[state.reason] } : {}),
+    ...(state.action ? { actionLabel: actionLabel(state.action, state.reason) } : {}),
+  };
+}
+
+/** Whether the sandbox is on here: read each time from what the box knows, without waiting. */
+function fenceNow(): FenceState {
   // `agents`: every coding agent's process here runs in it, or none runs (what opens the vault to agents).
   const said = bridgeSays();
   const base = { able: checked.able, agents: said === "none" || said === "inside", ...(said === "outside" ? { outside: true } : {}), ...(asksToRestart() ? { restart: true } : {}) };

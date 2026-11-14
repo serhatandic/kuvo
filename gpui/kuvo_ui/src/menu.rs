@@ -286,7 +286,8 @@ impl Render for Menu {
                             d.child(div().flex().w(IconSize::Nav.pixels()).flex_none().children(leading))
                         })
                         .child(div().flex_1().min_w_0().truncate().child(entry.label.clone()))
-                        .children(entry.detail.clone().map(|d| div().text_color(c.text_faint).child(d)))
+                        // (A long detail gives way too, so neither pushes the other out of the menu.)
+                        .children(entry.detail.clone().map(|d| div().min_w_0().max_w(gpui::relative(0.6)).truncate().text_color(c.text_faint).child(d)))
                         .children(entry.shortcut.clone().map(|k| {
                             div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(k)
                         }))

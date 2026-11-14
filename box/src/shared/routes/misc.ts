@@ -5,7 +5,7 @@
 // (`kuvo/sign-in/return`), and the ways to sign in to an account and how a sign-in is going, in the
 // box's words (`kuvo/sign-in/methods`, `kuvo/sign-in/status`).
 
-import { any, bool, type Infer, list, nullable, number, object, type RouteShape, string } from "../shape";
+import { any, bool, type Infer, list, nullable, number, object, type RouteShape, string, words } from "../shape";
 
 /** The folders in one of this box's folders: its path, the home folder, the one it's in (null for
  * the top), and the folders in it, ordered as Finder orders names (`repository`: a git
@@ -55,8 +55,16 @@ const SIGN_IN_WAYS = {
 } as const;
 /** (`hint`: the way in an account's card names under its name: "Sign in with ChatGPT", "API key".) */
 export const SIGN_IN_METHODS = object(SIGN_IN_WAYS);
-/** Every account the engine (or the coding agents' bridge) lists, each with its ways in. */
-export const SIGN_IN_ACCOUNTS = object({ accounts: list(object({ id: string, ...SIGN_IN_WAYS })) });
+/** Every account the engine (or the coding agents' bridge) lists, each with its ways in; what it is
+ * (`kind`: a provider, a web search service, an MCP server's sign-in, or the engine's own way to a
+ * plan a coding agent brings) and whether Accounts lists it (`listed`); and its mark, by the plan
+ * limits' service ids (`service`, left out for one with no mark: a client draws its letter). */
+export const SIGN_IN_ACCOUNTS = object({ accounts: list(object({ id: string, ...SIGN_IN_WAYS, kind: words("provider", "search", "mcp", "agentDuplicate"), listed: bool, "service?": string })) });
+
+/** A sign-in started in the browser (`POST kuvo/sign-in/start`): what the engine (or the coding
+ * agents' bridge) answered (`attemptID`, its page's `url`, `instructions`, how it ends: `mode`), and
+ * the code its page asks for, apart (`userCode`), where it has one. */
+export const SIGN_IN_STARTED = object({ "attemptID?": string, "url?": string, "instructions?": string, "mode?": string, "acceptsCode?": bool, "userCode?": string, "time?": any });
 
 /** How a started sign-in is going, as the engine (or the coding agents' bridge) says, with, once it
  * ended without signing in (`failed`, `expired`), what a client says of it (`failure`). */
@@ -100,5 +108,6 @@ export const MISC_ROUTES: RouteShape[] = [
   { route: "GET kuvo/sign-in/methods", answers: { 200: SIGN_IN_METHODS } },
   { route: "GET kuvo/sign-in/accounts", answers: { 200: SIGN_IN_ACCOUNTS } },
   { route: "GET kuvo/sign-in/status", answers: { 200: SIGN_IN_STATUS } },
+  { route: "POST kuvo/sign-in/start", answers: { 200: SIGN_IN_STARTED, 400: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }), 504: object({ message: string }) } },
   { route: "GET kuvo/search", answers: { 200: SEARCH_FOUND } },
 ];

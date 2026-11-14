@@ -1,7 +1,8 @@
 //! What the stand-in box says of its accounts and settings, and how it signs in: the engine's plans
 //! and providers and the coding agents' accounts (`…/api/integration`), the ways in the box offers
-//! for each (`kuvo/sign-in/accounts`, `…/methods`, shaped as `Vectors/sign-in.json` records them),
-//! sign-ins that go on until a test says how they end (or, in the app's `--stand-in`, finish after a
+//! for each, with what each is, whether Accounts lists it and its mark (`kuvo/sign-in/accounts`,
+//! `…/methods`, shaped as `Vectors/sign-in.json` records them), sign-ins started through the box
+//! (`kuvo/sign-in/start`, with a device code apart) that go on until a test says how they end (or, in the app's `--stand-in`, finish after a
 //! few asks), keys, installs, Disconnect and Sign Out; and this computer's settings (`kuvo/config`,
 //! `kuvo/approval`, `kuvo/sandbox`, `kuvo/sandbox/allowed`, `kuvo/browser/settings`, the usage
 //! settings). All made up: no key is real, and every page is at `.invalid`, which never resolves.
@@ -77,10 +78,11 @@ impl Default for Settings {
             integration("mistral", "Mistral", json!([]), json!({})),
             // Its page turns every sign-in down (`access_denied`), for what a failure shows.
             integration("poe", "Poe", json!([]), json!({})),
-            // A web search service and an MCP server's sign-in, which the engine lists too: the box
-            // doesn't yet say they aren't providers (BOX-NEEDED in `kuvo_box/src/accounts.rs`).
+            // A web search service, an MCP server's sign-in and the engine's own way to Claude's
+            // plan, which the engine lists too: the box says Accounts doesn't list them.
             integration("tavily", "Tavily", json!([]), json!({})),
             integration("linear", "Linear", json!([]), json!({ "source": "mcp" })),
+            integration("claude-agent", "Claude Agent", json!([]), json!({})),
         ];
         let agents = vec![
             integration("claude-code", "Claude Code", signed_in("sam@example.com", "oauth"), json!({ "agent": "claude", "installed": true, "version": "2.4.1", "remoteSignIn": true })),
@@ -221,6 +223,13 @@ impl Settings {
                         let id = each["id"].as_str()?;
                         let mut ways = self.ways_of(agents, id).unwrap_or_else(|| ways(json!([]), json!([]), "Connect"));
                         ways["id"] = json!(id);
+                        // What it is, whether Accounts lists it, and its mark, as the box decides.
+                        let (kind, listed) = kind_of(each, agents);
+                        ways["kind"] = json!(kind);
+                        ways["listed"] = json!(listed);
+                        if let Some(service) = service_of(each, agents) {
+                            ways["service"] = json!(service);
+                        }
                         Some(ways)
                     })
                     .collect();
@@ -232,6 +241,19 @@ impl Settings {
                     Some(ways) => (200, ways),
                     None => (404, json!({ "message": "There’s no such account here." })),
                 }
+            }
+            ("POST", ["kuvo", "sign-in", "start"]) => {
+                let (agents, account) = (query("agents").is_some(), query("integration").unwrap_or_default());
+                if agents && self.agents_down {
+                    return Some((503, json!({ "message": "The coding agents aren’t running." })));
+                }
+                if account.is_empty() || body["methodID"].as_str().is_none_or(str::is_empty) {
+                    return Some((400, json!({ "message": "Say which account (integration) and which way in (methodID)." })));
+                }
+                if !self.list(agents).iter().any(|each| each["id"] == account.as_str()) {
+                    return Some((404, json!({ "message": "There’s no such account here." })));
+                }
+                (200, self.start(agents, &account, body))
             }
             ("GET", ["kuvo", "sign-in", "status"]) => {
                 let attempt = query("attempt").unwrap_or_default();
@@ -338,34 +360,39 @@ impl Settings {
         } })
     }
 
+    /// Starts a sign-in in the browser, as the box does: the attempt its engine (or bridge)
+    /// answers, with the code its page asks for apart (`userCode`). The engine leaves a device
+    /// sign-in's code in its page's address; the box says it.
+    fn start(&mut self, agents: bool, account: &str, body: &Value) -> Value {
+        let id = format!("att_{}", self.next);
+        self.next += 1;
+        let method_id = body["methodID"].as_str().unwrap_or_default();
+        let device = method_id == "device";
+        let accepts_code = agents && account.starts_with("claude-code");
+        let mut attempt = json!({
+            "attemptID": id, "url": format!("https://sign-in.stand-in.invalid/{account}/{method_id}{}", if device { "?user_code=WDJB-MJHT" } else { "" }),
+            "instructions": if device { "Enter the code on the page." } else { "" },
+            "mode": "auto", "acceptsCode": accepts_code,
+            "time": { "created": 0, "expires": 900_000 },
+        });
+        let mut status = if account == "poe" {
+            json!({ "status": "failed", "message": "access_denied", "failure": failure(Some("access_denied")) })
+        } else {
+            json!({ "status": "pending" })
+        };
+        if device {
+            attempt["userCode"] = json!("WDJB-MJHT");
+            status["userCode"] = json!("WDJB-MJHT");
+        }
+        self.attempts.insert(id, Attempt { agents, account: account.to_owned(), status, asked: 0 });
+        attempt
+    }
+
     fn integration_answer(&mut self, method: &str, agents: bool, api: &[&str], body: &Value) -> Option<(u16, Value)> {
         let account = api.get(1).map(|part| path_part(part)).unwrap_or_default();
         let known = |this: &Self| (if agents { &this.agents } else { &this.engine }).iter().any(|each| each["id"] == account.as_str());
         let answer = match (method, api) {
             ("GET", ["integration"]) => (200, json!({ "data": if agents { &self.agents } else { &self.engine } })),
-            ("POST", ["integration", _, "connect", "oauth"]) if known(self) => {
-                let id = format!("att_{}", self.next);
-                self.next += 1;
-                let method_id = body["methodID"].as_str().unwrap_or_default();
-                // A device sign-in's code as `userCode`, the engine's too: what the box is asked to
-                // say (BOX-NEEDED in `settings/sign_in.rs`); the bridge says it already.
-                let device = method_id == "device";
-                let accepts_code = agents && account.starts_with("claude-code");
-                let attempt = json!({
-                    "attemptID": id, "url": format!("https://sign-in.stand-in.invalid/{account}/{method_id}"),
-                    "instructions": if device { "Enter the code on the page." } else { "" },
-                    "mode": "auto", "acceptsCode": accepts_code,
-                    "userCode": if device { Some("WDJB-MJHT") } else { None },
-                    "time": { "created": 0, "expires": 900_000 },
-                });
-                let status = if account == "poe" {
-                    json!({ "status": "failed", "message": "access_denied", "failure": failure(Some("access_denied")) })
-                } else {
-                    json!({ "status": "pending" })
-                };
-                self.attempts.insert(id, Attempt { agents, account: account.clone(), status, asked: 0 });
-                (200, json!({ "data": attempt }))
-            }
             ("POST", ["integration", _, "connect", "oauth", attempt, "complete"]) => {
                 let attempt = path_part(attempt);
                 if !self.attempts.contains_key(&attempt) {
@@ -416,6 +443,35 @@ impl Settings {
         };
         Some(answer)
     }
+}
+
+/// What an account is, and whether Accounts lists it, as the box decides (PROTOCOL.md, "Signing
+/// in"): a web search service and an MCP server's sign-in aren't listed; the engine's own way to a
+/// plan a coding agent brings, only while it's signed in.
+fn kind_of(account: &Value, agents: bool) -> (&'static str, bool) {
+    match account["id"].as_str().unwrap_or_default() {
+        _ if agents => ("provider", true),
+        "exa" | "firecrawl" | "parallel" | "tavily" | "tinyfish" => ("search", false),
+        _ if account["metadata"]["source"] == "mcp" => ("mcp", false),
+        "claude-agent" => ("agentDuplicate", account["connections"].as_array().is_some_and(|connections| !connections.is_empty())),
+        _ => ("provider", true),
+    }
+}
+
+/// An account's mark, by the plan limits' service ids: a coding agent's is its agent's; the
+/// engine's, its maker's where it has one.
+fn service_of(account: &Value, agents: bool) -> Option<&str> {
+    if agents {
+        return account["metadata"]["agent"].as_str();
+    }
+    Some(match account["id"].as_str()? {
+        "anthropic" | "claude-agent" => "claude",
+        "github-copilot" => "copilot",
+        "openai" => "codex",
+        "openrouter" => "openrouter",
+        "xai" => "grok",
+        _ => return None,
+    })
 }
 
 /// What the box says of a failed sign-in, as `Vectors/sign-in.json` words the cases used here.

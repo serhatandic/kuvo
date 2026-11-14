@@ -65,8 +65,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "pull-request", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(pull_request) },
     Screen { slug: "panel-narrow", width: 980., height: 760., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(changes) },
     // The rail's areas (`kuvo/src/rail.rs`, `areas.rs`): Sessions with what needs you on top, each
-    // other area with a row picked, a narrow window folded and opened, the first run, and a box from
-    // before #711 (no Needs you, no counts, rings without their share).
+    // other area with a row picked, a narrow window folded and opened, and the first run.
     Screen { slug: "area-sessions", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "area-bots", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "area-queue", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue) },
@@ -97,7 +96,6 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "sign-in-done", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sign_in_done) },
     Screen { slug: "sign-in-failed", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sign_in_failed) },
     Screen { slug: "sign-in-disconnect", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(disconnect) },
-    Screen { slug: "area-before-711", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
 ];
 
 /// An area's row, picked: what its page shows.
@@ -117,7 +115,7 @@ fn queue(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Worksp
 }
 
 fn computers(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    pick(workspace, Area::Computers, "machine:devbox", window, cx);
+    pick(workspace, Area::Computers, "computer:key_devbox", window, cx);
 }
 
 fn usage(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -302,9 +300,6 @@ fn main() -> anyhow::Result<()> {
         for appearance in [Appearance::Light, Appearance::Dark] {
             cx.update(|cx| Theme::set_appearance(appearance, cx));
             let stand_in = if screen.empty { StandIn::empty(Replies::Never) } else { StandIn::at(Replies::Never, NOW) };
-            if screen.slug == "area-before-711" {
-                stand_in.before_711();
-            }
             // The rate limits' conversation waits on a permission; another one waits behind it.
             let mut second = kuvo::stand_in::redis_permission();
             second["id"] = serde_json::json!("per_push");

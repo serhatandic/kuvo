@@ -47,13 +47,13 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
     let open = workspace.area();
     let waiting = workspace.waiting();
     let top = [Area::Sessions, Area::Bots, Area::Queue, Area::Computers].into_iter().map(|area| {
-        // BOX-NEEDED: how many things in each area wait on you, `{sessions, bots, queue}` from `GET kuvo/waiting` (#711): none drawn while the box doesn't say.
-        let count = waiting.map_or(0, |waiting| match area {
+        // How many things wait on you there, as the box counts them (`kuvo/waiting`).
+        let count = match area {
             Area::Sessions => waiting.sessions,
             Area::Bots => waiting.bots,
             Area::Queue => waiting.queue,
             _ => 0,
-        });
+        };
         area_button(area, area == open, count, cx)
     });
     div()
@@ -160,7 +160,7 @@ impl Rings {
         self.now = Some(now);
     }
 
-    /// What the box said. One that can't be read (an older box, its agents' bridge not running)
+    /// What the box said. One that can't be read (its agents' bridge not running)
     /// keeps what was there, and shows nothing until it's read once.
     fn take(&mut self, accounts: kuvo_box::Result<Vec<Account>>, cx: &mut Context<Self>) {
         if let Ok(accounts) = accounts {
@@ -242,25 +242,26 @@ impl Render for Rings {
     }
 }
 
-/// The colour of a level, as the box says it; a share it doesn't level yet is drawn quiet.
-fn level_color(level: Option<Level>, cx: &App) -> Hsla {
+/// The colour of a level, as the box says it: never a threshold of this app's.
+pub fn level_color(level: Level, cx: &App) -> Hsla {
     let c = &cx.theme().colors;
     match level {
-        Some(Level::Over) => c.danger,
-        Some(Level::Near) => c.warning,
-        Some(Level::Calm) => c.success,
-        None => c.text_muted,
+        Level::Over => c.danger,
+        Level::Near => c.warning,
+        Level::Calm => c.success,
+        // A word this app doesn't know: quiet, never a colour of its own choosing.
+        Level::Unknown => c.text_muted,
     }
 }
 
 fn ring_button(ix: usize, account: &Account, now: f64, cx: &mut Context<Rings>) -> AnyElement {
     let c = cx.theme().colors.clone();
     let hover = c.hover;
-    // BOX-NEEDED: which window is each ring, `windows[].span: short|long` in `GET kuvo/agents/api/kuvo/limits`' rows (#711): the short window outside and the long one inside where the box says them; until then one ring, the share of its fullest window still current (KuvoClient's `tightest(at:)`, a view).
+    // The box's rings (`rows[].rings`): its short window outside and its long one inside, one
+    // where it says one; each by its own share, coloured by the box's level. A plan with no
+    // window has an empty track.
     let rings = account.rings(now);
     let card = account.clone();
-    // Each ring by its own window: its share, and its colour by the box's level.
-    // BOX-NEEDED: how close to its limit, `windows[].level: calm|near|over` in `GET kuvo/agents/api/kuvo/limits`' rows (#711): until the box says it, an arc is drawn quiet, never coloured by a threshold here.
     let arcs_drawn: Vec<AnyElement> = if rings.is_empty() {
         vec![arcs(RING, STROKE, 0., c.text_muted, c.border).into_any_element()]
     } else {
@@ -315,7 +316,7 @@ fn ring_button(ix: usize, account: &Account, now: f64, cx: &mut Context<Rings>) 
 
 /// How a ring's arcs are named in tests: the account's service and label.
 fn account_key(account: &Account) -> String {
-    format!("{}{}", account.service, account.label.as_deref().map(|label| format!("-{label}")).unwrap_or_default())
+    format!("{}{}", account.service, account.label.as_deref().filter(|label| !label.is_empty()).map(|label| format!("-{label}")).unwrap_or_default())
 }
 
 /// Paints a ring: a faint track, and an arc from the top, clockwise, for `used` (0 to 1).
@@ -368,7 +369,8 @@ fn account_card(account: &Account, now: f64, cx: &App) -> AnyElement {
         // A window whose time has passed has started over: not read since, not used (PROTOCOL.md).
         let over = window.resets_at.is_some_and(|at| at <= now);
         let color = level_color(window.level, cx);
-        let calm = !matches!(window.level, Some(Level::Near | Level::Over));
+        // (A level this app doesn't know is drawn as quietly as a calm one.)
+        let calm = matches!(window.level, Level::Calm | Level::Unknown);
         let said = if over { "Not read since it started over".to_owned() } else { format!("{}% used", (window.used * 100.).round() as u32) };
         let resets = window.resets_at.filter(|_| !over).map(|at| format!("Starts over in {}", time::until(at, now)));
         div()
@@ -386,7 +388,6 @@ fn account_card(account: &Account, now: f64, cx: &App) -> AnyElement {
                     .child(div().flex_none().text_color(if calm { c.text_muted } else { color }).when(!calm, |d| d.medium()).child(said)),
             )
             .child(
-                // BOX-NEEDED: each window's level, `windows[].level` (#711): the meter is quiet until the box says it.
                 div().h(px(4.)).w_full().rounded(radius::PILL).bg(c.border).child(div().h_full().w(gpui::relative(if over { 0. } else { window.used.clamp(0., 1.) })).rounded(radius::PILL).bg(color)),
             )
             .children(resets.map(|resets| div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(resets)))

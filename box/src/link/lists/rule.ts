@@ -7,7 +7,8 @@
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import type { EngineSession } from "../engine/sessions";
-import type { ListedProject, SessionFacts, SessionKind } from "../../shared/routes/sessions";
+import type { BotNow, ListedProject, NeedsYou, SessionFacts, SessionKind } from "../../shared/routes/sessions";
+import type { AskWords } from "../glance/asked";
 
 /** What the rule reads of the box beside a session. */
 export interface ListPlace {
@@ -28,6 +29,10 @@ export interface ListPlace {
   asked: ReadonlyMap<string, number>;
   /** Copies that aren't this box's own (moved away, or on their way here). */
   away: ReadonlySet<string>;
+  /** What each one waiting asks, in a few words: its oldest ask's (none known: "waits on you"). */
+  asks?: ReadonlyMap<string, AskWords>;
+  /** The bot each of its bots' conversations is, by its id. */
+  botOf?: ReadonlyMap<string, string>;
 }
 
 /** A session's folder, as the engine names it. */
@@ -90,26 +95,73 @@ export function factsOf(session: EngineSession, place: ListPlace): SessionFacts 
   const asked = place.asked.get(session.id);
   if (asked !== undefined) facts.asked = asked;
   if (place.away.has(session.id)) facts.away = true;
+  const bot = botOf(session, kind, place);
+  if (bot) facts.bot = bot;
   return facts;
 }
 
+/** The bot a session is: whose conversation it is (as its bots list them), else the one it works
+ * for (`kuvo.by.bot`, "Work"), a subagent's never (its conversation's counts). */
+function botOf(session: EngineSession, kind: SessionKind, place: ListPlace): string | undefined {
+  if (kind === "subagent") return undefined;
+  const own = place.botOf?.get(session.id);
+  if (own) return own;
+  const by = kuvoOf(session).by;
+  return isObject(by) && typeof by.bot === "string" && by.bot ? by.bot : undefined;
+}
+
+/** Whether a session waits on you, or else is at work: never both (one asking does no work until answered). */
+const standing = (facts: SessionFacts): "asking" | "working" | null => (facts.asked !== undefined ? "asking" : facts.running ? "working" : null);
+
+/** The sessions waiting on you that the lists show (a project's and a chat, not archived, this
+ * box's own copy), the one that asked last first, each with what it asks. */
+export function needsYou(sessions: Readonly<Record<string, SessionFacts>>, asks?: ReadonlyMap<string, AskWords>): NeedsYou[] {
+  return Object.entries(sessions)
+    .filter(([, facts]) => facts.asked !== undefined && (facts.kind === "project" || facts.kind === "chat") && !facts.archived && !facts.away)
+    .sort(([a, one], [b, other]) => other.asked! - one.asked! || a.localeCompare(b))
+    .map(([session]) => ({ session, asks: asks?.get(session) ?? { kind: "other" as const, summary: "waits on you" } }));
+}
+
+/** What each bot is doing now, by its id: how many of its sessions (its conversation, and those
+ * working for it) are at work and waiting on you, and, with neither, when the newest of them last
+ * changed (`finished`). Archived sessions and copies that aren't this box's own aren't counted. */
+export function botsNow(sessions: Readonly<Record<string, SessionFacts>>): Record<string, BotNow> {
+  const bots: Record<string, { working: number; asking: number; finished?: number }> = {};
+  for (const facts of Object.values(sessions)) {
+    if (!facts.bot || facts.archived || facts.away) continue;
+    const now = (bots[facts.bot] ??= { working: 0, asking: 0 });
+    const stands = standing(facts);
+    if (stands) now[stands] += 1;
+    else if (facts.updated) now.finished = Math.max(now.finished ?? 0, facts.updated);
+  }
+  for (const now of Object.values(bots)) if (now.working || now.asking) delete now.finished;
+  return bots;
+}
+
 /** The projects the lists show: its list's (not removed), and each one a session listed in a project
- * (not archived) is filed under. Each with its name, where its list gives one, and when its newest
- * such session changed. */
+ * (not archived) is filed under. Each with its name, where its list gives one, when its newest
+ * such session changed, and how many of them wait on you (`asking`) and are at work (`working`,
+ * never one that's asking). */
 export function listedProjects(sessions: Readonly<Record<string, SessionFacts>>, place: Pick<ListPlace, "projects">): Record<string, ListedProject> {
   const names = new Map<string, string | undefined>();
   for (const project of place.projects) if (!project.removed) names.set(project.directory, project.name);
   const newest = new Map<string, number>();
+  const sums = new Map<string, { asking: number; working: number }>();
   for (const facts of Object.values(sessions)) {
     if (facts.kind !== "project" || facts.archived || facts.project === undefined) continue;
     newest.set(facts.project, Math.max(newest.get(facts.project) ?? 0, facts.updated));
+    const stands = facts.away ? null : standing(facts);
+    if (!stands) continue;
+    const sum = sums.get(facts.project) ?? { asking: 0, working: 0 };
+    sum[stands] += 1;
+    sums.set(facts.project, sum);
   }
   const projects: Record<string, ListedProject> = {};
   for (const directory of [...new Set([...names.keys(), ...newest.keys()])].sort()) {
     // (Named as its list names it, a removed one's too, which a session brings back.)
     const name = names.get(directory) ?? place.projects.find(each => each.directory === directory)?.name;
     const updated = newest.get(directory);
-    projects[directory] = { ...(name ? { name } : {}), ...(updated !== undefined ? { updated } : {}) };
+    projects[directory] = { ...(name ? { name } : {}), ...(updated !== undefined ? { updated } : {}), ...(sums.get(directory) ?? { asking: 0, working: 0 }) };
   }
   return projects;
 }

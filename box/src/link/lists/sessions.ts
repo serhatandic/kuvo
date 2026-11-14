@@ -22,10 +22,10 @@ import { isChatsFolder } from "../engine/chats";
 import { filedProjects, projectFollowers, readProjects } from "../areas/projects";
 import { botFollowers, botHere } from "../bots/here";
 import { awaySessions, moveFollowers, MOVES } from "../moves/records";
-import { askFollowers, readAsks } from "../glance/asked";
-import { factsOf, listedProjects, type ListPlace } from "./rule";
+import { askFollowers, readAsks, type AskWords } from "../glance/asked";
+import { factsOf, listedProjects, needsYou, type ListPlace } from "./rule";
 import type { EngineSession } from "../engine/sessions";
-import type { ListedProject, SessionFacts, SessionList } from "../../shared/routes/sessions";
+import type { ListedProject, NeedsYou, SessionFacts, SessionList } from "../../shared/routes/sessions";
 import type { Target } from "../../shared/records";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
@@ -59,6 +59,8 @@ export interface Kept {
   sessions: Record<string, { seq: number; facts: SessionFacts; place?: string }>;
   gone: Record<string, { seq: number; at: number }>;
   projects: Record<string, ListedProject>;
+  /** The sessions waiting on you, as "Needs you" lists them (none in a file from before it). */
+  needsYou?: NeedsYou[];
   pending?: string[];
   owner?: number;
   /** Which start of `owner` it is (the same process id may come again after a restart). */
@@ -76,6 +78,7 @@ const STARTED = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2
 interface Listed {
   sessions: Record<string, SessionFacts>;
   projects: Record<string, ListedProject>;
+  needsYou?: NeedsYou[];
   placeOf?: Record<string, string>;
   pending?: string[];
 }
@@ -104,6 +107,8 @@ export interface BoxKnows {
   projects: ReturnType<typeof readProjects>;
   filed: Record<string, string>;
   botSessions: Set<string>;
+  /** The bot each of its bots' conversations is. */
+  botOf: Map<string, string>;
   away: Set<string>;
   asks: ReturnType<typeof readAsks>;
 }
@@ -111,11 +116,12 @@ export interface BoxKnows {
 export function readBoxKnows(): BoxKnows {
   const projects = readProjects();
   const botSessions = new Set<string>();
+  const botOf = new Map<string, string>();
   for (const id of listOf(BOTS)) {
     const bot = botHere(id);
-    if (bot) botSessions.add(bot.session);
+    if (bot) { botSessions.add(bot.session); botOf.set(bot.session, id); }
   }
-  return { projects, filed: filedProjects(projects), botSessions, away: new Set(awaySessions()), asks: readAsks() };
+  return { projects, filed: filedProjects(projects), botSessions, botOf, away: new Set(awaySessions()), asks: readAsks() };
 }
 
 /** What the box knows beside its sessions, as it is now (`known`: as it was read last). */
@@ -123,13 +129,18 @@ export function placeNow(running: ReadonlySet<string>, sessions: Iterable<Engine
   const parents = new Map<string, string>();
   for (const session of sessions) if (session.parentID) parents.set(session.id, session.parentID);
   // (A subagent's ask is the conversation's it works for.)
+  // (What it asks: its oldest ask's words, the one `asked` is since.)
   const asked = new Map<string, number>();
+  const asks = new Map<string, AskWords>();
   for (const ask of known.asks) {
     let root = ask.session;
     for (let step = 0; step < 10 && parents.has(root); step++) root = parents.get(root)!;
-    asked.set(root, Math.min(asked.get(root) ?? Infinity, ask.at));
+    if (ask.at >= (asked.get(root) ?? Infinity)) continue;
+    asked.set(root, ask.at);
+    if (ask.asks) asks.set(root, ask.asks);
+    else asks.delete(root);
   }
-  return { isChatsFolder, botsFolder: BOTS, botSessions: known.botSessions, filed: known.filed, projects: known.projects, running, asked, away: known.away };
+  return { isChatsFolder, botsFolder: BOTS, botSessions: known.botSessions, botOf: known.botOf, filed: known.filed, projects: known.projects, running, asked, asks, away: known.away };
 }
 
 // Each session's facts as last worked out, while what they come from is the same (the session as
@@ -265,6 +276,11 @@ function takeIn(list: Kept, listed: Listed, now: number, owner?: number): { chan
     list.projects = listed.projects;
     changed = true;
   }
+  const needs = listed.needsYou ?? needsYou(listed.sessions);
+  if (JSON.stringify(list.needsYou) !== JSON.stringify(needs)) {
+    list.needsYou = needs;
+    changed = telling = true;
+  }
   const pending = listed.pending?.length ? [...listed.pending].sort() : undefined;
   if (JSON.stringify(list.pending) !== JSON.stringify(pending)) {
     if (pending) list.pending = pending;
@@ -290,9 +306,13 @@ export function answerFrom(list: Kept, since: string | null): SessionList {
   const sessions: Record<string, SessionFacts> = {};
   for (const [id, entry] of Object.entries(list.sessions)) if (whole || entry.seq > from!.seq) sessions[id] = entry.facts;
   const pending = list.pending?.length ? { pending: list.pending } : {};
-  if (whole) return { at: cursorOf(list), full: true, sessions, projects: list.projects, ...pending };
+  // (A file from before "Needs you" says none of what each asks until it's worked out again.)
+  const needs = list.needsYou ?? needsYou(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])));
+  // (And its projects' sums as none, where that file had none.)
+  const projects = Object.fromEntries(Object.entries(list.projects).map(([folder, project]) => [folder, { ...project, asking: project.asking ?? 0, working: project.working ?? 0 }]));
+  if (whole) return { at: cursorOf(list), full: true, sessions, projects, needsYou: needs, ...pending };
   const gone = Object.entries(list.gone).filter(([, entry]) => entry.seq > from!.seq).map(([id]) => id).sort();
-  return { at: cursorOf(list), sessions, ...(gone.length ? { gone } : {}), projects: list.projects, ...pending };
+  return { at: cursorOf(list), sessions, ...(gone.length ? { gone } : {}), projects, needsYou: needs, ...pending };
 }
 
 // MARK: The long-running process's list
@@ -511,7 +531,7 @@ function withPending(sessions: EngineSession[], placeOf: Record<string, string>,
       placeOf[id] = entry.place;
     }
   }
-  return { sessions: listed, projects: listedProjects(listed, box), placeOf, pending };
+  return { sessions: listed, projects: listedProjects(listed, box), needsYou: needsYou(listed, box.asks), placeOf, pending };
 }
 
 /** Every session's facts worked out again from what's kept of its places, once the engine's has
@@ -550,6 +570,9 @@ export function workOut(now = Date.now()): void {
 
 // What's not written yet, written as the process ends (it's stopped: the keeper, an update).
 process.once("exit", () => { if (writeTimer) writeNow(); });
+
+/** Whether this process keeps the list (the box's long-running one). */
+export const keepsList = (): boolean => keeping;
 
 /** The list as this process keeps it (the long-running one's), else as its file has it. */
 export const keptList = (): Kept | null => latest ?? readList();
@@ -602,7 +625,7 @@ async function readPlaces(context: Pick<RouteContext, "readEngine" | "bridge">):
  * the box's files as they are now (a project another process changed). In any other: as the
  * long-running process keeps it, while it runs; else read from the places now (the bridge's
  * sessions as last read where it doesn't answer), and kept. */
-async function listNow(context: Pick<RouteContext, "readEngine" | "bridge">, signal?: AbortSignal): Promise<Kept | null> {
+export async function listNow(context: Pick<RouteContext, "readEngine" | "bridge">, signal?: AbortSignal): Promise<Kept | null> {
   if (keeping) {
     if (!places.has("engine") || (context.bridge() && !places.has("bridge"))) await readPlaces(context);
     if (!places.has("engine")) return null;

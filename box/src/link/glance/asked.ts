@@ -24,8 +24,48 @@ export const ASKS_FILE = path.join(RUN, "glance", "asks.json");
  * session asking (a form's under `form`, or as it is). */
 export interface AskEvent {
   type: string;
-  data?: { id?: unknown; requestID?: unknown; sessionID?: unknown; form?: unknown };
+  data?: { id?: unknown; requestID?: unknown; sessionID?: unknown; form?: unknown; action?: unknown; resources?: unknown };
 }
+
+/** What an ask asks, in a few words (`needsYou` in `kuvo/sessions/list`): its kind, and the box's
+ * words for it, written to follow the session's name ("asks to run a command"). */
+export interface AskWords {
+  kind: "permission" | "question" | "sandbox" | "vault" | "other";
+  summary: string;
+}
+
+/** `text`, 60 characters of it at most: a summary is a few words, whatever a tool names. */
+const cut = (text: string, most: number): string => (text.length > most ? text.slice(0, most - 1) + "…" : text);
+const lastPart = (file: string): string => file.replace(/\/+$/, "").split("/").pop() || file;
+
+/** A permission in a few words, by what it would do (as its card's title goes by it, `permissionTitle`). */
+export function permissionWords(action: unknown, resources: unknown): AskWords {
+  const files = Array.isArray(resources) ? resources.filter((each): each is string => typeof each === "string") : [];
+  const what = files.length > 1 ? `${files.length} files` : files.length === 1 ? cut(lastPart(files[0]!), 60) : "a file";
+  const summary = (() => {
+    switch (action) {
+      case "edit": case "patch": case "write": return `asks to edit ${what}`;
+      case "read": return `asks to read ${what}`;
+      case "shell": case "bash": return "asks to run a command";
+      case "external_directory": return "asks to work outside the project";
+      case "subagent": return "asks to start an agent";
+      case "webfetch": return "asks to fetch a page";
+      default: return typeof action === "string" && action ? `asks to ${cut(action.replaceAll("_", " "), 60)}` : "asks for your OK";
+    }
+  })();
+  return { kind: "permission", summary };
+}
+
+/** A form in a few words: the agent's question, or anything else that needs your answer (an MCP server's). */
+export function formWords(form: { metadata?: unknown }): AskWords {
+  const kind = isObject(form.metadata) ? form.metadata.kind : undefined;
+  return kind === "question" ? { kind: "question", summary: "has a question for you" } : { kind: "other", summary: "needs your answer" };
+}
+
+export const SANDBOX_WORDS: AskWords = { kind: "sandbox", summary: "asks to run a command outside the sandbox" };
+export const VAULT_WORDS: AskWords = { kind: "vault", summary: "asks for something from the vault" };
+/** An ask heard without what it asks (noted by a box from before these words). */
+export const WAITS_WORDS: AskWords = { kind: "other", summary: "waits on you" };
 
 /** An ask waiting: the session asking (a subagent's own), when it came (ms), and the place it was
  * asked on ("engine", "bridge"), whose restart lets it go. */
@@ -33,6 +73,8 @@ interface OpenAsk {
   session: string;
   at: number;
   place?: string;
+  /** What it asks, in a few words. */
+  asks?: AskWords;
 }
 
 const ASKED = new Set(["permission.asked", "form.created"]);
@@ -60,7 +102,8 @@ export function noteAskEvent(event: AskEvent, place?: string, now = Date.now()):
   const asked = event.type === "form.created" && isObject(data.form) ? data.form : data;
   if (ASKED.has(event.type)) {
     if (typeof asked.id === "string" && typeof asked.sessionID === "string" && asked.sessionID.startsWith("ses") && !open.has(asked.id)) {
-      open.set(asked.id, { session: asked.sessionID, at: now, ...(place ? { place } : {}) });
+      const asks = event.type === "form.created" ? formWords(asked as { metadata?: unknown }) : permissionWords(asked.action, asked.resources);
+      open.set(asked.id, { session: asked.sessionID, at: now, ...(place ? { place } : {}), asks });
       changed = true;
     }
   } else if (ANSWERED.has(event.type)) {
@@ -79,7 +122,8 @@ function keep(): void {
   const reviewed = new Set(listAskReviews().filter(each => each.state !== "yours").map(each => each.id));
   const asks: Record<string, OpenAsk> = {};
   for (const [id, ask] of open) if (!reviewed.has(id)) asks[id] = ask;
-  for (const ask of [...listSandboxAsks(), ...listVaultAsks()]) if (ask.session) asks[ask.id] = { session: ask.session, at: ask.at };
+  for (const ask of listSandboxAsks()) if (ask.session) asks[ask.id] = { session: ask.session, at: ask.at, asks: SANDBOX_WORDS };
+  for (const ask of listVaultAsks()) if (ask.session) asks[ask.id] = { session: ask.session, at: ask.at, asks: VAULT_WORDS };
   try {
     writePrivate(ASKS_FILE, JSON.stringify({ asks }) + "\n");
   } catch {}
@@ -109,7 +153,12 @@ export function forgetAsksOn(place: string): void {
 export function readAsks(): OpenAsk[] {
   try {
     const kept = JSON.parse(fs.readFileSync(ASKS_FILE, "utf8")).asks;
-    return isObject(kept) ? Object.values(kept).filter((ask): ask is OpenAsk => isObject(ask) && typeof ask.session === "string" && typeof ask.at === "number") : [];
+    return isObject(kept)
+      ? Object.values(kept).filter((ask): ask is OpenAsk => isObject(ask) && typeof ask.session === "string" && typeof ask.at === "number").map(({ asks, ...ask }) => ({
+          ...ask,
+          ...(isObject(asks) && typeof asks.kind === "string" && typeof asks.summary === "string" ? { asks: { kind: asks.kind, summary: asks.summary } as AskWords } : {}),
+        }))
+      : [];
   } catch {
     return [];
   }

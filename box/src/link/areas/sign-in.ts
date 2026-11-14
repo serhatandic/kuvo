@@ -5,6 +5,8 @@
 // the coding agents' bridge, for an agent's account) does the signing in; the box only orders and
 // words what it offers. Held to protocol/vectors/sign-in.json.
 
+import { isObject, parsed } from "../../shared/json";
+import { ENGINE_SERVICES } from "../../shared/limits";
 import type { Target } from "../../shared/records";
 import { pause } from "../../shared/wait";
 import { call } from "../engine/client";
@@ -16,6 +18,7 @@ import type { AnswerPiece, RouteContext } from "../server/context";
 export const SIGN_IN_METHODS_ROUTE = "kuvo/sign-in/methods";
 export const SIGN_IN_STATUS_ROUTE = "kuvo/sign-in/status";
 export const SIGN_IN_ACCOUNTS_ROUTE = "kuvo/sign-in/accounts";
+export const SIGN_IN_START_ROUTE = "kuvo/sign-in/start";
 
 /** A way to sign in as the engine (or the bridge) lists it (`api/integration`'s `methods`). */
 interface ListedMethod {
@@ -32,6 +35,67 @@ export interface ListedAccount {
   name?: unknown;
   methods?: unknown;
   connections?: unknown;
+  metadata?: unknown;
+}
+
+/** What an account the engine lists is, to Accounts: a `provider` (models to run), a web `search`
+ * service (its key is Settings › Engine's), an `mcp` server's sign-in (an integration's), or the
+ * engine's own way to a plan a coding agent brings (`agentDuplicate`: "Claude Agent", which Kuvo
+ * Code runs through Claude Code instead). */
+export type AccountKind = "provider" | "search" | "mcp" | "agentDuplicate";
+
+/** Web search services the engine lists among its sign-ins. */
+const SEARCH_SERVICES = new Set(["exa", "firecrawl", "parallel", "tavily", "tinyfish"]);
+/** The engine's own way to a coding agent's plan. */
+const AGENT_DUPLICATES = new Set(["claude-agent"]);
+
+/** What `account` is, and whether Accounts lists it: every provider, never a search service or an
+ * MCP server's sign-in, and the engine's own way to a coding agent's plan only while it's signed in
+ * (one added before stays, to sign out of). The coding agents' accounts (`agents`) are all listed. */
+export function accountKind(account: ListedAccount, agents = false): { kind: AccountKind; listed: boolean } {
+  const id = typeof account.id === "string" ? account.id : "";
+  const source = (account.metadata as { source?: unknown } | null | undefined)?.source;
+  if (agents) return { kind: "provider", listed: true };
+  if (source === "mcp") return { kind: "mcp", listed: false };
+  if (SEARCH_SERVICES.has(id)) return { kind: "search", listed: false };
+  if (AGENT_DUPLICATES.has(id)) return { kind: "agentDuplicate", listed: Array.isArray(account.connections) && account.connections.length > 0 };
+  return { kind: "provider", listed: true };
+}
+
+/** An account's mark, by the plan limits' service ids (PROTOCOL.md, "Plan limits", `services`): a
+ * coding agent's is its agent's (`metadata.agent`, as its bridge says); the engine's by its
+ * provider (`ENGINE_SERVICES`). None for one with no mark of its own: a client draws its letter. */
+export function serviceOf(account: ListedAccount, agents = false): string | undefined {
+  const id = typeof account.id === "string" ? account.id : "";
+  if (agents) {
+    const agent = (account.metadata as { agent?: unknown } | null | undefined)?.agent;
+    const kind = typeof agent === "string" && agent ? agent : id.split("@")[0]!.replace(/-code$/, "");
+    return AGENT_SERVICES.has(kind) ? kind : undefined;
+  }
+  return ENGINE_SERVICES[id];
+}
+
+const AGENT_SERVICES = new Set(["claude", "codex", "grok", "cursor", "antigravity"]);
+
+/** The code a device sign-in's page asks for ("Enter code: ABCD-1234"), where its attempt has one:
+ * as it says it (`userCode`, the coding agents' bridge's), else from its page's address
+ * (`user_code`), else from its instructions (what follows the last "code:", where that's one
+ * word, else a code like ABCD-1234 standing by itself), as the engine leaves it for its own plans (Copilot, OpenCode, SuperGrok). */
+export function userCodeOf(said: { userCode?: unknown; url?: unknown; instructions?: unknown } | null | undefined): string | undefined {
+  if (typeof said?.userCode === "string" && said.userCode) return said.userCode;
+  if (typeof said?.url === "string") {
+    try {
+      const code = new URL(said.url).searchParams.get("user_code");
+      if (code) return code;
+    } catch {}
+  }
+  const instructions = typeof said?.instructions === "string" ? said.instructions : "";
+  // What follows the last "code:", where that's one word (its full stop left off); else a code
+  // by its shape, whole (never part of a longer word: "GITHUB-COPILOT" isn't one).
+  const at = instructions.toLowerCase().lastIndexOf("code:");
+  const after = at < 0 ? "" : instructions.slice(at + "code:".length).trim().replace(/[.,;:!]+$/, "");
+  if (after && !/\s/.test(after) && after.length <= 40) return after;
+  return instructions.match(/(?<![A-Za-z0-9-])[A-Z0-9]{4}-[A-Z0-9]{4,5}(?![A-Za-z0-9-])/)?.[0];
 }
 
 /** A way to sign in, as a client offers it: the engine's own (`type`, `id`, `form`, as a client
@@ -152,7 +216,38 @@ async function* accountsRoute(context: RouteContext, query: URLSearchParams): As
   try {
     const listed = await call(place.target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, deadline]) : deadline);
     const accounts = (Array.isArray(listed) ? listed : []).filter((each): each is ListedAccount => typeof (each as ListedAccount | null)?.id === "string");
-    return yield* json(200, { accounts: accounts.map(account => ({ id: account.id as string, ...signInMethods(account) })) });
+    const agents = query.get("agents") === "1";
+    return yield* json(200, {
+      accounts: accounts.map(account => {
+        const service = serviceOf(account, agents);
+        return { id: account.id as string, ...signInMethods(account), ...accountKind(account, agents), ...(service ? { service } : {}) };
+      }),
+    });
+  } catch (error) {
+    if (deadline.aborted) return yield* json(504, { message: "It didn't answer in time. Try again." });
+    const status = (error as { status?: unknown } | null)?.status;
+    return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message: error instanceof Error && error.message ? error.message : "It didn't answer." });
+  }
+}
+
+/** `POST kuvo/sign-in/start?integration=<id>[&agents=1]` `{methodID, answer?}`: starts a sign-in in
+ * the browser where the engine (or the bridge) does, as its own `connect/oauth` does, and answers
+ * what that answered with the code its page asks for apart (`userCode`), where it has one. */
+async function* startRoute(context: RouteContext, query: URLSearchParams): AsyncGenerator<AnswerPiece> {
+  const { request, signal, json } = context;
+  if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
+  const integration = query.get("integration")?.trim() ?? "";
+  const given = parsed(request.body);
+  if (!integration || !isObject(given) || typeof given.methodID !== "string" || !given.methodID) return yield* json(400, { message: "Say which account (integration) and which way in (methodID)." });
+  const place = placeOf(query, context);
+  if ("down" in place) return yield* json(503, { message: place.down });
+  // (A coding agent's sign-in may download its program first: longer than a read.)
+  const deadline = AbortSignal.timeout(120_000);
+  try {
+    const started = await call(place.target, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, { methodID: given.methodID, ...(isObject(given.answer) ? { answer: given.answer } : {}) }, signal ? AbortSignal.any([signal, deadline]) : deadline);
+    if (!isObject(started)) return yield* json(502, { message: "The sign-in couldn't be started." });
+    const userCode = userCodeOf(started);
+    return yield* json(200, { ...started, ...(userCode ? { userCode } : {}) });
   } catch (error) {
     if (deadline.aborted) return yield* json(504, { message: "It didn't answer in time. Try again." });
     const status = (error as { status?: unknown } | null)?.status;
@@ -166,8 +261,9 @@ async function* accountsRoute(context: RouteContext, query: URLSearchParams): As
  * each time, as a Mac asks a machine's box over SSH). */
 export async function* signInRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, route, signal, json } = context;
-  if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
   const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  if (route === SIGN_IN_START_ROUTE) return yield* startRoute(context, query);
+  if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
   if (route === SIGN_IN_ACCOUNTS_ROUTE) return yield* accountsRoute(context, query);
   const integration = query.get("integration")?.trim() ?? "";
   const attempt = route === SIGN_IN_STATUS_ROUTE ? query.get("attempt")?.trim() ?? "" : null;
@@ -202,7 +298,8 @@ export async function* signInRoute(context: RouteContext): AsyncGenerator<Answer
     }
     const status = said?.status;
     if (status !== "pending" && status !== "complete" && status !== "failed" && status !== "expired") return yield* json(502, { message: "The sign-in's status couldn't be read." });
-    return yield* json(200, { ...said, ...(status === "failed" || status === "expired" ? { failure: failureWords(status, said?.message) } : {}) });
+    const userCode = userCodeOf(said);
+    return yield* json(200, { ...said, ...(userCode ? { userCode } : {}), ...(status === "failed" || status === "expired" ? { failure: failureWords(status, said?.message) } : {}) });
   } catch (error) {
     if (attempt === null ? deadline.aborted : (error as Error | null)?.name === "TimeoutError") return yield* json(504, { message: "It didn't answer in time. Try again." });
     const status = (error as { status?: unknown } | null)?.status;

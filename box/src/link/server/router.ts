@@ -33,6 +33,8 @@ import { SESSION_ASKS_ROUTE, sessionAsksRoute } from "../areas/session-asks";
 import { MENTIONS_ROUTE, mentionsRoute } from "../areas/mentions";
 import { GLANCE_ROUTE, glanceRoute } from "../areas/glance";
 import { LIST_ROUTE, listRoute } from "../lists/sessions";
+import { WAITING_ROUTE, waitingRoute } from "../areas/waiting";
+import { COMPUTERS_ROUTE, computersRoute } from "../areas/computers";
 import { SESSION_MODELS_ROUTE, sessionModelsRoute } from "../areas/session-models";
 import { MODELS_OFFERED_ROUTE, modelsOfferedRoute } from "../areas/models-offered";
 import { READ_ALL_ROUTE, readAllRoute } from "../areas/read-all";
@@ -46,7 +48,7 @@ import { TYPED_ROUTE, typedRoute } from "../areas/typed";
 import { PARTS_ROUTE, partsRoute, SEND_ROUTE, sendRoute } from "../areas/messages";
 import { sandboxRoute } from "../areas/sandbox";
 import { providerModelsRoute } from "../areas/providers";
-import { SIGN_IN_ACCOUNTS_ROUTE, SIGN_IN_METHODS_ROUTE, SIGN_IN_STATUS_ROUTE, signInRoute } from "../areas/sign-in";
+import { SIGN_IN_ACCOUNTS_ROUTE, SIGN_IN_METHODS_ROUTE, SIGN_IN_START_ROUTE, SIGN_IN_STATUS_ROUTE, signInRoute } from "../areas/sign-in";
 import { answerProjects } from "../areas/projects";
 import { settingsRoute } from "../areas/settings";
 import { skillsRoute } from "../areas/skills";
@@ -145,6 +147,8 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   // A session at a glance: its row's and card's (PROTOCOL.md, "A session at a glance").
   { when: route => route.match(GLANCE_ROUTE), answer: glanceRoute },
   { when: route => route.match(LIST_ROUTE), answer: listRoute },
+  { when: route => route.match(WAITING_ROUTE), answer: waitingRoute },
+  { when: route => route.match(COMPUTERS_ROUTE), answer: computersRoute },
   // What a session's model button shows, and whether its model can run (PROTOCOL.md, "A session's model").
   { when: route => route === SESSION_MODELS_ROUTE, answer: sessionModelsRoute },
   // The models a session can use here, and the one a new session starts on (PROTOCOL.md, "The models offered").
@@ -160,7 +164,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route.match(/^kuvo\/asks\/([^/]+)$/), answer: askAnswerRoute },
   { when: route => route.match(/^kuvo\/engine\/(start|restart)$/), answer: engineControlRoute },
   { when: route => route === "kuvo/sign-in/return", answer: signInReturnRoute },
-  { when: route => route === SIGN_IN_METHODS_ROUTE || route === SIGN_IN_STATUS_ROUTE || route === SIGN_IN_ACCOUNTS_ROUTE, answer: signInRoute },
+  { when: route => route === SIGN_IN_METHODS_ROUTE || route === SIGN_IN_STATUS_ROUTE || route === SIGN_IN_ACCOUNTS_ROUTE || route === SIGN_IN_START_ROUTE, answer: signInRoute },
   { when: route => route === "kuvo/claude-code", answer: claudeCodeRoute },
   { when: (route, request) => request.path.startsWith(AGENTS), answer: agentsRoute },
   { when: route => route === "kuvo/accounts/ended" || route === "kuvo/accounts/refreshable" || /^kuvo\/accounts\/[^/]+\/(forget|refresh)$/.test(route), answer: accountsRoute },

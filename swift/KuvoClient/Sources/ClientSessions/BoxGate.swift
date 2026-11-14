@@ -19,9 +19,15 @@ public enum BoxGate {
     /// Changes and Branches.
     /// `bots.held` (#668 item 8): an edit to a bot whose computer is away is held by the box asked,
     /// and no client keeps an outbox of its own.
+    /// Then #711's, for the desktop client's sidebar and Settings, which draw what the box says and
+    /// keep no stand-in: `bots.now`, `computers`, `limits.rings`, `sandbox.words`,
+    /// `sessions.needsYou`, `sign-in.accounts.kinds`, `sign-in.codes`, `waiting` and
+    /// `work-queue.counts`.
     public static let required: [String] = [
         "agent-tools.own",
         "bots.held",
+        "bots.now",
+        "computers",
         "folders.tree",
         "git.branches",
         "git.branches.worktree",
@@ -30,19 +36,26 @@ public enum BoxGate {
         "git.merge",
         "git.pull-request",
         "git.status",
+        "limits.rings",
         "messages.send",
         "models.offered",
         "models.offered.folder",
         "models.offered.sides",
         "models.readiness",
         "queue.items",
+        "sandbox.words",
         "sessions.asks",
         "sessions.list",
         "sessions.mentions",
         "sessions.models",
+        "sessions.needsYou",
         "sessions.start.empty",
+        "sign-in.accounts.kinds",
+        "sign-in.codes",
         "typed",
         "usage.notices",
+        "waiting",
+        "work-queue.counts",
     ]
 
     /// What `features` lack of `required`, in its order: none when the box is up to date. Nil

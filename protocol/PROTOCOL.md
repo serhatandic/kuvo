@@ -431,7 +431,12 @@ connection.
   computers"; nothing else), and `setup` (the id of the setup it follows, where it follows one) and
   `shared: true` (it's a machine set up by Macs that aren't all in one setup), by which the receiver counts it as one of
   your own computers, for resets, Always Allow and usage totals, only within one setup (#701; "Plan
-  limits", "Across your computers", Whose). A box sends its bots and its 40 latest
+  limits", "Across your computers", Whose), and `computer` (`{version?, engine?, system?,
+  working}`: Kuvo Code's version there, its engine's, its system as people know it, and how many
+  of its sessions are at work, for `kuvo/computers`, "Computers"; only to a peer that's one of
+  your own computers, #701, once that peer has said what it is (never in the first mail to one),
+  and never by a shared machine; one from a peer that isn't yours is dropped as its mail is taken; told again at its next round, within a
+  minute, as it starts or stops working at all, else with the rest). A box sends its bots and its 40 latest
   sessions (its engine's and its coding agents') when they change and every ten minutes. Each box
   keeps the newest list from each peer. The relay keeps nothing, so a box that has just connected adds `"ask": "agents"` to
   what it sends first (its agents; a Mac's digest), and whoever gets it tells that box its agents
@@ -1412,7 +1417,8 @@ by the gate ("Updating…"), and one that answers `503` leaves a client's lists 
 sessions").
 
 - `GET kuvo/sessions/list[?since=<at>]` → `{at, full?, sessions: {<id>: facts}, gone?: [<id>],
-  projects: {<folder>: {name?, updated?}}, pending?: ["bridge"]}`. `…/events[?since=<at>]` (ndjson) sends that now, then
+  projects: {<folder>: {name?, updated?, asking, working}}, needsYou: [{session, asks}],
+  pending?: ["bridge"]}`. `…/events[?since=<at>]` (ndjson) sends that now, then
   a line as anything in it changes; through `box route` (a machine reached over SSH) it answers its
   first line, and a client reads it again as that machine's sessions change and every half minute.
   `503 {"message"}` while the engine can't be read; `405` for anything but `GET`. `pending`: the
@@ -1427,11 +1433,14 @@ sessions").
 - `at` says where the list is; `since` resumes from it: only the sessions that changed after it,
   and `gone`, those deleted since. A cursor the box can't resume from (it restarted, or the change
   is older than the day and 2000 deletions it keeps, or its file went) gets the whole list, `full: true`, in place of
-  what the client had. `projects` is whole in every line.
+  what the client had. `projects` and `needsYou` are whole in every line.
 - Facts, each flag left out where it isn't: `kind`, `project` (a `project` session's), `directory`,
   `title?`, `created`, `updated` (ms; the lists' order), `parent?` (a `subagent`'s session),
   `pinned?`, `archived?`, `running?`, `asked?` (since when it's waited on you, ms, as "A session at a
-  glance" says it), `away?` (this copy isn't the box's own: moved away, or on its way here, "Moves").
+  glance" says it), `away?` (this copy isn't the box's own: moved away, or on its way here, "Moves"),
+  `bot?` (`sessions.needsYou`: the bot it is, by its id: whose conversation it is, as `kuvo/bots`
+  lists it, else the one it works for, "Work"'s `kuvo.by.bot`, which may live on another
+  computer; never on a `subagent`).
   A kind a client doesn't know shows nowhere.
 - `kind`, in this order: `subagent` (it has a `parentID`); `seat` (`kuvo.seat`, a bot's seat in a
   group chat); `hidden` (`kuvo.engineFor` or `kuvo.reviewPart`: a run its session or review shows);
@@ -1442,7 +1451,21 @@ sessions").
   own folder ("Projects").
 - `projects`: every project of the box's list that isn't removed, and each one a `project` session
   that isn't archived is filed under (a removed one comes back so), with its list's `name` where
-  it has one, and `updated`, its newest such session's.
+  it has one, and `updated`, its newest such session's. `asking` and `working`
+  (`sessions.needsYou`, #711): how many of its sessions listed (not archived, this box's own copy)
+  wait on you, and are at work; one that waits isn't counted at work, here or anywhere the box
+  counts (a session asking does nothing until it's answered). A client draws its project's badge
+  and spinner from these and counts nothing.
+- `needsYou` (`sessions.needsYou`, #711): the sessions waiting on you that the lists show (a
+  `project`'s and a `chat`, not archived, this box's own copy), the one that asked last first
+  (`asked`, ties by id), each `{session, asks: {kind, summary}}`: what its oldest ask still open
+  asks, in the box's words, written to follow the session's or its project's name ("asks to run a
+  command", "asks to edit 3 files", "asks to edit App.swift", "has a question for you", "asks to
+  run a command outside the sandbox", "asks for something from the vault"; "waits on you" where
+  the box heard no more; a file's name or an action's own words are cut at 60 characters). `kind`: `permission`, `question`, `sandbox`, `vault` or `other`; a client
+  shows `summary` as it is, whatever the kind. A client draws "Needs you" from it, in its order,
+  and works out neither who waits nor what for. A bot's own conversation isn't here: it's its
+  bot's (`now` in `kuvo/bots`).
 - What a client draws: a `project` session in its project and a `chat` in Chats, unless archived;
   any other kind nowhere. Pinned and Chats newest first; projects by their newest session shown,
   those with none last, ties by name (its `name`, else its folder's last part; Finder's order:
@@ -1458,6 +1481,74 @@ sessions").
   beside them, the facts the box answers (`box/test/session-lists.test.ts`), and the
   sidebar a client draws from them (KuvoClient's `SessionListsTests`): a client in another language
   checks itself against it.
+
+### Computers
+
+Your computers as one list (`computers`, #711), from any box, a Mac's or a machine's, with no
+client connected: a client's Computers area and its switcher draw it, and ask no Mac for it
+(`kuvo/machines` names only what a Mac's app connects to over SSH). Each box lists what it knows:
+its peers in full, and the boxes they vouch for by name only (`reach: "unknown"`), so a Mac says
+more of its machines than of your other Mac, and a machine more of its Macs than of their other
+machines; a client that wants every computer's facts asks the box that has it as a peer.
+
+- `GET kuvo/computers` → `{computers: [computer…]}`: the box that answers first (`here: true`),
+  then its peers by name ("Peers"), then the boxes those vouch for ("Plan limits", Who). A
+  machine Macs of different setups share lists itself alone (as `kuvo/setup` refuses there: the
+  others aren't all one person's computers). Each:
+  - `key` (its box's public key; `""` for the box itself while it has none), `name`, `kind`
+    (`mac` or `machine`), `id?` (a machine's name on its Mac);
+  - `shared`: a machine set up by Macs that aren't all in one setup ("Your setup"); `apart: true`
+    on a peer that isn't one of your own computers (such a machine, or a box following another
+    setup, #701): it tells nothing of what it runs, and a client files it apart from yours. A box
+    only such a peer vouches for (the other person's Mac beside a shared machine) isn't listed;
+  - `reach`: `connected` (the box itself; a peer heard from in the last half hour), `connecting`
+    (a peer not heard from yet since this box knew of it), `away` (the relay said it isn't
+    there, `run/peer-reach.json`, or nothing came from it for half an hour) or `unknown` (a box
+    known only by a peer's word: this box can't say). As this box last heard: one that's itself
+    off the relay still says `connected` of a peer heard in the last half hour;
+  - `version?`, `engine?`, `system?`: Kuvo Code's version there, its engine's, and its system as
+    people know it ("macOS 15.1", "Ubuntu 24.04.1 LTS"), as that box said them with its agents
+    (`agents.computer`, "Peers"); left out for one that hasn't said (a box from before this, one
+    known only by a peer's word);
+  - `via`: how the box that answers knows it: `here` (itself), `relay` (a peer it talks to) or
+    `peer` (by another computer's word alone, `through` that one's name);
+  - `working`: how many of its sessions are at work (conversations, not their subagents, never
+    one that waits on you), its own from its session list, a peer's as it last said (`0` for one
+    that's away or unknown, and for one that isn't one of your own computers, which says none:
+    nothing there can be seen at work now);
+  - `limits`: the services whose plan limits it reads (`claude`, `codex`…), as the answering
+    box's limits rows say (`rows[].boxes`); `[]` while its coding agents' bridge doesn't run.
+  `405` for anything but `GET`.
+- `GET kuvo/computers/events` (ndjson): the same now, and a line as it changes (a peer's word, one
+  going away or coming back, this box's sessions starting or stopping work, and every 15 seconds
+  for the rest); through `box route` a client asks again instead.
+- A box says what it knows, never more: SSH connections are a Mac app's own (`kuvo/machines`), so
+  no box says a machine is reached "through SSH", and a computer no peer of this box names isn't
+  listed.
+
+### What waits on you
+
+How many things wait on you in each area, across the box (`waiting`, #711), for a client's badges
+(the Mac's rail, a phone's tabs): counted by the box from its session list, so every client says
+the same number and counts nothing.
+
+- `GET kuvo/waiting` → `{sessions, bots, queue}`: `sessions`, those "Needs you" lists (`needsYou`
+  in `kuvo/sessions/list`); `bots`, the bots that live here with a session waiting on you
+  (`now.asking`, below; a session here working for a bot on another computer is that computer's
+  to count); `queue`, the Work Queue's items here (not Done, not deleted) that a session linked to
+  them (not archived, this box's own copy) waits on you for. All zero while the engine can't be read. `405` for anything but `GET`.
+- `GET kuvo/waiting/events` (ndjson): the same now, and a line each time it changes (an ask comes
+  or is answered, a bot or an item changes); through `box route` it answers its first line, and a
+  client asks again as that box's session list changes.
+- Each box counts its own: a client that shows several computers adds theirs up (a view).
+- **What a bot is doing now** (`bots.now`, #711): each bot in `GET kuvo/bots` and
+  `kuvo/bots/events` has `now` `{working, asking, finished?}`: how many of its sessions (its own
+  conversation, and those working for it: `bot` in the session list's facts; not archived, this
+  box's own copy) are at work, and wait on you (never both); and, with neither, `finished`, when
+  the newest of them last changed (ms; left out for a bot with no session listed). Its events say
+  it again as its sessions start, ask, are answered and finish. Facts only: a client words them
+  ("1 at work, 1 waiting on you", "Finished 3h ago") alike, a view. A bot made or changed
+  (`POST`, `PATCH`) answers without `now`.
 
 ### A session's model
 
@@ -2430,10 +2521,13 @@ new version without cutting a turn:
 A client never keeps an older box's way of doing something (#679): it brings a box up to date
 before it uses it, and meanwhile says so. A box is older than a client needs when its `kuvo/info`
 `features` lack any name the client uses with no way around it (or it has no `kuvo/info`): today
-`agent-tools.own`, `bots.held`, `folders.tree`, `git.branches`, `git.branches.worktree`, `git.changes.path`,
-`git.files`, `git.merge`, `git.pull-request`, `git.status`, `messages.send`, `models.offered`,
-`models.offered.folder`, `models.offered.sides`, `models.readiness`, `queue.items`, `sessions.asks`,
-`sessions.list`, `sessions.mentions`, `sessions.models`, `sessions.start.empty`, `typed` and `usage.notices`
+`agent-tools.own`, `bots.held`, `bots.now`, `computers`, `folders.tree`, `git.branches`,
+`git.branches.worktree`, `git.changes.path`, `git.files`, `git.merge`, `git.pull-request`,
+`git.status`, `limits.rings`, `messages.send`, `models.offered`, `models.offered.folder`,
+`models.offered.sides`, `models.readiness`, `queue.items`, `sandbox.words`, `sessions.asks`,
+`sessions.list`, `sessions.mentions`, `sessions.models`, `sessions.needsYou`,
+`sessions.start.empty`, `sign-in.accounts.kinds`, `sign-in.codes`, `typed`, `usage.notices`,
+`waiting` and `work-queue.counts`
 (KuvoClient's `BoxGate.required`, and the same list in every client, gpui's `kuvo_box` too, so
 every client holds the same boxes; a box with `messages.send` has what came before it too,
 `sessions.move`, `projects.folders` and `sign-in.methods` among them, and names its chats folder in
@@ -3211,10 +3305,36 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     the account's card names under its name: its first sign-in that isn't legacy (the engine's
     "Login with" said "Sign in with"; plain "Sign in" where its words only name the account
     again), else "API key" for a key, else "Connect".
-  - `GET kuvo/sign-in/accounts[?agents=1]` → `{"accounts": [{id, methods, environment, hint}]}`:
+  - `GET kuvo/sign-in/accounts[?agents=1]` → `{"accounts": [{id, methods, environment, hint, kind,
+    listed, service?}]}`:
     every account the engine (or the bridge) lists, each with the same answer. Accounts goes by it
     on both apps: an account has Sign In (and Sign In Again, Add Another) only where `methods`
     isn't empty, and a card's line under its name is `hint`. A box from before it offers none.
+    `kind` and `listed` (`sign-in.accounts.kinds`, #711): what it is, and whether Accounts lists
+    it, so no client keeps the rule: `provider` (listed); `search`, a web search service the
+    engine lists among its sign-ins (Exa, Firecrawl, Parallel, Tavily, TinyFish: its key is
+    Settings › Engine's; not listed); `mcp`, an MCP server's sign-in (`metadata.source` `mcp`: an
+    integration's; not listed); `agentDuplicate`, the engine's own way to a plan a coding agent
+    brings (`claude-agent`: Kuvo Code runs Claude Code instead; listed only while it's signed in,
+    to sign out of). A coding agent's account (`agents=1`) is a `provider`, listed. A client lists
+    those with `listed` and leaves the rest out, whatever `kind` a newer box names. `service`: its
+    mark, by the plan limits' service ids ("Plan limits", `services`): a coding agent's is its
+    agent's; the engine's `openai` is `codex`, `xai` `grok`, `github-copilot` `copilot`,
+    `anthropic` and `claude-agent` `claude`, `opencode` and `opencode-go` `opencode`, `zai` and
+    `zai-coding-plan` `zai`, `ollama` and `ollama-cloud` `ollama`, `openrouter` its own; left out
+    for one with no mark, which a client draws by its name's first letter.
+  - `POST kuvo/sign-in/start?integration=<id>[&agents=1]` `{methodID, answer?}`
+    (`sign-in.codes`, #711): starts a sign-in in the browser as the engine's (or the bridge's) own
+    `api/integration/<id>/connect/oauth` does, and answers what that answered (`attemptID`, `url`,
+    `instructions`, `mode`, `acceptsCode?`) with `userCode`, the code its page asks for, apart,
+    where it has one: as the bridge says it, else from the page's address (`user_code`), else from
+    its instructions (what follows the last "code:" where that's one word, its full stop left
+    off; else a code like `ABCD-1234` standing by itself, never part of a longer word), as the engine
+    leaves it for its own plans (GitHub Copilot, OpenCode, SuperGrok). `400 {"message"}` without
+    an account or a way in, `405` for anything but `POST`, `503` while its place isn't running,
+    `504` when it didn't answer in two minutes, else its place's own refusal. A client starts
+    every browser sign-in here, and shows `userCode` as it is, never reading one out of the page
+    or the instructions itself. `kuvo/sign-in/status` says it too wherever the status has it.
   - `GET kuvo/sign-in/status?integration=<id>&attempt=<id>[&agents=1][&wait=<seconds>]` → the
     attempt's status as the engine (or the bridge) says it (`status`, `message?`, `url?`,
     `instructions?`, `userCode?`), with `failure` once it's `failed` or `expired`: what a client
@@ -4540,6 +4660,20 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     of their `read`, never live, however recent. A row a box can't say who it is (no `identity`) is
     never merged by its numbers: two accounts can read alike (a personal plan and a team's, each
     at 12%).
+  - **Rings and levels** (`limits.rings`, #711): in a row (never in `accounts`, nor in what peers
+    are told), each window adds `level`, how close it is to its limit in the box's word, the same
+    in every client: `calm`, `near` (70% used or more) or `over` (90% or more); and the row adds
+    `rings` `{short?, long?}`, the two circles a client draws for the account, each `{window, used,
+    resetsAt?, level}` (`window`, that window's `id`), with `span: short|long` on those two windows.
+    The box picks them: among the whole plan's windows (not a model's own; its plainly timed ones
+    before those named for what they count, "Web searches"), the shortest under a day is `short` (a
+    5-hour session) and the longest of a day or more `long` (the week, the month), the first listed
+    where two are as long. A plan with one window has one ring (`long`, where it states no
+    length); one with none, `rings: {}`. Where every window is named for what it counts
+    (Antigravity's pools, Copilot's counts), the rings are of one pool, the first listed's (those
+    whose `id` differs only in its last part: `gemini-5h` with `gemini-weekly`, never with
+    `3p-weekly`); where every window is a model's, the first model's stand for the plan. A client colours by `level` and never by a threshold of its own,
+    and draws a ring whose `resetsAt` has passed empty, in its place (as a window).
 - Listing them (KuvoClient's `UsageListing.listing`, as the Mac and the phone do): one box's `rows`
   as they are, merging nothing (the Mac: its own box's; the phone: the first box in its list of
   your computers that states accounts, a machine's on Linux too), refreshed
@@ -5208,6 +5342,14 @@ before (a linked item is its owner's to change). A client shows them first, as "
   linked session starting or stopping work). With `glance=1` (a client that shows only a count or
   chips: the phone's •••, a conversation's chips on a Mac; a client follows whole only while the
   Work Queue itself shows), either reads no issue or pull request from GitHub: each is as last read.
+  With `counts=1` (`work-queue.counts`, #711), either adds `counts` `{inProgress, categories:
+  {<id>: n}, sources: {<kind>: n}, computers: {<key>: n}, removed}`, counted from that same view
+  for a client that draws them (the sidebar's rows): its items in progress; in each category
+  (every category of the view, one with none `0`); from each outside source, by its kind
+  (`github`; items of the queue's own aren't in it); on each computer, by its key (this box's own
+  under its own key, `""` while it has none, and each other computer of `computers`); and how many
+  are deleted (`removed`). `owner=all` counts every queue across your computers. A client draws
+  these and never counts the items itself.
 - `GET kuvo/work-queue/items/<id or number>` → `{item}`, whole (an issue's `gh:` ref names it too,
   but its "/" can't go in a path through every client: a client asks by the `id` its chip has). `…/files/<name>` → its bytes. An
   item on another computer has `computer` and `told`. Asked by a client (as "What you do" says
@@ -5864,6 +6006,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `bots.job` | a bot's job as its box's record: `jobDetails` in `kuvo/bots`, `job` in `PATCH kuvo/bots/<id>` |
 | `bots.keys` | `kuvo/bots/<id>/keys…` |
 | `bots.make` | `kuvo/bots/templates` and `POST kuvo/bots` |
+| `bots.now` | `now` on each bot in `kuvo/bots` and `kuvo/bots/events`: its sessions at work and waiting on you ("What waits on you", #711) |
 | `box.app` | `kuvo/box/app` and `kuvo/box/app/open`: this Mac's app registering with a Mac's box in a home of its own, and opened by it for its agents' browser ("This Mac's box: this Mac's app") |
 | `box.app.host` | `kuvo/box/app`'s `host`: the app's own host interface, where a Mac's box in a home of its own sends a phone's ask of the Mac's own routes and asks what the panel's browser is signed in to ("This Mac's app") |
 | `box.appKeys` | `kuvo/box/proof` and `kuvo/box/kept-keys`: what this Mac's app asks of the keys a Mac's box in a home of its own holds ("This Mac's box: its keys, for its app"); `bin/integrations-mac.json` read there |
@@ -5880,6 +6023,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `btw` | `kuvo/agents/api/kuvo/btw…`: side questions ("Side questions, handoffs and reviews") |
 | `btw.threads` | a side question's `thread`, follow-ups and a thread's removal (bridge 0.9.98) |
 | `claude-code` | `kuvo/claude-code` (a Mac only, before #341) |
+| `computers` | `kuvo/computers` and `…/events`: your computers as one list, from any box ("Computers", #711) |
 | `config` | `kuvo/config` |
 | `config.apply` | `POST kuvo/config/apply` |
 | `engine.restart` | `POST kuvo/engine/restart` |
@@ -5915,6 +6059,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `letters-read` | (in a peer's agents' mail) it takes a letter with `read` (bridge 0.9.100) |
 | `limits` | `kuvo/agents/api/kuvo/limits…` and `plan_limits`: each account's plan limits ("Plan limits") |
 | `limits.resets` | `kuvo/agents/api/kuvo/limits/reset…` and `use_limit_reset`: using a plan's resets, once, on the computer with its sign-in ("Plan limits", "Resets") |
+| `limits.rings` | `rings`, and `level` and `span` on each window, in the plan limits' `rows` ("Plan limits", "Rings and levels", #711) |
 | `mac` | a Mac only: `kuvo/mac` |
 | `machines` | a Mac only: `kuvo/machines…` (with its app closed its box still lists them, and the rest says the app must be open) |
 | `mcp.catalog` | `kuvo/mcp/catalog…` |
@@ -5949,6 +6094,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sandbox.check` | `reason`, `action` and the rest in `kuvo/sandbox`, and `POST kuvo/sandbox/check` |
 | `sandbox.reviews.settled` | `settled` on `kuvo/sandbox/asks`: each ask Auto's reviewer was checking or left for you that was answered or went since, so no client takes it for one that waits, heard or not ("Sandbox") |
 | `sandbox.reviews.whole` | `reviews` on `kuvo/sandbox/asks` lists every ask to work outside a conversation's folder, so a client shows one only once it's listed `yours` ("Sandbox") |
+| `sandbox.words` | `why` for every `reason` and `actionLabel`, its button's words, in `kuvo/sandbox` ("Sandbox", #711) |
 | `search` | `kuvo/search` |
 | `sessions.agents` | `POST kuvo/sessions/<id>/agents` |
 | `sessions.asks` | `kuvo/sessions/<id>/asks`, `…/events`, and answering one ("A conversation's asks") |
@@ -5958,11 +6104,14 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sessions.mentions` | `GET kuvo/sessions/<id>/mentions` ("Mentions") |
 | `sessions.models` | `GET kuvo/sessions/models` ("A session's model") |
 | `sessions.move` | `POST kuvo/sessions/<id>/move`: a conversation moved into a project, given its folders ("Projects", #341) |
+| `sessions.needsYou` | `needsYou`, each project's `asking` and `working`, and each session's `bot`, in `kuvo/sessions/list` ("Session lists", #711) |
 | `sessions.start` | `POST kuvo/sessions`: a session started with a task (bridge 0.9.100) |
 | `sessions.start.empty` | `POST kuvo/sessions` from a client without a task, `agent`, `model` as `{providerID, id, variant?}`, and `info` and `worktree` in its answer (#341) |
 | `setup` | `kuvo/setup`, `…/events`: your setup and its main computer ("Your setup") |
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
 | `shell.stop` | `POST kuvo/shell/<id>/stop` |
+| `sign-in.accounts.kinds` | `kind`, `listed` and `service` on each account in `GET kuvo/sign-in/accounts`: which are providers Accounts lists, and each one's mark ("Signing in", #711) |
+| `sign-in.codes` | `POST kuvo/sign-in/start`, and `userCode` wherever a sign-in has a device code, the engine's own plans too ("Signing in", #711) |
 | `sign-in.methods` | `GET kuvo/sign-in/methods`, `GET kuvo/sign-in/accounts` and `GET kuvo/sign-in/status`: the ways to sign in, in the box's order and words, and what to say when a sign-in didn't work ("Signing in") |
 | `sign-in.return` | `POST kuvo/sign-in/return` |
 | `skills` | `kuvo/skills…` and `kuvo/skill-library…` |
@@ -5973,11 +6122,13 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `usage.settings` | `kuvo/agents/api/kuvo/usage/settings…`: the usage panel's settings, kept by each box and shared by yours ("Usage settings", #631) |
 | `vault` | `kuvo/vault…`: the box's own vault of sign-ins, keys, files and notes its agents use without seeing a value ("Vault", bridge 0.9.100) |
 | `vault.same` | `POST kuvo/vault/items/<id>/same`: whether values given are the ones kept, without giving them ("Vault") |
+| `waiting` | `kuvo/waiting` and `…/events`: how many sessions, bots and Work Queue items wait on you ("What waits on you", #711) |
 | `wakes` | `kuvo/wakes`, a session's, and cancelling one or sending it now |
 | `wakes.edit` | adding one (`POST kuvo/wakes/<session>`) and pausing them |
 | `wakes.events` | `kuvo/wakes/events`, and making a watch (`POST kuvo/wakes/<session>/watch`) |
 | `work` | a bot's work ("Work"): `kuvo/work`, `…/events`, `kuvo/bots/<id>/stop-all`, `start_session`'s and `kuvo/sessions`' new fields, the work tools, `limits` in `kuvo/bots` (bridge 0.9.106) |
 | `work-queue` | `kuvo/work-queue…` and the `queue_…` tools ("The Work Queue") |
+| `work-queue.counts` | `counts` in `kuvo/work-queue` and its events with `counts=1` ("The Work Queue", #711) |
 | `work-queue.elsewhere` | (in a peer's agents' mail) it tells and takes the Work Queue across your computers: `told`, `had`, `part`, `hand`, `handed`, and numbers' asks through a peer ("The Work Queue", Across your computers); also `POST kuvo/work-queue/refs`, `computer` and `computers` in its views, and 409 for an item elsewhere |
 | `work-queue.forward` | (in a peer's agents' mail) it does what a client asked another box to do to an item it keeps, and answers (`act`, `acted`; "The Work Queue", Across your computers, Done where it's kept); a box with it sends what a client does to an item on another computer there itself, and reads one whole, and its files, there for a client (`told`) |
 | `work.elsewhere` | (in a peer's agents' mail) it takes a lead's `call` and tells `rows` ("Peers"; bridge 0.9.204) |
@@ -8227,7 +8378,15 @@ it's empty.
   run, 126, rather than run with those open to them). A client says so beside it (`services`;
   the apps don't show `git` yet).
   When it isn't on, also `reason`, a word for a client to map rather than reading `why`, with what
-  you can do (`action`) and the box's route that does it (`route`, where there is one):
+  you can do (`action`) and the box's route that does it (`route`, where there is one). With
+  `sandbox.words` (#711), the words are the box's too, so no client keeps a table of them: `why`
+  is there for every `reason` (a sentence to show as it is), and `actionLabel` says the button's
+  words for `action`: `retry` "Try Again" ("Check Again" for `engineMissing`), `fix` "Fix It",
+  `restartEngine` "Restart Engine…" ("Restart Engine" for `engineDown`, where nothing runs to
+  stop), `help` "How to Check…", `softwareUpdate` "Software Update…". A client draws the button
+  with those words: one with a `route` sends it; `help` opens the docs on what a machine needs
+  and `softwareUpdate` the system's own (a client's to open, where it can). A state with no
+  `action` (Kuvo Code's own switch off) has no button.
 
   | `reason` | when | `action` | `route` |
   | --- | --- | --- | --- |

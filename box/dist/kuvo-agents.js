@@ -10012,7 +10012,7 @@ function limitRows(boxes) {
   }
   return groups.map(({ id, members }) => {
     const row = {
-      ...merged(members),
+      ...ringed(merged(members)),
       id,
       boxes: members.map(({ box, account }) => ({
         key: box.key,
@@ -10031,6 +10031,49 @@ function limitRows(boxes) {
     withResetsOn(row, members);
     return row;
   });
+}
+var levelOf = (used) => used >= 0.9 ? "over" : used >= 0.7 ? "near" : "calm";
+var DAY = 24 * 60;
+function spansOf(windows) {
+  const spans = new Map;
+  if (!windows.length)
+    return spans;
+  const plan = windows.filter((window) => !window.model);
+  const first = windows[0].model?.toLowerCase();
+  const whole = plan.length ? plan : windows.filter((window) => window.model?.toLowerCase() === first);
+  const plain = whole.filter((window) => !window.name);
+  const stem = (window) => window.id.replace(/[-_][^-_]*$/, "");
+  const pool = plain.length ? plain : whole.filter((window) => stem(window) === stem(whole[0]));
+  let short;
+  let long;
+  for (const window of pool) {
+    if (!window.minutes)
+      continue;
+    if (window.minutes < DAY) {
+      if (!short || window.minutes < short.minutes)
+        short = window;
+    } else if (!long || window.minutes > long.minutes)
+      long = window;
+  }
+  if (!short && !long)
+    long = pool[0];
+  if (short)
+    spans.set(short, "short");
+  if (long)
+    spans.set(long, "long");
+  return spans;
+}
+function ringed(account) {
+  const spans = spansOf(account.windows);
+  const rings = {};
+  const windows = account.windows.map((window) => {
+    const level = levelOf(window.used);
+    const span = spans.get(window);
+    if (span)
+      rings[span] = { window: window.id, used: window.used, ...window.resetsAt ? { resetsAt: window.resetsAt } : {}, level };
+    return { ...window, level, ...span ? { span } : {} };
+  });
+  return { ...account, windows, rings };
 }
 function withResetsOn(row, members) {
   const index = row.extras?.findIndex((extra) => extra.kind === "resets") ?? -1;
@@ -22372,7 +22415,7 @@ function datedBaseModel(model) {
 
 // box/src/agents/usage/history.ts
 var SLOT = 15 * 60000;
-var DAY = 24 * 60 * 60000;
+var DAY2 = 24 * 60 * 60000;
 var KEPT_DAYS = 35;
 var noSlots = () => ({ used: new Map, unknown: new Map, fallback: new Map });
 var UNATTRIBUTED = "Unattributed";
@@ -22435,7 +22478,7 @@ function summed(all) {
   return sum;
 }
 function trimmed2(slots, now) {
-  const since = now - KEPT_DAYS * DAY;
+  const since = now - KEPT_DAYS * DAY2;
   const kept = noSlots();
   for (const [slot, models] of slots.used)
     if (slot >= since)
@@ -22476,7 +22519,7 @@ function dayIn(at, zone) {
 function windowDays(now, zone, previous = 30) {
   const [year, month, day] = dayIn(now, zone).split("-").map(Number);
   const noon = Date.UTC(year, month - 1, day, 12);
-  return Array.from({ length: previous + 1 }, (_, back) => new Date(noon - back * DAY).toISOString().slice(0, 10));
+  return Array.from({ length: previous + 1 }, (_, back) => new Date(noon - back * DAY2).toISOString().slice(0, 10));
 }
 function daysIn(slots, zone, now, previous = 30) {
   const window = new Set(windowDays(now, zone, previous));
@@ -23493,7 +23536,7 @@ function readAntigravityDatabase(path) {
 import { createHash as createHash11 } from "crypto";
 import { mkdirSync as mkdirSync20, readFileSync as readFileSync30, renameSync as renameSync16, writeFileSync as writeFileSync21 } from "fs";
 import { join as join34 } from "path";
-var DAY2 = 24 * 60 * 60000;
+var DAY3 = 24 * 60 * 60000;
 var CURSOR_DAYS = 32;
 var MIN_BETWEEN = 60000;
 var integer = (value) => typeof value === "number" && Number.isSafeInteger(value) ? value : undefined;
@@ -23570,7 +23613,7 @@ class CursorHistory {
     if (under)
       return under;
     const last = this.last.get(key);
-    if (last && now >= last.at && now - last.at < MIN_BETWEEN && Math.floor(now / DAY2) === Math.floor(last.at / DAY2))
+    if (last && now >= last.at && now - last.at < MIN_BETWEEN && Math.floor(now / DAY3) === Math.floor(last.at / DAY3))
       return { days: last.days, whole: true };
     const read = this.readFor(client, access, key, now).then((result) => {
       if (result.whole)
@@ -23582,11 +23625,11 @@ class CursorHistory {
   }
   async readFor(client, access, key, now) {
     const token = { access };
-    const today = Math.floor(now / DAY2) * DAY2;
+    const today = Math.floor(now / DAY3) * DAY3;
     const window = Array.from({ length: CURSOR_DAYS }, (_, back) => {
-      const start = today - back * DAY2;
-      const end = Math.min(start + DAY2, now);
-      return { key: dayKey(start), start, end, complete: end === start + DAY2 };
+      const start = today - back * DAY3;
+      const end = Math.min(start + DAY3, now);
+      return { key: dayKey(start), start, end, complete: end === start + DAY3 };
     });
     const keys = new Set(window.map((day) => day.key));
     const cached = new Map([...this.load(key)].filter(([day]) => keys.has(day)));
@@ -23682,7 +23725,7 @@ class CursorHistory {
       if (count === 0 && received < parsed.total)
         return "incomplete";
       for (const event of parsed.events) {
-        if (event.at < day.start || event.at >= day.start + DAY2)
+        if (event.at < day.start || event.at >= day.start + DAY3)
           return "invalid";
         const slot = Math.floor(event.at / SLOT);
         const id = `${slot}
@@ -24572,7 +24615,7 @@ async function settingsRoutes(settings, choices, method, rest, body) {
 // box/src/agents/usage/usage.ts
 var USAGE_SERVICES = ["claude", "codex", "grok", "opencode", "cursor", "antigravity"];
 var MINUTE3 = 60000;
-var DAY3 = 24 * 60 * MINUTE3;
+var DAY4 = 24 * 60 * MINUTE3;
 var SCAN_EVERY = 5 * MINUTE3;
 function usageRows(boxes) {
   const groups = [];
@@ -24712,7 +24755,7 @@ class Usage {
     const pricing = this.pricing.current();
     const fallback = this.settings?.codexFallback ?? null;
     const at = this.now();
-    const since = Math.floor((at - KEPT_DAYS * DAY3) / DAY3) * DAY3;
+    const since = Math.floor((at - KEPT_DAYS * DAY4) / DAY4) * DAY4;
     const sources = this.sources();
     let complete = true;
     try {
@@ -31094,7 +31137,7 @@ import { mkdirSync as mkdirSync25, readFileSync as readFileSync36, renameSync as
 import { dirname as dirname21 } from "path";
 var isUsageMail = (value) => value !== null && typeof value === "object" && value.kind === "usage";
 var MINUTE4 = 60000;
-var DAY4 = 24 * 60 * MINUTE4;
+var DAY5 = 24 * 60 * MINUTE4;
 var TELL_AGAIN = 10 * MINUTE4;
 var PEER_AWAY = 25 * MINUTE4;
 var SKEW = MINUTE4;
@@ -31285,7 +31328,7 @@ class UsagePeers {
   }
   lastDigest;
   shared() {
-    const start = Math.floor(Math.floor((this.now() - KEPT_DAYS * DAY4) / DAY4) * DAY4) / SLOT;
+    const start = Math.floor(Math.floor((this.now() - KEPT_DAYS * DAY5) / DAY5) * DAY5) / SLOT;
     const accounts = this.usage.own().slice(0, MOST_ACCOUNTS).flatMap((own) => {
       const taken = takenAccount(toldOf2(own), 0, Infinity);
       return taken ? [{ ...toldOf2(taken), slots: fromSlot(keptSlots(taken.slots), start), whole: start }] : [];
@@ -36492,4 +36535,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents f88c3d9ff2b3c8a4a32f5c51b483845a69ba5ad6c5f879f05b50b15158933d0c
+// Built from Packages/Box/src/agents 3b7e461fb7c6a6f7cea6ebef7b51fc4d6220c94d9d332f9c63437da598032305

@@ -71,6 +71,10 @@ struct State {
     models: HashMap<String, Value>,
     /// Open followed routes: the session list's and the engine's events, by an id of their own.
     lists: HashMap<u64, Sender<String>>,
+    /// Those following what waits on you (`kuvo/waiting/events`), told as the list changes; and
+    /// those following your computers (`kuvo/computers/events`), which stay as they are.
+    waits: HashMap<u64, Sender<String>>,
+    computers: HashMap<u64, Sender<String>>,
     /// Those following a conversation's asks or queue (`…/asks/events`, `…/queue/events`): its
     /// session, which, and where its lines go.
     followers: HashMap<u64, (String, Followed, Sender<String>)>,
@@ -129,10 +133,9 @@ impl StandIn {
         StandIn { inner: Arc::new(Inner { state: Mutex::new(State { at: 1, next: 1, areas, ..State::default() }), replies }) }
     }
 
-    /// From now on it answers as a box from before #711: no `kuvo/waiting`, nothing of what a bot
-    /// is doing, no queue counts, no rings' shares or levels.
-    pub fn before_711(&self) {
-        self.state().areas.before_711 = true;
+    /// Whether its list of computers can be read (else 503, as a box that isn't answering).
+    pub fn computers_readable(&self, readable: bool) {
+        self.state().areas.computers_down = !readable;
     }
 
     /// Every sign-in under way ends so (the box's words for a failure: `message`, the engine's).
@@ -471,8 +474,35 @@ fn test_output() -> String {
 }
 
 impl State {
+    /// The session list, as a box says it: each project with its sums, and "Needs you".
     fn line(&self, full: bool) -> Value {
-        json!({ "at": self.at.to_string(), "full": full, "sessions": self.sessions, "projects": self.projects })
+        let listed = |facts: &Value| matches!(facts["kind"].as_str(), Some("project" | "chat")) && facts["archived"] != json!(true);
+        let mut projects = self.projects.clone();
+        for (directory, project) in &mut projects {
+            let its: Vec<&Value> = self.sessions.values().filter(|facts| listed(facts) && facts["project"] == json!(directory)).collect();
+            // (One that waits on you isn't counted at work.)
+            project["asking"] = json!(its.iter().filter(|facts| facts["asked"].is_number()).count());
+            project["working"] = json!(its.iter().filter(|facts| facts["running"] == json!(true) && !facts["asked"].is_number()).count());
+        }
+        json!({ "at": self.at.to_string(), "full": full, "sessions": self.sessions, "projects": projects, "needsYou": self.needs_you() })
+    }
+
+    /// The sessions waiting on you that the lists show, the one that asked last first, each with
+    /// what it asks.
+    fn needs_you(&self) -> Vec<Value> {
+        let mut asked: Vec<(&String, f64)> = self
+            .sessions
+            .iter()
+            .filter(|(_, facts)| matches!(facts["kind"].as_str(), Some("project" | "chat")) && facts["archived"] != json!(true))
+            .filter_map(|(id, facts)| facts["asked"].as_f64().map(|asked| (id, asked)))
+            .collect();
+        asked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        asked.into_iter().map(|(session, _)| json!({ "session": session, "asks": areas::asks_of(session) })).collect()
+    }
+
+    /// One of the areas' answers (`kuvo/waiting`, `kuvo/computers`…), as it is now.
+    fn area(&self, method: &str, route: &str) -> Option<(u16, Value)> {
+        areas::answer(self.areas, method, route, self.made.unwrap_or_else(now_ms), self.needs_you().len())
     }
 
     /// A conversation's asks, or its queue, as its follower reads them.
@@ -512,6 +542,11 @@ impl State {
         self.at += 1;
         let line = self.line(true).to_string();
         self.lists.retain(|_, sender| sender.send(line.clone()).is_ok());
+        // What waits on you may have changed with it.
+        if let Some((_, waiting)) = self.area("GET", "kuvo/waiting") {
+            let line = waiting.to_string();
+            self.waits.retain(|_, sender| sender.send(line.clone()).is_ok());
+        }
     }
 
     fn emit(&mut self, kind: &str, data: Value) {
@@ -676,13 +711,7 @@ impl StandIn {
                 return answer(status, value);
             }
         }
-        let asked: Vec<(String, f64)> = state
-            .sessions
-            .iter()
-            .filter(|(_, facts)| matches!(facts["kind"].as_str(), Some("project" | "chat")) && facts["archived"] != json!(true))
-            .filter_map(|(id, facts)| facts["asked"].as_f64().map(|asked| (id.clone(), asked)))
-            .collect();
-        if let Some((status, value)) = areas::answer(state.areas, method, route, state.made.unwrap_or_else(now_ms), &asked) {
+        if let Some((status, value)) = state.area(method, route) {
             return answer(status, value);
         }
         let body = request.body.clone().unwrap_or(Value::Null);
@@ -1046,6 +1075,31 @@ impl Transport for StandIn {
             let inner = self.inner.clone();
             let closer = Closer::new(move || {
                 inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).git_followers.remove(&id);
+            });
+            if !hold(closer.clone()) {
+                closer.close();
+            }
+            return Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(Pieces { receiver, piece: Vec::new(), at: 0, sse: false }), closer });
+        }
+        // What waits on you, or your computers, followed: as it is now, then a line as it changes.
+        if let Some(once) = route.strip_suffix("/events").filter(|once| matches!(*once, "kuvo/waiting" | "kuvo/computers")) {
+            let (sender, receiver) = channel();
+            let id = {
+                let mut state = self.state();
+                state.seen.push(Seen { method: request.method.clone(), path: request.path.clone(), body: None });
+                let id = state.next;
+                state.next += 1;
+                if let Some((_, now)) = state.area("GET", once) {
+                    let _ = sender.send(now.to_string());
+                }
+                if once == "kuvo/waiting" { state.waits.insert(id, sender) } else { state.computers.insert(id, sender) };
+                id
+            };
+            let inner = self.inner.clone();
+            let closer = Closer::new(move || {
+                let mut state = inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.waits.remove(&id);
+                state.computers.remove(&id);
             });
             if !hold(closer.clone()) {
                 closer.close();

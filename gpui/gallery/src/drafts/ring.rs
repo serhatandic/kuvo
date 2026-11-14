@@ -38,7 +38,7 @@ pub enum CalmColor {
 
 pub fn level_color(used: f32, calm: CalmColor, cx: &App) -> Hsla {
     let c = &cx.theme().colors;
-    // BOX-NEEDED: the level (near at 70%, over at 90% here) is the box's word, `level` in the ring above and in each window, so every client colours alike.
+    // A draft's constant: in the app the level is the box's word (`level` in each ring and window of its limits' rows).
     match Level::of(used) {
         Level::Over => c.danger,
         Level::Near => c.warning,
@@ -96,7 +96,7 @@ fn arcs(size: Pixels, stroke: Pixels, used: f32, color: Hsla, track: Hsla) -> im
 /// An account's ring, with its service's mark in the middle.
 pub fn ring(account: &Account, size: Pixels, stroke: Pixels, calm: CalmColor, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
-    // BOX-NEEDED: the ring's share and level per account: `rows[].ring {used, window, level: calm|near|over}` in `GET kuvo/agents/api/kuvo/limits` (and `kuvo.limits.updated`), the fullest window that hasn't started over.
+    // The rings' shares and levels per account: `rows[].rings` in the box's `kuvo/agents/api/kuvo/limits`.
     let used = account.used;
     let color = level_color(used, calm, cx);
     div()

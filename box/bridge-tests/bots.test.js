@@ -125,6 +125,8 @@ test("kuvo/bots lists the machine's described bots, each as its folder is now", 
     id: "bot_scout00001", session: "ses_bot_scout00001", name: "Scout", look: { color: "sky", shape: "round", face: "calm" }, machine: "my-server",
     job: "Watches the build", jobDetails: "", paused: true, wakes: 1792000100, watching: 1, agents: true, model: { id: "big-pickle", providerID: "opencode" },
     folder: scout, created: "2026-10-02T09:00:00Z",
+    // (What it's doing now: none of its sessions at work or waiting on you, and none listed.)
+    now: { working: 0, asking: 0 },
   });
   assert.equal("personality" in answer.json.bots[1], false, "none: left out, as the Mac leaves it out");
   assert.equal("wakes" in answer.json.bots[0], false, "none waiting: left out, as the Mac leaves it out");
