@@ -55,3 +55,11 @@ worktree `~/.kuvo-code/data/opencode/worktree/c5e2b5/tidy-otter`. Never merged t
 - KuvoClient b3dfd2c7e: `overdue`; phone compile, 3 classes and Release green.
 - Desktop: a20f68fc8 committed; the helper is applying the desktop review's fixes (overdue from the box, source kinds, sessions kept across a change, queued picks, stale search, flat chips, agent marks, title weight, stand-in faithfulness).
 - Left from reviews, not done: clients don't read `fromLabel`/`toLabel` yet; events of items an older box hands in keep raw category ids; a queue file damaged by a power cut after the copy isn't restored from it; told-file shape for an older box has no test; queue_import's `status`/`label` undescribed (tool budget).
+
+## Fix round after the separate review (no MUST, 8 SHOULD)
+- Decided by the lead: no release shipped the Work Queue, so every shape kept for "a box from before statuses" is gone (standing, asKept, told/hand/move categories, the compat entry). migrate.ts and fromCategory stay (main builds on the user's computers).
+- Migration no longer sets In progress: `started` ids in model.json, settled once by `started.ts` from the 3 s rounds when the engine says who's at work.
+- Labels: a primary's removed label is stripped on followers; a follower refuses changing the primary's. `can.assign`, `today`, filters as route parameters (`computers`, `sources`, `owners`, `labels`), a closed issue takes no change, `usr_you` titled "Your own".
+- Desktop: days from the box's today, filters sent to the box, Delete/Restore inert while busy, "N open", unknown status grouped, one search at a time.
+- KuvoClient/phone: moves only where `can` says; sample Mac serves `new`, `today`, `assign`.
+- Green: 216 bridge, 42 Bun here and on lokum, four --check, cargo 309 + clippy, KuvoClient, phone compile + 3 classes + Release; real-queue copy (623 items) 0 lost.
