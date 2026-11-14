@@ -232,9 +232,14 @@ export async function changesIn(directory: string, scope: Scope, base?: string, 
 async function oneFileIn(root: string, against: string, scope: Scope, compared: string[], args: string[], only: { path: string; oldPath?: string }): Promise<GitChanges | null> {
   const paths = [only.path, ...(only.oldPath ? [only.oldPath] : [])];
   const known = await git(root, ["--literal-pathspecs", "ls-files", "--error-unmatch", "--", only.path]);
+  // Binary, as git says in the diff's own heading ("Binary files a/x and b/x differ"): no lines to
+  // show (`git.changes.binary`). Only the heading is read, before the first hunk and line by line
+  // as git ends them, so no line of a text file reads as it, whatever it holds (a bare return, a
+  // line separator).
+  const binary = (patch: string) => (patch.split("\n@@ ", 1)[0] ?? "").split("\n").some(line => /^Binary files .* differ$/.test(line));
   const done = (patch: string, big = Buffer.byteLength(patch) > ONE_FILE_MOST): GitChanges => (big
     ? { repository: true, root, against, patch: "", untracked: [], hashes: {}, uncommitted: true, big: true }
-    : { repository: true, root, against, patch, untracked: [], hashes: {}, uncommitted: true });
+    : { repository: true, root, against, patch, untracked: [], hashes: {}, uncommitted: true, ...(binary(patch) ? { binary: true as const } : {}) });
   if (!known.ok && scope !== "staged" && !only.path.endsWith("/")) {
     const file = path.join(root, only.path);
     try {
@@ -325,6 +330,25 @@ type Group = "conflicted" | "staged" | "unstaged" | "untracked";
 const GROUPS: Group[] = ["conflicted", "staged", "unstaged", "untracked"];
 type Listed = Extract<GitFiles, { repository: true }>["files"][number];
 
+/** Whether anything is on disk at a listed file's path. */
+const thereAt = (root: string, name: string) => !!kind(path.join(root, name.replace(/\/$/, "")));
+
+/** What a file's stage button does (`git.files.does`): a staged one is unstaged (`kuvo/git/unstage`),
+ * one in conflict marked resolved and the rest staged (both `kuvo/git/stage`). */
+const stageOf = (group: Group): Listed["stage"] => (group === "staged" ? "unstage" : group === "conflicted" ? "resolve" : "stage");
+
+/** What `perform`'s discard of a file comes to, for a client to word its confirm (`git.files.does`),
+ * as `perform` decides it: a new file goes to the Trash (`trash`); a staged move is undone, its old
+ * path back and the new one to the Trash (`undoMove`); a deleted file comes back (`restore`); else
+ * its changes are thrown away (`changes`). `undoable`: nothing is lost for good (what goes, goes to
+ * the Trash, or a file comes back), which thrown-away changes aren't, nor a new or moved file
+ * staged and then changed again or gone from disk (`whole` false): what's on disk goes to the
+ * Trash, but what was staged of it is in neither the Trash nor a commit, and goes for good. */
+function discardsOf(status: Status, oldPath: string | undefined, whole: boolean): NonNullable<Listed["discards"]> {
+  const kind = status === "added" ? "trash" : status === "renamed" && oldPath ? "undoMove" : status === "deleted" ? "restore" : "changes";
+  return { kind, undoable: kind === "trash" || kind === "undoMove" ? whole : kind === "restore" };
+}
+
 /** What one of git's status letters says changed (`git status --porcelain=v2`). */
 const changeOf = (letter: string): Status => (letter === "A" || letter === "C" ? "added" : letter === "D" ? "deleted" : letter === "R" ? "renamed" : "modified");
 
@@ -368,7 +392,9 @@ export async function filesIn(directory: string): Promise<GitFiles | null> {
   let untracked = 0;
   // What the index has at each path, as `git status` says it (none for a new file git doesn't know).
   const indexed = new Map<string, string>();
-  const add = (group: Group, path: string, status: Status, oldPath?: string) => {
+  // `changedSince`: a staged file changed again on disk since (or gone from it), whose discard
+  // takes what's staged of it for good.
+  const add = (group: Group, path: string, status: Status, oldPath?: string, changedSince = false) => {
     const scope = group === "staged" ? "staged" : group === "conflicted" ? "uncommitted" : "unstaged";
     const lines = group === "staged" ? staged.get(path) : group === "unstaged" ? unstaged.get(path) : undefined;
     // What `perform`'s discard does to it in its scope: a new file to the Trash, else back to what's
@@ -377,7 +403,10 @@ export async function filesIn(directory: string): Promise<GitFiles | null> {
     // What a discard sends back, so it's refused once the file changed since.
     // A move's old path too, which its discard brings back.
     const stamp = discard ? stampOf(root, path.replace(/\/$/, ""), indexed.get(path), since) + (oldPath ? `|${stampOf(root, oldPath, undefined, since)}` : "") : undefined;
-    files.push({ path, ...(oldPath ? { oldPath } : {}), group, status, scope, ...(lines ?? {}), ...(discard ? { discard, stamp } : {}), ...(path.endsWith("/") ? { repository: true as const } : {}) });
+    files.push({
+      path, ...(oldPath ? { oldPath } : {}), group, status, scope, stage: stageOf(group), ...(lines ?? {}),
+      ...(discard ? { discard, discards: discardsOf(status, oldPath, thereAt(root, path) && !changedSince), stamp } : {}), ...(path.endsWith("/") ? { repository: true as const } : {}),
+    });
   };
   const records = status.out.toString("utf8").split("\0");
   for (let at = 0; at < records.length; at++) {
@@ -402,7 +431,7 @@ export async function filesIn(directory: string): Promise<GitFiles | null> {
       continue;
     }
     const oldPath = kind === "2" ? records[++at] : undefined;
-    if (x !== ".") add("staged", name, changeOf(x), x === "R" ? oldPath : undefined);
+    if (x !== ".") add("staged", name, changeOf(x), x === "R" ? oldPath : undefined, y !== ".");
     // Moved in what's staged, then changed again: the change is to the file where it is now.
     if (y !== ".") add("unstaged", name, y === "A" ? "added" : changeOf(y));
   }
@@ -415,8 +444,14 @@ export async function filesIn(directory: string): Promise<GitFiles | null> {
   const stagedNames = ((await text(root, ["-c", "core.quotepath=off", "diff", "--cached", "--name-only", "-z", "--no-renames", "--no-ext-diff", against])) ?? "").split("\0").filter(Boolean);
   const stagedElsewhere = stagedNames.filter(name => !inFolder(name)).length;
   const underway = await underwayIn(root);
+  // How many files that is (`git.files.does`): every staged file in the repository; or each
+  // changed file of the folder once, the new ones past the most listed too.
+  // What's staged is counted for the whole repository at once, a move as the one file it is, so
+  // the number is the same from every folder (`stagedElsewhere` counts a move's both sides).
+  const stagedFiles = ((await text(root, ["-c", "core.quotepath=off", "diff", "--cached", "--name-only", "-z", "--find-renames", "--no-ext-diff", against])) ?? "").split("\0").filter(Boolean).length;
+  const takes = commits === "staged" ? stagedFiles : new Set(files.map(file => file.path)).size + more;
   return {
-    repository: true, root, branch: await branchOf(root), files, uncommitted: files.length > 0 || more > 0, commits, stagedElsewhere,
+    repository: true, root, branch: await branchOf(root), files, uncommitted: files.length > 0 || more > 0, commits, stagedElsewhere, takes,
     ...(more ? { more } : {}), ...(underway ? { underway } : {}),
   };
 }
@@ -694,7 +729,34 @@ export async function branchesIn(directory: string): Promise<GitBranches | null>
   // A worktree whose branch Merge into… takes back, and where it goes without one named.
   const tree = root ? await mergedFrom(root) : null;
   const worktree = tree && fs.existsSync(tree.project) ? { into: tree.base ?? (await branchOf(tree.project)) } : undefined;
-  return { repository: true, root, current: branch(head), branches, ...(worktree ? { worktree } : {}) };
+  return { repository: true, root, current: branch(head), branches, pullRequest: root ? await pullRequestFrom(root, branch(head)) : false, ...(worktree ? { worktree } : {}) };
+}
+
+/** Whether a pull request can be made from `directory`'s branch at all (`git.branches.pullRequest`),
+ * so Create Pull Request isn't offered only to be refused: never on no branch, on the branch one
+ * goes into (`pullRequestBase`), or with no origin to push to. (Work not committed yet, or nothing
+ * new, is said by the draft: that changes as you work.) */
+async function pullRequestFrom(directory: string, branch: string | null): Promise<boolean> {
+  if (!branch || !(await originOf(directory))) return false;
+  return !isBase(branch, await pullRequestBase(directory, directory));
+}
+
+/** Whether `branch` is the one pull requests go into: its `base`, or main or master where none is known. */
+const isBase = (branch: string, base: string | undefined) => base === branch || (!base && ["main", "master"].includes(branch));
+
+/** The branch a pull request from `directory` (in the repository at `root`) goes into: its
+ * worktree's base, from the box's worktrees, else origin's main branch as git last heard of it;
+ * else main or master, here or on origin (a remote added by hand has no HEAD of origin's until
+ * it's fetched with one). */
+async function pullRequestBase(directory: string, root: string): Promise<string | undefined> {
+  const recorded = worktreeOf(directory)?.base;
+  if (recorded) return recorded;
+  const main = (await text(root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]))?.trim().replace(/^origin\//, "") || undefined;
+  if (main) return main;
+  for (const name of ["main", "master"]) {
+    if ((await git(root, ["rev-parse", "--verify", "-q", name])).ok || (await git(root, ["rev-parse", "--verify", "-q", `origin/${name}`])).ok) return name;
+  }
+  return undefined;
 }
 
 /** Switches `directory`'s repository to `branch`, or (`create`) to a new one from where it is, the
@@ -840,25 +902,17 @@ async function pullRequestWay(directory: string): Promise<{ status: number; fail
   const branch = await branchOf(directory);
   if (!branch) return { status: 409, failed: "This folder isn’t on a branch." };
   const root = (await text(directory, ["rev-parse", "--show-toplevel"]))?.trim() ?? directory;
-  const recorded = worktreeOf(directory)?.base;
-  // Origin's main branch, as git last heard of it; else main or master, here or on origin (a
-  // remote added by hand has no HEAD of origin's until it's fetched with one).
-  let main = recorded ? undefined : (await text(root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]))?.trim().replace(/^origin\//, "") || undefined;
-  for (const name of recorded || main ? [] : ["main", "master"]) {
-    if ((await git(root, ["rev-parse", "--verify", "-q", name])).ok || (await git(root, ["rev-parse", "--verify", "-q", `origin/${name}`])).ok) {
-      main = name;
-      break;
-    }
-  }
-  const base = recorded ?? main;
-  if (base === branch || (!base && ["main", "master"].includes(branch))) return { status: 409, failed: `${branch} is the branch a pull request goes into. Make one from a branch of its own.` };
+  const base = await pullRequestBase(directory, root);
+  if (isBase(branch, base)) return { status: 409, failed: `${branch} is the branch a pull request goes into. Make one from a branch of its own.` };
+  // Nowhere to push it: said here, as `kuvo/git/branches` says none can be made, not by a push that fails.
+  const remote = (await text(root, ["remote", "get-url", "origin"]))?.trim() || undefined;
+  if (!remote) return { status: 409, failed: "This repository has no origin to push to. Add a remote called origin first." };
   // What the branch has that its base doesn't, compared with the base here, or origin's.
   const against = base && ((await git(root, ["rev-parse", "--verify", "-q", base])).ok ? base : (await git(root, ["rev-parse", "--verify", "-q", `origin/${base}`])).ok ? `origin/${base}` : undefined);
   if (against) {
     const why = await unready(directory, branch, against);
     if (why) return { status: 409, failed: why.replace(`origin/${base}`, base!) };
   }
-  const remote = (await text(root, ["remote", "get-url", "origin"]))?.trim() || undefined;
   return { root, branch, base, against, remote };
 }
 

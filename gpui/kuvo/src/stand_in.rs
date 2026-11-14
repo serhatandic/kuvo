@@ -63,6 +63,8 @@ struct Inner {
 #[derive(Default)]
 struct State {
     at: u64,
+    /// It stands in for a box on another computer.
+    elsewhere: bool,
     sessions: BTreeMap<String, Value>,
     projects: BTreeMap<String, Value>,
     /// Each conversation's engine messages, oldest first.
@@ -154,6 +156,11 @@ impl StandIn {
     }
 
     /// From now on, it says this of its sandbox (`kuvo/sandbox`).
+    /// From now on it stands in for a box on another computer (a machine's), or this one's again.
+    pub fn set_elsewhere(&self, elsewhere: bool) {
+        self.state().elsewhere = elsewhere;
+    }
+
     pub fn set_sandbox(&self, sandbox: Value) {
         self.state().settings.set_sandbox(sandbox);
     }
@@ -248,6 +255,13 @@ impl StandIn {
             repo.files = files;
         }
         state.git_changed(root);
+    }
+
+    /// A file's diff from now on, as `kuvo/git/changes` sends it.
+    pub fn set_git_patch(&self, root: &str, path: &str, patch: &str) {
+        if let Some(repo) = self.state().git.as_mut().and_then(|git| git.repos.get_mut(root)) {
+            repo.patches.insert(path.to_owned(), patch.to_owned());
+        }
     }
 
     /// Staged files outside the folder from now on, and what git is in the middle of there.
@@ -696,10 +710,10 @@ impl StandIn {
         state.seen.push(Seen { method: method.into(), path: path.into(), body: request.body.clone() });
         let segments: Vec<&str> = route.split('/').collect();
         if let Some(git) = state.git.as_mut() {
-            if (method, route) == ("GET", "kuvo/file") {
+            if (method, route) == ("GET", "kuvo/file/text") {
                 let uri = query(path, "uri").map(decoded).unwrap_or_default();
-                return match git.bytes(&uri) {
-                    Some(bytes) => Ok(Response { status: 200, content_type: Some("application/octet-stream".into()), body: bytes }),
+                return match git.text(&uri) {
+                    Some(said) => answer(200, said),
                     None => answer(404, json!({ "message": "That file isn’t there anymore." })),
                 };
             }
@@ -1030,6 +1044,11 @@ fn title_from(words: &str) -> String {
 impl Transport for StandIn {
     fn send(&self, request: &Request) -> Result<Response> {
         self.route(request)
+    }
+
+    /// It stands in for this computer's own box, unless a test says it's another's.
+    fn here(&self) -> bool {
+        !self.state().elsewhere
     }
 
     fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {

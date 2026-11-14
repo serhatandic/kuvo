@@ -222,6 +222,62 @@ fn a_discard_waiting_for_its_confirm_goes_once_its_file_changes(cx: &mut TestApp
 }
 
 #[gpui::test]
+fn a_files_button_does_what_the_box_says_whatever_group_it_is_in(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    cx.simulate_keystrokes("cmd-alt-0");
+    cx.run_until_parked();
+    // The box's word alone picks the button: here one that goes against the file's group, and one
+    // this app doesn't know.
+    stand_in.set_git_files(
+        &website(),
+        vec![
+            json!({ "path": "a.ts", "group": "unstaged", "status": "modified", "scope": "unstaged", "stage": "unstage" }),
+            json!({ "path": "b.ts", "group": "unstaged", "status": "modified", "scope": "unstaged", "stage": "shelve" }),
+            json!({ "path": "c.ts", "group": "staged", "status": "modified", "scope": "staged", "stage": "resolve" }),
+        ],
+    );
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().clone());
+    view.update(cx, |view, cx| view.take(client.git_files(&website()), cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "unstage-Unstaged:a.ts").is_some());
+    assert!(bounds(cx, "stage-Unstaged:a.ts").is_none());
+    assert!(bounds(cx, "stage-Unstaged:b.ts").is_none() && bounds(cx, "unstage-Unstaged:b.ts").is_none(), "a word it doesn't know draws no button");
+    assert!(bounds(cx, "change-Unstaged:b.ts").is_some(), "and drops no row");
+    click(cx, "unstage-Unstaged:a.ts");
+    assert_eq!(sent(&stand_in, "kuvo/git/unstage"), [json!({ "root": website(), "path": "a.ts", "status": "modified", "scope": "unstaged" })]);
+    // A conflict's is marked resolved by staging it.
+    click(cx, "stage-Staged:c.ts");
+    assert_eq!(sent(&stand_in, "kuvo/git/stage").len(), 1);
+}
+
+#[gpui::test]
+fn a_binary_files_diff_says_so_as_the_box_does(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    cx.simulate_keystrokes("cmd-alt-0");
+    cx.run_until_parked();
+    stand_in.set_git_files(&website(), vec![json!({ "path": "public/favicon.png", "group": "unstaged", "status": "modified", "scope": "unstaged" })]);
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    let view = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().clone());
+    view.update(cx, |view, cx| view.take(client.git_files(&website()), cx));
+    cx.run_until_parked();
+    click(cx, "change-Unstaged:public/favicon.png");
+    assert_eq!(view.read_with(cx, |view, _| view.opened().and_then(|opened| opened.unshown)), Some("A binary file: no lines to show."));
+    assert!(bounds(cx, "file-diff").is_none());
+
+    // And only the box's word: git's words for a binary file in a patch the box doesn't call one
+    // (here with no lines either) aren't read as it.
+    stand_in.set_git_files(&website(), vec![json!({ "path": "notes.txt", "group": "unstaged", "status": "modified", "scope": "unstaged" })]);
+    stand_in.set_git_patch(&website(), "notes.txt", "diff --git a/notes.txt b/notes.txt\nBinary files a/notes.txt and b/notes.txt differ\n");
+    view.update(cx, |view, cx| view.take(client.git_files(&website()), cx));
+    cx.run_until_parked();
+    click(cx, "change-Unstaged:notes.txt");
+    assert_eq!(view.read_with(cx, |view, _| view.opened().and_then(|opened| opened.unshown)), None);
+}
+
+#[gpui::test]
 fn a_merge_under_way_and_files_staged_elsewhere_are_said(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
@@ -292,6 +348,15 @@ fn files_open_a_folder_at_a_time_and_one_that_cant_be_read_says_why(cx: &mut Tes
     click(cx, &format!("tree-{root}/README.md"));
     click(cx, "files-back");
     assert!(bounds(cx, "file-viewer").is_none());
+
+    // One the box says isn't text (a picture) says so in the viewer's place; the box is asked for
+    // the file as a viewer shows it, never for its bytes to look through.
+    click(cx, &format!("tree-{root}/public"));
+    click(cx, &format!("tree-{root}/public/favicon.png"));
+    let opened = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).files().read(cx).opened().cloned()).unwrap();
+    assert!(matches!(opened.1, Load::Ready(Shown::Unshown(_))));
+    assert!(stand_in.seen_at("GET", "kuvo/file").is_empty());
+    assert!(stand_in.seen_at("GET", "kuvo/file/text").iter().any(|seen| seen.path.contains("favicon.png") && seen.path.contains("&max=")));
 }
 
 #[gpui::test]
@@ -352,6 +417,18 @@ fn a_pull_request_starts_from_the_boxs_draft_and_is_made_from_the_session(cx: &m
         [json!({ "directory": website(), "title": "Keep the sign-up form when an email is taken", "body": "- Keep what was typed when the email is taken\n- Say so beside the email field", "session": "ses_signup" })]
     );
     assert!(matches!(view.read_with(cx, |view, _| view.said().cloned()), Some(Said::PullRequest { url: Some(_), .. })));
+}
+
+#[gpui::test]
+fn a_pull_request_isnt_offered_where_the_box_says_none_can_be_made(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    // The API's session is on main, the branch pull requests go into.
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_limits");
+    workspace.update(cx, |workspace, cx| workspace.show_panel(Tab::Branches, cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "branch-current").is_some());
+    assert!(bounds(cx, "branch-pull-request").is_none(), "never offered only to be refused");
+    assert!(sent(&stand_in, "kuvo/git/pull-request/draft").is_empty());
 }
 
 #[gpui::test]

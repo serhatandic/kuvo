@@ -43,6 +43,10 @@ export interface FenceState {
   route?: string;
   /** The words of the button that does `action`, for every client to show alike ("Try Again"). */
   actionLabel?: string;
+  /** The address the button opens, for an `action` with no route (`sandbox.opens`). */
+  opens?: string;
+  /** It's this computer's own (its system's settings): it opens only on this computer itself. */
+  opensHere?: true;
   /** What this computer needs first (`kernel`): "Linux 5.13". */
   needs?: string;
   /** Which part of the check failed (`checkFailed`). */
@@ -148,15 +152,28 @@ export function actionLabel(action: FenceAction, reason?: FenceReason): string {
   }
 }
 
+/** What an action with no route opens (`sandbox.opens`), the same for every client: `help`, the
+ * docs on what a machine needs for its sandbox; `softwareUpdate`, the system's own Software Update
+ * on this Mac (the only computer that says `macos`), an address that means this computer only where
+ * it's opened on it (`opensHere`). */
+export const SANDBOX_HELP = "https://www.kuvo.run/code/docs/machines/#sandbox";
+export const SOFTWARE_UPDATE = "x-apple.systempreferences:com.apple.Software-Update-Settings.extension";
+export function actionOpens(action: FenceAction): { opens: string; opensHere?: true } | undefined {
+  if (action === "help") return { opens: SANDBOX_HELP };
+  if (action === "softwareUpdate") return { opens: SOFTWARE_UPDATE, opensHere: true };
+  return undefined;
+}
+
 /** Whether the sandbox is on here, in the box's words: `why` for every reason it isn't, and the
- * words of the button for what you can do about it (PROTOCOL.md, "Sandbox", `sandbox.words`). */
+ * words of the button for what you can do about it (PROTOCOL.md, "Sandbox", `sandbox.words`), and
+ * the address it opens where it sends no route (`sandbox.opens`). */
 export function fenceState(): FenceState {
   const state = fenceNow();
   if (state.on) return state;
   return {
     ...state,
     ...(state.reason && !state.why ? { why: WHY[state.reason] } : {}),
-    ...(state.action ? { actionLabel: actionLabel(state.action, state.reason) } : {}),
+    ...(state.action ? { actionLabel: actionLabel(state.action, state.reason), ...(state.route ? {} : actionOpens(state.action)) } : {}),
   };
 }
 

@@ -263,6 +263,16 @@ export const LISTED_COMPUTER = object({
 export const COMPUTERS = object({ computers: list(LISTED_COMPUTER) });
 export type ListedComputer = Infer<typeof LISTED_COMPUTER>;
 
+/** A file as a viewer shows it (`kuvo/file/text`): its text (`content`, read as `encoding`, UTF-8,
+ * the only one read), or `text` false for one that isn't text (a picture, a program, another
+ * encoding), which a viewer says instead of showing. */
+export const FILE_TEXT = oneOf(
+  object({ text: literal(false) }),
+  object({ text: literal(true), encoding: literal("utf-8"), content: string }),
+);
+export type FileText = Infer<typeof FILE_TEXT>;
+const FILE_REFUSED = object({ message: string });
+
 export const BOX_ROUTES: RouteShape[] = [
   { route: "GET kuvo/computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
   { route: "GET kuvo/computers/events", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
@@ -280,6 +290,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "GET kuvo/browser", answers: { 200: BROWSER } },
   { route: "POST kuvo/browser", answers: { 202: BROWSER } },
   { route: "GET kuvo/file", answers: { 200: BYTES } },
+  { route: "GET kuvo/file/text", answers: { 200: FILE_TEXT, 400: FILE_REFUSED, 403: FILE_REFUSED, 404: FILE_REFUSED, 413: FILE_REFUSED } },
   { route: "GET kuvo/phones", answers: { 200: PHONES } },
   { route: "POST kuvo/phones/remove", answers: { 200: NOTHING } },
   { route: "POST kuvo/phones/pair", answers: { 200: PAIRING } },

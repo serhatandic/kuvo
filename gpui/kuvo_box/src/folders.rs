@@ -1,6 +1,6 @@
 //! A box's folders as a Files panel shows them (PROTOCOL.md, `kuvo/folders`, `folders.files`): one
 //! folder at a time, its folders and its files in the order the box gives, and why one can't be
-//! read; and a file's bytes, to show it (`kuvo/file`).
+//! read; and a file as a viewer shows it: its text, or that it isn't text (`kuvo/file/text`).
 
 use serde::Deserialize;
 
@@ -37,7 +37,17 @@ pub struct Unreadable {
     pub reason: Option<String>,
 }
 
-/// The most of a file a viewer reads (`kuvo/file`'s `max`): past it, the box says it's too big.
+/// A file as a viewer shows it (`kuvo/file/text`, `file.text`): the box says whether it's text.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct FileText {
+    /// Whether it's text at all (a picture, a program or another encoding isn't).
+    pub text: bool,
+    /// Its text, where it is.
+    #[serde(default)]
+    pub content: String,
+}
+
+/// The most of a file a viewer reads (`kuvo/file/text`'s `max`): past it, the box says it's too big.
 pub const SHOWN_MOST: u64 = 2 * 1024 * 1024;
 
 impl BoxClient {
@@ -56,10 +66,9 @@ impl BoxClient {
         Err(Err(Error::Refused(refusal)))
     }
 
-    /// A file's bytes, at most [`SHOWN_MOST`] (a `413` refusal past it).
-    pub fn read_file(&self, path: &str) -> Result<Vec<u8>> {
+    /// A file as a viewer shows it, at most [`SHOWN_MOST`] of it (a `413` refusal past it).
+    pub fn read_text(&self, path: &str) -> Result<FileText> {
         let uri = File::at(std::path::Path::new(path)).uri;
-        let response = self.send(&Request::get(format!("kuvo/file?uri={}&max={SHOWN_MOST}", paths::query_value(&uri))))?;
-        if response.is_success() { Ok(response.body) } else { Err(Error::Refused(Refusal::from_answer(response.status, &response.body))) }
+        self.get(&format!("kuvo/file/text?uri={}&max={SHOWN_MOST}", paths::query_value(&uri)))
     }
 }

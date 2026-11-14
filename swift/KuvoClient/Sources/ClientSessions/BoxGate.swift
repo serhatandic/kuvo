@@ -23,16 +23,23 @@ public enum BoxGate {
     /// keep no stand-in: `bots.now`, `computers`, `limits.rings`, `sandbox.words`,
     /// `sessions.needsYou`, `sign-in.accounts.kinds`, `sign-in.codes`, `waiting` and
     /// `work-queue.counts`.
+    /// Then #708's, for its side panel and the sandbox's row, which work nothing out from what the
+    /// box lists: `file.text`, `git.branches.pullRequest`, `git.changes.binary`, `git.files.does`
+    /// and `sandbox.opens`.
     public static let required: [String] = [
         "agent-tools.own",
         "bots.held",
         "bots.now",
         "computers",
+        "file.text",
         "folders.tree",
         "git.branches",
+        "git.branches.pullRequest",
         "git.branches.worktree",
+        "git.changes.binary",
         "git.changes.path",
         "git.files",
+        "git.files.does",
         "git.merge",
         "git.pull-request",
         "git.status",
@@ -43,6 +50,7 @@ public enum BoxGate {
         "models.offered.sides",
         "models.readiness",
         "queue.items",
+        "sandbox.opens",
         "sandbox.words",
         "sessions.asks",
         "sessions.list",

@@ -116,6 +116,11 @@ impl BoxClient {
         self.transport.streams()
     }
 
+    /// Whether the box is on the computer this client runs on.
+    pub fn here(&self) -> bool {
+        self.transport.here()
+    }
+
     /// Where the box stands with this client, as last read.
     pub fn gate(&self) -> Gate {
         self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).0.clone()

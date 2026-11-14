@@ -8,10 +8,11 @@ import { bool, BYTES, type Infer, list, literal, map, NOTHING, nullable, number,
  * top folder (`root`), what it was compared with (`against`: HEAD, a commit, or the empty tree
  * before the first commit), git's diff with the whole of each file as context, the new files git
  * doesn't know (a repository inside this one ends in "/"), git's hash of each of them by its path,
- * and whether anything isn't committed yet. */
+ * and whether anything isn't committed yet. One file's alone (asked with `path`): `big`, too big to
+ * show, or `binary`, a binary file's, which has no lines to show. */
 export const GIT_CHANGES = oneOf(
   object({ repository: literal(false) }),
-  object({ repository: literal(true), root: string, against: string, patch: string, untracked: list(string), hashes: map(string), uncommitted: bool, "big?": literal(true) }),
+  object({ repository: literal(true), root: string, against: string, patch: string, untracked: list(string), hashes: map(string), uncommitted: bool, "big?": literal(true), "binary?": literal(true) }),
 );
 export type GitChanges = Infer<typeof GIT_CHANGES>;
 
@@ -34,11 +35,18 @@ export type GitChangesCount = Infer<typeof GIT_CHANGES_COUNT>;
  * and is refused (409) once the file changed since. What its discard does (`discard`, none for a conflict, which is
  * resolved, not discarded): `trash`, a new file to the Trash; `unstaged`, what isn't staged thrown
  * away; `head`, back to the last commit, what's staged too. `repository`: a repository of its own
- * inside this one ("web/"), whose commits go with it to the Trash. */
+ * inside this one ("web/"), whose commits go with it to the Trash. What its stage button does
+ * (`stage`): `stage` it, `unstage` it, or mark a conflict resolved (`resolve`, by staging it). What
+ * its discard comes to, for the words of its confirm (`discards`, with `discard`): `kind`, `trash` (a
+ * new file to the Trash), `restore` (a deleted file comes back), `undoMove` (a staged move's old path
+ * comes back, the new one to the Trash) or `changes` (its changes thrown away); and `undoable`,
+ * nothing lost for good. */
 export const LISTED_FILE = object({
   path: string, "oldPath?": string, group: words("conflicted", "staged", "unstaged", "untracked"),
   status: words("added", "deleted", "modified", "renamed"), scope: words("uncommitted", "unstaged", "staged"),
   "additions?": number, "deletions?": number, "discard?": words("trash", "unstaged", "head"), "stamp?": string, "repository?": literal(true),
+  stage: words("stage", "unstage", "resolve"),
+  "discards?": object({ kind: words("trash", "restore", "undoMove", "changes"), undoable: bool }),
 });
 
 /** A folder's repository's changed files, grouped as a Changes panel shows them (`kuvo/git/files`):
@@ -46,13 +54,13 @@ export const LISTED_FILE = object({
  * the files in the order they show (conflicts, staged, unstaged, new; by name in each), whether
  * anything isn't committed, what a commit takes now (`commits`: what's staged anywhere in the
  * repository, or all of the folder's changes when nothing is), how many staged files outside the
- * folder it takes (`stagedElsewhere`), how many new files past the most it lists are left out
- * (`more`), and what git is in the middle of (`underway`). */
+ * folder it takes (`stagedElsewhere`), how many files in all (`takes`), how many new files past the
+ * most it lists are left out (`more`), and what git is in the middle of (`underway`). */
 export const GIT_FILES = oneOf(
   object({ repository: literal(false) }),
   object({
     repository: literal(true), root: string, branch: nullable(string), files: list(LISTED_FILE), uncommitted: bool, commits: words("staged", "all"),
-    stagedElsewhere: number, "more?": number, "underway?": words("merging", "rebasing", "cherry-picking", "reverting"),
+    stagedElsewhere: number, takes: number, "more?": number, "underway?": words("merging", "rebasing", "cherry-picking", "reverting"),
   }),
 );
 export type GitFiles = Infer<typeof GIT_FILES>;
@@ -61,10 +69,12 @@ export type GitFiles = Infer<typeof GIT_FILES>;
  * top folder (null with no checkout there: a bare repository its `.git` names), the branch checked
  * out (null on none) and its branches, the latest commit first; in a worktree whose branch Merge
  * into… takes back (`git.branches.worktree`), `worktree`, with the branch it goes into without one
- * named (`into`: its base, else the branch the project's folder has checked out; null on none). */
+ * named (`into`: its base, else the branch the project's folder has checked out; null on none).
+ * `pullRequest`: whether one can be made from the branch checked out (never on none, on the branch
+ * pull requests go into, or with no origin). */
 export const GIT_BRANCHES = oneOf(
   object({ repository: literal(false) }),
-  object({ repository: literal(true), root: nullable(string), current: nullable(string), branches: list(string), "worktree?": object({ into: nullable(string) }) }),
+  object({ repository: literal(true), root: nullable(string), current: nullable(string), branches: list(string), pullRequest: bool, "worktree?": object({ into: nullable(string) }) }),
 );
 export type GitBranches = Infer<typeof GIT_BRANCHES>;
 

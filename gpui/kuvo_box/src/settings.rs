@@ -95,10 +95,15 @@ pub struct Sandbox {
     /// What you can do about it: `help`, `softwareUpdate`, `retry`, `fix`, `restartEngine`.
     #[serde(default)]
     pub action: Option<String>,
-    /// The box's route that does it (`POST kuvo/sandbox/check`), where there is one; `help` and
-    /// `softwareUpdate` have none: they're a client's to open.
+    /// The box's route that does it (`POST kuvo/sandbox/check`), where there is one.
     #[serde(default)]
     pub route: Option<String>,
+    /// With no route, the address its button opens, as the box says it (`sandbox.opens`).
+    #[serde(default)]
+    pub opens: Option<String>,
+    /// That address is the box's computer's own (its Software Update): opened only on that computer.
+    #[serde(default, rename = "opensHere")]
+    pub opens_here: bool,
     /// The words of the button that does `action`, as the box says them.
     #[serde(default, rename = "actionLabel")]
     pub action_label: Option<String>,
@@ -109,25 +114,21 @@ pub struct Sandbox {
 pub enum SandboxDoes {
     /// Sends the box's own route.
     Route { method: String, path: String },
-    /// A client's to open: the docs on what a machine needs (`help`).
-    Help,
-    /// A client's to open: the system's own Software Update (`softwareUpdate`).
-    SoftwareUpdate,
+    /// Opens the address the box names; `here`, only where this client runs on the box's computer.
+    Open { address: String, here: bool },
 }
 
 impl Sandbox {
     /// Its button while it's off: the box's words for it, and what it does. None where the box
-    /// names no action (Kuvo Code's own switch off), or one with no route that a client doesn't
-    /// know how to open.
+    /// names no action (Kuvo Code's own switch off), or neither a route nor an address.
     pub fn button(&self) -> Option<(String, SandboxDoes)> {
         if self.on {
             return None;
         }
         let label = self.action_label.clone().filter(|label| !label.trim().is_empty())?;
-        let does = match (self.route.as_deref().and_then(|route| route.split_once(' ')), self.action.as_deref()) {
+        let does = match (self.route.as_deref().and_then(|route| route.split_once(' ')), self.opens.as_deref()) {
             (Some((method, path)), _) => SandboxDoes::Route { method: method.to_owned(), path: path.to_owned() },
-            (None, Some("help")) => SandboxDoes::Help,
-            (None, Some("softwareUpdate")) => SandboxDoes::SoftwareUpdate,
+            (None, Some(address)) => SandboxDoes::Open { address: address.to_owned(), here: self.opens_here },
             _ => return None,
         };
         Some((label, does))

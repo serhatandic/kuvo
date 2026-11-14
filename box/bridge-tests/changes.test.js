@@ -735,7 +735,8 @@ test("the branch menu: a repository's branches, the latest commit first, by thei
   git("tag", "newer");
   const { status: code, json } = await route("POST", "kuvo/git/branches", { directory: path.join(repo, "src") });
   assert.equal(code, 200);
-  assert.deepEqual(json, { repository: true, root: repo, current: "older", branches: ["newer", "older", "main"] });
+  // (No pull request from here: nowhere to push.)
+  assert.deepEqual(json, { repository: true, root: repo, current: "older", branches: ["newer", "older", "main"], pullRequest: false });
 
   git("switch", "-q", "--detach");
   assert.equal((await route("POST", "kuvo/git/branches", { directory: repo })).json.current, null);
@@ -852,7 +853,7 @@ test("a folder whose .git names a bare repository beside it (gitdir: ./.bare) is
   fs.writeFileSync(path.join(folder, ".git"), "gitdir: ./.bare\n");
   const { status: code, json } = await route("POST", "kuvo/git/branches", { directory: folder });
   assert.equal(code, 200);
-  assert.deepEqual(json, { repository: true, root: null, current: "main", branches: ["main"] });
+  assert.deepEqual(json, { repository: true, root: null, current: "main", branches: ["main"], pullRequest: false });
   assert.deepEqual((await route("POST", "kuvo/git/status", { directory: folder })).json, { repository: true, root: null, uncommitted: false });
   const switched = await route("POST", "kuvo/git/switch", { directory: folder, branch: "main" });
   assert.equal(switched.status, 422);

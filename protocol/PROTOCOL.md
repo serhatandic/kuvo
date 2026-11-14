@@ -2521,10 +2521,11 @@ new version without cutting a turn:
 A client never keeps an older box's way of doing something (#679): it brings a box up to date
 before it uses it, and meanwhile says so. A box is older than a client needs when its `kuvo/info`
 `features` lack any name the client uses with no way around it (or it has no `kuvo/info`): today
-`agent-tools.own`, `bots.held`, `bots.now`, `computers`, `folders.tree`, `git.branches`,
-`git.branches.worktree`, `git.changes.path`, `git.files`, `git.merge`, `git.pull-request`,
+`agent-tools.own`, `bots.held`, `bots.now`, `computers`, `file.text`, `folders.tree`, `git.branches`,
+`git.branches.pullRequest`, `git.branches.worktree`, `git.changes.binary`, `git.changes.path`,
+`git.files`, `git.files.does`, `git.merge`, `git.pull-request`,
 `git.status`, `limits.rings`, `messages.send`, `models.offered`, `models.offered.folder`,
-`models.offered.sides`, `models.readiness`, `queue.items`, `sandbox.words`, `sessions.asks`,
+`models.offered.sides`, `models.readiness`, `queue.items`, `sandbox.opens`, `sandbox.words`, `sessions.asks`,
 `sessions.list`, `sessions.mentions`, `sessions.models`, `sessions.needsYou`,
 `sessions.start.empty`, `sign-in.accounts.kinds`, `sign-in.codes`, `typed`, `usage.notices`,
 `waiting` and `work-queue.counts`
@@ -3743,19 +3744,24 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     `"oldPath"` for a move), a path in the repository as `kuvo/git/files` lists it (`git.changes.path`):
     that one file's diff alone, as a client opens it; a new file git doesn't know (not for `staged`)
     as all of its lines added (`new file mode`, git's diff of it against nothing, binary as git
-    says), `untracked` empty; past 4 MB, `patch` empty and `"big": true`, too big to show. `400`
+    says), `untracked` empty; past 4 MB, `patch` empty and `"big": true`, too big to show. A binary
+    file's says `"binary": true` (`git.changes.binary`, #708; read from git's own heading for it,
+    still in `patch`, never from a file's lines): it has no lines, and a client says so rather than reading git's words for it. `400`
     for a path that isn't one in the repository.
   - `GET kuvo/git/files?directory=<folder>` (`git.files`): the folder's changed files as a Changes
     panel groups them, what `git status` says of each → `{"repository": false}`, or `{"repository":
-    true, root, branch, files, uncommitted, commits, stagedElsewhere, more?, underway?}`: `branch`
+    true, root, branch, files, uncommitted, commits, stagedElsewhere, takes, more?, underway?}`: `branch`
     the one checked out (null on none); `commits`, what `kuvo/git/commit` takes now (`staged`, what's
-    staged anywhere in the repository, else `all` of the folder's), and `stagedElsewhere`, how many
-    staged files outside the folder it takes along; `more`, how many new files past the first 1,000
+    staged anywhere in the repository, else `all` of the folder's), `stagedElsewhere`, how many
+    staged files outside the folder it takes along (a move's two sides each), and `takes`
+    (`git.files.does`, #708), how many files in all: every staged file in the repository, a move
+    as the one file it is, the same number from every folder; or each of the folder's
+    changed files once, the new ones `more` counts too, so no client counts rows; `more`, how many new files past the first 1,000
     are left out of `files`; `underway`, what git is in the middle of (`merging`, `rebasing`,
     `cherry-picking`, `reverting`); `files`
     in the order they show, conflicts, then staged, unstaged and new files (`group`: `conflicted`,
     `staged`, `unstaged`, `untracked`), by name in each; each `{path, oldPath?, group, status,
-    scope, additions?, deletions?, discard?, stamp?, repository?}`, `path` in the repository (`oldPath` where
+    scope, stage, additions?, deletions?, discard?, discards?, stamp?, repository?}`, `path` in the repository (`oldPath` where
     a staged move came from), `status` and `scope` what its stage, unstage, discard and diff (with
     `path`) take (a staged one `staged`, a conflicted one `uncommitted`, the rest `unstaged`), git's
     count of its lines (none for a binary file, a new one or a conflicted one), what its discard does
@@ -3763,8 +3769,19 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     last commit, what's staged too; none for a conflict) with its `stamp` (what the file is now,
     opaque), and `repository` for a repository of its own inside this one ("web/"), whose commits go
     with it. A file partly staged is in both
-    groups; one in conflict only in `conflicted`. A client stages an `unstaged` or `untracked` one,
-    unstages a `staged` one, and marks a conflicted one resolved by staging it. `404` for a folder
+    groups; one in conflict only in `conflicted`. With `git.files.does` (#708), each file says what
+    its buttons do, so a client maps neither `group` nor `status`: `stage`, what its stage button
+    does (`stage`: `POST kuvo/git/stage`; `unstage`: `POST kuvo/git/unstage`, a staged one's;
+    `resolve`: a conflicted one's, marked resolved by `POST kuvo/git/stage`); and, beside `discard`,
+    `discards: {kind, undoable}`, what its discard comes to, for the words of a confirm: `kind` is
+    `trash` (a new file goes to the Trash), `restore` (a deleted file comes back: as last committed
+    for `discard` `head`, a copy on disk that differs going to the Trash first; as last staged for
+    `unstaged`), `undoMove` (a staged move: its old path comes back and the new one goes to the
+    Trash) or `changes` (its changes are thrown away, to where `discard` says); `undoable`, that
+    nothing is lost for good (never `changes`; nor a new or moved file staged and then changed
+    again or gone from disk, whose staged version is in neither the Trash nor a commit), by which a client draws the confirm's button as
+    destructive or not. What a discard does is `kuvo/git/discard`'s to decide, as before: these only
+    say it. `404` for a folder
     that isn't there, `500 {"message"}` when git couldn't say. `GET kuvo/git/files/events?directory=`
     (`application/x-ndjson`): the same now, and again as it changes: within a second of the
     repository's index or `HEAD` changing (staged, committed, switched); for what an agent edits, on a
@@ -3798,13 +3815,19 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     picture's old side), its bytes; `404` for one git doesn't have, `413` over 25 MB.
   - `POST kuvo/git/branches {"directory"}` (`git.branches`, #660): the repository's branches, for a
     branch menu (the Mac's title bar) → `{"repository": false}` outside one, else `{"repository":
-    true, root, current, branches}`: `root` its top folder, null for a folder with no checkout
+    true, root, current, branches, pullRequest}`: `root` its top folder, null for a folder with no checkout
     (its `.git` names a bare repository beside it, `gitdir: ./.bare`), `current` the branch checked
     out (null on none), `branches` its local branches by their names, the latest commit first;
     in a worktree whose branch Merge into… takes back (`git.branches.worktree`: one of the box's, or a
     git worktree whose project is its repository's own folder), `worktree: {into}`, the branch it goes
     into without one named (its `base`, else the one the project's folder has checked out; null on
-    none). Read by names only: nothing the repository's settings name runs. `500 {"message"}` when git couldn't say. A client also reads
+    none). `pullRequest` (`git.branches.pullRequest`, #708): whether a pull request can be made from
+    the branch checked out, so a client offers Create Pull Request only where it can go: false on no
+    branch, on the branch pull requests go into (the worktree's base, else origin's main branch, as
+    `kuvo/git/pull-request/draft` finds it), with no `origin` to push to, and with no checkout: each
+    as the draft and `kuvo/git/pull-request` refuse (`409 {"message"}`, saying which). (Work
+    not committed yet, or nothing new, is the draft's `409` to say: that changes as you work.)
+    Read by names only: nothing the repository's settings name runs. `500 {"message"}` when git couldn't say. A client also reads
     `repository` for whether a folder is in a repository at all (Edit Project's worktree setup).
   - `POST kuvo/git/switch {"directory", "branch", "create"?}` (`git.branches`): switches the
     repository to `branch`, or with `"create": true` to a new branch of that name from where it is,
@@ -3903,7 +3926,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   never shows a folder it couldn't read as empty. With `files=1` (`folders.files`), its files too,
   as a Files panel lists a folder: `files`, their names in the same order (with `hidden=1`, hidden
   ones too; `.DS_Store` left out), without version control's own (`.git`, `.hg`, `.svn`, a folder
-  or, in a linked worktree, a file), which nobody works in by hand.
+  or, in a linked worktree, a file), which nobody works in by hand: the box leaves them out, so a
+  client lists what it's sent and filters nothing itself.
   `POST kuvo/folders {"path"}` makes a new folder in one that's there, as a folder panel's New
   Folder does → `{"path"}`; `409 {"message"}` for something there already, `404` when the folder
   it's in isn't there, `403` when one can't be made there, `400` for a path that isn't a full one.
@@ -4398,6 +4422,13 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   {"message"}` for one that isn't there or isn't a file, `403 {"message"}` for one it can't read,
   `413 {"message"}` over 25 MB, or over `max` when it's given (`&max=<bytes>`: all a client would
   show of it), `400 {"message"}` for an address that isn't `file://`. Each box answers for its own files, a machine's with the Mac closed too.
+  `GET kuvo/file/text?uri=<file:// URI>[&max=<bytes>]` (`file.text`, #708): the same file as a
+  viewer shows it → `{"text": true, "encoding": "utf-8", "content"}`, its text, or `{"text": false}`
+  for one that isn't text (a picture, a program, an encoding other than UTF-8, the only one read:
+  UTF-8 with no NUL byte in it; a mark at its start, a BOM, isn't part of `content`), which a
+  viewer says instead of showing. So no client looks through a file's bytes to tell. Refused as
+  `kuvo/file` refuses (`400`, `403`, `404`, `413`), but `413` already over 4 MB, with or without
+  `max`: its text comes as one answer. `GET` only (`405 {}` otherwise).
 
 ### Goals
 
@@ -6029,16 +6060,20 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `engine.restart` | `POST kuvo/engine/restart` |
 | `engine.start` | a machine only: `POST kuvo/engine/start` |
 | `file` | `kuvo/file` |
+| `file.text` | `GET kuvo/file/text`: a file's text, or that it isn't text, for a viewer (#708) |
 | `folders` | `kuvo/folders` |
 | `folders.files` | `kuvo/folders?files=1`: a folder's files too, and `reason` on a refusal |
 | `folders.tree` | `GET kuvo/folders/tree`: every file under a folder, for a file filter and "@" (#660) |
 | `git` | `kuvo/git/…`: Changes (bridge 0.9.94) |
 | `git.backups` | `kuvo/git/backups…`: branch backups, and taking one back (bridge 0.9.182) |
 | `git.branches` | `POST kuvo/git/branches` and `POST kuvo/git/switch`: a branch menu (#660) |
+| `git.branches.pullRequest` | `kuvo/git/branches`' `pullRequest`: whether one can be made from the branch checked out (#708) |
 | `git.branches.worktree` | `kuvo/git/branches`' `worktree`: a worktree's, with where Merge into… takes it |
+| `git.changes.binary` | `kuvo/git/changes` with `path`: `binary` for a binary file's diff (#708) |
 | `git.changes.count` | `POST kuvo/git/changes/count`: how much changed, without the diff (bridge 0.9.211) |
 | `git.changes.path` | `kuvo/git/changes` with `path`: one file's diff, a new file's too |
 | `git.files` | `GET kuvo/git/files` and `…/events`: a Changes panel's files, grouped, followed |
+| `git.files.does` | `kuvo/git/files`' `stage` and `discards` on each file, and `takes`: what its buttons do, and how many files a commit takes (#708) |
 | `git.merge` | `POST kuvo/git/merge`: Merge into… (bridge 0.9.143) |
 | `git.pull-request` | `POST kuvo/git/pull-request`: Create Pull Request (bridge 0.9.143) |
 | `git.pull-request.draft` | `POST kuvo/git/pull-request/draft`: Create Pull Request's confirmation (bridge 0.9.179) |
@@ -6092,6 +6127,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sandbox` | `kuvo/sandbox` ("Sandbox", bridge 0.9.118) |
 | `sandbox.asks` | `kuvo/sandbox/asks…`, `kuvo/sandbox/allowed…` and `kuvo/sandbox/tools` ("Sandbox", "Asks", bridge 0.9.118) |
 | `sandbox.check` | `reason`, `action` and the rest in `kuvo/sandbox`, and `POST kuvo/sandbox/check` |
+| `sandbox.opens` | `opens`, the address a button with no route opens, and `opensHere`, in `kuvo/sandbox` ("Sandbox", #708) |
 | `sandbox.reviews.settled` | `settled` on `kuvo/sandbox/asks`: each ask Auto's reviewer was checking or left for you that was answered or went since, so no client takes it for one that waits, heard or not ("Sandbox") |
 | `sandbox.reviews.whole` | `reviews` on `kuvo/sandbox/asks` lists every ask to work outside a conversation's folder, so a client shows one only once it's listed `yours` ("Sandbox") |
 | `sandbox.words` | `why` for every `reason` and `actionLabel`, its button's words, in `kuvo/sandbox` ("Sandbox", #711) |
@@ -8385,7 +8421,13 @@ it's empty.
   `restartEngine` "Restart Engine…" ("Restart Engine" for `engineDown`, where nothing runs to
   stop), `help` "How to Check…", `softwareUpdate` "Software Update…". A client draws the button
   with those words: one with a `route` sends it; `help` opens the docs on what a machine needs
-  and `softwareUpdate` the system's own (a client's to open, where it can). A state with no
+  and `softwareUpdate` the system's own. With `sandbox.opens` (#708), the box says what those two
+  open, so no client keeps an address: `opens`, the address a button with no `route` opens (the
+  docs' page; the Mac's Software Update pane), and `opensHere: true` where that address is the
+  computer's own (the Software Update pane: it opens the pane of whichever computer opens it), so
+  only a client running on that very computer opens it, and any other shows no button, `why`
+  standing alone. A client opens an address that isn't `opensHere` only when it's a web page
+  (`https://` or `http://`): a box never has another computer open anything else. A state with no
   `action` (Kuvo Code's own switch off) has no button.
 
   | `reason` | when | `action` | `route` |

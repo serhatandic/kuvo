@@ -299,7 +299,10 @@ impl BranchesView {
                         .children(merge_into.map(|label| {
                             Button::new("branch-merge", label).size(ButtonSize::Small).primary().loading(busy).disabled(self.busy.is_some()).on_click(cx.listener(|this, _, _, cx| this.merge(cx)))
                         }))
-                        .child(Button::new("branch-pull-request", "Create Pull Request…").size(ButtonSize::Small).disabled(self.busy.is_some()).on_click(cx.listener(|this, _, window, cx| this.write_pull_request(window, cx)))),
+                        // Offered only where the box says one can be made from here.
+                        .when(branches.pull_request, |d| {
+                            d.child(Button::new("branch-pull-request", "Create Pull Request…").size(ButtonSize::Small).disabled(self.busy.is_some()).on_click(cx.listener(|this, _, window, cx| this.write_pull_request(window, cx))))
+                        }),
                 )
             })
             .into_any_element()

@@ -1575,6 +1575,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "engine.restart": ["GET", "kuvo/engine/restart"],
     "engine.start": ["GET", "kuvo/engine/start"],
     file: ["GET", "kuvo/file"],
+    "file.text": ["GET", "kuvo/file/text"],
     folders: ["DELETE", "kuvo/folders"],
     "folders.files": ["GET", "kuvo/folders?files=1"],
     "folders.tree": ["GET", "kuvo/folders/tree?path=/kuvo-none"],
@@ -1582,12 +1583,18 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "git.backups": ["GET", "kuvo/git/backups?folder=/"],
     // (Switching them too: kuvo/git/switch.)
     "git.branches": ["POST", "kuvo/git/branches"],
+    // (Whether a pull request can be made from here, in kuvo/git/branches' answer.)
+    "git.branches.pullRequest": ["POST", "kuvo/git/branches"],
     // (A worktree's, in kuvo/git/branches' answer.)
     "git.branches.worktree": ["POST", "kuvo/git/branches"],
+    // (A binary file's diff says so: kuvo/git/changes with `path`.)
+    "git.changes.binary": ["POST", "kuvo/git/changes"],
     "git.changes.count": ["POST", "kuvo/git/changes/count"],
     // (One file's diff: kuvo/git/changes with `path`.)
     "git.changes.path": ["POST", "kuvo/git/changes"],
     "git.files": ["GET", "kuvo/git/files?directory=/kuvo-none"],
+    // (What each file's stage button and discard do, and how many files a commit takes: in its answer.)
+    "git.files.does": ["GET", "kuvo/git/files?directory=/kuvo-none"],
     "git.merge": ["POST", "kuvo/git/merge"],
     "git.pull-request": ["POST", "kuvo/git/pull-request"],
     "git.pull-request.draft": ["POST", "kuvo/git/pull-request/draft"],
@@ -1652,6 +1659,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     sandbox: ["GET", "kuvo/sandbox"],
     "sandbox.asks": ["GET", "kuvo/sandbox/allowed"],
     "sandbox.check": ["POST", "kuvo/sandbox/check"],
+    // (The address a button with no route opens: what kuvo/sandbox says.)
+    "sandbox.opens": ["GET", "kuvo/sandbox"],
     // (Its asks' `settled` list those Auto's reviewer took up that are over: what kuvo/sandbox/asks says.)
     "sandbox.reviews.settled": ["GET", "kuvo/sandbox/asks"],
     // (Its asks' `reviews` list every ask Auto's reviewer may take up: what kuvo/sandbox/asks says.)

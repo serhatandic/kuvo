@@ -11,7 +11,7 @@ use gpui::{
     uniform_list,
 };
 use kuvo_box::follow::{Follow, Followed, Timing};
-use kuvo_box::git::{ChangedFile, Committed, FileDiff, GitFiles, Group};
+use kuvo_box::git::{ChangedFile, Committed, DiscardKind, FileDiff, GitFiles, Group, Stage};
 use kuvo_box::BoxClient;
 use kuvo_ui::output::{DiffLine, DiffView, parse_patch};
 use kuvo_ui::small::Checkbox;
@@ -254,11 +254,14 @@ impl ChangesView {
                     opened.diff = Load::Ready(Rc::default());
                     opened.unshown = Some("Too big to show here.");
                 }
+                // Binary, as the box says: no lines to show.
+                Ok(FileDiff { binary: true, .. }) => {
+                    opened.diff = Load::Ready(Rc::default());
+                    opened.unshown = Some("A binary file: no lines to show.");
+                }
                 Ok(FileDiff { patch, .. }) => {
                     opened.unshown = None;
-                    let lines = parse_patch(&patch);
-                    opened.unshown = (lines.is_empty() && patch.lines().any(|line| line.starts_with("Binary files "))).then_some("A binary file: no lines to show.");
-                    opened.diff = Load::Ready(Rc::new(lines));
+                    opened.diff = Load::Ready(Rc::new(parse_patch(&patch)));
                 }
                 Err(error) => opened.diff = Load::Failed(error.to_string()),
             }
@@ -452,8 +455,8 @@ impl ChangesView {
             .into_any_element()
     }
 
-    /// A file's actions, as its group takes them: stage what isn't staged, unstage what is, mark a
-    /// conflict resolved; discard any but a conflict.
+    /// A file's actions, as the box says them: what its stage button does (`stage`), and a discard
+    /// where it has one.
     fn actions(&self, file: &ChangedFile, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let key = file.key();
         let mut actions = Vec::new();
@@ -470,10 +473,12 @@ impl ChangesView {
                     .into_any_element(),
             );
         }
-        let (action, icon, label) = match file.group {
-            Group::Staged => (Action::Unstage, IconName::Minus, "Unstage"),
-            Group::Conflicted => (Action::Stage, IconName::Check, "Mark as Resolved"),
-            _ => (Action::Stage, IconName::Plus, "Stage"),
+        // (A word a newer box says that this app doesn't know: no button.)
+        let (action, icon, label) = match file.stage {
+            Stage::Unstage => (Action::Unstage, IconName::Minus, "Unstage"),
+            Stage::Resolve => (Action::Stage, IconName::Check, "Mark as Resolved"),
+            Stage::Stage => (Action::Stage, IconName::Plus, "Stage"),
+            Stage::Unknown => return actions,
         };
         let acted = file.clone();
         actions.push(
@@ -603,23 +608,7 @@ impl ChangesView {
     /// The discard's confirm, in the foot's place.
     fn confirm(&self, file: &ChangedFile, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        let name = file.name().to_owned();
-        // Worded by what the box says the discard does.
-        // What can be taken back (from the Trash, or a file coming back) isn't drawn as destructive.
-        let (title, detail, button, undoable) = match (file.discard.as_deref(), file.repository, file.status.as_str()) {
-            (Some("trash"), true, _) => (format!("Move the repository {name} to the Trash?"), "It’s a repository of its own: its commits go with it, pushed or not.".to_owned(), "Move to Trash", true),
-            (Some("trash"), false, _) => (format!("Move {name} to the Trash?"), "It’s a new file, so git keeps nothing of it.".to_owned(), "Move to Trash", true),
-            (Some("head"), _, "deleted") => (format!("Restore {name}?"), "The last commit’s copy comes back; a copy on disk that differs goes to the Trash first.".to_owned(), "Restore", true),
-            (_, _, "deleted") => (format!("Restore {name}?"), "It comes back as it was last staged.".to_owned(), "Restore", true),
-            (Some("head"), _, "renamed") => (
-                format!("Undo the move to {name}?"),
-                format!("{} comes back as last committed, and {name} goes to the Trash. A file written at {} since goes to the Trash first.", file.old_path.clone().unwrap_or_default(), file.old_path.clone().unwrap_or_default()),
-                "Undo Move",
-                true,
-            ),
-            (Some("head"), _, _) => (format!("Discard every change to {name}?"), "It goes back to the last commit, what’s staged too. This can’t be undone.".to_owned(), "Discard", false),
-            _ => (format!("Discard the changes to {name}?"), "What isn’t staged is thrown away. This can’t be undone.".to_owned(), "Discard", false),
-        };
+        let DiscardWords { title, detail, button, undoable } = discard_words(file);
         let file = file.clone();
         div()
             .id("discard-confirm")
@@ -633,7 +622,7 @@ impl ChangesView {
             .border_color(c.border)
             .bg(c.elevated)
             .child(div().flex().items_center().gap(space::S2).child(Icon::new(IconName::Warning).size(IconSize::Nav).color(c.warning)).child(div().medium().child(title)))
-            .child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(detail))
+            .when(!detail.is_empty(), |d| d.child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(detail)))
             .child(
                 div()
                     .flex()
@@ -644,7 +633,43 @@ impl ChangesView {
             )
             .into_any_element()
     }
+}
 
+/// A discard's confirm, in words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscardWords {
+    pub title: String,
+    pub detail: String,
+    pub button: &'static str,
+    /// Drawn as an ordinary button, not a destructive one.
+    pub undoable: bool,
+}
+
+/// The words of `file`'s discard confirm, by what the box says the discard comes to (`discards`) and
+/// where it goes back to (`discard`); what it says can be undone isn't drawn as destructive.
+pub fn discard_words(file: &ChangedFile) -> DiscardWords {
+    let name = file.name().to_owned();
+    let to_commit = file.discard.as_deref() == Some("head");
+    let kind = file.discards.as_ref().map_or(DiscardKind::Unknown, |discards| discards.kind);
+    let undoable = file.discards.as_ref().is_some_and(|discards| discards.undoable);
+    let (title, detail, button) = match kind {
+        DiscardKind::Trash if file.repository => (format!("Move the repository {name} to the Trash?"), "It’s a repository of its own: its commits go with it, pushed or not.".to_owned(), "Move to Trash"),
+        DiscardKind::Trash => (format!("Move {name} to the Trash?"), "It’s a new file, so git keeps nothing of it.".to_owned(), "Move to Trash"),
+        DiscardKind::Restore if to_commit => (format!("Restore {name}?"), "The last commit’s copy comes back; a copy on disk that differs goes to the Trash first.".to_owned(), "Restore"),
+        DiscardKind::Restore => (format!("Restore {name}?"), "It comes back as it was last staged.".to_owned(), "Restore"),
+        DiscardKind::UndoMove => {
+            let old = file.old_path.clone().unwrap_or_default();
+            (format!("Undo the move to {name}?"), format!("{old} comes back as last committed, and {name} goes to the Trash. A file written at {old} since goes to the Trash first."), "Undo Move")
+        }
+        DiscardKind::Changes if to_commit => (format!("Discard every change to {name}?"), "It goes back to the last commit, what’s staged too. This can’t be undone.".to_owned(), "Discard"),
+        DiscardKind::Changes => (format!("Discard the changes to {name}?"), "What isn’t staged is thrown away. This can’t be undone.".to_owned(), "Discard"),
+        // (A kind a newer box says that this app has no words for: asked plainly.)
+        DiscardKind::Unknown => (format!("Discard the changes to {name}?"), String::new(), "Discard"),
+    };
+    DiscardWords { title, detail, button, undoable }
+}
+
+impl ChangesView {
     /// A file opened to its diff, with its actions.
     fn file_page(&self, opened: &Opened, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
@@ -700,24 +725,21 @@ impl ChangesView {
     }
 }
 
-/// What a commit takes, as the box says it (`commits`, `stagedElsewhere`), counted: staged files
-/// outside this folder too.
+/// What a commit takes, in words, from what the box says: what it takes (`commits`), how many files
+/// that is (`takes`) and how many of them are staged outside this folder (`stagedElsewhere`). Nothing
+/// is counted here.
 pub fn commit_takes(files: &GitFiles) -> String {
-    if files.commits_staged() {
-        let here = files.files.iter().filter(|file| file.group == Group::Staged).count();
-        match (here, files.staged_elsewhere) {
-            (1, 0) => "Commits the staged file.".to_owned(),
-            (here, 0) => format!("Commits the {here} staged files."),
-            (0, 1) => "Commits the file staged outside this folder.".to_owned(),
-            (0, elsewhere) => format!("Commits the {elsewhere} files staged outside this folder."),
-            (here, elsewhere) => format!("Commits the {} staged files, {elsewhere} of them outside this folder.", here + elsewhere),
-        }
-    } else {
-        // (New files past the most the box lists go too.)
-        match files.files.iter().map(|file| file.path.as_str()).collect::<HashSet<_>>().len() + files.more {
-            1 => "Commits the one changed file.".to_owned(),
-            all => format!("Commits all {all} changed files."),
-        }
+    let (takes, elsewhere) = (files.takes, files.staged_elsewhere);
+    if !files.commits_staged() {
+        return if takes == 1 { "Commits the one changed file.".to_owned() } else { format!("Commits all {takes} changed files.") };
+    }
+    match (takes, elsewhere) {
+        // (`stagedElsewhere` counts a move's two sides, so it can pass `takes`.)
+        (1, 0) => "Commits the staged file.".to_owned(),
+        (takes, 0) => format!("Commits the {takes} staged files."),
+        (1, _) => "Commits the file staged outside this folder.".to_owned(),
+        (takes, elsewhere) if elsewhere >= takes => format!("Commits the {takes} files staged outside this folder."),
+        (takes, elsewhere) => format!("Commits the {takes} staged files, {elsewhere} of them outside this folder."),
     }
 }
 
@@ -899,16 +921,49 @@ mod tests {
     }
 
     #[test]
-    fn a_commit_is_said_to_take_what_the_box_says_staged_files_elsewhere_counted() {
+    fn a_commit_is_said_to_take_as_many_files_as_the_box_counts() {
         let file = |group: &str| format!(r#"{{"path":"app/{group}.ts","group":"{group}","status":"modified","scope":"unstaged"}}"#);
         // Only the folder's own file changed, another folder's staged: it takes that one.
-        let elsewhere = listed(&format!(r#"{{"repository":true,"commits":"staged","stagedElsewhere":1,"files":[{}]}}"#, file("unstaged")));
+        let elsewhere = listed(&format!(r#"{{"repository":true,"commits":"staged","stagedElsewhere":1,"takes":1,"files":[{}]}}"#, file("unstaged")));
         assert_eq!(commit_takes(&elsewhere), "Commits the file staged outside this folder.");
-        let both = listed(&format!(r#"{{"repository":true,"commits":"staged","stagedElsewhere":2,"files":[{}]}}"#, file("staged")));
+        let both = listed(&format!(r#"{{"repository":true,"commits":"staged","stagedElsewhere":2,"takes":3,"files":[{}]}}"#, file("staged")));
         assert_eq!(commit_takes(&both), "Commits the 3 staged files, 2 of them outside this folder.");
-        let here = listed(&format!(r#"{{"repository":true,"commits":"staged","stagedElsewhere":0,"files":[{}]}}"#, file("staged")));
+        let here = listed(&format!(r#"{{"repository":true,"commits":"staged","stagedElsewhere":0,"takes":1,"files":[{}]}}"#, file("staged")));
         assert_eq!(commit_takes(&here), "Commits the staged file.");
-        let all = listed(&format!(r#"{{"repository":true,"commits":"all","stagedElsewhere":0,"more":4,"files":[{}]}}"#, file("unstaged")));
+        let all = listed(&format!(r#"{{"repository":true,"commits":"all","stagedElsewhere":0,"more":4,"takes":5,"files":[{}]}}"#, file("unstaged")));
         assert_eq!(commit_takes(&all), "Commits all 5 changed files.");
+        // The count is the box's: the rows here are never counted in its place.
+        let said = listed(&format!(r#"{{"repository":true,"commits":"staged","stagedElsewhere":0,"takes":7,"files":[{}]}}"#, file("staged")));
+        assert_eq!(commit_takes(&said), "Commits the 7 staged files.");
+        let outside = listed(&format!(r#"{{"repository":true,"commits":"staged","stagedElsewhere":4,"takes":4,"files":[{}]}}"#, file("unstaged")));
+        assert_eq!(commit_takes(&outside), "Commits the 4 files staged outside this folder.");
+        // A move staged outside is one file to commit, though both its sides are outside.
+        let moved = listed(&format!(r#"{{"repository":true,"commits":"staged","stagedElsewhere":4,"takes":2,"files":[{}]}}"#, file("unstaged")));
+        assert_eq!(commit_takes(&moved), "Commits the 2 files staged outside this folder.");
+    }
+
+    #[test]
+    fn a_discards_confirm_is_worded_by_what_the_box_says_it_comes_to() {
+        let words = |more: &str| discard_words(&serde_json::from_str(&format!(r#"{{"path":"app/Form.tsx","group":"unstaged","scope":"unstaged",{more}}}"#)).unwrap());
+        // The kind is the box's, whatever the file's status would have suggested.
+        let restored = words(r#""status":"modified","discard":"head","discards":{"kind":"restore","undoable":true}"#);
+        assert_eq!((restored.title.as_str(), restored.button, restored.undoable), ("Restore Form.tsx?", "Restore", true));
+        assert!(restored.detail.starts_with("The last commit’s copy comes back"));
+        let staged = words(r#""status":"deleted","discard":"unstaged","discards":{"kind":"restore","undoable":true}"#);
+        assert_eq!(staged.detail, "It comes back as it was last staged.");
+        let moved = words(r#""status":"renamed","oldPath":"app/Old.tsx","discard":"head","discards":{"kind":"undoMove","undoable":true}"#);
+        assert_eq!((moved.title.as_str(), moved.button, moved.undoable), ("Undo the move to Form.tsx?", "Undo Move", true));
+        assert!(moved.detail.starts_with("app/Old.tsx comes back as last committed"));
+        let trashed = words(r#""status":"added","discard":"trash","repository":true,"discards":{"kind":"trash","undoable":true}"#);
+        assert_eq!((trashed.title.as_str(), trashed.button), ("Move the repository Form.tsx to the Trash?", "Move to Trash"));
+        // Whether it's drawn as destructive is the box's word too: a deletion it doesn't call a
+        // restore is a plain, destructive discard.
+        let thrown = words(r#""status":"deleted","discard":"head","discards":{"kind":"changes","undoable":false}"#);
+        assert_eq!((thrown.title.as_str(), thrown.button, thrown.undoable), ("Discard every change to Form.tsx?", "Discard", false));
+        let unstaged = words(r#""status":"modified","discard":"unstaged","discards":{"kind":"changes","undoable":false}"#);
+        assert_eq!((unstaged.title.as_str(), unstaged.undoable), ("Discard the changes to Form.tsx?", false));
+        // A kind a newer box says: asked plainly, drawn as the box says.
+        let newer = words(r#""status":"modified","discard":"head","discards":{"kind":"shelve","undoable":true}"#);
+        assert_eq!((newer.title.as_str(), newer.detail.as_str(), newer.button, newer.undoable), ("Discard the changes to Form.tsx?", "", "Discard", true));
     }
 }

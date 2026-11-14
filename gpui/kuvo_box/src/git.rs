@@ -3,9 +3,11 @@
 //! unstaging, discarding, committing and pushing; its branches, switching them and a new one
 //! (`git.branches`); Merge into… (`git.merge`) and Create Pull Request (`git.pull-request`).
 //!
-//! Every decision is the box's: which group a file is in, the scope its actions take, what a merge
-//! or a pull request does and why it can't. A client sends back what the box listed, and shows what
-//! it says.
+//! Every decision is the box's: which group a file is in, the scope its actions take, what its
+//! stage button does, what its discard comes to and whether that can be undone, how many files a
+//! commit takes, whether a diff is binary, whether a pull request can be made, what a merge or a
+//! pull request does and why it can't. A client sends back what the box listed, and shows what it
+//! says.
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -53,9 +55,56 @@ pub struct ChangedFile {
     /// What it was as listed, which its discard sends back: the box refuses once it changed since.
     #[serde(default)]
     pub stamp: Option<String>,
+    /// What its stage button does, as the box says (`git.files.does`).
+    #[serde(default)]
+    pub stage: Stage,
+    /// What its discard comes to, for the words of its confirm; none for one that isn't discarded.
+    #[serde(default)]
+    pub discards: Option<Discards>,
     /// A repository of its own inside this one, whose commits go with it.
     #[serde(default)]
     pub repository: bool,
+}
+
+/// What a file's stage button does (`stage`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Stage {
+    /// Stages it (`kuvo/git/stage`).
+    Stage,
+    /// Takes it out of what's staged (`kuvo/git/unstage`).
+    Unstage,
+    /// Marks a conflict resolved (`kuvo/git/stage`).
+    Resolve,
+    /// A word this client doesn't know (a newer box's): no button is drawn for it.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// What a file's discard comes to (`discards`), as the box says it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Discards {
+    pub kind: DiscardKind,
+    /// Nothing is lost for good: what goes, goes to the Trash, or a file comes back.
+    #[serde(default)]
+    pub undoable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DiscardKind {
+    /// A new file goes to the Trash.
+    Trash,
+    /// A deleted file comes back.
+    Restore,
+    /// A staged move is undone: its old path comes back, the new one goes to the Trash.
+    UndoMove,
+    /// Its changes are thrown away.
+    Changes,
+    /// A kind this client doesn't know (a newer box's): worded plainly, as a discard.
+    #[serde(other)]
+    Unknown,
 }
 
 impl ChangedFile {
@@ -98,6 +147,9 @@ pub struct GitFiles {
     /// How many staged files outside the folder a commit takes along.
     #[serde(default, rename = "stagedElsewhere")]
     pub staged_elsewhere: usize,
+    /// How many files a commit takes now, in all, as the box counts them (`git.files.does`).
+    #[serde(default)]
+    pub takes: usize,
     /// How many new files past the most the box lists are left out.
     #[serde(default)]
     pub more: usize,
@@ -114,11 +166,16 @@ impl GitFiles {
 }
 
 /// One file's diff (`kuvo/git/changes` with `path`): git's unified patch, with the whole file as
-/// context; `big` when it's too big to show.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// context; `big` when it's too big to show, `binary` for a binary file's, which has no lines
+/// (`git.changes.binary`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct FileDiff {
+    #[serde(default)]
     pub patch: String,
+    #[serde(default)]
     pub big: bool,
+    #[serde(default)]
+    pub binary: bool,
 }
 
 /// What a commit did.
@@ -146,6 +203,9 @@ pub struct Branches {
     /// A worktree whose branch Merge into… takes back (`git.branches.worktree`).
     #[serde(default)]
     pub worktree: Option<Worktree>,
+    /// Whether a pull request can be made from the branch checked out (`git.branches.pullRequest`).
+    #[serde(default, rename = "pullRequest")]
+    pub pull_request: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -201,19 +261,11 @@ impl BoxClient {
 
     /// One file's diff, in its repository (`root`), in the scope the box listed it with.
     pub fn file_diff(&self, root: &str, file: &ChangedFile) -> Result<FileDiff> {
-        #[derive(Deserialize)]
-        struct Answer {
-            #[serde(default)]
-            patch: String,
-            #[serde(default)]
-            big: bool,
-        }
         let mut body = json!({ "directory": root, "scope": file.scope, "path": file.path });
         if let Some(old) = &file.old_path {
             body["oldPath"] = json!(old);
         }
-        let answer: Answer = self.value(&Request::post("kuvo/git/changes", body))?;
-        Ok(FileDiff { patch: answer.patch, big: answer.big })
+        self.value(&Request::post("kuvo/git/changes", body))
     }
 
     /// Stages a file the box listed as unstaged, new or in conflict (marking it resolved).
@@ -327,6 +379,18 @@ mod tests {
         assert_eq!((listed.files[0].name(), listed.files[0].folder()), ("Form.tsx", "app"));
         assert_eq!((listed.files[3].name(), listed.files[3].folder()), ("README.md", ""));
         assert_eq!(listed.files[2].old_path.as_deref(), Some("app/old.ts"));
+        // What each button does is the box's word; one a newer box says draws nothing, and drops no list.
+        let said: GitFiles = serde_json::from_str(
+            r#"{"repository":true,"root":"/r","takes":2,"files":[
+              {"path":"a","group":"staged","status":"renamed","scope":"staged","stage":"unstage","discards":{"kind":"undoMove","undoable":true}},
+              {"path":"b","group":"conflicted","status":"modified","scope":"uncommitted","stage":"resolve"},
+              {"path":"c","group":"unstaged","status":"modified","scope":"unstaged","stage":"shelve","discards":{"kind":"archive","undoable":true}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(said.takes, 2);
+        assert_eq!(said.files.iter().map(|file| file.stage).collect::<Vec<_>>(), [Stage::Unstage, Stage::Resolve, Stage::Unknown]);
+        assert_eq!(said.files[0].discards, Some(Discards { kind: DiscardKind::UndoMove, undoable: true }));
+        assert_eq!((said.files[1].discards.clone(), said.files[2].discards.as_ref().map(|discards| discards.kind)), (None, Some(DiscardKind::Unknown)));
         let outside: GitFiles = serde_json::from_str(r#"{"repository":false}"#).unwrap();
         assert!(!outside.repository && outside.files.is_empty());
     }

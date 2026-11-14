@@ -86,6 +86,17 @@
       ]
     },
     {
+      "name": "kuvo/file/text: the same file as a viewer shows it, its text where it's text",
+      "steps": [
+        { "given": { "file": { "as": "notes", "name": "notes.txt", "text": "Ship it on Friday.\n" } } },
+        { "send": "GET kuvo/file/text?uri={{notes.uri}}", "expect": { "status": 200, "json": { "text": true, "encoding": "utf-8", "content": "Ship it on Friday.\n" } } },
+        { "send": "GET kuvo/file/text?uri={{notes.uri}}&max=4", "expect": { "status": 413, "json": { "message": "That file is too big to show here." } } },
+        { "send": "GET kuvo/file/text?uri=file:///nowhere/at/all.txt", "expect": { "status": 404, "json": { "message": "That file isn’t there anymore." } } },
+        { "send": "GET kuvo/file/text?uri=https://example.invalid/a.png", "expect": { "status": 400, "json": { "message": "That isn’t a file:// address." } } },
+        { "send": "POST kuvo/file/text?uri={{notes.uri}}", "expect": { "status": 405 } }
+      ]
+    },
+    {
       "name": "kuvo/sign-in/return takes only an address on this computer",
       "steps": [
         { "send": "POST kuvo/sign-in/return", "body": { "url": "https://example.invalid/callback?code=1" }, "expect": { "status": 400, "json": { "message": "<string>" } } },

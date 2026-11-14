@@ -385,20 +385,37 @@ fn the_sandbox_is_drawn_in_the_boxs_words(cx: &mut TestAppContext) {
     click(cx, "row-sandbox-try-again");
     assert_eq!(stand_in.seen_at("POST", "kuvo/sandbox/check").len(), 1, "at the box's route");
 
-    // A way out the box has no route for: the docs on what a machine needs, opened here.
-    stand_in.set_sandbox(json!({ "on": false, "able": false, "agents": false, "why": "Linux 5.4 can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on).", "reason": "kernel", "action": "help", "actionLabel": "How to Check…", "needs": "Linux 5.13" }));
+    // A way out the box has no route for: the page it names, opened here.
+    stand_in.set_sandbox(json!({ "on": false, "able": false, "agents": false, "why": "Linux 5.4 can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on).", "reason": "kernel", "action": "help", "actionLabel": "How to Check…", "opens": "https://docs.stand-in.invalid/sandbox", "needs": "Linux 5.13" }));
     section(&workspace, cx, "Browser");
     section(&workspace, cx, "Permissions");
     assert_eq!(line(&workspace, cx).as_deref(), Some("Linux 5.4 can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on)."));
     click(cx, "row-sandbox-how-to-check");
-    assert_eq!(cx.opened_url().as_deref(), Some("https://www.kuvo.run/code/docs/machines/#sandbox"));
+    assert_eq!(cx.opened_url().as_deref(), Some("https://docs.stand-in.invalid/sandbox"), "the address the box named, none of this app's own");
     assert_eq!(stand_in.seen_at("POST", "kuvo/sandbox/check").len(), 1, "nothing more is sent");
 
-    // The Mac's own Software Update, where this app runs on a Mac.
-    stand_in.set_sandbox(json!({ "on": false, "able": false, "agents": false, "why": "macOS's sandbox isn't on this Mac.", "reason": "macos", "action": "softwareUpdate", "actionLabel": "Software Update…" }));
+    // The computer's own Software Update, as its box names it: opened where this app runs on that
+    // computer, and no button for another computer's (it would open this one's).
+    let update = json!({ "on": false, "able": false, "agents": false, "why": "macOS's sandbox isn't on this Mac.", "reason": "macos", "action": "softwareUpdate", "actionLabel": "Software Update…", "opens": "x-apple.systempreferences:stand-in", "opensHere": true });
+    stand_in.set_sandbox(update.clone());
     section(&workspace, cx, "Browser");
     section(&workspace, cx, "Permissions");
-    assert_eq!(shown(cx, "row-sandbox-software-update"), cfg!(target_os = "macos"));
+    click(cx, "row-sandbox-software-update");
+    assert_eq!(cx.opened_url().as_deref(), Some("x-apple.systempreferences:stand-in"));
+    stand_in.set_elsewhere(true);
+    section(&workspace, cx, "Browser");
+    section(&workspace, cx, "Permissions");
+    assert!(!shown(cx, "row-sandbox-software-update"));
+    assert_eq!(line(&workspace, cx).as_deref(), Some("macOS's sandbox isn't on this Mac."), "why still says");
+    // Nothing but a web page is opened at a box's word: an address of another kind, not said to be
+    // this computer's own, draws no button.
+    for address in ["file:///Users/sam/run.command", "x-apple.systempreferences:stand-in"] {
+        stand_in.set_sandbox(json!({ "on": false, "able": false, "agents": false, "why": "It can't run here.", "reason": "kernel", "action": "help", "actionLabel": "How to Check…", "opens": address }));
+        section(&workspace, cx, "Browser");
+        section(&workspace, cx, "Permissions");
+        assert!(!shown(cx, "row-sandbox-how-to-check"), "{address}");
+    }
+    stand_in.set_elsewhere(false);
 
     // Kuvo Code's own switch off: why, and no action, so no button.
     stand_in.set_sandbox(json!({ "on": false, "able": true, "agents": false, "why": "Kuvo Code has it turned off on this computer for now." }));
