@@ -22,6 +22,7 @@ import { AGENTS_FILE, composeAgents, fitsAgent, isPutAway, keptAgent, MAC_AGENTS
 import { mailFor, movedOf, peersOf } from "./known";
 import { tellSeatPeers } from "./seats";
 import { followedSetup } from "../setup/record";
+import { ownComputer } from "../areas/computers";
 import { sharedMachine } from "../setup/settle";
 import type { BotKit } from "../bots/kit";
 import type { DigestEntry } from "../documents/work";
@@ -160,7 +161,10 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
   // one of your own computers for plan limits' resets and usage totals only within one setup.
   const setup = followedSetup(link)?.id;
   const where = { ...(setup ? { setup } : {}), ...(sharedMachine(link) ? { shared: true as const } : {}) };
-  const json = JSON.stringify([ownList, moved, boxes, where]);
+  // And what it is and runs, and how many of its sessions are at work ("Computers"): told again
+  // at once as it starts or stops working at all, else with the rest (every ten minutes).
+  const computer = ownComputer();
+  const json = JSON.stringify([ownList, moved, boxes, where, { ...computer, working: computer.working > 0 }]);
   let have: DigestEntry[] | false | null = null;
   for (const peer of peersOf(link)) {
     const last = toldPeers.get(peer.key);
@@ -172,7 +176,7 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
     let bytes: Buffer | null = null, sent: ListedAgent[] = [];
     for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
       sent = ownList.slice(0, count);
-      bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter(box => box.key !== peer.key), ...where }, ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
+      bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter(box => box.key !== peer.key), ...where, computer }, ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
       if (bytes) break;
     }
     if (!bytes) continue;

@@ -12,7 +12,7 @@ import { RUN } from "../home";
 import { KEY, MOST_PEERS, cleanPeer, fitsPeer, ownKey, peersOf } from "./known";
 import { SETUP_ID } from "../setup/record";
 import type { LinkState } from "../state";
-import type { AgentsFile, ListedAgent, ToldAgents } from "../../shared/records";
+import type { AgentsFile, ListedAgent, ToldAgents, ToldComputer } from "../../shared/records";
 import type { EngineSession } from "../engine/sessions";
 import { type BotLook, LOOKS as LOOK_WORDS } from "../../shared/routes/bots";
 import type { Peer } from "./known";
@@ -82,10 +82,21 @@ export function takeAgents(sender: { key: string; kind: "mac" | "machine"; id?: 
     all[sender.key] = { at: given.at as number, heard: Date.now(), kind: sender.kind, ...(sender.id ? { id: sender.id } : {}), list: (given.list as unknown[]).filter(fitsAgent).slice(0, MOST_AGENTS).map(keptAgent),
       ...(Array.isArray(given.features) ? { features: keptFeatures(given.features) } : {}), ...(Array.isArray(given.moved) ? { moved: keptMoved(given.moved) } : {}),
       ...(Array.isArray(given.boxes) ? { boxes: keptBoxes(given.boxes) } : {}),
-      ...(typeof given.setup === "string" && SETUP_ID.test(given.setup) ? { setup: given.setup } : {}), ...(given.shared === true ? { shared: true as const } : {}) };
+      ...(typeof given.setup === "string" && SETUP_ID.test(given.setup) ? { setup: given.setup } : {}), ...(given.shared === true ? { shared: true as const } : {}),
+      ...(keptComputer(given.computer) ? { computer: keptComputer(given.computer)! } : {}) };
     writePrivate(file, JSON.stringify(all));
     return true;
   });
+}
+
+const short = (value: unknown, most: number): string | undefined => (typeof value === "string" && value && value.length <= most ? value : undefined);
+
+/** What a peer said of itself, checked: only what's of a size it would have. */
+export function keptComputer(given: unknown): ToldComputer | undefined {
+  if (!isObject(given)) return undefined;
+  const version = short(given.version, 40), engine = short(given.engine, 40), system = short(given.system, 80);
+  const working = typeof given.working === "number" && Number.isInteger(given.working) && given.working >= 0 && given.working <= 10_000 ? given.working : 0;
+  return { ...(version ? { version } : {}), ...(engine ? { engine } : {}), ...(system ? { system } : {}), working };
 }
 
 const keptBoxes = (boxes: unknown[]): NonNullable<ToldAgents["boxes"]> => boxes.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(({ key, address, kind, name }) => ({ key, address, kind, name }));

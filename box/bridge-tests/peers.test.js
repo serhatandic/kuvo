@@ -557,6 +557,44 @@ test("a box tells its peers its agents as they change, and every ten minutes", a
   assert.equal(opened(sent[6], to(sent[6])).payload.ask, "agents");
 });
 
+// Your computers as one list (#711, "Computers"): every box says it alike, from what it is and what
+// its peers told it of themselves with their agents, so a client's Computers area asks any one box.
+test("a box lists your computers: itself, and each peer as it's heard from, with what each runs and how many sessions are at work there", async t => {
+  fresh({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  const { target } = await engine(t);
+  // What it tells its peers of itself, with its agents.
+  const sent = [];
+  // (Asked for, as a box just connected: told whatever it told before.)
+  await link.announce({ send: bytes => sent.push(bytes) }, () => target, link.readLink(), Date.now(), true);
+  const told = opened(sent[0], [mac, second].find(each => k(sent[0].subarray(1, 17)) === each.address)).payload.agents.computer;
+  assert.equal(told.working, 0);
+  assert.match(told.system, process.platform === "darwin" ? /^macOS/ : /\S/);
+
+  // A peer says what it is; another hasn't been heard from yet.
+  link.receiveMail(mailFrom(second, { at: Date.now(), agents: { at: Date.now(), list: [], computer: { version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", working: 2, more: "x".repeat(500) } } }), undefined, (sender, payload) => link.peerMail(sender, payload, null));
+  const handle = link.engineHandler(() => target, { name: "devbox" });
+  const ask = async (method = "GET") => {
+    const pieces = [];
+    for await (const piece of handle({ method, path: "kuvo/computers", headers: {}, fromApp: true }, undefined)) pieces.push(piece);
+    return { status: pieces.find(each => each.head).head.status, body: JSON.parse(Buffer.concat(pieces.filter(each => each.body).map(each => each.body)).toString() || "{}") };
+  };
+  let { status, body } = await ask();
+  assert.equal(status, 200);
+  const [own, ...others] = body.computers;
+  assert.deepEqual({ ...own, system: "said" }, { key: here.pub, name: "devbox", kind: "machine", here: true, shared: false, reach: "connected", via: "here", system: "said", working: 0, limits: [] });
+  // (Its peers by name.)
+  assert.deepEqual(others, [
+    { key: mac.pub, name: "mac", kind: "mac", shared: false, reach: "connecting", via: "relay", working: 0, limits: [] },
+    { key: second.pub, name: "second", kind: "machine", id: "second", shared: false, reach: "connected", via: "relay", version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", working: 2, limits: [] },
+  ]);
+
+  // One the relay says isn't there: away, and nothing there counts as at work now.
+  fs.writeFileSync(path.join(run, "peer-reach.json"), JSON.stringify({ [second.pub]: Date.now() }));
+  ({ body } = await ask());
+  assert.deepEqual([body.computers[2].reach, body.computers[2].working, body.computers[2].system], ["away", 0, "Ubuntu 24.04.1 LTS"]);
+  assert.equal((await ask("POST")).status, 405);
+});
+
 test("a box tells its peers the setup it follows, or that it's a machine two people's Macs share, so they count it as one of your own computers only within one setup (#701)", async t => {
   const air = box("mac", "air");
   const { target } = await engine(t);

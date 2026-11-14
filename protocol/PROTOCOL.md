@@ -431,7 +431,10 @@ connection.
   computers"; nothing else), and `setup` (the id of the setup it follows, where it follows one) and
   `shared: true` (it's a machine set up by Macs that aren't all in one setup), by which the receiver counts it as one of
   your own computers, for resets, Always Allow and usage totals, only within one setup (#701; "Plan
-  limits", "Across your computers", Whose). A box sends its bots and its 40 latest
+  limits", "Across your computers", Whose), and `computer` (`{version?, engine?, system?,
+  working}`: Kuvo Code's version there, its engine's, its system as people know it, and how many
+  of its sessions are at work, for `kuvo/computers`, "Computers"; told again at once as it starts
+  or stops working at all, else with the rest). A box sends its bots and its 40 latest
   sessions (its engine's and its coding agents') when they change and every ten minutes. Each box
   keeps the newest list from each peer. The relay keeps nothing, so a box that has just connected adds `"ask": "agents"` to
   what it sends first (its agents; a Mac's digest), and whoever gets it tells that box its agents
@@ -1475,6 +1478,40 @@ sessions").
   beside them, the facts the box answers (`box/test/session-lists.test.ts`), and the
   sidebar a client draws from them (KuvoClient's `SessionListsTests`): a client in another language
   checks itself against it.
+
+### Computers
+
+Your computers as one list (`computers`, #711), the same from any box, a Mac's or a machine's, with
+no client connected: a client's Computers area and its switcher draw it, and ask no Mac for it
+(`kuvo/machines` names only what a Mac's app connects to over SSH).
+
+- `GET kuvo/computers` → `{computers: [computer…]}`: the box that answers first (`here: true`),
+  then its peers by name ("Peers"), then the boxes those vouch for ("Plan limits", Who). Each:
+  - `key` (its box's public key; `""` for the box itself while it has none), `name`, `kind`
+    (`mac` or `machine`), `id?` (a machine's name on its Mac);
+  - `shared`: a machine set up by Macs that aren't all in one setup ("Your setup");
+  - `reach`: `connected` (the box itself; a peer heard from in the last half hour), `connecting`
+    (a peer not heard from yet since this box knew of it) or `away` (the relay said it isn't
+    there, `run/peer-reach.json`, or nothing came from it for half an hour; and every box known
+    only by a peer's word);
+  - `version?`, `engine?`, `system?`: Kuvo Code's version there, its engine's, and its system as
+    people know it ("macOS 15.1", "Ubuntu 24.04.1 LTS"), as that box said them with its agents
+    (`agents.computer`, "Peers"); left out for one that hasn't said (a box from before this, one
+    known only by a peer's word);
+  - `via`: how the box that answers knows it: `here` (itself), `relay` (a peer it talks to) or
+    `peer` (by another computer's word alone, `through` that one's name);
+  - `working`: how many of its sessions are at work (conversations, not their subagents, never
+    one that waits on you), its own from its session list, a peer's as it last said (`0` for one
+    that's away: nothing there can be seen at work now);
+  - `limits`: the services whose plan limits it reads (`claude`, `codex`…), as the answering
+    box's limits rows say (`rows[].boxes`); `[]` while its coding agents' bridge doesn't run.
+  `405` for anything but `GET`.
+- `GET kuvo/computers/events` (ndjson): the same now, and a line as it changes (a peer's word, one
+  going away or coming back, this box's sessions starting or stopping work, and every 15 seconds
+  for the rest); through `box route` a client asks again instead.
+- A box says what it knows, never more: SSH connections are a Mac app's own (`kuvo/machines`), so
+  no box says a machine is reached "through SSH", and a computer no peer of this box names isn't
+  listed.
 
 ### What waits on you
 

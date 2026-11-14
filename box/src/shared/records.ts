@@ -81,6 +81,18 @@ export interface ToldAgents {
   setup?: string;
   /** It's a machine two people's Macs set up: never one of your own computers for plan limits' resets and usage totals. */
   shared?: true;
+  /** What it says of itself (PROTOCOL.md, "Computers"). */
+  computer?: ToldComputer;
+}
+
+/** What a box says of itself, to its clients (`kuvo/computers`) and to its peers with its agents:
+ * Kuvo Code's version there and its engine's, its system as people know it, and how many of its
+ * sessions are at work. */
+export interface ToldComputer {
+  version?: string;
+  engine?: string;
+  system?: string;
+  working: number;
 }
 
 /** `run/agents.json`: everyone, for list_agents here (kuvo-browser.js reads it), and this box's

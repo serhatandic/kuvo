@@ -3074,6 +3074,148 @@
    }
   },
   {
+   "route": "GET kuvo/computers",
+   "answers": {
+    "200": {
+     "object": {
+      "computers": {
+       "list": {
+        "object": {
+         "key": "string",
+         "name": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "mac"
+           },
+           {
+            "literal": "machine"
+           }
+          ]
+         },
+         "here?": {
+          "literal": true
+         },
+         "id?": "string",
+         "shared": "bool",
+         "reach": {
+          "oneOf": [
+           {
+            "literal": "connected"
+           },
+           {
+            "literal": "connecting"
+           },
+           {
+            "literal": "away"
+           }
+          ]
+         },
+         "version?": "string",
+         "engine?": "string",
+         "system?": "string",
+         "via": {
+          "oneOf": [
+           {
+            "literal": "here"
+           },
+           {
+            "literal": "relay"
+           },
+           {
+            "literal": "peer"
+           }
+          ]
+         },
+         "through?": "string",
+         "working": "number",
+         "limits": {
+          "list": "string"
+         }
+        }
+       }
+      }
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/computers/events",
+   "answers": {
+    "200": {
+     "object": {
+      "computers": {
+       "list": {
+        "object": {
+         "key": "string",
+         "name": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "mac"
+           },
+           {
+            "literal": "machine"
+           }
+          ]
+         },
+         "here?": {
+          "literal": true
+         },
+         "id?": "string",
+         "shared": "bool",
+         "reach": {
+          "oneOf": [
+           {
+            "literal": "connected"
+           },
+           {
+            "literal": "connecting"
+           },
+           {
+            "literal": "away"
+           }
+          ]
+         },
+         "version?": "string",
+         "engine?": "string",
+         "system?": "string",
+         "via": {
+          "oneOf": [
+           {
+            "literal": "here"
+           },
+           {
+            "literal": "relay"
+           },
+           {
+            "literal": "peer"
+           }
+          ]
+         },
+         "through?": "string",
+         "working": "number",
+         "limits": {
+          "list": "string"
+         }
+        }
+       }
+      }
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
    "route": "GET kuvo/info",
    "answers": {
     "200": {
