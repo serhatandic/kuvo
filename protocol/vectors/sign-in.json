@@ -1,5 +1,5 @@
 {
- "why": "How every client offers the ways to sign in to an account and says why a sign-in didn't work, as the box decides them (box/src/link/areas/sign-in.ts: kuvo/sign-in/methods and kuvo/sign-in/status's failure). Signing in with an account comes first, then credentials the computer already has (external), then a key, each kind in the engine's order; a way whose label says legacy comes after all the others, marked legacy; a plan that goes through a coding agent (ChatGPT's, SuperGrok's) isn't offered for the engine's provider unless it's signed in that way already. `offered` is kuvo/sign-in/methods' answer, and each account's in kuvo/sign-in/accounts, with `hint`, the way in its card names (its first sign-in that isn't legacy, \"Login with\" said \"Sign in with\", plain \"Sign in\" where it only names the account again; else \"API key\" for a key; else \"Connect\"). Clients draw it as it is, and show `failure` as it is. Methods shaped as engine 2.2.5 lists them (api/integration): openai, xai, deepseek and github-copilot as it lists them; the others made up to hold each rule. The phone's sample Mac and its tests' computers serve these answers as recorded, matched by provider, name, methods and connections. `accounts`: what each account kuvo/sign-in/accounts lists is (`kind`), whether Accounts lists it (`listed`), and its mark by the plan limits' service ids (`service`; none: its letter), for the engine's or, with `agents`, the coding agents' bridge's (#711). `codes`: the code a device sign-in's page asks for (`userCode` in kuvo/sign-in/start's and kuvo/sign-in/status's answers), from what the engine or the bridge said of the attempt; none where it has none.",
+ "why": "How every client offers the ways to sign in to an account and says why a sign-in didn't work, as the box decides them (box/src/link/areas/sign-in.ts: kuvo/sign-in/methods and kuvo/sign-in/status's failure). Signing in with an account comes first, then credentials the computer already has (external), then a key, each kind in the engine's order; a way whose label says legacy comes after all the others, marked legacy; a plan that goes through a coding agent (ChatGPT's, SuperGrok's) isn't offered for the engine's provider unless it's signed in that way already. `offered` is kuvo/sign-in/methods' answer, and each account's in kuvo/sign-in/accounts, with `hint`, the way in its card names (its first sign-in that isn't legacy, \"Login with\" said \"Sign in with\", plain \"Sign in\" where it only names the account again; else \"API key\" for a key; else \"Connect\"). Clients draw it as it is, and show `failure` as it is. Methods shaped as engine 2.2.5 lists them (api/integration): openai, xai, deepseek and github-copilot as it lists them; the others made up to hold each rule. The phone's sample Mac and its tests' computers serve these answers as recorded, matched by provider, name, methods and connections. `accounts`: what each account kuvo/sign-in/accounts lists is (`kind`), whether Accounts lists it (`listed`), and its mark by the plan limits' service ids (`service`; none: its letter), for the engine's or, with `agents`, the coding agents' bridge's (#711). `codes`: the code a device sign-in's page asks for (`userCode` in kuvo/sign-in/start's and kuvo/sign-in/status's answers), from what the engine or the bridge said of the attempt; none where it has none. `states`: how an account stands, the line under its name, each of its sign-ins and what can be done with it (box/src/link/areas/sign-in-state.ts: kuvo/sign-in/accounts' state, line, connections and actions), from the account as the engine or the bridge lists it (`agents`), its ways in as the box offers them (`offered`, as `methods` above), the saved sign-in the box saw end (`ended`) and the box's computer's name (`computer`).",
  "methods": [
   {
    "provider": "anthropic",
@@ -1140,6 +1140,1774 @@
     "instructions": "Open https://example.test/OAUTH-DEVICE and enter code: 1234"
    },
    "userCode": "1234"
+  }
+ ],
+ "states": [
+  {
+   "about": "a coding agent whose program isn't on the computer, with its maker's installer: Install, and nothing to sign in to yet",
+   "agents": true,
+   "account": {
+    "id": "claude-code",
+    "name": "Claude Code",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "connections": [],
+    "metadata": {
+     "source": "agent",
+     "agent": "claude",
+     "accountID": "default",
+     "installed": false,
+     "signInEnded": false,
+     "unchecked": false,
+     "signsOut": false,
+     "outdated": false,
+     "updates": false,
+     "remoteSignIn": true,
+     "install": "curl -fsSL https://claude.ai/install.sh | bash"
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "environment": [],
+    "hint": "Claude Pro or Max"
+   },
+   "state": "notInstalled",
+   "line": "Not installed on Studio",
+   "actions": [
+    {
+     "id": "install",
+     "label": "Install"
+    }
+   ],
+   "connections": []
+  },
+  {
+   "about": "a coding agent not installed that Kuvo Code brings itself (no installer): it comes as it signs in",
+   "agents": true,
+   "account": {
+    "id": "antigravity",
+    "name": "Antigravity",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "google",
+      "label": "Sign in with Google"
+     }
+    ],
+    "connections": [],
+    "metadata": {
+     "source": "agent",
+     "agent": "antigravity",
+     "accountID": "default",
+     "installed": false,
+     "signInEnded": false,
+     "unchecked": false,
+     "signsOut": true,
+     "outdated": false,
+     "updates": false,
+     "remoteSignIn": true
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "google",
+      "label": "Sign in with Google"
+     }
+    ],
+    "environment": [],
+    "hint": "Sign in with Google"
+   },
+   "state": "signedOut",
+   "line": "Not signed in",
+   "actions": [
+    {
+     "id": "signIn",
+     "label": "Sign In"
+    }
+   ],
+   "connections": []
+  },
+  {
+   "about": "a coding agent not signed in, whose sign-in can finish on another device",
+   "agents": true,
+   "account": {
+    "id": "claude-code",
+    "name": "Claude Code",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "connections": [],
+    "metadata": {
+     "source": "agent",
+     "agent": "claude",
+     "accountID": "default",
+     "installed": true,
+     "signInEnded": false,
+     "unchecked": false,
+     "signsOut": false,
+     "outdated": false,
+     "updates": false,
+     "remoteSignIn": true
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "environment": [],
+    "hint": "Claude Pro or Max"
+   },
+   "state": "signedOut",
+   "line": "Not signed in",
+   "actions": [
+    {
+     "id": "signIn",
+     "label": "Sign In"
+    }
+   ],
+   "connections": []
+  },
+  {
+   "about": "a coding agent not signed in, whose sign-in page comes back to its computer: Sign In only there (`here`)",
+   "agents": true,
+   "account": {
+    "id": "codex-cli",
+    "name": "Codex",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "chatgpt",
+      "label": "Sign in with ChatGPT"
+     }
+    ],
+    "connections": [],
+    "metadata": {
+     "source": "agent",
+     "agent": "codex",
+     "accountID": "default",
+     "installed": true,
+     "signInEnded": false,
+     "unchecked": false,
+     "signsOut": false,
+     "outdated": false,
+     "updates": false,
+     "remoteSignIn": false
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "chatgpt",
+      "label": "Sign in with ChatGPT"
+     }
+    ],
+    "environment": [],
+    "hint": "Sign in with ChatGPT"
+   },
+   "state": "signedOut",
+   "line": "Not signed in",
+   "actions": [
+    {
+     "id": "signIn",
+     "label": "Sign In",
+     "here": true
+    }
+   ],
+   "connections": []
+  },
+  {
+   "about": "a coding agent signed in: who as, and Sign In Again",
+   "agents": true,
+   "account": {
+    "id": "claude-code",
+    "name": "Claude Code",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "connections": [
+     {
+      "type": "agent",
+      "label": "you@example.com · Max plan",
+      "method": "oauth",
+      "status": {
+       "status": "connected",
+       "message": "Signed in as you@example.com · Max plan"
+      }
+     }
+    ],
+    "metadata": {
+     "source": "agent",
+     "agent": "claude",
+     "accountID": "default",
+     "installed": true,
+     "signInEnded": false,
+     "unchecked": false,
+     "signsOut": false,
+     "outdated": false,
+     "updates": false,
+     "remoteSignIn": true
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "environment": [],
+    "hint": "Claude Pro or Max"
+   },
+   "state": "signedIn",
+   "line": "Signed in as you@example.com · Max plan",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again"
+    }
+   ],
+   "connections": [
+    {
+     "state": "signedIn",
+     "line": "you@example.com · Max plan"
+    }
+   ]
+  },
+  {
+   "about": "a coding agent signed in that didn't say who as",
+   "agents": true,
+   "account": {
+    "id": "claude-code",
+    "name": "Claude Code",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "connections": [
+     {
+      "type": "agent",
+      "method": "oauth",
+      "status": {
+       "status": "connected",
+       "message": "Signed in"
+      }
+     }
+    ],
+    "metadata": {
+     "source": "agent",
+     "agent": "claude",
+     "accountID": "default",
+     "installed": true,
+     "signInEnded": false,
+     "unchecked": false,
+     "signsOut": false,
+     "outdated": false,
+     "updates": false,
+     "remoteSignIn": true
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "environment": [],
+    "hint": "Claude Pro or Max"
+   },
+   "state": "signedIn",
+   "line": "Signed in",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again"
+    }
+   ],
+   "connections": [
+    {
+     "state": "signedIn",
+     "line": "Signed in"
+    }
+   ]
+  },
+  {
+   "about": "a coding agent its bridge can sign out of (Cursor, Antigravity): Sign Out while it's signed in",
+   "agents": true,
+   "account": {
+    "id": "cursor",
+    "name": "Cursor",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "cursor",
+      "label": "Sign in with Cursor"
+     }
+    ],
+    "connections": [
+     {
+      "type": "agent",
+      "label": "you@example.com",
+      "method": "oauth",
+      "status": {
+       "status": "connected",
+       "message": "Signed in as you@example.com"
+      }
+     }
+    ],
+    "metadata": {
+     "source": "agent",
+     "agent": "cursor",
+     "accountID": "default",
+     "installed": true,
+     "signInEnded": false,
+     "unchecked": false,
+     "signsOut": true,
+     "outdated": false,
+     "updates": false,
+     "remoteSignIn": true
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "cursor",
+      "label": "Sign in with Cursor"
+     }
+    ],
+    "environment": [],
+    "hint": "Sign in"
+   },
+   "state": "signedIn",
+   "line": "Signed in as you@example.com",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again"
+    },
+    {
+     "id": "signOut",
+     "label": "Sign Out"
+    }
+   ],
+   "connections": [
+    {
+     "state": "signedIn",
+     "line": "you@example.com"
+    }
+   ]
+  },
+  {
+   "about": "a coding agent's program behind, which its installer can update: Update, on the agent's own sign-in",
+   "agents": true,
+   "account": {
+    "id": "claude-code",
+    "name": "Claude Code",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "connections": [
+     {
+      "type": "agent",
+      "label": "you@example.com",
+      "method": "oauth",
+      "status": {
+       "status": "connected",
+       "message": "Signed in as you@example.com"
+      }
+     }
+    ],
+    "metadata": {
+     "source": "agent",
+     "agent": "claude",
+     "accountID": "default",
+     "installed": true,
+     "signInEnded": false,
+     "unchecked": false,
+     "signsOut": false,
+     "outdated": true,
+     "updates": true,
+     "remoteSignIn": true,
+     "version": "2.1.0",
+     "latestVersion": "2.2.4"
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "environment": [],
+    "hint": "Claude Pro or Max"
+   },
+   "state": "signedIn",
+   "line": "Signed in as you@example.com",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again"
+    },
+    {
+     "id": "update",
+     "label": "Update to 2.2.4"
+    }
+   ],
+   "connections": [
+    {
+     "state": "signedIn",
+     "line": "you@example.com"
+    }
+   ]
+  },
+  {
+   "about": "a program updating now isn't offered its update again",
+   "agents": true,
+   "account": {
+    "id": "claude-code",
+    "name": "Claude Code",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "connections": [
+     {
+      "type": "agent",
+      "label": "you@example.com",
+      "method": "oauth",
+      "status": {
+       "status": "connected",
+       "message": "Signed in as you@example.com"
+      }
+     }
+    ],
+    "metadata": {
+     "source": "agent",
+     "agent": "claude",
+     "accountID": "default",
+     "installed": true,
+     "signInEnded": false,
+     "unchecked": false,
+     "signsOut": false,
+     "outdated": true,
+     "updates": true,
+     "remoteSignIn": true,
+     "version": "2.1.0",
+     "latestVersion": "2.2.4",
+     "programUpdate": {
+      "state": "updating",
+      "at": 1
+     }
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "environment": [],
+    "hint": "Claude Pro or Max"
+   },
+   "state": "signedIn",
+   "line": "Signed in as you@example.com",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again"
+    }
+   ],
+   "connections": [
+    {
+     "state": "signedIn",
+     "line": "you@example.com"
+    }
+   ]
+  },
+  {
+   "about": "a program behind that only the way it was installed can update: no Update",
+   "agents": true,
+   "account": {
+    "id": "claude-code",
+    "name": "Claude Code",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "connections": [
+     {
+      "type": "agent",
+      "label": "you@example.com",
+      "method": "oauth",
+      "status": {
+       "status": "connected",
+       "message": "Signed in as you@example.com"
+      }
+     }
+    ],
+    "metadata": {
+     "source": "agent",
+     "agent": "claude",
+     "accountID": "default",
+     "installed": true,
+     "signInEnded": false,
+     "unchecked": false,
+     "signsOut": false,
+     "outdated": true,
+     "updates": false,
+     "remoteSignIn": true,
+     "latestVersion": "2.2.4"
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "environment": [],
+    "hint": "Claude Pro or Max"
+   },
+   "state": "signedIn",
+   "line": "Signed in as you@example.com",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again"
+    }
+   ],
+   "connections": [
+    {
+     "state": "signedIn",
+     "line": "you@example.com"
+    }
+   ]
+  },
+  {
+   "about": "an account you added beside an agent's own: Rename and Remove Account (which asks first), never the program's update",
+   "agents": true,
+   "account": {
+    "id": "claude-code@1f2e3d4c",
+    "name": "Claude Code · Work",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     }
+    ],
+    "connections": [
+     {
+      "type": "agent",
+      "label": "work@example.com · Team plan",
+      "method": "oauth",
+      "status": {
+       "status": "connected",
+       "message": "Signed in as work@example.com · Team plan"
+      }
+     }
+    ],
+    "metadata": {
+     "source": "agent",
+     "agent": "claude",
+     "accountID": "1f2e3d4c",
+     "installed": true,
+     "signInEnded": false,
+     "unchecked": false,
+     "signsOut": false,
+     "outdated": true,
+     "updates": true,
+     "remoteSignIn": true,
+     "accountLabel": "Work",
+     "latestVersion": "2.2.4"
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     }
+    ],
+    "environment": [],
+    "hint": "Claude Pro or Max"
+   },
+   "state": "signedIn",
+   "line": "Signed in as work@example.com · Team plan",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again"
+    },
+    {
+     "id": "rename",
+     "label": "Rename"
+    },
+    {
+     "id": "remove",
+     "label": "Remove Account",
+     "confirm": {
+      "title": "Remove Claude Code · Work?",
+      "message": "It’s signed out on Studio, and its models leave the model picker. Its sessions stay.",
+      "label": "Remove Account"
+     }
+    }
+   ],
+   "connections": [
+    {
+     "state": "signedIn",
+     "line": "work@example.com · Team plan"
+    }
+   ]
+  },
+  {
+   "about": "an account you added, not signed in yet: Sign In, and it can still be removed",
+   "agents": true,
+   "account": {
+    "id": "claude-code@1f2e3d4c",
+    "name": "Claude Code · Work",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     }
+    ],
+    "connections": [],
+    "metadata": {
+     "source": "agent",
+     "agent": "claude",
+     "accountID": "1f2e3d4c",
+     "installed": true,
+     "signInEnded": false,
+     "unchecked": false,
+     "signsOut": false,
+     "outdated": false,
+     "updates": false,
+     "remoteSignIn": true,
+     "accountLabel": "Work"
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     }
+    ],
+    "environment": [],
+    "hint": "Claude Pro or Max"
+   },
+   "state": "signedOut",
+   "line": "Not signed in",
+   "actions": [
+    {
+     "id": "signIn",
+     "label": "Sign In"
+    },
+    {
+     "id": "rename",
+     "label": "Rename"
+    },
+    {
+     "id": "remove",
+     "label": "Remove Account",
+     "confirm": {
+      "title": "Remove Claude Code · Work?",
+      "message": "It’s signed out on Studio, and its models leave the model picker. Its sessions stay.",
+      "label": "Remove Account"
+     }
+    }
+   ],
+   "connections": []
+  },
+  {
+   "about": "a coding agent whose maker ended the sign-in: Sign In Again",
+   "agents": true,
+   "account": {
+    "id": "claude-code",
+    "name": "Claude Code",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "connections": [],
+    "metadata": {
+     "source": "agent",
+     "agent": "claude",
+     "accountID": "default",
+     "installed": true,
+     "signInEnded": true,
+     "unchecked": false,
+     "signsOut": false,
+     "outdated": false,
+     "updates": false,
+     "remoteSignIn": true
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "environment": [],
+    "hint": "Claude Pro or Max"
+   },
+   "state": "ended",
+   "line": "Sign-in ended",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again"
+    }
+   ],
+   "connections": []
+  },
+  {
+   "about": "a coding agent that couldn't say just now, with nothing known yet",
+   "agents": true,
+   "account": {
+    "id": "claude-code",
+    "name": "Claude Code",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "connections": [],
+    "metadata": {
+     "source": "agent",
+     "agent": "claude",
+     "accountID": "default",
+     "installed": true,
+     "signInEnded": false,
+     "unchecked": true,
+     "signsOut": false,
+     "outdated": false,
+     "updates": false,
+     "remoteSignIn": true
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "environment": [],
+    "hint": "Claude Pro or Max"
+   },
+   "state": "unchecked",
+   "line": "Couldn’t check just now",
+   "actions": [
+    {
+     "id": "signIn",
+     "label": "Sign In"
+    }
+   ],
+   "connections": []
+  },
+  {
+   "about": "a coding agent that couldn't say just now stays as it last said: signed in",
+   "agents": true,
+   "account": {
+    "id": "claude-code",
+    "name": "Claude Code",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "connections": [
+     {
+      "type": "agent",
+      "label": "you@example.com",
+      "method": "oauth",
+      "status": {
+       "status": "connected",
+       "message": "Signed in as you@example.com"
+      }
+     }
+    ],
+    "metadata": {
+     "source": "agent",
+     "agent": "claude",
+     "accountID": "default",
+     "installed": true,
+     "signInEnded": false,
+     "unchecked": true,
+     "signsOut": false,
+     "outdated": false,
+     "updates": false,
+     "remoteSignIn": true
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "environment": [],
+    "hint": "Claude Pro or Max"
+   },
+   "state": "signedIn",
+   "line": "Signed in as you@example.com",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again"
+    }
+   ],
+   "connections": [
+    {
+     "state": "signedIn",
+     "line": "you@example.com"
+    }
+   ]
+  },
+  {
+   "about": "a provider not signed in: its line names its way in",
+   "account": {
+    "id": "github-copilot",
+    "name": "GitHub Copilot",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "device",
+      "label": "Login with GitHub Copilot"
+     }
+    ],
+    "connections": []
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "device",
+      "label": "Login with GitHub Copilot"
+     }
+    ],
+    "environment": [],
+    "hint": "Sign in"
+   },
+   "state": "signedOut",
+   "line": "Sign in",
+   "actions": [
+    {
+     "id": "signIn",
+     "label": "Sign In"
+    }
+   ],
+   "connections": []
+  },
+  {
+   "about": "a provider with a key only",
+   "account": {
+    "id": "deepseek",
+    "name": "DeepSeek",
+    "methods": [
+     {
+      "type": "key"
+     },
+     {
+      "type": "env",
+      "names": [
+       "DEEPSEEK_API_KEY"
+      ]
+     }
+    ],
+    "connections": []
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "key",
+      "label": "Use an API key"
+     }
+    ],
+    "environment": [
+     "DEEPSEEK_API_KEY"
+    ],
+    "hint": "API key"
+   },
+   "state": "signedOut",
+   "line": "API key",
+   "actions": [
+    {
+     "id": "signIn",
+     "label": "Sign In"
+    }
+   ],
+   "connections": []
+  },
+  {
+   "about": "a provider only its environment variables sign in to: no action, and its line says which",
+   "account": {
+    "id": "vertex",
+    "name": "Vertex",
+    "methods": [
+     {
+      "type": "env",
+      "names": [
+       "GOOGLE_CLOUD_PROJECT",
+       "GCP_PROJECT"
+      ]
+     }
+    ],
+    "connections": []
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [],
+    "environment": [
+     "GOOGLE_CLOUD_PROJECT",
+     "GCP_PROJECT"
+    ],
+    "hint": "Connect"
+   },
+   "state": "signedOut",
+   "line": "Set GOOGLE_CLOUD_PROJECT or GCP_PROJECT in your shell profile",
+   "actions": [],
+   "connections": []
+  },
+  {
+   "about": "a provider with no way in at all",
+   "account": {
+    "id": "local",
+    "name": "Local",
+    "methods": [],
+    "connections": []
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [],
+    "environment": [],
+    "hint": "Connect"
+   },
+   "state": "signedOut",
+   "line": "Not signed in",
+   "actions": [],
+   "connections": []
+  },
+  {
+   "about": "a provider signed in with an account: who as, another can be added, and Disconnect asks first",
+   "account": {
+    "id": "github-copilot",
+    "name": "GitHub Copilot",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "device",
+      "label": "Login with GitHub Copilot"
+     }
+    ],
+    "connections": [
+     {
+      "type": "credential",
+      "id": "cred_1",
+      "label": "you@example.com",
+      "method": "oauth",
+      "status": {
+       "status": "connected"
+      }
+     }
+    ]
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "device",
+      "label": "Login with GitHub Copilot"
+     }
+    ],
+    "environment": [],
+    "hint": "Sign in"
+   },
+   "state": "signedIn",
+   "line": "Signed in as you@example.com",
+   "actions": [
+    {
+     "id": "addAnother",
+     "label": "Add Another Account"
+    },
+    {
+     "id": "disconnect",
+     "label": "Disconnect",
+     "confirm": {
+      "title": "Disconnect GitHub Copilot?",
+      "message": "Its sign-ins and keys go from Studio, and its models leave the model picker there. Sessions on its models stop until you sign in again.",
+      "label": "Disconnect"
+     }
+    }
+   ],
+   "connections": [
+    {
+     "id": "cred_1",
+     "state": "signedIn",
+     "line": "you@example.com"
+    }
+   ]
+  },
+  {
+   "about": "a key the engine named after its provider says what it is, not the name again",
+   "account": {
+    "id": "deepseek",
+    "name": "DeepSeek",
+    "methods": [
+     {
+      "type": "key"
+     }
+    ],
+    "connections": [
+     {
+      "type": "credential",
+      "id": "cred_2",
+      "label": "DeepSeek",
+      "method": "key"
+     }
+    ]
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "key",
+      "label": "Use an API key"
+     }
+    ],
+    "environment": [],
+    "hint": "API key"
+   },
+   "state": "signedIn",
+   "line": "API key",
+   "actions": [
+    {
+     "id": "addAnother",
+     "label": "Add Another Account"
+    },
+    {
+     "id": "disconnect",
+     "label": "Disconnect",
+     "confirm": {
+      "title": "Disconnect DeepSeek?",
+      "message": "Its sign-ins and keys go from Studio, and its models leave the model picker there. Sessions on its models stop until you sign in again.",
+      "label": "Disconnect"
+     }
+    }
+   ],
+   "connections": [
+    {
+     "id": "cred_2",
+     "state": "signedIn",
+     "line": "API key"
+    }
+   ]
+  },
+  {
+   "about": "a key with a name of its own",
+   "account": {
+    "id": "deepseek",
+    "name": "DeepSeek",
+    "methods": [
+     {
+      "type": "key"
+     }
+    ],
+    "connections": [
+     {
+      "type": "credential",
+      "id": "cred_2",
+      "label": "Work",
+      "method": "key"
+     }
+    ]
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "key",
+      "label": "Use an API key"
+     }
+    ],
+    "environment": [],
+    "hint": "API key"
+   },
+   "state": "signedIn",
+   "line": "API key · Work",
+   "actions": [
+    {
+     "id": "addAnother",
+     "label": "Add Another Account"
+    },
+    {
+     "id": "disconnect",
+     "label": "Disconnect",
+     "confirm": {
+      "title": "Disconnect DeepSeek?",
+      "message": "Its sign-ins and keys go from Studio, and its models leave the model picker there. Sessions on its models stop until you sign in again.",
+      "label": "Disconnect"
+     }
+    }
+   ],
+   "connections": [
+    {
+     "id": "cred_2",
+     "state": "signedIn",
+     "line": "API key · Work"
+    }
+   ]
+  },
+  {
+   "about": "credentials the computer already has",
+   "account": {
+    "id": "amazon-bedrock",
+    "name": "Amazon Bedrock",
+    "methods": [
+     {
+      "type": "external",
+      "id": "aws",
+      "label": "AWS credentials on this computer"
+     }
+    ],
+    "connections": [
+     {
+      "type": "credential",
+      "id": "cred_3",
+      "method": "external"
+     }
+    ]
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "external",
+      "id": "aws",
+      "label": "AWS credentials on this computer"
+     }
+    ],
+    "environment": [],
+    "hint": "Connect"
+   },
+   "state": "signedIn",
+   "line": "Credentials on Studio",
+   "actions": [
+    {
+     "id": "addAnother",
+     "label": "Add Another Account"
+    },
+    {
+     "id": "disconnect",
+     "label": "Disconnect",
+     "confirm": {
+      "title": "Disconnect Amazon Bedrock?",
+      "message": "Its sign-ins and keys go from Studio, and its models leave the model picker there. Sessions on its models stop until you sign in again.",
+      "label": "Disconnect"
+     }
+    }
+   ],
+   "connections": [
+    {
+     "id": "cred_3",
+     "state": "signedIn",
+     "line": "Credentials on Studio"
+    }
+   ]
+  },
+  {
+   "about": "a provider signed in from the shell's environment: nothing this box keeps, so no Disconnect",
+   "account": {
+    "id": "openai",
+    "name": "OpenAI",
+    "methods": [
+     {
+      "type": "key"
+     },
+     {
+      "type": "env",
+      "names": [
+       "OPENAI_API_KEY"
+      ]
+     }
+    ],
+    "connections": [
+     {
+      "type": "env",
+      "name": "OPENAI_API_KEY"
+     }
+    ]
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "key",
+      "label": "Use an API key"
+     }
+    ],
+    "environment": [
+     "OPENAI_API_KEY"
+    ],
+    "hint": "API key"
+   },
+   "state": "signedIn",
+   "line": "From OPENAI_API_KEY",
+   "actions": [
+    {
+     "id": "addAnother",
+     "label": "Add Another Account"
+    }
+   ],
+   "connections": [
+    {
+     "state": "signedIn",
+     "line": "From OPENAI_API_KEY"
+    }
+   ]
+  },
+  {
+   "about": "two sign-ins: the one in use first, and how many",
+   "account": {
+    "id": "github-copilot",
+    "name": "GitHub Copilot",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "device",
+      "label": "Login with GitHub Copilot"
+     }
+    ],
+    "connections": [
+     {
+      "type": "credential",
+      "id": "cred_1",
+      "label": "you@example.com",
+      "method": "oauth"
+     },
+     {
+      "type": "credential",
+      "id": "cred_4",
+      "label": "work@example.com",
+      "method": "oauth"
+     }
+    ]
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "device",
+      "label": "Login with GitHub Copilot"
+     }
+    ],
+    "environment": [],
+    "hint": "Sign in"
+   },
+   "state": "signedIn",
+   "line": "Signed in as you@example.com · 2 accounts",
+   "actions": [
+    {
+     "id": "addAnother",
+     "label": "Add Another Account"
+    },
+    {
+     "id": "disconnect",
+     "label": "Disconnect",
+     "confirm": {
+      "title": "Disconnect GitHub Copilot?",
+      "message": "Its sign-ins and keys go from Studio, and its models leave the model picker there. Sessions on its models stop until you sign in again.",
+      "label": "Disconnect"
+     }
+    }
+   ],
+   "connections": [
+    {
+     "id": "cred_1",
+     "state": "signedIn",
+     "line": "you@example.com"
+    },
+    {
+     "id": "cred_4",
+     "state": "signedIn",
+     "line": "work@example.com"
+    }
+   ]
+  },
+  {
+   "about": "a provider whose sign-in in use the box saw end (runs on it were refused): Sign In Again",
+   "ended": "cred_1",
+   "account": {
+    "id": "github-copilot",
+    "name": "GitHub Copilot",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "device",
+      "label": "Login with GitHub Copilot"
+     }
+    ],
+    "connections": [
+     {
+      "type": "credential",
+      "id": "cred_1",
+      "label": "you@example.com",
+      "method": "oauth",
+      "status": {
+       "status": "connected"
+      }
+     }
+    ]
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "device",
+      "label": "Login with GitHub Copilot"
+     }
+    ],
+    "environment": [],
+    "hint": "Sign in"
+   },
+   "state": "ended",
+   "line": "Sign-in ended",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account"
+    },
+    {
+     "id": "disconnect",
+     "label": "Disconnect",
+     "confirm": {
+      "title": "Disconnect GitHub Copilot?",
+      "message": "Its sign-ins and keys go from Studio, and its models leave the model picker there. Sessions on its models stop until you sign in again.",
+      "label": "Disconnect"
+     }
+    }
+   ],
+   "connections": [
+    {
+     "id": "cred_1",
+     "state": "ended",
+     "line": "you@example.com"
+    }
+   ]
+  },
+  {
+   "about": "a sign-in that ended and isn't the one in use any more: its own state says so, the account is signed in",
+   "ended": "cred_1",
+   "account": {
+    "id": "github-copilot",
+    "name": "GitHub Copilot",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "device",
+      "label": "Login with GitHub Copilot"
+     }
+    ],
+    "connections": [
+     {
+      "type": "credential",
+      "id": "cred_4",
+      "label": "work@example.com",
+      "method": "oauth"
+     },
+     {
+      "type": "credential",
+      "id": "cred_1",
+      "label": "you@example.com",
+      "method": "oauth"
+     }
+    ]
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "device",
+      "label": "Login with GitHub Copilot"
+     }
+    ],
+    "environment": [],
+    "hint": "Sign in"
+   },
+   "state": "signedIn",
+   "line": "Signed in as work@example.com · 2 accounts",
+   "actions": [
+    {
+     "id": "addAnother",
+     "label": "Add Another Account"
+    },
+    {
+     "id": "disconnect",
+     "label": "Disconnect",
+     "confirm": {
+      "title": "Disconnect GitHub Copilot?",
+      "message": "Its sign-ins and keys go from Studio, and its models leave the model picker there. Sessions on its models stop until you sign in again.",
+      "label": "Disconnect"
+     }
+    }
+   ],
+   "connections": [
+    {
+     "id": "cred_4",
+     "state": "signedIn",
+     "line": "work@example.com"
+    },
+    {
+     "id": "cred_1",
+     "state": "ended",
+     "line": "you@example.com"
+    }
+   ]
+  },
+  {
+   "about": "a sign-in the engine says needs signing in again",
+   "account": {
+    "id": "github-copilot",
+    "name": "GitHub Copilot",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "device",
+      "label": "Login with GitHub Copilot"
+     }
+    ],
+    "connections": [
+     {
+      "type": "credential",
+      "id": "cred_1",
+      "label": "you@example.com",
+      "method": "oauth",
+      "status": {
+       "status": "needs_auth",
+       "message": "Token expired"
+      }
+     }
+    ]
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "device",
+      "label": "Login with GitHub Copilot"
+     }
+    ],
+    "environment": [],
+    "hint": "Sign in"
+   },
+   "state": "ended",
+   "line": "Sign-in ended",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account"
+    },
+    {
+     "id": "disconnect",
+     "label": "Disconnect",
+     "confirm": {
+      "title": "Disconnect GitHub Copilot?",
+      "message": "Its sign-ins and keys go from Studio, and its models leave the model picker there. Sessions on its models stop until you sign in again.",
+      "label": "Disconnect"
+     }
+    }
+   ],
+   "connections": [
+    {
+     "id": "cred_1",
+     "state": "ended",
+     "line": "you@example.com"
+    }
+   ]
+  },
+  {
+   "about": "a sign-in the engine says failed: its own words",
+   "account": {
+    "id": "github-copilot",
+    "name": "GitHub Copilot",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "device",
+      "label": "Login with GitHub Copilot"
+     }
+    ],
+    "connections": [
+     {
+      "type": "credential",
+      "id": "cred_1",
+      "label": "you@example.com",
+      "method": "oauth",
+      "status": {
+       "status": "failed",
+       "message": "GitHub didn't answer."
+      }
+     }
+    ]
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "device",
+      "label": "Login with GitHub Copilot"
+     }
+    ],
+    "environment": [],
+    "hint": "Sign in"
+   },
+   "state": "problem",
+   "line": "GitHub didn't answer.",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account"
+    },
+    {
+     "id": "disconnect",
+     "label": "Disconnect",
+     "confirm": {
+      "title": "Disconnect GitHub Copilot?",
+      "message": "Its sign-ins and keys go from Studio, and its models leave the model picker there. Sessions on its models stop until you sign in again.",
+      "label": "Disconnect"
+     }
+    }
+   ],
+   "connections": [
+    {
+     "id": "cred_1",
+     "state": "problem",
+     "line": "you@example.com"
+    }
+   ]
+  },
+  {
+   "about": "an ended provider that can't be signed in to from a client: no Sign In Again",
+   "ended": "cred_9",
+   "account": {
+    "id": "legacy",
+    "name": "Legacy",
+    "methods": [],
+    "connections": [
+     {
+      "type": "credential",
+      "id": "cred_9",
+      "method": "oauth"
+     }
+    ]
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [],
+    "environment": [],
+    "hint": "Connect"
+   },
+   "state": "ended",
+   "line": "Sign-in ended",
+   "actions": [
+    {
+     "id": "disconnect",
+     "label": "Disconnect",
+     "confirm": {
+      "title": "Disconnect Legacy?",
+      "message": "Its sign-ins and keys go from Studio, and its models leave the model picker there. Sessions on its models stop until you sign in again.",
+      "label": "Disconnect"
+     }
+    }
+   ],
+   "connections": [
+    {
+     "id": "cred_9",
+     "state": "ended",
+     "line": "Signed in"
+    }
+   ]
   }
  ]
 }

@@ -55,7 +55,9 @@ export type ListedCredential = Credentials["credentials"][number];
 
 const ENDED_SIGN_INS_FILE = path.join(RUN, "ended-sign-ins.json");
 
-function readEndedSignIns(): Map<string, string> {
+/** The sign-ins that ended, as kept: each plan's saved sign-in (its credential's id) that runs were
+ * refused with. One is its plan's now only while the engine still lists it as that plan's. */
+export function readEndedSignIns(): Map<string, string> {
   try {
     const kept = JSON.parse(fs.readFileSync(ENDED_SIGN_INS_FILE, "utf8"));
     return new Map(Object.entries(isObject(kept) ? kept : {}).filter(([, credential]) => typeof credential === "string") as [string, string][]);
