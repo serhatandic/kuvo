@@ -963,7 +963,7 @@ async function host() {
     for (const policy of frameClasses.values()) if (policy.targetId === targetId) policy.dirty();
   };
   setInterval(() => {
-    const groups = new Map();
+    const groups = new Map(), activeClasses = new Set();
     for (const c of clients) {
       const v = c.view;
       if (v && c.recoverAt !== undefined && Date.now() >= c.recoverAt && !c.rawView && !c.inflight?.size) {
@@ -972,11 +972,13 @@ async function host() {
         else v.scale = Math.min(c.requestedView.scale, v.scale * 1.25);
         qualityChanged(c, "recovery");
       }
+      if (v && !c.closed && own.has(v.targetId)) activeClasses.add(frameKey(v));
       if (!v || c.closed || Date.now() < (c.retryAt ?? 0) || resizing.has(v.targetId) || !own.has(v.targetId) || c.inflight?.size >= 2 || c.socket.writableLength > 120000) continue;
       const key = frameKey(v);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(c);
     }
+    for (const key of frameClasses.keys()) if (!activeClasses.has(key)) frameClasses.delete(key);
     for (const [key, group] of groups) {
       if (!frameClasses.has(key)) frameClasses.set(key, { ...framePolicy(), targetId: group[0].view.targetId });
       const policy = frameClasses.get(key);

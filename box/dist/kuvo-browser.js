@@ -1,4 +1,4 @@
-// kuvo-browser 9270d61fcac5f669
+// kuvo-browser e23987067c64bcb9
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -102,7 +102,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "45e8290c5e52";
+const KEEPER = "7056726c8302";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -982,7 +982,7 @@ async function host() {
     for (const policy of frameClasses.values()) if (policy.targetId === targetId) policy.dirty();
   };
   setInterval(() => {
-    const groups = new Map();
+    const groups = new Map(), activeClasses = new Set();
     for (const c of clients) {
       const v = c.view;
       if (v && c.recoverAt !== undefined && Date.now() >= c.recoverAt && !c.rawView && !c.inflight?.size) {
@@ -991,11 +991,13 @@ async function host() {
         else v.scale = Math.min(c.requestedView.scale, v.scale * 1.25);
         qualityChanged(c, "recovery");
       }
+      if (v && !c.closed && own.has(v.targetId)) activeClasses.add(frameKey(v));
       if (!v || c.closed || Date.now() < (c.retryAt ?? 0) || resizing.has(v.targetId) || !own.has(v.targetId) || c.inflight?.size >= 2 || c.socket.writableLength > 120000) continue;
       const key = frameKey(v);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(c);
     }
+    for (const key of frameClasses.keys()) if (!activeClasses.has(key)) frameClasses.delete(key);
     for (const [key, group] of groups) {
       if (!frameClasses.has(key)) frameClasses.set(key, { ...framePolicy(), targetId: group[0].view.targetId });
       const policy = frameClasses.get(key);

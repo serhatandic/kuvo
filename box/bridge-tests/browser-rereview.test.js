@@ -388,3 +388,17 @@ test("round3 NIT: a later large displayed frame cancels pending quality recovery
   await h.advance(2200); await settle(h);
   assert.equal(h.c.heard.all.filter(m => m.method === "Kuvo.viewQuality" && m.params.reason === "recovery").length, 0);
 });
+
+test("round3 NIT: an inactive picture class cannot retain the old view's slow capture floor", async t => {
+  const h = await page(t);
+  h.answer("Page.captureScreenshot", () => ({ data: "anBlZw==" }));
+  await call(h.c, "Kuvo.view", { targetId: "P", width: 393, height: 660, maxFps: 1 });
+  await capture(h);
+  const first = h.c.heard.all.find(m => m.method === "Kuvo.frame");
+  await call(h.c, "Kuvo.frameAck", { frameId: first.params.frameId });
+  await call(h.c, "Kuvo.view", { targetId: null });
+  await h.advance(100); await settle(h);
+  await call(h.c, "Kuvo.view", { targetId: "P", width: 393, height: 660, maxFps: 15 });
+  await h.advance(100); await settle(h);
+  assert.equal(h.c.heard.all.filter(m => m.method === "Kuvo.frame").length, 2);
+});
