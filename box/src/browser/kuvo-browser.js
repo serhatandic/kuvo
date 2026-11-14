@@ -1067,8 +1067,10 @@ async function host() {
         client.retryAt = undefined;
       }
       if (v && !client.rawView && info?.revision === client.viewRevision &&
-          info.scale === v.scale && info.quality === v.quality && info.bytes <= 20000 &&
-          (v.scale < client.requestedView.scale || v.quality < client.requestedView.quality)) client.recoverAt ??= Date.now() + 2000;
+          info.scale === v.scale && info.quality === v.quality) {
+        if (info.bytes <= 20000 && (v.scale < client.requestedView.scale || v.quality < client.requestedView.quality)) client.recoverAt ??= Date.now() + 2000;
+        else client.recoverAt = undefined;
+      }
       reply(); return true;
     }
     if (message.method === "Kuvo.view" || message.method === "Page.startScreencast") {

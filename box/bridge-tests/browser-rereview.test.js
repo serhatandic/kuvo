@@ -369,3 +369,22 @@ test("round3 NIT: page-scoped errors preserve the Chrome refusal and distinguish
   assert.match(timeout.error.message, /timed out/i);
   assert.doesNotMatch(timeout.error.message, /refused/i);
 });
+
+test("round3 NIT: a later large displayed frame cancels pending quality recovery", async t => {
+  const h = await page(t);
+  h.answer("Page.captureScreenshot", () => ({ data: "anBlZw==" }));
+  await call(h.c, "Kuvo.view", { targetId: "P", width: 1000, height: 700, scale: 2, quality: 75 });
+  await capture(h);
+  const original = h.c.heard.all.filter(m => m.method === "Kuvo.frame").at(-1);
+  await call(h.c, "Kuvo.frameDropped", { frameId: original.params.frameId, reason: "oversize" });
+  await capture(h, 100);
+  const small = h.c.heard.all.filter(m => m.method === "Kuvo.frame").at(-1);
+  await call(h.c, "Kuvo.frameAck", { frameId: small.params.frameId });
+  h.answer("Page.captureScreenshot", () => ({ data: Buffer.alloc(30000, 7).toString("base64") }));
+  await call(h.c, "Kuvo.input", { targetId: "P", kind: "text", text: "large page" });
+  await capture(h, 100);
+  const large = h.c.heard.all.filter(m => m.method === "Kuvo.frame").at(-1);
+  await call(h.c, "Kuvo.frameAck", { frameId: large.params.frameId });
+  await h.advance(2200); await settle(h);
+  assert.equal(h.c.heard.all.filter(m => m.method === "Kuvo.viewQuality" && m.params.reason === "recovery").length, 0);
+});

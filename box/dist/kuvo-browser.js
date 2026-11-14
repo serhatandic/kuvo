@@ -1,4 +1,4 @@
-// kuvo-browser 4e6504b8b9f56870
+// kuvo-browser 9270d61fcac5f669
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -102,7 +102,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "e6cc64af5504";
+const KEEPER = "45e8290c5e52";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -1086,8 +1086,10 @@ async function host() {
         client.retryAt = undefined;
       }
       if (v && !client.rawView && info?.revision === client.viewRevision &&
-          info.scale === v.scale && info.quality === v.quality && info.bytes <= 20000 &&
-          (v.scale < client.requestedView.scale || v.quality < client.requestedView.quality)) client.recoverAt ??= Date.now() + 2000;
+          info.scale === v.scale && info.quality === v.quality) {
+        if (info.bytes <= 20000 && (v.scale < client.requestedView.scale || v.quality < client.requestedView.quality)) client.recoverAt ??= Date.now() + 2000;
+        else client.recoverAt = undefined;
+      }
       reply(); return true;
     }
     if (message.method === "Kuvo.view" || message.method === "Page.startScreencast") {
