@@ -181,7 +181,7 @@ test("what your other computers told shows in the All view and a lead's view, wi
   assert.equal(far.progress.note, "Writing the test");
   assert.deepEqual([far.status, far.priority, far.labels], ["in-progress", "high", ["lbl_tests"]], "where it stands, as lab said");
   assert.deepEqual(lead.labels, [{ id: "lbl_tests", name: "Tests", color: "mint" }], "a label only lab has is listed for its items");
-  assert.deepEqual(far.can, { edit: false, set: false, close: false, delete: false, restore: false }, "lab takes no change from another box yet");
+  assert.deepEqual(far.can, { edit: false, set: false, close: false, delete: false, restore: false, why: "lab runs an older Kuvo Code: update it to change this from here." }, "lab takes no change from another box yet, and the box says why");
   assert.equal(lead.owners.find(each => each.owner === "ses_far")?.title, "Far away");
   const all = await view("all");
   assert.deepEqual(new Set(all.items.map(item => item.number)), new Set([100, 500, 501, 502]));
@@ -283,7 +283,7 @@ test("a computer that isn't answering: its items show as it last told them, none
   const item = away.items.find(each => each.number === 500);
   assert.deepEqual(item.sessions.map(each => each.working), [false], "nothing on a computer that's off can be seen at work");
   assert.equal(item.status, "in-progress", "its status is as lab set it: nothing works that out");
-  assert.deepEqual(item.can, { edit: false, set: false, close: false, delete: false, restore: false }, "and nothing may be done to it");
+  assert.deepEqual(item.can, { edit: false, set: false, close: false, delete: false, restore: false, why: "lab isn't answering now (it may be asleep, off or offline): it can be changed once it's back." }, "and nothing may be done to it, the box saying why");
   assert.equal(item.progress.note, "Writing the test", "what it said is kept");
   assert.deepEqual(away.computers.map(each => [each.name, each.away]), [["lab", since]]);
   assert.equal((await route("GET", "kuvo/work-queue/refs?refs=500")).body.refs["500"].status, "in-progress", "its chip says where it stands");

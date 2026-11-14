@@ -299,7 +299,7 @@ test("you add an item from a client: Todo and Normal unless said, numbered as an
   assert.equal((await ok("GET", `kuvo/work-queue/items/${full.id}`)).item.body, "It **crashes**.");
   // For a bot of this box: in that bot's queue, where its agent's tools see it.
   const forBot = (await ok("POST", "kuvo/work-queue/items", { title: "Scout's to do", assignee: { kind: "bot", id: "bot_scout00001" } })).item;
-  assert.deepEqual([forBot.owner, forBot.assignee], ["ses_scout", { kind: "bot", id: "bot_scout00001", name: "Scout" }]);
+  assert.deepEqual([forBot.owner, forBot.assignee], ["ses_scout", { kind: "bot", id: "bot_scout00001", name: "Scout", look: { color: "sky", shape: "round", face: "calm" } }]);
   assert.match((await tool("queue_list", {}, "ses_scout")).text, /Todo:\n- #4 "Scout's to do" · for Scout/);
   // Into the queue a client is looking at.
   assert.equal((await ok("POST", "kuvo/work-queue/items", { title: "For the lead", owner: "ses_lead" })).item.owner, "ses_lead");
@@ -313,6 +313,8 @@ test("you add an item from a client: Todo and Normal unless said, numbered as an
   // Who an item may be for: this box's bots, then the coding agents.
   assert.deepEqual(all.assignees.slice(0, 2).map(each => [each.kind, each.id, each.name]), [["bot", "bot_scout00001", "Scout"], ["agent", "claude-code", "Claude Code"]]);
   assert.deepEqual(all.assignees[0].look, { color: "sky", shape: "round", face: "calm" });
+  // What an item added with nothing said starts as, for a client's form.
+  assert.deepEqual(all.new, { status: "todo", priority: "normal" });
 
   // What isn't an item is refused, in words, and nothing is added.
   for (const [body, why] of [[{ title: "  " }, /Say what it is/], [{ title: "x", status: "soon" }, /no status soon/], [{ title: "x", priority: "max" }, /no priority max/], [{ title: "x", labels: ["Nope"] }, /no label Nope/],
@@ -395,9 +397,9 @@ test("the box says what may be done to each item, and refuses the rest", async (
   const seen = await view("ses_lead");
   const can = title => [...seen.items, ...seen.removed].find(item => item.title === title).can;
   assert.deepEqual(can("Plain"), { edit: true, set: true, close: true, delete: true, restore: false });
-  assert.deepEqual(can("To delete"), { edit: false, set: false, close: false, delete: false, restore: true });
-  assert.deepEqual(can("Item 3"), { edit: false, set: true, close: false, delete: true, restore: false });
-  assert.deepEqual(can("Item 4"), { edit: false, set: false, close: false, delete: true, restore: false });
+  assert.deepEqual(can("To delete"), { edit: false, set: false, close: false, delete: false, restore: true, why: "It's deleted: bring it back to change it." });
+  assert.deepEqual(can("Item 3"), { edit: false, set: true, close: false, delete: true, restore: false, why: "Its title, its description and closing it are GitHub's." });
+  assert.deepEqual(can("Item 4"), { edit: false, set: false, close: false, delete: true, restore: false, why: "It's on its way to Far on another computer: it can be changed there once it's arrived." });
   assert.deepEqual((await ok("GET", `kuvo/work-queue/items/${id(3)}`)).item.can, can("Item 3"), "an item whole says the same");
 
   // What it says can't be done is refused.

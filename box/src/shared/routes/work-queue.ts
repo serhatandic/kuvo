@@ -35,7 +35,7 @@ const ASSIGNEE = object({ kind: words("bot", "agent"), id: string, name: string,
 /** What whoever asked may do to an item (a client's view and answers; not what's told between
  * computers): change its title and description; where it stands among the open statuses, its
  * priority, labels, assignee, due day and place; close it (Done, Canceled); delete it; bring it back. */
-const CAN = object({ edit: bool, set: bool, close: bool, delete: bool, restore: bool });
+const CAN = object({ edit: bool, set: bool, close: bool, delete: bool, restore: bool, "why?": string });
 
 /** An item as a list shows it: everything but its body and notes (how many, and the last). */
 export const QUEUE_ITEM = object({
@@ -97,6 +97,8 @@ export const QUEUE_COUNTS = object({ open: number, statuses: map(number), priori
 
 /** An owner's view; with `counts=1`, its counts too; with `q`, only what the words are in. */
 export const QUEUE_VIEW = object({ owner: string, statuses: list(QUEUE_STATUS), priorities: list(QUEUE_PRIORITY), labels: list(QUEUE_LABEL), assignees: list(ASSIGNEE),
+  /** What an item added with nothing said starts as. */
+  new: object({ status: string, priority: string }),
   items: list(QUEUE_ITEM), owners: list(QUEUE_OWNER), removed: list(QUEUE_ITEM),
   computers: list(object({ ...COMPUTER.object, at: number, "away?": number })), "counts?": QUEUE_COUNTS, "q?": string });
 

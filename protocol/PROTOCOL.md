@@ -5428,7 +5428,7 @@ number asked back), `owner` (`ses_…`,
 (its place among the items of its status, of every owner on
 the box), `priority` (`urgent`, `high`, `normal` or `low`; always said, `normal` for one never
 set), `labels` (`[id]`, several; only ones the view's `labels` list), `assignee` (`{kind: bot|agent,
-id, name}`, who it's for; missing for no one), `due` (`YYYY-MM-DD`, a day, no time or zone;
+id, name, look?}`, who it's for, a bot of the box asked with its `look`; missing for no one), `due` (`YYYY-MM-DD`, a day, no time or zone;
 missing for none), `can` (what whoever asked may do to it, below), `progress` (`{value?: 0…1,
 note?}`: how far, and what's being done now),
 `sessions` (`[{session, title, working}]`: the sessions working on it, and which are at work now;
@@ -5524,8 +5524,8 @@ in the All view, and its own (`owner=usr_you`; `owners` names it `{owner: "usr_y
 title: null}`); no agent's view has it, and it never moves to another computer with a conversation.
 
 **What may be done** (`can`, on every item of a view and of an answer to a client): `{edit, set,
-close, delete, restore}`, so a client offers nothing the box would refuse, and works none of it out
-itself. `edit`: its title and description (never an issue's or a pull request's: GitHub's).
+close, delete, restore, why?}`, so a client offers nothing the box would refuse, and works none of it out
+itself; `why`, where something can't be done, says so in words a client shows as they are. `edit`: its title and description (never an issue's or a pull request's: GitHub's).
 `set`: its status among the open ones, its priority, labels, assignee, due day and place (not an
 issue's while GitHub has it closed). `close`: Done or Canceled (never an issue's: GitHub closes
 it). `delete`; `restore` (a deleted one, and nothing else then). All false while its conversation
@@ -5564,7 +5564,8 @@ before (a linked item is its owner's to change). A client shows them first, as "
 (`item.owner` isn't the view's `owner`, and the item's `sessions` include it).
 
 - `GET kuvo/work-queue?owner=<ses_…|grp_…|usr_you>` → `{owner, statuses, priorities, labels,
-  assignees, items, owners, removed, computers}`: `items` in the statuses' order, then this box's first and each other computer's
+  assignees, new, items, owners, removed, computers}`: `new` (`{status, priority}`) is what an item
+  added with nothing said starts as, for a client's form to show; `items` in the statuses' order, then this box's first and each other computer's
   after, by its name (each computer keeps its own order), then each one's order; `owners` (`[{owner, kind:
   bot|session|group|you, title, bot?: {id, name}, startedBy?}]`) names each owner in the view;
   `removed`, what's deleted in it here, newest first; `computers` (`[{key, name, kind, id?, at,

@@ -75,6 +75,8 @@ const toldItem = (item: Item, working: Set<string>, titles: Map<string, { title:
   const from = [...new Set((item.handed ?? []).map(each => each.from))];
   const read = summary.seen ? seenOf(item.source) : undefined;
   const checked = read ? read.checked ?? read.at : undefined;
+  // (A bot's look is this box's to draw with: another computer has its name.)
+  if (summary.assignee?.look !== undefined) summary.assignee = { kind: summary.assignee.kind, id: summary.assignee.id, name: summary.assignee.name };
   return { ...summary, ...(summary.lastNote ? { lastNote: { ...summary.lastNote, text: summary.lastNote.text.slice(0, 500) } } : {}), ...(from.length ? { handedFrom: from } : {}),
     ...(summary.seen && checked !== undefined ? { seen: { ...summary.seen, checked } } : {}) };
 };

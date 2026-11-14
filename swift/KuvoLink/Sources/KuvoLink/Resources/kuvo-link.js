@@ -22603,7 +22603,7 @@ function assigneeFor(given) {
 function assigneeNamed(assignee, all = assignable(), told) {
   const here = all.find((each) => each.kind === assignee.kind && each.id === assignee.id);
   const name = here?.name ?? (isObject(told) && typeof told.name === "string" ? plainName(told.name).slice(0, 100) : "") ?? "";
-  return { kind: assignee.kind, id: assignee.id, name: name || (assignee.kind === "bot" ? "A bot on another computer" : assignee.id) };
+  return { kind: assignee.kind, id: assignee.id, name: name || (assignee.kind === "bot" ? "A bot on another computer" : assignee.id), ...here?.look ? { look: here.look } : {} };
 }
 
 // box/src/link/work-queue/github.ts
@@ -23141,16 +23141,23 @@ async function sessionsNamed(ids, facts, targets, cache) {
   }
   return found;
 }
-function canOf(item, { moving = false, away = false } = {}) {
+function canOf(item, { moving = false, away = false, older = false, apart = false } = {}) {
   const none = { edit: false, set: false, close: false, delete: false, restore: false };
-  if (moving || away)
-    return none;
+  const there = item.computer?.name ?? "Its computer";
+  if (moving)
+    return { ...none, why: "Its conversation is moving to another computer: it can be changed once it's there." };
+  if (away)
+    return { ...none, why: `${there} isn't answering now (it may be asleep, off or offline): it can be changed once it's back.` };
+  if (apart)
+    return { ...none, why: `It's on ${there}: change it there.` };
+  if (older)
+    return { ...none, why: `${there} runs an older Kuvo Code: update it to change this from here.` };
   if (item.removed)
-    return { ...none, restore: true };
+    return { ...none, restore: true, why: "It's deleted: bring it back to change it." };
   if (item.handing)
-    return { ...none, delete: true };
+    return { ...none, delete: true, why: `It's on its way to ${item.handing.name || "a conversation"} on another computer: it can be changed there once it's arrived.` };
   if (item.source)
-    return { ...none, set: item.keptIn === undefined, delete: true };
+    return { ...none, set: item.keptIn === undefined, delete: true, why: item.keptIn === undefined ? "Its title, its description and closing it are GitHub's." : "It's closed on GitHub: it's back where it stood once it's reopened there." };
   return { edit: true, set: true, close: true, delete: true, restore: false };
 }
 function summaryOf(item, working, titles, assignables) {
@@ -26078,6 +26085,8 @@ var toldItem = (item, working, titles) => {
   const from = [...new Set((item.handed ?? []).map((each) => each.from))];
   const read = summary.seen ? seenOf(item.source) : undefined;
   const checked = read ? read.checked ?? read.at : undefined;
+  if (summary.assignee?.look !== undefined)
+    summary.assignee = { kind: summary.assignee.kind, id: summary.assignee.id, name: summary.assignee.name };
   return {
     ...summary,
     ...summary.lastNote ? { lastNote: { ...summary.lastNote, text: summary.lastNote.text.slice(0, 500) } } : {},
@@ -43697,7 +43706,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "6d15cd5cc039";
+var BRIDGE_VERSION = "f1f49216f6cd";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -52467,7 +52476,8 @@ async function viewOf2(owner, targets, facts, signal, cache, wait = GITHUB_WAIT,
     const said = withCan(summaryOf(item, known.working, titles, who), moving);
     return said.labels.every((each) => names.has(each)) ? said : { ...said, labels: said.labels.filter((each) => names.has(each)) };
   };
-  const cant = new Set(elsewhere.computers.filter((each) => each.away !== undefined || !takesChanges(each.key) || shared).map((each) => each.key));
+  const away = new Set(elsewhere.computers.filter((each) => each.away !== undefined).map((each) => each.key));
+  const older = new Set(elsewhere.computers.filter((each) => !takesChanges(each.key)).map((each) => each.key));
   const found = (item) => !q || says2(q, item, names);
   return {
     owner,
@@ -52475,9 +52485,10 @@ async function viewOf2(owner, targets, facts, signal, cache, wait = GITHUB_WAIT,
     priorities: [...PRIORITIES],
     labels: shown,
     assignees: who,
+    new: { status: "todo", priority: "normal" },
     items: byPlace([
       ...all.filter((item) => !item.removed && found(item)).map(summary),
-      ...elsewhere.items.filter(found).map(({ handedFrom: _, ...item }) => ({ ...item, labels: item.labels.filter((each) => names.has(each)), can: canOf(item, { away: cant.has(item.computer.key) }) }))
+      ...elsewhere.items.filter(found).map(({ handedFrom: _, ...item }) => ({ ...item, labels: item.labels.filter((each) => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), older: older.has(item.computer.key), apart: shared }) }))
     ]),
     owners: [...owners, ...elsewhere.owners.filter((each) => !named.has(each.owner))],
     removed: all.filter((item) => item.removed && found(item)).sort((a, b) => b.removed.at - a.removed.at).map(summary),
@@ -52646,11 +52657,11 @@ async function* workQueueRoute(context, match) {
       if (whole)
         return yield* json(200, { item: { ...whole, computer: far.computer, told: false } });
     }
-    const cant = !fromClient(context) || awaySince(far.computer.key) !== null || !takesChanges(far.computer.key) || sharedMachine(readLink());
+    const cant = { away: awaySince(far.computer.key) !== null, older: !takesChanges(far.computer.key), apart: !fromClient(context) || sharedMachine(readLink()) };
     await readSeen([itemElsewhere(ref, readLink(), { asTold: true }) ?? far], GITHUB_WAIT);
     far = itemElsewhere({ id: far.id }) ?? far;
     const { handedFrom: _, ...summary } = far;
-    return yield* json(200, { item: { ...summary, can: canOf(summary, { away: cant }), body: "", notes: [], events: [], files: [], links: [], handed: [], told: true } });
+    return yield* json(200, { item: { ...summary, can: canOf(summary, cant), body: "", notes: [], events: [], files: [], links: [], handed: [], told: true } });
   }
   if (action?.startsWith("files/") && method === "GET") {
     let name = "";

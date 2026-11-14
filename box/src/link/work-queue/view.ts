@@ -102,7 +102,8 @@ export interface ItemSummary {
   order: number;
   priority: string;
   labels: string[];
-  assignee?: Assignee & { name: string };
+  /** Who it's for, by name; a bot of this box with its look (its face). */
+  assignee?: Assignee & { name: string; look?: unknown };
   due?: string;
   progress?: { value?: number; note?: string };
   sessions: SessionFacts[];
@@ -153,15 +154,21 @@ export interface ItemWhole extends ItemSummary {
  * which GitHub closes); `delete` it; `restore` it (a deleted one, and nothing else then). None
  * of them while its conversation moves to another computer (`moving`), or its computer isn't
  * answering (`away`); only `delete` while it's on its way to another computer. */
-export interface Can { edit: boolean; set: boolean; close: boolean; delete: boolean; restore: boolean }
+export interface Can { edit: boolean; set: boolean; close: boolean; delete: boolean; restore: boolean; why?: string }
 
-export function canOf(item: Pick<ItemSummary, "removed" | "handing" | "source" | "seen" | "keptIn">, { moving = false, away = false }: { moving?: boolean; away?: boolean } = {}): Can {
+/** `why`: where something can't be done, the reason in words a client shows as they are. */
+export function canOf(item: Pick<ItemSummary, "removed" | "handing" | "source" | "seen" | "keptIn" | "computer">, { moving = false, away = false, older = false, apart = false }: { moving?: boolean; away?: boolean; older?: boolean; apart?: boolean } = {}): Can {
   const none = { edit: false, set: false, close: false, delete: false, restore: false };
-  if (moving || away) return none;
-  if (item.removed) return { ...none, restore: true };
-  if (item.handing) return { ...none, delete: true };
+  const there = item.computer?.name ?? "Its computer";
+  if (moving) return { ...none, why: "Its conversation is moving to another computer: it can be changed once it's there." };
+  if (away) return { ...none, why: `${there} isn't answering now (it may be asleep, off or offline): it can be changed once it's back.` };
+  // (A machine Macs share outside one setup hands nothing on to another computer.)
+  if (apart) return { ...none, why: `It's on ${there}: change it there.` };
+  if (older) return { ...none, why: `${there} runs an older Kuvo Code: update it to change this from here.` };
+  if (item.removed) return { ...none, restore: true, why: "It's deleted: bring it back to change it." };
+  if (item.handing) return { ...none, delete: true, why: `It's on its way to ${item.handing.name || "a conversation"} on another computer: it can be changed there once it's arrived.` };
   // (An issue GitHub closed stays Done until it's reopened there.)
-  if (item.source) return { ...none, set: item.keptIn === undefined, delete: true };
+  if (item.source) return { ...none, set: item.keptIn === undefined, delete: true, why: item.keptIn === undefined ? "Its title, its description and closing it are GitHub's." : "It's closed on GitHub: it's back where it stood once it's reopened there." };
   return { edit: true, set: true, close: true, delete: true, restore: false };
 }
 

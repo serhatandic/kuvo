@@ -101,7 +101,8 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
   };
   // (One on another computer: nothing to do to it while that one isn't answering, or doesn't take
   // what a client does from another box.)
-  const cant = new Set(elsewhere.computers.filter(each => each.away !== undefined || !takesChanges(each.key) || shared).map(each => each.key));
+  const away = new Set(elsewhere.computers.filter(each => each.away !== undefined).map(each => each.key));
+  const older = new Set(elsewhere.computers.filter(each => !takesChanges(each.key)).map(each => each.key));
   const found = (item: Parameters<typeof says>[1]) => !q || says(q, item, names);
   return {
     owner,
@@ -109,9 +110,10 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
     priorities: [...PRIORITIES],
     labels: shown,
     assignees: who,
+    new: { status: "todo", priority: "normal" },
     items: byPlace([
       ...all.filter(item => !item.removed && found(item)).map(summary),
-      ...elsewhere.items.filter(found).map(({ handedFrom: _, ...item }) => ({ ...item, labels: item.labels.filter(each => names.has(each)), can: canOf(item, { away: cant.has(item.computer.key) }) })),
+      ...elsewhere.items.filter(found).map(({ handedFrom: _, ...item }) => ({ ...item, labels: item.labels.filter(each => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), older: older.has(item.computer.key), apart: shared }) })),
     ]),
     owners: [...owners, ...elsewhere.owners.filter(each => !named.has(each.owner))],
     removed: all.filter(item => item.removed && found(item)).sort((a, b) => b.removed!.at - a.removed!.at).map(summary),
@@ -286,11 +288,11 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
       if (whole) return yield* json(200, { item: { ...whole, computer: far.computer, told: false } });
     }
     // (As it was told: nothing to do to it from here until its computer answers.)
-    const cant = !fromClient(context) || awaySince(far.computer.key) !== null || !takesChanges(far.computer.key) || sharedMachine(readLink());
+    const cant = { away: awaySince(far.computer.key) !== null, older: !takesChanges(far.computer.key), apart: !fromClient(context) || sharedMachine(readLink()) };
     await readSeen([itemElsewhere(ref, readLink(), { asTold: true }) ?? far], GITHUB_WAIT);
     far = itemElsewhere({ id: far.id }) ?? far;
     const { handedFrom: _, ...summary } = far;
-    return yield* json(200, { item: { ...summary, can: canOf(summary, { away: cant }), body: "", notes: [], events: [], files: [], links: [], handed: [], told: true } });
+    return yield* json(200, { item: { ...summary, can: canOf(summary, cant), body: "", notes: [], events: [], files: [], links: [], handed: [], told: true } });
   }
   if (action?.startsWith("files/") && method === "GET") {
     let name = "";

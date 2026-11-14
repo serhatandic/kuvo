@@ -45,8 +45,8 @@ export function assigneeFor(given: unknown): Assignee | null {
 
 /** An item's assignee as a view names it: by the name it has here, else as it was told (another
  * computer's bot), else by its id. */
-export function assigneeNamed(assignee: Assignee, all: Assignable[] = assignable(), told?: unknown): { kind: "bot" | "agent"; id: string; name: string } {
+export function assigneeNamed(assignee: Assignee, all: Assignable[] = assignable(), told?: unknown): { kind: "bot" | "agent"; id: string; name: string; look?: unknown } {
   const here = all.find(each => each.kind === assignee.kind && each.id === assignee.id);
   const name = here?.name ?? (isObject(told) && typeof told.name === "string" ? plainName(told.name).slice(0, 100) : "") ?? "";
-  return { kind: assignee.kind, id: assignee.id, name: name || (assignee.kind === "bot" ? "A bot on another computer" : assignee.id) };
+  return { kind: assignee.kind, id: assignee.id, name: name || (assignee.kind === "bot" ? "A bot on another computer" : assignee.id), ...(here?.look ? { look: here.look } : {}) };
 }

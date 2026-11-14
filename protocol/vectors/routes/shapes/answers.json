@@ -15058,6 +15058,12 @@
         }
        }
       },
+      "new": {
+       "object": {
+        "status": "string",
+        "priority": "string"
+       }
+      },
       "items": {
        "list": {
         "object": {
@@ -15096,7 +15102,8 @@
            "set": "bool",
            "close": "bool",
            "delete": "bool",
-           "restore": "bool"
+           "restore": "bool",
+           "why?": "string"
           }
          },
          "progress?": {
@@ -15334,7 +15341,8 @@
            "set": "bool",
            "close": "bool",
            "delete": "bool",
-           "restore": "bool"
+           "restore": "bool",
+           "why?": "string"
           }
          },
          "progress?": {
@@ -15596,6 +15604,12 @@
         }
        }
       },
+      "new": {
+       "object": {
+        "status": "string",
+        "priority": "string"
+       }
+      },
       "items": {
        "list": {
         "object": {
@@ -15634,7 +15648,8 @@
            "set": "bool",
            "close": "bool",
            "delete": "bool",
-           "restore": "bool"
+           "restore": "bool",
+           "why?": "string"
           }
          },
          "progress?": {
@@ -15872,7 +15887,8 @@
            "set": "bool",
            "close": "bool",
            "delete": "bool",
-           "restore": "bool"
+           "restore": "bool",
+           "why?": "string"
           }
          },
          "progress?": {
@@ -16318,7 +16334,8 @@
           "set": "bool",
           "close": "bool",
           "delete": "bool",
-          "restore": "bool"
+          "restore": "bool",
+          "why?": "string"
          }
         },
         "progress?": {
@@ -16545,7 +16562,8 @@
           "set": "bool",
           "close": "bool",
           "delete": "bool",
-          "restore": "bool"
+          "restore": "bool",
+          "why?": "string"
          }
         },
         "progress?": {
@@ -16934,7 +16952,8 @@
           "set": "bool",
           "close": "bool",
           "delete": "bool",
-          "restore": "bool"
+          "restore": "bool",
+          "why?": "string"
          }
         },
         "progress?": {
@@ -17187,7 +17206,8 @@
           "set": "bool",
           "close": "bool",
           "delete": "bool",
-          "restore": "bool"
+          "restore": "bool",
+          "why?": "string"
          }
         },
         "progress?": {
@@ -17440,7 +17460,8 @@
           "set": "bool",
           "close": "bool",
           "delete": "bool",
-          "restore": "bool"
+          "restore": "bool",
+          "why?": "string"
          }
         },
         "progress?": {
