@@ -365,6 +365,13 @@ import ClientSessions
         #expect(WorkQueue.sections(view).map(\.name) == ["In progress", "Needs you", "Todo", "Done", "Canceled"])
         #expect(WorkQueue.sections(view).map { $0.items.map(\.name) } == [["#2"], ["#1"], [], [], ["#3"]])
         #expect(WorkQueue.openCount(view) == 2, "a canceled one isn't open")
+        // Move To offers what the box says may be done, and nothing it would refuse.
+        var issue = first
+        issue.can = WorkCan(edit: false, set: true, close: false, delete: true, restore: false)
+        #expect(WorkQueue.moveTargets(for: issue, in: view.categories).map(\.id) == ["todo"], "an issue's Done and Canceled are GitHub's")
+        issue.can = WorkCan(edit: false, set: false, close: false, delete: false, restore: false)
+        #expect(WorkQueue.moveTargets(for: issue, in: view.categories).isEmpty, "on a computer that isn't answering, nothing")
+        #expect(WorkQueue.moveTargets(for: first, in: view.categories).map(\.id) == ["todo", "done", "canceled"])
     }
 
     @Test func anItemWholeHasItsBodyNotesAndFiles() throws {

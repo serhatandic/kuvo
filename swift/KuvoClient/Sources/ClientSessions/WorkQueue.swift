@@ -52,6 +52,17 @@ public struct WorkCan: Codable, Hashable, Sendable {
     public var close: Bool
     public var delete: Bool
     public var restore: Bool
+    /// Where something can't be done, why, in the box's words.
+    public var why: String?
+
+    public init(edit: Bool, set: Bool, close: Bool, delete: Bool, restore: Bool, why: String? = nil) {
+        self.edit = edit
+        self.set = set
+        self.close = close
+        self.delete = delete
+        self.restore = restore
+        self.why = why
+    }
 }
 
 /// Who wrote something: you, a session (by its name then), or someone else the box kept as it
@@ -780,17 +791,19 @@ public enum WorkQueue {
         return names.isEmpty ? nil : names.joined(separator: ", ")
     }
 
-    /// Where an item may be moved to from a menu: every category but the one it's in. In progress
-    /// isn't one (the box works it out from the sessions at work); nor is Done for an issue or a
-    /// pull request, which is Done when it's closed there, and stays so until it's reopened.
+    /// Where an item may be moved to from a menu: every status but the one it has (In progress has
+    /// a section of its own, and isn't one of `categories`), as far as the box says it may be
+    /// (`can`): none where its status can't be set, and neither Done nor Canceled where it can't be
+    /// closed here (an issue or a pull request, closed on GitHub).
     public static func moveTargets(for item: WorkItem, in categories: [WorkCategory]) -> [WorkCategory] {
         guard canMove(item) else { return [] }
-        return categories.filter { $0.id != item.category && (item.closesOn == nil || $0.id != WorkCategory.done) }
+        let closes = item.can?.close ?? (item.closesOn == nil)
+        return categories.filter { $0.id != item.category && (closes || ($0.id != WorkCategory.done && $0.id != WorkCategory.canceled)) }
     }
 
-    /// Whether you can move it at all: not one its source makes Done (an issue closed on GitHub),
-    /// which the box says by the category it keeps it in (`keptIn`).
-    public static func canMove(_ item: WorkItem) -> Bool { item.keptIn == nil }
+    /// Whether you can move it at all, as the box says (`can.set`); from a box's answer without
+    /// it, not one its source makes Done (`keptIn`).
+    public static func canMove(_ item: WorkItem) -> Bool { item.can?.set ?? (item.keptIn == nil) }
 }
 
 /// What both apps draw an item's name with, in a list or a chip: the mark of the service its source
