@@ -454,6 +454,11 @@ impl QueueView {
     pub fn set_said(&mut self, said: Reading<QueueSaid>, cx: &mut Context<Self>) {
         if self.said != said {
             self.said = said;
+            // (The queue changed: a narrowed list, which is the box's answer to another ask, is
+            // asked for again, or it would show what was until you changed something.)
+            if !self.narrowing().is_empty() {
+                self.search(cx);
+            }
             self.rebuild(cx);
         }
     }
