@@ -210,3 +210,39 @@ test("a reopened still view gets its first picture even when its JPEG has not ch
   await h.advance(100); await settle(h);
   assert.equal(h.c.heard.all.filter(m => m.method === "Kuvo.frame").length, 2);
 });
+
+test("captures wait for pending viewport changes before reading their source DPR", async t => {
+  const h = await page(t);
+  let release;
+  h.answer("Emulation.setPageScaleFactor", () => new Promise(resolve => { release = resolve; }));
+  h.answer("Page.captureScreenshot", () => ({ data: "anBlZw==" }));
+  const id = next++;
+  h.c.send({ id, method: "Kuvo.view", params: { targetId: "P", width: 393, height: 660 } });
+  await h.chrome.until(m => m.method === "Emulation.setPageScaleFactor");
+  const observer = await h.client(); await observer.heard.until(m => m.method === "Kuvo.hello");
+  await h.advance(100); await settle({ ...h, c: observer });
+  assert.equal(captures(h), 0, "a frame must not mix old cached dimensions with new Chrome metrics");
+  release({});
+  await h.c.heard.until(m => m.id === id);
+  await capture(h, 100);
+  const shot = h.chrome.all.find(m => m.method === "Page.captureScreenshot");
+  assert.equal(shot.params.clip.width, 393);
+  assert.equal(shot.params.clip.scale, 1);
+});
+
+test("an in-flight picture is discarded if its source metrics change before delivery", async t => {
+  const h = await page(t);
+  let release;
+  h.answer("Page.captureScreenshot", () => new Promise(resolve => { release = resolve; }));
+  await call(h.c, "Kuvo.view", { targetId: "P", width: 393, height: 660 });
+  await h.advance(100);
+  await h.chrome.until(m => m.method === "Page.captureScreenshot");
+  const agent = await h.client(); await agent.heard.until(m => m.method === "Kuvo.hello");
+  await call(agent, "Kuvo.setStatus", { targetId: "P", working: true });
+  release({ data: "b2xk" });
+  await settle(h);
+  assert.equal(h.c.heard.all.filter(m => m.method === "Kuvo.frame").length, 0);
+  h.answer("Page.captureScreenshot", () => ({ data: "bmV3" }));
+  await capture(h, 100);
+  assert.equal(h.c.heard.all.filter(m => m.method === "Kuvo.frame").at(-1).params.data, "bmV3");
+});

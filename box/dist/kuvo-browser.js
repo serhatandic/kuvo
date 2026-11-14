@@ -1,4 +1,4 @@
-// kuvo-browser 3655d6e2ee28faf3
+// kuvo-browser c483eafd82f71484
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -101,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "f584f1c05da3";
+const KEEPER = "9288d8629c18";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -900,6 +900,7 @@ async function host() {
   const titles = new Map();
   // Live view: one capture per size/quality class, independent of how many clients draw it.
   const agentSizes = new Map();
+  const resizing = new Map();
   const sizes = new Map(), loading = new Set(), histories = new Map(), dialogs = new Map();
   const pages = () => ({ active, pages: [...targets].map(targetId => ({
     targetId, url: addresses.get(targetId) ?? "", title: titles.get(targetId) ?? "",
@@ -927,10 +928,17 @@ async function host() {
     if (!own.has(target) || (by === "viewer" && workingIn(target))) return;
     const previous = sizes.get(target);
     if (previous?.by === by && ["width", "height", "scale", "zoom"].every(key => (previous[key] ?? 1) === (size[key] ?? 1))) return;
-    await requiredCall("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: size.scale, mobile: false }, own.get(target));
-    await requiredCall("Emulation.setPageScaleFactor", { pageScaleFactor: size.zoom ?? 1 }, own.get(target));
-    sizes.set(target, { ...size, by });
-    broadcast({ method: "Kuvo.viewport", params: { targetId: target, ...size, by } });
+    const change = {};
+    resizing.set(target, change);
+    try {
+      await requiredCall("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: size.scale, mobile: false }, own.get(target));
+      sizes.set(target, { ...size, zoom: previous?.zoom ?? 1, by });
+      await requiredCall("Emulation.setPageScaleFactor", { pageScaleFactor: size.zoom ?? 1 }, own.get(target));
+      sizes.set(target, { ...size, by });
+      broadcast({ method: "Kuvo.viewport", params: { targetId: target, ...size, by } });
+    } finally {
+      if (resizing.get(target) === change) resizing.delete(target);
+    }
   };
   let viewOrder = 0;
   const nativeSize = () => ({ ...sizeFor({}), scale: 2 });
@@ -965,7 +973,7 @@ async function host() {
         else v.scale = Math.min(c.requestedView.scale, v.scale * 1.25);
         qualityChanged(c, "recovery");
       }
-      if (!v || c.closed || !own.has(v.targetId) || c.inflight?.size >= 2 || c.socket.writableLength > 120000) continue;
+      if (!v || c.closed || resizing.has(v.targetId) || !own.has(v.targetId) || c.inflight?.size >= 2 || c.socket.writableLength > 120000) continue;
       const key = frameKey(v);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(c);
@@ -979,7 +987,8 @@ async function host() {
       if (!ready.length) continue;
       capturing.add(key);
       // clip.scale changes only the picture; a viewer never changes an agent's layout.
-      const size = sizes.get(v.targetId) ?? { width: 1280, height: 800, scale: 2 };
+      const sizeState = sizes.get(v.targetId);
+      const size = sizeState ?? { width: 1280, height: 800, scale: 2 };
       const scale = Math.min(v.width / size.width, v.height / size.height) * v.scale;
       (async () => {
         const metrics = await ownCall("Page.getLayoutMetrics", {}, own.get(v.targetId));
@@ -989,7 +998,7 @@ async function host() {
         clip: { x: scrollX, y: scrollY, width: size.width, height: size.height, scale: scale / size.scale } }, own.get(v.targetId));
         return { ...result, scrollX, scrollY };
       })().then(result => {
-        if (!result?.data) return;
+        if (!result?.data || resizing.has(v.targetId) || sizes.get(v.targetId) !== sizeState) return;
         const digest = JSON.stringify([key, result.data, result.scrollX, result.scrollY]);
         policy.captured(digest, Date.now(), Math.max(...ready.map(c => c.view?.maxFps ?? 15)));
         for (const c of ready) {
