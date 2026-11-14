@@ -3391,6 +3391,9 @@
             "literal": "file"
            },
            {
+            "literal": "file.text"
+           },
+           {
             "literal": "folders"
            },
            {
@@ -3409,7 +3412,13 @@
             "literal": "git.branches"
            },
            {
+            "literal": "git.branches.pullRequest"
+           },
+           {
             "literal": "git.branches.worktree"
+           },
+           {
+            "literal": "git.changes.binary"
            },
            {
             "literal": "git.changes.count"
@@ -3419,6 +3428,9 @@
            },
            {
             "literal": "git.files"
+           },
+           {
+            "literal": "git.files.does"
            },
            {
             "literal": "git.merge"
@@ -3569,6 +3581,9 @@
            },
            {
             "literal": "sandbox.check"
+           },
+           {
+            "literal": "sandbox.opens"
            },
            {
             "literal": "sandbox.reviews.settled"
@@ -3940,6 +3955,9 @@
             "literal": "file"
            },
            {
+            "literal": "file.text"
+           },
+           {
             "literal": "folders"
            },
            {
@@ -3958,7 +3976,13 @@
             "literal": "git.branches"
            },
            {
+            "literal": "git.branches.pullRequest"
+           },
+           {
             "literal": "git.branches.worktree"
+           },
+           {
+            "literal": "git.changes.binary"
            },
            {
             "literal": "git.changes.count"
@@ -3968,6 +3992,9 @@
            },
            {
             "literal": "git.files"
+           },
+           {
+            "literal": "git.files.does"
            },
            {
             "literal": "git.merge"
@@ -4118,6 +4145,9 @@
            },
            {
             "literal": "sandbox.check"
+           },
+           {
+            "literal": "sandbox.opens"
            },
            {
             "literal": "sandbox.reviews.settled"
@@ -5354,6 +5384,53 @@
    }
   },
   {
+   "route": "GET kuvo/file/text",
+   "answers": {
+    "200": {
+     "oneOf": [
+      {
+       "object": {
+        "text": {
+         "literal": false
+        }
+       }
+      },
+      {
+       "object": {
+        "text": {
+         "literal": true
+        },
+        "encoding": {
+         "literal": "utf-8"
+        },
+        "content": "string"
+       }
+      }
+     ]
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "413": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
    "route": "GET kuvo/phones",
    "answers": {
     "200": {
@@ -6382,6 +6459,9 @@
         "uncommitted": "bool",
         "big?": {
          "literal": true
+        },
+        "binary?": {
+         "literal": true
         }
        }
       }
@@ -6511,6 +6591,40 @@
            "stamp?": "string",
            "repository?": {
             "literal": true
+           },
+           "stage": {
+            "oneOf": [
+             {
+              "literal": "stage"
+             },
+             {
+              "literal": "unstage"
+             },
+             {
+              "literal": "resolve"
+             }
+            ]
+           },
+           "discards?": {
+            "object": {
+             "kind": {
+              "oneOf": [
+               {
+                "literal": "trash"
+               },
+               {
+                "literal": "restore"
+               },
+               {
+                "literal": "undoMove"
+               },
+               {
+                "literal": "changes"
+               }
+              ]
+             },
+             "undoable": "bool"
+            }
            }
           }
          }
@@ -6527,6 +6641,7 @@
          ]
         },
         "stagedElsewhere": "number",
+        "takes": "number",
         "more?": "number",
         "underway?": {
          "oneOf": [
@@ -6652,6 +6767,40 @@
            "stamp?": "string",
            "repository?": {
             "literal": true
+           },
+           "stage": {
+            "oneOf": [
+             {
+              "literal": "stage"
+             },
+             {
+              "literal": "unstage"
+             },
+             {
+              "literal": "resolve"
+             }
+            ]
+           },
+           "discards?": {
+            "object": {
+             "kind": {
+              "oneOf": [
+               {
+                "literal": "trash"
+               },
+               {
+                "literal": "restore"
+               },
+               {
+                "literal": "undoMove"
+               },
+               {
+                "literal": "changes"
+               }
+              ]
+             },
+             "undoable": "bool"
+            }
            }
           }
          }
@@ -6668,6 +6817,7 @@
          ]
         },
         "stagedElsewhere": "number",
+        "takes": "number",
         "more?": "number",
         "underway?": {
          "oneOf": [
@@ -6728,6 +6878,7 @@
         "branches": {
          "list": "string"
         },
+        "pullRequest": "bool",
         "worktree?": {
          "object": {
           "into": {
@@ -8954,6 +9105,10 @@
       },
       "route?": "string",
       "actionLabel?": "string",
+      "opens?": "string",
+      "opensHere?": {
+       "literal": true
+      },
       "needs?": "string",
       "check?": {
        "oneOf": [
@@ -9060,6 +9215,10 @@
       },
       "route?": "string",
       "actionLabel?": "string",
+      "opens?": "string",
+      "opensHere?": {
+       "literal": true
+      },
       "needs?": "string",
       "check?": {
        "oneOf": [
@@ -9166,6 +9325,10 @@
       },
       "route?": "string",
       "actionLabel?": "string",
+      "opens?": "string",
+      "opensHere?": {
+       "literal": true
+      },
       "needs?": "string",
       "check?": {
        "oneOf": [

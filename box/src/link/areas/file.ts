@@ -1,9 +1,11 @@
 // A file on this box that an agent's reply or tool names (PROTOCOL.md, `kuvo/file`): its bytes, by its
-// `file://` address, for a client to show, a machine's with the Mac closed too.
+// `file://` address, for a client to show, a machine's with the Mac closed too; and its text, where
+// it's text, for a viewer (`kuvo/file/text`).
 
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { FileText } from "../../shared/routes/box";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 // The biggest file `kuvo/file` sends.
@@ -19,7 +21,7 @@ const TYPES: Record<string, string> = {
 // `kuvo/file?uri=<file:// URI>[&max=<bytes>]`: a file on this machine, as an agent's reply or tool
 // names it: its bytes with its type; 404 with a message for one that isn't there (or isn't a
 // file), 413 over FILE_LIMIT, or over `max` (all a client would show of it).
-export async function* fileAt(requestPath: string, json: RouteContext["json"]): AsyncGenerator<AnswerPiece> {
+export async function* fileAt(requestPath: string, json: RouteContext["json"], asText = false): AsyncGenerator<AnswerPiece> {
   const query = requestPath.includes("?") ? requestPath.slice(requestPath.indexOf("?") + 1) : "";
   const asked = new URLSearchParams(query);
   const uri = asked.get("uri");
@@ -45,11 +47,31 @@ export async function* fileAt(requestPath: string, json: RouteContext["json"]): 
     const refused = (["EACCES", "EPERM"] as (string | undefined)[]).includes((error as NodeJS.ErrnoException)?.code);
     return yield* json(refused ? 403 : 404, { message: refused ? "That file can’t be opened here." : "That file isn’t there anymore." });
   }
+  if (asText) {
+    let bytes: Buffer;
+    try {
+      bytes = await handle.readFile();
+    } finally {
+      await handle.close().catch(() => {});
+    }
+    return yield* json(200, textOf(bytes));
+  }
   yield { head: { status: 200, headers: { "content-type": type, "content-length": String(stat.size) } } };
   // In pieces, as the engine's bodies go.
   try {
     for await (const piece of handle.createReadStream({ highWaterMark: 32 * 1024 })) yield { body: piece };
   } finally {
     await handle.close().catch(() => {});
+  }
+}
+/** Whether a file is text a viewer shows, and its text (`kuvo/file/text`, `file.text`): UTF-8 with
+ * no NUL byte in it, the only encoding read here (so a UTF-16 file, a picture or a program isn't);
+ * a mark at its start saying so (a BOM) isn't part of the text. */
+export function textOf(bytes: Buffer): FileText {
+  if (bytes.includes(0)) return { text: false };
+  try {
+    return { text: true, encoding: "utf-8", content: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
+  } catch {
+    return { text: false };
   }
 }

@@ -62,13 +62,13 @@ test("a folder's changes come grouped, a file partly staged in both groups, each
   for (const file of listed.files) expect(typeof file.stamp).toBe("string")
   for (const file of listed.files) delete file.stamp
   expect(listed).toEqual({
-    repository: true, root: top, branch: "main", uncommitted: true, commits: "staged", stagedElsewhere: 0,
+    repository: true, root: top, branch: "main", uncommitted: true, commits: "staged", stagedElsewhere: 0, takes: 2,
     files: [
-      { path: "app/Form.tsx", group: "staged", status: "modified", scope: "staged", additions: 1, deletions: 1, discard: "head" },
-      { path: "app/new.ts", oldPath: "app/old.ts", group: "staged", status: "renamed", scope: "staged", additions: 0, deletions: 0, discard: "head" },
-      { path: "app/Form.tsx", group: "unstaged", status: "modified", scope: "unstaged", additions: 1, deletions: 0, discard: "unstaged" },
-      { path: "README.md", group: "unstaged", status: "deleted", scope: "unstaged", additions: 0, deletions: 1, discard: "unstaged" },
-      { path: "docs/Plan 2.md", group: "untracked", status: "added", scope: "unstaged", discard: "trash" },
+      { path: "app/Form.tsx", group: "staged", status: "modified", scope: "staged", stage: "unstage", additions: 1, deletions: 1, discard: "head", discards: { kind: "changes", undoable: false } },
+      { path: "app/new.ts", oldPath: "app/old.ts", group: "staged", status: "renamed", scope: "staged", stage: "unstage", additions: 0, deletions: 0, discard: "head", discards: { kind: "undoMove", undoable: true } },
+      { path: "app/Form.tsx", group: "unstaged", status: "modified", scope: "unstaged", stage: "stage", additions: 1, deletions: 0, discard: "unstaged", discards: { kind: "changes", undoable: false } },
+      { path: "README.md", group: "unstaged", status: "deleted", scope: "unstaged", stage: "stage", additions: 0, deletions: 1, discard: "unstaged", discards: { kind: "restore", undoable: true } },
+      { path: "docs/Plan 2.md", group: "untracked", status: "added", scope: "unstaged", stage: "stage", discard: "trash", discards: { kind: "trash", undoable: true } },
     ],
   })
 
@@ -78,7 +78,7 @@ test("a folder's changes come grouped, a file partly staged in both groups, each
 
   // Nothing changed: an empty list, nothing uncommitted; outside a repository, none.
   const clean = repository("clean")
-  expect(await files(clean)).toEqual({ repository: true, root: clean, branch: "main", files: [], uncommitted: false, commits: "all", stagedElsewhere: 0 })
+  expect(await files(clean)).toEqual({ repository: true, root: clean, branch: "main", files: [], uncommitted: false, commits: "all", stagedElsewhere: 0, takes: 0 })
   mkdirSync(join(box, "plain"))
   expect(await files(join(box, "plain"))).toEqual({ repository: false })
   expect((await ask(handler, "GET", `kuvo/git/files?directory=${encodeURIComponent(join(box, "gone"))}`)).status).toBe(404)
@@ -95,7 +95,8 @@ test("a file both sides changed in a merge is a conflict, once, and nothing else
   spawnSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "merge", "other"], { cwd: top, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } })
 
   const listed = await files(top)
-  expect(listed.files).toEqual([{ path: "app/Form.tsx", group: "conflicted", status: "modified", scope: "uncommitted" }])
+  // Its button marks it resolved; a conflict isn't discarded, so nothing is said of one.
+  expect(listed.files).toEqual([{ path: "app/Form.tsx", group: "conflicted", status: "modified", scope: "uncommitted", stage: "resolve" }])
   expect(listed.underway).toBe("merging")
 })
 
@@ -116,9 +117,9 @@ test("names with spaces are read whole, a move's both sides; a new file staged g
   const listed = await files(top)
   for (const file of listed.files) delete file.stamp
   expect(listed.files).toEqual([
-    { path: "a b.ts", group: "staged", status: "added", scope: "staged", additions: 1, deletions: 0, discard: "trash" },
-    { path: "app/Your  Form.tsx", oldPath: "app/My Form.tsx", group: "staged", status: "renamed", scope: "staged", additions: 0, deletions: 0, discard: "head" },
-    { path: "web/", group: "untracked", status: "added", scope: "unstaged", discard: "trash", repository: true },
+    { path: "a b.ts", group: "staged", status: "added", scope: "staged", stage: "unstage", additions: 1, deletions: 0, discard: "trash", discards: { kind: "trash", undoable: true } },
+    { path: "app/Your  Form.tsx", oldPath: "app/My Form.tsx", group: "staged", status: "renamed", scope: "staged", stage: "unstage", additions: 0, deletions: 0, discard: "head", discards: { kind: "undoMove", undoable: true } },
+    { path: "web/", group: "untracked", status: "added", scope: "unstaged", stage: "stage", discard: "trash", discards: { kind: "trash", undoable: true }, repository: true },
   ])
 })
 
@@ -146,7 +147,19 @@ test("one file's diff comes alone, a move with where it was, and a new file as a
 
   // Binary, and too big to show.
   writeFileSync(join(top, "logo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 13, 0, 1]))
-  expect((await diff({ scope: "unstaged", path: "logo.png" })).patch).toContain("Binary files")
+  const logo = await diff({ scope: "unstaged", path: "logo.png" })
+  expect(logo.patch).toContain("Binary files")
+  // The box says it's binary: no client reads git's words for it. Never of a text file, even one
+  // whose own lines say "Binary files … differ".
+  expect(logo.binary).toBe(true)
+  git(top, "add", "logo.png")
+  git(top, "commit", "-q", "-m", "Logo")
+  writeFileSync(join(top, "logo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 13, 0, 2]))
+  expect((await diff({ scope: "unstaged", path: "logo.png" })).binary).toBe(true)
+  expect(form.binary).toBeUndefined()
+  expect(added.binary).toBeUndefined()
+  writeFileSync(join(top, "said.txt"), "Binary files a/x and b/x differ\n")
+  expect((await diff({ scope: "unstaged", path: "said.txt" })).binary).toBeUndefined()
   writeFileSync(join(top, "huge.txt"), "x".repeat(5 * 1024 * 1024))
   expect(await diff({ scope: "unstaged", path: "huge.txt" })).toMatchObject({ patch: "", big: true })
 
@@ -168,6 +181,32 @@ test("a worktree's branches say where Merge into… takes it; the project's own 
   expect(inProject.worktree).toBeUndefined()
 })
 
+test("a pull request is offered only where one can be made: from a branch of its own, with somewhere to push", async () => {
+  const top = repository("offered")
+  const branches = async (directory: string) => (await ask(handler, "POST", "kuvo/git/branches", { directory })).json
+  git(top, "switch", "-q", "-c", "fix-form")
+  // Nowhere to push yet.
+  expect((await branches(top)).pullRequest).toBe(false)
+  git(top, "remote", "add", "origin", "git@github.com:me/app.git")
+  expect((await branches(top)).pullRequest).toBe(true)
+  // Work not committed yet doesn't take the offer away: its confirmation says to commit first.
+  writeFileSync(join(top, "README.md"), "# App\nMore.\n")
+  expect((await branches(top)).pullRequest).toBe(true)
+  git(top, "commit", "-q", "-am", "More")
+  // The branch pull requests go into, and no branch at all: none from there.
+  git(top, "switch", "-q", "main")
+  expect((await branches(top)).pullRequest).toBe(false)
+  git(top, "switch", "-q", "--detach", "fix-form")
+  expect((await branches(top)).pullRequest).toBe(false)
+  // A worktree's goes into the branch it was made from, as its draft has it: never from that one.
+  const tree = join(box, "offered-tree")
+  git(top, "worktree", "add", "-q", "-b", "kuvo/side", tree, "fix-form")
+  expect((await branches(tree)).pullRequest).toBe(true)
+  // As Create Pull Request's confirmation answers there: refused exactly where none is offered.
+  git(top, "switch", "-q", "main")
+  expect((await ask(handler, "POST", "kuvo/git/pull-request/draft", { directory: top })).status).toBe(409)
+})
+
 test("followed, the list comes again as soon as something is staged", async () => {
   const top = repository("followed")
   writeFileSync(join(top, "README.md"), "# App\nMore.\n")
@@ -187,6 +226,13 @@ test("a Files panel's folder leaves out version control's own folder, and says w
   const { json } = await ask(handler, "GET", `kuvo/folders?path=${encodeURIComponent(top)}&files=1&hidden=1`)
   expect(json.folders).toEqual([{ name: "app" }])
   expect(json.files).toEqual([".env", "README.md"])
+  // Mercurial's and Subversion's too, as a folder or a file.
+  mkdirSync(join(top, ".hg"))
+  writeFileSync(join(top, ".svn"), "")
+  const others = await ask(handler, "GET", `kuvo/folders?path=${encodeURIComponent(top)}&files=1&hidden=1`)
+  expect([others.json.folders, others.json.files]).toEqual([[{ name: "app" }], [".env", "README.md"]])
+  rmSync(join(top, ".hg"), { recursive: true })
+  rmSync(join(top, ".svn"))
   // Asked for folders alone (a folder to choose), `.git` is still there.
   const chosen = await ask(handler, "GET", `kuvo/folders?path=${encodeURIComponent(top)}&hidden=1`)
   expect(chosen.json.folders.map((folder: any) => folder.name)).toEqual([".git", "app"])
@@ -209,10 +255,41 @@ test("what a commit takes is said for the whole repository, a staged file outsid
   expect(app.files.map((file: any) => file.group)).toEqual(["unstaged"])
   expect(app.commits).toBe("staged")
   expect(app.stagedElsewhere).toBe(1)
+  expect(app.takes).toBe(1)
   // Staged in both: it takes both, one of them outside.
   git(top, "add", "app/Form.tsx")
   const both = await files(join(top, "app"))
-  expect([both.commits, both.stagedElsewhere, both.files.length]).toEqual(["staged", 1, 1])
+  expect([both.commits, both.stagedElsewhere, both.files.length, both.takes]).toEqual(["staged", 1, 1, 2])
+  // Nothing staged: everything in the folder, a file once, as the commit itself then takes it.
+  git(top, "restore", "--staged", ".")
+  writeFileSync(join(top, "app", "new.ts"), "n\n")
+  const all = await files(join(top, "app"))
+  expect([all.commits, all.stagedElsewhere, all.takes]).toEqual(["all", 0, 2])
+  // (Its author sent along, as a client's settings would: no computer's own git identity is counted on.)
+  const author = { GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com" }
+  expect((await ask(handler, "POST", "kuvo/git/commit", { directory: join(top, "app"), message: "Both", author })).status).toBe(200)
+  expect(git(top, "show", "--name-only", "--format=", "HEAD").trim().split("\n").sort()).toEqual(["app/Form.tsx", "app/new.ts"])
+})
+
+test("a file opens as its text where it's text, and says it isn't where it isn't", async () => {
+  const folder = join(box, "viewer")
+  mkdirSync(folder)
+  const read = async (name: string, more = "") => ask(handler, "GET", `kuvo/file/text?uri=${encodeURIComponent(`file://${folder}/${name}`)}${more}`)
+  writeFileSync(join(folder, "notes.md"), "# Café\nline two\n")
+  expect((await read("notes.md")).json).toEqual({ text: true, encoding: "utf-8", content: "# Café\nline two\n" })
+  writeFileSync(join(folder, "empty.txt"), "")
+  expect((await read("empty.txt")).json).toEqual({ text: true, encoding: "utf-8", content: "" })
+  // A picture (a NUL in it), and bytes that aren't UTF-8 (Latin-1's é, a UTF-16 file): not text.
+  writeFileSync(join(folder, "logo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 13]))
+  expect((await read("logo.png")).json).toEqual({ text: false })
+  writeFileSync(join(folder, "latin.txt"), Buffer.from([0x63, 0x61, 0x66, 0xe9]))
+  expect((await read("latin.txt")).json).toEqual({ text: false })
+  writeFileSync(join(folder, "wide.txt"), Buffer.from("\ufeffhi", "utf16le"))
+  expect((await read("wide.txt")).json).toEqual({ text: false })
+  // Refused as the file's bytes are: too big to show, not there, not a file's address.
+  expect((await read("notes.md", "&max=4")).status).toBe(413)
+  expect((await read("gone.md")).status).toBe(404)
+  expect((await ask(handler, "GET", "kuvo/file/text?uri=https%3A%2F%2Fexample.com%2Fa.md")).status).toBe(400)
 })
 
 test("a discard is refused once its file changed since it was listed, and a new file committed since isn't trashed", async () => {
@@ -262,7 +339,7 @@ test("discarding a staged deletion of a file still there keeps what was on disk 
     git(top, "rm", "-q", "--cached", "README.md")
     writeFileSync(join(top, "README.md"), "# App\nEdits of mine.\n")
     const row = { ...(await files(top)).files.find((file: any) => file.group === "staged"), root: top }
-    expect([row.status, row.discard]).toEqual(["deleted", "head"])
+    expect([row.status, row.discard, row.discards]).toEqual(["deleted", "head", { kind: "restore", undoable: true }])
     expect((await discard(row)).status).toBe(200)
     expect(readFileSync(join(top, "README.md"), "utf8")).toBe("# App\n")
     const kept = spawnSync("grep", ["-rl", "Edits of mine.", trash], { encoding: "utf8" }).stdout.trim()
@@ -279,6 +356,8 @@ test("new files past the most a list names are counted, and a big file's diff is
   const listed = await files(top)
   expect(listed.files.length).toBe(1_000)
   expect(listed.more).toBe(5)
+  // A commit takes those not listed too.
+  expect([listed.commits, listed.takes]).toEqual(["all", 1_005])
   rmSync(join(top, "out"), { recursive: true, force: true })
   writeFileSync(join(top, "big.txt"), "x\n".repeat(3 * 1024 * 1024))
   git(top, "add", "big.txt")
@@ -341,7 +420,7 @@ test("a move into the folder from outside it counts the side outside", async () 
   git(top, "commit", "-q", "-m", "Other")
   git(top, "mv", "other/x.ts", "app/x.ts")
   const app = await files(join(top, "app"))
-  expect([app.commits, app.stagedElsewhere]).toEqual(["staged", 1])
+  expect([app.commits, app.stagedElsewhere, app.takes]).toEqual(["staged", 1, 2])
 })
 
 test("a staged deletion of a file just as it was committed leaves nothing in the Trash", async () => {

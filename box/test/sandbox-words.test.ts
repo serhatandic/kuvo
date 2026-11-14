@@ -11,3 +11,12 @@ test("each thing you can do about the sandbox has its button's words", async () 
   expect([actionLabel("restartEngine", "waiting"), actionLabel("restartEngine", "engineDown")]).toEqual(["Restart Engine…", "Restart Engine"])
   expect([actionLabel("help", "kernel"), actionLabel("softwareUpdate", "macos")]).toEqual(["How to Check…", "Software Update…"])
 })
+
+// What a button with no route opens is the box's to say too (`sandbox.opens`): no client keeps the
+// docs' address, or picks a system pane for a computer that may not be the one it runs on.
+test("a button that sends no route says what it opens, and whether that's this computer's own", async () => {
+  const { actionOpens } = await import("../src/link/fence/state")
+  expect(actionOpens("help")).toEqual({ opens: "https://www.kuvo.run/code/docs/machines/#sandbox" })
+  expect(actionOpens("softwareUpdate")).toEqual({ opens: "x-apple.systempreferences:com.apple.Software-Update-Settings.extension", opensHere: true })
+  for (const action of ["retry", "fix", "restartEngine"] as const) expect(actionOpens(action)).toBeUndefined()
+})

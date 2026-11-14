@@ -4202,16 +4202,20 @@ var FEATURES = [
   "engine.restart",
   "engine.start",
   "file",
+  "file.text",
   "folders",
   "folders.files",
   "folders.tree",
   "git",
   "git.backups",
   "git.branches",
+  "git.branches.pullRequest",
   "git.branches.worktree",
+  "git.changes.binary",
   "git.changes.count",
   "git.changes.path",
   "git.files",
+  "git.files.does",
   "git.merge",
   "git.pull-request",
   "git.pull-request.draft",
@@ -4262,6 +4266,7 @@ var FEATURES = [
   "sandbox",
   "sandbox.asks",
   "sandbox.check",
+  "sandbox.opens",
   "sandbox.reviews.settled",
   "sandbox.reviews.whole",
   "sandbox.words",
@@ -7121,6 +7126,15 @@ function actionLabel(action, reason) {
       return "Software Update…";
   }
 }
+var SANDBOX_HELP = "https://www.kuvo.run/code/docs/machines/#sandbox";
+var SOFTWARE_UPDATE = "x-apple.systempreferences:com.apple.Software-Update-Settings.extension";
+function actionOpens(action) {
+  if (action === "help")
+    return { opens: SANDBOX_HELP };
+  if (action === "softwareUpdate")
+    return { opens: SOFTWARE_UPDATE, opensHere: true };
+  return;
+}
 function fenceState() {
   const state = fenceNow();
   if (state.on)
@@ -7128,7 +7142,7 @@ function fenceState() {
   return {
     ...state,
     ...state.reason && !state.why ? { why: WHY[state.reason] } : {},
-    ...state.action ? { actionLabel: actionLabel(state.action, state.reason) } : {}
+    ...state.action ? { actionLabel: actionLabel(state.action, state.reason), ...state.route ? {} : actionOpens(state.action) } : {}
   };
 }
 function fenceNow() {
@@ -38244,7 +38258,7 @@ var TYPES2 = {
   css: "text/css",
   js: "text/javascript"
 };
-async function* fileAt(requestPath, json) {
+async function* fileAt(requestPath, json, asText = false) {
   const query = requestPath.includes("?") ? requestPath.slice(requestPath.indexOf("?") + 1) : "";
   const asked = new URLSearchParams(query);
   const uri = asked.get("uri");
@@ -38273,12 +38287,30 @@ async function* fileAt(requestPath, json) {
     const refused = ["EACCES", "EPERM"].includes(error?.code);
     return yield* json(refused ? 403 : 404, { message: refused ? "That file can’t be opened here." : "That file isn’t there anymore." });
   }
+  if (asText) {
+    let bytes;
+    try {
+      bytes = await handle.readFile();
+    } finally {
+      await handle.close().catch(() => {});
+    }
+    return yield* json(200, textOf3(bytes));
+  }
   yield { head: { status: 200, headers: { "content-type": type, "content-length": String(stat.size) } } };
   try {
     for await (const piece of handle.createReadStream({ highWaterMark: 32 * 1024 }))
       yield { body: piece };
   } finally {
     await handle.close().catch(() => {});
+  }
+}
+function textOf3(bytes) {
+  if (bytes.includes(0))
+    return { text: false };
+  try {
+    return { text: true, encoding: "utf-8", content: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
+  } catch {
+    return { text: false };
   }
 }
 
@@ -38438,7 +38470,7 @@ async function changesIn(directory, scope, base, only) {
 async function oneFileIn(root, against, scope, compared, args, only) {
   const paths = [only.path, ...only.oldPath ? [only.oldPath] : []];
   const known = await git2(root, ["--literal-pathspecs", "ls-files", "--error-unmatch", "--", only.path]);
-  const done = (patch, big = Buffer.byteLength(patch) > ONE_FILE_MOST) => big ? { repository: true, root, against, patch: "", untracked: [], hashes: {}, uncommitted: true, big: true } : { repository: true, root, against, patch, untracked: [], hashes: {}, uncommitted: true };
+  const done = (patch, big = Buffer.byteLength(patch) > ONE_FILE_MOST) => big ? { repository: true, root, against, patch: "", untracked: [], hashes: {}, uncommitted: true, big: true } : { repository: true, root, against, patch, untracked: [], hashes: {}, uncommitted: true, .../^Binary files .* differ$/m.test(patch) ? { binary: true } : {} };
   if (!known.ok && scope !== "staged" && !only.path.endsWith("/")) {
     const file = path131.join(root, only.path);
     try {
@@ -38510,6 +38542,11 @@ async function staleDiscard(root, file, stamp) {
   return null;
 }
 var GROUPS = ["conflicted", "staged", "unstaged", "untracked"];
+var stageOf = (group) => group === "staged" ? "unstage" : group === "conflicted" ? "resolve" : "stage";
+function discardsOf(status, oldPath) {
+  const kind = status === "added" ? "trash" : status === "renamed" && oldPath ? "undoMove" : status === "deleted" ? "restore" : "changes";
+  return { kind, undoable: kind !== "changes" };
+}
 var changeOf = (letter) => letter === "A" || letter === "C" ? "added" : letter === "D" ? "deleted" : letter === "R" ? "renamed" : "modified";
 async function linesBy(root, compared, limit) {
   const counted = new Map;
@@ -38551,7 +38588,17 @@ async function filesIn2(directory) {
     const lines = group === "staged" ? staged.get(path) : group === "unstaged" ? unstaged.get(path) : undefined;
     const discard = group === "conflicted" ? undefined : status === "added" ? "trash" : scope === "unstaged" ? "unstaged" : "head";
     const stamp = discard ? stampOf(root, path.replace(/\/$/, ""), indexed.get(path), since) + (oldPath ? `|${stampOf(root, oldPath, undefined, since)}` : "") : undefined;
-    files.push({ path, ...oldPath ? { oldPath } : {}, group, status, scope, ...lines ?? {}, ...discard ? { discard, stamp } : {}, ...path.endsWith("/") ? { repository: true } : {} });
+    files.push({
+      path,
+      ...oldPath ? { oldPath } : {},
+      group,
+      status,
+      scope,
+      stage: stageOf(group),
+      ...lines ?? {},
+      ...discard ? { discard, discards: discardsOf(status, oldPath), stamp } : {},
+      ...path.endsWith("/") ? { repository: true } : {}
+    });
   };
   const records = status.out.toString("utf8").split("\x00");
   for (let at = 0;at < records.length; at++) {
@@ -38587,6 +38634,7 @@ async function filesIn2(directory) {
   const stagedNames = (await text4(root, ["-c", "core.quotepath=off", "diff", "--cached", "--name-only", "-z", "--no-renames", "--no-ext-diff", against]) ?? "").split("\x00").filter(Boolean);
   const stagedElsewhere = stagedNames.filter((name) => !inFolder(name)).length;
   const underway = await underwayIn(root);
+  const takes = commits === "staged" ? files.filter((file) => file.group === "staged").length + stagedElsewhere : new Set(files.map((file) => file.path)).size + more;
   return {
     repository: true,
     root,
@@ -38595,6 +38643,7 @@ async function filesIn2(directory) {
     uncommitted: files.length > 0 || more > 0,
     commits,
     stagedElsewhere,
+    takes,
     ...more ? { more } : {},
     ...underway ? { underway } : {}
   };
@@ -38825,7 +38874,26 @@ async function branchesIn(directory) {
 `).map(branch).filter((name) => !!name);
   const tree = root ? await mergedFrom(root) : null;
   const worktree = tree && fs126.existsSync(tree.project) ? { into: tree.base ?? await branchOf(tree.project) } : undefined;
-  return { repository: true, root, current: branch(head), branches, ...worktree ? { worktree } : {} };
+  return { repository: true, root, current: branch(head), branches, pullRequest: root ? await pullRequestFrom(root, branch(head)) : false, ...worktree ? { worktree } : {} };
+}
+async function pullRequestFrom(directory, branch) {
+  if (!branch || !await originOf(directory))
+    return false;
+  return !isBase(branch, await pullRequestBase(directory, directory));
+}
+var isBase = (branch, base) => base === branch || !base && ["main", "master"].includes(branch);
+async function pullRequestBase(directory, root) {
+  const recorded = worktreeOf(directory)?.base;
+  if (recorded)
+    return recorded;
+  const main = (await text4(root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]))?.trim().replace(/^origin\//, "") || undefined;
+  if (main)
+    return main;
+  for (const name of ["main", "master"]) {
+    if ((await git2(root, ["rev-parse", "--verify", "-q", name])).ok || (await git2(root, ["rev-parse", "--verify", "-q", `origin/${name}`])).ok)
+      return name;
+  }
+  return;
 }
 async function switchBranch(directory, branch, create) {
   const found = await repositoryOf3(directory);
@@ -38954,16 +39022,8 @@ async function pullRequestWay(directory) {
   if (!branch)
     return { status: 409, failed: "This folder isn’t on a branch." };
   const root = (await text4(directory, ["rev-parse", "--show-toplevel"]))?.trim() ?? directory;
-  const recorded = worktreeOf(directory)?.base;
-  let main = recorded ? undefined : (await text4(root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]))?.trim().replace(/^origin\//, "") || undefined;
-  for (const name of recorded || main ? [] : ["main", "master"]) {
-    if ((await git2(root, ["rev-parse", "--verify", "-q", name])).ok || (await git2(root, ["rev-parse", "--verify", "-q", `origin/${name}`])).ok) {
-      main = name;
-      break;
-    }
-  }
-  const base = recorded ?? main;
-  if (base === branch || !base && ["main", "master"].includes(branch))
+  const base = await pullRequestBase(directory, root);
+  if (isBase(branch, base))
     return { status: 409, failed: `${branch} is the branch a pull request goes into. Make one from a branch of its own.` };
   const against = base && ((await git2(root, ["rev-parse", "--verify", "-q", base])).ok ? base : (await git2(root, ["rev-parse", "--verify", "-q", `origin/${base}`])).ok ? `origin/${base}` : undefined);
   if (against) {
@@ -42693,7 +42753,7 @@ import fs138 from "node:fs";
 import path144 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "807c170d6b6b";
+var BRIDGE_VERSION = "02c98f44218c";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -46411,7 +46471,7 @@ async function* searchRoute(context) {
     const sessions = [top, ...subagents];
     for (let start = 0;start < sessions.length; start += start === 0 ? 1 : 4) {
       const some = sessions.slice(start, start === 0 ? 1 : start + 4);
-      const kept = await Promise.all(some.map((session) => textOf3(place.name, place.target, session)));
+      const kept = await Promise.all(some.map((session) => textOf4(place.name, place.target, session)));
       const which = kept.findIndex((found) => found !== null && found.folded.includes(wanted));
       if (which < 0)
         continue;
@@ -46462,7 +46522,7 @@ function byConversation(sessions) {
   return [...conversations.values()];
 }
 var key2 = (place, id) => `${place}.${id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
-function textOf3(place, target, session) {
+function textOf4(place, target, session) {
   const name = key2(place, session.id);
   const updated = session.time.updated;
   const known = texts.get(name) ?? fromDisk(name);
@@ -54269,6 +54329,7 @@ var ROUTES = [
   { when: (route) => route === "kuvo/vault" || route.startsWith("kuvo/vault/"), answer: vaultRoute },
   { when: (route) => route === "kuvo/sandbox" || route.startsWith("kuvo/sandbox/"), answer: sandboxRoute },
   { when: (route) => route === "kuvo/file", answer: ({ request, json }) => fileAt(request.path, json) },
+  { when: (route) => route === "kuvo/file/text", answer: ({ request, json }) => request.method.toUpperCase() === "GET" ? fileAt(request.path, json, true) : json(405, {}) },
   { when: (route) => route === "kuvo/update", answer: updateRoute },
   { when: (route) => route === "kuvo/box/update", answer: boxUpdateRoute },
   { when: (route) => route === "kuvo/box/rehome", answer: rehomeRoute },
