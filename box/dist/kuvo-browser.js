@@ -1,4 +1,4 @@
-// kuvo-browser 852ef56af8cc1845
+// kuvo-browser 80faa4783b3cff1b
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // Kuvo Code's browser on a machine: a Chromium kept running there, which the agent browses with
 // and the app shows live in its panel. The engine's own runtime runs it, so the machine needs
@@ -85,7 +85,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "ba9bb65350b7";
+const KEEPER = "f26f75bf2700";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -948,29 +948,42 @@ async function host() {
   const live = async (client, message) => {
     const p = message.params ?? {}, target = Object.hasOwn(p, "targetId") ? p.targetId : attachedTo.get(message.sessionId) ?? client.view?.targetId;
     const session = own.get(target);
-    const reply = result => message.id !== undefined && send(client, { id: message.id, result: result ?? {} });
+    const reply = result => message.id !== undefined && send(client, { id: message.id, result: result ?? {}, ...(message.sessionId ? { sessionId: message.sessionId } : {}) });
     if (message.method === "Kuvo.frameAck" || message.method === "Page.screencastFrameAck") {
       client.inflight?.delete(p.frameId ?? p.sessionId); reply(); return true;
     }
     if (message.method === "Kuvo.view" || message.method === "Page.startScreencast") {
       client.viewer = true; client.inflight ??= new Set();
-      client.rawView = message.method === "Page.startScreencast" ? message.sessionId : null;
-      client.view = target && targets.has(target) ? { targetId: target, ...sizeFor({ ...p, width: p.width ?? p.maxWidth, height: p.height ?? p.maxHeight }) } : null;
+      const raw = message.method === "Page.startScreencast";
+      client.rawView = raw ? message.sessionId : null;
+      const metrics = client.rawMetrics?.get(target) ?? sizes.get(target) ?? sizeFor({});
+      // Raw screencast maxima limit picture pixels, never the page's CSS layout or DPR.
+      client.view = target && targets.has(target) ? raw
+        ? { targetId: target, ...metrics, width: finite(p.maxWidth, metrics.width, 1, 7680),
+            height: finite(p.maxHeight, metrics.height, 1, 4320), scale: 1,
+            quality: finite(p.quality, 75, 1, 100), maxFps: 60 }
+        : { targetId: target, ...sizeFor(p) } : null;
       if (client.view) {
         setActive(target, "user");
-        if (client.view.width <= 600) { client.view.scale = 1; client.view.quality = Math.min(50, client.view.quality); }
-        await resize(target, client.view, "viewer");
+        if (!raw) {
+          if (client.view.width <= 600) { client.view.scale = 1; client.view.quality = Math.min(50, client.view.quality); }
+          await resize(target, client.view, "viewer");
+        }
       }
       reply(); return true;
     }
     if (message.method === "Page.stopScreencast") { client.view = null; reply(); return true; }
     if (message.method.startsWith("Emulation.") && /DeviceMetrics|PageScaleFactor|VisibleSize/.test(message.method)) {
-      // Raw agents and raw viewers obey the same owner rule.
-      if (!client.viewer || !workingIn(target)) await resize(target, sizeFor({ ...p, scale: p.deviceScaleFactor }), client.viewer ? "viewer" : "agent");
+      const previous = client.rawMetrics?.get(target) ?? sizes.get(target) ?? sizeFor({});
+      const size = message.method === "Emulation.setPageScaleFactor"
+        ? { ...previous, zoom: finite(p.pageScaleFactor, 1, .25, 5) }
+        : { ...sizeFor({ ...p, scale: p.deviceScaleFactor }), scale: finite(p.deviceScaleFactor, previous.scale, .25, 8) };
+      client.rawMetrics ??= new Map();
+      client.rawMetrics.set(target, size);
+      await resize(target, size, client.viewer ? "viewer" : "agent");
       reply(); return true;
     }
-    if (client.viewer && message.method.startsWith("Emulation.")) { reply(); return true; }
-    if (client.viewer && message.method.startsWith("Input.") && client.view) await resize(target, client.view, "viewer");
+    if (client.viewer && message.method.startsWith("Input.") && client.view) await resize(target, client.rawView ? client.rawMetrics?.get(target) ?? sizes.get(target) : client.view, "viewer");
     if (!message.method.startsWith("Kuvo.")) return false;
     if (message.method === "Kuvo.pages") { reply(pages()); return true; }
     if (message.method === "Kuvo.go") {
