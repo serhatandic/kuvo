@@ -1715,7 +1715,10 @@ async function host() {
       const task = () => run().catch(error => {
         if (message.id !== undefined) send(client, { id: message.id, error: { message: error.message }, ...(message.sessionId ? { sessionId: message.sessionId } : {}) });
       });
-      const urgent = ["Kuvo.frameAck", "Kuvo.frameDropped", "Page.screencastFrameAck", "Page.handleJavaScriptDialog", "Kuvo.dialogAnswer"].includes(message.method);
+      const interruptsNavigation = message.method === "Page.stopLoading" || (message.method === "Kuvo.go" &&
+        message.params?.stop === true && message.params.input === undefined &&
+        !message.params.back && !message.params.forward && !message.params.reload);
+      const urgent = interruptsNavigation || ["Kuvo.frameAck", "Kuvo.frameDropped", "Page.screencastFrameAck", "Page.handleJavaScriptDialog", "Kuvo.dialogAnswer"].includes(message.method);
       if (client.keyed && urgent) void task();
       else serial = serial.then(task);
     }, "\n", (held) => !client.keyed && held > 4096 && (refuse(), true));

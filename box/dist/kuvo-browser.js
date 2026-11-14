@@ -1,4 +1,4 @@
-// kuvo-browser 28358b55c3c89a36
+// kuvo-browser 016405e26ee04e8e
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -102,7 +102,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "73e0433f009a";
+const KEEPER = "2514dcc98092";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -1734,7 +1734,10 @@ async function host() {
       const task = () => run().catch(error => {
         if (message.id !== undefined) send(client, { id: message.id, error: { message: error.message }, ...(message.sessionId ? { sessionId: message.sessionId } : {}) });
       });
-      const urgent = ["Kuvo.frameAck", "Kuvo.frameDropped", "Page.screencastFrameAck", "Page.handleJavaScriptDialog", "Kuvo.dialogAnswer"].includes(message.method);
+      const interruptsNavigation = message.method === "Page.stopLoading" || (message.method === "Kuvo.go" &&
+        message.params?.stop === true && message.params.input === undefined &&
+        !message.params.back && !message.params.forward && !message.params.reload);
+      const urgent = interruptsNavigation || ["Kuvo.frameAck", "Kuvo.frameDropped", "Page.screencastFrameAck", "Page.handleJavaScriptDialog", "Kuvo.dialogAnswer"].includes(message.method);
       if (client.keyed && urgent) void task();
       else serial = serial.then(task);
     }, "\n", (held) => !client.keyed && held > 4096 && (refuse(), true));

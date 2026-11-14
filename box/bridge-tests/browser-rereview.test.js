@@ -433,3 +433,19 @@ for (const leave of ["unsubscribe", "disconnect"]) {
     assert.deepEqual([size.width, size.height], [393, 660]);
   });
 }
+
+test("round3 NIT: Stop can interrupt a navigation waiting for Chrome", async t => {
+  const h = await page(t);
+  let release;
+  h.answer("Page.navigate", () => new Promise(resolve => { release = resolve; }));
+  h.answer("Page.stopLoading", () => { release({ errorText: "net::ERR_ABORTED" }); return {}; });
+  const navigation = next++;
+  h.c.send({ id: navigation, method: "Kuvo.go", params: { targetId: "P", input: "https://example.com/slow" } });
+  await h.chrome.until(m => m.method === "Page.navigate");
+  const stop = next++;
+  h.c.send({ id: stop, method: "Kuvo.go", params: { targetId: "P", stop: true } });
+  await settle({ ...h, c: await h.client() });
+  assert.ok(h.chrome.all.some(m => m.method === "Page.stopLoading"), "Stop must not wait behind navigation");
+  assert.ok(!(await h.c.heard.until(m => m.id === stop)).error);
+  await h.c.heard.until(m => m.id === navigation);
+});
