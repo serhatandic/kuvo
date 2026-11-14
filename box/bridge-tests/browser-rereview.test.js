@@ -287,3 +287,22 @@ for (const failure of ["refusal", "timeout"]) {
     assert.equal((await later.heard.until(m => m.method === "Kuvo.hello")).params.status.working, true);
   });
 }
+
+for (const phone of [false, true]) {
+  test("round3 S2: oversize preserves 1x detail before reducing " + (phone ? "phone" : "wide") + " quality", async t => {
+    const h = await page(t);
+    h.answer("Page.captureScreenshot", () => ({ data: "anBlZw==" }));
+    await call(h.c, "Kuvo.view", { targetId: "P", width: phone ? 393 : 1000, height: 700, scale: phone ? 1 : 2, quality: phone ? 50 : 75 });
+    await capture(h);
+    let frame = h.c.heard.all.filter(m => m.method === "Kuvo.frame").at(-1);
+    await call(h.c, "Kuvo.frameDropped", { frameId: frame.params.frameId, reason: "oversize" });
+    if (!phone) {
+      await capture(h, 100);
+      frame = h.c.heard.all.filter(m => m.method === "Kuvo.frame").at(-1);
+      await call(h.c, "Kuvo.frameDropped", { frameId: frame.params.frameId, reason: "oversize" });
+    }
+    const notice = h.c.heard.all.filter(m => m.method === "Kuvo.viewQuality").at(-1).params;
+    assert.equal(notice.scale, 1);
+    assert.equal(notice.quality, phone ? 40 : 65);
+  });
+}

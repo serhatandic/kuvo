@@ -1044,7 +1044,7 @@ async function host() {
         client.lastImage = null;
         wakePage(v.targetId);
         if (p.reason === "oversize") {
-          if (v.scale > .5) v.scale = Math.max(.5, v.scale / 2);
+          if (v.scale > 1) v.scale = Math.max(1, v.scale / 2);
           else if (v.quality > 40) v.quality = Math.max(40, v.quality - 10);
           else v.scale = Math.max(.125, v.scale * .75);
           qualityChanged(client, "oversize");

@@ -1,4 +1,4 @@
-// kuvo-browser 8b0ba4e77c4189a9
+// kuvo-browser 681d35cc24b7b62d
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -101,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "f980285c565a";
+const KEEPER = "8695dd71b6ef";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -1062,7 +1062,7 @@ async function host() {
         client.lastImage = null;
         wakePage(v.targetId);
         if (p.reason === "oversize") {
-          if (v.scale > .5) v.scale = Math.max(.5, v.scale / 2);
+          if (v.scale > 1) v.scale = Math.max(1, v.scale / 2);
           else if (v.quality > 40) v.quality = Math.max(40, v.quality - 10);
           else v.scale = Math.max(.125, v.scale * .75);
           qualityChanged(client, "oversize");
