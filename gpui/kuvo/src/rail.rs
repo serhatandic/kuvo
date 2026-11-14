@@ -160,7 +160,7 @@ impl Rings {
         self.now = Some(now);
     }
 
-    /// What the box said. One that can't be read (an older box, its agents' bridge not running)
+    /// What the box said. One that can't be read (its agents' bridge not running)
     /// keeps what was there, and shows nothing until it's read once.
     fn take(&mut self, accounts: kuvo_box::Result<Vec<Account>>, cx: &mut Context<Self>) {
         if let Ok(accounts) = accounts {
@@ -369,7 +369,8 @@ fn account_card(account: &Account, now: f64, cx: &App) -> AnyElement {
         // A window whose time has passed has started over: not read since, not used (PROTOCOL.md).
         let over = window.resets_at.is_some_and(|at| at <= now);
         let color = level_color(window.level, cx);
-        let calm = window.level == Level::Calm;
+        // (A level this app doesn't know is drawn as quietly as a calm one.)
+        let calm = matches!(window.level, Level::Calm | Level::Unknown);
         let said = if over { "Not read since it started over".to_owned() } else { format!("{}% used", (window.used * 100.).round() as u32) };
         let resets = window.resets_at.filter(|_| !over).map(|at| format!("Starts over in {}", time::until(at, now)));
         div()

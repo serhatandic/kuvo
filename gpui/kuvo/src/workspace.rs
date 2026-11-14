@@ -319,8 +319,9 @@ impl Workspace {
                 self.info = Some(info);
                 self.box_state = BoxState::Connected;
                 let name = self.box_name();
+                let kind = self.info.as_ref().map(|info| info.kind.clone()).unwrap_or_default();
                 for (_, view) in self.areas.clone() {
-                    view.update(cx, |view, cx| view.set_this_box(name.clone(), cx));
+                    view.update(cx, |view, cx| view.set_this_box(name.clone(), &kind, cx));
                 }
                 // Reached (perhaps updated since): what it says of its accounts is asked again, and
                 // of your computers where they aren't followed.

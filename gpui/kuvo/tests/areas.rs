@@ -267,6 +267,8 @@ fn computers_lists_yours_as_the_box_does_with_shared_machines_apart(cx: &mut Tes
     let studio = bounds(cx, "computer-key_studio").expect("one that's away");
     let header = bounds(cx, "header-shared").expect("Shared Machines");
     let shared = bounds(cx, "computer-key_build").expect("a shared machine");
+    // The box says how each is reached: a dot for each it lists.
+    assert!(bounds(cx, "computer-dot-this").is_some() && bounds(cx, "computer-dot-key_studio").is_some());
     assert!(this.top() < devbox.top() && devbox.top() < studio.top() && studio.top() < header.top() && header.top() < shared.top());
     assert!(stand_in.seen_at("GET", "kuvo/machines").is_empty());
     click(cx, "computer-key_devbox");
@@ -283,6 +285,8 @@ fn computers_keeps_this_one_while_the_list_cant_be_read(cx: &mut TestAppContext)
     click(cx, "rail-computers");
     assert!(bounds(cx, "computer-this").is_some());
     assert!(bounds(cx, "computer-key_devbox").is_none());
+    // Nothing is claimed of its reach, which only the list says: no dot.
+    assert!(bounds(cx, "computer-dot-this").is_none());
 }
 
 /// The title bar's switcher names your other computers as the box lists them; this window's first.

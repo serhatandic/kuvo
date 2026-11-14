@@ -253,7 +253,7 @@ fn windows(key: &str, account: &Account, now: f64, cx: &App) -> AnyElement {
             let over = window.resets_at.is_some_and(|at| at <= now);
             // Its colour is the box's level, as the rail's rings.
             let color = crate::rail::level_color(window.level, cx);
-            let calm = window.level == Level::Calm;
+            let calm = matches!(window.level, Level::Calm | Level::Unknown);
             let said = if over { "Not read since it started over".to_owned() } else { format!("{}% used", (window.used * 100.).round() as u32) };
             let resets = window.resets_at.filter(|_| !over).map(|at| format!("Starts over in {}", time::until(at, now)));
             div()

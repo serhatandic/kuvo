@@ -132,6 +132,9 @@ pub struct Computer {
     /// A machine Macs of different setups share.
     #[serde(default)]
     pub shared: bool,
+    /// It isn't one of your own computers (a shared machine, a box of another setup): filed apart.
+    #[serde(default)]
+    pub apart: bool,
     /// `connected`, `connecting`, `away`, or `unknown` (known by another computer's word alone).
     #[serde(default)]
     pub reach: String,

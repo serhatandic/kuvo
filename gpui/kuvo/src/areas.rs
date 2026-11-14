@@ -52,6 +52,8 @@ pub struct AreaView {
     computers: Reading<Vec<Computer>>,
     /// The box this window shows, as the Computers list names it first.
     this_box: SharedString,
+    /// What it is, as its `kuvo/info` said (`mac`, `machine`); none until it's read.
+    this_kind: String,
     selected: Option<String>,
     now: Option<f64>,
     reading: Option<Task<()>>,
@@ -79,7 +81,7 @@ impl AreaView {
             })
         });
         let changes = settings.as_ref().map(|settings| cx.observe(settings, |_, _, cx| cx.notify()));
-        AreaView { area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_changes: changes }
+        AreaView { area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
@@ -98,7 +100,11 @@ impl AreaView {
         }
     }
 
-    pub fn set_this_box(&mut self, name: SharedString, cx: &mut Context<Self>) {
+    pub fn set_this_box(&mut self, name: SharedString, kind: &str, cx: &mut Context<Self>) {
+        if self.this_kind != kind {
+            self.this_kind = kind.to_owned();
+            cx.notify();
+        }
         if self.this_box != name {
             if let Some(settings) = &self.settings {
                 settings.update(cx, |settings, cx| settings.set_this_box(&name, cx));
@@ -386,7 +392,7 @@ impl AreaView {
             }
             Reading::Ready(computers) => computers,
         };
-        let (shared, yours): (Vec<&Computer>, Vec<&Computer>) = computers.iter().partition(|computer| computer.shared);
+        let (shared, yours): (Vec<&Computer>, Vec<&Computer>) = computers.iter().partition(|computer| computer.shared || computer.apart);
         rows.extend(yours.into_iter().map(|computer| self.computer_row(computer, cx)));
         if !shared.is_empty() {
             rows.push(div().debug_selector(|| "header-shared".into()).child(SectionHeader::new("shared", "Shared Machines")).into_any_element());
@@ -396,9 +402,10 @@ impl AreaView {
     }
 
     /// The row of the computer this window shows, while the box's list isn't read: the window
-    /// knows which it is.
+    /// knows which it is, and what its `kuvo/info` said it is; nothing is claimed of its reach
+    /// (no dot), which only the list says.
     fn this_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let this = Computer { key: String::new(), name: self.this_box.to_string(), kind: "mac".into(), here: true, id: None, shared: false, reach: "connected".into(), version: None, engine: None, system: None, via: "here".into(), through: None, working: 0, limits: Vec::new() };
+        let this = Computer { key: String::new(), name: self.this_box.to_string(), kind: self.this_kind.clone(), here: true, id: None, shared: false, apart: false, reach: String::new(), version: None, engine: None, system: None, via: "here".into(), through: None, working: 0, limits: Vec::new() };
         self.computer_row(&this, cx)
     }
 
@@ -410,11 +417,14 @@ impl AreaView {
         let dot = match computer.reach.as_str() {
             "connected" => c.success,
             "connecting" => c.warning,
-            // Known by another computer's word alone: this box can't say whether it's reached.
             "away" => c.danger,
-            // Anything else (a word a newer box names): no claim of this app's about it.
+            // Known by another's word, or a word a newer box names: no claim of this app's about it.
+            "unknown" => c.text_faint,
             _ => c.text_faint,
         };
+        // None said (the list isn't read yet): no dot.
+        let dot = (!computer.reach.is_empty()).then_some(dot);
+        let dot_selector = format!("computer-dot-{id}");
         let (hover, selected_bg) = (c.hover, c.selected_card);
         let selector = format!("computer-{id}");
         let working = (computer.working > 0).then(|| {
@@ -453,7 +463,7 @@ impl AreaView {
                     .border_1()
                     .border_color(c.border)
                     .child(Icon::new(if computer.is_mac() { kuvo_ui::IconName::Computer } else { kuvo_ui::IconName::Terminal }).color(c.icon))
-                    .child(div().absolute().bottom(px(-2.)).right(px(-2.)).size(px(9.)).rounded(radius::PILL).border_2().border_color(c.surface).bg(dot)),
+                    .children(dot.map(|dot| div().debug_selector(move || dot_selector).absolute().bottom(px(-2.)).right(px(-2.)).size(px(9.)).rounded(radius::PILL).border_2().border_color(c.surface).bg(dot))),
             )
             .child(
                 div()
@@ -487,7 +497,7 @@ pub fn computer_line(computer: &Computer) -> String {
         "unknown" => computer.through.as_ref().map(|through| format!("Known through {through}")).unwrap_or_else(|| "Known through another computer".into()),
         "away" => "Can’t be reached".into(),
         // A word a newer box names: what it runs, with no claim about its reach.
-        _ => computer.system.clone().unwrap_or_default(),
+        _ => computer.system.clone().or_else(|| computer.version.as_ref().map(|version| format!("Kuvo Code {version}"))).unwrap_or_else(|| computer.name.clone()),
     }
 }
 

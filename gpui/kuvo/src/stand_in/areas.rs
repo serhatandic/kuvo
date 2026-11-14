@@ -103,7 +103,7 @@ fn computers(alone: bool) -> Vec<Value> {
         computers.extend([
             json!({ "key": "key_devbox", "name": "devbox", "kind": "machine", "id": "devbox", "shared": false, "reach": "connected", "version": "1.0.0", "engine": "2.3.0", "system": "Ubuntu 24.04.1 LTS", "via": "relay", "working": 2, "limits": ["claude"] }),
             json!({ "key": "key_studio", "name": "studio-mini", "kind": "mac", "shared": false, "reach": "away", "version": "1.0.0", "engine": "2.3.0", "system": "macOS 15.1", "via": "relay", "working": 0, "limits": [] }),
-            json!({ "key": "key_build", "name": "build-box", "kind": "machine", "id": "build-box", "shared": true, "reach": "connected", "system": "Debian 12", "via": "relay", "working": 0, "limits": [] }),
+            json!({ "key": "key_build", "name": "build-box", "kind": "machine", "id": "build-box", "shared": true, "apart": true, "reach": "connected", "system": "Debian 12", "via": "relay", "working": 0, "limits": [] }),
         ]);
     }
     computers
