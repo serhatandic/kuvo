@@ -231,9 +231,8 @@ export { mailsFor as queueMailsFor, takePart as takeQueuePart } from "./work-que
 export { parseBacklog } from "./work-queue/import";
 export { carryWorkQueue, forgetWorkQueues, packWorkQueues, placeWorkQueues } from "./work-queue/moves";
 export { forgetMigrated as forgetQueueMigrated } from "./work-queue/migrate";
-export { forgetSettled as forgetQueueSettled, settleStarted as settleQueueStarted } from "./work-queue/started";
-import { settleStarted } from "./work-queue/started";
-import { atWorkNow } from "./work/background";
+export { atWorkForSure as queueAtWorkForSure, forgetSettled as forgetQueueSettled, settleStarted as settleQueueStarted } from "./work-queue/started";
+import { atWorkForSure, settleStarted } from "./work-queue/started";
 export { readReach } from "./peers/reach";
 export { peerPlaces } from "./engine/client";
 export { answerPersonalities, retellBots, takePersonalities, takePersonalitiesDocument } from "./personalities/take";
@@ -497,7 +496,7 @@ async function run(): Promise<void> {
     if (current?.welcomed) pushQueues(current, readLink(), peerTargets()).catch(() => {});
     else try { handUpkeepSoon(readLink()); } catch {}
     // (Once: what was being worked on when the Work Queue's items moved over to statuses.)
-    void settleStarted(() => atWorkNow(peerTargets()));
+    void settleStarted(() => atWorkForSure());
   }, 3_000);
 
   let attempt = 0;

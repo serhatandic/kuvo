@@ -30,7 +30,7 @@ import { allItems, changeQueues, matching, OWNER, queueFollowers, readAll, WORK_
 import { readSeen, SEEN_FILE } from "../work-queue/github";
 import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/tools";
 import { canOf, overdueOf, todayHere, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, summaryOf, type Facts, type ItemSummary } from "../work-queue/view";
-import { forwardAct, takesChanges, type Acted } from "../work-queue/forward";
+import { forwardAct, takesForwarded, type Acted } from "../work-queue/forward";
 import { actHere, addHere, fileOf, GITHUB_WAIT, withCan } from "../work-queue/acts";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
@@ -109,7 +109,8 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
     items.sort((a, b) => (place.get(a.status) ?? 99) - (place.get(b.status) ?? 99) || computerOf(a).localeCompare(computerOf(b)) || a.order - b.order);
   const moving = frozen();
   const who = assignable();
-  // (A machine Macs share outside one setup hands nothing on to another computer.)
+  // (A machine Macs share outside one setup hands nothing on to another computer; nor is anything
+  // handed to one that doesn't take what a client does from another box.)
   const shared = sharedMachine(readLink());
   // (A label an item names that no computer lists any more isn't one of its labels.)
   const summary = (item: Item): ItemSummary => {
@@ -119,7 +120,6 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
   // (One on another computer: nothing to do to it while that one isn't answering, or doesn't take
   // what a client does from another box.)
   const away = new Set(elsewhere.computers.filter(each => each.away !== undefined).map(each => each.key));
-  const older = new Set(elsewhere.computers.filter(each => !takesChanges(each.key)).map(each => each.key));
   const ownKeyHere = (() => { const link = readLink(); return (link && ownKey(link)) || ""; })();
   const kept = (item: { owner: string; labels: string[]; source?: { kind: string }; computer?: { key: string } }) =>
     (!filters.computers || filters.computers.some(each => (item.computer ? each === item.computer.key : each === "" || each === ownKeyHere)))
@@ -137,7 +137,7 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
     today: todayHere(),
     items: byPlace([
       ...all.filter(item => !item.removed && found(item)).map(summary).filter(kept),
-      ...elsewhere.items.filter(item => found(item) && kept(item)).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...(overdueOf(item) ? { overdue: true } : {}), labels: item.labels.filter(each => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), older: older.has(item.computer.key), apart: shared }) })),
+      ...elsewhere.items.filter(item => found(item) && kept(item)).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...(overdueOf(item) ? { overdue: true } : {}), labels: item.labels.filter(each => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), apart: shared || !takesForwarded(item.computer.key) }) })),
     ]),
     owners: [...owners, ...elsewhere.owners.filter(each => !named.has(each.owner))],
     removed: all.filter(item => item.removed && found(item)).sort((a, b) => b.removed!.at - a.removed!.at).map(summary).filter(kept),
@@ -312,10 +312,11 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     if (fromClient(context)) {
       const there = await forwardAct(far.computer, nameOf(far), { method: "GET", item: far.id }, signal);
       const whole = there.status === 200 && "value" in there && isObject(there.value) && isObject(there.value.item) ? there.value.item : null;
-      if (whole) return yield* json(200, { item: { ...whole, computer: far.computer, told: false } });
+      // (Who it's for is set there: that box's `can` is for its own client, whose bots are its own.)
+      if (whole) return yield* json(200, { item: { ...whole, ...(isObject(whole.can) ? { can: { ...whole.can, assign: false } } : {}), computer: far.computer, told: false } });
     }
     // (As it was told: nothing to do to it from here until its computer answers.)
-    const cant = { away: awaySince(far.computer.key) !== null, older: !takesChanges(far.computer.key), apart: !fromClient(context) || sharedMachine(readLink()) };
+    const cant = { away: awaySince(far.computer.key) !== null, apart: !fromClient(context) || sharedMachine(readLink()) || !takesForwarded(far.computer.key) };
     await readSeen([itemElsewhere(ref, readLink(), { asTold: true }) ?? far], GITHUB_WAIT);
     far = itemElsewhere({ id: far.id }) ?? far;
     const { handedFrom: _, ...summary } = far;
@@ -356,7 +357,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   if (there.status === 200 && isObject(there.value) && isObject(there.value.item) && there.value.item.id === far.id) changedThere(far.computer.key, asked.method === "DELETE" ? "delete" : asked.action ?? "change", there.value.item);
   // (As this box names that computer, so a client knows where it is.)
   const value = !isObject(there.value) ? there.value
-    : isObject(there.value.item) ? { ...there.value, item: { ...there.value.item, computer: far.computer } }
+    : isObject(there.value.item) ? { ...there.value, item: { ...there.value.item, ...(isObject(there.value.item.can) ? { can: { ...there.value.item.can, assign: false } } : {}), computer: far.computer } }
     : there.status === 200 ? there.value : { ...there.value, computer: far.computer };
   return yield* json(there.status, value);
 }

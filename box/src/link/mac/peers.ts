@@ -13,8 +13,7 @@ import { pushQueues } from "../work-queue/across";
 import { forwardsSoon, sendForwards } from "../work-queue/forward";
 import { heldSoon, sendHeld } from "../bots/held";
 import { handUpkeepSoon } from "../work-queue/hand";
-import { settleStarted } from "../work-queue/started";
-import { atWorkNow } from "../work/background";
+import { atWorkForSure, settleStarted } from "../work-queue/started";
 import { attentionGiven } from "../notices/hold";
 import { announce, refreshOwn } from "../peers/agents";
 import { mailFor, peersOf } from "../peers/known";
@@ -83,7 +82,7 @@ export function runMacPeers(): void {
       if (host?.welcomed) pushQueues(host, readLink(), peerTargets()).catch(() => {});
       else try { handUpkeepSoon(readLink()); } catch {}
       // (Once: what was being worked on when the Work Queue's items moved over to statuses.)
-      void settleStarted(() => atWorkNow(peerTargets()));
+      void settleStarted(() => atWorkForSure());
     }, 3_000),
   ];
   macLink.stopPeers = () => {

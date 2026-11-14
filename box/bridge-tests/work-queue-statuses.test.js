@@ -39,6 +39,8 @@ const sessions = new Map([
   ["ses_scout", { id: "ses_scout", title: "Scout", location: { directory: path.join(home, "bots", "bot_scout00001", "workspace") }, time: { created: 1, updated: 3 } }],
 ]);
 let active = new Set();
+// (The engine as it starts: it answers, but can't say anything yet.)
+let engineDown = false;
 const calling = new Map();
 const engine = http.createServer((request, response) => {
   request.resume();
@@ -46,6 +48,7 @@ const engine = http.createServer((request, response) => {
     const reply = (value, status = 200) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
     const url = new URL(request.url, "http://x");
     if (url.pathname === "/api/session" && request.method === "GET") return reply({ data: [...sessions.values()] });
+    if (engineDown) return reply({ message: "Starting." }, 503);
     if (url.pathname === "/api/session/active") return reply({ data: Object.fromEntries([...active].map(id => [id, {}])) });
     const one = url.pathname.match(/^\/api\/session\/([^/]+)(\/.*)?$/);
     const id = one && decodeURIComponent(one[1]);
@@ -213,12 +216,17 @@ test("an item a session had said it was on is In progress only if that session i
   write(path.join(queues, "queues", "ses_child.json"), JSON.stringify(kept));
   const stands = async number => (await view("all")).items.find(item => item.number === number).status;
   assert.deepEqual([await stands(10), await stands(15)], ["todo", "backlog"]);
-  // The engine can't say yet: nothing is decided, and it's asked again.
+  // The engine can't say yet (it's starting: it answers nothing useful): nothing is decided, and
+  // it's asked again at the next round. As the box asks it, of the engine itself.
   link.forgetQueueSettled();
-  await link.settleQueueStarted(async () => { throw new Error("the engine isn't answering"); });
+  engineDown = true;
+  await link.settleQueueStarted(() => link.queueAtWorkForSure());
   assert.deepEqual(read("model.json").started.sort(), [id(10), id(15)]);
+  assert.deepEqual([await stands(10), await stands(15)], ["todo", "backlog"]);
   // It can: the lead is at work, the other session isn't.
-  await link.settleQueueStarted(async () => new Set(["ses_lead"]));
+  engineDown = false;
+  active = new Set(["ses_lead"]);
+  await link.settleQueueStarted(() => link.queueAtWorkForSure());
   assert.deepEqual([await stands(10), await stands(15)], ["in-progress", "backlog"]);
   assert.equal(read("model.json").started, undefined);
   const moved = (await ok("GET", "kuvo/work-queue/items/10")).item.events.at(-1);

@@ -33,13 +33,22 @@ export function labelOf(given: unknown): Label | null {
 
 // The labels as they're kept, in order; and which of them came from the primary
 // (`takePrimaryLabels`).
-function readKept(): { labels: Label[]; fromPrimary: string[] } {
+interface Kept { labels: Label[]; fromPrimary: string[]; primary?: string }
+
+// Whether this box numbers from another computer now (its primary): told by what knows (across.ts),
+// as this file is loaded before it. While it does, that computer's labels are changed there.
+let follows: () => boolean = () => true;
+export function followsBy(says: () => boolean): void {
+  follows = says;
+}
+
+function readKept(): Kept {
   try {
     const kept = JSON.parse(textOf(LABELS_FILE) ?? "null");
     const seen = new Set<string>();
     const labels = (isObject(kept) && Array.isArray(kept.labels) ? kept.labels : []).map(labelOf).filter((each: Label | null): each is Label => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
     const fromPrimary = isObject(kept) && Array.isArray(kept.fromPrimary) ? kept.fromPrimary.filter((each: unknown): each is string => typeof each === "string" && LABEL_ID.test(each)) : [];
-    return { labels, fromPrimary };
+    return { labels, fromPrimary, ...(isObject(kept) && typeof kept.primary === "string" ? { primary: kept.primary } : {}) };
   } catch {
     return { labels: [], fromPrimary: [] };
   }
@@ -67,7 +76,7 @@ function colorFor(given: unknown): string | { refused: string } {
 /** What a change says: done (the label now), or why not. */
 export type LabelOutcome = { done: Label } | { refused: string };
 
-const change = (work: (kept: { labels: Label[]; fromPrimary: string[] }) => LabelOutcome): LabelOutcome => {
+const change = (work: (kept: Kept) => LabelOutcome): LabelOutcome => {
   // (Not before the categories from before statuses are labels: `migrate.ts` makes them.)
   try {
     migratedToChange();
@@ -79,7 +88,7 @@ const change = (work: (kept: { labels: Label[]; fromPrimary: string[] }) => Labe
     const kept = readKept();
     const outcome = work(kept);
     const fromPrimary = kept.fromPrimary.filter(id => kept.labels.some(each => each.id === id));
-    if ("done" in outcome) writePrivate(LABELS_FILE, JSON.stringify({ labels: kept.labels, ...(fromPrimary.length ? { fromPrimary } : {}) }));
+    if ("done" in outcome) writePrivate(LABELS_FILE, JSON.stringify({ labels: kept.labels, ...(fromPrimary.length ? { fromPrimary, ...(kept.primary ? { primary: kept.primary } : {}) } : {}) }));
     return outcome;
   });
   // (Every queue's view names them.)
@@ -119,7 +128,7 @@ export function changeLabel(which: unknown, { name, color }: { name?: unknown; c
   return change(kept => {
     const found = labelNamed(which, kept.labels);
     if (!found) return { refused: `There's no label ${String(which ?? "")}.` };
-    if (kept.fromPrimary.includes(found.id)) return { refused: thePrimarys(found.name, "Change") };
+    if (kept.fromPrimary.includes(found.id) && follows()) return { refused: thePrimarys(found.name, "Change") };
     const taken = named !== undefined ? labelNamed(named, kept.labels) : null;
     if (taken && taken.id !== found.id) return { refused: `There's a label called ${named} already.` };
     if (named !== undefined) found.name = named;
@@ -130,17 +139,18 @@ export function changeLabel(which: unknown, { name, color }: { name?: unknown; c
 
 // A label this box took from the computer it numbers from: that one's to change or remove, since
 // its list comes back here as it tells it (a change made here would be undone at its next word).
+// Only while this box numbers from another: once it's the first computer itself, they're its own.
 const thePrimarys = (name: string, change: "Change" | "Remove"): string =>
   `${name} is one of the labels this computer takes from your first computer (the one that gives the Work Queue its numbers). ${change} it there, and it's ${change === "Remove" ? "gone" : "changed"} here too.`;
 
 /** A label removed: taken off every item here first (`strip`, by its id), then off the list. Two
  * steps, under two locks (the queues', then the labels'): one cut off between them leaves a label
- * no item has, still listed, which removing it again finishes; never an item with a label that's
- * gone. */
+ * no item has, still listed, which removing it again finishes. (An agent that gives an item the
+ * label between the two leaves its id on that item, which no view lists once the label's gone.) */
 export function removeLabel(which: unknown, strip: (id: string) => void): LabelOutcome {
   const found = labelNamed(which);
   if (!found) return { refused: `There's no label ${String(which ?? "")}.` };
-  if (readKept().fromPrimary.includes(found.id)) return { refused: thePrimarys(found.name, "Remove") };
+  if (readKept().fromPrimary.includes(found.id) && follows()) return { refused: thePrimarys(found.name, "Remove") };
   try {
     strip(found.id);
   } catch (error) {
@@ -170,26 +180,31 @@ export function keepLabel(given: unknown): boolean {
   });
 }
 
-/** The labels of the primary this box numbers from, as it told them: its list, in its order, names,
- * colours and all, is this box's; one it removed goes here too, taken off every item here first
- * (`strip`), as it went there. Those only this box has (made here) stay, after them (`used`: how
- * many items have one, for which of them go past the most there may be). */
-export function takePrimaryLabels(given: Label[], used: (id: string) => number, strip: (id: string) => void): void {
+/** The labels of the primary this box numbers from (`key`), as it told them: its list, in its
+ * order, names, colours and all, is this box's (one of the same id made here is the primary's
+ * from then on: one set for every queue); one it removed goes here too, taken off every item here
+ * first (`strip`), as it went there. Only the same primary's word removes one: where the primary
+ * is another computer than before, or tells no labels at all (a list it lost, say), those it no
+ * longer names stay, as this box's own. Those only this box has stay, after the primary's (`used`:
+ * how many items have one, for which of them go past the most there may be). */
+export function takePrimaryLabels(given: Label[], used: (id: string) => number, strip: (id: string) => void, key: string): void {
   const theirs = given.slice(0, MOST_LABELS);
   const ids = new Set(theirs.map(each => each.id));
-  const worked = (kept: { labels: Label[]; fromPrimary: string[] }) => {
-    const left = kept.labels.filter(each => !ids.has(each.id) && !kept.fromPrimary.includes(each.id));
+  const removes = (kept: Kept) => (theirs.length > 0 && (kept.primary === undefined || kept.primary === key) ? kept.fromPrimary.filter(id => !ids.has(id)) : []);
+  const worked = (kept: Kept): Kept => {
+    const gone = new Set(removes(kept));
+    const left = kept.labels.filter(each => !ids.has(each.id) && !gone.has(each.id));
     // (Past the most there may be, this box's own unused ones go, the last first; never one in use.)
     const all = [...theirs, ...left];
     for (let index = all.length - 1; index >= theirs.length && all.length > MOST_LABELS; index--) if (!used(all[index].id)) all.splice(index, 1);
-    return { labels: all, fromPrimary: theirs.map(each => each.id) };
+    return { labels: all, fromPrimary: theirs.map(each => each.id), primary: key };
   };
-  const same = (a: { labels: Label[]; fromPrimary: string[] }, b: { labels: Label[]; fromPrimary: string[] }) => JSON.stringify(a) === JSON.stringify(b);
+  const same = (a: Kept, b: Kept) => JSON.stringify([a.labels, a.fromPrimary, a.primary]) === JSON.stringify([b.labels, b.fromPrimary, b.primary]);
   const before = readKept();
   if (same(worked(before), before)) return;
-  // (Off the items first, as a removal here goes: never an item with a label that's gone.)
+  // (Off the items first, as a removal here goes.)
   try {
-    for (const id of before.fromPrimary) if (!ids.has(id)) strip(id);
+    for (const id of removes(before)) strip(id);
   } catch (error) {
     if (error instanceof Refusal) return;
     throw error;
@@ -199,6 +214,7 @@ export function takePrimaryLabels(given: Label[], used: (id: string) => number, 
     if (same(now, kept)) return { refused: "" };
     kept.labels.splice(0, kept.labels.length, ...now.labels);
     kept.fromPrimary = now.fromPrimary;
+    kept.primary = key;
     return { done: now.labels[0] ?? { id: "lbl_none", name: "", color: "graphite" } };
   });
 }

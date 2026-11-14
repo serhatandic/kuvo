@@ -5509,8 +5509,11 @@ custom category; `color` one of `coral`, `orange`, `amber`, `lime`, `mint`, `sky
 graphite), in the order they were made. You and your agents make, rename, recolour and remove
 them; removing one takes it off every item on that box first (then off the list: cut off between
 the two, it's a label no item has, which removing it again finishes). Each box takes the labels of the
-primary it numbers from as it tells them (its list, order, names and colours; one it removed is
-taken off every item here and goes too), and changes none of those itself: renaming, recolouring
+primary it numbers from as it tells them (its list, order, names and colours; a label of the same
+id made here is the primary's from then on, as it's one set for every queue; one it removed is
+taken off every item here and goes too, but only by the same primary's word: where the primary is
+another computer than before, or tells no labels at all, those it no longer names stay, as this
+box's own), and changes none of those itself while it numbers from another: renaming, recolouring
 or removing one on such a box is refused (400), saying to do it on the first computer, and those of an item handed or moved to it; a view also lists a label
 only another computer has, after its own, for its items there.
 
@@ -5535,7 +5538,7 @@ its assignee, from the view's `assignees` (the bots of the box asked: false for 
 computer keeps, which is assigned there). `close`: Done or Canceled (never an issue's: GitHub closes
 it). `delete`; `restore` (a deleted one, and nothing else then). All false while its conversation
 moves to another computer, or while the computer it's on isn't answering or doesn't take a
-client's changes from another box (one without `work-queue.edit` answers a `PATCH` for it 409, saying to update it); only `delete` while it's on its way to another computer
+client's changes from another box; only `delete` while it's on its way to another computer
 (`handing`). An item as another computer told it between boxes carries none.
 
 **From categories** (a box that kept its items under categories, as builds before #674 did; no
@@ -5564,8 +5567,10 @@ item was. One process moves them over (`.moving-to-statuses` while it does: anot
 meanwhile reads on and changes nothing; one left by a process cut off goes after two minutes), and
 the copy is on the disk, its folders too, before a queue is written. A run that finds
 `labels.json` there already (cut off after it, or `model.json` lost) adds only the labels an item
-it still has to move over names, never one removed since. A box takes nothing in the old shape from another computer: what one
-tells without `labels` isn't kept. Where the
+it still has to move over names, never one removed since. Nothing is kept for another computer that hasn't moved over yet: what one
+tells without `labels` isn't taken, and an item it hands on or carries in a move under a category
+is read as one read here before the move (its status from its category; its custom category's
+label only where this box has it). Where the
 move can't be made now (a full disk), views still answer, each item said anew as it's read, and
 every change is refused (400, in words) until it's made: nothing is written under statuses
 without the copy.

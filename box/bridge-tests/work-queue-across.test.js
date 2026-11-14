@@ -176,7 +176,7 @@ test("what your other computers told shows in the All view and a lead's view, wi
   assert.equal(far.progress.note, "Writing the test");
   assert.deepEqual([far.status, far.priority, far.labels], ["in-progress", "high", ["lbl_tests"]], "where it stands, as lab said");
   assert.deepEqual(lead.labels, [{ id: "lbl_tests", name: "Tests", color: "mint" }], "a label only lab has is listed for its items");
-  assert.deepEqual(far.can, { edit: false, set: false, assign: false, close: false, delete: false, restore: false, why: "lab runs an older Kuvo Code: update it to change this from here." }, "lab takes no change from another box yet, and the box says why");
+  assert.deepEqual(far.can, { edit: false, set: false, assign: false, close: false, delete: false, restore: false, why: "It's on lab: change it there." }, "lab takes no change from another box yet, and the box says so");
   assert.equal(lead.owners.find(each => each.owner === "ses_far")?.title, "Far away");
   const all = await view("all");
   assert.deepEqual(new Set(all.items.map(item => item.number)), new Set([100, 500, 501, 502]));
@@ -765,7 +765,13 @@ test("the primary's labels are this box's: added, renamed, recoloured and remove
   receive(lab, { workQueue: telling([], { labels: [{ id: "lbl_old", name: "Old", color: "amber" }], primary: { key: first.pub, kind: "mac", since: 500 } }) });
   assert.equal(link.primaryOf(link.readLink()).via?.key, lab.pub);
   receive(lab, { workQueue: telling([], { labels: [{ id: "lbl_old", name: "Old", color: "amber" }], primary: { key: first.pub, kind: "mac", since: 500 } }) });
-  assert.deepEqual(await names(), ["lbl_old=Old", "lbl_mine=Mine"]);
+  // (Another primary than before: its list is this box's, and what the one before named that it
+  // doesn't stays, as this box's own, on the items that have it: only the same primary's word
+  // takes a label off them.)
+  assert.deepEqual(await names(), ["lbl_old=Old", "lbl_review=Reviewing", "lbl_mine=Mine"]);
+  // Nor does a primary that tells no labels at all (a list it lost) take any away.
+  receive(lab, { workQueue: telling([], { labels: [], primary: { key: first.pub, kind: "mac", since: 500 } }) });
+  assert.deepEqual(await names(), ["lbl_old=Old", "lbl_review=Reviewing", "lbl_mine=Mine"]);
   sent.length = 0;
 });
 
@@ -912,10 +918,12 @@ test("what you do to an item another computer keeps, asked of this box, is done 
   const reading = route("GET", "kuvo/work-queue/items/500");
   const [read] = await sentTo(lab);
   assert.deepEqual({ method: read.workQueue.act.method, item: read.workQueue.act.item }, { method: "GET", item: told(500).id });
-  receive(lab, { workQueue: { acted: { id: read.workQueue.act.id, status: 200, value: { item: { ...told(500, "ses_far"), body: "What only lab keeps", notes: [], events: [], files: [], links: [], handed: [] } } } } });
+  receive(lab, { workQueue: { acted: { id: read.workQueue.act.id, status: 200, value: { item: { ...told(500, "ses_far"), can: { edit: true, set: true, assign: true, close: true, delete: true, restore: false }, body: "What only lab keeps", notes: [], events: [], files: [], links: [], handed: [] } } } } });
   const whole = await reading;
   assert.equal(whole.body.item.body, "What only lab keeps");
   assert.equal(whole.body.item.told, false);
+  // (Who it's for is set on the computer that keeps it: this one lists only its own bots.)
+  assert.deepEqual([whole.body.item.can.assign, whole.body.item.can.set], [false, true]);
   assert.equal(whole.body.item.computer.id, "lab");
   // One of its files, for a client: from lab, its bytes as they are.
   const fetching = route("GET", "kuvo/work-queue/items/500/files/notes%20one.txt");
@@ -1077,13 +1085,6 @@ test("a computer that keeps the item but isn't answering: said at once, plainly,
   assert.match(shared.body.message, /#500 "Item 500" is on lab: change it there\./);
   assert.deepEqual(mailTo(lab), []);
   fresh();
-
-  // A lab that takes what you do but still keeps categories (no `work-queue.edit`): a change isn't
-  // sent, and says to update it.
-  agentsTold({ [lab.pub]: { at: 1, heard: Date.now(), kind: "machine", id: "lab", list: [], features: ["work-queue", "work-queue.elsewhere", "work-queue.forward"] } });
-  const notYet = await route("PATCH", "kuvo/work-queue/items/500", { status: "backlog" });
-  assert.deepEqual(notYet, { status: 409, body: { message: '#500 "Item 500" is on lab, which runs an older Kuvo Code: update it, then change it.', computer: { key: lab.pub, name: "lab", kind: "machine", id: "lab" } } });
-  assert.deepEqual(mailTo(lab), [], "nothing sent");
 
   // A lab from before: changed there, as it was.
   agentsTold();

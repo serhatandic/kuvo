@@ -14450,13 +14450,17 @@ function labelOf(given) {
   const name = plainName(given.name).slice(0, MOST_NAME) || given.id.slice(4);
   return { id: given.id, name, color: typeof given.color === "string" && COLOR.has(given.color) ? given.color : "graphite" };
 }
+var follows = () => true;
+function followsBy(says) {
+  follows = says;
+}
 function readKept2() {
   try {
     const kept = JSON.parse(textOf(LABELS_FILE2) ?? "null");
     const seen = new Set;
     const labels = (isObject(kept) && Array.isArray(kept.labels) ? kept.labels : []).map(labelOf).filter((each) => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
     const fromPrimary = isObject(kept) && Array.isArray(kept.fromPrimary) ? kept.fromPrimary.filter((each) => typeof each === "string" && LABEL_ID.test(each)) : [];
-    return { labels, fromPrimary };
+    return { labels, fromPrimary, ...isObject(kept) && typeof kept.primary === "string" ? { primary: kept.primary } : {} };
   } catch {
     return { labels: [], fromPrimary: [] };
   }
@@ -14488,7 +14492,7 @@ var change3 = (work) => {
     const outcome = work(kept);
     const fromPrimary = kept.fromPrimary.filter((id) => kept.labels.some((each) => each.id === id));
     if ("done" in outcome)
-      writePrivate(LABELS_FILE2, JSON.stringify({ labels: kept.labels, ...fromPrimary.length ? { fromPrimary } : {} }));
+      writePrivate(LABELS_FILE2, JSON.stringify({ labels: kept.labels, ...fromPrimary.length ? { fromPrimary, ...kept.primary ? { primary: kept.primary } : {} } : {} }));
     return outcome;
   });
   if ("done" in outcome)
@@ -14535,7 +14539,7 @@ function changeLabel(which, { name, color }) {
     const found = labelNamed(which, kept.labels);
     if (!found)
       return { refused: `There's no label ${String(which ?? "")}.` };
-    if (kept.fromPrimary.includes(found.id))
+    if (kept.fromPrimary.includes(found.id) && follows())
       return { refused: thePrimarys(found.name, "Change") };
     const taken = named !== undefined ? labelNamed(named, kept.labels) : null;
     if (taken && taken.id !== found.id)
@@ -14552,7 +14556,7 @@ function removeLabel(which, strip) {
   const found = labelNamed(which);
   if (!found)
     return { refused: `There's no label ${String(which ?? "")}.` };
-  if (readKept2().fromPrimary.includes(found.id))
+  if (readKept2().fromPrimary.includes(found.id) && follows())
     return { refused: thePrimarys(found.name, "Remove") };
   try {
     strip(found.id);
@@ -14585,25 +14589,26 @@ function keepLabel(given) {
     return { done: label };
   });
 }
-function takePrimaryLabels(given, used, strip) {
+function takePrimaryLabels(given, used, strip, key) {
   const theirs = given.slice(0, MOST_LABELS);
   const ids = new Set(theirs.map((each) => each.id));
+  const removes = (kept) => theirs.length > 0 && (kept.primary === undefined || kept.primary === key) ? kept.fromPrimary.filter((id) => !ids.has(id)) : [];
   const worked = (kept) => {
-    const left = kept.labels.filter((each) => !ids.has(each.id) && !kept.fromPrimary.includes(each.id));
+    const gone = new Set(removes(kept));
+    const left = kept.labels.filter((each) => !ids.has(each.id) && !gone.has(each.id));
     const all = [...theirs, ...left];
     for (let index = all.length - 1;index >= theirs.length && all.length > MOST_LABELS; index--)
       if (!used(all[index].id))
         all.splice(index, 1);
-    return { labels: all, fromPrimary: theirs.map((each) => each.id) };
+    return { labels: all, fromPrimary: theirs.map((each) => each.id), primary: key };
   };
-  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const same = (a, b) => JSON.stringify([a.labels, a.fromPrimary, a.primary]) === JSON.stringify([b.labels, b.fromPrimary, b.primary]);
   const before = readKept2();
   if (same(worked(before), before))
     return;
   try {
-    for (const id of before.fromPrimary)
-      if (!ids.has(id))
-        strip(id);
+    for (const id of removes(before))
+      strip(id);
   } catch (error) {
     if (error instanceof Refusal)
       return;
@@ -14615,6 +14620,7 @@ function takePrimaryLabels(given, used, strip) {
       return { refused: "" };
     kept.labels.splice(0, kept.labels.length, ...now.labels);
     kept.fromPrimary = now.fromPrimary;
+    kept.primary = key;
     return { done: now.labels[0] ?? { id: "lbl_none", name: "", color: "graphite" } };
   });
 }
@@ -17083,7 +17089,7 @@ async function sessionsNamed(ids, facts, targets, cache) {
   }
   return found;
 }
-function canOf(item, { moving = false, away = false, older = false, apart = false } = {}) {
+function canOf(item, { moving = false, away = false, apart = false } = {}) {
   const none = { edit: false, set: false, assign: false, close: false, delete: false, restore: false };
   const there = item.computer?.name ?? "Its computer";
   if (moving)
@@ -17092,8 +17098,6 @@ function canOf(item, { moving = false, away = false, older = false, apart = fals
     return { ...none, why: `${there} isn't answering now (it may be asleep, off or offline): it can be changed once it's back.` };
   if (apart)
     return { ...none, why: `It's on ${there}: change it there.` };
-  if (older)
-    return { ...none, why: `${there} runs an older Kuvo Code: update it to change this from here.` };
   if (item.removed)
     return { ...none, restore: true, why: "It's deleted: bring it back to change it." };
   if (item.handing)
@@ -25902,7 +25906,6 @@ import fs89 from "node:fs";
 import path91 from "node:path";
 var FORWARD_FEATURE = "work-queue.forward";
 var takesForwarded = (key) => (readPeerAgents()[key]?.features ?? []).includes(FORWARD_FEATURE);
-var takesChanges = (key) => takesForwarded(key) && (readPeerAgents()[key]?.features ?? []).includes("work-queue.edit");
 var FORWARDS = path91.join(WORK_QUEUE2, "forward");
 var DONE_FILE = path91.join(WORK_QUEUE2, "acted.json");
 var ID2 = /^wqa_[A-Za-z0-9_-]{16,40}$/;
@@ -25929,8 +25932,6 @@ async function forwardAct(computer, named, act, signal, link = readLink(), now =
   const peer = peersOf(link).find((each) => each.key === computer.key);
   if (!peer || !takesForwarded(peer.key) || sharedMachine(link))
     return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
-  if (act.method === "PATCH" && !takesChanges(peer.key))
-    return { status: 409, refused: `${named} is on ${computer.name}, which runs an older Kuvo Code: update it, then change it.` };
   const here = ownName();
   if (awaySince(peer.key) !== null)
     return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
@@ -26167,6 +26168,7 @@ var toldItem = (item, working, titles) => {
     ...summary.seen && checked !== undefined ? { seen: { ...summary.seen, checked } } : {}
   };
 };
+followsBy(() => !("self" in primaryOf()));
 async function tellingNow2(targets, link, signal, cache) {
   const facts = await factsOf(targets, signal);
   const all = allItems().filter((item) => OWNER2.test(item.owner) && !item.removed);
@@ -26304,7 +26306,7 @@ function takeTold(sender, given, reply) {
             counts.set(label, (counts.get(label) ?? 0) + 1);
       }
       return counts.get(id) ?? 0;
-    }, stripLabel);
+    }, stripLabel, primary.peer.key);
   }
   for (const tell of queueFollowers2)
     tell();
@@ -26980,6 +26982,19 @@ function forgetHeldSends() {
 }
 
 // box/src/link/work-queue/started.ts
+async function atWorkForSure(signal) {
+  const bridge = bridgeTarget();
+  const working = new Set(Object.keys(readBackground()));
+  for (const target of [readEngineFile(), ...bridge ? [bridge] : []]) {
+    const active = await call(target, "GET", "/api/session/active", undefined, signal);
+    if (!Array.isArray(active) && !isObject(active))
+      throw new Error("no answer of who's at work");
+    for (const id of Array.isArray(active) ? active : Object.keys(active))
+      if (typeof id === "string")
+        working.add(id);
+  }
+  return working;
+}
 var settled = false;
 var settling = false;
 function forgetSettled() {
@@ -30946,7 +30961,7 @@ function runMacPeers() {
         try {
           handUpkeepSoon(readLink());
         } catch {}
-      settleStarted(() => atWorkNow(peerTargets()));
+      settleStarted(() => atWorkForSure());
     }, 3000)
   ];
   macLink.stopPeers = () => {
@@ -43812,7 +43827,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "06987f911a15";
+var BRIDGE_VERSION = "69e74627a6dd";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -52585,7 +52600,6 @@ async function viewOf2(owner, targets, facts, signal, cache, wait = GITHUB_WAIT,
     return said.labels.every((each) => names.has(each)) ? said : { ...said, labels: said.labels.filter((each) => names.has(each)) };
   };
   const away = new Set(elsewhere.computers.filter((each) => each.away !== undefined).map((each) => each.key));
-  const older = new Set(elsewhere.computers.filter((each) => !takesChanges(each.key)).map((each) => each.key));
   const ownKeyHere = (() => {
     const link = readLink();
     return link && ownKey(link) || "";
@@ -52602,7 +52616,7 @@ async function viewOf2(owner, targets, facts, signal, cache, wait = GITHUB_WAIT,
     today: todayHere(),
     items: byPlace([
       ...all.filter((item) => !item.removed && found(item)).map(summary).filter(kept),
-      ...elsewhere.items.filter((item) => found(item) && kept(item)).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...overdueOf(item) ? { overdue: true } : {}, labels: item.labels.filter((each) => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), older: older.has(item.computer.key), apart: shared }) }))
+      ...elsewhere.items.filter((item) => found(item) && kept(item)).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...overdueOf(item) ? { overdue: true } : {}, labels: item.labels.filter((each) => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), apart: shared || !takesForwarded(item.computer.key) }) }))
     ]),
     owners: [...owners, ...elsewhere.owners.filter((each) => !named.has(each.owner))],
     removed: all.filter((item) => item.removed && found(item)).sort((a, b) => b.removed.at - a.removed.at).map(summary).filter(kept),
@@ -52771,9 +52785,9 @@ async function* workQueueRoute(context, match) {
       const there = await forwardAct(far.computer, nameOf(far), { method: "GET", item: far.id }, signal);
       const whole = there.status === 200 && "value" in there && isObject(there.value) && isObject(there.value.item) ? there.value.item : null;
       if (whole)
-        return yield* json(200, { item: { ...whole, computer: far.computer, told: false } });
+        return yield* json(200, { item: { ...whole, ...isObject(whole.can) ? { can: { ...whole.can, assign: false } } : {}, computer: far.computer, told: false } });
     }
-    const cant = { away: awaySince(far.computer.key) !== null, older: !takesChanges(far.computer.key), apart: !fromClient(context) || sharedMachine(readLink()) };
+    const cant = { away: awaySince(far.computer.key) !== null, apart: !fromClient(context) || sharedMachine(readLink()) || !takesForwarded(far.computer.key) };
     await readSeen([itemElsewhere(ref, readLink(), { asTold: true }) ?? far], GITHUB_WAIT);
     far = itemElsewhere({ id: far.id }) ?? far;
     const { handedFrom: _, ...summary } = far;
@@ -52816,7 +52830,7 @@ async function* workQueueRoute(context, match) {
     return yield* json(there.status, { message: there.refused, computer: far.computer });
   if (there.status === 200 && isObject(there.value) && isObject(there.value.item) && there.value.item.id === far.id)
     changedThere(far.computer.key, asked.method === "DELETE" ? "delete" : asked.action ?? "change", there.value.item);
-  const value = !isObject(there.value) ? there.value : isObject(there.value.item) ? { ...there.value, item: { ...there.value.item, computer: far.computer } } : there.status === 200 ? there.value : { ...there.value, computer: far.computer };
+  const value = !isObject(there.value) ? there.value : isObject(there.value.item) ? { ...there.value, item: { ...there.value.item, ...isObject(there.value.item.can) ? { can: { ...there.value.item.can, assign: false } } : {}, computer: far.computer } } : there.status === 200 ? there.value : { ...there.value, computer: far.computer };
   return yield* json(there.status, value);
 }
 var answered4 = (answer, json) => json(answer.status, answer.value);
@@ -56711,7 +56725,7 @@ async function run6() {
       try {
         handUpkeepSoon(readLink());
       } catch {}
-    settleStarted(() => atWorkNow(peerTargets()));
+    settleStarted(() => atWorkForSure());
   }, 3000);
   let attempt = 0;
   while (true) {
@@ -57604,6 +57618,7 @@ export {
   pushTo,
   queryFor,
   actForPeer as queueActForPeer,
+  atWorkForSure as queueAtWorkForSure,
   forwardTiming as queueForwardTiming,
   forwardsSoon as queueForwardsSoon,
   mailsFor as queueMailsFor,

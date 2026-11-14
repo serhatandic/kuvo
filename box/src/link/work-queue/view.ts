@@ -160,14 +160,13 @@ export interface ItemWhole extends ItemSummary {
 export interface Can { edit: boolean; set: boolean; assign: boolean; close: boolean; delete: boolean; restore: boolean; why?: string }
 
 /** `why`: where something can't be done, the reason in words a client shows as they are. */
-export function canOf(item: Pick<ItemSummary, "removed" | "handing" | "source" | "seen" | "keptIn" | "computer">, { moving = false, away = false, older = false, apart = false }: { moving?: boolean; away?: boolean; older?: boolean; apart?: boolean } = {}): Can {
+export function canOf(item: Pick<ItemSummary, "removed" | "handing" | "source" | "seen" | "keptIn" | "computer">, { moving = false, away = false, apart = false }: { moving?: boolean; away?: boolean; apart?: boolean } = {}): Can {
   const none = { edit: false, set: false, assign: false, close: false, delete: false, restore: false };
   const there = item.computer?.name ?? "Its computer";
   if (moving) return { ...none, why: "Its conversation is moving to another computer: it can be changed once it's there." };
   if (away) return { ...none, why: `${there} isn't answering now (it may be asleep, off or offline): it can be changed once it's back.` };
   // (A machine Macs share outside one setup hands nothing on to another computer.)
   if (apart) return { ...none, why: `It's on ${there}: change it there.` };
-  if (older) return { ...none, why: `${there} runs an older Kuvo Code: update it to change this from here.` };
   if (item.removed) return { ...none, restore: true, why: "It's deleted: bring it back to change it." };
   if (item.handing) return { ...none, delete: true, why: `It's on its way to ${item.handing.name || "a conversation"} on another computer: it can be changed there once it's arrived.` };
   // (An issue GitHub closed stays Done until it's reopened there.)

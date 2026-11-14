@@ -15,7 +15,7 @@ import { readPeerAgents } from "../peers/directory";
 import { ownKey, peersOf, removedBoxes } from "../peers/known";
 import { awaySince, readReach } from "../peers/reach";
 import { readLink } from "../state";
-import { labels as labelsHere, LABELS_FILE, takePrimaryLabels, type Label } from "./labels";
+import { followsBy, labels as labelsHere, LABELS_FILE, takePrimaryLabels, type Label } from "./labels";
 import { isClosed } from "./statuses";
 import { stripLabel } from "./ops";
 import { handArrived, handedBack, sendHandings } from "./hand";
@@ -81,6 +81,9 @@ const toldItem = (item: Item, working: Set<string>, titles: Map<string, { title:
   return { ...summary, ...(summary.lastNote ? { lastNote: { ...summary.lastNote, text: summary.lastNote.text.slice(0, 500) } } : {}), ...(from.length ? { handedFrom: from } : {}),
     ...(summary.seen && checked !== undefined ? { seen: { ...summary.seen, checked } } : {}) };
 };
+
+// (A box that numbers from another takes that one's labels, and changes none of them itself.)
+followsBy(() => !("self" in primaryOf()));
 
 /** What this box tells of its Work Queue now: its items (not deleted ones; the latest Done ones
  * only), the owners they name, its labels, and how it numbers. */
@@ -233,7 +236,7 @@ function takeTold(sender: MailSender, given: unknown, reply: (payload: Record<st
         for (const item of allItems()) for (const label of item.labels) counts.set(label, (counts.get(label) ?? 0) + 1);
       }
       return counts.get(id) ?? 0;
-    }, stripLabel);
+    }, stripLabel, primary.peer.key);
   }
   for (const tell of queueFollowers) tell();
 }
