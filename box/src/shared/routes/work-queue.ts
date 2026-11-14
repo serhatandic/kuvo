@@ -2,7 +2,7 @@
 // what `#n` refs name, the categories, and what you do from a client. Times are milliseconds since
 // 1970.
 
-import { any, bool, BYTES, list, map, nullable, number, object, oneOf, type RouteShape, string, words } from "../shape";
+import { any, bool, BYTES, type Infer, list, map, nullable, number, object, oneOf, type RouteShape, string, words } from "../shape";
 
 // (You, an agent, or another shape kept as it came: an outside tracker's change, later.)
 const WHO = oneOf(object({ user: bool }), object({ session: string, name: string }), map(any));
@@ -74,9 +74,14 @@ export const QUEUE_ITEM_WHOLE = object({
 /** An owner in a view: what it is, its title, the bot it is, and who started it. */
 export const QUEUE_OWNER = object({ owner: string, kind: words("bot", "session", "group"), title: nullable(string), "bot?": object({ id: string, name: string }), "startedBy?": string });
 
-/** An owner's view. */
+/** A view's counts (`counts=1`): its items in progress, in each category (by its id, every one of
+ * the view's), from each outside source (by its kind), on each computer (by its key, this box's
+ * own too), and how many are deleted. */
+export const QUEUE_COUNTS = object({ inProgress: number, categories: map(number), sources: map(number), computers: map(number), removed: number });
+
+/** An owner's view; with `counts=1`, its counts too. */
 export const QUEUE_VIEW = object({ owner: string, categories: list(QUEUE_CATEGORY), items: list(QUEUE_ITEM), owners: list(QUEUE_OWNER), removed: list(QUEUE_ITEM),
-  computers: list(object({ ...COMPUTER.object, at: number, "away?": number })) });
+  computers: list(object({ ...COMPUTER.object, at: number, "away?": number })), "counts?": QUEUE_COUNTS });
 
 const REF = nullable(object({ id: string, "number?": number, "source?": SOURCE, "seen?": SEEN, "struck?": bool, "closesOn?": string, title: string, category: string, inProgress: bool, owner: string, "removed?": bool, "computer?": COMPUTER }));
 
@@ -103,3 +108,5 @@ export const WORK_QUEUE_ROUTES: RouteShape[] = [
 ];
 
 
+
+export type QueueCounts = Infer<typeof QUEUE_COUNTS>;

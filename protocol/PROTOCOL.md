@@ -5260,6 +5260,14 @@ before (a linked item is its owner's to change). A client shows them first, as "
   linked session starting or stopping work). With `glance=1` (a client that shows only a count or
   chips: the phone's •••, a conversation's chips on a Mac; a client follows whole only while the
   Work Queue itself shows), either reads no issue or pull request from GitHub: each is as last read.
+  With `counts=1` (`work-queue.counts`, #711), either adds `counts` `{inProgress, categories:
+  {<id>: n}, sources: {<kind>: n}, computers: {<key>: n}, removed}`, counted from that same view
+  for a client that draws them (the sidebar's rows): its items in progress; in each category
+  (every category of the view, one with none `0`); from each outside source, by its kind
+  (`github`; items of the queue's own aren't in it); on each computer, by its key (this box's own
+  under its own key, `""` while it has none, and each other computer of `computers`); and how many
+  are deleted (`removed`). `owner=all` counts every queue across your computers. A client draws
+  these and never counts the items itself.
 - `GET kuvo/work-queue/items/<id or number>` → `{item}`, whole (an issue's `gh:` ref names it too,
   but its "/" can't go in a path through every client: a client asks by the `id` its chip has). `…/files/<name>` → its bytes. An
   item on another computer has `computer` and `told`. Asked by a client (as "What you do" says

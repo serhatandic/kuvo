@@ -17,6 +17,8 @@ import { changedThere, itemElsewhere, itemsElsewhere, tellQueuesAgain } from "..
 import { Refusal, refuseMoving } from "../work-queue/ops";
 import { TOLD } from "../work-queue/told";
 import { readLink } from "../state";
+import { ownKey } from "../peers/known";
+import type { QueueCounts } from "../../shared/routes/work-queue";
 import { allItems, changeQueues, matching, OWNER, queueFollowers, readAll, WORK_QUEUE, type Item } from "../work-queue/store";
 import { readSeen, SEEN_FILE } from "../work-queue/github";
 import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/tools";
@@ -81,6 +83,32 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
     computers: elsewhere.computers,
   };
 }
+
+/** A view's counts (PROTOCOL.md, "The Work Queue", `counts=1`): how many of its items are in
+ * progress, in each category (every category of the view, those with none too), from each outside
+ * source (by its kind), and on each computer (by its key; this box's own under its own, `""` while
+ * it has none), and how many are deleted. Counted here, so a client's sidebar counts nothing. */
+export function countsOf(view: Awaited<ReturnType<typeof viewOf>>, own = ""): QueueCounts {
+  const categories: Record<string, number> = Object.fromEntries(view.categories.map(each => [each.id, 0]));
+  const sources: Record<string, number> = {};
+  const computers: Record<string, number> = { [own]: 0 };
+  for (const computer of view.computers) computers[computer.key] = 0;
+  let inProgress = 0;
+  for (const item of view.items) {
+    if (item.inProgress) inProgress += 1;
+    categories[item.category] = (categories[item.category] ?? 0) + 1;
+    if (item.source) sources[item.source.kind] = (sources[item.source.kind] ?? 0) + 1;
+    const key = item.computer?.key ?? own;
+    computers[key] = (computers[key] ?? 0) + 1;
+  }
+  return { inProgress, categories, sources, computers, removed: view.removed.length };
+}
+
+const withCounts = (view: Awaited<ReturnType<typeof viewOf>>, counts: boolean) => {
+  if (!counts) return view;
+  const link = readLink();
+  return { ...view, counts: countsOf(view, (link && ownKey(link)) || "") };
+};
 
 // What a chip shows of an item (a summary): its number (or its outside source, and what GitHub says
 // of it), title, where it stands, whose.
@@ -184,9 +212,11 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     if (!OWNER.test(owner) && owner !== ALL) return yield* json(400, { message: "Say whose queue (owner): a conversation's address, a group chat's id, or all." });
     // (A glance at it, a count say, as the phone's ••• shows: GitHub isn't read for it.)
     const glance = queryOf(request).get("glance") === "1";
-    if (part === undefined) return yield* json(200, await viewOf(owner, targets, undefined, signal ?? undefined, undefined, glance ? null : GITHUB_WAIT));
+    // (Its counts too, for a client that draws them: the sidebar's, `counts=1`.)
+    const counts = queryOf(request).get("counts") === "1";
+    if (part === undefined) return yield* json(200, withCounts(await viewOf(owner, targets, undefined, signal ?? undefined, undefined, glance ? null : GITHUB_WAIT), counts));
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followView(owner, targets, signal ?? undefined, glance);
+    return yield* followView(owner, targets, signal ?? undefined, glance, counts);
   }
 
   // One item.
@@ -256,7 +286,7 @@ const answered = (answer: Acted, json: RouteContext["json"]) => json(answer.stat
 // An owner's view, a line now and one each time it changes: a change to the queues (here, or by
 // another process: its files), or a session linked to one of its items starting or stopping work
 // (looked at every few seconds).
-async function* followView(owner: string, targets: Target[], signal?: AbortSignal, glance = false): AsyncGenerator<AnswerPiece> {
+async function* followView(owner: string, targets: Target[], signal?: AbortSignal, glance = false, counts = false): AsyncGenerator<AnswerPiece> {
   let wake: (() => void) | null = null;
   let dirty = true;
   const told = () => {
@@ -294,7 +324,7 @@ async function* followView(owner: string, targets: Target[], signal?: AbortSigna
       }
       dirty = false;
       // (GitHub isn't waited for: what it says comes as a line of its own once it's read.)
-      const line = JSON.stringify(await viewOf(owner, targets, facts, signal, titles, glance ? null : 0));
+      const line = JSON.stringify(withCounts(await viewOf(owner, targets, facts, signal, titles, glance ? null : 0), counts));
       if (line !== last) {
         yield { body: Buffer.from(line + "\n") };
         last = line;

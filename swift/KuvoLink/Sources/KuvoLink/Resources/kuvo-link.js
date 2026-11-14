@@ -2439,6 +2439,153 @@ var WORK_ROUTES = [
   { route: "POST kuvo/projects/new", answers: { 201: object({ project: PROJECT, text: string }), 400: REFUSED, 403: object({ message: string, needs: string }), 409: REFUSED, 502: REFUSED } }
 ];
 
+// box/src/shared/routes/sessions.ts
+var CARRIED = object({ session: string });
+var STARTED = object({ session: string, title: nullable(string), folder: string, project: nullable(string), "answer?": nullable(string), "got?": words("askFirst", "acceptEdits", "auto"), "info?": any, "worktree?": object({ project: string, root: string, "folder?": string, branch: string, "base?": string }) });
+var SESSION_MOVED = object({ session: string, directory: string, "info?": any });
+var TOOL_ANSWER = object({ text: string, isError: bool });
+var REFUSED2 = object({ message: string });
+var WAITING = object({ id: string, "from?": string, text: string, "files?": list(string), "keyword?": string, at: number });
+var QUEUE = object({ paused: bool, held: list(string), "waiting?": list(WAITING) });
+var ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITING), waits: bool });
+var REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, "before?": string });
+var QUEUE_ITEM = object({
+  id: string,
+  words: string,
+  files: list(string),
+  keyword: nullable(string),
+  from: nullable(string),
+  on: words("engine", "box"),
+  delivery: words("steer", "queue"),
+  held: bool
+});
+var QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), items: nullable(list(QUEUE_ITEM)) });
+var QUEUE_READ = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "items?": nullable(list(QUEUE_ITEM)) });
+var ASK_CHOICE = object({ answer: words("once", "always", "reject", "instead"), title: string, named: nullable(string), placeholder: nullable(string) });
+var PERMISSION_ASK = object({
+  id: string,
+  kind: literal("permission"),
+  session: string,
+  title: string,
+  message: nullable(string),
+  command: nullable(string),
+  files: list(object({ file: string, patch: string, additions: number, deletions: number, status: nullable(words("added", "deleted", "modified")) })),
+  resources: list(string),
+  choices: list(ASK_CHOICE)
+});
+var ASKED_QUESTION = object({
+  key: string,
+  title: nullable(string),
+  question: string,
+  options: list(object({ value: string, label: string, description: nullable(string) })),
+  multiple: bool,
+  custom: bool,
+  required: bool
+});
+var QUESTION_ASK = object({ id: string, kind: literal("question"), session: string, title: string, questions: list(ASKED_QUESTION) });
+var OTHER_ASK = object({ id: string, kind: literal("other"), session: string, title: string, message: string, dismiss: bool });
+var SESSION_ASK = oneOf(PERMISSION_ASK, QUESTION_ASK, OTHER_ASK);
+var SESSION_ASKS = object({ asks: list(SESSION_ASK) });
+var MENTION = object({ text: string, title: string, detail: nullable(string), kind: words("file", "folder", "bot", "session"), session: nullable(string) });
+var MENTIONS = object({ mentions: list(MENTION) });
+var GLANCE_CHECKS = object({ passed: number, failed: number, pending: number });
+var GLANCE_PULL = object({
+  number,
+  url: string,
+  "state?": words("open", "draft", "merged", "closed"),
+  "additions?": number,
+  "deletions?": number,
+  "checks?": GLANCE_CHECKS
+});
+var GLANCE = object({
+  "branch?": string,
+  "additions?": number,
+  "deletions?": number,
+  "pull?": GLANCE_PULL,
+  "account?": object({ name: string, "label?": string }),
+  "asked?": number
+});
+var GLANCES = object({ sessions: map(GLANCE) });
+var MODEL_ACTION = object({ do: words("signIn", "addKey", "install", "choose"), label: string, help: string });
+var SESSION_MODEL = object({
+  model: nullable(object({ providerID: string, id: string, "variant?": string })),
+  "name?": string,
+  runs: bool,
+  "missing?": words("model", "signIn", "key", "install", "gone"),
+  "account?": object({ id: string, name: string, "label?": string }),
+  "plan?": object({ name: string, agent: string, provider: string }),
+  "refusal?": string,
+  "choose?": bool,
+  "action?": MODEL_ACTION
+});
+var SESSION_MODELS = object({ sessions: map(SESSION_MODEL) });
+var MODEL_REF = object({ providerID: string, id: string, "variant?": string });
+var MODELS_OFFERED = object({
+  models: list(object({ providerID: string, id: string, name: string, side: words("engine", "agents"), efforts: list(string), aliases: list(string), "retiring?": bool, "hidden?": bool })),
+  known: object({ engine: bool, agents: bool }),
+  "listing?": list(string),
+  "starting?": nullable(MODEL_REF)
+});
+var SESSION_KINDS = ["project", "chat", "bot", "seat", "hidden", "subagent"];
+var SESSION_FACTS = object({
+  kind: words(...SESSION_KINDS),
+  "project?": string,
+  directory: string,
+  "title?": string,
+  created: number,
+  updated: number,
+  "parent?": string,
+  "pinned?": bool,
+  "archived?": bool,
+  "running?": bool,
+  "asked?": number,
+  "away?": bool,
+  "bot?": string
+});
+var LISTED_PROJECT = object({ "name?": string, "updated?": number, asking: number, working: number });
+var ASKS_WORDS = object({ kind: words("permission", "question", "sandbox", "vault", "other"), summary: string });
+var NEEDS_YOU = object({ session: string, asks: ASKS_WORDS });
+var BOT_NOW = object({ working: number, asking: number, "finished?": number });
+var WAITING_ON_YOU = object({ sessions: number, bots: number, queue: number });
+var SESSION_LIST = object({
+  at: string,
+  "full?": bool,
+  sessions: map(SESSION_FACTS),
+  "gone?": list(string),
+  projects: map(LISTED_PROJECT),
+  needsYou: list(NEEDS_YOU),
+  "pending?": list(string)
+});
+var SESSION_ROUTES = [
+  { route: "POST kuvo/sessions/:id/agents", answers: { 200: CARRIED } },
+  { route: "POST kuvo/sessions/:id/folders", answers: { 200: object({ session: string }), 404: REFUSED2, 405: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+  { route: "POST kuvo/sessions/:id/move", answers: { 200: SESSION_MOVED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+  { route: "POST kuvo/sessions", answers: { 200: STARTED, 400: REFUSED2, 403: REFUSED2, 404: REFUSED2, 409: object({ message: string, reason: words("fullAccessOff") }), 429: REFUSED2, 502: object({ message: string, "session?": string }), 503: REFUSED2 } },
+  { route: "POST kuvo/agent-tools", answers: { 200: TOOL_ANSWER, 400: REFUSED2 } },
+  { route: "GET kuvo/sessions/queues/events", answers: { 200: object({ queues: map(QUEUE) }) } },
+  { route: "GET kuvo/sessions/glance", answers: { 200: GLANCES, 400: REFUSED2, 503: REFUSED2 } },
+  { route: "POST kuvo/sessions/read", answers: { 200: object({ read: number }), 503: REFUSED2 } },
+  { route: "GET kuvo/sessions/glance/events", answers: { 200: GLANCES, 400: REFUSED2, 503: REFUSED2 } },
+  { route: "GET kuvo/sessions/list", answers: { 200: SESSION_LIST, 405: REFUSED2, 503: REFUSED2 } },
+  { route: "GET kuvo/sessions/list/events", answers: { 200: SESSION_LIST, 405: REFUSED2, 503: REFUSED2 } },
+  { route: "GET kuvo/waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED2 } },
+  { route: "GET kuvo/waiting/events", answers: { 200: WAITING_ON_YOU, 405: REFUSED2 } },
+  { route: "GET kuvo/sessions/models", answers: { 200: SESSION_MODELS, 400: REFUSED2, 503: REFUSED2 } },
+  { route: "GET kuvo/models/offered", answers: { 200: MODELS_OFFERED, 503: REFUSED2 } },
+  { route: "GET kuvo/sessions/:id/queue", answers: { 200: QUEUE_READ } },
+  { route: "GET kuvo/sessions/:id/queue/events", answers: { 200: QUEUE_SHOWN } },
+  { route: "GET kuvo/sessions/:id/asks", answers: { 200: SESSION_ASKS, 404: REFUSED2, 503: REFUSED2 } },
+  { route: "GET kuvo/sessions/:id/asks/events", answers: { 200: SESSION_ASKS, 404: REFUSED2, 503: REFUSED2 } },
+  { route: "POST kuvo/sessions/:id/asks/:ask", answers: { 200: NOTHING, 400: REFUSED2, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+  { route: "GET kuvo/sessions/:id/mentions", answers: { 200: MENTIONS, 400: REFUSED2, 404: REFUSED2, 503: REFUSED2 } },
+  { route: "POST kuvo/sessions/:id/stop", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+  { route: "POST kuvo/sessions/:id/queue/hold", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+  { route: "POST kuvo/sessions/:id/queue/resume", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+  { route: "POST kuvo/sessions/:id/queue/:item/now", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+  { route: "POST kuvo/sessions/:id/queue/add", answers: { 200: ADDED, 400: REFUSED2, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+  { route: "DELETE kuvo/sessions/:id/queue/:item", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "removed?": REMOVED }), 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } }
+];
+
 // box/src/shared/routes/bots.ts
 var LOOKS = {
   colors: ["mint", "sky", "indigo", "violet", "pink", "coral", "orange", "amber", "lime", "graphite"],
@@ -2465,7 +2612,8 @@ var BOT = object({
   "project?": string,
   "created?": string,
   "limits?": LIMITS,
-  "allowed?": list(words("makeProject", "cloneProject"))
+  "allowed?": list(words("makeProject", "cloneProject")),
+  "now?": BOT_NOW
 });
 var HELD_EDIT = object({ bot: string, box: string, computer: string, "change?": map(any), "delete?": literal(true), since: number });
 var REFUSED_EDIT = object({ bot: string, box: string, computer: string, message: string, at: number });
@@ -7972,6 +8120,22 @@ function watchFolders(folders, changed, { recursive = true, missed = changed } =
       watcher.close();
   } };
 }
+function followersOf(...sets) {
+  const all = {
+    add(told) {
+      for (const set of sets)
+        set.add(told);
+      return all;
+    },
+    delete(told) {
+      let had = false;
+      for (const set of sets)
+        had = set.delete(told) || had;
+      return had;
+    }
+  };
+  return all;
+}
 async function* followed(read, followers, signal, { folders = [], recursive = true, watch = watchFolders } = {}) {
   let wake = null;
   const queue = [];
@@ -13060,7 +13224,7 @@ function rowsOfLeads(leads) {
   }
   return [...found.values()];
 }
-var STARTED = path52.join(WORK_FOLDER, "started-elsewhere.json");
+var STARTED2 = path52.join(WORK_FOLDER, "started-elsewhere.json");
 var STARTED_FOR = 30 * 86400000;
 function noteStartedOn(lead, key, now = Date.now()) {
   try {
@@ -13075,7 +13239,7 @@ function noteStartedOn(lead, key, now = Date.now()) {
           delete kept[each];
       }
       kept[lead] = { ...kept[lead] ?? {}, [key]: now };
-      writePrivate(STARTED, JSON.stringify(kept));
+      writePrivate(STARTED2, JSON.stringify(kept));
     });
   } catch {}
 }
@@ -13084,7 +13248,7 @@ function startedOn(lead, now = Date.now()) {
 }
 var readStarted = () => {
   try {
-    const kept = JSON.parse(fs50.readFileSync(STARTED, "utf8"));
+    const kept = JSON.parse(fs50.readFileSync(STARTED2, "utf8"));
     return isObject(kept) ? kept : {};
   } catch {
     return {};
@@ -36001,11 +36165,11 @@ var KEEP = 100;
 var KEEP_FOR2 = 30 * 24 * 60 * 60 * 1000;
 var MORE = ["-c", "protocol.file.allow=always", "-c", "gc.autoDetach=false"];
 var ENV = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_ASKPASS: "", SSH_ASKPASS: "" };
-var REFUSED2 = { ok: false, out: "", error: "This repository's own settings name a program Kuvo Code won't run for it." };
+var REFUSED3 = { ok: false, out: "", error: "This repository's own settings name a program Kuvo Code won't run for it." };
 async function git(given, options = {}) {
   const args = await ownArgsLater([...MORE, ...given], options.cwd);
   if (!args)
-    return REFUSED2;
+    return REFUSED3;
   return new Promise((resolve) => {
     const child = execFile11("git", args, { cwd: options.cwd, env: ENV, encoding: "utf8", timeout: 300000, maxBuffer: 64 * 1024 * 1024 }, (error, out, err) => resolve({ ok: !error, out: String(out ?? ""), error: String(err ?? "").trim() || (error ? String(error.message) : "") }));
     if (options.input !== undefined)
@@ -36016,7 +36180,7 @@ async function gitPipe(given, input, receiving) {
   const from = await ownArgsLater([...MORE, ...given]);
   const to = await ownArgsLater([...MORE, ...receiving]);
   if (!from || !to)
-    return REFUSED2;
+    return REFUSED3;
   return new Promise((resolve) => {
     const options = { env: ENV, stdio: ["pipe", "pipe", "pipe"] };
     const sender = spawn11("git", from, options);
@@ -36929,6 +37093,39 @@ function watchVaultAsks(tell, answered = () => {}, after = 2000) {
 
 // box/src/link/glance/asked.ts
 var ASKS_FILE2 = path127.join(RUN, "glance", "asks.json");
+var lastPart = (file) => file.replace(/\/+$/, "").split("/").pop() || file;
+function permissionWords2(action, resources) {
+  const files = Array.isArray(resources) ? resources.filter((each) => typeof each === "string") : [];
+  const what = files.length > 1 ? `${files.length} files` : files.length === 1 ? lastPart(files[0]) : "a file";
+  const summary = (() => {
+    switch (action) {
+      case "edit":
+      case "patch":
+      case "write":
+        return `asks to edit ${what}`;
+      case "read":
+        return `asks to read ${what}`;
+      case "shell":
+      case "bash":
+        return "asks to run a command";
+      case "external_directory":
+        return "asks to work outside the project";
+      case "subagent":
+        return "asks to start an agent";
+      case "webfetch":
+        return "asks to fetch a page";
+      default:
+        return typeof action === "string" && action ? `asks to ${action.replaceAll("_", " ")}` : "asks for your OK";
+    }
+  })();
+  return { kind: "permission", summary };
+}
+function formWords(form) {
+  const kind = isObject(form.metadata) ? form.metadata.kind : undefined;
+  return kind === "question" ? { kind: "question", summary: "has a question for you" } : { kind: "other", summary: "needs your answer" };
+}
+var SANDBOX_WORDS = { kind: "sandbox", summary: "asks to run a command outside the sandbox" };
+var VAULT_WORDS = { kind: "vault", summary: "asks for something from the vault" };
 var ASKED2 = new Set(["permission.asked", "form.created"]);
 var ANSWERED3 = new Set(["permission.replied", "permission.rejected", "form.replied", "form.cancelled"]);
 var ENDS = new Set(["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted", "session.deleted"]);
@@ -36943,7 +37140,8 @@ function noteAskEvent(event, place, now = Date.now()) {
   const asked = event.type === "form.created" && isObject(data.form) ? data.form : data;
   if (ASKED2.has(event.type)) {
     if (typeof asked.id === "string" && typeof asked.sessionID === "string" && asked.sessionID.startsWith("ses") && !open.has(asked.id)) {
-      open.set(asked.id, { session: asked.sessionID, at: now, ...place ? { place } : {} });
+      const asks = event.type === "form.created" ? formWords(asked) : permissionWords2(asked.action, asked.resources);
+      open.set(asked.id, { session: asked.sessionID, at: now, ...place ? { place } : {}, asks });
       changed = true;
     }
   } else if (ANSWERED3.has(event.type)) {
@@ -36964,9 +37162,12 @@ function keep3() {
   for (const [id, ask] of open)
     if (!reviewed.has(id))
       asks[id] = ask;
-  for (const ask of [...listSandboxAsks(), ...listAsks()])
+  for (const ask of listSandboxAsks())
     if (ask.session)
-      asks[ask.id] = { session: ask.session, at: ask.at };
+      asks[ask.id] = { session: ask.session, at: ask.at, asks: SANDBOX_WORDS };
+  for (const ask of listAsks())
+    if (ask.session)
+      asks[ask.id] = { session: ask.session, at: ask.at, asks: VAULT_WORDS };
   try {
     writePrivate(ASKS_FILE2, JSON.stringify({ asks }) + `
 `);
@@ -36995,7 +37196,10 @@ function forgetAsksOn(place) {
 function readAsks2() {
   try {
     const kept = JSON.parse(fs122.readFileSync(ASKS_FILE2, "utf8")).asks;
-    return isObject(kept) ? Object.values(kept).filter((ask) => isObject(ask) && typeof ask.session === "string" && typeof ask.at === "number") : [];
+    return isObject(kept) ? Object.values(kept).filter((ask) => isObject(ask) && typeof ask.session === "string" && typeof ask.at === "number").map(({ asks, ...ask }) => ({
+      ...ask,
+      ...isObject(asks) && typeof asks.kind === "string" && typeof asks.summary === "string" ? { asks: { kind: asks.kind, summary: asks.summary } } : {}
+    })) : [];
   } catch {
     return [];
   }
@@ -37111,7 +37315,40 @@ function factsOf2(session, place) {
     facts.asked = asked;
   if (place.away.has(session.id))
     facts.away = true;
+  const bot = botOf3(session, kind, place);
+  if (bot)
+    facts.bot = bot;
   return facts;
+}
+function botOf3(session, kind, place) {
+  if (kind === "subagent")
+    return;
+  const own = place.botOf?.get(session.id);
+  if (own)
+    return own;
+  const by = kuvoOf(session).by;
+  return isObject(by) && typeof by.bot === "string" && by.bot ? by.bot : undefined;
+}
+var standing = (facts) => facts.asked !== undefined ? "asking" : facts.running ? "working" : null;
+function needsYou(sessions, asks) {
+  return Object.entries(sessions).filter(([, facts]) => facts.asked !== undefined && (facts.kind === "project" || facts.kind === "chat") && !facts.archived && !facts.away).sort(([a, one], [b, other]) => other.asked - one.asked || a.localeCompare(b)).map(([session]) => ({ session, asks: asks?.get(session) ?? { kind: "other", summary: "waits on you" } }));
+}
+function botsNow(sessions) {
+  const bots = {};
+  for (const facts of Object.values(sessions)) {
+    if (!facts.bot || facts.archived || facts.away)
+      continue;
+    const now = bots[facts.bot] ??= { working: 0, asking: 0 };
+    const stands = standing(facts);
+    if (stands)
+      now[stands] += 1;
+    else if (facts.updated)
+      now.finished = Math.max(now.finished ?? 0, facts.updated);
+  }
+  for (const now of Object.values(bots))
+    if (now.working || now.asking)
+      delete now.finished;
+  return bots;
 }
 function listedProjects(sessions, place) {
   const names = new Map;
@@ -37119,16 +37356,23 @@ function listedProjects(sessions, place) {
     if (!project.removed)
       names.set(project.directory, project.name);
   const newest = new Map;
+  const sums = new Map;
   for (const facts of Object.values(sessions)) {
     if (facts.kind !== "project" || facts.archived || facts.project === undefined)
       continue;
     newest.set(facts.project, Math.max(newest.get(facts.project) ?? 0, facts.updated));
+    const stands = facts.away ? null : standing(facts);
+    if (!stands)
+      continue;
+    const sum = sums.get(facts.project) ?? { asking: 0, working: 0 };
+    sum[stands] += 1;
+    sums.set(facts.project, sum);
   }
   const projects = {};
   for (const directory of [...new Set([...names.keys(), ...newest.keys()])].sort()) {
     const name = names.get(directory) ?? place.projects.find((each) => each.directory === directory)?.name;
     const updated = newest.get(directory);
-    projects[directory] = { ...name ? { name } : {}, ...updated !== undefined ? { updated } : {} };
+    projects[directory] = { ...name ? { name } : {}, ...updated !== undefined ? { updated } : {}, ...sums.get(directory) ?? { asking: 0, working: 0 } };
   }
   return projects;
 }
@@ -37143,7 +37387,7 @@ var RELOADS = new Set(["session.created", "session.updated", "session.renamed", 
 var STARTS = "session.execution.started";
 var ENDS2 = new Set(["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"]);
 var LOST_GAP = 1e6;
-var STARTED2 = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+var STARTED3 = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 var keeping2 = false;
 var latest2 = null;
 var places3 = new Map;
@@ -37156,12 +37400,15 @@ function parseCursor(given) {
 function readBoxKnows() {
   const projects = readProjects();
   const botSessions = new Set;
+  const botOf = new Map;
   for (const id of listOf(BOTS)) {
     const bot = botHere(id);
-    if (bot)
+    if (bot) {
       botSessions.add(bot.session);
+      botOf.set(bot.session, id);
+    }
   }
-  return { projects, filed: filedProjects(projects), botSessions, away: new Set(awaySessions()), asks: readAsks2() };
+  return { projects, filed: filedProjects(projects), botSessions, botOf, away: new Set(awaySessions()), asks: readAsks2() };
 }
 function placeNow(running, sessions, known = readBoxKnows()) {
   const parents = new Map;
@@ -37169,13 +37416,20 @@ function placeNow(running, sessions, known = readBoxKnows()) {
     if (session.parentID)
       parents.set(session.id, session.parentID);
   const asked = new Map;
+  const asks = new Map;
   for (const ask of known.asks) {
     let root = ask.session;
     for (let step = 0;step < 10 && parents.has(root); step++)
       root = parents.get(root);
-    asked.set(root, Math.min(asked.get(root) ?? Infinity, ask.at));
+    if (ask.at >= (asked.get(root) ?? Infinity))
+      continue;
+    asked.set(root, ask.at);
+    if (ask.asks)
+      asks.set(root, ask.asks);
+    else
+      asks.delete(root);
   }
-  return { isChatsFolder, botsFolder: BOTS, botSessions: known.botSessions, filed: known.filed, projects: known.projects, running, asked, away: known.away };
+  return { isChatsFolder, botsFolder: BOTS, botSessions: known.botSessions, botOf: known.botOf, filed: known.filed, projects: known.projects, running, asked, asks, away: known.away };
 }
 var factsMade = new WeakMap;
 function factsNow(session, place, known) {
@@ -37239,7 +37493,7 @@ function commit(listed, now = Date.now(), file = LIST_FILE, owner) {
     const list = readList(file) ?? { epoch: `${now.toString(36)}-${process.pid.toString(36)}`, seq: 0, floor: 0, sessions: {}, gone: {}, projects: {} };
     if (owner === undefined && list.owner && list.owner !== process.pid && processRuns(list.owner, "kuvo-link"))
       return list;
-    if (list.owner !== undefined && (list.owner !== owner || list.started !== STARTED2)) {
+    if (list.owner !== undefined && (list.owner !== owner || list.started !== STARTED3)) {
       list.seq += LOST_GAP;
       list.floor = list.seq;
     }
@@ -37268,9 +37522,9 @@ function takeIn(list, listed, now, owner) {
     delete list.owner;
     delete list.started;
   } else {
-    noted ||= list.started !== STARTED2;
+    noted ||= list.started !== STARTED3;
     list.owner = owner;
-    list.started = STARTED2;
+    list.started = STARTED3;
   }
   for (const [id, facts] of Object.entries(listed.sessions)) {
     const before = list.sessions[id];
@@ -37301,6 +37555,11 @@ function takeIn(list, listed, now, owner) {
     list.projects = listed.projects;
     changed = true;
   }
+  const needs = listed.needsYou ?? needsYou(listed.sessions);
+  if (JSON.stringify(list.needsYou) !== JSON.stringify(needs)) {
+    list.needsYou = needs;
+    changed = telling = true;
+  }
   const pending = listed.pending?.length ? [...listed.pending].sort() : undefined;
   if (JSON.stringify(list.pending) !== JSON.stringify(pending)) {
     if (pending)
@@ -37329,10 +37588,11 @@ function answerFrom(list, since) {
     if (whole || entry.seq > from.seq)
       sessions[id] = entry.facts;
   const pending = list.pending?.length ? { pending: list.pending } : {};
+  const needs = list.needsYou ?? needsYou(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])));
   if (whole)
-    return { at: cursorOf(list), full: true, sessions, projects: list.projects, ...pending };
+    return { at: cursorOf(list), full: true, sessions, projects: list.projects, needsYou: needs, ...pending };
   const gone = Object.entries(list.gone).filter(([, entry]) => entry.seq > from.seq).map(([id]) => id).sort();
-  return { at: cursorOf(list), sessions, ...gone.length ? { gone } : {}, projects: list.projects, ...pending };
+  return { at: cursorOf(list), sessions, ...gone.length ? { gone } : {}, projects: list.projects, needsYou: needs, ...pending };
 }
 var LIST_FILES = new Set(["projects.json", "worktrees.json"]);
 var BOT_FILES = new Set(["bot.json", "session"]);
@@ -37544,7 +37804,7 @@ function withPending(sessions, placeOf, running, pending, before, knows) {
       placeOf[id] = entry.place;
     }
   }
-  return { sessions: listed, projects: listedProjects(listed, box), placeOf, pending };
+  return { sessions: listed, projects: listedProjects(listed, box), needsYou: needsYou(listed, box.asks), placeOf, pending };
 }
 function workOut(now = Date.now()) {
   if (!keeping2)
@@ -37569,7 +37829,7 @@ function workOut(now = Date.now()) {
     known2 = null;
   known2 ??= readBoxKnows();
   const listed = withPending(sessions, placeOf, running, pendingPlaces(), latest2 ?? readList(), known2);
-  if (latest2?.owner === process.pid && latest2.started === STARTED2) {
+  if (latest2?.owner === process.pid && latest2.started === STARTED3) {
     const { changed, noted, telling } = takeIn(latest2, listed, now, process.pid);
     if (changed || noted)
       scheduleWrite(telling || noted);
@@ -37588,6 +37848,7 @@ process.once("exit", () => {
   if (writeTimer)
     writeNow();
 });
+var keepsList = () => keeping2;
 var keptList = () => latest2 ?? readList();
 var known2 = null;
 var watchesWhole = () => true;
@@ -42214,7 +42475,7 @@ import fs137 from "node:fs";
 import path144 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f442492cd45b";
+var BRIDGE_VERSION = "ee9f04b3c442";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -46553,6 +46814,35 @@ async function* attentionRoute(context) {
   return yield* json(200, { for: given.seconds });
 }
 
+// box/src/link/areas/waiting.ts
+var WAITING_ROUTE = /^kuvo\/waiting(\/events)?$/;
+var factsOf3 = (list) => Object.fromEntries(Object.entries(list?.sessions ?? {}).map(([id, entry]) => [id, entry.facts]));
+function botsNowHere(list = keptList()) {
+  return botsNow(factsOf3(list));
+}
+function waitingOf(list) {
+  const facts = factsOf3(list);
+  const asking = (session) => facts[session]?.asked !== undefined;
+  return {
+    sessions: (list?.needsYou ?? []).length,
+    bots: Object.values(botsNow(facts)).filter((now) => now.asking > 0).length,
+    queue: allItems().filter((item) => !item.removed && item.category !== "done" && item.sessions.some((linked) => asking(linked.session))).length
+  };
+}
+async function* waitingRoute(context, match) {
+  const { request, signal, json } = context;
+  if (request.method.toUpperCase() !== "GET")
+    return yield* json(405, { message: "Only GET." });
+  const list = await listNow(context, signal ?? undefined);
+  if (!match[1])
+    return yield* json(200, waitingOf(list));
+  yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+  if (!keepsList())
+    return yield { body: Buffer.from(JSON.stringify(waitingOf(list)) + `
+`) };
+  return yield* followed(() => waitingOf(keptList()), followersOf(listFollowers, queueFollowers2, botFollowers), signal);
+}
+
 // box/src/link/areas/bots.ts
 async function* botTemplatesRoute(context) {
   const { request, signal, readEngine, info, json } = context;
@@ -46613,19 +46903,23 @@ async function* retellRoute(context) {
   }
   return yield* json(200, {});
 }
+function botsWithNow(machine) {
+  const now = botsNowHere();
+  return listBots(machine).map((bot) => ({ ...bot, now: now[bot.id] ?? { working: 0, asking: 0 } }));
+}
 async function* botEventsRoute(context) {
   const { request, signal, info, json } = context;
   if (request.method.toUpperCase() !== "GET")
     return yield* json(405, {});
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-  return yield* followed(() => ({ bots: listBots(info.name), ...heldLists() }), botFollowers, signal, { folders: [BOTS, HELD3] });
+  return yield* followed(() => ({ bots: botsWithNow(info.name), ...heldLists() }), followersOf(botFollowers, listFollowers), signal, { folders: [BOTS, HELD3] });
 }
 async function* botsRoute(context) {
   const { request, info, text } = context;
   if (!["GET", "HEAD"].includes(request.method.toUpperCase()))
     return yield* text(405, "Read them with GET.");
   yield { head: { status: 200, headers: { "content-type": "application/json" } } };
-  yield { body: Buffer.from(JSON.stringify({ bots: listBots(info.name), ...heldLists() })) };
+  yield { body: Buffer.from(JSON.stringify({ bots: botsWithNow(info.name), ...heldLists() })) };
   return;
 }
 
@@ -48930,7 +49224,7 @@ async function answer4(request, source, signal) {
   return message(FAILURE);
 }
 var LONGEST_PATH = process.platform === "darwin" ? 103 : 107;
-var WAITING = 4;
+var WAITING2 = 4;
 function serveAgent(socket, source) {
   const open = new Set;
   const server = net4.createServer((connection) => {
@@ -48948,7 +49242,7 @@ function serveAgent(socket, source) {
       held = Buffer.concat([held, chunk]);
       while (held.length >= 4) {
         const length = held.readUInt32BE(0);
-        if (length === 0 || length > LONGEST || waiting >= WAITING)
+        if (length === 0 || length > LONGEST || waiting >= WAITING2)
           return void connection.destroy();
         if (held.length < 4 + length)
           break;
@@ -50848,6 +51142,30 @@ async function viewOf2(owner, targets, facts, signal, cache, wait = GITHUB_WAIT)
     computers: elsewhere.computers
   };
 }
+function countsOf(view, own = "") {
+  const categories = Object.fromEntries(view.categories.map((each) => [each.id, 0]));
+  const sources = {};
+  const computers = { [own]: 0 };
+  for (const computer of view.computers)
+    computers[computer.key] = 0;
+  let inProgress = 0;
+  for (const item of view.items) {
+    if (item.inProgress)
+      inProgress += 1;
+    categories[item.category] = (categories[item.category] ?? 0) + 1;
+    if (item.source)
+      sources[item.source.kind] = (sources[item.source.kind] ?? 0) + 1;
+    const key = item.computer?.key ?? own;
+    computers[key] = (computers[key] ?? 0) + 1;
+  }
+  return { inProgress, categories, sources, computers, removed: view.removed.length };
+}
+var withCounts = (view, counts) => {
+  if (!counts)
+    return view;
+  const link = readLink();
+  return { ...view, counts: countsOf(view, link && ownKey(link) || "") };
+};
 var refFacts = (item) => ({
   id: item.id,
   ...item.number !== undefined ? { number: item.number } : {},
@@ -50947,10 +51265,11 @@ async function* workQueueRoute(context, match) {
     if (!OWNER2.test(owner) && owner !== ALL)
       return yield* json(400, { message: "Say whose queue (owner): a conversation's address, a group chat's id, or all." });
     const glance = queryOf(request).get("glance") === "1";
+    const counts = queryOf(request).get("counts") === "1";
     if (part === undefined)
-      return yield* json(200, await viewOf2(owner, targets, undefined, signal ?? undefined, undefined, glance ? null : GITHUB_WAIT));
+      return yield* json(200, withCounts(await viewOf2(owner, targets, undefined, signal ?? undefined, undefined, glance ? null : GITHUB_WAIT), counts));
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followView(owner, targets, signal ?? undefined, glance);
+    return yield* followView(owner, targets, signal ?? undefined, glance, counts);
   }
   let named = "";
   try {
@@ -51018,7 +51337,7 @@ async function* workQueueRoute(context, match) {
   return yield* json(there.status, value);
 }
 var answered4 = (answer, json) => json(answer.status, answer.value);
-async function* followView(owner, targets, signal, glance = false) {
+async function* followView(owner, targets, signal, glance = false, counts = false) {
   let wake = null;
   let dirty = true;
   const told = () => {
@@ -51055,7 +51374,7 @@ async function* followView(owner, targets, signal, glance = false) {
         facts = { all: known.all, working: await atWorkNow(targets, signal).catch(() => known.working) };
       }
       dirty = false;
-      const line = JSON.stringify(await viewOf2(owner, targets, facts, signal, titles, glance ? null : 0));
+      const line = JSON.stringify(withCounts(await viewOf2(owner, targets, facts, signal, titles, glance ? null : 0), counts));
       if (line !== last) {
         yield { body: Buffer.from(line + `
 `) };
@@ -53661,6 +53980,7 @@ var ROUTES = [
   { when: (route) => route.match(MENTIONS_ROUTE), answer: mentionsRoute },
   { when: (route) => route.match(GLANCE_ROUTE), answer: glanceRoute },
   { when: (route) => route.match(LIST_ROUTE), answer: listRoute },
+  { when: (route) => route.match(WAITING_ROUTE), answer: waitingRoute },
   { when: (route) => route === SESSION_MODELS_ROUTE, answer: sessionModelsRoute },
   { when: (route) => route === MODELS_OFFERED_ROUTE, answer: modelsOfferedRoute },
   { when: (route) => route === READ_ALL_ROUTE, answer: readAllRoute },

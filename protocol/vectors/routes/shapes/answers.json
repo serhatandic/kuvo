@@ -14353,6 +14353,21 @@
          "away?": "number"
         }
        }
+      },
+      "counts?": {
+       "object": {
+        "inProgress": "number",
+        "categories": {
+         "map": "number"
+        },
+        "sources": {
+         "map": "number"
+        },
+        "computers": {
+         "map": "number"
+        },
+        "removed": "number"
+       }
       }
      }
     }
@@ -14769,6 +14784,21 @@
          "at": "number",
          "away?": "number"
         }
+       }
+      },
+      "counts?": {
+       "object": {
+        "inProgress": "number",
+        "categories": {
+         "map": "number"
+        },
+        "sources": {
+         "map": "number"
+        },
+        "computers": {
+         "map": "number"
+        },
+        "removed": "number"
        }
       }
      }
