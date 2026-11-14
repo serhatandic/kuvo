@@ -966,12 +966,15 @@ async function host() {
     const session = own.get(target);
     const reply = result => message.id !== undefined && send(client, { id: message.id, result: result ?? {}, ...(message.sessionId ? { sessionId: message.sessionId } : {}) });
     if (message.method === "Kuvo.frameDropped") {
-      if (client.inflight?.delete(p.frameId) && p.reason === "oversize" && client.view) {
+      if (client.inflight?.delete(p.frameId) && client.view) {
         const v = client.view;
-        if (v.quality > 10) v.quality = Math.max(10, v.quality - 10);
-        else v.scale = Math.max(.125, v.scale * .75);
         client.lastImage = null;
-        send(client, { method: "Kuvo.viewQuality", params: { targetId: v.targetId, quality: v.quality, scale: v.scale, reason: "oversize" } });
+        wakePage(v.targetId);
+        if (p.reason === "oversize") {
+          if (v.quality > 10) v.quality = Math.max(10, v.quality - 10);
+          else v.scale = Math.max(.125, v.scale * .75);
+          send(client, { method: "Kuvo.viewQuality", params: { targetId: v.targetId, quality: v.quality, scale: v.scale, reason: "oversize" } });
+        }
       }
       reply(); return true;
     }

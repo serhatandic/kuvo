@@ -70,3 +70,19 @@ for (const action of ["raw input", "agent command", "navigation", "load event"])
     assert.ok(captures(h) > before, "picture must not wait for the two-second still-page poll");
   });
 }
+
+for (const reason of ["budget", "unsent", "backpressure"]) {
+  test("re-review M3: an unchanged picture skipped for " + reason + " is retried", async t => {
+    const h = await page(t);
+    h.answer("Page.captureScreenshot", () => ({ data: "anBlZw==" }));
+    await call(h.c, "Kuvo.view", { targetId: "P", width: 393, height: 660 });
+    await capture(h);
+    const first = h.c.heard.all.find(m => m.method === "Kuvo.frame");
+    await call(h.c, "Kuvo.frameDropped", { frameId: first.params.frameId, reason });
+    await h.advance(100);
+    await settle(h);
+    const frames = h.c.heard.all.filter(m => m.method === "Kuvo.frame");
+    assert.equal(frames.length, 2, "a skipped picture must not be remembered as displayed");
+    assert.equal(frames[1].params.data, first.params.data);
+  });
+}

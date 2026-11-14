@@ -5,7 +5,7 @@ import path from "node:path";
 import { RUN, socketKey } from "../home";
 import type { SocketEvents, SocketHandle } from "../relay/host";
 
-const COMMANDS = new Set(["Kuvo.view", "Kuvo.frameAck", "Kuvo.pages", "Kuvo.input", "Kuvo.go", "Kuvo.upload", "Kuvo.hold", "Kuvo.claim"]);
+const COMMANDS = new Set(["Kuvo.view", "Kuvo.frameAck", "Kuvo.frameDropped", "Kuvo.pages", "Kuvo.input", "Kuvo.go", "Kuvo.upload", "Kuvo.hold", "Kuvo.claim"]);
 let windowAt = 0, messages = 0;
 /** Shared by every relay viewer on this box; the relay counts messages, not bytes. */
 export function frameBudget(count: number, now = Date.now(), ceiling = 100): boolean {
@@ -51,8 +51,9 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
         const length = Buffer.alloc(4); length.writeUInt32BE(header.length);
         const frame = Buffer.concat([length, header, jpeg]);
         // Binary fits one relay message; oversize pictures are dropped and credited locally.
-        if ((relay && (frame.length > 60000 || (options.unsent?.() ?? 0) > 0 || !budget(1, 80)))) {
-          socket.write(JSON.stringify({ method: frame.length > 60000 ? "Kuvo.frameDropped" : "Kuvo.frameAck", params: { frameId: meta.frameId, ...(frame.length > 60000 ? { reason: "oversize" } : {}) } }) + "\n");
+        const reason = !relay ? null : frame.length > 60000 ? "oversize" : (options.unsent?.() ?? 0) > 0 ? "unsent" : !budget(1, 80) ? "budget" : null;
+        if (reason) {
+          socket.write(JSON.stringify({ method: "Kuvo.frameDropped", params: { frameId: meta.frameId, reason } }) + "\n");
           return;
         }
         events.binary(frame);

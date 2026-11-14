@@ -183,7 +183,7 @@ test("relay pictures are skipped while host.unsent reports buffered connection t
   const h = await keeperView(t, true, { unsent: () => unsent, budget: () => true });
   const frame = id => ({ method: "Kuvo.frame", params: { targetId: "P", frameId: id, data: "anBlZw==", width: 1, height: 1, scrollX: 0, scrollY: 0 } });
   h.emit(frame(1));
-  await h.commands.until(m => m.method === "Kuvo.frameAck" && m.params.frameId === 1);
+  await h.commands.until(m => m.method === "Kuvo.frameDropped" && m.params.frameId === 1);
   assert.equal(h.heard.all.some(m => m.binary), false);
   unsent = 0;
   h.emit(frame(2));
@@ -209,3 +209,13 @@ test("external URL examples always identify the page whose viewers may handle th
   const vectors = JSON.parse(fs.readFileSync(new URL("../../protocol/vectors/browser-view.json", import.meta.url)));
   for (const fact of vectors.facts.filter(f => f.method === "Kuvo.external")) assert.equal(typeof fact.params.targetId, "string");
 });
+
+for (const reason of ["budget", "unsent"]) {
+  test("re-review M3: relay " + reason + " skip is a drop, not a display acknowledgement", async t => {
+    const h = await keeperView(t, true, { budget: () => reason !== "budget", unsent: () => reason === "unsent" ? 1 : 0 });
+    h.emit({ method: "Kuvo.frame", params: { targetId: "P", frameId: 990, data: "anBlZw==" } });
+    const reply = await h.commands.until(m => m.params?.frameId === 990);
+    assert.equal(reply.method, "Kuvo.frameDropped");
+    assert.equal(reply.params.reason, reason);
+  });
+}

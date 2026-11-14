@@ -82,7 +82,7 @@ test("a slow serve viewer skips and credits pictures while retaining text and it
   assert.equal(socket.destroyed, false);
   assert.equal(writes.length, 2);
   assert.match(writes[1].toString(), /"id":7/);
-  assert.deepEqual(commands, [{ method: "Kuvo.frameAck", params: { frameId: 12 } }]);
+  assert.deepEqual(commands, [{ method: "Kuvo.frameDropped", params: { frameId: 12, reason: "backpressure" } }]);
 });
 
 test("a 50 MiB WebSocket upload arriving in small TCP chunks is forwarded intact", async t => {

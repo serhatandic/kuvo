@@ -1,4 +1,4 @@
-// kuvo-browser 90d33f07aeceac61
+// kuvo-browser 39c615b6f07d9040
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -101,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "d1c13fbf2b7d";
+const KEEPER = "0817b74a2d57";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -984,12 +984,15 @@ async function host() {
     const session = own.get(target);
     const reply = result => message.id !== undefined && send(client, { id: message.id, result: result ?? {}, ...(message.sessionId ? { sessionId: message.sessionId } : {}) });
     if (message.method === "Kuvo.frameDropped") {
-      if (client.inflight?.delete(p.frameId) && p.reason === "oversize" && client.view) {
+      if (client.inflight?.delete(p.frameId) && client.view) {
         const v = client.view;
-        if (v.quality > 10) v.quality = Math.max(10, v.quality - 10);
-        else v.scale = Math.max(.125, v.scale * .75);
         client.lastImage = null;
-        send(client, { method: "Kuvo.viewQuality", params: { targetId: v.targetId, quality: v.quality, scale: v.scale, reason: "oversize" } });
+        wakePage(v.targetId);
+        if (p.reason === "oversize") {
+          if (v.quality > 10) v.quality = Math.max(10, v.quality - 10);
+          else v.scale = Math.max(.125, v.scale * .75);
+          send(client, { method: "Kuvo.viewQuality", params: { targetId: v.targetId, quality: v.quality, scale: v.scale, reason: "oversize" } });
+        }
       }
       reply(); return true;
     }

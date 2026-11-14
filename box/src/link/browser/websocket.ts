@@ -81,7 +81,7 @@ export function viewUpgrade(server: http.Server, password: string, connect: (eve
         // This transport dropped the picture, so it returns that picture's keeper credit.
         const length = data.readUInt32BE(0);
         const meta = JSON.parse(data.subarray(4, 4 + length).toString());
-        handle?.send(Buffer.from(JSON.stringify({ method: "Kuvo.frameAck", params: { frameId: meta.params.frameId } }) + "\n"));
+        handle?.send(Buffer.from(JSON.stringify({ method: "Kuvo.frameDropped", params: { frameId: meta.params.frameId, reason: "backpressure" } }) + "\n"));
       },
       end() { if (!opened) refuse(502); else socket.end(); },
     });

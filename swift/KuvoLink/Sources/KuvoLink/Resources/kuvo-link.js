@@ -9546,7 +9546,7 @@ class LineBuffer {
 // box/src/link/browser/view.ts
 import net3 from "node:net";
 import path35 from "node:path";
-var COMMANDS = new Set(["Kuvo.view", "Kuvo.frameAck", "Kuvo.pages", "Kuvo.input", "Kuvo.go", "Kuvo.upload", "Kuvo.hold", "Kuvo.claim"]);
+var COMMANDS = new Set(["Kuvo.view", "Kuvo.frameAck", "Kuvo.frameDropped", "Kuvo.pages", "Kuvo.input", "Kuvo.go", "Kuvo.upload", "Kuvo.hold", "Kuvo.claim"]);
 var windowAt = 0;
 var messages = 0;
 function frameBudget(count, now = Date.now(), ceiling = 100) {
@@ -9614,8 +9614,9 @@ function browserView(events, relay = false, run = RUN, key = socketKey, options 
           const length = Buffer.alloc(4);
           length.writeUInt32BE(header.length);
           const frame = Buffer.concat([length, header, jpeg]);
-          if (relay && (frame.length > 60000 || (options.unsent?.() ?? 0) > 0 || !budget(1, 80))) {
-            socket.write(JSON.stringify({ method: frame.length > 60000 ? "Kuvo.frameDropped" : "Kuvo.frameAck", params: { frameId: meta.frameId, ...frame.length > 60000 ? { reason: "oversize" } : {} } }) + `
+          const reason = !relay ? null : frame.length > 60000 ? "oversize" : (options.unsent?.() ?? 0) > 0 ? "unsent" : !budget(1, 80) ? "budget" : null;
+          if (reason) {
+            socket.write(JSON.stringify({ method: "Kuvo.frameDropped", params: { frameId: meta.frameId, reason } }) + `
 `);
             return;
           }
@@ -42914,7 +42915,7 @@ import fs138 from "node:fs";
 import path145 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "6e81b00d292c";
+var BRIDGE_VERSION = "574dd1d5e683";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -54859,7 +54860,7 @@ Sec-WebSocket-Accept: ${accept}\r
           return;
         const length = data.readUInt32BE(0);
         const meta = JSON.parse(data.subarray(4, 4 + length).toString());
-        handle?.send(Buffer.from(JSON.stringify({ method: "Kuvo.frameAck", params: { frameId: meta.params.frameId } }) + `
+        handle?.send(Buffer.from(JSON.stringify({ method: "Kuvo.frameDropped", params: { frameId: meta.params.frameId, reason: "backpressure" } }) + `
 `));
       },
       end() {
