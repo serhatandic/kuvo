@@ -255,6 +255,8 @@ public struct WorkItem: Hashable, Sendable, Decodable, Identifiable {
     public var assignee: WorkAssignee?
     /// The day it's due, `YYYY-MM-DD`.
     public var due: String?
+    /// Late, as the box says: due before today there, and still open.
+    public var overdue: Bool = false
     public var can: WorkCan?
     public var progress: WorkProgress?
     public var sessions: [WorkItemSession]
@@ -294,7 +296,7 @@ public struct WorkItem: Hashable, Sendable, Decodable, Identifiable {
 
 extension WorkItem {
     private enum Keys: String, CodingKey {
-        case id, number, wanted, owner, title, status, order, priority, labels, assignee, due, can, progress, sessions, noteCount, lastNote, fileCount, linkCount, handedBy
+        case id, number, wanted, owner, title, status, order, priority, labels, assignee, due, overdue, can, progress, sessions, noteCount, lastNote, fileCount, linkCount, handedBy
         case source, seen, keptIn, struck, closesOn, doneAs, computer, handing, created, updated, doneAt, removed
     }
 
@@ -317,6 +319,7 @@ extension WorkItem {
             labels: try container.decodeIfPresent([String].self, forKey: .labels) ?? [],
             assignee: try? container.decodeIfPresent(WorkAssignee.self, forKey: .assignee),
             due: try container.decodeIfPresent(String.self, forKey: .due),
+            overdue: try container.decodeIfPresent(Bool.self, forKey: .overdue) ?? false,
             can: try? container.decodeIfPresent(WorkCan.self, forKey: .can),
             progress: try container.decodeIfPresent(WorkProgress.self, forKey: .progress),
             sessions: try container.decode([WorkItemSession].self, forKey: .sessions),

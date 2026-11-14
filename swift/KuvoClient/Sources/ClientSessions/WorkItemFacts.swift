@@ -85,7 +85,7 @@ public extension WorkQueue {
         }
         // What else it says of itself, as text: its priority (but Normal), its labels, who it's for
         // and when it's due.
-        let tags = [item.priority == "normal" ? nil : item.priority.capitalized, labelWords(item, in: view), item.assignee.map { "For \($0.name)" }, item.due.map { "Due \($0)" }].compactMap { $0 }
+        let tags = [item.priority == "normal" ? nil : item.priority.capitalized, labelWords(item, in: view), item.assignee.map { "For \($0.name)" }, item.due.map { item.overdue ? "Overdue (due \($0))" : "Due \($0)" }].compactMap { $0 }
         if !tags.isEmpty, item.removed == nil {
             properties.append(Property(kind: .category(tagsID), words: tags.joined(separator: " · "), help: nil))
         }
