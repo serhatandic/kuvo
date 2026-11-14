@@ -7,7 +7,7 @@ import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, textOf, writePrivate } from "../files";
 import { migratedToChange, noteQueuesChanged, Refusal, WORK_QUEUE } from "./store";
-import { colorBefore } from "./statuses";
+import { colorBefore, PARKED_LABEL } from "./statuses";
 
 export const LABELS_FILE = path.join(WORK_QUEUE, "labels.json");
 const LOCK = path.join(WORK_QUEUE, ".labels.lock");
@@ -161,6 +161,10 @@ export function keepLabel(given: unknown): boolean {
     return { done: label };
   });
 }
+
+/** The label Parked here, where an item that carries it comes (from a box that kept categories) to
+ * a box that never made it. */
+export const keepParked = (): boolean => keepLabel({ id: PARKED_LABEL, name: "Parked", color: "graphite" });
 
 /** The labels of the primary this box numbers from, as it told them: its list, in its order, names,
  * colours and all, is this box's; one it removed goes here too, once no item here has it (`used`:

@@ -13857,7 +13857,7 @@ function standing(given, name) {
     return { status: before.status, labels: before.label ? [before.label] : [] };
   }
   const labels = [...new Set(kept)];
-  if (typeof given.category !== "string" || !STATUS_ID.test(given.status) || given.category === categoryBefore({ status: given.status, labels }))
+  if (typeof given.category !== "string" || !/^(?:next|later|parked|done|cat_[a-z0-9-]{1,40})$/.test(given.category) || !STATUS_ID.test(given.status) || given.category === categoryBefore({ status: given.status, labels }))
     return { status: given.status, labels };
   const moved = fromCategory(given.category, named);
   const rest = moved.label === PARKED_LABEL ? labels : labels.filter((each) => each !== PARKED_LABEL);
@@ -14207,7 +14207,10 @@ function migratedToChange() {
   try {
     migrateOnce();
   } catch (error) {
-    throw new Refusal(`The Work Queue's items couldn't be moved over to statuses on this computer (${error?.message ?? error}), so nothing was changed. Check ${WORK_QUEUE2} (is the disk full?), then try again.`);
+    const why = String(error?.message ?? error);
+    if (/another process/.test(why))
+      throw new Refusal("The Work Queue's items are being moved over to statuses on this computer right now, so nothing was changed. Try again in a moment (two minutes at most, if what was moving them was cut off).");
+    throw new Refusal(`The Work Queue's items couldn't be moved over to statuses on this computer (${why}), so nothing was changed. Check ${WORK_QUEUE2} (is the disk full?), then try again.`);
   }
 }
 var asKept = (item) => ({ ...item, category: categoryBefore(item) });
@@ -14593,6 +14596,7 @@ function keepLabel(given) {
     return { done: label };
   });
 }
+var keepParked = () => keepLabel({ id: PARKED_LABEL, name: "Parked", color: "graphite" });
 function takePrimaryLabels(given, used) {
   const theirs = given.slice(0, MOST_LABELS);
   const ids = new Set(theirs.map((each) => each.id));
@@ -14712,12 +14716,20 @@ function readTold3(key) {
       return again ? { ...again, heard: typeof kept.heard === "number" ? kept.heard : 0 } : null;
     }
     const { categories: _, ...told } = kept;
-    return { ...told, items: kept.items.map((each) => {
-      if (!isObject(each) || !("category" in each))
-        return each;
+    const items = [];
+    for (const each of kept.items) {
+      if (!isObject(each))
+        continue;
+      if (typeof each.status !== "string") {
+        const again = toldItemOf(each);
+        if (again)
+          items.push(again);
+        continue;
+      }
       const { category: __, ...item } = each;
-      return item;
-    }) };
+      items.push(item);
+    }
+    return { ...told, items };
   } catch {
     return null;
   }
@@ -23798,6 +23810,8 @@ function placeWorkQueues(carried, owners, opened) {
   for (const each of [...Array.isArray(carried.labels) ? carried.labels : [], ...Array.isArray(carried.categories) ? carried.categories : []])
     if (isObject(each) && carriedLabels.has(String(each.id)))
       keepLabel(each);
+  if (carriedLabels.has(PARKED_LABEL))
+    keepParked();
   const here = new Set(labels().map((each) => each.id));
   for (const item of items) {
     item.labels = item.labels.filter((each) => here.has(each));
@@ -25706,6 +25720,8 @@ async function handArrived(sender, given, reply, places, now = Date.now()) {
   for (const each of [...Array.isArray(given.labels) ? given.labels : [], ...Array.isArray(given.categories) ? given.categories : []])
     if (isObject(each) && item.labels.includes(String(each.id)))
       keepLabel(each);
+  if (item.labels.includes(PARKED_LABEL))
+    keepParked();
   const labelsHere = new Set(labels().map((each) => each.id));
   item.labels = item.labels.filter((each) => labelsHere.has(each));
   const kept = whoOf(given.by) ?? { name: "someone else" };
@@ -26180,7 +26196,7 @@ async function tellingNow2(targets, link, signal, cache) {
   const items = [...all.filter((item) => !isDone(item)).sort((a, b) => b.updated.at - a.updated.at).slice(0, MOST_TOLD - done.length), ...done];
   const { owners, titles } = await ownersOf("all", items, facts, targets, cache);
   const told = items.map((item) => toldItem(item, facts.working, titles));
-  const content = { items: told, owners, labels: labels(), ...numberingNow(link) };
+  const content = { items: told.map((item) => ({ ...item, category: categoryBefore(item) })), owners, labels: labels(), categories: [], ...numberingNow(link) };
   const unchecked = { ...content, items: told.map((item) => item.seen?.checked !== undefined ? { ...item, seen: { ...item.seen, checked: undefined } } : item) };
   const id = "wqt_" + crypto34.createHash("sha256").update(JSON.stringify(unchecked)).digest("base64url").slice(0, 22);
   return { id, payload: { told: { id, at: Date.now(), ...content } } };
@@ -43780,7 +43796,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "2d48444a0889";
+var BRIDGE_VERSION = "ecdfb68d4b22";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -52537,6 +52553,8 @@ async function viewOf2(owner, targets, facts, signal, cache, wait = GITHUB_WAIT,
   const { owners, titles } = await ownersOf(owner, all, known, targets, cache);
   const elsewhere = itemsElsewhere(owner, readLink(), new Set(here.filter((item) => !item.removed).map((item) => item.id)), new Set(here.filter((item) => item.removed).map((item) => item.id)), { linked: true });
   const named = new Set(owners.map((each) => each.owner));
+  if (here.some((item) => item.labels.includes(PARKED_LABEL)) && !labels().some((each) => each.id === PARKED_LABEL))
+    keepParked();
   const own = labels();
   const shown = [...own, ...elsewhere.labels.filter((each) => !own.some((mine) => mine.id === each.id))];
   const names = new Map(shown.map((each) => [each.id, each.name]));

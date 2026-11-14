@@ -6,7 +6,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
-import { keepLabel, labels } from "./labels";
+import { keepLabel, keepParked, labels } from "./labels";
+import { PARKED_LABEL } from "./statuses";
 import { statusNamed } from "./statuses";
 import { intoTodo } from "./ops";
 import { asKept, changeQueues, FILE_NAME, filesOf, itemOf, OWNER, readKeptQueue, readQueueSettingAside, type Item } from "./store";
@@ -61,6 +62,7 @@ export function placeWorkQueues(carried: unknown, owners: readonly string[], ope
   // COMPAT(0.7 queue-categories): a move from a box that kept categories brings its custom ones (`categories`), labels now. Goes 3 months after 0.8.0.
   const carriedLabels = new Set(items.flatMap(item => item.labels));
   for (const each of [...(Array.isArray(carried.labels) ? carried.labels : []), ...(Array.isArray(carried.categories) ? carried.categories : [])]) if (isObject(each) && carriedLabels.has(String(each.id))) keepLabel(each);
+  if (carriedLabels.has(PARKED_LABEL)) keepParked();
   const here = new Set(labels().map(each => each.id));
   for (const item of items) {
     item.labels = item.labels.filter(each => here.has(each));

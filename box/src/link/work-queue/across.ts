@@ -16,7 +16,7 @@ import { ownKey, peersOf, removedBoxes } from "../peers/known";
 import { awaySince, readReach } from "../peers/reach";
 import { readLink } from "../state";
 import { labels as labelsHere, LABELS_FILE, takePrimaryLabels, type Label } from "./labels";
-import { isClosed } from "./statuses";
+import { categoryBefore, isClosed } from "./statuses";
 import { handArrived, handedBack, sendHandings } from "./hand";
 import { actForPeer } from "./acts";
 import { takeAct, takeActed } from "./forward";
@@ -98,7 +98,8 @@ export async function tellingNow(targets: Target[], link: LinkState | null, sign
   const items = [...all.filter(item => !isDone(item)).sort((a, b) => b.updated.at - a.updated.at).slice(0, MOST_TOLD - done.length), ...done];
   const { owners, titles } = await ownersOf("all", items, facts, targets, cache);
   const told = items.map(item => toldItem(item, facts.working, titles));
-  const content = { items: told, owners, labels: labelsHere(), ...numberingNow(link) };
+  // COMPAT(0.7 queue-categories): with each item's `category` and `categories`, as a box from before statuses reads what it's told (else every item there, Done ones too, shows under Next). Goes 3 months after 0.8.0.
+  const content = { items: told.map(item => ({ ...item, category: categoryBefore(item) })), owners, labels: labelsHere(), categories: [], ...numberingNow(link) };
   // (When GitHub was last asked of an issue goes with it, so the others don't ask again meanwhile,
   // but isn't a change: what's told goes again only once something else changes.)
   const unchecked = { ...content, items: told.map(item => (item.seen?.checked !== undefined ? { ...item, seen: { ...item.seen, checked: undefined } } : item)) };

@@ -85,7 +85,8 @@ export function standing(given: { status?: unknown; category?: unknown; labels?:
   }
   const labels = [...new Set(kept)];
   // (A status this box doesn't know is a newer box's, with a category of its own choosing: as it came.)
-  if (typeof given.category !== "string" || !STATUS_ID.test(given.status) || given.category === categoryBefore({ status: given.status, labels })) return { status: given.status, labels };
+  // (Nor is a category such a box never writes its move.)
+  if (typeof given.category !== "string" || !/^(?:next|later|parked|done|cat_[a-z0-9-]{1,40})$/.test(given.category) || !STATUS_ID.test(given.status) || given.category === categoryBefore({ status: given.status, labels })) return { status: given.status, labels };
   const moved = fromCategory(given.category, named);
   // (Out of Parked: its label goes with the move.)
   const rest = moved.label === PARKED_LABEL ? labels : labels.filter(each => each !== PARKED_LABEL);

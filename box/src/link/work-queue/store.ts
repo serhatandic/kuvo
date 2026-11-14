@@ -256,7 +256,9 @@ export function migratedToChange(): void {
   try {
     migrateOnce();
   } catch (error) {
-    throw new Refusal(`The Work Queue's items couldn't be moved over to statuses on this computer (${(error as Error)?.message ?? error}), so nothing was changed. Check ${WORK_QUEUE} (is the disk full?), then try again.`);
+    const why = String((error as Error)?.message ?? error);
+    if (/another process/.test(why)) throw new Refusal("The Work Queue's items are being moved over to statuses on this computer right now, so nothing was changed. Try again in a moment (two minutes at most, if what was moving them was cut off).");
+    throw new Refusal(`The Work Queue's items couldn't be moved over to statuses on this computer (${why}), so nothing was changed. Check ${WORK_QUEUE} (is the disk full?), then try again.`);
   }
 }
 

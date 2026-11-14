@@ -19,7 +19,8 @@ import { frozen } from "../moves/records";
 import { peersOf, removedBoxes } from "../peers/known";
 import { awaySince } from "../peers/reach";
 import { readLink } from "../state";
-import { keepLabel, labels } from "./labels";
+import { keepLabel, keepParked, labels } from "./labels";
+import { PARKED_LABEL } from "./statuses";
 import { isClosed, statusNamed } from "./statuses";
 import { intoTodo, linkSession } from "./ops";
 import {
@@ -280,6 +281,7 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
   // (Its labels this box doesn't have yet come with it; one it can't keep is left off.)
   // COMPAT(0.7 queue-categories): a hand-off from a box that kept categories brings its custom one (`categories`), a label now. Goes 3 months after 0.8.0.
   for (const each of [...(Array.isArray(given.labels) ? given.labels : []), ...(Array.isArray(given.categories) ? given.categories : [])]) if (isObject(each) && item.labels.includes(String(each.id))) keepLabel(each);
+  if (item.labels.includes(PARKED_LABEL)) keepParked();
   const labelsHere = new Set(labels().map(each => each.id));
   item.labels = item.labels.filter(each => labelsHere.has(each));
   const kept = whoOf(given.by) ?? { name: "someone else" };

@@ -797,6 +797,7 @@ public enum WorkQueue {
     /// closed here (an issue or a pull request, closed on GitHub).
     public static func moveTargets(for item: WorkItem, in categories: [WorkCategory]) -> [WorkCategory] {
         guard canMove(item) else { return [] }
+        // COMPAT(0.7 queue-categories): an item a box from before `can` answered with is judged as before (`closesOn`, `keptIn`). Goes 3 months after 0.8.0.
         let closes = item.can?.close ?? (item.closesOn == nil)
         return categories.filter { $0.id != item.category && (closes || ($0.id != WorkCategory.done && $0.id != WorkCategory.canceled)) }
     }

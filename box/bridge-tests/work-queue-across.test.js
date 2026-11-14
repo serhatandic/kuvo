@@ -1328,6 +1328,8 @@ test("closed and gone issues are among the latest Done told to your other comput
   const told = mailTo(lab).flatMap(mail => mail.workQueue?.told?.items ?? []);
   assert.deepEqual(told.map(item => item.source?.ref).filter(Boolean).sort(), ["gh:kuvo-test/app#12", "gh:kuvo-test/app#13"]);
   assert.equal(told.length, 100, "the latest hundred Done");
+  // (Each also under the category a box from before statuses reads it by: Done there too, not Next.)
+  assert.deepEqual([...new Set(told.map(item => `${item.status} ${item.category}`))], ["done done"]);
 });
 
 test("an issue another computer told of, never read here and moved since, is found by the id its item knows: at once where that computer found it gone or elsewhere, else once it's missing where it was", async () => {

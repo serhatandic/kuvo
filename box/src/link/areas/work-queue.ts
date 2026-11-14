@@ -11,8 +11,8 @@ import { watchFolders } from "../follow";
 import { targetsOf } from "../letters/tools";
 import { atWorkNow } from "../work/background";
 import { provedRequest } from "./vault";
-import { addLabel, changeLabel, labels, LABELS_FILE, removeLabel, type Label } from "../work-queue/labels";
-import { isClosed, PRIORITIES, statusName, STATUSES } from "../work-queue/statuses";
+import { addLabel, changeLabel, keepParked, labels, LABELS_FILE, removeLabel, type Label } from "../work-queue/labels";
+import { isClosed, PARKED_LABEL, PRIORITIES, statusName, STATUSES } from "../work-queue/statuses";
 import { assignable } from "../work-queue/assignees";
 import { stripLabel } from "../work-queue/tools";
 import { frozen } from "../moves/records";
@@ -80,6 +80,8 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
   const elsewhere = itemsElsewhere(owner, readLink(), new Set(here.filter(item => !item.removed).map(item => item.id)), new Set(here.filter(item => item.removed).map(item => item.id)), { linked: true });
   const named = new Set(owners.map(each => each.owner));
   // The labels: this box's, then those only another computer has.
+  // (Parked, where a box from before statuses parked an item in this folder and it was never made here.)
+  if (here.some(item => item.labels.includes(PARKED_LABEL)) && !labels().some(each => each.id === PARKED_LABEL)) keepParked();
   const own = labels();
   const shown: Label[] = [...own, ...elsewhere.labels.filter(each => !own.some(mine => mine.id === each.id))];
   const names = new Map(shown.map(each => [each.id, each.name]));

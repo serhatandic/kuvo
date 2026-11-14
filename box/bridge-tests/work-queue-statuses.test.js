@@ -320,7 +320,7 @@ test("one process moves the items over: another that comes meanwhile reads on, a
   assert.equal(seen.items.find(item => item.number === 2).status, "backlog");
   const refused = await route("PATCH", "kuvo/work-queue/items/1", { status: "done" });
   assert.equal(refused.status, 400);
-  assert.match(refused.body.message, /couldn't be moved over to statuses on this computer \(another process is moving them over now\), so nothing was changed/);
+  assert.equal(refused.body.message, "The Work Queue's items are being moved over to statuses on this computer right now, so nothing was changed. Try again in a moment (two minutes at most, if what was moving them was cut off).");
   assert.equal((await tool("queue_add", { title: "Not yet" }, "ses_lead")).isError, true);
   assert.equal(fs.existsSync(path.join(queues, "before-statuses")), false, "it made no copy of its own beside the other's");
   assert.equal(read("queues/ses_lead.json").items[0].status, undefined);

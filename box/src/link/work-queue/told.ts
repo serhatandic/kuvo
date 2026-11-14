@@ -141,6 +141,7 @@ export function toldOf(given: unknown, now = Date.now()): Omit<Told, "heard"> | 
   const owners = (Array.isArray(given.owners) ? given.owners : []).slice(0, MOST_TOLD).map(ownerOf).filter((each): each is OwnerFacts => each !== null);
   // COMPAT(0.7 queue-categories): a box from before statuses tells its custom categories (`categories`), labels here, named as it named them. Goes 3 months after 0.8.0.
   const before = Array.isArray(given.labels) ? [] : Array.isArray(given.categories) ? given.categories : [];
+  // (A box with statuses says `categories: []` too, for such a box: `labels` says which it is.)
   const labels = [...(Array.isArray(given.labels) ? given.labels : []), ...before].slice(0, MOST_LABELS).map(labelOf).filter((each): each is Label => each !== null);
   return { id: given.id, at: Math.min(given.at, now), items, owners, labels, ...numberingOf(given), ...(Array.isArray(given.labels) ? {} : { beforeLabels: true }) };
 }
@@ -158,7 +159,19 @@ export function readTold(key: string): Told | null {
     }
     // (Without what's kept only for a box from before statuses to read, `asToldKept`.)
     const { categories: _, ...told } = kept;
-    return { ...told, items: kept.items.map(each => { if (!isObject(each) || !("category" in each)) return each; const { category: __, ...item } = each; return item; }) } as unknown as Told;
+    // (One such a box put there itself, with no status: read as it came.)
+    const items: unknown[] = [];
+    for (const each of kept.items) {
+      if (!isObject(each)) continue;
+      if (typeof each.status !== "string") {
+        const again = toldItemOf(each);
+        if (again) items.push(again);
+        continue;
+      }
+      const { category: __, ...item } = each;
+      items.push(item);
+    }
+    return { ...told, items } as unknown as Told;
   } catch {
     return null;
   }
