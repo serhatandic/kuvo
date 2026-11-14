@@ -92,7 +92,14 @@ socket.on("close", () => process.exit(0));
 
   const clockFile = path.join(root, "clock.mjs");
   if (clock) fs.writeFileSync(clockFile, `let now = 1000000, next = 0;
-const intervals = new Map();
+const intervals = new Map(), timeouts = new Map();
+const realTimeout = globalThis.setTimeout, realClear = globalThis.clearTimeout;
+globalThis.setTimeout = (fn, ms, ...args) => {
+  if (ms < 1000) return realTimeout(fn, ms, ...args);
+  const handle = { id: ++next, unref() { return this; } };
+  timeouts.set(handle, { fn: () => fn(...args), at: now + ms }); return handle;
+};
+globalThis.clearTimeout = handle => { if (!timeouts.delete(handle)) realClear(handle); };
 Date.now = () => now;
 globalThis.setInterval = (fn, ms) => {
   const handle = { id: ++next, unref() { return this; } };
@@ -102,6 +109,7 @@ globalThis.clearInterval = handle => intervals.delete(handle);
 process.on("message", message => {
   if (typeof message.advance !== "number") return;
   now += message.advance;
+  for (const [handle, timer] of timeouts) if (now >= timer.at) { timeouts.delete(handle); timer.fn(); }
   for (const timer of intervals.values()) if (now >= timer.at) { timer.at = now + timer.ms; timer.fn(); }
   process.send({ tick: message.id });
 });

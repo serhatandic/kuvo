@@ -1,4 +1,4 @@
-// kuvo-browser 39c615b6f07d9040
+// kuvo-browser a76d41c50e78a971
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -101,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "0817b74a2d57";
+const KEEPER = "8cbaf95512c6";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -861,9 +861,19 @@ async function host() {
   // The same, for its answer: its result, or null when Chrome refused it.
   const ownCall = (method, params = {}, sessionId) => new Promise((resolve) => {
     const id = next++;
-    pending.set(id, { internal: true, answered: (message) => resolve(message.error ? null : message.result ?? {}) });
+    const deadline = setTimeout(() => { pending.delete(id); resolve(null); }, 10_000);
+    deadline.unref?.();
+    pending.set(id, { internal: true, answered: (message) => {
+      clearTimeout(deadline);
+      resolve(message.error ? null : message.result ?? {});
+    } });
     toChrome({ id, method, params, ...(sessionId ? { sessionId } : {}) });
   });
+  const requiredCall = async (...args) => {
+    const result = await ownCall(...args);
+    if (result === null) throw Error("Chrome refused or timed out: " + args[0]);
+    return result;
+  };
   const setActive = (targetId, by, session) => {
     if (active === targetId) return;
     active = targetId;
@@ -917,9 +927,9 @@ async function host() {
     if (!own.has(target) || (by === "viewer" && workingIn(target))) return;
     const previous = sizes.get(target);
     if (previous?.by === by && ["width", "height", "scale", "zoom"].every(key => (previous[key] ?? 1) === (size[key] ?? 1))) return;
+    await requiredCall("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: size.scale, mobile: false }, own.get(target));
+    await requiredCall("Emulation.setPageScaleFactor", { pageScaleFactor: size.zoom ?? 1 }, own.get(target));
     sizes.set(target, { ...size, by });
-    await ownCall("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: size.scale, mobile: false }, own.get(target));
-    await ownCall("Emulation.setPageScaleFactor", { pageScaleFactor: size.zoom ?? 1 }, own.get(target));
     broadcast({ method: "Kuvo.viewport", params: { targetId: target, ...size, by } });
   };
   let frameNumber = 0;
@@ -1043,12 +1053,12 @@ async function host() {
         if (/^(javascript|data|blob):/i.test(url)) throw Error("That address cannot be opened here.");
         const hostPort = /^(?:[a-z0-9.-]+|\[[0-9a-f:]+\]):[0-9]+(?:[/?#]|$)/i.test(url);
         if (!hostPort && /^[a-z][a-z0-9+.-]*:/i.test(url) && !/^(https?|file|about):/i.test(url)) send(client, { method: "Kuvo.external", params: { targetId: target, url } });
-        else await ownCall("Page.navigate", { url: destination(url) ?? "about:blank" }, session);
+        else await requiredCall("Page.navigate", { url: destination(url) ?? "about:blank" }, session);
       } else if (p.back || p.forward) {
-        const h = await ownCall("Page.getNavigationHistory", {}, session);
+        const h = await requiredCall("Page.getNavigationHistory", {}, session);
         const entry = h?.entries[h.currentIndex + (p.back ? -1 : 1)];
-        if (entry) await ownCall("Page.navigateToHistoryEntry", { entryId: entry.id }, session);
-      } else await ownCall(p.stop ? "Page.stopLoading" : "Page.reload", {}, session);
+        if (entry) await requiredCall("Page.navigateToHistoryEntry", { entryId: entry.id }, session);
+      } else await requiredCall(p.stop ? "Page.stopLoading" : "Page.reload", {}, session);
       reply(); return true;
     }
     if (message.method === "Kuvo.input") {
@@ -1059,7 +1069,7 @@ async function host() {
       if (Array.isArray(data.modifiers)) data.modifiers = data.modifiers.reduce((bits, key) => bits | ({ alt: 1, control: 2, meta: 4, shift: 8 }[key] ?? 0), 0);
       const methods = { mouse: "Input.dispatchMouseEvent", wheel: "Input.dispatchMouseEvent", key: "Input.dispatchKeyEvent", text: "Input.insertText", compose: "Input.imeSetComposition" };
       if (!methods[kind]) throw Error("Unknown input kind.");
-      await ownCall(methods[kind], kind === "key" ? keyForHere(data) : { ...data, ...(kind === "wheel" ? { type: "mouseWheel" } : {}) }, session);
+      await requiredCall(methods[kind], kind === "key" ? keyForHere(data) : { ...data, ...(kind === "wheel" ? { type: "mouseWheel" } : {}) }, session);
       reply(); return true;
     }
     if (message.method === "Kuvo.upload") {
@@ -1076,7 +1086,7 @@ async function host() {
         for (const f of files) fs.writeFileSync(path.join(dir, f.name), f.data, { mode: 0o600 });
         const chooser = choosers.get(target);
         if (!chooser) throw Error("No file chooser.");
-        if (await ownCall("DOM.setFileInputFiles", { files: files.map(f => path.join(dir, f.name)), backendNodeId: chooser.backendNodeId }, session) === null) throw Error("Chrome refused the selected files.");
+        if (await requiredCall("DOM.setFileInputFiles", { files: files.map(f => path.join(dir, f.name)), backendNodeId: chooser.backendNodeId }, session) === null) throw Error("Chrome refused the selected files.");
         choosers.delete(target);
         if (!uploads.has(target)) uploads.set(target, new Set());
         uploads.get(target).add(dir);
@@ -1469,7 +1479,6 @@ async function host() {
     });
     let serial = Promise.resolve();
     lines(socket, text => {
-      serial = serial.then(async () => {
       let message;
       try {
         message = JSON.parse(text);
@@ -1478,6 +1487,7 @@ async function host() {
         return;
       }
       if (!message || typeof message !== "object" || Array.isArray(message)) return;
+      const run = async () => {
       if (client.closed) return;
       if (!client.keyed) {
         if (message.method !== "Kuvo.key" || !sameKey(message.params?.key)) return refuse();
@@ -1597,8 +1607,13 @@ async function host() {
       const forward = { id, method: message.method, params: message.method === "Input.dispatchKeyEvent" ? keyForHere(message.params ?? {}) : message.params ?? {} };
       if (message.sessionId) forward.sessionId = message.sessionId;
       toChrome(forward);
+      };
+      const task = () => run().catch(error => {
+        if (message.id !== undefined) send(client, { id: message.id, error: { message: error.message }, ...(message.sessionId ? { sessionId: message.sessionId } : {}) });
       });
-      serial = serial.catch(() => socket.destroy());
+      const urgent = ["Kuvo.frameAck", "Kuvo.frameDropped", "Page.screencastFrameAck", "Page.handleJavaScriptDialog", "Kuvo.dialogAnswer"].includes(message.method);
+      if (client.keyed && urgent) void task();
+      else serial = serial.then(task);
     }, "\n", (held) => !client.keyed && held > 4096 && (refuse(), true));
   });
   server.on("error", (error) => fail("failed", "The browser couldn't listen for Kuvo Code: " + error.message));

@@ -86,3 +86,23 @@ for (const reason of ["budget", "unsent", "backpressure"]) {
     assert.equal(frames[1].params.data, first.params.data);
   });
 }
+
+test("re-review S1: a renderer call has a deadline, and frame credits bypass its ordered queue", async t => {
+  const h = await page(t);
+  h.answer("Page.captureScreenshot", () => ({ data: "anBlZw==" }));
+  await call(h.c, "Kuvo.view", { targetId: "P", width: 393, height: 660 });
+  await capture(h);
+  const first = h.c.heard.all.find(m => m.method === "Kuvo.frame");
+  h.answer("Input.insertText", () => new Promise(() => {}));
+  const input = next++;
+  h.c.send({ id: input, method: "Kuvo.input", params: { targetId: "P", kind: "text", text: "hung" } });
+  await h.chrome.until(m => m.method === "Input.insertText");
+  const ack = next++;
+  h.c.send({ id: ack, method: "Kuvo.frameAck", params: { frameId: first.params.frameId } });
+  await settle({ ...h, c: await h.client() });
+  assert.ok(h.c.heard.all.some(m => m.id === ack), "acknowledgements must bypass a blocked command");
+  await h.advance(10001);
+  const response = await h.c.heard.until(m => m.id === input);
+  assert.match(response.error?.message ?? "", /timed out/i);
+  assert.ok(!(await call(h.c, "Kuvo.pages")).error);
+});
