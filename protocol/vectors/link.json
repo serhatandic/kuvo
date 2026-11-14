@@ -867,8 +867,6 @@
     }
   ],
   "sockets": [
-    {"path": "kuvo/browser/view", "allowed": true, "forwarded": "kuvo/browser/view"},
-    {"path": "kuvo/browser/view/other", "allowed": false},
     {
       "path": "api/pty/pty_1/connect",
       "allowed": true,

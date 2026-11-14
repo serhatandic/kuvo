@@ -114,3 +114,10 @@ test("relay pictures are binary and excess or oversized frames are dropped at th
   assert.equal(JSON.parse(first.subarray(4, 4 + length)).method, "Kuvo.frame");
   assert.deepEqual(first.subarray(4 + length), Buffer.alloc(100, 7));
 });
+
+test("box-only browser socket paths follow their own vectors without changing kept-up Swift vectors", () => {
+  const vectors = JSON.parse(fs.readFileSync(new URL("../../protocol/vectors/browser-view.json", import.meta.url)));
+  for (const v of vectors.sockets) assert.equal(socketAllowed(v.path), v.allowed);
+  const shared = JSON.parse(fs.readFileSync(new URL("../../protocol/vectors/link.json", import.meta.url)));
+  assert.ok(shared.sockets.every(v => !v.path.startsWith("kuvo/browser/")));
+});
