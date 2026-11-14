@@ -1611,14 +1611,15 @@ async function host() {
           const previousTarget = client.status?.working ? client.status.targetId : null;
           // Each helper's: the pages agents are at work in, all together.
           client.status = message.params ?? { working: false };
+          // Agent activity is a fact even if Chrome cannot apply the requested geometry.
+          status = everyStatus();
+          announcePages();
+          broadcast({ method: "Kuvo.status", params: status });
           if (client.status.working && client.status.targetId) {
             cancelRestore(client.status.targetId);
             await resize(client.status.targetId, agentSizes.get(client.status.targetId) ?? { ...sizeFor({}), scale: 2 }, "agent");
           }
           if (previousTarget && (!client.status.working || previousTarget !== client.status.targetId)) restoreAfterIdle(previousTarget);
-          status = everyStatus();
-          announcePages();
-          broadcast({ method: "Kuvo.status", params: status });
           return message.id !== undefined && send(client, { id: message.id, result: {} });
         }
         case "Kuvo.stop":

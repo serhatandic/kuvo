@@ -1,4 +1,4 @@
-// kuvo-browser a007720a0f61e5e4
+// kuvo-browser 8b0ba4e77c4189a9
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -101,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "c4fc7748b4a8";
+const KEEPER = "f980285c565a";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -1629,14 +1629,15 @@ async function host() {
           const previousTarget = client.status?.working ? client.status.targetId : null;
           // Each helper's: the pages agents are at work in, all together.
           client.status = message.params ?? { working: false };
+          // Agent activity is a fact even if Chrome cannot apply the requested geometry.
+          status = everyStatus();
+          announcePages();
+          broadcast({ method: "Kuvo.status", params: status });
           if (client.status.working && client.status.targetId) {
             cancelRestore(client.status.targetId);
             await resize(client.status.targetId, agentSizes.get(client.status.targetId) ?? { ...sizeFor({}), scale: 2 }, "agent");
           }
           if (previousTarget && (!client.status.working || previousTarget !== client.status.targetId)) restoreAfterIdle(previousTarget);
-          status = everyStatus();
-          announcePages();
-          broadcast({ method: "Kuvo.status", params: status });
           return message.id !== undefined && send(client, { id: message.id, result: {} });
         }
         case "Kuvo.stop":

@@ -269,3 +269,21 @@ for (const raw of [false, true]) {
     assert.equal(h.chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").at(-1).params.width, raw ? 900 : 393);
   });
 }
+
+for (const failure of ["refusal", "timeout"]) {
+  test("round3 S1: status facts survive a viewport " + failure, async t => {
+    const h = await page(t);
+    h.answer("Emulation.setDeviceMetricsOverride", () => failure === "refusal"
+      ? { __error: { message: "metrics refused" } } : new Promise(() => {}));
+    const id = next++;
+    h.c.send({ id, method: "Kuvo.setStatus", params: { targetId: "P", working: true } });
+    await h.chrome.until(m => m.method === "Emulation.setDeviceMetricsOverride");
+    if (failure === "timeout") await h.advance(10001);
+    const response = await h.c.heard.until(m => m.id === id);
+    assert.ok(response.error);
+    assert.equal(h.c.heard.all.filter(m => m.method === "Kuvo.status").at(-1)?.params.working, true);
+    assert.equal(h.c.heard.all.filter(m => m.method === "Kuvo.pages").at(-1).params.pages[0].working, true);
+    const later = await h.client();
+    assert.equal((await later.heard.until(m => m.method === "Kuvo.hello")).params.status.working, true);
+  });
+}
