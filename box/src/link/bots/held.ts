@@ -247,8 +247,14 @@ export function holdEdit(bot: string, given: { change: unknown } | { delete: tru
         return;
       }
       const given = checked ? Object.fromEntries(Object.keys(checked.change).map(field => [field, now])) : {};
+      // (A model given without an effort runs at its own, as one changed where it lives does: an
+      // effort held for the model it had doesn't go on to the new one.)
+      const dropsEffort = Boolean(checked) && "model" in checked!.change && !("effort" in checked!.change);
+      const { effort: _effort, ...changeBefore } = (before?.change ?? {}) as Record<string, unknown>;
+      const { effort: _effortAt, ...timesBefore } = before?.times ?? {};
+      const kept = dropsEffort ? { change: changeBefore as BotChange, times: timesBefore } : { change: before?.change ?? {}, times: before?.times ?? {} };
       // (What's held goes in one mail: one too big for it never would.)
-      if (checked && Buffer.byteLength(JSON.stringify({ ...(before?.change ?? {}), ...checked.change })) > MOST_CHANGE) {
+      if (checked && Buffer.byteLength(JSON.stringify({ ...kept.change, ...checked.change })) > MOST_CHANGE) {
         answer = no(400, "That’s too much to change at once.");
         return;
       }
@@ -257,7 +263,7 @@ export function holdEdit(bot: string, given: { change: unknown } | { delete: tru
         bot,
         to: keeper?.key ?? "",
         ...(keeper ? {} : { on: named }),
-        ...(checked ? { change: { ...(before?.change ?? {}), ...checked.change }, times: { ...(before?.times ?? {}), ...given } } : { delete: true as const }),
+        ...(checked ? { change: { ...kept.change, ...checked.change }, times: { ...kept.times, ...given } } : { delete: true as const }),
         since: before?.since ?? now,
         at: now,
         ...(known ? { known } : {}),

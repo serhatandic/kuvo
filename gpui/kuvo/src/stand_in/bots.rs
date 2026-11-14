@@ -315,7 +315,7 @@ fn unknown(body: &Value, projects: &[(String, String)]) -> Option<(u16, Value)> 
 
 /// A bot on another computer, as that computer last told this box.
 fn elsewhere(id: &str, session: &str, name: &str, look: Value, job: &str, (computer, kind): (&str, &str), now: f64) -> Value {
-    let mut bot = json!({ "id": id, "session": session, "name": name, "look": look, "box": format!("key_{computer}"), "computer": computer, "kind": kind, "heard": now - HOUR, "deletes": deletes(computer, kind == "mac", None) });
+    let mut bot = json!({ "id": id, "session": session, "name": name, "look": look, "box": format!("key_{computer}"), "computer": computer, "kind": kind, "deletes": deletes(computer, kind == "mac", None) });
     if !job.is_empty() {
         bot["job"] = json!(job);
     }

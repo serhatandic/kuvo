@@ -230,16 +230,20 @@ export async function changeBot(id: string, given: BotChange | null | undefined,
 }
 
 // The effort `given` names for `model`, as the model's variant: none for null or "" (the model's
-// own); refused (400) for one that model hasn't, by its efforts as this box lists them, and (503)
-// while it can't list them.
-async function effortOf(model: { id: string; providerID: string }, given: unknown, readEngine: () => Target, readBridge: () => Target | null, signal?: AbortSignal): Promise<{ variant: string | null } | { status: 400 | 503; refused: string }> {
+// own); refused (400) for one that model hasn't, by its efforts as this box lists them, (422) for
+// a model it doesn't list, and (503) while it can list none.
+async function effortOf(model: { id: string; providerID: string }, given: unknown, readEngine: () => Target, readBridge: () => Target | null, signal?: AbortSignal): Promise<{ variant: string | null } | { status: 400 | 422 | 503; refused: string }> {
   if (given === null || given === "") return { variant: null };
   if (typeof given !== "string") return { status: 400, refused: "That isn’t an effort." };
   let engine: Target | null = null, agents: Target | null = null;
   try { engine = readEngine(); } catch {}
   try { agents = readBridge(); } catch {}
-  const listed = modelNamed(model, await usableModels(engine, agents, signal));
-  if (!listed) return { status: 503, refused: `The efforts of ${model.id} can’t be read on ${HERE} now. Try again in a moment.` };
+  const models = await usableModels(engine, agents, signal);
+  const listed = modelNamed(model, models);
+  // (Nothing listed at all: its engine isn't answering, which passes. Listed, but not this model:
+  // it can't run here now (its account signed out), which doesn't pass by itself.)
+  if (!listed && !models.length) return { status: 503, refused: `The efforts of ${model.id} can’t be read on ${HERE} now. Try again in a moment.` };
+  if (!listed) return { status: 422, refused: `${model.id} can’t be used on ${HERE} now, so its effort can’t be set: sign in to it in Settings › Accounts, or choose another model.` };
   if (!listed.efforts.length) return { status: 400, refused: `${listed.name} has no efforts to choose from.` };
   if (!listed.efforts.includes(given)) return { status: 400, refused: `${listed.name} has no “${given}” effort: its efforts are ${listed.efforts.join(", ")}.` };
   return { variant: given };

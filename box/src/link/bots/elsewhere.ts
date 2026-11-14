@@ -45,7 +45,8 @@ export function botsElsewhere(link: LinkState | null = readLink(), told: Record<
   for (const peer of peers) {
     const computer = shownName(peer);
     for (const agent of told[peer.key]?.list ?? []) {
-      if (agent.kind !== "bot" || !agent.id || latest.get(agent.id)?.key !== peer.key || botHere(agent.id)) continue;
+      // (One its computer gave no name isn't listed: nothing to show it by.)
+      if (agent.kind !== "bot" || !agent.id || !agent.name || latest.get(agent.id)?.key !== peer.key || botHere(agent.id)) continue;
       // (Listed once by each computer; one that names a bot twice is told once.)
       latest.delete(agent.id);
       bots.push({
@@ -57,7 +58,6 @@ export function botsElsewhere(link: LinkState | null = readLink(), told: Record<
         box: peer.key,
         computer,
         kind: peer.kind,
-        ...(heard(peer) ? { heard: heard(peer) } : {}),
         // (Its wake-ups aren't told between computers: said without a count. A Mac's app takes
         // its folder on to the Trash; a machine keeps it in Kuvo Code's trash folder.)
         deletes: whatDeleteTakes({ computer, folder: peer.kind === "mac" ? { to: "trash" } : { to: "kuvo" } }),

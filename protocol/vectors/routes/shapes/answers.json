@@ -2626,7 +2626,6 @@
            }
           ]
          },
-         "heard?": "number",
          "deletes": {
           "list": {
            "object": {

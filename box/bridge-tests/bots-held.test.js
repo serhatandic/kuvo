@@ -474,8 +474,7 @@ test("the bots of your other computers are listed by the box asked, as each last
     [wren, "Wren", "lab", "machine", lab.pub],
   ], "bots only, by computer");
   const there = elsewhere[1];
-  assert.deepEqual({ ...there, heard: 0, deletes: [] }, { id: wren, session: "ses_wren", name: "Wren", look: wrenLook, job: "Watches the build", box: lab.pub, computer: "lab", kind: "machine", heard: 0, deletes: [] });
-  assert.ok(there.heard > 0, "when lab last said so");
+  assert.deepEqual({ ...there, deletes: [] }, { id: wren, session: "ses_wren", name: "Wren", look: wrenLook, job: "Watches the build", box: lab.pub, computer: "lab", kind: "machine", deletes: [] });
   assert.equal("look" in elsewhere[0] || "job" in elsewhere[0], false, "what a computer didn't say is left out");
   // What deleting one takes with it there, in words: a Mac's folder goes to the Trash, a machine's
   // to Kuvo Code's trash folder; its wake-ups aren't told between computers, so no count.
@@ -564,6 +563,33 @@ test("an effort held for another computer waits until that computer takes one", 
   agentsTold({ labFeatures: ["bots.held", "bots.effort"] });
   link.sendHeld(host);
   assert.deepEqual(mailTo(lab).at(-1).botEdit.change, { effort: "high" });
+  // A model picked after it, with no effort of its own, runs at its own: the effort held for the
+  // model it had is let go, as two changes made where it lives would end.
+  const model = await route("PATCH", `kuvo/bots/${wren}`, { model: { id: "opus", providerID: "anthropic" } });
+  assert.deepEqual(model.body.held.change, { model: { id: "opus", providerID: "anthropic" } });
+  assert.deepEqual(Object.keys(mailTo(lab).at(-1).botEdit.ages), ["model"]);
+});
+
+test("a peer saying its agents again changes nothing for those following this box's bots, and one it gives no name isn't listed", async () => {
+  agentsTold({ labBots: [labWren, { ...labWren, id: "bot_blank000001", session: "ses_blank", name: "" }] });
+  const before = JSON.stringify(await listed());
+  // (The same list, heard later.)
+  const told = JSON.parse(fs.readFileSync(path.join(run, "peer-agents.json"), "utf8"));
+  told[lab.pub].heard += 60_000;
+  write(path.join(run, "peer-agents.json"), told);
+  assert.equal(JSON.stringify(await listed()), before);
+  assert.deepEqual(JSON.parse(before).elsewhere.map(each => each.id), [wren]);
+});
+
+test("an edit held before a bot's name was kept with it is still this box's own, and still goes", async () => {
+  // As a box from before `bots.elsewhere` wrote and sealed it: no `known`.
+  const record = { id: `bte_${crypto.randomBytes(16).toString("base64url")}`, bot: wren, to: lab.pub, change: { name: "Wren II" }, times: { name: 5 }, since: 5, at: 5 };
+  const key = crypto.createHmac("sha256", Buffer.from(secret, "base64url")).update("kuvo bot edits held").digest();
+  const seal = crypto.createHmac("sha256", key).update(JSON.stringify([record.id, record.bot, record.to, null, record.change, record.times, false, record.since, record.at])).digest("base64url");
+  write(path.join(held, `${wren}.json`), { ...record, seal });
+  assert.deepEqual((await listed()).held.map(each => [each.bot, each.name, each.change]), [[wren, "Wren", { name: "Wren II" }]]);
+  link.sendHeld(host);
+  assert.equal(mailTo(lab).at(-1).botEdit.id, record.id);
 });
 
 test("an effort held for a bot here is its model's: not done once its model changed here since, and done as one given here otherwise", async () => {

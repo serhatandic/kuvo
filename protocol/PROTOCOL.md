@@ -4062,17 +4062,17 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   - **What deleting a bot takes with it** (`bots.deletes`): each bot has `deletes`, `[{what, words,
     kept?}]`, a line for each thing in the box's words, in the order it's done, then what stays
     (`kept: true`): its `conversation`, its `folder` and where that goes (the Trash on a Mac whose
-    app answers to take it there; else Kuvo Code's trash folder on that computer, with its path),
+    app answers to take it there; else Kuvo Code's trash folder on that computer, with its path; the
+    computer by its name where it has one, so the lines read the same from a client on another),
     its `wakes` (how many wake-ups and watches are cancelled; left out for a bot with none), its
     `keys` of its own, its place in the `groups` there, and its `sessions`, which stay. A client's
     confirm shows these lines as they are and writes none of its own; a `what` it doesn't know
     is a line all the same.
   - **The bots of your other computers** (`bots.elsewhere`): `elsewhere`, `[{id, session, name,
-    look?, job?, box, computer, kind, heard?, deletes}]`, each bot your other computers list, as
+    look?, job?, box, computer, kind, deletes}]`, each bot your other computers list, as
     each last told the box asked (their agents, "Peers"): its `job`'s line, the computer it lives
     on by its key (`box`, as `kuvo/computers` has it) and by its name here (`computer`, a machine
-    by its name), that computer's `kind` (`mac` or `machine`), when it last said so (`heard`, ms by
-    this box's clock) and `deletes`, what deleting it takes with it there (as far as its kind
+    by its name), that computer's `kind` (`mac` or `machine`) and `deletes`, what deleting it takes with it there (as far as its kind
     says: a Mac's folder goes to the Trash, a machine's to Kuvo Code's trash folder; its wake-ups
     aren't told between computers, so that line has no count). Only from your own computers:
     nothing from one that isn't only yours (as "Held for another computer" goes), and never one
@@ -4113,7 +4113,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   names: one of that model's own as the box lists them (`efforts`, "The models offered"), null or
   `""` for the model's own; it's the model's `variant` from then on, and a `model` without one
   still means the model's own; 400 `{"message"}` for one that model hasn't, in words naming those
-  it has, or for a bot with no model; 503 while the box can't list that model's efforts,
+  it has, or for a bot with no model; 422 for a model the box doesn't list (its account signed out there); 503 while the box can list no model's efforts,
   `job` as `{line, details}`, the whole job, which replaces the one it had: its line on one line,
   without a sentence's end; both `""` for none; 400 for one too long): `200 {"bot": <as kuvo/bots
   lists one>}` (null when it no longer lists here by then, a move begun meanwhile), after a coding agent's model for a bot on the engine has carried its conversation
@@ -4151,7 +4151,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   its refusals the same way, so what anything else there leaves isn't sent or shown.
   An `effort` is held too (`bots.effort`), and goes only to a computer whose `features` say
   `bots.effort` (one that doesn't yet would drop it: it waits until it's updated); that computer
-  takes it only if it was given after the bot's model last changed there.
+  takes it only if it was given after the bot's model last changed there; a `model` held after it
+  without an `effort` of its own lets the held `effort` go, as a model alone means its own effort.
   - `kuvo/bots` and its events add `held` (each as above, the first held first) and `refused`
     (`[{bot, box, computer, message, at}]`; each of both with the bot's `name` and `look`,
     `bots.elsewhere`: as its computer says them now, else as it last had by the time the edit was

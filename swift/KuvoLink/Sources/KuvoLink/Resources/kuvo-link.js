@@ -2640,7 +2640,6 @@ var BOT_ELSEWHERE = object({
   box: string,
   computer: string,
   kind: words("mac", "machine"),
-  "heard?": number,
   deletes: DELETES
 });
 var HELD_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, "change?": map(any), "delete?": literal(true), since: number });
@@ -24069,9 +24068,12 @@ async function effortOf(model, given, readEngine, readBridge, signal) {
   try {
     agents = readBridge();
   } catch {}
-  const listed = modelNamed(model, await usableModels(engine, agents, signal));
-  if (!listed)
+  const models = await usableModels(engine, agents, signal);
+  const listed = modelNamed(model, models);
+  if (!listed && !models.length)
     return { status: 503, refused: `The efforts of ${model.id} can’t be read on ${HERE} now. Try again in a moment.` };
+  if (!listed)
+    return { status: 422, refused: `${model.id} can’t be used on ${HERE} now, so its effort can’t be set: sign in to it in Settings › Accounts, or choose another model.` };
   if (!listed.efforts.length)
     return { status: 400, refused: `${listed.name} has no efforts to choose from.` };
   if (!listed.efforts.includes(given))
@@ -25783,7 +25785,7 @@ function botsElsewhere(link = readLink(), told = readPeerAgents()) {
   for (const peer of peers) {
     const computer = shownName2(peer);
     for (const agent of told[peer.key]?.list ?? []) {
-      if (agent.kind !== "bot" || !agent.id || latest.get(agent.id)?.key !== peer.key || botHere(agent.id))
+      if (agent.kind !== "bot" || !agent.id || !agent.name || latest.get(agent.id)?.key !== peer.key || botHere(agent.id))
         continue;
       latest.delete(agent.id);
       bots.push({
@@ -25795,7 +25797,6 @@ function botsElsewhere(link = readLink(), told = readPeerAgents()) {
         box: peer.key,
         computer,
         kind: peer.kind,
-        ...heard(peer) ? { heard: heard(peer) } : {},
         deletes: whatDeleteTakes({ computer, folder: peer.kind === "mac" ? { to: "trash" } : { to: "kuvo" } })
       });
     }
@@ -25963,7 +25964,11 @@ function holdEdit(bot, given, on, { removed = false, now = Date.now() } = {}) {
         return;
       }
       const given = checked ? Object.fromEntries(Object.keys(checked.change).map((field) => [field, now])) : {};
-      if (checked && Buffer.byteLength(JSON.stringify({ ...before?.change ?? {}, ...checked.change })) > MOST_CHANGE) {
+      const dropsEffort = Boolean(checked) && "model" in checked.change && !("effort" in checked.change);
+      const { effort: _effort, ...changeBefore } = before?.change ?? {};
+      const { effort: _effortAt, ...timesBefore } = before?.times ?? {};
+      const kept = dropsEffort ? { change: changeBefore, times: timesBefore } : { change: before?.change ?? {}, times: before?.times ?? {} };
+      if (checked && Buffer.byteLength(JSON.stringify({ ...kept.change, ...checked.change })) > MOST_CHANGE) {
         answer = no(400, "That’s too much to change at once.");
         return;
       }
@@ -25972,7 +25977,7 @@ function holdEdit(bot, given, on, { removed = false, now = Date.now() } = {}) {
         bot,
         to: keeper?.key ?? "",
         ...keeper ? {} : { on: named },
-        ...checked ? { change: { ...before?.change ?? {}, ...checked.change }, times: { ...before?.times ?? {}, ...given } } : { delete: true },
+        ...checked ? { change: { ...kept.change, ...checked.change }, times: { ...kept.times, ...given } } : { delete: true },
         since: before?.since ?? now,
         at: now,
         ...known ? { known } : {}
@@ -33207,7 +33212,7 @@ async function* sessionWakesRoute(context, wakes) {
 import path110 from "node:path";
 function listBots(machine) {
   const bots = [];
-  const computer = IS_MAC ? HERE : machine || HERE;
+  const computer = (IS_MAC ? plainName(macLink.config?.name) : machine) || HERE;
   const goes = folderGoes();
   for (const id of listOf(BOTS)) {
     const here = botHere(id);
@@ -43007,7 +43012,7 @@ import fs138 from "node:fs";
 import path145 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "2cd768eff774";
+var BRIDGE_VERSION = "cca0aa8ad077";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";

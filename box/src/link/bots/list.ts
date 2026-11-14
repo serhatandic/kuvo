@@ -6,6 +6,8 @@ import path from "node:path";
 import { listOf } from "../files";
 import { BOTS, HERE, homeFolder, IS_MAC, K } from "../home";
 import { appHost } from "../host-interface";
+import { plainName } from "../../shared/text";
+import { macLink } from "../state";
 import { whatDeleteTakes } from "./deletes";
 import type { FolderGoes } from "./deletes";
 import { botHere, isModel } from "./here";
@@ -19,7 +21,8 @@ import { allowedOf } from "../work/asks";
 // coding agents). One without a description or a session isn't listed.
 export function listBots(machine?: string): ListedBot[] {
   const bots: { created: string; bot: ListedBot }[] = [];
-  const computer = IS_MAC ? HERE : machine || HERE;
+  // (This computer by its name, as a client on another one shows it: "this Mac" only without one.)
+  const computer = (IS_MAC ? plainName(macLink.config?.name) : machine) || HERE;
   const goes = folderGoes();
   for (const id of listOf(BOTS)) {
     const here = botHere(id);

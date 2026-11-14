@@ -412,7 +412,7 @@ mod tests {
         let deletes = json!([{ "what": "folder", "words": "Its folder goes to the Trash." }, { "what": "a newer box's", "words": "Something new.", "kept": true }, { "what": "no words" }]);
         let said = said(&json!({
             "bots": [{ "id": "bot_mira", "session": "ses_mira", "name": "Mira", "look": look, "deletes": deletes }],
-            "elsewhere": [{ "id": "bot_scout", "session": "ses_scout", "name": "Scout", "look": look, "job": "Watches CI", "box": "k", "computer": "studio-mini", "kind": "mac", "heard": 5, "deletes": deletes }, { "id": "bot_wren", "session": "ses_wren", "name": "Wren", "look": "striped", "box": "k2", "computer": "lab", "kind": "machine", "deletes": [] }],
+            "elsewhere": [{ "id": "bot_scout", "session": "ses_scout", "name": "Scout", "look": look, "job": "Watches CI", "box": "k", "computer": "studio-mini", "kind": "mac", "deletes": deletes }, { "id": "bot_wren", "session": "ses_wren", "name": "Wren", "look": "striped", "box": "k2", "computer": "lab", "kind": "machine", "deletes": [] }],
             "held": [{ "bot": "bot_scout", "box": "k", "computer": "studio-mini", "name": "Scout", "look": look, "delete": true, "since": 5 }],
             "refused": [{ "bot": "bot_wren", "box": "k2", "computer": "lab", "name": "Wren", "message": "No.", "at": 9 }],
         }));

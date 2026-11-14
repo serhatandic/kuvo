@@ -54,8 +54,8 @@ export const BOT = object({
 });
 /** A bot that lives on another of your own computers, as that computer last told this box
  * (`bots.elsewhere`): its id, conversation, name, look and job's line (left out where it said none),
- * that computer by its key and by its name here, what kind it is, when it last said so (ms, by this
- * box's clock), and what deleting it takes with it there. */
+ * that computer by its key and by its name here, what kind it is, and what deleting it takes with
+ * it there. */
 export const BOT_ELSEWHERE = object({
   id: string,
   session: string,
@@ -65,7 +65,6 @@ export const BOT_ELSEWHERE = object({
   box: string,
   computer: string,
   kind: words("mac", "machine"),
-  "heard?": number,
   deletes: DELETES,
 });
 /** A change to a bot (or its delete) that lives on another of your computers, held here until that

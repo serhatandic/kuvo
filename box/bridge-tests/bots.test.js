@@ -785,7 +785,8 @@ test("a bot's effort is changed on its own, to one its model has here; one it ha
       [{ effort: 3 }, 400, "That isn’t an effort."],
       [{ model: { id: "plain", providerID: "opencode" }, effort: "high" }, 400, "Plain has no efforts to choose from."],
       [{ model: { id: "x" }, effort: "high" }, 400, "That isn’t a model."],
-      [{ model: { id: "ghost", providerID: "opencode" }, effort: "high" }, 503, "The efforts of ghost can’t be read on this machine now. Try again in a moment."],
+      // (A model this box doesn't list, its account signed out here: not one to try again for.)
+      [{ model: { id: "ghost", providerID: "opencode" }, effort: "high" }, 422, "ghost can’t be used on this machine now, so its effort can’t be set: sign in to it in Settings › Accounts, or choose another model."],
     ]) {
       const answer = await ask(handle, "PATCH", "kuvo/bots/bot_scout00001", { name: "Renamed", ...body });
       assert.deepEqual([answer.status, answer.json.message], [status, words], JSON.stringify(body));
@@ -797,6 +798,10 @@ test("a bot's effort is changed on its own, to one its model has here; one it ha
     // None (null, or ""): the model's own.
     const own = await ask(handle, "PATCH", "kuvo/bots/bot_scout00001", { effort: null });
     assert.deepEqual([own.status, own.json.bot.model], [200, { id: "opus", providerID: "anthropic" }]);
+    // While its engine lists no models at all (it isn't answering), it says to try again.
+    const down = link.engineHandler(() => ({ port: 1, password: "p" }), { name: "my-server" }, () => null);
+    const later = await ask(down, "PATCH", "kuvo/bots/bot_scout00001", { effort: "medium" });
+    assert.deepEqual([later.status, later.json.message], [503, "The efforts of opus can’t be read on this machine now. Try again in a moment."]);
     // A bot with no model has none to set an effort for.
     write(path.join(folder, "bot.json"), JSON.stringify({ ...JSON.parse(kept), model: undefined }));
     const none = await ask(handle, "PATCH", "kuvo/bots/bot_scout00001", { effort: "high" });
