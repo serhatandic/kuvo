@@ -449,3 +449,14 @@ test("round3 NIT: Stop can interrupt a navigation waiting for Chrome", async t =
   assert.ok(!(await h.c.heard.until(m => m.id === stop)).error);
   await h.c.heard.until(m => m.id === navigation);
 });
+
+test("round3 NIT: raw screencast maxima never upscale beyond the page's device pixels", async t => {
+  const h = await page(t);
+  h.answer("Page.captureScreenshot", () => ({ data: "anBlZw==" }));
+  await call(h.c, "Kuvo.viewing");
+  await call(h.c, "Emulation.setDeviceMetricsOverride", { width: 500, height: 350, deviceScaleFactor: 2 }, "raw");
+  await call(h.c, "Page.startScreencast", { maxWidth: 10000, maxHeight: 10000 }, "raw");
+  await capture(h);
+  const shot = h.chrome.all.find(m => m.method === "Page.captureScreenshot");
+  assert.equal(shot.params.clip.scale, 1, "picture maxima are limits, not a request to invent pixels");
+});

@@ -1,4 +1,4 @@
-// kuvo-browser 016405e26ee04e8e
+// kuvo-browser 55cdc26fd1ad37b7
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -102,7 +102,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "2514dcc98092";
+const KEEPER = "5782f804f2ee";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -1009,7 +1009,7 @@ async function host() {
       // clip.scale changes only the picture; a viewer never changes an agent's layout.
       const sizeState = sizes.get(v.targetId);
       const size = sizeState ?? { width: 1280, height: 800, scale: 2 };
-      const scale = Math.min(v.width / size.width, v.height / size.height) * v.scale;
+      const scale = Math.min(Math.min(v.width / size.width, v.height / size.height) * v.scale, size.scale);
       (async () => {
         const metrics = await ownCall("Page.getLayoutMetrics", {}, own.get(v.targetId));
         const viewport = metrics?.cssVisualViewport ?? metrics?.visualViewport ?? {};

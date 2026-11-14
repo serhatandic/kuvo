@@ -990,7 +990,7 @@ async function host() {
       // clip.scale changes only the picture; a viewer never changes an agent's layout.
       const sizeState = sizes.get(v.targetId);
       const size = sizeState ?? { width: 1280, height: 800, scale: 2 };
-      const scale = Math.min(v.width / size.width, v.height / size.height) * v.scale;
+      const scale = Math.min(Math.min(v.width / size.width, v.height / size.height) * v.scale, size.scale);
       (async () => {
         const metrics = await ownCall("Page.getLayoutMetrics", {}, own.get(v.targetId));
         const viewport = metrics?.cssVisualViewport ?? metrics?.visualViewport ?? {};
