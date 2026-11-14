@@ -23,6 +23,7 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
       if (!frameBudget(Math.ceil(bytes.length / 59000))) break;
       facts.delete(name); events.text(bytes);
     }
+    if (facts.size < 32) socket.resume();
   };
   const timer = relay ? setInterval(flush, 50) : undefined;
   timer?.unref();
@@ -64,7 +65,7 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
           const state = ["Kuvo.pages", "Kuvo.status", "Kuvo.viewport", "Kuvo.pointer", "Kuvo.cursor"].includes(message.method);
           const name = state ? message.method + ":" + (message.params?.targetId ?? "") : "notice:" + ++notice;
           facts.set(name, bytes);
-          if (facts.size > 64 || [...facts.values()].reduce((n, b) => n + b.length, 0) > 4 * 1024 * 1024) return end(new Error("Viewer stopped reading."));
+          if (facts.size >= 64) socket.pause();
           flush();
         }
       }

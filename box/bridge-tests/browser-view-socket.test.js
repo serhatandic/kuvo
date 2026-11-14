@@ -160,3 +160,11 @@ test("the view socket exposes Kuvo facts and request replies without leaking raw
   assert.equal(h.heard.all.some(m => m.method === "Target.targetCreated"), false);
   assert.ok(h.heard.all.some(m => m.id === 4));
 });
+
+test("an input-reply burst is backpressured and delivered without cutting off a healthy viewer", async t => {
+  const h = await keeperView(t, true);
+  for (let id = 1000; id < 1250; id++) h.emit({ id, result: {} });
+  await h.heard.until(m => m.id === 1249);
+  assert.equal(h.heard.all.filter(m => m.id >= 1000 && m.id < 1250).length, 250);
+  assert.equal(h.heard.all.some(m => m.ended), false);
+});
