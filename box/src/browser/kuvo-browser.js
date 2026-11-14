@@ -1495,7 +1495,7 @@ async function host() {
           // Each helper's: the pages agents are at work in, all together.
           client.status = message.params ?? { working: false };
           if (client.status.working && client.status.targetId) {
-            await resize(client.status.targetId, agentSizes.get(client.status.targetId) ?? sizeFor({}), "agent");
+            await resize(client.status.targetId, agentSizes.get(client.status.targetId) ?? { ...sizeFor({}), scale: 2 }, "agent");
           }
           status = everyStatus();
           announcePages();
