@@ -219,3 +219,12 @@ for (const reason of ["budget", "unsent"]) {
     assert.equal(reply.params.reason, reason);
   });
 }
+
+test("re-review S2: the view socket permits typed dialog answers", async t => {
+  const h = await keeperView(t);
+  h.view.send(Buffer.from('{"id":92,"method":"Kuvo.dialogAnswer","params":{"targetId":"P","accept":true}}\n'));
+  h.emit({ method: "Kuvo.pages", params: { pages: [], active: null } });
+  await h.heard.until(m => m.method === "Kuvo.pages" || m.ended);
+  assert.equal(h.heard.all.some(m => m.ended), false);
+  await h.commands.until(m => m.id === 92 && m.method === "Kuvo.dialogAnswer");
+});

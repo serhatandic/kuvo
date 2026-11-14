@@ -106,3 +106,24 @@ test("re-review S1: a renderer call has a deadline, and frame credits bypass its
   assert.match(response.error?.message ?? "", /timed out/i);
   assert.ok(!(await call(h.c, "Kuvo.pages")).error);
 });
+
+test("re-review S2: a view client can answer the dialog that is holding its input call", async t => {
+  const h = await page(t);
+  let release;
+  h.answer("Input.insertText", () => new Promise(resolve => { release = resolve; }));
+  h.answer("Page.handleJavaScriptDialog", () => { release({}); return {}; });
+  const input = next++;
+  h.c.send({ id: input, method: "Kuvo.input", params: { targetId: "P", kind: "text", text: "dialog" } });
+  await h.chrome.until(m => m.method === "Input.insertText");
+  h.event("Page.javascriptDialogOpening", { type: "prompt", message: "Name?", defaultPrompt: "" }, "own");
+  await h.c.heard.until(m => m.method === "Kuvo.dialog");
+  const id = next++;
+  h.c.send({ id, method: "Kuvo.dialogAnswer", params: { targetId: "P", accept: true, promptText: "name" } });
+  await settle({ ...h, c: await h.client() });
+  const command = h.chrome.all.find(m => m.method === "Page.handleJavaScriptDialog");
+  assert.ok(command, "the new vocabulary must dismiss Chrome's dialog");
+  assert.equal(command.sessionId, "own");
+  assert.deepEqual(command.params, { accept: true, promptText: "name" });
+  assert.ok(!(await h.c.heard.until(m => m.id === id)).error);
+  await h.c.heard.until(m => m.id === input);
+});

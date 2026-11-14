@@ -1,4 +1,4 @@
-// kuvo-browser a76d41c50e78a971
+// kuvo-browser 23c54e563d5ba2ca
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -101,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "8cbaf95512c6";
+const KEEPER = "3312e03a9cb3";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -1045,6 +1045,12 @@ async function host() {
     if (client.viewer && message.method.startsWith("Input.") && client.view) await resize(target, client.rawView ? client.rawMetrics?.get(target) ?? sizes.get(target) : client.view, "viewer");
     if (!message.method.startsWith("Kuvo.")) return false;
     if (message.method === "Kuvo.pages") { reply(pages()); return true; }
+    if (message.method === "Kuvo.dialogAnswer") {
+      if (!session || !dialogs.has(target)) throw Error("That page has no open dialog.");
+      if (typeof p.accept !== "boolean" || (p.promptText !== undefined && typeof p.promptText !== "string")) throw Error("Give a dialog answer and optional prompt text.");
+      await requiredCall("Page.handleJavaScriptDialog", { accept: p.accept, ...(p.promptText !== undefined ? { promptText: p.promptText } : {}) }, session);
+      reply(); return true;
+    }
     if (message.method === "Kuvo.go") {
       wakePage(target);
       if (!session) throw Error("That page is closed.");

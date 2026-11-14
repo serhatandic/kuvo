@@ -1027,6 +1027,12 @@ async function host() {
     if (client.viewer && message.method.startsWith("Input.") && client.view) await resize(target, client.rawView ? client.rawMetrics?.get(target) ?? sizes.get(target) : client.view, "viewer");
     if (!message.method.startsWith("Kuvo.")) return false;
     if (message.method === "Kuvo.pages") { reply(pages()); return true; }
+    if (message.method === "Kuvo.dialogAnswer") {
+      if (!session || !dialogs.has(target)) throw Error("That page has no open dialog.");
+      if (typeof p.accept !== "boolean" || (p.promptText !== undefined && typeof p.promptText !== "string")) throw Error("Give a dialog answer and optional prompt text.");
+      await requiredCall("Page.handleJavaScriptDialog", { accept: p.accept, ...(p.promptText !== undefined ? { promptText: p.promptText } : {}) }, session);
+      reply(); return true;
+    }
     if (message.method === "Kuvo.go") {
       wakePage(target);
       if (!session) throw Error("That page is closed.");

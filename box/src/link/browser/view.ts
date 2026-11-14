@@ -5,7 +5,7 @@ import path from "node:path";
 import { RUN, socketKey } from "../home";
 import type { SocketEvents, SocketHandle } from "../relay/host";
 
-const COMMANDS = new Set(["Kuvo.view", "Kuvo.frameAck", "Kuvo.frameDropped", "Kuvo.pages", "Kuvo.input", "Kuvo.go", "Kuvo.upload", "Kuvo.hold", "Kuvo.claim"]);
+const COMMANDS = new Set(["Kuvo.view", "Kuvo.frameAck", "Kuvo.frameDropped", "Kuvo.pages", "Kuvo.input", "Kuvo.go", "Kuvo.upload", "Kuvo.hold", "Kuvo.claim", "Kuvo.dialogAnswer"]);
 let windowAt = 0, messages = 0;
 /** Shared by every relay viewer on this box; the relay counts messages, not bytes. */
 export function frameBudget(count: number, now = Date.now(), ceiling = 100): boolean {

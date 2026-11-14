@@ -9546,7 +9546,7 @@ class LineBuffer {
 // box/src/link/browser/view.ts
 import net3 from "node:net";
 import path35 from "node:path";
-var COMMANDS = new Set(["Kuvo.view", "Kuvo.frameAck", "Kuvo.frameDropped", "Kuvo.pages", "Kuvo.input", "Kuvo.go", "Kuvo.upload", "Kuvo.hold", "Kuvo.claim"]);
+var COMMANDS = new Set(["Kuvo.view", "Kuvo.frameAck", "Kuvo.frameDropped", "Kuvo.pages", "Kuvo.input", "Kuvo.go", "Kuvo.upload", "Kuvo.hold", "Kuvo.claim", "Kuvo.dialogAnswer"]);
 var windowAt = 0;
 var messages = 0;
 function frameBudget(count, now = Date.now(), ceiling = 100) {
@@ -42915,7 +42915,7 @@ import fs138 from "node:fs";
 import path145 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "574dd1d5e683";
+var BRIDGE_VERSION = "7926528f586d";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
