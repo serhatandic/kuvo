@@ -64,6 +64,9 @@ test("a commit message is asked for in the box's words, with your instructions o
 });
 
 test("a pull request is asked for in the box's words, from what the branch brings, with your instructions", async () => {
+  const bare = path.join(root, `origin-${path.basename(repo)}.git`);
+  execFileSync("git", ["init", "-q", "--bare", bare], { env: gitEnv });
+  git("remote", "add", "origin", bare);
   git("switch", "-q", "-c", "kuvo/feature");
   write("feature.txt", "new\n");
   git("add", "-A");
@@ -74,6 +77,16 @@ test("a pull request is asked for in the box's words, from what the branch bring
   assert.match(draft.json.prompt, /^Write a pull request for the changes below\. The first line is its title/);
   assert.match(draft.json.prompt, /Commits:\n- Add the feature[\s\S]*feature\.txt/, "with what the branch brings");
   assert.match(draft.json.prompt, /\n\nAlso follow these instructions from the user:\nAdd a Testing section\.$/);
+});
+
+test("a pull request is refused, saying so, in a repository with no origin", async () => {
+  git("switch", "-q", "-c", "kuvo/feature");
+  write("feature.txt", "new\n");
+  git("add", "-A");
+  git("commit", "-q", "-m", "Add the feature");
+  const draft = await route("POST", "kuvo/git/pull-request/draft", { directory: repo, prompt: true });
+  assert.equal(draft.status, 409, JSON.stringify(draft.json));
+  assert.match(JSON.stringify(draft.json), /This repository has no origin to push to\. Add a remote called origin first\./);
 });
 
 test("a Mac's Settings › Git from before moves to a box once, never over the box's own", async () => {
