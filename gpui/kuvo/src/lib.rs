@@ -15,6 +15,7 @@ pub mod conversation;
 pub mod entries;
 mod landing;
 pub mod panel;
+pub mod queue;
 pub mod rail;
 pub mod settings;
 pub mod sidebar;

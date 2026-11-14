@@ -1,7 +1,7 @@
 //! The window: the title bar across the top; under it the rail, and beside the rail one raised
 //! panel holding the open area's sidebar and its main view (OpenBot's layout). In Sessions the main
 //! view is the conversation open or, for a new one, the landing view, with the side panel beside it;
-//! in Bots, a bot's page or its own conversation; the Work Queue's and Computers' pages aren't in
+//! in Bots, a bot's page or its own conversation; in the Work Queue, the queue or an item's page; Computers' pages aren't in
 //! the app yet. In a narrow window the area's sidebar folds away.
 
 use std::collections::{HashMap, HashSet};
@@ -357,8 +357,13 @@ impl Workspace {
                 self.box_state = BoxState::Connected;
                 let name = self.box_name();
                 let kind = self.info.as_ref().map(|info| info.kind.clone()).unwrap_or_default();
+                // (What a client may write in the Work Queue is the box's to say, by a feature's name.)
+                let writes = self.info.as_ref().is_some_and(|info| info.has(kuvo_box::work_queue::WRITES));
                 for (_, view) in self.areas.clone() {
-                    view.update(cx, |view, cx| view.set_this_box(name.clone(), &kind, cx));
+                    view.update(cx, |view, cx| {
+                        view.set_this_box(name.clone(), &kind, cx);
+                        view.set_writes(writes, cx);
+                    });
                 }
                 // Reached (perhaps updated since): what it says of its accounts is asked again, and
                 // of your computers where they aren't followed.

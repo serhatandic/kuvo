@@ -4,16 +4,17 @@
 //! view, kept while another area shows and drawn only while its own does; Bots and the Work Queue
 //! ask the box as they open, and the window hands Computers the list its title bar draws too.
 //!
-//! Bots' main view is its own (`crate::bots`): a bot's page, New Bot. The Work Queue's and
-//! Computers' pages, and a group chat's, aren't in the app yet: picking a row there shows a plain
-//! page saying so.
+//! Bots' main view is its own (`crate::bots`): a bot's page, New Bot. So is the Work Queue's
+//! (`crate::queue`): the queue and an item's page. Computers' pages, and a group chat's, aren't in
+//! the app yet: picking a row there shows a plain page saying so.
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, EventEmitter, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString,
     StatefulInteractiveElement, Styled, Task, Window, div, prelude::FluentBuilder as _, px, rgb,
 };
 use kuvo_box::BoxClient;
-use kuvo_box::areas::{Bot, BotNow, Computer, Group, Look, WorkQueue};
+use kuvo_box::areas::{Bot, BotNow, Computer, Group, Look};
+use kuvo_box::work_queue::QueueSaid;
 use kuvo_box::bots::{BotsSaid, Elsewhere, Held, Refused};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconSize, StyledType, TypeSize,
@@ -24,6 +25,7 @@ use kuvo_ui::{
 
 use crate::area::Area;
 use crate::bots::{BotsEvent, BotsView, There};
+use crate::queue::{Act as QueueAct, QueueEvent, QueueView};
 use crate::settings::{Pick, SettingsView};
 use crate::time;
 
@@ -74,7 +76,7 @@ pub struct AreaView {
     client: BoxClient,
     live: bool,
     bots: Reading<Bots>,
-    queue: Reading<WorkQueue>,
+    queue: Reading<QueueSaid>,
     /// Your computers, as the box lists them: the window's, handed here as it reads them.
     computers: Reading<Vec<Computer>>,
     /// The box this window shows, as the Computers list names it first.
@@ -92,6 +94,9 @@ pub struct AreaView {
     /// Bots' main view: a bot's page and New Bot.
     page: Option<gpui::Entity<BotsView>>,
     _page: Vec<gpui::Subscription>,
+    /// The Work Queue's main view: the queue and an item's page.
+    queue_page: Option<gpui::Entity<QueueView>>,
+    _queue_page: Vec<gpui::Subscription>,
 }
 
 impl EventEmitter<Picked> for AreaView {}
@@ -133,7 +138,26 @@ impl AreaView {
                 ]
             })
             .unwrap_or_default();
-        AreaView { page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_changes: changes }
+        let queue_page = (area == Area::Queue).then(|| cx.new(|cx| QueueView::new(client.clone(), live, cx)));
+        let queue_subscriptions = queue_page
+            .as_ref()
+            .map(|page| {
+                vec![
+                    cx.subscribe(page, |this: &mut AreaView, _, event: &QueueEvent, cx| match event {
+                        QueueEvent::Session(session) => cx.emit(Go::Session(session.clone())),
+                        QueueEvent::Select(Some(key)) => this.pick(key.clone(), cx),
+                        QueueEvent::Select(None) => {
+                            this.select(None, cx);
+                            cx.emit(Picked);
+                        }
+                        // The view as the box says it now (what a change answered shows meanwhile).
+                        QueueEvent::Changed => this.read_list(cx),
+                    }),
+                    cx.observe(page, |_, _, cx| cx.notify()),
+                ]
+            })
+            .unwrap_or_default();
+        AreaView { queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
@@ -146,9 +170,25 @@ impl AreaView {
         self.page.as_ref()
     }
 
-    /// The area's own main view, for what's picked: a bot's page or New Bot. None where the page
-    /// isn't in the app yet (a group chat, the Work Queue, a computer).
+    /// The Work Queue's main view, in the Work Queue area.
+    pub fn queue_page(&self) -> Option<&gpui::Entity<QueueView>> {
+        self.queue_page.as_ref()
+    }
+
+    /// Whether the box takes an item added or rewritten by a client, as its `features` say.
+    pub fn set_writes(&mut self, writes: bool, cx: &mut Context<Self>) {
+        if let Some(page) = &self.queue_page {
+            page.update(cx, |page, cx| page.set_writes(writes, cx));
+            cx.notify();
+        }
+    }
+
+    /// The area's own main view, for what's picked: a bot's page or New Bot, the Work Queue or one
+    /// of its items. None where the page isn't in the app yet (a group chat, a computer).
     pub fn main(&self) -> Option<gpui::AnyView> {
+        if let Some(page) = &self.queue_page {
+            return Some(page.clone().into());
+        }
         let page = self.page.as_ref()?;
         let other = self.selected.as_deref().is_some_and(|key| key.starts_with("group:"));
         (!other).then(|| page.clone().into())
@@ -166,6 +206,9 @@ impl AreaView {
         if let Some(page) = &self.page {
             page.update(cx, |page, _| page.set_now(now));
         }
+        if let Some(page) = &self.queue_page {
+            page.update(cx, |page, _| page.set_now(now));
+        }
     }
 
     pub fn set_this_box(&mut self, name: SharedString, kind: &str, cx: &mut Context<Self>) {
@@ -178,6 +221,9 @@ impl AreaView {
                 settings.update(cx, |settings, cx| settings.set_this_box(&name, cx));
             }
             if let Some(page) = &self.page {
+                page.update(cx, |page, cx| page.set_this_box(&name, cx));
+            }
+            if let Some(page) = &self.queue_page {
                 page.update(cx, |page, cx| page.set_this_box(&name, cx));
             }
             self.this_box = name;
@@ -196,7 +242,6 @@ impl AreaView {
     /// It's shown: its list is read from the box (in the app, on another thread; in tests and
     /// shots, at once). What was read before stays on screen meanwhile.
     pub fn shown(&mut self, cx: &mut Context<Self>) {
-        let (area, client) = (self.area, self.client.clone());
         if let Some(settings) = &self.settings {
             settings.update(cx, |settings, cx| settings.shown(cx));
             return;
@@ -205,6 +250,15 @@ impl AreaView {
         if let Some(page) = &self.page {
             page.update(cx, |page, cx| page.read(cx));
         }
+        if let Some(page) = &self.queue_page {
+            page.update(cx, |page, cx| page.read(cx));
+        }
+        self.read_list(cx);
+    }
+
+    /// Reads the area's list from the box, what's on screen staying meanwhile.
+    fn read_list(&mut self, cx: &mut Context<Self>) {
+        let (area, client) = (self.area, self.client.clone());
         if !self.live {
             let read = read(area, &client);
             self.take(read, cx);
@@ -241,7 +295,14 @@ impl AreaView {
                     page.update(cx, |page, cx| page.set_said(said, cx));
                 }
             }
-            Read::Queue(queue) => self.queue = reading(queue, &self.queue),
+            Read::Queue(queue) => {
+                self.queue = reading(queue, &self.queue);
+                // The same reading, handed to the page.
+                if let Some(page) = &self.queue_page {
+                    let said = self.queue.clone();
+                    page.update(cx, |page, cx| page.set_said(said, cx));
+                }
+            }
             Read::Nothing => {}
         }
         cx.notify();
@@ -279,12 +340,16 @@ impl AreaView {
             let key = self.selected.clone();
             page.update(cx, |page, cx| page.show(key.as_deref(), cx));
         }
+        if let Some(page) = &self.queue_page {
+            let key = self.selected.clone();
+            page.update(cx, |page, cx| page.show(key.as_deref(), cx));
+        }
     }
 
     /// The page's title: what's picked, named as its row is.
     pub fn title(&self) -> SharedString {
         let Some(key) = self.selected.as_deref() else { return self.area.name().into() };
-        let (kind, id) = key.split_once(':').unwrap_or(("", key));
+        let (kind, id) = key.split_once(':').unwrap_or((key, ""));
         let named = match kind {
             "bot" => ready(&self.bots).and_then(|bots| bots.bots.iter().find(|bot| bot.id == id).map(|bot| bot.name.clone())),
             "elsewhere" => ready(&self.bots).and_then(|bots| bots.there().into_iter().find(|there| there.id == id).map(|there| there.name)),
@@ -292,6 +357,7 @@ impl AreaView {
             "group" => ready(&self.bots).and_then(|bots| bots.groups.iter().find(|group| group.id == id).map(|group| group.name.clone())),
             "category" => ready(&self.queue).and_then(|queue| queue.categories.iter().find(|category| category.id == id).map(|category| category.name.clone())),
             "computer" => ready(&self.computers).and_then(|computers| computers.iter().find(|computer| computer.key == id).map(|computer| computer.name.clone())),
+            "item" => ready(&self.queue).and_then(|queue| queue.items.iter().chain(&queue.removed).find(|item| item.id == id).map(|item| item.title.clone())),
             "progress" => Some("In Progress".into()),
             "this" => Some(self.this_box.to_string()),
             _ => Some(key.to_owned()),
@@ -306,7 +372,7 @@ impl AreaView {
 
 enum Read {
     Bots(kuvo_box::Result<Bots>),
-    Queue(kuvo_box::Result<WorkQueue>),
+    Queue(kuvo_box::Result<QueueSaid>),
     Nothing,
 }
 
@@ -317,7 +383,7 @@ fn read(area: Area, client: &BoxClient) -> Read {
             let groups = client.groups().unwrap_or_default();
             Bots { bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups }
         })),
-        Area::Queue => Read::Queue(client.work_queue()),
+        Area::Queue => Read::Queue(client.work_queue_view()),
         _ => Read::Nothing,
     }
 }
@@ -351,7 +417,7 @@ impl Render for AreaView {
             Area::Sessions => Vec::new(),
         };
         // A sheet open on the area's page: the sidebar waits under the same dimming.
-        let dimmed = self.page.as_ref().is_some_and(|page| page.read(cx).sheet().is_some());
+        let dimmed = self.page.as_ref().is_some_and(|page| page.read(cx).sheet().is_some()) || self.queue_page.as_ref().is_some_and(|page| page.read(cx).sheet().is_some());
         div()
             .id("area-frame")
             .relative()
@@ -520,13 +586,25 @@ impl AreaView {
         let counts = &queue.counts;
         let count = |n: usize| div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(n.to_string());
         let mut rows = Vec::new();
+        let all = NavRow::new("queue-all", "All Items").icon(kuvo_ui::IconName::Queue).selected(self.selected.is_none()).on_click(cx.listener(|this, _, _, cx| {
+            this.select(None, cx);
+            cx.emit(Picked);
+        }));
+        rows.push(div().debug_selector(|| "queue-all".into()).pb(space::S0_5).child(all).into_any_element());
         let progress = NavRow::new("queue-progress", "In Progress")
             .leading(if counts.in_progress > 0 { spinner("queue-spin", IconSize::Nav, c.text_muted).into_any_element() } else { Icon::new(kuvo_ui::IconName::Clock).color(c.icon).into_any_element() })
             .trailing(count(counts.in_progress))
             .selected(self.is_selected("progress"))
             .on_click(self.row_click("progress".into(), cx));
         rows.push(div().debug_selector(|| "queue-progress".into()).pb(space::S0_5).child(progress).into_any_element());
-        rows.push(SectionHeader::new("categories", "Categories").into_any_element());
+        // Categories are the box's: one's made from here through its route.
+        let page = self.queue_page.clone();
+        let new_category = Button::icon_only("new-category", kuvo_ui::IconName::Plus, "New Category").ghost().size(ButtonSize::Small).tooltip("New Category").on_click(move |_, _, cx| {
+            if let Some(page) = &page {
+                page.update(cx, |page, cx| page.act(QueueAct::NewCategory, cx));
+            }
+        });
+        rows.push(SectionHeader::new("categories", "Categories").action(div().debug_selector(|| "new-category".into()).child(new_category)).into_any_element());
         for category in &queue.categories {
             let key = format!("category:{}", category.id);
             let selector = format!("category-{}", category.id);
@@ -683,9 +761,11 @@ pub(crate) fn doing(now: &BotNow, at: f64) -> Option<String> {
     }
 }
 
+// BOX-NEEDED: a category's colour, said by the box (`color` on each of `categories`), once
+// categories are all the user's own: these are the built-in ones' by their ids.
 /// A category's dot, by KuvoClient's rule (`WorkItemChip.color(of:)`: Next teal, Later purple,
 /// Parked grey, Done green, a custom one's by its id), in the theme's nearest colours.
-fn category_color(id: &str, cx: &App) -> Hsla {
+pub fn category_color(id: &str, cx: &App) -> Hsla {
     let c = &cx.theme().colors;
     match id {
         "next" => c.syntax.property,

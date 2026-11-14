@@ -20,6 +20,7 @@ pub use crate::time::now_ms;
 pub mod areas;
 pub mod bots;
 pub mod git;
+pub mod queue;
 pub mod settings;
 
 use kuvo_box::Result;
@@ -110,6 +111,8 @@ struct State {
     settings: settings::Settings,
     /// Its bots.
     bots: bots::Bots,
+    /// Its Work Queue.
+    queue: queue::Queue,
 }
 
 pub const NAME: &str = "Stand-in Mac";
@@ -135,7 +138,18 @@ impl StandIn {
     /// An empty box: no projects, no sessions.
     pub fn empty(replies: Replies) -> StandIn {
         let areas = areas::Areas { empty: true, ..areas::Areas::default() };
-        StandIn { inner: Arc::new(Inner { state: Mutex::new(State { at: 1, next: 1, areas, ..State::default() }), replies }) }
+        StandIn { inner: Arc::new(Inner { state: Mutex::new(State { at: 1, next: 1, areas, queue: queue::Queue::none(), ..State::default() }), replies }) }
+    }
+
+    /// Whether its Work Queue can be read (else 503).
+    pub fn queue_readable(&self, readable: bool) {
+        self.state().queue.down = !readable;
+    }
+
+    /// Whether it takes an item added or rewritten by a client (no box does yet: the routes are
+    /// proposed), and says so in its features.
+    pub fn queue_writable(&self, writable: bool) {
+        self.state().queue.read_only = !writable;
     }
 
     /// Whether its list of computers can be read (else 503, as a box that isn't answering).
@@ -378,6 +392,7 @@ impl StandIn {
         }
         state.git = Some(git::Git::new());
         state.bots = bots::Bots::sample(now);
+        state.queue = queue::Queue::sample(now);
         state.sync_bots();
     }
 }
@@ -786,10 +801,14 @@ impl StandIn {
                 return answer(status, value);
             }
         }
+        let body = request.body.clone().unwrap_or(Value::Null);
+        let made = state.made.unwrap_or_else(now_ms);
+        if let Some((status, value)) = state.queue.answer(method, route, &body, made) {
+            return answer(status, value);
+        }
         if let Some((status, value)) = state.area(method, route) {
             return answer(status, value);
         }
-        let body = request.body.clone().unwrap_or(Value::Null);
         let projects: Vec<(String, String)> = state.projects.iter().map(|(directory, project)| (directory.clone(), project["name"].as_str().unwrap_or_default().to_owned())).collect();
         let now = state.made.unwrap_or_else(now_ms);
         if let Some((status, value)) = state.bots.answer(method, route, &|name| query(path, name).map(decoded), &body, &projects, now) {
@@ -802,7 +821,8 @@ impl StandIn {
         match (method, segments.as_slice()) {
             ("GET", ["kuvo", "info"]) => {
                 let mut features: Vec<&str> = kuvo_box::gate::REQUIRED.to_vec();
-                features.extend(["queue", "work-queue", "asks"]);
+                features.extend(["queue", "asks"]);
+                features.extend(state.queue.features());
                 answer(200, json!({ "kind": "mac", "name": NAME, "app": "1.0.0", "engine": "2.3.0", "features": features, "agents": true, "started": 1.0, "chats": format!("{HOME}/.kuvo-code/chats") }))
             }
             ("GET", ["kuvo", "sessions", "list"]) => answer(200, state.line(true)),
