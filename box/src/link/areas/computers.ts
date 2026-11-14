@@ -16,6 +16,7 @@ import { followedLive } from "../follow";
 import { IS_MAC, LINK_FILE, MAC_APP_VERSION, MAC_ENGINE_VERSION } from "../home";
 import { keptList, listFollowers, listNow } from "../lists/sessions";
 import { PEER_AGENTS_FILE, readPeerAgents, vouchedOf } from "../peers/directory";
+import { isApart } from "../peers/apart";
 import { ownKey, peersOf } from "../peers/known";
 import { awaySince, PEER_REACH, readReach } from "../peers/reach";
 import { sharedMachine } from "../setup/settle";
@@ -113,6 +114,8 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   if (sharedMachine(link)) return computers;
   const peers = peersOf(link);
   const reach = readReach();
+  // (Those that aren't your own: a shared machine, a box of another setup.)
+  const apart = new Set(peers.filter(peer => isApart(peer.key, link, told)).map(peer => peer.key));
   for (const peer of byName(peers)) {
     const said = told[peer.key];
     const away = awaySince(peer.key, reach) !== null || (said?.heard !== undefined && now - said.heard > HEARD_LATELY);
@@ -122,18 +125,22 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       kind: peer.kind,
       ...(peer.id ? { id: peer.id } : {}),
       shared: said?.shared === true,
+      ...(apart.has(peer.key) ? { apart: true as const } : {}),
       // (Not heard from since this box knew of it, and not found away: still being reached.)
       reach: away ? "away" : said?.heard === undefined ? "connecting" : "connected",
       via: "relay",
-      ...(said?.computer ? { ...said.computer, working: away ? 0 : said.computer.working } : { working: 0 }),
+      ...(said?.computer && !apart.has(peer.key) ? { ...said.computer, working: away ? 0 : said.computer.working } : { working: 0 }),
       limits: limits.get(peer.key) ?? [],
     });
   }
   // The boxes a peer vouches for (another Mac's, beside a machine two Macs share): known by that
   // peer's word alone, for plan limits, so nothing is known of what they run or whether they answer.
+  // One only a peer that isn't yours vouches for (the other Mac of a machine two people share)
+  // isn't one of your computers: left out.
   for (const box of byName(vouchedOf(link, told))) {
-    const through = peers.find(peer => told[peer.key]?.boxes?.some(each => each.key === box.key));
-    computers.push({ key: box.key, name: box.name, kind: box.kind, shared: false, reach: "unknown", via: "peer", ...(through ? { through: through.name } : {}), working: 0, limits: limits.get(box.key) ?? [] });
+    const through = peers.find(peer => !apart.has(peer.key) && told[peer.key]?.boxes?.some(each => each.key === box.key));
+    if (!through) continue;
+    computers.push({ key: box.key, name: box.name, kind: box.kind, shared: false, reach: "unknown", via: "peer", through: through.name, working: 0, limits: limits.get(box.key) ?? [] });
   }
   return computers;
 }

@@ -16,6 +16,13 @@ import { readPeerAgents } from "./directory";
 /** Whether the peer `key` says it's a machine Macs of two setups share. */
 export const saysShared = (key: string, told: Record<string, ToldAgents> = readPeerAgents()): boolean => told[key]?.shared === true || toldShared(key) === true;
 
+/** Whether a peer that says `given` in its agents' mail isn't one of your own computers, as that
+ * mail itself says (before it's kept): what it says of what it runs isn't taken then. */
+export function saysApart(key: string, given: { shared?: unknown; setup?: unknown }, link: LinkState | null = readLink()): boolean {
+  const setup = followedSetup(link);
+  return sharedMachine(link) || given.shared === true || toldShared(key) === true || (!!setup && typeof given.setup === "string" && given.setup !== setup.id);
+}
+
 /** Whether the peer `key` isn't one of your own computers to this box. */
 export function isApart(key: string, link: LinkState | null = readLink(), told: Record<string, ToldAgents> = readPeerAgents()): boolean {
   const setup = followedSetup(link);

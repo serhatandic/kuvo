@@ -165,7 +165,8 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
   // And what it is and runs, and how many of its sessions are at work ("Computers"): told again
   // at once as it starts or stops working at all, else with the rest (every ten minutes).
   // Only between your own computers: a machine Macs of different setups share tells none, and no
-  // box tells a peer that isn't one of yours (`isApart`).
+  // box tells a peer that isn't one of yours (`isApart`), nor one that hasn't said what it is yet
+  // (its first word says whether it's shared, or of another setup).
   const computer = sharedMachine(link) ? null : ownComputer();
   const told = computer ? readPeerAgents() : {};
   const json = JSON.stringify([ownList, moved, boxes, where, computer && { ...computer, working: computer.working > 0 }]);
@@ -180,7 +181,7 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
     let bytes: Buffer | null = null, sent: ListedAgent[] = [];
     for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
       sent = ownList.slice(0, count);
-      bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter(box => box.key !== peer.key), ...where, ...(computer && !isApart(peer.key, link, told) ? { computer } : {}) }, ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
+      bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter(box => box.key !== peer.key), ...where, ...(computer && told[peer.key] && !isApart(peer.key, link, told) ? { computer } : {}) }, ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
       if (bytes) break;
     }
     if (!bytes) continue;

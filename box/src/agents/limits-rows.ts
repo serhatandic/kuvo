@@ -118,8 +118,10 @@ const DAY = 24 * 60
  * whole plan's windows (not one model's; its plainly timed ones before those named for what they
  * count, "Premium requests"), the shortest under a day is `short`, and the longest of a day or
  * more `long`, the first listed where two are as long. A plan that states no length has its first
- * window as `long`. Where every window is a model's (Antigravity), the first model's stand for
- * the plan.
+ * window as `long`. Where every window is named for what it counts (Antigravity's pools, Copilot's
+ * counts), the rings are of one pool, the first listed's (those whose `id` differs only in its
+ * last part), so one pool's session is never paired with another's week. Where every window is a
+ * model's, the first model's stand for the plan.
  */
 export function spansOf(windows: LimitWindow[]): Map<LimitWindow, LimitSpan> {
   const spans = new Map<LimitWindow, LimitSpan>()
@@ -127,7 +129,11 @@ export function spansOf(windows: LimitWindow[]): Map<LimitWindow, LimitSpan> {
   const plan = windows.filter((window) => !window.model)
   const first = windows[0]!.model?.toLowerCase()
   const whole = plan.length ? plan : windows.filter((window) => window.model?.toLowerCase() === first)
-  const pool = whole.some((window) => !window.name) ? whole.filter((window) => !window.name) : whole
+  const plain = whole.filter((window) => !window.name)
+  // (Where each is named for what it counts, only those of one pool pair up: the first listed's,
+  // by its id but its last part, `gemini-5h` with `gemini-weekly`, never with `3p-weekly`.)
+  const stem = (window: LimitWindow) => window.id.replace(/[-_][^-_]*$/, "")
+  const pool = plain.length ? plain : whole.filter((window) => stem(window) === stem(whole[0]!))
   let short: LimitWindow | undefined
   let long: LimitWindow | undefined
   for (const window of pool) {

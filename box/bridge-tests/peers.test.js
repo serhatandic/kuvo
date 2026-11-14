@@ -562,16 +562,17 @@ test("a box tells its peers its agents as they change, and every ten minutes", a
 test("a box lists your computers: itself, and each peer as it's heard from, with what each runs and how many sessions are at work there", async t => {
   fresh({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
   const { target } = await engine(t);
-  // What it tells its peers of itself, with its agents.
+  // A peer says what it is; another hasn't been heard from yet.
+  link.receiveMail(mailFrom(second, { at: Date.now(), agents: { at: Date.now(), list: [], computer: { version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", working: 2, more: "x".repeat(500) } } }), undefined, (sender, payload) => link.peerMail(sender, payload, null));
+  // What it tells its peers of itself, with its agents: only one that has said what it is (its
+  // first word says whether it's a shared machine, or of another setup), never one it knows nothing of yet.
   const sent = [];
   // (Asked for, as a box just connected: told whatever it told before.)
   await link.announce({ send: bytes => sent.push(bytes) }, () => target, link.readLink(), Date.now(), true);
-  const told = opened(sent[0], [mac, second].find(each => k(sent[0].subarray(1, 17)) === each.address)).payload.agents.computer;
-  assert.equal(told.working, 0);
-  assert.match(told.system, process.platform === "darwin" ? /^macOS/ : /\S/);
-
-  // A peer says what it is; another hasn't been heard from yet.
-  link.receiveMail(mailFrom(second, { at: Date.now(), agents: { at: Date.now(), list: [], computer: { version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", working: 2, more: "x".repeat(500) } } }), undefined, (sender, payload) => link.peerMail(sender, payload, null));
+  const saidTo = each => opened(sent.find(bytes => k(bytes.subarray(1, 17)) === each.address), each).payload.agents.computer;
+  assert.equal(saidTo(mac), undefined);
+  assert.equal(saidTo(second).working, 0);
+  assert.match(saidTo(second).system, process.platform === "darwin" ? /^macOS/ : /\S/);
   const handle = link.engineHandler(() => target, { name: "devbox" });
   const ask = async (method = "GET") => {
     const pieces = [];
@@ -605,6 +606,26 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   fs.rmSync(path.join(run, "peer-reach.json"));
   ({ body } = await ask());
   assert.equal(body.computers[2].reach, "away");
+
+  // A peer that isn't one of your own computers (it says it's a machine Macs of different setups
+  // share): listed as apart, what it says it runs not kept, and told nothing of what this one runs;
+  // and the box only it vouches for (the other person's Mac) isn't among your computers.
+  const theirs = box("mac");
+  const takeMail = (sender, payload) => link.peerMail(sender, payload, null);
+  link.receiveMail(mailFrom(second, { at: Date.now() + 1, agents: { at: Date.now() + 1, list: [], shared: true, boxes: [theirs.peer], computer: { version: "9.9.9", system: "Theirs", working: 5 } } }), undefined, takeMail);
+  // (One of your own vouches for a box: listed by name, with nothing said of its reach.)
+  const yours = box("machine", "attic");
+  link.receiveMail(mailFrom(mac, { at: Date.now() + 1, agents: { at: Date.now() + 1, list: [], boxes: [yours.peer], computer: { version: "1.0.0", working: 1 } } }), undefined, takeMail);
+  ({ body } = await ask());
+  assert.deepEqual(body.computers.slice(1).map(each => [each.name, each.apart, each.version, each.working, each.reach, each.through]), [
+    ["mac", undefined, "1.0.0", 1, "connected", undefined],
+    ["second", true, undefined, 0, "connected", undefined],
+    ["attic", undefined, undefined, 0, "unknown", "mac"],
+  ]);
+  const again = [];
+  await link.announce({ send: bytes => again.push(bytes) }, () => target, link.readLink(), Date.now(), true);
+  const tells = each => opened(again.find(bytes => k(bytes.subarray(1, 17)) === each.address), each).payload.agents.computer;
+  assert.deepEqual([typeof tells(mac), tells(second)], ["object", undefined]);
 
   // A machine Macs of different setups share lists itself alone, and tells no one what it runs:
   // the others there aren't all one person's computers.

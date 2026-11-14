@@ -966,7 +966,20 @@ describe("an account's rings (#711)", () => {
     expect(spans("copilot", [{ id: "premium", used: 0.4, minutes: 43_200, name: "Premium requests" }, { id: "chat", used: 0.1, minutes: 43_200, name: "Chat" }])).toEqual({ long: "premium" })
     // A plan with a session, a week and a month: the longest is the long ring.
     expect(spans("opencode", [{ id: "session", used: 0.1, minutes: 300 }, { id: "weekly", used: 0.2, minutes: 10_080 }, { id: "monthly", used: 0.3, minutes: 43_200 }])).toEqual({ short: "session", long: "monthly" })
-    // Antigravity: every window is a model's; the first model's stand for the plan.
-    expect(spans("antigravity", [{ id: "gemini", used: 0.1, minutes: 300, model: "Gemini Pro" }, { id: "gemini_week", used: 0.2, minutes: 10_080, model: "Gemini Pro" }, { id: "claude", used: 0.9, minutes: 300, model: "Claude" }])).toEqual({ short: "gemini", long: "gemini_week" })
+    // A maker whose every window is a model's: the first model's stand for the plan.
+    expect(spans("newer", [{ id: "gemini", used: 0.1, minutes: 300, model: "Gemini Pro" }, { id: "gemini_week", used: 0.2, minutes: 10_080, model: "Gemini Pro" }, { id: "claude", used: 0.9, minutes: 300, model: "Claude" }])).toEqual({ short: "gemini", long: "gemini_week" })
+  })
+
+  test("Antigravity's rings are one pool's, as its reader lists them: Gemini's session is never paired with Claude's week", async () => {
+    const { antigravitySummary } = await import("../../src/agents/usage/antigravity-plan")
+    const bucket = (bucketId: string) => ({ bucketId, remainingFraction: 0.6, resetTime: "2026-11-20T00:00:00Z" })
+    const read = (ids: string[]) => antigravitySummary([{ groups: [{ displayName: "Models", buckets: ids.map(bucket) }] }])!
+    const rings = (ids: string[]) => Object.fromEntries(Object.entries(rowOf("antigravity", read(ids)).rings).map(([span, ring]) => [span, ring!.window]))
+    expect(rings(["gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"])).toEqual({ short: "gemini-5h", long: "gemini-weekly" })
+    // One of Gemini's missing: its other alone, one ring.
+    expect(rings(["gemini-5h", "3p-5h", "3p-weekly"])).toEqual({ short: "gemini-5h" })
+    expect(rings(["gemini-weekly", "3p-5h", "3p-weekly"])).toEqual({ long: "gemini-weekly" })
+    // Only Claude's pool read: its two.
+    expect(rings(["3p-5h", "3p-weekly"])).toEqual({ short: "3p-5h", long: "3p-weekly" })
   })
 })

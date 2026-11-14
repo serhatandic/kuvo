@@ -434,7 +434,8 @@ connection.
   limits", "Across your computers", Whose), and `computer` (`{version?, engine?, system?,
   working}`: Kuvo Code's version there, its engine's, its system as people know it, and how many
   of its sessions are at work, for `kuvo/computers`, "Computers"; only to a peer that's one of
-  your own computers, #701, and never by a shared machine; told again at its next round, within a
+  your own computers, #701, once that peer has said what it is (never in the first mail to one),
+  and never by a shared machine; one from a peer that isn't yours is dropped as its mail is taken; told again at its next round, within a
   minute, as it starts or stops working at all, else with the rest). A box sends its bots and its 40 latest
   sessions (its engine's and its coding agents') when they change and every ten minutes. Each box
   keeps the newest list from each peer. The relay keeps nothing, so a box that has just connected adds `"ask": "agents"` to
@@ -1496,7 +1497,10 @@ machines; a client that wants every computer's facts asks the box that has it as
   others aren't all one person's computers). Each:
   - `key` (its box's public key; `""` for the box itself while it has none), `name`, `kind`
     (`mac` or `machine`), `id?` (a machine's name on its Mac);
-  - `shared`: a machine set up by Macs that aren't all in one setup ("Your setup");
+  - `shared`: a machine set up by Macs that aren't all in one setup ("Your setup"); `apart: true`
+    on a peer that isn't one of your own computers (such a machine, or a box following another
+    setup, #701): it tells nothing of what it runs, and a client files it apart from yours. A box
+    only such a peer vouches for (the other person's Mac beside a shared machine) isn't listed;
   - `reach`: `connected` (the box itself; a peer heard from in the last half hour), `connecting`
     (a peer not heard from yet since this box knew of it), `away` (the relay said it isn't
     there, `run/peer-reach.json`, or nothing came from it for half an hour) or `unknown` (a box
@@ -4665,8 +4669,10 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     before those named for what they count, "Web searches"), the shortest under a day is `short` (a
     5-hour session) and the longest of a day or more `long` (the week, the month), the first listed
     where two are as long. A plan with one window has one ring (`long`, where it states no
-    length); one with none, `rings: {}`. Where every window is a model's (Antigravity), the first
-    model's stand for the plan. A client colours by `level` and never by a threshold of its own,
+    length); one with none, `rings: {}`. Where every window is named for what it counts
+    (Antigravity's pools, Copilot's counts), the rings are of one pool, the first listed's (those
+    whose `id` differs only in its last part: `gemini-5h` with `gemini-weekly`, never with
+    `3p-weekly`); where every window is a model's, the first model's stand for the plan. A client colours by `level` and never by a threshold of its own,
     and draws a ring whose `resetsAt` has passed empty, in its place (as a window).
 - Listing them (KuvoClient's `UsageListing.listing`, as the Mac and the phone do): one box's `rows`
   as they are, merging nothing (the Mac: its own box's; the phone: the first box in its list of

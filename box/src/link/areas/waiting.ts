@@ -3,7 +3,7 @@
 // session linked to them waits for. Counted from the box's session list (`lists/sessions.ts`), so
 // every client's badges say the same, and none counts.
 
-import { botsNow } from "../lists/rule";
+import { botsNow, needsYou } from "../lists/rule";
 import { keepsList, keptList, listFollowers, listNow, type Kept } from "../lists/sessions";
 import path from "node:path";
 import { botFollowers, botHere } from "../bots/here";
@@ -29,7 +29,8 @@ export function waitingOf(list: Kept | null): WaitingOnYou {
   // (As "Needs you" counts them: not archived, this box's own copy.)
   const asking = new Set(Object.entries(facts).filter(([, each]) => each.asked !== undefined && !each.archived && !each.away).map(([id]) => id));
   return {
-    sessions: (list?.needsYou ?? []).length,
+    // (A list kept from before "Needs you" says none: counted as the list's own answer lists them.)
+    sessions: (list?.needsYou ?? needsYou(facts)).length,
     bots: Object.entries(botsNow(facts)).filter(([id, now]) => now.asking > 0 && botHere(id) !== null).length,
     // (The queues are read only while something waits at all.)
     queue: asking.size ? allItems().filter(item => !item.removed && item.category !== "done" && item.sessions.some(linked => asking.has(linked.session))).length : 0,
@@ -38,7 +39,11 @@ export function waitingOf(list: Kept | null): WaitingOnYou {
 
 /** What of the list this counts from: looked at again only when it changed (the list changes with
  * every step of a run). */
-const countedFrom = (list: Kept | null): string => JSON.stringify([list?.needsYou ?? [], botsNow(factsOf(list))]);
+const countedFrom = (list: Kept | null): string => {
+  const facts = factsOf(list);
+  // (And who asks at all, for the queue's count: a seat's ask is in neither of the others.)
+  return JSON.stringify([list?.needsYou ?? [], botsNow(facts), Object.keys(facts).filter(id => facts[id]!.asked !== undefined).sort()]);
+};
 
 export async function* waitingRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, signal, json } = context;

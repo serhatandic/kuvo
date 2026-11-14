@@ -10041,7 +10041,9 @@ function spansOf(windows) {
   const plan = windows.filter((window) => !window.model);
   const first = windows[0].model?.toLowerCase();
   const whole = plan.length ? plan : windows.filter((window) => window.model?.toLowerCase() === first);
-  const pool = whole.some((window) => !window.name) ? whole.filter((window) => !window.name) : whole;
+  const plain = whole.filter((window) => !window.name);
+  const stem = (window) => window.id.replace(/[-_][^-_]*$/, "");
+  const pool = plain.length ? plain : whole.filter((window) => stem(window) === stem(whole[0]));
   let short;
   let long;
   for (const window of pool) {
@@ -36533,4 +36535,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 7f01e06a20c3c0675a68b12ae159555ed8867fe29269768e7f6740b3e4e27db8
+// Built from Packages/Box/src/agents 3b7e461fb7c6a6f7cea6ebef7b51fc4d6220c94d9d332f9c63437da598032305

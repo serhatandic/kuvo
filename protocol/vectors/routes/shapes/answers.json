@@ -3098,6 +3098,9 @@
          },
          "id?": "string",
          "shared": "bool",
+         "apart?": {
+          "literal": true
+         },
          "reach": {
           "oneOf": [
            {
@@ -3172,6 +3175,9 @@
          },
          "id?": "string",
          "shared": "bool",
+         "apart?": {
+          "literal": true
+         },
          "reach": {
           "oneOf": [
            {

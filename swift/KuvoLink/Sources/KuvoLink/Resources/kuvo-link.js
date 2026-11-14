@@ -25669,6 +25669,10 @@ import path91 from "node:path";
 
 // box/src/link/peers/apart.ts
 var saysShared = (key, told = readPeerAgents()) => told[key]?.shared === true || toldShared(key) === true;
+function saysApart(key, given, link = readLink()) {
+  const setup = followedSetup(link);
+  return sharedMachine(link) || given.shared === true || toldShared(key) === true || !!setup && typeof given.setup === "string" && given.setup !== setup.id;
+}
 function isApart(key, link = readLink(), told = readPeerAgents()) {
   const setup = followedSetup(link);
   return sharedMachine(link) || saysShared(key, told) || !!setup && !!told[key]?.setup && told[key].setup !== setup.id;
@@ -35154,6 +35158,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
     return computers;
   const peers = peersOf(link);
   const reach = readReach();
+  const apart = new Set(peers.filter((peer) => isApart(peer.key, link, told)).map((peer) => peer.key));
   for (const peer of byName(peers)) {
     const said = told[peer.key];
     const away = awaySince(peer.key, reach) !== null || said?.heard !== undefined && now - said.heard > HEARD_LATELY;
@@ -35163,15 +35168,18 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
       kind: peer.kind,
       ...peer.id ? { id: peer.id } : {},
       shared: said?.shared === true,
+      ...apart.has(peer.key) ? { apart: true } : {},
       reach: away ? "away" : said?.heard === undefined ? "connecting" : "connected",
       via: "relay",
-      ...said?.computer ? { ...said.computer, working: away ? 0 : said.computer.working } : { working: 0 },
+      ...said?.computer && !apart.has(peer.key) ? { ...said.computer, working: away ? 0 : said.computer.working } : { working: 0 },
       limits: limits.get(peer.key) ?? []
     });
   }
   for (const box of byName(vouchedOf(link, told))) {
-    const through = peers.find((peer) => told[peer.key]?.boxes?.some((each) => each.key === box.key));
-    computers.push({ key: box.key, name: box.name, kind: box.kind, shared: false, reach: "unknown", via: "peer", ...through ? { through: through.name } : {}, working: 0, limits: limits.get(box.key) ?? [] });
+    const through = peers.find((peer) => !apart.has(peer.key) && told[peer.key]?.boxes?.some((each) => each.key === box.key));
+    if (!through)
+      continue;
+    computers.push({ key: box.key, name: box.name, kind: box.kind, shared: false, reach: "unknown", via: "peer", through: through.name, working: 0, limits: limits.get(box.key) ?? [] });
   }
   return computers;
 }
@@ -35329,7 +35337,7 @@ async function announce(host, readEngine, link = readLink(), now = Date.now(), a
     let bytes = null, sent = [];
     for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
       sent = ownList.slice(0, count);
-      bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter((box) => box.key !== peer.key), ...where, ...computer && !isApart(peer.key, link, told) ? { computer } : {} }, ...docs, at: now, ...ask ? { ask: "agents" } : {} }, link);
+      bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter((box) => box.key !== peer.key), ...where, ...computer && told[peer.key] && !isApart(peer.key, link, told) ? { computer } : {} }, ...docs, at: now, ...ask ? { ask: "agents" } : {} }, link);
       if (bytes)
         break;
     }
@@ -42685,7 +42693,7 @@ import fs138 from "node:fs";
 import path144 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f833a52e3eca";
+var BRIDGE_VERSION = "807c170d6b6b";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -45732,7 +45740,8 @@ function peerMail(sender, payload, host, places = () => ({ targets: [], bridge: 
       } catch {}
   };
   if (isObject(payload.agents)) {
-    if (takeAgents(sender, payload.agents))
+    const agents = saysApart(sender.key, payload.agents) ? { ...payload.agents, computer: undefined } : payload.agents;
+    if (takeAgents(sender, agents))
       writeAgents();
   }
   if (isObject(payload.docs))
@@ -47035,12 +47044,15 @@ function waitingOf(list) {
   const facts = factsOf3(list);
   const asking = new Set(Object.entries(facts).filter(([, each]) => each.asked !== undefined && !each.archived && !each.away).map(([id]) => id));
   return {
-    sessions: (list?.needsYou ?? []).length,
+    sessions: (list?.needsYou ?? needsYou(facts)).length,
     bots: Object.entries(botsNow(facts)).filter(([id, now]) => now.asking > 0 && botHere(id) !== null).length,
     queue: asking.size ? allItems().filter((item) => !item.removed && item.category !== "done" && item.sessions.some((linked) => asking.has(linked.session))).length : 0
   };
 }
-var countedFrom = (list) => JSON.stringify([list?.needsYou ?? [], botsNow(factsOf3(list))]);
+var countedFrom = (list) => {
+  const facts = factsOf3(list);
+  return JSON.stringify([list?.needsYou ?? [], botsNow(facts), Object.keys(facts).filter((id) => facts[id].asked !== undefined).sort()]);
+};
 async function* waitingRoute(context, match) {
   const { request, signal, json } = context;
   if (request.method.toUpperCase() !== "GET")
