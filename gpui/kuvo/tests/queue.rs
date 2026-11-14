@@ -204,6 +204,28 @@ fn the_search_is_the_boxs_and_shows_its_counts_of_what_it_found(cx: &mut TestApp
 }
 
 #[gpui::test]
+fn a_narrowed_list_follows_the_queue_as_it_changes(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_workspace, page, cx) = queue(cx, &stand_in);
+    click(cx, "queue-filter");
+    click(cx, "menu-item-devbox");
+    assert!(shown(cx, "item-wqi_236") && shown(cx, "tab-all-open-1"));
+    let asks = |stand_in: &StandIn| stand_in.seen_at("GET", "kuvo/work-queue").iter().filter(|seen| seen.path.contains("computers=key_devbox")).count();
+    let before = asks(&stand_in);
+    // An agent closes it meanwhile, and the queue is read again (as the area reads it): the list
+    // under the filter is the box's answer to another ask, so it's asked again, not left as it was.
+    let client = BoxClient::new(stand_in.clone());
+    client
+        .change_work_item("wqi_236", &kuvo_box::work_queue::ItemChange { status: Some("done".into()), ..Default::default() })
+        .expect("the stand-in takes the change");
+    let said = client.work_queue_view().expect("the stand-in's queue");
+    page.update(cx, |page, cx| page.set_said(kuvo::areas::Reading::Ready(said), cx));
+    cx.run_until_parked();
+    assert_eq!(asks(&stand_in), before + 1);
+    assert!(shown(cx, "tab-all-open-0") && shown(cx, "tab-todo-count-0"), "its counts are the box's, of the list as it is now");
+}
+
+#[gpui::test]
 fn the_filters_are_the_boxs_and_its_counts_are_of_what_it_lists(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (_workspace, page, cx) = queue(cx, &stand_in);
