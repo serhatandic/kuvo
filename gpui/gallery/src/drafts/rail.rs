@@ -23,7 +23,7 @@ fn waiting_in(area: Area, scene: Scene) -> usize {
     if scene == Scene::Empty {
         return 0;
     }
-    // BOX-NEEDED: how many things in each area wait on you: a new `GET kuvo/waiting` (and `kuvo/waiting/events`, ndjson) → `{sessions, bots, queue}` across the box (`kuvo/attention` is taken: it's the client-in-use lease).
+    // How many things in each area wait on you: the box's `kuvo/waiting`.
     match area {
         Area::Sessions => data::SESSIONS_WAITING,
         Area::Bots => data::BOTS_WAITING,

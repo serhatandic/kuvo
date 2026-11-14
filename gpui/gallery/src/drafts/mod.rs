@@ -400,7 +400,7 @@ fn window_buttons() -> impl IntoElement {
 /// The computer switcher: the computer this window shows, in the workspace switcher's place.
 fn computer_switcher(cx: &App) -> impl IntoElement {
     let c = &cx.theme().colors;
-    // BOX-NEEDED: the computers it switches between, and whether this one is reached, from `GET kuvo/computers` (see lists.rs).
+    // The computers it switches between, and whether each is reached: the box's `kuvo/computers`.
     div()
         .id("computer-switcher")
         .flex()

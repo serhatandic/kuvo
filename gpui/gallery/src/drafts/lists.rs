@@ -162,7 +162,7 @@ fn sessions(d: &Ctx, cx: &App) -> Vec<AnyElement> {
     let mut rows = Vec::new();
 
     if d.look.needs_you {
-        // BOX-NEEDED: the sessions waiting on you across projects, newest first, each with what it asks in a few words: `needsYou: [{session, asks: {kind, summary}}]` in the sessions listing `Listing::sidebar()` reads (`GET kuvo/sessions`).
+        // The sessions waiting on you across projects, newest ask first, each with what it asks: `needsYou` in the box's session list (`kuvo/sessions/list`).
         rows.push(group_header("Needs you", NEEDS_YOU.len(), cx));
         for (id, title, what, when) in NEEDS_YOU {
             rows.push(needs_you_row(d, id, title, what, when, cx));
@@ -177,7 +177,7 @@ fn sessions(d: &Ctx, cx: &App) -> Vec<AnyElement> {
     );
     for project in PROJECTS {
         let folded = d.look.folding && project.folded_in_c;
-        // BOX-NEEDED: a project's sums: `projects[].{asking, working}` in the same sessions listing (phase 2 counts them in the client today, left to move).
+        // A project's sums: `projects[<dir>].{asking, working}` in the box's session list.
         let (asking, working) = (project.asking, project.working);
         let trailing: Option<AnyElement> = if asking > 0 {
             Some(count_badge(asking, cx).into_any_element())
@@ -313,7 +313,7 @@ fn bots(cx: &App) -> Vec<AnyElement> {
     let c = cx.theme().colors.clone();
     let mut rows = vec![div().h(space::S1).into_any_element()];
     for (ix, bot) in BOTS.iter().enumerate() {
-        // BOX-NEEDED: what a bot is doing now: `now: {working, asking, finished?}` on each bot in `GET kuvo/bots` (and `kuvo/bots/events`); `wakes` is there already.
+        // What a bot is doing now: `now` on each bot in the box's `kuvo/bots`.
         let selected = ix == 0;
         let trailing: Option<AnyElement> = if bot.asking > 0 {
             Some(count_badge(bot.asking, cx).into_any_element())
@@ -361,7 +361,7 @@ fn bots(cx: &App) -> Vec<AnyElement> {
 fn queue(cx: &App) -> Vec<AnyElement> {
     let c = cx.theme().colors.clone();
     let count = |n: usize| div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(n.to_string());
-    // BOX-NEEDED: the Work Queue's counts across your computers: `GET kuvo/work-queue?owner=all&counts=1` → `{counts: {inProgress, categories: {<id>: n}, sources, computers: {<key>: n}, removed}}` (and on its events).
+    // The Work Queue's counts across your computers: `counts` in the box's `kuvo/work-queue?owner=all&counts=1`.
     let mut rows = vec![
         spaced(
             NavRow::new("q-progress", "In Progress")
@@ -400,7 +400,7 @@ fn queue(cx: &App) -> Vec<AnyElement> {
 
 fn computers(cx: &App) -> Vec<AnyElement> {
     let c = cx.theme().colors.clone();
-    // BOX-NEEDED: your computers and shared machines as one list: `GET kuvo/computers` (and events) → `[{key, name, kind: mac|machine, shared, reach: connected|connecting|away, version, system, via, working, limits: [service]}]`; `kuvo/machines` names only a Mac's machines.
+    // Your computers and shared machines as one list: the box's `kuvo/computers`.
     let mut rows = vec![SectionHeader::new("computers", "Your Computers").into_any_element()];
     for (ix, computer) in COMPUTERS.iter().enumerate() {
         let selected = ix == 1;

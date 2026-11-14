@@ -440,7 +440,7 @@ fn computer_page(cx: &App) -> AnyElement {
                 .into_any_element(),
         ),
         vec![
-            // BOX-NEEDED: a computer's facts: reach, Kuvo Code's and the engine's versions, its sessions at work, and which services' limits it reads (`GET kuvo/computers`, below in lists.rs).
+            // A computer's facts (reach, versions, its sessions at work, the limits it reads): the box's `kuvo/computers`.
             row_card(
                 [
                     fact("c1", "Connected", "Kuvo Code 1.42 · engine 1.19", IconName::Check),

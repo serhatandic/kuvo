@@ -34,8 +34,10 @@ Read (GPL-3.0, behaviour only): `crates/workspace/src/dock.rs` (`Dock`, `PanelBu
 ## What Kuvo takes
 
 - Each area past Sessions is its own view (`AreaView`), made once and kept while hidden; only the
-  open area's is drawn, and only it asks the box anything, as it opens (`only_the_area_on_screen_
-  asks_the_box`). The rings are a view of their own, read on their own clock, so a reading redraws
+  open area's is drawn, and Bots and the Work Queue ask the box only as they open
+  (`only_the_area_on_screen_asks_the_box`). The window itself keeps what the rail's counts and the
+  title bar's switcher draw: what waits on you (`kuvo/waiting`) and your computers
+  (`kuvo/computers`, handed to the Computers area), followed where the box streams. The rings are a view of their own, read on their own clock, so a reading redraws
   them, not the window.
 - The rail's buttons: tooltip with the area's name and key (⌃1 to ⌃5), the open one filled, a count
   on the icon, clicking the open one folds its sidebar away; ids carry whether it's open.

@@ -32,8 +32,7 @@ restyle.
    Remove Account (asked first) and Disconnect (asked first, `kuvo/accounts/<id>/forget`).
 4. **The look the user asked for, in the theme** (`kuvo_ui/src/theme.rs`, one place): see "The
    restyle" below. **Two rings an account** on the rail (`rail.rs`), outer the short window, inner
-   the long, each by its own level; one where the box says one, one for the fullest window from a
-   box before #711.
+   the long, each by its own level, as the box picks them (`rows[].rings`); one where it says one.
 5. `kuvo_ui`: `TextField::masked()`; `row::selected_card`; menu items and switches carry debug
    selectors; the theme's `sidebar`, `card`, `selected_card`, `selected_edge`, `icon`, and
    `Theme::selected_shadow`; icons thinned as they load (`icon::STROKE`); `icon::mark_color`.
@@ -59,19 +58,18 @@ restyle.
 - Before and after: `git show 7aafa3842:gpui/shots/screens-area-bots-light.png` against
   `shots/screens-area-bots-light.png` (and `-dark`).
 
-## BOX-NEEDED
+## The box's now (#711)
 
-`grep -rn BOX-NEEDED gpui/kuvo gpui/kuvo_box/src`. Each is drawn plainly until the box says it;
-the shapes are proposals.
+What this phase drew ahead of the box is the box's, and drawn as it says (PROTOCOL.md, "Plan limits",
+"Signing in", "Sandbox"); no rule for any of it is in the app:
 
-| What | Route and shape | Where it's drawn | Until then |
-|---|---|---|---|
-| Which window is each ring | `rows[].windows[].span: short\|long` in `GET kuvo/agents/api/kuvo/limits` (#711) | `rail.rs`, `ring_button`; `kuvo_box/src/areas.rs`, `Account::rings` | one ring, the fullest window (the stand-in sends it) |
-| Which engine integrations are providers | `kind: provider\|search\|agentDuplicate` on each account in `GET kuvo/sign-in/accounts`, or the box leaving the rest out (web search services, MCP servers' sign-ins, `claude-agent`) | `kuvo_box/src/accounts.rs`, `side_accounts` | every account the box lists, unfiltered (no rule ported) |
-| An account's mark | `service` (the limits' ids) on each account in `GET kuvo/sign-in/accounts` | `settings/rows.rs`, `provider_row` | the provider's first letter (agents use the bridge's `metadata.agent`) |
-| A device code, the engine's too | `userCode` on `POST api/integration/<id>/connect/oauth`'s answer or `GET kuvo/sign-in/status`, for Copilot, OpenCode, SuperGrok | `settings/sign_in.rs`, `waiting` | the page and its instructions, no code apart (the bridge says it for agents) |
-| The sandbox's words | `why` for every `reason`, and `actionLabel`, the words of the button that does `action` at its `route`, in `GET kuvo/sandbox` | `kuvo_box/src/settings.rs`, `Sandbox`; `settings/rows.rs`, `permissions` | "Sandbox" On or Off; off, the box's `why`, else "This needs your OK."; a button only with the box's words and route (none today) |
-| A window's level (#711, as before) | `windows[].level` | `rail.rs`, `settings/page.rs` `windows` | quiet grey meters and arcs |
+| What | Where the box says it | Where it's drawn |
+|---|---|---|
+| Which window is each ring, and each one's level | `rows[].rings {short?, long?}` and `windows[].level` in `GET kuvo/agents/api/kuvo/limits` | `rail.rs`, `ring_button`; `settings/page.rs`, `windows` |
+| Which accounts Accounts lists | `listed` (with `kind`) on each account in `GET kuvo/sign-in/accounts` | `kuvo_box/src/accounts.rs`, `side_accounts` |
+| An account's mark | `service` on each account there (none: its first letter) | `settings/rows.rs`, `mark` |
+| A device code, the engine's too | `userCode` in `POST kuvo/sign-in/start`'s answer (every browser sign-in starts there) and `GET kuvo/sign-in/status` | `settings/sign_in.rs`, `waiting` |
+| The sandbox's words | `why` for every `reason` and `actionLabel` in `GET kuvo/sandbox` | `settings/rows.rs`, `permissions`: a button with a `route` sends it; `help` opens the docs and `softwareUpdate` the Mac's Software Update (this app's to open) |
 
 ## Review
 

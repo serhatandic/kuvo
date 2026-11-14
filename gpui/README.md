@@ -120,8 +120,7 @@ box, with real clicks and keystrokes: the sidebar opening a session and folding 
 a message and a typed keyword, "/"'s list, a model that can't run, a new session from the landing
 view, a run streaming in and paging back. The rail and its areas' are `kuvo/tests/areas.rs` (switching areas by the rail and ⌃1 to ⌃5,
 folding the sidebar by its button and in a narrow window, "Needs you", back and forward, the
-rings), against the stand-in's sample bots, queue, machines and accounts, and as a box from before
-#711. Settings' are `kuvo/tests/settings.rs` (each section, the search, each way of signing in, failing,
+rings), against the stand-in's sample bots, queue, computers and accounts. Settings' are `kuvo/tests/settings.rs` (each section, the search, each way of signing in, failing,
 cancelling, installing, signing out, Disconnect), against the stand-in's made-up accounts and
 settings (no key is real). The side panel's are `kuvo/tests/panel.rs`, against the
 stand-in's made-up repositories (no git runs). The follows' threads are left off: what they'd hand the
@@ -183,8 +182,10 @@ What it uses of the box: `kuvo/info`; `kuvo/sessions/list` and `…/events` (wit
 `api/session/active` (whether a run is under way); `kuvo/sessions/<id>/send` (a message's fields,
 #668 item 3) and `kuvo/messages/parts` (the parts of messages from before); and
 `kuvo/work-queue?owner=all&glance=1` and `kuvo/asks` for the counts; for the rail's areas
-(`kuvo_box::areas`), `kuvo/bots`, `kuvo/groups`, `kuvo/work-queue/categories`, `kuvo/machines` and `kuvo/agents/api/kuvo/limits`' rows, and `kuvo/waiting` once a box
-has it (#711; a box without it is asked once). A message's parts and fields
+(`kuvo_box::areas`), `kuvo/bots` (with `now`), `kuvo/groups`, `kuvo/work-queue?owner=all&counts=1&glance=1`,
+`kuvo/computers` and `kuvo/waiting` (each with its `…/events` where the box streams) and
+`kuvo/agents/api/kuvo/limits`' rows (with `rings`); "Needs you" and each project's sums come in
+the session list itself. A message's parts and fields
 are held to `protocol/vectors/message-parts.json`.
 
 Over a box's own server, what's followed streams. Its record is read again for each request, so
