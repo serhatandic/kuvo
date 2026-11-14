@@ -431,7 +431,13 @@ impl BotsView {
             ),
         };
         let saving = self.saving;
-        let go = Button::new("sheet-save", save).loading(saving).on_click(cx.listener(|this, _, _, cx| this.save_sheet(cx)));
+        // (A delete the box said nothing of isn't offered: its confirm would show nothing.)
+        let unsaid = matches!(sheet, Sheet::Delete) && self.deletes().is_empty();
+        let go = Button::new("sheet-save", save).loading(saving).disabled(unsaid).on_click(cx.listener(move |this, _, _, cx| {
+            if !unsaid {
+                this.save_sheet(cx);
+            }
+        }));
         let enter_saves = matches!(sheet, Sheet::Look { .. });
         div()
             .debug_selector(|| "bot-sheet".into())

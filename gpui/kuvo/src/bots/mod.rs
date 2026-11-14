@@ -399,14 +399,12 @@ impl BotsView {
 
     /// The bot shown that lives on another computer, as it's drawn.
     fn there(&self, id: &str) -> Option<There> {
-        let said = self.bots()?;
-        bots_there(&said.elsewhere, &said.held, &said.refused, &said.bots).into_iter().find(|there| there.id == id)
+        self.bots()?.elsewhere.iter().find(|bot| bot.id == id).map(There::of)
     }
 
-    /// The bot shown that lives on another computer, as the box lists it (none: no computer lists
-    /// it now).
+    /// The bot shown that lives on another computer, where one of your computers lists it now.
     fn listed_there(&self, id: &str) -> Option<&Elsewhere> {
-        self.bots()?.elsewhere.iter().find(|bot| bot.id == id)
+        self.bots()?.elsewhere.iter().find(|bot| bot.id == id && !bot.unlisted)
     }
 
     /// The bot a sheet is about: the one shown, here or on another computer, where the box lists
@@ -414,7 +412,7 @@ impl BotsView {
     fn subject(&self) -> Option<(String, String, Option<Look>)> {
         match &self.shown {
             Shown::Bot(_) => self.bot().map(|bot| (bot.id.clone(), bot.name.clone(), Some(bot.look.clone()))),
-            Shown::Elsewhere(id) => self.listed_there(id).map(|bot| (bot.id.clone(), bot.name.clone(), bot.look.clone())),
+            Shown::Elsewhere(id) => self.listed_there(id).map(|bot| (bot.id.clone(), There::of(bot).name, bot.look.clone())),
             Shown::Nothing | Shown::New => None,
         }
     }
@@ -549,7 +547,10 @@ impl BotsView {
     fn notices(&self, bot: &str) -> Vec<Item> {
         let mut items = Vec::new();
         if let Some(held) = self.held(bot) {
-            let words = if held.delete {
+            // Why it waits though its computer answers, where the box says so, as it says it.
+            let words = if let Some(waits) = &held.waits {
+                waits.clone()
+            } else if held.delete {
                 "It’s deleted once that computer is back.".to_owned()
             } else {
                 // (Each field by the box's own name for it: name, look, job, personality, model.)
@@ -1077,7 +1078,8 @@ fn listed<S: AsRef<str>>(words: &[S]) -> String {
     }
 }
 
-/// A bot that lives on another of your computers, as it's drawn.
+/// A bot that lives on another of your computers, as it's drawn: all of it the box's
+/// (`elsewhere` in `kuvo/bots`), named where the box had no name for it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct There {
     pub id: String,
@@ -1087,7 +1089,7 @@ pub struct There {
     pub job: String,
     /// The computer it lives on, by the name the box gave it.
     pub computer: String,
-    /// The box lists it (one of your computers says it has it now), so it can be changed from here.
+    /// One of your computers lists it now, so it can be changed from here.
     pub listed: bool,
     /// The box holds a change or a delete for it.
     pub waiting: bool,
@@ -1095,38 +1097,21 @@ pub struct There {
     pub refused: bool,
 }
 
-/// The bots that live on your other computers, as the box says them: those it lists (`elsewhere`,
-/// in its order), then any it only holds an edit for or heard a refusal of. Each as you left it
-/// (PROTOCOL.md, "Held for another computer"): the name and look a held change gives it over the
-/// ones its computer last said. One that lives on the box asked isn't among them.
-pub fn bots_there(elsewhere: &[Elsewhere], held: &[Held], refused: &[Refused], here: &[Bot]) -> Vec<There> {
-    let mut all: Vec<There> = Vec::new();
-    let ids = elsewhere.iter().map(|bot| bot.id.as_str()).chain(held.iter().map(|held| held.bot.as_str())).chain(refused.iter().map(|refused| refused.bot.as_str()));
-    for id in ids {
-        if here.iter().any(|bot| bot.id == id) || all.iter().any(|there| there.id == id) {
-            continue;
-        }
-        let listed = elsewhere.iter().find(|bot| bot.id == id);
-        let held = held.iter().find(|held| held.bot == id);
-        let refused = refused.iter().find(|refused| refused.bot == id);
-        let computer = listed.map(|bot| bot.computer.as_str()).or(held.map(|held| held.computer.as_str())).or(refused.map(|refused| refused.computer.as_str())).unwrap_or_default();
-        let computer = computer_name(computer).to_owned();
-        // Who it is, as the box says: its computer's word, else what the box kept with the edit.
-        let said_name = listed.map(|bot| bot.name.clone()).or_else(|| held.and_then(|held| held.bot_name.clone())).or_else(|| refused.and_then(|refused| refused.bot_name.clone()));
-        let said_look = listed.and_then(|bot| bot.look.clone()).or_else(|| held.and_then(|held| held.bot_look.clone())).or_else(|| refused.and_then(|refused| refused.bot_look.clone()));
-        all.push(There {
-            id: id.to_owned(),
-            // (One the box has no name for, no computer of yours ever having listed it to it.)
-            name: held.and_then(Held::name).map(str::to_owned).or(said_name).unwrap_or_else(|| format!("A bot on {computer}")),
-            look: held.and_then(Held::look).or(said_look),
-            job: listed.map(|bot| bot.job.clone()).unwrap_or_default(),
+impl There {
+    pub fn of(bot: &Elsewhere) -> There {
+        let computer = computer_name(&bot.computer).to_owned();
+        There {
+            id: bot.id.clone(),
+            // (One the box has no name for: PROTOCOL.md, `bots.elsewhere`.)
+            name: bot.name.clone().filter(|name| !name.is_empty()).unwrap_or_else(|| format!("A bot on {computer}")),
+            look: bot.look.clone(),
+            job: bot.job.clone(),
             computer,
-            listed: listed.is_some(),
-            waiting: held.is_some(),
-            refused: refused.is_some(),
-        });
+            listed: !bot.unlisted,
+            waiting: bot.waiting,
+            refused: bot.refused,
+        }
     }
-    all
 }
 
 /// A computer by the name the box gave it; where it gave none, a neutral one.

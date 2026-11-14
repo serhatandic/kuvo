@@ -23,7 +23,7 @@ use kuvo_ui::{
 };
 
 use crate::area::Area;
-use crate::bots::{BotsEvent, BotsView, There, bots_there};
+use crate::bots::{BotsEvent, BotsView, There};
 use crate::settings::{Pick, SettingsView};
 use crate::time;
 
@@ -50,10 +50,9 @@ pub struct Bots {
 }
 
 impl Bots {
-    /// The bots that live on your other computers, as they're drawn: those the box lists, in its
-    /// order, then any it only holds an edit for or heard a refusal of.
+    /// The bots that live on your other computers, as the box lists them, in its order.
     pub fn there(&self) -> Vec<There> {
-        bots_there(&self.elsewhere, &self.held, &self.refused, &self.bots)
+        self.elsewhere.iter().map(There::of).collect()
     }
 }
 
@@ -227,6 +226,7 @@ impl AreaView {
                     {
                         bots.held = before.held.clone();
                         bots.refused = before.refused.clone();
+                        bots.elsewhere = before.elsewhere.clone();
                     }
                     bots
                 });

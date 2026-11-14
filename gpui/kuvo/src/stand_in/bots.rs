@@ -111,6 +111,51 @@ impl Bots {
         self.refused.push(refused);
     }
 
+    /// The bots of your other computers as a box says them for drawing: those listed, each as you
+    /// left it (a held change's name and look over its computer's) and marked waiting or
+    /// refused; then any it only holds an edit for or heard a refusal of (`unlisted`).
+    fn elsewhere_said(&self) -> Vec<Value> {
+        let held = |id: &Value| self.held.iter().find(|held| &held["bot"] == id);
+        let refused = |id: &Value| self.refused.iter().any(|refused| &refused["bot"] == id);
+        let mark = |bot: &mut Value, id: &Value| {
+            if let Some(held) = held(id) {
+                bot["waiting"] = json!(true);
+                for field in ["name", "look"] {
+                    if !held["change"][field].is_null() {
+                        bot[field] = held["change"][field].clone();
+                    }
+                }
+            }
+            if refused(id) {
+                bot["refused"] = json!(true);
+            }
+        };
+        let mut all: Vec<Value> = self
+            .elsewhere
+            .iter()
+            .map(|listed| {
+                let mut bot = listed.clone();
+                mark(&mut bot, &listed["id"]);
+                bot
+            })
+            .collect();
+        for edit in self.held.iter().chain(&self.refused) {
+            let id = &edit["bot"];
+            if all.iter().any(|bot| &bot["id"] == id) || self.bots.iter().any(|bot| &bot["id"] == id) {
+                continue;
+            }
+            let mut bot = json!({ "id": id, "box": edit["box"], "computer": edit["computer"], "unlisted": true });
+            for field in ["name", "look"] {
+                if !edit[field].is_null() {
+                    bot[field] = edit[field].clone();
+                }
+            }
+            mark(&mut bot, id);
+            all.push(bot);
+        }
+        all
+    }
+
     /// Its bots, each with what deleting it takes with it here (this Mac's box: with its wake-ups
     /// counted, and its folder on to the Trash).
     fn listed(&self) -> Vec<Value> {
@@ -131,8 +176,8 @@ impl Bots {
         Some(match (method, segments.as_slice()) {
             ("GET", ["kuvo", "bots"]) if self.down => (503, json!({ "message": "The box isn’t answering." })),
             ("GET", ["kuvo", "bots"]) => {
-                // Both lists, empty too; neither while it can't check its seals (as a box does).
-                if self.unsealed { (200, json!({ "bots": self.listed(), "elsewhere": self.elsewhere })) } else { (200, json!({ "bots": self.listed(), "held": self.held, "refused": self.refused, "elsewhere": self.elsewhere })) }
+                // The lists, empty too; none of the three while it can't check its seals (as a box does).
+                if self.unsealed { (200, json!({ "bots": self.listed() })) } else { (200, json!({ "bots": self.listed(), "held": self.held, "refused": self.refused, "elsewhere": self.elsewhere_said() })) }
             }
             ("GET", ["kuvo", "bots", "templates"]) => (200, templates(projects)),
             ("POST", ["kuvo", "bots"]) => self.make(body, projects, now),
@@ -327,7 +372,7 @@ fn elsewhere(id: &str, session: &str, name: &str, look: Value, job: &str, (compu
 /// trash folder; `watching`, how many things it watches where the box asked knows (its own bots).
 fn deletes(computer: &str, mac: bool, watching: Option<u64>) -> Value {
     let mut lines = vec![json!({ "what": "conversation", "words": "Its conversation is deleted." })];
-    lines.push(json!({ "what": "folder", "words": if mac { "Its folder, with its memory and what it made there, goes to the Trash.".to_owned() } else { format!("Its folder, with its memory and what it made there, goes to Kuvo Code’s trash folder on {computer}.") } }));
+    lines.push(json!({ "what": "folder", "words": if mac { format!("Its folder, with its memory and what it made there, goes to the Trash on {computer}.") } else { format!("Its folder, with its memory and what it made there, goes to Kuvo Code’s trash folder on {computer}.") } }));
     match watching {
         None => lines.push(json!({ "what": "wakes", "words": "Its wake-ups and watches are cancelled." })),
         Some(0) => {}

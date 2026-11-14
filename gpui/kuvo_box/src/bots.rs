@@ -38,6 +38,9 @@ pub struct Held {
     /// When it was first held (ms).
     #[serde(default)]
     pub since: Option<f64>,
+    /// Why it hasn't gone to a computer that answers, in the box's words.
+    #[serde(default)]
+    pub waits: Option<String>,
 }
 
 impl Held {
@@ -77,16 +80,29 @@ pub struct Refused {
     pub at: Option<f64>,
 }
 
-/// A bot that lives on another of your computers, as that computer last told the box asked
-/// (`bots.elsewhere`).
+/// A bot that lives on another of your computers, as the box asked says it for drawing
+/// (`bots.elsewhere`): as that computer last told it, and as you left it (its name and look those
+/// a change the box holds gives it).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Elsewhere {
     pub id: String,
     #[serde(default)]
     pub session: String,
-    pub name: String,
+    /// None: one the box has no name for (no computer of yours ever listed it to it).
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default, deserialize_with = "lenient")]
     pub look: Option<Look>,
+    /// The box holds a change or a delete for it.
+    #[serde(default)]
+    pub waiting: bool,
+    /// Its computer refused a change, lately.
+    #[serde(default)]
+    pub refused: bool,
+    /// No computer of yours lists it now: it's here only by what's held or was refused, and
+    /// nothing more is taken for it.
+    #[serde(default)]
+    pub unlisted: bool,
     /// What it does, in a few words; empty where its computer said none.
     #[serde(default)]
     pub job: String,
@@ -119,6 +135,7 @@ impl BotsSaid {
         {
             self.held = before.held.clone();
             self.refused = before.refused.clone();
+            self.elsewhere = before.elsewhere.clone();
         }
         self
     }
@@ -412,13 +429,14 @@ mod tests {
         let deletes = json!([{ "what": "folder", "words": "Its folder goes to the Trash." }, { "what": "a newer box's", "words": "Something new.", "kept": true }, { "what": "no words" }]);
         let said = said(&json!({
             "bots": [{ "id": "bot_mira", "session": "ses_mira", "name": "Mira", "look": look, "deletes": deletes }],
-            "elsewhere": [{ "id": "bot_scout", "session": "ses_scout", "name": "Scout", "look": look, "job": "Watches CI", "box": "k", "computer": "studio-mini", "kind": "mac", "deletes": deletes }, { "id": "bot_wren", "session": "ses_wren", "name": "Wren", "look": "striped", "box": "k2", "computer": "lab", "kind": "machine", "deletes": [] }],
+            "elsewhere": [{ "id": "bot_scout", "session": "ses_scout", "name": "Scout", "look": look, "job": "Watches CI", "box": "k", "computer": "studio-mini", "kind": "mac", "deletes": deletes, "waiting": true }, { "id": "bot_wren", "session": "ses_wren", "name": "Wren", "look": "striped", "box": "k2", "computer": "lab", "kind": "machine", "deletes": [], "refused": true }, { "id": "bot_ghost", "box": "", "computer": "old-box", "waiting": true, "unlisted": true }],
             "held": [{ "bot": "bot_scout", "box": "k", "computer": "studio-mini", "name": "Scout", "look": look, "delete": true, "since": 5 }],
             "refused": [{ "bot": "bot_wren", "box": "k2", "computer": "lab", "name": "Wren", "message": "No.", "at": 9 }],
         }));
         let lines: Vec<(&str, bool)> = said.bots[0].deletes.iter().map(|line| (line.words.as_str(), line.kept)).collect();
         assert_eq!(lines, vec![("Its folder goes to the Trash.", false), ("Something new.", true)], "a line without words is left out; one of a kind this doesn't know is a line all the same");
-        assert_eq!(said.elsewhere.iter().map(|bot| (bot.name.as_str(), bot.computer.as_str(), bot.job.as_str(), bot.look.is_some(), bot.deletes.len())).collect::<Vec<_>>(), vec![("Scout", "studio-mini", "Watches CI", true, 2), ("Wren", "lab", "", false, 0)]);
+        assert_eq!(said.elsewhere.iter().map(|bot| (bot.name.as_deref(), bot.computer.as_str(), bot.job.as_str(), bot.look.is_some(), bot.deletes.len())).collect::<Vec<_>>(), vec![(Some("Scout"), "studio-mini", "Watches CI", true, 2), (Some("Wren"), "lab", "", false, 0), (None, "old-box", "", false, 0)]);
+        assert_eq!(said.elsewhere.iter().map(|bot| (bot.waiting, bot.refused, bot.unlisted)).collect::<Vec<_>>(), vec![(true, false, false), (false, true, false), (true, false, true)]);
         assert_eq!((said.held[0].bot_name.as_deref(), said.held[0].bot_look.as_ref().map(|look| look.color.as_str())), (Some("Scout"), Some("amber")));
         assert_eq!((said.refused[0].bot_name.as_deref(), &said.refused[0].bot_look), (Some("Wren"), &None));
     }
@@ -432,6 +450,8 @@ mod tests {
         assert!(!before.held_unsaid && before.held.len() == 1);
         let unsaid = said(&json!({ "bots": [] })).keeping(Some(&before));
         assert_eq!(unsaid.held, before.held, "left out: what was last heard stays");
+        let there = said(&json!({ "bots": [], "held": [], "refused": [], "elsewhere": [{ "id": "bot_scout", "name": "Scout", "box": "k", "computer": "studio-mini" }] }));
+        assert_eq!(said(&json!({ "bots": [] })).keeping(Some(&there)).elsewhere, there.elsewhere, "and the bots elsewhere with it");
         let none = said(&json!({ "bots": [], "held": [], "refused": [] })).keeping(Some(&before));
         assert!(none.held.is_empty(), "said, and empty: it went through");
     }

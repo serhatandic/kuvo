@@ -36,7 +36,8 @@ None is left marked in the code; each stand-in is gone and the box's answer is d
 |---|---|---|
 | What deleting a bot takes with it, a line each in the box's words, then what stays | `deletes` on each bot in `GET kuvo/bots`, and on each in `elsewhere` | Delete's confirm, as the lines are (`sheet_content`); the Delete Bot row claims nothing itself |
 | The bots of your other computers, as each last told the box asked | `elsewhere` in `GET kuvo/bots` | "On Other Computers" lists them all; a page with Name, Look and Delete, each held by the box for that computer |
-| Who a held edit or a refusal is for | `name`, `look` on each of `held`, `refused` | The bot as itself, with the name or look you gave it over them where what's held gives one |
+| Who a held edit or a refusal is for | `name`, `look` on each of `held`, `refused`; `elsewhere` lists each bot as you left it, with `waiting`, `refused`, and `unlisted` for one no computer lists now | The box's list as it is: the app merges nothing (`There::of`) |
+| Why a held edit waits though its computer answers | `waits` on a `held` entry | The notice's words |
 | The effort a bot's model runs at | `effort` in `PATCH kuvo/bots/<id>` | An Effort row under Model, from the model's own efforts as the box lists them |
 
 ## Review
