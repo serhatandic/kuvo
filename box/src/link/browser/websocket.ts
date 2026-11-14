@@ -52,6 +52,7 @@ export function viewUpgrade(server: http.Server, password: string, connect: (eve
         if (op === 9) { write(10, body); continue; }
         if (op === 10) continue;
         if ((op === 0) !== fragmenting) return finish();
+        if (fragment.length >= 4096) return finish();
         fragment.push(body); fragmentSize += length; fragmenting = !fin;
         if (fin) {
           const whole = Buffer.concat(fragment);

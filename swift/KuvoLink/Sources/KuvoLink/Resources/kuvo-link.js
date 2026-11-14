@@ -42838,7 +42838,7 @@ import fs138 from "node:fs";
 import path145 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "b6e16fc418e3";
+var BRIDGE_VERSION = "88c850131996";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -54739,6 +54739,8 @@ Connection: close\r
         if (op === 10)
           continue;
         if (op === 0 !== fragmenting)
+          return finish();
+        if (fragment.length >= 4096)
           return finish();
         fragment.push(body);
         fragmentSize += length;

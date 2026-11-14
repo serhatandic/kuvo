@@ -44,3 +44,11 @@ test("resetting an upgrade refused with 401 cannot raise an unhandled socket err
   assert.match((await h.open()).response, /101/);
   assert.equal(h.calls.length, 0);
 });
+
+test("empty continuation fragments have a count limit even when their byte size is zero", async t => {
+  const h = await server(t), { socket } = await h.open();
+  const closed = once(socket, "close");
+  socket.write(Buffer.concat([masked(1, Buffer.alloc(0), false), ...Array.from({ length: 4096 }, () => masked(0, Buffer.alloc(0), false))]));
+  await closed;
+  assert.equal(h.calls.length, 0);
+});
