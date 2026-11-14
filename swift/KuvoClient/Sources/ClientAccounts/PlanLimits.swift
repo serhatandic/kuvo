@@ -93,6 +93,10 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
     /// `limits.rings`): the shortest window under a day and the longest of a day or more. Nil
     /// outside a row; none in it for a plan with no windows.
     public var rings: Rings?
+    /// How close the account as a whole is to a limit, in its box's word (`level` on its row): the
+    /// higher of its rings', or, with none, of what's left of a balance or a capped extra that has
+    /// a limit. Nil where nothing says a limit (spend alone): no level, which isn't calm.
+    public var rowLevel: LimitsLevel?
 
     /// One of an account's rings: the window it's of (by its `id`), how much of it is gone, when it
     /// resets, and how close it is to its limit in the box's word.
@@ -323,7 +327,7 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
         self.problem = problem
     }
 
-    private enum CodingKeys: String, CodingKey { case provider, service, agent, account, label, identity, plan, windows, balance, extras, agentsReset, checked, next, problem, id, boxes, away, rings }
+    private enum CodingKeys: String, CodingKey { case provider, service, agent, account, label, identity, plan, windows, balance, extras, agentsReset, checked, next, problem, id, boxes, away, rings, level }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -346,6 +350,7 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
         boxes = (try? container.decodeIfPresent(Readable<Computer>.self, forKey: .boxes))?.items ?? []
         away = (try? container.decodeIfPresent(Bool.self, forKey: .away)) ?? false
         rings = try? container.decodeIfPresent(Rings.self, forKey: .rings)
+        rowLevel = try? container.decodeIfPresent(LimitsLevel.self, forKey: .level)
     }
 
     /// Its row's name: "Claude", "Claude · Work" for one you added, "Copilot" for the engine's.
@@ -388,9 +393,11 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
         rings(at: now).reduce(nil) { shown, ring in shown.map { ring.used > $0.used ? ring : $0 } ?? ring }
     }
 
-    /// How close the account is to a limit, in the box's word: its rings' nearer one.
+    /// How close the account is to a limit, in the box's word: its rings' nearer one (a ring
+    /// whose reset has passed drawn empty), and with no rings its row's own (a balance's). Nil
+    /// where its box says none: no level, which a client draws apart from calm.
     public func level(at now: Date) -> LimitsLevel? {
-        rings(at: now).compactMap(\.level).max()
+        rings(at: now).compactMap(\.level).max() ?? rowLevel
     }
 
     /// When it was last heard of or read: its "as of" (a turn tells one window, the rest stay as read).

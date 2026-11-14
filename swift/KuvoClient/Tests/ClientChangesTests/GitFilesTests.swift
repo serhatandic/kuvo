@@ -43,9 +43,11 @@ struct GitFilesTests {
         #expect(thrown.title == "Discard every change to Form.tsx?" && thrown.button == "Discard" && !thrown.undoable)
         let unstaged = try file(#""status":"modified","discard":"unstaged","discards":{"kind":"changes","undoable":false}"#).discardWords
         #expect(unstaged.title == "Discard the changes to Form.tsx?" && !unstaged.undoable)
-        // A new file staged, then gone from disk: to the Trash in name, but the box says it can't
-        // be had back, so it's drawn as destructive.
-        #expect(try !file(#""status":"added","discard":"trash","discards":{"kind":"trash","undoable":false}"#).discardWords.undoable)
+        // A new file staged, then changed again: to the Trash in name, but the box says what's lost
+        // for good, in its own sentence, and it's drawn as destructive.
+        let lost = try file(#""status":"added","discard":"trash","discards":{"kind":"trash","undoable":false,"loses":"What you staged of it isn’t kept anywhere, so this can’t be undone."}"#).discardWords
+        #expect(!lost.undoable)
+        #expect(lost.detail == "It’s a new file, so git keeps nothing of it. What you staged of it isn’t kept anywhere, so this can’t be undone.")
     }
 
     // A repository of its own inside this one ("web/") is named without its "/", and its confirm

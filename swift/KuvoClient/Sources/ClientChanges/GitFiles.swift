@@ -79,10 +79,14 @@ public struct ListedFile: Decodable, Hashable, Sendable, Identifiable {
         public var kind: String
         /// Nothing is lost for good: what goes, goes to the Trash, or a file comes back.
         public var undoable: Bool
+        /// What's lost for good that the kind's own words don't say (a new or moved file staged
+        /// and then changed again), in the box's sentence: shown in the confirm as it is.
+        public var loses: String?
 
-        public init(kind: String, undoable: Bool) {
+        public init(kind: String, undoable: Bool, loses: String? = nil) {
             self.kind = kind
             self.undoable = undoable
+            self.loses = loses
         }
     }
 
@@ -173,7 +177,9 @@ public struct ListedFile: Decodable, Hashable, Sendable, Identifiable {
         default:
             (title, detail, button) = ("Discard the changes to \(name)?", "", "Discard")
         }
-        return DiscardWords(title: title, detail: detail, button: button, undoable: discards?.undoable ?? false)
+        // What the box says is lost for good, in its own sentence, after what the discard does.
+        let said = [detail, discards?.loses ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
+        return DiscardWords(title: title, detail: said, button: button, undoable: discards?.undoable ?? false)
     }
 }
 
