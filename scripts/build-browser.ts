@@ -44,7 +44,7 @@ function fill(text: string, part: string, by: string): string {
   return pieces.join(by);
 }
 
-const source = fs.readFileSync(path.join(folder, "kuvo-browser.js"), "utf8");
+const source = fs.readFileSync(path.join(folder, "frame-policy.js"), "utf8") + "\n" + fs.readFileSync(path.join(folder, "kuvo-browser.js"), "utf8");
 const config = JSON.stringify(inOrder({ scripts: pageScripts(), tools: TOOLS, instructions: INSTRUCTIONS, vaultInstructions: VAULT_INSTRUCTIONS, searchEngines: SEARCH_ENGINES }));
 const body = BANNER + fill(fill(source, KEEPER, `const KEEPER = "${sha256(source).slice(0, 12)}";`), CONFIG, config);
 const built = `// kuvo-browser ${sha256(body).slice(0, 16)}\n` + body;

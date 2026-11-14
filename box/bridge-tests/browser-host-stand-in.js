@@ -38,7 +38,7 @@ export class Heard {
 
 /** Starts the keeper with its stand-in Chrome; `before(home, answer)` sets up what the keeper finds
  * as it starts (what a keeper before it left), and Chrome's answers from its start. */
-export async function browserHost({ before } = {}) {
+export async function browserHost({ before, clock = false } = {}) {
   // A short path: Unix sockets' are limited.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "kbh-"));
   const home = path.join(root, "home");
@@ -74,7 +74,10 @@ socket.on("close", () => process.exit(0));
         chrome.add(message);
         // Every call answered, as Chrome does once it's done it.
         const result = answers.get(message.method)?.(message.params ?? {}) ?? (message.method === "Browser.getVersion" ? { product: "Chrome/155.0.0.0" } : {});
-        if (message.id !== undefined) socket.write(JSON.stringify({ id: message.id, result, ...(message.sessionId ? { sessionId: message.sessionId } : {}) }) + "\0");
+        if (message.id !== undefined) Promise.resolve(result).then(value => socket.write(JSON.stringify({
+          id: message.id, ...(value?.__error ? { error: value.__error } : { result: value }),
+          ...(message.sessionId ? { sessionId: message.sessionId } : {})
+        }) + "\0"));
       }
     });
   });
@@ -87,17 +90,42 @@ socket.on("close", () => process.exit(0));
   fs.mkdirSync(path.join(home, "run"), { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(home, "run", "socket.key"), socketKey + "\n", { mode: 0o600 });
 
+  const clockFile = path.join(root, "clock.mjs");
+  if (clock) fs.writeFileSync(clockFile, `let now = 1000000, next = 0;
+const intervals = new Map(), timeouts = new Map();
+const realTimeout = globalThis.setTimeout, realClear = globalThis.clearTimeout;
+globalThis.setTimeout = (fn, ms, ...args) => {
+  if (ms < 1000) return realTimeout(fn, ms, ...args);
+  const handle = { id: ++next, unref() { return this; } };
+  timeouts.set(handle, { fn: () => fn(...args), at: now + ms }); return handle;
+};
+globalThis.clearTimeout = handle => { if (!timeouts.delete(handle)) realClear(handle); };
+Date.now = () => now;
+globalThis.setInterval = (fn, ms) => {
+  const handle = { id: ++next, unref() { return this; } };
+  intervals.set(handle, { fn, ms, at: now + ms }); return handle;
+};
+globalThis.clearInterval = handle => intervals.delete(handle);
+process.on("message", message => {
+  if (typeof message.advance !== "number") return;
+  now += message.advance;
+  for (const [handle, timer] of timeouts) if (now >= timer.at) { timeouts.delete(handle); timer.fn(); }
+  for (const timer of intervals.values()) if (now >= timer.at) { timer.at = now + timer.ms; timer.fn(); }
+  process.send({ tick: message.id });
+});
+`);
   before?.(home, (method, give) => answers.set(method, give));
-  const host = spawn(process.execPath, [keeper, "host"], {
+  const host = spawn(process.execPath, [...(clock ? ["--import", clockFile] : []), keeper, "host"], {
     env: { ...process.env, KUVO_HOME: home, KUVO_TEST_CHROME: pipePath },
-    stdio: "ignore",
+    stdio: ["ignore", "ignore", "inherit", ...(clock ? ["ipc"] : [])],
   });
-  atEnd(() => {
+  const close = () => {
     host.kill("SIGKILL");
     // (Chrome's end, which the keeper started, goes once it sees this one has.)
     toKeeper?.destroy();
     pipe.close();
-  });
+  };
+  atEnd(close);
 
   /** A client of the keeper (the Mac's live view, or the agent's tools), on its socket. */
   async function client() {
@@ -127,11 +155,17 @@ socket.on("close", () => process.exit(0));
     const send = (message) => socket.write(JSON.stringify(message) + "\n");
     // Kuvo Code's own, which knows the box's socket key: it gives it first.
     send({ method: "Kuvo.key", params: { key: socketKey } });
-    return { heard, send };
+    return { heard, send, close: () => new Promise(resolve => { socket.once("close", resolve); socket.destroy(); }) };
   }
 
   /** Chrome's answer to each call of `method` from now on. */
   const answer = (method, give) => answers.set(method, give);
 
-  return { home, chrome, event, client, answer };
+  let tick = 0;
+  const advance = ms => new Promise(resolve => {
+    const id = ++tick;
+    const heard = message => { if (message.tick !== id) return; host.off("message", heard); resolve(); };
+    host.on("message", heard); host.send({ id, advance: ms });
+  });
+  return { home, chrome, event, client, answer, advance, close };
 }

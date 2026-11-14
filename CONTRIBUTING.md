@@ -464,6 +464,14 @@ engine's own runtime in three ways:
 - **mcp**, the agent's browser tools for the machine's engine, talking to the keeper.
 - **connect**, the Mac's live view of the pages, over SSH, also through the keeper.
 
+New clients can open `kuvo/browser/view` through serve (its Basic password) or a paired relay
+session. The box translates the keeper's newline stream to JSON facts and binary JPEG frames.
+The keeper owns page sizes, captures once per size/quality class and allows two unacknowledged
+pictures per viewer. Raw CDP metrics and screencast calls obey the same rule: viewers cannot
+resize an agent's working page. The wire format and message budget are in PROTOCOL.md,
+“The browser's live view”. Test with `browser-live-view.test.js` and
+`browser-view-socket.test.js`: Chrome is stood in at the pipe; no real profile is used.
+
 The first two, finding no browser, have the box set it up and wait for it (`kuvo-link.js browser
 install`); a browser that doesn't start because its build isn't whole is set up again once.
 

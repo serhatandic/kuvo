@@ -1,5 +1,6 @@
 // The box's server on this Mac (`serve`)
 
+import { viewUpgrade } from "../browser/websocket";
 import crypto from "node:crypto";
 import http from "node:http";
 import os from "node:os";
@@ -36,7 +37,7 @@ export function serveBox(password: string, handle: LinkHandler = engineHandler(r
   const expected = Buffer.from("Basic " + Buffer.from(`opencode:${password}`).toString("base64"));
   // (`any`: nothing reads what it gives back, and its early `return response.end()` lines would
   // otherwise each need a return on every path.)
-  return http.createServer({ keepAliveTimeout: IDLE_TOLD, keepAliveTimeoutBuffer: IDLE_KEPT }, async (request, response): Promise<any> => {
+  const server = http.createServer({ keepAliveTimeout: IDLE_TOLD, keepAliveTimeoutBuffer: IDLE_KEPT }, async (request, response): Promise<any> => {
     const given = Buffer.from(request.headers.authorization ?? "");
     if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) {
       response.writeHead(401);
@@ -90,4 +91,6 @@ export function serveBox(password: string, handle: LinkHandler = engineHandler(r
     if (!headed) response.writeHead(502);
     response.end();
   });
+  viewUpgrade(server, password);
+  return server;
 }

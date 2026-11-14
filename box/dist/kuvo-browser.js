@@ -1,5 +1,22 @@
-// kuvo-browser 241eb218eb789715
+// kuvo-browser 9de05b6925575ae5
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
+// One capture class's clock and digest; pure so its backoff is tested without sleeps.
+export function framePolicy() {
+  let digest = null, quiet = 0, nextAt = 0, floorAt = 0;
+  return {
+    due(now) { return now >= nextAt; },
+    dirty() { nextAt = floorAt; quiet = 0; },
+    captured(image, now, fps) {
+      const changed = image !== digest;
+      digest = image;
+      quiet = changed ? 0 : quiet + 1;
+      floorAt = now + 1000 / fps;
+      nextAt = now + (changed ? 1000 / fps : Math.min(2000, 125 * 2 ** Math.min(quiet, 4)));
+      return changed;
+    },
+  };
+}
+
 // Kuvo Code's browser on a machine: a Chromium kept running there, which the agent browses with
 // and the app shows live in its panel. The engine's own runtime runs it, so the machine needs
 // nothing else:
@@ -85,7 +102,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "249bdfa16c03";
+const KEEPER = "925938ae9121";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -821,7 +838,7 @@ async function host() {
   const send = (client, message) => {
     if (!client.closed) client.socket.write((typeof message === "string" ? message : JSON.stringify(message)) + "\n");
   };
-  const viewers = () => [...clients].filter((client) => client.viewer && !client.closed).length;
+  const viewers = () => [...clients].filter((client) => client.canAnswer && !client.closed).length;
   const everyStatus = () => {
     const working = [...clients].filter((client) => client.status?.working && !client.closed);
     return {
@@ -843,14 +860,26 @@ async function host() {
     toChrome({ id, method, params });
   };
   // The same, for its answer: its result, or null when Chrome refused it.
-  const ownCall = (method, params = {}, sessionId) => new Promise((resolve) => {
+  const ownCall = (method, params = {}, sessionId, required = false) => new Promise((resolve, reject) => {
     const id = next++;
-    pending.set(id, { internal: true, answered: (message) => resolve(message.error ? null : message.result ?? {}) });
+    const deadline = setTimeout(() => {
+      pending.delete(id);
+      if (required) reject(Error("Chrome call timed out: " + method));
+      else resolve(null);
+    }, 10_000);
+    deadline.unref?.();
+    pending.set(id, { internal: true, answered: (message) => {
+      clearTimeout(deadline);
+      if (message.error && required) reject(Error("Chrome refused " + method + ": " + String(message.error.message ?? "Unknown error")));
+      else resolve(message.error ? null : message.result ?? {});
+    } });
     toChrome({ id, method, params, ...(sessionId ? { sessionId } : {}) });
   });
+  const requiredCall = (method, params = {}, sessionId) => ownCall(method, params, sessionId, true);
   const setActive = (targetId, by, session) => {
     if (active === targetId) return;
     active = targetId;
+    announcePages();
     broadcast({ method: "Kuvo.activeChanged", params: { targetId, by, ...(session ? { session } : {}) } });
   };
   // Which conversation works in each page lately, so another one gets a page of its own rather
@@ -871,6 +900,328 @@ async function host() {
   let firstPage = null;
   // Each page's title, as the browser last said.
   const titles = new Map();
+  // Live view: one capture per size/quality class, independent of how many clients draw it.
+  const agentSizes = new Map();
+  const resizing = new Map();
+  const sizes = new Map(), loading = new Set(), histories = new Map(), dialogs = new Map();
+  const pages = () => ({ active, pages: [...targets].map(targetId => ({
+    targetId, url: addresses.get(targetId) ?? "", title: titles.get(targetId) ?? "",
+    opener: openers.get(targetId) ?? null, session: claims.get(targetId)?.session ?? null,
+    loading: loading.has(targetId), canGoBack: (histories.get(targetId)?.currentIndex ?? 0) > 0,
+    canGoForward: (histories.get(targetId)?.currentIndex ?? 0) < (histories.get(targetId)?.entries?.length ?? 1) - 1,
+    working: everyStatus().pages.includes(targetId), held: held.has(targetId),
+    ...(dialogs.has(targetId) ? { dialog: dialogs.get(targetId) } : {}),
+  })) });
+  let lastPages = null;
+  const announcePages = () => {
+    const params = pages(), digest = JSON.stringify(params);
+    if (lastPages === digest) return;
+    lastPages = digest;
+    broadcast({ method: "Kuvo.pages", params });
+  };
+  const workingIn = target => [...clients].some(c => c.status?.working && c.status.targetId === target);
+  const finite = (n, fallback, min, max) => Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+  const sizeFor = p => ({
+    width: Math.round(finite(p.width, 1280, 100, 3840)), height: Math.round(finite(p.height, 800, 100, 2160)),
+    scale: finite(p.scale, 1, 1, 2), quality: Math.round(finite(p.quality, 75, 20, 90)),
+    maxFps: finite(p.maxFps, 15, 1, 15), zoom: finite(p.zoom, 1, .25, 5),
+  });
+  const resizeQueues = new Map();
+  const resize = (target, size, by) => {
+    const work = async () => {
+      if (!own.has(target) || (by === "viewer" && workingIn(target))) return;
+      const previous = sizes.get(target);
+      if (previous?.by === by && ["width", "height", "scale", "zoom"].every(key => (previous[key] ?? 1) === (size[key] ?? 1))) return;
+      const change = {};
+      resizing.set(target, change);
+      try {
+        await requiredCall("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: size.scale, mobile: false }, own.get(target));
+        sizes.set(target, { ...size, zoom: previous?.zoom ?? 1, by });
+        await requiredCall("Emulation.setPageScaleFactor", { pageScaleFactor: size.zoom ?? 1 }, own.get(target));
+        sizes.set(target, { ...size, by });
+        broadcast({ method: "Kuvo.viewport", params: { targetId: target, ...size, by } });
+      } finally {
+        if (resizing.get(target) === change) resizing.delete(target);
+      }
+    };
+    const queued = (resizeQueues.get(target) ?? Promise.resolve()).catch(() => {}).then(work);
+    resizeQueues.set(target, queued);
+    void queued.finally(() => {
+      if (resizeQueues.get(target) === queued) resizeQueues.delete(target);
+    }).catch(() => {});
+    return queued;
+  };
+  let viewOrder = 0;
+  const nativeSize = () => ({ ...sizeFor({}), scale: 2 });
+  const viewerSize = client => client.rawView
+    ? client.rawMetrics?.get(client.view?.targetId) ?? sizes.get(client.view?.targetId) ?? nativeSize()
+    : { ...client.view, ...(client.requestedView ?? {}) };
+  const restoreViewer = targetId => {
+    const latest = [...clients].filter(c => !c.closed && c.view?.targetId === targetId && (!c.rawView || c.rawMetrics?.has(targetId)))
+      .sort((a, b) => (b.viewOrder ?? 0) - (a.viewOrder ?? 0))[0];
+    return latest ? resize(targetId, viewerSize(latest), "viewer") : Promise.resolve();
+  };
+  // A tool finishing is not the agent finishing: preserve layout between successive tools.
+  const idleRestores = new Map();
+  const cancelRestore = targetId => {
+    clearTimeout(idleRestores.get(targetId));
+    idleRestores.delete(targetId);
+  };
+  const restoreAfterIdle = targetId => {
+    if (!targetId) return;
+    cancelRestore(targetId);
+    const timer = setTimeout(() => {
+      idleRestores.delete(targetId);
+      if (!workingIn(targetId)) restoreViewer(targetId).catch(() => {});
+    }, 5000);
+    timer.unref?.();
+    idleRestores.set(targetId, timer);
+  };
+  let frameNumber = 0;
+  const capturing = new Set(), frameClasses = new Map();
+  const frameKey = v => JSON.stringify([v.targetId, v.width, v.height, v.scale, v.quality]);
+  const qualityChanged = (client, reason) => {
+    client.lastImage = null;
+    wakePage(client.view.targetId);
+    send(client, { method: "Kuvo.viewQuality", params: {
+      targetId: client.view.targetId, quality: client.view.quality, scale: client.view.scale, reason
+    } });
+  };
+  const wakePage = targetId => {
+    for (const policy of frameClasses.values()) if (policy.targetId === targetId) policy.dirty();
+  };
+  setInterval(() => {
+    const groups = new Map(), activeClasses = new Set();
+    for (const c of clients) {
+      const v = c.view;
+      if (v && c.recoverAt !== undefined && Date.now() >= c.recoverAt && !c.rawView && !c.inflight?.size) {
+        c.recoverAt = undefined;
+        if (v.quality < c.requestedView.quality) v.quality = Math.min(c.requestedView.quality, v.quality + 10);
+        else v.scale = Math.min(c.requestedView.scale, v.scale * 1.25);
+        qualityChanged(c, "recovery");
+      }
+      if (v && !c.closed && own.has(v.targetId)) activeClasses.add(frameKey(v));
+      if (!v || c.closed || Date.now() < (c.retryAt ?? 0) || resizing.has(v.targetId) || !own.has(v.targetId) || c.inflight?.size >= 2 || c.socket.writableLength > 120000) continue;
+      const key = frameKey(v);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(c);
+    }
+    for (const key of frameClasses.keys()) if (!activeClasses.has(key)) frameClasses.delete(key);
+    for (const [key, group] of groups) {
+      if (!frameClasses.has(key)) frameClasses.set(key, { ...framePolicy(), targetId: group[0].view.targetId });
+      const policy = frameClasses.get(key);
+      if (capturing.has(key) || !policy.due(Date.now())) continue;
+      const v = { ...group[0].view }, now = Date.now();
+      const ready = group.filter(c => now - (c.lastFrame ?? 0) >= 1000 / c.view.maxFps);
+      if (!ready.length) continue;
+      capturing.add(key);
+      // clip.scale changes only the picture; a viewer never changes an agent's layout.
+      const sizeState = sizes.get(v.targetId);
+      const size = sizeState ?? { width: 1280, height: 800, scale: 2 };
+      const scale = Math.min(Math.min(v.width / size.width, v.height / size.height) * v.scale, size.scale);
+      (async () => {
+        const metrics = await ownCall("Page.getLayoutMetrics", {}, own.get(v.targetId));
+        const viewport = metrics?.cssVisualViewport ?? metrics?.visualViewport ?? {};
+        const scrollX = viewport.pageX ?? 0, scrollY = viewport.pageY ?? 0;
+        const result = await ownCall("Page.captureScreenshot", { format: "jpeg", quality: v.quality, captureBeyondViewport: false,
+        clip: { x: scrollX, y: scrollY, width: size.width, height: size.height, scale: scale / size.scale } }, own.get(v.targetId));
+        return { ...result, scrollX, scrollY };
+      })().then(result => {
+        if (!result?.data || resizing.has(v.targetId) || sizes.get(v.targetId) !== sizeState) return;
+        const digest = JSON.stringify([key, result.data, result.scrollX, result.scrollY]);
+        policy.captured(digest, Date.now(), Math.max(...ready.map(c => c.view?.maxFps ?? 15)));
+        for (const c of ready) {
+          if (c.closed || !c.view || frameKey(c.view) !== key || c.inflight?.size >= 2 || c.lastImage === digest) continue;
+          c.lastImage = digest;
+          c.inflight ??= new Set();
+          const id = ++frameNumber;
+          c.inflight.add(id); c.lastFrame = now;
+          c.frameInfo ??= new Map();
+          c.frameInfo.set(id, { revision: c.viewRevision, scale: v.scale, quality: v.quality, bytes: Buffer.byteLength(result.data, "base64") });
+          const params = { targetId: v.targetId, frameId: id, data: result.data,
+            width: Math.round(size.width * scale), height: Math.round(size.height * scale), scrollX: result.scrollX, scrollY: result.scrollY };
+          if (c.rawView) send(c, { method: "Page.screencastFrame", sessionId: c.rawView, params: {
+            data: result.data, sessionId: id, metadata: { deviceWidth: size.width, deviceHeight: size.height, offsetTop: 0, pageScaleFactor: 1, scrollOffsetX: result.scrollX, scrollOffsetY: result.scrollY } } });
+          else send(c, { method: "Kuvo.frame", params });
+        }
+      }).finally(() => capturing.delete(key));
+    }
+  }, 20).unref();
+  const uploads = new Map();
+  const clearUploads = target => {
+    choosers.delete(target);
+    for (const dir of uploads.get(target) ?? []) fs.rmSync(dir, { recursive: true, force: true });
+    uploads.delete(target);
+  };
+  const stopRawView = (client, sessionId) => {
+    if (!client || client.rawView !== sessionId) return;
+    const targetId = client.view?.targetId;
+    client.view = null;
+    client.rawView = null;
+    restoreAfterIdle(targetId);
+    client.lastImage = null;
+    client.inflight?.clear();
+    client.frameInfo?.clear();
+    client.recoverAt = undefined;
+  };
+  const live = async (client, message) => {
+    const p = message.params ?? {}, target = Object.hasOwn(p, "targetId") ? p.targetId : attachedTo.get(message.sessionId) ?? client.view?.targetId;
+    const session = own.get(target);
+    const reply = result => message.id !== undefined && send(client, { id: message.id, result: result ?? {}, ...(message.sessionId ? { sessionId: message.sessionId } : {}) });
+    if (message.method === "Kuvo.frameDropped") {
+      const info = client.frameInfo?.get(p.frameId);
+      client.frameInfo?.delete(p.frameId);
+      if (client.inflight?.delete(p.frameId) && client.view && info?.revision === client.viewRevision) {
+        const v = client.view;
+        client.recoverAt = undefined;
+        client.lastImage = null;
+        wakePage(v.targetId);
+        if (p.reason !== "oversize") {
+          client.retryDelay = Math.min(2000, (client.retryDelay || 50) * 2);
+          client.retryAt = Date.now() + client.retryDelay;
+        } else {
+          client.retryAt = undefined;
+          if (v.scale > 1) v.scale = Math.max(1, v.scale / 2);
+          else if (v.quality > 40) v.quality = Math.max(40, v.quality - 10);
+          else v.scale = Math.max(.125, v.scale * .75);
+          qualityChanged(client, "oversize");
+        }
+      }
+      reply(); return true;
+    }
+    if (message.method === "Kuvo.frameAck" || message.method === "Page.screencastFrameAck") {
+      const id = p.frameId ?? p.sessionId, info = client.frameInfo?.get(id);
+      client.frameInfo?.delete(id);
+      client.inflight?.delete(id);
+      const v = client.view;
+      if (v && info?.revision === client.viewRevision) {
+        client.retryDelay = 0;
+        client.retryAt = undefined;
+      }
+      if (v && !client.rawView && info?.revision === client.viewRevision &&
+          info.scale === v.scale && info.quality === v.quality) {
+        if (info.bytes <= 20000 && (v.scale < client.requestedView.scale || v.quality < client.requestedView.quality)) client.recoverAt ??= Date.now() + 2000;
+        else client.recoverAt = undefined;
+      }
+      reply(); return true;
+    }
+    if (message.method === "Kuvo.view" || message.method === "Page.startScreencast") {
+      client.viewer = true; client.inflight ??= new Set();
+      client.viewRevision = (client.viewRevision ?? 0) + 1;
+      client.lastImage = null;
+      client.recoverAt = undefined;
+      client.retryAt = undefined;
+      client.retryDelay = 0;
+      const raw = message.method === "Page.startScreencast";
+      const previousViewTarget = client.view?.targetId;
+      client.rawView = raw ? message.sessionId : null;
+      const metrics = client.rawMetrics?.get(target) ?? sizes.get(target) ?? sizeFor({});
+      // Raw screencast maxima limit picture pixels, never the page's CSS layout or DPR.
+      client.view = target && targets.has(target) ? raw
+        ? { targetId: target, ...metrics, width: finite(p.maxWidth, metrics.width, 1, Infinity),
+            height: finite(p.maxHeight, metrics.height, 1, Infinity), scale: 1,
+            quality: finite(p.quality, 75, 1, 100), maxFps: 60 }
+        : { targetId: target, ...sizeFor(p) } : null;
+      if (previousViewTarget && previousViewTarget !== client.view?.targetId) restoreAfterIdle(previousViewTarget);
+      if (client.view) {
+        client.viewOrder = ++viewOrder;
+        wakePage(target);
+        setActive(target, "user");
+        if (!raw) {
+          if (client.view.width <= 600) { client.view.scale = 1; client.view.quality = Math.min(50, client.view.quality); }
+          client.requestedView = { scale: client.view.scale, quality: client.view.quality };
+          await resize(target, client.view, "viewer");
+        }
+        client.requestedView = { scale: client.view.scale, quality: client.view.quality };
+      }
+      reply(); return true;
+    }
+    if (message.method === "Page.stopScreencast") { stopRawView(client, message.sessionId); reply(); return true; }
+    if (message.method === "Target.detachFromTarget") stopRawView(client, p.sessionId);
+    if (message.method.startsWith("Emulation.") && /DeviceMetrics|PageScaleFactor|VisibleSize/.test(message.method)) {
+      const previous = client.rawMetrics?.get(target) ?? sizes.get(target) ?? sizeFor({});
+      const size = message.method === "Emulation.setPageScaleFactor"
+        ? { ...previous, zoom: finite(p.pageScaleFactor, 1, .25, 5) }
+        : { ...sizeFor({ ...p, scale: p.deviceScaleFactor }),
+            width: finite(p.width, previous.width, 1, Infinity),
+            height: finite(p.height, previous.height, 1, Infinity),
+            scale: finite(p.deviceScaleFactor, previous.scale, .25, Infinity) };
+      client.rawMetrics ??= new Map();
+      client.rawMetrics.set(target, size);
+      if (!client.viewer) agentSizes.set(target, size);
+      await resize(target, size, client.viewer ? "viewer" : "agent");
+      reply(); return true;
+    }
+    if (message.method.startsWith("Input.")) wakePage(target);
+    if (client.viewer && message.method.startsWith("Input.") && client.view?.targetId === target) {
+      client.viewOrder = ++viewOrder;
+      await resize(target, viewerSize(client), "viewer");
+    }
+    if (!message.method.startsWith("Kuvo.")) return false;
+    if (message.method === "Kuvo.pages") { reply(pages()); return true; }
+    if (message.method === "Kuvo.dialogAnswer") {
+      if (!session || !dialogs.has(target)) throw Error("That page has no open dialog.");
+      if (typeof p.accept !== "boolean" || (p.promptText !== undefined && typeof p.promptText !== "string")) throw Error("Give a dialog answer and optional prompt text.");
+      await requiredCall("Page.handleJavaScriptDialog", { accept: p.accept, ...(p.promptText !== undefined ? { promptText: p.promptText } : {}) }, session);
+      reply(); return true;
+    }
+    if (message.method === "Kuvo.go") {
+      wakePage(target);
+      if (!session) throw Error("That page is closed.");
+      if (p.input !== undefined) {
+        const url = String(p.input).trim();
+        if (/^(javascript|data|blob):/i.test(url)) throw Error("That address cannot be opened here.");
+        const hostPort = /^(?:[a-z0-9.-]+|\[[0-9a-f:]+\]):[0-9]+(?:[/?#]|$)/i.test(url);
+        if (!hostPort && /^[a-z][a-z0-9+.-]*:/i.test(url) && !/^(https?|file|about):/i.test(url)) send(client, { method: "Kuvo.external", params: { targetId: target, url } });
+        else await requiredCall("Page.navigate", { url: destination(url) ?? "about:blank" }, session);
+      } else if (p.back || p.forward) {
+        const h = await requiredCall("Page.getNavigationHistory", {}, session);
+        const entry = h?.entries[h.currentIndex + (p.back ? -1 : 1)];
+        if (entry) await requiredCall("Page.navigateToHistoryEntry", { entryId: entry.id }, session);
+      } else await requiredCall(p.stop ? "Page.stopLoading" : "Page.reload", {}, session);
+      reply(); return true;
+    }
+    if (message.method === "Kuvo.input") {
+      if (!session) throw Error("That page is closed.");
+      wakePage(target);
+      if (client.view?.targetId === target) {
+        client.viewOrder = ++viewOrder;
+        await resize(target, viewerSize(client), "viewer");
+      }
+      const { kind, targetId, ...data } = p;
+      if (Array.isArray(data.modifiers)) data.modifiers = data.modifiers.reduce((bits, key) => bits | ({ alt: 1, control: 2, meta: 4, shift: 8 }[key] ?? 0), 0);
+      const methods = { mouse: "Input.dispatchMouseEvent", wheel: "Input.dispatchMouseEvent", key: "Input.dispatchKeyEvent", text: "Input.insertText", compose: "Input.imeSetComposition" };
+      if (!methods[kind]) throw Error("Unknown input kind.");
+      await requiredCall(methods[kind], kind === "key" ? keyForHere(data) : { ...data, ...(kind === "wheel" ? { type: "mouseWheel" } : {}) }, session);
+      reply(); return true;
+    }
+    if (message.method === "Kuvo.upload") {
+      if (!session || !Array.isArray(p.files)) throw Error("No file chooser.");
+      let bytes = 0;
+      const files = p.files.map(f => {
+        if (!f || typeof f.name !== "string" || typeof f.data !== "string") throw Error("Files need a name and base64 text.");
+        if (f.data.length > Math.ceil(50 * 1024 * 1024 / 3) * 4) throw Error("Files exceed 50 MB.");
+        const data = Buffer.from(f.data, "base64"); bytes += data.length;
+        if (bytes > 50 * 1024 * 1024) throw Error("Files exceed 50 MB.");
+        return { name: path.basename(String(f.name)), data }; });
+      const dir = fs.mkdtempSync(path.join(BROWSER, "tmp", "upload-"));
+      try {
+        for (const f of files) fs.writeFileSync(path.join(dir, f.name), f.data, { mode: 0o600 });
+        const chooser = choosers.get(target);
+        if (!chooser) throw Error("No file chooser.");
+        await requiredCall("DOM.setFileInputFiles", { files: files.map(f => path.join(dir, f.name)), backendNodeId: chooser.backendNodeId }, session);
+        choosers.delete(target);
+        if (!uploads.has(target)) uploads.set(target, new Set());
+        uploads.get(target).add(dir);
+      } catch (error) { fs.rmSync(dir, { recursive: true, force: true }); throw error; }
+      reply();
+      return true;
+    }
+    return false;
+  };
+  const choosers = new Map();
+  fs.mkdirSync(path.join(BROWSER, "tmp"), { recursive: true, mode: 0o700 });
+
   // What the box removed while Chrome was stopped, the rest of it (what each site's pages stored):
   // cleared in the first page Chrome has (Storage's calls need one), and forgotten once Chrome took
   // each; what it refused is cleared the next time.
@@ -953,7 +1304,7 @@ async function host() {
   };
   // The page each client's session is attached to, to know which pages a Mac shows.
   const attachedTo = new Map();
-  const shown = (targetId) => [...attachedTo].some(([sessionId, target]) => target === targetId && owners.get(sessionId)?.viewer);
+  const shown = (targetId) => [...clients].some(c => c.view?.targetId === targetId) || [...attachedTo].some(([sessionId, target]) => target === targetId && owners.get(sessionId)?.viewer);
   // Pages a Mac has shown: yours, kept however long agents leave them alone.
   const seen = new Set();
   // Pages only agents used, left alone for an hour, close: sessions' subagents and bots that wake
@@ -1080,6 +1431,7 @@ async function host() {
     if (message.method === "Target.detachedFromTarget") {
       frameTargets.delete(message.params.sessionId);
       const owner = owners.get(message.params.sessionId);
+      stopRawView(owner, message.params.sessionId);
       owner?.sessions.delete(message.params.sessionId);
       owners.delete(message.params.sessionId);
       attachedTo.delete(message.params.sessionId);
@@ -1100,6 +1452,7 @@ async function host() {
       // dialog, which no one sees in the live view, holding the page still (Passkeys.swift). The
       // page domain first: without it Chrome takes the script and never runs it.
       toChrome({ id: next++, method: "Page.enable", params: {}, sessionId });
+      toChrome({ id: next++, method: "Page.setInterceptFileChooserDialog", params: { enabled: true }, sessionId });
       // How the script says a passkey was asked for: its listener in a world of the keeper's, and
       // the binding there (no Runtime domain needed, which sites notice).
       toChrome({ id: next++, method: "Runtime.addBinding", params: { name: PASSKEY_BINDING, executionContextName: PASSKEY_WORLD }, sessionId });
@@ -1157,7 +1510,11 @@ async function host() {
       if (asked && hostOf(message.params.targetInfo.url) !== asked) passkeyCleared(message.params.targetInfo.targetId);
     }
     if (message.method === "Target.targetDestroyed") {
+      cancelRestore(message.params.targetId);
+      clearUploads(message.params.targetId);
       targets.delete(message.params.targetId);
+      agentSizes.delete(message.params.targetId);
+      sizes.delete(message.params.targetId); loading.delete(message.params.targetId); histories.delete(message.params.targetId); dialogs.delete(message.params.targetId); choosers.delete(message.params.targetId);
       openers.delete(message.params.targetId);
       for (const [frame, page] of framePages) if (page === message.params.targetId) framePages.delete(frame);
       addresses.delete(message.params.targetId);
@@ -1176,6 +1533,25 @@ async function host() {
       const page = [...own].find(([, each]) => each === message.sessionId)?.[0];
       if (page && targets.has(page)) loaded(page, message.sessionId);
     }
+    const page = pageOf(message.sessionId);
+    if (page && isOwn(message.sessionId)) {
+      if (message.method.startsWith("Page.")) wakePage(page);
+      if (message.method === "Page.frameNavigated" && !message.params.frame.parentId) {
+        clearUploads(page);
+        addresses.set(page, message.params.frame.url);
+        ownCall("Page.getNavigationHistory", {}, message.sessionId).then(h => { if (h) histories.set(page, h); announcePages(); });
+      }
+      if (message.method === "Page.frameStartedLoading" && message.params.frameId === page) loading.add(page);
+      if (message.method === "Page.frameStoppedLoading" && message.params.frameId === page) loading.delete(page);
+      if (message.method === "Page.javascriptDialogOpening") { dialogs.set(page, message.params); broadcast({ method: "Kuvo.dialog", params: { targetId: page, ...message.params } }); }
+      if (message.method === "Page.javascriptDialogClosed") dialogs.delete(page);
+      if (message.method === "Page.frameRequestedNavigation" && /^[a-z][a-z0-9+.-]*:/i.test(message.params.url) && !/^(https?|file|about|javascript|data|blob):/i.test(message.params.url)) for (const client of clients) {
+        if (client.view?.targetId === page) send(client, { method: "Kuvo.external", params: { targetId: page, url: message.params.url } });
+      }
+      if (message.method === "Page.fileChooserOpened") { choosers.set(page, message.params); broadcast({ method: "Kuvo.fileChooser", params: { targetId: page, mode: message.params.mode } }); }
+      if (message.method.startsWith("Page.")) announcePages();
+    }
+    if (/^Target.target(Created|InfoChanged|Destroyed)$/.test(message.method)) announcePages();
     const owner = message.sessionId ? owners.get(message.sessionId) : null;
     if (owner) send(owner, text);
     else if (!message.sessionId) broadcast(text);
@@ -1201,6 +1577,8 @@ async function host() {
       client.closed = true;
       if (!client.keyed) return;
       clients.delete(client);
+      if (client.view?.targetId) restoreAfterIdle(client.view.targetId);
+      if (client.status?.working && client.status.targetId) restoreAfterIdle(client.status.targetId);
       for (const sessionId of client.sessions) {
         owners.delete(sessionId);
         internal("Target.detachFromTarget", { sessionId });
@@ -1222,11 +1600,12 @@ async function host() {
           announceHeld();
         }, 600_000).unref?.();
       }
-      if (client.status?.working) broadcast({ method: "Kuvo.status", params: (status = everyStatus()) });
+      if (client.status?.working) { announcePages(); broadcast({ method: "Kuvo.status", params: (status = everyStatus()) }); }
       if (client.viewer) broadcast({ method: "Kuvo.viewers", params: { count: viewers() } });
       if (!client.quiet && ![...clients].some((each) => !each.quiet)) idleSoon();
     });
-    lines(socket, (text) => {
+    let serial = Promise.resolve();
+    lines(socket, text => {
       let message;
       try {
         message = JSON.parse(text);
@@ -1234,6 +1613,8 @@ async function host() {
         if (!client.keyed) refuse();
         return;
       }
+      if (!message || typeof message !== "object" || Array.isArray(message)) return;
+      const run = async () => {
       if (client.closed) return;
       if (!client.keyed) {
         if (message.method !== "Kuvo.key" || !sameKey(message.params?.key)) return refuse();
@@ -1245,12 +1626,18 @@ async function host() {
         client.quiet = message.params?.quiet === true;
         if (!client.quiet) clearTimeout(idle);
         send(client, { method: "Kuvo.hello", params: { targetId: active, status, version: VERSION, keeper: KEEPER_NUMBER, build: KEEPER, asks: [...asks.values()].map((ask) => ask.params), viewers: viewers(), held: [...held.keys()], holdMacs: Object.fromEntries(holdMacs), passkeys: Object.fromEntries(passkeyPages) } });
+        send(client, { method: "Kuvo.pages", params: pages() });
+        for (const [targetId, size] of sizes) send(client, { method: "Kuvo.viewport", params: { targetId, ...size } });
         return;
       }
+      if (typeof message.method !== "string") return;
+      try { if (await live(client, message)) return; }
+      catch (error) { if (message.id !== undefined) send(client, { id: message.id, error: { message: error.message }, ...(message.sessionId ? { sessionId: message.sessionId } : {}) }); return; }
       switch (message.method) {
         case "Kuvo.viewing":
           // A Mac showing the browser: someone who can answer asks.
           client.viewer = true;
+          client.canAnswer = true;
           broadcast({ method: "Kuvo.viewers", params: { count: viewers() } });
           return message.id !== undefined && send(client, { id: message.id, result: {} });
         case "Kuvo.getActive":
@@ -1268,12 +1655,21 @@ async function host() {
           }
           return message.id !== undefined && send(client, { id: message.id, result: {} });
         }
-        case "Kuvo.setStatus":
+        case "Kuvo.setStatus": {
+          const previousTarget = client.status?.working ? client.status.targetId : null;
           // Each helper's: the pages agents are at work in, all together.
           client.status = message.params ?? { working: false };
+          // Agent activity is a fact even if Chrome cannot apply the requested geometry.
           status = everyStatus();
+          announcePages();
           broadcast({ method: "Kuvo.status", params: status });
+          if (client.status.working && client.status.targetId) {
+            cancelRestore(client.status.targetId);
+            await resize(client.status.targetId, agentSizes.get(client.status.targetId) ?? { ...sizeFor({}), scale: 2 }, "agent");
+          }
+          if (previousTarget && (!client.status.working || previousTarget !== client.status.targetId)) restoreAfterIdle(previousTarget);
           return message.id !== undefined && send(client, { id: message.id, result: {} });
+        }
         case "Kuvo.stop":
           return stop();
         case "Kuvo.ask": {
@@ -1310,7 +1706,7 @@ async function host() {
           // A page a Mac shows stays with its conversation however long ago it was last used.
           const claim = claims.get(targetId);
           const ok = !claim || claim.session === session || (Date.now() - claim.at > 90_000 && !shown(targetId));
-          if (ok && targetId && session) claims.set(targetId, { session, at: Date.now() });
+          if (ok && targetId && session) { claims.set(targetId, { session, at: Date.now() }); announcePages(); }
           return message.id !== undefined && send(client, { id: message.id, result: { ok } });
         }
         case "Kuvo.pointer":
@@ -1332,15 +1728,27 @@ async function host() {
             holdMacs.delete(targetId);
           }
           announceHeld();
+          announcePages();
           return message.id !== undefined && send(client, { id: message.id, result: {} });
         }
       }
       if (message.id === undefined || typeof message.method !== "string") return;
       const id = next++;
       pending.set(id, { client, id: message.id, method: message.method, targetId: message.params?.targetId });
+      wakePage(message.params?.targetId ?? attachedTo.get(message.sessionId));
       const forward = { id, method: message.method, params: message.method === "Input.dispatchKeyEvent" ? keyForHere(message.params ?? {}) : message.params ?? {} };
       if (message.sessionId) forward.sessionId = message.sessionId;
       toChrome(forward);
+      };
+      const task = () => run().catch(error => {
+        if (message.id !== undefined) send(client, { id: message.id, error: { message: error.message }, ...(message.sessionId ? { sessionId: message.sessionId } : {}) });
+      });
+      const interruptsNavigation = message.method === "Page.stopLoading" || (message.method === "Kuvo.go" &&
+        message.params?.stop === true && message.params.input === undefined &&
+        !message.params.back && !message.params.forward && !message.params.reload);
+      const urgent = interruptsNavigation || ["Kuvo.frameAck", "Kuvo.frameDropped", "Page.screencastFrameAck", "Page.handleJavaScriptDialog", "Kuvo.dialogAnswer"].includes(message.method);
+      if (client.keyed && urgent) void task();
+      else serial = serial.then(task);
     }, "\n", (held) => !client.keyed && held > 4096 && (refuse(), true));
   });
   server.on("error", (error) => fail("failed", "The browser couldn't listen for Kuvo Code: " + error.message));
@@ -1385,7 +1793,7 @@ class Connection {
     this.waiting = new Map();
     this.handlers = new Set();
     this.closed = false;
-    lines(socket, (text) => {
+    lines(socket, async (text) => {
       let message;
       try {
         message = JSON.parse(text);
@@ -1454,43 +1862,10 @@ async function connect() {
   }
   const socket = keeperConnection();
   socket.on("connect", () => {
-    // Pictures of a page come one at a time, each once the last is acknowledged. Here, a couple
-    // ahead of the Mac: the next is made while the last is on its way, so over a slow link the
-    // round trip doesn't set the frame rate, and no more than that many are ever under way.
-    const ahead = 2;
-    const pacing = new Map();
-    const pace = (session) => pacing.get(session) ?? pacing.set(session, { underWay: 0, owed: [] }).get(session);
-    const acknowledge = (session, frame) => socket.write(JSON.stringify({ id: -2, method: "Page.screencastFrameAck", params: { sessionId: frame }, sessionId: session }) + "\n");
-    lines(process.stdin, (line) => {
-      if (line.includes('"Page.screencastFrameAck"') || line.includes('"Page.startScreencast"') || line.includes('"Page.stopScreencast"')) {
-        const message = JSON.parse(line);
-        if (message.method === "Page.screencastFrameAck") {
-          // The Mac has it: one fewer under way, and the picture held back can come.
-          const p = pace(message.sessionId);
-          p.underWay = Math.max(0, p.underWay - 1);
-          const frame = p.owed.shift();
-          if (frame !== undefined) acknowledge(message.sessionId, frame);
-          return;
-        }
-        // Starting or stopping over: nothing under way.
-        pacing.delete(message.sessionId);
-      }
-      socket.write(line + "\n");
-    });
-    lines(socket, (line) => {
-      // The answers to the acknowledgments made here.
-      if (line.startsWith('{"id":-2,')) return;
-      if (line.startsWith('{"method":"Page.screencastFrame"')) {
-        // Its numbers are at the end; the picture before them is long.
-        const ids = line.slice(-160).match(/"sessionId":(\d+)\}\s*,\s*"sessionId":"([^"]+)"\}\s*$/);
-        const [frame, session] = ids ? [Number(ids[1]), ids[2]] : (({ params, sessionId }) => [params.sessionId, sessionId])(JSON.parse(line));
-        const p = pace(session);
-        p.underWay += 1;
-        if (p.underWay <= ahead) acknowledge(session, frame);
-        else p.owed.push(frame);
-      }
-      process.stdout.write(line + "\n");
-    });
+    // The keeper now paces both raw CDP and Kuvo frames. Only the drawing client's
+    // acknowledgement returns credit; an SSH hop must not acknowledge on its behalf.
+    lines(process.stdin, line => socket.write(line + "\n"));
+    lines(socket, line => process.stdout.write(line + "\n"));
   });
   socket.on("close", () => process.exit(0));
   socket.on("error", (error) => {

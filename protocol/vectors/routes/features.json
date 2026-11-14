@@ -183,6 +183,7 @@
          ],
          "<excludes>": [
           "browser",
+          "browser.view",
           "engine.start",
           "pieces",
           "update"
@@ -237,6 +238,7 @@
          "branch",
          "browser",
          "browser.data",
+         "browser.view",
          "btw",
          "btw.threads",
          "claude-code",
