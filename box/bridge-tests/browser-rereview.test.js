@@ -146,3 +146,21 @@ for (const way of ["request", "event"]) {
     assert.equal(captures(h), before, "the detached page must consume no capture work");
   });
 }
+
+for (const raw of [false, true]) {
+  test("re-review S4: a passive " + (raw ? "raw" : "Kuvo") + " viewer regains its size when the agent stops", async t => {
+    const h = await page(t);
+    await call(h.c, "Kuvo.setStatus", { targetId: "P", working: true });
+    const viewer = await h.client(); await viewer.heard.until(m => m.method === "Kuvo.hello");
+    if (raw) {
+      await call(viewer, "Kuvo.viewing");
+      await call(viewer, "Target.attachToTarget", { targetId: "P", flatten: true });
+      await call(viewer, "Emulation.setDeviceMetricsOverride", { width: 393, height: 660, deviceScaleFactor: 2 }, "raw");
+      await call(viewer, "Page.startScreencast", { maxWidth: 393, maxHeight: 660 }, "raw");
+    } else await call(viewer, "Kuvo.view", { targetId: "P", width: 393, height: 660 });
+    assert.equal(h.chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").at(-1).params.width, 1280);
+    await call(h.c, "Kuvo.setStatus", { working: false });
+    const restored = h.chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").at(-1);
+    assert.deepEqual([restored.params.width, restored.params.height], [393, 660]);
+  });
+}

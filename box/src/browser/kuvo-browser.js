@@ -914,6 +914,15 @@ async function host() {
     sizes.set(target, { ...size, by });
     broadcast({ method: "Kuvo.viewport", params: { targetId: target, ...size, by } });
   };
+  let viewOrder = 0;
+  const nativeSize = () => ({ ...sizeFor({}), scale: 2 });
+  const viewerSize = client => client.rawView
+    ? client.rawMetrics?.get(client.view?.targetId) ?? nativeSize() : client.view;
+  const restoreViewer = targetId => {
+    const latest = [...clients].filter(c => !c.closed && c.view?.targetId === targetId)
+      .sort((a, b) => (b.viewOrder ?? 0) - (a.viewOrder ?? 0))[0];
+    return latest ? resize(targetId, viewerSize(latest), "viewer") : Promise.resolve();
+  };
   let frameNumber = 0;
   const capturing = new Set(), frameClasses = new Map();
   const wakePage = targetId => {
@@ -1010,6 +1019,7 @@ async function host() {
             quality: finite(p.quality, 75, 1, 100), maxFps: 60 }
         : { targetId: target, ...sizeFor(p) } : null;
       if (client.view) {
+        client.viewOrder = ++viewOrder;
         setActive(target, "user");
         if (!raw) {
           if (client.view.width <= 600) { client.view.scale = 1; client.view.quality = Math.min(50, client.view.quality); }
@@ -1032,7 +1042,10 @@ async function host() {
       reply(); return true;
     }
     if (message.method.startsWith("Input.")) wakePage(target);
-    if (client.viewer && message.method.startsWith("Input.") && client.view) await resize(target, client.rawView ? client.rawMetrics?.get(target) ?? sizes.get(target) : client.view, "viewer");
+    if (client.viewer && message.method.startsWith("Input.") && client.view?.targetId === target) {
+      client.viewOrder = ++viewOrder;
+      await resize(target, viewerSize(client), "viewer");
+    }
     if (!message.method.startsWith("Kuvo.")) return false;
     if (message.method === "Kuvo.pages") { reply(pages()); return true; }
     if (message.method === "Kuvo.dialogAnswer") {
@@ -1060,7 +1073,10 @@ async function host() {
     if (message.method === "Kuvo.input") {
       if (!session) throw Error("That page is closed.");
       wakePage(target);
-      if (client.view) await resize(target, client.view, "viewer");
+      if (client.view?.targetId === target) {
+        client.viewOrder = ++viewOrder;
+        await resize(target, viewerSize(client), "viewer");
+      }
       const { kind, targetId, ...data } = p;
       if (Array.isArray(data.modifiers)) data.modifiers = data.modifiers.reduce((bits, key) => bits | ({ alt: 1, control: 2, meta: 4, shift: 8 }[key] ?? 0), 0);
       const methods = { mouse: "Input.dispatchMouseEvent", wheel: "Input.dispatchMouseEvent", key: "Input.dispatchKeyEvent", text: "Input.insertText", compose: "Input.imeSetComposition" };
@@ -1449,6 +1465,7 @@ async function host() {
       client.closed = true;
       if (!client.keyed) return;
       clients.delete(client);
+      if (client.status?.working && client.status.targetId) restoreViewer(client.status.targetId).catch(() => {});
       for (const sessionId of client.sessions) {
         owners.delete(sessionId);
         internal("Target.detachFromTarget", { sessionId });
@@ -1525,16 +1542,19 @@ async function host() {
           }
           return message.id !== undefined && send(client, { id: message.id, result: {} });
         }
-        case "Kuvo.setStatus":
+        case "Kuvo.setStatus": {
+          const previousTarget = client.status?.working ? client.status.targetId : null;
           // Each helper's: the pages agents are at work in, all together.
           client.status = message.params ?? { working: false };
           if (client.status.working && client.status.targetId) {
             await resize(client.status.targetId, agentSizes.get(client.status.targetId) ?? { ...sizeFor({}), scale: 2 }, "agent");
           }
+          if (previousTarget && (!client.status.working || previousTarget !== client.status.targetId)) await restoreViewer(previousTarget);
           status = everyStatus();
           announcePages();
           broadcast({ method: "Kuvo.status", params: status });
           return message.id !== undefined && send(client, { id: message.id, result: {} });
+        }
         case "Kuvo.stop":
           return stop();
         case "Kuvo.ask": {
