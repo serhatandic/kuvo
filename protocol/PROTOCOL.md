@@ -3785,7 +3785,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     (`trash`, a new file to the Trash; `unstaged`, what isn't staged thrown away; `head`, back to the
     last commit, what's staged too; none for a conflict) with its `stamp` (what the file is now,
     opaque; a repository of its own is stamped by what its own git says, its commit and everything
-    not committed in it, so a discard listed before an edit or a commit made inside it is refused),
+    not committed in it, so a discard listed before an edit or a commit made inside it is refused; a file its own `.gitignore` names isn't looked at; one git can't read there is refused saying so),
     and `repository` for a repository of its own inside this one ("web/"), whose commits go
     with it. A file partly staged is in both
     groups; one in conflict only in `conflicted`. With `git.files.does` (#708), each file says what
