@@ -11,6 +11,8 @@ import path from "node:path"
 const { WORK_QUEUE, allItems, changeQueues } = await import("../src/link/work-queue/store")
 const { forgetMigrated } = await import("../src/link/work-queue/migrate")
 const { labels } = await import("../src/link/work-queue/labels")
+const { itemOf } = await import("../src/link/work-queue/store")
+const { toldOf } = await import("../src/link/work-queue/told")
 
 const before = path.join(WORK_QUEUE, "before-statuses")
 const fresh = () => {
@@ -77,4 +79,19 @@ test("a run cut off after the copy, one queue written, ends as an uninterrupted 
   } finally {
     fs.rmSync(copy, { recursive: true, force: true })
   }
+})
+
+test("an item a computer from before statuses hands, moves or tells is said anew as it comes, never dropped", () => {
+  // As a hand-off or a move brings it whole.
+  const whole = itemOf(item(21, "cat_security-privacy", { doneAt: undefined }), "ses_a")!
+  expect([whole.status, whole.labels, whole.title, whole.notes.length, whole.number]).toEqual(["todo", ["cat_security-privacy"], "Item 21", 1, 21])
+  expect((whole as Record<string, unknown>).category).toBeUndefined()
+  expect(itemOf(item(22, "parked"), "ses_a")!.status).toBe("backlog")
+  expect(itemOf(item(23, "cat_waiting-on-you"), "ses_a")!.status).toBe("needs-you")
+  expect(itemOf(item(24, "done", { doneAt: 5 }), "ses_a")).toMatchObject({ status: "done", doneAt: 5 })
+  // As it tells its queue: summaries under categories, its custom ones beside them.
+  const summary = (n: number, category: string) => ({ id: `wqi_${String(n).padStart(20, "0")}`, number: n, owner: "ses_far", title: `Far ${n}`, category, order: n, inProgress: false, sessions: [], noteCount: 0, fileCount: 0, linkCount: 0, created: { at: 1, by: { user: true } }, updated: { at: 2, by: { user: true } } })
+  const told = toldOf({ id: "wqt_0123456789abcdef", at: 5, kind: "mac", items: [summary(31, "next"), summary(32, "later"), summary(33, "cat_features")], owners: [], categories: [{ id: "cat_features", name: "Features" }] }, 10)!
+  expect(told.items.map(each => [each.number, each.status, each.labels, each.priority])).toEqual([[31, "todo", [], "normal"], [32, "backlog", [], "normal"], [33, "todo", ["cat_features"], "normal"]])
+  expect(told.labels).toEqual([])
 })
