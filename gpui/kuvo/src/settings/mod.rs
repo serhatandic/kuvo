@@ -229,6 +229,11 @@ impl SettingsView {
         })
     }
 
+    /// The confirm open, as drawn: its question, what it comes to, and its button.
+    pub fn confirm_words(&self) -> Option<(String, String, String)> {
+        self.confirm.as_ref().map(|confirm| (confirm.title.clone(), confirm.body.clone(), confirm.button.clone()))
+    }
+
     pub fn sections_found(&self) -> Vec<&'static str> {
         rows::BUILT
             .iter()
@@ -323,7 +328,7 @@ impl SettingsView {
 
     fn read_section(&mut self, section: &str, cx: &mut Context<Self>) {
         match section {
-            "Accounts" => self.run("read-accounts", |client| client.sign_in_accounts(), |this, read, _| this.accounts = accounts_reading(read, &this.accounts), cx),
+            "Accounts" => self.run("read-accounts", |client| client.sign_in_accounts(), |this, read, _| this.accounts = reading(read, &this.accounts), cx),
             "Usage" => self.run("read-limits", |client| client.accounts(), |this, read, _| this.limits = reading(read, &this.limits), cx),
             "Models" => {
                 self.run("read-config", |client| client.config(), |this, read, _| this.config = reading(read, &this.config), cx);
@@ -367,7 +372,7 @@ impl SettingsView {
                         this.done(&key);
                         match done {
                             Ok(installed) if installed.installed => {
-                                this.run("read-accounts", |client| client.sign_in_accounts(), |this, read, _| this.accounts = accounts_reading(read, &this.accounts), cx);
+                                this.run("read-accounts", |client| client.sign_in_accounts(), |this, read, _| this.accounts = reading(read, &this.accounts), cx);
                                 // Installed: on to signing in, as the Mac does.
                                 if this.offers_sign_in(Side::Agents, &account) {
                                     this.open_sign_in(Side::Agents, &account, &name, cx);
@@ -380,23 +385,16 @@ impl SettingsView {
                     cx,
                 );
             }
-            Act::Disconnect { account, name } => {
-                self.focus_confirm = true;
-                self.confirm = Some(Confirm {
-                    title: format!("Disconnect {name}?"),
-                    body: format!("{} forgets its sign-ins and keys for {name}. Sessions on its models stop until you sign in again.", capitalized(&self.this_box)),
-                    button: "Disconnect".into(),
-                    act: Act::Disconnect { account, name },
-                });
+            // Asked first where the box says to, in its words; else done at once.
+            Act::Disconnect { account, confirm: Some(asks) } => self.ask(asks, Act::Disconnect { account, confirm: None }),
+            Act::RemoveAgent { account, confirm: Some(asks) } => self.ask(asks, Act::RemoveAgent { account, confirm: None }),
+            Act::Disconnect { account, confirm: None } => {
+                let forgetting = account.clone();
+                self.account_change(account, move |client| client.forget_account(&forgetting), "Disconnecting…", cx)
             }
-            Act::RemoveAgent { account, name } => {
-                self.focus_confirm = true;
-                self.confirm = Some(Confirm {
-                    title: format!("Remove {name}?"),
-                    body: "Kuvo Code signs it out and forgets it. Sessions on its models go on when you pick another model.".into(),
-                    button: "Remove".into(),
-                    act: Act::RemoveAgent { account, name },
-                });
+            Act::RemoveAgent { account, confirm: None } => {
+                let removing = account.clone();
+                self.account_change(account, move |client| client.remove_agent_account(&removing), "Removing…", cx)
             }
             Act::SignOut { account } => self.account_change(account.clone(), move |client| client.sign_out_agent(&account), "Signing out…", cx),
             Act::SetModel { path, model, was } => {
@@ -520,7 +518,7 @@ impl SettingsView {
             move |this, done, _| {
                 this.done(&done_key);
                 match done {
-                    Ok(accounts) => this.accounts = accounts_reading(Ok(accounts), &this.accounts),
+                    Ok(accounts) => this.accounts = Reading::Ready(accounts),
                     Err(error) => this.problem = Some(said(&error)),
                 }
             },
@@ -528,19 +526,15 @@ impl SettingsView {
         );
     }
 
+    /// Opens the confirm the box asked for, with its words; `act` is what going ahead does.
+    fn ask(&mut self, asks: kuvo_box::accounts::Confirm, act: Act) {
+        self.focus_confirm = true;
+        self.confirm = Some(Confirm { title: asks.title, body: asks.message, button: asks.label, act });
+    }
+
     fn confirmed(&mut self, cx: &mut Context<Self>) {
         let Some(confirm) = self.confirm.take() else { return };
-        match confirm.act {
-            Act::Disconnect { account, .. } => {
-                let forgetting = account.clone();
-                self.account_change(account, move |client| client.forget_account(&forgetting), "Disconnecting…", cx)
-            }
-            Act::RemoveAgent { account, .. } => {
-                let removing = account.clone();
-                self.account_change(account, move |client| client.remove_agent_account(&removing), "Removing…", cx)
-            }
-            _ => {}
-        }
+        self.act(confirm.act, cx);
         self.rebuild(cx);
     }
 
@@ -549,7 +543,8 @@ impl SettingsView {
     fn offers_sign_in(&self, side: Side, account: &str) -> bool {
         let Reading::Ready(accounts) = &self.accounts else { return false };
         let list = if side == Side::Agents { &accounts.agents } else { &accounts.engine };
-        list.iter().any(|entry| entry.integration.id == account && entry.offers_sign_in())
+        // As the box says: a sign-in among its actions, one this app can start from where it runs.
+        list.iter().any(|entry| entry.integration.id == account && entry.actions.iter().any(|action| action.signs_in() && (self.client.here() || !action.here)))
     }
 
     pub fn open_sign_in(&mut self, side: Side, account: &str, name: &str, cx: &mut Context<Self>) {
@@ -558,7 +553,7 @@ impl SettingsView {
         self.sign_in_closed = Some(cx.subscribe(&sheet, |this: &mut SettingsView, _, _: &sign_in::Closed, cx| {
             this.sign_in = None;
             this.sign_in_closed = None;
-            this.run("read-accounts", |client| client.sign_in_accounts(), |this, read, _| this.accounts = accounts_reading(read, &this.accounts), cx);
+            this.run("read-accounts", |client| client.sign_in_accounts(), |this, read, _| this.accounts = reading(read, &this.accounts), cx);
             cx.notify();
         }));
         sheet.update(cx, |sheet, cx| sheet.start(cx));
@@ -571,27 +566,6 @@ impl SettingsView {
 fn rows_model_key(path: &[&str]) -> String {
     let ix = ["model", "agents", "subagent_model"].iter().position(|first| path.first() == Some(first)).unwrap_or(0);
     format!("model-{ix}")
-}
-
-fn capitalized(words: &str) -> String {
-    let mut chars = words.chars();
-    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
-}
-
-/// Accounts as read, where the box couldn't say which sign-ins ended just now keeping what it
-/// said before (PROTOCOL.md: `kuvo/accounts/ended` answers 503 then, and a client keeps it).
-fn accounts_reading(read: kuvo_box::Result<Accounts>, before: &Reading<Accounts>) -> Reading<Accounts> {
-    let read = read.map(|mut accounts| {
-        if accounts.ended_unknown
-            && let Reading::Ready(before) = before
-        {
-            for entry in accounts.engine.iter_mut().chain(accounts.agents.iter_mut()) {
-                entry.ended = before.engine.iter().chain(&before.agents).any(|was| was.integration.id == entry.integration.id && was.ended);
-            }
-        }
-        accounts
-    });
-    reading(read, before)
 }
 
 /// What a read makes of what's shown: what it read, or (failing) what was there, else why.

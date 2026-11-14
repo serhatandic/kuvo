@@ -222,8 +222,9 @@ session and stopping one (`kuvo_box::models`); a folder's git as the box runs it
 grouped and followed, a file's diff, staging, committing, branches, Merge into… and pull requests
 (`kuvo_box::git`); a folder as a Files panel lists it, and a file's bytes (`kuvo_box::folders`);
 accounts and signing in (`kuvo_box::accounts`: `…/api/integration` on the engine and the agents'
-bridge, `kuvo/sign-in/accounts`, `…/methods`, `…/status`, the engine's and bridge's connect routes,
-install, `kuvo/accounts/ended` and `…/forget`; never `api/credential`, which carries secrets); and
+bridge for each account's name, `kuvo/sign-in/accounts` for its state, line and actions, `…/methods`,
+`…/status`, the engine's and bridge's connect routes, install and `kuvo/accounts/…/forget`; never
+`api/credential`, which carries secrets); and
 this computer's settings (`kuvo_box::settings`: `kuvo/config`, `kuvo/approval`, `kuvo/sandbox`,
 `kuvo/sandbox/allowed`, `kuvo/browser/settings`, the usage settings' notices).
 

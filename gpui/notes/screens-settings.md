@@ -58,11 +58,15 @@ Read (GPL-3.0, behaviour only): `crates/settings_ui/src/settings_ui.rs` (`Settin
 The box's facts, drawn: the coding agents' accounts (`kuvo/agents/api/integration`), then the
 engine's plans and providers signed in (or ended), then the rest to add, each in its side's order,
 with the box's ways in (`kuvo/sign-in/accounts`). Only those the box says Accounts lists
-(`listed`) show, each with the box's mark (`service`; its first letter where it names none). Sign In only where the box offers a way;
-Install where the agent isn't installed; Sign In Again where a sign-in ended (the agent's
-`signInEnded`, or `kuvo/accounts/ended`); Disconnect (`kuvo/accounts/<id>/forget`, asked first)
-where this box keeps a key or sign-in; an agent's menu has Sign In Again…, Sign Out (where it
-`signsOut`) and Remove Account… (one you added, asked first).
+(`listed`) show, each with the box's mark (`service`; its first letter where it names none).
+What a row says and offers is the box's too (`state`, `line`, `actions`, #668): its line under the
+name, a warning where its state needs you (`ended`, `problem`), its buttons with the box's words,
+and a confirm in the box's words where an action has one. This app keeps no rule for when Sign In,
+Sign In Again, Install, Disconnect, Sign Out or Remove Account show. Only the layout is its own:
+signed in, the actions are in a menu (a lone one that asks first stays a button, Disconnect);
+otherwise buttons, in the box's order; an action that only works on the box's computer (`here`)
+is drawn only there. In a menu, a row that opens something first ends in an ellipsis, drawn here.
+Not drawn yet (no control for them): a program's `update`, `rename`, and `addAnother`.
 
 The sheet (the Mac's `ConnectView` steps): the box's ways in order, legacy ones under "Other ways
 to sign in", "Or set … in your shell profile"; one way alone starts at once. A key: masked field,

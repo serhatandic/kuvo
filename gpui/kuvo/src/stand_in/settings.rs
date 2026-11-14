@@ -1,6 +1,7 @@
 //! What the stand-in box says of its accounts and settings, and how it signs in: the engine's plans
 //! and providers and the coding agents' accounts (`…/api/integration`), the ways in the box offers
-//! for each, with what each is, whether Accounts lists it and its mark (`kuvo/sign-in/accounts`,
+//! for each, with what each is, whether Accounts lists it, its mark, how it stands, its line and
+//! what can be done with it (`kuvo/sign-in/accounts`,
 //! `…/methods`, shaped as `Vectors/sign-in.json` records them), sign-ins started through the box
 //! (`kuvo/sign-in/start`, with a device code apart) that go on until a test says how they end (or, in the app's `--stand-in`, finish after a
 //! few asks), keys, installs, Disconnect and Sign Out; and this computer's settings (`kuvo/config`,
@@ -27,12 +28,12 @@ pub struct Settings {
     agents: Vec<Value>,
     ways: BTreeMap<String, Value>,
     ended: Vec<String>,
+    /// What a test has the box say of an account, in place of what it would.
+    said: BTreeMap<String, Value>,
     attempts: BTreeMap<String, Attempt>,
     next: u32,
     /// The bridge isn't running (`503`).
     pub agents_down: bool,
-    /// It can't say just now which sign-ins ended (`503`).
-    pub ended_unreadable: bool,
     /// Sign-ins finish by themselves after a few asks (the app's `--stand-in`).
     pub finishes: bool,
     config: Value,
@@ -120,10 +121,10 @@ impl Default for Settings {
             agents,
             ways: all,
             ended: vec!["gitlab".into()],
+            said: BTreeMap::new(),
             attempts: BTreeMap::new(),
             next: 1,
             agents_down: false,
-            ended_unreadable: false,
             finishes: false,
             config: json!({ "$schema": "https://opencode.ai/config.json", "model": "anthropic/claude-sonnet-5-5", "agents": { "title": { "model": "google/gemini-3-pro" } } }),
             approval: json!({ "fullAccess": false, "default": "auto", "auto": { "engine": {}, "agents": {} }, "otherComputers": false }),
@@ -230,6 +231,18 @@ impl Settings {
                         if let Some(service) = service_of(each, agents) {
                             ways["service"] = json!(service);
                         }
+                        // How it stands and what can be done with it: the saved sign-in in use
+                        // of a plan whose sign-in ended is the one that did.
+                        let ended = (!agents && self.ended.iter().any(|ended| ended == id)).then(|| each["connections"][0]["id"].as_str()).flatten();
+                        let mut said = said_of(each, &ways, agents, ended, COMPUTER);
+                        if let Some(set) = self.said.get(id).and_then(Value::as_object) {
+                            for (key, value) in set {
+                                said[key] = value.clone();
+                            }
+                        }
+                        for key in ["state", "line", "actions", "connections"] {
+                            ways[key] = said[key].clone();
+                        }
                         Some(ways)
                     })
                     .collect();
@@ -264,7 +277,6 @@ impl Settings {
                 }
                 (200, self.attempts[&attempt].status.clone())
             }
-            ("GET", ["kuvo", "accounts", "ended"]) if self.ended_unreadable => (503, json!({ "message": "The engine can’t say which sign-in each plan uses just now." })),
             ("GET", ["kuvo", "accounts", "ended"]) => (200, json!({ "providers": self.ended })),
             ("POST", ["kuvo", "accounts", provider, "forget"]) => {
                 let provider = path_part(provider);
@@ -339,6 +351,10 @@ impl Settings {
 
     pub fn set_sandbox(&mut self, sandbox: Value) {
         self.sandbox = sandbox;
+    }
+
+    pub fn set_account_said(&mut self, account: &str, said: Value) {
+        self.said.insert(account.to_owned(), said);
     }
 
     pub fn set_config(&mut self, path: &[&str], value: Value) {
@@ -474,6 +490,123 @@ fn service_of(account: &Value, agents: bool) -> Option<&str> {
     })
 }
 
+/// The stand-in's computer, as its box names it in a sentence.
+const COMPUTER: &str = super::NAME;
+
+/// How an account stands, its line, its sign-ins and what can be done with it, as the box says
+/// them (box/src/link/areas/sign-in-state.ts; PROTOCOL.md, `sign-in.accounts.state`): the stand-in
+/// answers what a box would for its made-up accounts, held to the same cases
+/// (`Vectors/sign-in.json`, `states`). `offered`: its ways in; `ended`: its saved sign-in the box
+/// saw end.
+pub fn said_of(account: &Value, offered: &Value, agents: bool, ended: Option<&str>, computer: &str) -> Value {
+    let text = |value: &Value| value.as_str().map(|text| text.split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default();
+    let id = account["id"].as_str().unwrap_or_default();
+    let name = Some(text(&account["name"])).filter(|name| !name.is_empty()).unwrap_or_else(|| id.to_owned());
+    let meta = &account["metadata"];
+    let listed: Vec<&Value> = account["connections"].as_array().map(|all| all.iter().filter(|each| each.is_object()).collect()).unwrap_or_default();
+    // Each sign-in: (its answer, who, whether it reads "Signed in as", what's wrong).
+    let said: Vec<(Value, String, bool, String)> = listed
+        .iter()
+        .map(|each| {
+            let label = text(&each["label"]);
+            let who = if label != name { label } else { String::new() };
+            let kind = match each["method"].as_str() {
+                Some("key") => "API key".to_owned(),
+                Some("external") => format!("Credentials on {computer}"),
+                _ => String::new(),
+            };
+            let line = if each["type"] == "env" {
+                format!("From {}", Some(text(&each["name"])).filter(|name| !name.is_empty()).unwrap_or_else(|| "its environment".into()))
+            } else if !kind.is_empty() {
+                if who.is_empty() { kind.clone() } else { format!("{kind} · {who}") }
+            } else if who.is_empty() {
+                "Signed in".into()
+            } else {
+                who.clone()
+            };
+            let trouble = if each["status"]["status"] == "failed" { text(&each["status"]["message"]) } else { String::new() };
+            let saved = (each["type"] == "credential").then(|| each["id"].as_str()).flatten().filter(|id| !id.is_empty());
+            let is_ended = (!agents && saved.is_some() && saved == ended) || each["status"]["status"] == "needs_auth";
+            let state = if is_ended { "ended" } else if !trouble.is_empty() { "problem" } else { "signedIn" };
+            let mut answer = json!({ "state": state, "line": line });
+            if let Some(saved) = saved {
+                answer["id"] = json!(saved);
+            }
+            (answer, who.clone(), each["type"] != "env" && kind.is_empty() && !who.is_empty(), trouble)
+        })
+        .collect();
+    let in_use = said.first();
+    let signs_in = offered["methods"].as_array().is_some_and(|methods| !methods.is_empty());
+    let added = agents && (id.contains('@') || meta["accountID"].as_str().is_some_and(|account| !account.is_empty() && account != "default"));
+    let installs = agents && meta["installed"] == false && meta["install"].as_str().is_some_and(|install| !install.is_empty());
+    let state = if installs {
+        "notInstalled"
+    } else if if agents { meta["signInEnded"] == true } else { in_use.is_some_and(|first| first.0["state"] == "ended") } {
+        "ended"
+    } else if let Some(first) = in_use {
+        if first.0["state"] == "problem" { "problem" } else { "signedIn" }
+    } else if agents && meta["unchecked"] == true {
+        "unchecked"
+    } else {
+        "signedOut"
+    };
+    let environment: Vec<String> = offered["environment"].as_array().map(|all| all.iter().filter_map(|each| each.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+    let line = match (state, in_use) {
+        ("notInstalled", _) => format!("Not installed on {computer}"),
+        ("ended", _) => "Sign-in ended".into(),
+        ("problem", Some(first)) => first.3.clone(),
+        ("unchecked", _) => "Couldn’t check just now".into(),
+        ("signedIn", Some(first)) => {
+            let line = if first.2 { format!("Signed in as {}", first.1) } else { first.0["line"].as_str().unwrap_or_default().to_owned() };
+            if said.len() > 1 { format!("{line} · {} accounts", said.len()) } else { line }
+        }
+        _ if agents => "Not signed in".into(),
+        _ if !signs_in && !environment.is_empty() => format!("Set {} in your shell profile", environment.join(" or ")),
+        _ if !signs_in => "Not signed in".into(),
+        _ => Some(text(&offered["hint"])).filter(|hint| !hint.is_empty()).unwrap_or_else(|| "Not signed in".into()),
+    };
+    let mut actions = Vec::new();
+    let sign_in = |id: &str, label: &str| {
+        let mut action = json!({ "id": id, "label": label });
+        if agents && meta["remoteSignIn"] != true {
+            action["here"] = json!(true);
+        }
+        action
+    };
+    if agents {
+        if installs {
+            actions.push(json!({ "id": "install", "label": "Install" }));
+        } else if signs_in {
+            actions.push(if !said.is_empty() || state == "ended" { sign_in("signInAgain", "Sign In Again") } else { sign_in("signIn", "Sign In") });
+        }
+        let latest = text(&meta["latestVersion"]);
+        if !added && !installs && meta["outdated"] == true && meta["updates"] == true && !latest.is_empty() && meta["programUpdate"]["state"] != "updating" {
+            actions.push(json!({ "id": "update", "label": format!("Update to {latest}") }));
+        }
+        if added {
+            actions.push(json!({ "id": "rename", "label": "Rename" }));
+            actions.push(json!({ "id": "remove", "label": "Remove Account", "confirm": { "title": format!("Remove {name}?"), "message": format!("It’s signed out on {computer}, and its models leave the model picker. Its sessions stay."), "label": "Remove Account" } }));
+        } else if meta["signsOut"] == true && !said.is_empty() {
+            actions.push(json!({ "id": "signOut", "label": "Sign Out" }));
+        }
+    } else if said.is_empty() {
+        if signs_in {
+            actions.push(json!({ "id": "signIn", "label": "Sign In" }));
+        }
+    } else {
+        if signs_in {
+            if state == "ended" || state == "problem" {
+                actions.push(json!({ "id": "signInAgain", "label": "Sign In Again" }));
+            }
+            actions.push(json!({ "id": "addAnother", "label": "Add Another Account" }));
+        }
+        if listed.iter().any(|each| each["type"] == "credential") {
+            actions.push(json!({ "id": "disconnect", "label": "Disconnect", "confirm": { "title": format!("Disconnect {name}?"), "message": format!("Its sign-ins and keys go from {computer}, and its models leave the model picker there. Sessions on its models stop until you sign in again."), "label": "Disconnect" } }));
+        }
+    }
+    json!({ "state": state, "line": line, "actions": actions, "connections": said.into_iter().map(|each| each.0).collect::<Vec<_>>() })
+}
+
 /// What the box says of a failed sign-in, as `Vectors/sign-in.json` words the cases used here.
 fn failure(message: Option<&str>) -> String {
     match message {
@@ -499,5 +632,24 @@ fn set_at(document: &mut Value, path: &[String], value: Value) {
         }
     } else {
         at[last.as_str()] = value;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The stand-in says of an account what a box would: every case the box is held to.
+    #[test]
+    fn the_stand_in_says_an_accounts_state_as_the_box_does() {
+        let vectors: Value = serde_json::from_str(include_str!("../../../../protocol/vectors/sign-in.json")).unwrap();
+        let cases = vectors["states"].as_array().unwrap();
+        assert!(cases.len() >= 20);
+        for case in cases {
+            let said = said_of(&case["account"], &case["offered"], case["agents"] == true, case["ended"].as_str(), case["computer"].as_str().unwrap());
+            for key in ["state", "line", "actions", "connections"] {
+                assert_eq!(said[key], case[key], "{}: {key}", case["about"]);
+            }
+        }
     }
 }

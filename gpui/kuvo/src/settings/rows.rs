@@ -4,7 +4,7 @@
 //! The words are this app's (the Mac's, where it has them); every fact is the box's, and so are
 //! the words it gives (why the sandbox is off, its button's, a failure's).
 
-use kuvo_box::accounts::{AccountEntry, Accounts, Side};
+use kuvo_box::accounts::{AccountEntry, Accounts, Action, Confirm, Side, State};
 use kuvo_box::areas::Account;
 use kuvo_box::models::Offered;
 use kuvo_box::settings::{Allowed, Approval, BrowserSettings, Config, Sandbox, SandboxDoes, UsageSettings};
@@ -54,9 +54,11 @@ pub fn is_built(section: &str) -> bool {
 pub enum Act {
     SignIn { side: Side, account: String, name: String },
     Install { account: String, name: String },
-    Disconnect { account: String, name: String },
+    /// Disconnect, asked first in the box's words where it says to.
+    Disconnect { account: String, confirm: Option<Confirm> },
     SignOut { account: String },
-    RemoveAgent { account: String, name: String },
+    /// An added account removed, asked first in the box's words where it says to.
+    RemoveAgent { account: String, confirm: Option<Confirm> },
     /// A model setting at a path in the engine's settings, from what was read there.
     SetModel { path: &'static [&'static str], model: Option<String>, was: Option<String> },
     SetOtherComputers(bool),
@@ -241,102 +243,44 @@ fn general(facts: &Facts) -> Vec<Block> {
 
 // MARK: Accounts
 
-/// The line under an account's name, from what the engine or the agent says of it.
-fn account_line(entry: &AccountEntry) -> (String, bool) {
-    let integration = &entry.integration;
-    if integration.needs_install() {
-        return ("Not installed on this computer".into(), false);
-    }
-    if entry.sign_in_ended() {
-        return ("Sign-in ended".into(), true);
-    }
-    if let Some(connection) = integration.connections.first() {
-        if let Some(status) = connection.status.as_ref().filter(|status| !status.message.is_empty() && status.status != "ok") {
-            return (status.message.clone(), true);
-        }
-        if connection.kind == "env" {
-            return (format!("From {}", connection.name.clone().unwrap_or_default()), false);
-        }
-        let who = connection.label.clone().filter(|label| !label.trim().is_empty());
-        let how = match connection.method.as_deref() {
-            Some("key") => "API key",
-            Some("external") => "Credentials on this computer",
-            _ => "Signed in",
-        };
-        let more = integration.connections.len().saturating_sub(1);
-        let line = match who {
-            Some(who) if how == "Signed in" => format!("Signed in as {who}"),
-            Some(who) => format!("{how} · {who}"),
-            None => how.into(),
-        };
-        return (if more > 0 { format!("{line} · {} accounts", more + 1) } else { line }, false);
-    }
-    if integration.unchecked() {
-        return ("Couldn’t check just now".into(), false);
-    }
-    if entry.ways.methods.is_empty() && !entry.ways.environment.is_empty() {
-        return (format!("Set {} in your shell profile", entry.ways.environment.join(" or ")), false);
-    }
-    (if entry.ways.hint.is_empty() { "Not signed in".into() } else { entry.ways.hint.clone() }, false)
+/// What one of the box's actions does here, where this app has a control for it; none for one it
+/// hasn't yet (a program's update, renaming an account, another account beside the one in use).
+fn act_of(entry: &AccountEntry, action: &Action) -> Option<Act> {
+    let (account, name) = (entry.integration.id.clone(), entry.integration.name.clone());
+    Some(match action.id.as_str() {
+        "signIn" | "signInAgain" => Act::SignIn { side: entry.side, account, name },
+        "install" => Act::Install { account, name },
+        "disconnect" => Act::Disconnect { account, confirm: action.confirm.clone() },
+        "signOut" => Act::SignOut { account },
+        "remove" => Act::RemoveAgent { account, confirm: action.confirm.clone() },
+        _ => return None,
+    })
 }
 
-fn agent_row(entry: &AccountEntry, facts: &Facts) -> Row {
-    let integration = &entry.integration;
-    let (account, name) = (integration.id.clone(), integration.name.clone());
-    let key = format!("account-{account}");
-    let (mut line, warning) = account_line(entry);
-    // An agent's hint only names its way in ("Sign in"): one signed out says so instead.
-    if !integration.connected() && !integration.needs_install() && !entry.sign_in_ended() && !integration.unchecked() {
-        line = "Not signed in".into();
-    }
-    let sign_in = Act::SignIn { side: Side::Agents, account: account.clone(), name: name.clone() };
+/// An account's row, all of it as the box says: its line, a warning where its state needs you,
+/// and its actions with the box's words. Only the layout is this app's: signed in, they're in a
+/// menu (but a lone one that asks first, which stays a button); otherwise buttons, in the box's
+/// order. An action that only works on the box's computer is drawn only there.
+fn account_row(entry: &AccountEntry, facts: &Facts) -> Row {
+    let name = entry.integration.name.clone();
+    let key = format!("account-{}", entry.integration.id);
     let control = facts.busy(&key).unwrap_or_else(|| {
-        if integration.needs_install() {
-            return Control::Buttons(vec![("Install".into(), Act::Install { account: account.clone(), name: name.clone() })]);
+        let offered: Vec<(&Action, Act)> = entry.actions.iter().filter(|action| facts.here || !action.here).filter_map(|action| Some((action, act_of(entry, action)?))).collect();
+        match offered.as_slice() {
+            [] => Control::None,
+            [(action, _)] if entry.state == State::SignedIn && action.confirm.is_none() => menu(&offered),
+            [_, _, ..] if entry.state == State::SignedIn => menu(&offered),
+            _ => Control::Buttons(offered.into_iter().map(|(action, act)| (action.label.clone(), act)).collect()),
         }
-        if !integration.connected() || entry.sign_in_ended() {
-            let words = if entry.sign_in_ended() { "Sign In Again" } else { "Sign In" };
-            return if entry.offers_sign_in() { Control::Buttons(vec![(words.into(), sign_in.clone())]) } else { Control::None };
-        }
-        let mut choices = Vec::new();
-        if entry.offers_sign_in() {
-            choices.push(("Sign In Again…".into(), sign_in.clone(), false));
-        }
-        if integration.signs_out() {
-            choices.push(("Sign Out".into(), Act::SignOut { account: account.clone() }, false));
-        }
-        if integration.added() {
-            choices.push(("Remove Account…".into(), Act::RemoveAgent { account: account.clone(), name: name.clone() }, false));
-        }
-        if choices.is_empty() { Control::None } else { Control::Menu { shown: String::new(), choices } }
     });
-    Row::new(key, name.clone(), line, control).leading(mark(entry, name)).warning(warning)
+    Row::new(key, name.clone(), entry.line.clone(), control).leading(mark(entry, name)).warning(entry.state.needs_you())
 }
 
-fn provider_row(entry: &AccountEntry, facts: &Facts) -> Row {
-    let integration = &entry.integration;
-    let (account, name) = (integration.id.clone(), integration.name.clone());
-    let key = format!("account-{account}");
-    let (line, warning) = account_line(entry);
-    let sign_in = Act::SignIn { side: Side::Engine, account: account.clone(), name: name.clone() };
-    let control = facts.busy(&key).unwrap_or_else(|| {
-        let mut buttons = Vec::new();
-        if !integration.connected() {
-            if entry.offers_sign_in() {
-                buttons.push(("Connect".into(), sign_in.clone()));
-            }
-            return Control::Buttons(buttons);
-        }
-        if entry.sign_in_ended() && entry.offers_sign_in() {
-            buttons.push(("Sign In Again".into(), sign_in.clone()));
-        }
-        // A key or sign-in this box keeps can be forgotten; one from the shell's environment can't.
-        if integration.connections.iter().any(|connection| connection.kind == "credential") {
-            buttons.push(("Disconnect".into(), Act::Disconnect { account: account.clone(), name: name.clone() }));
-        }
-        Control::Buttons(buttons)
-    });
-    Row::new(key, name.clone(), line, control).leading(mark(entry, name)).warning(warning)
+/// Actions in a menu: one that opens something first (the box's confirm, or this app's sign-in
+/// sheet) ends in an ellipsis, as menus mark them. The mark is drawn here, never read in a label.
+fn menu(offered: &[(&Action, Act)]) -> Control {
+    let choices = offered.iter().map(|(action, act)| (if action.confirm.is_some() || action.signs_in() { format!("{}…", action.label) } else { action.label.clone() }, act.clone(), false)).collect();
+    Control::Menu { shown: String::new(), choices }
 }
 
 /// An account's mark: the box's `service`; its name's first letter where the box names none.
@@ -353,18 +297,19 @@ fn accounts(facts: &Facts) -> Vec<Block> {
     if let Some(why) = &accounts.agents_down {
         blocks.push(note("note-agents-down", format!("The coding agents aren’t running on {}: {why}", facts.this_box), false));
     } else if !accounts.agents.is_empty() {
-        blocks.push(Block::Group("Coding Agents".into(), accounts.agents.iter().map(|entry| agent_row(entry, facts)).collect()));
+        blocks.push(Block::Group("Coding Agents".into(), accounts.agents.iter().map(|entry| account_row(entry, facts)).collect()));
     }
     if let Some(why) = &accounts.engine_down {
         blocks.push(note("note-engine-down", format!("The engine isn’t running on {}: {why}", facts.this_box), false));
     }
-    // Signed in (or once signed in, now ended), then the rest to add, each in the engine's order.
-    let (connected, others): (Vec<&AccountEntry>, Vec<&AccountEntry>) = accounts.engine.iter().partition(|entry| entry.integration.connected() || entry.sign_in_ended());
+    // By the box's state: those signed in (or once signed in, now ended), then the rest to add,
+    // each in the engine's order.
+    let (connected, others): (Vec<&AccountEntry>, Vec<&AccountEntry>) = accounts.engine.iter().partition(|entry| entry.state != State::SignedOut);
     if !connected.is_empty() {
-        blocks.push(Block::Group("Providers".into(), connected.into_iter().map(|entry| provider_row(entry, facts)).collect()));
+        blocks.push(Block::Group("Providers".into(), connected.into_iter().map(|entry| account_row(entry, facts)).collect()));
     }
     if !others.is_empty() {
-        blocks.push(Block::Group("Add a Provider".into(), others.into_iter().map(|entry| provider_row(entry, facts)).collect()));
+        blocks.push(Block::Group("Add a Provider".into(), others.into_iter().map(|entry| account_row(entry, facts)).collect()));
     }
     blocks
 }

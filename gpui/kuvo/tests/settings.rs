@@ -148,8 +148,14 @@ fn accounts_lists_the_agents_and_providers_as_the_box_says_them(cx: &mut TestApp
     assert!(shown(cx, "account-gitlab-sign-in-again") && shown(cx, "account-gitlab-disconnect"), "an engine plan the box says ended");
     assert!(shown(cx, "account-cursor-sign-in"));
     assert!(shown(cx, "account-grok-cli-install"));
-    assert!(shown(cx, "account-anthropic-connect"));
-    assert!(!shown(cx, "account-groq-connect"), "no way in to offer: only its variable");
+    assert!(shown(cx, "account-anthropic-sign-in"));
+    assert!(!shown(cx, "account-groq-sign-in"), "no way in to offer: only its variable");
+    // What each offers is the box's `actions`, no more: the agent's own sign-in has no Remove
+    // Account (only one you added does), and one signed in from where nothing's kept, no Disconnect.
+    click(cx, "account-claude-code-menu");
+    assert!(shown(cx, "menu-item-Sign In Again…") && !shown(cx, "menu-item-Remove Account…"));
+    cx.simulate_keystrokes("escape");
+    assert!(shown(cx, "account-github-copilot-disconnect") && !shown(cx, "account-github-copilot-sign-in-again"));
     // The coding agents not running: the box's words, and the engine's accounts still.
     stand_in.agents_running(false);
     section(&workspace, cx, "Usage");
@@ -196,10 +202,10 @@ fn a_device_code_is_shown_and_copied_after_disconnecting(cx: &mut TestAppContext
     assert!(stand_in.seen_at("POST", "kuvo/accounts/github-copilot/forget").is_empty());
     click(cx, "confirm-go");
     assert_eq!(stand_in.seen_at("POST", "kuvo/accounts/github-copilot/forget").len(), 1);
-    // Now under Add a Provider: Connect, and its device code, as the box says it apart when it
+    // Now under Add a Provider: Sign In, and its device code, as the box says it apart when it
     // starts the sign-in (the engine leaves it in its page's address, which this never reads).
     let view = settings(&workspace, cx);
-    click(cx, "account-github-copilot-connect");
+    click(cx, "account-github-copilot-sign-in");
     assert_eq!(stand_in.seen_at("POST", "kuvo/sign-in/start").len(), 1);
     assert!(matches!(step(&view, cx), Some(Step::Waiting { attempt, .. }) if attempt.user_code.as_deref() == Some("WDJB-MJHT")));
     assert!(shown(cx, "sign-in-user-code"));
@@ -234,7 +240,7 @@ fn a_key_turned_down_stays_with_why_and_a_good_one_connects(cx: &mut TestAppCont
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     let view = section(&workspace, cx, "Accounts");
-    click(cx, "account-openai-connect");
+    click(cx, "account-openai-sign-in");
     assert!(matches!(step(&view, cx), Some(Step::Key(_))), "its only way is a key");
     cx.simulate_input("not-a-real-key");
     cx.simulate_keystrokes("enter");
@@ -255,7 +261,7 @@ fn credentials_on_the_computer_take_their_forms_answer(cx: &mut TestAppContext) 
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     let view = section(&workspace, cx, "Accounts");
-    click(cx, "account-amazon-bedrock-connect");
+    click(cx, "account-amazon-bedrock-sign-in");
     assert_eq!(step(&view, cx), Some(Step::Choose), "two ways: chosen");
     assert!(shown(cx, "sign-in-way-0") && shown(cx, "sign-in-way-1"));
     click(cx, "sign-in-way-0");
@@ -271,7 +277,7 @@ fn credentials_on_the_computer_take_their_forms_answer(cx: &mut TestAppContext) 
 fn the_ways_in_come_in_the_boxs_order_with_legacy_ones_apart(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     let view = section(&workspace, cx, "Accounts");
-    click(cx, "account-anthropic-connect");
+    click(cx, "account-anthropic-sign-in");
     let labels = view.read_with(cx, |view, cx| view.sign_in().unwrap().read(cx).ways().primary().map(|way| way.label.clone()).collect::<Vec<_>>());
     assert_eq!(labels, ["Claude Pro/Max", "Create an API Key", "Manually enter API Key"]);
     assert!(!shown(cx, "sign-in-way-3"), "the legacy way waits under Other ways");
@@ -283,7 +289,7 @@ fn the_ways_in_come_in_the_boxs_order_with_legacy_ones_apart(cx: &mut TestAppCon
 fn a_sign_in_turned_down_says_why_in_the_boxs_words(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     let view = section(&workspace, cx, "Accounts");
-    click(cx, "account-poe-connect");
+    click(cx, "account-poe-sign-in");
     tick(cx);
     assert_eq!(step(&view, cx), Some(Step::Failed("The sign-in was turned down on its page. Try again to sign in.".into())));
     assert!(shown(cx, "sign-in-failure"));
@@ -542,7 +548,7 @@ fn closing_a_sign_in_under_way_gives_it_up_and_reads_accounts_again(cx: &mut Tes
 fn escape_closes_the_sign_in_and_the_confirm(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     section(&workspace, cx, "Accounts");
-    click(cx, "account-anthropic-connect");
+    click(cx, "account-anthropic-sign-in");
     assert!(shown(cx, "sign-in"));
     // The sidebar waits under the dimming (drawn as the sheet opens, by the area's own view): a
     // section clicked there isn't opened.
@@ -573,16 +579,67 @@ fn a_sign_in_the_engine_forgot_is_given_up_after_a_while(cx: &mut TestAppContext
     assert_eq!(step(&view, cx), Some(Step::Failed("The engine started over while you were signing in. Try again.".into())));
 }
 
+/// What an account says and offers is the box's answer, drawn as it comes: its line, its buttons'
+/// words, and a confirm in the box's words. An action this app has no control for, or one that
+/// only works on the box's computer while this app isn't there, isn't drawn, and no rule of this
+/// app's fills in for what the box didn't say.
 #[gpui::test]
-fn sign_ins_ended_stay_marked_while_the_box_cant_say(cx: &mut TestAppContext) {
+fn an_account_is_drawn_from_the_boxs_state_line_and_actions(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
-    section(&workspace, cx, "Accounts");
-    assert!(shown(cx, "account-gitlab-sign-in-again"));
-    stand_in.ended_readable(false);
-    section(&workspace, cx, "Usage");
-    section(&workspace, cx, "Accounts");
-    assert!(shown(cx, "account-gitlab-sign-in-again"), "kept from the last reading");
+    let again = |workspace: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        section(workspace, cx, "Usage");
+        section(workspace, cx, "Accounts")
+    };
+    let asks = json!({ "id": "disconnect", "label": "Forget This Plan", "confirm": { "title": "Forget it?", "message": "The box’s own words.", "label": "Forget" } });
+    // A plan that isn't signed in, said by the box to have ended, with words of its own.
+    stand_in.set_account_said("anthropic", json!({ "state": "ended", "line": "The box’s line", "actions": [{ "id": "signInAgain", "label": "Sign In Once More" }, asks] }));
+    let view = again(&workspace, cx);
+    assert_eq!(view.read_with(cx, |view, _| view.row_detail("account-anthropic")).as_deref(), Some("The box’s line"));
+    assert!(shown(cx, "account-anthropic-sign-in-once-more") && shown(cx, "account-anthropic-forget-this-plan"));
+    click(cx, "account-anthropic-forget-this-plan");
+    assert_eq!(view.read_with(cx, |view, _| view.confirm_words()), Some(("Forget it?".into(), "The box’s own words.".into(), "Forget".into())));
+    cx.simulate_keystrokes("escape");
+
+    // Signed in with several: a menu, the one that asks first marked by this app, not in its label.
+    stand_in.set_account_said("anthropic", json!({ "state": "signedIn", "line": "Signed in", "actions": [{ "id": "signInAgain", "label": "Sign In Again" }, asks] }));
+    again(&workspace, cx);
+    click(cx, "account-anthropic-menu");
+    assert!(shown(cx, "menu-item-Sign In Again…") && shown(cx, "menu-item-Forget This Plan…"));
+    cx.simulate_keystrokes("escape");
+
+    // A signed-in plan the box offers nothing this app has a control for: nothing drawn, though
+    // it's a saved sign-in this app once offered Disconnect for by itself.
+    stand_in.set_account_said("github-copilot", json!({ "actions": [{ "id": "somethingNew", "label": "A Newer Thing" }, { "id": "update", "label": "Update to 9" }, { "id": "addAnother", "label": "Add Another Account" }] }));
+    again(&workspace, cx);
+    assert!(shown(cx, "account-github-copilot"));
+    for button in ["account-github-copilot-disconnect", "account-github-copilot-menu", "account-github-copilot-a-newer-thing", "account-github-copilot-update-to-9", "account-github-copilot-add-another-account"] {
+        assert!(!shown(cx, button), "{button}");
+    }
+
+    // A sign-in whose page comes back to the box's computer: only where this app runs there.
+    stand_in.set_account_said("cursor", json!({ "actions": [{ "id": "signIn", "label": "Sign In", "here": true }] }));
+    again(&workspace, cx);
+    assert!(shown(cx, "account-cursor-sign-in"));
+    stand_in.set_elsewhere(true);
+    again(&workspace, cx);
+    assert!(shown(cx, "account-cursor") && !shown(cx, "account-cursor-sign-in"));
+}
+
+#[gpui::test]
+fn a_confirm_asks_in_the_boxs_words(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "Accounts");
+    click(cx, "account-github-copilot-disconnect");
+    let (title, body, button) = view.read_with(cx, |view, _| view.confirm_words()).expect("a confirm");
+    assert_eq!(title, "Disconnect GitHub Copilot?");
+    assert_eq!(body, "Its sign-ins and keys go from Stand-in Mac, and its models leave the model picker there. Sessions on its models stop until you sign in again.");
+    assert_eq!(button, "Disconnect");
+    assert!(stand_in.seen_at("POST", "kuvo/accounts/github-copilot/forget").is_empty(), "nothing sent until it's confirmed");
+    click(cx, "confirm-go");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/accounts/github-copilot/forget").len(), 1);
+    assert!(shown(cx, "account-github-copilot-sign-in"), "signed out, as the box now says");
 }
 
 /// The app's way: the box asked off the window's thread, its answers coming in later.
