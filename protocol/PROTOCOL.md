@@ -5537,7 +5537,8 @@ client's changes from another box; only `delete` while it's on its way to anothe
 reads or changes the queues, once, one way. What was kept is copied whole first to
 `run/work-queue/before-statuses/` (`queues/`, `categories.json`), in one step (a copy cut off is
 never taken for it), and never changed again; each queue's file is then written whole, item by item
-left as it is if it has a `status` already; `model.json` (`{model: 2, at}`) is written last, so a
+left as it is if it has a `status` already; `categories.json` then goes (it's in the copy) and
+`model.json` (`{model: 2, at}`) is written last, so a
 run cut off midway is carried on by the next to the same end. Nothing an item holds changes (its
 number, description, notes, files, links, sessions, progress, events, hand-offs) but where it
 stands: Next is `todo`, Later `backlog`, Done `done`; Parked is `backlog` with the label Parked

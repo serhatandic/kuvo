@@ -13876,6 +13876,9 @@ var MODEL_FILE = path54.join(WORK_QUEUE, "model.json");
 var BEFORE = path54.join(WORK_QUEUE, "before-statuses");
 var MODEL2 = 2;
 var done = false;
+function forgetMigrated() {
+  done = false;
+}
 var jsonOf = (file) => {
   try {
     return JSON.parse(fs51.readFileSync(file, "utf8"));
@@ -13924,10 +13927,19 @@ function migrate() {
         fs51.rmSync(path54.join(WORK_QUEUE, name), { recursive: true, force: true });
     const making = path54.join(WORK_QUEUE, `before-statuses.${crypto21.randomBytes(6).toString("hex")}`);
     fs51.mkdirSync(path54.join(making, "queues"), { recursive: true, mode: 448 });
+    const copy = (from, to) => {
+      fs51.copyFileSync(from, to);
+      const handle = fs51.openSync(to, "r");
+      try {
+        fs51.fsyncSync(handle);
+      } finally {
+        fs51.closeSync(handle);
+      }
+    };
     for (const name of queueFiles2(QUEUES))
-      fs51.copyFileSync(path54.join(QUEUES, name), path54.join(making, "queues", name));
+      copy(path54.join(QUEUES, name), path54.join(making, "queues", name));
     if (fs51.existsSync(CATEGORIES_FILE))
-      fs51.copyFileSync(CATEGORIES_FILE, path54.join(making, "categories.json"));
+      copy(CATEGORIES_FILE, path54.join(making, "categories.json"));
     try {
       fs51.renameSync(making, BEFORE);
     } catch (error) {
@@ -13990,6 +14002,7 @@ function migrate() {
     if (changed)
       writePrivate(file, JSON.stringify(queue));
   }
+  fs51.rmSync(CATEGORIES_FILE, { force: true });
   writePrivate(MODEL_FILE, JSON.stringify({ model: MODEL2, at: Date.now() }));
 }
 function migrateOnce() {
@@ -43640,7 +43653,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "35e8076602ec";
+var BRIDGE_VERSION = "f65b3993e9a7";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -57267,6 +57280,7 @@ export {
   forgetPhones,
   forgetPlan,
   forgetActs as forgetQueueActs,
+  forgetMigrated as forgetQueueMigrated,
   forgetPushed as forgetQueuesTold,
   forgetWorkQueues,
   foundOf,

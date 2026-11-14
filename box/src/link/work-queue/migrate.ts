@@ -4,9 +4,9 @@
 //
 // - What was kept is copied whole first, to `run/work-queue/before-statuses/` (the queues' files
 //   and `categories.json`), and never touched again: it's what this works from, so a run cut off
-//   midway is carried on by the next, to the same end, whatever was written meanwhile.
+//   midway is carried on by the next, to the same end.
 // - Each queue's file is written whole, one at a time; an item that has a status already is left.
-// - `model.json` says it's done, written last.
+// - `categories.json` goes (it's in the copy), and `model.json` says it's done, written last.
 
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -84,8 +84,14 @@ function migrate(): void {
     for (const name of fs.readdirSync(WORK_QUEUE)) if (name.startsWith("before-statuses.")) fs.rmSync(path.join(WORK_QUEUE, name), { recursive: true, force: true });
     const making = path.join(WORK_QUEUE, `before-statuses.${crypto.randomBytes(6).toString("hex")}`);
     fs.mkdirSync(path.join(making, "queues"), { recursive: true, mode: 0o700 });
-    for (const name of queueFiles(QUEUES)) fs.copyFileSync(path.join(QUEUES, name), path.join(making, "queues", name));
-    if (fs.existsSync(CATEGORIES_FILE)) fs.copyFileSync(CATEGORIES_FILE, path.join(making, "categories.json"));
+    // (Each on the disk before it counts as the copy: the files it's of are written over next.)
+    const copy = (from: string, to: string) => {
+      fs.copyFileSync(from, to);
+      const handle = fs.openSync(to, "r");
+      try { fs.fsyncSync(handle); } finally { fs.closeSync(handle); }
+    };
+    for (const name of queueFiles(QUEUES)) copy(path.join(QUEUES, name), path.join(making, "queues", name));
+    if (fs.existsSync(CATEGORIES_FILE)) copy(CATEGORIES_FILE, path.join(making, "categories.json"));
     try {
       fs.renameSync(making, BEFORE);
     } catch (error) {
@@ -149,6 +155,8 @@ function migrate(): void {
     });
     if (changed) writePrivate(file, JSON.stringify(queue));
   }
+  // (The categories are in the copy, and labels now: the file nothing reads any more goes.)
+  fs.rmSync(CATEGORIES_FILE, { force: true });
   writePrivate(MODEL_FILE, JSON.stringify({ model: MODEL, at: Date.now() }));
 }
 

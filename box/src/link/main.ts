@@ -230,6 +230,7 @@ export { actForPeer as queueActForPeer } from "./work-queue/acts";
 export { mailsFor as queueMailsFor, takePart as takeQueuePart } from "./work-queue/parts";
 export { parseBacklog } from "./work-queue/import";
 export { carryWorkQueue, forgetWorkQueues, packWorkQueues, placeWorkQueues } from "./work-queue/moves";
+export { forgetMigrated as forgetQueueMigrated } from "./work-queue/migrate";
 export { readReach } from "./peers/reach";
 export { peerPlaces } from "./engine/client";
 export { answerPersonalities, retellBots, takePersonalities, takePersonalitiesDocument } from "./personalities/take";
