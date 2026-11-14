@@ -48,13 +48,23 @@ export async function* fileAt(requestPath: string, json: RouteContext["json"], a
     return yield* json(refused ? 403 : 404, { message: refused ? "That file can’t be opened here." : "That file isn’t there anymore." });
   }
   if (asText) {
-    let bytes: Buffer;
+    // No more of it than was asked for, whatever it grew to since it was looked at (or a file
+    // that says no size, as /proc's do).
+    const most = Math.min(Number.isFinite(max) ? max : FILE_LIMIT, FILE_LIMIT);
+    const pieces: Buffer[] = [];
+    let read = 0;
     try {
-      bytes = await handle.readFile();
+      for await (const piece of handle.createReadStream({ end: most, highWaterMark: 64 * 1024 })) {
+        pieces.push(piece as Buffer);
+        read += (piece as Buffer).length;
+      }
+    } catch {
+      return yield* json(403, { message: "That file can’t be opened here." });
     } finally {
       await handle.close().catch(() => {});
     }
-    return yield* json(200, textOf(bytes));
+    if (read > most) return yield* json(413, { message: "That file is too big to show here." });
+    return yield* json(200, textOf(Buffer.concat(pieces)));
   }
   yield { head: { status: 200, headers: { "content-type": type, "content-length": String(stat.size) } } };
   // In pieces, as the engine's bodies go.

@@ -202,9 +202,10 @@ impl Git {
                 let path = text("path");
                 let patch = self.repos[&root].patches.get(&path).cloned().unwrap_or_else(|| default_patch(&path));
                 let mut answer = json!({ "repository": true, "root": root, "against": "HEAD", "patch": patch, "untracked": [], "hashes": {}, "uncommitted": true });
-                // A picture's diff, as the box says one: binary.
+                // A picture's diff, as the box says one: binary (without git's own words for it here,
+                // so nothing reads them in the box's place).
                 if path.ends_with(".png") {
-                    answer["patch"] = json!(format!("diff --git a/{path} b/{path}\nBinary files a/{path} and b/{path} differ\n"));
+                    answer["patch"] = json!(format!("diff --git a/{path} b/{path}\nindex 1a2b3c4..5d6e7f8 100644\n"));
                     answer["binary"] = json!(true);
                 }
                 found(200, answer)

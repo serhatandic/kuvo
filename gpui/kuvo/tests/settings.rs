@@ -407,6 +407,14 @@ fn the_sandbox_is_drawn_in_the_boxs_words(cx: &mut TestAppContext) {
     section(&workspace, cx, "Permissions");
     assert!(!shown(cx, "row-sandbox-software-update"));
     assert_eq!(line(&workspace, cx).as_deref(), Some("macOS's sandbox isn't on this Mac."), "why still says");
+    // Nothing but a web page is opened at a box's word: an address of another kind, not said to be
+    // this computer's own, draws no button.
+    for address in ["file:///Users/sam/run.command", "x-apple.systempreferences:stand-in"] {
+        stand_in.set_sandbox(json!({ "on": false, "able": false, "agents": false, "why": "It can't run here.", "reason": "kernel", "action": "help", "actionLabel": "How to Check…", "opens": address }));
+        section(&workspace, cx, "Browser");
+        section(&workspace, cx, "Permissions");
+        assert!(!shown(cx, "row-sandbox-how-to-check"), "{address}");
+    }
     stand_in.set_elsewhere(false);
 
     // Kuvo Code's own switch off: why, and no action, so no button.

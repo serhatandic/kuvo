@@ -434,6 +434,11 @@ fn models(facts: &Facts) -> Vec<Block> {
 
 // MARK: Permissions
 
+/// Only a web page is opened at a box's word, unless it's this computer's own box naming its own.
+fn is_page(address: &str) -> bool {
+    address.starts_with("https://") || address.starts_with("http://")
+}
+
 /// A mode's name, as every client says it (KuvoClient's `ApprovalWords`).
 fn mode_name(mode: &str) -> String {
     match mode {
@@ -483,7 +488,8 @@ fn permissions(facts: &Facts) -> Vec<Block> {
             let detail = if sandbox.on { String::new() } else { sandbox.why.clone().unwrap_or_default() };
             let control = facts.busy("row-sandbox").unwrap_or_else(|| match sandbox.button() {
                 Some((label, SandboxDoes::Route { method, path })) => Control::Buttons(vec![(label, Act::SandboxAction { method, path })]),
-                Some((label, SandboxDoes::Open { address, here })) if !here || facts.here => Control::Buttons(vec![(label, Act::Open(address))]),
+                // (Another computer's box has this one open a web page only, never anything else.)
+                Some((label, SandboxDoes::Open { address, here })) if if here { facts.here } else { is_page(&address) } => Control::Buttons(vec![(label, Act::Open(address))]),
                 _ => Control::Text(if sandbox.on { "On".into() } else { "Off".into() }),
             });
             let state = Row::new("row-sandbox", "Sandbox", detail, control).warning(!sandbox.on);

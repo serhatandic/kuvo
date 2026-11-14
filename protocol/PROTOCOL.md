@@ -3745,8 +3745,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     that one file's diff alone, as a client opens it; a new file git doesn't know (not for `staged`)
     as all of its lines added (`new file mode`, git's diff of it against nothing, binary as git
     says), `untracked` empty; past 4 MB, `patch` empty and `"big": true`, too big to show. A binary
-    file's says `"binary": true` (`git.changes.binary`, #708; git's own heading for it is still in
-    `patch`): it has no lines, and a client says so rather than reading git's words for it. `400`
+    file's says `"binary": true` (`git.changes.binary`, #708; read from git's own heading for it,
+    still in `patch`, never from a file's lines): it has no lines, and a client says so rather than reading git's words for it. `400`
     for a path that isn't one in the repository.
   - `GET kuvo/git/files?directory=<folder>` (`git.files`): the folder's changed files as a Changes
     panel groups them, what `git status` says of each → `{"repository": false}`, or `{"repository":
@@ -3777,7 +3777,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     for `discard` `head`, a copy on disk that differs going to the Trash first; as last staged for
     `unstaged`), `undoMove` (a staged move: its old path comes back and the new one goes to the
     Trash) or `changes` (its changes are thrown away, to where `discard` says); `undoable`, that
-    nothing is lost for good (all but `changes`), by which a client draws the confirm's button as
+    nothing is lost for good (all but `changes`, and a new file staged and gone from disk since,
+    of which only what's staged is left), by which a client draws the confirm's button as
     destructive or not. What a discard does is `kuvo/git/discard`'s to decide, as before: these only
     say it. `404` for a folder
     that isn't there, `500 {"message"}` when git couldn't say. `GET kuvo/git/files/events?directory=`
@@ -8422,7 +8423,8 @@ it's empty.
   docs' page; the Mac's Software Update pane), and `opensHere: true` where that address is the
   computer's own (the Software Update pane: it opens the pane of whichever computer opens it), so
   only a client running on that very computer opens it, and any other shows no button, `why`
-  standing alone. A state with no
+  standing alone. A client opens an address that isn't `opensHere` only when it's a web page
+  (`https://` or `http://`): a box never has another computer open anything else. A state with no
   `action` (Kuvo Code's own switch off) has no button.
 
   | `reason` | when | `action` | `route` |

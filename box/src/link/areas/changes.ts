@@ -232,11 +232,14 @@ export async function changesIn(directory: string, scope: Scope, base?: string, 
 async function oneFileIn(root: string, against: string, scope: Scope, compared: string[], args: string[], only: { path: string; oldPath?: string }): Promise<GitChanges | null> {
   const paths = [only.path, ...(only.oldPath ? [only.oldPath] : [])];
   const known = await git(root, ["--literal-pathspecs", "ls-files", "--error-unmatch", "--", only.path]);
-  // Binary, as git says in the diff's own heading ("Binary files a/x and b/x differ": a file's
-  // lines each start with " ", "+" or "-", so none reads as it): no lines to show (`git.changes.binary`).
+  // Binary, as git says in the diff's own heading ("Binary files a/x and b/x differ"): no lines to
+  // show (`git.changes.binary`). Only the heading is read, before the first hunk and line by line
+  // as git ends them, so no line of a text file reads as it, whatever it holds (a bare return, a
+  // line separator).
+  const binary = (patch: string) => (patch.split("\n@@ ", 1)[0] ?? "").split("\n").some(line => /^Binary files .* differ$/.test(line));
   const done = (patch: string, big = Buffer.byteLength(patch) > ONE_FILE_MOST): GitChanges => (big
     ? { repository: true, root, against, patch: "", untracked: [], hashes: {}, uncommitted: true, big: true }
-    : { repository: true, root, against, patch, untracked: [], hashes: {}, uncommitted: true, ...(/^Binary files .* differ$/m.test(patch) ? { binary: true as const } : {}) });
+    : { repository: true, root, against, patch, untracked: [], hashes: {}, uncommitted: true, ...(binary(patch) ? { binary: true as const } : {}) });
   if (!known.ok && scope !== "staged" && !only.path.endsWith("/")) {
     const file = path.join(root, only.path);
     try {
@@ -327,6 +330,9 @@ type Group = "conflicted" | "staged" | "unstaged" | "untracked";
 const GROUPS: Group[] = ["conflicted", "staged", "unstaged", "untracked"];
 type Listed = Extract<GitFiles, { repository: true }>["files"][number];
 
+/** Whether anything is on disk at a listed file's path. */
+const thereAt = (root: string, name: string) => !!kind(path.join(root, name.replace(/\/$/, "")));
+
 /** What a file's stage button does (`git.files.does`): a staged one is unstaged (`kuvo/git/unstage`),
  * one in conflict marked resolved and the rest staged (both `kuvo/git/stage`). */
 const stageOf = (group: Group): Listed["stage"] => (group === "staged" ? "unstage" : group === "conflicted" ? "resolve" : "stage");
@@ -335,10 +341,11 @@ const stageOf = (group: Group): Listed["stage"] => (group === "staged" ? "unstag
  * as `perform` decides it: a new file goes to the Trash (`trash`); a staged move is undone, its old
  * path back and the new one to the Trash (`undoMove`); a deleted file comes back (`restore`); else
  * its changes are thrown away (`changes`). `undoable`: nothing is lost for good (what goes, goes to
- * the Trash, or a file comes back), which only thrown-away changes aren't. */
-function discardsOf(status: Status, oldPath: string | undefined): NonNullable<Listed["discards"]> {
+ * the Trash, or a file comes back), which thrown-away changes aren't, nor a new file staged and
+ * gone from disk since (`there` false): only what's staged is left of it, and that goes. */
+function discardsOf(status: Status, oldPath: string | undefined, there: boolean): NonNullable<Listed["discards"]> {
   const kind = status === "added" ? "trash" : status === "renamed" && oldPath ? "undoMove" : status === "deleted" ? "restore" : "changes";
-  return { kind, undoable: kind !== "changes" };
+  return { kind, undoable: kind === "trash" ? there : kind !== "changes" };
 }
 
 /** What one of git's status letters says changed (`git status --porcelain=v2`). */
@@ -395,7 +402,7 @@ export async function filesIn(directory: string): Promise<GitFiles | null> {
     const stamp = discard ? stampOf(root, path.replace(/\/$/, ""), indexed.get(path), since) + (oldPath ? `|${stampOf(root, oldPath, undefined, since)}` : "") : undefined;
     files.push({
       path, ...(oldPath ? { oldPath } : {}), group, status, scope, stage: stageOf(group), ...(lines ?? {}),
-      ...(discard ? { discard, discards: discardsOf(status, oldPath), stamp } : {}), ...(path.endsWith("/") ? { repository: true as const } : {}),
+      ...(discard ? { discard, discards: discardsOf(status, oldPath, thereAt(root, path)), stamp } : {}), ...(path.endsWith("/") ? { repository: true as const } : {}),
     });
   };
   const records = status.out.toString("utf8").split("\0");

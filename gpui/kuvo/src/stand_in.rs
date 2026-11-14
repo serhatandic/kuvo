@@ -257,6 +257,13 @@ impl StandIn {
         state.git_changed(root);
     }
 
+    /// A file's diff from now on, as `kuvo/git/changes` sends it.
+    pub fn set_git_patch(&self, root: &str, path: &str, patch: &str) {
+        if let Some(repo) = self.state().git.as_mut().and_then(|git| git.repos.get_mut(root)) {
+            repo.patches.insert(path.to_owned(), patch.to_owned());
+        }
+    }
+
     /// Staged files outside the folder from now on, and what git is in the middle of there.
     pub fn set_git_state(&self, root: &str, staged_elsewhere: usize, underway: Option<&'static str>) {
         let mut state = self.state();

@@ -207,6 +207,12 @@ these fields (each a name in the update gate, so no box without them is used):
   `kuvo/folders?files=1` by the box; the app filters nothing. (The Mac's `FilesView` has a filter
   of its own, `unlisted`: retired, left as it is.)
 
+Other clients still keep copies of some of these, though the gate they share now names them; left
+to move, each in its own session: KuvoClient's `GitDiff` reads a binary diff from the patch's words
+(`ClientChanges/GitDiff.swift`); the phone keeps the docs' address for the sandbox's button
+(`SandboxSection.swift`, `GoalSandbox.swift`) and picks its Stage and Unstage buttons itself
+(`ChangesSheet.swift`).
+
 Wanted from the box, not built (new features, not fixes): Stage All and Unstage All in one request;
 a branch's last commit and its time, and deleting a branch, in `kuvo/git/branches`; a Files filter
 the box matches over `kuvo/folders/tree`; follow-ups after Merge into… (Archive Session) and after a

@@ -160,6 +160,11 @@ test("one file's diff comes alone, a move with where it was, and a new file as a
   expect(added.binary).toBeUndefined()
   writeFileSync(join(top, "said.txt"), "Binary files a/x and b/x differ\n")
   expect((await diff({ scope: "unstaged", path: "said.txt" })).binary).toBeUndefined()
+  // Nor one whose line says so after a bare return (a captured log) or a line separator.
+  writeFileSync(join(top, "log.txt"), "Comparing...\rBinary files a/x and b/x differ\nline\u2028Binary files a and b differ\u2028\n")
+  const log = await diff({ scope: "unstaged", path: "log.txt" })
+  expect(log.patch).toContain("Binary files a/x and b/x differ")
+  expect(log.binary).toBeUndefined()
   writeFileSync(join(top, "huge.txt"), "x".repeat(5 * 1024 * 1024))
   expect(await diff({ scope: "unstaged", path: "huge.txt" })).toMatchObject({ patch: "", big: true })
 
@@ -202,7 +207,7 @@ test("a pull request is offered only where one can be made: from a branch of its
   const tree = join(box, "offered-tree")
   git(top, "worktree", "add", "-q", "-b", "kuvo/side", tree, "fix-form")
   expect((await branches(tree)).pullRequest).toBe(true)
-  // As Create Pull Request's confirmation answers there: refused exactly where none is offered.
+  // On the branch they go into, Create Pull Request's confirmation refuses too.
   git(top, "switch", "-q", "main")
   expect((await ask(handler, "POST", "kuvo/git/pull-request/draft", { directory: top })).status).toBe(409)
 })
@@ -271,6 +276,19 @@ test("what a commit takes is said for the whole repository, a staged file outsid
   expect(git(top, "show", "--name-only", "--format=", "HEAD").trim().split("\n").sort()).toEqual(["app/Form.tsx", "app/new.ts"])
 })
 
+test("a new file staged and then gone from disk can't be had back from the Trash, and its discard says so", async () => {
+  const top = repository("staged-gone")
+  writeFileSync(join(top, "draft.md"), "draft\n")
+  writeFileSync(join(top, "kept.md"), "kept\n")
+  git(top, "add", "draft.md", "kept.md")
+  rmSync(join(top, "draft.md"))
+  const staged = (await files(top)).files.filter((file: any) => file.group === "staged")
+  expect(staged.map((file: any) => [file.path, file.discards])).toEqual([
+    ["draft.md", { kind: "trash", undoable: false }],
+    ["kept.md", { kind: "trash", undoable: true }],
+  ])
+})
+
 test("a file opens as its text where it's text, and says it isn't where it isn't", async () => {
   const folder = join(box, "viewer")
   mkdirSync(folder)
@@ -279,6 +297,12 @@ test("a file opens as its text where it's text, and says it isn't where it isn't
   expect((await read("notes.md")).json).toEqual({ text: true, encoding: "utf-8", content: "# Café\nline two\n" })
   writeFileSync(join(folder, "empty.txt"), "")
   expect((await read("empty.txt")).json).toEqual({ text: true, encoding: "utf-8", content: "" })
+  // A mark at its start saying it's UTF-8 isn't part of its text.
+  writeFileSync(join(folder, "marked.txt"), "\ufeffhi\n")
+  expect((await read("marked.txt")).json).toEqual({ text: true, encoding: "utf-8", content: "hi\n" })
+  // All of a file as big as the most asked for, and none of one a byte bigger.
+  expect((await read("marked.txt", "&max=6")).json.content).toBe("hi\n")
+  expect((await read("marked.txt", "&max=5")).status).toBe(413)
   // A picture (a NUL in it), and bytes that aren't UTF-8 (Latin-1's é, a UTF-16 file): not text.
   writeFileSync(join(folder, "logo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 13]))
   expect((await read("logo.png")).json).toEqual({ text: false })

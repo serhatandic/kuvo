@@ -650,22 +650,22 @@ pub struct DiscardWords {
 pub fn discard_words(file: &ChangedFile) -> DiscardWords {
     let name = file.name().to_owned();
     let to_commit = file.discard.as_deref() == Some("head");
-        let kind = file.discards.as_ref().map_or(DiscardKind::Unknown, |discards| discards.kind);
-        let undoable = file.discards.as_ref().is_some_and(|discards| discards.undoable);
-        let (title, detail, button) = match kind {
-            DiscardKind::Trash if file.repository => (format!("Move the repository {name} to the Trash?"), "It’s a repository of its own: its commits go with it, pushed or not.".to_owned(), "Move to Trash"),
-            DiscardKind::Trash => (format!("Move {name} to the Trash?"), "It’s a new file, so git keeps nothing of it.".to_owned(), "Move to Trash"),
-            DiscardKind::Restore if to_commit => (format!("Restore {name}?"), "The last commit’s copy comes back; a copy on disk that differs goes to the Trash first.".to_owned(), "Restore"),
-            DiscardKind::Restore => (format!("Restore {name}?"), "It comes back as it was last staged.".to_owned(), "Restore"),
-            DiscardKind::UndoMove => {
-                let old = file.old_path.clone().unwrap_or_default();
-                (format!("Undo the move to {name}?"), format!("{old} comes back as last committed, and {name} goes to the Trash. A file written at {old} since goes to the Trash first."), "Undo Move")
-            }
-            DiscardKind::Changes if to_commit => (format!("Discard every change to {name}?"), "It goes back to the last commit, what’s staged too. This can’t be undone.".to_owned(), "Discard"),
-            DiscardKind::Changes => (format!("Discard the changes to {name}?"), "What isn’t staged is thrown away. This can’t be undone.".to_owned(), "Discard"),
-            // (A kind a newer box says that this app has no words for: asked plainly.)
-            DiscardKind::Unknown => (format!("Discard the changes to {name}?"), String::new(), "Discard"),
-        };
+    let kind = file.discards.as_ref().map_or(DiscardKind::Unknown, |discards| discards.kind);
+    let undoable = file.discards.as_ref().is_some_and(|discards| discards.undoable);
+    let (title, detail, button) = match kind {
+        DiscardKind::Trash if file.repository => (format!("Move the repository {name} to the Trash?"), "It’s a repository of its own: its commits go with it, pushed or not.".to_owned(), "Move to Trash"),
+        DiscardKind::Trash => (format!("Move {name} to the Trash?"), "It’s a new file, so git keeps nothing of it.".to_owned(), "Move to Trash"),
+        DiscardKind::Restore if to_commit => (format!("Restore {name}?"), "The last commit’s copy comes back; a copy on disk that differs goes to the Trash first.".to_owned(), "Restore"),
+        DiscardKind::Restore => (format!("Restore {name}?"), "It comes back as it was last staged.".to_owned(), "Restore"),
+        DiscardKind::UndoMove => {
+            let old = file.old_path.clone().unwrap_or_default();
+            (format!("Undo the move to {name}?"), format!("{old} comes back as last committed, and {name} goes to the Trash. A file written at {old} since goes to the Trash first."), "Undo Move")
+        }
+        DiscardKind::Changes if to_commit => (format!("Discard every change to {name}?"), "It goes back to the last commit, what’s staged too. This can’t be undone.".to_owned(), "Discard"),
+        DiscardKind::Changes => (format!("Discard the changes to {name}?"), "What isn’t staged is thrown away. This can’t be undone.".to_owned(), "Discard"),
+        // (A kind a newer box says that this app has no words for: asked plainly.)
+        DiscardKind::Unknown => (format!("Discard the changes to {name}?"), String::new(), "Discard"),
+    };
     DiscardWords { title, detail, button, undoable }
 }
 

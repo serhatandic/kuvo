@@ -38288,13 +38288,22 @@ async function* fileAt(requestPath, json, asText = false) {
     return yield* json(refused ? 403 : 404, { message: refused ? "That file can’t be opened here." : "That file isn’t there anymore." });
   }
   if (asText) {
-    let bytes;
+    const most = Math.min(Number.isFinite(max) ? max : FILE_LIMIT, FILE_LIMIT);
+    const pieces = [];
+    let read = 0;
     try {
-      bytes = await handle.readFile();
+      for await (const piece of handle.createReadStream({ end: most, highWaterMark: 64 * 1024 })) {
+        pieces.push(piece);
+        read += piece.length;
+      }
+    } catch {
+      return yield* json(403, { message: "That file can’t be opened here." });
     } finally {
       await handle.close().catch(() => {});
     }
-    return yield* json(200, textOf3(bytes));
+    if (read > most)
+      return yield* json(413, { message: "That file is too big to show here." });
+    return yield* json(200, textOf3(Buffer.concat(pieces)));
   }
   yield { head: { status: 200, headers: { "content-type": type, "content-length": String(stat.size) } } };
   try {
@@ -38470,7 +38479,10 @@ async function changesIn(directory, scope, base, only) {
 async function oneFileIn(root, against, scope, compared, args, only) {
   const paths = [only.path, ...only.oldPath ? [only.oldPath] : []];
   const known = await git2(root, ["--literal-pathspecs", "ls-files", "--error-unmatch", "--", only.path]);
-  const done = (patch, big = Buffer.byteLength(patch) > ONE_FILE_MOST) => big ? { repository: true, root, against, patch: "", untracked: [], hashes: {}, uncommitted: true, big: true } : { repository: true, root, against, patch, untracked: [], hashes: {}, uncommitted: true, .../^Binary files .* differ$/m.test(patch) ? { binary: true } : {} };
+  const binary = (patch) => (patch.split(`
+@@ `, 1)[0] ?? "").split(`
+`).some((line) => /^Binary files .* differ$/.test(line));
+  const done = (patch, big = Buffer.byteLength(patch) > ONE_FILE_MOST) => big ? { repository: true, root, against, patch: "", untracked: [], hashes: {}, uncommitted: true, big: true } : { repository: true, root, against, patch, untracked: [], hashes: {}, uncommitted: true, ...binary(patch) ? { binary: true } : {} };
   if (!known.ok && scope !== "staged" && !only.path.endsWith("/")) {
     const file = path131.join(root, only.path);
     try {
@@ -38542,10 +38554,11 @@ async function staleDiscard(root, file, stamp) {
   return null;
 }
 var GROUPS = ["conflicted", "staged", "unstaged", "untracked"];
+var thereAt = (root, name) => !!kind(path131.join(root, name.replace(/\/$/, "")));
 var stageOf = (group) => group === "staged" ? "unstage" : group === "conflicted" ? "resolve" : "stage";
-function discardsOf(status, oldPath) {
+function discardsOf(status, oldPath, there) {
   const kind = status === "added" ? "trash" : status === "renamed" && oldPath ? "undoMove" : status === "deleted" ? "restore" : "changes";
-  return { kind, undoable: kind !== "changes" };
+  return { kind, undoable: kind === "trash" ? there : kind !== "changes" };
 }
 var changeOf = (letter) => letter === "A" || letter === "C" ? "added" : letter === "D" ? "deleted" : letter === "R" ? "renamed" : "modified";
 async function linesBy(root, compared, limit) {
@@ -38596,7 +38609,7 @@ async function filesIn2(directory) {
       scope,
       stage: stageOf(group),
       ...lines ?? {},
-      ...discard ? { discard, discards: discardsOf(status, oldPath), stamp } : {},
+      ...discard ? { discard, discards: discardsOf(status, oldPath, thereAt(root, path)), stamp } : {},
       ...path.endsWith("/") ? { repository: true } : {}
     });
   };
@@ -42753,7 +42766,7 @@ import fs138 from "node:fs";
 import path144 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "02c98f44218c";
+var BRIDGE_VERSION = "49d49be3ce46";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";

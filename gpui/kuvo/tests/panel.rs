@@ -266,6 +266,15 @@ fn a_binary_files_diff_says_so_as_the_box_does(cx: &mut TestAppContext) {
     click(cx, "change-Unstaged:public/favicon.png");
     assert_eq!(view.read_with(cx, |view, _| view.opened().and_then(|opened| opened.unshown)), Some("A binary file: no lines to show."));
     assert!(bounds(cx, "file-diff").is_none());
+
+    // And only the box's word: git's words for a binary file in a patch the box doesn't call one
+    // (here with no lines either) aren't read as it.
+    stand_in.set_git_files(&website(), vec![json!({ "path": "notes.txt", "group": "unstaged", "status": "modified", "scope": "unstaged" })]);
+    stand_in.set_git_patch(&website(), "notes.txt", "diff --git a/notes.txt b/notes.txt\nBinary files a/notes.txt and b/notes.txt differ\n");
+    view.update(cx, |view, cx| view.take(client.git_files(&website()), cx));
+    cx.run_until_parked();
+    click(cx, "change-Unstaged:notes.txt");
+    assert_eq!(view.read_with(cx, |view, _| view.opened().and_then(|opened| opened.unshown)), None);
 }
 
 #[gpui::test]
