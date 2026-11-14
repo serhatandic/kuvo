@@ -1,4 +1,4 @@
-// kuvo-browser d242c105acf4f59a
+// kuvo-browser 4c4819d8fc503595
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -101,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "2dfb532974f1";
+const KEEPER = "6a9b80b069d2";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -965,6 +965,7 @@ async function host() {
   }, 20).unref();
   const uploads = new Map();
   const clearUploads = target => {
+    choosers.delete(target);
     for (const dir of uploads.get(target) ?? []) fs.rmSync(dir, { recursive: true, force: true });
     uploads.delete(target);
   };
@@ -1058,7 +1059,7 @@ async function host() {
         for (const f of files) fs.writeFileSync(path.join(dir, f.name), f.data, { mode: 0o600 });
         const chooser = choosers.get(target);
         if (!chooser) throw Error("No file chooser.");
-        await ownCall("DOM.setFileInputFiles", { files: files.map(f => path.join(dir, f.name)), backendNodeId: chooser.backendNodeId }, session);
+        if (await ownCall("DOM.setFileInputFiles", { files: files.map(f => path.join(dir, f.name)), backendNodeId: chooser.backendNodeId }, session) === null) throw Error("Chrome refused the selected files.");
         choosers.delete(target);
         if (!uploads.has(target)) uploads.set(target, new Set());
         uploads.get(target).add(dir);

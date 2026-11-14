@@ -98,3 +98,17 @@ test("upload data must be base64 text, not an attacker-controlled array-like all
   assert.equal(chrome.all.filter(m => m.method === "DOM.setFileInputFiles").length, 0);
   assert.ok(!(await call(c, "Browser.getVersion")).error);
 });
+
+test("a refused upload reports failure and navigation invalidates its old chooser", async () => {
+  const { c, event, answer, chrome } = await page();
+  event("Page.fileChooserOpened", { backendNodeId: 42, mode: "selectSingle" }, "own");
+  await c.heard.until(m => m.method === "Kuvo.fileChooser");
+  answer("DOM.setFileInputFiles", () => ({ __error: { message: "No such node" } }));
+  const files = [{ name: "test.txt", data: "aGk=" }];
+  assert.match((await call(c, "Kuvo.upload", { targetId: "P", files })).error.message, /refused/);
+  event("Page.frameNavigated", { frame: { id: "P", url: "https://example.com/new" } }, "own");
+  await c.heard.until(m => m.method === "Kuvo.pages" && m.params.pages.some(p => p.url.endsWith("/new")));
+  const before = chrome.all.filter(m => m.method === "DOM.setFileInputFiles").length;
+  assert.match((await call(c, "Kuvo.upload", { targetId: "P", files })).error.message, /No file chooser/);
+  assert.equal(chrome.all.filter(m => m.method === "DOM.setFileInputFiles").length, before);
+});

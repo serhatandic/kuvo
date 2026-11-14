@@ -74,7 +74,10 @@ socket.on("close", () => process.exit(0));
         chrome.add(message);
         // Every call answered, as Chrome does once it's done it.
         const result = answers.get(message.method)?.(message.params ?? {}) ?? (message.method === "Browser.getVersion" ? { product: "Chrome/155.0.0.0" } : {});
-        if (message.id !== undefined) socket.write(JSON.stringify({ id: message.id, result, ...(message.sessionId ? { sessionId: message.sessionId } : {}) }) + "\0");
+        if (message.id !== undefined) Promise.resolve(result).then(value => socket.write(JSON.stringify({
+          id: message.id, ...(value?.__error ? { error: value.__error } : { result: value }),
+          ...(message.sessionId ? { sessionId: message.sessionId } : {})
+        }) + "\0"));
       }
     });
   });

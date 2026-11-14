@@ -947,6 +947,7 @@ async function host() {
   }, 20).unref();
   const uploads = new Map();
   const clearUploads = target => {
+    choosers.delete(target);
     for (const dir of uploads.get(target) ?? []) fs.rmSync(dir, { recursive: true, force: true });
     uploads.delete(target);
   };
@@ -1040,7 +1041,7 @@ async function host() {
         for (const f of files) fs.writeFileSync(path.join(dir, f.name), f.data, { mode: 0o600 });
         const chooser = choosers.get(target);
         if (!chooser) throw Error("No file chooser.");
-        await ownCall("DOM.setFileInputFiles", { files: files.map(f => path.join(dir, f.name)), backendNodeId: chooser.backendNodeId }, session);
+        if (await ownCall("DOM.setFileInputFiles", { files: files.map(f => path.join(dir, f.name)), backendNodeId: chooser.backendNodeId }, session) === null) throw Error("Chrome refused the selected files.");
         choosers.delete(target);
         if (!uploads.has(target)) uploads.set(target, new Set());
         uploads.get(target).add(dir);
