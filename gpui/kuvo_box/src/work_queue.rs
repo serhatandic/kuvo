@@ -242,6 +242,9 @@ pub struct Item {
     /// The day it's due, `YYYY-MM-DD`.
     #[serde(default)]
     pub due: Option<String>,
+    /// It's late, as the box says: its day is gone by and it's still open.
+    #[serde(default)]
+    pub overdue: bool,
     /// What may be done to it (nothing, where the box says nothing).
     #[serde(default)]
     pub can: Can,
@@ -594,13 +597,13 @@ mod tests {
     fn an_item_reads_as_the_box_says_it_and_is_named_by_its_number_or_its_issue() {
         let item: Item = serde_json::from_str(
             r#"{"id":"wqi_1","number":243,"owner":"ses_a","title":"Fix it","status":"in-progress","order":1,"priority":"high","labels":["lbl_bug","lbl_web"],
-            "assignee":{"kind":"bot","id":"bot_mira","name":"Mira","look":{"color":"sky","shape":"round","face":"calm"}},"due":"2026-11-30","can":{"edit":true,"set":true,"close":true,"delete":true,"restore":false,"later":true},
+            "assignee":{"kind":"bot","id":"bot_mira","name":"Mira","look":{"color":"sky","shape":"round","face":"calm"}},"due":"2026-11-30","overdue":true,"can":{"edit":true,"set":true,"close":true,"delete":true,"restore":false,"later":true},
             "progress":{"value":0.4,"note":"Writing the test"},"sessions":[{"session":"ses_a","title":"Fixing","working":true}],"noteCount":2,"fileCount":1,"linkCount":0,
             "created":{"at":5,"by":{"user":true}},"updated":{"at":9,"by":{"session":"ses_a","name":"Mira"}},"newer":{"kept":true}}"#,
         )
         .unwrap();
         assert_eq!(item.label().as_deref(), Some("#243"));
-        assert!(item.at_work() && item.created.by.user);
+        assert!(item.at_work() && item.created.by.user && item.overdue);
         assert_eq!((item.status.as_str(), item.priority.as_str(), item.labels.len(), item.due.as_deref()), ("in-progress", "high", 2, Some("2026-11-30")));
         assert_eq!(item.assignee.as_ref().map(|assignee| (assignee.kind.as_str(), assignee.name.as_str(), assignee.look.as_ref().map(|look| look.color.as_str()))), Some(("bot", "Mira", Some("sky"))));
         assert_eq!(item.can, Can { edit: true, set: true, close: true, delete: true, restore: false, why: None });

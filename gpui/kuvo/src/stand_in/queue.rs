@@ -24,6 +24,10 @@ pub struct Queue {
     /// What it says a new item starts as (a status and a priority), where a test says otherwise
     /// than Todo and Normal.
     pub starts: Option<(String, String)>,
+    /// It lists a status this app has never heard of (a newer box's), with an item in it.
+    pub newer_status: bool,
+    /// The moment it was last asked at: what "today" is, for what's overdue.
+    at: f64,
     /// What it says a status counts, where a test says otherwise than its items do (a box counts
     /// across what a view may not list whole).
     pub counted: Vec<(String, usize)>,
@@ -31,6 +35,10 @@ pub struct Queue {
 
 const DEVBOX: (&str, &str, &str) = ("key_devbox", "devbox", "machine");
 const STUDIO: (&str, &str, &str) = ("key_studio", "studio-mini", "mac");
+/// A Mac on a Kuvo Code from before a client's changes went between boxes.
+const OLD: (&str, &str, &str) = ("key_old", "old-mini", "mac");
+/// A machine Macs of different setups share: it hands nothing on to another computer.
+const SHARED: (&str, &str, &str) = ("key_shared", "shared-box", "machine");
 
 /// The colours a label may be: the looks' names.
 const COLORS: [&str; 10] = ["coral", "orange", "amber", "lime", "mint", "sky", "indigo", "violet", "pink", "graphite"];
@@ -39,18 +47,32 @@ fn there(computer: (&str, &str, &str)) -> Value {
     json!({ "key": computer.0, "name": computer.1, "kind": computer.2 })
 }
 
-/// The statuses, the same on every box, in the order a client shows them.
-fn statuses() -> Value {
-    json!([
-        { "id": "needs-you", "name": "Needs you", "closed": false },
-        { "id": "in-review", "name": "In review", "closed": false },
-        { "id": "in-progress", "name": "In progress", "closed": false },
-        { "id": "waiting", "name": "Waiting", "closed": false },
-        { "id": "todo", "name": "Todo", "closed": false },
-        { "id": "backlog", "name": "Backlog", "closed": false },
-        { "id": "done", "name": "Done", "closed": true },
-        { "id": "canceled", "name": "Canceled", "closed": true },
-    ])
+/// The statuses, the same on every box, in the order a client shows them; with `newer`, one a
+/// newer box would list, which this app has no mark for.
+fn statuses(newer: bool) -> Value {
+    let mut statuses = vec![
+        json!({ "id": "needs-you", "name": "Needs you", "closed": false }),
+        json!({ "id": "in-review", "name": "In review", "closed": false }),
+        json!({ "id": "in-progress", "name": "In progress", "closed": false }),
+        json!({ "id": "waiting", "name": "Waiting", "closed": false }),
+        json!({ "id": "todo", "name": "Todo", "closed": false }),
+        json!({ "id": "backlog", "name": "Backlog", "closed": false }),
+        json!({ "id": "done", "name": "Done", "closed": true }),
+        json!({ "id": "canceled", "name": "Canceled", "closed": true }),
+    ];
+    if newer {
+        statuses.insert(4, json!({ "id": "blocked", "name": "Blocked", "closed": false }));
+    }
+    json!(statuses)
+}
+
+/// The conversation a bot of this box keeps its queue in.
+fn bot_session(assignee: &Value) -> Option<&'static str> {
+    match (assignee["kind"].as_str(), assignee["id"].as_str()) {
+        (Some("bot"), Some("bot_mira")) => Some("ses_mira"),
+        (Some("bot"), Some("bot_scout")) => Some("ses_scout"),
+        _ => None,
+    }
 }
 
 fn priorities() -> Value {
@@ -197,7 +219,14 @@ impl Queue {
         }
         // 246 to 249.
         for (title, status) in [("Offline mode for the mobile app", "backlog"), ("A plugin API", "backlog"), ("Self-hosted relay", "canceled"), ("Import from the old wiki", "canceled")] {
-            add(&mut queue, "ses_mira", title, status, 12.0 * DAY, &plain);
+            add(&mut queue, "ses_mira", title, status, 12.0 * DAY, &|item| {
+                // 247: a pull request (its kind is its own: `github-pr`).
+                if title == "A plugin API" {
+                    item["source"] = json!({ "kind": "github-pr", "ref": "gh:acme/website#482", "url": "https://github.com/acme/website/pull/482", "host": "github.com", "name": "website#482" });
+                    item["seen"] = json!({ "state": "draft", "at": now - 2.0 * DAY });
+                    item["closesOn"] = json!("github");
+                }
+            });
         }
         // 250: an issue GitHub closed.
         add(&mut queue, "ses_mira", "The footer links 404 on the docs site", "done", 6.0 * HOUR, &|item| {
@@ -209,15 +238,38 @@ impl Queue {
         });
         // 251 to 261.
         for (ix, title) in ["Cache the avatars", "A sitemap for the docs", "Two-factor codes by mail", "Faster cold start on mobile", "Tidy the CI cache", "Weekly usage mail", "Retire the old API keys", "The status page", "Invoices as PDF", "Team invites by link", "A dark favicon"].iter().enumerate() {
-            add(&mut queue, "ses_mira", title, "done", (1.0 + ix as f64) * DAY, &plain);
+            add(&mut queue, "ses_mira", title, "done", (1.0 + ix as f64) * DAY, &|item| {
+                // 251: done after its day; nothing closed is overdue.
+                if ix == 0 {
+                    item["due"] = json!(day(-3));
+                }
+            });
         }
         // 262: deleted.
-        add(&mut queue, "ses_mira", "A carousel on the home page", "backlog", 2.0 * DAY, &plain);
-        if let Some(mut gone) = queue.items.pop() {
-            gone["removed"] = json!({ "at": now - DAY, "by": { "user": true } });
-            queue.removed.push(gone);
+        add(&mut queue, "ses_mira", "A carousel on the home page", "backlog", 2.0 * DAY, &|item| item["due"] = json!(day(-5)));
+        // 228 and 229: on a computer that runs an older Kuvo Code, and on a machine shared outside
+        // your setup. Neither takes a change from here.
+        for (number, title, computer) in [(228, "Rotate the signing certificate", OLD), (229, "Clean up the shared build cache", SHARED)] {
+            queue.items.push(json!({
+                "id": format!("wqi_{number}"), "number": number, "owner": "ses_scout", "title": title, "status": "waiting", "order": 242.0 + number as f64 / 1000.0, "priority": "normal", "labels": [],
+                "sessions": [], "created": { "at": now - 8.0 * DAY, "by": user }, "updated": { "at": now - 6.0 * DAY, "by": mira }, "computer": there(computer),
+                "body": "", "notes": [], "events": [], "files": [], "links": [], "handed": [],
+            }));
         }
+        let mut gone = queue.items.remove(queue.items.len() - 3);
+        gone["removed"] = json!({ "at": now - DAY, "by": { "user": true } });
+        queue.removed.push(gone);
         queue
+    }
+
+    /// It lists a status a newer box would (Blocked), with an item in it.
+    pub fn add_newer_status(&mut self, now: f64) {
+        self.newer_status = true;
+        self.items.push(json!({
+            "id": "wqi_227", "number": 227, "owner": "ses_mira", "title": "Wait for the vendor's new API key", "status": "blocked", "order": 1, "priority": "normal", "labels": [],
+            "sessions": [], "created": { "at": now - 3.0 * DAY, "by": { "user": true } }, "updated": { "at": now - DAY, "by": { "user": true } },
+            "body": "", "notes": [], "events": [], "files": [], "links": [], "handed": [],
+        }));
     }
 
     /// The sample queue with many more labels than a menu shows at once.
@@ -237,6 +289,7 @@ impl Queue {
         let route = path.split('?').next().unwrap_or(path);
         let segments: Vec<&str> = route.split('/').collect();
         let ["kuvo", "work-queue", rest @ ..] = segments.as_slice() else { return None };
+        self.at = now;
         Some(match (method, rest) {
             ("GET", []) if self.down => (503, json!({ "message": "The box isn’t answering." })),
             ("GET", []) => {
@@ -247,7 +300,7 @@ impl Queue {
             ("POST", ["labels"]) => self.change_labels(body),
             ("POST", ["items"]) => self.add(body, now),
             ("GET", ["items", id]) => match self.find(id) {
-                Some(item) => (200, json!({ "item": whole(item) })),
+                Some(item) => (200, json!({ "item": whole(item, &self.today()) })),
                 None => (404, json!({ "message": "There’s no such item." })),
             },
             ("PATCH", ["items", id]) => self.change(id, body, now),
@@ -261,9 +314,30 @@ impl Queue {
         self.items.iter().chain(&self.removed).find(|item| item["id"] == json!(id))
     }
 
+    /// Today, as this box writes a day.
+    fn today(&self) -> String {
+        time::day(self.at, 0, 0)
+    }
+
     /// Why an item on another computer can't be changed now, if it can't.
     fn away(item: &Value) -> Option<(u16, Value)> {
-        (item["computer"]["key"] == json!(STUDIO.0)).then(|| (503, json!({ "message": "studio-mini isn’t answering. Nothing was changed.", "computer": item["computer"] })))
+        let key = item["computer"]["key"].as_str().unwrap_or_default();
+        if key == STUDIO.0 {
+            return Some((503, json!({ "message": "studio-mini isn’t answering. Nothing was changed.", "computer": item["computer"] })));
+        }
+        // (One that doesn't take it from another box: changed there.)
+        (key == OLD.0 || key == SHARED.0).then(|| (409, json!({ "message": can(item)["why"], "computer": item["computer"] })))
+    }
+
+    /// An item as a change answers it: a box answers a change with no word of its sessions (each
+    /// "New Session", none at work), which the view says again when it's next read.
+    fn answered(&self, item: &Value) -> Value {
+        let mut said = summary(item, &self.today());
+        for session in said["sessions"].as_array_mut().into_iter().flatten() {
+            session["title"] = json!("New Session");
+            session["working"] = json!(false);
+        }
+        said
     }
 
     /// Whether every word is in what an item says: its title, its `#n` or its issue's name, its
@@ -284,7 +358,7 @@ impl Queue {
     /// The view of every queue: the items in the statuses' order, then each one's own; with `q`,
     /// only those its words are in, and the counts of those.
     fn view(&self, q: Option<&str>, now: f64) -> Value {
-        let statuses = statuses();
+        let statuses = statuses(self.newer_status);
         let place = |item: &Value| statuses.as_array().and_then(|statuses| statuses.iter().position(|status| status["id"] == item["status"])).unwrap_or(usize::MAX);
         let takes = |item: &&Value| q.is_none_or(|q| self.has(item, q));
         let mut items: Vec<&Value> = self.items.iter().filter(takes).collect();
@@ -302,20 +376,28 @@ impl Queue {
             by_status.insert(status.clone(), json!(counted));
         }
         let on = |key: &str| items.iter().filter(|item| item["computer"]["key"].as_str().unwrap_or("") == key).count();
-        let github = items.iter().filter(|item| item["source"]["kind"] == json!("github")).count();
+        // From each outside source, by its kind: an issue's and a pull request's are two.
+        let mut sources = serde_json::Map::new();
+        for kind in items.iter().filter_map(|item| item["source"]["kind"].as_str()) {
+            let counted = sources.get(kind).and_then(Value::as_u64).unwrap_or(0);
+            sources.insert(kind.to_owned(), json!(counted + 1));
+        }
+        let today = self.today();
         let counts = json!({
             "open": items.iter().filter(|item| !closed(item["status"].as_str().unwrap_or_default())).count(),
             "statuses": by_status,
             "priorities": count(&priorities(), &|item, id| &item["priority"] == id),
             "labels": count(&json!(self.labels), &|item, id| item["labels"].as_array().is_some_and(|labels| labels.contains(id))),
-            "sources": if github > 0 { json!({ "github": github }) } else { json!({}) },
-            "computers": { "": on(""), DEVBOX.0: on(DEVBOX.0), STUDIO.0: on(STUDIO.0) },
+            "sources": sources,
+            "computers": { "": on(""), DEVBOX.0: on(DEVBOX.0), STUDIO.0: on(STUDIO.0), OLD.0: on(OLD.0), SHARED.0: on(SHARED.0) },
             "removed": removed.len(),
         });
         let computers = if self.items.iter().any(|item| item.get("computer").is_some()) {
             json!([
                 { "key": DEVBOX.0, "name": DEVBOX.1, "kind": DEVBOX.2, "id": "devbox", "at": now - 2.0 * MINUTE },
                 { "key": STUDIO.0, "name": STUDIO.1, "kind": STUDIO.2, "at": now - 3.0 * HOUR, "away": now - 2.0 * HOUR },
+                { "key": OLD.0, "name": OLD.1, "kind": OLD.2, "at": now - 5.0 * MINUTE },
+                { "key": SHARED.0, "name": SHARED.1, "kind": SHARED.2, "id": "shared-box", "at": now - 4.0 * MINUTE },
             ])
         } else {
             json!([])
@@ -328,10 +410,10 @@ impl Queue {
             "assignees": assignees(),
             // What an item added with nothing said starts as.
             "new": { "status": self.starts().0, "priority": self.starts().1 },
-            "items": items.into_iter().map(summary).collect::<Vec<_>>(),
+            "items": items.into_iter().map(|item| summary(item, &today)).collect::<Vec<_>>(),
             // (Each owner in the view: those with an item in it.)
             "owners": owners().as_array().map(|owners| owners.iter().filter(|owner| self.items.iter().chain(&self.removed).any(|item| item["owner"] == owner["owner"])).cloned().collect::<Vec<_>>()).unwrap_or_default(),
-            "removed": removed.into_iter().map(summary).collect::<Vec<_>>(),
+            "removed": removed.into_iter().map(|item| summary(item, &today)).collect::<Vec<_>>(),
             "computers": computers,
             "counts": counts,
         });
@@ -397,7 +479,7 @@ impl Queue {
         let mut item = self.items.remove(at);
         item["removed"] = json!({ "at": now, "by": { "user": true } });
         item["sessions"] = json!([]);
-        let said = summary(&item);
+        let said = self.answered(&item);
         self.removed.insert(0, item);
         (200, json!({ "item": said }))
     }
@@ -411,7 +493,7 @@ impl Queue {
             fields.remove("removed");
         }
         item["updated"] = json!({ "at": now, "by": { "user": true } });
-        let said = summary(&item);
+        let said = self.answered(&item);
         self.items.push(item);
         (200, json!({ "item": said }))
     }
@@ -422,7 +504,7 @@ impl Queue {
             return refuse("An item needs a title.");
         }
         let status = match body["status"].as_str() {
-            Some(said) => match named(&statuses(), said) {
+            Some(said) => match named(&statuses(self.newer_status), said) {
                 Some(status) => status,
                 None => return refuse(format!("There’s no status called {said}.")),
             },
@@ -451,8 +533,8 @@ impl Queue {
             match Queue::assignee_named(said) {
                 Ok(assignee) => {
                     // For a bot of this box, it goes in that bot's queue.
-                    if assignee["id"] == json!("bot_mira") {
-                        item["owner"] = json!("ses_mira");
+                    if let Some(session) = bot_session(&assignee) {
+                        item["owner"] = json!(session);
                     }
                     item["assignee"] = assignee;
                 }
@@ -468,7 +550,7 @@ impl Queue {
         if closed(&status) {
             item["doneAt"] = json!(now);
         }
-        let said = summary(&item);
+        let said = self.answered(&item);
         self.items.push(item);
         (200, json!({ "item": said }))
     }
@@ -501,7 +583,7 @@ impl Queue {
             item["body"] = json!(text);
         }
         if let Some(said) = body["status"].as_str() {
-            let Some(status) = named(&statuses(), said) else { return refuse(format!("There’s no status called {said}.")) };
+            let Some(status) = named(&statuses(self.newer_status), said) else { return refuse(format!("There’s no status called {said}.")) };
             let was = item["status"].as_str().unwrap_or_default().to_owned();
             if issue && (closed(&status) || closed(&was)) {
                 return refuse("This one is closed when its issue is closed on GitHub.");
@@ -533,7 +615,15 @@ impl Queue {
                 item.as_object_mut().map(|fields| fields.remove("assignee"));
             } else {
                 match Queue::assignee_named(said) {
-                    Ok(assignee) => item["assignee"] = assignee,
+                    Ok(assignee) => {
+                        // One of your own, assigned to a bot of this box, goes into that bot's
+                        // queue: a hand-off.
+                        if let (true, Some(session)) = (item["owner"] == json!("usr_you"), bot_session(&assignee)) {
+                            item["owner"] = json!(session);
+                            item["handedBy"] = json!("usr_you");
+                        }
+                        item["assignee"] = assignee;
+                    }
                     Err(refusal) => return refusal,
                 }
             }
@@ -549,7 +639,7 @@ impl Queue {
             }
         }
         item["updated"] = json!({ "at": now, "by": { "user": true } });
-        let said = summary(&item);
+        let said = self.answered(&item);
         self.items[at] = item;
         (200, json!({ "item": said }))
     }
@@ -640,8 +730,11 @@ fn owners() -> Value {
 /// issue's words and its closing are GitHub's, and so is where it stands once GitHub closed it.
 fn can(item: &Value) -> Value {
     let none = |why: String| json!({ "edit": false, "set": false, "close": false, "delete": false, "restore": false, "why": why });
-    if item["computer"]["key"] == json!(STUDIO.0) {
-        return none(format!("{} isn't answering now (it may be asleep, off or offline): it can be changed once it's back.", STUDIO.1));
+    match item["computer"]["key"].as_str() {
+        Some(key) if key == STUDIO.0 => return none(format!("{} isn't answering now (it may be asleep, off or offline): it can be changed once it's back.", STUDIO.1)),
+        Some(key) if key == SHARED.0 => return none(format!("It's on {}: change it there.", SHARED.1)),
+        Some(key) if key == OLD.0 => return none(format!("{} runs an older Kuvo Code: update it to change this from here.", OLD.1)),
+        _ => {}
     }
     if item.get("removed").is_some() {
         let mut can = none("It's deleted: bring it back to change it.".into());
@@ -666,8 +759,12 @@ fn can(item: &Value) -> Value {
 
 /// An item as a list shows it: without what it says, with how many notes, files and links it has
 /// and what may be done to it.
-fn summary(item: &Value) -> Value {
+fn summary(item: &Value, today: &str) -> Value {
     let mut said = item.clone();
+    // Late: its day is before today, and it's still open (not closed, not deleted).
+    if item.get("removed").is_none() && !closed(item["status"].as_str().unwrap_or_default()) && item["due"].as_str().is_some_and(|due| due < today) {
+        said["overdue"] = json!(true);
+    }
     let count = |field: &str| item[field].as_array().map_or(0, Vec::len);
     said["noteCount"] = json!(count("notes"));
     said["fileCount"] = json!(count("files"));
@@ -694,8 +791,8 @@ fn summary(item: &Value) -> Value {
 
 /// An item whole. One on a computer that answers is read there (`told: false`); one on a computer
 /// that's away is as it last told it, without what only it keeps.
-fn whole(item: &Value) -> Value {
-    let mut said = summary(item);
+fn whole(item: &Value, today: &str) -> Value {
+    let mut said = summary(item, today);
     let away = item["computer"]["key"] == json!(STUDIO.0);
     if item.get("computer").is_some() {
         said["told"] = json!(away);

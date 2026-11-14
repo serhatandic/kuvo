@@ -250,11 +250,6 @@ impl QueueView {
         column(body).into_any_element()
     }
 
-    /// Whether a day is gone by for an item that's still open.
-    fn overdue(&self, due: &str, status: &str) -> bool {
-        !self.is_closed(status) && matches!((time::parse_day(due), time::parse_day(&self.today(0))), (Some(due), Some(today)) if due < today)
-    }
-
     /// One item in the list: its status, what names it, its title (and what's being done on it
     /// now), its priority, labels, who it's for, when it's due, where it is, when it last changed;
     /// it opens its page.
@@ -313,12 +308,20 @@ impl QueueView {
             // (Its look as the item says it; else as the view lists who an item may be for.)
             let look = assignee.look.clone().or_else(|| self.queue().and_then(|said| said.assignees.iter().find(|each| each.kind == assignee.kind && each.id == assignee.id)).and_then(|each| each.look.clone()));
             let selector = format!("item-{id}-assignee");
-            div().debug_selector(move || selector).flex_none().child(who_mark(look.as_ref(), &assignee.name, px(18.), cx))
+            div().debug_selector(move || selector).flex_none().child(who_mark(look.as_ref(), &assignee.id, &assignee.name, px(18.), cx))
         });
         let due = item.due.as_ref().map(|due| {
             let selector = format!("item-{id}-due");
-            let late = !deleted && self.overdue(due, &item.status);
-            div().debug_selector(move || selector).flex_none().text_ui(TypeSize::Caption).text_color(if late { c.danger } else { c.text_muted }).child(time::due_words(due, &self.today(0)))
+            // Late where the box says so (`overdue`): nothing of it is worked out here.
+            let late = item.overdue;
+            let late_selector = format!("item-{id}-due-late");
+            div()
+                .debug_selector(move || selector)
+                .flex_none()
+                .text_ui(TypeSize::Caption)
+                .text_color(if late { c.danger } else { c.text_muted })
+                .child(time::due_words(due, &self.today(0)))
+                .when(late, |d| d.child(div().debug_selector(move || late_selector)))
         });
         let open = Act::Open(id.clone());
         let main = div()
@@ -378,7 +381,10 @@ impl QueueView {
             .children(chips)
             .children(who)
             .children(due)
-            .children(item.computer.as_ref().filter(|_| !narrow).map(|computer| Chip::new(SharedString::from(format!("item-{id}-computer")), crate::bots::computer_name(&computer.name).to_owned()).icon(IconName::Computer)))
+            .children(item.computer.as_ref().filter(|_| !narrow).map(|computer| {
+                let selector = format!("item-{id}-computer");
+                div().debug_selector(move || selector).flex_none().child(Chip::new(SharedString::from(format!("item-{id}-computer")), crate::bots::computer_name(&computer.name).to_owned()).icon(IconName::Computer))
+            }))
             .children(ago.map(|ago| div().flex_none().w(px(30.)).text_right().text_ui(TypeSize::Caption).text_color(c.text_faint).child(ago)));
         let trailing: Option<AnyElement> = if deleted {
             // (Brought back where the box says it may be.)
@@ -484,11 +490,15 @@ impl QueueView {
             .max_w(px(240.))
             .px(px(10.))
             .rounded(radius::NAV)
-            .border_1()
-            .border_color(if open { c.border_strong } else { c.border })
-            .bg(c.card)
             .text_ui(TypeSize::Small)
-            .text_color(if danger { c.danger } else if set { c.text } else { c.text_muted })
+            // One that opens a menu is a control: a card with an edge (a stronger one on a dark
+            // sheet, where the quiet one is lost). One that can't be changed is a fact: no edge,
+            // no fill, quieter words.
+            .when(enabled, |d| d.border_1().border_color(if open || cx.theme().appearance.is_dark() { c.border_strong } else { c.border }).bg(c.card).text_color(if danger { c.danger } else if set { c.text } else { c.text_muted }))
+            .when(!enabled, |d| {
+                let selector = format!("chip-{}-fact", field.slug());
+                d.px(space::S1).text_color(if danger { c.danger } else { c.text_muted }).child(div().debug_selector(move || selector))
+            })
             .when(open, |d| d.bg(c.hover))
             .when(enabled, |d| d.cursor_pointer().hover(|s| s.bg(c.hover)).on_click(cx.listener(move |this, _, _, cx| this.act(act.clone(), cx))))
             // One that doesn't open says why, in the box's words, when rested on.
@@ -522,13 +532,13 @@ impl QueueView {
         }
         if facts.assignee.is_some() || facts.set {
             let (mark, words) = match &facts.assignee {
-                Some((_, _, name)) => (who_mark(facts.look.as_ref(), name, px(16.), cx), name.clone()),
+                Some((_, id, name)) => (who_mark(facts.look.as_ref(), id, name, px(16.), cx), name.clone()),
                 None => (quiet(IconName::User), "Assignee".to_owned()),
             };
             chips.push(self.chip(&target, Field::Assignee, mark, words, facts.assignee.is_some(), facts.set, false, facts.why.as_ref(), cx));
         }
         if facts.due.is_some() || facts.set {
-            let late = facts.due.as_ref().is_some_and(|due| facts.status.as_ref().is_some_and(|status| self.overdue(due, status)));
+            let late = facts.late;
             let words = facts.due.as_ref().map_or_else(|| "Due date".to_owned(), |due| time::due_words(due, &self.today(0)));
             chips.push(self.chip(&target, Field::Due, quiet(IconName::Clock), words, facts.due.is_some(), facts.set, late, facts.why.as_ref(), cx));
         }
@@ -742,6 +752,8 @@ impl QueueView {
                 _ => {}
             }
         }
+        // (As they were last drawn: how far they scroll, and how far they have.)
+        let tabs_cut = self.tabs_scroll.max_offset().x + self.tabs_scroll.offset().x > px(1.);
         let search = div()
             .debug_selector(|| "queue-search".into())
             .flex()
@@ -824,7 +836,17 @@ impl QueueView {
                         .items_center()
                         .gap(space::S2)
                         // (The tabs scroll sideways where the box has more categories than fit.)
-                        .child(div().id("queue-tabs").flex_1().min_w_0().flex().items_center().gap(space::S1).py(space::S1).overflow_x_scroll().children(tabs))
+                        .child(
+                            div()
+                                .relative()
+                                .flex_1()
+                                .min_w_0()
+                                .child(div().id("queue-tabs").track_scroll(&self.tabs_scroll).w_full().flex().items_center().gap(space::S1).py(space::S1).overflow_x_scroll().children(tabs))
+                                // More tabs than fit: the last fades, so it's seen that they scroll.
+                                .when(tabs_cut, |d| {
+                                    d.child(div().debug_selector(|| "queue-tabs-more".into()).absolute().top_0().bottom_0().right_0().w(px(36.)).bg(gpui::linear_gradient(90., gpui::linear_color_stop(c.sidebar.opacity(0.), 0.), gpui::linear_color_stop(c.sidebar, 1.))))
+                                }),
+                        )
                         .child(search)
                         .children(filter)
                         .child(more)
@@ -872,7 +894,8 @@ impl QueueView {
                     .px(space::S5)
                     .py(space::S3)
                     .border_t_1()
-                    .border_color(c.border)
+                    // (On a dark sheet the quiet edge is lost: the stronger one.)
+                    .border_color(if cx.theme().appearance.is_dark() { c.border_strong } else { c.border })
                     // What it last made, while it stays open for the next.
                     .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).children(self.created.clone().filter(|_| new).map(|made| div().debug_selector(|| "sheet-created".into()).child(made))))
                     .when(new, |d| {
@@ -1036,6 +1059,13 @@ impl Render for QueueView {
             window.focus(&focus, cx);
         }
         self.viewport = window.viewport_size();
+        // Which of an item's two fields has the keyboard: where it goes back to after a menu.
+        for field in [&self.title, &self.body] {
+            let focus = gpui::Focusable::focus_handle(field.read(cx), cx);
+            if focus.is_focused(window) {
+                self.text_focus = Some(focus);
+            }
+        }
         // A chip's menu is open: a press anywhere else closes it, and does nothing more.
         let viewport = self.viewport;
         let scrim = self.picker.is_some().then(|| {

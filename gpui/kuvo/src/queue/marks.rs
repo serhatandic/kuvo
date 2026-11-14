@@ -3,7 +3,7 @@
 //! box names (a status's or a priority's id, a label's colour, a bot's look); one this doesn't know
 //! gets a plain mark, never none.
 
-use gpui::{AnyElement, App, IntoElement, ParentElement, Pixels, Styled, div, px};
+use gpui::{AnyElement, App, InteractiveElement, IntoElement, ParentElement, Pixels, Styled, div, px, svg};
 use kuvo_box::areas::Look;
 use kuvo_ui::{ActiveTheme, Icon, IconName, StyledType, TypeSize, theme::radius, theme::space};
 
@@ -74,12 +74,32 @@ pub fn label_chip(name: &str, color: &str, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// Who an item is for: a bot's still face where the box gave its look, else initials.
-pub fn who_mark(look: Option<&Look>, name: &str, size: Pixels, cx: &App) -> AnyElement {
+/// The mark Kuvo has for a coding agent, by the id the box names it by (`claude-code`, `codex-cli`,
+/// `cursor`): the one the rail draws for its account.
+fn agent_mark(id: &str) -> Option<(&'static str, String)> {
+    let service = id.split('-').next().unwrap_or(id);
+    [id, service].into_iter().find_map(|service| kuvo_ui::icon::mark_path(service).map(|path| (path, service.to_owned())))
+}
+
+/// Who an item is for: a bot's still face where the box gave its look; a coding agent's own mark;
+/// else an initial.
+pub fn who_mark(look: Option<&Look>, id: &str, name: &str, size: Pixels, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
-    match look {
-        Some(look) => bot_face(look, size),
-        None => div()
+    match (look, agent_mark(id)) {
+        (Some(look), _) => bot_face(look, size),
+        (None, Some((path, service))) => div()
+            .debug_selector({
+                let selector = format!("agent-mark-{service}");
+                move || selector
+            })
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .size(size)
+            .child(svg().path(path).size(size * 0.86).flex_none().text_color(kuvo_ui::icon::mark_color(&service).unwrap_or(c.text)))
+            .into_any_element(),
+        (None, None) => div()
             .flex()
             .flex_none()
             .items_center()

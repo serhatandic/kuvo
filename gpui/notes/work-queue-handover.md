@@ -2,7 +2,7 @@
 
 ## Done (#674: statuses, priorities and labels in place of categories)
 
-Notes: `notes/screens-queue.md` (with the Zed study). Scenarios: `kuvo/tests/queue.rs` (25, real
+Notes: `notes/screens-queue.md` (with the Zed study). Scenarios: `kuvo/tests/queue.rs` (34, real
 clicks and keys against the stand-in), unit tests in `kuvo_box/src/work_queue.rs`,
 `kuvo/src/queue/mod.rs` and `kuvo/src/time.rs`. Shots: `shots/screens-queue-*-{light,dark}.png`
 (28 screens); `screens-area-queue` rendered again.
@@ -51,8 +51,37 @@ clicks and keys against the stand-in), unit tests in `kuvo_box/src/work_queue.rs
    an item's assignee, `q` with narrowed counts.
 9. Every read-only path for a box that takes no writing is gone (the update gate holds such a
    box), and so is every `BOX-NEEDED` in the Work Queue's code.
-10. `cargo build`, `cargo test --workspace` (295) and `cargo clippy --workspace --all-targets`
+10. `cargo build`, `cargo test --workspace` (304) and `cargo clippy --workspace --all-targets`
     clean, every run with `KUVO_*` unset and the stand-in box only.
+
+## After the review
+
+- **Late is the box's** (`overdue` on an item): a due day is red only where the box says so; the
+  app's own rule is gone.
+- **The Source filter is by kind**, as the box counts them: "GitHub issues" (`github`) and "GitHub
+  pull requests" (`github-pr`) are two.
+- **A change's answer keeps the sessions the app knew** for that item (the box answers a change
+  with each "New Session", none at work) until the view is read again.
+- **A pick while a change is on its way waits behind it** (the latest wanted, field by field) and
+  is sent when it answers; the chips and the menu show what's wanted meanwhile, so two labels
+  picked quickly are both put on. A refusal drops what waited.
+- **A search's result is drawn only for the words it answered**; other words typed show "Searching
+  for …" until the box answers.
+- **A chip that can't be changed is drawn as a fact** (no edge, no fill, quiet words), with the
+  box's why when rested on.
+- **A coding agent wears its own mark** (the rail's, by its id), an initial only where Kuvo has
+  none.
+- **New Item's title is set as a title** (`TextField::title`: the page's title size, medium), over
+  the description.
+- **Edit Item sends only what changed**, and nothing where nothing did.
+- After a chip's menu closes the keyboard is back in the field it was in (title or description).
+- A due day's line shows a day a fortnight from today; the tabs' end fades where they're cut, and
+  so does a long menu's; a dark sheet's chips and divider have the stronger edge; "As studio-mini
+  last reported it."
+- The stand-in answers as the box does: `overdue`, sources by kind (it has a pull request), a
+  change's answer without session facts, an item of your own assigned to a bot handed to that
+  bot's queue (`handedBy`), and `can` for a computer on an older Kuvo Code and for a shared
+  machine, each with the box's sentence. A notice's words are asserted as the page draws them.
 
 ## BOX-NEEDED
 
@@ -64,9 +93,11 @@ something can't be done (`can.why`: the tooltip of a chip that doesn't open, the
 its face from it; the view's `assignees` is only the fallback).
 
 Still awkward to draw from, for the box session to weigh (none blocks anything):
-- **Counts under a filter**: `q` narrows the counts; the computer, source and owner filters are the
-  app's, so no count shows over them. `computer=`, `source=`, `ownerIs=` (and `label=`,
-  `priority=`, `assignee=`) on the view would make them the box's, with counts.
+- **Filters as the box's query parameters**: `q` narrows the counts; the computer, source and owner
+  filters are the app's, so no count shows over them. `computer=`, `source=`, `ownerIs=` (and
+  `label=`, `priority=`, `assignee=`) on the view would make them the box's, with counts.
+- **The colours a label may be** are listed in the app (`COLORS`, the protocol's ten): `colors` on
+  the view would say them.
 - **Which closed status is "done"**: Mark Done and Mark Canceled send the protocol's ids (`done`,
   `canceled`), shown only where the view lists them. A `kind` on a status would say it.
 - **A status's or a priority's look** is drawn by its id (a newer box's status gets a plain ring).
@@ -90,23 +121,19 @@ Still awkward to draw from, for the box session to weigh (none blocks anything):
 - **Left in the client, view words:** "At work", "Mark Done", "Mark Canceled", "Open"/"Closed" over
   the status menu, "No one", "Bot"/"Coding agent", Today/Tomorrow/In a week and "Nov 16", the
   empty lines, "From GitHub", "In your own queue".
-- The title in New Item is the text field's one size (the block sets every field in one type; an
-  item's page already has the page's title style, 24 px over a 14 px description).
 - No VoiceOver labels (GPUI has none here yet); larger text not tried.
 - The phone and the Mac app: not this piece. Docs and CHANGELOG: none needed for the GPUI app
   (not shipped); the box's change has its own.
 
 ## Edge cases left
 
-- In a narrow window the tabs are cut at the search with nothing saying they scroll.
-- Labels picked fast one after another on an item's page: a pick while the one before is on its
-  way is dropped (one change at a time for an item).
+- A row's trailing things (labels, face, due day, computer, when) aren't in slots of a fixed
+  width, so they don't line up in columns from row to row.
 - A label an item wears that the view doesn't list isn't drawn (a rename in flight).
 - A menu taller than the room under its chip is moved up over the chip, not flipped above it.
 - Leaving a page drops a sheet's typed text, unasked (Bots' too).
 - A due day typed for a new item is only checked by the box at Create.
 - "Create more" keeps the chips as picked for the next item (only the text clears).
-- The GitHub filter takes `github-pr` too (the box counts sources by `github`).
 
 ## Decisions for the user
 

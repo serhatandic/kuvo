@@ -114,12 +114,14 @@ fn the_queue_lists_the_boxs_items_under_its_statuses_with_whats_closed_folded(cx
     for part in ["item-wqi_231-status-in-progress", "item-wqi_231-priority-high", "item-wqi_231-label-lbl_bug", "item-wqi_231-assignee", "item-wqi_231-due", "item-working-wqi_231", "item-wqi_232-priority-urgent"] {
         assert!(shown(cx, part), "{part}");
     }
+    // A coding agent wears its own mark; an item on another computer says which.
+    assert!(shown(cx, "agent-mark-claude") && shown(cx, "item-wqi_242-computer") && !shown(cx, "item-wqi_234-computer"));
     // Normal is no mark; an item with nothing set shows none of them.
     assert!(!shown(cx, "item-wqi_234-priority-normal") && !shown(cx, "item-wqi_234-assignee") && !shown(cx, "item-wqi_234-due") && !shown(cx, "item-working-wqi_234"));
     // More labels than a row shows fold to how many more.
     assert!(shown(cx, "item-wqi_235-label-lbl_docs") && shown(cx, "item-wqi_235-label-lbl_launch") && shown(cx, "item-wqi_235-more-labels") && !shown(cx, "item-wqi_235-label-lbl_design"));
     // The counts are the box's: on the groups, the tabs and the sidebar's rows.
-    for count in ["group-todo-count-6", "group-done-count-12", "tab-todo-count-6", "status-todo-count-6", "status-canceled-count-2", "label-lbl_design-count-5", "queue-open-17"] {
+    for count in ["group-todo-count-6", "group-done-count-12", "tab-todo-count-6", "status-todo-count-6", "status-canceled-count-2", "label-lbl_design-count-5", "queue-open-19"] {
         assert!(shown(cx, count), "{count}");
     }
 
@@ -213,11 +215,18 @@ fn the_filters_only_choose_which_of_the_boxs_items_show(cx: &mut TestAppContext)
     click(cx, "menu-item-studio-mini");
     assert!(shown(cx, "item-wqi_236") && shown(cx, "item-wqi_242"));
     click(cx, "queue-filter");
-    click(cx, "menu-item-GitHub");
+    click(cx, "menu-item-GitHub issues");
     assert!(shown(cx, "queue-empty"));
     assert_eq!(page.read_with(cx, |page, _| page.filters().len()), 3);
     click(cx, "filters-clear");
     assert!(!shown(cx, "queue-filters") && shown(cx, "item-wqi_231") && shown(cx, "group-todo-count-6"));
+    // A source is its kind, as the box counts them: issues and pull requests are two filters.
+    click(cx, "queue-filter");
+    click(cx, "menu-item-GitHub pull requests");
+    assert!(shown(cx, "item-wqi_247") && !shown(cx, "item-wqi_233") && !shown(cx, "item-wqi_250"));
+    click(cx, "queue-filter");
+    click(cx, "menu-item-GitHub issues");
+    assert!(shown(cx, "item-wqi_247") && shown(cx, "item-wqi_233") && shown(cx, "item-wqi_250") && !shown(cx, "item-wqi_234"));
     // None of it asked the box again.
     assert_eq!(stand_in.seen_at("GET", "kuvo/work-queue").len(), asked);
 }
@@ -275,12 +284,29 @@ fn an_item_on_a_computer_thats_away_says_so_and_offers_nothing(cx: &mut TestAppC
     click(cx, "chip-status");
     assert_eq!(menu(&page, cx), None);
     assert!(!shown(cx, "chip-assignee") && !shown(cx, "chip-due"), "what's unset and can't be set isn't drawn");
+    // A chip that can't be changed is drawn as a fact, not a control.
+    assert!(shown(cx, "chip-status-fact") && shown(cx, "chip-priority-fact"));
+    // Why, on the page, in the box's words.
+    assert_eq!(page.read_with(cx, |page, _| page.notice("item-elsewhere")).as_deref(), Some("As studio-mini last reported it. Its description, notes, files and links are on studio-mini. studio-mini isn't answering now (it may be asleep, off or offline): it can be changed once it's back."));
     assert!(stand_in.seen_at("PATCH", "kuvo/work-queue/items/wqi_242").is_empty());
 
     // One on a computer that answers is read there, whole, and changed there.
     click(cx, "item-back");
     click(cx, "item-wqi_236");
-    assert!(shown(cx, "item-elsewhere") && shown(cx, "item-no-body") && shown(cx, "item-finish") && shown(cx, "chip-assignee"));
+    assert!(shown(cx, "item-elsewhere") && shown(cx, "item-no-body") && shown(cx, "item-finish") && shown(cx, "chip-assignee") && !shown(cx, "chip-status-fact"));
+    assert_eq!(page.read_with(cx, |page, _| page.notice("item-elsewhere")).as_deref(), Some("Read from devbox. What you change here is changed there."));
+
+    // One on a computer that runs an older Kuvo Code, and one on a machine shared outside your
+    // setup: read there, and neither takes a change from here. Each says why, as the box does.
+    for (item, why) in [("wqi_228", "Read from old-mini. old-mini runs an older Kuvo Code: update it to change this from here."), ("wqi_229", "Read from shared-box. It's on shared-box: change it there.")] {
+        click(cx, "item-back");
+        assert!(shown(cx, &format!("item-{item}-why")) && !shown(cx, &format!("item-{item}-more")));
+        click(cx, &format!("item-{item}"));
+        assert_eq!(page.read_with(cx, |page, _| page.notice("item-elsewhere")).as_deref(), Some(why));
+        assert!(shown(cx, "chip-status-fact") && !shown(cx, "item-finish") && !shown(cx, "item-edit") && !shown(cx, "item-more"));
+        click(cx, "chip-status");
+        assert_eq!(menu(&page, cx), None);
+    }
 }
 
 #[gpui::test]
@@ -391,6 +417,16 @@ fn rewriting_an_items_title_and_description(cx: &mut TestAppContext) {
     // The page shows it as the box has it now.
     assert_eq!(title(&workspace, cx).as_deref(), Some("Dark mode for Settings"));
     assert!(shown(cx, "item-body") && !shown(cx, "item-no-body"));
+    // Only what was changed is sent: the title alone; and with nothing changed, nothing.
+    click(cx, "item-edit");
+    keys(cx, "cmd-a backspace");
+    cx.simulate_input("Dark mode, everywhere");
+    keys(cx, "cmd-enter");
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/work-queue/items/wqi_234").last(), Some(&json!({ "title": "Dark mode, everywhere" })));
+    click(cx, "item-edit");
+    keys(cx, "cmd-enter");
+    assert!(!shown(cx, "queue-sheet"));
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/work-queue/items/wqi_234").len(), 2);
     // A title the box won't take: why not, in its words, and the sheet stays.
     click(cx, "item-edit");
     keys(cx, "cmd-a backspace");
@@ -416,6 +452,7 @@ fn only_what_the_box_says_may_be_done_is_offered(cx: &mut TestAppContext) {
     assert!(shown(cx, "item-head") && !shown(cx, "item-finish") && !shown(cx, "item-edit"));
     // Why, in the box's words, in a notice of its own.
     assert!(shown(cx, "item-why"));
+    assert_eq!(page.read_with(cx, |page, _| page.notice("item-why")).as_deref(), Some("Its title, its description and closing it are GitHub's."));
     click(cx, "chip-status");
     assert!(shown(cx, "pick-backlog") && shown(cx, "pick-needs-you") && !shown(cx, "pick-done") && !shown(cx, "pick-canceled"));
     click(cx, "pick-backlog");
@@ -428,6 +465,7 @@ fn only_what_the_box_says_may_be_done_is_offered(cx: &mut TestAppContext) {
     click(cx, "item-back");
     click(cx, "group-done");
     click(cx, "item-wqi_250");
+    assert_eq!(page.read_with(cx, |page, _| page.notice("item-why")).as_deref(), Some("It's closed on GitHub: it's back where it stood once it's reopened there."));
     click(cx, "chip-status");
     assert_eq!(menu(&page, cx), None);
     click(cx, "chip-priority");
@@ -445,6 +483,7 @@ fn only_what_the_box_says_may_be_done_is_offered(cx: &mut TestAppContext) {
     keys(cx, "escape");
     click(cx, "item-wqi_241");
     assert!(shown(cx, "item-handing") && !shown(cx, "item-why") && !shown(cx, "item-finish") && !shown(cx, "item-edit"));
+    assert_eq!(page.read_with(cx, |page, _| page.notice("item-handing")).as_deref(), Some("It's on its way to Wren on another computer: it can be changed there once it's arrived."));
     click(cx, "chip-status");
     assert_eq!(menu(&page, cx), None);
     // An item of your own has nothing to explain.
@@ -505,6 +544,7 @@ fn deleting_an_item_and_bringing_it_back(cx: &mut TestAppContext) {
     // A deleted item's page says so, offers only to bring it back, and does.
     click(cx, "item-wqi_262");
     assert!(shown(cx, "item-deleted") && !shown(cx, "item-finish") && !shown(cx, "item-edit") && !shown(cx, "item-more"));
+    assert_eq!(page.read_with(cx, |page, _| page.notice("item-deleted")).as_deref(), Some("It's deleted: bring it back to change it."));
     click(cx, "chip-status");
     assert_eq!(menu(&page, cx), None);
     click(cx, "notice-act");
@@ -541,8 +581,12 @@ fn a_new_item_is_written_and_its_chips_picked_by_their_menus(cx: &mut TestAppCon
     click(cx, "chip-priority");
     assert!(shown(cx, "pick-normal-on"));
     keys(cx, "1");
-    // Who it's for (the first is no one), and when it's due.
+    // After a menu the keyboard is back where it was: in the description.
+    cx.simulate_input(" More soon.");
+    assert_eq!(page.read_with(cx, |page, cx| page.item_fields().1.read(cx).text().to_owned()), "Uptime, and what's wrong now. More soon.");
+    // Who it's for (the first is no one; each coding agent by its own mark), and when it's due.
     click(cx, "chip-assignee");
+    assert!(shown(cx, "agent-mark-claude") && shown(cx, "agent-mark-codex") && shown(cx, "agent-mark-cursor"));
     keys(cx, "2");
     click(cx, "chip-due");
     assert!(shown(cx, "pick-today") && shown(cx, "pick-tomorrow") && shown(cx, "pick-week") && shown(cx, "pick-none-on"));
@@ -566,7 +610,7 @@ fn a_new_item_is_written_and_its_chips_picked_by_their_menus(cx: &mut TestAppCon
     assert!(!shown(cx, "queue-sheet"));
     assert_eq!(
         posted(&stand_in).last(),
-        Some(&json!({ "title": "A status page", "body": "Uptime, and what's wrong now.", "status": "in-review", "priority": "urgent", "labels": ["lbl_bug", "lbl_n1"], "assignee": { "kind": "bot", "id": "bot_mira" }, "due": "2026-11-14" }))
+        Some(&json!({ "title": "A status page", "body": "Uptime, and what's wrong now. More soon.", "status": "in-review", "priority": "urgent", "labels": ["lbl_bug", "lbl_n1"], "assignee": { "kind": "bot", "id": "bot_mira" }, "due": "2026-11-14" }))
     );
     // It's in the queue as the box made it: numbered by the box, under In review.
     assert!(top(cx, "item-wqi_263") > top(cx, "item-wqi_235") && top(cx, "item-wqi_263") < top(cx, "group-in-progress"));
@@ -708,6 +752,130 @@ fn a_long_list_of_labels_scrolls_and_narrows_as_its_typed(cx: &mut TestAppContex
 }
 
 #[gpui::test]
+fn a_due_day_is_red_only_where_the_box_says_its_late(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_workspace, _page, cx) = queue(cx, &stand_in);
+    // Late is the box's word (`overdue`): yesterday's, still open, is red; one to come isn't.
+    assert!(shown(cx, "item-wqi_235-due-late") && shown(cx, "item-wqi_231-due") && !shown(cx, "item-wqi_231-due-late"));
+    assert_eq!((item_said(&stand_in, "wqi_235")["overdue"].clone(), item_said(&stand_in, "wqi_251").get("overdue").cloned()), (json!(true), None));
+    // A closed item whose day is gone by isn't late, nor is a deleted one: the app works none of it out.
+    click(cx, "group-deleted");
+    assert!(shown(cx, "item-wqi_262-due") && !shown(cx, "item-wqi_262-due-late"));
+    click(cx, "group-deleted");
+    click(cx, "group-done");
+    assert!(shown(cx, "item-wqi_251-due") && !shown(cx, "item-wqi_251-due-late"));
+    // On its page too.
+    click(cx, "item-wqi_251");
+    assert!(shown(cx, "chip-due"));
+}
+
+#[gpui::test]
+fn a_changes_answer_keeps_the_sessions_already_known(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_workspace, page, cx) = queue(cx, &stand_in);
+    // A change's answer names its sessions "New Session", none at work; the view says them again
+    // when it's read, which fails here: what the app knew of them stays.
+    stand_in.queue_readable(false);
+    click(cx, "item-wqi_231-more");
+    click(cx, "menu-item-In review");
+    assert_eq!(item_said(&stand_in, "wqi_231")["status"], "in-review");
+    assert!(shown(cx, "item-wqi_231-status-in-review") && shown(cx, "item-working-wqi_231"), "still at work, as it was");
+    let sessions = page.read_with(cx, |page, _| match page.said() {
+        kuvo::areas::Reading::Ready(said) => said.items.iter().find(|item| item.id == "wqi_231").map(|item| item.sessions.clone()).unwrap_or_default(),
+        _ => Vec::new(),
+    });
+    assert_eq!(sessions.iter().map(|session| (session.title.as_str(), session.working)).collect::<Vec<_>>(), vec![("Fix the sign-up form wiping on a taken email", true), ("Move the blog to the new CMS", false)]);
+    // Closed, the box unlinks everyone: none is kept then.
+    click(cx, "item-wqi_231-more");
+    click(cx, "menu-item-Mark Done");
+    click(cx, "group-done");
+    assert!(shown(cx, "item-wqi_231-status-done") && !shown(cx, "item-working-wqi_231"));
+}
+
+#[gpui::test]
+fn assigning_your_own_item_to_a_bot_moves_it_to_that_bots_queue(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_workspace, page, cx) = queue(cx, &stand_in);
+    click(cx, "queue-new");
+    cx.simulate_input("Mine for now");
+    keys(cx, "cmd-enter");
+    assert_eq!(item_said(&stand_in, "wqi_263")["owner"], "usr_you");
+    click(cx, "item-wqi_263");
+    assert!(page.read_with(cx, |page, _| page.facts_line()).is_some_and(|line| line.ends_with("In your own queue")));
+    // For a bot of this box, the box hands it on: it's in that bot's queue from then.
+    click(cx, "chip-assignee");
+    click(cx, "pick-bot_mira");
+    let item = item_said(&stand_in, "wqi_263");
+    assert_eq!((item["owner"].as_str(), item["handedBy"].as_str()), (Some("ses_mira"), Some("usr_you")));
+    assert!(page.read_with(cx, |page, _| page.facts_line()).is_some_and(|line| line.ends_with("In Mira’s queue")));
+}
+
+#[gpui::test]
+fn a_label_is_made_from_the_menu_on_an_items_page(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_workspace, page, cx) = queue(cx, &stand_in);
+    click(cx, "item-wqi_234");
+    click(cx, "chip-labels");
+    cx.simulate_input("Infra");
+    assert!(shown(cx, "pick-make") && !shown(cx, "pick-lbl_bug"));
+    keys(cx, "enter");
+    // Made by the box, then put on the item; the menu stays for more.
+    assert_eq!(bodies(&stand_in, "POST", "kuvo/work-queue/labels"), vec![json!({ "add": "Infra" })]);
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/work-queue/items/wqi_234"), vec![json!({ "labels": ["lbl_n1"] })]);
+    assert_eq!(menu(&page, cx), Some(Field::Labels));
+    assert!(shown(cx, "pick-lbl_n1-on") && shown(cx, "label-lbl_n1"));
+    // A name the box won't take is said in the menu, in its words.
+    cx.simulate_input("  ");
+    cx.simulate_input("infra");
+    assert!(!shown(cx, "pick-make"), "one of that name is there already");
+    keys(cx, "escape");
+    click(cx, "item-back");
+    assert!(shown(cx, "item-wqi_234-label-lbl_n1"));
+}
+
+#[gpui::test]
+fn a_status_this_app_has_never_heard_of_is_listed_as_the_box_says(cx: &mut TestAppContext) {
+    // A newer box lists a status of its own: its group, tab and sidebar row are there, in its place,
+    // and it's one of the statuses an item can be given.
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.newer_status();
+    let (_workspace, page, cx) = queue(cx, &stand_in);
+    for part in ["group-blocked", "item-wqi_227", "item-wqi_227-status-blocked", "tab-blocked-count-1", "status-blocked-count-1"] {
+        assert!(shown(cx, part), "{part}");
+    }
+    assert!(top(cx, "group-waiting") < top(cx, "group-blocked") && top(cx, "group-blocked") < top(cx, "group-todo"));
+    click(cx, "item-wqi_234");
+    click(cx, "chip-status");
+    click(cx, "pick-blocked");
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/work-queue/items/wqi_234"), vec![json!({ "status": "blocked" })]);
+    assert_eq!(menu(&page, cx), None);
+    click(cx, "item-back");
+    assert!(shown(cx, "item-wqi_234-status-blocked"));
+}
+
+#[gpui::test]
+fn a_narrow_windows_row_shows_less_and_keeps_its_title(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_workspace, _page, cx) = queue(cx, &stand_in);
+    assert!(shown(cx, "item-wqi_235-label-lbl_launch") && shown(cx, "item-wqi_242-computer"));
+    let wide = bounds(cx, "item-wqi_235-title").expect("its title").size.width;
+    cx.simulate_resize(size(px(760.), px(1800.)));
+    cx.run_until_parked();
+    // One label, then how many more; no computer chip. What says most stays: its status, priority,
+    // who it's for and its due day.
+    assert!(shown(cx, "item-wqi_235-label-lbl_docs") && !shown(cx, "item-wqi_235-label-lbl_launch") && shown(cx, "item-wqi_235-more-labels") && !shown(cx, "item-wqi_242-computer"));
+    for part in ["item-wqi_235-status-in-review", "item-wqi_235-priority-high", "item-wqi_235-assignee", "item-wqi_235-due-late", "item-wqi_235-more"] {
+        assert!(shown(cx, part), "{part}");
+    }
+    // Its title still has room, and nothing runs past the window.
+    let title = bounds(cx, "item-wqi_235-title").expect("its title");
+    assert!(title.size.width > px(120.) && title.size.width < wide);
+    assert!(bounds(cx, "item-wqi_235-more").expect("its menu").right() <= px(760.));
+    // The tabs don't all fit: their end fades, to say they scroll.
+    assert!(shown(cx, "queue-tabs-more"));
+}
+
+#[gpui::test]
 fn a_queue_that_cant_be_read_says_so_and_is_read_again(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.queue_readable(false);
@@ -811,6 +979,79 @@ mod live {
         field.update(cx, |field, cx| field.set_text("", cx));
         cx.run_until_parked();
         assert!(shown(cx, "item-wqi_231") && shown(cx, "tab-backlog-count-7"));
+    }
+
+    #[gpui::test]
+    fn a_new_search_never_shows_the_old_result_under_the_new_words(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (page, cx) = host(cx, &stand_in);
+        let field = page.read_with(cx, |page, _| page.search_field().clone());
+        field.update(cx, |field, cx| field.set_text("docs", cx));
+        cx.run_until_parked();
+        assert!(shown(cx, "item-wqi_239") && !page.read_with(cx, |page, _| page.searching()));
+        // Other words typed, and drawn before the box answers: it says it's searching, with none
+        // of what the search before found.
+        field.update(cx, |field, cx| field.set_text("lighthouse", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(page.read_with(cx, |page, _| page.searching()));
+        assert!(shown(cx, "search-loading") && !shown(cx, "item-wqi_239") && !shown(cx, "group-backlog"));
+        cx.run_until_parked();
+        assert!(shown(cx, "item-wqi_237") && !shown(cx, "search-loading") && !shown(cx, "item-wqi_239"));
+    }
+
+    #[gpui::test]
+    fn a_second_pick_while_the_first_is_on_its_way_is_kept_and_sent(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (page, cx) = host(cx, &stand_in);
+        page.update(cx, |page, cx| page.show(Some("item:wqi_234"), cx));
+        cx.run_until_parked();
+        // Two labels picked one after the other, the second before the box answers the first.
+        click(cx, "chip-labels");
+        cx.simulate_keystrokes("1 2");
+        cx.run_until_parked();
+        // Both are on it: the second was sent when the first answered, with the first.
+        assert_eq!(bodies(&stand_in, "PATCH", "kuvo/work-queue/items/wqi_234"), vec![json!({ "labels": ["lbl_bug"] }), json!({ "labels": ["lbl_bug", "lbl_design"] })]);
+        assert_eq!(item_said(&stand_in, "wqi_234")["labels"], json!(["lbl_bug", "lbl_design"]));
+        assert!(shown(cx, "pick-lbl_bug-on") && shown(cx, "pick-lbl_design-on"));
+        // Three at once: what's wanted last is what's sent after the one on its way.
+        cx.simulate_keystrokes("1 2 3");
+        cx.run_until_parked();
+        assert_eq!(item_said(&stand_in, "wqi_234")["labels"], json!(["lbl_docs"]));
+        assert_eq!(bodies(&stand_in, "PATCH", "kuvo/work-queue/items/wqi_234").len(), 4);
+        // Different chips, one after the other: each is kept.
+        cx.simulate_keystrokes("escape");
+        page.update(cx, |page, cx| {
+            page.act(Act::Set { item: "wqi_234".into(), change: Box::new(ItemChange { priority: Some("high".into()), ..ItemChange::default() }) }, cx);
+            page.act(Act::Set { item: "wqi_234".into(), change: Box::new(ItemChange { due: Some(Some("2026-12-01".into())), ..ItemChange::default() }) }, cx);
+            page.act(Act::Set { item: "wqi_234".into(), change: Box::new(ItemChange { status: Some("backlog".into()), ..ItemChange::default() }) }, cx);
+        });
+        cx.run_until_parked();
+        let item = item_said(&stand_in, "wqi_234");
+        assert_eq!((item["priority"].as_str(), item["due"].as_str(), item["status"].as_str()), (Some("high"), Some("2026-12-01"), Some("backlog")));
+        assert_eq!(bodies(&stand_in, "PATCH", "kuvo/work-queue/items/wqi_234").last(), Some(&json!({ "status": "backlog", "due": "2026-12-01" })));
+    }
+
+    #[gpui::test]
+    fn escape_while_a_sheet_is_saving_leaves_it_until_the_box_answers(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (page, cx) = host(cx, &stand_in);
+        page.update(cx, |page, cx| {
+            page.act(Act::New, cx);
+            page.act(Act::CreateMore(true), cx);
+        });
+        cx.run_until_parked();
+        cx.simulate_input("One");
+        // ⌘↩, then Escape before the box answers: the sheet isn't closed under its own save, so
+        // with Create more it's still there for the next one, saying what it made.
+        cx.simulate_keystrokes("cmd-enter escape");
+        cx.run_until_parked();
+        assert_eq!(bodies(&stand_in, "POST", "kuvo/work-queue/items").len(), 1);
+        assert_eq!(page.read_with(cx, |page, _| page.sheet().cloned()), Some(Sheet::New));
+        assert!(shown(cx, "sheet-created"));
+        // Answered, Escape closes it.
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert_eq!(page.read_with(cx, |page, _| page.sheet().cloned()), None);
     }
 
     #[gpui::test]

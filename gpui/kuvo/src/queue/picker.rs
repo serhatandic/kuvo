@@ -46,7 +46,7 @@ impl Field {
             Field::Status => "Change status…",
             Field::Priority => "Change priority…",
             Field::Assignee => "Assign to…",
-            Field::Due => "Or type a day: 2026-11-30",
+            Field::Due => "Or type a day",
             Field::Labels => "Find or make a label…",
         }
     }
@@ -92,7 +92,8 @@ pub(super) enum Picked {
 pub(super) enum Mark {
     Status(String),
     Priority(String),
-    Who(Option<Look>, String),
+    /// A look, an id and a name.
+    Who(Option<Look>, String, String),
     Icon(IconName),
     Dot(String),
 }
@@ -125,6 +126,8 @@ pub(super) struct Facts {
     pub look: Option<Look>,
     /// Why something of it can't be changed, in the box's words.
     pub why: Option<String>,
+    /// Its day is gone by, as the box says.
+    pub late: bool,
     pub due: Option<String>,
     /// Its status among the open ones, its priority, labels, assignee and due day may be changed.
     pub set: bool,
@@ -148,6 +151,7 @@ impl QueueView {
                     assignee: draft.assignee.as_ref().map(|(kind, id)| (kind.clone(), id.clone(), named(kind, id))),
                     look: draft.assignee.as_ref().and_then(|(kind, id)| listed(kind, id)).and_then(|each| each.look.clone()),
                     why: None,
+                    late: false,
                     due: draft.due.clone(),
                     set: true,
                     close: true,
@@ -155,7 +159,7 @@ impl QueueView {
             }
             Target::Item(id) => {
                 let item = self.item(id)?;
-                Some(Facts {
+                let mut facts = Facts {
                     status: Some(item.status.clone()),
                     status_words: item.done_as.clone(),
                     priority: Some(item.priority.clone()).filter(|priority| !priority.is_empty()),
@@ -164,10 +168,35 @@ impl QueueView {
                     // Its look as the item says it (a bot of the box asked), else as the view lists it.
                     look: item.assignee.as_ref().and_then(|assignee| assignee.look.clone().or_else(|| listed(&assignee.kind, &assignee.id).and_then(|each| each.look.clone()))),
                     why: item.can.why.clone(),
+                    late: item.overdue,
                     due: item.due.clone(),
                     set: item.can.set,
                     close: item.can.close,
-                })
+                };
+                // What's been asked of it and not answered yet (a change on its way, and one
+                // waiting behind it) is what the next pick starts from: a second label picked
+                // quickly is put on beside the first.
+                for wanted in [self.flying.get(id), self.waiting.get(id)].into_iter().flatten() {
+                    if let Some(status) = &wanted.status {
+                        facts.status = Some(status.clone());
+                        facts.status_words = None;
+                    }
+                    if let Some(priority) = &wanted.priority {
+                        facts.priority = Some(priority.clone());
+                    }
+                    if let Some(labels) = &wanted.labels {
+                        facts.labels = labels.clone();
+                    }
+                    if let Some(assignee) = &wanted.assignee {
+                        facts.assignee = assignee.as_ref().map(|(kind, id)| (kind.clone(), id.clone(), named(kind, id)));
+                        facts.look = assignee.as_ref().and_then(|(kind, id)| listed(kind, id)).and_then(|each| each.look.clone());
+                    }
+                    if let Some(due) = &wanted.due {
+                        facts.due = due.clone();
+                        facts.late = false;
+                    }
+                }
+                Some(facts)
             }
         }
     }
@@ -207,7 +236,7 @@ impl QueueView {
                     key: each.id.clone(),
                     label: each.name.clone(),
                     detail: Some(if each.kind == "bot" { "Bot" } else { "Coding agent" }.to_owned()),
-                    mark: Mark::Who(each.look.clone(), each.name.clone()),
+                    mark: Mark::Who(each.look.clone(), each.id.clone(), each.name.clone()),
                     checked: facts.assignee.as_ref().is_some_and(|(kind, id, _)| kind == &each.kind && id == &each.id),
                     value: Picked::Assignee(Some((each.kind.clone(), each.id.clone()))),
                     header: None,
@@ -260,8 +289,10 @@ impl QueueView {
         if !may {
             return;
         }
+        // (A due day's line shows how a day is written, with one a fortnight from today.)
+        let placeholder = if field == Field::Due { format!("{}: {}", field.placeholder(), self.today(14)) } else { field.placeholder().to_owned() };
         self.picker_field.update(cx, |line, cx| {
-            line.set_placeholder(field.placeholder());
+            line.set_placeholder(placeholder);
             line.set_text("", cx);
         });
         self.picker = Some(Picker { target, field, at: 0, error: None, making: false, typed: String::new() });
@@ -279,9 +310,10 @@ impl QueueView {
 
     pub(super) fn close_picker(&mut self, cx: &mut Context<Self>) {
         if self.picker.take().is_some() {
-            // The keyboard goes back to where it was: the item being written, or the page.
+            // The keyboard goes back to where it was: the title or the description of the item
+            // being written, or the page.
             self.wants_focus = Some(match self.sheet {
-                Some(Sheet::New) => self.title.focus_handle(cx),
+                Some(Sheet::New) => self.text_focus.clone().unwrap_or_else(|| self.title.focus_handle(cx)),
                 _ => self.focus.clone(),
             });
             cx.notify();
@@ -441,6 +473,8 @@ impl QueueView {
         let picks = self.picks(cx);
         let typed = !self.picker_field.read(cx).text().trim().is_empty();
         let slug = picker.field.slug();
+        // (As it was last drawn: how far it scrolls, and how far it has.)
+        let more_below = self.picker_scroll.max_offset().y + self.picker_scroll.offset().y > px(1.);
         let rows: Vec<AnyElement> = picks
             .iter()
             .enumerate()
@@ -450,7 +484,7 @@ impl QueueView {
                 let mark: AnyElement = match &pick.mark {
                     Mark::Status(id) => status_mark(id, cx),
                     Mark::Priority(id) => priority_mark(id, cx),
-                    Mark::Who(look, name) => who_mark(look.as_ref(), name, px(16.), cx),
+                    Mark::Who(look, id, name) => who_mark(look.as_ref(), id, name, px(16.), cx),
                     Mark::Icon(icon) => div().flex().flex_none().items_center().justify_center().size(px(16.)).child(Icon::new(*icon).color(c.icon)).into_any_element(),
                     Mark::Dot(color) => div().flex().flex_none().items_center().justify_center().size(px(16.)).child(label_dot(color)).into_any_element(),
                 };
@@ -550,7 +584,15 @@ impl QueueView {
                     .child(div().flex_1().min_w_0().child(self.picker_field.clone()))
                     .children(picker.making.then(|| spinner("picker-making", kuvo_ui::IconSize::Nav, c.text_muted))),
             )
-            .child(div().id("queue-picker-rows").track_scroll(&self.picker_scroll).max_h(px(308.)).overflow_y_scroll().flex().flex_col().p(space::S1).children(rows).children(empty))
+            .child(
+                div()
+                    .relative()
+                    .child(div().id("queue-picker-rows").track_scroll(&self.picker_scroll).max_h(px(308.)).overflow_y_scroll().flex().flex_col().p(space::S1).children(rows).children(empty))
+                    // More rows than fit: the last ones fade, so it's seen that it scrolls.
+                    .when(more_below, |d| {
+                        d.child(div().debug_selector(|| "picker-more".into()).absolute().left_0().right_0().bottom_0().h(px(28.)).rounded_b(radius::POPOVER).bg(gpui::linear_gradient(180., gpui::linear_color_stop(c.elevated.opacity(0.), 0.), gpui::linear_color_stop(c.elevated, 1.))))
+                    }),
+            )
             // Why the box wouldn't make the label, in its words.
             .children(picker.error.clone().map(|error| div().debug_selector(|| "picker-error".into()).px(space::S3).pb(space::S2).text_ui(TypeSize::Small).text_color(c.danger).child(error)))
             .into_any_element()

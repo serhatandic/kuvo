@@ -87,7 +87,7 @@ impl Filter {
     pub fn words(&self) -> String {
         match self {
             Filter::Computer { name, .. } => format!("On {name}"),
-            Filter::Source(kind) => format!("From {}", source_name(kind)),
+            Filter::Source(kind) => source_name(kind),
             Filter::Owner { name, .. } => format!("Owner: {name}"),
         }
     }
@@ -113,8 +113,8 @@ impl Filter {
     fn takes(&self, item: &Item) -> bool {
         match self {
             Filter::Computer { key, .. } => item.computer.as_ref().map_or("", |computer| computer.key.as_str()) == key,
-            // (The box counts its sources by kind, `github`: a pull request's `github-pr` is one of them.)
-            Filter::Source(kind) => item.source.as_ref().is_some_and(|source| source.kind.starts_with(kind.as_str())),
+            // (By its kind, as the box counts them: an issue's and a pull request's are two.)
+            Filter::Source(kind) => item.source.as_ref().is_some_and(|source| &source.kind == kind),
             Filter::Owner { owner, .. } => &item.owner == owner,
         }
     }
@@ -230,8 +230,19 @@ pub struct QueueView {
     search: Entity<TextField>,
     /// What's searched for, as typed (the box searches; nothing is matched here).
     query: String,
-    /// The box's view narrowed by the search, as it last answered one.
+    /// The box's view narrowed by the search, as it last answered one, and the words it answered
+    /// for: drawn only while they're what's searched for.
     found: Reading<QueueSaid>,
+    found_for: String,
+    /// Changes to an item sent and not answered yet, and the latest wanted while one is on its
+    /// way (sent when it answers), by the item's id.
+    flying: HashMap<String, ItemChange>,
+    waiting: HashMap<String, ItemChange>,
+    /// What Edit Item opened on (a title and a description): only what's changed is sent.
+    editing: Option<(String, String)>,
+    /// The field of the item being written that last had the keyboard.
+    text_focus: Option<FocusHandle>,
+    tabs_scroll: ScrollHandle,
     filters: Vec<Filter>,
     /// Groups folded or unfolded by hand, by their key (a status's id, or Deleted).
     folds: HashMap<String, bool>,
@@ -286,7 +297,7 @@ impl Focusable for QueueView {
 impl QueueView {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> QueueView {
         let search = cx.new(|cx| TextField::new(cx).bare().placeholder("Search items"));
-        let title = cx.new(|cx| TextField::new(cx).bare().placeholder("Item title"));
+        let title = cx.new(|cx| TextField::new(cx).bare().title().placeholder("Item title"));
         let body = cx.new(|cx| TextField::new(cx).bare().multi_line(3, 12).placeholder("Add a description. Markdown works."));
         let name = cx.new(|cx| TextField::new(cx).placeholder("Name"));
         let picker_field = cx.new(|cx| TextField::new(cx).bare());
@@ -335,6 +346,12 @@ impl QueueView {
             search,
             query: String::new(),
             found: Reading::NotYet,
+            found_for: String::new(),
+            flying: HashMap::new(),
+            waiting: HashMap::new(),
+            editing: None,
+            text_focus: None,
+            tabs_scroll: ScrollHandle::new(),
             filters: Vec::new(),
             folds: HashMap::new(),
             busy: Vec::new(),
@@ -468,9 +485,30 @@ impl QueueView {
             return self.queue();
         }
         match &self.found {
-            Reading::Ready(found) => Some(found),
+            Reading::Ready(found) if self.found_for == self.query => Some(found),
             _ => None,
         }
+    }
+
+    /// Whether the box is yet to answer for what's searched for now.
+    pub fn searching(&self) -> bool {
+        !self.query.is_empty() && self.found_for != self.query
+    }
+
+    /// The line at an item's page's foot (who added and changed it, whose queue it's in), as drawn.
+    pub fn facts_line(&self) -> Option<String> {
+        self.rows.iter().find_map(|row| match row {
+            Row::Facts(words) => Some(words.clone()),
+            _ => None,
+        })
+    }
+
+    /// A notice on the page, by its key: its words, as they're drawn.
+    pub fn notice(&self, key: &str) -> Option<String> {
+        self.rows.iter().find_map(|row| match row {
+            Row::Notice { key: each, words, .. } if each == key => Some(words.clone()),
+            _ => None,
+        })
     }
 
     /// Asks the box for the view narrowed by what's typed. A newer search replaces an older one
@@ -479,6 +517,7 @@ impl QueueView {
         let query = self.query.clone();
         if query.is_empty() {
             self.found = Reading::NotYet;
+            self.found_for.clear();
             self.tasks.remove("search");
             return;
         }
@@ -488,6 +527,7 @@ impl QueueView {
             move |client| client.work_queue_search(&asked),
             move |this, read, _| {
                 if this.query == query {
+                    this.found_for = query;
                     this.found = match read {
                         Ok(found) => Reading::Ready(found),
                         Err(error) => Reading::Failed(error.to_string()),
@@ -647,6 +687,10 @@ impl QueueView {
         if self.query.is_empty() {
             return None;
         }
+        // (What an older search found is never drawn under the words typed since.)
+        if self.searching() {
+            return Some(vec![Row::Note { key: "search-loading".into(), words: format!("Searching for “{}”…", self.query), busy: true }, Row::End]);
+        }
         match &self.found {
             Reading::NotYet => Some(vec![Row::Note { key: "search-loading".into(), words: format!("Searching for “{}”…", self.query), busy: true }, Row::End]),
             Reading::Failed(why) => Some(vec![Row::Note { key: "search-failed".into(), words: format!("The search couldn’t be read: {why}"), busy: false }, Row::End]),
@@ -741,7 +785,7 @@ impl QueueView {
         if let Some(computer) = &item.computer {
             let name = crate::bots::computer_name(&computer.name);
             // As that computer last told it (`told`): what only it keeps isn't here.
-            let read = if whole.is_some_and(|whole| whole.told) { format!("Shown as {name} last told {}. Its description, notes, files and links are on {name}.", self.this_box) } else { format!("Read from {name}.") };
+            let read = if whole.is_some_and(|whole| whole.told) { format!("As {name} last reported it. Its description, notes, files and links are on {name}.") } else { format!("Read from {name}.") };
             let words = match why.take() {
                 Some(why) => format!("{read} {why}"),
                 None => format!("{read} What you change here is changed there."),
@@ -867,8 +911,16 @@ impl QueueView {
             }
             Act::ClearFilters => self.filters.clear(),
             Act::Set { item, change } => {
-                let asked = item.clone();
-                self.change(&item, move |client| client.change_work_item(&asked, &change), cx);
+                // One at a time for an item: while one is on its way, the latest wanted waits
+                // behind it (what's said later wins, field by field) and goes when it answers.
+                if self.busy.contains(&item) {
+                    let waiting = self.waiting.entry(item).or_default();
+                    merge(waiting, &change);
+                } else {
+                    self.flying.insert(item.clone(), (*change).clone());
+                    let asked = item.clone();
+                    self.change(&item, move |client| client.change_work_item(&asked, &change), cx);
+                }
             }
             Act::Delete(item) => {
                 let asked = item.clone();
@@ -902,6 +954,7 @@ impl QueueView {
                     // (From its start, so a long one opens on its first lines.)
                     field.select_range(0..0, cx);
                 });
+                self.editing = Some((whole.item.title.trim().to_owned(), whole.body.trim().to_owned()));
                 self.open_sheet(Sheet::Edit(whole.item.id), Some(self.title.focus_handle(cx)));
             }
             Act::Pick { target, field } => self.open_picker(target, field, cx),
@@ -946,12 +999,24 @@ impl QueueView {
             work,
             move |this, answer, cx| {
                 this.busy.retain(|busy| busy != &id);
+                this.flying.remove(&id);
                 match answer {
-                    Ok(now) => this.took(now, cx),
-                    // Why not, over the list or its own page; over another item's page, nothing
-                    // is said (nothing changed, and it wouldn't say of what).
-                    Err(error) if matches!(&this.shown, Shown::List(_)) || this.shown == Shown::Item(id.clone()) => this.problem = Some(said(&error)),
-                    Err(_) => {}
+                    Ok(now) => {
+                        this.took(now, cx);
+                        // What was wanted of it meanwhile goes now.
+                        if let Some(change) = this.waiting.remove(&id) {
+                            this.act(Act::Set { item: id.clone(), change: Box::new(change) }, cx);
+                        }
+                    }
+                    Err(error) => {
+                        // (What waited behind a change the box refused isn't sent after it.)
+                        this.waiting.remove(&id);
+                        // Why not, over the list or its own page; over another item's page, nothing
+                        // is said (nothing changed, and it wouldn't say of what).
+                        if matches!(&this.shown, Shown::List(_)) || this.shown == Shown::Item(id.clone()) {
+                            this.problem = Some(said(&error));
+                        }
+                    }
                 }
             },
             cx,
@@ -960,8 +1025,17 @@ impl QueueView {
 
     /// An item as the box answered it, drawn at once; its place, the counts and whatever else
     /// changed with it are the box's to say, read again (and searched again, where something is).
-    fn took(&mut self, now: Item, cx: &mut Context<Self>) {
+    fn took(&mut self, mut now: Item, cx: &mut Context<Self>) {
         let id = now.id.clone();
+        // A change's answer says nothing of its sessions (the box names each "New Session", none
+        // at work): what's known of them here is kept until the view is read again.
+        if let Some(known) = self.item(&id).map(|item| item.sessions.clone()) {
+            for session in &mut now.sessions {
+                if let Some(known) = known.iter().find(|known| known.session == session.session) {
+                    *session = known.clone();
+                }
+            }
+        }
         let place = |said: &mut QueueSaid, add: bool| {
             let listed = said.items.iter().position(|item| item.id == id);
             let removed = said.removed.iter().position(|item| item.id == id);
@@ -1021,6 +1095,7 @@ impl QueueView {
 
     fn open_sheet(&mut self, sheet: Sheet, focus: Option<FocusHandle>) {
         self.sheet_opened += 1;
+        self.text_focus = None;
         self.sheet = Some(sheet);
         self.picker = None;
         self.sheet_error = None;
@@ -1048,10 +1123,20 @@ impl QueueView {
             return;
         }
         let Some(sheet) = self.sheet.clone() else { return };
+        let (title, body, name) = (self.title.read(cx).text().trim().to_owned(), self.body.read(cx).text().trim().to_owned(), self.name.read(cx).text().trim().to_owned());
+        // An item rewritten: only what was changed is sent; nothing changed, nothing is.
+        let mut rewritten = ItemChange::default();
+        if let (Sheet::Edit(_), Some((was_title, was_body))) = (&sheet, &self.editing) {
+            rewritten.title = (&title != was_title).then(|| title.clone());
+            rewritten.body = (&body != was_body).then(|| body.clone());
+            if rewritten == ItemChange::default() {
+                self.close_sheet(cx);
+                return;
+            }
+        }
         self.saving = true;
         self.sheet_error = None;
         self.picker = None;
-        let (title, body, name) = (self.title.read(cx).text().trim().to_owned(), self.body.read(cx).text().trim().to_owned(), self.name.read(cx).text().trim().to_owned());
         let (draft, color) = (self.draft.clone(), self.label_color.clone());
         let (sent, opened) = (sheet.clone(), self.sheet_opened);
         enum Answer {
@@ -1063,7 +1148,7 @@ impl QueueView {
             format!("sheet-{opened}"),
             move |client| match &sheet {
                 Sheet::New => Answer::Item(Box::new(client.add_work_item(&NewItem { title, body, status: draft.status, priority: draft.priority, labels: draft.labels, assignee: draft.assignee, due: draft.due }))),
-                Sheet::Edit(item) => Answer::Item(Box::new(client.change_work_item(item, &ItemChange { title: Some(title), body: Some(body), ..ItemChange::default() }))),
+                Sheet::Edit(item) => Answer::Item(Box::new(client.change_work_item(item, &rewritten))),
                 Sheet::NewLabel => Answer::Labels(client.add_label(&name, color.as_deref()).map(|(labels, _)| labels)),
                 Sheet::EditLabel(id) => Answer::Labels(client.change_label(id, Some(&name), color.as_deref()).map(|(labels, _)| labels)),
                 Sheet::RemoveLabel(id) => Answer::Labels(client.remove_label(id).map(|(labels, _)| labels)),
@@ -1127,6 +1212,14 @@ impl QueueView {
     }
 }
 
+/// Puts what `later` says over what `wanted` says, field by field.
+fn merge(wanted: &mut ItemChange, later: &ItemChange) {
+    macro_rules! over {
+        ($($field:ident),*) => { $(if later.$field.is_some() { wanted.$field = later.$field.clone(); })* };
+    }
+    over!(title, body, status, priority, labels, assignee, due);
+}
+
 /// Who did something, by name: you, or the name the box gave (none: unsaid).
 fn who(who: &Who) -> String {
     if who.user { "You".to_owned() } else { who.name.clone().unwrap_or_default() }
@@ -1141,7 +1234,8 @@ fn ago(then: f64, now: f64) -> String {
 /// An outside source by name, from its kind (one this doesn't know, as the box wrote it).
 pub fn source_name(kind: &str) -> String {
     match kind {
-        "github" | "github-pr" => "GitHub".to_owned(),
+        "github" => "GitHub issues".to_owned(),
+        "github-pr" => "GitHub pull requests".to_owned(),
         other => other.to_owned(),
     }
 }

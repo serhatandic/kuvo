@@ -156,6 +156,13 @@ impl StandIn {
         self.state().queue.starts = Some((status.to_owned(), priority.to_owned()));
     }
 
+    /// Its Work Queue lists a status this app has never heard of, with an item in it.
+    pub fn newer_status(&self) {
+        let mut state = self.state();
+        let now = state.made.unwrap_or_else(now_ms);
+        state.queue.add_newer_status(now);
+    }
+
     /// Its Work Queue has many more labels than a menu shows at once.
     pub fn many_labels(&self) {
         self.state().queue.add_many_labels();

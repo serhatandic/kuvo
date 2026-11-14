@@ -41,8 +41,8 @@ and what the Bots note read of modals and forms (`notes/screens-bots.md`).
   card of its own. What the box says is closed, and Deleted, start folded. While the search or a
   filter is on, nothing is folded, so a match in Done shows.
 - The search leaves the thread: the box searches (`q`), since only it has what items say. A newer
-  search replaces one on its way (`run` under one name), and an answer is taken only for what's
-  typed now. Escape clears it. Filters are chips, each taken off by its ×, or all by Clear.
+  search replaces one on its way (`run` under one name), an answer is taken only for what's
+  typed now, and a result is drawn only for the words it answered ("Searching for …" meanwhile). Escape clears it. Filters are chips, each taken off by its ×, or all by Clear.
 - A chip's menu is the view's own (`picker.rs`), not the block's `Menu`: it has a line to type in,
   picks several (labels), and takes number keys. It's drawn under its chip, above everything, over
   a sheet that takes any press outside it (which closes the menu and does nothing more). Its rows
@@ -65,6 +65,8 @@ and what the Bots note read of modals and forms (`notes/screens-bots.md`).
 - What may be done to an item is the box's (`can`): nothing it leaves out is offered, and the app
   works none of it out. What the box refuses anyway is drawn in its words, over the list or that
   item's own page.
+- Late is the box's (`overdue`); the app compares no days. A change wanted while another is on
+  its way waits behind it and goes when that one answers (one at a time for an item).
 - After every change the view is read again (and searched again, where something is): an item's
   place, the counts and the labels are the box's.
 - What a new item starts as is the box's (`new`): New Item shows it and sends it. Why something
