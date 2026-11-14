@@ -57,7 +57,10 @@ public extension WorkQueue {
         public var id: Kind { kind }
     }
 
-    /// An item's properties, on one line under its title: the category it's kept in ("In Next",
+    /// What names the property that says an item's priority, labels, assignee and due day.
+    static let tagsID = "tags"
+
+    /// An item's properties, on one line under its title: its status ("Todo",
     /// "Done", or the box's words for one its source made Done, "Merged on GitHub"), only when no session is at work on it and it isn't deleted (its
     /// status says those, once); whose queue it's in; the computer it's on, when that's another;
     /// where it's being handed; and when it was added. Whose queue only where the view names its
@@ -73,10 +76,18 @@ public extension WorkQueue {
                 properties.append(Property(kind: .category(item.category), words: words,
                                            help: item.isGone ? "If GitHub shows it again, it’s back in \(back)." : "If it’s reopened there, it’s back in \(back)."))
             } else if item.isDone {
-                properties.append(Property(kind: .category(item.category), words: "Done", help: item.doneAt.map { "Done \(ago(Date(timeIntervalSince1970: $0 / 1000), now: now, calendar: calendar, locale: locale))" }))
+                let closed = item.category == WorkCategory.canceled ? "Canceled" : "Done"
+                properties.append(Property(kind: .category(item.category), words: closed, help: item.doneAt.map { "\(closed) \(ago(Date(timeIntervalSince1970: $0 / 1000), now: now, calendar: calendar, locale: locale))" }))
             } else {
-                properties.append(Property(kind: .category(item.category), words: "In \(categoryName(item.category, in: view.categories))", help: nil))
+                // (Its status, by the name the box gives it: "Todo", "Needs you".)
+                properties.append(Property(kind: .category(item.category), words: categoryName(item.category, in: view.categories), help: nil))
             }
+        }
+        // What else it says of itself, as text: its priority (but Normal), its labels, who it's for
+        // and when it's due.
+        let tags = [item.priority == "normal" ? nil : item.priority.capitalized, labelWords(item, in: view), item.assignee.map { "For \($0.name)" }, item.due.map { "Due \($0)" }].compactMap { $0 }
+        if !tags.isEmpty, item.removed == nil {
+            properties.append(Property(kind: .category(tagsID), words: tags.joined(separator: " · "), help: nil))
         }
         if let owner = ownerWords(item.owner, in: view) {
             properties.append(Property(kind: .owner(item.owner), words: "\(owner)’s queue", help: nil))

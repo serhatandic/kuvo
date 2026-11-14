@@ -207,7 +207,7 @@ import ClientSessions
         #expect(WorkQueue.status(of: atWork) == .inProgress)
         #expect(WorkQueue.properties(of: atWork, in: Self.sessionView, now: now).map(\.words) == ["Kuvo Foreman’s queue", "Added just now"], "never In Next beside In progress")
         #expect(WorkQueue.status(of: idle) == nil)
-        #expect(WorkQueue.properties(of: idle, in: Self.sessionView, now: now).map(\.words) == ["In Later", "Kuvo Foreman’s queue", "Added just now"])
+        #expect(WorkQueue.properties(of: idle, in: Self.sessionView, now: now).map(\.words) == ["Later", "Kuvo Foreman’s queue", "Added just now"])
         #expect(WorkQueue.properties(of: idle, in: Self.sessionView, now: now).last?.help == "Added just now by you. Updated just now by Sign-in.")
     }
 
@@ -359,6 +359,8 @@ import ClientSessions
         #expect(WorkQueue.labelWords(first, in: view) == "Architecture, Parked")
         #expect(WorkQueue.labelWords(view.items[1], in: view) == nil)
         #expect(first.can?.edit == true)
+        #expect(WorkQueue.properties(of: first, in: view, now: Date(timeIntervalSince1970: 3)).map(\.words) == ["Needs you", "Urgent · Architecture, Parked · For Mira · Due 2026-12-01", "Added just now"])
+        #expect(WorkQueue.properties(of: view.items[2], in: view, now: Date(timeIntervalSince1970: 3)).first?.words == "Canceled")
         // The list files each under its status, In progress in its own section; closed ones aren't open.
         #expect(WorkQueue.sections(view).map(\.name) == ["In progress", "Needs you", "Todo", "Done", "Canceled"])
         #expect(WorkQueue.sections(view).map { $0.items.map(\.name) } == [["#2"], ["#1"], [], [], ["#3"]])
