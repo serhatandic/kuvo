@@ -2507,10 +2507,13 @@ new version without cutting a turn:
 A client never keeps an older box's way of doing something (#679): it brings a box up to date
 before it uses it, and meanwhile says so. A box is older than a client needs when its `kuvo/info`
 `features` lack any name the client uses with no way around it (or it has no `kuvo/info`): today
-`agent-tools.own`, `bots.held`, `folders.tree`, `git.branches`, `git.branches.worktree`, `git.changes.path`,
-`git.files`, `git.merge`, `git.pull-request`, `git.status`, `messages.send`, `models.offered`,
-`models.offered.folder`, `models.offered.sides`, `models.readiness`, `queue.items`, `sessions.asks`,
-`sessions.list`, `sessions.mentions`, `sessions.models`, `sessions.start.empty`, `typed` and `usage.notices`
+`agent-tools.own`, `bots.held`, `bots.now`, `computers`, `folders.tree`, `git.branches`,
+`git.branches.worktree`, `git.changes.path`, `git.files`, `git.merge`, `git.pull-request`,
+`git.status`, `limits.rings`, `messages.send`, `models.offered`, `models.offered.folder`,
+`models.offered.sides`, `models.readiness`, `queue.items`, `sandbox.words`, `sessions.asks`,
+`sessions.list`, `sessions.mentions`, `sessions.models`, `sessions.needsYou`,
+`sessions.start.empty`, `sign-in.accounts.kinds`, `sign-in.codes`, `typed`, `usage.notices`,
+`waiting` and `work-queue.counts`
 (KuvoClient's `BoxGate.required`, and the same list in every client, gpui's `kuvo_box` too, so
 every client holds the same boxes; a box with `messages.send` has what came before it too,
 `sessions.move`, `projects.folders` and `sign-in.methods` among them, and names its chats folder in
@@ -5986,6 +5989,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `bots.job` | a bot's job as its box's record: `jobDetails` in `kuvo/bots`, `job` in `PATCH kuvo/bots/<id>` |
 | `bots.keys` | `kuvo/bots/<id>/keys…` |
 | `bots.make` | `kuvo/bots/templates` and `POST kuvo/bots` |
+| `bots.now` | `now` on each bot in `kuvo/bots` and `kuvo/bots/events`: its sessions at work and waiting on you ("What waits on you", #711) |
 | `box.app` | `kuvo/box/app` and `kuvo/box/app/open`: this Mac's app registering with a Mac's box in a home of its own, and opened by it for its agents' browser ("This Mac's box: this Mac's app") |
 | `box.app.host` | `kuvo/box/app`'s `host`: the app's own host interface, where a Mac's box in a home of its own sends a phone's ask of the Mac's own routes and asks what the panel's browser is signed in to ("This Mac's app") |
 | `box.appKeys` | `kuvo/box/proof` and `kuvo/box/kept-keys`: what this Mac's app asks of the keys a Mac's box in a home of its own holds ("This Mac's box: its keys, for its app"); `bin/integrations-mac.json` read there |
@@ -6002,6 +6006,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `btw` | `kuvo/agents/api/kuvo/btw…`: side questions ("Side questions, handoffs and reviews") |
 | `btw.threads` | a side question's `thread`, follow-ups and a thread's removal (bridge 0.9.98) |
 | `claude-code` | `kuvo/claude-code` (a Mac only, before #341) |
+| `computers` | `kuvo/computers` and `…/events`: your computers as one list, from any box ("Computers", #711) |
 | `config` | `kuvo/config` |
 | `config.apply` | `POST kuvo/config/apply` |
 | `engine.restart` | `POST kuvo/engine/restart` |
@@ -6037,6 +6042,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `letters-read` | (in a peer's agents' mail) it takes a letter with `read` (bridge 0.9.100) |
 | `limits` | `kuvo/agents/api/kuvo/limits…` and `plan_limits`: each account's plan limits ("Plan limits") |
 | `limits.resets` | `kuvo/agents/api/kuvo/limits/reset…` and `use_limit_reset`: using a plan's resets, once, on the computer with its sign-in ("Plan limits", "Resets") |
+| `limits.rings` | `rings`, and `level` and `span` on each window, in the plan limits' `rows` ("Plan limits", "Rings and levels", #711) |
 | `mac` | a Mac only: `kuvo/mac` |
 | `machines` | a Mac only: `kuvo/machines…` (with its app closed its box still lists them, and the rest says the app must be open) |
 | `mcp.catalog` | `kuvo/mcp/catalog…` |
@@ -6071,6 +6077,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sandbox.check` | `reason`, `action` and the rest in `kuvo/sandbox`, and `POST kuvo/sandbox/check` |
 | `sandbox.reviews.settled` | `settled` on `kuvo/sandbox/asks`: each ask Auto's reviewer was checking or left for you that was answered or went since, so no client takes it for one that waits, heard or not ("Sandbox") |
 | `sandbox.reviews.whole` | `reviews` on `kuvo/sandbox/asks` lists every ask to work outside a conversation's folder, so a client shows one only once it's listed `yours` ("Sandbox") |
+| `sandbox.words` | `why` for every `reason` and `actionLabel`, its button's words, in `kuvo/sandbox` ("Sandbox", #711) |
 | `search` | `kuvo/search` |
 | `sessions.agents` | `POST kuvo/sessions/<id>/agents` |
 | `sessions.asks` | `kuvo/sessions/<id>/asks`, `…/events`, and answering one ("A conversation's asks") |
@@ -6080,11 +6087,14 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sessions.mentions` | `GET kuvo/sessions/<id>/mentions` ("Mentions") |
 | `sessions.models` | `GET kuvo/sessions/models` ("A session's model") |
 | `sessions.move` | `POST kuvo/sessions/<id>/move`: a conversation moved into a project, given its folders ("Projects", #341) |
+| `sessions.needsYou` | `needsYou`, each project's `asking` and `working`, and each session's `bot`, in `kuvo/sessions/list` ("Session lists", #711) |
 | `sessions.start` | `POST kuvo/sessions`: a session started with a task (bridge 0.9.100) |
 | `sessions.start.empty` | `POST kuvo/sessions` from a client without a task, `agent`, `model` as `{providerID, id, variant?}`, and `info` and `worktree` in its answer (#341) |
 | `setup` | `kuvo/setup`, `…/events`: your setup and its main computer ("Your setup") |
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
 | `shell.stop` | `POST kuvo/shell/<id>/stop` |
+| `sign-in.accounts.kinds` | `kind`, `listed` and `service` on each account in `GET kuvo/sign-in/accounts`: which are providers Accounts lists, and each one's mark ("Signing in", #711) |
+| `sign-in.codes` | `POST kuvo/sign-in/start`, and `userCode` wherever a sign-in has a device code, the engine's own plans too ("Signing in", #711) |
 | `sign-in.methods` | `GET kuvo/sign-in/methods`, `GET kuvo/sign-in/accounts` and `GET kuvo/sign-in/status`: the ways to sign in, in the box's order and words, and what to say when a sign-in didn't work ("Signing in") |
 | `sign-in.return` | `POST kuvo/sign-in/return` |
 | `skills` | `kuvo/skills…` and `kuvo/skill-library…` |
@@ -6095,11 +6105,13 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `usage.settings` | `kuvo/agents/api/kuvo/usage/settings…`: the usage panel's settings, kept by each box and shared by yours ("Usage settings", #631) |
 | `vault` | `kuvo/vault…`: the box's own vault of sign-ins, keys, files and notes its agents use without seeing a value ("Vault", bridge 0.9.100) |
 | `vault.same` | `POST kuvo/vault/items/<id>/same`: whether values given are the ones kept, without giving them ("Vault") |
+| `waiting` | `kuvo/waiting` and `…/events`: how many sessions, bots and Work Queue items wait on you ("What waits on you", #711) |
 | `wakes` | `kuvo/wakes`, a session's, and cancelling one or sending it now |
 | `wakes.edit` | adding one (`POST kuvo/wakes/<session>`) and pausing them |
 | `wakes.events` | `kuvo/wakes/events`, and making a watch (`POST kuvo/wakes/<session>/watch`) |
 | `work` | a bot's work ("Work"): `kuvo/work`, `…/events`, `kuvo/bots/<id>/stop-all`, `start_session`'s and `kuvo/sessions`' new fields, the work tools, `limits` in `kuvo/bots` (bridge 0.9.106) |
 | `work-queue` | `kuvo/work-queue…` and the `queue_…` tools ("The Work Queue") |
+| `work-queue.counts` | `counts` in `kuvo/work-queue` and its events with `counts=1` ("The Work Queue", #711) |
 | `work-queue.elsewhere` | (in a peer's agents' mail) it tells and takes the Work Queue across your computers: `told`, `had`, `part`, `hand`, `handed`, and numbers' asks through a peer ("The Work Queue", Across your computers); also `POST kuvo/work-queue/refs`, `computer` and `computers` in its views, and 409 for an item elsewhere |
 | `work-queue.forward` | (in a peer's agents' mail) it does what a client asked another box to do to an item it keeps, and answers (`act`, `acted`; "The Work Queue", Across your computers, Done where it's kept); a box with it sends what a client does to an item on another computer there itself, and reads one whole, and its files, there for a client (`told`) |
 | `work.elsewhere` | (in a peer's agents' mail) it takes a lead's `call` and tells `rows` ("Peers"; bridge 0.9.204) |

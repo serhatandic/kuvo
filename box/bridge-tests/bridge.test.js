@@ -1540,6 +1540,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "bots.job": ["GET", "kuvo/bots"],
     "bots.keys": ["GET", "kuvo/bots/bot_none/keys"],
     "bots.make": ["GET", "kuvo/bots/templates"],
+    "bots.now": ["GET", "kuvo/bots"],
     // (This Mac's app, registered with a Mac's box in a home of its own: a machine says it has none.)
     "box.app": ["GET", "kuvo/box/app"],
     // (Where the app's own host answers, said as it registers there: the same route.)
@@ -1568,6 +1569,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (What a side question's routes take besides, on the coding agents' bridge.)
     "btw.threads": ["GET", "kuvo/agents/api/kuvo/btw"],
     "claude-code": ["GET", "kuvo/claude-code"],
+    computers: ["GET", "kuvo/computers"],
     config: ["GET", "kuvo/config"],
     "config.apply": ["GET", "kuvo/config/apply"],
     "engine.restart": ["GET", "kuvo/engine/restart"],
@@ -1610,6 +1612,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     limits: ["GET", "kuvo/agents/api/kuvo/limits"],
     // (Using a plan's resets, and the agents' tool for it: the bridge's `limits/reset`.)
     "limits.resets": ["POST", "kuvo/agents/api/kuvo/limits/reset"],
+    "limits.rings": ["GET", "kuvo/agents/api/kuvo/limits"],
     "mcp.catalog": ["GET", "kuvo/mcp/catalog"],
     // (And kuvo/sessions/<id>/send, which the same box answers.)
     "messages.send": ["POST", "kuvo/messages/parts"],
@@ -1653,6 +1656,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "sandbox.reviews.settled": ["GET", "kuvo/sandbox/asks"],
     // (Its asks' `reviews` list every ask Auto's reviewer may take up: what kuvo/sandbox/asks says.)
     "sandbox.reviews.whole": ["GET", "kuvo/sandbox/asks"],
+    "sandbox.words": ["GET", "kuvo/sandbox"],
     search: ["GET", "kuvo/search?q=none"],
     "sessions.agents": ["GET", "kuvo/sessions/ses_none/agents"],
     "sessions.asks": ["GET", "kuvo/sessions/ses_none/asks"],
@@ -1663,6 +1667,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "sessions.mentions": ["GET", "kuvo/sessions/ses_none/mentions?for=files"],
     "sessions.models": ["POST", "kuvo/sessions/models"],
     "sessions.move": ["POST", "kuvo/sessions/ses_none/move"],
+    "sessions.needsYou": ["POST", "kuvo/sessions/list"],
     "sessions.start": ["POST", "kuvo/sessions"],
     // (A client's start without a task, `kuvo/sessions` too.)
     "sessions.start.empty": ["POST", "kuvo/sessions"],
@@ -1670,6 +1675,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     setup: ["GET", "kuvo/setup"],
     "setup.mainOnly": ["GET", "kuvo/setup"],
     "shell.stop": ["POST", "kuvo/shell/sh_none/stop"],
+    "sign-in.accounts.kinds": ["GET", "kuvo/sign-in/accounts"],
+    "sign-in.codes": ["GET", "kuvo/sign-in/start?integration=openai"],
     "sign-in.methods": ["GET", "kuvo/sign-in/methods?integration=openai"],
     "sign-in.return": ["GET", "kuvo/sign-in/return"],
     skills: ["GET", "kuvo/skills"],
@@ -1683,11 +1690,13 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     vault: ["GET", "kuvo/vault/tools"],
     // (Whether a value is what's kept, without giving it: an item this vault doesn't have.)
     "vault.same": ["POST", "kuvo/vault/items/item_none/same"],
+    waiting: ["POST", "kuvo/waiting"],
     wakes: ["GET", "kuvo/wakes"],
     "wakes.edit": ["POST", "kuvo/wakes/ses_none/pause"],
     "wakes.events": ["POST", "kuvo/wakes/events"],
     work: ["GET", "kuvo/work"],
     "work-queue": ["GET", "kuvo/work-queue/categories"],
+    "work-queue.counts": ["GET", "kuvo/work-queue?owner=all&counts=1"],
     "work-queue.elsewhere": ["POST", "kuvo/work-queue/refs"],
     // (What you do to an item another computer keeps, done there: on the item's routes.)
     "work-queue.forward": ["GET", "kuvo/work-queue/items/1"],

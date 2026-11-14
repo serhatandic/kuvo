@@ -3310,6 +3310,9 @@
             "literal": "bots.make"
            },
            {
+            "literal": "bots.now"
+           },
+           {
             "literal": "box.app"
            },
            {
@@ -3356,6 +3359,9 @@
            },
            {
             "literal": "claude-code"
+           },
+           {
+            "literal": "computers"
            },
            {
             "literal": "config"
@@ -3460,6 +3466,9 @@
             "literal": "limits.resets"
            },
            {
+            "literal": "limits.rings"
+           },
+           {
             "literal": "mcp.catalog"
            },
            {
@@ -3556,6 +3565,9 @@
             "literal": "sandbox.reviews.whole"
            },
            {
+            "literal": "sandbox.words"
+           },
+           {
             "literal": "search"
            },
            {
@@ -3583,6 +3595,9 @@
             "literal": "sessions.move"
            },
            {
+            "literal": "sessions.needsYou"
+           },
+           {
             "literal": "sessions.start"
            },
            {
@@ -3596,6 +3611,12 @@
            },
            {
             "literal": "shell.stop"
+           },
+           {
+            "literal": "sign-in.accounts.kinds"
+           },
+           {
+            "literal": "sign-in.codes"
            },
            {
             "literal": "sign-in.methods"
@@ -3631,6 +3652,9 @@
             "literal": "vault.same"
            },
            {
+            "literal": "waiting"
+           },
+           {
             "literal": "wakes"
            },
            {
@@ -3644,6 +3668,9 @@
            },
            {
             "literal": "work-queue"
+           },
+           {
+            "literal": "work-queue.counts"
            },
            {
             "literal": "work-queue.elsewhere"
@@ -3832,6 +3859,9 @@
             "literal": "bots.make"
            },
            {
+            "literal": "bots.now"
+           },
+           {
             "literal": "box.app"
            },
            {
@@ -3878,6 +3908,9 @@
            },
            {
             "literal": "claude-code"
+           },
+           {
+            "literal": "computers"
            },
            {
             "literal": "config"
@@ -3982,6 +4015,9 @@
             "literal": "limits.resets"
            },
            {
+            "literal": "limits.rings"
+           },
+           {
             "literal": "mcp.catalog"
            },
            {
@@ -4078,6 +4114,9 @@
             "literal": "sandbox.reviews.whole"
            },
            {
+            "literal": "sandbox.words"
+           },
+           {
             "literal": "search"
            },
            {
@@ -4105,6 +4144,9 @@
             "literal": "sessions.move"
            },
            {
+            "literal": "sessions.needsYou"
+           },
+           {
             "literal": "sessions.start"
            },
            {
@@ -4118,6 +4160,12 @@
            },
            {
             "literal": "shell.stop"
+           },
+           {
+            "literal": "sign-in.accounts.kinds"
+           },
+           {
+            "literal": "sign-in.codes"
            },
            {
             "literal": "sign-in.methods"
@@ -4153,6 +4201,9 @@
             "literal": "vault.same"
            },
            {
+            "literal": "waiting"
+           },
+           {
             "literal": "wakes"
            },
            {
@@ -4166,6 +4217,9 @@
            },
            {
             "literal": "work-queue"
+           },
+           {
+            "literal": "work-queue.counts"
            },
            {
             "literal": "work-queue.elsewhere"

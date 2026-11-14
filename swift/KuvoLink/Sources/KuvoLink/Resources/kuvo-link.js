@@ -4178,6 +4178,7 @@ var FEATURES = [
   "bots.job",
   "bots.keys",
   "bots.make",
+  "bots.now",
   "box.app",
   "box.app.host",
   "box.appKeys",
@@ -4194,6 +4195,7 @@ var FEATURES = [
   "btw",
   "btw.threads",
   "claude-code",
+  "computers",
   "config",
   "config.apply",
   "engine.restart",
@@ -4228,6 +4230,7 @@ var FEATURES = [
   "letters-read",
   "limits",
   "limits.resets",
+  "limits.rings",
   "mcp.catalog",
   "messages.send",
   "models.offered",
@@ -4260,6 +4263,7 @@ var FEATURES = [
   "sandbox.check",
   "sandbox.reviews.settled",
   "sandbox.reviews.whole",
+  "sandbox.words",
   "search",
   "sessions.agents",
   "sessions.asks",
@@ -4269,11 +4273,14 @@ var FEATURES = [
   "sessions.mentions",
   "sessions.models",
   "sessions.move",
+  "sessions.needsYou",
   "sessions.start",
   "sessions.start.empty",
   "setup",
   "setup.mainOnly",
   "shell.stop",
+  "sign-in.accounts.kinds",
+  "sign-in.codes",
   "sign-in.methods",
   "sign-in.return",
   "skills",
@@ -4285,11 +4292,13 @@ var FEATURES = [
   "usage.settings",
   "vault",
   "vault.same",
+  "waiting",
   "wakes",
   "wakes.edit",
   "wakes.events",
   "work",
   "work-queue",
+  "work-queue.counts",
   "work-queue.elsewhere",
   "work-queue.forward",
   "work.elsewhere",
@@ -42658,7 +42667,7 @@ import fs138 from "node:fs";
 import path144 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "a0699a4e69a7";
+var BRIDGE_VERSION = "31ef0ecef514";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
