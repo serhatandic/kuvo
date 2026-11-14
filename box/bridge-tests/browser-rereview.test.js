@@ -53,3 +53,20 @@ test("re-review M1: an agent with no Emulation calls retains Chrome's native DPR
   await call(h.c, "Kuvo.setStatus", { targetId: "P", working: true });
   assert.equal(h.chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").at(-1).params.deviceScaleFactor, 2);
 });
+
+for (const action of ["raw input", "agent command", "navigation", "load event"]) {
+  test("re-review M2: a still class wakes immediately for " + action, async t => {
+    const h = await page(t);
+    await still(h);
+    const before = captures(h);
+    h.answer("Page.captureScreenshot", () => ({ data: "Y2hhbmdlZA==" }));
+    if (action === "raw input") await call(h.c, "Input.dispatchMouseEvent", { type: "mousePressed", x: 1, y: 1 }, "raw");
+    else if (action === "agent command") await call(h.c, "Runtime.evaluate", { expression: "document.body.click()" }, "raw");
+    else if (action === "navigation") await call(h.c, "Kuvo.go", { targetId: "P", input: "https://example.com/new" });
+    else h.event("Page.loadEventFired", {}, "own");
+    await settle(h);
+    await h.advance(100);
+    await settle(h);
+    assert.ok(captures(h) > before, "picture must not wait for the two-second still-page poll");
+  });
+}

@@ -1,4 +1,4 @@
-// kuvo-browser 09057edc434527cc
+// kuvo-browser 90d33f07aeceac61
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -101,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "d8f1f9d76cf3";
+const KEEPER = "d1c13fbf2b7d";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -924,6 +924,9 @@ async function host() {
   };
   let frameNumber = 0;
   const capturing = new Set(), frameClasses = new Map();
+  const wakePage = targetId => {
+    for (const policy of frameClasses.values()) if (policy.targetId === targetId) policy.dirty();
+  };
   setInterval(() => {
     const groups = new Map();
     for (const c of clients) {
@@ -934,7 +937,7 @@ async function host() {
       groups.get(key).push(c);
     }
     for (const [key, group] of groups) {
-      if (!frameClasses.has(key)) frameClasses.set(key, framePolicy());
+      if (!frameClasses.has(key)) frameClasses.set(key, { ...framePolicy(), targetId: group[0].view.targetId });
       const policy = frameClasses.get(key);
       if (capturing.has(key) || !policy.due(Date.now())) continue;
       const v = group[0].view, now = Date.now();
@@ -1025,10 +1028,12 @@ async function host() {
       await resize(target, size, client.viewer ? "viewer" : "agent");
       reply(); return true;
     }
+    if (message.method.startsWith("Input.")) wakePage(target);
     if (client.viewer && message.method.startsWith("Input.") && client.view) await resize(target, client.rawView ? client.rawMetrics?.get(target) ?? sizes.get(target) : client.view, "viewer");
     if (!message.method.startsWith("Kuvo.")) return false;
     if (message.method === "Kuvo.pages") { reply(pages()); return true; }
     if (message.method === "Kuvo.go") {
+      wakePage(target);
       if (!session) throw Error("That page is closed.");
       if (p.input !== undefined) {
         const url = String(p.input).trim();
@@ -1045,7 +1050,7 @@ async function host() {
     }
     if (message.method === "Kuvo.input") {
       if (!session) throw Error("That page is closed.");
-      for (const policy of frameClasses.values()) policy.dirty();
+      wakePage(target);
       if (client.view) await resize(target, client.view, "viewer");
       const { kind, targetId, ...data } = p;
       if (Array.isArray(data.modifiers)) data.modifiers = data.modifiers.reduce((bits, key) => bits | ({ alt: 1, control: 2, meta: 4, shift: 8 }[key] ?? 0), 0);
@@ -1392,6 +1397,7 @@ async function host() {
     }
     const page = pageOf(message.sessionId);
     if (page && isOwn(message.sessionId)) {
+      if (message.method.startsWith("Page.")) wakePage(page);
       if (message.method === "Page.frameNavigated" && !message.params.frame.parentId) {
         clearUploads(page);
         addresses.set(page, message.params.frame.url);
@@ -1584,6 +1590,7 @@ async function host() {
       if (message.id === undefined || typeof message.method !== "string") return;
       const id = next++;
       pending.set(id, { client, id: message.id, method: message.method, targetId: message.params?.targetId });
+      wakePage(message.params?.targetId ?? attachedTo.get(message.sessionId));
       const forward = { id, method: message.method, params: message.method === "Input.dispatchKeyEvent" ? keyForHere(message.params ?? {}) : message.params ?? {} };
       if (message.sessionId) forward.sessionId = message.sessionId;
       toChrome(forward);
