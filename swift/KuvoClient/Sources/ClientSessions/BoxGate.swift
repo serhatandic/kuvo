@@ -26,8 +26,14 @@ public enum BoxGate {
     /// Then #708's, for its side panel and the sandbox's row, which work nothing out from what the
     /// box lists: `file.text`, `git.branches.pullRequest`, `git.changes.binary`, `git.files.does`
     /// and `sandbox.opens`.
+    /// Then the desktop client's Bots area, which draws what the box says of a delete, of the bots
+    /// on your other computers and of a model's effort, and writes none of it: `bots.deletes`,
+    /// `bots.effort` and `bots.elsewhere`.
     public static let required: [String] = [
         "agent-tools.own",
+        "bots.deletes",
+        "bots.effort",
+        "bots.elsewhere",
         "bots.held",
         "bots.now",
         "computers",

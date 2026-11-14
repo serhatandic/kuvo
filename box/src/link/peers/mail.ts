@@ -7,6 +7,7 @@ import { receiveDocs } from "../documents/exchange";
 import { bridgeTarget, readEngineFile } from "../engine/client";
 import { changeBot, deleteBot } from "../bots/edit";
 import { heldBack, takeBotEdit, takeBotEdited } from "../bots/held";
+import { noteBotsChanged } from "../bots/here";
 import { leaveAnswer, letterWent } from "../letters/outbox";
 import { takeLetter } from "../letters/take";
 import { callsBack, takeCall } from "../letters/calls";
@@ -46,7 +47,12 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
   if (isObject(payload.agents)) {
     // (What it runs is kept only from one of your own computers: PROTOCOL.md, "Computers".)
     const agents = saysApart(sender.key, payload.agents) ? { ...payload.agents, computer: undefined } : payload.agents;
-    if (takeAgents(sender, agents)) writeAgents();
+    if (takeAgents(sender, agents)) {
+      writeAgents();
+      // (Its bots show in this box's list of those elsewhere: its followers hear at once. Only
+      // one of your own computers' do.)
+      if (!saysApart(sender.key, payload.agents)) noteBotsChanged();
+    }
   }
   // Documents (PROTOCOL.md, "Documents"): given, in parts, or a digest of what it has.
   if (isObject(payload.docs)) receiveDocs(sender, payload.docs as DocsMail, host).catch(() => {});

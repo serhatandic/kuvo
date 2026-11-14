@@ -19,7 +19,9 @@ use gpui::{App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Foc
 use kuvo_box::BoxClient;
 use kuvo_box::accounts::said;
 use kuvo_box::areas::{Bot, Look};
-use kuvo_box::bots::{BotChange, BotsSaid, Held, NewBot, Outcome, Refused, Templates, Work, WorkSession, WorkState};
+use kuvo_box::areas::DeleteLine;
+use kuvo_box::bots::{BotChange, BotsSaid, Elsewhere, Held, NewBot, Outcome, Refused, Templates, Work, WorkSession, WorkState};
+use kuvo_box::models::effort_title;
 use kuvo_box::models::Offered;
 use kuvo_box::typed::ModelRef;
 use kuvo_ui::{TextField, TextFieldEvent};
@@ -37,7 +39,8 @@ pub enum Shown {
     Nothing,
     /// One of the box's bots, by its id.
     Bot(String),
-    /// A bot that lives on another computer, known here by what's held for it (or was refused).
+    /// A bot that lives on another of your computers, as the box says that computer last told it
+    /// (or, for one none lists, by what's held for it or was refused).
     Elsewhere(String),
     /// New Bot.
     New,
@@ -67,6 +70,8 @@ pub enum Act {
     EditLook,
     SetPersonality(Option<String>),
     SetModel(ModelRef),
+    /// The effort its model runs at; none: the model's own.
+    SetEffort(Option<String>),
     Delete,
     New,
     PickTemplate(Option<String>),
@@ -296,7 +301,7 @@ impl BotsView {
         if self.said != said {
             self.said = said;
             // A sheet for a bot the list no longer has (deleted or moved, from anywhere) closes.
-            if matches!(self.shown, Shown::Bot(_)) && self.bot().is_none() && self.sheet.is_some() && !self.saving {
+            if matches!(self.shown, Shown::Bot(_) | Shown::Elsewhere(_)) && self.subject().is_none() && self.sheet.is_some() && !self.saving {
                 self.sheet = None;
                 self.sheet_error = None;
             }
@@ -344,8 +349,9 @@ impl BotsView {
                 }, cx);
                 self.read_offers(cx);
             }
-            Shown::New => self.read_offers(cx),
-            Shown::Nothing | Shown::Elsewhere(_) => {}
+            // (A bot elsewhere: the looks a bot can have, for its Look sheet.)
+            Shown::New | Shown::Elsewhere(_) => self.read_offers(cx),
+            Shown::Nothing => {}
         }
     }
 
@@ -389,6 +395,36 @@ impl BotsView {
     pub fn bot(&self) -> Option<&Bot> {
         let Shown::Bot(id) = &self.shown else { return None };
         self.bots()?.bots.iter().find(|bot| &bot.id == id)
+    }
+
+    /// The bot shown that lives on another computer, as it's drawn.
+    fn there(&self, id: &str) -> Option<There> {
+        self.bots()?.elsewhere.iter().find(|bot| bot.id == id).map(There::of)
+    }
+
+    /// The bot shown that lives on another computer, where one of your computers lists it now.
+    fn listed_there(&self, id: &str) -> Option<&Elsewhere> {
+        self.bots()?.elsewhere.iter().find(|bot| bot.id == id && !bot.unlisted)
+    }
+
+    /// The bot a sheet is about: the one shown, here or on another computer, where the box lists
+    /// it. Its id, its name and its look.
+    fn subject(&self) -> Option<(String, String, Option<Look>)> {
+        match &self.shown {
+            Shown::Bot(_) => self.bot().map(|bot| (bot.id.clone(), bot.name.clone(), Some(bot.look.clone()))),
+            Shown::Elsewhere(id) => self.listed_there(id).map(|bot| (bot.id.clone(), There::of(bot).name, bot.look.clone())),
+            Shown::Nothing | Shown::New => None,
+        }
+    }
+
+    /// What deleting the bot shown takes with it, in the box's words: what its confirm shows.
+    pub fn deletes(&self) -> Vec<DeleteLine> {
+        match &self.shown {
+            Shown::Bot(_) => self.bot().map(|bot| bot.deletes.clone()),
+            Shown::Elsewhere(id) => self.listed_there(id).map(|bot| bot.deletes.clone()),
+            Shown::Nothing | Shown::New => None,
+        }
+        .unwrap_or_default()
     }
 
     fn held(&self, bot: &str) -> Option<&Held> {
@@ -502,16 +538,7 @@ impl BotsView {
         items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));
 
         items.push(Item::Group(String::new()));
-        let delete = Row {
-            key: "bot-delete".into(),
-            title: "Delete Bot".into(),
-            // BOX-NEEDED: what deleting a bot takes with it, in the box's words (its conversation,
-            // wake-ups, keys and folder, and where the folder goes, differ by computer): e.g.
-            // `deletes` on each bot in `GET kuvo/bots`. Until then nothing is claimed here.
-            detail: format!("Removes it from {}.", self.this_box),
-            control: Control::Danger("Delete…".into(), Act::Delete),
-        };
-        items.push(Item::Row { row: Box::new(delete), first: true, last: true });
+        items.push(Item::Row { row: Box::new(delete_row()), first: true, last: true });
         items.push(Item::End);
         items
     }
@@ -520,7 +547,10 @@ impl BotsView {
     fn notices(&self, bot: &str) -> Vec<Item> {
         let mut items = Vec::new();
         if let Some(held) = self.held(bot) {
-            let words = if held.delete {
+            // Why it waits though its computer answers, where the box says so, as it says it.
+            let words = if let Some(waits) = &held.waits {
+                waits.clone()
+            } else if held.delete {
                 "It’s deleted once that computer is back.".to_owned()
             } else {
                 // (Each field by the box's own name for it: name, look, job, personality, model.)
@@ -582,6 +612,16 @@ impl BotsView {
             _ => "What it thinks with.".into(),
         };
         rows.push(Row { key: "bot-model".into(), title: "Model".into(), detail: model_line, control: busy_or("bot-model", model) });
+        // The effort its model runs at, among those the box lists for that model (none of its
+        // own: no row).
+        let efforts = bot.model.as_ref().and_then(|model| self.offered()?.models.iter().find(|each| each.is(model))).map(|each| each.efforts.clone()).unwrap_or_default();
+        if !efforts.is_empty() {
+            let has = bot.model.as_ref().and_then(|model| model.variant.clone());
+            let mut choices = vec![(OWN_EFFORT.to_owned(), String::new(), Act::SetEffort(None), has.is_none())];
+            choices.extend(efforts.iter().map(|effort| (effort_title(effort), String::new(), Act::SetEffort(Some(effort.clone())), has.as_ref() == Some(effort))));
+            let shown = has.as_deref().map(effort_title).unwrap_or_else(|| OWN_EFFORT.to_owned());
+            rows.push(Row { key: "bot-effort".into(), title: "Effort".into(), detail: "How hard it thinks before it answers.".into(), control: busy_or("bot-effort", Control::Menu { shown, choices }) });
+        }
         // Where it lives and works: the box's facts, read only.
         rows.push(Row { key: "bot-lives".into(), title: "Lives on".into(), detail: String::new(), control: Control::Text(bot.machine.clone().unwrap_or_else(|| self.this_box.clone())) });
         rows.push(Row { key: "bot-works".into(), title: "Works in".into(), detail: String::new(), control: Control::Text(bot.project.as_deref().map(|project| self.project_name(project)).unwrap_or_else(|| "A folder of its own".into())) });
@@ -589,24 +629,40 @@ impl BotsView {
     }
 
     fn elsewhere_items(&self, id: &str) -> Vec<Item> {
-        let (held, refused) = (self.held(id), self.refused(id));
-        let Some(computer) = held.map(|held| held.computer.clone()).or_else(|| refused.first().map(|refused| refused.computer.clone())) else {
-            // Nothing waits for it any more: it went through (or was let go).
-            return vec![Item::Note { key: "elsewhere-done".into(), words: "Nothing is waiting for this bot any more.".into(), busy: false }, Item::End];
+        let Some(there) = self.there(id) else {
+            return match &self.said {
+                Reading::NotYet => vec![Item::Note { key: "bots-loading".into(), words: "Loading bots…".into(), busy: true }, Item::End],
+                Reading::Failed(why) => vec![Item::Note { key: "bots-failed".into(), words: format!("Bots couldn’t be read: {why}"), busy: false }, Item::End],
+                // No computer lists it now, and nothing waits for it: deleted, or it went through.
+                Reading::Ready(_) => vec![Item::Note { key: "elsewhere-done".into(), words: "None of your computers lists this bot now.".into(), busy: false }, Item::End],
+            };
         };
-        let computer = computer_name(&computer).to_owned();
+        let computer = there.computer.clone();
         let mut items = vec![Item::ElsewhereHead {
             key: id.to_owned(),
-            name: elsewhere_name(held, &computer),
-            look: held.and_then(Held::look),
-            line: format!("Lives on {computer}"),
+            name: there.name.clone(),
+            look: there.look.clone(),
+            line: if there.job.is_empty() { format!("Lives on {computer}") } else { format!("{} · Lives on {computer}", there.job) },
         }];
         items.extend(self.notices(id));
-        // BOX-NEEDED: the bots of your other computers as a list a client can draw and change
-        // (name, look, job, where each lives), e.g. `GET kuvo/bots?across=1`, as `kuvo/computers`
-        // lists the computers themselves. `kuvo/bots` lists only the bots of the box asked, so a bot
-        // living elsewhere is known here only by what's held for it.
-        items.push(Item::Note { key: "elsewhere-note".into(), words: format!("This window shows the bots that live on {}. This one’s page is on {computer}.", self.this_box), busy: false });
+        if there.listed {
+            // What the box takes for a bot on another computer without that computer's own lists:
+            // its name and look. (It holds each for that computer, and says so above.)
+            items.push(Item::Group("Settings".into()));
+            let rows = vec![
+                Row { key: "bot-name".into(), title: "Name".into(), detail: "What it’s called, here and in group chats.".into(), control: Control::Button("Rename…".into(), Act::Rename) },
+                Row { key: "bot-look".into(), title: "Look".into(), detail: "Its colour and shape, wherever it shows.".into(), control: Control::Face(there.look.clone(), "Change…".into(), Act::EditLook) },
+                Row { key: "bot-lives".into(), title: "Lives on".into(), detail: String::new(), control: Control::Text(computer.clone()) },
+            ];
+            let count = rows.len();
+            items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));
+            items.push(Item::Group(String::new()));
+            items.push(Item::Row { row: Box::new(delete_row()), first: true, last: true });
+            // What this box can't say of it: said plainly, with where it's said.
+            items.push(Item::Note { key: "elsewhere-note".into(), words: format!("{} shows what {computer} last told it. Its job, personality, model and sessions are on {computer}.", capitalized(&self.this_box)), busy: false });
+        } else {
+            items.push(Item::Note { key: "elsewhere-note".into(), words: format!("{computer} hasn’t told {} about this bot.", self.this_box), busy: false });
+        }
         items.push(Item::End);
         items
     }
@@ -770,6 +826,12 @@ impl BotsView {
         self.busy.retain(|(busy, _)| busy != key);
     }
 
+    /// The first look the box offers, for a bot it gave none.
+    fn first_look(&self) -> Option<Look> {
+        let looks = &self.templates()?.looks;
+        Some(Look { color: looks.colors.first()?.clone(), shape: looks.shapes.first()?.clone(), face: looks.faces.first()?.clone() })
+    }
+
     /// Whether a change is on its way for this row of the bot shown.
     fn is_busy(&self, key: &str) -> bool {
         self.bot().is_some_and(|bot| self.busy(&bot.id, key).is_some())
@@ -786,7 +848,7 @@ impl BotsView {
             Act::OpenSession(session) => cx.emit(BotsEvent::Session(session)),
             Act::ShowAll => self.all_sessions = true,
             Act::Rename => {
-                let Some(name) = self.bot().map(|bot| bot.name.clone()) else { return };
+                let Some((_, name, _)) = self.subject() else { return };
                 self.name.update(cx, |field, cx| {
                     field.set_error(None, cx);
                     let end = name.len();
@@ -802,21 +864,21 @@ impl BotsView {
                 self.open_sheet(Sheet::Job, Some(self.line.focus_handle(cx)));
             }
             Act::EditLook => {
-                let Some(look) = self.bot().map(|bot| bot.look.clone()) else { return };
+                // From the look it has; a bot elsewhere whose computer said none, the box's first.
+                let Some(look) = self.subject().and_then(|(_, _, look)| look.or_else(|| self.first_look())) else { return };
                 self.open_sheet(Sheet::Look { look, new: false }, None);
             }
             Act::FormLook => {
                 // From the look shown; with none, the first of each the box offers.
-                let look = self.form_look().or_else(|| {
-                    let looks = &self.templates()?.looks;
-                    Some(Look { color: looks.colors.first()?.clone(), shape: looks.shapes.first()?.clone(), face: looks.faces.first()?.clone() })
-                });
+                let look = self.form_look().or_else(|| self.first_look());
                 let Some(look) = look else { return };
                 self.open_sheet(Sheet::Look { look, new: true }, None);
             }
             // (One at a time for a row: a pick while one's on its way waits for the box's answer.)
             Act::SetPersonality(_) if self.is_busy("bot-personality") => {}
             Act::SetModel(_) if self.is_busy("bot-model") => {}
+            Act::SetEffort(_) if self.is_busy("bot-effort") => {}
+            Act::SetEffort(effort) => self.change("bot-effort", BotChange { effort: Some(effort), ..BotChange::default() }, cx),
             Act::SetPersonality(personality) => self.change("bot-personality", BotChange { personality: Some(personality), ..BotChange::default() }, cx),
             Act::SetModel(model) => self.change("bot-model", BotChange { model: Some(model), ..BotChange::default() }, cx),
             Act::Delete => self.open_sheet(Sheet::Delete, None),
@@ -905,11 +967,11 @@ impl BotsView {
             Sheet::Look { look, new: false } => Some(BotChange { look: Some(look), ..BotChange::default() }),
             Sheet::Delete => None,
         };
-        let Some(bot) = self.bot().map(|bot| bot.id.clone()) else { return };
+        let Some((bot, _, _)) = self.subject() else { return };
         self.saving = true;
         self.sheet_error = None;
         // What was sent, and for which bot: its answer is that bot's, whatever shows by then.
-        let (id, deleting, sent) = (bot.clone(), change.is_none(), self.sheet.clone());
+        let (id, deleting, sent, page) = (bot.clone(), change.is_none(), self.sheet.clone(), self.shown.clone());
         self.run(
             format!("sheet-{bot}"),
             move |client| match &change {
@@ -918,7 +980,7 @@ impl BotsView {
             },
             move |this, outcome, cx| {
                 // The sheet it was sent from, still open on its bot: it closes, or says why not.
-                let its_sheet = this.shown == Shown::Bot(bot.clone()) && this.sheet == sent;
+                let its_sheet = this.shown == page && this.sheet == sent;
                 if its_sheet {
                     this.saving = false;
                 }
@@ -987,7 +1049,7 @@ impl BotsView {
                 Outcome::Done(None) => {}
                 Outcome::Held(held) => {
                     said.held.retain(|each| each.bot != bot);
-                    said.held.push(held);
+                    said.held.push(*held);
                 }
             }
         }
@@ -999,6 +1061,14 @@ impl BotsView {
 /// How a personality left to the model is named.
 const OWN_WAY: &str = "The model’s own way";
 
+/// How an effort left to the model is named.
+const OWN_EFFORT: &str = "The model’s own";
+
+/// Delete Bot's row. What goes with the bot is the box's to say: its confirm shows it.
+fn delete_row() -> Row {
+    Row { key: "bot-delete".into(), title: "Delete Bot".into(), detail: "You’ll see what goes with it before anything is deleted.".into(), control: Control::Danger("Delete…".into(), Act::Delete) }
+}
+
 /// "name", "name and look", "name, look and job".
 fn listed<S: AsRef<str>>(words: &[S]) -> String {
     match words {
@@ -1008,12 +1078,40 @@ fn listed<S: AsRef<str>>(words: &[S]) -> String {
     }
 }
 
-/// What a bot that lives elsewhere is called here: the name held for it, where what's held names one.
-pub fn elsewhere_name(held: Option<&Held>, computer: &str) -> String {
-    // BOX-NEEDED: each `held` and `refused` entry in `GET kuvo/bots` should carry the bot's name
-    // and look as the box last knew them (it has them from its peers' agents), so a bot waiting on
-    // another computer shows as itself. Until then: the name being given, else a neutral one.
-    held.and_then(Held::name).map(str::to_owned).unwrap_or_else(|| format!("A bot on {}", computer_name(computer)))
+/// A bot that lives on another of your computers, as it's drawn: all of it the box's
+/// (`elsewhere` in `kuvo/bots`), named where the box had no name for it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct There {
+    pub id: String,
+    pub name: String,
+    pub look: Option<Look>,
+    /// What it does, in a few words, as its computer last said (empty: none said).
+    pub job: String,
+    /// The computer it lives on, by the name the box gave it.
+    pub computer: String,
+    /// One of your computers lists it now, so it can be changed from here.
+    pub listed: bool,
+    /// The box holds a change or a delete for it.
+    pub waiting: bool,
+    /// Its computer refused a change, lately.
+    pub refused: bool,
+}
+
+impl There {
+    pub fn of(bot: &Elsewhere) -> There {
+        let computer = computer_name(&bot.computer).to_owned();
+        There {
+            id: bot.id.clone(),
+            // (One the box has no name for: PROTOCOL.md, `bots.elsewhere`.)
+            name: bot.name.clone().filter(|name| !name.is_empty()).unwrap_or_else(|| format!("A bot on {computer}")),
+            look: bot.look.clone(),
+            job: bot.job.clone(),
+            computer,
+            listed: !bot.unlisted,
+            waiting: bot.waiting,
+            refused: bot.refused,
+        }
+    }
 }
 
 /// A computer by the name the box gave it; where it gave none, a neutral one.

@@ -17,13 +17,19 @@ export const LOOK = object({ color: words(...LOOKS.colors), shape: words(...LOOK
 /** A model as a bot names it: its id, its provider, and the variant (effort) it runs at, if any. */
 export const MODEL = object({ id: string, providerID: string, "variant?": string });
 
+/** What deleting a bot takes with it, in the words of the box that says it (`bots.deletes`): one
+ * line for each thing, by what it is (`conversation`, `folder`, `wakes`, `keys`, `groups`,
+ * `sessions`; a client draws one it doesn't know all the same), `kept` for what stays. */
+export const DELETES = list(object({ what: string, words: string, "kept?": literal(true) }));
+
 /** A bot that lives here, by its session: its name and look; its job's line (what shows under its
  * name) and all of it; whether its wake-ups are paused, the next one (seconds since 1970, left out
  * when none waits) and how many things it watches; whether it runs with the coding agents; its
  * personality's id and its model, left out when it has none; its folder, the project it works in
  * (left out for a folder of its own) and when it was made, and the limits you set for its work
  * (left out for none). `machine`: the machine's name, left out on a Mac. `now`, in `kuvo/bots` and
- * its events (`bots.now`): what it's doing, its sessions at work and waiting on you. */
+ * its events (`bots.now`): what it's doing, its sessions at work and waiting on you. `deletes`: what
+ * deleting it takes with it here (`bots.deletes`). */
 export const BOT = object({
   id: string,
   session: string,
@@ -44,18 +50,45 @@ export const BOT = object({
   "limits?": LIMITS,
   "allowed?": list(words("makeProject", "cloneProject")),
   "now?": BOT_NOW,
+  deletes: DELETES,
+});
+/** A bot that lives on another of your own computers (`bots.elsewhere`), as a client draws it: as
+ * that computer last told this box, and as you left it (its `name` and `look` those a change held
+ * here gives it, over that computer's). Its id, conversation and job's line, that computer by its
+ * key and by its name here, what kind it is, and what deleting it takes with it there; `waiting`
+ * while this box holds an edit for it, `refused` when that computer refused one lately. `unlisted`:
+ * no computer of yours lists it now, and it's here only by what's held or was refused (its
+ * conversation, kind and `deletes` left out, and its `name` and `look` where this box never knew
+ * them): nothing more is taken for it from here but what's held. */
+export const BOT_ELSEWHERE = object({
+  id: string,
+  "session?": string,
+  "name?": string,
+  "look?": LOOK,
+  "job?": string,
+  box: string,
+  computer: string,
+  "kind?": words("mac", "machine"),
+  "deletes?": DELETES,
+  "waiting?": literal(true),
+  "refused?": literal(true),
+  "unlisted?": literal(true),
 });
 /** A change to a bot (or its delete) that lives on another of your computers, held here until that
  * computer answers ("Held for another computer"): the bot, that computer by its key (empty for one this box
  * doesn't know now, as the client named it: a machine you removed) and by its name here, the change as `PATCH kuvo/bots/<id>` takes it (each field the last given) or a delete, and
- * since when it's held (ms). */
-export const HELD_EDIT = object({ bot: string, box: string, computer: string, "change?": map(any), "delete?": literal(true), since: number });
+ * since when it's held (ms). `name` and `look`: the bot's, as its computer last told this box
+ * (`bots.elsewhere`; left out for one no computer of yours ever listed to it). `waits`: why it
+ * hasn't gone to a computer that answers, in words (that computer needs an update first). */
+export const HELD_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, "change?": map(any), "delete?": literal(true), since: number, "waits?": string });
 /** What another computer refused of an edit held here for it, lately (a day): the bot, that
- * computer, the words to show, and when (ms). */
-export const REFUSED_EDIT = object({ bot: string, box: string, computer: string, message: string, at: number });
-/** The bots that live here, the first made first; and the edits held here for bots on your other
- * computers, and what those refused lately (`bots.held`). */
-export const BOTS = object({ bots: list(BOT), "held?": list(HELD_EDIT), "refused?": list(REFUSED_EDIT) });
+ * computer, the words to show, and when (ms); the bot's `name` and `look` as a held edit has them. */
+export const REFUSED_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, message: string, at: number });
+/** The bots that live here, the first made first; the edits held here for bots on your other
+ * computers, and what those refused lately (`bots.held`); and the bots that live on your other
+ * computers, as each last told this box (`bots.elsewhere`). None of the three while this box
+ * can't check what it holds: a client keeps what it last heard. */
+export const BOTS = object({ bots: list(BOT), "held?": list(HELD_EDIT), "refused?": list(REFUSED_EDIT), "elsewhere?": list(BOT_ELSEWHERE) });
 /** An edit held here for the computer its bot lives on. */
 export const HELD = object({ held: HELD_EDIT });
 
@@ -108,6 +141,8 @@ export type ChangedBot = Infer<typeof CHANGED>;
 export type BotKeys = Infer<typeof BOT_KEYS>;
 export type BotKeyValues = Infer<typeof BOT_KEY_VALUES>;
 export type BotKeyKept = Infer<typeof BOT_KEY_KEPT>;
+export type BotDeletes = Infer<typeof DELETES>;
+export type BotElsewhere = Infer<typeof BOT_ELSEWHERE>;
 export type HeldEdit = Infer<typeof HELD_EDIT>;
 export type RefusedEdit = Infer<typeof REFUSED_EDIT>;
 

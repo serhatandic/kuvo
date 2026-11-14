@@ -10,7 +10,7 @@ import { macFeatures } from "../../shared/routes/mac";
 import { processRuns as runs } from "../../shared/platform";
 import { boxProjects } from "../areas/projects";
 import { readKit } from "../bots/kit";
-import { listBots } from "../bots/list";
+import { folderGoes, listBots } from "../bots/list";
 import { currentDigest } from "../documents/work";
 import { readBridgeFile } from "../engine/client";
 import { locked, textOf, writePrivate } from "../files";
@@ -169,7 +169,10 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
   // (its first word says whether it's shared, or of another setup).
   const computer = sharedMachine(link) ? null : ownComputer();
   const told = computer ? readPeerAgents() : {};
-  const json = JSON.stringify([ownList, moved, boxes, where, computer && { ...computer, working: computer.working > 0 }]);
+  // And where a bot deleted here ends up (the Trash, or Kuvo Code's trash folder), so a box that
+  // lists this one's bots says what deleting one takes with it as this computer would.
+  const trash = folderGoes().to;
+  const json = JSON.stringify([ownList, moved, boxes, where, computer && { ...computer, working: computer.working > 0 }, trash]);
   let have: DigestEntry[] | false | null = null;
   for (const peer of peersOf(link)) {
     const last = toldPeers.get(peer.key);
@@ -181,7 +184,7 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
     let bytes: Buffer | null = null, sent: ListedAgent[] = [];
     for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
       sent = ownList.slice(0, count);
-      bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter(box => box.key !== peer.key), ...where, ...(computer && told[peer.key] && !isApart(peer.key, link, told) ? { computer } : {}) }, ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
+      bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter(box => box.key !== peer.key), trash, ...where, ...(computer && told[peer.key] && !isApart(peer.key, link, told) ? { computer } : {}) }, ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
       if (bytes) break;
     }
     if (!bytes) continue;

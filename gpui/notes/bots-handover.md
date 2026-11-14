@@ -27,18 +27,18 @@ clicks and keys against the stand-in), unit tests in `kuvo_box/src/bots.rs` (3) 
 8. `cargo build`, `cargo test --workspace` and `cargo clippy --workspace --all-targets` clean, every
    run with `KUVO_*` unset and the stand-in box only.
 
-## BOX-NEEDED (for the box lane's queue)
+## What the box says now (the BOX-NEEDED items, built)
 
-Each is marked in the code at the spot it's drawn; a neutral stand-in is drawn meanwhile.
+None is left marked in the code; each stand-in is gone and the box's answer is drawn (PROTOCOL.md,
+`kuvo/bots`; features `bots.deletes`, `bots.effort`, `bots.elsewhere`, all three in the update gate).
 
-| # | What the box should say | Where (route) | Marked at | Drawn meanwhile |
-|---|---|---|---|---|
-| 1 | What deleting a bot takes with it, in its words (conversation, wake-ups, keys, folder, and where the folder goes: it differs by computer) | e.g. `deletes` on each bot in `GET kuvo/bots` | `bots/mod.rs` (`bot_items`, the Delete Bot row), `bots/page.rs` (`sheet_content`, Delete) | "Removes it from This Mac." and "<name> is removed from This Mac."; nothing is claimed about what goes with it |
-| 2 | The bots of your other computers as a list a client can draw and change (name, look, job, where each lives) | e.g. `GET kuvo/bots?across=1`, as `kuvo/computers` lists computers | `bots/mod.rs` (`elsewhere_items`) | A bot elsewhere shows only if the box holds an edit for it or heard a refusal, with a line saying its page is on that computer |
-| 3 | Each `held` and `refused` entry's bot by name and look, as the box last knew them | `held[]`, `refused[]` in `GET kuvo/bots` | `bots/mod.rs` (`elsewhere_name`) | The name being given in the held change, else "A bot on <computer>"; a blank face unless the held change gives a look |
-
-Not marked, but the box's to consider: `PATCH` with `model` takes a `variant` (effort); the page
-sends none (it has no effort picker), so the box picks.
+| What | Where (route) | Drawn |
+|---|---|---|
+| What deleting a bot takes with it, a line each in the box's words, then what stays | `deletes` on each bot in `GET kuvo/bots`, and on each in `elsewhere` | Delete's confirm, as the lines are (`sheet_content`); the Delete Bot row claims nothing itself |
+| The bots of your other computers, as each last told the box asked | `elsewhere` in `GET kuvo/bots` | "On Other Computers" lists them all; a page with Name, Look and Delete, each held by the box for that computer |
+| Who a held edit or a refusal is for | `name`, `look` on each of `held`, `refused`; `elsewhere` lists each bot as you left it, with `waiting`, `refused`, and `unlisted` for one no computer lists now | The box's list as it is: the app merges nothing (`There::of`) |
+| Why a held edit waits though its computer answers | `waits` on a `held` entry | The notice's words |
+| The effort a bot's model runs at | `effort` in `PATCH kuvo/bots/<id>` | An Effort row under Model, from the model's own efforts as the box lists them |
 
 ## Review
 
@@ -80,7 +80,10 @@ One reviewer pass; every MUST and SHOULD fixed, with a scenario for each where o
   reaches this Mac's box only), group chats' pages, the work bar over a bot's conversation and Stop.
 - **Faces:** the app draws one still face (calm eyes); the box offers six. The Look sheet picks
   colour and shape and keeps the bot's face; a new bot's face is the template's or the box's first.
-- **A model's effort** isn't picked on the page (see above).
+- **A bot on another computer:** its job, personality, model and sessions aren't shown or changed
+  from here (the box asked has only what that computer told it: name, look, job's line); the page
+  says so. Its job isn't edited from here, as a `PATCH` replaces the whole job and its details
+  aren't known here.
 - **Not live:** the bots list and a bot's sessions are read as the area and the page open and
   after each change, not followed (`kuvo/bots/events`, `kuvo/work/events`): `now` on a page left
   open goes stale. The sidebar had this already.
@@ -109,17 +112,19 @@ Built without drafts (the lead's brief: build, with shots); each is cheap to cha
 - **No Edit Bot form with Save:** each setting changes by itself, in Settings' row style
   (`screens-bot-rename`, `-job`, `-look`). Recommended: keep; an edit held for another computer
   then waits a field at a time, as the box holds them.
-- **Delete's confirm doesn't say what goes with the bot** (`screens-bot-delete`: "Mira is removed
-  from This Mac."), though deleting takes its conversation, wake-ups, keys and folder: those words
-  are the box's (BOX-NEEDED 1) and none are written in the app. A risk to weigh: recommended, take
-  BOX-NEEDED 1 first in the box lane; or hold Delete back in the app until it lands. It's built,
-  at the foot of the page with a red button, asked first, and Return doesn't confirm it.
+- **Delete's confirm shows the box's lines** (`screens-bot-delete`, `screens-bot-elsewhere-delete`),
+  each with a trash mark, what stays with a check; the Delete Bot row says only "You’ll see what
+  goes with it before anything is deleted." The lines' wording is the box's (`bots/deletes.ts`).
+- **A bot on another computer has a page** (`screens-bot-elsewhere`): Name, Look, Lives on, Delete,
+  and a line saying what's on its own computer. Its row in the sidebar says "On <computer>".
+- **Effort is a row of its own** under Model ("The model’s own" first, then the model's efforts);
+  picking a model leaves its effort to the model.
 - **New Bot is a page**, templates as tiles with Blank first (`screens-bot-new`); Create is always
   enabled and the box says what's missing (`screens-bot-new-refused`). Recommended: keep (no rule
   of the box's is copied to disable it).
 - **After Create, the new bot's conversation opens**, its job in the composer.
-- **"On Other Computers"** in the sidebar for bots with a held edit or a refusal
-  (`screens-bot-held`, `screens-bot-waiting`). Recommended: keep until BOX-NEEDED 2 lists them all.
+- **"On Other Computers"** in the sidebar lists every bot your other computers told this box of,
+  then any it only holds an edit for (`screens-bot-held`, `screens-bot-waiting`).
 - **Six recent sessions, then "Show all".**
 - **Wording** throughout (row lines such as "What it thinks with.", "The model’s own way", "It
   hasn’t started a session yet.", the empty page's sentence): the user's to settle.

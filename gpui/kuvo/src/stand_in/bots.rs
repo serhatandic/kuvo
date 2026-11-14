@@ -1,6 +1,7 @@
 //! The stand-in box's bots, in a box's own shapes (PROTOCOL.md, `kuvo/bots`): the list with what
 //! each is doing now, what it holds for another computer and what one refused; what New Bot offers
-//! (`kuvo/bots/templates`); making, changing and deleting one; and a bot's sessions
+//! (`kuvo/bots/templates`); making, changing and deleting one; the bots of your other computers and
+//! what deleting each takes with it, in its words; and a bot's sessions
 //! (`kuvo/work?bot=`). As a box does, it decides what a bot may be: the app draws what it says.
 
 use std::collections::HashMap;
@@ -19,8 +20,9 @@ pub struct Bots {
     pub bots: Vec<Value>,
     pub held: Vec<Value>,
     pub refused: Vec<Value>,
-    /// Bots that moved to another computer: a change to one is held for it.
-    moved: HashMap<String, String>,
+    /// The bots of your other computers, as each last told this box: a change to one is held for
+    /// its computer.
+    pub elsewhere: Vec<Value>,
     /// New Bot requests answered, by their id.
     made: HashMap<String, Value>,
     next: u64,
@@ -65,9 +67,12 @@ impl Bots {
                 bot("bot_docs", "Docs Keeper", "violet", "gem", "Keeps the docs matching the code", "", Some("preset.perfectionist"), json!({ "working": 0, "asking": 0, "finished": now - 3.0 * HOUR })),
             ],
             // A rename made from another of your clients for a bot that lives on a Mac that's away.
-            held: vec![json!({ "bot": "bot_scout", "box": "key_studio", "computer": "studio-mini", "change": { "name": "Scout", "job": { "line": "Watches CI", "details": "" } }, "since": now - 2.0 * HOUR })],
+            held: vec![json!({ "bot": "bot_scout", "box": "key_studio-mini", "computer": "studio-mini", "name": "Scout", "look": { "color": "amber", "shape": "gem", "face": "calm" }, "change": { "name": "Scout", "job": { "line": "Watches CI", "details": "" } }, "since": now - 2.0 * HOUR })],
             refused: Vec::new(),
-            moved: HashMap::new(),
+            elsewhere: vec![
+                elsewhere("bot_scout", "ses_scout", "Scout", json!({ "color": "amber", "shape": "gem", "face": "calm" }), "Watches the checks", ("studio-mini", "mac")),
+                elsewhere("bot_wren", "ses_wren", "Wren", json!({ "color": "mint", "shape": "bloom", "face": "calm" }), "Builds the nightly", ("lab", "machine")),
+            ],
             made: HashMap::new(),
             next: 1,
             down: false,
@@ -81,10 +86,87 @@ impl Bots {
         self.bots.iter().filter(|bot| bot["now"]["asking"].as_u64().unwrap_or(0) > 0).count()
     }
 
-    /// `bot` moves to `computer`: it no longer lists here, and a change to it is held for there.
+    /// `bot` moves to `computer` (a Mac): it no longer lists here but there, as that computer
+    /// tells this box, and a change to it is held for there.
     pub fn move_away(&mut self, bot: &str, computer: &str) {
-        self.bots.retain(|each| each["id"] != json!(bot));
-        self.moved.insert(bot.to_owned(), computer.to_owned());
+        let Some(at) = self.bots.iter().position(|each| each["id"] == json!(bot)) else { return };
+        let moved = self.bots.remove(at);
+        self.elsewhere.retain(|each| each["id"] != json!(bot));
+        self.elsewhere.push(elsewhere(bot, moved["session"].as_str().unwrap_or_default(), moved["name"].as_str().unwrap_or_default(), moved["look"].clone(), moved["job"].as_str().unwrap_or_default(), (computer, "mac")));
+    }
+
+    /// A bot that lives on another computer, as that computer last told this box.
+    fn there(&self, bot: &str) -> Option<&Value> {
+        self.elsewhere.iter().find(|each| each["id"] == json!(bot))
+    }
+
+    /// What `computer` refused of an edit held for `bot`, in its words.
+    pub fn refuse(&mut self, bot: &str, computer: &str, message: &str, at: f64) {
+        self.held.retain(|held| held["bot"] != json!(bot));
+        let mut refused = json!({ "bot": bot, "box": format!("key_{computer}"), "computer": computer, "message": message, "at": at });
+        if let Some(there) = self.there(bot) {
+            refused["name"] = there["name"].clone();
+            refused["look"] = there["look"].clone();
+        }
+        self.refused.push(refused);
+    }
+
+    /// The bots of your other computers as a box says them for drawing: those listed, each as you
+    /// left it (a held change's name and look over its computer's) and marked waiting or
+    /// refused; then any it only holds an edit for or heard a refusal of (`unlisted`).
+    fn elsewhere_said(&self) -> Vec<Value> {
+        let held = |id: &Value| self.held.iter().find(|held| &held["bot"] == id);
+        let refused = |id: &Value| self.refused.iter().any(|refused| &refused["bot"] == id);
+        let mark = |bot: &mut Value, id: &Value| {
+            if let Some(held) = held(id) {
+                bot["waiting"] = json!(true);
+                for field in ["name", "look"] {
+                    if !held["change"][field].is_null() {
+                        bot[field] = held["change"][field].clone();
+                    }
+                }
+            }
+            if refused(id) {
+                bot["refused"] = json!(true);
+            }
+        };
+        let mut all: Vec<Value> = self
+            .elsewhere
+            .iter()
+            .map(|listed| {
+                let mut bot = listed.clone();
+                mark(&mut bot, &listed["id"]);
+                bot
+            })
+            .collect();
+        for edit in self.held.iter().chain(&self.refused) {
+            let id = &edit["bot"];
+            if all.iter().any(|bot| &bot["id"] == id) || self.bots.iter().any(|bot| &bot["id"] == id) {
+                continue;
+            }
+            let mut bot = json!({ "id": id, "box": edit["box"], "computer": edit["computer"], "unlisted": true });
+            for field in ["name", "look"] {
+                if !edit[field].is_null() {
+                    bot[field] = edit[field].clone();
+                }
+            }
+            mark(&mut bot, id);
+            all.push(bot);
+        }
+        all
+    }
+
+    /// Its bots, each with what deleting it takes with it here (this Mac's box: with its wake-ups
+    /// counted, and its folder on to the Trash).
+    fn listed(&self) -> Vec<Value> {
+        self.bots
+            .iter()
+            .map(|bot| {
+                let mut bot = bot.clone();
+                bot["deletes"] = deletes("this Mac", true, Some(bot["watching"].as_u64().unwrap_or(0)));
+                bot
+            })
+            .collect()
     }
 
     /// Its answer to `method route`, if it's one of the bots' routes. `projects`: the box's, as
@@ -94,8 +176,8 @@ impl Bots {
         Some(match (method, segments.as_slice()) {
             ("GET", ["kuvo", "bots"]) if self.down => (503, json!({ "message": "The box isn’t answering." })),
             ("GET", ["kuvo", "bots"]) => {
-                // Both lists, empty too; neither while it can't check its seals (as a box does).
-                if self.unsealed { (200, json!({ "bots": self.bots })) } else { (200, json!({ "bots": self.bots, "held": self.held, "refused": self.refused })) }
+                // The lists, empty too; none of the three while it can't check its seals (as a box does).
+                if self.unsealed { (200, json!({ "bots": self.listed() })) } else { (200, json!({ "bots": self.listed(), "held": self.held, "refused": self.refused, "elsewhere": self.elsewhere_said() })) }
             }
             ("GET", ["kuvo", "bots", "templates"]) => (200, templates(projects)),
             ("POST", ["kuvo", "bots"]) => self.make(body, projects, now),
@@ -169,8 +251,11 @@ impl Bots {
         if let Some(refusal) = unknown(body, &[]) {
             return refusal;
         }
-        // One that lives on another computer now: held for it, a later change on top.
-        if let Some(computer) = self.moved.get(id).cloned() {
+        if body.get("effort").is_some_and(|effort| !effort.is_null() && !effort.is_string()) {
+            return (400, json!({ "message": "That isn’t an effort." }));
+        }
+        // One that lives on another computer: held for it, a later change on top.
+        if let Some(computer) = self.there(id).map(|there| there["computer"].as_str().unwrap_or_default().to_owned()) {
             return (202, json!({ "held": self.hold(id, &computer, Some(change), false, now) }));
         }
         if self.stopped {
@@ -179,8 +264,28 @@ impl Bots {
         let Some(bot) = self.bots.iter_mut().find(|bot| bot["id"] == json!(id)) else {
             return (404, json!({ "message": "There’s no such bot here." }));
         };
+        // An effort is one of its model's own (the one it has, or the one the change names).
+        if let Some(effort) = change.get("effort") {
+            let model = change.get("model").unwrap_or(&bot["model"]).clone();
+            let Some((listed, efforts)) = super::models().into_iter().chain(super::agents_models()).find(|(each, _)| each["providerID"] == model["providerID"] && each["id"] == model["id"]) else {
+                return (400, json!({ "message": "It has no model to set an effort for." }));
+            };
+            let name = listed["name"].as_str().unwrap_or_default().to_owned();
+            match effort.as_str().filter(|effort| !effort.is_empty()) {
+                Some(effort) if efforts.is_empty() => {
+                    let _ = effort;
+                    return (400, json!({ "message": format!("{name} has no efforts to choose from.") }));
+                }
+                Some(effort) if !efforts.contains(&effort) => return (400, json!({ "message": format!("{name} has no “{effort}” effort: its efforts are {}.", efforts.join(", ")) })),
+                Some(effort) => bot["model"] = json!({ "providerID": model["providerID"], "id": model["id"], "variant": effort }),
+                None => bot["model"] = json!({ "providerID": model["providerID"], "id": model["id"] }),
+            }
+        }
         for (field, value) in change {
             match field.as_str() {
+                // (Done above: it's its model's variant.)
+                "effort" => {}
+                "model" if change.contains_key("effort") => {}
                 "job" => {
                     bot["job"] = value["line"].clone();
                     bot["jobDetails"] = value["details"].clone();
@@ -197,7 +302,7 @@ impl Bots {
     }
 
     fn delete(&mut self, id: &str, now: f64) -> (u16, Value) {
-        if let Some(computer) = self.moved.get(id).cloned() {
+        if let Some(computer) = self.there(id).map(|there| there["computer"].as_str().unwrap_or_default().to_owned()) {
             return (202, json!({ "held": self.hold(id, &computer, None, true, now) }));
         }
         let before = self.bots.len();
@@ -209,6 +314,11 @@ impl Bots {
     fn hold(&mut self, id: &str, computer: &str, change: Option<&Map<String, Value>>, delete: bool, now: f64) -> Value {
         let at = self.held.iter().position(|held| held["bot"] == json!(id));
         let mut held = at.map(|at| self.held.remove(at)).unwrap_or(json!({ "bot": id, "box": format!("key_{computer}"), "computer": computer, "since": now }));
+        // (Who it is, as its computer says now.)
+        if let Some(there) = self.there(id).cloned() {
+            held["name"] = there["name"].clone();
+            held["look"] = there["look"].clone();
+        }
         if delete {
             held.as_object_mut().map(|held| held.remove("change"));
             held["delete"] = json!(true);
@@ -246,6 +356,33 @@ fn unknown(body: &Value, projects: &[(String, String)]) -> Option<(u16, Value)> 
         return Some((400, json!({ "message": "There’s no such project here." })));
     }
     None
+}
+
+/// A bot on another computer, as that computer last told this box.
+fn elsewhere(id: &str, session: &str, name: &str, look: Value, job: &str, (computer, kind): (&str, &str)) -> Value {
+    let mut bot = json!({ "id": id, "session": session, "name": name, "look": look, "box": format!("key_{computer}"), "computer": computer, "kind": kind, "deletes": deletes(computer, kind == "mac", None) });
+    if !job.is_empty() {
+        bot["job"] = json!(job);
+    }
+    bot
+}
+
+/// What deleting a bot takes with it, in a box's words (PROTOCOL.md, `bots.deletes`): on
+/// `computer`, a Mac whose folder goes on to the Trash or a machine that keeps it in Kuvo Code's
+/// trash folder; `watching`, how many things it watches where the box asked knows (its own bots).
+fn deletes(computer: &str, mac: bool, watching: Option<u64>) -> Value {
+    let mut lines = vec![json!({ "what": "conversation", "words": "Its conversation is deleted." })];
+    lines.push(json!({ "what": "folder", "words": if mac { format!("Its folder, with its memory and what it made there, goes to the Trash on {computer}.") } else { format!("Its folder, with its memory and what it made there, goes to Kuvo Code’s trash folder on {computer}.") } }));
+    match watching {
+        None => lines.push(json!({ "what": "wakes", "words": "Its wake-ups and watches are cancelled." })),
+        Some(0) => {}
+        Some(1) => lines.push(json!({ "what": "wakes", "words": "Its watch is cancelled." })),
+        Some(count) => lines.push(json!({ "what": "wakes", "words": format!("Its {count} watches are cancelled.") })),
+    }
+    lines.push(json!({ "what": "keys", "words": "Any keys of its own are removed." }));
+    lines.push(json!({ "what": "groups", "words": format!("It leaves the group chats on {computer}.") }));
+    lines.push(json!({ "what": "sessions", "words": "The sessions it started stay.", "kept": true }));
+    Value::Array(lines)
 }
 
 fn starting() -> Value {

@@ -71,6 +71,20 @@ pub struct Bot {
     /// Its conversation is with the coding agents.
     #[serde(default)]
     pub agents: bool,
+    /// What deleting it takes with it, in its box's words (`bots.deletes`).
+    #[serde(default, deserialize_with = "readable")]
+    pub deletes: Vec<DeleteLine>,
+}
+
+/// One thing deleting a bot does, in the words of the box that says it: by what it is (a word a
+/// newer box may add to), and whether it stays rather than goes.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct DeleteLine {
+    #[serde(default)]
+    pub what: String,
+    pub words: String,
+    #[serde(default)]
+    pub kept: bool,
 }
 
 /// The last thing said in a group chat.
@@ -273,7 +287,7 @@ pub struct Account {
 }
 
 /// A list's items this can read: one it can't is left out, not all of them (KuvoClient's `Readable`).
-fn readable<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(deserializer: D) -> std::result::Result<Vec<T>, D::Error> {
+pub(crate) fn readable<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(deserializer: D) -> std::result::Result<Vec<T>, D::Error> {
     let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
     Ok(values.into_iter().filter_map(|value| serde_json::from_value(value).ok()).collect())
 }

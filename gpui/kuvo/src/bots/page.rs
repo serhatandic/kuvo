@@ -386,7 +386,7 @@ impl BotsView {
 
     fn sheet_content(&mut self, sheet: Sheet, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        let name = self.bot().map(|bot| bot.name.clone()).unwrap_or_default();
+        let name = self.subject().map(|(_, name, _)| name).unwrap_or_default();
         let label = |words: &'static str| div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words);
         let (title, width, body, save, danger): (String, f32, AnyElement, &'static str, bool) = match &sheet {
             Sheet::Name => (format!("Rename {name}"), 400., div().debug_selector(|| "sheet-name-field".into()).child(self.name.clone()).into_any_element(), "Save", false),
@@ -408,15 +408,36 @@ impl BotsView {
             Sheet::Look { look, new } => (if *new { "The new bot’s look".to_owned() } else { format!("{name}’s look") }, 440., self.look_picker(look, cx), if *new { "Use This Look" } else { "Save" }, false),
             Sheet::Delete => (
                 format!("Delete {name}?"),
-                400.,
-                // BOX-NEEDED: what goes with it, in the box's words (see the Delete Bot row).
-                div().text_ui(TypeSize::Small).text_color(c.text_muted).child(format!("{name} is removed from {}.", self.this_box)).into_any_element(),
+                440.,
+                // What goes with it, and what stays, in the box's words, a line each.
+                div()
+                    .debug_selector(|| "sheet-deletes".into())
+                    .flex()
+                    .flex_col()
+                    .gap(space::S1_5)
+                    .children(self.deletes().into_iter().enumerate().map(|(ix, line)| {
+                        let (icon, color) = if line.kept { (IconName::Check, c.text_muted) } else { (IconName::Trash, c.text) };
+                        div()
+                            .debug_selector(move || format!("sheet-delete-{ix}"))
+                            .flex()
+                            .items_start()
+                            .gap(space::S2)
+                            .child(div().flex_none().pt(px(1.)).child(Icon::new(icon).color(c.icon)))
+                            .child(div().flex_1().min_w_0().text_ui(TypeSize::Small).text_color(color).child(line.words))
+                    }))
+                    .into_any_element(),
                 "Delete Bot",
                 true,
             ),
         };
         let saving = self.saving;
-        let go = Button::new("sheet-save", save).loading(saving).on_click(cx.listener(|this, _, _, cx| this.save_sheet(cx)));
+        // (A delete the box said nothing of isn't offered: its confirm would show nothing.)
+        let unsaid = matches!(sheet, Sheet::Delete) && self.deletes().is_empty();
+        let go = Button::new("sheet-save", save).loading(saving).disabled(unsaid).on_click(cx.listener(move |this, _, _, cx| {
+            if !unsaid {
+                this.save_sheet(cx);
+            }
+        }));
         let enter_saves = matches!(sheet, Sheet::Look { .. });
         div()
             .debug_selector(|| "bot-sheet".into())

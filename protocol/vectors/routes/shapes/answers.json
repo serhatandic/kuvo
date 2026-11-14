@@ -2326,6 +2326,17 @@
            "asking": "number",
            "finished?": "number"
           }
+         },
+         "deletes": {
+          "list": {
+           "object": {
+            "what": "string",
+            "words": "string",
+            "kept?": {
+             "literal": true
+            }
+           }
+          }
          }
         }
        }
@@ -2336,13 +2347,94 @@
          "bot": "string",
          "box": "string",
          "computer": "string",
+         "name?": "string",
+         "look?": {
+          "object": {
+           "color": {
+            "oneOf": [
+             {
+              "literal": "mint"
+             },
+             {
+              "literal": "sky"
+             },
+             {
+              "literal": "indigo"
+             },
+             {
+              "literal": "violet"
+             },
+             {
+              "literal": "pink"
+             },
+             {
+              "literal": "coral"
+             },
+             {
+              "literal": "orange"
+             },
+             {
+              "literal": "amber"
+             },
+             {
+              "literal": "lime"
+             },
+             {
+              "literal": "graphite"
+             }
+            ]
+           },
+           "shape": {
+            "oneOf": [
+             {
+              "literal": "round"
+             },
+             {
+              "literal": "squircle"
+             },
+             {
+              "literal": "pebble"
+             },
+             {
+              "literal": "gem"
+             },
+             {
+              "literal": "bloom"
+             }
+            ]
+           },
+           "face": {
+            "oneOf": [
+             {
+              "literal": "calm"
+             },
+             {
+              "literal": "happy"
+             },
+             {
+              "literal": "sleepy"
+             },
+             {
+              "literal": "wink"
+             },
+             {
+              "literal": "curious"
+             },
+             {
+              "literal": "bright"
+             }
+            ]
+           }
+          }
+         },
          "change?": {
           "map": "any"
          },
          "delete?": {
           "literal": true
          },
-         "since": "number"
+         "since": "number",
+         "waits?": "string"
         }
        }
       },
@@ -2352,8 +2444,209 @@
          "bot": "string",
          "box": "string",
          "computer": "string",
+         "name?": "string",
+         "look?": {
+          "object": {
+           "color": {
+            "oneOf": [
+             {
+              "literal": "mint"
+             },
+             {
+              "literal": "sky"
+             },
+             {
+              "literal": "indigo"
+             },
+             {
+              "literal": "violet"
+             },
+             {
+              "literal": "pink"
+             },
+             {
+              "literal": "coral"
+             },
+             {
+              "literal": "orange"
+             },
+             {
+              "literal": "amber"
+             },
+             {
+              "literal": "lime"
+             },
+             {
+              "literal": "graphite"
+             }
+            ]
+           },
+           "shape": {
+            "oneOf": [
+             {
+              "literal": "round"
+             },
+             {
+              "literal": "squircle"
+             },
+             {
+              "literal": "pebble"
+             },
+             {
+              "literal": "gem"
+             },
+             {
+              "literal": "bloom"
+             }
+            ]
+           },
+           "face": {
+            "oneOf": [
+             {
+              "literal": "calm"
+             },
+             {
+              "literal": "happy"
+             },
+             {
+              "literal": "sleepy"
+             },
+             {
+              "literal": "wink"
+             },
+             {
+              "literal": "curious"
+             },
+             {
+              "literal": "bright"
+             }
+            ]
+           }
+          }
+         },
          "message": "string",
          "at": "number"
+        }
+       }
+      },
+      "elsewhere?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "session?": "string",
+         "name?": "string",
+         "look?": {
+          "object": {
+           "color": {
+            "oneOf": [
+             {
+              "literal": "mint"
+             },
+             {
+              "literal": "sky"
+             },
+             {
+              "literal": "indigo"
+             },
+             {
+              "literal": "violet"
+             },
+             {
+              "literal": "pink"
+             },
+             {
+              "literal": "coral"
+             },
+             {
+              "literal": "orange"
+             },
+             {
+              "literal": "amber"
+             },
+             {
+              "literal": "lime"
+             },
+             {
+              "literal": "graphite"
+             }
+            ]
+           },
+           "shape": {
+            "oneOf": [
+             {
+              "literal": "round"
+             },
+             {
+              "literal": "squircle"
+             },
+             {
+              "literal": "pebble"
+             },
+             {
+              "literal": "gem"
+             },
+             {
+              "literal": "bloom"
+             }
+            ]
+           },
+           "face": {
+            "oneOf": [
+             {
+              "literal": "calm"
+             },
+             {
+              "literal": "happy"
+             },
+             {
+              "literal": "sleepy"
+             },
+             {
+              "literal": "wink"
+             },
+             {
+              "literal": "curious"
+             },
+             {
+              "literal": "bright"
+             }
+            ]
+           }
+          }
+         },
+         "job?": "string",
+         "box": "string",
+         "computer": "string",
+         "kind?": {
+          "oneOf": [
+           {
+            "literal": "mac"
+           },
+           {
+            "literal": "machine"
+           }
+          ]
+         },
+         "deletes?": {
+          "list": {
+           "object": {
+            "what": "string",
+            "words": "string",
+            "kept?": {
+             "literal": true
+            }
+           }
+          }
+         },
+         "waiting?": {
+          "literal": true
+         },
+         "refused?": {
+          "literal": true
+         },
+         "unlisted?": {
+          "literal": true
+         }
         }
        }
       }
@@ -2493,6 +2786,17 @@
           "working": "number",
           "asking": "number",
           "finished?": "number"
+         }
+        },
+        "deletes": {
+         "list": {
+          "object": {
+           "what": "string",
+           "words": "string",
+           "kept?": {
+            "literal": true
+           }
+          }
          }
         }
        }
@@ -2804,6 +3108,17 @@
             "asking": "number",
             "finished?": "number"
            }
+          },
+          "deletes": {
+           "list": {
+            "object": {
+             "what": "string",
+             "words": "string",
+             "kept?": {
+              "literal": true
+             }
+            }
+           }
           }
          }
         },
@@ -2819,13 +3134,94 @@
         "bot": "string",
         "box": "string",
         "computer": "string",
+        "name?": "string",
+        "look?": {
+         "object": {
+          "color": {
+           "oneOf": [
+            {
+             "literal": "mint"
+            },
+            {
+             "literal": "sky"
+            },
+            {
+             "literal": "indigo"
+            },
+            {
+             "literal": "violet"
+            },
+            {
+             "literal": "pink"
+            },
+            {
+             "literal": "coral"
+            },
+            {
+             "literal": "orange"
+            },
+            {
+             "literal": "amber"
+            },
+            {
+             "literal": "lime"
+            },
+            {
+             "literal": "graphite"
+            }
+           ]
+          },
+          "shape": {
+           "oneOf": [
+            {
+             "literal": "round"
+            },
+            {
+             "literal": "squircle"
+            },
+            {
+             "literal": "pebble"
+            },
+            {
+             "literal": "gem"
+            },
+            {
+             "literal": "bloom"
+            }
+           ]
+          },
+          "face": {
+           "oneOf": [
+            {
+             "literal": "calm"
+            },
+            {
+             "literal": "happy"
+            },
+            {
+             "literal": "sleepy"
+            },
+            {
+             "literal": "wink"
+            },
+            {
+             "literal": "curious"
+            },
+            {
+             "literal": "bright"
+            }
+           ]
+          }
+         }
+        },
         "change?": {
          "map": "any"
         },
         "delete?": {
          "literal": true
         },
-        "since": "number"
+        "since": "number",
+        "waits?": "string"
        }
       }
      }
@@ -2845,13 +3241,94 @@
         "bot": "string",
         "box": "string",
         "computer": "string",
+        "name?": "string",
+        "look?": {
+         "object": {
+          "color": {
+           "oneOf": [
+            {
+             "literal": "mint"
+            },
+            {
+             "literal": "sky"
+            },
+            {
+             "literal": "indigo"
+            },
+            {
+             "literal": "violet"
+            },
+            {
+             "literal": "pink"
+            },
+            {
+             "literal": "coral"
+            },
+            {
+             "literal": "orange"
+            },
+            {
+             "literal": "amber"
+            },
+            {
+             "literal": "lime"
+            },
+            {
+             "literal": "graphite"
+            }
+           ]
+          },
+          "shape": {
+           "oneOf": [
+            {
+             "literal": "round"
+            },
+            {
+             "literal": "squircle"
+            },
+            {
+             "literal": "pebble"
+            },
+            {
+             "literal": "gem"
+            },
+            {
+             "literal": "bloom"
+            }
+           ]
+          },
+          "face": {
+           "oneOf": [
+            {
+             "literal": "calm"
+            },
+            {
+             "literal": "happy"
+            },
+            {
+             "literal": "sleepy"
+            },
+            {
+             "literal": "wink"
+            },
+            {
+             "literal": "curious"
+            },
+            {
+             "literal": "bright"
+            }
+           ]
+          }
+         }
+        },
         "change?": {
          "map": "any"
         },
         "delete?": {
          "literal": true
         },
-        "since": "number"
+        "since": "number",
+        "waits?": "string"
        }
       }
      }
@@ -2992,6 +3469,17 @@
             "working": "number",
             "asking": "number",
             "finished?": "number"
+           }
+          },
+          "deletes": {
+           "list": {
+            "object": {
+             "what": "string",
+             "words": "string",
+             "kept?": {
+              "literal": true
+             }
+            }
            }
           }
          }
@@ -3304,7 +3792,16 @@
             "literal": "bots"
            },
            {
+            "literal": "bots.deletes"
+           },
+           {
             "literal": "bots.edit"
+           },
+           {
+            "literal": "bots.effort"
+           },
+           {
+            "literal": "bots.elsewhere"
            },
            {
             "literal": "bots.events"
@@ -3871,7 +4368,16 @@
             "literal": "bots"
            },
            {
+            "literal": "bots.deletes"
+           },
+           {
             "literal": "bots.edit"
+           },
+           {
+            "literal": "bots.effort"
+           },
+           {
+            "literal": "bots.elsewhere"
            },
            {
             "literal": "bots.events"

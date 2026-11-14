@@ -70,6 +70,22 @@ fn bodies(stand_in: &StandIn, method: &str, route: &str) -> Vec<Value> {
     stand_in.seen_at(method, route).into_iter().map(|seen| seen.body.unwrap_or(Value::Null)).collect()
 }
 
+/// Whether the sidebar has `bot`, on another computer, as waiting for that computer.
+fn waiting(workspace: &Entity<Workspace>, cx: &mut VisualTestContext, bot: &str) -> bool {
+    workspace.read_with(cx, |workspace, cx| {
+        let view = workspace.area_view(Area::Bots).expect("Bots").read(cx);
+        match view.bots() {
+            kuvo::areas::Reading::Ready(bots) => bots.there().iter().any(|there| there.id == bot && there.waiting),
+            _ => false,
+        }
+    })
+}
+
+/// What `kuvo/bots` says now, as the stand-in box answers it.
+fn said(stand_in: &StandIn) -> Value {
+    serde_json::from_slice(&kuvo_box::transport::Transport::send(stand_in, &kuvo_box::transport::Request::get("kuvo/bots")).expect("answered").body).expect("JSON")
+}
+
 /// The bot shown, as the page has it from the box.
 fn name_and_job(page: &Entity<BotsView>, cx: &mut VisualTestContext) -> (String, String, String) {
     page.read_with(cx, |page, _| page.bot().map(|bot| (bot.name.clone(), bot.job.clone(), bot.job_details.clone())).expect("a bot shown"))
@@ -266,12 +282,13 @@ fn an_edit_for_a_bot_on_another_computer_is_held_and_says_waiting(cx: &mut TestA
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_docs"), vec![json!({ "name": "Docs Warden" })]);
     // The list read again no longer has it here: it's on the other computer, waiting.
     assert!(!shown(cx, "bot-bot_docs") && shown(cx, "elsewhere-bot_docs"));
+    assert!(waiting(&workspace, cx, "bot_docs"));
 
     // While the box can't say what it holds (it leaves the lists out), what it last said stays.
     stand_in.bots_held_sayable(false);
     click(cx, "rail-sessions");
     click(cx, "rail-bots");
-    assert!(shown(cx, "elsewhere-bot_docs") && shown(cx, "elsewhere-bot_scout"), "kept, not taken for gone");
+    assert!(waiting(&workspace, cx, "bot_docs") && waiting(&workspace, cx, "bot_scout"), "kept, not taken for gone");
     stand_in.bots_held_sayable(true);
 
     // What that computer refuses comes back in the box's words.
@@ -352,12 +369,97 @@ fn a_blank_bot_sends_what_was_chosen_and_cancel_makes_none(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn the_bots_of_your_other_computers_list_as_the_box_says_and_change_through_it(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    click(cx, "rail-bots");
+    // One nothing waits for: listed all the same, as its computer last told the box.
+    assert!(shown(cx, "elsewhere-bot_wren") && !waiting(&workspace, cx, "bot_wren"));
+    click(cx, "elsewhere-bot_wren");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Wren"));
+    assert!(shown(cx, "elsewhere-head-bot_wren") && !shown(cx, "bot-held"));
+    // What this box can't say of it is said, and isn't offered: its job, personality and model.
+    assert!(shown(cx, "elsewhere-note") && !shown(cx, "bot-personality-menu") && !shown(cx, "bot-model-menu") && !shown(cx, "bot-job-button"));
+
+    // Renamed from here: asked of this box, which holds it for the bot's computer (202).
+    click(cx, "bot-name-button");
+    cx.simulate_input("Wren II");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_wren"), vec![json!({ "name": "Wren II" })]);
+    assert!(!shown(cx, "bot-sheet") && shown(cx, "bot-held") && waiting(&workspace, cx, "bot_wren"));
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Wren II"), "as you left it");
+
+    // Deleting it shows what that computer's delete takes, in the box's words for it: a machine's.
+    let page = page(&workspace, cx);
+    click(cx, "bot-delete-button");
+    let lines = page.read_with(cx, |page, _| page.deletes());
+    let there = said(&stand_in)["elsewhere"].as_array().and_then(|all| all.iter().find(|bot| bot["id"] == json!("bot_wren")).cloned()).expect("listed");
+    assert_eq!(lines.iter().map(|line| json!(line.words)).collect::<Vec<_>>(), there["deletes"].as_array().unwrap().iter().map(|line| line["words"].clone()).collect::<Vec<_>>());
+    assert!(lines.iter().any(|line| line.words.contains("Kuvo Code’s trash folder on lab")));
+    click(cx, "sheet-save");
+    assert_eq!(stand_in.seen_at("DELETE", "kuvo/bots/bot_wren").len(), 1);
+    assert!(shown(cx, "bot-held") && shown(cx, "elsewhere-bot_wren"), "held for lab: still listed until lab says it's gone");
+}
+
+#[gpui::test]
+fn a_bot_held_for_a_computer_shows_as_itself_by_the_name_and_look_the_box_gives(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    click(cx, "rail-bots");
+    // A delete held for a bot (no name in what's held), which its computer then refuses: both name
+    // it as the box does.
+    click(cx, "elsewhere-bot_wren");
+    click(cx, "bot-delete-button");
+    click(cx, "sheet-save");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Wren"));
+    stand_in.refuse_bot_edit("bot_wren", "lab", "lab didn’t delete the bot.");
+    stand_in.forget_bot_elsewhere("bot_wren");
+    click(cx, "rail-sessions");
+    click(cx, "rail-bots");
+    // No computer lists it now: known by the refusal alone, still as itself, and not changed from here.
+    assert!(shown(cx, "elsewhere-bot_wren"));
+    click(cx, "elsewhere-bot_wren");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Wren"));
+    assert!(shown(cx, "bot-refused-0") && !shown(cx, "bot-name-button") && !shown(cx, "bot-delete-button"));
+}
+
+#[gpui::test]
+fn its_effort_is_picked_from_its_models_own_and_sent_alone(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let page = bot(&workspace, cx, "bot_mira");
+    let variant = |cx: &mut VisualTestContext| page.read_with(cx, |page, _| page.bot().and_then(|bot| bot.model.as_ref().and_then(|model| model.variant.clone())));
+    assert_eq!(variant(cx), Some("high".into()));
+    click(cx, "bot-effort-menu");
+    assert!(shown(cx, "menu-item-Max") && !shown(cx, "menu-item-Extra"), "its model's own efforts, as the box lists them");
+    click(cx, "menu-item-Low");
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira"), vec![json!({ "effort": "low" })]);
+    assert_eq!(variant(cx), Some("low".into()), "the box's answer");
+    // None: the model's own, sent as null.
+    click(cx, "bot-effort-menu");
+    click(cx, "menu-item-The model’s own");
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").last(), Some(&json!({ "effort": null })));
+    assert_eq!(variant(cx), None);
+    // A model with no efforts of its own has no Effort row.
+    click(cx, "bot-model-menu");
+    click(cx, "menu-item-Gemini 3 Pro");
+    assert!(!shown(cx, "bot-effort-menu") && shown(cx, "bot-model-menu"));
+}
+
+#[gpui::test]
 fn deleting_a_bot_is_asked_first(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     let page = bot(&workspace, cx, "bot_docs");
     click(cx, "bot-delete-button");
     assert_eq!(page.read_with(cx, |page, _| page.sheet().cloned()), Some(Sheet::Delete));
+    // The confirm shows what the box says deleting it takes with it, each line as it is.
+    let lines = page.read_with(cx, |page, _| page.deletes());
+    let listed = said(&stand_in)["bots"].as_array().and_then(|all| all.iter().find(|bot| bot["id"] == json!("bot_docs")).cloned()).expect("listed");
+    assert_eq!(lines.iter().map(|line| json!(line.words)).collect::<Vec<_>>(), listed["deletes"].as_array().unwrap().iter().map(|line| line["words"].clone()).collect::<Vec<_>>());
+    assert!(lines.len() >= 5 && lines.iter().any(|line| line.words.contains("goes to the Trash")) && lines.last().is_some_and(|line| line.kept));
+    assert!(shown(cx, "sheet-delete-0") && shown(cx, &format!("sheet-delete-{}", lines.len() - 1)) && !shown(cx, &format!("sheet-delete-{}", lines.len())));
     // Return doesn't delete: only its button does.
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();

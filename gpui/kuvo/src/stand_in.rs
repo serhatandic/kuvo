@@ -195,8 +195,12 @@ impl StandIn {
     pub fn refuse_bot_edit(&self, bot: &str, computer: &str, message: &str) {
         let mut state = self.state();
         let at = state.made.unwrap_or_else(now_ms);
-        state.bots.held.retain(|held| held["bot"] != json!(bot));
-        state.bots.refused.push(json!({ "bot": bot, "box": format!("key_{computer}"), "computer": computer, "message": message, "at": at }));
+        state.bots.refuse(bot, computer, message, at);
+    }
+
+    /// `bot`'s computer no longer lists it (deleted there, or that computer was removed).
+    pub fn forget_bot_elsewhere(&self, bot: &str) {
+        self.state().bots.elsewhere.retain(|each| each["id"] != json!(bot));
     }
 
     /// Sign-ins under way are forgotten, as by an engine that started over.

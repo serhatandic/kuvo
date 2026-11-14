@@ -56,6 +56,7 @@ const engine = http.createServer((request, response) => {
     asked.push({ method: request.method, url: request.url, body: body ? JSON.parse(body) : undefined });
     const reply = (value, status = 200) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
     if (request.url === "/api/provider") return reply({ data: [{ id: "opencode" }] });
+    if (request.url === "/api/model") return reply({ data: [{ id: "big-pickle", providerID: "opencode", name: "Big Pickle", variants: [{ id: "low" }, { id: "high" }] }] });
     reply({});
   });
 });
@@ -77,9 +78,9 @@ const fresh = () => link.writeLink({
   legacy: { [mac.pub]: { at: 1, peers: [mac.peer, lab.peer, here.peer] } },
 });
 // What each peer's agents' mail said: lab keeps Wren, and takes held edits.
-const agentsTold = ({ labFeatures = ["bots.held"], labBots = [{ session: "ses_wren", name: "Wren", kind: "bot", id: "bot_wren0000001" }], macBots = [] } = {}) => write(path.join(run, "peer-agents.json"), {
-  [lab.pub]: { at: 1, heard: Date.now(), kind: "machine", id: "lab", list: labBots, features: labFeatures },
-  [mac.pub]: { at: 1, heard: Date.now(), kind: "mac", list: macBots, features: ["bots.held"] },
+const agentsTold = ({ labFeatures = ["bots.held"], labBots = [{ session: "ses_wren", name: "Wren", kind: "bot", id: "bot_wren0000001" }], macBots = [], labTrash = "kuvo", macTrash = "trash" } = {}) => write(path.join(run, "peer-agents.json"), {
+  [lab.pub]: { at: 1, heard: Date.now(), kind: "machine", id: "lab", list: labBots, features: labFeatures, ...(labTrash ? { trash: labTrash } : {}) },
+  [mac.pub]: { at: 1, heard: Date.now(), kind: "mac", list: macBots, features: ["bots.held"], ...(macTrash ? { trash: macTrash } : {}) },
 });
 
 // Mail as the relay hands it on, from `from` to this box; and what this box sent, opened as `to` would.
@@ -124,7 +125,7 @@ test("an edit to a bot whose computer is away is held by the box asked, merged a
   write(path.join(run, "peer-reach.json"), { [lab.pub]: Date.now() - 60_000 });
   const first = await route("PATCH", `kuvo/bots/${wren}`, { name: "  Wren\nthe Second ", look: { color: "mint", shape: "round", face: "calm" } });
   assert.equal(first.status, 202);
-  assert.deepEqual({ ...first.body.held, since: 0 }, { bot: wren, box: lab.pub, computer: "lab", change: { name: "Wren the Second", look: { color: "mint", shape: "round", face: "calm" } }, since: 0 });
+  assert.deepEqual({ ...first.body.held, since: 0 }, { bot: wren, box: lab.pub, computer: "lab", name: "Wren", change: { name: "Wren the Second", look: { color: "mint", shape: "round", face: "calm" } }, since: 0 });
   // A later one on top: each field the last given.
   const second = await route("PATCH", `kuvo/bots/${wren}`, { name: "Wren III", personality: null });
   assert.equal(second.status, 202);
@@ -455,4 +456,240 @@ test("a new edit to a bot its computer said isn't there starts its tries over", 
   receive(lab, { botEdited: { id: newer.botEdit.id, bot: wren, status: 404, message: "That bot isn’t there any more." } });
   assert.equal((await listed()).held.length, 1, "still held: its first 404");
   assert.deepEqual((await listed()).refused, []);
+});
+
+// PROTOCOL.md, `kuvo/bots`, "The bots of your other computers" (`bots.elsewhere`).
+const wrenLook = { color: "sky", shape: "round", face: "happy" };
+const labWren = { session: "ses_wren", name: "Wren", kind: "bot", id: wren, about: "Watches the build", look: wrenLook };
+
+test("the bots of your other computers are listed by the box asked, as each last told it, with what deleting one takes there", async () => {
+  agentsTold({
+    labBots: [labWren, { session: "ses_plain", name: "A session", kind: "session" }],
+    macBots: [{ session: "ses_mira", name: "Mira", kind: "bot", id: "bot_mira0000001" }],
+  });
+  const { elsewhere, bots: own } = await listed();
+  assert.deepEqual(own, []);
+  assert.deepEqual(elsewhere.map(each => [each.id, each.name, each.computer, each.kind, each.box]), [
+    ["bot_mira0000001", "Mira", "Studio", "mac", mac.pub],
+    [wren, "Wren", "lab", "machine", lab.pub],
+  ], "bots only, by computer");
+  const there = elsewhere[1];
+  assert.deepEqual({ ...there, deletes: [] }, { id: wren, session: "ses_wren", name: "Wren", look: wrenLook, job: "Watches the build", box: lab.pub, computer: "lab", kind: "machine", deletes: [] });
+  assert.equal("look" in elsewhere[0] || "job" in elsewhere[0], false, "what a computer didn't say is left out");
+  // What deleting one takes with it there, in words: a Mac's folder goes to the Trash, a machine's
+  // to Kuvo Code's trash folder; its wake-ups aren't told between computers, so no count.
+  assert.deepEqual(there.deletes, [
+    { what: "conversation", words: "Its conversation is deleted." },
+    { what: "folder", words: "Its folder, with its memory and what it made there, goes to Kuvo Code’s trash folder on lab." },
+    { what: "wakes", words: "Its wake-ups and watches are cancelled." },
+    { what: "keys", words: "Any keys of its own are removed." },
+    { what: "groups", words: "It leaves the group chats on lab." },
+    { what: "sessions", words: "The sessions it started stay.", kept: true },
+  ]);
+  // Each as that computer says where its deleted bots' folders go: the Mac's app takes them to the
+  // Trash; with its app closed it says Kuvo Code's trash folder, as a machine does; and one that
+  // hasn't said (from before it did) is said both ways. Always by the computer's name.
+  const macFolder = async macTrash => {
+    agentsTold({ macBots: [{ session: "ses_mira", name: "Mira", kind: "bot", id: "bot_mira0000001" }], macTrash });
+    return (await listed()).elsewhere[0].deletes[1].words;
+  };
+  assert.equal(await macFolder("trash"), "Its folder, with its memory and what it made there, goes to the Trash on Studio.");
+  assert.equal(await macFolder("kuvo"), "Its folder, with its memory and what it made there, goes to Kuvo Code’s trash folder on Studio.");
+  assert.equal(await macFolder(null), "Its folder, with its memory and what it made there, goes to the Trash on Studio, or to Kuvo Code’s trash folder there.");
+  // What it says in its agents' mail is what's kept (and nothing but those two words).
+  receive(mac, { agents: { at: Date.now() + 5, list: [{ session: "ses_mira", name: "Mira", kind: "bot", id: "bot_mira0000001" }], trash: "kuvo" } });
+  assert.match((await listed()).elsewhere[0].deletes[1].words, /Kuvo Code’s trash folder on Studio\./);
+  receive(mac, { agents: { at: Date.now() + 10, list: [{ session: "ses_mira", name: "Mira", kind: "bot", id: "bot_mira0000001" }], trash: "/etc" } });
+  assert.match((await listed()).elsewhere[0].deletes[1].words, /or to Kuvo Code’s trash folder there/);
+});
+
+test("nothing is listed from a computer of another setup, nor by a machine two people's Macs share", async () => {
+  // This box follows one setup; lab says it follows another.
+  const setup = id => `set_${id.repeat(22)}`;
+  link.writeLink({ ...link.readLink(), setup: { id: setup("a"), role: "member", primary: mac.pub } });
+  const told = JSON.parse(fs.readFileSync(path.join(run, "peer-agents.json"), "utf8"));
+  told[lab.pub].setup = setup("b");
+  told[lab.pub].list = [labWren];
+  write(path.join(run, "peer-agents.json"), told);
+  assert.deepEqual((await listed()).elsewhere, []);
+  told[lab.pub].setup = setup("a");
+  write(path.join(run, "peer-agents.json"), told);
+  assert.deepEqual((await listed()).elsewhere.map(each => each.id), [wren], "the same setup: one of yours");
+  // This box set up by two people's Macs: none of its peers is only yours.
+  fresh();
+  const other = box("mac", "Other");
+  link.writeLink({ ...link.readLink(), macs: [mac.pub, other.pub] });
+  assert.deepEqual((await listed()).elsewhere, []);
+});
+
+test("a bot two computers list (it's moving) is the one's that said so last; one that lives here is this box's own", async () => {
+  write(path.join(run, "peer-agents.json"), {
+    [lab.pub]: { at: 1, heard: 1_000, kind: "machine", id: "lab", list: [labWren], features: [] },
+    [mac.pub]: { at: 1, heard: 2_000, kind: "mac", list: [{ ...labWren, name: "Wren, moved" }], features: [] },
+  });
+  assert.deepEqual((await listed()).elsewhere.map(each => [each.name, each.computer]), [["Wren, moved", "Studio"]]);
+  // It arrived here: listed among this box's own, and no longer as elsewhere.
+  write(path.join(bots, "kit.json"), kit);
+  write(path.join(bots, wren, "bot.json"), { kuvo: 1, id: wren, name: "Wren", look: wrenLook, created: "2026-10-01T09:00:00Z" });
+  write(path.join(bots, wren, "session"), "ses_wren");
+  const list = await listed();
+  assert.deepEqual([list.bots.map(each => each.id), list.elsewhere], [[wren], []]);
+});
+
+test("nothing is listed from a computer that isn't only yours, whatever its list says", async () => {
+  write(path.join(run, "peer-agents.json"), {
+    [lab.pub]: { at: 1, heard: Date.now(), kind: "machine", id: "lab", list: [labWren], features: ["bots.held"], shared: true },
+    [mac.pub]: { at: 1, heard: Date.now(), kind: "mac", list: [], features: ["bots.held"] },
+  });
+  assert.deepEqual((await listed()).elsewhere, []);
+});
+
+test("a peer's agents' mail changes the list at once for those following this box's bots", async () => {
+  agentsTold({ labBots: [] });
+  const stop = new AbortController();
+  const lines = handle({ method: "GET", path: "kuvo/bots/events", headers: {}, fromApp: true }, undefined, stop.signal);
+  const next = async () => {
+    for (;;) {
+      const piece = (await lines.next()).value;
+      if (piece?.body) return JSON.parse(piece.body.toString());
+    }
+  };
+  try {
+    assert.deepEqual((await next()).elsewhere, []);
+    receive(lab, { agents: { at: Date.now(), list: [labWren], features: ["bots.held"] } });
+    assert.deepEqual((await next()).elsewhere.map(each => each.name), ["Wren"]);
+  } finally {
+    stop.abort();
+    await lines.return?.();
+  }
+});
+
+test("what's held and what was refused name the bot and its look, as its computer last said, and still once it no longer lists it", async () => {
+  agentsTold({ labBots: [labWren] });
+  const first = await route("PATCH", `kuvo/bots/${wren}`, { name: "Wren II" });
+  assert.deepEqual([first.body.held.name, first.body.held.look, first.body.held.change], ["Wren", wrenLook, { name: "Wren II" }], "who it is, and what you changed");
+  // Among the bots elsewhere it's as you left it, and waiting: a client draws that as it is.
+  const [left] = (await listed()).elsewhere;
+  assert.deepEqual([left.id, left.name, left.look, left.waiting, left.kind, "unlisted" in left], [wren, "Wren II", wrenLook, true, "machine", false]);
+  await route("PATCH", `kuvo/bots/${wren}`, { look: { color: "mint", shape: "round", face: "calm" } });
+  assert.deepEqual((await listed()).elsewhere[0].look, { color: "mint", shape: "round", face: "calm" });
+  // Lab renames it meanwhile: as it says now.
+  agentsTold({ labBots: [{ ...labWren, name: "Wren the Elder" }] });
+  assert.equal((await listed()).held[0].name, "Wren the Elder");
+  // A delete on top, then lab stops listing it: who it was is kept with what's held.
+  await route("DELETE", `kuvo/bots/${wren}`);
+  agentsTold({ labBots: [] });
+  let list = await listed();
+  assert.deepEqual([list.held[0].name, list.held[0].look, list.held[0].delete], ["Wren the Elder", wrenLook, true]);
+  // And it's still among the bots elsewhere, by what's held alone: not listed by any computer now.
+  assert.deepEqual(list.elsewhere, [{ id: wren, name: "Wren the Elder", look: wrenLook, box: lab.pub, computer: "lab", waiting: true, unlisted: true }]);
+  // Lab refuses it: the refusal names it the same way.
+  const [{ botEdit }] = mailTo(lab).slice(-1);
+  receive(lab, { botEdited: { id: botEdit.id, bot: wren, status: 403, message: "Not from here." } });
+  list = await listed();
+  assert.deepEqual(list.held, []);
+  assert.deepEqual(list.refused.map(each => [each.bot, each.name, each.look, each.computer]), [[wren, "Wren the Elder", wrenLook, "lab"]]);
+  assert.deepEqual(list.elsewhere, [{ id: wren, name: "Wren the Elder", look: wrenLook, box: lab.pub, computer: "lab", refused: true, unlisted: true }]);
+  // One no computer of yours ever listed to this box has neither.
+  const unknown = await route("PATCH", "kuvo/bots/bot_ghost000001?on=lab", { name: "Ghost" });
+  assert.equal(unknown.status, 202);
+  assert.equal("name" in unknown.body.held || "look" in unknown.body.held, false);
+  // (Among the bots elsewhere, by the name you gave it.)
+  assert.deepEqual((await listed()).elsewhere.find(each => each.id === "bot_ghost000001"), { id: "bot_ghost000001", name: "Ghost", box: lab.pub, computer: "lab", waiting: true, unlisted: true });
+});
+
+test("an effort held for another computer waits until that computer takes one", async () => {
+  const held = await route("PATCH", `kuvo/bots/${wren}`, { effort: "high" });
+  assert.deepEqual([held.status, held.body.held.change], [202, { effort: "high" }]);
+  assert.deepEqual(mailTo(lab), [], "lab doesn't take an effort yet: it would drop it and call the change done");
+  // Why it waits though lab answers is said, in words, to whoever follows this box's bots.
+  assert.equal((await listed()).held[0].waits, "lab needs an update before it takes an effort: this goes once Kuvo Code is updated on lab.");
+  assert.equal((await route("PATCH", `kuvo/bots/${wren}`, { effort: 3 })).status, 400);
+  agentsTold({ labFeatures: ["bots.held", "bots.effort"] });
+  assert.equal("waits" in (await listed()).held[0], false);
+  link.sendHeld(host);
+  assert.deepEqual(mailTo(lab).at(-1).botEdit.change, { effort: "high" });
+  // A model picked after it, with no effort of its own, runs at its own: the effort held for the
+  // model it had is let go, as two changes made where it lives would end.
+  const model = await route("PATCH", `kuvo/bots/${wren}`, { model: { id: "opus", providerID: "anthropic" } });
+  assert.deepEqual(model.body.held.change, { model: { id: "opus", providerID: "anthropic" } });
+  assert.deepEqual(Object.keys(mailTo(lab).at(-1).botEdit.ages), ["model"]);
+});
+
+test("a peer saying its agents again changes nothing for those following this box's bots, and one it gives no name isn't listed", async () => {
+  agentsTold({ labBots: [labWren, { ...labWren, id: "bot_blank000001", session: "ses_blank", name: "" }] });
+  const before = JSON.stringify(await listed());
+  // (The same list, heard later.)
+  const told = JSON.parse(fs.readFileSync(path.join(run, "peer-agents.json"), "utf8"));
+  told[lab.pub].heard += 60_000;
+  write(path.join(run, "peer-agents.json"), told);
+  assert.equal(JSON.stringify(await listed()), before);
+  assert.deepEqual(JSON.parse(before).elsewhere.map(each => each.id), [wren]);
+});
+
+test("an edit held before a bot's name was kept with it is still this box's own, and still goes", async () => {
+  // As a box from before `bots.elsewhere` wrote and sealed it: no `known`.
+  const record = { id: `bte_${crypto.randomBytes(16).toString("base64url")}`, bot: wren, to: lab.pub, change: { name: "Wren II" }, times: { name: 5 }, since: 5, at: 5 };
+  const key = crypto.createHmac("sha256", Buffer.from(secret, "base64url")).update("kuvo bot edits held").digest();
+  const seal = crypto.createHmac("sha256", key).update(JSON.stringify([record.id, record.bot, record.to, null, record.change, record.times, false, record.since, record.at])).digest("base64url");
+  write(path.join(held, `${wren}.json`), { ...record, seal });
+  assert.deepEqual((await listed()).held.map(each => [each.bot, each.name, each.change]), [[wren, "Wren", { name: "Wren II" }]]);
+  link.sendHeld(host);
+  assert.equal(mailTo(lab).at(-1).botEdit.id, record.id);
+});
+
+test("an effort held for a bot here is its model's: not done once its model changed here since, and done as one given here otherwise", async () => {
+  write(path.join(bots, "kit.json"), kit);
+  write(path.join(bots, wren, "bot.json"), { kuvo: 1, id: wren, name: "Wren", look: wrenLook, model: { id: "big-pickle", providerID: "opencode" }, created: "2026-10-01T09:00:00Z" });
+  write(path.join(bots, wren, "session"), "ses_wren");
+  const answer = async () => {
+    for (;;) {
+      const [mail] = mailTo(mac).filter(each => each.botEdited);
+      if (mail) return mail.botEdited;
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+  const edit = (effort, age) => receive(mac, { botEdit: { id: `bte_${crypto.randomBytes(16).toString("base64url")}`, bot: wren, change: { effort }, ages: { effort: age }, at: Date.now() } });
+  const model = async () => (await listed()).bots[0].model;
+  // Its model was picked here a moment ago; an effort you gave a minute before that, held on the
+  // Mac meanwhile, was for the model it had then.
+  assert.equal((await route("PATCH", `kuvo/bots/${wren}`, { model: { id: "big-pickle", providerID: "opencode" } })).status, 200);
+  write(path.join(bots, wren, "edited.json"), { model: Date.now() - 30_000 });
+  edit("low", 60_000);
+  assert.equal((await answer()).status, 200);
+  assert.deepEqual(await model(), { id: "big-pickle", providerID: "opencode" });
+  // One given since is done, as `PATCH` with `effort` here would be; one its model hasn't is refused in words.
+  edit("high", 1_000);
+  assert.equal((await answer()).status, 200);
+  assert.deepEqual(await model(), { id: "big-pickle", providerID: "opencode", variant: "high" });
+  edit("max", 0);
+  const refused = await answer();
+  assert.deepEqual([refused.status, refused.message], [400, "Big Pickle has no “max” effort: its efforts are low, high."]);
+});
+
+test("a model and the effort held with it are one: a model this computer can't use takes no effort to the model it has, and the rest still lands", async () => {
+  write(path.join(bots, "kit.json"), kit);
+  write(path.join(bots, wren, "bot.json"), { kuvo: 1, id: wren, name: "Wren", look: wrenLook, model: { id: "big-pickle", providerID: "opencode" }, created: "2026-10-01T09:00:00Z" });
+  write(path.join(bots, wren, "session"), "ses_wren");
+  const answer = async () => {
+    for (;;) {
+      const [mail] = mailTo(mac).filter(each => each.botEdited);
+      if (mail) return mail.botEdited;
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  };
+  const edit = (change, ages) => receive(mac, { botEdit: { id: `bte_${crypto.randomBytes(16).toString("base64url")}`, bot: wren, change, ages, at: Date.now() } });
+  const now = async () => { const [bot] = (await listed()).bots; return [bot.name, bot.model]; };
+  // Luna isn't signed in here: refused with its effort, which isn't put on Big Pickle; the name lands.
+  edit({ name: "Wren II", model: { id: "luna", providerID: "openai" }, effort: "high" }, { name: 0, model: 0, effort: 0 });
+  const partly = await answer();
+  assert.equal(partly.status, 200);
+  assert.match(partly.message, /luna/);
+  assert.deepEqual(await now(), ["Wren II", { id: "big-pickle", providerID: "opencode" }]);
+  // A model given before its model last changed here is stale, and the effort given with it goes
+  // with it, though given later.
+  write(path.join(bots, wren, "edited.json"), { model: Date.now() - 30_000 });
+  edit({ model: { id: "luna", providerID: "openai" }, effort: "high" }, { model: 60_000, effort: 1_000 });
+  assert.equal((await answer()).status, 200);
+  assert.deepEqual(await now(), ["Wren II", { id: "big-pickle", providerID: "opencode" }]);
 });
