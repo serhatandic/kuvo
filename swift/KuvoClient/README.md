@@ -47,8 +47,10 @@ by (the old-box path): not a ChatGPT or SuperGrok plan's own (they go through Co
 unless one was made before; held, with `PlanSignIns`, to the box's cases (`protocol/vectors/plan-sign-ins.json`).
 `SignInMethods`, `SignInAccounts` and `SignInStatus` are the box's answers for signing in
 (`kuvo/sign-in/methods`, `kuvo/sign-in/accounts`, `kuvo/sign-in/status`): the ways in, in its order
-and words, legacy ones apart, the way in an account's card names (`hint`), whether Accounts offers
-Sign In (`offersSignIn`), and what to say when one didn't work; held to `protocol/vectors/sign-in.json`.
+and words, legacy ones apart, the way in an account's card names (`hint`), how each account stands
+with its line, its sign-ins and what can be done with it (`AccountSaid`: `state`, `line`,
+`connections`, `actions`, each action with its button's words and its confirm's), and what to say
+when one didn't work; held to `protocol/vectors/sign-in.json`.
 Both apps' sign-in sheets and Accounts draw them.
 `ProgramUpdate` is how a coding agent's program's update stands as its box keeps it
 (`Integration.programUpdate`: under way, updated, already the newest, or why it failed, by an id
