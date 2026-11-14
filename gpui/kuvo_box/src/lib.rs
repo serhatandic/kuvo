@@ -13,6 +13,7 @@
 pub mod accounts;
 pub mod areas;
 pub mod asks;
+pub mod bots;
 pub mod client;
 pub mod error;
 pub mod folders;

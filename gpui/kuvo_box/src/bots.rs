@@ -1,0 +1,376 @@
+//! A box's bots, as it lists, makes, changes and deletes them (PROTOCOL.md, `kuvo/bots`): the list
+//! with what's held for another computer and what one refused, what New Bot offers there
+//! (`kuvo/bots/templates`), `POST kuvo/bots`, `PATCH` and `DELETE kuvo/bots/<id>`, and a bot's
+//! sessions (`kuvo/work?bot=`). The box decides all of it: what a bot may be called, which looks,
+//! personalities and models there are, and where an edit waits. This reads and sends.
+
+use std::collections::HashMap;
+
+use serde::Deserialize;
+use serde_json::{Map, Value, json};
+
+use crate::areas::{Bot, Look};
+use crate::client::{BoxClient, decode};
+use crate::error::{Error, Refusal, Result};
+use crate::transport::Request;
+use crate::typed::ModelRef;
+
+/// A change or a delete a box holds for the computer a bot lives on (`bots.held`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Held {
+    /// The bot's id.
+    pub bot: String,
+    /// The name of the computer it waits for, as the box that holds it knows it.
+    #[serde(default)]
+    pub computer: String,
+    /// Each field as `PATCH` takes it, the last given of each.
+    #[serde(default)]
+    pub change: Option<Map<String, Value>>,
+    /// It's a delete.
+    #[serde(default)]
+    pub delete: bool,
+    /// When it was first held (ms).
+    #[serde(default)]
+    pub since: Option<f64>,
+}
+
+impl Held {
+    /// The name it was given in what's held, if that changes it.
+    pub fn name(&self) -> Option<&str> {
+        self.change.as_ref()?.get("name")?.as_str()
+    }
+
+    /// The look it was given in what's held, if that changes it.
+    pub fn look(&self) -> Option<Look> {
+        serde_json::from_value(self.change.as_ref()?.get("look")?.clone()).ok()
+    }
+
+    /// The fields what's held changes, in Edit Bot's order (others a newer box names, after).
+    pub fn fields(&self) -> Vec<String> {
+        let Some(change) = &self.change else { return Vec::new() };
+        let known = ["name", "look", "job", "personality", "model"];
+        let mut fields: Vec<String> = known.iter().filter(|field| change.contains_key(**field)).map(|field| (*field).to_owned()).collect();
+        fields.extend(change.keys().filter(|field| !known.contains(&field.as_str())).cloned());
+        fields
+    }
+}
+
+/// What a computer refused of an edit held for it, in the last day, with the words to show.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Refused {
+    pub bot: String,
+    #[serde(default)]
+    pub computer: String,
+    pub message: String,
+    #[serde(default)]
+    pub at: Option<f64>,
+}
+
+/// What `kuvo/bots` says: the bots that live on the box, and what it holds for (and heard back
+/// from) your other computers.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct BotsSaid {
+    pub bots: Vec<Bot>,
+    pub held: Vec<Held>,
+    pub refused: Vec<Refused>,
+}
+
+/// One of New Bot's templates.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Template {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub job: String,
+    #[serde(default, deserialize_with = "lenient")]
+    pub look: Option<Look>,
+    #[serde(default)]
+    pub personality: Option<String>,
+    /// It's made to work in a project.
+    #[serde(default, rename = "wantsProject")]
+    pub wants_project: bool,
+}
+
+/// A personality a bot can have.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Personality {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// One you made.
+    #[serde(default)]
+    pub custom: bool,
+}
+
+/// The looks a bot can have, by name.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct Looks {
+    #[serde(default)]
+    pub colors: Vec<String>,
+    #[serde(default)]
+    pub shapes: Vec<String>,
+    #[serde(default)]
+    pub faces: Vec<String>,
+}
+
+/// A project a new bot can work in.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct BotProject {
+    pub directory: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+/// What New Bot offers on a box (`kuvo/bots/templates`).
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+pub struct Templates {
+    #[serde(default, deserialize_with = "readable")]
+    pub templates: Vec<Template>,
+    #[serde(default, deserialize_with = "readable")]
+    pub personalities: Vec<Personality>,
+    #[serde(default)]
+    pub looks: Looks,
+    /// The model a new bot starts on there, by the place's name (one key).
+    #[serde(default, rename = "startingModel")]
+    pub starting_model: HashMap<String, Option<ModelRef>>,
+    #[serde(default, deserialize_with = "readable")]
+    pub projects: Vec<BotProject>,
+}
+
+impl Templates {
+    /// The model a new bot starts on, where the box names one.
+    pub fn starting(&self) -> Option<&ModelRef> {
+        self.starting_model.values().next().and_then(Option::as_ref)
+    }
+}
+
+/// A new bot, as `POST kuvo/bots` takes it. What's left out is the box's to pick.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct NewBot {
+    pub name: String,
+    pub look: Option<Look>,
+    pub personality: Option<String>,
+    pub model: Option<ModelRef>,
+    pub project: Option<String>,
+    pub template: Option<String>,
+    /// This New Bot's own id, sent again with a retry so the bot is made once.
+    pub request: String,
+}
+
+/// A bot the box made: the bot, and (from a template) its job for your composer, to edit and send.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Made {
+    pub bot: Bot,
+    #[serde(default, rename = "firstMessage")]
+    pub first_message: Option<String>,
+}
+
+/// A change to a bot, as `PATCH kuvo/bots/<id>` takes it: only the fields given.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct BotChange {
+    pub name: Option<String>,
+    pub look: Option<Look>,
+    /// `Some(None)`: the model's own way.
+    pub personality: Option<Option<String>>,
+    pub model: Option<ModelRef>,
+    /// Its line and its details, the whole job.
+    pub job: Option<(String, String)>,
+}
+
+impl BotChange {
+    fn body(&self) -> Value {
+        let mut body = Map::new();
+        if let Some(name) = &self.name {
+            body.insert("name".into(), json!(name));
+        }
+        if let Some(look) = &self.look {
+            body.insert("look".into(), look_json(look));
+        }
+        if let Some(personality) = &self.personality {
+            body.insert("personality".into(), json!(personality));
+        }
+        if let Some(model) = &self.model {
+            body.insert("model".into(), json!(model));
+        }
+        if let Some((line, details)) = &self.job {
+            body.insert("job".into(), json!({ "line": line, "details": details }));
+        }
+        Value::Object(body)
+    }
+}
+
+fn look_json(look: &Look) -> Value {
+    json!({ "color": look.color, "shape": look.shape, "face": look.face })
+}
+
+/// What came of a change or a delete.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outcome {
+    /// Done where the bot lives: the bot as it is now (none: deleted, or it no longer lists here).
+    Done(Option<Box<Bot>>),
+    /// Taken, and held for the computer it lives on (`202`).
+    Held(Held),
+}
+
+/// How one of a bot's sessions stands, in the box's word. One a newer box names is `Other`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkState {
+    Working,
+    Asking,
+    Finished,
+    Failed,
+    Stopped,
+    Idle,
+    #[default]
+    #[serde(other)]
+    Other,
+}
+
+/// One of a bot's sessions (`kuvo/work?bot=`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct WorkSession {
+    pub session: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub state: WorkState,
+    /// When it started (ms).
+    #[serde(default)]
+    pub started: Option<f64>,
+}
+
+/// A bot's sessions, the latest first.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+pub struct Work {
+    #[serde(default, deserialize_with = "readable")]
+    pub sessions: Vec<WorkSession>,
+}
+
+/// A list's items this can read: one it can't is left out, not all of them.
+fn readable<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(deserializer: D) -> std::result::Result<Vec<T>, D::Error> {
+    let values = Vec::<Value>::deserialize(deserializer)?;
+    Ok(values.into_iter().filter_map(|value| serde_json::from_value(value).ok()).collect())
+}
+
+/// A value a newer box may say in a way this doesn't know: none.
+fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(deserializer: D) -> std::result::Result<Option<T>, D::Error> {
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
+}
+
+fn read_all<T: serde::de::DeserializeOwned>(values: Option<&Value>) -> Vec<T> {
+    values.and_then(Value::as_array).map(|values| values.iter().filter_map(|value| serde_json::from_value(value.clone()).ok()).collect()).unwrap_or_default()
+}
+
+impl BoxClient {
+    /// The box's bots, with what it holds for your other computers and what they refused.
+    pub fn bots_said(&self) -> Result<BotsSaid> {
+        let answer: Value = self.get("kuvo/bots")?;
+        if !answer.get("bots").is_some_and(Value::is_array) {
+            return Err(Error::BadAnswer("The box didn’t list its bots.".into()));
+        }
+        Ok(BotsSaid { bots: read_all(answer.get("bots")), held: read_all(answer.get("held")), refused: read_all(answer.get("refused")) })
+    }
+
+    /// What New Bot offers on this box.
+    pub fn bot_templates(&self) -> Result<Templates> {
+        self.get("kuvo/bots/templates")
+    }
+
+    /// Makes a bot on this box.
+    pub fn make_bot(&self, new: &NewBot) -> Result<Made> {
+        let mut body = Map::new();
+        body.insert("name".into(), json!(new.name));
+        body.insert("request".into(), json!(new.request));
+        if let Some(look) = &new.look {
+            body.insert("look".into(), look_json(look));
+        }
+        for (field, value) in [("personality", &new.personality), ("project", &new.project), ("template", &new.template)] {
+            if let Some(value) = value {
+                body.insert(field.into(), json!(value));
+            }
+        }
+        if let Some(model) = &new.model {
+            body.insert("model".into(), json!(model));
+        }
+        self.value(&Request::post("kuvo/bots", Value::Object(body)))
+    }
+
+    /// Changes a bot. Asked of a box it doesn't live on, the box holds it for that computer.
+    pub fn change_bot(&self, bot: &str, change: &BotChange) -> Result<Outcome> {
+        self.bot_outcome(Request { method: "PATCH".into(), path: format!("kuvo/bots/{bot}"), headers: Vec::new(), body: Some(change.body()) })
+    }
+
+    /// Deletes a bot, as Delete Bot… does. Asked of a box it doesn't live on, it's held too.
+    pub fn delete_bot(&self, bot: &str) -> Result<Outcome> {
+        self.bot_outcome(Request::delete(format!("kuvo/bots/{bot}")))
+    }
+
+    fn bot_outcome(&self, request: Request) -> Result<Outcome> {
+        #[derive(Deserialize)]
+        struct Answer {
+            #[serde(default, deserialize_with = "lenient")]
+            bot: Option<Bot>,
+            #[serde(default, deserialize_with = "lenient")]
+            held: Option<Held>,
+        }
+        let response = self.send(&request)?;
+        if !response.is_success() {
+            return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
+        }
+        let answer: Answer = decode(&response)?;
+        Ok(match (response.status, answer.held) {
+            (202, Some(held)) => Outcome::Held(held),
+            _ => Outcome::Done(answer.bot.map(Box::new)),
+        })
+    }
+
+    /// A bot's sessions, the latest first.
+    pub fn bot_work(&self, bot: &str) -> Result<Work> {
+        self.get(&format!("kuvo/work?bot={bot}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn whats_held_and_refused_reads_as_the_box_says_it() {
+        let held: Held = serde_json::from_str(r#"{"bot":"bot_scout","box":"key_studio","computer":"studio-mini","change":{"name":"Scout II","look":{"color":"amber","shape":"gem","face":"wink"},"mood":"new"},"since":5}"#).unwrap();
+        assert_eq!((held.name(), held.look().map(|look| look.color), held.delete), (Some("Scout II"), Some("amber".into()), false));
+        assert_eq!(held.fields(), vec!["name", "look", "mood"], "Edit Bot's order, then what a newer box names");
+        let delete: Held = serde_json::from_str(r#"{"bot":"bot_scout","box":"","computer":"old-box","delete":true,"since":5}"#).unwrap();
+        assert!(delete.delete && delete.fields().is_empty());
+        let refused: Refused = serde_json::from_str(r#"{"bot":"bot_scout","box":"k","computer":"studio-mini","message":"studio-mini has no personality “Dry Wit”.","at":9}"#).unwrap();
+        assert_eq!(refused.message, "studio-mini has no personality “Dry Wit”.");
+    }
+
+    #[test]
+    fn a_change_sends_only_the_fields_given() {
+        assert_eq!(BotChange { name: Some("Mira".into()), ..BotChange::default() }.body(), json!({ "name": "Mira" }));
+        assert_eq!(BotChange { personality: Some(None), ..BotChange::default() }.body(), json!({ "personality": null }), "null: the model's own way");
+        assert_eq!(BotChange { job: Some(("Ships betas".into(), String::new())), ..BotChange::default() }.body(), json!({ "job": { "line": "Ships betas", "details": "" } }));
+        let model = ModelRef { provider_id: "anthropic".into(), id: "claude-opus-5-5".into(), variant: None };
+        assert_eq!(BotChange { model: Some(model), ..BotChange::default() }.body(), json!({ "model": { "providerID": "anthropic", "id": "claude-opus-5-5" } }));
+    }
+
+    #[test]
+    fn templates_and_work_leave_out_what_cant_be_read() {
+        let said: Templates = serde_json::from_str(
+            r#"{"templates":[{"id":"news","name":"Herald","job":"Reads the news","instructions":"…","look":{"color":"sky","shape":"round","face":"calm"},"wantsProject":false},{"id":"ci","name":"Keeper","look":"striped","personality":"preset.perfectionist","wantsProject":true},{"name":"No id"}],
+                "personalities":[{"id":"preset.straight","name":"Straight Shooter","description":"Says it plainly.","custom":false}],
+                "looks":{"colors":["mint"],"shapes":["bloom"],"faces":["wink"]},"startingModel":{"mac":{"providerID":"anthropic","id":"claude-opus-5-5","variant":"high"}},"projects":[{"directory":"/p/site","name":"Website"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(said.templates.len(), 2);
+        assert!(said.templates[1].look.is_none() && said.templates[1].wants_project, "a look this can't read is none, not the template");
+        assert_eq!(said.starting().map(|model| model.id.as_str()), Some("claude-opus-5-5"));
+        let work: Work = serde_json::from_str(r#"{"bot":"bot_1","sessions":[{"session":"ses_1","title":"Fix it","folder":"/p","state":"asking","started":4,"tokens":1},{"session":"ses_2","state":"dozing"},{"title":"no id"}]}"#).unwrap();
+        assert_eq!(work.sessions.iter().map(|session| session.state).collect::<Vec<_>>(), vec![WorkState::Asking, WorkState::Other]);
+    }
+}

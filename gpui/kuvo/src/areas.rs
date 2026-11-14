@@ -4,7 +4,9 @@
 //! view, kept while another area shows and drawn only while its own does; Bots and the Work Queue
 //! ask the box as they open, and the window hands Computers the list its title bar draws too.
 //!
-//! None of these areas' pages is in the app yet: picking a row shows a plain page saying so.
+//! Bots' main view is its own (`crate::bots`): a bot's page, New Bot. The Work Queue's and
+//! Computers' pages, and a group chat's, aren't in the app yet: picking a row there shows a plain
+//! page saying so.
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, EventEmitter, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString,
@@ -12,14 +14,16 @@ use gpui::{
 };
 use kuvo_box::BoxClient;
 use kuvo_box::areas::{Bot, BotNow, Computer, Group, Look, WorkQueue};
+use kuvo_box::bots::{BotsSaid, Held, Refused};
 use kuvo_ui::{
-    ActiveTheme, Icon, IconSize, StyledType, TypeSize,
+    ActiveTheme, Button, ButtonSize, Icon, IconSize, StyledType, TypeSize,
     row::{NavRow, SectionHeader},
     small::{count_badge, spinner, status_dot},
     theme::{radius, space},
 };
 
 use crate::area::Area;
+use crate::bots::{BotsEvent, BotsView, elsewhere_name};
 use crate::settings::{Pick, SettingsView};
 use crate::time;
 
@@ -35,11 +39,37 @@ pub enum Reading<T> {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Bots {
     pub bots: Vec<Bot>,
+    /// What the box holds for your other computers, and what they refused (`kuvo/bots`).
+    pub held: Vec<Held>,
+    pub refused: Vec<Refused>,
     pub groups: Vec<Group>,
+}
+
+impl Bots {
+    /// The bots that live on other computers, known here by what's held for them or was refused:
+    /// each one's id and that computer's name, in the box's order.
+    pub fn elsewhere(&self) -> Vec<(&str, &str)> {
+        let mut ids: Vec<(&str, &str)> = Vec::new();
+        for (bot, computer) in self.held.iter().map(|held| (held.bot.as_str(), held.computer.as_str())).chain(self.refused.iter().map(|refused| (refused.bot.as_str(), refused.computer.as_str()))) {
+            if !self.bots.iter().any(|listed| listed.id == bot) && !ids.iter().any(|(id, _)| *id == bot) {
+                ids.push((bot, computer));
+            }
+        }
+        ids
+    }
 }
 
 /// A row was picked: the window goes to its page.
 pub struct Picked;
+
+/// Somewhere the window is to go, asked from an area's page.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Go {
+    /// A bot's own conversation, with `draft` in its composer where the box gave one.
+    BotChat { bot: String, session: String, draft: Option<String> },
+    /// One of the box's sessions.
+    Session(String),
+}
 
 /// One area's sidebar.
 pub struct AreaView {
@@ -62,9 +92,13 @@ pub struct AreaView {
     _settings_picks: Option<gpui::Subscription>,
     /// Settings' sidebar is drawn here: redrawn as Settings changes (a search, a reading, a sheet).
     _settings_changes: Option<gpui::Subscription>,
+    /// Bots' main view: a bot's page and New Bot.
+    page: Option<gpui::Entity<BotsView>>,
+    _page: Vec<gpui::Subscription>,
 }
 
 impl EventEmitter<Picked> for AreaView {}
+impl EventEmitter<Go> for AreaView {}
 
 impl AreaView {
     pub fn new(area: Area, client: BoxClient, live: bool, cx: &mut Context<Self>) -> AreaView {
@@ -81,12 +115,46 @@ impl AreaView {
             })
         });
         let changes = settings.as_ref().map(|settings| cx.observe(settings, |_, _, cx| cx.notify()));
-        AreaView { area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_changes: changes }
+        let page = (area == Area::Bots).then(|| cx.new(|cx| BotsView::new(client.clone(), live, cx)));
+        let page_subscriptions = page
+            .as_ref()
+            .map(|page| {
+                vec![
+                    cx.subscribe(page, |this: &mut AreaView, _, event: &BotsEvent, cx| match event {
+                        BotsEvent::Chat { bot, session, draft } => cx.emit(Go::BotChat { bot: bot.clone(), session: session.clone(), draft: draft.clone() }),
+                        BotsEvent::Session(session) => cx.emit(Go::Session(session.clone())),
+                        BotsEvent::Select(Some(key)) => this.pick(key.clone(), cx),
+                        BotsEvent::Select(None) => {
+                            this.select(None, cx);
+                            cx.emit(Picked);
+                        }
+                        // The list as the box says it now (what a change answered shows meanwhile).
+                        BotsEvent::Changed => this.shown(cx),
+                    }),
+                    // Its sheet dims the sidebar too: redrawn as it opens and closes.
+                    cx.observe(page, |_, _, cx| cx.notify()),
+                ]
+            })
+            .unwrap_or_default();
+        AreaView { page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
     pub fn settings(&self) -> Option<&gpui::Entity<SettingsView>> {
         self.settings.as_ref()
+    }
+
+    /// Bots' main view, in the Bots area.
+    pub fn page(&self) -> Option<&gpui::Entity<BotsView>> {
+        self.page.as_ref()
+    }
+
+    /// The area's own main view, for what's picked: a bot's page or New Bot. None where the page
+    /// isn't in the app yet (a group chat, the Work Queue, a computer).
+    pub fn main(&self) -> Option<gpui::AnyView> {
+        let page = self.page.as_ref()?;
+        let other = self.selected.as_deref().is_some_and(|key| key.starts_with("group:"));
+        (!other).then(|| page.clone().into())
     }
 
     pub fn area(&self) -> Area {
@@ -98,6 +166,9 @@ impl AreaView {
         if let Some(settings) = &self.settings {
             settings.update(cx, |settings, _| settings.set_now(now));
         }
+        if let Some(page) = &self.page {
+            page.update(cx, |page, _| page.set_now(now));
+        }
     }
 
     pub fn set_this_box(&mut self, name: SharedString, kind: &str, cx: &mut Context<Self>) {
@@ -108,6 +179,9 @@ impl AreaView {
         if self.this_box != name {
             if let Some(settings) = &self.settings {
                 settings.update(cx, |settings, cx| settings.set_this_box(&name, cx));
+            }
+            if let Some(page) = &self.page {
+                page.update(cx, |page, cx| page.set_this_box(&name, cx));
             }
             self.this_box = name;
             cx.notify();
@@ -130,6 +204,10 @@ impl AreaView {
             settings.update(cx, |settings, cx| settings.shown(cx));
             return;
         }
+        // The page open reads what it's drawn from again, as the area comes on screen.
+        if let Some(page) = &self.page {
+            page.update(cx, |page, cx| page.read(cx));
+        }
         if !self.live {
             let read = read(area, &client);
             self.take(read, cx);
@@ -143,7 +221,18 @@ impl AreaView {
 
     fn take(&mut self, read: Read, cx: &mut Context<Self>) {
         match read {
-            Read::Bots(bots) => self.bots = reading(bots, &self.bots),
+            Read::Bots(bots) => {
+                self.bots = reading(bots, &self.bots);
+                // The same reading, handed to the page.
+                let said = match &self.bots {
+                    Reading::NotYet => Reading::NotYet,
+                    Reading::Failed(why) => Reading::Failed(why.clone()),
+                    Reading::Ready(bots) => Reading::Ready(BotsSaid { bots: bots.bots.clone(), held: bots.held.clone(), refused: bots.refused.clone() }),
+                };
+                if let Some(page) = &self.page {
+                    page.update(cx, |page, cx| page.set_said(said, cx));
+                }
+            }
             Read::Queue(queue) => self.queue = reading(queue, &self.queue),
             Read::Nothing => {}
         }
@@ -172,11 +261,15 @@ impl AreaView {
         cx.notify();
     }
 
-    /// Settings shows the section picked (its first, General, for none).
+    /// Settings shows the section picked (its first, General, for none); Bots, what's picked.
     fn show_section(&mut self, cx: &mut Context<Self>) {
         let section = self.selected.clone().unwrap_or_else(|| "General".into());
         if let Some(settings) = &self.settings {
             settings.update(cx, |settings, cx| settings.set_section(&section, cx));
+        }
+        if let Some(page) = &self.page {
+            let key = self.selected.clone();
+            page.update(cx, |page, cx| page.show(key.as_deref(), cx));
         }
     }
 
@@ -186,6 +279,8 @@ impl AreaView {
         let (kind, id) = key.split_once(':').unwrap_or(("", key));
         let named = match kind {
             "bot" => ready(&self.bots).and_then(|bots| bots.bots.iter().find(|bot| bot.id == id).map(|bot| bot.name.clone())),
+            "elsewhere" => ready(&self.bots).and_then(|bots| bots.elsewhere().into_iter().find(|(bot, _)| *bot == id).map(|(bot, computer)| elsewhere_name(bots.held.iter().find(|held| held.bot == bot), computer))),
+            _ if key == "new" => Some("New Bot".into()),
             "group" => ready(&self.bots).and_then(|bots| bots.groups.iter().find(|group| group.id == id).map(|group| group.name.clone())),
             "category" => ready(&self.queue).and_then(|queue| queue.categories.iter().find(|category| category.id == id).map(|category| category.name.clone())),
             "computer" => ready(&self.computers).and_then(|computers| computers.iter().find(|computer| computer.key == id).map(|computer| computer.name.clone())),
@@ -209,10 +304,10 @@ enum Read {
 
 fn read(area: Area, client: &BoxClient) -> Read {
     match area {
-        Area::Bots => Read::Bots(client.bots().map(|bots| {
+        Area::Bots => Read::Bots(client.bots_said().map(|said| {
             // Group chats come from the same box; a box whose chats can't be read still lists its bots.
             let groups = client.groups().unwrap_or_default();
-            Bots { bots, groups }
+            Bots { bots: said.bots, held: said.held, refused: said.refused, groups }
         })),
         Area::Queue => Read::Queue(client.work_queue()),
         _ => Read::Nothing,
@@ -247,14 +342,14 @@ impl Render for AreaView {
             Area::Settings => Vec::new(),
             Area::Sessions => Vec::new(),
         };
+        // A sheet open on the area's page: the sidebar waits under the same dimming.
+        let dimmed = self.page.as_ref().is_some_and(|page| page.read(cx).sheet().is_some());
         div()
-            .id(SharedString::from(format!("area-{}", self.area.slug())))
+            .id("area-frame")
+            .relative()
             .size_full()
-            .overflow_y_scroll()
-            .px(space::S2)
-            .pt(space::S2)
-            .pb(space::S4)
-            .children(rows)
+            .child(div().id(SharedString::from(format!("area-{}", self.area.slug()))).size_full().overflow_y_scroll().px(space::S2).pt(space::S2).pb(space::S4).children(rows))
+            .when(dimmed, |d| d.child(div().id("area-sidebar-dim").debug_selector(|| "area-sidebar-dim".into()).absolute().inset_0().bg(crate::bots::dim(cx)).occlude()))
     }
 }
 
@@ -269,12 +364,24 @@ impl AreaView {
 
     fn bots_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let c = cx.theme().colors.clone();
+        // The area's name, with New Bot beside it.
+        let header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .h(px(32.))
+            .pl(space::S2)
+            .pr(space::S1)
+            .mb(space::S1)
+            .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child("Bots"))
+            .child(Button::icon_only("new-bot", kuvo_ui::IconName::Plus, "New Bot").ghost().size(ButtonSize::Small).selected(self.is_selected("new")).tooltip("New Bot").on_click(self.row_click("new".into(), cx)))
+            .into_any_element();
         let bots = match &self.bots {
-            Reading::NotYet => return vec![quiet("Loading bots…", true, cx)],
-            Reading::Failed(why) => return vec![quiet(&format!("Bots couldn’t be read: {why}"), false, cx)],
+            Reading::NotYet => return vec![header, quiet("Loading bots…", true, cx)],
+            Reading::Failed(why) => return vec![header, quiet(&format!("Bots couldn’t be read: {why}"), false, cx)],
             Reading::Ready(bots) => bots,
         };
-        let mut rows = Vec::new();
+        let mut rows = vec![header];
         if bots.bots.is_empty() {
             rows.push(quiet("No bots on this computer yet.", false, cx));
         }
@@ -324,6 +431,50 @@ impl AreaView {
                     .children(trailing.map(|trailing| div().flex_none().child(trailing)))
                     .into_any_element(),
             );
+        }
+        // Bots that live on your other computers, known here by what the box holds for them.
+        let elsewhere = bots.elsewhere();
+        if !elsewhere.is_empty() {
+            rows.push(SectionHeader::new("elsewhere", "On Other Computers").into_any_element());
+            for (bot, computer) in elsewhere {
+                let held = bots.held.iter().find(|held| held.bot == bot);
+                let key = format!("elsewhere:{bot}");
+                let selected = self.is_selected(&key);
+                let (hover, selected_bg) = (c.hover, c.selected_card);
+                let selector = format!("elsewhere-{bot}");
+                let line = if held.is_some() { format!("Waiting for {computer}") } else { format!("{computer} didn’t take a change") };
+                let face = match held.and_then(Held::look) {
+                    Some(look) => bot_face(&look, px(28.)),
+                    None => div().flex().flex_none().items_center().justify_center().size(px(28.)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(kuvo_ui::IconName::Bot).color(c.icon)).into_any_element(),
+                };
+                rows.push(
+                    div()
+                        .id(SharedString::from(selector.clone()))
+                        .debug_selector(move || selector)
+                        .flex()
+                        .items_center()
+                        .gap(space::S2)
+                        .px(space::S2)
+                        .py(space::S1_5)
+                        .mb(space::S0_5)
+                        .rounded(radius::NAV)
+                        .cursor_pointer()
+                        .map(|r| kuvo_ui::row::selected_card(r, selected, cx))
+                        .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
+                        .on_click(self.row_click(key, cx))
+                        .child(face)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(div().truncate().text_ui(TypeSize::Body).text_color(c.text).child(elsewhere_name(held, computer)))
+                                .child(div().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(line)),
+                        )
+                        .into_any_element(),
+                );
+            }
         }
         if !bots.groups.is_empty() {
             rows.push(SectionHeader::new("groups", "Group Chats").into_any_element());
@@ -504,7 +655,7 @@ pub fn computer_line(computer: &Computer) -> String {
 /// What a bot is doing, in words, from the box's facts: "1 at work, 1 waiting on you", "Waiting
 /// on you", "2 at work"; with neither, "Finished 3h ago" from when its newest session last changed;
 /// none where the box says none of them (its row shows its job).
-fn doing(now: &BotNow, at: f64) -> Option<String> {
+pub(crate) fn doing(now: &BotNow, at: f64) -> Option<String> {
     let at_work = (now.working > 0).then(|| format!("{} at work", now.working));
     let waiting = (now.asking > 0).then(|| if now.working > 0 { format!("{} waiting on you", now.asking) } else { "Waiting on you".to_owned() });
     match (at_work, waiting) {
@@ -530,11 +681,9 @@ fn category_color(id: &str, cx: &App) -> Hsla {
     }
 }
 
-/// A bot's still face: its look's colour and shape, with calm eyes (the Mac's `BotAvatar` drawn
-/// without moving; its faces and animation aren't brought over yet). A look this doesn't know is
-/// graphite and round, as the Mac shows one.
-pub fn bot_face(look: &Look, size: Pixels) -> AnyElement {
-    let tint: Hsla = rgb(match look.color.as_str() {
+/// A look's colour, by its name (graphite for one this doesn't know).
+pub fn look_tint(color: &str) -> Hsla {
+    rgb(match color {
         "mint" => 0x5EC7B8,
         "sky" => 0x4F9CF5,
         "indigo" => 0x5C5CF0,
@@ -546,7 +695,14 @@ pub fn bot_face(look: &Look, size: Pixels) -> AnyElement {
         "lime" => 0x8CCC4F,
         _ => 0x6E7380,
     })
-    .into();
+    .into()
+}
+
+/// A bot's still face: its look's colour and shape, with calm eyes (the Mac's `BotAvatar` drawn
+/// without moving; its faces and animation aren't brought over yet). A look this doesn't know is
+/// graphite and round, as the Mac shows one.
+pub fn bot_face(look: &Look, size: Pixels) -> AnyElement {
+    let tint = look_tint(&look.color);
     // Deep tints get light eyes, as the Mac's (`isDeep`).
     let deep = !matches!(look.color.as_str(), "mint" | "sky" | "pink" | "coral" | "orange" | "amber" | "lime");
     let eye = if deep { gpui::hsla(0., 0., 1., 0.92) } else { gpui::hsla(0., 0., 0.12, 0.9) };

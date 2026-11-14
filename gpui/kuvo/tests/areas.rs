@@ -54,12 +54,14 @@ fn the_rail_switches_areas_and_sessions_comes_back_to_what_was_open(cx: &mut Tes
     click(cx, "session-project-ses_signup");
     assert_eq!(title(&workspace, cx).as_deref(), Some("Fix the sign-up form wiping on a taken email"));
 
-    // Bots: its sidebar lists the box's bots, and its page isn't in the app yet.
+    // Bots: its sidebar lists the box's bots; a group chat's page isn't in the app yet.
     click(cx, "rail-bots");
     assert_eq!(area(&workspace, cx), Area::Bots);
     assert!(bounds(cx, "bot-bot_mira").is_some());
     assert!(bounds(cx, "group-grp_launch").is_some(), "group chats under the bots");
     assert!(bounds(cx, "session-project-ses_signup").is_none(), "only the open area's sidebar shows");
+    assert!(bounds(cx, "bots-empty").is_some(), "nothing picked yet");
+    click(cx, "group-grp_launch");
     assert!(bounds(cx, "placeholder").is_some());
     click(cx, "bot-bot_mira");
     assert_eq!(title(&workspace, cx).as_deref(), Some("Mira"));
