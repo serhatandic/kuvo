@@ -324,3 +324,29 @@ for (const raw of [false, true]) {
     assert.ok(captures(h) - before <= 15, "wakes must not encode still frames at input frequency");
   });
 }
+
+test("round3 S4: congestion drops double their retry delay and a displayed frame resets it", async t => {
+  const h = await page(t);
+  h.answer("Page.captureScreenshot", () => ({ data: "anBlZw==" }));
+  await call(h.c, "Kuvo.view", { targetId: "P", width: 393, height: 660 });
+  await capture(h);
+  for (const delay of [100, 200, 400, 800]) {
+    const frame = h.c.heard.all.filter(m => m.method === "Kuvo.frame").at(-1);
+    await call(h.c, "Kuvo.frameDropped", { frameId: frame.params.frameId, reason: "budget" });
+    const before = captures(h);
+    await h.advance(delay - 20); await settle(h);
+    assert.equal(captures(h), before, "congestion must back off repeated capture and encoding");
+    await h.advance(20); await settle(h);
+    assert.equal(captures(h), before + 1);
+  }
+  const displayed = h.c.heard.all.filter(m => m.method === "Kuvo.frame").at(-1);
+  await call(h.c, "Kuvo.frameAck", { frameId: displayed.params.frameId });
+  h.answer("Page.captureScreenshot", () => ({ data: "bmV3" }));
+  await call(h.c, "Kuvo.input", { targetId: "P", kind: "text", text: "changed" });
+  await capture(h, 100);
+  const fresh = h.c.heard.all.filter(m => m.method === "Kuvo.frame").at(-1);
+  await call(h.c, "Kuvo.frameDropped", { frameId: fresh.params.frameId, reason: "unsent" });
+  const before = captures(h);
+  await h.advance(100); await settle(h);
+  assert.equal(captures(h), before + 1, "a real display acknowledgement resets the congestion history");
+});

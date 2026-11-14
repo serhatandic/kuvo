@@ -971,7 +971,7 @@ async function host() {
         else v.scale = Math.min(c.requestedView.scale, v.scale * 1.25);
         qualityChanged(c, "recovery");
       }
-      if (!v || c.closed || resizing.has(v.targetId) || !own.has(v.targetId) || c.inflight?.size >= 2 || c.socket.writableLength > 120000) continue;
+      if (!v || c.closed || Date.now() < (c.retryAt ?? 0) || resizing.has(v.targetId) || !own.has(v.targetId) || c.inflight?.size >= 2 || c.socket.writableLength > 120000) continue;
       const key = frameKey(v);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(c);
@@ -1043,7 +1043,11 @@ async function host() {
         client.recoverAt = undefined;
         client.lastImage = null;
         wakePage(v.targetId);
-        if (p.reason === "oversize") {
+        if (p.reason !== "oversize") {
+          client.retryDelay = Math.min(2000, (client.retryDelay || 50) * 2);
+          client.retryAt = Date.now() + client.retryDelay;
+        } else {
+          client.retryAt = undefined;
           if (v.scale > 1) v.scale = Math.max(1, v.scale / 2);
           else if (v.quality > 40) v.quality = Math.max(40, v.quality - 10);
           else v.scale = Math.max(.125, v.scale * .75);
@@ -1057,6 +1061,10 @@ async function host() {
       client.frameInfo?.delete(id);
       client.inflight?.delete(id);
       const v = client.view;
+      if (v && info?.revision === client.viewRevision) {
+        client.retryDelay = 0;
+        client.retryAt = undefined;
+      }
       if (v && !client.rawView && info?.revision === client.viewRevision &&
           info.scale === v.scale && info.quality === v.quality && info.bytes <= 20000 &&
           (v.scale < client.requestedView.scale || v.quality < client.requestedView.quality)) client.recoverAt ??= Date.now() + 2000;
@@ -1067,6 +1075,8 @@ async function host() {
       client.viewRevision = (client.viewRevision ?? 0) + 1;
       client.lastImage = null;
       client.recoverAt = undefined;
+      client.retryAt = undefined;
+      client.retryDelay = 0;
       const raw = message.method === "Page.startScreencast";
       client.rawView = raw ? message.sessionId : null;
       const metrics = client.rawMetrics?.get(target) ?? sizes.get(target) ?? sizeFor({});
