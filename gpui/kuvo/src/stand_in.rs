@@ -173,6 +173,12 @@ impl StandIn {
         self.state().bots.down = !readable;
     }
 
+    /// Whether it can say what it holds for other computers (`held` and `refused` are left out of
+    /// `kuvo/bots` while it can't check its seals).
+    pub fn bots_held_sayable(&self, sayable: bool) {
+        self.state().bots.unsealed = !sayable;
+    }
+
     /// Whether a bot can be made or changed (`503` while not, as with its engine stopped).
     pub fn bots_changeable(&self, changeable: bool) {
         self.state().bots.stopped = !changeable;

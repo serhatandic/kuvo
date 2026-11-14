@@ -40,6 +40,38 @@ Each is marked in the code at the spot it's drawn; a neutral stand-in is drawn m
 Not marked, but the box's to consider: `PATCH` with `model` takes a `variant` (effort); the page
 sends none (it has no effort picker), so the box picks.
 
+## Review
+
+One reviewer pass; every MUST and SHOULD fixed, with a scenario for each where one can be written
+(they weren't run against the code before the fixes):
+- **MUST:** `held` and `refused` left out by the box (while it can't check its seals) were read as
+  none, so "Waiting for <computer>" vanished: what was last heard is kept now (PROTOCOL.md), and
+  the stand-in sends both lists always, as a box does, with a switch for leaving them out
+  (`an_edit_for_a_bot_on_another_computer…`, `kuvo_box`'s `whats_held_is_kept_while_the_box_cant_say`).
+- **MUST:** a sheet's answer landed on whatever sheet was open by then (another bot's Delete could
+  be closed, or taken for done): each answer is its own bot's and its own sheet's now
+  (`live::an_answer_that_comes_after_youve_gone_to_another_bot_is_its_own_bots`, run the app's way).
+- A row's "Saving…" and a refusal showed on whichever bot was open: both are per bot, and a second
+  pick waits for the first's answer (`live::a_refusal_that_comes_after_youve_gone…`).
+- A bot's conversation was remembered by its session, which the box may replace (a coding agent's
+  model): back, forward and returning to Bots ask the box's list for it, and a conversation open
+  goes to the new session as the list is read.
+- Create answered after you'd left New Bot pulled the window to the new bot, and coming back made a
+  second request: the form stays while one's being made, and the window moves only from New Bot
+  (`live::a_bot_made_after_youve_left_new_bot_moves_nothing`).
+- Delete's understated confirm is a decision for the user now (below).
+- Tests added: Delete of a bot that moved away, held (`deleting_a_bot_that_moved_away…`); Back after
+  a delete asserts where it lands.
+- NITs fixed: a `now` in a change's answer is kept; a computer the box gives no name is "another
+  computer"; a template made for a project says so on Works in (`wantsProject`, a fact drawn); Back
+  passes over a deleted bot's page; a sheet closes when its bot leaves the list; the Name row's line
+  no longer repeats the name.
+- NITs left: every change and each showing of the area reads the bot's sessions, the templates and
+  the models again (three small reads); the template's name filling the Name field while it's
+  still a template's name is the app's own form filling.
+- Not tested: a `PATCH` that answers `bot: null`, and one that answers with a new `session` (the
+  stand-in does neither).
+
 ## Left
 
 - **Not built (scope):** wake-ups (the list, Pause; `paused`, `wakes`, `watching` are read by the
@@ -77,8 +109,11 @@ Built without drafts (the lead's brief: build, with shots); each is cheap to cha
 - **No Edit Bot form with Save:** each setting changes by itself, in Settings' row style
   (`screens-bot-rename`, `-job`, `-look`). Recommended: keep; an edit held for another computer
   then waits a field at a time, as the box holds them.
-- **Delete sits at the foot of the page** with a red button, asked first (`screens-bot-delete`).
-  Its wording waits on BOX-NEEDED 1.
+- **Delete's confirm doesn't say what goes with the bot** (`screens-bot-delete`: "Mira is removed
+  from This Mac."), though deleting takes its conversation, wake-ups, keys and folder: those words
+  are the box's (BOX-NEEDED 1) and none are written in the app. A risk to weigh: recommended, take
+  BOX-NEEDED 1 first in the box lane; or hold Delete back in the app until it lands. It's built,
+  at the foot of the page with a red button, asked first, and Return doesn't confirm it.
 - **New Bot is a page**, templates as tiles with Blank first (`screens-bot-new`); Create is always
   enabled and the box says what's missing (`screens-bot-new-refused`). Recommended: keep (no rule
   of the box's is copied to disable it).

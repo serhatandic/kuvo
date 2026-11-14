@@ -42,6 +42,8 @@ pub struct Bots {
     /// What the box holds for your other computers, and what they refused (`kuvo/bots`).
     pub held: Vec<Held>,
     pub refused: Vec<Refused>,
+    /// The box couldn't say what it holds just now: what it last said is kept.
+    pub held_unsaid: bool,
     pub groups: Vec<Group>,
 }
 
@@ -222,12 +224,22 @@ impl AreaView {
     fn take(&mut self, read: Read, cx: &mut Context<Self>) {
         match read {
             Read::Bots(bots) => {
+                // What the box couldn't say it holds just now stays as it last said it.
+                let bots = bots.map(|mut bots| {
+                    if bots.held_unsaid
+                        && let Reading::Ready(before) = &self.bots
+                    {
+                        bots.held = before.held.clone();
+                        bots.refused = before.refused.clone();
+                    }
+                    bots
+                });
                 self.bots = reading(bots, &self.bots);
                 // The same reading, handed to the page.
                 let said = match &self.bots {
                     Reading::NotYet => Reading::NotYet,
                     Reading::Failed(why) => Reading::Failed(why.clone()),
-                    Reading::Ready(bots) => Reading::Ready(BotsSaid { bots: bots.bots.clone(), held: bots.held.clone(), refused: bots.refused.clone() }),
+                    Reading::Ready(bots) => Reading::Ready(BotsSaid { bots: bots.bots.clone(), held: bots.held.clone(), refused: bots.refused.clone(), held_unsaid: bots.held_unsaid }),
                 };
                 if let Some(page) = &self.page {
                     page.update(cx, |page, cx| page.set_said(said, cx));
@@ -307,7 +319,7 @@ fn read(area: Area, client: &BoxClient) -> Read {
         Area::Bots => Read::Bots(client.bots_said().map(|said| {
             // Group chats come from the same box; a box whose chats can't be read still lists its bots.
             let groups = client.groups().unwrap_or_default();
-            Bots { bots: said.bots, held: said.held, refused: said.refused, groups }
+            Bots { bots: said.bots, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups }
         })),
         Area::Queue => Read::Queue(client.work_queue()),
         _ => Read::Nothing,
@@ -442,6 +454,7 @@ impl AreaView {
                 let selected = self.is_selected(&key);
                 let (hover, selected_bg) = (c.hover, c.selected_card);
                 let selector = format!("elsewhere-{bot}");
+                let computer = crate::bots::computer_name(computer);
                 let line = if held.is_some() { format!("Waiting for {computer}") } else { format!("{computer} didn’t take a change") };
                 let face = match held.and_then(Held::look) {
                     Some(look) => bot_face(&look, px(28.)),

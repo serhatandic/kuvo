@@ -50,8 +50,8 @@ pub enum Nav {
     Session(String),
     /// Another area, and the row picked in it (none: its own page).
     Area(Area, Option<String>),
-    /// A bot's own conversation, in Bots.
-    BotChat { bot: String, session: String },
+    /// A bot's own conversation, in Bots (whichever session the box says is its conversation then).
+    BotChat { bot: String },
 }
 
 /// A bot's own conversation, shown in Bots in its page's place.
@@ -187,6 +187,10 @@ impl Workspace {
                 Go::Session(session) => this.open_session_now(session, window, cx),
             })
         }));
+        // The Bots list as it's read again (a bot's conversation may be another session by then).
+        if let Some((_, bots)) = areas.iter().find(|(area, _)| *area == Area::Bots) {
+            area_subscriptions.push(cx.observe_in(bots, window, |this: &mut Workspace, _, window, cx| this.bots_changed(window, cx)));
+        }
         let rings = cx.new(|cx| Rings::new(client.clone(), live, cx));
         let mut workspace = Workspace {
             client: client.clone(),
@@ -561,7 +565,7 @@ impl Workspace {
         if let Some(view) = self.area_view(Area::Bots).cloned() {
             view.update(cx, |view, cx| view.select(Some(format!("bot:{bot}")), cx));
         }
-        self.record(Nav::BotChat { bot: bot.to_owned(), session: session.to_owned() });
+        self.record(Nav::BotChat { bot: bot.to_owned() });
         self.in_bot_chat = true;
         let composer = self.composer_for(session, window, cx);
         if self.bot_chat.as_ref().is_none_or(|chat| chat.session != session) {
@@ -583,6 +587,32 @@ impl Workspace {
             window.focus(&chat.view.focus_handle(cx), cx);
         }
         cx.notify();
+    }
+
+    /// The session the box lists as `bot`'s own conversation now.
+    fn bot_session(&self, bot: &str, cx: &App) -> Option<String> {
+        match self.area_view(Area::Bots)?.read(cx).bots() {
+            Reading::Ready(bots) => bots.bots.iter().find(|each| each.id == bot).map(|each| each.session.clone()),
+            _ => None,
+        }
+    }
+
+    /// The box's bots were read again: a conversation shown for a bot whose conversation is
+    /// another session now (a coding agent's model carried it on) goes to that one.
+    fn bots_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(chat) = &self.bot_chat else { return };
+        let (bot, session) = (chat.bot.clone(), chat.session.clone());
+        match self.bot_session(&bot, cx) {
+            Some(now) if now != session => {
+                if self.bot_chat().is_some() {
+                    self.open_bot_chat(&bot, &now, None, window, cx);
+                } else {
+                    // (Not on screen: made again the next time it's opened.)
+                    self.bot_chat = None;
+                }
+            }
+            _ => {}
+        }
     }
 
     /// From a bot's conversation back to its page.
@@ -1056,10 +1086,7 @@ impl Workspace {
                     let picked = view.read(cx).selected().map(str::to_owned);
                     // (Bots comes back to the conversation it showed, as Sessions does.)
                     match self.bot_chat().map(|(bot, _)| bot.to_owned()) {
-                        Some(bot) => {
-                            let session = self.bot_chat.as_ref().map(|chat| chat.session.clone()).unwrap_or_default();
-                            self.record(Nav::BotChat { bot, session });
-                        }
+                        Some(bot) => self.record(Nav::BotChat { bot }),
                         None => self.record(Nav::Area(area, picked)),
                     }
                     view.update(cx, |view, cx| view.shown(cx));
@@ -1248,7 +1275,9 @@ impl Workspace {
         });
         let gone = |nav: &Nav, this: &Self| match nav {
             Nav::Session(session) => this.listing.is_read() && kuvo_box::sessions::place(this.listing.facts(session)).is_none() && !this.started.contains_key(session),
-            Nav::BotChat { bot, .. } => bots.as_ref().is_some_and(|bots| !bots.contains(bot)),
+            Nav::BotChat { bot } => bots.as_ref().is_some_and(|bots| !bots.contains(bot)),
+            // (Its page goes with it too.)
+            Nav::Area(Area::Bots, Some(key)) => key.strip_prefix("bot:").is_some_and(|bot| bots.as_ref().is_some_and(|bots| !bots.iter().any(|each| each == bot))),
             _ => false,
         };
         let mut kept: Vec<Nav> = Vec::with_capacity(self.history.len());
@@ -1299,7 +1328,17 @@ impl Workspace {
                 }
                 self.show_area(*area, window, cx);
             }
-            Nav::BotChat { bot, session } => self.open_bot_chat(bot, session, None, window, cx),
+            // Its conversation as the box lists it now (a change of model may have given it a new one).
+            Nav::BotChat { bot } => match self.bot_session(bot, cx) {
+                Some(session) => self.open_bot_chat(bot, &session, None, window, cx),
+                None => {
+                    self.in_bot_chat = false;
+                    if let Some(view) = self.area_view(Area::Bots).cloned() {
+                        view.update(cx, |view, cx| view.select(Some(format!("bot:{bot}")), cx));
+                    }
+                    self.show_area(Area::Bots, window, cx);
+                }
+            },
         }
         self.history = history;
         self.at = at;

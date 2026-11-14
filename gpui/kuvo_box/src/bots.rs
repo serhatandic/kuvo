@@ -73,6 +73,22 @@ pub struct BotsSaid {
     pub bots: Vec<Bot>,
     pub held: Vec<Held>,
     pub refused: Vec<Refused>,
+    /// The box couldn't say what it holds just now (it leaves `held` and `refused` out while it
+    /// can't check its seals): a client keeps what it last heard ([`BotsSaid::keeping`]).
+    pub held_unsaid: bool,
+}
+
+impl BotsSaid {
+    /// This answer, with what `before` said the box holds where this one couldn't say.
+    pub fn keeping(mut self, before: Option<&BotsSaid>) -> BotsSaid {
+        if self.held_unsaid
+            && let Some(before) = before
+        {
+            self.held = before.held.clone();
+            self.refused = before.refused.clone();
+        }
+        self
+    }
 }
 
 /// One of New Bot's templates.
@@ -86,7 +102,7 @@ pub struct Template {
     pub look: Option<Look>,
     #[serde(default)]
     pub personality: Option<String>,
-    /// It's made to work in a project.
+    /// It's made to work in a project (a fact a client may draw; the box decides what's needed).
     #[serde(default, rename = "wantsProject")]
     pub wants_project: bool,
 }
@@ -262,6 +278,11 @@ fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(des
     Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
+/// What a `kuvo/bots` answer says. `held` and `refused` left out: not known now, not none.
+fn said(answer: &Value) -> BotsSaid {
+    BotsSaid { bots: read_all(answer.get("bots")), held: read_all(answer.get("held")), refused: read_all(answer.get("refused")), held_unsaid: answer.get("held").is_none() }
+}
+
 fn read_all<T: serde::de::DeserializeOwned>(values: Option<&Value>) -> Vec<T> {
     values.and_then(Value::as_array).map(|values| values.iter().filter_map(|value| serde_json::from_value(value.clone()).ok()).collect()).unwrap_or_default()
 }
@@ -273,7 +294,7 @@ impl BoxClient {
         if !answer.get("bots").is_some_and(Value::is_array) {
             return Err(Error::BadAnswer("The box didn’t list its bots.".into()));
         }
-        Ok(BotsSaid { bots: read_all(answer.get("bots")), held: read_all(answer.get("held")), refused: read_all(answer.get("refused")) })
+        Ok(said(&answer))
     }
 
     /// What New Bot offers on this box.
@@ -348,6 +369,19 @@ mod tests {
         assert!(delete.delete && delete.fields().is_empty());
         let refused: Refused = serde_json::from_str(r#"{"bot":"bot_scout","box":"k","computer":"studio-mini","message":"studio-mini has no personality “Dry Wit”.","at":9}"#).unwrap();
         assert_eq!(refused.message, "studio-mini has no personality “Dry Wit”.");
+    }
+
+    /// PROTOCOL.md, "Held for another computer": neither is there while the box can't check its
+    /// seals, and a client keeps what it last heard.
+    #[test]
+    fn whats_held_is_kept_while_the_box_cant_say() {
+        let held = json!({ "bot": "bot_scout", "box": "k", "computer": "studio-mini", "change": { "name": "Scout" }, "since": 5 });
+        let before = said(&json!({ "bots": [], "held": [held], "refused": [] }));
+        assert!(!before.held_unsaid && before.held.len() == 1);
+        let unsaid = said(&json!({ "bots": [] })).keeping(Some(&before));
+        assert_eq!(unsaid.held, before.held, "left out: what was last heard stays");
+        let none = said(&json!({ "bots": [], "held": [], "refused": [] })).keeping(Some(&before));
+        assert!(none.held.is_empty(), "said, and empty: it went through");
     }
 
     #[test]

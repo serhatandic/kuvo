@@ -295,6 +295,11 @@ impl BotsView {
     pub fn set_said(&mut self, said: Reading<BotsSaid>, cx: &mut Context<Self>) {
         if self.said != said {
             self.said = said;
+            // A sheet for a bot the list no longer has (deleted or moved, from anywhere) closes.
+            if matches!(self.shown, Shown::Bot(_)) && self.bot().is_none() && self.sheet.is_some() && !self.saving {
+                self.sheet = None;
+                self.sheet_error = None;
+            }
             self.rebuild(cx);
         }
     }
@@ -312,10 +317,14 @@ impl BotsView {
             self.problem = None;
             self.sheet = None;
             self.sheet_error = None;
+            // (A change still on its way answers for its own bot, not for what's shown now.)
+            self.saving = false;
             self.all_sessions = false;
             self.work = Reading::NotYet;
             self.list.scroll_to(gpui::ListOffset::default());
-            if self.shown == Shown::New {
+            // New Bot starts empty, unless one's still being made: that form stays, so a second
+            // Create can't make another.
+            if self.shown == Shown::New && !self.form.creating {
                 self.start_form(cx);
             }
         }
@@ -404,8 +413,10 @@ impl BotsView {
         }
     }
 
-    fn busy(&self, key: &str) -> Option<&str> {
-        self.busy.iter().find(|(busy, _)| busy == key).map(|(_, words)| words.as_str())
+    /// What `bot`'s row `key` says while its change is on its way.
+    fn busy(&self, bot: &str, key: &str) -> Option<&str> {
+        let key = format!("{bot}/{key}");
+        self.busy.iter().find(|(busy, _)| *busy == key).map(|(_, words)| words.as_str())
     }
 
     /// A model's name, as the box's list of models offered names it (its id where it lists none).
@@ -498,10 +509,7 @@ impl BotsView {
             // wake-ups, keys and folder, and where the folder goes, differ by computer): e.g.
             // `deletes` on each bot in `GET kuvo/bots`. Until then nothing is claimed here.
             detail: format!("Removes it from {}.", self.this_box),
-            control: match self.busy("bot-delete") {
-                Some(words) => Control::Busy(words.to_owned()),
-                None => Control::Danger("Delete…".into(), Act::Delete),
-            },
+            control: Control::Danger("Delete…".into(), Act::Delete),
         };
         items.push(Item::Row { row: Box::new(delete), first: true, last: true });
         items.push(Item::End);
@@ -522,22 +530,22 @@ impl BotsView {
                     fields => format!("Your changes to its {} go to it once that computer is back.", listed(fields)),
                 }
             };
-            items.push(Item::Notice { key: "bot-held".into(), tone: Tone::Waiting, title: format!("Waiting for {}", held.computer), words });
+            items.push(Item::Notice { key: "bot-held".into(), tone: Tone::Waiting, title: format!("Waiting for {}", computer_name(&held.computer)), words });
         }
         for (ix, refused) in self.refused(bot).into_iter().enumerate() {
             // The box's own words for why, as they are.
-            items.push(Item::Notice { key: format!("bot-refused-{ix}"), tone: Tone::Refused, title: format!("{} didn’t take a change", refused.computer), words: refused.message.clone() });
+            items.push(Item::Notice { key: format!("bot-refused-{ix}"), tone: Tone::Refused, title: format!("{} didn’t take a change", capitalized(computer_name(&refused.computer))), words: refused.message.clone() });
         }
         items
     }
 
     fn setting_rows(&self, bot: &Bot) -> Vec<Row> {
-        let busy_or = |key: &str, control: Control| match self.busy(key) {
+        let busy_or = |key: &str, control: Control| match self.busy(&bot.id, key) {
             Some(words) => Control::Busy(words.to_owned()),
             None => control,
         };
         let mut rows = vec![
-            Row { key: "bot-name".into(), title: "Name".into(), detail: bot.name.clone(), control: Control::Button("Rename…".into(), Act::Rename) },
+            Row { key: "bot-name".into(), title: "Name".into(), detail: "What it’s called, here and in group chats.".into(), control: Control::Button("Rename…".into(), Act::Rename) },
             Row { key: "bot-look".into(), title: "Look".into(), detail: "Its colour and shape, wherever it shows.".into(), control: Control::Face(Some(bot.look.clone()), "Change…".into(), Act::EditLook) },
             Row {
                 key: "bot-job".into(),
@@ -586,6 +594,7 @@ impl BotsView {
             // Nothing waits for it any more: it went through (or was let go).
             return vec![Item::Note { key: "elsewhere-done".into(), words: "Nothing is waiting for this bot any more.".into(), busy: false }, Item::End];
         };
+        let computer = computer_name(&computer).to_owned();
         let mut items = vec![Item::ElsewhereHead {
             key: id.to_owned(),
             name: elsewhere_name(held, &computer),
@@ -686,7 +695,12 @@ impl BotsView {
             rows.push(Row {
                 key: "new-project".into(),
                 title: "Works in".into(),
-                detail: "Its own folder, or one of your projects.".into(),
+                // (A template made for a project says so; whether one's needed is the box's to say.)
+                detail: if self.form.template.as_ref().is_some_and(|id| templates.templates.iter().any(|each| &each.id == id && each.wants_project)) {
+                    "This one is made to work in one of your projects.".into()
+                } else {
+                    "Its own folder, or one of your projects.".into()
+                },
                 control: Control::Menu { shown: self.form.project.as_deref().map(|project| self.project_name(project)).unwrap_or_else(|| "A folder of its own".into()), choices: projects },
             });
         }
@@ -713,19 +727,32 @@ impl BotsView {
         };
         self.form.creating = true;
         self.form.error = None;
+        let request = new.request.clone();
         self.run(
             "create",
             move |client| client.make_bot(&new),
-            |this, made, cx| {
-                this.form.creating = false;
+            move |this, made, cx| {
+                // (Only this New Bot's own answer is its form's.)
+                let its_form = this.form.request == request;
+                if its_form {
+                    this.form.creating = false;
+                }
                 match made {
                     Ok(made) => {
                         cx.emit(BotsEvent::Changed);
-                        // On to its conversation: from a template its job waits in the composer,
-                        // to edit and send; otherwise it writes first.
-                        cx.emit(BotsEvent::Chat { bot: made.bot.id.clone(), session: made.bot.session.clone(), draft: made.first_message.filter(|draft| !draft.is_empty()) });
+                        if its_form {
+                            // Made: the next New Bot starts empty, with an id of its own.
+                            this.form = Form::default();
+                        }
+                        // On to its conversation (from a template its job waits in the composer,
+                        // to edit and send; otherwise it writes first), unless you've gone
+                        // elsewhere meanwhile: then it's in the list, and nothing moves.
+                        if its_form && this.shown == Shown::New {
+                            cx.emit(BotsEvent::Chat { bot: made.bot.id.clone(), session: made.bot.session.clone(), draft: made.first_message.filter(|draft| !draft.is_empty()) });
+                        }
                     }
-                    Err(error) => this.form.error = Some(said(&error)),
+                    Err(error) if its_form => this.form.error = Some(said(&error)),
+                    Err(_) => {}
                 }
             },
             cx,
@@ -741,6 +768,11 @@ impl BotsView {
 
     fn done(&mut self, key: &str) {
         self.busy.retain(|(busy, _)| busy != key);
+    }
+
+    /// Whether a change is on its way for this row of the bot shown.
+    fn is_busy(&self, key: &str) -> bool {
+        self.bot().is_some_and(|bot| self.busy(&bot.id, key).is_some())
     }
 
     /// What a control asked for.
@@ -782,6 +814,9 @@ impl BotsView {
                 let Some(look) = look else { return };
                 self.open_sheet(Sheet::Look { look, new: true }, None);
             }
+            // (One at a time for a row: a pick while one's on its way waits for the box's answer.)
+            Act::SetPersonality(_) if self.is_busy("bot-personality") => {}
+            Act::SetModel(_) if self.is_busy("bot-model") => {}
             Act::SetPersonality(personality) => self.change("bot-personality", BotChange { personality: Some(personality), ..BotChange::default() }, cx),
             Act::SetModel(model) => self.change("bot-model", BotChange { model: Some(model), ..BotChange::default() }, cx),
             Act::Delete => self.open_sheet(Sheet::Delete, None),
@@ -873,23 +908,32 @@ impl BotsView {
         let Some(bot) = self.bot().map(|bot| bot.id.clone()) else { return };
         self.saving = true;
         self.sheet_error = None;
-        let id = bot.clone();
+        // What was sent, and for which bot: its answer is that bot's, whatever shows by then.
+        let (id, deleting, sent) = (bot.clone(), change.is_none(), self.sheet.clone());
         self.run(
-            "sheet",
+            format!("sheet-{bot}"),
             move |client| match &change {
                 Some(change) => client.change_bot(&id, change),
                 None => client.delete_bot(&id),
             },
             move |this, outcome, cx| {
-                this.saving = false;
-                let deleting = this.sheet == Some(Sheet::Delete);
+                // The sheet it was sent from, still open on its bot: it closes, or says why not.
+                let its_sheet = this.shown == Shown::Bot(bot.clone()) && this.sheet == sent;
+                if its_sheet {
+                    this.saving = false;
+                }
                 match outcome {
                     Ok(outcome) => {
-                        this.sheet = None;
-                        this.wants_focus = Some(this.focus.clone());
+                        if its_sheet {
+                            this.sheet = None;
+                            this.wants_focus = Some(this.focus.clone());
+                        }
                         this.took(&bot, outcome, deleting, cx);
                     }
-                    Err(error) => this.sheet_error = Some(said(&error)),
+                    Err(error) if its_sheet => this.sheet_error = Some(said(&error)),
+                    // You've gone elsewhere meanwhile: nothing changed, and nothing is said over
+                    // another bot's page.
+                    Err(_) => {}
                 }
             },
             cx,
@@ -902,8 +946,9 @@ impl BotsView {
     fn change(&mut self, key: &str, change: BotChange, cx: &mut Context<Self>) {
         let Some(bot) = self.bot().map(|bot| bot.id.clone()) else { return };
         self.problem = None;
-        self.set_busy(key, "Saving…");
-        let (key, id) = (key.to_owned(), bot.clone());
+        // (Busy and its answer are this bot's row's, whatever shows by then.)
+        let (key, id) = (format!("{bot}/{key}"), bot.clone());
+        self.set_busy(&key, "Saving…");
         self.run(
             key.clone(),
             move |client| client.change_bot(&id, &change),
@@ -911,7 +956,8 @@ impl BotsView {
                 this.done(&key);
                 match outcome {
                     Ok(outcome) => this.took(&bot, outcome, false, cx),
-                    Err(error) => this.problem = Some(said(&error)),
+                    Err(error) if this.shown == Shown::Bot(bot) => this.problem = Some(said(&error)),
+                    Err(_) => {}
                 }
             },
             cx,
@@ -926,13 +972,17 @@ impl BotsView {
                 Outcome::Done(Some(mut now)) => {
                     if let Some(listed) = said.bots.iter_mut().find(|each| each.id == bot) {
                         // (A change answers without what it's doing: that stays as last said.)
-                        now.now = listed.now.clone();
+                        if now.now == Default::default() {
+                            now.now = listed.now.clone();
+                        }
                         *listed = *now;
                     }
                 }
                 Outcome::Done(None) if deleted => {
                     said.bots.retain(|each| each.id != bot);
-                    cx.emit(BotsEvent::Select(None));
+                    if self.shown == Shown::Bot(bot.to_owned()) {
+                        cx.emit(BotsEvent::Select(None));
+                    }
                 }
                 Outcome::Done(None) => {}
                 Outcome::Held(held) => {
@@ -963,7 +1013,17 @@ pub fn elsewhere_name(held: Option<&Held>, computer: &str) -> String {
     // BOX-NEEDED: each `held` and `refused` entry in `GET kuvo/bots` should carry the bot's name
     // and look as the box last knew them (it has them from its peers' agents), so a bot waiting on
     // another computer shows as itself. Until then: the name being given, else a neutral one.
-    held.and_then(Held::name).map(str::to_owned).unwrap_or_else(|| format!("A bot on {computer}"))
+    held.and_then(Held::name).map(str::to_owned).unwrap_or_else(|| format!("A bot on {}", computer_name(computer)))
+}
+
+/// A computer by the name the box gave it; where it gave none, a neutral one.
+pub fn computer_name(name: &str) -> &str {
+    if name.trim().is_empty() { "another computer" } else { name }
+}
+
+fn capitalized(words: &str) -> String {
+    let mut chars = words.chars();
+    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
 /// This New Bot's own id (8 to 64 of `A-Za-z0-9_-`), sent again with a retry.

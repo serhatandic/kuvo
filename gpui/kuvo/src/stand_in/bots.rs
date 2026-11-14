@@ -26,6 +26,8 @@ pub struct Bots {
     next: u64,
     /// Its list can't be read now (503).
     pub down: bool,
+    /// It can't check what it holds now: `held` and `refused` are left out of its list.
+    pub unsealed: bool,
     /// Nothing can be made or changed now (503, as with its engine stopped).
     pub stopped: bool,
 }
@@ -69,6 +71,7 @@ impl Bots {
             made: HashMap::new(),
             next: 1,
             down: false,
+            unsealed: false,
             stopped: false,
         }
     }
@@ -91,14 +94,8 @@ impl Bots {
         Some(match (method, segments.as_slice()) {
             ("GET", ["kuvo", "bots"]) if self.down => (503, json!({ "message": "The box isn’t answering." })),
             ("GET", ["kuvo", "bots"]) => {
-                let mut said = json!({ "bots": self.bots });
-                if !self.held.is_empty() {
-                    said["held"] = json!(self.held);
-                }
-                if !self.refused.is_empty() {
-                    said["refused"] = json!(self.refused);
-                }
-                (200, said)
+                // Both lists, empty too; neither while it can't check its seals (as a box does).
+                if self.unsealed { (200, json!({ "bots": self.bots })) } else { (200, json!({ "bots": self.bots, "held": self.held, "refused": self.refused })) }
             }
             ("GET", ["kuvo", "bots", "templates"]) => (200, templates(projects)),
             ("POST", ["kuvo", "bots"]) => self.make(body, projects, now),

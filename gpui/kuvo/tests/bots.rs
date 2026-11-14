@@ -267,6 +267,13 @@ fn an_edit_for_a_bot_on_another_computer_is_held_and_says_waiting(cx: &mut TestA
     // The list read again no longer has it here: it's on the other computer, waiting.
     assert!(!shown(cx, "bot-bot_docs") && shown(cx, "elsewhere-bot_docs"));
 
+    // While the box can't say what it holds (it leaves the lists out), what it last said stays.
+    stand_in.bots_held_sayable(false);
+    click(cx, "rail-sessions");
+    click(cx, "rail-bots");
+    assert!(shown(cx, "elsewhere-bot_docs") && shown(cx, "elsewhere-bot_scout"), "kept, not taken for gone");
+    stand_in.bots_held_sayable(true);
+
     // What that computer refuses comes back in the box's words.
     stand_in.refuse_bot_edit("bot_docs", "studio-mini", "studio-mini is full.");
     click(cx, "rail-sessions");
@@ -359,10 +366,28 @@ fn deleting_a_bot_is_asked_first(cx: &mut TestAppContext) {
     assert_eq!(stand_in.seen_at("DELETE", "kuvo/bots/bot_docs").len(), 1);
     assert!(!shown(cx, "bot-bot_docs") && shown(cx, "bots-empty"), "gone from the list, nothing picked");
     assert_eq!(title(&workspace, cx).as_deref(), Some("Bots"));
-    // Back doesn't come back to a page for a bot that's gone.
+    // Back doesn't come back to a page for a bot that's gone: it passes over it.
     cx.simulate_keystrokes("cmd-[");
     cx.run_until_parked();
-    assert!(!shown(cx, "bot-head"));
+    assert!(!shown(cx, "bot-head") && !shown(cx, "bot-gone"));
+    // (Before its page the window was where it is now, Bots with nothing picked: so on back, to
+    // where it was before that.)
+    assert_eq!(workspace.read_with(cx, |workspace, _| (workspace.area(), workspace.is_landing())), (Area::Sessions, true));
+}
+
+#[gpui::test]
+fn deleting_a_bot_that_moved_away_is_held_for_its_computer(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    bot(&workspace, cx, "bot_docs");
+    stand_in.move_bot("bot_docs", "studio-mini");
+    click(cx, "bot-delete-button");
+    click(cx, "sheet-save");
+    assert_eq!(stand_in.seen_at("DELETE", "kuvo/bots/bot_docs").len(), 1);
+    // Taken and held (202): it waits under the other computers, and its page says what waits.
+    assert!(!shown(cx, "bot-sheet") && shown(cx, "elsewhere-bot_docs"));
+    click(cx, "elsewhere-bot_docs");
+    assert!(shown(cx, "bot-held"));
 }
 
 #[gpui::test]
@@ -394,4 +419,110 @@ fn a_first_run_offers_a_new_bot_and_a_narrow_window_keeps_the_page(cx: &mut Test
     assert!(!shown(cx, "area-sidebar") && shown(cx, "bot-head") && shown(cx, "bot-chat"), "the sidebar folds away; the page and its Chat stay");
     let (head, chat) = (bounds(cx, "bot-head").unwrap(), bounds(cx, "bot-chat").unwrap());
     assert!(chat.right() <= head.right() + px(1.) && head.right() <= px(760.), "nothing is cut off");
+}
+
+/// The app's way: the box asked off the window's thread, its answers coming in later, perhaps
+/// after you've gone on to something else.
+mod live {
+    use super::*;
+    use gpui::{AppContext as _, Context, IntoElement, ParentElement, Render, Styled, Window, div};
+    use kuvo::areas::Reading;
+    use kuvo::bots::Act;
+
+    struct Host {
+        page: Entity<BotsView>,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.page.clone())
+        }
+    }
+
+    fn host<'a>(cx: &'a mut TestAppContext, stand_in: &StandIn) -> (Entity<BotsView>, &'a mut VisualTestContext) {
+        cx.update(|cx| {
+            Theme::init(Appearance::Light, cx);
+            kuvo::bind_keys(cx);
+        });
+        let client = BoxClient::new(stand_in.clone());
+        let said = client.bots_said().expect("the stand-in's bots");
+        let (host, cx) = cx.add_window_view(|_, cx| Host { page: cx.new(|cx| BotsView::new(client, true, cx)) });
+        let page = host.read_with(cx, |host, _| host.page.clone());
+        cx.simulate_resize(size(px(1280.), px(1600.)));
+        page.update(cx, |page, cx| page.set_said(Reading::Ready(said), cx));
+        cx.run_until_parked();
+        (page, cx)
+    }
+
+    #[gpui::test]
+    fn an_answer_that_comes_after_youve_gone_to_another_bot_is_its_own_bots(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (page, cx) = host(cx, &stand_in);
+        page.update(cx, |page, cx| page.show(Some("bot:bot_mira"), cx));
+        cx.run_until_parked();
+        click(cx, "bot-name-button");
+        cx.simulate_input("Mira Two");
+        // Save, and before the box answers: on to another bot, and its Delete asked.
+        page.update(cx, |page, cx| {
+            page.save_sheet(cx);
+            page.show(Some("bot:bot_docs"), cx);
+            page.act(Act::Delete, cx);
+        });
+        cx.run_until_parked();
+        // Mira's answer renamed Mira; Docs Keeper's confirm is still asked, and nothing was deleted.
+        assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira"), vec![json!({ "name": "Mira Two" })]);
+        assert_eq!(page.read_with(cx, |page, _| (page.sheet().cloned(), page.bot().map(|bot| bot.name.clone()))), (Some(Sheet::Delete), Some("Docs Keeper".into())));
+        assert!(stand_in.seen_at("DELETE", "kuvo/bots/bot_docs").is_empty());
+        // Its Delete still works (nothing was left saving).
+        click(cx, "sheet-save");
+        assert_eq!(stand_in.seen_at("DELETE", "kuvo/bots/bot_docs").len(), 1);
+        assert!(!shown(cx, "bot-sheet"));
+    }
+
+    #[gpui::test]
+    fn a_refusal_that_comes_after_youve_gone_shows_over_no_other_bots_page(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (page, cx) = host(cx, &stand_in);
+        page.update(cx, |page, cx| page.show(Some("bot:bot_mira"), cx));
+        cx.run_until_parked();
+        stand_in.bots_changeable(false);
+        page.update(cx, |page, cx| {
+            page.act(Act::SetPersonality(None), cx);
+            page.show(Some("bot:bot_docs"), cx);
+        });
+        // Meanwhile Docs Keeper's rows aren't busy with Mira's change.
+        cx.run_until_parked();
+        assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira"), vec![json!({ "personality": null })]);
+        assert!(!shown(cx, "bots-problem") && !shown(cx, "bot-personality-busy") && shown(cx, "bot-personality-menu"));
+    }
+
+    #[gpui::test]
+    fn a_bot_made_after_youve_left_new_bot_moves_nothing(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (page, cx) = host(cx, &stand_in);
+        let chats = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counted = chats.clone();
+        let _events = cx.update(|_, cx| {
+            cx.subscribe(&page, move |_, event: &kuvo::bots::BotsEvent, _| {
+                if matches!(event, kuvo::bots::BotsEvent::Chat { .. }) {
+                    counted.set(counted.get() + 1);
+                }
+            })
+        });
+        page.update(cx, |page, cx| page.show(Some("new"), cx));
+        cx.run_until_parked();
+        cx.simulate_input("Scribe");
+        page.update(cx, |page, cx| {
+            page.act(Act::Create, cx);
+            page.show(Some("bot:bot_mira"), cx);
+            // Back to New Bot while it's being made: the same form, so Create can't make another.
+            page.show(Some("new"), cx);
+            page.act(Act::Create, cx);
+            page.show(Some("bot:bot_mira"), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(stand_in.seen_at("POST", "kuvo/bots").len(), 1, "made once");
+        assert_eq!(chats.get(), 0, "you've gone to Mira's page: the window isn't pulled to the new bot");
+        assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::Bot("bot_mira".into()));
+    }
 }
