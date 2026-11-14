@@ -43812,7 +43812,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "6380cd42567d";
+var BRIDGE_VERSION = "06987f911a15";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -51983,14 +51983,14 @@ var ISSUE = { type: "string", description: "gh:owner/repo#12 or its URL." };
 var TOP = { type: "boolean", description: "At the top of its status." };
 var STATUS = { type: "string", description: "Needs you (only the user can move it on), In review, In progress, Waiting, Todo, Backlog, Done or Canceled." };
 var PRIORITY = { type: "string", description: "Urgent, High, Normal or Low." };
-var LABELS = { type: "array", items: { type: "string" }, description: "All its labels by name, replacing those it had ([]: none). See queue_labels." };
+var LABELS = { type: "array", items: { type: "string" }, description: "All its labels by name, replacing those it had ([]: none)." };
 var ASSIGNEE = { type: ["string", "null"], description: "Who it's for: a bot's or coding agent's name (null: no one). Doesn't hand it on." };
 var DUE = { type: ["string", "null"], description: "YYYY-MM-DD, or null." };
 var LINKS = { type: "array", items: { type: "string" }, description: "Web links (a PR, a doc)." };
 var FILES4 = { type: "array", items: { type: "string" }, description: "Full paths of files to keep with it (in the body: ![](name))." };
 var PROGRESS = { type: ["number", "null"], description: "0 to 1, where it can be counted." };
 var PROGRESS_NOTE = { type: ["string", "null"], description: "What's being done now, briefly." };
-var WORKING = { type: "boolean", description: "true: you're on it now (Todo, Backlog or Waiting becomes In progress). false: you stopped; its status doesn't change unless you give status too." };
+var WORKING = { type: "boolean", description: "true: you're on it now (Todo, Backlog or Waiting becomes In progress). false: you stopped (its status stays as it is)." };
 var NAMES2 = { type: "array", items: { type: "string" } };
 var QUEUE_TOOLS = [
   {
@@ -51999,7 +51999,7 @@ var QUEUE_TOOLS = [
     inputSchema: { type: "object", properties: {
       status: { type: "string", description: "Only this one." },
       label: { type: "string", description: "Only with this label." },
-      query: { type: "string", description: "Words in the title, description or notes." },
+      query: { type: "string", description: "Words in it or its notes." },
       done: { type: "boolean", description: "Done and Canceled too." }
     }, additionalProperties: false }
   },
@@ -52065,12 +52065,12 @@ var QUEUE_TOOLS = [
   },
   {
     name: "queue_remove",
-    description: "Delete an item (the user can restore it for 30 days); undo restores one an agent deleted. Work that won't be done is status Canceled, not a delete.",
+    description: "Delete an item (the user can restore it for 30 days); undo restores one an agent deleted. Work that won't be done: status Canceled.",
     inputSchema: { type: "object", properties: { item: ITEM, undo: { type: "boolean" } }, required: ["item"], additionalProperties: false }
   },
   {
     name: "queue_labels",
-    description: "List the labels (kinds of work; one set for every queue), or make one change the user asked for: add a label, rename one (with to), recolor one (with color), or remove one (it comes off every item).",
+    description: "List the labels (kinds of work; one set for every queue), or make one change the user asked for: add, rename (with to), recolor (with color) or remove (off every item).",
     inputSchema: { type: "object", properties: {
       add: { type: "string" },
       rename: { type: "string" },
@@ -52088,8 +52088,8 @@ var QUEUE_TOOLS = [
         number: { type: "integer" },
         title: { type: "string" },
         body: { type: "string" },
-        status: { type: "string", description: "Todo if not given." },
-        label: { type: "string", description: "One existing label's name." },
+        status: { type: "string", description: "Todo if none." },
+        label: { type: "string", description: "A label's name." },
         done: { type: "boolean", description: "Done, whatever status says." }
       }, required: ["number", "title"] } }
     }, required: ["items"], additionalProperties: false }
