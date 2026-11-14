@@ -5530,7 +5530,7 @@ itself. `edit`: its title and description (never an issue's or a pull request's:
 issue's while GitHub has it closed). `close`: Done or Canceled (never an issue's: GitHub closes
 it). `delete`; `restore` (a deleted one, and nothing else then). All false while its conversation
 moves to another computer, or while the computer it's on isn't answering or doesn't take a
-client's changes from another box; only `delete` while it's on its way to another computer
+client's changes from another box (one without `work-queue.edit` answers a `PATCH` for it 409, saying to update it); only `delete` while it's on its way to another computer
 (`handing`). An item as another computer told it between boxes carries none.
 
 **From categories** (a box updated from one that kept categories, 0.5 to 0.7): before anything

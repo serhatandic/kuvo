@@ -38,6 +38,8 @@ export const FORWARD_FEATURE = "work-queue.forward";
 
 /** Whether the computer `key` takes what you do to its items from another box. */
 export const takesForwarded = (key: string): boolean => (readPeerAgents()[key]?.features ?? []).includes(FORWARD_FEATURE);
+/** Whether it takes a change to an item (`PATCH`: a box with statuses, `work-queue.edit`). */
+export const takesChanges = (key: string): boolean => takesForwarded(key) && (readPeerAgents()[key]?.features ?? []).includes("work-queue.edit");
 
 export const FORWARDS = path.join(WORK_QUEUE, "forward");
 // What a keeper did for the asks it took, by asker and id (changes only: a read is done again).
@@ -102,6 +104,8 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
   // (One it doesn't know any more, or that doesn't take it yet: changed there, as before. Nor from
   // a machine Macs share outside one setup: another person's computers may tell it theirs.)
   if (!peer || !takesForwarded(peer.key) || sharedMachine(link)) return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
+  // (A box from before statuses can't take a change as this one sends it.)
+  if (act.method === "PATCH" && !takesChanges(peer.key)) return { status: 409, refused: `${named} is on ${computer.name}, which runs an older Kuvo Code: update it, then change it.` };
   const here = ownName();
   if (awaySince(peer.key) !== null) return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
   if (offRelay()) return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };

@@ -25782,6 +25782,7 @@ import fs89 from "node:fs";
 import path91 from "node:path";
 var FORWARD_FEATURE = "work-queue.forward";
 var takesForwarded = (key) => (readPeerAgents()[key]?.features ?? []).includes(FORWARD_FEATURE);
+var takesChanges = (key) => takesForwarded(key) && (readPeerAgents()[key]?.features ?? []).includes("work-queue.edit");
 var FORWARDS = path91.join(WORK_QUEUE2, "forward");
 var DONE_FILE = path91.join(WORK_QUEUE2, "acted.json");
 var ID2 = /^wqa_[A-Za-z0-9_-]{16,40}$/;
@@ -25808,6 +25809,8 @@ async function forwardAct(computer, named, act, signal, link = readLink(), now =
   const peer = peersOf(link).find((each) => each.key === computer.key);
   if (!peer || !takesForwarded(peer.key) || sharedMachine(link))
     return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
+  if (act.method === "PATCH" && !takesChanges(peer.key))
+    return { status: 409, refused: `${named} is on ${computer.name}, which runs an older Kuvo Code: update it, then change it.` };
   const here = ownName();
   if (awaySince(peer.key) !== null)
     return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
@@ -43653,7 +43656,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "64a168a90771";
+var BRIDGE_VERSION = "1a8d64886f6e";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -52414,11 +52417,12 @@ async function viewOf2(owner, targets, facts, signal, cache, wait = GITHUB_WAIT,
   const byPlace = (items) => items.sort((a, b) => (place.get(a.status) ?? 99) - (place.get(b.status) ?? 99) || computerOf(a).localeCompare(computerOf(b)) || a.order - b.order);
   const moving = frozen();
   const who = assignable();
+  const shared = sharedMachine(readLink());
   const summary = (item) => {
     const said = withCan(summaryOf(item, known.working, titles, who), moving);
     return said.labels.every((each) => names.has(each)) ? said : { ...said, labels: said.labels.filter((each) => names.has(each)) };
   };
-  const cant = new Set(elsewhere.computers.filter((each) => each.away !== undefined || !takesForwarded(each.key)).map((each) => each.key));
+  const cant = new Set(elsewhere.computers.filter((each) => each.away !== undefined || !takesChanges(each.key) || shared).map((each) => each.key));
   const found = (item) => !q || says2(q, item, names);
   return {
     owner,
@@ -52597,7 +52601,7 @@ async function* workQueueRoute(context, match) {
       if (whole)
         return yield* json(200, { item: { ...whole, computer: far.computer, told: false } });
     }
-    const cant = !fromClient(context) || awaySince(far.computer.key) !== null || !takesForwarded(far.computer.key);
+    const cant = !fromClient(context) || awaySince(far.computer.key) !== null || !takesChanges(far.computer.key) || sharedMachine(readLink());
     await readSeen([itemElsewhere(ref, readLink(), { asTold: true }) ?? far], GITHUB_WAIT);
     far = itemElsewhere({ id: far.id }) ?? far;
     const { handedFrom: _, ...summary } = far;

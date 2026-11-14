@@ -16,6 +16,7 @@ import { isClosed, PRIORITIES, statusName, STATUSES } from "../work-queue/status
 import { assignable } from "../work-queue/assignees";
 import { stripLabel } from "../work-queue/tools";
 import { frozen } from "../moves/records";
+import { sharedMachine } from "../setup/settle";
 import { importItems, importWords, parseBacklog, readBacklogFiles } from "../work-queue/import";
 import { primaryOf } from "../work-queue/numbers";
 import { changedThere, itemElsewhere, itemsElsewhere, tellQueuesAgain } from "../work-queue/across";
@@ -29,7 +30,7 @@ import { allItems, changeQueues, matching, OWNER, queueFollowers, readAll, WORK_
 import { readSeen, SEEN_FILE } from "../work-queue/github";
 import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/tools";
 import { canOf, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, summaryOf, type Facts, type ItemSummary } from "../work-queue/view";
-import { forwardAct, takesForwarded, type Acted } from "../work-queue/forward";
+import { forwardAct, takesChanges, type Acted } from "../work-queue/forward";
 import { actHere, addHere, fileOf, GITHUB_WAIT, withCan } from "../work-queue/acts";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
@@ -91,6 +92,8 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
     items.sort((a, b) => (place.get(a.status) ?? 99) - (place.get(b.status) ?? 99) || computerOf(a).localeCompare(computerOf(b)) || a.order - b.order);
   const moving = frozen();
   const who = assignable();
+  // (A machine Macs share outside one setup hands nothing on to another computer.)
+  const shared = sharedMachine(readLink());
   // (A label an item names that no computer lists any more isn't one of its labels.)
   const summary = (item: Item): ItemSummary => {
     const said = withCan(summaryOf(item, known.working, titles, who), moving);
@@ -98,7 +101,7 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
   };
   // (One on another computer: nothing to do to it while that one isn't answering, or doesn't take
   // what a client does from another box.)
-  const cant = new Set(elsewhere.computers.filter(each => each.away !== undefined || !takesForwarded(each.key)).map(each => each.key));
+  const cant = new Set(elsewhere.computers.filter(each => each.away !== undefined || !takesChanges(each.key) || shared).map(each => each.key));
   const found = (item: Parameters<typeof says>[1]) => !q || says(q, item, names);
   return {
     owner,
@@ -283,7 +286,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
       if (whole) return yield* json(200, { item: { ...whole, computer: far.computer, told: false } });
     }
     // (As it was told: nothing to do to it from here until its computer answers.)
-    const cant = !fromClient(context) || awaySince(far.computer.key) !== null || !takesForwarded(far.computer.key);
+    const cant = !fromClient(context) || awaySince(far.computer.key) !== null || !takesChanges(far.computer.key) || sharedMachine(readLink());
     await readSeen([itemElsewhere(ref, readLink(), { asTold: true }) ?? far], GITHUB_WAIT);
     far = itemElsewhere({ id: far.id }) ?? far;
     const { handedFrom: _, ...summary } = far;
