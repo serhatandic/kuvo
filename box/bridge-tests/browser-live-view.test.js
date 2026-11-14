@@ -73,6 +73,10 @@ test("view navigation, input and chosen file bytes are handled on the box", asyn
   });
   const result = await call(viewer, 32, "Kuvo.upload", { targetId: "P", files: [{ name: "../note.txt", data: "aGVsbG8=" }] });
   assert.ok(!result.error);
+  // Chrome reads a selected file when a form submits later, not only when it is chosen.
+  assert.equal(fs.readFileSync(uploaded, "utf8"), "hello");
+  event("Page.frameNavigated", { frame: { id: "P", url: "https://example.org/upload-done" } }, "keeper");
+  await viewer.heard.until(m => m.method === "Kuvo.pages" && m.params.pages.some(p => p.url === "https://example.org/upload-done"));
   assert.equal(fs.existsSync(uploaded), false);
   await call(viewer, 33, "Kuvo.go", { targetId: "P", input: "mailto:hello@example.com" });
   await viewer.heard.until(m => m.method === "Kuvo.external" && m.params.url === "mailto:hello@example.com");

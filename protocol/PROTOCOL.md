@@ -9000,7 +9000,8 @@ Modifiers may be CDP's bitmask or an array of `alt/control/meta/shift`.
 The keeper maps Control shortcuts to Command when Chrome runs on macOS.
 Coordinates are CSS page viewport coordinates, calculated by the client from the displayed
 frame's scale and letterbox. Files are written privately under `browser/tmp/upload-*`,
-given only to Chrome's current chooser and removed after Chrome consumes them.
+given only to Chrome's current chooser and retained for a later form submission. They are
+removed when that page navigates or closes, or when Chrome next starts.
 
 While an agent's status says it works in a page, a viewer cannot change that page's size.
 Otherwise the latest view or input sets it. Raw clients' device metrics, page scale and
