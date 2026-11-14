@@ -187,6 +187,27 @@ fn staging_sends_back_what_the_box_listed_and_a_discard_is_asked_first(cx: &mut 
     );
 }
 
+// The stand-in refuses what the box refuses: a discard that doesn't say what the file was when it
+// was listed, so a change here that dropped the stamp would fail these tests.
+#[gpui::test]
+fn a_discard_with_no_stamp_is_refused_as_the_box_refuses_it(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, _cx) = open(cx, stand_in.clone(), "ses_signup");
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    let listed = client.git_files(&website()).unwrap().files.into_iter().find(|file| file.path == "src/styles/legacy.css").unwrap();
+    let mut bare = listed.clone();
+    bare.stamp = None;
+    let refused = client.discard(&website(), &bare).unwrap_err();
+    assert!(refused.to_string().contains("wasn’t discarded"), "{refused}");
+    let mut stale = listed.clone();
+    stale.stamp = Some("an older one".into());
+    assert!(client.discard(&website(), &stale).unwrap_err().to_string().contains("changed since it was listed"));
+    assert!(client.git_files(&website()).unwrap().files.iter().any(|file| file.path == "src/styles/legacy.css"), "still there");
+    // As it was listed: it goes.
+    client.discard(&website(), &listed).unwrap();
+    assert!(!client.git_files(&website()).unwrap().files.iter().any(|file| file.path == "src/styles/legacy.css"));
+}
+
 #[gpui::test]
 fn a_discard_waiting_for_its_confirm_goes_once_its_file_changes(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
