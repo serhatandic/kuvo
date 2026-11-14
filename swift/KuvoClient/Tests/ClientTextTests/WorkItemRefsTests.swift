@@ -95,6 +95,13 @@ import ClientText
     }
 
     @Test func aToolCallOnAnIssueNamesItAsItsChipDoes() {
+        // The labels tool, by what it does to which label.
+        #expect(WorkQueueWords.summary("queue_labels", item: nil, title: nil, to: nil, category: nil, undo: false, add: nil, isActive: false) == "Looked at the labels")
+        #expect(WorkQueueWords.summary("queue_labels", item: nil, title: nil, to: nil, category: nil, undo: false, add: "Bug", isActive: true) == "Making the label “Bug”")
+        #expect(WorkQueueWords.summary("queue_labels", item: nil, title: nil, to: nil, category: nil, undo: false, add: nil, isActive: false, remove: "Bug") == "Removed the label “Bug”")
+        #expect(WorkQueueWords.summary("queue_labels", item: nil, title: nil, to: "Defect", category: nil, undo: false, add: nil, isActive: false, rename: "Bug") == "Renamed the label “Bug” to “Defect”")
+        #expect(WorkQueueWords.summary("queue_labels", item: nil, title: nil, to: nil, category: nil, undo: false, add: nil, isActive: true, recolor: "Bug") == "Recolouring the label “Bug”")
+        #expect(WorkQueueWords.summary("queue_update", item: "#3", title: nil, to: nil, category: "Done", undo: false, add: nil, isActive: false) == "Marked #3 done")
         #expect(WorkQueueWords.summary("queue_add", item: nil, title: nil, to: nil, category: nil, undo: false, add: nil, isActive: false, issue: "gh:kuvo-test/app#12") == "Added app#12 to the Work Queue")
         #expect(WorkQueueWords.summary("queue_update", item: "#182", title: nil, to: nil, category: nil, undo: false, add: nil, isActive: true, issue: "https://github.com/kuvo-test/app/pull/57") == "Linking #182 to app#57")
         #expect(WorkQueueWords.summary("queue_update", item: "gh:kuvo-test/app#12", title: nil, to: nil, category: nil, undo: false, add: nil, isActive: false) == "Updated app#12")

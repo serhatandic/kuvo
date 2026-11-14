@@ -374,6 +374,44 @@ import ClientSessions
         #expect(WorkQueue.moveTargets(for: first, in: view.categories).map(\.id) == ["todo", "done", "canceled"])
     }
 
+    @Test func onlyWhatTheBoxSaysMayBeDoneIsOffered() throws {
+        let item = { (name: String) in Self.view.items.first { $0.name == name }! }
+        let sections = WorkQueue.sections(Self.view)
+        let later = try #require(sections.first { $0.category == "later" })
+        let done = try #require(sections.first { $0.category == WorkCategory.done })
+        // A box that says nothing of what may be done: no move is offered, by menu or by drag.
+        var silent = item("#2")
+        silent.can = nil
+        #expect(WorkQueue.moveTargets(for: silent, in: Self.view.categories).isEmpty)
+        #expect(WorkQueue.place(of: silent, at: 0, in: later) == nil)
+        #expect(WorkQueue.menuPlaces(of: silent, in: Self.view) == WorkQueue.MenuPlaces())
+        // One that can't be closed here (an issue's): a drag onto Done lands nowhere, another status does.
+        var issue = item("#2")
+        issue.can = WorkCan(edit: false, set: true, close: false, delete: true, restore: false)
+        #expect(WorkQueue.place(of: issue, at: 0, in: done) == nil)
+        #expect(WorkQueue.place(of: issue, at: 0, in: later) != nil)
+        #expect(WorkQueue.place(of: item("#2"), at: 0, in: done) != nil)
+    }
+
+    @Test func anItemMovedOutOfInProgressIsNoLongerDrawnAtWorkThere() throws {
+        let atWork = Self.view.items.first { $0.name == "#1" }!
+        #expect(atWork.inProgress)
+        let moved = WorkQueue.moving(atWork, to: .top("later"), in: Self.view)
+        let now = try #require(moved.items.first { $0.id == atWork.id })
+        #expect(!now.inProgress && now.category == "later")
+        #expect(WorkQueue.sections(moved).first { $0.id == WorkQueue.inProgressID }?.items.isEmpty == true)
+        #expect(WorkQueue.sections(moved).first { $0.category == "later" }?.items.first?.name == "#1")
+    }
+
+    @Test func yourOwnListIsNamedAsTheBoxNamesIt() throws {
+        let view = try JSONDecoder().decode(WorkQueueView.self, from: Data("""
+        {"owner":"all","statuses":[{"id":"todo","name":"Todo","closed":false}],"labels":[],"removed":[],"computers":[],
+         "owners":[{"owner":"usr_you","kind":"you","title":"Your own"}],
+         "items":[{"id":"wqi_1","number":1,"owner":"usr_you","title":"Mine","status":"todo","order":0,"priority":"normal","labels":[],"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}}]}
+        """.utf8))
+        #expect(WorkQueue.properties(of: view.items[0], in: view, now: Date(timeIntervalSince1970: 3)).map(\.words) == ["Todo", "Your own list", "Added just now"])
+    }
+
     @Test func anItemWholeHasItsBodyNotesAndFiles() throws {
         let json = """
         {"id":"wqi_1","number":243,"owner":"ses_a","title":"T","status":"next","order":1,"sessions":[],"noteCount":1,"fileCount":1,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}},
