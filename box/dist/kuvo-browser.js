@@ -1,4 +1,4 @@
-// kuvo-browser 4176ea503f6198b3
+// kuvo-browser f06eabd1aa18d1ab
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // Kuvo Code's browser on a machine: a Chromium kept running there, which the agent browses with
 // and the app shows live in its panel. The engine's own runtime runs it, so the machine needs
@@ -85,7 +85,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "69222d9b3ae2";
+const KEEPER = "056311cf49c4";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -878,7 +878,7 @@ async function host() {
     targetId, url: addresses.get(targetId) ?? "", title: titles.get(targetId) ?? "",
     opener: openers.get(targetId) ?? null, session: claims.get(targetId)?.session ?? null,
     loading: loading.has(targetId), canGoBack: (histories.get(targetId)?.currentIndex ?? 0) > 0,
-    canGoForward: (histories.get(targetId)?.currentIndex ?? 0) < (histories.get(targetId)?.entries.length ?? 1) - 1,
+    canGoForward: (histories.get(targetId)?.currentIndex ?? 0) < (histories.get(targetId)?.entries?.length ?? 1) - 1,
     working: everyStatus().pages.includes(targetId), held: held.has(targetId),
     ...(dialogs.has(targetId) ? { dialog: dialogs.get(targetId) } : {}),
   })) });
@@ -917,8 +917,14 @@ async function host() {
       // clip.scale changes only the picture; a viewer never changes an agent's layout.
       const size = sizes.get(v.targetId) ?? { width: 1280, height: 800 };
       const scale = Math.min(v.width / size.width, v.height / size.height) * v.scale;
-      ownCall("Page.captureScreenshot", { format: "jpeg", quality: v.quality, captureBeyondViewport: false,
-        clip: { x: 0, y: 0, width: size.width, height: size.height, scale } }, own.get(v.targetId)).then(result => {
+      (async () => {
+        const metrics = await ownCall("Page.getLayoutMetrics", {}, own.get(v.targetId));
+        const viewport = metrics?.cssVisualViewport ?? metrics?.visualViewport ?? {};
+        const scrollX = viewport.pageX ?? 0, scrollY = viewport.pageY ?? 0;
+        const result = await ownCall("Page.captureScreenshot", { format: "jpeg", quality: v.quality, captureBeyondViewport: false,
+        clip: { x: scrollX, y: scrollY, width: size.width, height: size.height, scale } }, own.get(v.targetId));
+        return { ...result, scrollX, scrollY };
+      })().then(result => {
         if (!result?.data) return;
         for (const c of ready) {
           if (c.closed || c.view?.targetId !== v.targetId || c.inflight?.size >= 2) continue;
@@ -926,9 +932,9 @@ async function host() {
           const id = ++frameNumber;
           c.inflight.add(id); c.lastFrame = now;
           const params = { targetId: v.targetId, frameId: id, data: result.data,
-            width: Math.round(size.width * scale), height: Math.round(size.height * scale), scrollX: 0, scrollY: 0 };
+            width: Math.round(size.width * scale), height: Math.round(size.height * scale), scrollX: result.scrollX, scrollY: result.scrollY };
           if (c.rawView) send(c, { method: "Page.screencastFrame", sessionId: c.rawView, params: {
-            data: result.data, sessionId: id, metadata: { deviceWidth: size.width, deviceHeight: size.height, offsetTop: 0, pageScaleFactor: 1, scrollOffsetX: 0, scrollOffsetY: 0 } } });
+            data: result.data, sessionId: id, metadata: { deviceWidth: size.width, deviceHeight: size.height, offsetTop: 0, pageScaleFactor: 1, scrollOffsetX: result.scrollX, scrollOffsetY: result.scrollY } } });
           else send(c, { method: "Kuvo.frame", params });
         }
       }).finally(() => capturing.delete(key));
@@ -952,11 +958,13 @@ async function host() {
       reply(); return true;
     }
     if (message.method === "Page.stopScreencast") { client.view = null; reply(); return true; }
-    if (message.method.startsWith("Emulation.") && /DeviceMetrics|PageScaleFactor/.test(message.method)) {
+    if (message.method.startsWith("Emulation.") && /DeviceMetrics|PageScaleFactor|VisibleSize/.test(message.method)) {
       // Raw agents and raw viewers obey the same owner rule.
       if (!client.viewer || !workingIn(target)) await resize(target, sizeFor({ ...p, scale: p.deviceScaleFactor }), client.viewer ? "viewer" : "agent");
       reply(); return true;
     }
+    if (client.viewer && message.method.startsWith("Emulation.")) { reply(); return true; }
+    if (client.viewer && message.method.startsWith("Input.") && client.view) await resize(target, client.view, "viewer");
     if (!message.method.startsWith("Kuvo.")) return false;
     if (message.method === "Kuvo.pages") { reply(pages()); return true; }
     if (message.method === "Kuvo.go") {
@@ -976,6 +984,7 @@ async function host() {
       if (!session) throw Error("That page is closed.");
       if (client.view) await resize(target, client.view, "viewer");
       const { kind, targetId, ...data } = p;
+      if (Array.isArray(data.modifiers)) data.modifiers = data.modifiers.reduce((bits, key) => bits | ({ alt: 1, control: 2, meta: 4, shift: 8 }[key] ?? 0), 0);
       const methods = { mouse: "Input.dispatchMouseEvent", wheel: "Input.dispatchMouseEvent", key: "Input.dispatchKeyEvent", text: "Input.insertText", compose: "Input.imeSetComposition" };
       if (!methods[kind]) throw Error("Unknown input kind.");
       await ownCall(methods[kind], kind === "key" ? keyForHere(data) : { ...data, ...(kind === "wheel" ? { type: "mouseWheel" } : {}) }, session);
@@ -1461,7 +1470,7 @@ async function host() {
           // A page a Mac shows stays with its conversation however long ago it was last used.
           const claim = claims.get(targetId);
           const ok = !claim || claim.session === session || (Date.now() - claim.at > 90_000 && !shown(targetId));
-          if (ok && targetId && session) claims.set(targetId, { session, at: Date.now() });
+          if (ok && targetId && session) { claims.set(targetId, { session, at: Date.now() }); announcePages(); }
           return message.id !== undefined && send(client, { id: message.id, result: { ok } });
         }
         case "Kuvo.pointer":
@@ -1483,6 +1492,7 @@ async function host() {
             holdMacs.delete(targetId);
           }
           announceHeld();
+          announcePages();
           return message.id !== undefined && send(client, { id: message.id, result: {} });
         }
       }

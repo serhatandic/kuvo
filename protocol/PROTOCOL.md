@@ -6019,6 +6019,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `box.update` | `POST kuvo/box/update {from}`: a release from a folder on the box's computer, the one Kuvo Code carries, taken at the next quiet moment ("Updates"); a release's Mac bundles, swapped whole; `kuvo/update`'s `offered` |
 | `branch` | `kuvo/agents/api/kuvo/branch/<session>`: Branch from here, marked |
 | `browser` | a machine only: `kuvo/browser`, its browser set up by the box itself ("The browser on a machine") |
+| `browser.view` | `kuvo/browser/view`: authenticated live view socket (“The browser’s live view”) |
 | `browser.data` | `kuvo/browser/history`, `…/icons/<host>`, `…/sites` and `…/settings`: the browser's data, every box's own ("The browser's data") |
 | `btw` | `kuvo/agents/api/kuvo/btw…`: side questions ("Side questions, handoffs and reviews") |
 | `btw.threads` | a side question's `thread`, follow-ups and a thread's removal (bridge 0.9.98) |
@@ -8954,3 +8955,68 @@ and left out, as UsageKit's scanner does, and is retried next round. It never ho
 for other services' logs.
 A new account with no conversations is empty. Places are hashed with the machine ID.
 The apps read Antigravity only from the box, with no older-box fallback (#679 updates boxes first).
+
+## The browser's live view
+
+Feature `browser.view`. Every box's keeper owns its Chrome and page state. No client needs
+CDP to draw it. The Swift Mac app remains on its existing raw-CDP stream.
+
+Open `GET kuvo/browser/view` as a socket: locally, a WebSocket on `serve` with its
+`Authorization: Basic <base64(opencode:password)>` header; through the relay, a WebSocket
+request in an authenticated, paired client's Noise session. Peers cannot open sockets.
+The upgrade checks the exact canonical path, method and password itself; the ordinary HTTP
+handler never sees upgrades. A GET without upgrading returns 426 with `{message}`.
+If the keeper isn't running, opening fails; starting the browser remains a separate operation.
+
+Text messages are newline-delimited JSON `{id?, method, params?}`. A request with an id
+gets `{id, result}` or `{id, error: {message}}`. The socket accepts only the view commands
+below, never raw CDP or keeper administration. SSH `kuvo-browser.js connect` keeps its
+newline JSON stream, including raw CDP compatibility.
+
+| Direction | Method | Parameters |
+| --- | --- | --- |
+| box → client | `Kuvo.pages` | `{active, pages: [{targetId,url,title,opener,session,loading,canGoBack,canGoForward,working,held,dialog?}]}` |
+| box → client | `Kuvo.viewport` | `{targetId,width,height,scale,zoom?,by: "agent" \| "viewer"}` |
+| box → client | `Kuvo.frame` | `{targetId,frameId,width,height,scrollX,scrollY}`, with JPEG bytes (below) |
+| client → box | `Kuvo.pages` | `{}`: request current page facts |
+| client → box | `Kuvo.view` | `{targetId: string \| null,width,height,scale?,zoom?,quality?,maxFps?}`; null stops pictures |
+| client → box | `Kuvo.frameAck` | `{frameId}`, only after the client consumed the picture |
+| client → box | `Kuvo.go` | `{targetId,input? ,back?,forward?,reload?,stop?}`; one action |
+| client → box | `Kuvo.input` | `{targetId,kind,...}`; kind mouse, wheel, key, text or compose |
+| client → box | `Kuvo.upload` | `{targetId,files:[{name,data}]}`; data is base64, total decoded size ≤50 MiB |
+| box → client | `Kuvo.fileChooser` | `{targetId,mode}`, after Chrome opens a file chooser |
+| box → client | `Kuvo.external` | `{url}`, a typed address using another app's scheme |
+| client → box | `Kuvo.hold` | existing `{targetId,on,mac?}` takeover vocabulary |
+
+The keeper also forwards its existing hello, ask, download, status and pointer facts.
+Pages are announced when Chrome reports creation, navigation, title, loading or destruction,
+and when agent status changes. The address comes from these facts even when an agent navigates.
+A tab's name is its nonempty title, else its address's host without `www.`, else “New Tab”.
+
+Input fields follow CDP's Input parameters: mouse has type, x, y, button and clickCount;
+wheel has x, y, deltaX and deltaY; key has type, key and code; text has text;
+compose has text, selectionStart, selectionEnd and optional replacement offsets.
+Modifiers may be CDP's bitmask or an array of `alt/control/meta/shift`.
+The keeper maps Control shortcuts to Command when Chrome runs on macOS.
+Coordinates are CSS page viewport coordinates, calculated by the client from the displayed
+frame's scale and letterbox. Files are written privately under `browser/tmp/upload-*`,
+given only to Chrome's current chooser and removed after Chrome consumes them.
+
+While an agent's status says it works in a page, a viewer cannot change that page's size.
+Otherwise the latest view or input sets it. Raw clients' device metrics, page scale and
+screencast calls go through that same rule. Raw agents' requested size is retained.
+The keeper captures once per target, dimensions, scale and quality class, with one capture
+in progress per class, and scales the picture without changing the working page's layout.
+
+On the new sockets a binary message is: four bytes of big-endian JSON header length,
+that many UTF-8 bytes of `{method:"Kuvo.frame",params:{...}}`, then the JPEG.
+SSH retains base64 `params.data`. Binary avoids base64's expansion; relay frames larger
+than 60,000 bytes are dropped, never split. Phone-sized views (width ≤600 CSS pixels)
+use scale 1 and quality at most 50. All views are capped at 15 fps.
+At most two unacknowledged frames are allowed per viewer. Obsolete pictures are dropped,
+never queued for a slow viewer. The relay counts messages (500/s for its whole connection);
+the live view shares a ceiling of about 100 messages/s across its relay viewers.
+Other box traffic retains the rest of that connection's budget.
+
+Examples and socket path cases live in `protocol/vectors/browser-view.json` and
+`protocol/vectors/link.json`; route answers are generated from the browser route shapes.

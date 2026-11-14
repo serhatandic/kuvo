@@ -51,6 +51,7 @@ export const FEATURES = [
   "branch",
   "browser",
   "browser.data",
+  "browser.view",
   "btw",
   "btw.threads",
   "claude-code",

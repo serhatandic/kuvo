@@ -90,7 +90,7 @@ socket.on("close", () => process.exit(0));
   before?.(home, (method, give) => answers.set(method, give));
   const host = spawn(process.execPath, [keeper, "host"], {
     env: { ...process.env, KUVO_HOME: home, KUVO_TEST_CHROME: pipePath },
-    stdio: "ignore",
+    stdio: ["ignore", "ignore", "inherit"],
   });
   atEnd(() => {
     host.kill("SIGKILL");

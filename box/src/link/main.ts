@@ -1189,3 +1189,6 @@ if (main) {
     process.exit(2);
   }
 }
+
+export { frameBudget, browserView } from "./browser/view";
+export { viewUpgrade } from "./browser/websocket";

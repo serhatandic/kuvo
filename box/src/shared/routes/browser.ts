@@ -52,6 +52,7 @@ export type BrowserSites = Infer<typeof BROWSER_SITES>;
 export type BrowserSettings = Infer<typeof BROWSER_SETTINGS>;
 
 export const BROWSER_ROUTES: RouteShape[] = [
+  { route: "GET kuvo/browser/view", answers: { 101: BYTES, 426: object({ message: string }) } },
   { route: "GET kuvo/browser/history", answers: { 200: BROWSER_HISTORY } },
   { route: "DELETE kuvo/browser/history", answers: { 200: BROWSER_HISTORY } },
   { route: "DELETE kuvo/browser/history/:host", answers: { 200: BROWSER_HISTORY } },
