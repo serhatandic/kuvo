@@ -4,7 +4,7 @@ import path from "node:path";
 import { RUN, socketKey } from "../home";
 import type { SocketEvents, SocketHandle } from "../relay/host";
 
-const COMMANDS = new Set(["Kuvo.view", "Kuvo.frameAck", "Kuvo.pages", "Kuvo.input", "Kuvo.go", "Kuvo.upload", "Kuvo.hold"]);
+const COMMANDS = new Set(["Kuvo.view", "Kuvo.frameAck", "Kuvo.pages", "Kuvo.input", "Kuvo.go", "Kuvo.upload", "Kuvo.hold", "Kuvo.claim"]);
 let windowAt = 0, messages = 0;
 /** Shared by every relay viewer on this box; the relay counts messages, not bytes. */
 export function frameBudget(count: number, now = Date.now(), ceiling = 100): boolean {
@@ -17,6 +17,7 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
   const socket = net.createConnection(path.join(run, "browser.sock"));
   let buffer = "", input = "", opened = false, ended = false;
   const facts = new Map<string, Buffer>();
+  let notice = 0;
   const flush = () => {
     for (const [name, bytes] of facts) {
       if (!frameBudget(Math.ceil(bytes.length / 59000))) break;
@@ -59,7 +60,8 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
         const bytes = Buffer.from(line + "\n");
         if (!relay) events.text(bytes);
         else {
-          const name = message.id === undefined ? message.method : "id:" + message.id;
+          const state = ["Kuvo.pages", "Kuvo.status", "Kuvo.viewport", "Kuvo.pointer", "Kuvo.cursor"].includes(message.method);
+          const name = state ? message.method + ":" + (message.params?.targetId ?? "") : "notice:" + ++notice;
           facts.set(name, bytes);
           if (facts.size > 64 || [...facts.values()].reduce((n, b) => n + b.length, 0) > 4 * 1024 * 1024) return end(new Error("Viewer stopped reading."));
           flush();
@@ -77,7 +79,7 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
         const line = input.slice(0, at); input = input.slice(at + 1);
         let message: any;
         try { message = JSON.parse(line); } catch { return end(new Error("Invalid browser request.")); }
-        if (!COMMANDS.has(message.method)) return end(new Error("Unknown view command."));
+        if (!message || typeof message !== "object" || !COMMANDS.has(message.method)) return end(new Error("Unknown view command."));
         socket.write(JSON.stringify(message) + "\n");
       }
     },

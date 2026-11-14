@@ -72,3 +72,45 @@ test("an unpaired relay client cannot open the browser socket", async () => {
   assert.equal(connected, 1);
   host.reset();
 });
+
+test("relay pictures are binary and excess or oversized frames are dropped at the socket", async t => {
+  const { browserView } = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+  const run = fs.mkdtempSync(path.join(os.tmpdir(), "kv-frames-"));
+  removeAtEnd(run);
+  const frames = [], acknowledgements = [];
+  let complete;
+  const done = new Promise(resolve => { complete = resolve; });
+  const server = net.createServer(socket => {
+    let input = "";
+    socket.setEncoding("utf8");
+    socket.on("data", chunk => {
+      input += chunk;
+      let at;
+      while ((at = input.indexOf("\n")) >= 0) {
+        const message = JSON.parse(input.slice(0, at)); input = input.slice(at + 1);
+        if (message.method === "Kuvo.key") {
+          assert.equal(message.params.key, "private");
+          const lines = [{ method: "Kuvo.hello", params: {} }];
+          for (let frameId = 1; frameId <= 103; frameId++) lines.push({
+            method: "Kuvo.frame", params: { targetId: "P", frameId, width: 393, height: 246,
+              scrollX: 0, scrollY: 0, data: Buffer.alloc(frameId === 103 ? 61000 : 100, 7).toString("base64") },
+          });
+          socket.write(lines.map(m => JSON.stringify(m) + "\n").join(""));
+        }
+        if (message.method === "Kuvo.frameAck") {
+          acknowledgements.push(message.params.frameId);
+          if (message.params.frameId === 103) complete();
+        }
+      }
+    });
+  });
+  server.listen(path.join(run, "browser.sock")); await once(server, "listening");
+  const view = browserView({ open() {}, text() {}, binary(data) { frames.push(data); }, end() {} }, true, run, () => "private");
+  t.after(() => { view.close(); server.close(); });
+  await done;
+  assert.ok(frames.length > 0 && frames.length <= 80);
+  assert.equal(acknowledgements.length, 103 - frames.length);
+  const first = frames[0], length = first.readUInt32BE(0);
+  assert.equal(JSON.parse(first.subarray(4, 4 + length)).method, "Kuvo.frame");
+  assert.deepEqual(first.subarray(4 + length), Buffer.alloc(100, 7));
+});

@@ -890,7 +890,7 @@ async function host() {
   });
   const resize = async (target, size, by) => {
     if (!own.has(target) || (by === "viewer" && workingIn(target))) return;
-    sizes.set(target, size);
+    sizes.set(target, { ...size, by });
     await ownCall("Emulation.setDeviceMetricsOverride", { width: size.width, height: size.height, deviceScaleFactor: size.scale, mobile: false }, own.get(target));
     await ownCall("Emulation.setPageScaleFactor", { pageScaleFactor: size.zoom ?? 1 }, own.get(target));
     broadcast({ method: "Kuvo.viewport", params: { targetId: target, ...size, by } });
@@ -939,17 +939,18 @@ async function host() {
     }
   }, 20).unref();
   const live = async (client, message) => {
-    const p = message.params ?? {}, target = p.targetId ?? attachedTo.get(message.sessionId) ?? client.view?.targetId;
+    const p = message.params ?? {}, target = Object.hasOwn(p, "targetId") ? p.targetId : attachedTo.get(message.sessionId) ?? client.view?.targetId;
     const session = own.get(target);
     const reply = result => message.id !== undefined && send(client, { id: message.id, result: result ?? {} });
     if (message.method === "Kuvo.frameAck" || message.method === "Page.screencastFrameAck") {
       client.inflight?.delete(p.frameId ?? p.sessionId); reply(); return true;
     }
     if (message.method === "Kuvo.view" || message.method === "Page.startScreencast") {
-      client.viewer = true; client.inflight = new Set();
+      client.viewer = true; client.inflight ??= new Set();
       client.rawView = message.method === "Page.startScreencast" ? message.sessionId : null;
       client.view = target && targets.has(target) ? { targetId: target, ...sizeFor({ ...p, width: p.width ?? p.maxWidth, height: p.height ?? p.maxHeight }) } : null;
       if (client.view) {
+        setActive(target, "user");
         if (client.view.width <= 600) { client.view.scale = 1; client.view.quality = Math.min(50, client.view.quality); }
         await resize(target, client.view, "viewer");
       }
@@ -969,6 +970,7 @@ async function host() {
       if (!session) throw Error("That page is closed.");
       if (p.input !== undefined) {
         const url = String(p.input).trim();
+        if (/^(javascript|data|blob):/i.test(url)) throw Error("That address cannot be opened here.");
         if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^(https?|file|about):/i.test(url)) send(client, { method: "Kuvo.external", params: { url } });
         else await ownCall("Page.navigate", { url: destination(url) ?? "about:blank" }, session);
       } else if (p.back || p.forward) {
@@ -1000,8 +1002,9 @@ async function host() {
         const chooser = choosers.get(target);
         if (!chooser) throw Error("No file chooser.");
         await ownCall("DOM.setFileInputFiles", { files: files.map(f => path.join(dir, f.name)), backendNodeId: chooser.backendNodeId }, session);
-        choosers.delete(target); reply();
+        choosers.delete(target);
       } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+      reply();
       return true;
     }
     return false;
@@ -1091,7 +1094,7 @@ async function host() {
   };
   // The page each client's session is attached to, to know which pages a Mac shows.
   const attachedTo = new Map();
-  const shown = (targetId) => [...attachedTo].some(([sessionId, target]) => target === targetId && owners.get(sessionId)?.viewer);
+  const shown = (targetId) => [...clients].some(c => c.view?.targetId === targetId) || [...attachedTo].some(([sessionId, target]) => target === targetId && owners.get(sessionId)?.viewer);
   // Pages a Mac has shown: yours, kept however long agents leave them alone.
   const seen = new Set();
   // Pages only agents used, left alone for an hour, close: sessions' subagents and bots that wake
@@ -1297,6 +1300,7 @@ async function host() {
     }
     if (message.method === "Target.targetDestroyed") {
       targets.delete(message.params.targetId);
+      sizes.delete(message.params.targetId); loading.delete(message.params.targetId); histories.delete(message.params.targetId); dialogs.delete(message.params.targetId); choosers.delete(message.params.targetId);
       openers.delete(message.params.targetId);
       for (const [frame, page] of framePages) if (page === message.params.targetId) framePages.delete(frame);
       addresses.delete(message.params.targetId);
@@ -1321,10 +1325,11 @@ async function host() {
         addresses.set(page, message.params.frame.url); titles.set(page, message.params.frame.name ?? titles.get(page) ?? "");
         ownCall("Page.getNavigationHistory", {}, message.sessionId).then(h => { if (h) histories.set(page, h); announcePages(); });
       }
-      if (message.method === "Page.frameStartedLoading") loading.add(page);
-      if (message.method === "Page.frameStoppedLoading") loading.delete(page);
+      if (message.method === "Page.frameStartedLoading" && message.params.frameId === page) loading.add(page);
+      if (message.method === "Page.frameStoppedLoading" && message.params.frameId === page) loading.delete(page);
       if (message.method === "Page.javascriptDialogOpening") { dialogs.set(page, message.params); broadcast({ method: "Kuvo.dialog", params: { targetId: page, ...message.params } }); }
       if (message.method === "Page.javascriptDialogClosed") dialogs.delete(page);
+      if (message.method === "Page.frameRequestedNavigation" && /^[a-z][a-z0-9+.-]*:/i.test(message.params.url) && !/^(https?|file|about|javascript|data|blob):/i.test(message.params.url)) broadcast({ method: "Kuvo.external", params: { url: message.params.url } });
       if (message.method === "Page.fileChooserOpened") { choosers.set(page, message.params); broadcast({ method: "Kuvo.fileChooser", params: { targetId: page, mode: message.params.mode } }); }
       if (message.method.startsWith("Page.")) announcePages();
     }
@@ -1375,7 +1380,7 @@ async function host() {
           announceHeld();
         }, 600_000).unref?.();
       }
-      if (client.status?.working) broadcast({ method: "Kuvo.status", params: (status = everyStatus()) });
+      if (client.status?.working) { announcePages(); broadcast({ method: "Kuvo.status", params: (status = everyStatus()) }); }
       if (client.viewer) broadcast({ method: "Kuvo.viewers", params: { count: viewers() } });
       if (!client.quiet && ![...clients].some((each) => !each.quiet)) idleSoon();
     });
@@ -1387,6 +1392,7 @@ async function host() {
         if (!client.keyed) refuse();
         return;
       }
+      if (!message || typeof message !== "object" || Array.isArray(message)) return;
       if (client.closed) return;
       if (!client.keyed) {
         if (message.method !== "Kuvo.key" || !sameKey(message.params?.key)) return refuse();
@@ -1399,6 +1405,7 @@ async function host() {
         if (!client.quiet) clearTimeout(idle);
         send(client, { method: "Kuvo.hello", params: { targetId: active, status, version: VERSION, keeper: KEEPER_NUMBER, build: KEEPER, asks: [...asks.values()].map((ask) => ask.params), viewers: viewers(), held: [...held.keys()], holdMacs: Object.fromEntries(holdMacs), passkeys: Object.fromEntries(passkeyPages) } });
         send(client, { method: "Kuvo.pages", params: pages() });
+        for (const [targetId, size] of sizes) send(client, { method: "Kuvo.viewport", params: { targetId, ...size } });
         return;
       }
       if (typeof message.method !== "string") return;

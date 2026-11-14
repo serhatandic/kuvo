@@ -53,3 +53,27 @@ test("raw viewer metrics and screencast calls cannot override an agent", async (
   assert.equal(chrome.all.filter(m => m.method === "Page.startScreencast").length, 0);
   await raw.heard.until(m => m.method === "Page.screencastFrame");
 });
+
+test("view navigation, input and chosen file bytes are handled on the box", async () => {
+  const fs = await import("node:fs");
+  const viewer = await client();
+  await viewer.heard.until(m => m.method === "Kuvo.hello");
+  await call(viewer, 30, "Kuvo.go", { targetId: "P", input: "example.org" });
+  assert.ok(chrome.all.some(m => m.method === "Page.navigate" && m.sessionId === "keeper" && m.params.url === "https://example.org"));
+  await call(viewer, 31, "Kuvo.input", { targetId: "P", kind: "text", text: "hello" });
+  assert.ok(chrome.all.some(m => m.method === "Input.insertText" && m.sessionId === "keeper" && m.params.text === "hello"));
+  event("Page.fileChooserOpened", { backendNodeId: 42, mode: "selectSingle" }, "keeper");
+  await viewer.heard.until(m => m.method === "Kuvo.fileChooser");
+  let uploaded;
+  answer("DOM.setFileInputFiles", params => {
+    assert.equal(params.backendNodeId, 42);
+    uploaded = params.files[0];
+    assert.equal(fs.readFileSync(uploaded, "utf8"), "hello");
+    return {};
+  });
+  const result = await call(viewer, 32, "Kuvo.upload", { targetId: "P", files: [{ name: "../note.txt", data: "aGVsbG8=" }] });
+  assert.ok(!result.error);
+  assert.equal(fs.existsSync(uploaded), false);
+  await call(viewer, 33, "Kuvo.go", { targetId: "P", input: "mailto:hello@example.com" });
+  await viewer.heard.until(m => m.method === "Kuvo.external" && m.params.url === "mailto:hello@example.com");
+});

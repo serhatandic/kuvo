@@ -9471,7 +9471,7 @@ import { spawn as spawn6 } from "node:child_process";
 // box/src/link/browser/view.ts
 import net3 from "node:net";
 import path35 from "node:path";
-var COMMANDS = new Set(["Kuvo.view", "Kuvo.frameAck", "Kuvo.pages", "Kuvo.input", "Kuvo.go", "Kuvo.upload", "Kuvo.hold"]);
+var COMMANDS = new Set(["Kuvo.view", "Kuvo.frameAck", "Kuvo.pages", "Kuvo.input", "Kuvo.go", "Kuvo.upload", "Kuvo.hold", "Kuvo.claim"]);
 var windowAt = 0;
 var messages = 0;
 function frameBudget(count, now = Date.now(), ceiling = 100) {
@@ -9488,6 +9488,7 @@ function browserView(events, relay = false, run = RUN, key = socketKey) {
   const socket = net3.createConnection(path35.join(run, "browser.sock"));
   let buffer = "", input = "", opened = false, ended = false;
   const facts = new Map;
+  let notice = 0;
   const flush = () => {
     for (const [name, bytes] of facts) {
       if (!frameBudget(Math.ceil(bytes.length / 59000)))
@@ -9553,7 +9554,8 @@ function browserView(events, relay = false, run = RUN, key = socketKey) {
         if (!relay)
           events.text(bytes);
         else {
-          const name = message.id === undefined ? message.method : "id:" + message.id;
+          const state = ["Kuvo.pages", "Kuvo.status", "Kuvo.viewport", "Kuvo.pointer", "Kuvo.cursor"].includes(message.method);
+          const name = state ? message.method + ":" + (message.params?.targetId ?? "") : "notice:" + ++notice;
           facts.set(name, bytes);
           if (facts.size > 64 || [...facts.values()].reduce((n, b) => n + b.length, 0) > 4 * 1024 * 1024)
             return end(new Error("Viewer stopped reading."));
@@ -9580,7 +9582,7 @@ function browserView(events, relay = false, run = RUN, key = socketKey) {
         } catch {
           return end(new Error("Invalid browser request."));
         }
-        if (!COMMANDS.has(message.method))
+        if (!message || typeof message !== "object" || !COMMANDS.has(message.method))
           return end(new Error("Unknown view command."));
         socket.write(JSON.stringify(message) + `
 `);
@@ -42836,7 +42838,7 @@ import fs138 from "node:fs";
 import path145 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f24c37ae4e07";
+var BRIDGE_VERSION = "debca226bf88";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
