@@ -13847,6 +13847,7 @@ function priorityNamed(given) {
   return PRIORITIES.find((each) => each.id === wanted) ?? (wanted === "medium" || wanted === "none" ? PRIORITIES[2] : null);
 }
 var PARKED_LABEL = "lbl_parked";
+var categoryBefore = (item) => isClosed(item.status) ? "done" : item.status === "backlog" ? item.labels?.includes(PARKED_LABEL) ? "parked" : "later" : "next";
 function fromCategory(category, name) {
   if (category === "next")
     return { status: "todo" };
@@ -13913,7 +13914,7 @@ function migrateItem(item, name) {
   }
   item.status = working ? "in-progress" : status;
   item.labels = label ? [label] : [];
-  delete item.category;
+  item.category = categoryBefore({ status: item.status, labels: item.labels });
 }
 var placeOf = (category, custom) => category === "next" ? 0 : category === "later" ? 1 : category === "parked" ? custom.length + 2 : category === "done" ? custom.length + 3 : typeof category === "string" && custom.includes(category) ? custom.indexOf(category) + 2 : custom.length + 2;
 function migrate() {
@@ -14149,6 +14150,7 @@ function migratedToChange() {
     throw new Refusal(`The Work Queue's items couldn't be moved over to statuses on this computer (${error?.message ?? error}), so nothing was changed. Check ${WORK_QUEUE2} (is the disk full?), then try again.`);
   }
 }
+var asKept = (item) => ({ ...item, category: categoryBefore(item) });
 
 class UnreadableQueue extends Error {
   owner;
@@ -14309,7 +14311,7 @@ class Book {
       if (!queue.items.length)
         fs52.rmSync(fileOf2(owner), { force: true });
       else
-        writePrivate(fileOf2(owner), JSON.stringify({ owner, items: queue.items }));
+        writePrivate(fileOf2(owner), JSON.stringify({ owner, items: queue.items.map(asKept) }));
       this.before.set(owner, JSON.stringify(queue.items));
     }
     return any;
@@ -23692,7 +23694,7 @@ function packWorkQueues(owners) {
     return null;
   const used = new Set(items.flatMap((item) => item.labels));
   return {
-    items,
+    items: items.map(asKept),
     labels: labels().filter((each) => used.has(each.id)),
     withFiles: items.filter((item) => item.files.length && fs79.existsSync(filesOf2(item.id))).map((item) => item.id)
   };
@@ -25424,7 +25426,7 @@ function handPayload(item) {
     }
   });
   const has = labels().filter((each) => item.labels.includes(each.id));
-  return { hand: { id: handing.id, to: handing.to, from: item.owner, by: handing.by, at: handing.at, item: rest, files, ...has.length ? { labels: has } : {} } };
+  return { hand: { id: handing.id, to: handing.to, from: item.owner, by: handing.by, at: handing.at, item: asKept(rest), files, ...has.length ? { labels: has } : {} } };
 }
 var scanned = null;
 var queuesMark = () => {
@@ -43695,7 +43697,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "94e536aad0c2";
+var BRIDGE_VERSION = "6d15cd5cc039";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";

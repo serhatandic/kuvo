@@ -23,7 +23,7 @@ import { keepLabel, labels } from "./labels";
 import { isClosed, statusNamed } from "./statuses";
 import { intoTodo, linkSession } from "./ops";
 import {
-  allItems, changeQueues, FILE_NAME, filesOf, itemOf, MOST_FILE, MOST_HANDED_FILES, MOST_ITEMS, noteHanded, OWNER, placeIn, Refusal, WORK_QUEUE, whoOf,
+  allItems, asKept, changeQueues, FILE_NAME, filesOf, itemOf, MOST_FILE, MOST_HANDED_FILES, MOST_ITEMS, noteHanded, OWNER, placeIn, Refusal, WORK_QUEUE, whoOf,
   type Book, type Item, type Who,
 } from "./store";
 import { mailsFor } from "./parts";
@@ -75,7 +75,7 @@ function handPayload(item: Item): Record<string, unknown> {
     }
   });
   const has = labels().filter(each => item.labels.includes(each.id));
-  return { hand: { id: handing!.id, to: handing!.to, from: item.owner, by: handing!.by, at: handing!.at, item: rest, files, ...(has.length ? { labels: has } : {}) } };
+  return { hand: { id: handing!.id, to: handing!.to, from: item.owner, by: handing!.by, at: handing!.at, item: asKept(rest as Item), files, ...(has.length ? { labels: has } : {}) } };
 }
 
 // The items on their way to another computer, as last read: read again when the queues change, and

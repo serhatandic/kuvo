@@ -60,6 +60,12 @@ export function priorityNamed(given: unknown): Priority | null {
 /** The label that says an item was Parked, before statuses (`migrate.ts`). */
 export const PARKED_LABEL = "lbl_parked";
 
+/** The category a box from before statuses reads an item under (one of its built-in four), so it
+ * never takes an item kept, handed or moved with a status for no item at all: Done for a closed
+ * one, Later for Backlog (Parked with that label), else Next. */
+export const categoryBefore = (item: { status: string; labels?: string[] }): string =>
+  isClosed(item.status) ? "done" : item.status === "backlog" ? (item.labels?.includes(PARKED_LABEL) ? "parked" : "later") : "next";
+
 /** Where an item kept under a category (before statuses) stands now: its status, and the label its
  * category became. `name` is its custom category's name, where that's known. Next is Todo, Later
  * Backlog, Done Done; Parked is Backlog with the label Parked; "Waiting on you" is Needs you; any

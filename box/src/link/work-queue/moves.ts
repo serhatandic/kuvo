@@ -9,7 +9,7 @@ import { isObject } from "../../shared/json";
 import { keepLabel, labels } from "./labels";
 import { statusNamed } from "./statuses";
 import { intoTodo } from "./ops";
-import { changeQueues, FILE_NAME, filesOf, itemOf, OWNER, readKeptQueue, readQueueSettingAside, type Item } from "./store";
+import { asKept, changeQueues, FILE_NAME, filesOf, itemOf, OWNER, readKeptQueue, readQueueSettingAside, type Item } from "./store";
 
 /** What a move carries: each owner's items, the labels they have, and which items
  * have files (packed beside `move.json`, in `work-queue/<item>/`). */
@@ -26,7 +26,7 @@ export function packWorkQueues(owners: readonly string[]): CarriedQueues | null 
   if (!items.length) return null;
   const used = new Set(items.flatMap(item => item.labels));
   return {
-    items,
+    items: items.map(asKept),
     labels: labels().filter(each => used.has(each.id)),
     withFiles: items.filter(item => item.files.length && fs.existsSync(filesOf(item.id))).map(item => item.id),
   };

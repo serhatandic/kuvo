@@ -181,7 +181,8 @@ test("items kept under categories move over to statuses and labels once, with no
   for (const was of [...before.lead, ...before.child]) {
     const now = kept.find(each => each.id === was.id);
     assert.deepEqual(held(now), held(was), `#${was.number}`);
-    assert.equal(now.category, undefined);
+    // (And under a category a box from before statuses still reads: it never takes one for no item.)
+    assert.equal(now.category, now.status === "done" ? "done" : now.status === "backlog" ? (now.labels.includes("lbl_parked") ? "parked" : "later") : "next", `#${was.number}`);
   }
   // What happened to it stays, its moves naming statuses.
   assert.deepEqual(kept.find(each => each.number === 10).events, [{ at: 55, by: YOU, kind: "moved", from: "backlog", to: "todo", top: true }, { at: 60, by: LEAD, kind: "started" }]);

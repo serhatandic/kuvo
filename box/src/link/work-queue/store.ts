@@ -15,7 +15,7 @@ import { listOf, locked, textOf, writePrivate } from "../files";
 import { RUN } from "../home";
 import { sourceKeyOf } from "./sources";
 import { migrateOnce } from "./migrate";
-import { fromCategory, PRIORITY_ID } from "./statuses";
+import { categoryBefore, fromCategory, PRIORITY_ID } from "./statuses";
 
 export const WORK_QUEUE = path.join(RUN, "work-queue");
 const QUEUES = path.join(WORK_QUEUE, "queues");
@@ -260,6 +260,10 @@ export function migratedToChange(): void {
   }
 }
 
+// An item as it goes to disk, or to another computer whole (a hand-off, a move).
+// COMPAT(0.7 queue-categories): with the category a box from before statuses reads it under, so one that reads this folder for a while (a released Mac puts its own box over this one as it connects), or takes the item, never drops it for having none; this box reads only its status. Goes 3 months after 0.8.0.
+export const asKept = (item: Item): Item & { category: string } => ({ ...item, category: categoryBefore(item) });
+
 /** A queue file that's there but isn't one (cut short, changed by hand): `aside` true. Or one that
  * can't be read just now (too many files open, a disk error): left where it is. */
 export class UnreadableQueue extends Error {
@@ -450,7 +454,7 @@ export class Book {
     for (const [owner, queue] of changed) {
       any = true;
       if (!queue.items.length) fs.rmSync(fileOf(owner), { force: true });
-      else writePrivate(fileOf(owner), JSON.stringify({ owner, items: queue.items }));
+      else writePrivate(fileOf(owner), JSON.stringify({ owner, items: queue.items.map(asKept) }));
       this.before.set(owner, JSON.stringify(queue.items));
     }
     return any;

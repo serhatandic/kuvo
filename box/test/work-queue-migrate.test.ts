@@ -74,6 +74,10 @@ test("a run cut off after the copy, one queue written, ends as an uninterrupted 
     expect(fs.readFileSync(path.join(WORK_QUEUE, "queues", "ses_b.json"), "utf8")).toBe(whole)
     // The first change after it is kept with statuses, and nothing is moved over twice.
     changeQueues(book => { book.find({ number: 1 })!.status = "in-review" })
+    // (Every item kept is still one to a box from before statuses, which reads it by a category.)
+    for (const name of ["ses_a.json", "ses_b.json"]) {
+      for (const each of JSON.parse(fs.readFileSync(path.join(WORK_QUEUE, "queues", name), "utf8")).items) expect(each.category).toMatch(/^(next|later|parked|done)$/)
+    }
     forgetMigrated()
     expect(stands()[1]).toEqual(["in-review", [], 1])
     expect(JSON.parse(fs.readFileSync(path.join(before, "queues", "ses_a.json"), "utf8")).items[0].category).toBe("next")

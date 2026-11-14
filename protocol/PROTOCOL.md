@@ -9127,7 +9127,12 @@ before connects (the box notes one: `run/attached`).
   `labels`. A box with `work-queue.edit` reads each as it comes ("The Work Queue", From
   categories): its status from its category, a custom category as a label under its own id (named
   as that box named it, where it came with a hand-off or a move). It sends such a box nothing in
-  the old shape, and no client's change to an item it keeps (`PATCH`: 409). (The box's own items
+  the old shape but one field: every item it keeps on disk, hands on or carries in a move also
+  says `category` (`done` for a closed one, `later` for Backlog, `parked` for Backlog with the
+  label Parked, else `next`), so a box from before statuses that reads the folder for a while (a
+  released Mac puts its own box over this one as it connects) or takes the item never drops it for
+  having none; a box with statuses reads only `status`. It sends such a box no client's change to
+  an item it keeps (`PATCH`: 409). (The box's own items
   moving over once, as it updates, isn't for released Macs: it stays.)
   <!-- compat: 0.7 queue-categories -->
 

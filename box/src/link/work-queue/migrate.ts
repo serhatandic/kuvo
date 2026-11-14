@@ -15,7 +15,7 @@ import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, writePrivate } from "../files";
 import { RUN } from "../home";
-import { fromCategory, isClosed, PARKED_LABEL } from "./statuses";
+import { categoryBefore, fromCategory, isClosed, PARKED_LABEL } from "./statuses";
 
 const WORK_QUEUE = path.join(RUN, "work-queue");
 const QUEUES = path.join(WORK_QUEUE, "queues");
@@ -64,7 +64,8 @@ export function migrateItem(item: Record<string, unknown>, name: (category: stri
   }
   item.status = working ? "in-progress" : status;
   item.labels = label ? [label] : [];
-  delete item.category;
+  // (What a box from before statuses still reads it under: `asKept`, store.ts.)
+  item.category = categoryBefore({ status: item.status as string, labels: item.labels as string[] });
 }
 
 // Where the old categories stood, for the order items keep within a status: Next, Later, the custom
