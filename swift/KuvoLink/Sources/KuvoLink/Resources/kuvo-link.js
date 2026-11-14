@@ -9549,6 +9549,8 @@ function browserView(events, relay = false, run = RUN, key = socketKey) {
         }
         events.binary(frame);
       } else {
+        if (message.id === undefined && !String(message.method).startsWith("Kuvo."))
+          continue;
         const bytes = Buffer.from(line + `
 `);
         if (!relay)
@@ -42838,7 +42840,7 @@ import fs138 from "node:fs";
 import path145 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "88c850131996";
+var BRIDGE_VERSION = "1a175a40fb78";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";

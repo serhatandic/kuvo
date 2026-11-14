@@ -57,6 +57,7 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
         }
         events.binary(frame);
       } else {
+        if (message.id === undefined && !String(message.method).startsWith("Kuvo.")) continue;
         const bytes = Buffer.from(line + "\n");
         if (!relay) events.text(bytes);
         else {

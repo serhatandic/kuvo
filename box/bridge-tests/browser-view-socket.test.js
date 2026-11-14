@@ -121,3 +121,42 @@ test("box-only browser socket paths follow their own vectors without changing ke
   const shared = JSON.parse(fs.readFileSync(new URL("../../protocol/vectors/link.json", import.meta.url)));
   assert.ok(shared.sockets.every(v => !v.path.startsWith("kuvo/browser/")));
 });
+
+async function keeperView(t, relay = false, options = {}) {
+  const { browserView } = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+  const { Heard } = await import("./browser-host-stand-in.js");
+  const run = fs.mkdtempSync(path.join(os.tmpdir(), "kv-vk-")); removeAtEnd(run);
+  const commands = new Heard(), heard = new Heard();
+  let keeper, opened;
+  const ready = new Promise(resolve => { opened = resolve; });
+  const server = net.createServer(socket => {
+    keeper = socket;
+    let buffer = "";
+    socket.on("data", data => {
+      buffer += data.toString();
+      let at;
+      while ((at = buffer.indexOf("\n")) >= 0) {
+        const m = JSON.parse(buffer.slice(0, at)); buffer = buffer.slice(at + 1);
+        commands.add(m);
+        if (m.method === "Kuvo.key") socket.write(JSON.stringify({ method: "Kuvo.hello", params: {} }) + "\n");
+      }
+    });
+  });
+  server.listen(path.join(run, "browser.sock")); await once(server, "listening");
+  const view = browserView({
+    open: opened, text(data) { heard.add(JSON.parse(data)); },
+    binary(data) { heard.add({ binary: data }); }, end(error) { heard.add({ ended: true, error }); },
+  }, relay, run, () => "key", options);
+  t.after(() => { view.close(); keeper?.destroy(); server.close(); });
+  await ready;
+  return { view, heard, commands, emit: m => keeper.write(JSON.stringify(m) + "\n") };
+}
+test("the view socket exposes Kuvo facts and request replies without leaking raw CDP events", async t => {
+  const h = await keeperView(t);
+  h.emit({ method: "Target.targetCreated", params: { targetInfo: { targetId: "secret-cdp" } } });
+  h.emit({ id: 4, result: {} });
+  h.emit({ method: "Kuvo.pages", params: { pages: [], active: null } });
+  await h.heard.until(m => m.method === "Kuvo.pages");
+  assert.equal(h.heard.all.some(m => m.method === "Target.targetCreated"), false);
+  assert.ok(h.heard.all.some(m => m.id === 4));
+});
