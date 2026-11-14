@@ -126,14 +126,14 @@ let failures = 0;
 let lastProfiles = "";
 
 /** Why it isn't on, for a reason whose check left no words of its own: every reason has a sentence. */
-const WHY: Record<FenceReason, string> = {
+export const WHY: Record<FenceReason, string> = {
   kernel: "This Linux can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on).",
   namespaces: "This machine doesn't let commands have a namespace of their own.",
   macos: "macOS's sandbox isn't on this Mac.",
   engineMissing: "The engine isn't installed here yet.",
   checking: "It's being checked.",
   checkFailed: "Its check failed.",
-  plugin: "Its plugin for the engine was changed or removed.",
+  plugin: "Kuvo’s part in the engine was changed or removed.",
   engineDown: "The engine isn't running.",
   waiting: "Waiting for the engine to load it.",
 };
@@ -207,7 +207,7 @@ export function fenceWhole(): boolean {
 
 /** Whether the engine has the sandbox's plugin, as it is now: on, or why not. */
 function loaded(): Pick<FenceState, "on" | "why" | "reason" | "action" | "route"> {
-  if (textOf(PLUGIN) !== pluginScript(places, VERSION)) return { on: false, why: "Its plugin for the engine was changed or removed.", reason: "plugin", action: "fix", route: CHECK };
+  if (textOf(PLUGIN) !== pluginScript(places, VERSION)) return { on: false, why: "Kuvo’s part in the engine was changed or removed.", reason: "plugin", action: "fix", route: CHECK };
   let engine: { pid?: number } = {};
   try { engine = JSON.parse(fs.readFileSync(ENGINE_FILE, "utf8")); } catch {
     return { on: false, why: "The engine isn't running.", reason: "engineDown", action: "restartEngine", route: RESTART };

@@ -122,6 +122,15 @@ export function needsYou(sessions: Readonly<Record<string, SessionFacts>>, asks?
     .map(([session]) => ({ session, asks: asks?.get(session) ?? { kind: "other" as const, summary: "waits on you" } }));
 }
 
+/** How many sessions wait on you, for a client's one badge of them (`kuvo/waiting`'s `sessions`):
+ * those "Needs you" lists, and the bots' own conversations that wait (a permission or a question
+ * there, a goal it put to you, what it asks before it does it), which the lists file under their
+ * bots. Each session once, whatever it asks and however many times; not archived, this box's own
+ * copy. */
+export function waitingSessions(sessions: Readonly<Record<string, SessionFacts>>): number {
+  return Object.values(sessions).filter(facts => facts.asked !== undefined && (facts.kind === "project" || facts.kind === "chat" || facts.kind === "bot") && !facts.archived && !facts.away).length;
+}
+
 /** What each bot is doing now, by its id: how many of its sessions (its conversation, and those
  * working for it) are at work and waiting on you, and, with neither, when the newest of them last
  * changed (`finished`). Archived sessions and copies that aren't this box's own aren't counted. */

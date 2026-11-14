@@ -20,3 +20,10 @@ test("a button that sends no route says what it opens, and whether that's this c
   expect(actionOpens("softwareUpdate")).toEqual({ opens: "x-apple.systempreferences:com.apple.Software-Update-Settings.extension", opensHere: true })
   for (const action of ["retry", "fix", "restartEngine"] as const) expect(actionOpens(action)).toBeUndefined()
 })
+
+// Every reason's sentence is shown to people as it is: none names the machinery ("plugin").
+test("no reason's sentence says plugin: a changed setup is Kuvo's part in the engine", async () => {
+  const { WHY } = await import("../src/link/fence/state")
+  expect(WHY.plugin).toBe("Kuvo’s part in the engine was changed or removed.")
+  for (const sentence of Object.values(WHY)) expect(sentence.toLowerCase()).not.toContain("plugin")
+})

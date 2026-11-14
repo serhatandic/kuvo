@@ -286,7 +286,8 @@ test("a new file staged and then gone from disk can't be had back from the Trash
   rmSync(join(top, "draft.md"))
   const staged = (await files(top)).files.filter((file: any) => file.group === "staged")
   expect(staged.map((file: any) => [file.path, file.discards])).toEqual([
-    ["draft.md", { kind: "trash", undoable: false }],
+    // (Said in a sentence of the box's, for the confirm: its usual words say only "to the Trash".)
+    ["draft.md", { kind: "trash", undoable: false, loses: "What you staged of it isn’t kept anywhere, so this can’t be undone." }],
     ["kept.md", { kind: "trash", undoable: true }],
   ])
 })
@@ -311,10 +312,10 @@ test("a discard that would lose a staged version for good never says it can be u
     git(top, "mv", "app/Form.tsx", "app/Sheet.tsx")
     const staged = (await files(top)).files.filter((file: any) => file.group === "staged")
     expect(staged.map((file: any) => [file.path, file.discards])).toEqual([
-      ["app/new.ts", { kind: "undoMove", undoable: false }],
+      ["app/new.ts", { kind: "undoMove", undoable: false, loses: "What you staged of it isn’t kept anywhere, so this can’t be undone." }],
       ["app/Sheet.tsx", { kind: "undoMove", undoable: true }],
-      ["new.md", { kind: "trash", undoable: false }],
-      ["READ.md", { kind: "undoMove", undoable: false }],
+      ["new.md", { kind: "trash", undoable: false, loses: "What you staged of it isn’t kept anywhere, so this can’t be undone." }],
+      ["READ.md", { kind: "undoMove", undoable: false, loses: "What you staged of it isn’t kept anywhere, so this can’t be undone." }],
     ])
     // As the discard itself goes: v2 is in the Trash, v1 nowhere.
     const row = { ...staged.find((file: any) => file.path === "new.md"), root: top }
@@ -574,6 +575,51 @@ test("a discard that doesn't say what the file was when it was listed is refused
     for (const row of listed) expect((await discard(row)).status).toBe(200)
     expect(readFileSync(join(top, "README.md"), "utf8")).toBe("# App\n")
     expect(existsSync(join(top, "notes.txt"))).toBe(false)
+  } finally {
+    delete process.env.KUVO_CHANGES_TRASH
+  }
+})
+
+// A repository of its own inside this one ("web/") goes to the Trash whole, so its stamp is what its
+// own git says: an edit or a commit an agent makes inside it after it was listed is seen, and the
+// discard refused, where the folder's own size and time said nothing had changed.
+test("a repository inside this one isn't discarded once anything in it changed since it was listed", async () => {
+  const top = repository("nested")
+  const trash = join(box, "trash-nested")
+  process.env.KUVO_CHANGES_TRASH = trash
+  try {
+    const web = join(top, "web")
+    mkdirSync(web)
+    git(web, "init", "-q", "-b", "main")
+    writeFileSync(join(web, "index.html"), "<p>hi</p>\n")
+    git(web, "add", "-A")
+    git(web, "-c", "user.name=Ada", "-c", "user.email=ada@example.com", "commit", "-q", "-m", "Web")
+    const row = async () => ({ ...(await files(top)).files.find((file: any) => file.path === "web/"), root: top })
+    const listed = await row()
+    expect([listed.repository, listed.discard]).toEqual([true, "trash"])
+    // Listed again with nothing changed: the same stamp.
+    expect((await row()).stamp).toBe(listed.stamp)
+
+    // An agent edits a file in it (the folder itself is as it was).
+    writeFileSync(join(web, "index.html"), "<p>the agent's newer page</p>\n")
+    const edited = await discard(listed)
+    expect(edited.status).toBe(409)
+    expect(edited.json.message).toBe("web changed since it was listed. Look at it again before you discard it.")
+    expect(readFileSync(join(web, "index.html"), "utf8")).toBe("<p>the agent's newer page</p>\n")
+
+    // It commits there: nothing uncommitted again, but another commit.
+    const seen = await row()
+    expect(seen.stamp).not.toBe(listed.stamp)
+    git(web, "-c", "user.name=Ada", "-c", "user.email=ada@example.com", "commit", "-q", "-am", "Newer")
+    expect((await discard(seen)).status).toBe(409)
+    expect((await discard(listed)).status).toBe(409)
+    expect(existsSync(web)).toBe(true)
+    expect(existsSync(trash)).toBe(false)
+
+    // Listed again, as it is now: it goes to the Trash, whole.
+    expect((await discard(await row())).status).toBe(200)
+    expect(existsSync(web)).toBe(false)
+    expect(spawnSync("grep", ["-rl", "the agent's newer page", trash], { encoding: "utf8" }).stdout.trim()).not.toBe("")
   } finally {
     delete process.env.KUVO_CHANGES_TRASH
   }

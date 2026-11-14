@@ -6,10 +6,11 @@
 // folders, with the box's git and its settings.
 
 import { execFile, execFileSync, spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { askedArgsLater, ownArgsLater } from "../../shared/git";
+import { askedArgsLater, ownArgs, ownArgsLater } from "../../shared/git";
 import { parsed } from "../../shared/json";
 import type { GitBranches, GitChanges, GitChangesCount, GitFiles, GitStatus, PullRequestDraft } from "../../shared/routes/changes";
 import { K } from "../home";
@@ -287,10 +288,52 @@ function onDisk<T>(look: () => T): T | undefined {
  * has at its path, and its size and when it last changed on disk ("gone" without one). */
 export function stampOf(root: string, name: string, indexed: string | undefined, since?: bigint): string {
   const stat = onDisk(() => fs.lstatSync(path.join(root, name), { bigint: true }));
+  // A repository of its own (a folder with its own `.git`): the folder's own size and time say
+  // nothing of what's in it, so it's what its git says, its commit and everything not committed
+  // there, that a discard must still find as it was.
+  if (stat?.isDirectory() && kind(path.join(root, name, ".git"))) {
+    const inside = insideOf(path.join(root, name));
+    // (git couldn't say: a stamp nothing matches, so nothing of it is thrown away on a guess.)
+    if (!inside) return `${indexed ?? "-"}:repository-unread-${crypto.randomUUID()}`;
+    // (Changed once the list was being read, as a file is below.)
+    return `${indexed ?? "-"}:repository-${inside.is}${since !== undefined && inside.newest >= since ? ":since" : ""}`;
+  }
   // Changed once the list was being read (`since`): what the row shows may be from before it, so
   // its stamp matches nothing, and a discard waits for the list read again.
   const fresh = since !== undefined && stat && stat.mtimeNs >= since ? ":since" : "";
   return `${indexed ?? "-"}:${stat ? `${stat.size}-${stat.mtimeNs}` : "gone"}${fresh}`;
+}
+
+/** What a repository inside this one is now, for its stamp: its commit (none before its first) and a
+ * hash of what its own `git status` says isn't committed there, each changed file with its size and
+ * when it last changed (an edit that leaves status's own line the same is still seen); null when
+ * git can't say. */
+function insideOf(folder: string): { is: string; newest: bigint } | null {
+  const run = (given: string[]) => {
+    const args = ownArgs(given, folder);
+    if (!args) return null;
+    try {
+      return execFileSync("git", args, { cwd: folder, env: { ...commandEnv(), GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" }, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 60_000, maxBuffer: 256 * 1024 * 1024 });
+    } catch {
+      return null;
+    }
+  };
+  // (Asked of that folder itself: a folder that isn't a repository's top would answer for this one.)
+  const top = run(["rev-parse", "--show-toplevel"])?.trim();
+  if (!top || realOr(top) !== realOr(folder)) return null;
+  const status = run(["-c", "core.quotepath=off", "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  if (status === null) return null;
+  const head = run(["rev-parse", "--verify", "-q", "HEAD"])?.trim() || "none";
+  const hash = crypto.createHash("sha256").update(status);
+  let newest = 0n;
+  for (const record of status.split("\0")) {
+    const name = record.slice(3);
+    if (!name) continue;
+    const stat = onDisk(() => fs.lstatSync(path.join(folder, name), { bigint: true }));
+    if (stat && stat.mtimeNs > newest) newest = stat.mtimeNs;
+    hash.update(`\0${name}\0${stat ? `${stat.size}-${stat.mtimeNs}` : "gone"}`);
+  }
+  return { is: `${head}-${hash.digest("hex").slice(0, 32)}`, newest };
 }
 
 /** What the index has at `name`, as `git status` says it (as `kuvo/git/files` lists it): its
@@ -346,8 +389,14 @@ const stageOf = (group: Group): Listed["stage"] => (group === "staged" ? "unstag
  * Trash, but what was staged of it is in neither the Trash nor a commit, and goes for good. */
 function discardsOf(status: Status, oldPath: string | undefined, whole: boolean): NonNullable<Listed["discards"]> {
   const kind = status === "added" ? "trash" : status === "renamed" && oldPath ? "undoMove" : status === "deleted" ? "restore" : "changes";
-  return { kind, undoable: kind === "trash" || kind === "undoMove" ? whole : kind === "restore" };
+  // What goes for good that the kind's own words don't say (`loses`): what was staged of a new or
+  // moved file that isn't whole on disk any more.
+  if ((kind === "trash" || kind === "undoMove") && !whole) return { kind, undoable: false, loses: STAGED_LOST };
+  return { kind, undoable: kind === "trash" || kind === "undoMove" || kind === "restore" };
 }
+
+/** What a discard's confirm says when a staged version goes for good (`discards.loses`). */
+export const STAGED_LOST = "What you staged of it isn’t kept anywhere, so this can’t be undone.";
 
 /** What one of git's status letters says changed (`git status --porcelain=v2`). */
 const changeOf = (letter: string): Status => (letter === "A" || letter === "C" ? "added" : letter === "D" ? "deleted" : letter === "R" ? "renamed" : "modified");

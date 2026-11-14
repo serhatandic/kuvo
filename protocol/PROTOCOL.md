@@ -1532,15 +1532,32 @@ How many things wait on you in each area, across the box (`waiting`, #711), for 
 (the Mac's rail, a phone's tabs): counted by the box from its session list, so every client says
 the same number and counts nothing.
 
-- `GET kuvo/waiting` → `{sessions, bots, queue}`: `sessions`, those "Needs you" lists (`needsYou`
-  in `kuvo/sessions/list`); `bots`, the bots that live here with a session waiting on you
+- `GET kuvo/waiting` → `{sessions, bots, queue}`: `sessions`, every session that waits on you, each
+  once, for a client's one badge of them: those "Needs you" lists (`needsYou` in
+  `kuvo/sessions/list`) and, since #718, the bots' own conversations that wait, which the lists file
+  under their bots (not archived, this box's own copy), so the number is what a client's rows of
+  waiting sessions show and a client adds nothing to it; `bots`, the bots that live here with a session waiting on you
   (`now.asking`, below; a session here working for a bot on another computer is that computer's
   to count); `queue`, the Work Queue's items here (not Done, not deleted) that a session linked to
   them (not archived, this box's own copy) waits on you for. All zero while the engine can't be read. `405` for anything but `GET`.
 - `GET kuvo/waiting/events` (ndjson): the same now, and a line each time it changes (an ask comes
   or is answered, a bot or an item changes); through `box route` it answers its first line, and a
   client asks again as that box's session list changes.
-- Each box counts its own: a client that shows several computers adds theirs up (a view).
+- Each box counts its own: a client that shows several computers adds theirs up (a view). The three
+  are counts of three areas, never added to each other: a bot's helper that asks is in `sessions`
+  (as its own session) and makes its bot one of `bots`.
+- **What counts as waiting** (one rule, the box's: `asked` in the session list's facts, from which
+  `needsYou`, `now.asking`, the projects' `asking` and these counts all come): a permission or a
+  question the session or one of its subagents asks, a command the sandbox stopped, what it asks of
+  the vault, and, since #718, the cards the box keeps for it: what its agent asks while it browses
+  (`kuvo/asks`: a sign-in, a code, a step of yours; while that browser runs), what it asks before it
+  does it (`kuvo/work/asks`: a project to make or clone, a limit reset to use), and a goal its bot
+  put to you (`kuvo/work/goals`, while it's proposed, in the bot's own conversation). In `needsYou`
+  these say `kind: "other"` with the box's words ("asks you to sign in to github.com", "asks for a
+  code from …", "asks you to do a step in its browser", "asks to make a project", "asks to clone a
+  project", "asks to use a limit reset", "proposes a goal"). The box looks at those cards every two
+  seconds, and at once for one kept in its own process. No client keeps a rule of its own for any
+  of them.
 - **What a bot is doing now** (`bots.now`, #711): each bot in `GET kuvo/bots` and
   `kuvo/bots/events` has `now` `{working, asking, finished?}`: how many of its sessions (its own
   conversation, and those working for it: `bot` in the session list's facts; not archived, this
@@ -3767,7 +3784,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     count of its lines (none for a binary file, a new one or a conflicted one), what its discard does
     (`trash`, a new file to the Trash; `unstaged`, what isn't staged thrown away; `head`, back to the
     last commit, what's staged too; none for a conflict) with its `stamp` (what the file is now,
-    opaque), and `repository` for a repository of its own inside this one ("web/"), whose commits go
+    opaque; a repository of its own is stamped by what its own git says, its commit and everything
+    not committed in it, so a discard listed before an edit or a commit made inside it is refused),
+    and `repository` for a repository of its own inside this one ("web/"), whose commits go
     with it. A file partly staged is in both
     groups; one in conflict only in `conflicted`. With `git.files.does` (#708), each file says what
     its buttons do, so a client maps neither `group` nor `status`: `stage`, what its stage button
@@ -3780,7 +3799,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     Trash) or `changes` (its changes are thrown away, to where `discard` says); `undoable`, that
     nothing is lost for good (never `changes`; nor a new or moved file staged and then changed
     again or gone from disk, whose staged version is in neither the Trash nor a commit), by which a client draws the confirm's button as
-    destructive or not. What a discard does is `kuvo/git/discard`'s to decide, as before: these only
+    destructive or not; and, since #718, `loses`, a sentence to show in the confirm as it is, where
+    something goes for good that the kind's own words don't say (that staged version: "What you
+    staged of it isn’t kept anywhere, so this can’t be undone."), left out otherwise. What a discard does is `kuvo/git/discard`'s to decide, as before: these only
     say it. `404` for a folder
     that isn't there, `500 {"message"}` when git couldn't say. `GET kuvo/git/files/events?directory=`
     (`application/x-ndjson`): the same now, and again as it changes: within a second of the
@@ -4705,7 +4726,12 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     (Antigravity's pools, Copilot's counts), the rings are of one pool, the first listed's (those
     whose `id` differs only in its last part: `gemini-5h` with `gemini-weekly`, never with
     `3p-weekly`); where every window is a model's, the first model's stand for the plan. A client colours by `level` and never by a threshold of its own,
-    and draws a ring whose `resetsAt` has passed empty, in its place (as a window).
+    and draws a ring whose `resetsAt` has passed empty, in its place (as a window). Since #718 a row
+    also says `level` for the account as a whole, for a client's one mark of it (a gauge): the
+    higher of its rings' levels; with no ring, what it has with a most it may come to, by the same
+    shares: its `balance` (what's gone of `limit`) and each `capped` extra (`amount` of `limit`), the
+    highest of them. It's left out where nothing says a limit (a balance with no cap, spend alone, no
+    reading): that is "no level", which a client draws apart from `calm`, never as it.
 - Listing them (KuvoClient's `UsageListing.listing`, as the Mac and the phone do): one box's `rows`
   as they are, merging nothing (the Mac: its own box's; the phone: the first box in its list of
   your computers that states accounts, a machine's on Linux too), refreshed
@@ -8317,7 +8343,7 @@ it's empty.
 - `GET kuvo/sandbox` → `{on, why?, able, agents, outside?, restart?, …}`. `on`: every command the engine runs here
   goes through the sandbox, checked (the engine loaded this box's plugin). `why`, when it isn't, in
   words for Settings: why this computer can't (`able: false`: no Landlock, no engine
-  yet), a failed check, `Its plugin for the engine was changed or removed.`, `The engine isn't
+  yet), a failed check, `Kuvo’s part in the engine was changed or removed.`, `The engine isn't
   running.`, `Waiting for the engine to load it.`. `agents`: the coding agents' own
   programs (Claude Code, Codex, Cursor, Grok and Antigravity, whose commands don't go through the
   engine) run in it too: each starts its next turn in it once it's set up and checked here, and

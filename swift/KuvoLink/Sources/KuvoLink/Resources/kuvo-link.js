@@ -2,7 +2,7 @@
 
 // box/src/link/main.ts
 import { spawn as spawn17 } from "node:child_process";
-import crypto58 from "node:crypto";
+import crypto59 from "node:crypto";
 import fs170 from "node:fs";
 import os23 from "node:os";
 import path176 from "node:path";
@@ -7108,7 +7108,7 @@ var WHY = {
   engineMissing: "The engine isn't installed here yet.",
   checking: "It's being checked.",
   checkFailed: "Its check failed.",
-  plugin: "Its plugin for the engine was changed or removed.",
+  plugin: "Kuvo’s part in the engine was changed or removed.",
   engineDown: "The engine isn't running.",
   waiting: "Waiting for the engine to load it."
 };
@@ -7166,7 +7166,7 @@ function fenceWhole() {
 }
 function loaded() {
   if (textOf(PLUGIN) !== pluginScript(places, VERSION))
-    return { on: false, why: "Its plugin for the engine was changed or removed.", reason: "plugin", action: "fix", route: CHECK };
+    return { on: false, why: "Kuvo’s part in the engine was changed or removed.", reason: "plugin", action: "fix", route: CHECK };
   let engine = {};
   try {
     engine = JSON.parse(fs24.readFileSync(ENGINE_FILE, "utf8"));
@@ -34231,6 +34231,15 @@ function formWords(form) {
 }
 var SANDBOX_WORDS = { kind: "sandbox", summary: "asks to run a command outside the sandbox" };
 var VAULT_WORDS = { kind: "vault", summary: "asks for something from the vault" };
+var browserWords = (ask) => ({
+  kind: "other",
+  summary: ask.kind === "signIn" ? `asks you to sign in${ask.host ? ` to ${cut2(ask.host, 40)}` : ""}` : ask.kind === "code" ? `asks for a code${ask.host ? ` from ${cut2(ask.host, 40)}` : ""}` : "asks you to do a step in its browser"
+});
+var workWords = (action) => ({
+  kind: "other",
+  summary: action === "makeProject" ? "asks to make a project" : action === "cloneProject" ? "asks to clone a project" : action === "resetLimits" ? "asks to use a limit reset" : "asks for your OK"
+});
+var GOAL_WORDS = { kind: "other", summary: "proposes a goal" };
 var ASKED2 = new Set(["permission.asked", "form.created"]);
 var ANSWERED3 = new Set(["permission.replied", "permission.rejected", "form.replied", "form.cancelled"]);
 var ENDS = new Set(["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted", "session.deleted"]);
@@ -34238,7 +34247,7 @@ var open = new Map;
 var parents = new Map;
 var started = false;
 var askChanges = 0;
-var askFollowers = new Set;
+var askFollowers2 = new Set;
 function noteAskEvent(event, place, now = Date.now()) {
   const data = event.data ?? {};
   let changed = false;
@@ -34273,21 +34282,61 @@ function keep3() {
   for (const ask of listAsks())
     if (ask.session)
       asks[ask.id] = { session: ask.session, at: ask.at, asks: VAULT_WORDS };
+  const others = othersNow();
+  othersKept = [...others.keys()].sort().join(`
+`);
+  for (const [id, ask] of others)
+    asks[id] = ask;
   try {
     writePrivate(ASKS_FILE2, JSON.stringify({ asks }) + `
 `);
   } catch {}
   askChanges += 1;
-  for (const told of askFollowers)
+  for (const told of askFollowers2)
     try {
       told();
     } catch {}
 }
+var browserSeen = new Map;
+function othersNow(now = Date.now()) {
+  const asks = new Map;
+  const browsing = readAsks().filter((ask) => typeof ask.session === "string" && ask.session);
+  for (const id of browserSeen.keys())
+    if (!browsing.some((ask) => ask.id === id))
+      browserSeen.delete(id);
+  for (const ask of browsing) {
+    if (!browserSeen.has(ask.id))
+      browserSeen.set(ask.id, now);
+    asks.set(`browser:${ask.id}`, { session: ask.session, at: browserSeen.get(ask.id), asks: browserWords(ask) });
+  }
+  for (const ask of workAsks())
+    if (ask.session)
+      asks.set(`work:${ask.id}`, { session: ask.session, at: ask.at, asks: workWords(ask.action) });
+  for (const goal of proposedGoals())
+    if (goal.session)
+      asks.set(`goal:${goal.id}`, { session: goal.session, at: goal.proposed, asks: GOAL_WORDS });
+  return asks;
+}
+var othersKept = "";
+function lookAtOthers() {
+  const now = [...othersNow().keys()].sort().join(`
+`);
+  if (now === othersKept)
+    return;
+  keep3();
+}
 function followAsks() {
   const stops = [onAskReviewsChanged(keep3), onSandboxAsksChanged(keep3), onAsksChanged(keep3)];
+  askFollowers.add(lookAtOthers);
+  goalFollowers.add(lookAtOthers);
+  const timer = setInterval(lookAtOthers, 2000);
+  timer.unref?.();
   return () => {
     for (const stop of stops)
       stop();
+    askFollowers.delete(lookAtOthers);
+    goalFollowers.delete(lookAtOthers);
+    clearInterval(timer);
   };
 }
 function forgetAsksOn(place) {
@@ -34353,6 +34402,8 @@ async function askedSince(sessions, targets, signal) {
 function forgetAsks() {
   open.clear();
   parents.clear();
+  browserSeen.clear();
+  othersKept = "";
   started = false;
   try {
     fs110.rmSync(ASKS_FILE2, { force: true });
@@ -34433,6 +34484,9 @@ function botOf3(session, kind, place) {
 var standing = (facts) => facts.asked !== undefined ? "asking" : facts.running ? "working" : null;
 function needsYou(sessions, asks) {
   return Object.entries(sessions).filter(([, facts]) => facts.asked !== undefined && (facts.kind === "project" || facts.kind === "chat") && !facts.archived && !facts.away).sort(([a, one], [b, other]) => other.asked - one.asked || a.localeCompare(b)).map(([session]) => ({ session, asks: asks?.get(session) ?? { kind: "other", summary: "waits on you" } }));
+}
+function waitingSessions(sessions) {
+  return Object.values(sessions).filter((facts) => facts.asked !== undefined && (facts.kind === "project" || facts.kind === "chat" || facts.kind === "bot") && !facts.archived && !facts.away).length;
 }
 function botsNow(sessions) {
   const bots = {};
@@ -34708,7 +34762,7 @@ function keepList() {
     known2 = null;
     scheduleWorkOut();
   };
-  const followers = [projectFollowers, botFollowers, moveFollowers, askFollowers];
+  const followers = [projectFollowers, botFollowers, moveFollowers, askFollowers2];
   for (const each of followers)
     each.add(again);
   const box = watchFolders([BOX], (...told) => {
@@ -35877,7 +35931,7 @@ var WORK_ASKS2 = path118.join(WORK_FOLDER, "asks.json");
 var LOCK15 = path118.join(WORK_FOLDER, ".asks.lock");
 var WORK_ACTIONS = ["makeProject", "cloneProject", "resetLimits"];
 var BOT_ACTIONS = ["makeProject", "cloneProject"];
-var askFollowers2 = new Set;
+var askFollowers = new Set;
 var readKept6 = (file = WORK_ASKS2) => {
   try {
     const asks = JSON.parse(textOf(file) ?? "").asks;
@@ -35895,7 +35949,7 @@ function changeKept2(change, file = WORK_ASKS2) {
     writePrivate(file, JSON.stringify({ asks: kept }, null, 2));
     return value;
   });
-  for (const tell of askFollowers2)
+  for (const tell of askFollowers)
     tell();
   return result;
 }
@@ -38228,6 +38282,7 @@ import path132 from "node:path";
 
 // box/src/link/areas/changes.ts
 import { execFile as execFile12, execFileSync as execFileSync3, spawn as spawn14 } from "node:child_process";
+import crypto48 from "node:crypto";
 import fs126 from "node:fs";
 import os15 from "node:os";
 import path131 from "node:path";
@@ -38529,8 +38584,45 @@ function onDisk(look) {
 }
 function stampOf(root, name, indexed, since) {
   const stat = onDisk(() => fs126.lstatSync(path131.join(root, name), { bigint: true }));
+  if (stat?.isDirectory() && kind(path131.join(root, name, ".git"))) {
+    const inside = insideOf(path131.join(root, name));
+    if (!inside)
+      return `${indexed ?? "-"}:repository-unread-${crypto48.randomUUID()}`;
+    return `${indexed ?? "-"}:repository-${inside.is}${since !== undefined && inside.newest >= since ? ":since" : ""}`;
+  }
   const fresh = since !== undefined && stat && stat.mtimeNs >= since ? ":since" : "";
   return `${indexed ?? "-"}:${stat ? `${stat.size}-${stat.mtimeNs}` : "gone"}${fresh}`;
+}
+function insideOf(folder) {
+  const run = (given) => {
+    const args = ownArgs(given, folder);
+    if (!args)
+      return null;
+    try {
+      return execFileSync3("git", args, { cwd: folder, env: { ...commandEnv(), GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" }, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 60000, maxBuffer: 256 * 1024 * 1024 });
+    } catch {
+      return null;
+    }
+  };
+  const top = run(["rev-parse", "--show-toplevel"])?.trim();
+  if (!top || realOr2(top) !== realOr2(folder))
+    return null;
+  const status = run(["-c", "core.quotepath=off", "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  if (status === null)
+    return null;
+  const head = run(["rev-parse", "--verify", "-q", "HEAD"])?.trim() || "none";
+  const hash = crypto48.createHash("sha256").update(status);
+  let newest = 0n;
+  for (const record of status.split("\x00")) {
+    const name = record.slice(3);
+    if (!name)
+      continue;
+    const stat = onDisk(() => fs126.lstatSync(path131.join(folder, name), { bigint: true }));
+    if (stat && stat.mtimeNs > newest)
+      newest = stat.mtimeNs;
+    hash.update(`\x00${name}\x00${stat ? `${stat.size}-${stat.mtimeNs}` : "gone"}`);
+  }
+  return { is: `${head}-${hash.digest("hex").slice(0, 32)}`, newest };
 }
 async function indexEntryOf(root, name) {
   const said = await text4(root, ["--literal-pathspecs", "-c", "core.quotepath=off", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames", "--", name]) ?? "";
@@ -38561,8 +38653,11 @@ var thereAt = (root, name) => !!kind(path131.join(root, name.replace(/\/$/, ""))
 var stageOf = (group) => group === "staged" ? "unstage" : group === "conflicted" ? "resolve" : "stage";
 function discardsOf(status, oldPath, whole) {
   const kind = status === "added" ? "trash" : status === "renamed" && oldPath ? "undoMove" : status === "deleted" ? "restore" : "changes";
-  return { kind, undoable: kind === "trash" || kind === "undoMove" ? whole : kind === "restore" };
+  if ((kind === "trash" || kind === "undoMove") && !whole)
+    return { kind, undoable: false, loses: STAGED_LOST };
+  return { kind, undoable: kind === "trash" || kind === "undoMove" || kind === "restore" };
 }
+var STAGED_LOST = "What you staged of it isn’t kept anywhere, so this can’t be undone.";
 var changeOf = (letter) => letter === "A" || letter === "C" ? "added" : letter === "D" ? "deleted" : letter === "R" ? "renamed" : "modified";
 async function linesBy(root, compared, limit) {
   const counted = new Map;
@@ -39758,7 +39853,7 @@ async function atWork3(target) {
 
 // box/src/link/browser/install.ts
 import { execFileSync as execFileSync4, spawn as spawn15 } from "node:child_process";
-import crypto49 from "node:crypto";
+import crypto50 from "node:crypto";
 import fs129 from "node:fs";
 import os16 from "node:os";
 import path134 from "node:path";
@@ -41197,7 +41292,7 @@ var mac_default = {
 import zlib from "node:zlib";
 
 // box/src/link/browser/xz.ts
-import crypto48 from "node:crypto";
+import crypto49 from "node:crypto";
 var MAGIC = [253, 55, 122, 88, 90, 0];
 var LZMA2 = 33;
 
@@ -41631,7 +41726,7 @@ function unxz(input, most = 512 * 1024 * 1024) {
       corrupt("its check");
     if (check === 4 && !crc64(content, outStart, out.length).equals(given))
       corrupt("its check");
-    if (check === 10 && !crypto48.createHash("sha256").update(content.subarray(outStart, out.length)).digest().equals(given))
+    if (check === 10 && !crypto49.createHash("sha256").update(content.subarray(outStart, out.length)).digest().equals(given))
       corrupt("its check");
     at += checkSize;
   }
@@ -41995,7 +42090,7 @@ function runtimeHere(platform = testSystem() ?? process.platform, arch = os16.ar
   if (!kind)
     return { unsupported: `The browser runs on machines with x86-64 or ARM64 processors; this one is ${arch}.` };
   const runtime = pinned(system);
-  const hash = crypto49.createHash("sha256").update(JSON.stringify(runtime)).digest("hex").slice(0, 8);
+  const hash = crypto50.createHash("sha256").update(JSON.stringify(runtime)).digest("hex").slice(0, 8);
   return { runtime, id: `${runtime.chromium.version}-${system === "darwin" ? "mac-" : ""}${hash}`, kind, mac: system === "darwin" };
 }
 function compareVersions(a, b) {
@@ -42172,7 +42267,7 @@ async function download(url, expected, to, received, signal) {
     throw new SetupError(`${hostOf2(url)} answered ${response.status} for the browser's download.`);
   }
   const fd = fs129.openSync(to, fs129.constants.O_WRONLY | fs129.constants.O_CREAT | fs129.constants.O_EXCL, 384);
-  const hash = crypto49.createHash("sha256");
+  const hash = crypto50.createHash("sha256");
   let bytes = 0, done = false;
   try {
     for await (const chunk of response.body) {
@@ -42294,7 +42389,7 @@ function takeLock3() {
         return null;
       }
     })();
-    const aside = `${LOCK17()}.gone-${process.pid}-${crypto49.randomBytes(4).toString("hex")}`;
+    const aside = `${LOCK17()}.gone-${process.pid}-${crypto50.randomBytes(4).toString("hex")}`;
     try {
       fs129.renameSync(LOCK17(), aside);
     } catch {
@@ -42428,7 +42523,7 @@ async function installBrowser(asked = {}) {
     const room = freeRoom(folder);
     if (room !== null && room < needed)
       throw new SetupError(`There isn't room for the browser on this machine: it needs about ${Math.ceil(needed / 1e9 * 10) / 10} GB free where Kuvo Code keeps its files.`);
-    staging = path134.join(folder, `${STAGING2}${process.pid}-${crypto49.randomBytes(4).toString("hex")}`);
+    staging = path134.join(folder, `${STAGING2}${process.pid}-${crypto50.randomBytes(4).toString("hex")}`);
     const bundle = path134.join(staging, "bundle");
     for (const each of [staging, bundle, path134.join(bundle, "lib"), path134.join(bundle, "fonts"), path134.join(bundle, "licenses")])
       fs129.mkdirSync(each, { recursive: true, mode: 493 });
@@ -42775,7 +42870,7 @@ import fs138 from "node:fs";
 import path144 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "88d811dc1578";
+var BRIDGE_VERSION = "171d62224d59";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -43269,7 +43364,7 @@ function keeperEngine(root) {
 
 // box/src/link/rehome/engine-check.ts
 import { spawn as spawn16 } from "node:child_process";
-import crypto50 from "node:crypto";
+import crypto51 from "node:crypto";
 import fs135 from "node:fs";
 import path141 from "node:path";
 
@@ -43690,7 +43785,7 @@ async function checkWithEngine({ engine, data, scratch, lost }) {
     return made;
   };
   quietCopy(database, path141.join(folder("data/opencode"), "opencode.db"));
-  const password = crypto50.randomBytes(24).toString("hex");
+  const password = crypto51.randomBytes(24).toString("hex");
   const child = spawn16(engine, ["serve", "--stdio", "--port", "0"], {
     cwd: folder("workspace"),
     stdio: ["pipe", "pipe", "pipe"],
@@ -47126,14 +47221,14 @@ function waitingOf(list) {
   const facts = factsOf3(list);
   const asking = new Set(Object.entries(facts).filter(([, each]) => each.asked !== undefined && !each.archived && !each.away).map(([id]) => id));
   return {
-    sessions: (list?.needsYou ?? needsYou(facts)).length,
+    sessions: waitingSessions(facts),
     bots: Object.entries(botsNow(facts)).filter(([id, now]) => now.asking > 0 && botHere(id) !== null).length,
     queue: asking.size ? allItems().filter((item) => !item.removed && item.category !== "done" && item.sessions.some((linked) => asking.has(linked.session))).length : 0
   };
 }
 var countedFrom = (list) => {
   const facts = factsOf3(list);
-  return JSON.stringify([list?.needsYou ?? [], botsNow(facts), Object.keys(facts).filter((id) => facts[id].asked !== undefined).sort()]);
+  return JSON.stringify([waitingSessions(facts), botsNow(facts), Object.keys(facts).filter((id) => facts[id].asked !== undefined).sort()]);
 };
 async function* waitingRoute(context, match) {
   const { request, signal, json } = context;
@@ -48383,7 +48478,7 @@ function changeOrPause(ms, seen, signal) {
     const done = () => {
       clearTimeout(timer);
       clearTimeout(settle);
-      askFollowers.delete(changed);
+      askFollowers2.delete(changed);
       pullFollowers.delete(changed);
       signal?.removeEventListener("abort", done);
       resolve();
@@ -48393,7 +48488,7 @@ function changeOrPause(ms, seen, signal) {
         settle = setTimeout(done, 1500);
     };
     const timer = setTimeout(done, ms);
-    askFollowers.add(changed);
+    askFollowers2.add(changed);
     pullFollowers.add(changed);
     signal?.addEventListener("abort", done, { once: true });
     if (signal?.aborted)
@@ -48691,9 +48786,9 @@ async function* sessionAsksRoute(context, match) {
         return;
       throw error;
     }), (told) => {
-      askFollowers.add(told);
+      askFollowers2.add(told);
       return () => {
-        askFollowers.delete(told);
+        askFollowers2.delete(told);
       };
     }, signal ?? undefined, { look });
   }
@@ -49134,7 +49229,7 @@ import fs158 from "node:fs";
 import path165 from "node:path";
 
 // box/src/link/areas/vault.ts
-import crypto55 from "node:crypto";
+import crypto56 from "node:crypto";
 
 // box/src/link/vault/activity.ts
 import fs152 from "node:fs";
@@ -49345,18 +49440,18 @@ async function fill(given, caller, signal) {
 }
 
 // box/src/link/vault/holder.ts
-import crypto53 from "node:crypto";
+import crypto54 from "node:crypto";
 import fs155 from "node:fs";
 import net5 from "node:net";
 import path163 from "node:path";
 
 // box/src/link/vault/ssh.ts
-import crypto52 from "node:crypto";
+import crypto53 from "node:crypto";
 import fs154 from "node:fs";
 import path162 from "node:path";
 
 // box/src/link/vault/ssh-agent.ts
-import crypto51 from "node:crypto";
+import crypto52 from "node:crypto";
 import fs153 from "node:fs";
 import net4 from "node:net";
 import path161 from "node:path";
@@ -49470,12 +49565,12 @@ function openSSHKey(data) {
   if (type === "ssh-ed25519") {
     const pub = inner.bytes();
     const both = inner.bytes();
-    return crypto51.createPrivateKey({ key: { kty: "OKP", crv: "Ed25519", d: b64url(both.subarray(0, 32)), x: b64url(pub) }, format: "jwk" });
+    return crypto52.createPrivateKey({ key: { kty: "OKP", crv: "Ed25519", d: b64url(both.subarray(0, 32)), x: b64url(pub) }, format: "jwk" });
   }
   if (type === "ssh-rsa") {
     const [n, e, d, qi, p, q] = [inner.bytes(), inner.bytes(), inner.bytes(), inner.bytes(), inner.bytes(), inner.bytes()].map(unsigned);
     const big = { d: bigOf(d), p: bigOf(p), q: bigOf(q) };
-    return crypto51.createPrivateKey({
+    return crypto52.createPrivateKey({
       key: {
         kty: "RSA",
         n: b64url(n),
@@ -49498,7 +49593,7 @@ function openSSHKey(data) {
     const { jwk, size } = CURVES[curve];
     if (point[0] !== 4 || point.length !== 1 + 2 * size)
       throw new Error("That isn't a private key.");
-    return crypto51.createPrivateKey({
+    return crypto52.createPrivateKey({
       key: { kty: "EC", crv: jwk, x: b64url(point.subarray(1, 1 + size)), y: b64url(point.subarray(1 + size)), d: b64url(bufOf(bigOf(d), size)) },
       format: "jwk"
     });
@@ -49515,7 +49610,7 @@ function privateKeyOf(text) {
     if (/ENCRYPTED/.test(trimmed))
       throw new Error("This key has a passphrase: Kuvo Code's agent uses keys without one (ssh-keygen -p takes it off a copy).");
     try {
-      key = crypto51.createPrivateKey(trimmed);
+      key = crypto52.createPrivateKey(trimmed);
     } catch {
       throw new Error("That isn't a private key.");
     }
@@ -49525,14 +49620,14 @@ function privateKeyOf(text) {
 function signWith2(agentKey, data, flags) {
   const { key, type } = agentKey;
   if (type === "ssh-ed25519")
-    return Buffer.concat([str(type), str(crypto51.sign(null, data, key))]);
+    return Buffer.concat([str(type), str(crypto52.sign(null, data, key))]);
   if (type === "ssh-rsa") {
     const [name, hash] = flags & RSA_SHA2_512 ? ["rsa-sha2-512", "sha512"] : flags & RSA_SHA2_256 ? ["rsa-sha2-256", "sha256"] : ["ssh-rsa", "sha1"];
-    return Buffer.concat([str(name), str(crypto51.sign(hash, data, key))]);
+    return Buffer.concat([str(name), str(crypto52.sign(hash, data, key))]);
   }
   const curve = type.replace("ecdsa-sha2-", "");
   const { hash, size } = CURVES[curve];
-  const both = crypto51.sign(hash, data, { key, dsaEncoding: "ieee-p1363" });
+  const both = crypto52.sign(hash, data, { key, dsaEncoding: "ieee-p1363" });
   return Buffer.concat([str(type), str(Buffer.concat([mpint(both.subarray(0, size)), mpint(both.subarray(size))]))]);
 }
 var message = (type, ...parts) => {
@@ -49608,7 +49703,7 @@ function serveAgent(socket, source) {
     } catch {}
     return close(done);
   };
-  const bound = path161.join(path161.dirname(socket), `.${crypto51.randomBytes(6).toString("base64url")}`);
+  const bound = path161.join(path161.dirname(socket), `.${crypto52.randomBytes(6).toString("base64url")}`);
   if (Math.max(Buffer.byteLength(socket), Buffer.byteLength(bound)) > LONGEST_PATH) {
     queueMicrotask(() => server.emit("error", new Error(`An SSH agent's socket can't be this long: ${socket}`)));
     return server;
@@ -49639,7 +49734,7 @@ function serveAgent(socket, source) {
 
 // box/src/link/vault/ssh.ts
 var isSshKey = (item) => item.kind === "key" && item.fields.includes("private_key");
-var sumOf2 = (text) => crypto52.createHash("sha256").update(text).digest("hex").slice(0, 32);
+var sumOf2 = (text) => crypto53.createHash("sha256").update(text).digest("hex").slice(0, 32);
 var REFUSED_FOR = 30000;
 var NOTE_KEPT = 30 * 24 * 60 * 60000;
 var IDLE = 60 * 60000;
@@ -49794,7 +49889,7 @@ function keepSshAgents(watch = watchFolder) {
       for (const old of fs154.readdirSync(SSH_AGENTS))
         if (old.startsWith(prefix))
           fs154.rmSync(path162.join(SSH_AGENTS, old), { force: true });
-      const socket = path162.join(SSH_AGENTS, `${prefix}${crypto52.randomBytes(9).toString("base64url")}.sock`);
+      const socket = path162.join(SSH_AGENTS, `${prefix}${crypto53.randomBytes(9).toString("base64url")}.sock`);
       const agent = { folder, server: serveAgent(socket, sourceFor(callerFor(note, folder))), used: Date.now() };
       agent.server.on("connection", () => {
         agent.used = Date.now();
@@ -49866,8 +49961,8 @@ var heldHere = (route) => /^kuvo\/(vault|sandbox\/(asks|tools|allowed|stopped))(
 var MOST4 = 8 * 1024 * 1024;
 var KEY3 = "x-kuvo-vault-key";
 var AUTH = "x-kuvo-vault-auth";
-var nonce = () => crypto53.randomBytes(18).toString("base64url");
-var covered = (theirs, method, route, body) => `${theirs}\x00${method.toUpperCase()}\x00${route}\x00${crypto53.createHash("sha256").update(body).digest("base64url")}`;
+var nonce = () => crypto54.randomBytes(18).toString("base64url");
+var covered = (theirs, method, route, body) => `${theirs}\x00${method.toUpperCase()}\x00${route}\x00${crypto54.createHash("sha256").update(body).digest("base64url")}`;
 function holdVault(handle) {
   holding4 = true;
   fs155.mkdirSync(RUN, { recursive: true, mode: 448 });
@@ -50073,7 +50168,7 @@ function askHolder(request, signal) {
 }
 
 // box/src/link/vault/tools.ts
-import crypto54 from "node:crypto";
+import crypto55 from "node:crypto";
 import fs156 from "node:fs";
 import os20 from "node:os";
 import path164 from "node:path";
@@ -50300,7 +50395,7 @@ async function runWith(caller, args, signal) {
       return may.leftUndone ? { text: may.message, isError: false } : failed3(may.message);
     allowed.set(item.id, may.how);
   }
-  const scratch = path164.join(RUN_FOLDER, crypto54.randomBytes(8).toString("hex"));
+  const scratch = path164.join(RUN_FOLDER, crypto55.randomBytes(8).toString("hex"));
   const env = commandEnv();
   const hidden = [];
   try {
@@ -50411,9 +50506,9 @@ function provedMac(given, tag = "kuvo-vault-key", rest = "") {
   if (usedProofs.has(nonce))
     return null;
   try {
-    const key = crypto55.createPublicKey({ key: Buffer.concat([ED_SPKI2, Buffer.from(sign, "base64url")]), format: "der", type: "spki" });
+    const key = crypto56.createPublicKey({ key: Buffer.concat([ED_SPKI2, Buffer.from(sign, "base64url")]), format: "der", type: "spki" });
     const signature = Buffer.from(given.proof, "base64url");
-    const good = signature.length === 64 && typeof link?.id === "string" && crypto55.verify(null, Buffer.from(`${tag}\x00${link.id}\x00${at}\x00${nonce}${rest}`), key, signature);
+    const good = signature.length === 64 && typeof link?.id === "string" && crypto56.verify(null, Buffer.from(`${tag}\x00${link.id}\x00${at}\x00${nonce}${rest}`), key, signature);
     if (good)
       usedProofs.set(nonce, now + 2 * PROOF_FOR);
     return good ? mac : null;
@@ -50431,7 +50526,7 @@ function provedRequest(request) {
   } catch {
     return null;
   }
-  const hash = crypto55.createHash("sha256").update(request.body ?? Buffer.alloc(0)).digest("hex");
+  const hash = crypto56.createHash("sha256").update(request.body ?? Buffer.alloc(0)).digest("hex");
   return provedMac(given, `kuvo-vault-request`, `\x00${request.method.toUpperCase()}\x00${request.path}\x00${hash}`);
 }
 var idOf4 = (part) => {
@@ -53585,7 +53680,7 @@ async function* workAsksRoute(context, match) {
     if (route === "kuvo/work/asks")
       return yield* json(200, { asks: workAsks() });
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followed(() => ({ asks: workAsks() }), askFollowers2, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
+    return yield* followed(() => ({ asks: workAsks() }), askFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
   }
   if (method !== "POST")
     return yield* json(405, {});
@@ -54160,7 +54255,7 @@ async function* appOpenRoute({ request, json, signal }) {
 }
 
 // box/src/link/mac/app-keys.ts
-import crypto56 from "node:crypto";
+import crypto57 from "node:crypto";
 var ONLY_APP = "Only Kuvo Code on this Mac can ask for that.";
 var ONLY_OWN_HOME = "Only a Mac's box in a home of its own does this for its app.";
 var KEY_TEXT2 = /^[A-Za-z0-9_-]{43}$/;
@@ -54199,7 +54294,7 @@ async function* proofRoute({ request, json }) {
   if (!identity || !mac)
     return yield* json(503, { message: "This Mac's link keys can't be read from your Keychain now. Try again in a moment." });
   const at = Date.now();
-  const nonce = crypto56.randomBytes(18).toString("base64url");
+  const nonce = crypto57.randomBytes(18).toString("base64url");
   const signed = asked ? `kuvo-vault-request\x00${given.machine}\x00${at}\x00${nonce}\x00${asked.method}\x00${asked.path}\x00${asked.hash}` : `kuvo-vault-key\x00${given.machine}\x00${at}\x00${nonce}`;
   return yield* json(200, { mac, at, nonce, proof: signWith(identity.sign, Buffer.from(signed)) });
 }
@@ -54582,7 +54677,7 @@ async function runMacLink() {
 }
 
 // box/src/link/server/serve.ts
-import crypto57 from "node:crypto";
+import crypto58 from "node:crypto";
 import http from "node:http";
 import os22 from "node:os";
 var IDLE_TOLD = 5000;
@@ -54592,7 +54687,7 @@ function serveBox(password, handle = engineHandler(readEngineFile, { name: os22.
   const expected = Buffer.from("Basic " + Buffer.from(`opencode:${password}`).toString("base64"));
   return http.createServer({ keepAliveTimeout: IDLE_TOLD, keepAliveTimeoutBuffer: IDLE_KEPT }, async (request, response) => {
     const given = Buffer.from(request.headers.authorization ?? "");
-    if (given.length !== expected.length || !crypto57.timingSafeEqual(given, expected)) {
+    if (given.length !== expected.length || !crypto58.timingSafeEqual(given, expected)) {
       response.writeHead(401);
       return response.end();
     }
@@ -55504,7 +55599,7 @@ async function keptServe() {
     return;
   }
   fs170.mkdirSync(RUN, { recursive: true, mode: 448 });
-  const password = crypto58.randomBytes(24).toString("hex");
+  const password = crypto59.randomBytes(24).toString("hex");
   const server = serveBox(password, engineHandler(readEngineFile, { name: os23.hostname() }, readBridgeFile));
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -55661,7 +55756,7 @@ async function setup() {
   const replaced = mac && Array.isArray(input.replaces) ? input.replaces.filter((key) => typeof key === "string" && KEY.test(key) && key !== mac).slice(0, 8) : [];
   let formerMacs = [];
   updateLink((current) => {
-    const next = current ?? { secret: crypto58.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
+    const next = current ?? { secret: crypto59.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
     next.sign ??= newSigningSeed();
     if (mac) {
       next.mac = mac;
@@ -55773,7 +55868,7 @@ function pair(relay) {
     process.exit(3);
   }
   const link = updateLink((current) => {
-    const next = current ?? { secret: crypto58.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os23.hostname(), phones: [] };
+    const next = current ?? { secret: crypto59.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os23.hostname(), phones: [] };
     next.sign ??= newSigningSeed();
     if (relay)
       next.relay = relay;

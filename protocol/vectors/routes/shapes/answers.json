@@ -6623,7 +6623,8 @@
                }
               ]
              },
-             "undoable": "bool"
+             "undoable": "bool",
+             "loses?": "string"
             }
            }
           }
@@ -6799,7 +6800,8 @@
                }
               ]
              },
-             "undoable": "bool"
+             "undoable": "bool",
+             "loses?": "string"
             }
            }
           }
