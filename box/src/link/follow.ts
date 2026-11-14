@@ -37,6 +37,15 @@ export function watchFolders(folders: string[], changed: () => void, { recursive
   return { get whole() { return whole; }, close: () => { for (const watcher of watchers) watcher.close(); } };
 }
 
+/** Several lists' followers as one, for what's read from them together: told as any of them is. */
+export function followersOf(...sets: Set<() => void>[]): Set<() => void> {
+  const all = {
+    add(told: () => void) { for (const set of sets) set.add(told); return all; },
+    delete(told: () => void) { let had = false; for (const set of sets) had = set.delete(told) || had; return had; },
+  };
+  return all as unknown as Set<() => void>;
+}
+
 /** What `read` says, a line now and one for each change after, in order: each change this process
  * makes as it's made (`followers` are told), and what another made, looked for each second; or,
  * given `folders` to watch, as the system says they change, looked for again every half minute

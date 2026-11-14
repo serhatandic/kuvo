@@ -1412,7 +1412,8 @@ by the gate ("Updating…"), and one that answers `503` leaves a client's lists 
 sessions").
 
 - `GET kuvo/sessions/list[?since=<at>]` → `{at, full?, sessions: {<id>: facts}, gone?: [<id>],
-  projects: {<folder>: {name?, updated?}}, pending?: ["bridge"]}`. `…/events[?since=<at>]` (ndjson) sends that now, then
+  projects: {<folder>: {name?, updated?, asking, working}}, needsYou: [{session, asks}],
+  pending?: ["bridge"]}`. `…/events[?since=<at>]` (ndjson) sends that now, then
   a line as anything in it changes; through `box route` (a machine reached over SSH) it answers its
   first line, and a client reads it again as that machine's sessions change and every half minute.
   `503 {"message"}` while the engine can't be read; `405` for anything but `GET`. `pending`: the
@@ -1427,11 +1428,13 @@ sessions").
 - `at` says where the list is; `since` resumes from it: only the sessions that changed after it,
   and `gone`, those deleted since. A cursor the box can't resume from (it restarted, or the change
   is older than the day and 2000 deletions it keeps, or its file went) gets the whole list, `full: true`, in place of
-  what the client had. `projects` is whole in every line.
+  what the client had. `projects` and `needsYou` are whole in every line.
 - Facts, each flag left out where it isn't: `kind`, `project` (a `project` session's), `directory`,
   `title?`, `created`, `updated` (ms; the lists' order), `parent?` (a `subagent`'s session),
   `pinned?`, `archived?`, `running?`, `asked?` (since when it's waited on you, ms, as "A session at a
-  glance" says it), `away?` (this copy isn't the box's own: moved away, or on its way here, "Moves").
+  glance" says it), `away?` (this copy isn't the box's own: moved away, or on its way here, "Moves"),
+  `bot?` (`sessions.needsYou`: the bot it is, by its id: whose conversation it is, as `kuvo/bots`
+  lists it, else the one it works for, "Work"'s `kuvo.by.bot`; never on a `subagent`).
   A kind a client doesn't know shows nowhere.
 - `kind`, in this order: `subagent` (it has a `parentID`); `seat` (`kuvo.seat`, a bot's seat in a
   group chat); `hidden` (`kuvo.engineFor` or `kuvo.reviewPart`: a run its session or review shows);
@@ -1442,7 +1445,21 @@ sessions").
   own folder ("Projects").
 - `projects`: every project of the box's list that isn't removed, and each one a `project` session
   that isn't archived is filed under (a removed one comes back so), with its list's `name` where
-  it has one, and `updated`, its newest such session's.
+  it has one, and `updated`, its newest such session's. `asking` and `working`
+  (`sessions.needsYou`, #711): how many of its sessions listed (not archived, this box's own copy)
+  wait on you, and are at work; one that waits isn't counted at work, here or anywhere the box
+  counts (a session asking does nothing until it's answered). A client draws its project's badge
+  and spinner from these and counts nothing.
+- `needsYou` (`sessions.needsYou`, #711): the sessions waiting on you that the lists show (a
+  `project`'s and a `chat`, not archived, this box's own copy), the one that asked last first
+  (`asked`, ties by id), each `{session, asks: {kind, summary}}`: what its oldest ask still open
+  asks, in the box's words, written to follow the session's or its project's name ("asks to run a
+  command", "asks to edit 3 files", "asks to edit App.swift", "has a question for you", "asks to
+  run a command outside the sandbox", "asks for something from the vault"; "waits on you" where
+  the box heard no more). `kind`: `permission`, `question`, `sandbox`, `vault` or `other`; a client
+  shows `summary` as it is, whatever the kind. A client draws "Needs you" from it, in its order,
+  and works out neither who waits nor what for. A bot's own conversation isn't here: it's its
+  bot's (`now` in `kuvo/bots`).
 - What a client draws: a `project` session in its project and a `chat` in Chats, unless archived;
   any other kind nowhere. Pinned and Chats newest first; projects by their newest session shown,
   those with none last, ties by name (its `name`, else its folder's last part; Finder's order:
@@ -1458,6 +1475,29 @@ sessions").
   beside them, the facts the box answers (`box/test/session-lists.test.ts`), and the
   sidebar a client draws from them (KuvoClient's `SessionListsTests`): a client in another language
   checks itself against it.
+
+### What waits on you
+
+How many things wait on you in each area, across the box (`waiting`, #711), for a client's badges
+(the Mac's rail, a phone's tabs): counted by the box from its session list, so every client says
+the same number and counts nothing.
+
+- `GET kuvo/waiting` → `{sessions, bots, queue}`: `sessions`, those "Needs you" lists (`needsYou`
+  in `kuvo/sessions/list`); `bots`, the bots here with a session waiting on you (`now.asking`,
+  below); `queue`, the Work Queue's items here (not Done, not deleted) that a session linked to
+  them waits on you for. All zero while the engine can't be read. `405` for anything but `GET`.
+- `GET kuvo/waiting/events` (ndjson): the same now, and a line each time it changes (an ask comes
+  or is answered, a bot or an item changes); through `box route` it answers its first line, and a
+  client asks again as that box's session list changes.
+- Each box counts its own: a client that shows several computers adds theirs up (a view).
+- **What a bot is doing now** (`bots.now`, #711): each bot in `GET kuvo/bots` and
+  `kuvo/bots/events` has `now` `{working, asking, finished?}`: how many of its sessions (its own
+  conversation, and those working for it: `bot` in the session list's facts; not archived, this
+  box's own copy) are at work, and wait on you (never both); and, with neither, `finished`, when
+  the newest of them last changed (ms; left out for a bot with no session listed). Its events say
+  it again as its sessions start, ask, are answered and finish. Facts only: a client words them
+  ("1 at work, 1 waiting on you", "Finished 3h ago") alike, a view. A bot made or changed
+  (`POST`, `PATCH`) answers without `now`.
 
 ### A session's model
 

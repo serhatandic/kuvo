@@ -8,7 +8,7 @@ import { join } from "node:path"
 // (protocol/vectors/session-lists.json, which KuvoClient's tests hold the drawing to); kept
 // as the engine's events come, and resumed from where a client was after its stream dropped.
 
-const { factsOf, listedProjects } = await import("../src/link/lists/rule")
+const { botsNow, factsOf, listedProjects, needsYou } = await import("../src/link/lists/rule")
 const { commit, keepList, keptList, listFollowers, listPlaceHeard, listRoute, noteListEvent, readList, workOut, LIST_FILE } = await import("../src/link/lists/sessions")
 const { engineHandler } = await import("../src/link/server/router")
 
@@ -23,6 +23,8 @@ const placeOf = (box: any) => ({
   running: new Set<string>(box.running),
   asked: new Map<string, number>(Object.entries(box.asked)),
   away: new Set<string>(box.away),
+  asks: new Map<string, any>(Object.entries(box.asks ?? {})),
+  botOf: new Map<string, string>(Object.entries(box.botOf ?? {})),
 })
 
 test.each(vectors.cases.map((each: any) => [each.name, each]))("%s", (_, each: any) => {
@@ -30,6 +32,8 @@ test.each(vectors.cases.map((each: any) => [each.name, each]))("%s", (_, each: a
   const sessions = Object.fromEntries(each.sessions.map((session: any) => [session.id, factsOf(session, place)]))
   expect(sessions).toEqual(each.expect.sessions)
   expect(listedProjects(sessions, place)).toEqual(each.expect.projects)
+  expect(needsYou(sessions, place.asks)).toEqual(each.expect.needsYou)
+  expect(botsNow(sessions)).toEqual(each.expect.bots)
 })
 
 // What a client draws from the facts alone, as a client not in Swift would: the vectors' sidebar
@@ -133,10 +137,11 @@ test("a route answered in a process of its own reads the engine itself, and resu
   expect(Object.keys(lines[0].sessions).sort()).toEqual(["ses_a", "ses_chat", "ses_page1", "ses_page2", "ses_page3"])
   expect(lines[0].sessions.ses_a).toEqual({ kind: "project", project: work, directory: work, created: 100, updated: 100 })
   expect(lines[0].sessions.ses_chat.kind).toBe("chat")
-  expect(lines[0].projects).toEqual({ [work]: { name: "Work", updated: 100 } })
+  expect(lines[0].projects).toEqual({ [work]: { name: "Work", updated: 100, asking: 0, working: 0 } })
+  expect(lines[0].needsYou).toEqual([])
   // Kept for the next read, whichever process makes it: nothing changed since.
   const again = (await ask(`kuvo/sessions/list?since=${lines[0].at}`)).lines[0]
-  expect(again).toEqual({ at: lines[0].at, sessions: {}, projects: lines[0].projects })
+  expect(again).toEqual({ at: lines[0].at, sessions: {}, projects: lines[0].projects, needsYou: [] })
   for (const n of [1, 2, 3]) sessions.delete(`ses_page${n}`)
 })
 
@@ -267,7 +272,7 @@ test("kept as events come: a client resumes from where it was, and one from befo
     expect(after.projects[work].updated).toBe(100)
     // Nothing changed since: nothing but where it's at.
     const same = (await ask(`kuvo/sessions/list?since=${after.at}`)).lines[0]
-    expect(same).toEqual({ at: after.at, sessions: {}, projects: after.projects })
+    expect(same).toEqual({ at: after.at, sessions: {}, projects: after.projects, needsYou: [] })
 
     // A cursor of another list's (its file went), or from ahead of it: all of it, said so.
     for (const since of ["zz-1.3", `${after.at.split(".")[0]}.999`, "nonsense"]) {
@@ -558,4 +563,86 @@ test("only GET", async () => {
   const pieces: any[] = []
   for await (const piece of handler({ method: "POST", path: "kuvo/sessions/list", headers: {}, fromApp: true }, undefined)) pieces.push(piece)
   expect(pieces[0]!.head!.status).toBe(405)
+})
+
+// What waits on you (#711): a session asks, and the list says it under "Needs you" with what it
+// asks, its project's sums count it, its bot says it's waiting, and `kuvo/waiting` counts each
+// area; answered, all of it goes. Every client draws its badges from these, counting nothing.
+test("a session that asks is in Needs you, its project's sums, its bot's now and what waits on you, until it's answered", async () => {
+  const { noteAskEvent, forgetAsks } = await import("../src/link/glance/asked")
+  const { BOTS } = await import("../src/link/home")
+  const { WORK_QUEUE } = await import("../src/link/work-queue/store")
+  const folder = join(BOTS, "bot_waits")
+  // (A project of its own: other tests' sessions are in `work`.)
+  const mine = join(home, "lists-waits")
+  mkdirSync(folder, { recursive: true })
+  writeFileSync(join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id: "bot_waits", name: "Mira" }))
+  writeFileSync(join(folder, "session"), "ses_mira")
+  add("ses_mira", folder, 600)
+  add("ses_asks", mine, 610, { title: "Rate limits" })
+  add("ses_works", mine, 620, { metadata: { kuvo: { startedBy: "ses_mira", by: { bot: "bot_waits", name: "Mira" }, depth: 1 } } })
+  add("ses_works_sub", mine, 625, { parentID: "ses_works" })
+  active.add("ses_works")
+  active.add("ses_asks")
+  // An item of the Work Queue the session that will ask is working on.
+  mkdirSync(join(WORK_QUEUE, "queues"), { recursive: true })
+  const queueFile = join(WORK_QUEUE, "queues", "ses_asks.json")
+  writeFileSync(queueFile, JSON.stringify({ owner: "ses_asks", items: [{ id: "wqi_aaaaaaaaaaaaaaaaaaaa", number: 7, title: "Limits", category: "next", order: 1, sessions: [{ session: "ses_asks", since: 1 }], created: { at: 1, by: { user: true } } }] }))
+  const stop = keepList()
+  const listed = (when: () => boolean) => new Promise<void>(done => {
+    const look = () => { if (when()) { listFollowers.delete(look); done() } }
+    listFollowers.add(look)
+    look()
+  })
+  try {
+    await listPlaceHeard("engine", target)
+    const before = (await ask("kuvo/sessions/list")).lines[0]
+    expect(before.needsYou).toEqual([])
+    expect(before.projects[mine]).toMatchObject({ asking: 0, working: 2 })
+    expect(before.sessions.ses_works.bot).toBe("bot_waits")
+    expect((await ask("kuvo/waiting")).lines[0]).toEqual({ sessions: 0, bots: 0, queue: 0 })
+    expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toEqual({ working: 1, asking: 0 })
+
+    // A project's session asks to run a command; then the bot's session's subagent asks to edit files.
+    noteAskEvent({ type: "permission.asked", data: { id: "per_1", sessionID: "ses_asks", action: "bash", resources: ["git push"] } }, "engine", 1000)
+    await listed(() => keptList()?.needsYou?.length === 1)
+    noteAskEvent({ type: "permission.asked", data: { id: "per_2", sessionID: "ses_works_sub", action: "edit", resources: [join(mine, "a.ts"), join(mine, "b.ts")] } }, "engine", 2000)
+    await listed(() => keptList()?.needsYou?.length === 2)
+
+    const asking = (await ask(`kuvo/sessions/list?since=${before.at}`)).lines[0]
+    // The one that asked last first; a subagent's ask is its conversation's.
+    expect(asking.needsYou).toEqual([
+      { session: "ses_works", asks: { kind: "permission", summary: "asks to edit 2 files" } },
+      { session: "ses_asks", asks: { kind: "permission", summary: "asks to run a command" } },
+    ])
+    // (One that asks isn't counted at work.)
+    expect(asking.projects[mine]).toMatchObject({ asking: 2, working: 0 })
+    expect((await ask("kuvo/waiting/events")).lines[0]).toEqual({ sessions: 2, bots: 1, queue: 1 })
+    expect((await ask("kuvo/bots/events")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toEqual({ working: 0, asking: 1 })
+
+    // Answered: nothing waits, and the bot's session is at work again.
+    noteAskEvent({ type: "permission.replied", data: { requestID: "per_1", sessionID: "ses_asks" } }, "engine")
+    noteAskEvent({ type: "permission.replied", data: { requestID: "per_2", sessionID: "ses_works_sub" } }, "engine")
+    await listed(() => keptList()?.needsYou?.length === 0)
+    expect((await ask("kuvo/waiting")).lines[0]).toEqual({ sessions: 0, bots: 0, queue: 0 })
+    expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toEqual({ working: 1, asking: 0 })
+
+    // Its work over: the bot says when its sessions last changed.
+    active.delete("ses_works")
+    await noteListEvent("engine", target, { type: "session.execution.succeeded", data: { sessionID: "ses_works" } })
+    await listed(() => !keptList()?.sessions.ses_works?.facts.running)
+    expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toEqual({ working: 0, asking: 0, finished: 620 })
+  } finally {
+    stop()
+    forgetAsks()
+    for (const id of ["ses_mira", "ses_asks", "ses_works", "ses_works_sub"]) { sessions.delete(id); active.delete(id) }
+    rmSync(folder, { recursive: true, force: true })
+    rmSync(queueFile, { force: true })
+  }
+}, 20_000)
+
+test("what waits on you is read with GET only", async () => {
+  const pieces: any[] = []
+  for await (const piece of handler({ method: "POST", path: "kuvo/waiting", headers: {}, fromApp: true }, undefined)) pieces.push(piece)
+  expect(pieces[0].head.status).toBe(405)
 })

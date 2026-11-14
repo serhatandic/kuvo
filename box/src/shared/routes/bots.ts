@@ -4,6 +4,7 @@
 
 import { any, bool, type Infer, list, literal, map, NOTHING, nullable, number, object, type RouteShape, string, words } from "../shape";
 import { LIMITS } from "./work";
+import { BOT_NOW } from "./sessions";
 
 /** How a bot looks: its colour, shape and face, by their names (`kuvo/bots/templates`' `looks`). */
 /** The colors, shapes and faces a bot can have: those the apps draw (bot-words.json's `looks`). */
@@ -21,7 +22,8 @@ export const MODEL = object({ id: string, providerID: string, "variant?": string
  * when none waits) and how many things it watches; whether it runs with the coding agents; its
  * personality's id and its model, left out when it has none; its folder, the project it works in
  * (left out for a folder of its own) and when it was made, and the limits you set for its work
- * (left out for none). `machine`: the machine's name, left out on a Mac. */
+ * (left out for none). `machine`: the machine's name, left out on a Mac. `now`, in `kuvo/bots` and
+ * its events (`bots.now`): what it's doing, its sessions at work and waiting on you. */
 export const BOT = object({
   id: string,
   session: string,
@@ -41,6 +43,7 @@ export const BOT = object({
   "created?": string,
   "limits?": LIMITS,
   "allowed?": list(words("makeProject", "cloneProject")),
+  "now?": BOT_NOW,
 });
 /** A change to a bot (or its delete) that lives on another of your computers, held here until that
  * computer answers ("Held for another computer"): the bot, that computer by its key (empty for one this box

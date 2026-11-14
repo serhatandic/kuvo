@@ -9,7 +9,9 @@ import { botTemplates, NO_KIT, readKit } from "../bots/kit";
 import { listBots } from "../bots/list";
 import { makeBot, startingModelHere } from "../bots/make";
 import { freshenBots, settleBot } from "../bots/tell";
-import { followed } from "../follow";
+import { followed, followersOf } from "../follow";
+import { listFollowers } from "../lists/sessions";
+import { botsNowHere } from "./waiting";
 import { BOTS } from "../home";
 import type { Target } from "../../shared/records";
 import type { BotChange } from "../bots/edit";
@@ -79,13 +81,20 @@ export async function* retellRoute(context: RouteContext): AsyncGenerator<Answer
   return yield* json(200, {});
 }
 
+/** Its bots, each with what it's doing now (`now`), as the session list has its sessions: its
+ * conversation and those working for it, at work and waiting on you. */
+function botsWithNow(machine?: string) {
+  const now = botsNowHere();
+  return listBots(machine).map(bot => ({ ...bot, now: now[bot.id] ?? { working: 0, asking: 0 } }));
+}
+
 // Its bots followed: a line now, and again as they change (made, changed, deleted, a wake-up
 // added or sent), as a client shows them.
 export async function* botEventsRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, signal, info, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-  return yield* followed(() => ({ bots: listBots(info.name), ...heldLists() }), botFollowers, signal, { folders: [BOTS, HELD] });
+  return yield* followed(() => ({ bots: botsWithNow(info.name), ...heldLists() }), followersOf(botFollowers, listFollowers), signal, { folders: [BOTS, HELD] });
 }
 
 // This machine's bots and wake-ups, from their folders.
@@ -93,6 +102,6 @@ export async function* botsRoute(context: RouteContext): AsyncGenerator<AnswerPi
   const { request, info, text } = context;
   if (!["GET", "HEAD"].includes(request.method.toUpperCase())) return yield* text(405, "Read them with GET.");
   yield { head: { status: 200, headers: { "content-type": "application/json" } } };
-  yield { body: Buffer.from(JSON.stringify({ bots: listBots(info.name), ...heldLists() })) };
+  yield { body: Buffer.from(JSON.stringify({ bots: botsWithNow(info.name), ...heldLists() })) };
   return;
 }

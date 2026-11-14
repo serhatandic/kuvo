@@ -2319,6 +2319,13 @@
             }
            ]
           }
+         },
+         "now?": {
+          "object": {
+           "working": "number",
+           "asking": "number",
+           "finished?": "number"
+          }
          }
         }
        }
@@ -2479,6 +2486,13 @@
             "literal": "cloneProject"
            }
           ]
+         }
+        },
+        "now?": {
+         "object": {
+          "working": "number",
+          "asking": "number",
+          "finished?": "number"
          }
         }
        }
@@ -2783,6 +2797,13 @@
              }
             ]
            }
+          },
+          "now?": {
+           "object": {
+            "working": "number",
+            "asking": "number",
+            "finished?": "number"
+           }
           }
          }
         },
@@ -2964,6 +2985,13 @@
               "literal": "cloneProject"
              }
             ]
+           }
+          },
+          "now?": {
+           "object": {
+            "working": "number",
+            "asking": "number",
+            "finished?": "number"
            }
           }
          }
@@ -9773,7 +9801,8 @@
          "archived?": "bool",
          "running?": "bool",
          "asked?": "number",
-         "away?": "bool"
+         "away?": "bool",
+         "bot?": "string"
         }
        }
       },
@@ -9784,7 +9813,40 @@
        "map": {
         "object": {
          "name?": "string",
-         "updated?": "number"
+         "updated?": "number",
+         "asking": "number",
+         "working": "number"
+        }
+       }
+      },
+      "needsYou": {
+       "list": {
+        "object": {
+         "session": "string",
+         "asks": {
+          "object": {
+           "kind": {
+            "oneOf": [
+             {
+              "literal": "permission"
+             },
+             {
+              "literal": "question"
+             },
+             {
+              "literal": "sandbox"
+             },
+             {
+              "literal": "vault"
+             },
+             {
+              "literal": "other"
+             }
+            ]
+           },
+           "summary": "string"
+          }
+         }
         }
        }
       },
@@ -9847,7 +9909,8 @@
          "archived?": "bool",
          "running?": "bool",
          "asked?": "number",
-         "away?": "bool"
+         "away?": "bool",
+         "bot?": "string"
         }
        }
       },
@@ -9858,7 +9921,40 @@
        "map": {
         "object": {
          "name?": "string",
-         "updated?": "number"
+         "updated?": "number",
+         "asking": "number",
+         "working": "number"
+        }
+       }
+      },
+      "needsYou": {
+       "list": {
+        "object": {
+         "session": "string",
+         "asks": {
+          "object": {
+           "kind": {
+            "oneOf": [
+             {
+              "literal": "permission"
+             },
+             {
+              "literal": "question"
+             },
+             {
+              "literal": "sandbox"
+             },
+             {
+              "literal": "vault"
+             },
+             {
+              "literal": "other"
+             }
+            ]
+           },
+           "summary": "string"
+          }
+         }
         }
        }
       },
@@ -9873,6 +9969,40 @@
      }
     },
     "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/waiting",
+   "answers": {
+    "200": {
+     "object": {
+      "sessions": "number",
+      "bots": "number",
+      "queue": "number"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/waiting/events",
+   "answers": {
+    "200": {
+     "object": {
+      "sessions": "number",
+      "bots": "number",
+      "queue": "number"
+     }
+    },
+    "405": {
      "object": {
       "message": "string"
      }
