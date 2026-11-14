@@ -42,7 +42,7 @@ import ClientSessions
 
     @Test func anItemTwoComputersListIsFoundOnceWhereItsKept() {
         let told = { (number: Int, title: String) in
-            #"{"id":"wqi_\#(number)","number":\#(number),"owner":"ses_far","title":"\#(title)","category":"next","order":1,"inProgress":false,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"computer":{"key":"k","name":"lab","kind":"machine"},"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}}"#
+            #"{"id":"wqi_\#(number)","number":\#(number),"owner":"ses_far","title":"\#(title)","status":"todo","order":1,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"computer":{"key":"k","name":"lab","kind":"machine"},"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}}"#
         }
         let decode = { (json: String) in try! JSONDecoder().decode(WorkItem.self, from: Data(json.utf8)) }
         let mac = [decode(WorkQueueTests.item(1, "Sign-in", "next")), decode(told(500, "Lab's"))]

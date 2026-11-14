@@ -6,7 +6,10 @@ import ClientText
 // item's name ("#243", or "New" while it waits for a number), and whose an item is. Times on the
 // wire are milliseconds since 1970.
 
-/// A category: Next, Later, Parked and Done built in, custom ones (`cat_…`) between Later and Parked.
+/// Where an item stands, as the box lists them (its `statuses`: Needs you, In review, Waiting, Todo,
+/// Backlog, Done, Canceled; In progress is drawn as its own section, `WorkQueue.inProgressID`). The
+/// name is from when the box kept categories (#674): a section of the list is still one of these.
+/// None is yours to rename or remove (`builtIn`).
 public struct WorkCategory: Codable, Hashable, Sendable, Identifiable {
     public var id: String
     public var name: String
@@ -19,6 +22,36 @@ public struct WorkCategory: Codable, Hashable, Sendable, Identifiable {
     }
 
     public static let done = "done"
+    public static let canceled = "canceled"
+}
+
+/// A label, as the box lists them: what kind of work an item is; `color` a look's name.
+public struct WorkLabel: Codable, Hashable, Sendable, Identifiable {
+    public var id: String
+    public var name: String
+    public var color: String
+
+    public init(id: String, name: String, color: String) {
+        self.id = id
+        self.name = name
+        self.color = color
+    }
+}
+
+/// Who an item is for: a bot or a coding agent, by the name the box gives.
+public struct WorkAssignee: Codable, Hashable, Sendable {
+    public var kind: String
+    public var id: String
+    public var name: String
+}
+
+/// What may be done to an item, as the box says (`can`): nothing else is offered.
+public struct WorkCan: Codable, Hashable, Sendable {
+    public var edit: Bool
+    public var set: Bool
+    public var close: Bool
+    public var delete: Bool
+    public var restore: Bool
 }
 
 /// Who wrote something: you, a session (by its name then), or someone else the box kept as it
@@ -199,9 +232,19 @@ public struct WorkItem: Hashable, Sendable, Decodable, Identifiable {
     public var wanted: Int?
     public var owner: String
     public var title: String
+    /// Its status's id (the box's `status`).
     public var category: String
     public var order: Double
+    /// Its status is In progress.
     public var inProgress: Bool
+    /// `urgent`, `high`, `normal` or `low`.
+    public var priority: String = "normal"
+    /// Its labels' ids (the view's `labels` names them).
+    public var labels: [String] = []
+    public var assignee: WorkAssignee?
+    /// The day it's due, `YYYY-MM-DD`.
+    public var due: String?
+    public var can: WorkCan?
     public var progress: WorkProgress?
     public var sessions: [WorkItemSession]
     public var noteCount: Int
@@ -228,13 +271,63 @@ public struct WorkItem: Hashable, Sendable, Decodable, Identifiable {
     public var doneAt: Double?
     public var removed: WorkStamp?
 
-    public var isDone: Bool { category == WorkCategory.done }
+    /// Closed: Done or Canceled.
+    public var isDone: Bool { category == WorkCategory.done || category == WorkCategory.canceled }
     /// An outside source's name ("app#12"), "#243", or "New" while it waits for its number.
     public var name: String { source?.shownName ?? number.map { "#\($0)" } ?? "New" }
 
     /// How it's written in a message, so it names it there: `gh:owner/repo#12`, "#243"; nil while
     /// it has no number.
     public var written: String? { source?.ref ?? number.map { "#\($0)" } }
+}
+
+extension WorkItem {
+    private enum Keys: String, CodingKey {
+        case id, number, wanted, owner, title, status, order, priority, labels, assignee, due, can, progress, sessions, noteCount, lastNote, fileCount, linkCount, handedBy
+        case source, seen, keptIn, struck, closesOn, doneAs, computer, handing, created, updated, doneAt, removed
+    }
+
+    /// An item as the box says it: its `status` is what a list files it under, and In progress is
+    /// one of them. What a newer box adds is left out; `priority` and `labels` have their defaults
+    /// where one says none.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: Keys.self)
+        let status = try container.decode(String.self, forKey: .status)
+        self.init(
+            id: try container.decode(String.self, forKey: .id),
+            number: try container.decodeIfPresent(Int.self, forKey: .number),
+            wanted: try container.decodeIfPresent(Int.self, forKey: .wanted),
+            owner: try container.decode(String.self, forKey: .owner),
+            title: try container.decode(String.self, forKey: .title),
+            category: status,
+            order: try container.decode(Double.self, forKey: .order),
+            inProgress: status == WorkQueue.inProgressID,
+            priority: try container.decodeIfPresent(String.self, forKey: .priority) ?? "normal",
+            labels: try container.decodeIfPresent([String].self, forKey: .labels) ?? [],
+            assignee: try? container.decodeIfPresent(WorkAssignee.self, forKey: .assignee),
+            due: try container.decodeIfPresent(String.self, forKey: .due),
+            can: try? container.decodeIfPresent(WorkCan.self, forKey: .can),
+            progress: try container.decodeIfPresent(WorkProgress.self, forKey: .progress),
+            sessions: try container.decode([WorkItemSession].self, forKey: .sessions),
+            noteCount: try container.decode(Int.self, forKey: .noteCount),
+            lastNote: try container.decodeIfPresent(WorkNote.self, forKey: .lastNote),
+            fileCount: try container.decode(Int.self, forKey: .fileCount),
+            linkCount: try container.decode(Int.self, forKey: .linkCount),
+            handedBy: try container.decodeIfPresent(String.self, forKey: .handedBy),
+            source: try container.decodeIfPresent(WorkSource.self, forKey: .source),
+            seen: try container.decodeIfPresent(WorkSeen.self, forKey: .seen),
+            keptIn: try container.decodeIfPresent(String.self, forKey: .keptIn),
+            struck: try container.decodeIfPresent(Bool.self, forKey: .struck),
+            closesOn: try container.decodeIfPresent(String.self, forKey: .closesOn),
+            doneAs: try container.decodeIfPresent(String.self, forKey: .doneAs),
+            computer: try container.decodeIfPresent(WorkComputer.self, forKey: .computer),
+            handing: try container.decodeIfPresent(WorkHanding.self, forKey: .handing),
+            created: try container.decode(WorkStamp.self, forKey: .created),
+            updated: try container.decode(WorkStamp.self, forKey: .updated),
+            doneAt: try container.decodeIfPresent(Double.self, forKey: .doneAt),
+            removed: try container.decodeIfPresent(WorkStamp.self, forKey: .removed)
+        )
+    }
 }
 
 /// An item whole: its description (Markdown), notes, files, links and who handed it on.
@@ -331,27 +424,37 @@ public struct WorkQueueView: Hashable, Sendable, Decodable {
     }
 
     public var owner: String
+    /// The statuses a list files items under, in the box's order (its `statuses`, but In progress,
+    /// which has a section of its own).
     public var categories: [WorkCategory]
+    /// The labels the box lists, for an item's `labels`.
+    public var labels: [WorkLabel]
     public var items: [WorkItem]
     public var owners: [WorkOwner]
     public var removed: [WorkItem]
     public var computers: [Told]
 
-    public init(owner: String, categories: [WorkCategory] = [], items: [WorkItem] = [], owners: [WorkOwner] = [], removed: [WorkItem] = [], computers: [Told] = []) {
+    public init(owner: String, categories: [WorkCategory] = [], labels: [WorkLabel] = [], items: [WorkItem] = [], owners: [WorkOwner] = [], removed: [WorkItem] = [], computers: [Told] = []) {
         self.owner = owner
         self.categories = categories
+        self.labels = labels
         self.items = items
         self.owners = owners
         self.removed = removed
         self.computers = computers
     }
 
-    private enum Keys: String, CodingKey { case owner, categories, items, owners, removed, computers }
+    private enum Keys: String, CodingKey { case owner, statuses, labels, items, owners, removed, computers }
+    private struct Status: Decodable {
+        var id: String
+        var name: String
+    }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: Keys.self)
         owner = try container.decode(String.self, forKey: .owner)
-        categories = try container.decode([WorkCategory].self, forKey: .categories)
+        categories = try container.decode([Status].self, forKey: .statuses).filter { $0.id != WorkQueue.inProgressID }.map { WorkCategory(id: $0.id, name: $0.name, builtIn: true) }
+        labels = (try? container.decodeIfPresent([WorkLabel].self, forKey: .labels)) ?? []
         items = try container.decode([WorkItem].self, forKey: .items)
         owners = try container.decode([WorkOwner].self, forKey: .owners)
         removed = try container.decodeIfPresent([WorkItem].self, forKey: .removed) ?? []
@@ -389,6 +492,27 @@ public struct WorkRef: Hashable, Sendable, Decodable {
         self.owner = owner
         self.removed = removed
         self.computer = computer
+    }
+
+    private enum Keys: String, CodingKey { case id, number, source, seen, struck, title, status, owner, removed, computer }
+
+    /// As the box says it: its `status` is what a chip marks it by.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: Keys.self)
+        let status = try container.decode(String.self, forKey: .status)
+        self.init(
+            id: try container.decode(String.self, forKey: .id),
+            number: try container.decodeIfPresent(Int.self, forKey: .number),
+            source: try container.decodeIfPresent(WorkSource.self, forKey: .source),
+            seen: try container.decodeIfPresent(WorkSeen.self, forKey: .seen),
+            struck: try container.decodeIfPresent(Bool.self, forKey: .struck),
+            title: try container.decode(String.self, forKey: .title),
+            category: status,
+            inProgress: status == WorkQueue.inProgressID,
+            owner: try container.decodeIfPresent(String.self, forKey: .owner),
+            removed: try container.decodeIfPresent(Bool.self, forKey: .removed),
+            computer: try container.decodeIfPresent(WorkComputer.self, forKey: .computer)
+        )
     }
 
     public init(_ item: WorkItem) {
@@ -647,7 +771,13 @@ public enum WorkQueue {
 
     /// The category an item is kept in, by name.
     public static func categoryName(_ id: String, in categories: [WorkCategory]) -> String {
-        categories.first { $0.id == id }?.name ?? id.capitalized
+        categories.first { $0.id == id }?.name ?? (id == inProgressID ? "In progress" : id.capitalized)
+    }
+
+    /// An item's labels by name, as the view lists them, joined for a line of text: nil for none.
+    public static func labelWords(_ item: WorkItem, in view: WorkQueueView) -> String? {
+        let names = item.labels.compactMap { id in view.labels.first { $0.id == id }?.name }
+        return names.isEmpty ? nil : names.joined(separator: ", ")
     }
 
     /// Where an item may be moved to from a menu: every category but the one it's in. In progress

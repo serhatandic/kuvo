@@ -6,7 +6,7 @@ import ClientSessions
 @Suite struct WorkQueueTests {
     static func item(_ number: Int?, _ title: String, _ category: String, order: Double = 1, owner: String = "ses_lead", inProgress: Bool = false, note: String? = nil) -> String {
         """
-        {"id":"wqi_\(number ?? 0)\(title.count)","\(number == nil ? "wanted" : "number")":\(number ?? 9),"owner":"\(owner)","title":"\(title)","category":"\(category)","order":\(order),"inProgress":\(inProgress),\(note.map { "\"progress\":{\"note\":\"\($0)\"}," } ?? "")"sessions":[{"session":"ses_child","title":"Sign-in","working":\(inProgress)}],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1000,"by":{"user":true}},"updated":{"at":2000,"by":{"session":"ses_child","name":"Sign-in"}}}
+        {"id":"wqi_\(number ?? 0)\(title.count)","\(number == nil ? "wanted" : "number")":\(number ?? 9),"owner":"\(owner)","title":"\(title)","status":"\(inProgress ? "in-progress" : category)","order":\(order),\(note.map { "\"progress\":{\"note\":\"\($0)\"}," } ?? "")"sessions":[{"session":"ses_child","title":"Sign-in","working":\(inProgress)}],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1000,"by":{"user":true}},"updated":{"at":2000,"by":{"session":"ses_child","name":"Sign-in"}}}
         """
     }
 
@@ -21,7 +21,7 @@ import ClientSessions
             item(nil, "Waiting", "cat_design"),
         ].joined(separator: ",")
         let json = """
-        {"owner":"ses_lead","categories":[{"id":"next","name":"Next","builtIn":true},{"id":"later","name":"Later","builtIn":true},{"id":"cat_design","name":"Design","builtIn":false},{"id":"parked","name":"Parked","builtIn":true},{"id":"done","name":"Done","builtIn":true}],
+        {"owner":"ses_lead","statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false},{"id":"later","name":"Later","closed":false},{"id":"cat_design","name":"Design","closed":false},{"id":"parked","name":"Parked","closed":false},{"id":"done","name":"Done","closed":true}],
          "items":[\(items)],
          "owners":[{"owner":"ses_lead","kind":"session","title":"Lead"},{"owner":"ses_child","kind":"session","title":"Sign-in","startedBy":"ses_lead"}],
          "removed":[]}
@@ -99,8 +99,8 @@ import ClientSessions
         // Next (not in progress) is #2, #6.
         #expect(WorkQueue.menuPlaces(of: item("#2"), in: Self.view) == WorkQueue.MenuPlaces(top: nil, up: nil, down: .after(item("#6"))))
         #expect(WorkQueue.menuPlaces(of: item("#6"), in: Self.view) == WorkQueue.MenuPlaces(top: .top("next"), up: .before(item("#2")), down: nil))
-        // In progress: only to its category's top, its place among the others there unseen.
-        #expect(WorkQueue.menuPlaces(of: item("#1"), in: Self.view) == WorkQueue.MenuPlaces(top: .top("next"), up: nil, down: nil))
+        // In progress: its own section, where a list keeps no order by hand.
+        #expect(WorkQueue.menuPlaces(of: item("#1"), in: Self.view) == WorkQueue.MenuPlaces(top: nil, up: nil, down: nil))
     }
 
     @Test func aMovedItemShowsInItsNewPlaceAtOnce() throws {
@@ -116,9 +116,9 @@ import ClientSessions
     @Test func itemsOfAComputerThatIsntAnsweringAreSaidToBeAsItLastToldThem() throws {
         let now = Date(timeIntervalSince1970: 1_000_000)
         let json = """
-        {"owner":"all","categories":[{"id":"next","name":"Next","builtIn":true}],
+        {"owner":"all","statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false}],
          "items":[\(Self.item(1, "Here", "next")),
-                  {"id":"wqi_far","number":2,"owner":"ses_far","title":"Far","category":"next","order":1,"inProgress":false,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1000,"by":{"user":true}},"updated":{"at":2000,"by":{"user":true}},"computer":{"key":"k","name":"lab","kind":"machine","id":"lab"}}],
+                  {"id":"wqi_far","number":2,"owner":"ses_far","title":"Far","status":"next","order":1,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1000,"by":{"user":true}},"updated":{"at":2000,"by":{"user":true}},"computer":{"key":"k","name":"lab","kind":"machine","id":"lab"}}],
          "owners":[],"removed":[],
          "computers":[{"key":"k","name":"lab","kind":"machine","id":"lab","at":\((now.timeIntervalSince1970 - 7200) * 1000)},{"key":"j","name":"Studio","kind":"mac","at":1000,"away":5000}]}
         """
@@ -157,7 +157,7 @@ import ClientSessions
         let idle = item(552, "Rows and page", "later", owner: "ses_lead")
             .replacingOccurrences(of: #""session":"ses_child","title":"Sign-in""#, with: ##""session":"ses_worker","title":"#552""##)
         let json = """
-        {"owner":"ses_worker","categories":[{"id":"next","name":"Next","builtIn":true},{"id":"later","name":"Later","builtIn":true},{"id":"parked","name":"Parked","builtIn":true},{"id":"done","name":"Done","builtIn":true}],
+        {"owner":"ses_worker","statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false},{"id":"later","name":"Later","closed":false},{"id":"parked","name":"Parked","closed":false},{"id":"done","name":"Done","closed":true}],
          "items":[\(lead),\(idle),\(item(7, "Its own", "next", owner: "ses_worker")),\(item(8, "Its own at work", "later", owner: "ses_worker", inProgress: true))],
          "owners":[{"owner":"ses_lead","kind":"bot","title":"Kuvo Foreman","bot":{"id":"bot_1","name":"Kuvo Foreman"}},{"owner":"ses_worker","kind":"session","title":"#551"}],
          "removed":[]}
@@ -213,10 +213,10 @@ import ClientSessions
 
     @Test func doneDeletedAndClosedOnGitHubAreSaidOnce() throws {
         let json = """
-        {"owner":"ses_lead","categories":[{"id":"next","name":"Next","builtIn":true},{"id":"later","name":"Later","builtIn":true},{"id":"done","name":"Done","builtIn":true}],"owners":[],
-         "items":[{"id":"wqi_1","source":{"kind":"github-pr","ref":"gh:kuvo/app#57","name":"app#57"},"seen":{"state":"merged","at":5},"keptIn":"later","closesOn":"github","owner":"ses_lead","title":"Keep the name","category":"done","order":1,"inProgress":false,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"computer":{"key":"k","name":"lab","kind":"machine"},"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}},
-                  {"id":"wqi_2","number":5,"owner":"ses_lead","title":"Shipped","category":"done","doneAt":1,"order":2,"inProgress":false,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}}],
-         "removed":[{"id":"wqi_3","number":6,"owner":"ses_lead","title":"Gone","category":"next","order":3,"inProgress":false,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}},"removed":{"at":1,"by":{"user":true}}}]}
+        {"owner":"ses_lead","statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false},{"id":"later","name":"Later","closed":false},{"id":"done","name":"Done","closed":true}],"owners":[],
+         "items":[{"id":"wqi_1","source":{"kind":"github-pr","ref":"gh:kuvo/app#57","name":"app#57"},"seen":{"state":"merged","at":5},"keptIn":"later","closesOn":"github","owner":"ses_lead","title":"Keep the name","status":"done","order":1,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"computer":{"key":"k","name":"lab","kind":"machine"},"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}},
+                  {"id":"wqi_2","number":5,"owner":"ses_lead","title":"Shipped","status":"done","doneAt":1,"order":2,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}}],
+         "removed":[{"id":"wqi_3","number":6,"owner":"ses_lead","title":"Gone","status":"next","order":3,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}},"removed":{"at":1,"by":{"user":true}}}]}
         """
         let view = try JSONDecoder().decode(WorkQueueView.self, from: Data(json.utf8))
         let now = Date(timeIntervalSince1970: 0)
@@ -243,7 +243,7 @@ import ClientSessions
 
     @Test func activityIsNotesAndWhatTheBoxKeptOldestFirst() throws {
         let json = """
-        {"id":"wqi_1","number":243,"owner":"ses_b","title":"T","category":"done","doneAt":9000,"order":1,"inProgress":false,"sessions":[],"noteCount":2,"fileCount":0,"linkCount":0,"created":{"at":1000,"by":{"session":"ses_lead","name":"Kuvo Foreman"}},"updated":{"at":9000,"by":{"session":"ses_b","name":"Sign-in"}},
+        {"id":"wqi_1","number":243,"owner":"ses_b","title":"T","status":"done","doneAt":9000,"order":1,"sessions":[],"noteCount":2,"fileCount":0,"linkCount":0,"created":{"at":1000,"by":{"session":"ses_lead","name":"Kuvo Foreman"}},"updated":{"at":9000,"by":{"session":"ses_b","name":"Sign-in"}},
          "body":"","notes":[{"at":5000,"by":{"session":"ses_b","name":"Sign-in"},"text":"Halfway."},{"at":2000,"by":{"user":true},"text":"Use the new endpoint."}],"files":[],"links":[],"handed":[{"from":"ses_lead","to":"ses_b","at":3000}]}
         """
         let detail = try JSONDecoder().decode(WorkItemDetail.self, from: Data(json.utf8))
@@ -258,7 +258,7 @@ import ClientSessions
         // and a note; at 7000, as `queue_update {category, working: true, note}` keeps them, a move
         // and the work it started, in the box's order, then the note.)
         let json = """
-        {"id":"wqi_1","number":551,"owner":"ses_lead","title":"T","category":"done","doneAt":9000,"order":1,"inProgress":false,"sessions":[],"noteCount":2,"fileCount":0,"linkCount":0,"created":{"at":1000,"by":{"session":"ses_lead","name":"Kuvo Foreman"}},"updated":{"at":9000,"by":{"session":"ses_b","name":"Sign-in"}},
+        {"id":"wqi_1","number":551,"owner":"ses_lead","title":"T","status":"done","doneAt":9000,"order":1,"sessions":[],"noteCount":2,"fileCount":0,"linkCount":0,"created":{"at":1000,"by":{"session":"ses_lead","name":"Kuvo Foreman"}},"updated":{"at":9000,"by":{"session":"ses_b","name":"Sign-in"}},
          "body":"","notes":[{"at":4000,"by":{"session":"ses_b","name":"Sign-in"},"text":"Starting with the tests."},{"at":8500,"by":{"session":"ses_b","name":"Sign-in"},"text":"All pass."},{"at":7000,"by":{"session":"ses_b","name":"Sign-in"},"text":"On it."}],
          "events":[{"at":4000,"by":{"session":"ses_b","name":"Sign-in"},"kind":"started"},
                    {"at":4000,"by":{"user":true},"kind":"moved","from":"next","to":"next","top":true},
@@ -302,7 +302,7 @@ import ClientSessions
 
     @Test func anItemFromBeforeTheBoxKeptWhatHappenedHasNotesOnly() throws {
         let json = """
-        {"id":"wqi_1","number":7,"owner":"ses_lead","title":"Old","category":"done","doneAt":3000,"order":1,"inProgress":false,"sessions":[],"noteCount":1,"fileCount":0,"linkCount":0,"created":{"at":1000,"by":{"user":true}},"updated":{"at":3000,"by":{"user":true}},
+        {"id":"wqi_1","number":7,"owner":"ses_lead","title":"Old","status":"done","doneAt":3000,"order":1,"sessions":[],"noteCount":1,"fileCount":0,"linkCount":0,"created":{"at":1000,"by":{"user":true}},"updated":{"at":3000,"by":{"user":true}},
          "body":"","notes":[{"at":2000,"by":{"user":true},"text":"From before."}],"files":[],"links":[],"handed":[]}
         """
         let detail = try JSONDecoder().decode(WorkItemDetail.self, from: Data(json.utf8))
@@ -336,12 +336,38 @@ import ClientSessions
 
     @Test func anItemMovesToAnyOtherCategoryNeverInProgress() {
         let item = Self.view.items[0]
-        #expect(WorkQueue.moveTargets(for: item, in: Self.view.categories).map(\.id) == ["later", "cat_design", "parked", "done"])
+        // (One In progress goes to any of them; one Next, to all but its own. In progress itself is a
+        // status the box lists, drawn as its own section: never a place in the Move To menu.)
+        #expect(item.inProgress)
+        #expect(WorkQueue.moveTargets(for: item, in: Self.view.categories).map(\.id) == ["next", "later", "cat_design", "parked", "done"])
+        #expect(WorkQueue.moveTargets(for: Self.view.items[1], in: Self.view.categories).map(\.id) == ["later", "cat_design", "parked", "done"])
+        #expect(!Self.view.categories.contains { $0.id == WorkQueue.inProgressID })
+    }
+
+    @Test func anItemSaysItsStatusPriorityLabelsWhoItsForAndWhenItsDue() throws {
+        let view = try JSONDecoder().decode(WorkQueueView.self, from: Data("""
+        {"owner":"all","statuses":[{"id":"needs-you","name":"Needs you","closed":false},{"id":"in-progress","name":"In progress","closed":false},{"id":"todo","name":"Todo","closed":false},{"id":"done","name":"Done","closed":true},{"id":"canceled","name":"Canceled","closed":true}],
+         "priorities":[{"id":"urgent","name":"Urgent"},{"id":"normal","name":"Normal"}],
+         "labels":[{"id":"cat_architecture","name":"Architecture","color":"indigo"},{"id":"lbl_parked","name":"Parked","color":"graphite"}],
+         "assignees":[],"owners":[],"removed":[],"computers":[],
+         "items":[{"id":"wqi_1","number":1,"owner":"usr_you","title":"Sign the release","status":"needs-you","order":0,"priority":"urgent","labels":["cat_architecture","lbl_parked"],"assignee":{"kind":"bot","id":"bot_1","name":"Mira"},"due":"2026-12-01","can":{"edit":true,"set":true,"close":true,"delete":true,"restore":false},"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}},
+                  {"id":"wqi_2","number":2,"owner":"ses_a","title":"Build it","status":"in-progress","order":0,"priority":"normal","labels":[],"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}},
+                  {"id":"wqi_3","number":3,"owner":"ses_a","title":"Dropped","status":"canceled","order":0,"priority":"normal","labels":[],"doneAt":5,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}}]}
+        """.utf8))
+        let first = view.items[0]
+        #expect([first.category, first.priority, first.due ?? "", first.assignee?.name ?? ""] == ["needs-you", "urgent", "2026-12-01", "Mira"])
+        #expect(WorkQueue.labelWords(first, in: view) == "Architecture, Parked")
+        #expect(WorkQueue.labelWords(view.items[1], in: view) == nil)
+        #expect(first.can?.edit == true)
+        // The list files each under its status, In progress in its own section; closed ones aren't open.
+        #expect(WorkQueue.sections(view).map(\.name) == ["In progress", "Needs you", "Todo", "Done", "Canceled"])
+        #expect(WorkQueue.sections(view).map { $0.items.map(\.name) } == [["#2"], ["#1"], [], [], ["#3"]])
+        #expect(WorkQueue.openCount(view) == 2, "a canceled one isn't open")
     }
 
     @Test func anItemWholeHasItsBodyNotesAndFiles() throws {
         let json = """
-        {"id":"wqi_1","number":243,"owner":"ses_a","title":"T","category":"next","order":1,"inProgress":false,"sessions":[],"noteCount":1,"fileCount":1,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}},
+        {"id":"wqi_1","number":243,"owner":"ses_a","title":"T","status":"next","order":1,"sessions":[],"noteCount":1,"fileCount":1,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}},
          "body":"# Hi","notes":[{"at":5,"by":{"session":"ses_a","name":"Mira"},"text":"Started."}],"files":[{"name":"shot.png","size":10,"type":"image/png","at":3}],"links":[{"url":"https://x.y"}],"handed":[]}
         """
         let detail = try JSONDecoder().decode(WorkItemDetail.self, from: Data(json.utf8))
@@ -360,9 +386,9 @@ import ClientSessions
 
     @Test func oneRefThisClientCantReadLeavesTheOthersChips() throws {
         let refs = try JSONDecoder().decode(WorkRefs.self, from: Data("""
-        {"refs":{"243":{"id":"wqi_1","number":243,"title":"Panel","category":"next","inProgress":false,"owner":"ses_a"},
-                 "gh:owner/repo#12":{"id":"wqi_2","source":{"kind":"github","ref":"gh:owner/repo#12"},"title":"Login loops","category":"later","inProgress":true},
-                 "500":{"id":"wqi_3","number":500,"title":"Far","category":"next","inProgress":false,"owner":"ses_far","computer":{"key":"k","name":"lab","kind":"machine","id":"lab"}},
+        {"refs":{"243":{"id":"wqi_1","number":243,"title":"Panel","status":"next","owner":"ses_a"},
+                 "gh:owner/repo#12":{"id":"wqi_2","source":{"kind":"github","ref":"gh:owner/repo#12"},"title":"Login loops","status":"in-progress"},
+                 "500":{"id":"wqi_3","number":500,"title":"Far","status":"next","owner":"ses_far","computer":{"key":"k","name":"lab","kind":"machine","id":"lab"}},
                  "9":null,
                  "77":{"id":7}}}
         """.utf8))
@@ -375,9 +401,9 @@ import ClientSessions
 
     @Test func anItemFromAnOutsideSourceIsNamedByItsRefAndOneElsewhereSaysWhere() throws {
         let json = """
-        {"owner":"all","categories":[{"id":"next","name":"Next","builtIn":true}],"owners":[],"removed":[],
-         "items":[{"id":"wqi_1","number":250,"source":{"kind":"github","ref":"gh:owner/repo#12"},"owner":"ses_a","title":"Login loops","category":"next","order":1,"inProgress":false,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}},
-                  {"id":"wqi_2","number":500,"owner":"ses_far","title":"Far","category":"next","order":2,"inProgress":false,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"computer":{"key":"k","name":"lab","kind":"machine","id":"lab"},"handing":{"to":"ses_b","name":"Wren"},"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}}],
+        {"owner":"all","statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false}],"owners":[],"removed":[],
+         "items":[{"id":"wqi_1","number":250,"source":{"kind":"github","ref":"gh:owner/repo#12"},"owner":"ses_a","title":"Login loops","status":"next","order":1,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}},
+                  {"id":"wqi_2","number":500,"owner":"ses_far","title":"Far","status":"next","order":2,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"computer":{"key":"k","name":"lab","kind":"machine","id":"lab"},"handing":{"to":"ses_b","name":"Wren"},"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}}],
          "computers":[{"key":"k","name":"lab","kind":"machine","id":"lab","at":5000}]}
         """
         let view = try JSONDecoder().decode(WorkQueueView.self, from: Data(json.utf8))
@@ -387,15 +413,15 @@ import ClientSessions
         #expect(view.items[1].handing?.name == "Wren")
         #expect(view.computers.first?.date == Date(timeIntervalSince1970: 5))
         // A box from before piece 3 says nothing of other computers.
-        let older = try JSONDecoder().decode(WorkQueueView.self, from: Data(#"{"owner":"all","categories":[],"items":[],"owners":[],"removed":[]}"#.utf8))
+        let older = try JSONDecoder().decode(WorkQueueView.self, from: Data(#"{"owner":"all","statuses":[],"items":[],"owners":[],"removed":[]}"#.utf8))
         #expect(older.computers.isEmpty)
     }
 
     @Test func anIssueClosedOnGitHubIsDoneWhereItWasKeptAndOnlyGitHubMovesItInOrOut() throws {
         let json = """
-        {"owner":"ses_lead","categories":[{"id":"next","name":"Next","builtIn":true},{"id":"later","name":"Later","builtIn":true},{"id":"parked","name":"Parked","builtIn":true},{"id":"done","name":"Done","builtIn":true}],"owners":[],"removed":[],
-         "items":[{"id":"wqi_1","source":{"kind":"github","ref":"gh:kuvo/app#12","url":"https://github.com/kuvo/app/issues/12","name":"app#12"},"seen":{"state":"not_planned","at":5},"keptIn":"later","struck":true,"closesOn":"github","owner":"ses_lead","title":"Upload retries","category":"done","order":1,"inProgress":false,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}},
-                  {"id":"wqi_2","source":{"kind":"github-pr","ref":"gh:kuvo/app#57","name":"app#57"},"seen":{"state":"open","at":5},"closesOn":"github","owner":"ses_lead","title":"Keep the name","category":"next","order":2,"inProgress":false,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}}]}
+        {"owner":"ses_lead","statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false},{"id":"later","name":"Later","closed":false},{"id":"parked","name":"Parked","closed":false},{"id":"done","name":"Done","closed":true}],"owners":[],"removed":[],
+         "items":[{"id":"wqi_1","source":{"kind":"github","ref":"gh:kuvo/app#12","url":"https://github.com/kuvo/app/issues/12","name":"app#12"},"seen":{"state":"not_planned","at":5},"keptIn":"later","struck":true,"closesOn":"github","owner":"ses_lead","title":"Upload retries","status":"done","order":1,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}},
+                  {"id":"wqi_2","source":{"kind":"github-pr","ref":"gh:kuvo/app#57","name":"app#57"},"seen":{"state":"open","at":5},"closesOn":"github","owner":"ses_lead","title":"Keep the name","status":"next","order":2,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}}]}
         """
         let view = try JSONDecoder().decode(WorkQueueView.self, from: Data(json.utf8))
         let (closed, open) = (view.items[0], view.items[1])
@@ -413,11 +439,11 @@ import ClientSessions
     /// from GitHub says so, its mark dimmed. An older box's words are worked out as before.
     @Test func whatGitHubMadeDoneIsSaidInTheBoxsWordsAndOneGoneIsDimmed() throws {
         let item = { (extra: String) in
-            #"{"id":"wqi_1","source":{"kind":"github","ref":"gh:kuvo/app#12","name":"app#12"},"keptIn":"later","closesOn":"github","owner":"ses_lead","title":"Upload retries","category":"done","order":1,"inProgress":false,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}},"#
+            #"{"id":"wqi_1","source":{"kind":"github","ref":"gh:kuvo/app#12","name":"app#12"},"keptIn":"later","closesOn":"github","owner":"ses_lead","title":"Upload retries","status":"done","order":1,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}},"#
                 + extra + "}"
         }
         let json = """
-        {"owner":"ses_lead","categories":[{"id":"next","name":"Next","builtIn":true},{"id":"later","name":"Later","builtIn":true},{"id":"done","name":"Done","builtIn":true}],"owners":[],"removed":[],
+        {"owner":"ses_lead","statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false},{"id":"later","name":"Later","closed":false},{"id":"done","name":"Done","closed":true}],"owners":[],"removed":[],
          "items":[\(item(#""seen":{"state":"open","at":5,"gone":true},"struck":true,"doneAs":"Gone from GitHub""#)),
                   \(item(#""seen":{"state":"completed","at":5},"doneAs":"Closed as planned""#)),
                   \(item(#""seen":{"state":"merged","at":5}"#))]}

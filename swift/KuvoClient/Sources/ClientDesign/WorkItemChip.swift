@@ -12,13 +12,18 @@ public enum WorkItemMark: Hashable, Sendable {
         if removed { self = .removed } else if category == "done" { self = .done } else if inProgress { self = .inProgress } else { self = .category(category) }
     }
 
-    /// A category's color: Next teal, Later purple, Parked gray, Done green, and a custom one's
-    /// own, kept for its id. Work in progress is blue, as its ring is.
+    /// A status's color: Todo teal, Backlog purple, Needs you orange, In review indigo, Waiting
+    /// yellow, Done green, Canceled gray; one this doesn't know, a color kept for its id. Work in
+    /// progress is blue, as its ring is.
     public static func color(of category: String) -> Color {
         switch category {
-        case "next": return .teal
-        case "later": return .purple
-        case "parked": return .gray
+        case "todo": return .teal
+        case "backlog": return .purple
+        case "needs-you": return .orange
+        case "in-review": return .indigo
+        case "waiting": return .yellow
+        case "in-progress": return .blue
+        case "canceled": return .gray
         case "done": return .green
         default:
             let palette: [Color] = [.orange, .pink, .indigo, .mint, .brown, .yellow]
