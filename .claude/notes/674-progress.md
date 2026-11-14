@@ -35,3 +35,10 @@ add-for-bot without a hand-off note; `before-statuses/` never removed; `fromLabe
 removes its LAST label doesn't take it off followers (an empty list never strips); the settle promotes an item still
 Todo/Backlog/Waiting even if you moved it between those since; phone picture test `feedShots` times out on main too;
 the retired Swift Mac app not compiled by this session.
+
+## Resumed after the reset (2026-11-15)
+- S4's scenario written (`a_narrowed_list_follows_the_queue_as_it_changes`; fails without the fix: 1 ask instead of 2).
+- N3 left as an edge case (a scope is one of status or label; combining them is a design change).
+- Green on the tips: four --check, `bun run check`, bridge 216, Bun 42 here and on lokum, compat, cargo 310 + clippy 0,
+  KuvoClient, phone compile + 3 classes + Release; real-queue copy (626 items) 0 lost, backup byte-identical.
+- Waiting: the re-review of `8e3377cf2..HEAD`; then the final report and removing the two build folders.
