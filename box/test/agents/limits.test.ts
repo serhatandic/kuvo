@@ -956,6 +956,30 @@ describe("an account's rings (#711)", () => {
     expect(rowOf("ollama", []).rings).toEqual({})
   })
 
+  // One level for the account as a whole (#718), for a client's one mark of it (a gauge): its rings'
+  // higher one; with no window, what it has with a most it may come to; none where nothing says a
+  // limit, which a client draws as unknown, never as calm.
+  test("a row says the account's level: its rings' higher one, a balance's or a capped extra's, and none where nothing has a limit", () => {
+    const row = (account: Record<string, unknown>) =>
+      limitRows([{ key: "k", name: "mac", here: true, away: false, accounts: [{ provider: "x", service: "x", windows: [], ...account } as any] }])[0]!
+    const window = (id: string, used: number, minutes: number) => ({ id, used, minutes, read: 1, source: "usage" })
+    expect(row({ windows: [window("five_hour", 0.2, 300), window("seven_day", 0.75, 10_080)] }).level).toBe("near")
+    expect(row({ windows: [window("five_hour", 0.95, 300), window("seven_day", 0.1, 10_080)] }).level).toBe("over")
+    expect(row({ windows: [window("weekly", 0.1, 10_080)] }).level).toBe("calm")
+    // Credits alone, with the most they come to: by what's gone of it.
+    expect(row({ balance: { left: 80, limit: 100, unit: "usd" } })).toMatchObject({ rings: {}, level: "calm" })
+    expect(row({ balance: { left: 25, limit: 100, unit: "usd" } }).level).toBe("near")
+    expect(row({ balance: { left: 4, limit: 100, unit: "credits" } }).level).toBe("over")
+    // What it has beyond its windows, capped: what's spent of the cap.
+    expect(row({ extras: [{ id: "on_demand", name: "On-demand", kind: "capped", amount: 46, limit: 50, unit: "usd" }] }).level).toBe("over")
+    // Nothing says a limit: a balance with no cap, spend alone, nothing at all.
+    expect("level" in row({ balance: { left: 12, unit: "usd" } })).toBe(false)
+    expect("level" in row({ extras: [{ id: "today", name: "Today", kind: "spent", amount: 3, unit: "usd" }] })).toBe(false)
+    expect("level" in row({})).toBe(false)
+    // (Its rings say it where it has them, whatever it has beyond them.)
+    expect(row({ windows: [window("weekly", 0.1, 10_080)], balance: { left: 1, limit: 100, unit: "usd" } }).level).toBe("calm")
+  })
+
   test("the box picks which of a maker's windows is each ring", () => {
     const spans = (service: string, windows: any[]) => Object.fromEntries(Object.entries(rowOf(service, windows).rings).map(([span, ring]) => [span, ring!.window]))
     // Codex: its own names for them, and a model's windows beside the plan's.

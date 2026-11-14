@@ -1,8 +1,9 @@
 import Foundation
 
 /// The sandbox a computer's agents' commands run in, as its box answers `kuvo/sandbox` (KuvoLink's
-/// PROTOCOL.md, "Sandbox"): whether it's on, and when it isn't, why and what you can do. A word a
-/// newer box adds reads as none, so `why` is what's left to show. The same in both apps.
+/// PROTOCOL.md, "Sandbox"): whether it's on, and when it isn't, why and what you can do, in the
+/// box's own words (`why`, `actionLabel`), which a client shows as they are. A word a newer box
+/// adds reads as none; its sentence and its button's words still show. The same in both apps.
 public struct SandboxState: Codable, Equatable, Sendable {
     /// Why it isn't on, as a word a client maps.
     public enum Reason: String, Codable, Sendable {
@@ -28,7 +29,7 @@ public struct SandboxState: Codable, Equatable, Sendable {
 
     /// Every command the engine runs here goes through the sandbox, checked.
     public var on: Bool
-    /// Why it isn't on, in the box's own words.
+    /// Why it isn't on, in the box's own words: a sentence to show as it is, there for every `reason`.
     public var why: String?
     /// This computer can run it at all.
     public var able: Bool
@@ -40,6 +41,14 @@ public struct SandboxState: Codable, Equatable, Sendable {
     public var reason: Reason?
     public var action: Action?
     public var route: String?
+    /// The words of the button that does `action`, as the box says them ("Try Again", "Restart
+    /// Engine…": an ellipsis where a client asks or goes somewhere first).
+    public var actionLabel: String?
+    /// The address a button with no `route` opens (the docs' page, the Mac's Software Update pane).
+    public var opens: String?
+    /// That address is the computer's own: only a client running on that very computer opens it,
+    /// and any other shows no button.
+    public var opensHere: Bool?
     /// What the computer needs first.
     public var needs: String?
     public var check: Check?
@@ -50,7 +59,11 @@ public struct SandboxState: Codable, Equatable, Sendable {
     /// While it's on, what it can't keep commands from here (a newer box's words left out).
     public var gaps: [Gap]?
 
-    public init(on: Bool, why: String? = nil, able: Bool = true, agents: Bool = false, outside: Bool? = nil, reason: Reason? = nil, action: Action? = nil, route: String? = nil, needs: String? = nil, check: Check? = nil, failures: Int? = nil, restart: Bool? = nil, gaps: [Gap]? = nil) {
+    public init(on: Bool, why: String? = nil, able: Bool = true, agents: Bool = false, outside: Bool? = nil, reason: Reason? = nil, action: Action? = nil, route: String? = nil, needs: String? = nil, check: Check? = nil, failures: Int? = nil, restart: Bool? = nil, gaps: [Gap]? = nil,
+                actionLabel: String? = nil, opens: String? = nil, opensHere: Bool? = nil) {
+        self.actionLabel = actionLabel
+        self.opens = opens
+        self.opensHere = opensHere
         self.restart = restart
         self.gaps = gaps
         self.on = on
@@ -76,6 +89,9 @@ public struct SandboxState: Codable, Equatable, Sendable {
         reason = try? keys.decodeIfPresent(Reason.self, forKey: .reason)
         action = try? keys.decodeIfPresent(Action.self, forKey: .action)
         route = try keys.decodeIfPresent(String.self, forKey: .route)
+        actionLabel = try? keys.decodeIfPresent(String.self, forKey: .actionLabel)
+        opens = try? keys.decodeIfPresent(String.self, forKey: .opens)
+        opensHere = try? keys.decodeIfPresent(Bool.self, forKey: .opensHere)
         needs = try keys.decodeIfPresent(String.self, forKey: .needs)
         check = try? keys.decodeIfPresent(Check.self, forKey: .check)
         failures = try keys.decodeIfPresent(Int.self, forKey: .failures)

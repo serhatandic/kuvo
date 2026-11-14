@@ -43,6 +43,7 @@ pub const REQUIRED: &[&str] = &[
     "typed",
     "usage.notices",
     "waiting",
+    "waiting.cards",
     "work-queue.counts",
 ];
 

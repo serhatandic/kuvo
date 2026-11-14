@@ -39,14 +39,16 @@ export type GitChangesCount = Infer<typeof GIT_CHANGES_COUNT>;
  * (`stage`): `stage` it, `unstage` it, or mark a conflict resolved (`resolve`, by staging it). What
  * its discard comes to, for the words of its confirm (`discards`, with `discard`): `kind`, `trash` (a
  * new file to the Trash), `restore` (a deleted file comes back), `undoMove` (a staged move's old path
- * comes back, the new one to the Trash) or `changes` (its changes thrown away); and `undoable`,
- * nothing lost for good. */
+ * comes back, the new one to the Trash) or `changes` (its changes thrown away); `undoable`,
+ * nothing lost for good; and `loses`, a sentence for the confirm where something goes for good that
+ * the kind's own words don't say (what was staged of a new or moved file changed again since). A
+ * repository of its own is stamped by its own commit and what isn't committed in it. */
 export const LISTED_FILE = object({
   path: string, "oldPath?": string, group: words("conflicted", "staged", "unstaged", "untracked"),
   status: words("added", "deleted", "modified", "renamed"), scope: words("uncommitted", "unstaged", "staged"),
   "additions?": number, "deletions?": number, "discard?": words("trash", "unstaged", "head"), "stamp?": string, "repository?": literal(true),
   stage: words("stage", "unstage", "resolve"),
-  "discards?": object({ kind: words("trash", "restore", "undoMove", "changes"), undoable: bool }),
+  "discards?": object({ kind: words("trash", "restore", "undoMove", "changes"), undoable: bool, "loses?": string }),
 });
 
 /** A folder's repository's changed files, grouped as a Changes panel shows them (`kuvo/git/files`):

@@ -10063,6 +10063,21 @@ function spansOf(windows) {
     spans.set(long, "long");
   return spans;
 }
+var LEVELS = ["calm", "near", "over"];
+var highest = (levels) => levels.reduce((most, level) => most === undefined || LEVELS.indexOf(level) > LEVELS.indexOf(most) ? level : most, undefined);
+function accountLevel(account, rings) {
+  const ringed = highest(Object.values(rings).map((ring) => ring.level));
+  if (ringed)
+    return ringed;
+  const shares = [];
+  const balance = account.balance;
+  if (balance && typeof balance.limit === "number" && balance.limit > 0)
+    shares.push(1 - balance.left / balance.limit);
+  for (const extra of account.extras ?? [])
+    if (extra.kind === "capped" && typeof extra.amount === "number" && typeof extra.limit === "number" && extra.limit > 0)
+      shares.push(extra.amount / extra.limit);
+  return highest(shares.map(levelOf));
+}
 function ringed(account) {
   const spans = spansOf(account.windows);
   const rings = {};
@@ -10073,7 +10088,8 @@ function ringed(account) {
       rings[span] = { window: window.id, used: window.used, ...window.resetsAt ? { resetsAt: window.resetsAt } : {}, level };
     return { ...window, level, ...span ? { span } : {} };
   });
-  return { ...account, windows, rings };
+  const level = accountLevel(account, rings);
+  return { ...account, windows, rings, ...level ? { level } : {} };
 }
 function withResetsOn(row, members) {
   const index = row.extras?.findIndex((extra) => extra.kind === "resets") ?? -1;
@@ -36535,4 +36551,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 78448c453ff9d111a50027dff44565b7fc689f3222a4c8b842a8ed73b2177986
+// Built from Packages/Box/src/agents 48f28e317c705702de98464696a561be552194f048d9087d8f8b34036b2fe033

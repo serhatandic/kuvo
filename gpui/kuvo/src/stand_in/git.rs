@@ -217,9 +217,16 @@ impl Git {
                 let repo = self.repos.get_mut(&root)?;
                 let at = repo.files.iter().position(|file| file["path"] == json!(path) && file["scope"] == json!(scope));
                 let Some(at) = at else { return found(422, json!({ "message": format!("git couldn’t find {path}.") })) };
-                // A discard of what it was shown, only: changed since, refused.
-                if route == "kuvo/git/discard" && body.get("stamp").is_some() && body["stamp"] != repo.files[at]["stamp"] {
-                    return found(409, json!({ "message": format!("{path} changed since it was listed. Look at it again before you discard it.") }));
+                // A discard of what it was shown, only, as the box has it: with no word of what the
+                // file was when it was listed, or changed since, refused.
+                if route == "kuvo/git/discard" {
+                    let stamp = body.get("stamp").and_then(|stamp| stamp.as_str()).unwrap_or_default();
+                    if stamp.is_empty() {
+                        return found(409, json!({ "message": format!("{path} wasn’t discarded: this app didn’t say what the file was when it listed it, so changes made since could be lost. Update the app, then try again.") }));
+                    }
+                    if json!(stamp) != repo.files[at]["stamp"] {
+                        return found(409, json!({ "message": format!("{path} changed since it was listed. Look at it again before you discard it.") }));
+                    }
                 }
                 let mut moved = repo.files.remove(at);
                 match route {

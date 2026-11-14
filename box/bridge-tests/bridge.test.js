@@ -1700,6 +1700,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (Whether a value is what's kept, without giving it: an item this vault doesn't have.)
     "vault.same": ["POST", "kuvo/vault/items/item_none/same"],
     waiting: ["POST", "kuvo/waiting"],
+    "waiting.cards": ["POST", "kuvo/waiting"],
     wakes: ["GET", "kuvo/wakes"],
     "wakes.edit": ["POST", "kuvo/wakes/ses_none/pause"],
     "wakes.events": ["POST", "kuvo/wakes/events"],

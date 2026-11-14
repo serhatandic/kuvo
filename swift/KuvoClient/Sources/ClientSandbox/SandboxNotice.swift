@@ -3,7 +3,8 @@ import Foundation
 // MARK: Settings › Permissions' words
 
 /// How both apps show a computer's sandbox atop its Permissions page: when it's on, one quiet line;
-/// when it needs you, an orange row with what happened and the one button that fixes it.
+/// when it needs you, an orange row with why, in the box's own sentence (`why`), and the one button
+/// that fixes it, in the box's words (`actionLabel`). No client keeps words for a reason.
 public struct SandboxNotice: Equatable, Sendable {
     public enum Look: Sendable {
         /// On: a small green shield and the line, in secondary ink.
@@ -14,7 +15,7 @@ public struct SandboxNotice: Equatable, Sendable {
         case needsYou
     }
 
-    /// What a button does. `route` ones are the box's (`SandboxState.route`); the others the
+    /// What a button does, by the box's word for it (`SandboxState.action`); Report a Problem is the
     /// client's own.
     public enum Action: Equatable, Sendable {
         /// Checks it again (`kuvo/sandbox/check`), which also puts back what was changed.
@@ -32,12 +33,23 @@ public struct SandboxNotice: Equatable, Sendable {
     public struct Button: Equatable, Sendable {
         public var title: String
         public var action: Action
+        /// The page it opens, as the box names it (`opens`), where its action sends no route.
+        public var opens: URL?
+        /// That address is the computer's own (its Software Update pane): only a client running on
+        /// that computer draws the button.
+        public var opensHere: Bool
 
-        public init(title: String, action: Action) {
+        public init(title: String, action: Action, opens: URL? = nil, opensHere: Bool = false) {
             self.title = title
             self.action = action
+            self.opens = opens
+            self.opensHere = opensHere
         }
     }
+
+    /// The docs on what a machine needs for its sandbox, for a machine whose sandbox is on but
+    /// can't keep commands from your login's services (the box names no page for that yet).
+    public static let machinesHelp = URL(string: "https://www.kuvo.run/code/docs/machines/#sandbox")
 
     public var look: Look
     /// The row's title; none for a one-line state.
@@ -54,71 +66,35 @@ extension SandboxState {
             let fix = needs == "util-linux" ? "has util-linux" : "allows user namespaces"
             return SandboxNotice(look: .needsYou, title: "Commands can still reach your login’s services",
                                  detail: "They run in the sandbox, but this machine doesn’t let it keep them from services like systemd. Until it \(fix), agents don’t use your vault here and goals don’t run on their own.",
-                                 buttons: [.init(title: "How to Check…", action: .help)])
+                                 buttons: [.init(title: "How to Check…", action: .help, opens: SandboxNotice.machinesHelp)])
         }
         if on { return SandboxNotice(look: .on, title: nil, detail: "Agents’ commands run in a sandbox: they can’t read your keys or sign-ins.", buttons: []) }
-        let check = SandboxNotice.Button(title: "Try Again", action: .check)
-        switch reason {
-        case .checking:
-            return SandboxNotice(look: .checking, title: nil, detail: "Checking the sandbox…", buttons: [])
-        case .checkFailed:
-            let again = (failures ?? 1) > 1
-            return SandboxNotice(look: .needsYou, title: again ? "The sandbox’s check failed again" : "The sandbox’s check failed",
-                                 detail: "\(again ? "It" : "Its check") found that \(found), so commands run outside the sandbox for now.",
-                                 buttons: again ? [check, .init(title: "Report a Problem…", action: .report)] : [check])
-        case .plugin:
-            return SandboxNotice(look: .needsYou, title: "Kuvo Code’s part in the engine was changed",
-                                 detail: "It’s missing or not as Kuvo Code left it, so commands run outside the sandbox.", buttons: [.init(title: "Fix It", action: .check)])
-        case .waiting:
-            return SandboxNotice(look: .needsYou, title: "The sandbox starts when the engine restarts", detail: "Until then, commands run outside it.",
-                                 buttons: [.init(title: "Restart Engine…", action: .restartEngine(asking: true))])
-        case .engineDown:
-            return SandboxNotice(look: .needsYou, title: "The engine isn’t running", detail: "No commands run until it starts again, in the sandbox.",
-                                 buttons: [.init(title: "Restart Engine", action: .restartEngine(asking: false))])
-        case .engineMissing:
-            return SandboxNotice(look: .needsYou, title: "The engine isn’t installed yet", detail: "Commands run in the sandbox once it is.",
-                                 buttons: [.init(title: "Check Again", action: .check)])
-        case .kernel:
-            return SandboxNotice(look: .needsYou, title: "\(release.map { "Linux \($0)" } ?? "This Linux") can’t sandbox commands",
-                                 detail: "Commands run outside the sandbox here. It needs \(needs ?? "Linux 5.13") or later, with Landlock on.",
-                                 buttons: [.init(title: "How to Check…", action: .help)])
-        case .namespaces:
-            // A box that doesn't run without a namespace for each command (none does now: `gaps`).
-            let fix = needs == "util-linux" ? "has util-linux" : "allows user namespaces"
-            return SandboxNotice(look: .needsYou, title: "This machine can’t sandbox commands",
-                                 detail: "Commands run outside the sandbox here until it \(fix), so the sandbox can keep them from services like systemd.",
-                                 buttons: [.init(title: "How to Check…", action: .help)])
-        case .macos:
-            return SandboxNotice(look: .needsYou, title: "This version of macOS can’t sandbox commands", detail: "Commands run outside the sandbox here.",
-                                 buttons: [.init(title: "Software Update…", action: .softwareUpdate)])
+        // Not on: the box's sentence as it is, and its button. Being checked is a quiet line.
+        let detail = why ?? "Its computer didn’t say why."
+        if reason == .checking { return SandboxNotice(look: .checking, title: nil, detail: why ?? "Checking the sandbox…", buttons: []) }
+        // (Report a Problem, the client's own, once its check has failed more than once.)
+        let report: [SandboxNotice.Button] = (failures ?? 0) > 1 ? [.init(title: "Report a Problem…", action: .report)] : []
+        return SandboxNotice(look: .needsYou, title: "The sandbox isn’t on", detail: detail, buttons: (button.map { [$0] } ?? []) + report)
+    }
+
+    /// Its button while it isn't on: the box's words for it (`actionLabel`), and what it does by
+    /// the box's word (`action`): its route (the check again; the engine restarted, asking first
+    /// where its words end in an ellipsis), or the page it opens (`opens`: a web page, unless the
+    /// address is that computer's own, `opensHere`). None where the box names no words, or
+    /// nothing a client can do.
+    private var button: SandboxNotice.Button? {
+        guard let actionLabel, !actionLabel.isEmpty else { return nil }
+        switch action {
+        case .retry?, .fix?: return .init(title: actionLabel, action: .check)
+        case .restartEngine?: return .init(title: actionLabel, action: .restartEngine(asking: actionLabel.hasSuffix("…")))
+        case .help?, .softwareUpdate?:
+            let here = opensHere == true
+            guard let page = opens.flatMap(URL.init(string:)), here || ["https", "http"].contains(page.scheme?.lowercased() ?? "") else { return nil }
+            return .init(title: actionLabel, action: action == .help ? .help : .softwareUpdate, opens: page, opensHere: here)
         case nil:
-            // A newer box's reason: its own words, and the button for the route it names, where a
-            // client knows it.
-            let button: SandboxNotice.Button? = switch route {
-            case let route? where route.hasSuffix(SandboxRoutes.check): check
-            case let route? where route.hasSuffix("kuvo/engine/restart"): .init(title: "Restart Engine…", action: .restartEngine(asking: true))
-            default: nil
-            }
-            return SandboxNotice(look: .needsYou, title: "Commands run outside the sandbox", detail: why ?? "The sandbox isn’t on.", buttons: button.map { [$0] } ?? [])
+            // An action a newer box names: its words, where it sends the check's route.
+            guard let route, route.hasSuffix(SandboxRoutes.check) else { return nil }
+            return .init(title: actionLabel, action: .check)
         }
-    }
-
-    /// What the failed check found, in words.
-    private var found: String {
-        switch check {
-        case .readsOwn: "a command could still read Kuvo Code’s files"
-        case .writesOwn: "a command could write in Kuvo Code’s own folder"
-        case .services: "a command could still reach your login’s services"
-        case .folder: "a command couldn’t work in its own folder"
-        case .tempFiles: "a command couldn’t write its temporary files"
-        case .setup: "it couldn’t be set up"
-        case .didntRun, nil: "its test command didn’t run"
-        }
-    }
-
-    /// The Linux release in the box's words ("Linux 5.10 can't…").
-    private var release: String? {
-        guard let why, let range = why.range(of: #"Linux [0-9][0-9.]*"#, options: .regularExpression) else { return nil }
-        return String(why[range].dropFirst("Linux ".count))
     }
 }

@@ -62,6 +62,10 @@ export interface LimitRow extends AccountLimits {
   windows: RowWindow[]
   /** Its two rings, the short limit and the long one; one alone where its plan has one window; none where it has none. */
   rings: { short?: LimitRing; long?: LimitRing }
+  /** How close the account as a whole is to a limit, for one mark of it (a gauge): the higher of its
+   * rings'; with no window, its balance's or a capped extra's (used of the most it may come to).
+   * Left out where nothing says a limit (a balance with no cap, spend alone): not calm, unknown. */
+  level?: LimitLevel
   /** The same for the account on every box: `<service>#<identity>`, or `<box key>/<provider>` for one that can't say who it is. */
   id: string
   boxes: LimitRowBox[]
@@ -148,8 +152,27 @@ export function spansOf(windows: LimitWindow[]): Map<LimitWindow, LimitSpan> {
   return spans
 }
 
-/** An account as a row states it: each window with its level and which ring it is, and the rings themselves. */
-function ringed(account: AccountLimits): AccountLimits & Pick<LimitRow, "windows" | "rings"> {
+const LEVELS: LimitLevel[] = ["calm", "near", "over"]
+const highest = (levels: LimitLevel[]): LimitLevel | undefined => levels.reduce<LimitLevel | undefined>((most, level) => (most === undefined || LEVELS.indexOf(level) > LEVELS.indexOf(most) ? level : most), undefined)
+
+/**
+ * How close an account as a whole is to a limit (PROTOCOL.md, "Plan limits", a row's `level`): the
+ * higher of its rings' levels; with no ring, what it has with a most it may come to, by the same
+ * shares (`levelOf`): its balance (what's gone of `limit`) and each `capped` extra (`amount` of
+ * `limit`). None where nothing says a limit.
+ */
+export function accountLevel(account: Pick<AccountLimits, "balance" | "extras">, rings: LimitRow["rings"]): LimitLevel | undefined {
+  const ringed = highest(Object.values(rings).map((ring) => ring!.level))
+  if (ringed) return ringed
+  const shares: number[] = []
+  const balance = account.balance
+  if (balance && typeof balance.limit === "number" && balance.limit > 0) shares.push(1 - balance.left / balance.limit)
+  for (const extra of account.extras ?? []) if (extra.kind === "capped" && typeof extra.amount === "number" && typeof extra.limit === "number" && extra.limit > 0) shares.push(extra.amount / extra.limit)
+  return highest(shares.map(levelOf))
+}
+
+/** An account as a row states it: each window with its level and which ring it is, the rings themselves, and its level as a whole. */
+function ringed(account: AccountLimits): AccountLimits & Pick<LimitRow, "windows" | "rings" | "level"> {
   const spans = spansOf(account.windows)
   const rings: LimitRow["rings"] = {}
   const windows = account.windows.map((window) => {
@@ -158,7 +181,8 @@ function ringed(account: AccountLimits): AccountLimits & Pick<LimitRow, "windows
     if (span) rings[span] = { window: window.id, used: window.used, ...(window.resetsAt ? { resetsAt: window.resetsAt } : {}), level }
     return { ...window, level, ...(span ? { span } : {}) }
   })
-  return { ...account, windows, rings }
+  const level = accountLevel(account, rings)
+  return { ...account, windows, rings, ...(level ? { level } : {}) }
 }
 
 /**

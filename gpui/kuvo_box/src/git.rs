@@ -89,6 +89,10 @@ pub struct Discards {
     /// Nothing is lost for good: what goes, goes to the Trash, or a file comes back.
     #[serde(default)]
     pub undoable: bool,
+    /// What's lost for good that the kind's own words don't say (a new or moved file staged and
+    /// then changed again), in the box's sentence: shown in the confirm as it is.
+    #[serde(default)]
+    pub loses: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -389,7 +393,7 @@ mod tests {
         .unwrap();
         assert_eq!(said.takes, 2);
         assert_eq!(said.files.iter().map(|file| file.stage).collect::<Vec<_>>(), [Stage::Unstage, Stage::Resolve, Stage::Unknown]);
-        assert_eq!(said.files[0].discards, Some(Discards { kind: DiscardKind::UndoMove, undoable: true }));
+        assert_eq!(said.files[0].discards, Some(Discards { kind: DiscardKind::UndoMove, undoable: true, loses: None }));
         assert_eq!((said.files[1].discards.clone(), said.files[2].discards.as_ref().map(|discards| discards.kind)), (None, Some(DiscardKind::Unknown)));
         let outside: GitFiles = serde_json::from_str(r#"{"repository":false}"#).unwrap();
         assert!(!outside.repository && outside.files.is_empty());

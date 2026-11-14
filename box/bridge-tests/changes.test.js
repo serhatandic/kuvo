@@ -53,6 +53,13 @@ async function route(method, routePath, body, env = {}) {
   const answer = JSON.parse(out.trim().split("\n").at(-1));
   return { ...answer, json: answer.body ? JSON.parse(answer.body) : undefined };
 }
+// A discard as a client sends it: with what the file was when it was listed (`kuvo/git/files`'
+// `stamp`), without which the box refuses it.
+async function discard(body) {
+  const listed = (await route("GET", `kuvo/git/files?directory=${encodeURIComponent(body.root)}`)).json?.files ?? [];
+  const stamp = listed.find(file => file.path === body.path && file.stamp)?.stamp;
+  return route("POST", "kuvo/git/discard", { ...body, ...(stamp ? { stamp } : {}) });
+}
 const changes = (scope = "uncommitted", directory = repo) => route("POST", "kuvo/git/changes", { directory, scope });
 const trashed = () => (fs.existsSync(trash) ? fs.readdirSync(trash, { recursive: true }).map(String) : []);
 
@@ -253,9 +260,9 @@ test("Stage moves an edit to Staged, and Unstage moves it back", async () => {
 test("Discard puts an edit back, and a new file goes to Kuvo Code's trash, not deleted for good", async () => {
   write("README.md", "Changed\n");
   write("draft.txt", "precious\n");
-  assert.equal((await route("POST", "kuvo/git/discard", { root: repo, path: "README.md", status: "modified", scope: "uncommitted" })).status, 200);
+  assert.equal((await discard({ root: repo, path: "README.md", status: "modified", scope: "uncommitted" })).status, 200);
   assert.equal(read("README.md"), "Hello\n");
-  assert.equal((await route("POST", "kuvo/git/discard", { root: repo, path: "draft.txt", status: "added", scope: "uncommitted" })).status, 200);
+  assert.equal((await discard({ root: repo, path: "draft.txt", status: "added", scope: "uncommitted" })).status, 200);
   assert.equal(fs.existsSync(path.join(repo, "draft.txt")), false);
   assert.ok(trashed().some(name => name.endsWith("draft.txt")));
   assert.deepEqual(status(), []);
@@ -264,7 +271,7 @@ test("Discard puts an edit back, and a new file goes to Kuvo Code's trash, not d
 test("Discard with a file where a committed file's folder was: the folder's file comes back, the file in its way goes to the trash", async () => {
   fs.rmSync(path.join(repo, "src"), { recursive: true });
   write("src", "a file in the folder's place\n");
-  assert.equal((await route("POST", "kuvo/git/discard", { root: repo, path: "src/app.js", status: "deleted", scope: "uncommitted" })).status, 200);
+  assert.equal((await discard({ root: repo, path: "src/app.js", status: "deleted", scope: "uncommitted" })).status, 200);
   assert.equal(read("src/app.js"), "let a = 1\n");
   assert.ok(trashed().some(name => path.basename(name) === "src"));
 });
@@ -333,14 +340,29 @@ test("a commit's hooks run with none of the box's own variables, and on a Mac wi
 test("Discard with a folder where a committed file was: the file comes back, the folder and what's in it go to the trash", async () => {
   fs.rmSync(path.join(repo, "README.md"));
   write("README.md/kept.txt", "precious\n");
-  assert.equal((await route("POST", "kuvo/git/discard", { root: repo, path: "README.md", status: "modified" })).status, 200);
+  assert.equal((await discard({ root: repo, path: "README.md", status: "modified" })).status, 200);
   assert.equal(read("README.md"), "Hello\n");
   assert.ok(trashed().some(name => name.endsWith(path.join("README.md", "kept.txt"))));
 });
 
+test("Discard without what the file was when it was listed is refused in plain words, and the file stays", async () => {
+  write("README.md", "The agent's newer edit\n");
+  const refused = await route("POST", "kuvo/git/discard", { root: repo, path: "README.md", status: "modified", scope: "unstaged" });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.json.message, "README.md wasn’t discarded: this app didn’t say what the file was when it listed it, so changes made since could be lost. Update the app, then try again.");
+  assert.equal(read("README.md"), "The agent's newer edit\n");
+  // Listed, then changed again by an agent: the old stamp is refused too.
+  const listed = (await route("GET", `kuvo/git/files?directory=${encodeURIComponent(repo)}`)).json.files.find(file => file.path === "README.md");
+  write("README.md", "The agent's newest edit, longer\n");
+  const stale = await route("POST", "kuvo/git/discard", { root: repo, path: "README.md", status: "modified", scope: "unstaged", stamp: listed.stamp });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.json.message, "README.md changed since it was listed. Look at it again before you discard it.");
+  assert.equal(read("README.md"), "The agent's newest edit, longer\n");
+});
+
 test("Discard of a move: the new name goes to the trash and the old one comes back", async () => {
   git("mv", "README.md", "GUIDE.md");
-  assert.equal((await route("POST", "kuvo/git/discard", { root: repo, path: "GUIDE.md", oldPath: "README.md", status: "renamed" })).status, 200);
+  assert.equal((await discard({ root: repo, path: "GUIDE.md", oldPath: "README.md", status: "renamed" })).status, 200);
   assert.equal(read("README.md"), "Hello\n");
   assert.equal(fs.existsSync(path.join(repo, "GUIDE.md")), false);
   assert.deepEqual(status(), []);
@@ -348,13 +370,14 @@ test("Discard of a move: the new name goes to the trash and the old one comes ba
 
 test("Discard never takes the repository or a folder git keeps: a path that names one is refused or left be", async () => {
   for (const name of [".", "./", "/", "./README.md", "a//b", "a//", "../x", "/etc/hosts"]) {
-    assert.equal((await route("POST", "kuvo/git/discard", { root: repo, path: name, status: "modified" })).status, 400, name);
+    assert.equal((await discard({ root: repo, path: name, status: "modified" })).status, 400, name);
   }
   // A folder git keeps, named as a file: git puts its files back as they were committed, and the
   // folder, with a new file in it, stays where it is.
   write("src/new.js", "mine\n");
   const before = trashed();
-  await route("POST", "kuvo/git/discard", { root: repo, path: "src", status: "modified" });
+  // (Never listed as a file, so no client has a stamp for it: refused before anything is touched.)
+  assert.equal((await discard({ root: repo, path: "src", status: "modified" })).status, 409);
   assert.equal(read("src/new.js"), "mine\n", "a folder git keeps isn't thrown away");
   assert.deepEqual(trashed(), before);
 });
@@ -372,7 +395,7 @@ test("a repository inside the project, listed as \"web/\": staged, unstaged, and
   assert.deepEqual(status(), ["A  web"]);
   assert.equal((await route("POST", "kuvo/git/unstage", { root: repo, path: "web/", status: "added", scope: "staged" })).status, 200);
   assert.deepEqual(status(), ["?? web/"]);
-  assert.equal((await route("POST", "kuvo/git/discard", { root: repo, path: "web/", status: "added" })).status, 200);
+  assert.equal((await discard({ root: repo, path: "web/", status: "added" })).status, 200);
   assert.equal(fs.existsSync(web), false);
   assert.ok(trashed().some(name => name.endsWith(path.join("web", "index.html"))));
   assert.deepEqual(status(), []);
@@ -711,7 +734,7 @@ test("Discard on a submodule with edits of its own says to discard them there, a
   git("-c", "protocol.file.allow=always", "submodule", "add", "-q", library, "lib");
   git("commit", "-q", "-m", "Add the library");
   write("lib/lib.js", "let lib = 2\n");
-  const { status: code, json } = await route("POST", "kuvo/git/discard", { root: repo, path: "lib", status: "modified" });
+  const { status: code, json } = await discard({ root: repo, path: "lib", status: "modified" });
   assert.equal(code, 422);
   assert.equal(json.message, "lib is a submodule: its changes are in its own repository, so discard them there.");
   assert.equal(read("lib/lib.js"), "let lib = 2\n");

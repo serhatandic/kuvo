@@ -3682,6 +3682,9 @@
             "literal": "waiting"
            },
            {
+            "literal": "waiting.cards"
+           },
+           {
             "literal": "wakes"
            },
            {
@@ -4244,6 +4247,9 @@
            },
            {
             "literal": "waiting"
+           },
+           {
+            "literal": "waiting.cards"
            },
            {
             "literal": "wakes"
@@ -6623,7 +6629,8 @@
                }
               ]
              },
-             "undoable": "bool"
+             "undoable": "bool",
+             "loses?": "string"
             }
            }
           }
@@ -6799,7 +6806,8 @@
                }
               ]
              },
-             "undoable": "bool"
+             "undoable": "bool",
+             "loses?": "string"
             }
            }
           }

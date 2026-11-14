@@ -157,6 +157,7 @@ export const FEATURES = [
   "vault",
   "vault.same",
   "waiting",
+  "waiting.cards",
   "wakes",
   "wakes.edit",
   "wakes.events",

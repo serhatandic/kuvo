@@ -1,7 +1,8 @@
 // When what a session waits on you for came (`asked` in `kuvo/sessions/glance`): a permission or a
 // question it or one of its subagents asks, noted as its event comes from the engine or the coding
 // agents' bridge, and let go as it's answered, its run ends or it's deleted; and what the box itself
-// asks you for it (to run a command outside the sandbox, a sign-in or a key from the vault). An ask
+// asks you for it (to run a command outside the sandbox, a sign-in or a key from the vault, what an
+// agent asks while it browses, what a bot asks before it does it, a goal a bot puts to you). An ask
 // Auto's reviewer takes up isn't yours, and isn't counted. The box's long-running process notes them,
 // in `run/glance/asks.json`, so a route answered in a process of its own (`box route`) reads them
 // too. An ask made while the box wasn't listening has no time, and a client says how long since the
@@ -16,6 +17,9 @@ import { call } from "../engine/client";
 import { listAskReviews, onAskReviewsChanged } from "../work/reviewing";
 import { listSandboxAsks, onSandboxAsksChanged } from "../fence/outside";
 import { listAsks as listVaultAsks, onAsksChanged as onVaultAsksChanged } from "../vault/asks";
+import { readAsks as readBrowserAsks, type BrowserAsk } from "../areas/asks";
+import { askFollowers as workAskFollowers, workAsks } from "../work/asks";
+import { goalFollowers, proposedGoals } from "../work/goals";
 import type { Target } from "../../shared/records";
 
 export const ASKS_FILE = path.join(RUN, "glance", "asks.json");
@@ -64,6 +68,17 @@ export function formWords(form: { metadata?: unknown }): AskWords {
 
 export const SANDBOX_WORDS: AskWords = { kind: "sandbox", summary: "asks to run a command outside the sandbox" };
 export const VAULT_WORDS: AskWords = { kind: "vault", summary: "asks for something from the vault" };
+/** What an agent asks while it browses (`kuvo/asks`), in a few words. */
+export const browserWords = (ask: Pick<BrowserAsk, "kind" | "host">): AskWords => ({
+  kind: "other",
+  summary: ask.kind === "signIn" ? `asks you to sign in${ask.host ? ` to ${cut(ask.host, 40)}` : ""}` : ask.kind === "code" ? `asks for a code${ask.host ? ` from ${cut(ask.host, 40)}` : ""}` : "asks you to do a step in its browser",
+});
+/** What a bot asks before it does it (`kuvo/work/asks`), in a few words. */
+export const workWords = (action: string): AskWords => ({
+  kind: "other",
+  summary: action === "makeProject" ? "asks to make a project" : action === "cloneProject" ? "asks to clone a project" : action === "resetLimits" ? "asks to use a limit reset" : "asks for your OK",
+});
+export const GOAL_WORDS: AskWords = { kind: "other", summary: "proposes a goal" };
 /** An ask heard without what it asks (noted by a box from before these words). */
 export const WAITS_WORDS: AskWords = { kind: "other", summary: "waits on you" };
 
@@ -124,6 +139,9 @@ function keep(): void {
   for (const [id, ask] of open) if (!reviewed.has(id)) asks[id] = ask;
   for (const ask of listSandboxAsks()) if (ask.session) asks[ask.id] = { session: ask.session, at: ask.at, asks: SANDBOX_WORDS };
   for (const ask of listVaultAsks()) if (ask.session) asks[ask.id] = { session: ask.session, at: ask.at, asks: VAULT_WORDS };
+  const others = othersNow();
+  othersKept = [...others.keys()].sort().join("\n");
+  for (const [id, ask] of others) asks[id] = ask;
   try {
     writePrivate(ASKS_FILE, JSON.stringify({ asks }) + "\n");
   } catch {}
@@ -131,11 +149,51 @@ function keep(): void {
   for (const told of askFollowers) try { told(); } catch {}
 }
 
+/** When each of the browser's asks was first seen here (the browser keeps no time for one). */
+const browserSeen = new Map<string, number>();
+
+/** What else waits on you for a session, kept by the box outside the engine's asks: what an agent
+ * asks while it browses (a sign-in, a code, a step of yours), what a bot asks before it does it
+ * (a project, a limit reset), and a goal a bot proposed, which waits in its own conversation. Each
+ * by an id of its own, with the session it waits in. */
+function othersNow(now = Date.now()): Map<string, OpenAsk> {
+  const asks = new Map<string, OpenAsk>();
+  const browsing = (readBrowserAsks() as BrowserAsk[]).filter(ask => typeof ask.session === "string" && ask.session);
+  for (const id of browserSeen.keys()) if (!browsing.some(ask => ask.id === id)) browserSeen.delete(id);
+  for (const ask of browsing) {
+    if (!browserSeen.has(ask.id)) browserSeen.set(ask.id, now);
+    asks.set(`browser:${ask.id}`, { session: ask.session!, at: browserSeen.get(ask.id)!, asks: browserWords(ask) });
+  }
+  for (const ask of workAsks()) if (ask.session) asks.set(`work:${ask.id}`, { session: ask.session, at: ask.at, asks: workWords(ask.action) });
+  for (const goal of proposedGoals()) if (goal.session) asks.set(`goal:${goal.id}`, { session: goal.session, at: goal.proposed, asks: GOAL_WORDS });
+  return asks;
+}
+
+/** Looks again at what the box keeps outside the engine's asks, and keeps what waits when it
+ * changed: the browser's asks are another process's file, and a route answered in a process of its
+ * own (`box route`) changes the others'. */
+let othersKept = "";
+export function lookAtOthers(): void {
+  const now = [...othersNow().keys()].sort().join("\n");
+  if (now === othersKept) return;
+  keep();
+}
+
 /** The box's long-running process: what it asks you itself, and what Auto's reviewer takes up,
- * kept as they change. */
+ * kept as they change; what's kept in files another process writes, looked at every two seconds
+ * (as the browser's asks are for their notifications). */
 export function followAsks(): () => void {
   const stops = [onAskReviewsChanged(keep), onSandboxAsksChanged(keep), onVaultAsksChanged(keep)];
-  return () => { for (const stop of stops) stop(); };
+  workAskFollowers.add(lookAtOthers);
+  goalFollowers.add(lookAtOthers);
+  const timer = setInterval(lookAtOthers, 2000);
+  timer.unref?.();
+  return () => {
+    for (const stop of stops) stop();
+    workAskFollowers.delete(lookAtOthers);
+    goalFollowers.delete(lookAtOthers);
+    clearInterval(timer);
+  };
 }
 
 /** A place heard again after it couldn't be (it restarted on another port, its stream dropped): what
@@ -210,6 +268,8 @@ export async function askedSince(sessions: string[], targets: Target[], signal?:
 export function forgetAsks(): void {
   open.clear();
   parents.clear();
+  browserSeen.clear();
+  othersKept = "";
   started = false;
   try { fs.rmSync(ASKS_FILE, { force: true }); } catch {}
 }

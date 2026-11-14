@@ -666,6 +666,12 @@ pub fn discard_words(file: &ChangedFile) -> DiscardWords {
         // (A kind a newer box says that this app has no words for: asked plainly.)
         DiscardKind::Unknown => (format!("Discard the changes to {name}?"), String::new(), "Discard"),
     };
+    // What the box says is lost for good, in its own sentence, after what the discard does.
+    let detail = match file.discards.as_ref().and_then(|discards| discards.loses.as_deref()) {
+        Some(loses) if detail.is_empty() => loses.to_owned(),
+        Some(loses) => format!("{detail} {loses}"),
+        None => detail,
+    };
     DiscardWords { title, detail, button, undoable }
 }
 
@@ -960,6 +966,10 @@ mod tests {
         // restore is a plain, destructive discard.
         let thrown = words(r#""status":"deleted","discard":"head","discards":{"kind":"changes","undoable":false}"#);
         assert_eq!((thrown.title.as_str(), thrown.button, thrown.undoable), ("Discard every change to Form.tsx?", "Discard", false));
+        // What a discard loses for good is the box's sentence, said after what it does.
+        let lost = words(r#""status":"added","discard":"trash","discards":{"kind":"trash","undoable":false,"loses":"What you staged of it isn’t kept anywhere, so this can’t be undone."}"#);
+        assert_eq!(lost.detail, "It’s a new file, so git keeps nothing of it. What you staged of it isn’t kept anywhere, so this can’t be undone.");
+        assert!(!lost.undoable);
         let unstaged = words(r#""status":"modified","discard":"unstaged","discards":{"kind":"changes","undoable":false}"#);
         assert_eq!((unstaged.title.as_str(), unstaged.undoable), ("Discard the changes to Form.tsx?", false));
         // A kind a newer box says: asked plainly, drawn as the box says.
