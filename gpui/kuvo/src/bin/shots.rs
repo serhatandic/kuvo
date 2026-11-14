@@ -12,7 +12,7 @@ use kuvo_box::git::Group;
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo::bots::{Act as BotAct, BotsView};
 use kuvo::queue::{Act as QueueAct, Filter, QueueView};
-use kuvo::settings::{Act, SettingsView, sign_in::SignIn};
+use kuvo::settings::{SettingsView, sign_in::SignIn};
 use kuvo::{Workspace, bind_keys};
 use kuvo_box::accounts::Side;
 use kuvo_box::BoxClient;
@@ -398,7 +398,12 @@ fn sign_in_failed(w: &mut Workspace, window: &mut Window, cx: &mut Context<Works
 /// Disconnect, asked first.
 fn disconnect(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let view = settings(w, "Accounts", window, cx);
-    view.update(cx, |view, cx| view.act(Act::Disconnect { account: "github-copilot".into(), name: "GitHub Copilot".into() }, cx));
+    // As its row's Disconnect asks it: the box's action, with the box's confirm.
+    view.update(cx, |view, cx| {
+        if let Some(act) = view.account_act("github-copilot", "disconnect") {
+            view.act(act, cx);
+        }
+    });
 }
 
 /// In a narrow window, the Sessions sidebar brought out by its button.

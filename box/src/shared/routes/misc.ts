@@ -62,7 +62,8 @@ export const SIGN_IN_METHODS = object(SIGN_IN_WAYS);
  * stands (`state`), the line under its name (`line`), each of its sign-ins and keys with its own
  * line (`connections`, the one in use first), and what can be done with it now (`actions`: each
  * with its button's words, `confirm` where a client asks first, in the box's words, and `here` where
- * it only works on this box's computer), as the box decides them (`sign-in.accounts.state`). */
+ * it only works on this box's computer), as the box decides them (`sign-in.accounts.state`);
+ * `added` for an account you added beside a coding agent's own sign-in. */
 const SIGN_IN_STATE = {
   state: words("signedIn", "signedOut", "ended", "notInstalled", "unchecked", "problem"),
   line: string,
@@ -73,6 +74,7 @@ const SIGN_IN_STATE = {
     "here?": literal(true),
   })),
   connections: list(object({ "id?": string, state: words("signedIn", "ended", "problem"), line: string })),
+  "added?": literal(true),
 } as const;
 export const SIGN_IN_ACCOUNTS = object({ accounts: list(object({ id: string, ...SIGN_IN_WAYS, kind: words("provider", "search", "mcp", "agentDuplicate"), listed: bool, "service?": string, ...SIGN_IN_STATE })) });
 

@@ -46,6 +46,9 @@ export interface AccountSaid {
   line: string;
   actions: AccountAction[];
   connections: SaidConnection[];
+  /** One you added beside a coding agent's own sign-in: listed with its agent whether or not it's
+   * signed in. */
+  added?: true;
 }
 
 interface ListedConnection {
@@ -63,10 +66,10 @@ const text = (value: unknown): string => (typeof value === "string" ? plainName(
  * how it stands. `ended`: the box saw runs refused with it (accounts.ts). */
 function connectionSaid(connection: ListedConnection, name: string, computer: string, ended: boolean): SaidConnection & { who: string; signedInAs: boolean; trouble: string } {
   const status = isObject(connection.status) ? connection.status : {};
-  // (A key the engine named after its provider says what it is, rather than the name again.)
+  // (A key the engine named after its provider, or only "API key", says what it is once.)
   const label = text(connection.label);
-  const who = label && label !== name ? label : "";
   const kind = connection.method === "key" ? "API key" : connection.method === "external" ? `Credentials on ${computer}` : "";
+  const who = label && label !== name && label.toLowerCase() !== kind.toLowerCase() ? label : "";
   const line = connection.type === "env" ? `From ${text(connection.name) || "its environment"}` : kind ? (who ? `${kind} · ${who}` : kind) : who || "Signed in";
   const trouble = status.status === "failed" ? text(status.message) : "";
   return {
@@ -91,6 +94,9 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
   const said = listed.map(each => connectionSaid(each, name, computer, !agents && ended !== undefined && each.type === "credential" && each.id === ended));
   const connections = said.map(({ id, state, line }) => ({ ...(id ? { id } : {}), state, line }));
   const inUse = said[0];
+  // The saved sign-in in use is the first the box keeps, as `kuvo/accounts/ended` goes by
+  // (accounts.ts): ended, its plan's sign-in ended, whatever its shell's environment adds.
+  const savedInUse = said[listed.findIndex(each => each.type === "credential")];
   const signsIn = offered.methods.length > 0;
   // One you added beside the agent's own sign-in (`claude-code@1f2e3d4c`).
   const added = agents && (id.includes("@") || (typeof meta.accountID === "string" && meta.accountID !== "" && meta.accountID !== "default"));
@@ -99,7 +105,7 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
   const installs = agents && meta.installed === false && typeof meta.install === "string" && meta.install !== "";
 
   const state: AccountState = installs ? "notInstalled"
-    : (agents ? meta.signInEnded === true : inUse?.state === "ended") ? "ended"
+    : (agents ? meta.signInEnded === true : inUse?.state === "ended" || savedInUse?.state === "ended") ? "ended"
     : inUse ? (inUse.state === "problem" ? "problem" : "signedIn")
     : agents && meta.unchecked === true ? "unchecked"
     : "signedOut";
@@ -111,6 +117,8 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
       case "problem": return inUse!.trouble;
       case "unchecked": return "Couldn’t check just now";
       case "signedIn": {
+        // (An agent that couldn't say just now, and never said who: as its bridge takes it.)
+        if (agents && meta.unchecked === true && !inUse!.who) return "Couldn’t check just now";
         const first = inUse!.signedInAs ? `Signed in as ${inUse!.who}` : inUse!.line;
         return said.length > 1 ? `${first} · ${said.length} accounts` : first;
       }
@@ -138,16 +146,17 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
     const latest = text(meta.latestVersion);
     const updating = isObject(meta.programUpdate) && meta.programUpdate.state === "updating";
     if (!added && !installs && meta.outdated === true && meta.updates === true && latest && !updating) actions.push({ id: "update", label: `Update to ${latest}` });
+    if (meta.signsOut === true && said.length) actions.push({ id: "signOut", label: "Sign Out" });
     if (added) actions.push({ id: "rename", label: "Rename" }, remove);
-    else if (meta.signsOut === true && said.length) actions.push({ id: "signOut", label: "Sign Out" });
-    return { state, line, actions, connections };
+    return { state, line, actions, connections, ...(added ? { added: true as const } : {}) };
   }
   if (!said.length) {
     if (signsIn) actions.push({ id: "signIn", label: "Sign In" });
     return { state, line, actions, connections };
   }
   if (signsIn) {
-    if (state === "ended" || state === "problem") actions.push({ id: "signInAgain", label: "Sign In Again" });
+    // Wherever one of its sign-ins ended, the one in use or another, or the one in use failed.
+    if (state === "ended" || state === "problem" || said.some(each => each.state === "ended")) actions.push({ id: "signInAgain", label: "Sign In Again" });
     // (The engine uses one at a time: another is kept beside it.)
     actions.push({ id: "addAnother", label: "Add Another Account" });
   }

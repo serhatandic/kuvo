@@ -28,7 +28,7 @@ test.each(vectors.codes.map((each: any) => [each.about, each]))("a device sign-i
 
 test.each(vectors.states.map((each: any) => [each.about, each]))("an account's state, line and actions: %s", (_, each: any) => {
   expect(signInMethods(each.account)).toEqual(each.offered)
-  expect(accountState(each.account, each.offered, { agents: each.agents === true, ended: each.ended, computer: each.computer })).toEqual({ state: each.state, line: each.line, actions: each.actions, connections: each.connections })
+  expect(accountState(each.account, each.offered, { agents: each.agents === true, ended: each.ended, computer: each.computer })).toEqual({ state: each.state, line: each.line, actions: each.actions, connections: each.connections, ...(each.added ? { added: true } : {}) })
 })
 
 // Through the box's routes, the engine a stand-in: Accounts lists what the box says is a provider,

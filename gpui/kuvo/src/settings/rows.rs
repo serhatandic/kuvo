@@ -245,7 +245,7 @@ fn general(facts: &Facts) -> Vec<Block> {
 
 /// What one of the box's actions does here, where this app has a control for it; none for one it
 /// hasn't yet (a program's update, renaming an account, another account beside the one in use).
-fn act_of(entry: &AccountEntry, action: &Action) -> Option<Act> {
+pub(super) fn act_of(entry: &AccountEntry, action: &Action) -> Option<Act> {
     let (account, name) = (entry.integration.id.clone(), entry.integration.name.clone());
     Some(match action.id.as_str() {
         "signIn" | "signInAgain" => Act::SignIn { side: entry.side, account, name },

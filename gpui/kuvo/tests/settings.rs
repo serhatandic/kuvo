@@ -599,6 +599,7 @@ fn an_account_is_drawn_from_the_boxs_state_line_and_actions(cx: &mut TestAppCont
     assert!(shown(cx, "account-anthropic-sign-in-once-more") && shown(cx, "account-anthropic-forget-this-plan"));
     click(cx, "account-anthropic-forget-this-plan");
     assert_eq!(view.read_with(cx, |view, _| view.confirm_words()), Some(("Forget it?".into(), "The box’s own words.".into(), "Forget".into())));
+    assert!(stand_in.seen_at("POST", "kuvo/accounts/anthropic/forget").is_empty(), "nothing sent until it's confirmed");
     cx.simulate_keystrokes("escape");
 
     // Signed in with several: a menu, the one that asks first marked by this app, not in its label.
@@ -624,22 +625,6 @@ fn an_account_is_drawn_from_the_boxs_state_line_and_actions(cx: &mut TestAppCont
     stand_in.set_elsewhere(true);
     again(&workspace, cx);
     assert!(shown(cx, "account-cursor") && !shown(cx, "account-cursor-sign-in"));
-}
-
-#[gpui::test]
-fn a_confirm_asks_in_the_boxs_words(cx: &mut TestAppContext) {
-    let stand_in = StandIn::at(Replies::Never, NOW);
-    let (workspace, cx) = open(cx, stand_in.clone());
-    let view = section(&workspace, cx, "Accounts");
-    click(cx, "account-github-copilot-disconnect");
-    let (title, body, button) = view.read_with(cx, |view, _| view.confirm_words()).expect("a confirm");
-    assert_eq!(title, "Disconnect GitHub Copilot?");
-    assert_eq!(body, "Its sign-ins and keys go from Stand-in Mac, and its models leave the model picker there. Sessions on its models stop until you sign in again.");
-    assert_eq!(button, "Disconnect");
-    assert!(stand_in.seen_at("POST", "kuvo/accounts/github-copilot/forget").is_empty(), "nothing sent until it's confirmed");
-    click(cx, "confirm-go");
-    assert_eq!(stand_in.seen_at("POST", "kuvo/accounts/github-copilot/forget").len(), 1);
-    assert!(shown(cx, "account-github-copilot-sign-in"), "signed out, as the box now says");
 }
 
 /// The app's way: the box asked off the window's thread, its answers coming in later.

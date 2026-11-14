@@ -229,6 +229,14 @@ impl SettingsView {
         })
     }
 
+    /// What the box's action `id` on `account` does here, as its row's control asks it: none
+    /// where the box doesn't offer it now (for the shots, which press no button).
+    pub fn account_act(&self, account: &str, id: &str) -> Option<Act> {
+        let Reading::Ready(accounts) = &self.accounts else { return None };
+        let entry = accounts.agents.iter().chain(&accounts.engine).find(|entry| entry.integration.id == account)?;
+        rows::act_of(entry, entry.actions.iter().find(|action| action.id == id)?)
+    }
+
     /// The confirm open, as drawn: its question, what it comes to, and its button.
     pub fn confirm_words(&self) -> Option<(String, String, String)> {
         self.confirm.as_ref().map(|confirm| (confirm.title.clone(), confirm.body.clone(), confirm.button.clone()))

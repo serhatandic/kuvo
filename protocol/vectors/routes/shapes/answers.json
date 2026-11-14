@@ -9393,6 +9393,9 @@
             "line": "string"
            }
           }
+         },
+         "added?": {
+          "literal": true
          }
         }
        }

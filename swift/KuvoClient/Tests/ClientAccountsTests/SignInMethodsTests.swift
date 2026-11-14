@@ -77,16 +77,18 @@ struct SignInMethodsTests {
     /// through whole, a confirm with its words, and nothing is worked out here.
     @Test func anAccountsStateLineAndActionsAreTheBoxsWord() throws {
         let cases = try #require(try Self.vectors()["states"] as? [[String: Any]])
-        #expect(cases.count >= 20)
+        #expect(cases.count >= 38)
         for each in cases {
             let id = try #require((each["account"] as? [String: Any])?["id"] as? String)
             let offered = try #require(each["offered"] as? [String: Any])
-            let answer = offered.merging(["id": id, "kind": "provider", "listed": true, "state": each["state"]!, "line": each["line"]!, "actions": each["actions"]!, "connections": each["connections"]!]) { $1 }
+            var answer = offered.merging(["id": id, "kind": "provider", "listed": true, "state": each["state"]!, "line": each["line"]!, "actions": each["actions"]!, "connections": each["connections"]!]) { $1 }
+            if let added = each["added"] { answer["added"] = added }
             let read = try JSONDecoder().decode(SignInAccounts.self, from: JSONSerialization.data(withJSONObject: ["accounts": [answer]]))
             let said = try #require(read.said[id], "\(each["about"]!)")
             #expect(said.state.rawValue == each["state"] as? String, "\(each["about"]!)")
             #expect(read.state(id) == said.state)
             #expect(said.line == each["line"] as? String)
+            #expect(said.added == (each["added"] as? Bool ?? false), "\(each["about"]!)")
             let actions = try #require(each["actions"] as? [[String: Any]])
             #expect(said.actions.map(\.id) == actions.map { $0["id"] as? String }, "\(each["about"]!)")
             #expect(said.actions.map(\.label) == actions.map { $0["label"] as? String })
@@ -110,6 +112,9 @@ struct SignInMethodsTests {
         let newer = try JSONDecoder().decode(SignInAccounts.self, from: Data(#"{"accounts":[{"id":"acme","methods":[],"environment":[],"hint":"Connect","state":"somethingNew","line":"A newer line","actions":[{"id":"somethingNew","label":"A Newer Thing"}],"connections":[]}]}"#.utf8))
         #expect(newer.state("acme") == .signedOut && newer.said["acme"]?.line == "A newer line" && newer.said["acme"]?.actions.map(\.id) == ["somethingNew"])
         #expect(newer.said["acme"]?.signIn == nil)
+        // An action this client can't read is left out; the account and its other actions stay.
+        let partly = try JSONDecoder().decode(SignInAccounts.self, from: Data(#"{"accounts":[{"id":"acme","methods":[],"environment":[],"hint":"Connect","state":"signedIn","line":"API key","actions":[{"id":"odd"},{"id":"disconnect","label":"Disconnect"}],"connections":[]}]}"#.utf8))
+        #expect(partly.said["acme"]?.actions.map(\.id) == ["disconnect"] && partly.state("acme") == .signedIn)
         #expect(SignInAccounts.none.said["acme"] == nil && SignInAccounts.none.state("acme") == .signedOut)
         #expect(AccountSaid.State.ended.needsYou && AccountSaid.State.problem.needsYou && !AccountSaid.State.signedIn.needsYou)
     }

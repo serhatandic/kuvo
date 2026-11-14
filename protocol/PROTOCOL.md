@@ -3324,7 +3324,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     "Login with" said "Sign in with"; plain "Sign in" where its words only name the account
     again), else "API key" for a key, else "Connect".
   - `GET kuvo/sign-in/accounts[?agents=1]` → `{"accounts": [{id, methods, environment, hint, kind,
-    listed, service?, state, line, connections, actions}]}`:
+    listed, service?, state, line, connections, actions, added?}]}`:
     every account the engine (or the bridge) lists, each with the same answer. Accounts goes by it
     on every client: what an account offers is its `actions`, and the line under its name is its
     `line`.
@@ -3332,8 +3332,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     stands and what can be done with it, decided by the box from what the engine (or the bridge)
     lists and its own record of sign-ins that ended, so no client keeps the rule or the words.
     - `state` is the fact: `signedIn`; `signedOut`; `ended` (the engine says its sign-in in use
-      needs signing in again, `needs_auth`, or the box saw runs refused with it, as
-      `kuvo/accounts/ended` says; a coding agent's, its maker ended it, `metadata.signInEnded`);
+      needs signing in again, `needs_auth`, or the box saw runs refused with the saved one in use,
+      the first it keeps, as `kuvo/accounts/ended` says of the same plans; a coding agent's, its
+      maker ended it, `metadata.signInEnded`);
       `notInstalled` (a coding agent's program isn't on the computer and has an installer to run;
       one Kuvo Code brings itself is `signedOut`, and comes as it signs in); `unchecked` (the
       agent couldn't say just now and nothing's known yet; one that was signed in stays
@@ -3343,14 +3344,15 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     - `line` is the account's status in a line, words over that fact: "Signed in as
       you@example.com" (with "· 2 accounts" for more than one), "API key", "API key · Work",
       "Credentials on <computer>", "From OPENAI_API_KEY", "Sign-in ended", "Not installed on
-      <computer>", "Couldn’t check just now", the failed sign-in's own words, and signed out "Not
+      <computer>", "Couldn’t check just now" (also for an agent taken as signed in that couldn't
+      say and never said who), the failed sign-in's own words, and signed out "Not
       signed in" for a coding agent, else the account's `hint`, or "Set … in your shell profile"
       where only its environment variables sign in to it. `<computer>` is the box's own name.
     - `connections`: each of its sign-ins and keys, in the engine's order (the first is the one in
       use), `{id?, state, line}`: the engine's id for one the box keeps (a `credential`, as
       `api/credential/<id>` takes it), `signedIn`, `ended` or `problem`, and who or what it is
       ("you@example.com", "API key", "From OPENAI_API_KEY"; a key the engine named after its
-      provider says "API key"). A client that draws a row for each draws these.
+      provider, or only "API key", says "API key"). A client that draws a row for each draws these.
     - `actions`: what can be done with it now, in the order to offer them, `{id, label, confirm?,
       here?}`. `label` is the button's words. `confirm`, where a client asks first: `{title,
       message, label}`, the question, what it comes to and the words of the button that goes
@@ -3358,8 +3360,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
       never reads one in `label`. `here`: it only works on the box's computer (a coding agent's
       sign-in whose page comes back to it, no `metadata.remoteSignIn`), so a client elsewhere
       doesn't offer it and says where instead. The ids, and the route each is done through:
-      `signIn` and `signInAgain` (a coding agent's that's signed in or ended; an engine's whose
-      sign-in ended or failed) and `addAnother` (an engine's that's signed in: the engine uses
+      `signIn` and `signInAgain` (a coding agent's that's signed in or ended; an engine's with a
+      sign-in that ended, the one in use or another, or whose one in use failed) and `addAnother`
+      (an engine's that's signed in: the engine uses
       one at a time) start a sign-in from `methods`, there only where `methods` isn't empty;
       `disconnect` (an engine's with a sign-in or key the box keeps; one from the shell's
       environment has none) is `POST kuvo/accounts/<id>/forget`; `install` is `POST
@@ -3370,6 +3373,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
       kuvo/agents/api/integration/<id>/disconnect`; `rename` and `remove` (an account you added
       beside an agent's own) are `PATCH` and `DELETE kuvo/agents/api/kuvo/accounts/<id>`. A
       client draws the ids it has a control for and leaves out one it doesn't know.
+    - `added: true` for an account you added beside a coding agent's own sign-in: a client lists
+      it with its agent whether or not it's signed in.
     Not said here yet, so still each client's: an account Custom Auto holds at its usage limit,
     and what can be done with one sign-in of several (use it, remove it).
     `kind` and `listed` (`sign-in.accounts.kinds`, #711): what it is, and whether Accounts lists
@@ -6275,7 +6280,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
 | `shell.stop` | `POST kuvo/shell/<id>/stop` |
 | `sign-in.accounts.kinds` | `kind`, `listed` and `service` on each account in `GET kuvo/sign-in/accounts`: which are providers Accounts lists, and each one's mark ("Signing in", #711) |
-| `sign-in.accounts.state` | `state`, `line`, `connections` and `actions` on each account in `GET kuvo/sign-in/accounts`: how it stands, the line under its name, each of its sign-ins' own line, and what can be done with it, each with its button's words and its confirm's ("Signing in", #668) |
+| `sign-in.accounts.state` | `state`, `line`, `connections` and `actions` on each account in `GET kuvo/sign-in/accounts`: how it stands, the line under its name, each of its sign-ins' own line, and what can be done with it, each with its button's words and its confirm's ("Signing in", #668), and `added` on one you added |
 | `sign-in.codes` | `POST kuvo/sign-in/start`, and `userCode` wherever a sign-in has a device code, the engine's own plans too ("Signing in", #711) |
 | `sign-in.methods` | `GET kuvo/sign-in/methods`, `GET kuvo/sign-in/accounts` and `GET kuvo/sign-in/status`: the ways to sign in, in the box's order and words, and what to say when a sign-in didn't work ("Signing in") |
 | `sign-in.return` | `POST kuvo/sign-in/return` |

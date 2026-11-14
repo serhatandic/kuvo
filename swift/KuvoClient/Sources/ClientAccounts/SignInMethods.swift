@@ -116,15 +116,25 @@ public struct AccountSaid: Decodable, Sendable, Equatable {
     public let line: String
     public let actions: [Action]
     public let connections: [Connection]
+    /// One you added beside a coding agent's own sign-in: listed with its agent whether or not
+    /// it's signed in.
+    public let added: Bool
 
-    private enum CodingKeys: String, CodingKey { case state, line, actions, connections }
+    private enum CodingKeys: String, CodingKey { case state, line, actions, connections, added }
+
+    /// One of a list's items, or nothing where this client can't read it: the rest still come.
+    private struct Readable<Item: Decodable>: Decodable {
+        let item: Item?
+        init(from decoder: Decoder) throws { item = try? Item(from: decoder) }
+    }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         state = State(rawValue: try container.decode(String.self, forKey: .state)) ?? .signedOut
         line = try container.decode(String.self, forKey: .line)
-        actions = try container.decodeIfPresent([Action].self, forKey: .actions) ?? []
+        actions = (try container.decodeIfPresent([Readable<Action>].self, forKey: .actions) ?? []).compactMap(\.item)
         connections = try container.decodeIfPresent([Connection].self, forKey: .connections) ?? []
+        added = try container.decodeIfPresent(Bool.self, forKey: .added) ?? false
     }
 
     /// The action with `id`, where the box offers it now.

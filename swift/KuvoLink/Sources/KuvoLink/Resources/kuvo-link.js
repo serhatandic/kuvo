@@ -43055,7 +43055,7 @@ import fs138 from "node:fs";
 import path145 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f6c66ba60d82";
+var BRIDGE_VERSION = "698010de5e66";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -53290,8 +53290,8 @@ var text6 = (value) => typeof value === "string" ? plainName(value) : "";
 function connectionSaid(connection, name, computer, ended) {
   const status = isObject(connection.status) ? connection.status : {};
   const label = text6(connection.label);
-  const who = label && label !== name ? label : "";
   const kind = connection.method === "key" ? "API key" : connection.method === "external" ? `Credentials on ${computer}` : "";
+  const who = label && label !== name && label.toLowerCase() !== kind.toLowerCase() ? label : "";
   const line = connection.type === "env" ? `From ${text6(connection.name) || "its environment"}` : kind ? who ? `${kind} · ${who}` : kind : who || "Signed in";
   const trouble = status.status === "failed" ? text6(status.message) : "";
   return {
@@ -53311,10 +53311,11 @@ function accountState(account, offered, { agents = false, ended, computer }) {
   const said = listed.map((each) => connectionSaid(each, name, computer, !agents && ended !== undefined && each.type === "credential" && each.id === ended));
   const connections = said.map(({ id, state, line }) => ({ ...id ? { id } : {}, state, line }));
   const inUse = said[0];
+  const savedInUse = said[listed.findIndex((each) => each.type === "credential")];
   const signsIn = offered.methods.length > 0;
   const added = agents && (id.includes("@") || typeof meta.accountID === "string" && meta.accountID !== "" && meta.accountID !== "default");
   const installs = agents && meta.installed === false && typeof meta.install === "string" && meta.install !== "";
-  const state = installs ? "notInstalled" : (agents ? meta.signInEnded === true : inUse?.state === "ended") ? "ended" : inUse ? inUse.state === "problem" ? "problem" : "signedIn" : agents && meta.unchecked === true ? "unchecked" : "signedOut";
+  const state = installs ? "notInstalled" : (agents ? meta.signInEnded === true : inUse?.state === "ended" || savedInUse?.state === "ended") ? "ended" : inUse ? inUse.state === "problem" ? "problem" : "signedIn" : agents && meta.unchecked === true ? "unchecked" : "signedOut";
   const line = (() => {
     switch (state) {
       case "notInstalled":
@@ -53326,6 +53327,8 @@ function accountState(account, offered, { agents = false, ended, computer }) {
       case "unchecked":
         return "Couldn’t check just now";
       case "signedIn": {
+        if (agents && meta.unchecked === true && !inUse.who)
+          return "Couldn’t check just now";
         const first = inUse.signedInAs ? `Signed in as ${inUse.who}` : inUse.line;
         return said.length > 1 ? `${first} · ${said.length} accounts` : first;
       }
@@ -53353,11 +53356,11 @@ function accountState(account, offered, { agents = false, ended, computer }) {
     const updating = isObject(meta.programUpdate) && meta.programUpdate.state === "updating";
     if (!added && !installs && meta.outdated === true && meta.updates === true && latest && !updating)
       actions.push({ id: "update", label: `Update to ${latest}` });
+    if (meta.signsOut === true && said.length)
+      actions.push({ id: "signOut", label: "Sign Out" });
     if (added)
       actions.push({ id: "rename", label: "Rename" }, remove);
-    else if (meta.signsOut === true && said.length)
-      actions.push({ id: "signOut", label: "Sign Out" });
-    return { state, line, actions, connections };
+    return { state, line, actions, connections, ...added ? { added: true } : {} };
   }
   if (!said.length) {
     if (signsIn)
@@ -53365,7 +53368,7 @@ function accountState(account, offered, { agents = false, ended, computer }) {
     return { state, line, actions, connections };
   }
   if (signsIn) {
-    if (state === "ended" || state === "problem")
+    if (state === "ended" || state === "problem" || said.some((each) => each.state === "ended"))
       actions.push({ id: "signInAgain", label: "Sign In Again" });
     actions.push({ id: "addAnother", label: "Add Another Account" });
   }
