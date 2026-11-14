@@ -6019,8 +6019,8 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `box.update` | `POST kuvo/box/update {from}`: a release from a folder on the box's computer, the one Kuvo Code carries, taken at the next quiet moment ("Updates"); a release's Mac bundles, swapped whole; `kuvo/update`'s `offered` |
 | `branch` | `kuvo/agents/api/kuvo/branch/<session>`: Branch from here, marked |
 | `browser` | a machine only: `kuvo/browser`, its browser set up by the box itself ("The browser on a machine") |
-| `browser.view` | `kuvo/browser/view`: authenticated live view socket (“The browser’s live view”) |
 | `browser.data` | `kuvo/browser/history`, `…/icons/<host>`, `…/sites` and `…/settings`: the browser's data, every box's own ("The browser's data") |
+| `browser.view` | `kuvo/browser/view`: authenticated live view socket (“The browser’s live view”) |
 | `btw` | `kuvo/agents/api/kuvo/btw…`: side questions ("Side questions, handoffs and reviews") |
 | `btw.threads` | a side question's `thread`, follow-ups and a thread's removal (bridge 0.9.98) |
 | `claude-code` | `kuvo/claude-code` (a Mac only, before #341) |
@@ -8987,10 +8987,13 @@ newline JSON stream, including raw CDP compatibility.
 | box → client | `Kuvo.fileChooser` | `{targetId,mode}`, after Chrome opens a file chooser |
 | box → client | `Kuvo.external` | `{targetId,url}`, a typed address using another app's scheme |
 | client → box | `Kuvo.hold` | existing `{targetId,on,mac?}` takeover vocabulary |
+| client → box | `Kuvo.claim` | existing `{targetId,session}` conversation ownership vocabulary |
+| box → client | `Kuvo.dialog` | `{targetId,type,message,defaultPrompt?,url?,...}`, Chrome's dialog facts |
+| box → client | `Kuvo.viewQuality` | `{targetId,quality,scale,reason:"oversize"}`, reduced picture settings |
 
 The keeper also forwards its existing hello, ask, download, status and pointer facts.
 Pages are announced when Chrome reports creation, navigation, title, loading or destruction,
-and when agent status changes. The address comes from these facts even when an agent navigates.
+and when agent status changes, only if the facts changed. The address comes from these facts even when an agent navigates.
 A tab's name is its nonempty title, else its address's host without `www.`, else “New Tab”.
 
 Input fields follow CDP's Input parameters: mouse has type, x, y, button and clickCount;
@@ -9007,19 +9010,30 @@ removed when that page navigates or closes, or when Chrome next starts.
 
 While an agent's status says it works in a page, a viewer cannot change that page's size.
 Otherwise the latest view or input sets it. Raw clients' device metrics, page scale and
-screencast calls go through that same rule. Raw agents' requested size is retained.
+screencast calls go through that same rule. Raw agents' requested size is retained and restored
+when work resumes. A raw screencast's maxima limit its picture, without changing its CSS
+viewport or DPR; non-size Emulation calls pass through. New view sockets do not register
+as clients able to answer browser asks.
 The keeper captures once per target, dimensions, scale and quality class, with one capture
 in progress per class, and scales the picture without changing the working page's layout.
+Capture scale compensates for the source DPR. Identical pictures are not resent, and unchanged
+classes back off to a two-second poll; input wakes them immediately.
 
 On the new sockets a binary message is: four bytes of big-endian JSON header length,
 that many UTF-8 bytes of `{method:"Kuvo.frame",params:{...}}`, then the JPEG.
 SSH retains base64 `params.data`. Binary avoids base64's expansion; relay frames larger
-than 60,000 bytes are dropped, never split. Phone-sized views (width ≤600 CSS pixels)
-use scale 1 and quality at most 50. All views are capped at 15 fps.
+than 60,000 bytes are dropped, never split. The next picture's quality steps down by ten
+(to q10); if necessary its scale then steps down. Only that viewer receives Kuvo.viewQuality. Phone-sized views (width ≤600 CSS pixels)
+start at scale 1 and quality at most 50. New Kuvo views are capped at 15 fps. Legacy raw
+streams keep a 60 fps ceiling and their requested quality; narrow raw views are not phone-classed.
 At most two unacknowledged frames are allowed per viewer. Obsolete pictures are dropped,
 never queued for a slow viewer. The relay counts messages (500/s for its whole connection);
 the live view shares a ceiling of about 100 messages/s across its relay viewers.
-Other box traffic retains the rest of that connection's budget.
+Other box traffic retains the rest of that connection's budget. A nonzero host.unsent()
+skips pictures as a backstop. Reply bursts pause keeper reads rather than close a healthy
+viewer; a slow serve client skips and credits pictures but retains text. New relay sockets
+keep the one-message picture bound instead of an automatic multi-message 2x stopped-page
+refinement; the legacy local client retains its own sharp-screenshot path.
 
-Examples and socket path cases live in `protocol/vectors/browser-view.json` and
-`protocol/vectors/link.json`; route answers are generated from the browser route shapes.
+Examples and box-only socket path cases live in `protocol/vectors/browser-view.json`;
+released Swift socket vectors stay unchanged in `protocol/vectors/link.json`. Route answers are generated from the browser route shapes.

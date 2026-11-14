@@ -126,7 +126,7 @@ export async function runMacLink(): Promise<void> {
         // Mail from your machines, taken here as a machine takes it (`peerMail`).
         mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces)),
         handle: macFront(engineHandler(readEngineFile, { name: config!.name }, readBridgeFile, changed => host.keepOnly(new Set((changed.phones ?? []).map(phone => phone.key))), macLink.hold)),
-        connect: engineConnect(readEngineFile, () => host.unsent?.() ?? 0),
+        connect: engineConnect(readEngineFile, (): number => host.unsent?.() ?? 0),
         send: () => {},
       });
       macLink.host = host;
