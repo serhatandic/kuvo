@@ -35185,10 +35185,21 @@ async function* computersRoute(context, match) {
   if (!match[1])
     return yield* json(200, await read());
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-  return yield* followedLive(read, (told) => {
-    listFollowers.add(told);
-    return () => listFollowers.delete(told);
-  }, signal, { look: () => `${mtime(PEER_AGENTS_FILE)} ${mtime(PEER_REACH)} ${mtime(LINK_FILE)}` });
+  const listen = (told) => {
+    let was = workingHere();
+    const listTold = () => {
+      const now = workingHere();
+      if (now === was)
+        return;
+      was = now;
+      told();
+    };
+    listFollowers.add(listTold);
+    return () => {
+      listFollowers.delete(listTold);
+    };
+  };
+  return yield* followedLive(read, listen, signal, { look: () => `${mtime(PEER_AGENTS_FILE)} ${mtime(PEER_REACH)} ${mtime(LINK_FILE)}` });
 }
 
 // box/src/link/peers/agents.ts
@@ -42667,7 +42678,7 @@ import fs138 from "node:fs";
 import path144 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "31ef0ecef514";
+var BRIDGE_VERSION = "afe65c313e19";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -47014,11 +47025,11 @@ function botsNowHere(list = keptList()) {
 }
 function waitingOf(list) {
   const facts = factsOf3(list);
-  const asking = (session) => facts[session]?.asked !== undefined;
+  const asking = new Set(Object.entries(facts).filter(([, each]) => each.asked !== undefined).map(([id]) => id));
   return {
     sessions: (list?.needsYou ?? []).length,
     bots: Object.values(botsNow(facts)).filter((now) => now.asking > 0).length,
-    queue: allItems().filter((item) => !item.removed && item.category !== "done" && item.sessions.some((linked) => asking(linked.session))).length
+    queue: asking.size ? allItems().filter((item) => !item.removed && item.category !== "done" && item.sessions.some((linked) => asking.has(linked.session))).length : 0
   };
 }
 async function* waitingRoute(context, match) {
@@ -47104,7 +47115,22 @@ async function* botEventsRoute(context) {
   if (request.method.toUpperCase() !== "GET")
     return yield* json(405, {});
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-  return yield* followed(() => ({ bots: botsWithNow(info.name), ...heldLists() }), followersOf(botFollowers, listFollowers), signal, { folders: [BOTS, HELD3] });
+  const nowChanged = new Set;
+  let last = JSON.stringify(botsNowHere());
+  const listTold = () => {
+    const now = JSON.stringify(botsNowHere());
+    if (now === last)
+      return;
+    last = now;
+    for (const tell of nowChanged)
+      tell();
+  };
+  listFollowers.add(listTold);
+  try {
+    return yield* followed(() => ({ bots: botsWithNow(info.name), ...heldLists() }), followersOf(botFollowers, nowChanged), signal, { folders: [BOTS, HELD3] });
+  } finally {
+    listFollowers.delete(listTold);
+  }
 }
 async function* botsRoute(context) {
   const { request, info, text } = context;

@@ -94,7 +94,22 @@ export async function* botEventsRoute(context: RouteContext): AsyncGenerator<Ans
   const { request, signal, info, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-  return yield* followed(() => ({ bots: botsWithNow(info.name), ...heldLists() }), followersOf(botFollowers, listFollowers), signal, { folders: [BOTS, HELD] });
+  // (Told as the session list changes only where what a bot is doing did: the list changes with
+  // every step of a run, and listing the bots reads their folders.)
+  const nowChanged = new Set<() => void>();
+  let last = JSON.stringify(botsNowHere());
+  const listTold = () => {
+    const now = JSON.stringify(botsNowHere());
+    if (now === last) return;
+    last = now;
+    for (const tell of nowChanged) tell();
+  };
+  listFollowers.add(listTold);
+  try {
+    return yield* followed(() => ({ bots: botsWithNow(info.name), ...heldLists() }), followersOf(botFollowers, nowChanged), signal, { folders: [BOTS, HELD] });
+  } finally {
+    listFollowers.delete(listTold);
+  }
 }
 
 // This machine's bots and wake-ups, from their folders.

@@ -24,11 +24,12 @@ export function botsNowHere(list: Kept | null = keptList()): Record<string, BotN
 /** What waits on you, as `list` has it. */
 export function waitingOf(list: Kept | null): WaitingOnYou {
   const facts = factsOf(list);
-  const asking = (session: string) => facts[session]?.asked !== undefined;
+  const asking = new Set(Object.entries(facts).filter(([, each]) => each.asked !== undefined).map(([id]) => id));
   return {
     sessions: (list?.needsYou ?? []).length,
     bots: Object.values(botsNow(facts)).filter(now => now.asking > 0).length,
-    queue: allItems().filter(item => !item.removed && item.category !== "done" && item.sessions.some(linked => asking(linked.session))).length,
+    // (The queues are read only while something waits at all: this is asked as the list changes.)
+    queue: asking.size ? allItems().filter(item => !item.removed && item.category !== "done" && item.sessions.some(linked => asking.has(linked.session))).length : 0,
   };
 }
 

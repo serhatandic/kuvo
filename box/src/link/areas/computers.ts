@@ -146,6 +146,18 @@ export async function* computersRoute(context: RouteContext, match: RegExpMatchA
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
   // A line now, and one as it changes: its peers, what they told, which are away (their files),
   // and its own sessions starting and stopping work; and every 15 s for the rest (its limits).
-  return yield* followedLive(read, told => { listFollowers.add(told); return () => listFollowers.delete(told); }, signal,
+  // (Of its list's changes, only how many are at work: it changes with every step of a run.)
+  const listen = (told: () => void) => {
+    let was = workingHere();
+    const listTold = () => {
+      const now = workingHere();
+      if (now === was) return;
+      was = now;
+      told();
+    };
+    listFollowers.add(listTold);
+    return () => { listFollowers.delete(listTold); };
+  };
+  return yield* followedLive(read, listen, signal,
     { look: () => `${mtime(PEER_AGENTS_FILE)} ${mtime(PEER_REACH)} ${mtime(LINK_FILE)}` });
 }
