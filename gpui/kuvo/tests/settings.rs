@@ -665,4 +665,29 @@ mod live {
         assert!(shown(cx, "account-github-copilot"), "the page with it, once Accounts is read");
         let _ = host;
     }
+
+    /// Install in the app's own way, its answers coming in later: installed, the sign-in opens,
+    /// from what the box says of the account after the install (before it, only Install was offered).
+    #[gpui::test]
+    fn an_agent_installed_goes_on_to_signing_in_once_its_box_offers_it(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            Theme::init(Appearance::Light, cx);
+            kuvo::bind_keys(cx);
+        });
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let client = BoxClient::new(stand_in.clone());
+        let (host, cx) = cx.add_window_view(|_, cx| {
+            let settings = cx.new(|cx| SettingsView::new(client, true, cx));
+            cx.subscribe(&settings, |host: &mut Host, _, pick: &Pick, cx| host.settings.update(cx, |settings, cx| settings.set_section(&pick.section, cx))).detach();
+            Host { settings }
+        });
+        cx.simulate_resize(size(px(1280.), px(1400.)));
+        host.update(cx, |host, cx| host.settings.update(cx, |settings, cx| settings.set_section("Accounts", cx)));
+        cx.run_until_parked();
+        click(cx, "account-grok-cli-install");
+        cx.run_until_parked();
+        assert_eq!(stand_in.seen_at("POST", "kuvo/agents/api/integration/grok-cli/install").len(), 1);
+        assert!(shown(cx, "sign-in"), "on to signing in");
+        assert_eq!(stand_in.seen_at("POST", "kuvo/sign-in/start").len(), 1, "its sign-in started");
+    }
 }

@@ -310,17 +310,17 @@ export class ClaudeAgent implements Agent {
           // account's, its own). Not a Claude plan an earlier version signed it in to there:
           // Claude Code would renew that one in the sandbox, which can't keep what it renews.
           const console = await this.readStatus(this.consoleEnv())
-          if (console.loggedIn && console.authMethod !== "claude.ai") return { installed: true, signedIn: true, label: describe(console) || "Anthropic Console" }
+          if (console.loggedIn && console.authMethod !== "claude.ai") return { installed: true, signedIn: true, ...named(console, "Anthropic Console") }
           return { installed: true, signedIn: false, message: "Sign in to Claude Code with your Claude plan or an Anthropic Console account." }
         }
         // Who and which plan, from your own sign-in (Kuvo Code's can only ask Claude for answers),
         // read as it is: never renewed here. An added account's may be another one: not named.
         const status = this.instance.home ? undefined : await this.readStatus().catch(() => undefined)
-        return { installed: true, signedIn: true, label: (status?.loggedIn && describe(status)) || "Claude plan" }
+        return { installed: true, signedIn: true, ...named(status?.loggedIn ? status : undefined, "Claude plan") }
       }
       const status = await this.readStatus()
       if (!status.loggedIn) return { installed: true, signedIn: false, message: "Sign in to Claude Code with your Claude plan or an Anthropic Console account." }
-      return { installed: true, signedIn: true, label: describe(status) || "Claude Code" }
+      return { installed: true, signedIn: true, ...named(status, "Claude Code") }
     })
     // Claude turned the sign-in away in a run, though `claude auth status` may still say signed in.
     const turnedAway = this.turnedAway
@@ -2628,4 +2628,11 @@ function describe(status: Status): string {
   const plan = status.subscriptionType ? `${status.subscriptionType.charAt(0).toUpperCase()}${status.subscriptionType.slice(1)} plan` : undefined
   const who = status.email ?? (status.apiProvider && status.apiProvider !== "firstParty" ? status.apiProvider : undefined)
   return [who, plan].filter(Boolean).join(" · ")
+}
+
+/** A sign-in's label: who it is and on which plan, where `claude auth status` says who; else what
+ * it's signed in with (its plan alone, or `otherwise`), marked so (`what`), for a client's words. */
+function named(status: Status | undefined, otherwise: string): { label: string; what?: true } {
+  const described = status ? describe(status) : ""
+  return described && status?.email ? { label: described } : { label: described || otherwise, what: true }
 }

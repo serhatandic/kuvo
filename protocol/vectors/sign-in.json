@@ -1864,7 +1864,7 @@
      "label": "Remove Account",
      "confirm": {
       "title": "Remove Claude Code · Work?",
-      "message": "It’s signed out on Studio, and its models leave the model picker. Its sessions stay.",
+      "message": "It’s signed out on Studio, and its models leave the model picker. A turn running on it stops; its sessions stay.",
       "label": "Remove Account"
      }
     }
@@ -1933,7 +1933,7 @@
      "label": "Remove Account",
      "confirm": {
       "title": "Remove Claude Code · Work?",
-      "message": "It’s signed out on Studio, and its models leave the model picker. Its sessions stay.",
+      "message": "It’s signed out on Studio, and its models leave the model picker. A turn running on it stops; its sessions stay.",
       "label": "Remove Account"
      }
     }
@@ -3029,7 +3029,7 @@
      "label": "Disconnect",
      "confirm": {
       "title": "Disconnect OpenAI?",
-      "message": "Its sign-ins and keys go from Studio, and its models leave the model picker there. Sessions on its models stop until you sign in again.",
+      "message": "Its saved sign-ins and keys go from Studio. It stays signed in from OPENAI_API_KEY in its shell’s environment, so its models stay.",
       "label": "Disconnect"
      }
     }
@@ -3305,7 +3305,7 @@
      "label": "Remove Account",
      "confirm": {
       "title": "Remove Claude Code · Work?",
-      "message": "It’s signed out on Studio, and its models leave the model picker. Its sessions stay.",
+      "message": "It’s signed out on Studio, and its models leave the model picker. A turn running on it stops; its sessions stay.",
       "label": "Remove Account"
      }
     }
@@ -3383,7 +3383,7 @@
      "label": "Remove Account",
      "confirm": {
       "title": "Remove Cursor · Work?",
-      "message": "It’s signed out on Studio, and its models leave the model picker. Its sessions stay.",
+      "message": "It’s signed out on Studio, and its models leave the model picker. A turn running on it stops; its sessions stay.",
       "label": "Remove Account"
      }
     }
@@ -3395,6 +3395,189 @@
     }
    ],
    "added": true
+  },
+  {
+   "about": "a coding agent signed in with something its bridge names, not someone (`what`): signed in with it, not as it",
+   "agents": true,
+   "account": {
+    "id": "codex-cli",
+    "name": "Codex",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "chatgpt",
+      "label": "Sign in with ChatGPT"
+     }
+    ],
+    "connections": [
+     {
+      "type": "agent",
+      "label": "OpenAI API key",
+      "method": "oauth",
+      "what": true
+     }
+    ],
+    "metadata": {
+     "source": "agent",
+     "agent": "codex",
+     "accountID": "default",
+     "installed": true,
+     "signInEnded": false,
+     "unchecked": false,
+     "signsOut": false,
+     "outdated": false,
+     "updates": false,
+     "remoteSignIn": true
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "chatgpt",
+      "label": "Sign in with ChatGPT"
+     }
+    ],
+    "environment": [],
+    "hint": "Sign in with ChatGPT"
+   },
+   "state": "signedIn",
+   "line": "Signed in with OpenAI API key",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again"
+    }
+   ],
+   "connections": [
+    {
+     "state": "signedIn",
+     "line": "OpenAI API key"
+    }
+   ]
+  },
+  {
+   "about": "an integration's server's sign-in is never a plan to disconnect",
+   "account": {
+    "id": "linear",
+    "name": "Linear",
+    "metadata": {
+     "source": "mcp"
+    },
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "mcp",
+      "label": "Sign in"
+     }
+    ],
+    "connections": [
+     {
+      "type": "credential",
+      "id": "cred_7",
+      "method": "oauth"
+     }
+    ]
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "mcp",
+      "label": "Sign in"
+     }
+    ],
+    "environment": [],
+    "hint": "Sign in"
+   },
+   "state": "signedIn",
+   "line": "Signed in",
+   "actions": [
+    {
+     "id": "addAnother",
+     "label": "Add Another Account"
+    }
+   ],
+   "connections": [
+    {
+     "id": "cred_7",
+     "state": "signedIn",
+     "line": "Signed in"
+    }
+   ]
+  },
+  {
+   "about": "a saved key beside one from the shell's environment: Disconnect says the environment's stays, and its models with it",
+   "account": {
+    "id": "openai",
+    "name": "OpenAI",
+    "methods": [
+     {
+      "type": "key"
+     },
+     {
+      "type": "env",
+      "names": [
+       "OPENAI_API_KEY"
+      ]
+     }
+    ],
+    "connections": [
+     {
+      "type": "credential",
+      "id": "cred_1",
+      "label": "Work",
+      "method": "key"
+     },
+     {
+      "type": "env",
+      "name": "OPENAI_API_KEY"
+     }
+    ]
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "key",
+      "label": "Use an API key"
+     }
+    ],
+    "environment": [
+     "OPENAI_API_KEY"
+    ],
+    "hint": "API key"
+   },
+   "state": "signedIn",
+   "line": "API key · Work · 2 accounts",
+   "actions": [
+    {
+     "id": "addAnother",
+     "label": "Add Another Account"
+    },
+    {
+     "id": "disconnect",
+     "label": "Disconnect",
+     "confirm": {
+      "title": "Disconnect OpenAI?",
+      "message": "Its saved sign-ins and keys go from Studio. It stays signed in from OPENAI_API_KEY in its shell’s environment, so its models stay.",
+      "label": "Disconnect"
+     }
+    }
+   ],
+   "connections": [
+    {
+     "id": "cred_1",
+     "state": "signedIn",
+     "line": "API key · Work"
+    },
+    {
+     "state": "signedIn",
+     "line": "From OPENAI_API_KEY"
+    }
+   ]
   },
   {
    "about": "a coding agent never checked that couldn't say just now: taken as signed in, and its line says it couldn't check",

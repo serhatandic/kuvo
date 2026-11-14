@@ -58,13 +58,16 @@ interface ListedConnection {
   method?: unknown;
   name?: unknown;
   status?: unknown;
+  /** Its label says what it's signed in with ("OpenAI API key", "Google account"), not who: as
+   * the coding agents' bridge marks it. */
+  what?: unknown;
 }
 
 const text = (value: unknown): string => (typeof value === "string" ? plainName(value) : "");
 
 /** One sign-in or key: who or what it is ("you@example.com", "API key", "From OPENAI_API_KEY"), and
  * how it stands. `ended`: the box saw runs refused with it (accounts.ts). */
-function connectionSaid(connection: ListedConnection, name: string, computer: string, ended: boolean): SaidConnection & { who: string; signedInAs: boolean; trouble: string } {
+function connectionSaid(connection: ListedConnection, name: string, computer: string, ended: boolean): SaidConnection & { who: string; signedInAs: boolean; what: boolean; trouble: string } {
   const status = isObject(connection.status) ? connection.status : {};
   // (A key the engine named after its provider, or only "API key", says what it is once.)
   const label = text(connection.label);
@@ -78,6 +81,7 @@ function connectionSaid(connection: ListedConnection, name: string, computer: st
     line,
     who,
     signedInAs: connection.type !== "env" && !kind && who !== "",
+    what: connection.what === true,
     trouble,
   };
 }
@@ -119,7 +123,8 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
       case "signedIn": {
         // (An agent that couldn't say just now, and never said who: as its bridge takes it.)
         if (agents && meta.unchecked === true && !inUse!.who) return "Couldn’t check just now";
-        const first = inUse!.signedInAs ? `Signed in as ${inUse!.who}` : inUse!.line;
+        // ("as" someone, "with" something: an agent's own name for a key or a kind of account.)
+        const first = inUse!.signedInAs ? `Signed in ${inUse!.what ? "with" : "as"} ${inUse!.who}` : inUse!.line;
         return said.length > 1 ? `${first} · ${said.length} accounts` : first;
       }
       case "signedOut":
@@ -136,7 +141,7 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
   const remove: AccountAction = {
     id: "remove",
     label: "Remove Account",
-    confirm: { title: `Remove ${name}?`, message: `It’s signed out on ${computer}, and its models leave the model picker. Its sessions stay.`, label: "Remove Account" },
+    confirm: { title: `Remove ${name}?`, message: `It’s signed out on ${computer}, and its models leave the model picker. A turn running on it stops; its sessions stay.`, label: "Remove Account" },
   };
   if (agents) {
     if (installs) actions.push({ id: "install", label: "Install" });
@@ -160,13 +165,14 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
     // (The engine uses one at a time: another is kept beside it.)
     actions.push({ id: "addAnother", label: "Add Another Account" });
   }
-  // A sign-in or key this box keeps can be forgotten; one from the shell's environment can't.
-  if (listed.some(each => each.type === "credential")) {
-    actions.push({
-      id: "disconnect",
-      label: "Disconnect",
-      confirm: { title: `Disconnect ${name}?`, message: `Its sign-ins and keys go from ${computer}, and its models leave the model picker there. Sessions on its models stop until you sign in again.`, label: "Disconnect" },
-    });
+  // A sign-in or key this box keeps can be forgotten; one from the shell's environment can't,
+  // and stays (its models with it). Never an integration's server's: Disconnect is a plan's.
+  if (meta.source !== "mcp" && listed.some(each => each.type === "credential")) {
+    const stays = listed.filter(each => each.type === "env").map(each => text(each.name)).filter(Boolean);
+    const message = stays.length
+      ? `Its saved sign-ins and keys go from ${computer}. It stays signed in from ${stays.join(" and ")} in its shell’s environment, so its models stay.`
+      : `Its sign-ins and keys go from ${computer}, and its models leave the model picker there. Sessions on its models stop until you sign in again.`;
+    actions.push({ id: "disconnect", label: "Disconnect", confirm: { title: `Disconnect ${name}?`, message, label: "Disconnect" } });
   }
   return { state, line, actions, connections };
 }

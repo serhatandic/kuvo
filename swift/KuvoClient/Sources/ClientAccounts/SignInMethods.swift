@@ -133,7 +133,7 @@ public struct AccountSaid: Decodable, Sendable, Equatable {
         state = State(rawValue: try container.decode(String.self, forKey: .state)) ?? .signedOut
         line = try container.decode(String.self, forKey: .line)
         actions = (try container.decodeIfPresent([Readable<Action>].self, forKey: .actions) ?? []).compactMap(\.item)
-        connections = try container.decodeIfPresent([Connection].self, forKey: .connections) ?? []
+        connections = (try container.decodeIfPresent([Readable<Connection>].self, forKey: .connections) ?? []).compactMap(\.item)
         added = try container.decodeIfPresent(Bool.self, forKey: .added) ?? false
     }
 

@@ -3099,6 +3099,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     and sessions are theirs. `kuvo/agents/api/kuvo/accounts`: `POST {agent, label}` (agent:
     `claude`, `codex`, `cursor`, `grok`, `antigravity`) → `{data: {providerID}}`, then sign in as
     any; `PATCH …/accounts/<provider> {label}`; `DELETE …/accounts/<provider>`.
+    A signed-in account's connection has `what: true` where its `label` says what it's signed in
+    with ("OpenAI API key", "Google account", "grok.com", a plan with no one named), not who.
     `metadata.signInEnded` true: its maker ended the sign-in; mark the account (the Mac says
     "Sign-in ended") and offer to sign in again. `metadata.unchecked` true: the agent couldn't
     say just now whether it's signed in (its check failed or took too long, on a busy computer);
@@ -3342,7 +3344,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
       marks by `state` (`ended` and `problem` need you), and treats one it doesn't know as
       `signedOut`.
     - `line` is the account's status in a line, words over that fact: "Signed in as
-      you@example.com" (with "· 2 accounts" for more than one), "API key", "API key · Work",
+      you@example.com" (with "· 2 accounts" for more than one; "Signed in with OpenAI API key"
+      where a coding agent's bridge marks its connection's label `what: true`, what it's signed
+      in with rather than who), "API key", "API key · Work",
       "Credentials on <computer>", "From OPENAI_API_KEY", "Sign-in ended", "Not installed on
       <computer>", "Couldn’t check just now" (also for an agent taken as signed in that couldn't
       say and never said who), the failed sign-in's own words, and signed out "Not
@@ -3364,8 +3368,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
       sign-in that ended, the one in use or another, or whose one in use failed) and `addAnother`
       (an engine's that's signed in: the engine uses
       one at a time) start a sign-in from `methods`, there only where `methods` isn't empty;
-      `disconnect` (an engine's with a sign-in or key the box keeps; one from the shell's
-      environment has none) is `POST kuvo/accounts/<id>/forget`; `install` is `POST
+      `disconnect` (an engine's plan with a sign-in or key the box keeps, never an integration's
+      server's; one from the shell's environment has none, and where one stays beside a saved
+      one the confirm says it stays, and its models with it) is `POST kuvo/accounts/<id>/forget`; `install` is `POST
       kuvo/agents/api/integration/<id>/install`; `update` (on the agent's own sign-in, where its
       program is behind, its installer can update it and it isn't updating; `label` names the
       version, "Update to 2.2.4") is `POST kuvo/agents/api/kuvo/updates/<id>`; `signOut` (an

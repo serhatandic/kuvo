@@ -559,7 +559,7 @@ pub fn said_of(account: &Value, offered: &Value, agents: bool, ended: Option<&st
         ("unchecked", _) => "Couldn’t check just now".into(),
         ("signedIn", Some(first)) if agents && meta["unchecked"] == true && first.1.is_empty() => "Couldn’t check just now".into(),
         ("signedIn", Some(first)) => {
-            let line = if first.2 { format!("Signed in as {}", first.1) } else { first.0["line"].as_str().unwrap_or_default().to_owned() };
+            let line = if first.2 { format!("Signed in {} {}", if listed[0]["what"] == true { "with" } else { "as" }, first.1) } else { first.0["line"].as_str().unwrap_or_default().to_owned() };
             if said.len() > 1 { format!("{line} · {} accounts", said.len()) } else { line }
         }
         _ if agents => "Not signed in".into(),
@@ -590,7 +590,7 @@ pub fn said_of(account: &Value, offered: &Value, agents: bool, ended: Option<&st
         }
         if added {
             actions.push(json!({ "id": "rename", "label": "Rename" }));
-            actions.push(json!({ "id": "remove", "label": "Remove Account", "confirm": { "title": format!("Remove {name}?"), "message": format!("It’s signed out on {computer}, and its models leave the model picker. Its sessions stay."), "label": "Remove Account" } }));
+            actions.push(json!({ "id": "remove", "label": "Remove Account", "confirm": { "title": format!("Remove {name}?"), "message": format!("It’s signed out on {computer}, and its models leave the model picker. A turn running on it stops; its sessions stay."), "label": "Remove Account" } }));
         }
     } else if said.is_empty() {
         if signs_in {
@@ -603,8 +603,14 @@ pub fn said_of(account: &Value, offered: &Value, agents: bool, ended: Option<&st
             }
             actions.push(json!({ "id": "addAnother", "label": "Add Another Account" }));
         }
-        if listed.iter().any(|each| each["type"] == "credential") {
-            actions.push(json!({ "id": "disconnect", "label": "Disconnect", "confirm": { "title": format!("Disconnect {name}?"), "message": format!("Its sign-ins and keys go from {computer}, and its models leave the model picker there. Sessions on its models stop until you sign in again."), "label": "Disconnect" } }));
+        if meta["source"] != "mcp" && listed.iter().any(|each| each["type"] == "credential") {
+            let stays: Vec<String> = listed.iter().filter(|each| each["type"] == "env").map(|each| text(&each["name"])).filter(|name| !name.is_empty()).collect();
+            let message = if stays.is_empty() {
+                format!("Its sign-ins and keys go from {computer}, and its models leave the model picker there. Sessions on its models stop until you sign in again.")
+            } else {
+                format!("Its saved sign-ins and keys go from {computer}. It stays signed in from {} in its shell’s environment, so its models stay.", stays.join(" and "))
+            };
+            actions.push(json!({ "id": "disconnect", "label": "Disconnect", "confirm": { "title": format!("Disconnect {name}?"), "message": message, "label": "Disconnect" } }));
         }
     }
     let mut answer = json!({ "state": state, "line": line, "actions": actions, "connections": said.into_iter().map(|each| each.0).collect::<Vec<_>>() });
@@ -651,7 +657,7 @@ mod tests {
     fn the_stand_in_says_an_accounts_state_as_the_box_does() {
         let vectors: Value = serde_json::from_str(include_str!("../../../../protocol/vectors/sign-in.json")).unwrap();
         let cases = vectors["states"].as_array().unwrap();
-        assert!(cases.len() >= 38, "every case the box has: one added there is one to hold this to");
+        assert!(cases.len() >= 41, "every case the box has: one added there is one to hold this to");
         for case in cases {
             let said = said_of(&case["account"], &case["offered"], case["agents"] == true, case["ended"].as_str(), case["computer"].as_str().unwrap());
             for key in ["state", "line", "actions", "connections", "added"] {

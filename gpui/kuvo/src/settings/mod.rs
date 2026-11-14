@@ -375,18 +375,26 @@ impl SettingsView {
                 let installing = account.clone();
                 self.run(
                     key.clone(),
-                    move |client| client.install_agent(&installing),
+                    // Installed, its accounts are read again in the same piece of work: what the
+                    // box says of it after the install is what the next step goes by (before it,
+                    // it offered only Install).
+                    move |client| client.install_agent(&installing).map(|installed| {
+                        let read = installed.installed.then(|| client.sign_in_accounts());
+                        (installed, read)
+                    }),
                     move |this, done, cx| {
                         this.done(&key);
                         match done {
-                            Ok(installed) if installed.installed => {
-                                this.run("read-accounts", |client| client.sign_in_accounts(), |this, read, _| this.accounts = reading(read, &this.accounts), cx);
-                                // Installed: on to signing in, as the Mac does.
+                            Ok((installed, read)) if installed.installed => {
+                                if let Some(read) = read {
+                                    this.accounts = reading(read, &this.accounts);
+                                }
+                                // Installed: on to signing in, where its box now offers it.
                                 if this.offers_sign_in(Side::Agents, &account) {
                                     this.open_sign_in(Side::Agents, &account, &name, cx);
                                 }
                             }
-                            Ok(installed) => this.problem = Some(format!("{name} couldn’t be installed. {}", installed.message.unwrap_or_else(|| "It isn’t installed.".into()))),
+                            Ok((installed, _)) => this.problem = Some(format!("{name} couldn’t be installed. {}", installed.message.unwrap_or_else(|| "It isn’t installed.".into()))),
                             Err(error) => this.problem = Some(format!("{name} couldn’t be installed. {}", said(&error))),
                         }
                     },
@@ -552,7 +560,7 @@ impl SettingsView {
         let Reading::Ready(accounts) = &self.accounts else { return false };
         let list = if side == Side::Agents { &accounts.agents } else { &accounts.engine };
         // As the box says: a sign-in among its actions, one this app can start from where it runs.
-        list.iter().any(|entry| entry.integration.id == account && entry.actions.iter().any(|action| action.signs_in() && (self.client.here() || !action.here)))
+        list.iter().any(|entry| entry.integration.id == account && entry.actions.iter().any(|action| action.signs_in() && action.offered(self.client.here())))
     }
 
     pub fn open_sign_in(&mut self, side: Side, account: &str, name: &str, cx: &mut Context<Self>) {

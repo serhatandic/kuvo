@@ -182,6 +182,12 @@ pub struct Action {
 }
 
 impl Action {
+    /// Whether a client offers it: one that only works on the box's computer, only where the
+    /// client runs there (`here`).
+    pub fn offered(&self, here: bool) -> bool {
+        here || !self.here
+    }
+
     /// Whether it starts a sign-in from the account's ways in.
     pub fn signs_in(&self) -> bool {
         matches!(self.id.as_str(), "signIn" | "signInAgain" | "addAnother")
@@ -484,7 +490,7 @@ mod tests {
     fn an_accounts_state_and_actions_read_as_the_shared_vectors_say_them() {
         let vectors: Value = serde_json::from_str(include_str!("../../../protocol/vectors/sign-in.json")).unwrap();
         let cases = vectors["states"].as_array().unwrap();
-        assert!(cases.len() >= 38);
+        assert!(cases.len() >= 41);
         for case in cases {
             let state: State = serde_json::from_value(case["state"].clone()).unwrap();
             assert_eq!(state == State::SignedOut, case["state"] == "signedOut", "{}", case["about"]);

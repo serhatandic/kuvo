@@ -159,7 +159,7 @@ export class CursorAgent implements Agent {
       } else {
         try {
           const me: any = await withTimeout(sdk.Cursor.me({ apiKey }), 15_000)
-          account = { installed: true, signedIn: true, label: me?.userEmail ?? (process.env.CURSOR_API_KEY ? "Cursor API key" : "Cursor account") }
+          account = { installed: true, signedIn: true, label: me?.userEmail ?? (process.env.CURSOR_API_KEY ? "Cursor API key" : "Cursor account"), ...(me?.userEmail ? {} : { what: true }) }
         } catch (error: any) {
           // Only Cursor turning it down is a sign-out (not Cursor out of reach, or slow to answer).
           if (!(error instanceof sdk.AuthenticationError || error?.status === 401)) throw error

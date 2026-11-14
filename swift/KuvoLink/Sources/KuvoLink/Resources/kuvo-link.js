@@ -43277,7 +43277,7 @@ import fs138 from "node:fs";
 import path146 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "2f2bc8d51972";
+var BRIDGE_VERSION = "963a7ad08ed8";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -53522,6 +53522,7 @@ function connectionSaid(connection, name, computer, ended) {
     line,
     who,
     signedInAs: connection.type !== "env" && !kind && who !== "",
+    what: connection.what === true,
     trouble
   };
 }
@@ -53551,7 +53552,7 @@ function accountState(account, offered, { agents = false, ended, computer }) {
       case "signedIn": {
         if (agents && meta.unchecked === true && !inUse.who)
           return "Couldn’t check just now";
-        const first = inUse.signedInAs ? `Signed in as ${inUse.who}` : inUse.line;
+        const first = inUse.signedInAs ? `Signed in ${inUse.what ? "with" : "as"} ${inUse.who}` : inUse.line;
         return said.length > 1 ? `${first} · ${said.length} accounts` : first;
       }
       case "signedOut":
@@ -53567,7 +53568,7 @@ function accountState(account, offered, { agents = false, ended, computer }) {
   const remove = {
     id: "remove",
     label: "Remove Account",
-    confirm: { title: `Remove ${name}?`, message: `It’s signed out on ${computer}, and its models leave the model picker. Its sessions stay.`, label: "Remove Account" }
+    confirm: { title: `Remove ${name}?`, message: `It’s signed out on ${computer}, and its models leave the model picker. A turn running on it stops; its sessions stay.`, label: "Remove Account" }
   };
   if (agents) {
     if (installs)
@@ -53594,12 +53595,10 @@ function accountState(account, offered, { agents = false, ended, computer }) {
       actions.push({ id: "signInAgain", label: "Sign In Again" });
     actions.push({ id: "addAnother", label: "Add Another Account" });
   }
-  if (listed.some((each) => each.type === "credential")) {
-    actions.push({
-      id: "disconnect",
-      label: "Disconnect",
-      confirm: { title: `Disconnect ${name}?`, message: `Its sign-ins and keys go from ${computer}, and its models leave the model picker there. Sessions on its models stop until you sign in again.`, label: "Disconnect" }
-    });
+  if (meta.source !== "mcp" && listed.some((each) => each.type === "credential")) {
+    const stays = listed.filter((each) => each.type === "env").map((each) => text6(each.name)).filter(Boolean);
+    const message = stays.length ? `Its saved sign-ins and keys go from ${computer}. It stays signed in from ${stays.join(" and ")} in its shell’s environment, so its models stay.` : `Its sign-ins and keys go from ${computer}, and its models leave the model picker there. Sessions on its models stop until you sign in again.`;
+    actions.push({ id: "disconnect", label: "Disconnect", confirm: { title: `Disconnect ${name}?`, message, label: "Disconnect" } });
   }
   return { state, line, actions, connections };
 }

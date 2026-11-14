@@ -265,7 +265,7 @@ fn account_row(entry: &AccountEntry, facts: &Facts) -> Row {
     let name = entry.integration.name.clone();
     let key = format!("account-{}", entry.integration.id);
     let control = facts.busy(&key).unwrap_or_else(|| {
-        let offered: Vec<(&Action, Act)> = entry.actions.iter().filter(|action| facts.here || !action.here).filter_map(|action| Some((action, act_of(entry, action)?))).collect();
+        let offered: Vec<(&Action, Act)> = entry.actions.iter().filter(|action| action.offered(facts.here)).filter_map(|action| Some((action, act_of(entry, action)?))).collect();
         match offered.as_slice() {
             [] => Control::None,
             [(action, _)] if entry.state == State::SignedIn && action.confirm.is_none() => menu(&offered),

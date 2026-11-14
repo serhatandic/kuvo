@@ -77,7 +77,7 @@ struct SignInMethodsTests {
     /// through whole, a confirm with its words, and nothing is worked out here.
     @Test func anAccountsStateLineAndActionsAreTheBoxsWord() throws {
         let cases = try #require(try Self.vectors()["states"] as? [[String: Any]])
-        #expect(cases.count >= 38)
+        #expect(cases.count >= 41)
         for each in cases {
             let id = try #require((each["account"] as? [String: Any])?["id"] as? String)
             let offered = try #require(each["offered"] as? [String: Any])
@@ -113,8 +113,9 @@ struct SignInMethodsTests {
         #expect(newer.state("acme") == .signedOut && newer.said["acme"]?.line == "A newer line" && newer.said["acme"]?.actions.map(\.id) == ["somethingNew"])
         #expect(newer.said["acme"]?.signIn == nil)
         // An action this client can't read is left out; the account and its other actions stay.
-        let partly = try JSONDecoder().decode(SignInAccounts.self, from: Data(#"{"accounts":[{"id":"acme","methods":[],"environment":[],"hint":"Connect","state":"signedIn","line":"API key","actions":[{"id":"odd"},{"id":"disconnect","label":"Disconnect"}],"connections":[]}]}"#.utf8))
+        let partly = try JSONDecoder().decode(SignInAccounts.self, from: Data(#"{"accounts":[{"id":"acme","methods":[],"environment":[],"hint":"Connect","state":"signedIn","line":"API key","actions":[{"id":"odd"},{"id":"disconnect","label":"Disconnect"}],"connections":[{"state":"signedIn"},{"state":"signedIn","line":"API key"}]}]}"#.utf8))
         #expect(partly.said["acme"]?.actions.map(\.id) == ["disconnect"] && partly.state("acme") == .signedIn)
+        #expect(partly.said["acme"]?.connections.map(\.line) == ["API key"])
         #expect(SignInAccounts.none.said["acme"] == nil && SignInAccounts.none.state("acme") == .signedOut)
         #expect(AccountSaid.State.ended.needsYou && AccountSaid.State.problem.needsYou && !AccountSaid.State.signedIn.needsYou)
     }

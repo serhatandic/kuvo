@@ -439,7 +439,7 @@ export class AntigravityAgent implements Agent {
         message: this.isInstalled ? "Sign in with your Google account." : `Sign in with your Google account. Kuvo Code downloads Google's Antigravity agent (about ${Math.round(release.bytes / 1_000_000)} MB) first.`,
       }
     }
-    return { installed: this.isInstalled, signedIn: true, label: "Google account" }
+    return { installed: this.isInstalled, signedIn: true, label: "Google account", what: true }
   }
 
   /** Downloads and checks Google's agent, once. */
