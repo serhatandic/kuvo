@@ -10,6 +10,8 @@ import type { AnswerPiece, RouteContext } from "../server/context";
 
 // The biggest file `kuvo/file` sends.
 export const FILE_LIMIT = 25 * 1024 * 1024;
+// The biggest `kuvo/file/text` reads into one answer (as much as one file's diff, `kuvo/git/changes`).
+export const TEXT_LIMIT = 4 * 1024 * 1024;
 
 const TYPES: Record<string, string> = {
   png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", heic: "image/heic",
@@ -20,12 +22,15 @@ const TYPES: Record<string, string> = {
 
 // `kuvo/file?uri=<file:// URI>[&max=<bytes>]`: a file on this machine, as an agent's reply or tool
 // names it: its bytes with its type; 404 with a message for one that isn't there (or isn't a
-// file), 413 over FILE_LIMIT, or over `max` (all a client would show of it).
+// file), 413 over FILE_LIMIT (as text, over TEXT_LIMIT), or over `max` (all a client would show of it).
 export async function* fileAt(requestPath: string, json: RouteContext["json"], asText = false): AsyncGenerator<AnswerPiece> {
   const query = requestPath.includes("?") ? requestPath.slice(requestPath.indexOf("?") + 1) : "";
   const asked = new URLSearchParams(query);
   const uri = asked.get("uri");
-  const max = Number(asked.get("max") ?? FILE_LIMIT);
+  const most = asText ? TEXT_LIMIT : FILE_LIMIT;
+  // (A whole number of bytes, whatever was sent.)
+  const given = Math.floor(Number(asked.get("max") ?? most));
+  const max = Number.isFinite(given) ? given : most;
   let file;
   try {
     file = uri ? fileURLToPath(uri) : undefined;
@@ -36,8 +41,8 @@ export async function* fileAt(requestPath: string, json: RouteContext["json"], a
     stat = fs.statSync(file);
   } catch {}
   if (!stat?.isFile()) return yield* json(404, { message: "That file isn’t there anymore." });
-  if (stat.size > FILE_LIMIT) return yield* json(413, { message: "That file is too big to open here." });
-  if (Number.isFinite(max) && stat.size > max) return yield* json(413, { message: "That file is too big to show here." });
+  if (stat.size > most) return yield* json(413, { message: asText ? "That file is too big to show here." : "That file is too big to open here." });
+  if (stat.size > max) return yield* json(413, { message: "That file is too big to show here." });
   const type = TYPES[path.extname(file).slice(1).toLowerCase()] ?? "application/octet-stream";
   // Opened before it's answered: one that can't be read says so, with no path in it.
   let handle;
@@ -50,11 +55,11 @@ export async function* fileAt(requestPath: string, json: RouteContext["json"], a
   if (asText) {
     // No more of it than was asked for, whatever it grew to since it was looked at (or a file
     // that says no size, as /proc's do).
-    const most = Math.min(Number.isFinite(max) ? max : FILE_LIMIT, FILE_LIMIT);
+    const end = Math.max(0, Math.min(max, most));
     const pieces: Buffer[] = [];
     let read = 0;
     try {
-      for await (const piece of handle.createReadStream({ end: most, highWaterMark: 64 * 1024 })) {
+      for await (const piece of handle.createReadStream({ end, highWaterMark: 64 * 1024 })) {
         pieces.push(piece as Buffer);
         read += (piece as Buffer).length;
       }
@@ -63,7 +68,7 @@ export async function* fileAt(requestPath: string, json: RouteContext["json"], a
     } finally {
       await handle.close().catch(() => {});
     }
-    if (read > most) return yield* json(413, { message: "That file is too big to show here." });
+    if (read > end) return yield* json(413, { message: "That file is too big to show here." });
     return yield* json(200, textOf(Buffer.concat(pieces)));
   }
   yield { head: { status: 200, headers: { "content-type": type, "content-length": String(stat.size) } } };

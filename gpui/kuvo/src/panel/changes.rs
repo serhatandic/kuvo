@@ -734,10 +734,11 @@ pub fn commit_takes(files: &GitFiles) -> String {
         return if takes == 1 { "Commits the one changed file.".to_owned() } else { format!("Commits all {takes} changed files.") };
     }
     match (takes, elsewhere) {
+        // (`stagedElsewhere` counts a move's two sides, so it can pass `takes`.)
         (1, 0) => "Commits the staged file.".to_owned(),
         (takes, 0) => format!("Commits the {takes} staged files."),
         (1, _) => "Commits the file staged outside this folder.".to_owned(),
-        (takes, elsewhere) if takes == elsewhere => format!("Commits the {takes} files staged outside this folder."),
+        (takes, elsewhere) if elsewhere >= takes => format!("Commits the {takes} files staged outside this folder."),
         (takes, elsewhere) => format!("Commits the {takes} staged files, {elsewhere} of them outside this folder."),
     }
 }
@@ -936,6 +937,9 @@ mod tests {
         assert_eq!(commit_takes(&said), "Commits the 7 staged files.");
         let outside = listed(&format!(r#"{{"repository":true,"commits":"staged","stagedElsewhere":4,"takes":4,"files":[{}]}}"#, file("unstaged")));
         assert_eq!(commit_takes(&outside), "Commits the 4 files staged outside this folder.");
+        // A move staged outside is one file to commit, though both its sides are outside.
+        let moved = listed(&format!(r#"{{"repository":true,"commits":"staged","stagedElsewhere":4,"takes":2,"files":[{}]}}"#, file("unstaged")));
+        assert_eq!(commit_takes(&moved), "Commits the 2 files staged outside this folder.");
     }
 
     #[test]

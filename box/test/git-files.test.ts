@@ -190,8 +190,10 @@ test("a pull request is offered only where one can be made: from a branch of its
   const top = repository("offered")
   const branches = async (directory: string) => (await ask(handler, "POST", "kuvo/git/branches", { directory })).json
   git(top, "switch", "-q", "-c", "fix-form")
-  // Nowhere to push yet.
+  // Nowhere to push yet: none offered, and one asked for anyway is refused saying so.
   expect((await branches(top)).pullRequest).toBe(false)
+  const nowhere = await ask(handler, "POST", "kuvo/git/pull-request/draft", { directory: top })
+  expect([nowhere.status, nowhere.json.message]).toEqual([409, "This repository has no origin to push to. Add a remote called origin first."])
   git(top, "remote", "add", "origin", "git@github.com:me/app.git")
   expect((await branches(top)).pullRequest).toBe(true)
   // Work not committed yet doesn't take the offer away: its confirmation says to commit first.
@@ -289,6 +291,58 @@ test("a new file staged and then gone from disk can't be had back from the Trash
   ])
 })
 
+test("a discard that would lose a staged version for good never says it can be undone", async () => {
+  const top = repository("staged-then-changed")
+  const trash = join(box, "trash-changed")
+  process.env.KUVO_CHANGES_TRASH = trash
+  try {
+    // A new file staged, then written again: its discard trashes what's on disk, and the staged one goes.
+    writeFileSync(join(top, "new.md"), "v1\n")
+    git(top, "add", "new.md")
+    writeFileSync(join(top, "new.md"), "v2\n")
+    // A move staged with an edit, then edited again; and one staged, then gone from disk.
+    git(top, "mv", "app/old.ts", "app/new.ts")
+    writeFileSync(join(top, "app", "new.ts"), "export const old = 1\n// staged\n")
+    git(top, "add", "app/new.ts")
+    writeFileSync(join(top, "app", "new.ts"), "export const old = 1\n// staged\n// later\n")
+    git(top, "mv", "README.md", "READ.md")
+    rmSync(join(top, "READ.md"))
+    // One moved and left as staged can be had back whole.
+    git(top, "mv", "app/Form.tsx", "app/Sheet.tsx")
+    const staged = (await files(top)).files.filter((file: any) => file.group === "staged")
+    expect(staged.map((file: any) => [file.path, file.discards])).toEqual([
+      ["app/new.ts", { kind: "undoMove", undoable: false }],
+      ["app/Sheet.tsx", { kind: "undoMove", undoable: true }],
+      ["new.md", { kind: "trash", undoable: false }],
+      ["READ.md", { kind: "undoMove", undoable: false }],
+    ])
+    // As the discard itself goes: v2 is in the Trash, v1 nowhere.
+    const row = { ...staged.find((file: any) => file.path === "new.md"), root: top }
+    expect((await discard(row)).status).toBe(200)
+    expect(spawnSync("grep", ["-rl", "v2", trash], { encoding: "utf8" }).stdout.trim()).not.toBe("")
+    expect(spawnSync("grep", ["-rlx", "v1", trash], { encoding: "utf8" }).stdout.trim()).toBe("")
+  } finally {
+    delete process.env.KUVO_CHANGES_TRASH
+  }
+})
+
+test("a commit takes the same number of files from every folder, a move across a folder's edge as one", async () => {
+  const top = repository("moves")
+  mkdirSync(join(top, "out"))
+  writeFileSync(join(top, "out", "in.ts"), "into the folder\n")
+  writeFileSync(join(top, "app", "away.ts"), "out of the folder\n")
+  git(top, "add", "-A")
+  git(top, "commit", "-q", "-m", "More")
+  git(top, "mv", "app/old.ts", "app/renamed.ts")
+  git(top, "mv", "out/in.ts", "app/in.ts")
+  git(top, "mv", "app/away.ts", "out/away.ts")
+  const [atTop, inApp] = [await files(top), await files(join(top, "app"))]
+  expect([atTop.commits, atTop.takes, inApp.takes]).toEqual(["staged", 3, 3])
+  const author = { GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com" }
+  expect((await ask(handler, "POST", "kuvo/git/commit", { directory: join(top, "app"), message: "Moves", author })).status).toBe(200)
+  expect(git(top, "show", "--name-status", "--find-renames", "--format=", "HEAD").trim().split("\n").length).toBe(3)
+})
+
 test("a file opens as its text where it's text, and says it isn't where it isn't", async () => {
   const folder = join(box, "viewer")
   mkdirSync(folder)
@@ -303,6 +357,13 @@ test("a file opens as its text where it's text, and says it isn't where it isn't
   // All of a file as big as the most asked for, and none of one a byte bigger.
   expect((await read("marked.txt", "&max=6")).json.content).toBe("hi\n")
   expect((await read("marked.txt", "&max=5")).status).toBe(413)
+  // A size that isn't a whole number is taken as the whole number under it, never as a file that can't be opened.
+  expect((await read("empty.txt", "&max=1.5")).json).toEqual({ text: true, encoding: "utf-8", content: "" })
+  expect((await read("marked.txt", "&max=6.9")).json.content).toBe("hi\n")
+  // Past the most text one answer carries, whatever was asked for: too big, not read.
+  writeFileSync(join(folder, "long.txt"), "x".repeat(4 * 1024 * 1024 + 1))
+  expect((await read("long.txt")).status).toBe(413)
+  expect((await read("long.txt", `&max=${50 * 1024 * 1024}`)).status).toBe(413)
   // A picture (a NUL in it), and bytes that aren't UTF-8 (Latin-1's é, a UTF-16 file): not text.
   writeFileSync(join(folder, "logo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 13]))
   expect((await read("logo.png")).json).toEqual({ text: false })
@@ -444,7 +505,8 @@ test("a move into the folder from outside it counts the side outside", async () 
   git(top, "commit", "-q", "-m", "Other")
   git(top, "mv", "other/x.ts", "app/x.ts")
   const app = await files(join(top, "app"))
-  expect([app.commits, app.stagedElsewhere, app.takes]).toEqual(["staged", 1, 2])
+  // (One file, whichever folder it's seen from.)
+  expect([app.commits, app.stagedElsewhere, app.takes]).toEqual(["staged", 1, 1])
 })
 
 test("a staged deletion of a file just as it was committed leaves nothing in the Trash", async () => {

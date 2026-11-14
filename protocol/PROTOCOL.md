@@ -3753,8 +3753,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     true, root, branch, files, uncommitted, commits, stagedElsewhere, takes, more?, underway?}`: `branch`
     the one checked out (null on none); `commits`, what `kuvo/git/commit` takes now (`staged`, what's
     staged anywhere in the repository, else `all` of the folder's), `stagedElsewhere`, how many
-    staged files outside the folder it takes along, and `takes` (`git.files.does`, #708), how many
-    files in all: the staged ones listed and those outside the folder, or each of the folder's
+    staged files outside the folder it takes along (a move's two sides each), and `takes`
+    (`git.files.does`, #708), how many files in all: every staged file in the repository, a move
+    as the one file it is, the same number from every folder; or each of the folder's
     changed files once, the new ones `more` counts too, so no client counts rows; `more`, how many new files past the first 1,000
     are left out of `files`; `underway`, what git is in the middle of (`merging`, `rebasing`,
     `cherry-picking`, `reverting`); `files`
@@ -3777,8 +3778,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     for `discard` `head`, a copy on disk that differs going to the Trash first; as last staged for
     `unstaged`), `undoMove` (a staged move: its old path comes back and the new one goes to the
     Trash) or `changes` (its changes are thrown away, to where `discard` says); `undoable`, that
-    nothing is lost for good (all but `changes`, and a new file staged and gone from disk since,
-    of which only what's staged is left), by which a client draws the confirm's button as
+    nothing is lost for good (never `changes`; nor a new or moved file staged and then changed
+    again or gone from disk, whose staged version is in neither the Trash nor a commit), by which a client draws the confirm's button as
     destructive or not. What a discard does is `kuvo/git/discard`'s to decide, as before: these only
     say it. `404` for a folder
     that isn't there, `500 {"message"}` when git couldn't say. `GET kuvo/git/files/events?directory=`
@@ -3823,7 +3824,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     none). `pullRequest` (`git.branches.pullRequest`, #708): whether a pull request can be made from
     the branch checked out, so a client offers Create Pull Request only where it can go: false on no
     branch, on the branch pull requests go into (the worktree's base, else origin's main branch, as
-    `kuvo/git/pull-request/draft` finds it), with no `origin` to push to, and with no checkout. (Work
+    `kuvo/git/pull-request/draft` finds it), with no `origin` to push to, and with no checkout: each
+    as the draft and `kuvo/git/pull-request` refuse (`409 {"message"}`, saying which). (Work
     not committed yet, or nothing new, is the draft's `409` to say: that changes as you work.)
     Read by names only: nothing the repository's settings name runs. `500 {"message"}` when git couldn't say. A client also reads
     `repository` for whether a folder is in a repository at all (Edit Project's worktree setup).
@@ -4425,7 +4427,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   for one that isn't text (a picture, a program, an encoding other than UTF-8, the only one read:
   UTF-8 with no NUL byte in it; a mark at its start, a BOM, isn't part of `content`), which a
   viewer says instead of showing. So no client looks through a file's bytes to tell. Refused as
-  `kuvo/file` refuses (`400`, `403`, `404`, `413`).
+  `kuvo/file` refuses (`400`, `403`, `404`, `413`), but `413` already over 4 MB, with or without
+  `max`: its text comes as one answer. `GET` only (`405 {}` otherwise).
 
 ### Goals
 

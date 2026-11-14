@@ -38237,6 +38237,7 @@ import fs125 from "node:fs";
 import path130 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 var FILE_LIMIT = 25 * 1024 * 1024;
+var TEXT_LIMIT = 4 * 1024 * 1024;
 var TYPES2 = {
   png: "image/png",
   jpg: "image/jpeg",
@@ -38262,7 +38263,9 @@ async function* fileAt(requestPath, json, asText = false) {
   const query = requestPath.includes("?") ? requestPath.slice(requestPath.indexOf("?") + 1) : "";
   const asked = new URLSearchParams(query);
   const uri = asked.get("uri");
-  const max = Number(asked.get("max") ?? FILE_LIMIT);
+  const most = asText ? TEXT_LIMIT : FILE_LIMIT;
+  const given = Math.floor(Number(asked.get("max") ?? most));
+  const max = Number.isFinite(given) ? given : most;
   let file;
   try {
     file = uri ? fileURLToPath2(uri) : undefined;
@@ -38275,9 +38278,9 @@ async function* fileAt(requestPath, json, asText = false) {
   } catch {}
   if (!stat?.isFile())
     return yield* json(404, { message: "That file isn’t there anymore." });
-  if (stat.size > FILE_LIMIT)
-    return yield* json(413, { message: "That file is too big to open here." });
-  if (Number.isFinite(max) && stat.size > max)
+  if (stat.size > most)
+    return yield* json(413, { message: asText ? "That file is too big to show here." : "That file is too big to open here." });
+  if (stat.size > max)
     return yield* json(413, { message: "That file is too big to show here." });
   const type = TYPES2[path130.extname(file).slice(1).toLowerCase()] ?? "application/octet-stream";
   let handle;
@@ -38288,11 +38291,11 @@ async function* fileAt(requestPath, json, asText = false) {
     return yield* json(refused ? 403 : 404, { message: refused ? "That file can’t be opened here." : "That file isn’t there anymore." });
   }
   if (asText) {
-    const most = Math.min(Number.isFinite(max) ? max : FILE_LIMIT, FILE_LIMIT);
+    const end = Math.max(0, Math.min(max, most));
     const pieces = [];
     let read = 0;
     try {
-      for await (const piece of handle.createReadStream({ end: most, highWaterMark: 64 * 1024 })) {
+      for await (const piece of handle.createReadStream({ end, highWaterMark: 64 * 1024 })) {
         pieces.push(piece);
         read += piece.length;
       }
@@ -38301,7 +38304,7 @@ async function* fileAt(requestPath, json, asText = false) {
     } finally {
       await handle.close().catch(() => {});
     }
-    if (read > most)
+    if (read > end)
       return yield* json(413, { message: "That file is too big to show here." });
     return yield* json(200, textOf3(Buffer.concat(pieces)));
   }
@@ -38556,9 +38559,9 @@ async function staleDiscard(root, file, stamp) {
 var GROUPS = ["conflicted", "staged", "unstaged", "untracked"];
 var thereAt = (root, name) => !!kind(path131.join(root, name.replace(/\/$/, "")));
 var stageOf = (group) => group === "staged" ? "unstage" : group === "conflicted" ? "resolve" : "stage";
-function discardsOf(status, oldPath, there) {
+function discardsOf(status, oldPath, whole) {
   const kind = status === "added" ? "trash" : status === "renamed" && oldPath ? "undoMove" : status === "deleted" ? "restore" : "changes";
-  return { kind, undoable: kind === "trash" ? there : kind !== "changes" };
+  return { kind, undoable: kind === "trash" || kind === "undoMove" ? whole : kind === "restore" };
 }
 var changeOf = (letter) => letter === "A" || letter === "C" ? "added" : letter === "D" ? "deleted" : letter === "R" ? "renamed" : "modified";
 async function linesBy(root, compared, limit) {
@@ -38596,7 +38599,7 @@ async function filesIn2(directory) {
   let more = 0;
   let untracked = 0;
   const indexed = new Map;
-  const add = (group, path, status, oldPath) => {
+  const add = (group, path, status, oldPath, changedSince = false) => {
     const scope = group === "staged" ? "staged" : group === "conflicted" ? "uncommitted" : "unstaged";
     const lines = group === "staged" ? staged.get(path) : group === "unstaged" ? unstaged.get(path) : undefined;
     const discard = group === "conflicted" ? undefined : status === "added" ? "trash" : scope === "unstaged" ? "unstaged" : "head";
@@ -38609,7 +38612,7 @@ async function filesIn2(directory) {
       scope,
       stage: stageOf(group),
       ...lines ?? {},
-      ...discard ? { discard, discards: discardsOf(status, oldPath, thereAt(root, path)), stamp } : {},
+      ...discard ? { discard, discards: discardsOf(status, oldPath, thereAt(root, path) && !changedSince), stamp } : {},
       ...path.endsWith("/") ? { repository: true } : {}
     });
   };
@@ -38637,7 +38640,7 @@ async function filesIn2(directory) {
     }
     const oldPath = kind === "2" ? records[++at] : undefined;
     if (x !== ".")
-      add("staged", name, changeOf(x), x === "R" ? oldPath : undefined);
+      add("staged", name, changeOf(x), x === "R" ? oldPath : undefined, y !== ".");
     if (y !== ".")
       add("unstaged", name, y === "A" ? "added" : changeOf(y));
   }
@@ -38647,7 +38650,8 @@ async function filesIn2(directory) {
   const stagedNames = (await text4(root, ["-c", "core.quotepath=off", "diff", "--cached", "--name-only", "-z", "--no-renames", "--no-ext-diff", against]) ?? "").split("\x00").filter(Boolean);
   const stagedElsewhere = stagedNames.filter((name) => !inFolder(name)).length;
   const underway = await underwayIn(root);
-  const takes = commits === "staged" ? files.filter((file) => file.group === "staged").length + stagedElsewhere : new Set(files.map((file) => file.path)).size + more;
+  const stagedFiles = (await text4(root, ["-c", "core.quotepath=off", "diff", "--cached", "--name-only", "-z", "--find-renames", "--no-ext-diff", against]) ?? "").split("\x00").filter(Boolean).length;
+  const takes = commits === "staged" ? stagedFiles : new Set(files.map((file) => file.path)).size + more;
   return {
     repository: true,
     root,
@@ -39038,13 +39042,15 @@ async function pullRequestWay(directory) {
   const base = await pullRequestBase(directory, root);
   if (isBase(branch, base))
     return { status: 409, failed: `${branch} is the branch a pull request goes into. Make one from a branch of its own.` };
+  const remote = (await text4(root, ["remote", "get-url", "origin"]))?.trim() || undefined;
+  if (!remote)
+    return { status: 409, failed: "This repository has no origin to push to. Add a remote called origin first." };
   const against = base && ((await git2(root, ["rev-parse", "--verify", "-q", base])).ok ? base : (await git2(root, ["rev-parse", "--verify", "-q", `origin/${base}`])).ok ? `origin/${base}` : undefined);
   if (against) {
     const why = await unready(directory, branch, against);
     if (why)
       return { status: 409, failed: why.replace(`origin/${base}`, base) };
   }
-  const remote = (await text4(root, ["remote", "get-url", "origin"]))?.trim() || undefined;
   return { root, branch, base, against, remote };
 }
 function ghOn(root, host) {
@@ -42766,7 +42772,7 @@ import fs138 from "node:fs";
 import path144 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "49d49be3ce46";
+var BRIDGE_VERSION = "01b177a40afd";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
