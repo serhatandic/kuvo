@@ -22,6 +22,7 @@ import { noteWorkChanged } from "../work/changes";
 import { limitsFrom } from "../work/limits";
 import { noteEdited } from "./edited";
 import { WORK_ACTIONS } from "../work/asks";
+import { modelNamed, usableModels } from "../work/models";
 import type { Target } from "../../shared/records";
 import type { BotLook } from "../../shared/routes/bots";
 import type { ChangedBot } from "../../shared/routes/bots";
@@ -62,11 +63,13 @@ function onto(now: BotDescription | null, before: BotDescription, after: BotDesc
 /** A change to a bot, as Edit Bot sends it (`PATCH kuvo/bots/<id>`): its name, look, personality,
  * job or model, and its work's settings (`work: {limits, allowed}`: the limits you set, null for
  * none, and what it may do without asking, each only when named),
- * each checked here (`personality` null for none). */
-export type BotChange = Pick<GivenBot, "name" | "look" | "personality" | "job" | "model"> & { work?: unknown };
+ * each checked here (`personality` null for none). `effort` (`bots.effort`): the effort its model
+ * runs at, one of that model's own as this box lists them (null or "" for the model's own), for the
+ * model it has or the one the change names. */
+export type BotChange = Pick<GivenBot, "name" | "look" | "personality" | "job" | "model"> & { effort?: unknown; work?: unknown };
 
 /** The fields of a change whose times are noted (`noteEdited`). */
-const EDITED_FIELDS = ["name", "look", "personality", "job", "model", "work"];
+const EDITED_FIELDS = ["name", "look", "personality", "job", "model", "effort", "work"];
 
 /** What `changeBot` answers: the bot as it is after the change, or why not. */
 export type ChangedAnswer = JSONAnswer<ChangedBot | { message: string }>;
@@ -106,15 +109,28 @@ export async function changeBot(id: string, given: BotChange | null | undefined,
   }
   const personalities = botPersonalities(kit);
   if ("personality" in given) {
-    if (given.personality === null) delete changed.personality;
-    else if (personalities.some(each => each.id === given.personality)) changed.personality = given.personality as string;
-    else return no(400, `There’s no personality “${given.personality}”.`);
+    const wanted = given.personality;
+    if (wanted === null) delete changed.personality;
+    else if (personalities.some(each => each.id === wanted)) changed.personality = wanted as string;
+    else return no(400, `There’s no personality “${wanted}”.`);
   }
   let job: Job | undefined;
   if ("job" in given) {
     const checked = givenJob(given.job);
     if (checked.error) return no(400, checked.error);
     job = checked.job;
+  }
+  // The effort its model runs at: one of that model's own, as this box lists them (the engine's, or
+  // its coding agents'). It's the model's variant from here on, as `model` alone names it.
+  if ("effort" in given) {
+    const base = "model" in given ? given.model : described.model;
+    if (!isModel(base)) return no(400, "model" in given ? "That isn’t a model." : `${described.name} has no model to set an effort for.`);
+    const effort = given.effort;
+    const picked = await effortOf(base, effort, readEngine, readBridge, signal);
+    if ("refused" in picked) return no(picked.status, picked.refused);
+    given = { ...given, model: { id: base.id, providerID: base.providerID, ...(picked.variant ? { variant: picked.variant } : {}) } };
+    // (Its model changed when its effort did, where the change names no time for its model.)
+    if (typeof at !== "number" && at.effort !== undefined && at.model === undefined) at = { ...at, model: at.effort };
   }
   if ("model" in given) {
     if (!isModel(given.model)) return no(400, "That isn’t a model.");
@@ -211,6 +227,22 @@ export async function changeBot(id: string, given: BotChange | null | undefined,
   }
   noteEdited(id, EDITED_FIELDS.filter(field => field in given), at);
   return { status: 200, value: { bot: listBots(machine).find(each => each.id === id) ?? null } satisfies ChangedBot };
+}
+
+// The effort `given` names for `model`, as the model's variant: none for null or "" (the model's
+// own); refused (400) for one that model hasn't, by its efforts as this box lists them, and (503)
+// while it can't list them.
+async function effortOf(model: { id: string; providerID: string }, given: unknown, readEngine: () => Target, readBridge: () => Target | null, signal?: AbortSignal): Promise<{ variant: string | null } | { status: 400 | 503; refused: string }> {
+  if (given === null || given === "") return { variant: null };
+  if (typeof given !== "string") return { status: 400, refused: "That isn’t an effort." };
+  let engine: Target | null = null, agents: Target | null = null;
+  try { engine = readEngine(); } catch {}
+  try { agents = readBridge(); } catch {}
+  const listed = modelNamed(model, await usableModels(engine, agents, signal));
+  if (!listed) return { status: 503, refused: `The efforts of ${model.id} can’t be read on ${HERE} now. Try again in a moment.` };
+  if (!listed.efforts.length) return { status: 400, refused: `${listed.name} has no efforts to choose from.` };
+  if (!listed.efforts.includes(given)) return { status: 400, refused: `${listed.name} has no “${given}” effort: its efforts are ${listed.efforts.join(", ")}.` };
+  return { variant: given };
 }
 
 // Bots deleted here whose keys of their own are still to go (`run/bot-keys-left.json`): where the

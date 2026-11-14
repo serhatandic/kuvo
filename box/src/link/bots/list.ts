@@ -2,8 +2,12 @@
 
 import type { BotLook, ListedBot } from "../../shared/routes/bots";
 import { readWakes } from "../areas/wakes";
+import path from "node:path";
 import { listOf } from "../files";
-import { BOTS, IS_MAC } from "../home";
+import { BOTS, HERE, homeFolder, IS_MAC, K } from "../home";
+import { appHost } from "../host-interface";
+import { whatDeleteTakes } from "./deletes";
+import type { FolderGoes } from "./deletes";
 import { botHere, isModel } from "./here";
 import { jobOf } from "./jobs";
 import { limitsFrom } from "../work/limits";
@@ -15,6 +19,8 @@ import { allowedOf } from "../work/asks";
 // coding agents). One without a description or a session isn't listed.
 export function listBots(machine?: string): ListedBot[] {
   const bots: { created: string; bot: ListedBot }[] = [];
+  const computer = IS_MAC ? HERE : machine || HERE;
+  const goes = folderGoes();
   for (const id of listOf(BOTS)) {
     const here = botHere(id);
     if (!here) continue;
@@ -48,9 +54,18 @@ export function listBots(machine?: string): ListedBot[] {
         limits: limitsFrom((described.work as { limits?: unknown } | undefined)?.limits) ?? undefined,
         // What you allowed it to do without asking ("Always").
         allowed: allowedOf(described).length ? allowedOf(described) : undefined,
+        // What deleting it takes with it, in this box's words.
+        deletes: whatDeleteTakes({ computer, folder: goes, wakes: wakes.length, watching: watches.length }),
       },
     });
   }
   // In the order they were made, as the Mac's list is.
   return bots.sort((a, b) => a.created.localeCompare(b.created)).map(entry => entry.bot);
+}
+/** Where a bot deleted here ends up (`deleteBot`): the Finder's Trash on a Mac whose app answers to
+ * take it there, else Kuvo Code's own trash folder, written as you'd find it. */
+export function folderGoes(): FolderGoes {
+  if (IS_MAC && appHost()) return { to: "trash" };
+  const trash = path.join(K, "trash"), home = homeFolder();
+  return { to: "kuvo", folder: home && trash.startsWith(home + path.sep) ? `~${trash.slice(home.length)}` : trash };
 }

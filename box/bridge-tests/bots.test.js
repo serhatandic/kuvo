@@ -125,9 +125,23 @@ test("kuvo/bots lists the machine's described bots, each as its folder is now", 
     id: "bot_scout00001", session: "ses_bot_scout00001", name: "Scout", look: { color: "sky", shape: "round", face: "calm" }, machine: "my-server",
     job: "Watches the build", jobDetails: "", paused: true, wakes: 1792000100, watching: 1, agents: true, model: { id: "big-pickle", providerID: "opencode" },
     folder: scout, created: "2026-10-02T09:00:00Z",
+    // What deleting it takes with it, in this box's words, as it is now (`bots.deletes`): what
+    // Delete Bot… does here, then what stays. A machine keeps its folder in Kuvo Code's trash folder.
+    deletes: [
+      { what: "conversation", words: "Its conversation is deleted." },
+      { what: "folder", words: `Its folder, with its memory and what it made there, goes to Kuvo Code’s trash folder on my-server (${path.join(home, "trash")}).` },
+      { what: "wakes", words: "Its 2 wake-ups and watch are cancelled." },
+      { what: "keys", words: "Any keys of its own are removed." },
+      { what: "groups", words: "It leaves the group chats on my-server." },
+      { what: "sessions", words: "The sessions it started stay.", kept: true },
+    ],
     // (What it's doing now: none of its sessions at work or waiting on you, and none listed.)
     now: { working: 0, asking: 0 },
   });
+  // One with no wake-ups or watches says nothing of them.
+  assert.deepEqual(answer.json.bots[0].deletes.map(each => each.what), ["conversation", "folder", "keys", "groups", "sessions"]);
+  // (No other computer has told this box of its bots.)
+  assert.deepEqual(answer.json.elsewhere, []);
   assert.equal("personality" in answer.json.bots[1], false, "none: left out, as the Mac leaves it out");
   assert.equal("wakes" in answer.json.bots[0], false, "none waiting: left out, as the Mac leaves it out");
   assert.equal((await ask(handle, "PUT", "kuvo/bots")).status, 405);
@@ -671,7 +685,8 @@ test("with the Mac closed, a bot here is changed from a phone as Edit Bot change
       name: " Scout\nPrime ", look: { color: "mint", shape: "round", face: "happy" }, personality: "preset.straight", model: { id: "opus", providerID: "anthropic", variant: "high" },
     });
     assert.equal(changed.status, 200, JSON.stringify(changed.json));
-    assert.deepEqual({ ...changed.json.bot, wakes: undefined }, {
+    assert.deepEqual({ ...changed.json.bot, wakes: undefined, deletes: undefined }, {
+      deletes: undefined,
       id: "bot_scout00001", session: "ses_bot_scout00001", name: "Scout Prime", look: { color: "mint", shape: "round", face: "happy" }, machine: "my-server",
       job: "Watches the build", jobDetails: "Tells you when it breaks.", paused: false, wakes: undefined, watching: 0, agents: false, personality: "preset.straight", model: { id: "opus", providerID: "anthropic", variant: "high" },
       folder, created: before.created,
@@ -742,6 +757,50 @@ test("a change that waits on the engine (a new model's sign-in) keeps what anoth
     assert.deepEqual(described.model, { id: "opus", providerID: "anthropic" });
     assert.deepEqual(described.look, { color: "mint", shape: "round", face: "happy" }, "the other change's look is kept");
     assert.equal(described.personality, "preset.straight");
+  } finally {
+    engine.close();
+  }
+});
+
+test("a bot's effort is changed on its own, to one its model has here; one it hasn't is said, and nothing changes", async () => {
+  write(path.join(bots, "kit.json"), JSON.stringify(kit));
+  const folder = bot("bot_scout00001");
+  const models = [
+    { id: "big-pickle", providerID: "opencode", name: "Big Pickle", variants: [{ id: "low" }, { id: "high" }] },
+    { id: "opus", providerID: "anthropic", name: "Opus", variants: [{ id: "medium" }, { id: "max" }] },
+    { id: "plain", providerID: "opencode", name: "Plain", variants: [] },
+  ];
+  const engine = await makingEngine(["opencode", "anthropic"], {}, () => {}, { models, defaultModel: { id: "big-pickle", providerID: "opencode" } });
+  try {
+    const handle = link.engineHandler(() => ({ port: engine.port, password: "p" }), { name: "my-server" }, () => null);
+    // The model it has, at an effort of its own: its conversation runs at it from its next step.
+    const high = await ask(handle, "PATCH", "kuvo/bots/bot_scout00001", { effort: "high" });
+    assert.equal(high.status, 200, JSON.stringify(high.json));
+    assert.deepEqual(high.json.bot.model, { id: "big-pickle", providerID: "opencode", variant: "high" });
+    assert.deepEqual(told(engine.asked, "ses_bot_scout00001").model, { id: "big-pickle", providerID: "opencode", variant: "high" });
+    // One its model hasn't, or that isn't one: said, with those it has, and nothing changes.
+    const kept = fs.readFileSync(path.join(folder, "bot.json"), "utf8");
+    for (const [body, status, words] of [
+      [{ effort: "max" }, 400, "Big Pickle has no “max” effort: its efforts are low, high."],
+      [{ effort: 3 }, 400, "That isn’t an effort."],
+      [{ model: { id: "plain", providerID: "opencode" }, effort: "high" }, 400, "Plain has no efforts to choose from."],
+      [{ model: { id: "x" }, effort: "high" }, 400, "That isn’t a model."],
+      [{ model: { id: "ghost", providerID: "opencode" }, effort: "high" }, 503, "The efforts of ghost can’t be read on this machine now. Try again in a moment."],
+    ]) {
+      const answer = await ask(handle, "PATCH", "kuvo/bots/bot_scout00001", { name: "Renamed", ...body });
+      assert.deepEqual([answer.status, answer.json.message], [status, words], JSON.stringify(body));
+    }
+    assert.equal(fs.readFileSync(path.join(folder, "bot.json"), "utf8"), kept);
+    // With a model: that model's effort.
+    const opus = await ask(handle, "PATCH", "kuvo/bots/bot_scout00001", { model: { id: "opus", providerID: "anthropic" }, effort: "max" });
+    assert.deepEqual([opus.status, opus.json.bot.model], [200, { id: "opus", providerID: "anthropic", variant: "max" }]);
+    // None (null, or ""): the model's own.
+    const own = await ask(handle, "PATCH", "kuvo/bots/bot_scout00001", { effort: null });
+    assert.deepEqual([own.status, own.json.bot.model], [200, { id: "opus", providerID: "anthropic" }]);
+    // A bot with no model has none to set an effort for.
+    write(path.join(folder, "bot.json"), JSON.stringify({ ...JSON.parse(kept), model: undefined }));
+    const none = await ask(handle, "PATCH", "kuvo/bots/bot_scout00001", { effort: "high" });
+    assert.deepEqual([none.status, none.json.message], [400, "Scout has no model to set an effort for."]);
   } finally {
     engine.close();
   }

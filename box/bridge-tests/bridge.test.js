@@ -1533,7 +1533,10 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     attention: ["GET", "kuvo/attention"],
     autopilot: ["GET", "kuvo/sessions/ses_none/autopilot"],
     bots: ["GET", "kuvo/bots"],
+    "bots.deletes": ["GET", "kuvo/bots"],
     "bots.edit": ["DELETE", "kuvo/bots/bot_none"],
+    "bots.effort": ["PATCH", "kuvo/bots/bot_none"],
+    "bots.elsewhere": ["GET", "kuvo/bots"],
     "bots.events": ["GET", "kuvo/bots/events"],
     // (A bot on another computer, held for it: a bot none of them lists is refused with words.)
     "bots.held": ["PATCH", "kuvo/bots/bot_none"],

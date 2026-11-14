@@ -34,6 +34,45 @@
       ]
     },
     {
+      "name": "each bot says what deleting it takes with it, in the box's words; no other computer has told of its bots",
+      "steps": [
+        { "given": { "bot": { "id": "bot_ada", "name": "Ada", "session": "ses_ada" } } },
+        { "given": { "bot": { "id": "bot_ben", "name": "Ben", "session": "ses_ben", "created": "2026-10-02T09:00:00Z" } } },
+        { "given": { "wake": { "session": "ses_ben", "in": 7200, "note": "Morning digest", "letters": "AbC123" } } },
+        {
+          "send": "GET kuvo/bots",
+          "why": "A machine keeps a deleted bot's folder in Kuvo Code's trash folder, and names itself; a Mac's goes on to the Trash where its app answers to take it there.",
+          "expect": { "status": 200, "json": {
+            "bots": [
+              { "id": "bot_ada", "deletes": [
+                { "what": "conversation", "words": "Its conversation is deleted." },
+                { "what": "folder", "words": "<string>" },
+                { "what": "keys", "words": "Any keys of its own are removed." },
+                { "what": "groups", "words": "<string>" },
+                { "what": "sessions", "words": "The sessions it started stay.", "kept": true }
+              ] },
+              { "id": "bot_ben", "deletes": [
+                { "what": "conversation" }, { "what": "folder" },
+                { "what": "wakes", "words": "Its wake-up is cancelled." },
+                { "what": "keys" }, { "what": "groups" }, { "what": "sessions" }
+              ] }
+            ],
+            "elsewhere": []
+          } }
+        }
+      ]
+    },
+    {
+      "name": "a bot's effort: none is its model's own, and what isn't one is said",
+      "steps": [
+        { "given": { "bot": { "id": "bot_ada", "name": "Ada", "session": "ses_ada", "model": { "providerID": "opencode", "id": "big-pickle", "variant": "high" } } } },
+        { "given": { "bot": { "id": "bot_ben", "name": "Ben", "session": "ses_ben", "created": "2026-10-02T09:00:00Z" } } },
+        { "send": "PATCH kuvo/bots/bot_ada", "body": { "effort": 3 }, "expect": { "status": 400, "json": { "message": "That isn’t an effort." } } },
+        { "send": "PATCH kuvo/bots/bot_ben", "body": { "effort": "high" }, "expect": { "status": 400, "json": { "message": "Ben has no model to set an effort for." } } },
+        { "send": "PATCH kuvo/bots/bot_ada", "body": { "effort": null }, "expect": { "status": 200, "json": { "bot": { "id": "bot_ada", "model": { "providerID": "opencode", "id": "big-pickle", "variant": "<absent>" } } } } }
+      ]
+    },
+    {
       "name": "kuvo/bots/templates offers New Bot's templates, personalities, looks and starting places",
       "steps": [
         {
