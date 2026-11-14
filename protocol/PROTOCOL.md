@@ -1538,7 +1538,7 @@ the same number and counts nothing.
   under their bots (not archived, this box's own copy), so the number is what a client's rows of
   waiting sessions show and a client adds nothing to it; `bots`, the bots that live here with a session waiting on you
   (`now.asking`, below; a session here working for a bot on another computer is that computer's
-  to count); `queue`, the Work Queue's items here (not Done, not deleted) that a session linked to
+  to count); `queue`, the Work Queue's items here (not Done or Canceled, not deleted) that a session linked to
   them (not archived, this box's own copy) waits on you for. All zero while the engine can't be read. `405` for anything but `GET`.
 - `GET kuvo/waiting/events` (ndjson): the same now, and a line each time it changes (an ask comes
   or is answered, a bot or an item changes); through `box route` it answers its first line, and a
@@ -2545,7 +2545,7 @@ before it uses it, and meanwhile says so. A box is older than a client needs whe
 `models.offered.sides`, `models.readiness`, `queue.items`, `sandbox.opens`, `sandbox.words`, `sessions.asks`,
 `sessions.list`, `sessions.mentions`, `sessions.models`, `sessions.needsYou`,
 `sessions.start.empty`, `sign-in.accounts.kinds`, `sign-in.accounts.state`, `sign-in.codes`, `typed`, `usage.notices`,
-`waiting`, `waiting.cards` and `work-queue.counts`
+`waiting`, `waiting.cards`, `work-queue.counts` and `work-queue.edit`
 (KuvoClient's `BoxGate.required`, and the same list in every client, gpui's `kuvo_box` too, so
 every client holds the same boxes; a box with `messages.send` has what came before it too,
 `sessions.move`, `projects.folders` and `sign-in.methods` among them, and names its chats folder in
@@ -5413,17 +5413,26 @@ conversation's), or a group chat's (`grp_…`, the queue its seats write to). To
 list across your computers: each item lives once, in its owner's queue on its owner's box, and
 every box shows every other's ("Across your computers"). It replaces the
 hand-kept backlog file: agents write items through tools, every agent kind alike; clients show
-them, and you reorder them, move them between categories, delete them and bring them back, never
-change what they say. Kept in `run/work-queue/` (`queues/<owner>.json`, files kept with items in
-`files/<item>/`, `categories.json`, `numbers.json`); a deleted item stays 30 days. Where
-`features` has `work-queue`. Times are milliseconds since 1970.
+them, and you add them, change what they say and where they stand, reorder them, delete them and
+bring them back (where `features` has `work-queue.edit`, which names everything here about
+statuses, priorities, labels, assignees, due days, `can`, `q` and a client's `POST` and `PATCH`; a
+box without it kept categories, and isn't described here). Kept in `run/work-queue/`
+(`queues/<owner>.json`, files kept with items in `files/<item>/`, `labels.json`, `numbers.json`,
+`model.json`); a deleted item stays 30 days. Where `features` has `work-queue`. Times are
+milliseconds since 1970.
 
 **An item**: `id` (`wqi_…`, never shown), `number` (its `#n`; missing while it waits for one,
 shown as new), `wanted` (a number an import asked for, until it's granted; beside `number`, its own
-number asked back), `owner` (`ses_…` or
-`grp_…`), `title`, `category`, `order` (its place in its category, among every owner's items on
-the box), `inProgress`, `progress` (`{value?: 0…1, note?}`: how far, and what's being done now),
-`sessions` (`[{session, title, working}]`: the sessions working on it, and which are at work now),
+number asked back), `owner` (`ses_…`,
+`grp_…`, or `usr_you`: your own queue, below), `title`, `status` (one of `statuses`, below), `order`
+(its place among the items of its status, of every owner on
+the box), `priority` (`urgent`, `high`, `normal` or `low`; always said, `normal` for one never
+set), `labels` (`[id]`, several; only ones the view's `labels` list), `assignee` (`{kind: bot|agent,
+id, name}`, who it's for; missing for no one), `due` (`YYYY-MM-DD`, a day, no time or zone;
+missing for none), `can` (what whoever asked may do to it, below), `progress` (`{value?: 0…1,
+note?}`: how far, and what's being done now),
+`sessions` (`[{session, title, working}]`: the sessions working on it, and which are at work now;
+none at work on a closed or deleted one),
 `noteCount`, `lastNote`, `fileCount`, `linkCount`, `handedBy` (the first owner that handed it on),
 `source` (an outside source's item: `{kind, ref, url?, host?, id?, name?}`, named by `ref` and
 never numbered; one that had a number keeps it, never shown again: "Issues and pull requests"),
@@ -5456,33 +5465,90 @@ kept as it came, for a client to read (a newer box's `top: false` or `from: null
   no `stopped`. Done and a delete unlink everyone and say no `stopped`: they say it. A session that
   starts again within 2 minutes of its `stopped`, with nothing between (no other event, note or
   hand-off), never stopped: the `stopped` goes.
-- `moved`: you or an agent moved it to another category, or to another place in its own (`from` and
-  `to`, category ids, the same for a reorder; `top` when it went to the top). Its place is among
-  every owner's items in that category on the box, as the All view lists them, so a move past
-  another queue's item is one; a move that leaves it where it was isn't. One's reorders in one
-  category within 10 minutes of each other, with nothing between (no other event, note or
+- `moved`: you or an agent gave it another status, or another place among those of its own (`from`
+  and `to`, status ids, the same for a reorder; `top` when it went to the top). Its place is among
+  every owner's items of that status on the box, as the All view lists them, so a move past
+  another queue's item is one; a move that leaves it where it was isn't. One's reorders within one
+  status within 10 minutes of each other, with nothing between (no other event, note or
   hand-off), are one `moved`. (Neither fold reaches back in time: an event from a computer whose
-  clock was ahead is never folded into.) An item whose category the box doesn't keep (brought back after its
-  category was removed, or come by a hand-off or a move) goes to Next, a `moved` by the box. An
+  clock was ahead is never folded into.) An item whose status the box doesn't know (a newer box's,
+  come by a hand-off or a move, or brought back) goes to Todo, a `moved` by the box. A session
+  that says it's working on one that's Todo, Backlog or Waiting makes it In progress: a `moved`
+  by that session, before its `started`. An
   item added isn't moved, wherever it's put (`top`, `before`, `after`).
-- `done`: moved to Done (a move out of Done is `moved`).
+- `done`: its status became Done (to Canceled, and out of either, is `moved`).
+
+A change to its title, description, priority, labels, assignee or due day keeps no event: `updated`
+says who last changed it, and when.
 
 A hand-off is in `handed`, not here. A newer box may keep other kinds: a box keeps them as they
 came, a client leaves them out. An item from before this has none (`[]`), and keeps what happens
 from then on. A client puts `notes` and `events` (with `created`, `handed`, `doneAt` where no `done`
 was kept at it or since, and `removed`) in one feed, oldest first. At one moment: `created`; the
 box's events up to its last `started` at that moment, in its order (a move and the work it
-started); notes; hand-offs; its other events, in its order; `doneAt`; `removed`. A category an
-event names that the view doesn't (a custom one removed since) is "another category".
+started); notes; hand-offs; its other events, in its order; `doneAt`; `removed`. A status an
+event names that the view's `statuses` don't is "another status".
 
-**In progress** isn't a category: an item is in progress while a session linked to it is at work
-(its turn running, or what it left running), unless it's Done or deleted. A session is linked to
-3 items at most (linking a fourth drops its oldest link); Done or a delete unlinks everyone.
+**Statuses**: where an item stands, one each, the same eight on every box, never changed by
+anyone: `{id, name, closed}`, listed by the view in the order a client shows them. Open:
+`needs-you` (Needs you: only you can move it on), `in-review` (In review), `in-progress` (In
+progress), `waiting` (Waiting: on something else), `todo` (Todo, where a new item starts),
+`backlog` (Backlog). Closed: `done` (Done), `canceled` (Canceled). A status is set, by you or an
+agent, never worked out: `sessions[].working` says who's at work now, whatever the status. Closing
+an item (Done or Canceled) sets `doneAt` and unlinks everyone; opening it again clears it. A
+session is linked to 3 items at most (linking a fourth drops its oldest link); a delete unlinks
+everyone too. An item of a status a box doesn't know is kept as it came, and listed after the rest.
 
-**Categories**: one set for every queue: `next`, `later`, `parked`, `done` (built in), and custom
-ones (`cat_…`), between Later and Parked: `{id, name, builtIn}`. Each box takes the custom ones of
-the primary it numbers from as it tells them, and of an item handed to it; a view also lists a
-custom one only another computer has (before Parked), for its items there.
+**Priorities**: `{id, name}`: `urgent`, `high`, `normal`, `low`, the same on every box.
+
+**Labels**: what kind of work an item is; several on one item (10 at most), one set for every
+queue (60 at most), none built in: `{id, name, color}` (`lbl_…`, or `cat_…` for one that was a
+custom category; `color` one of `coral`, `orange`, `amber`, `lime`, `mint`, `sky`, `indigo`,
+`violet`, `pink`, `graphite`, the bots' looks' names, a client drawing one it doesn't know as
+graphite), in the order they were made. You and your agents make, rename, recolour and remove
+them; removing one takes it off every item on that box first. Each box takes the labels of the
+primary it numbers from as it tells them (its list, order, names and colours; one it removed goes
+once no item here has it), and those of an item handed or moved to it; a view also lists a label
+only another computer has, after its own, for its items there.
+
+**Assignee**: who an item is for: one of the box's bots (`{kind: "bot", id: "bot_…"}`) or a coding
+agent (`{kind: "agent", id}`: `claude-code`, `codex-cli`, `cursor`, `grok-cli`, `antigravity`). A
+view's `assignees` (`[{kind, id, name, look?}]`, the box's bots first, each with its `look`) lists
+who an item kept on that box may be for. It's a fact the item states; it starts no work, and
+hands nothing on, but for one case: an item in your own queue assigned to a bot of that box goes
+into that bot's queue (a hand-off, in `handed`), where its agent's tools see it. One told by
+another computer names its assignee as that computer does.
+
+**Your own queue** (`usr_you`): the items you added from a client that are no conversation's. It's
+in the All view, and its own (`owner=usr_you`; `owners` names it `{owner: "usr_you", kind: "you",
+title: null}`); no agent's view has it, and it never moves to another computer with a conversation.
+
+**What may be done** (`can`, on every item of a view and of an answer to a client): `{edit, set,
+close, delete, restore}`, so a client offers nothing the box would refuse, and works none of it out
+itself. `edit`: its title and description (never an issue's or a pull request's: GitHub's).
+`set`: its status among the open ones, its priority, labels, assignee, due day and place (not an
+issue's while GitHub has it closed). `close`: Done or Canceled (never an issue's: GitHub closes
+it). `delete`; `restore` (a deleted one, and nothing else then). All false while its conversation
+moves to another computer, or while the computer it's on isn't answering or doesn't take a
+client's changes from another box; only `delete` while it's on its way to another computer
+(`handing`). An item as another computer told it between boxes carries none.
+
+**From categories** (a box updated from one that kept categories, 0.5 to 0.7): before anything
+reads or changes the queues, once, one way. What was kept is copied whole first to
+`run/work-queue/before-statuses/` (`queues/`, `categories.json`), in one step (a copy cut off is
+never taken for it), and never changed again; each queue's file is then written whole, item by item
+left as it is if it has a `status` already; `model.json` (`{model: 2, at}`) is written last, so a
+run cut off midway is carried on by the next to the same end. Nothing an item holds changes (its
+number, description, notes, files, links, sessions, progress, events, hand-offs) but where it
+stands: Next is `todo`, Later `backlog`, Done `done`; Parked is `backlog` with the label Parked
+(`lbl_parked`, graphite); a custom category called "Waiting on you" is `needs-you`; any other
+custom category becomes a label under its own id, in the colour the apps drew it in, on a `todo`
+item (`backlog` for "Correctness sweep" and "Edge cases"); an open item a session had said it was
+working on (linked, its last word `started`) is `in-progress`. `moved` events name the statuses
+their categories became. Items keep their order: within a status, in the order of the categories
+they came from (Next, Later, the custom ones as listed, Parked), then their place there. A label
+is made only for a category some item was in. An item an older box hands, moves or tells later is
+said anew the same way as it comes (a custom category by its id, as its name isn't known).
 
 **Who sees what**: an owner's view is its own items, those of the sessions it oversees (started by
 it, or by those, put away ones too), and those it handed on, each living once in its owner's queue,
@@ -5493,25 +5559,31 @@ only: its agent's tools still change, show and list only what's in its view with
 before (a linked item is its owner's to change). A client shows them first, as "Working on"
 (`item.owner` isn't the view's `owner`, and the item's `sessions` include it).
 
-- `GET kuvo/work-queue?owner=<ses_…|grp_…>` → `{owner, categories, items, owners, removed,
-  computers}`: `items` in the categories' order, then this box's first and each other computer's
+- `GET kuvo/work-queue?owner=<ses_…|grp_…|usr_you>` → `{owner, statuses, priorities, labels,
+  assignees, items, owners, removed, computers}`: `items` in the statuses' order, then this box's first and each other computer's
   after, by its name (each computer keeps its own order), then each one's order; `owners` (`[{owner, kind:
-  bot|session|group, title, bot?: {id, name}, startedBy?}]`) names each owner in the view;
+  bot|session|group|you, title, bot?: {id, name}, startedBy?}]`) names each owner in the view;
   `removed`, what's deleted in it here, newest first; `computers` (`[{key, name, kind, id?, at,
   away?}]`), each other computer that told of its queue, as of when, and since when it hasn't
   answered (`away`, as `run/peer-reach.json` says): its items show as it told them, but none of
-  them in progress, nor any of their sessions at work, as nothing there can be seen at work now (an
-  item's `refs` and page say the same). `owner=all` is every queue on the box
+  their sessions at work, as nothing there can be seen at work now (an
+  item's page says the same), and nothing may be done to them (`can`). `owner=all` is every queue on the box
   and on every other computer that told of its own (the panel's All). An item on another computer
   has `computer`. `kuvo/work-queue/events?owner=` is the same as NDJSON: a line now and one each
   time it changes (a change here or by another process, another computer telling of its queue, or a
   linked session starting or stopping work). With `glance=1` (a client that shows only a count or
   chips: the phone's •••, a conversation's chips on a Mac; a client follows whole only while the
   Work Queue itself shows), either reads no issue or pull request from GitHub: each is as last read.
-  With `counts=1` (`work-queue.counts`, #711), either adds `counts` `{inProgress, categories:
-  {<id>: n}, sources: {<kind>: n}, computers: {<key>: n}, removed}`, counted from that same view
-  for a client that draws them (the sidebar's rows): its items in progress; in each category
-  (every category of the view, one with none `0`); from each outside source, by its kind
+  With `q=<words>` (200 characters at most), either lists only the items, deleted ones too, that
+  every word is in, any case: in its title, its `#n` or its issue's name, its labels' names and, of
+  one kept on this box, its description and notes (of one on another computer, its last note: what
+  this box was told of it); the view says `q` back.
+  With `counts=1` (`work-queue.counts`, #711), either adds `counts` `{open, statuses: {<id>: n},
+  priorities: {<id>: n}, labels: {<id>: n}, sources: {<kind>: n}, computers: {<key>: n},
+  removed}`, counted from that same view, as `q` narrowed it,
+  for a client that draws them (the sidebar's rows, a search's): its open items; of each status,
+  priority and label
+  (every one of the view's, one with none `0`); from each outside source, by its kind
   (`github`; items of the queue's own aren't in it); on each computer, by its key (this box's own
   under its own key, `""` while it has none, and each other computer of `computers`); and how many
   are deleted (`removed`). `owner=all` counts every queue across your computers. A client draws
@@ -5529,13 +5601,13 @@ before (a linked item is its owner's to change). A client shows them first, as "
   conversation?}` (a list, so a ref with a comma in it, an outside one later, goes whole;
   `conversation` is taken and not used yet: it's for "issue #12" in a project bound to a tracker,
   later) →
-  `{refs: {"243": {id, number?, source?, seen?, title, category, inProgress, owner?, removed?,
+  `{refs: {"243": {id, number?, source?, seen?, title, status, owner?, removed?,
   computer?} | null}}`: what each ref names (`#243`, `243`, an id, or an issue or pull request in a
   queue: `gh:owner/repo#12` or its page, and a linked item's old `#n`), by the ref as it was asked, for a chip; one on another computer as
   it last told it, with `computer`; null for one no computer told this box of. A client reads each
   on its own (one it can't read is as null, the others still chips), and keeps what it learns by
   the ref as asked, not by a number.
-- `GET kuvo/work-queue/categories` → `{categories}`.
+- `GET kuvo/work-queue/labels` → `{labels}`.
 
 **What you do** (a paired phone, this Mac's app, or Kuvo Code on another computer through `box
 route` with its Mac's proof for that request alone, `x-kuvo-vault-proof` as the vault takes it; anything
@@ -5549,17 +5621,30 @@ computer stopped answering meanwhile (it may have been done: a client looks agai
 from another box (an older box), and on a machine Macs share outside one setup ("Your setup":
 another person's computers may tell it theirs), changed there. One on its way to another computer (`handing`) is refused (400) until it's there,
 but for `DELETE`, which calls its hand-off off (a note says so) and deletes it.
-`POST kuvo/work-queue/items/<item>/move` `{category?, before?,
-after?, top?}` (a category by its id or name; `before`/`after` an item in the same category);
-`DELETE kuvo/work-queue/items/<item>` and `POST …/restore`; `POST kuvo/work-queue/categories`
-`{add, after?}`, `{rename, to}` or `{remove}` (a custom one, once nothing is in it; on a box that
-numbers from another, that one's custom categories come back as it says, "Across your computers");
+`POST kuvo/work-queue/items` `{title, body?, status?, priority?, labels?, assignee?, due?, top?,
+owner?}` → `{item}`: an item added, `todo` and `normal` unless said, numbered as an agent's is. The
+box decides whose queue it's in: `owner`'s where a client names one (the conversation whose queue
+it's looking at); else, for a bot of this box (`assignee`), that bot's; else your own (`usr_you`).
+A title is one line, 200 characters at most (longer is cut, an empty one refused).
+`PATCH kuvo/work-queue/items/<item>` `{title?, body?, status?, priority?, labels?, assignee?,
+due?, before?, after?, top?}` → `{item}`: only what's sent changes. `status` and `priority` by id
+or name; `labels` all of them, by id or name, in place of those it had (`[]` for none; one that
+isn't a label is refused, never made); `assignee` `{kind, id}`, or null for no one; `due` a day, or
+null for none; `before`/`after` an item of the same status, `top` the top of its status. An issue's
+or a pull request's title and description are GitHub's, and so is closing it: refused (400).
+`DELETE kuvo/work-queue/items/<item>` and `POST …/restore`; `POST kuvo/work-queue/labels`
+`{add, color?}` (a colour the fewest labels have, unless said), `{change, name?, color?}` (a label
+by its id or name) or `{remove}` (taken off every item on this box, deleted ones too, then gone)
+→ `{labels, label?}` (on a box that
+numbers from another, that one's labels come back as it says, "Across your computers");
 `POST
 kuvo/work-queue/import` `{owner, files: [paths]}` (Markdown files on the box: each list line
-starting with `#N` is an item, in the category of the nearest heading above it that names one
-(Done, Shelved/Parked, Later/Ideas), else Next, Done with `[x]`; a line `NOW:`/`LATER:`/… with
+starting with `#N` is an item, with the status of the nearest heading above it that names one
+(Done; Canceled; Shelved/Parked/Later/Ideas/Backlog as Backlog; any status by its name; a
+heading that names a label gives that label, on a Todo item), else Todo, Done with `[x]`; a line
+`NOW:`/`NEXT:` (Todo), `LATER:`/`PARKED:` (Backlog) or `DONE:` with
 refs sets theirs; the first line naming a number gives its title, every line naming it its body)
-→ `{added, byCategory, waiting, skipped, said}`. An item keeps its own number wherever no other item
+→ `{added, byStatus, waiting, skipped, said}`. An item keeps its own number wherever no other item
 has it, here or on another of your computers (as each told this box), and it isn't one this box
 gave an item that's gone from it (`numbers.json`, `used`: moved away, or deleted); one waiting for
 its number (an import's still under way) holds it as its own. An import skips a number here already under the
@@ -5573,8 +5658,8 @@ number lets it go); granted, every such item moves at once (two can trade), with
 `importedAs` goes. One whose number another item has waits (`backGranted`, never asked again) while
 that one asks for its own, and moves once it has; else, or refused, it stays as it is, with a note
 (`stays`: an import doesn't ask again). So importing the same backlog again repairs an import that
-went wrong, and once it has, changes nothing. Each change
-answers `{item}`; a category removed only once nothing, deleted items included, is in it.
+went wrong, and once it has, changes nothing. Each change to an item
+answers `{item}`, with its `can`.
 
 **Tools**: `GET kuvo/work-queue/tools` → `{tools, instructions}` (MCP definitions, and what the
 tool servers add to what they tell agents); `POST kuvo/work-queue/tools {name, arguments, session}`
@@ -5585,8 +5670,13 @@ told them), `queue_show` (one on another computer as it told it, saying it lives
 `queue_add`, `queue_update`, `queue_hand` (into a session's queue, linked to it: one on this box at
 once; one on another computer that takes the Work Queue's mail, by address or a bot's name, by mail,
 "Across your computers"), `queue_remove` (`undo` brings back an agent's delete; only you
-bring back yours; one on its way to another computer has its hand-off called off), `queue_categories` (list, or add one), `queue_import` (items an agent read from
-an old backlog, with their numbers). `item` is a number (`#243` or `243`), the id of one that has
+bring back yours; one on its way to another computer has its hand-off called off), `queue_labels` (list them, or one change: `add` with `color?`, `rename` with `to`, `recolor` with `color`, `remove`), `queue_import` (items an agent read from
+an old backlog, with their numbers; each `status?`, `label?`, `done?`). `queue_add` and `queue_update` take `status`, `priority`,
+`labels` (all of them, by name), `assignee` (a bot's or a coding agent's name; null for no one)
+and `due`; a new item is Todo and Normal unless said. `working: true` links the caller and makes a
+Todo, Backlog or Waiting item In progress (unless the same call sets its status); `working:
+false` unlinks it and leaves its status as it is. `queue_list` lists by status, the open ones
+unless `done`, and takes `status`, `label` and `query` (words in titles, descriptions and notes). `item` is a number (`#243` or `243`), the id of one that has
 none yet (the tool says it), or the issue or pull request an item is (`gh:owner/repo#12`, or its
 page); `queue_add` with `issue` adds one, `queue_update` with `issue` makes an item that issue
 ("Issues and pull requests"); one on another computer is changed there, and a change from here is
@@ -5617,7 +5707,7 @@ block references: "to #243" and "the #1 reason" can name visible items. Code, li
 exclusions above still apply. With no conversation owner, bare numbers stay plain and cause no
 requests; explicit `gh:` refs keep their computer-wide lookup and chips. Clients follow the
 conversation's queue for numeric chips; only explicit `gh:` refs need
-the computer-wide `refs` lookup. A client draws an eligible known reference as a chip (its category's color, a ring in progress, a check when done, `#243` and the
+the computer-wide `refs` lookup. A client draws an eligible known reference as a chip (a mark for its status: a ring in progress, a check when done, `#243` and the
 title on one line; for an issue or a pull request, GitHub's mark and `source.name` in place of
 `#243`, the title struck through when `seen.state` is `not_planned` or `closed`), leaving one it
 doesn't know as written; the message's words never change. A chip opens the item.
@@ -5666,10 +5756,10 @@ never written to: nothing here changes anything on GitHub.
   (`repo#12`, `owner/repo#12` when another owner's repository read here has that name); `seen`
   (`{state, at, gone?}`: `open`, `draft`, `completed`, `not_planned` (a duplicate too), `merged` or
   `closed` (a pull request closed unmerged), and since when; a newer box may say more); and, while it's
-  `completed`, `not_planned`, `merged` or `closed`, or `gone`, `category` `done` (never in progress
-  then), its own category in `keptIn`, `doneAt` when GitHub closed it (or since when it's gone), and
-  `doneAs`, what a client shows in place of its category: "Merged on GitHub", "Closed on GitHub" or
-  "Gone from GitHub". Reopened, or found again, it's back in its own category; `struck` (closed
+  `completed`, `not_planned`, `merged` or `closed`, or `gone`, `status` `done`,
+  the status it's kept with in `keptIn`, `doneAt` when GitHub closed it (or since when it's gone), and
+  `doneAs`, what a client shows in place of its status: "Merged on GitHub", "Closed on GitHub" or
+  "Gone from GitHub". Reopened, or found again, it's back at the status it's kept with; `struck` (closed
   without being done, or gone: its title drawn struck through) and `closesOn` (`github`: Done is
   GitHub's, never a place to move it to), for clients to draw by. A client draws a `gone` one's
   GitHub mark dimmed. What another
@@ -5744,8 +5834,9 @@ every item in it reads as one here (else it's left as it is, where it is).
 
 **Moves**: a move carries its conversations' queues (a group chat's, its own) and their files
 (`move.json`'s `workQueue`, the files in the bundle's `work-queue/<item>/`), put in place under the
-same owners and numbers, each item checked as this box's own are (a category it can't keep is
-Next); once it's over, the box it left forgets them. While it's under way nothing changes those
+same owners and numbers, each item checked as this box's own are, with the labels they have (`workQueue.labels`; one this
+box can't keep is left off the item; a status it doesn't know is
+Todo); once it's over, the box it left forgets them. While it's under way nothing changes those
 queues (a tool's change, a hand-off into one, or yours: refused, with words to try again once
 it's there), so nothing is left behind. A conversation carried on as another takes its queue. An
 item on its way to another computer (`handing`) goes with the move and is sent from where it lands.
@@ -5755,11 +5846,11 @@ item on its way to another computer (`handing`) goes with the move and is sent f
 
 - **Told**: each box tells every such peer its Work Queue, unasked, so the others have it while it
   sleeps: `{workQueue: {told: {id, at, kind, since, top, primary?: {key, kind, since?}, shared?,
-  items, owners, categories}}}`. `items` are its items as a view gives them (not deleted ones; the
+  items, owners, labels}}}`. `items` are its items as a view gives them (without `can`) (not deleted ones; the
   100 latest Done; 1,500 at most), each with `handedFrom` (who handed it on), an issue's or pull
   request's with `seen` and `keptIn` as this box last read it (`seen.checked`, when it last asked
   GitHub); `owners` names their
-  owners; `categories` its custom ones; `kind`, `since` and `top` how it numbers, `primary` the
+  owners; `labels` its labels (`[{id, name, color}]`); `kind`, `since` and `top` how it numbers, `primary` the
   one it numbers from (itself when it's the primary), and `shared`, whether it's a machine Macs
   share outside one setup ("Your setup"; an older box says neither). `id` (`wqt_…`) is the same while all that is.
   It's worked out again when a queue changes and each minute (who's at work changes it), and goes
@@ -5773,10 +5864,11 @@ item on its way to another computer (`handing`) goes with the move and is sent f
   it takes it, and only from a box that's one of its peers; what's kept of a computer you removed
   goes. An item two computers tell of (one handed between them, the first not told again yet) shows
   once, as the one that changed it last says; one deleted here that another tells of is that
-  computer's (a hand-off called off after it got there), unless it told of it on its way here. The primary's custom categories are those of every box
-  that numbers from it (one reached through a peer: as that peer tells them): added, renamed and
-  removed as it tells them (one still in use on a box stays there until it's empty); those only a
-  box has itself stay, after them (past 30 in all, its unused ones go; never one in use).
+  computer's (a hand-off called off after it got there), unless it told of it on its way here. The primary's labels are those of every box
+  that numbers from it (one reached through a peer: as that peer tells them): made, renamed,
+  recoloured and removed as it tells them (one an item on a box still has stays there until none
+  does); those only a
+  box has itself stay, after them (past 60 in all, its unused ones go; never one in use).
 - **Parts**: Work Queue mail too big for one goes as `{workQueue: {part: {whole, i, of, d, s}}}`,
   as a document's parts go ("Peers"): `d` pieces of 40,000 characters of the base64url of the
   whole's JSON (`{told: …}`, `{hand: …}`), `whole` the SHA-256 of all of it (base64url), `s` empty,
@@ -5784,9 +5876,9 @@ item on its way to another computer (`handing`) goes with the move and is sent f
   under way from each box at most), checks `whole`, and takes it as if it came in one.
 - **Hand-offs**: `queue_hand` to a conversation on another computer leaves the item where it is,
   unchanged (`handing`: changes to it are refused meanwhile), and sends `{workQueue: {hand: {id, to,
-  from, by, at, item, files, categories?}}}` (`id` `wqh_…`; `item` the item whole, as kept; `files`
-  `[{name, data}]`, base64, 4 MB at most in all, one with more refused at once; `categories` the
-  custom one it's in) to the box `to` lives on now, again each minute until it answers
+  from, by, at, item, files, labels?}}}` (`id` `wqh_…`; `item` the item whole, as kept; `files`
+  `[{name, data}]`, base64, 4 MB at most in all, one with more refused at once; `labels` those
+  it has, `[{id, name, color}]`) to the box `to` lives on now, again each minute until it answers
   `{workQueue: {handed: {id, ok, why?, retry?}}}`, from that box only. Had (`ok`), the item and its
   files go from the sender; refused for good, it's back as it was with a note saying why; `retry`, it
   goes again; given back with a note at once when you removed the box it goes to, three days after
@@ -5798,7 +5890,7 @@ item on its way to another computer (`handing`) goes with the move and is sent f
   days, and an item it has already is had, but one deleted here, which the live one replaces), only
   from one of its peers, into the queue of `to`'s
   root conversation (a subagent's, its conversation's; a group chat's seat refused), linked to it,
-  noted as handed from `from`, in a category it can keep (else Next), with its number as it was (one
+  noted as handed from `from`, with the labels it can keep and its status (Todo for one it doesn't know), with its number as it was (one
   with none takes one there at once); it
   answers `retry` while `to` moves between computers or it can't look it up (its engine starting, or
   the coding agents' bridge not running), and while the item is still on its way from it to
@@ -5807,10 +5899,10 @@ item on its way to another computer (`handing`) goes with the move and is sent f
   (`handedBy`, `handedFrom`).
 - **Done where it's kept** (to a peer whose `features` say `work-queue.forward`): what a client
   asks a box to do to an item another computer keeps ("What you do": a delete, a bringing back, a
-  move, and a client's whole read) goes to that computer's box as `{workQueue: {act: {id, method,
+  change, and a client's whole read) goes to that computer's box as `{workQueue: {act: {id, method,
   item, action?, name?, body?, at}}}` (`id` `wqa_…`; `method` `GET`, or with `action` `file` and
-  `name` one of its files, or `DELETE`, or `POST` with `action` `move` or `restore`; `item` its id;
-  `body` a move's `{category?, before?, after?, top?}`; `at` when it was asked), again every five
+  `name` one of its files, or `DELETE`, or `POST` with `action` `restore`, or `PATCH`; `item` its id;
+  `body` a `PATCH`'s, as the route takes it; `at` when it was asked), again every five
   seconds while it's waited for, and the answer comes back as `{workQueue: {acted: {id, status,
   value}}}` (in parts when it's big), what that box's own route would answer (`value` its JSON; a
   file's `{type, data}`, its bytes in base64, 4 MB at most, else 413), taken only from the box it
@@ -6306,6 +6398,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `work` | a bot's work ("Work"): `kuvo/work`, `…/events`, `kuvo/bots/<id>/stop-all`, `start_session`'s and `kuvo/sessions`' new fields, the work tools, `limits` in `kuvo/bots` (bridge 0.9.106) |
 | `work-queue` | `kuvo/work-queue…` and the `queue_…` tools ("The Work Queue") |
 | `work-queue.counts` | `counts` in `kuvo/work-queue` and its events with `counts=1` ("The Work Queue", #711) |
+| `work-queue.edit` | statuses, priorities and labels in place of categories: `status`, `priority`, `labels`, `assignee`, `due` and `can` on items, `statuses`, `priorities`, `labels` and `assignees` in views, `q`, `kuvo/work-queue/labels`, a client's `POST kuvo/work-queue/items` and `PATCH kuvo/work-queue/items/<item>`, and the tools' fields ("The Work Queue", #674); `kuvo/work-queue/categories` and `…/items/<item>/move` are gone |
 | `work-queue.elsewhere` | (in a peer's agents' mail) it tells and takes the Work Queue across your computers: `told`, `had`, `part`, `hand`, `handed`, and numbers' asks through a peer ("The Work Queue", Across your computers); also `POST kuvo/work-queue/refs`, `computer` and `computers` in its views, and 409 for an item elsewhere |
 | `work-queue.forward` | (in a peer's agents' mail) it does what a client asked another box to do to an item it keeps, and answers (`act`, `acted`; "The Work Queue", Across your computers, Done where it's kept); a box with it sends what a client does to an item on another computer there itself, and reads one whole, and its files, there for a client (`told`) |
 | `work.elsewhere` | (in a peer's agents' mail) it takes a lead's `call` and tells `rows` ("Peers"; bridge 0.9.204) |

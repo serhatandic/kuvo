@@ -1,6 +1,6 @@
 // The Work Queue across your computers (PROTOCOL.md, "The Work Queue", "Across your computers"):
 // one list for everything. Each box tells every other its items (summaries, the owners they name,
-// its custom categories and how it numbers) as they change, unasked, so the All view and a lead's
+// its labels and how it numbers) as they change, unasked, so the All view and a lead's
 // view on any computer have them, as of when they were told, while that one sleeps; each goes again
 // each minute until that computer says it has it. Mail too big for one goes in parts. Numbers' asks
 // and blocks, and items handed to another computer's conversations (`hand.ts`), come through here.
@@ -15,7 +15,8 @@ import { readPeerAgents } from "../peers/directory";
 import { ownKey, peersOf, removedBoxes } from "../peers/known";
 import { awaySince, readReach } from "../peers/reach";
 import { readLink } from "../state";
-import { categories, takePrimaryCategories } from "./categories";
+import { labels as labelsHere, LABELS_FILE, takePrimaryLabels, type Label } from "./labels";
+import { isClosed } from "./statuses";
 import { handArrived, handedBack, sendHandings } from "./hand";
 import { actForPeer } from "./acts";
 import { takeAct, takeActed } from "./forward";
@@ -79,12 +80,12 @@ const toldItem = (item: Item, working: Set<string>, titles: Map<string, { title:
 };
 
 /** What this box tells of its Work Queue now: its items (not deleted ones; the latest Done ones
- * only), the owners they name, its custom categories, and how it numbers. */
+ * only), the owners they name, its labels, and how it numbers. */
 export async function tellingNow(targets: Target[], link: LinkState | null, signal?: AbortSignal, cache?: Map<string, unknown>): Promise<Telling> {
   const facts = await factsOf(targets, signal);
   const all = allItems().filter(item => OWNER.test(item.owner) && !item.removed);
   // (An issue closed on GitHub is Done here too: among the latest Done, not the open ones.)
-  const isDone = (item: Item) => item.category === "done" || Boolean(item.source && doneByRead(seenOf(item.source)));
+  const isDone = (item: Item) => isClosed(item.status) || Boolean(item.source && doneByRead(seenOf(item.source)));
   // (When it was Done: an issue Done on GitHub, when it was closed there or, gone, since when, as
   // clients show it; it has no Done time of its own here.)
   const doneTime = (item: Item) => {
@@ -95,8 +96,7 @@ export async function tellingNow(targets: Target[], link: LinkState | null, sign
   const items = [...all.filter(item => !isDone(item)).sort((a, b) => b.updated.at - a.updated.at).slice(0, MOST_TOLD - done.length), ...done];
   const { owners, titles } = await ownersOf("all", items, facts, targets, cache);
   const told = items.map(item => toldItem(item, facts.working, titles));
-  const custom = categories().filter(each => !each.builtIn).map(({ id, name }) => ({ id, name }));
-  const content = { items: told, owners, categories: custom, ...numberingNow(link) };
+  const content = { items: told, owners, labels: labelsHere(), ...numberingNow(link) };
   // (When GitHub was last asked of an issue goes with it, so the others don't ask again meanwhile,
   // but isn't a change: what's told goes again only once something else changes.)
   const unchecked = { ...content, items: told.map(item => (item.seen?.checked !== undefined ? { ...item, seen: { ...item.seen, checked: undefined } } : item)) };
@@ -112,7 +112,7 @@ let builtMarks = "";
 let building = false;
 /** The least time between two tellings to one computer, however busy. */
 export const TELL_SPACING = 15_000;
-const marks = () => [path.join(WORK_QUEUE, "queues"), path.join(WORK_QUEUE, "categories.json"), path.join(WORK_QUEUE, "numbers.json"), TOLD, SEEN_FILE].map(file => {
+const marks = () => [path.join(WORK_QUEUE, "queues"), LABELS_FILE, path.join(WORK_QUEUE, "numbers.json"), TOLD, SEEN_FILE].map(file => {
   try { return String(fs.statSync(file).mtimeMs); } catch { return "-"; }
 }).join(" ");
 // Titles of sessions the list doesn't have, looked up once in ten minutes at most.
@@ -204,7 +204,7 @@ export function forgetPushed(): void {
 }
 
 /** What a computer told of its Work Queue, kept (unless what's kept is newer) and said to be had;
- * the primary moves its counter past the numbers it uses; a box takes the custom categories of the
+ * the primary moves its counter past the numbers it uses; a box takes the labels of the
  * primary it numbers from (from the peer it reaches it through, one that numbers from it too). */
 function takeTold(sender: MailSender, given: unknown, reply: (payload: Record<string, unknown>) => void): void {
   const told = toldOf(given);
@@ -222,12 +222,12 @@ function takeTold(sender: MailSender, given: unknown, reply: (payload: Record<st
   const primary = primaryOf(link);
   if ("self" in primary) movePast(Math.max(told.top ?? 0, ...told.items.map(item => item.number ?? 0)));
   else if ("peer" in primary && (primary.via ? primary.via.key === sender.key && told.primary?.key === primary.peer.key : primary.peer.key === sender.key)) {
-    // (Read only when a category it no longer has is one this box might keep.)
+    // (Read only when a label it no longer has is one this box might keep.)
     let counts: Map<string, number> | null = null;
-    takePrimaryCategories(told.categories, id => {
+    takePrimaryLabels(told.labels, id => {
       if (!counts) {
         counts = new Map();
-        for (const item of allItems()) counts.set(item.category, (counts.get(item.category) ?? 0) + 1);
+        for (const item of allItems()) for (const label of item.labels) counts.set(label, (counts.get(label) ?? 0) + 1);
       }
       return counts.get(id) ?? 0;
     });
@@ -270,13 +270,13 @@ export type ItemElsewhere = ToldItem & { computer: Computer };
 /** Your other computers' items that `owner`'s view has (`all`: every one), as each last told them:
  * those of the sessions it oversees there (their rows, "Work"), those it handed on, its own, and
  * with `linked` those linked to it (what it's working on, for its view to show: never what its
- * tools may change); with the owners they name, their custom categories, and when each computer
+ * tools may change); with the owners they name, their labels, and when each computer
  * told them. Items this box has itself (`here`: one on its way here, say) are left to it; one
  * deleted here (`deleted`) is theirs, unless they told of it on its way here. */
 export function itemsElsewhere(owner: string, link: LinkState | null = readLink(), here?: Set<string>, deleted?: Set<string>, { asTold = false, linked = false }: { asTold?: boolean; linked?: boolean } = {}): {
   items: ItemElsewhere[];
   owners: OwnerFacts[];
-  categories: { id: string; name: string }[];
+  labels: Label[];
   computers: (Computer & { at: number; away?: number })[];
 } {
   if (!here || !deleted) {
@@ -286,7 +286,7 @@ export function itemsElsewhere(owner: string, link: LinkState | null = readLink(
   }
   const overseen = owner === "all" ? null : new Set(rowsOf(owner).flatMap(each => each.rows.map(row => row.session)));
   const owners = new Map<string, OwnerFacts>();
-  const custom = new Map<string, string>();
+  const custom = new Map<string, Label>();
   const computers: (Computer & { at: number; away?: number })[] = [];
   // (An item two computers told of, one handed between them and the first not told again yet: the
   // newer word, so a stale copy never hides the live one.)
@@ -305,12 +305,12 @@ export function itemsElsewhere(owner: string, link: LinkState | null = readLink(
       if (!other || newer(item, told.at, other.item, other.at)) best.set(item.id, { item: asTold ? { ...item, computer } : withSeen({ ...asAway(item, away), computer }), at: told.at });
     }
     for (const each of told.owners) if (!owners.has(each.owner)) owners.set(each.owner, each);
-    for (const each of told.categories) if (!custom.has(each.id)) custom.set(each.id, each.name);
+    for (const each of told.labels) if (!custom.has(each.id)) custom.set(each.id, each);
   }
   const items = [...best.values()].map(each => each.item)
     .filter(item => !overseen || item.owner === owner || overseen.has(item.owner) || item.handedBy === owner || item.handedFrom?.includes(owner) || (linked && linkedTo(owner, item)));
   const named = new Set(items.flatMap(item => [item.owner, ...(item.handedBy ? [item.handedBy] : [])]));
-  return { items, owners: [...owners.values()].filter(each => named.has(each.owner)), categories: [...custom].map(([id, name]) => ({ id, name })), computers };
+  return { items, owners: [...owners.values()].filter(each => named.has(each.owner)), labels: [...custom.values()], computers };
 }
 
 /** The item another computer told of that `ref` names (by id, number or source), or null: of two,
@@ -379,7 +379,7 @@ function forgetDeletedThere(told: Set<string>): void {
 /** A change you made through this box to an item the computer `key` keeps, as its box answered
  * (`item`): what this box has of it now, so its views show it at once, not when that computer next
  * tells (one deleted is gone from them, and kept for bringing back there). */
-export function changedThere(key: string, action: "delete" | "move" | "restore", item: Record<string, unknown>, now = Date.now()): void {
+export function changedThere(key: string, action: "delete" | "change" | "restore", item: Record<string, unknown>, now = Date.now()): void {
   const id = typeof item.id === "string" ? item.id : null;
   if (!id) return;
   patchTold(key, id, item, action === "delete");
@@ -398,7 +398,7 @@ export function changedThere(key: string, action: "delete" | "move" | "restore",
 // An item told by a computer that isn't answering (`away`, since when): as it told it, but with
 // none of its sessions said to be at work, as nothing there can be seen at work now.
 const asAway = (item: ToldItem, away: number | null): ToldItem =>
-  away === null || (!item.inProgress && !item.sessions.some(each => each.working)) ? item : { ...item, inProgress: false, sessions: item.sessions.map(each => ({ ...each, working: false })) };
+  away === null || !item.sessions.some(each => each.working) ? item : { ...item, sessions: item.sessions.map(each => ({ ...each, working: false })) };
 
 // Whether `a` (told at `aAt`) is newer word of an item than `b`: changed later, or the same and
 // told later.

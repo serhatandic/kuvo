@@ -5,7 +5,7 @@
 //
 // What was read is kept beside the queues (`run/work-queue/seen.json`), never in them: a read
 // changes no queue file and no item's `updated`. A summary takes it in as it's made (`withSeen`):
-// GitHub's title, its state (`seen`), and Done while it's closed or merged, the item's own category
+// GitHub's title, its state (`seen`), and Done while it's closed or merged, the item's own status
 // kept (`keptIn`) for when it's reopened.
 
 import path from "node:path";
@@ -172,7 +172,7 @@ export const doneOnGitHub = (state: string | undefined): boolean => state !== un
  * or no longer visible to `gh` here: GitHub says the same of both). */
 export const doneByRead = (read: Read<IssueRead> | undefined): boolean => Boolean(read?.value && (read.gone || doneOnGitHub(read.value.state)));
 
-/** What a client shows in place of its category while GitHub makes it Done. */
+/** What a client shows in place of its status while GitHub makes it Done. */
 const doneWords = (seen: Seen): string => (seen.gone ? "Gone from GitHub" : seen.state === "merged" ? "Merged on GitHub" : "Closed on GitHub");
 
 /** The name a client shows: `kuvo-ai#12`, or `owner/kuvo-ai#12` where another owner's repository
@@ -185,8 +185,7 @@ export function shownName(at: IssueAt): string {
 /** What a summary of an item needs for this. */
 interface Shown {
   title: string;
-  category: string;
-  inProgress: boolean;
+  status: string;
   source?: Source;
   seen?: Seen;
   keptIn?: string;
@@ -198,14 +197,14 @@ interface Shown {
 
 /** A summary with what GitHub says of its issue or pull request taken in: the newer of what was
  * read here and what its computer told (`seen`). Done while it's closed or merged, or gone (never
- * in progress then), its own category kept in `keptIn`, and said in words (`doneAs`); GitHub's
+ * anything else then), its own status kept in `keptIn`, and said in words (`doneAs`); GitHub's
  * title; the name a client shows. */
 export function withSeen<S extends Shown>(summary: S): S {
   if (!summary.source) return summary;
   const at = issueAt(summary.source.ref);
   if (!at) return summary;
   let read = seenReads().reads[sourceKey(at)];
-  const keptIn = summary.keptIn ?? summary.category;
+  const keptIn = summary.keptIn ?? summary.status;
   let { title } = summary;
   let seen = summary.seen;
   let source: Source = { ...summary.source, name: shownName(at) };
@@ -231,8 +230,7 @@ export function withSeen<S extends Shown>(summary: S): S {
     title,
     source,
     ...(seen ? { seen } : {}),
-    category: done ? "done" : keptIn,
-    inProgress: done ? false : summary.inProgress,
+    status: done ? "done" : keptIn,
     // (What a client draws: its title struck through when it was closed without being done, or is
     // gone.)
     ...(seen && (seen.gone || STRUCK.has(seen.state)) ? { struck: true } : {}),

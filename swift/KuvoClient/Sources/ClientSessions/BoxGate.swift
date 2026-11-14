@@ -23,6 +23,8 @@ public enum BoxGate {
     /// keep no stand-in: `bots.now`, `computers`, `limits.rings`, `sandbox.words`,
     /// `sessions.needsYou`, `sign-in.accounts.kinds`, `sign-in.codes`, `waiting`, `waiting.cards` (#718: what waits on you counts the cards a client used to add itself) and
     /// `work-queue.counts`.
+    /// Then #674's, the Work Queue's statuses, priorities and labels in place of categories:
+    /// `work-queue.edit`.
     /// Then #708's, for its side panel and the sandbox's row, which work nothing out from what the
     /// box lists: `file.text`, `git.branches.pullRequest`, `git.changes.binary`, `git.files.does`
     /// and `sandbox.opens`.
@@ -74,6 +76,7 @@ public enum BoxGate {
         "waiting",
         "waiting.cards",
         "work-queue.counts",
+        "work-queue.edit",
     ]
 
     /// What `features` lack of `required`, in its order: none when the box is up to date. Nil

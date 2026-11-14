@@ -61,13 +61,13 @@ const AHEAD = 60_000;
 const MOST_REMEMBERED = 2_000;
 
 /** What a client did, as it goes to the box that keeps the item: a whole read (`GET`) or one of its
- * files (`action` `file`, `name`), a delete, or a move or a bringing back (`action`), with what it
- * said (`body`, a move's place). */
+ * files (`action` `file`, `name`), a delete, a change (`PATCH`, with what it said, `body`), or a
+ * bringing back (`action` `restore`). */
 export interface Act {
   id: string;
-  method: "GET" | "DELETE" | "POST";
+  method: "GET" | "DELETE" | "POST" | "PATCH";
   item: string;
-  action?: "move" | "restore" | "file";
+  action?: "restore" | "file";
   name?: string;
   body?: Record<string, unknown>;
   at: number;
@@ -311,7 +311,7 @@ const actOf = (given: unknown): Act | null => {
   if (!isObject(given) || typeof given.id !== "string" || !ID.test(given.id) || typeof given.item !== "string" || !given.item || given.item.length > 300) return null;
   if (typeof given.at !== "number" || !Number.isFinite(given.at)) return null;
   const { method, action, name } = given;
-  const fits = (method === "GET" && action === undefined) || (method === "DELETE" && action === undefined) || (method === "POST" && (action === "move" || action === "restore"))
+  const fits = (method === "GET" && action === undefined) || (method === "DELETE" && action === undefined) || (method === "POST" && action === "restore") || (method === "PATCH" && action === undefined)
     || (method === "GET" && action === "file" && typeof name === "string" && name.length > 0 && name.length <= 300);
   if (!fits) return null;
   return { id: given.id, method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;

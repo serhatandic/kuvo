@@ -4206,6 +4206,9 @@
             "literal": "work-queue.counts"
            },
            {
+            "literal": "work-queue.edit"
+           },
+           {
             "literal": "work-queue.elsewhere"
            },
            {
@@ -4786,6 +4789,9 @@
            },
            {
             "literal": "work-queue.counts"
+           },
+           {
+            "literal": "work-queue.edit"
            },
            {
             "literal": "work-queue.elsewhere"
@@ -15007,12 +15013,48 @@
     "200": {
      "object": {
       "owner": "string",
-      "categories": {
+      "statuses": {
        "list": {
         "object": {
          "id": "string",
          "name": "string",
-         "builtIn": "bool"
+         "closed": "bool"
+        }
+       }
+      },
+      "priorities": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
+      "labels": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string",
+         "color": "string"
+        }
+       }
+      },
+      "assignees": {
+       "list": {
+        "object": {
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "bot"
+           },
+           {
+            "literal": "agent"
+           }
+          ]
+         },
+         "id": "string",
+         "name": "string",
+         "look?": "any"
         }
        }
       },
@@ -15024,9 +15066,39 @@
          "wanted?": "number",
          "owner": "string",
          "title": "string",
-         "category": "string",
+         "status": "string",
          "order": "number",
-         "inProgress": "bool",
+         "priority": "string",
+         "labels": {
+          "list": "string"
+         },
+         "assignee?": {
+          "object": {
+           "kind": {
+            "oneOf": [
+             {
+              "literal": "bot"
+             },
+             {
+              "literal": "agent"
+             }
+            ]
+           },
+           "id": "string",
+           "name": "string",
+           "look?": "any"
+          }
+         },
+         "due?": "string",
+         "can?": {
+          "object": {
+           "edit": "bool",
+           "set": "bool",
+           "close": "bool",
+           "delete": "bool",
+           "restore": "bool"
+          }
+         },
          "progress?": {
           "object": {
            "value?": "number",
@@ -15202,6 +15274,9 @@
            },
            {
             "literal": "group"
+           },
+           {
+            "literal": "you"
            }
           ]
          },
@@ -15229,9 +15304,39 @@
          "wanted?": "number",
          "owner": "string",
          "title": "string",
-         "category": "string",
+         "status": "string",
          "order": "number",
-         "inProgress": "bool",
+         "priority": "string",
+         "labels": {
+          "list": "string"
+         },
+         "assignee?": {
+          "object": {
+           "kind": {
+            "oneOf": [
+             {
+              "literal": "bot"
+             },
+             {
+              "literal": "agent"
+             }
+            ]
+           },
+           "id": "string",
+           "name": "string",
+           "look?": "any"
+          }
+         },
+         "due?": "string",
+         "can?": {
+          "object": {
+           "edit": "bool",
+           "set": "bool",
+           "close": "bool",
+           "delete": "bool",
+           "restore": "bool"
+          }
+         },
          "progress?": {
           "object": {
            "value?": "number",
@@ -15416,8 +15521,14 @@
       },
       "counts?": {
        "object": {
-        "inProgress": "number",
-        "categories": {
+        "open": "number",
+        "statuses": {
+         "map": "number"
+        },
+        "priorities": {
+         "map": "number"
+        },
+        "labels": {
          "map": "number"
         },
         "sources": {
@@ -15428,7 +15539,8 @@
         },
         "removed": "number"
        }
-      }
+      },
+      "q?": "string"
      }
     }
    }
@@ -15439,12 +15551,48 @@
     "200": {
      "object": {
       "owner": "string",
-      "categories": {
+      "statuses": {
        "list": {
         "object": {
          "id": "string",
          "name": "string",
-         "builtIn": "bool"
+         "closed": "bool"
+        }
+       }
+      },
+      "priorities": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string"
+        }
+       }
+      },
+      "labels": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string",
+         "color": "string"
+        }
+       }
+      },
+      "assignees": {
+       "list": {
+        "object": {
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "bot"
+           },
+           {
+            "literal": "agent"
+           }
+          ]
+         },
+         "id": "string",
+         "name": "string",
+         "look?": "any"
         }
        }
       },
@@ -15456,9 +15604,39 @@
          "wanted?": "number",
          "owner": "string",
          "title": "string",
-         "category": "string",
+         "status": "string",
          "order": "number",
-         "inProgress": "bool",
+         "priority": "string",
+         "labels": {
+          "list": "string"
+         },
+         "assignee?": {
+          "object": {
+           "kind": {
+            "oneOf": [
+             {
+              "literal": "bot"
+             },
+             {
+              "literal": "agent"
+             }
+            ]
+           },
+           "id": "string",
+           "name": "string",
+           "look?": "any"
+          }
+         },
+         "due?": "string",
+         "can?": {
+          "object": {
+           "edit": "bool",
+           "set": "bool",
+           "close": "bool",
+           "delete": "bool",
+           "restore": "bool"
+          }
+         },
          "progress?": {
           "object": {
            "value?": "number",
@@ -15634,6 +15812,9 @@
            },
            {
             "literal": "group"
+           },
+           {
+            "literal": "you"
            }
           ]
          },
@@ -15661,9 +15842,39 @@
          "wanted?": "number",
          "owner": "string",
          "title": "string",
-         "category": "string",
+         "status": "string",
          "order": "number",
-         "inProgress": "bool",
+         "priority": "string",
+         "labels": {
+          "list": "string"
+         },
+         "assignee?": {
+          "object": {
+           "kind": {
+            "oneOf": [
+             {
+              "literal": "bot"
+             },
+             {
+              "literal": "agent"
+             }
+            ]
+           },
+           "id": "string",
+           "name": "string",
+           "look?": "any"
+          }
+         },
+         "due?": "string",
+         "can?": {
+          "object": {
+           "edit": "bool",
+           "set": "bool",
+           "close": "bool",
+           "delete": "bool",
+           "restore": "bool"
+          }
+         },
          "progress?": {
           "object": {
            "value?": "number",
@@ -15848,8 +16059,14 @@
       },
       "counts?": {
        "object": {
-        "inProgress": "number",
-        "categories": {
+        "open": "number",
+        "statuses": {
+         "map": "number"
+        },
+        "priorities": {
+         "map": "number"
+        },
+        "labels": {
          "map": "number"
         },
         "sources": {
@@ -15860,7 +16077,8 @@
         },
         "removed": "number"
        }
-      }
+      },
+      "q?": "string"
      }
     }
    }
@@ -15922,8 +16140,7 @@
            "struck?": "bool",
            "closesOn?": "string",
            "title": "string",
-           "category": "string",
-           "inProgress": "bool",
+           "status": "string",
            "owner": "string",
            "removed?": "bool",
            "computer?": {
@@ -15986,8 +16203,7 @@
            "struck?": "bool",
            "closesOn?": "string",
            "title": "string",
-           "category": "string",
-           "inProgress": "bool",
+           "status": "string",
            "owner": "string",
            "removed?": "bool",
            "computer?": {
@@ -16018,16 +16234,16 @@
    }
   },
   {
-   "route": "GET kuvo/work-queue/categories",
+   "route": "GET kuvo/work-queue/labels",
    "answers": {
     "200": {
      "object": {
-      "categories": {
+      "labels": {
        "list": {
         "object": {
          "id": "string",
          "name": "string",
-         "builtIn": "bool"
+         "color": "string"
         }
        }
       }
@@ -16036,16 +16252,232 @@
    }
   },
   {
-   "route": "POST kuvo/work-queue/categories",
+   "route": "POST kuvo/work-queue/labels",
    "answers": {
     "200": {
      "object": {
-      "categories": {
+      "labels": {
        "list": {
         "object": {
          "id": "string",
          "name": "string",
-         "builtIn": "bool"
+         "color": "string"
+        }
+       }
+      },
+      "label?": {
+       "object": {
+        "id": "string",
+        "name": "string",
+        "color": "string"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/work-queue/items",
+   "answers": {
+    "200": {
+     "object": {
+      "item": {
+       "object": {
+        "id": "string",
+        "number?": "number",
+        "wanted?": "number",
+        "owner": "string",
+        "title": "string",
+        "status": "string",
+        "order": "number",
+        "priority": "string",
+        "labels": {
+         "list": "string"
+        },
+        "assignee?": {
+         "object": {
+          "kind": {
+           "oneOf": [
+            {
+             "literal": "bot"
+            },
+            {
+             "literal": "agent"
+            }
+           ]
+          },
+          "id": "string",
+          "name": "string",
+          "look?": "any"
+         }
+        },
+        "due?": "string",
+        "can?": {
+         "object": {
+          "edit": "bool",
+          "set": "bool",
+          "close": "bool",
+          "delete": "bool",
+          "restore": "bool"
+         }
+        },
+        "progress?": {
+         "object": {
+          "value?": "number",
+          "note?": "string"
+         }
+        },
+        "sessions": {
+         "list": {
+          "object": {
+           "session": "string",
+           "title": "string",
+           "working": "bool"
+          }
+         }
+        },
+        "noteCount": "number",
+        "lastNote?": {
+         "object": {
+          "at": "number",
+          "by": {
+           "oneOf": [
+            {
+             "object": {
+              "user": "bool"
+             }
+            },
+            {
+             "object": {
+              "session": "string",
+              "name": "string"
+             }
+            },
+            {
+             "map": "any"
+            }
+           ]
+          },
+          "text": "string"
+         }
+        },
+        "fileCount": "number",
+        "linkCount": "number",
+        "handedBy?": "string",
+        "source?": {
+         "object": {
+          "kind": "string",
+          "ref": "string",
+          "url?": "string",
+          "host?": "string",
+          "id?": "string",
+          "name?": "string"
+         }
+        },
+        "seen?": {
+         "object": {
+          "state": "string",
+          "at": "number",
+          "checked?": "number",
+          "gone?": "bool"
+         }
+        },
+        "keptIn?": "string",
+        "struck?": "bool",
+        "closesOn?": "string",
+        "doneAs?": "string",
+        "handing?": {
+         "object": {
+          "to": "string",
+          "name": "string"
+         }
+        },
+        "computer?": {
+         "object": {
+          "key": "string",
+          "name": "string",
+          "kind": {
+           "oneOf": [
+            {
+             "literal": "mac"
+            },
+            {
+             "literal": "machine"
+            }
+           ]
+          },
+          "id?": "string"
+         }
+        },
+        "created": {
+         "object": {
+          "at": "number",
+          "by": {
+           "oneOf": [
+            {
+             "object": {
+              "user": "bool"
+             }
+            },
+            {
+             "object": {
+              "session": "string",
+              "name": "string"
+             }
+            },
+            {
+             "map": "any"
+            }
+           ]
+          }
+         }
+        },
+        "updated": {
+         "object": {
+          "at": "number",
+          "by": {
+           "oneOf": [
+            {
+             "object": {
+              "user": "bool"
+             }
+            },
+            {
+             "object": {
+              "session": "string",
+              "name": "string"
+             }
+            },
+            {
+             "map": "any"
+            }
+           ]
+          }
+         }
+        },
+        "doneAt?": "number",
+        "removed?": {
+         "object": {
+          "at": "number",
+          "by": {
+           "oneOf": [
+            {
+             "object": {
+              "user": "bool"
+             }
+            },
+            {
+             "object": {
+              "session": "string",
+              "name": "string"
+             }
+            },
+            {
+             "map": "any"
+            }
+           ]
+          }
+         }
         }
        }
       }
@@ -16059,7 +16491,7 @@
     "200": {
      "object": {
       "added": "number",
-      "byCategory": {
+      "byStatus": {
        "map": "number"
       },
       "waiting": "number",
@@ -16083,9 +16515,39 @@
         "wanted?": "number",
         "owner": "string",
         "title": "string",
-        "category": "string",
+        "status": "string",
         "order": "number",
-        "inProgress": "bool",
+        "priority": "string",
+        "labels": {
+         "list": "string"
+        },
+        "assignee?": {
+         "object": {
+          "kind": {
+           "oneOf": [
+            {
+             "literal": "bot"
+            },
+            {
+             "literal": "agent"
+            }
+           ]
+          },
+          "id": "string",
+          "name": "string",
+          "look?": "any"
+         }
+        },
+        "due?": "string",
+        "can?": {
+         "object": {
+          "edit": "bool",
+          "set": "bool",
+          "close": "bool",
+          "delete": "bool",
+          "restore": "bool"
+         }
+        },
         "progress?": {
          "object": {
           "value?": "number",
@@ -16431,7 +16893,7 @@
    }
   },
   {
-   "route": "POST kuvo/work-queue/items/:item/move",
+   "route": "PATCH kuvo/work-queue/items/:item",
    "answers": {
     "200": {
      "object": {
@@ -16442,9 +16904,39 @@
         "wanted?": "number",
         "owner": "string",
         "title": "string",
-        "category": "string",
+        "status": "string",
         "order": "number",
-        "inProgress": "bool",
+        "priority": "string",
+        "labels": {
+         "list": "string"
+        },
+        "assignee?": {
+         "object": {
+          "kind": {
+           "oneOf": [
+            {
+             "literal": "bot"
+            },
+            {
+             "literal": "agent"
+            }
+           ]
+          },
+          "id": "string",
+          "name": "string",
+          "look?": "any"
+         }
+        },
+        "due?": "string",
+        "can?": {
+         "object": {
+          "edit": "bool",
+          "set": "bool",
+          "close": "bool",
+          "delete": "bool",
+          "restore": "bool"
+         }
+        },
         "progress?": {
          "object": {
           "value?": "number",
@@ -16665,9 +17157,39 @@
         "wanted?": "number",
         "owner": "string",
         "title": "string",
-        "category": "string",
+        "status": "string",
         "order": "number",
-        "inProgress": "bool",
+        "priority": "string",
+        "labels": {
+         "list": "string"
+        },
+        "assignee?": {
+         "object": {
+          "kind": {
+           "oneOf": [
+            {
+             "literal": "bot"
+            },
+            {
+             "literal": "agent"
+            }
+           ]
+          },
+          "id": "string",
+          "name": "string",
+          "look?": "any"
+         }
+        },
+        "due?": "string",
+        "can?": {
+         "object": {
+          "edit": "bool",
+          "set": "bool",
+          "close": "bool",
+          "delete": "bool",
+          "restore": "bool"
+         }
+        },
         "progress?": {
          "object": {
           "value?": "number",
@@ -16888,9 +17410,39 @@
         "wanted?": "number",
         "owner": "string",
         "title": "string",
-        "category": "string",
+        "status": "string",
         "order": "number",
-        "inProgress": "bool",
+        "priority": "string",
+        "labels": {
+         "list": "string"
+        },
+        "assignee?": {
+         "object": {
+          "kind": {
+           "oneOf": [
+            {
+             "literal": "bot"
+            },
+            {
+             "literal": "agent"
+            }
+           ]
+          },
+          "id": "string",
+          "name": "string",
+          "look?": "any"
+         }
+        },
+        "due?": "string",
+        "can?": {
+         "object": {
+          "edit": "bool",
+          "set": "bool",
+          "close": "bool",
+          "delete": "bool",
+          "restore": "bool"
+         }
+        },
         "progress?": {
          "object": {
           "value?": "number",

@@ -6,18 +6,19 @@
 import fs from "node:fs";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
-import { categoryNamed } from "./categories";
+import { labelNamed } from "./labels";
+import { isClosed, statusNamed } from "./statuses";
 import { claimNumbers, inRanges, MOST_NUMBER, numberWaiting, rangesOf, readNumbers, type Primary } from "./numbers";
 import { readTold, toldKeys } from "./told";
 import { MOST_BODY, MOST_TITLE, newItemID, placeIn, type Book, type Item, type Who } from "./store";
 
-/** An item to import: its number, title, body and category id. */
-export interface Imported { number: number; title: string; body: string; category: string }
+/** An item to import: its number, title, body, status and, where its heading named one, label. */
+export interface Imported { number: number; title: string; body: string; status: string; label?: string }
 
-/** What an import did: how many came into each category, and what it left out, in words. */
+/** What an import did: how many came with each status, and what it left out, in words. */
 export interface ImportOutcome {
   added: number;
-  byCategory: Record<string, number>;
+  byStatus: Record<string, number>;
   skipped: string[];
   /** Numbers skipped as in the queue already (or imported before). */
   already: number[];
@@ -39,22 +40,25 @@ export function titleOf(text: string): string {
   return sentence.length <= 120 ? sentence : sentence.slice(0, 119).replace(/\s+\S*$/, "") + "…";
 }
 
-// The category a heading's words give, if any.
-function categoryOfHeading(heading: string): string | null {
+// Where a heading's words put the items under it, if anywhere: a status, or a label (Todo then).
+function placeOfHeading(heading: string): { status: string; label?: string } | null {
   const words = heading.toLowerCase();
-  if (/\b(done|finished|completed)\b/.test(words)) return "done";
-  if (/\b(shelved|parked)\b/.test(words)) return "parked";
-  if (/\b(later|ideas?|someday)\b/.test(words)) return "later";
-  const custom = categoryNamed(heading.trim());
-  return custom ? custom.id : null;
+  if (/\b(done|finished|completed)\b/.test(words)) return { status: "done" };
+  if (/\b(cancell?ed|dropped|won'?t do)\b/.test(words)) return { status: "canceled" };
+  if (/\b(shelved|parked|later|ideas?|someday|backlog)\b/.test(words)) return { status: "backlog" };
+  const status = statusNamed(heading.trim());
+  if (status) return { status: status.id };
+  const label = labelNamed(heading.trim());
+  return label ? { status: "todo", label: label.id } : null;
 }
 
 /** Markdown files' items, by the import's plain rules: a list line starting with `#N` is one (its
- * mark `[x]` makes it Done), in the category of the nearest heading above it that names one, else
- * Next; a line like `LATER: #3 #4` sets those items' category; the first line naming a number
+ * mark `[x]` makes it Done), with the status of the nearest heading above it that names one (a
+ * heading that names a label gives that label), else Todo; a line like `LATER: #3 #4` sets those
+ * items' status (Backlog; `NOW:` and `NEXT:` Todo); the first line naming a number
  * gives its title, and every line naming it, in any file, its body. */
 export function parseBacklog(texts: string[]): { items: Imported[]; skipped: string[] } {
-  const found = new Map<number, { title: string; lines: string[]; category: string }>();
+  const found = new Map<number, { title: string; lines: string[]; status: string; label?: string }>();
   const set = new Map<number, string>();
   const skipped: string[] = [];
   for (const text of texts) {
@@ -70,8 +74,8 @@ export function parseBacklog(texts: string[]): { items: Imported[]; skipped: str
       }
       const sorted = line.match(/^\s*(?:[-*]\s+)?(NOW|NEXT|LATER|PARKED|DONE)\b[^:]{0,80}:\s*(.*)$/);
       if (sorted && /#\d/.test(sorted[2])) {
-        const category = sorted[1] === "NOW" ? "next" : sorted[1].toLowerCase();
-        for (const ref of sorted[2].matchAll(/(?:^|[\s,(])#(\d{1,6})(?![\w])/g)) set.set(Number(ref[1]), category);
+        const status = sorted[1] === "NOW" || sorted[1] === "NEXT" ? "todo" : sorted[1] === "DONE" ? "done" : "backlog";
+        for (const ref of sorted[2].matchAll(/(?:^|[\s,(])#(\d{1,6})(?![\w])/g)) set.set(Number(ref[1]), status);
         continue;
       }
       const listed = line.match(/^\s*[-*]\s+(.*)$/);
@@ -87,21 +91,21 @@ export function parseBacklog(texts: string[]): { items: Imported[]; skipped: str
         kept.lines.push(listed[1]);
         continue;
       }
-      let category = "next";
+      let place: { status: string; label?: string } = { status: "todo" };
       for (const each of [...headings].reverse()) {
-        const named = categoryOfHeading(each.text);
+        const named = placeOfHeading(each.text);
         if (named) {
-          category = named;
+          place = named;
           break;
         }
       }
-      if (done) category = "done";
-      found.set(number, { title: titleOf(rest) || `Item ${number}`, lines: [listed[1]], category });
+      if (done) place = { ...place, status: "done" };
+      found.set(number, { title: titleOf(rest) || `Item ${number}`, lines: [listed[1]], ...place });
     }
   }
-  for (const [number, category] of set) {
+  for (const [number, status] of set) {
     const kept = found.get(number);
-    if (kept && kept.category !== "done") kept.category = category;
+    if (kept && kept.status !== "done") kept.status = status;
   }
   // Numbers named in a list line that no line starts with: said, never lost silently.
   for (const text of texts) {
@@ -113,7 +117,7 @@ export function parseBacklog(texts: string[]): { items: Imported[]; skipped: str
       }
     }
   }
-  const items = [...found.entries()].sort((a, b) => a[0] - b[0]).map(([number, kept]) => ({ number, title: kept.title, body: kept.lines.join("\n\n").slice(0, MOST_BODY), category: kept.category }));
+  const items = [...found.entries()].sort((a, b) => a[0] - b[0]).map(([number, kept]) => ({ number, title: kept.title, body: kept.lines.join("\n\n").slice(0, MOST_BODY), status: kept.status, ...(kept.label ? { label: kept.label } : {}) }));
   return { items, skipped: [...new Set(skipped)] };
 }
 
@@ -147,13 +151,18 @@ export function givenItems(given: unknown): { items: Imported[]; skipped: string
       skipped.push(isObject(each) && each.number !== undefined ? `#${String(each.number)} (it needs a whole number of six digits at most, and a title)` : "an item with no number");
       continue;
     }
-    const category = isObject(each) && each.done === true ? "done" : isObject(each) && each.category !== undefined ? categoryNamed(each.category)?.id : "next";
-    if (!category) {
-      skipped.push(`#${number} (there's no category ${String((each as Record<string, unknown>).category)})`);
+    const status = isObject(each) && each.done === true ? "done" : isObject(each) && each.status !== undefined ? statusNamed(each.status)?.id : "todo";
+    if (!status) {
+      skipped.push(`#${number} (there's no status ${String((each as Record<string, unknown>).status)})`);
+      continue;
+    }
+    const label = isObject(each) && each.label !== undefined ? labelNamed(each.label)?.id : undefined;
+    if (isObject(each) && each.label !== undefined && !label) {
+      skipped.push(`#${number} (there's no label ${String(each.label)}: queue_labels makes one)`);
       continue;
     }
     const body = isObject(each) && typeof each.body === "string" ? each.body.slice(0, MOST_BODY) : "";
-    items.push({ number, title, body, category });
+    items.push({ number, title, body, status, ...(label ? { label } : {}) });
   }
   return { items, skipped };
 }
@@ -179,7 +188,7 @@ export function importItems(book: Book, owner: string, items: Imported[], who: W
   // (Numbers this box gave items that are gone from it: moved to another computer, or deleted.)
   const used = readNumbers().used ?? [];
   const gone = (n: number, here: Item[]) => !here.length && inRanges(used, n);
-  const outcome: ImportOutcome = { added: 0, byCategory: {}, skipped: [], already: [], waiting: 0, renumbered: [], restored: [], restoring: [] };
+  const outcome: ImportOutcome = { added: 0, byStatus: {}, skipped: [], already: [], waiting: 0, renumbered: [], restored: [], restoring: [] };
   const made: Item[] = [];
   const fresh: { from: number; item: Item }[] = [];
   const back: { from: number; item: Item }[] = [];
@@ -220,15 +229,16 @@ export function importItems(book: Book, owner: string, items: Imported[], who: W
       ...(taken ? { importedAs: each.number } : { wanted: each.number }),
       title: each.title,
       body: each.body,
-      category: each.category,
-      order: placeIn(book.items(), each.category),
+      status: each.status,
+      order: placeIn(book.items(), each.status),
+      labels: each.label ? [each.label] : [],
       notes: taken ? [{ at: now, by: { user: true }, text: `Imported as #${each.number}, a number already given to another item${here.length ? " here" : far !== undefined ? " on another of your computers" : ", one no longer here"}, so it has a new one.` }] : [],
       files: [],
       links: [],
       sessions: [],
       created: { at: now, by: who },
       updated: { at: now, by: who },
-      ...(each.category === "done" ? { doneAt: now } : {}),
+      ...(isClosed(each.status) ? { doneAt: now } : {}),
     };
     book.queue(owner).items.push(item);
     if (taken) fresh.push({ from: each.number, item });
@@ -237,7 +247,7 @@ export function importItems(book: Book, owner: string, items: Imported[], who: W
       made.push(item);
     }
     outcome.added++;
-    outcome.byCategory[each.category] = (outcome.byCategory[each.category] ?? 0) + 1;
+    outcome.byStatus[each.status] = (outcome.byStatus[each.status] ?? 0) + 1;
   }
   const restores = back.map(({ item }) => item.wanted!);
   const claimed = [...made.map(item => item.wanted!), ...restores];
@@ -268,7 +278,7 @@ const runsWords = (numbers: number[]) => rangesOf(numbers).map(([from, to]) => (
 
 /** An import's outcome, in words. */
 export function importWords(outcome: ImportOutcome, skipped: string[], names: (id: string) => string): string {
-  const parts = Object.entries(outcome.byCategory).map(([category, count]) => `${count} in ${names(category)}`);
+  const parts = Object.entries(outcome.byStatus).map(([status, count]) => `${count} ${names(status)}`);
   const all = [...skipped, ...outcome.skipped];
   const left = all.length + outcome.already.length;
   const said = [...(outcome.already.length ? [`${runsWords(outcome.already)} (already in the Work Queue here)`] : []), ...all.slice(0, MOST_SKIPPED_SAID)];

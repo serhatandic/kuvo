@@ -1,5 +1,5 @@
 // What you do to an item from a client, on the box that keeps it (PROTOCOL.md, "The Work Queue"):
-// read it whole, delete it, bring it back, or move it. The same whether your client asked this box
+// add one, read it whole, change it, delete it or bring it back. The same whether your client asked this box
 // (`kuvo/work-queue/items/…`) or another of your computers' boxes handed it on (`forward.ts`).
 
 import fs from "node:fs";
@@ -8,10 +8,12 @@ import { ownName } from "../letters/start";
 import { callOffHanding, refuseLiveElsewhere, twinOf } from "./hand";
 import { readSeen } from "./github";
 import { numberWaiting, primaryOf } from "./numbers";
-import { changeItem, refuseHanding, refuseMoving, removeItem, restoreItem } from "./ops";
-import { allItems, changeQueues, FILE_NAME, filesOf, matching, MOST_HANDED_FILES, Refusal, type Book, type Item, type ItemRef } from "./store";
+import { addItem, changeItem, handItem, refuseHanding, refuseMoving, removeItem, restoreItem, type Fields } from "./ops";
+import { assignable, assigneeFor, botSession } from "./assignees";
+import { frozen } from "../moves/records";
+import { allItems, changeQueues, FILE_NAME, filesOf, matching, MOST_HANDED_FILES, OWNER, Refusal, YOURS, type Book, type Item, type ItemRef } from "./store";
 import { tellQueuesAgain } from "./across";
-import { factsOf, ownersOf, refOf, summaryOf, titlesHere, wholeOf } from "./view";
+import { canOf, factsOf, nameOf, ownersOf, refOf, summaryOf, titlesHere, wholeOf, type ItemSummary } from "./view";
 import type { Act, Acted } from "./forward";
 import type { Target } from "../../shared/records";
 
@@ -23,22 +25,46 @@ const YOU = { user: true } as const;
 // An item a client named that isn't here.
 class Missing extends Refusal {}
 
+/** A summary with what a client may do to it here (`canOf`): nothing while its conversation moves. */
+export const withCan = <S extends ItemSummary>(summary: S, moving: Set<string> = frozen()): S => ({ ...summary, can: canOf(summary, { moving: moving.has(summary.owner) }) });
+
 // What a client's own change says: the item as it is now, or why not.
 function changed(work: () => Item): Acted {
   try {
     const item = work();
     // Your other computers hear of it at their next round, not after the usual wait.
     tellQueuesAgain();
-    return { status: 200, value: { item: summaryOf(item, new Set(), new Map()) } };
+    return { status: 200, value: { item: withCan(summaryOf(item, new Set(), new Map(), assignable())) } };
   } catch (error) {
     if (error instanceof Refusal) return { status: error instanceof Missing ? 404 : 400, value: { message: error.message } };
     throw error;
   }
 }
 
+/** What a client may say of an item it adds or changes: nothing else is taken from it. */
+const fieldsOf = ({ title, body, status, priority, labels, assignee, due, before, after, top }: Record<string, unknown>): Fields => ({ title, body, status, priority, labels, assignee, due, before, after, top });
+
+/** An item you add from a client (`POST kuvo/work-queue/items`): in the queue `owner` names (a
+ * conversation's, the one you're looking at); else, for a bot of this box, in that bot's; else in
+ * your own (`usr_you`). Todo and Normal unless said. */
+export function addHere(given: Record<string, unknown>): Acted {
+  const now = Date.now();
+  const primary = primaryOf();
+  return changed(() => changeQueues(book => {
+    if (given.owner !== undefined && (typeof given.owner !== "string" || !OWNER.test(given.owner))) throw new Refusal("That's no queue to add it to (owner): a conversation's address, or a group chat's id.");
+    const assignee = given.assignee === undefined || given.assignee === null ? null : assigneeFor(given.assignee);
+    const owner = (given.owner as string | undefined) ?? botSession(assignee ?? undefined) ?? YOURS;
+    refuseMoving([owner]);
+    const { before: _, after: __, ...fields } = fieldsOf(given);
+    const item = addItem(book, owner, fields, { who: YOU, now, fileOps: [] }, primary);
+    numberWaiting(book, primary, null);
+    return item;
+  }));
+}
+
 /** What a client does to an item this box keeps (`ref`), as the route answers it: read whole, delete,
- * bring back or move (`given`, where to). */
-export async function actHere({ method, action, ref, given = {}, targets, signal }: { method: Act["method"]; action?: "move" | "restore"; ref: ItemRef; given?: Record<string, unknown>; targets: Target[]; signal?: AbortSignal | null }): Promise<Acted> {
+ * bring back or change (`given`: what it says, where it stands, its place). */
+export async function actHere({ method, action, ref, given = {}, targets, signal }: { method: Act["method"]; action?: "restore"; ref: ItemRef; given?: Record<string, unknown>; targets: Target[]; signal?: AbortSignal | null }): Promise<Acted> {
   const find = (items: Item[]) => matching(items, ref)[0] ?? null;
   if (method === "GET") {
     const item = find(allItems());
@@ -46,7 +72,7 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
     const facts = await factsOf(targets, signal ?? undefined);
     await readSeen([item], GITHUB_WAIT);
     const { titles } = await ownersOf(item.owner, [item], facts, targets);
-    return { status: 200, value: { item: wholeOf(item, facts.working, titles) } };
+    return { status: 200, value: { item: withCan(wholeOf(item, facts.working, titles, assignable())) } };
   }
   const now = Date.now();
   const primary = primaryOf();
@@ -82,10 +108,16 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
   }
   return changed(inBook((item, book) => {
     if (item.removed) throw new Refusal("It's deleted: bring it back first.");
-    // (Only where it goes: what it says is the agents' to change.)
-    const { category, before, after, top } = given;
-    if ([before, after].some(each => each !== undefined && refOf(each) === null)) throw new Refusal("There's no item like that to put it beside.");
-    changeItem(book, item, { category, before, after, top }, { who: YOU, now, fileOps: [] });
+    const fields = fieldsOf(given);
+    if ([fields.before, fields.after].some(each => each !== undefined && refOf(each) === null)) throw new Refusal("There's no item like that to put it beside.");
+    if (item.source && (fields.title !== undefined || fields.body !== undefined)) throw new Refusal(`${nameOf(item)} takes its title and description from GitHub: change them there.`);
+    changeItem(book, item, fields, { who: YOU, now, fileOps: [] });
+    // (One of your own given to a bot here goes into that bot's queue, where its agent sees it.)
+    const to = item.owner === YOURS && fields.assignee !== undefined ? botSession(item.assignee) : null;
+    if (to) {
+      refuseMoving([to]);
+      handItem(book, item, to, YOU, now);
+    }
   }));
 }
 
