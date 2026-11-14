@@ -327,3 +327,9 @@ test("signed in to Copilot as another GitHub account, what was kept of the one b
   expect(bob.windows.map((each) => each.amount?.used)).toEqual([10])
   expect(bob.problem).toBeUndefined()
 })
+
+test("an account's mark in Accounts is the service its limits are read as", async () => {
+  const { readerServices } = await import("../../src/agents/engine-limits")
+  const { ENGINE_SERVICES } = await import("../../src/shared/limits")
+  for (const [provider, service] of Object.entries(readerServices())) expect([provider, ENGINE_SERVICES[provider]]).toEqual([provider, service])
+})

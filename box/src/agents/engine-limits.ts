@@ -65,6 +65,9 @@ const READERS: Record<string, Reader> = {
   "opencode-go": { service: "opencode", read: readOpenCodeGo, identity: byKey },
 }
 
+/** Each provider whose limits are read, with its service (what the link marks its account with: `shared/limits.ts`). */
+export const readerServices = (): Record<string, LimitsService> => Object.fromEntries(Object.entries(READERS).map(([provider, reader]) => [provider, reader.service]))
+
 /** The services whose limits the engine's sign-ins are read for. */
 export const ENGINE_SERVICES: LimitsService[] = [...new Set(Object.values(READERS).map((reader) => reader.service))]
 

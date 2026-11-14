@@ -46,3 +46,21 @@ export function resetTime(at: number): string {
 export function isLimit(text: string | undefined): boolean {
   return Boolean(text && /\b429\b|rate.?limit|usage limit|limit (?:was |has been )?reached|reached (?:its|your|the) (?:usage )?limit|quota|too many requests|resets? in|try again in|overloaded|capacity/i.test(text))
 }
+
+/** The plan limits' service (its mark and color, PROTOCOL.md "Plan limits", `services`) of each of
+ * the engine's providers that has one: those whose limits are read (the coding agents' bridge's
+ * `READERS`, held to this by its tests), and those of a maker with a mark besides. */
+export const ENGINE_SERVICES: Readonly<Record<string, string>> = {
+  anthropic: "claude",
+  "claude-agent": "claude",
+  "github-copilot": "copilot",
+  ollama: "ollama",
+  "ollama-cloud": "ollama",
+  openai: "codex",
+  opencode: "opencode",
+  "opencode-go": "opencode",
+  openrouter: "openrouter",
+  xai: "grok",
+  zai: "zai",
+  "zai-coding-plan": "zai",
+}

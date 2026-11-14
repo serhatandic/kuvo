@@ -3288,10 +3288,35 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     the account's card names under its name: its first sign-in that isn't legacy (the engine's
     "Login with" said "Sign in with"; plain "Sign in" where its words only name the account
     again), else "API key" for a key, else "Connect".
-  - `GET kuvo/sign-in/accounts[?agents=1]` → `{"accounts": [{id, methods, environment, hint}]}`:
+  - `GET kuvo/sign-in/accounts[?agents=1]` → `{"accounts": [{id, methods, environment, hint, kind,
+    listed, service?}]}`:
     every account the engine (or the bridge) lists, each with the same answer. Accounts goes by it
     on both apps: an account has Sign In (and Sign In Again, Add Another) only where `methods`
     isn't empty, and a card's line under its name is `hint`. A box from before it offers none.
+    `kind` and `listed` (`sign-in.accounts.kinds`, #711): what it is, and whether Accounts lists
+    it, so no client keeps the rule: `provider` (listed); `search`, a web search service the
+    engine lists among its sign-ins (Exa, Firecrawl, Parallel, Tavily, TinyFish: its key is
+    Settings › Engine's; not listed); `mcp`, an MCP server's sign-in (`metadata.source` `mcp`: an
+    integration's; not listed); `agentDuplicate`, the engine's own way to a plan a coding agent
+    brings (`claude-agent`: Kuvo Code runs Claude Code instead; listed only while it's signed in,
+    to sign out of). A coding agent's account (`agents=1`) is a `provider`, listed. A client lists
+    those with `listed` and leaves the rest out, whatever `kind` a newer box names. `service`: its
+    mark, by the plan limits' service ids ("Plan limits", `services`): a coding agent's is its
+    agent's; the engine's `openai` is `codex`, `xai` `grok`, `github-copilot` `copilot`,
+    `anthropic` and `claude-agent` `claude`, `opencode` and `opencode-go` `opencode`, `zai` and
+    `zai-coding-plan` `zai`, `ollama` and `ollama-cloud` `ollama`, `openrouter` its own; left out
+    for one with no mark, which a client draws by its name's first letter.
+  - `POST kuvo/sign-in/start?integration=<id>[&agents=1]` `{methodID, answer?}`
+    (`sign-in.codes`, #711): starts a sign-in in the browser as the engine's (or the bridge's) own
+    `api/integration/<id>/connect/oauth` does, and answers what that answered (`attemptID`, `url`,
+    `instructions`, `mode`, `acceptsCode?`) with `userCode`, the code its page asks for, apart,
+    where it has one: as the bridge says it, else from the page's address (`user_code`), else from
+    its instructions (a code like `ABCD-1234`, or what follows the last "code:"), as the engine
+    leaves it for its own plans (GitHub Copilot, OpenCode, SuperGrok). `400 {"message"}` without
+    an account or a way in, `405` for anything but `POST`, `503` while its place isn't running,
+    `504` when it didn't answer in two minutes, else its place's own refusal. A client starts
+    every browser sign-in here, and shows `userCode` as it is, never reading one out of the page
+    or the instructions itself. `kuvo/sign-in/status` says it too wherever the status has it.
   - `GET kuvo/sign-in/status?integration=<id>&attempt=<id>[&agents=1][&wait=<seconds>]` → the
     attempt's status as the engine (or the bridge) says it (`status`, `message?`, `url?`,
     `instructions?`, `userCode?`), with `failure` once it's `failed` or `expired`: what a client
