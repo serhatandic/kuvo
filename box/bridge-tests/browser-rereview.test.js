@@ -164,3 +164,22 @@ for (const raw of [false, true]) {
     assert.deepEqual([restored.params.width, restored.params.height], [393, 660]);
   });
 }
+
+test("re-review S5: oversize lowers pixel scale before quality, then recovers a small displayed picture", async t => {
+  const h = await page(t);
+  h.answer("Page.captureScreenshot", () => ({ data: "anBlZw==" }));
+  await call(h.c, "Kuvo.view", { targetId: "P", width: 1000, height: 700, scale: 2, quality: 75 });
+  await capture(h);
+  const first = h.c.heard.all.find(m => m.method === "Kuvo.frame");
+  await call(h.c, "Kuvo.frameDropped", { frameId: first.params.frameId, reason: "oversize" });
+  const lowered = h.c.heard.all.filter(m => m.method === "Kuvo.viewQuality").at(-1).params;
+  assert.deepEqual([lowered.scale, lowered.quality], [1, 75], "pixel count must fall before JPEG quality");
+  await capture(h, 100);
+  const retry = h.c.heard.all.filter(m => m.method === "Kuvo.frame").at(-1);
+  await call(h.c, "Kuvo.frameAck", { frameId: retry.params.frameId });
+  await h.advance(2200); await settle(h);
+  const recovered = h.c.heard.all.filter(m => m.method === "Kuvo.viewQuality").at(-1).params;
+  assert.equal(recovered.reason, "recovery");
+  assert.ok(recovered.scale > 1 && recovered.scale <= 2);
+  assert.equal(recovered.quality, 75);
+});

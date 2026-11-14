@@ -1,4 +1,4 @@
-// kuvo-browser c7018bbed15baa68
+// kuvo-browser f6dd48a0dc699c5d
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -101,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "bf111ffdf30d";
+const KEEPER = "c1774959f57c";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -935,7 +935,8 @@ async function host() {
   let viewOrder = 0;
   const nativeSize = () => ({ ...sizeFor({}), scale: 2 });
   const viewerSize = client => client.rawView
-    ? client.rawMetrics?.get(client.view?.targetId) ?? nativeSize() : client.view;
+    ? client.rawMetrics?.get(client.view?.targetId) ?? nativeSize()
+    : { ...client.view, ...(client.requestedView ?? {}) };
   const restoreViewer = targetId => {
     const latest = [...clients].filter(c => !c.closed && c.view?.targetId === targetId)
       .sort((a, b) => (b.viewOrder ?? 0) - (a.viewOrder ?? 0))[0];
@@ -943,6 +944,14 @@ async function host() {
   };
   let frameNumber = 0;
   const capturing = new Set(), frameClasses = new Map();
+  const frameKey = v => JSON.stringify([v.targetId, v.width, v.height, v.scale, v.quality]);
+  const qualityChanged = (client, reason) => {
+    client.lastImage = null;
+    wakePage(client.view.targetId);
+    send(client, { method: "Kuvo.viewQuality", params: {
+      targetId: client.view.targetId, quality: client.view.quality, scale: client.view.scale, reason
+    } });
+  };
   const wakePage = targetId => {
     for (const policy of frameClasses.values()) if (policy.targetId === targetId) policy.dirty();
   };
@@ -950,8 +959,14 @@ async function host() {
     const groups = new Map();
     for (const c of clients) {
       const v = c.view;
+      if (v && c.recoverAt !== undefined && Date.now() >= c.recoverAt && !c.rawView && !c.inflight?.size) {
+        c.recoverAt = undefined;
+        if (v.quality < c.requestedView.quality) v.quality = Math.min(c.requestedView.quality, v.quality + 10);
+        else v.scale = Math.min(c.requestedView.scale, v.scale * 1.25);
+        qualityChanged(c, "recovery");
+      }
       if (!v || c.closed || !own.has(v.targetId) || c.inflight?.size >= 2 || c.socket.writableLength > 120000) continue;
-      const key = JSON.stringify([v.targetId, v.width, v.height, v.scale, v.quality]);
+      const key = frameKey(v);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(c);
     }
@@ -959,7 +974,7 @@ async function host() {
       if (!frameClasses.has(key)) frameClasses.set(key, { ...framePolicy(), targetId: group[0].view.targetId });
       const policy = frameClasses.get(key);
       if (capturing.has(key) || !policy.due(Date.now())) continue;
-      const v = group[0].view, now = Date.now();
+      const v = { ...group[0].view }, now = Date.now();
       const ready = group.filter(c => now - (c.lastFrame ?? 0) >= 1000 / c.view.maxFps);
       if (!ready.length) continue;
       capturing.add(key);
@@ -978,11 +993,13 @@ async function host() {
         const digest = JSON.stringify([key, result.data, result.scrollX, result.scrollY]);
         policy.captured(digest, Date.now(), Math.max(...ready.map(c => c.view?.maxFps ?? 15)));
         for (const c of ready) {
-          if (c.closed || c.view?.targetId !== v.targetId || c.inflight?.size >= 2 || c.lastImage === digest) continue;
+          if (c.closed || !c.view || frameKey(c.view) !== key || c.inflight?.size >= 2 || c.lastImage === digest) continue;
           c.lastImage = digest;
           c.inflight ??= new Set();
           const id = ++frameNumber;
           c.inflight.add(id); c.lastFrame = now;
+          c.frameInfo ??= new Map();
+          c.frameInfo.set(id, { revision: c.viewRevision, scale: v.scale, quality: v.quality, bytes: Buffer.byteLength(result.data, "base64") });
           const params = { targetId: v.targetId, frameId: id, data: result.data,
             width: Math.round(size.width * scale), height: Math.round(size.height * scale), scrollX: result.scrollX, scrollY: result.scrollY };
           if (c.rawView) send(c, { method: "Page.screencastFrame", sessionId: c.rawView, params: {
@@ -1004,29 +1021,44 @@ async function host() {
     client.rawView = null;
     client.lastImage = null;
     client.inflight?.clear();
+    client.frameInfo?.clear();
+    client.recoverAt = undefined;
   };
   const live = async (client, message) => {
     const p = message.params ?? {}, target = Object.hasOwn(p, "targetId") ? p.targetId : attachedTo.get(message.sessionId) ?? client.view?.targetId;
     const session = own.get(target);
     const reply = result => message.id !== undefined && send(client, { id: message.id, result: result ?? {}, ...(message.sessionId ? { sessionId: message.sessionId } : {}) });
     if (message.method === "Kuvo.frameDropped") {
-      if (client.inflight?.delete(p.frameId) && client.view) {
+      const info = client.frameInfo?.get(p.frameId);
+      client.frameInfo?.delete(p.frameId);
+      if (client.inflight?.delete(p.frameId) && client.view && info?.revision === client.viewRevision) {
         const v = client.view;
+        client.recoverAt = undefined;
         client.lastImage = null;
         wakePage(v.targetId);
         if (p.reason === "oversize") {
-          if (v.quality > 10) v.quality = Math.max(10, v.quality - 10);
+          if (v.scale > .5) v.scale = Math.max(.5, v.scale / 2);
+          else if (v.quality > 40) v.quality = Math.max(40, v.quality - 10);
           else v.scale = Math.max(.125, v.scale * .75);
-          send(client, { method: "Kuvo.viewQuality", params: { targetId: v.targetId, quality: v.quality, scale: v.scale, reason: "oversize" } });
+          qualityChanged(client, "oversize");
         }
       }
       reply(); return true;
     }
     if (message.method === "Kuvo.frameAck" || message.method === "Page.screencastFrameAck") {
-      client.inflight?.delete(p.frameId ?? p.sessionId); reply(); return true;
+      const id = p.frameId ?? p.sessionId, info = client.frameInfo?.get(id);
+      client.frameInfo?.delete(id);
+      client.inflight?.delete(id);
+      const v = client.view;
+      if (v && !client.rawView && info?.revision === client.viewRevision &&
+          info.scale === v.scale && info.quality === v.quality && info.bytes <= 20000 &&
+          (v.scale < client.requestedView.scale || v.quality < client.requestedView.quality)) client.recoverAt ??= Date.now() + 2000;
+      reply(); return true;
     }
     if (message.method === "Kuvo.view" || message.method === "Page.startScreencast") {
       client.viewer = true; client.inflight ??= new Set();
+      client.viewRevision = (client.viewRevision ?? 0) + 1;
+      client.recoverAt = undefined;
       const raw = message.method === "Page.startScreencast";
       client.rawView = raw ? message.sessionId : null;
       const metrics = client.rawMetrics?.get(target) ?? sizes.get(target) ?? sizeFor({});
@@ -1041,8 +1073,10 @@ async function host() {
         setActive(target, "user");
         if (!raw) {
           if (client.view.width <= 600) { client.view.scale = 1; client.view.quality = Math.min(50, client.view.quality); }
+          client.requestedView = { scale: client.view.scale, quality: client.view.quality };
           await resize(target, client.view, "viewer");
         }
+        client.requestedView = { scale: client.view.scale, quality: client.view.quality };
       }
       reply(); return true;
     }

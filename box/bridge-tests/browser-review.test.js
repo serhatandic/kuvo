@@ -78,7 +78,7 @@ test("an identical JPEG is not sent again even after the viewer returns credit",
   await call(c, "Kuvo.view", { targetId: null });
 });
 
-test("an oversized relay picture lowers the next class quality and tells that viewer", async () => {
+test("an oversized relay picture lowers the next class scale and tells that viewer", async () => {
   const { c, answer, chrome } = await page();
   let captures = 0;
   answer("Page.captureScreenshot", p => ({ data: Buffer.from("jpeg:" + p.quality + ":" + ++captures).toString("base64") }));
@@ -86,8 +86,9 @@ test("an oversized relay picture lowers the next class quality and tells that vi
   const frame = await c.heard.until(m => m.method === "Kuvo.frame");
   await call(c, "Kuvo.frameDropped", { frameId: frame.params.frameId, reason: "oversize" });
   const notice = await c.heard.until(m => m.method === "Kuvo.viewQuality");
-  assert.equal(notice.params.quality, 40);
-  await chrome.until(m => m.method === "Page.captureScreenshot" && m.params.quality === 40);
+  assert.equal(notice.params.quality, 50);
+  assert.equal(notice.params.scale, .5);
+  await chrome.until(m => m.method === "Page.captureScreenshot" && m.params.quality === 50 && m.params.clip.scale < 1);
   await call(c, "Kuvo.view", { targetId: null });
 });
 
