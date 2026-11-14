@@ -52,3 +52,26 @@ test("empty continuation fragments have a count limit even when their byte size 
   await closed;
   assert.equal(h.calls.length, 0);
 });
+
+test("a slow serve viewer skips and credits pictures while retaining text and its connection", async () => {
+  const { EventEmitter } = await import("node:events");
+  const server = new EventEmitter(), socket = new EventEmitter();
+  const writes = [], commands = [];
+  Object.assign(socket, { writableLength: 0, destroyed: false, write(data) { writes.push(data); }, end() {}, destroy() { this.destroyed = true; } });
+  let events;
+  viewUpgrade(server, "secret", e => { events = e; return { send(data) { commands.push(JSON.parse(data)); }, close() {} }; });
+  server.emit("upgrade", { method: "GET", url: "/kuvo/browser/view", headers: {
+    authorization: "Basic " + Buffer.from("opencode:secret").toString("base64"),
+    "sec-websocket-version": "13", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==", upgrade: "websocket", connection: "Upgrade",
+  } }, socket, Buffer.alloc(0));
+  events.open();
+  socket.writableLength = 300000;
+  const json = Buffer.from(JSON.stringify({ method: "Kuvo.frame", params: { frameId: 12 } }));
+  const length = Buffer.alloc(4); length.writeUInt32BE(json.length);
+  events.binary(Buffer.concat([length, json, Buffer.from("jpeg")]));
+  events.text(Buffer.from('{"id":7,"result":{}}\n'));
+  assert.equal(socket.destroyed, false);
+  assert.equal(writes.length, 2);
+  assert.match(writes[1].toString(), /"id":7/);
+  assert.deepEqual(commands, [{ method: "Kuvo.frameAck", params: { frameId: 12 } }]);
+});

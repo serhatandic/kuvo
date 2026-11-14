@@ -21,14 +21,15 @@ export function viewUpgrade(server: http.Server, password: string, connect: (eve
     let handle: SocketHandle | undefined;
     const finish = () => { handle?.close(); socket.destroy(); };
     const write = (opcode: number, data: Buffer) => {
-      if (!opened || socket.destroyed) return;
-      if (socket.writableLength > 256000) { finish(); return; }
+      if (!opened || socket.destroyed) return false;
+      if (opcode === 2 && socket.writableLength > 256000) return false;
       const header = Buffer.alloc(data.length < 126 ? 2 : data.length <= 65535 ? 4 : 10);
       header[0] = 0x80 | opcode;
       if (header.length === 2) header[1] = data.length;
       else if (header.length === 4) { header[1] = 126; header.writeUInt16BE(data.length, 2); }
       else { header[1] = 127; header.writeBigUInt64BE(BigInt(data.length), 2); }
       socket.write(Buffer.concat([header, data]));
+      return true;
     };
     const read = (data: Buffer) => {
       pending = Buffer.concat([pending, data]);
@@ -70,7 +71,14 @@ export function viewUpgrade(server: http.Server, password: string, connect: (eve
         socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
         opened = true; if (head.length) read(head);
       },
-      text: data => write(1, data), binary: data => write(2, data),
+      text: data => { write(1, data); },
+      binary: data => {
+        if (write(2, data)) return;
+        // This transport dropped the picture, so it returns that picture's keeper credit.
+        const length = data.readUInt32BE(0);
+        const meta = JSON.parse(data.subarray(4, 4 + length).toString());
+        handle?.send(Buffer.from(JSON.stringify({ method: "Kuvo.frameAck", params: { frameId: meta.params.frameId } }) + "\n"));
+      },
       end() { if (!opened) refuse(502); else socket.end(); },
     });
     socket.on("data", read);

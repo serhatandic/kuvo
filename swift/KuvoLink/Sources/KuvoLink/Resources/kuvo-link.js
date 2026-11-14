@@ -42842,7 +42842,7 @@ import fs138 from "node:fs";
 import path145 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "36bad28720eb";
+var BRIDGE_VERSION = "e90cb0ab40e2";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -54683,11 +54683,9 @@ Connection: close\r
     };
     const write = (opcode, data) => {
       if (!opened || socket.destroyed)
-        return;
-      if (socket.writableLength > 256000) {
-        finish();
-        return;
-      }
+        return false;
+      if (opcode === 2 && socket.writableLength > 256000)
+        return false;
       const header = Buffer.alloc(data.length < 126 ? 2 : data.length <= 65535 ? 4 : 10);
       header[0] = 128 | opcode;
       if (header.length === 2)
@@ -54700,6 +54698,7 @@ Connection: close\r
         header.writeBigUInt64BE(BigInt(data.length), 2);
       }
       socket.write(Buffer.concat([header, data]));
+      return true;
     };
     const read = (data) => {
       pending = Buffer.concat([pending, data]);
@@ -54777,8 +54776,17 @@ Sec-WebSocket-Accept: ${accept}\r
         if (head.length)
           read(head);
       },
-      text: (data) => write(1, data),
-      binary: (data) => write(2, data),
+      text: (data) => {
+        write(1, data);
+      },
+      binary: (data) => {
+        if (write(2, data))
+          return;
+        const length = data.readUInt32BE(0);
+        const meta = JSON.parse(data.subarray(4, 4 + length).toString());
+        handle?.send(Buffer.from(JSON.stringify({ method: "Kuvo.frameAck", params: { frameId: meta.params.frameId } }) + `
+`));
+      },
       end() {
         if (!opened)
           refuse(502);
