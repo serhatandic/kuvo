@@ -8981,6 +8981,7 @@ newline JSON stream, including raw CDP compatibility.
 | client → box | `Kuvo.pages` | `{}`: request current page facts |
 | client → box | `Kuvo.view` | `{targetId: string \| null,width,height,scale?,zoom?,quality?,maxFps?}`; null stops pictures |
 | client → box | `Kuvo.frameAck` | `{frameId}`, only after the client consumed the picture |
+| client → box | `Kuvo.frameDropped` | `{frameId,reason}`, a skipped picture: oversize, budget, unsent or backpressure |
 | client → box | `Kuvo.go` | `{targetId,input? ,back?,forward?,reload?,stop?}`; one action |
 | client → box | `Kuvo.input` | `{targetId,kind,...}`; kind mouse, wheel, key, text or compose |
 | client → box | `Kuvo.upload` | `{targetId,files:[{name,data}]}`; data is base64, total decoded size ≤50 MiB |
@@ -8989,7 +8990,8 @@ newline JSON stream, including raw CDP compatibility.
 | client → box | `Kuvo.hold` | existing `{targetId,on,mac?}` takeover vocabulary |
 | client → box | `Kuvo.claim` | existing `{targetId,session}` conversation ownership vocabulary |
 | box → client | `Kuvo.dialog` | `{targetId,type,message,defaultPrompt?,url?,...}`, Chrome's dialog facts |
-| box → client | `Kuvo.viewQuality` | `{targetId,quality,scale,reason:"oversize"}`, reduced picture settings |
+| client → box | `Kuvo.dialogAnswer` | `{targetId,accept,promptText?}`, boolean accept and optional text |
+| box → client | `Kuvo.viewQuality` | `{targetId,quality,scale,reason:"oversize" \| "recovery"}`, reduced picture settings |
 
 The keeper also forwards its existing hello, ask, download, status and pointer facts.
 Pages are announced when Chrome reports creation, navigation, title, loading or destruction,
@@ -9011,29 +9013,47 @@ removed when that page navigates or closes, or when Chrome next starts.
 While an agent's status says it works in a page, a viewer cannot change that page's size.
 Otherwise the latest view or input sets it. Raw clients' device metrics, page scale and
 screencast calls go through that same rule. Raw agents' requested size is retained and restored
-when work resumes. A raw screencast's maxima limit its picture, without changing its CSS
-viewport or DPR; non-size Emulation calls pass through. New view sockets do not register
+when work resumes (the native default is 1280×800 at DPR 2). When the agent stops, the
+most recently shown or used viewer regains its requested size without needing input.
+A raw screencast's maxima limit its picture, without changing its CSS
+viewport or DPR; raw dimensions are left to Chrome rather than the new view's desktop
+limits. Non-size Emulation calls pass through. Detaching a raw session stops its captures. New view sockets do not register
 as clients able to answer browser asks.
 The keeper captures once per target, dimensions, scale and quality class, with one capture
 in progress per class, and scales the picture without changing the working page's layout.
 Capture scale compensates for the source DPR. Identical pictures are not resent, and unchanged
-classes back off to a two-second poll; input wakes them immediately.
+classes back off to a two-second poll. Raw input, page commands, navigation and page
+events wake only the affected page immediately. Captures wait for pending source metrics,
+and stale captures from before a source-size change are discarded. Reopening a still view
+gets a first picture even if its JPEG is unchanged.
 
 On the new sockets a binary message is: four bytes of big-endian JSON header length,
 that many UTF-8 bytes of `{method:"Kuvo.frame",params:{...}}`, then the JPEG.
 SSH retains base64 `params.data`. Binary avoids base64's expansion; relay frames larger
-than 60,000 bytes are dropped, never split. The next picture's quality steps down by ten
-(to q10); if necessary its scale then steps down. Only that viewer receives Kuvo.viewQuality. Phone-sized views (width ≤600 CSS pixels)
+than 60,000 bytes are dropped, never split. The next picture's scale halves first, down to
+0.5; quality then steps down by ten, to q40.
+If needed, scale steps down further, to 0.125. Only that viewer receives Kuvo.viewQuality.
+After a displayed JPEG under 20,000 bytes and two seconds without a drop, quality/scale move
+gradually back toward the viewer's requested settings; adaptation never changes page layout.
+Phone-sized views (width ≤600 CSS pixels)
 start at scale 1 and quality at most 50. New Kuvo views are capped at 15 fps. Legacy raw
 streams keep a 60 fps ceiling and their requested quality; narrow raw views are not phone-classed.
 At most two unacknowledged frames are allowed per viewer. Obsolete pictures are dropped,
 never queued for a slow viewer. The relay counts messages (500/s for its whole connection);
 the live view shares a ceiling of about 100 messages/s across its relay viewers.
 Other box traffic retains the rest of that connection's budget. A nonzero host.unsent()
-skips pictures as a backstop. Reply bursts pause keeper reads rather than close a healthy
-viewer; a slow serve client skips and credits pictures but retains text. New relay sockets
+skips pictures as a backstop. Every transport skip returns Kuvo.frameDropped, never a
+display acknowledgement. Drops clear that viewer's image digest and wake capture so a
+still picture can be retried when pressure clears. Reply bursts pause keeper reads rather
+than close a healthy
+viewer; a slow serve client skips and credits pictures but retains text. A serve connection
+with more than 4 MiB queued for text is closed rather than allowing unbounded buffering.
+Awaited keeper calls expire after ten seconds. Frame credits and dialog answers bypass
+a client's ordered command queue, so they can release a click blocked by a dialog. New relay
+sockets
 keep the one-message picture bound instead of an automatic multi-message 2x stopped-page
 refinement; the legacy local client retains its own sharp-screenshot path.
 
 Examples and box-only socket path cases live in `protocol/vectors/browser-view.json`;
-released Swift socket vectors stay unchanged in `protocol/vectors/link.json`. Route answers are generated from the browser route shapes.
+released Swift socket vectors stay unchanged in `protocol/vectors/link.json`. Route answers
+are generated from the browser route shapes.
