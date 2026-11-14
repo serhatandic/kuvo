@@ -1,8 +1,8 @@
 // The Work Queue on a box (PROTOCOL.md, "The Work Queue"): what agents keep with their queue_*
 // tools (`POST kuvo/work-queue/tools`, only while the conversation named is making the call), and
 // what clients read and do (`kuvo/work-queue/…`): each conversation's own queue, a lead's view of
-// the sessions it oversees, In progress from the sessions at work, hand-offs, delete with undo,
-// categories, files, refs for chips, imports keeping their numbers, and numbers from the primary.
+// the sessions it oversees, statuses (In progress once an agent says it's on it), hand-offs, delete
+// with undo, labels, files, refs for chips, imports keeping their numbers, and numbers from the primary.
 // Each request by a process of its own, as a machine's tools ask it (`kuvo-link.js box route`); the
 // real box script on a folder of the test's own; only the engine is a stand-in.
 //
@@ -133,24 +133,31 @@ async function tool(name, args, session) {
 const view = async owner => (await route("GET", `kuvo/work-queue?owner=${owner}`)).body;
 const numberIn = text => Number(text.match(/#(\d+)/)[1]);
 
-test("an agent keeps its work in its own queue: numbered from #1 here (its own primary), In next by default, listed by category", async () => {
+test("an agent keeps its work in its own queue: numbered from #1 here (its own primary), Todo by default, listed by status", async () => {
   const first = await tool("queue_add", { title: "Fix the login page", body: "It loops after **sign-in**." }, "ses_lead");
   assert.equal(first.isError, false, first.text);
-  assert.equal(first.text, 'Added #1 "Fix the login page" to Next. Refer to it as #1.');
-  const later = await tool("queue_add", { title: "Dark mode icons", category: "later" }, "ses_lead");
+  assert.equal(first.text, 'Added #1 "Fix the login page" as Todo. Refer to it as #1.');
+  const later = await tool("queue_add", { title: "Dark mode icons", status: "backlog" }, "ses_lead");
   assert.equal(numberIn(later.text), 2);
   const top = await tool("queue_add", { title: "Ship the release", top: true }, "ses_lead");
   assert.equal(numberIn(top.text), 3);
 
   const listed = await tool("queue_list", {}, "ses_lead");
-  assert.match(listed.text, /^Your Work Queue \(3 open\):\n\nNext:\n- #3 "Ship the release" · updated just now\n- #1 "Fix the login page" · updated just now\n\nLater:\n- #2 "Dark mode icons"/);
+  assert.match(listed.text, /^Your Work Queue \(3 open\):\n\nTodo:\n- #3 "Ship the release" · updated just now\n- #1 "Fix the login page" · updated just now\n\nBacklog:\n- #2 "Dark mode icons"/);
 
   // A subagent writes into its conversation's queue.
   const fromHelper = await tool("queue_add", { title: "Helper's find" }, "ses_helper");
   assert.equal(numberIn(fromHelper.text), 4);
   const seen = await view("ses_lead");
-  assert.deepEqual(seen.items.map(item => [item.number, item.owner, item.category]), [[3, "ses_lead", "next"], [1, "ses_lead", "next"], [4, "ses_lead", "next"], [2, "ses_lead", "later"]]);
-  assert.deepEqual(seen.categories.map(each => each.name), ["Next", "Later", "Parked", "Done"]);
+  assert.deepEqual(seen.items.map(item => [item.number, item.owner, item.status]), [[3, "ses_lead", "todo"], [1, "ses_lead", "todo"], [4, "ses_lead", "todo"], [2, "ses_lead", "backlog"]]);
+  assert.deepEqual(seen.statuses, [
+    { id: "needs-you", name: "Needs you", closed: false }, { id: "in-review", name: "In review", closed: false }, { id: "in-progress", name: "In progress", closed: false },
+    { id: "waiting", name: "Waiting", closed: false }, { id: "todo", name: "Todo", closed: false }, { id: "backlog", name: "Backlog", closed: false },
+    { id: "done", name: "Done", closed: true }, { id: "canceled", name: "Canceled", closed: true },
+  ]);
+  assert.equal("categories" in seen, false);
+  // Normal, with no labels, unless said.
+  assert.deepEqual(seen.items.map(item => [item.priority, item.labels]), Array(4).fill(["normal", []]));
   assert.equal(seen.items[0].created.by.name, "Lead");
 
   // Another conversation's queue is its own.
@@ -167,56 +174,74 @@ test("only a call the conversation is making runs: a command naming a session ca
   // As a machine's tool server asks it, from a process of its own, a real call goes ahead.
   calling.set("ses_lead", { name: "queue_add", args: { title: "Real" } });
   const real = (await spawnRoute("POST", "kuvo/work-queue/tools", { name: "queue_add", arguments: { title: "Real" }, session: "ses_lead" })).body;
-  assert.equal(real.text, 'Added #1 "Real" to Next. Refer to it as #1.');
+  assert.equal(real.text, 'Added #1 "Real" as Todo. Refer to it as #1.');
 });
 
-test("an item is In progress while a session linked to it is at work, and Done unlinks everyone", async () => {
+test("an item is In progress once its agent says it's working on it, never merely because a linked session is at work, and Done unlinks everyone", async () => {
   const added = await tool("queue_add", { title: "Write the tests", working: true, progress_note: "Writing the tests (3 of 8)", progress: 0.375 }, "ses_lead");
-  assert.match(added.text, /linked to you/);
+  assert.equal(added.text, 'Added #1 "Write the tests" as In progress, linked to you. Refer to it as #1.');
   let item = (await view("ses_lead")).items[0];
-  assert.equal(item.inProgress, false, "linked, but not at work");
+  assert.equal(item.status, "in-progress", "its agent said so");
+  assert.deepEqual(item.sessions, [{ session: "ses_lead", title: "Lead", working: false }], "linked, but not at work now");
+  assert.equal("inProgress" in item, false, "its status says it");
   active = new Set(["ses_lead"]);
   item = (await view("ses_lead")).items[0];
-  assert.equal(item.inProgress, true);
+  assert.equal(item.status, "in-progress");
   assert.deepEqual(item.sessions, [{ session: "ses_lead", title: "Lead", working: true }]);
   assert.deepEqual(item.progress, { value: 0.375, note: "Writing the tests (3 of 8)" });
-  assert.match((await tool("queue_list", {}, "ses_lead")).text, /In progress:\n- #1 "Write the tests" · in progress \("Lead" at work\): Writing the tests \(3 of 8\) 38%/);
+  assert.match((await tool("queue_list", {}, "ses_lead")).text, /In progress:\n- #1 "Write the tests" · "Lead" at work: Writing the tests \(3 of 8\) 38%/);
 
-  // "In progress" isn't a category anyone sets.
-  const set = await tool("queue_update", { item: "#1", category: "In progress" }, "ses_lead");
+  // A status is set, never worked out: an item a session at work is only linked to stays where it is.
+  await tool("queue_add", { title: "Only linked" }, "ses_lead");
+  await tool("queue_update", { item: 2, sessions: ["ses_lead"] }, "ses_lead");
+  const linked = (await view("ses_lead")).items.find(each => each.number === 2);
+  assert.deepEqual([linked.status, linked.sessions.map(each => each.working)], ["todo", [true]]);
+  // Saying it's working on it makes it In progress; saying it stopped leaves it there.
+  assert.equal((await tool("queue_update", { item: 2, working: true }, "ses_lead")).text, 'Changed #2 "Only linked" (In progress, 1 session linked).');
+  assert.equal((await tool("queue_update", { item: 2, working: false }, "ses_lead")).text, 'Changed #2 "Only linked" (In progress).');
+  // Unless the same call says where it stands.
+  assert.equal((await tool("queue_update", { item: 2, working: true, status: "In review" }, "ses_lead")).text, 'Changed #2 "Only linked" (In review, 1 session linked).');
+
+  // A status that isn't one is refused, naming them.
+  const set = await tool("queue_update", { item: "#1", status: "Shipping" }, "ses_lead");
   assert.equal(set.isError, true);
-  assert.match(set.text, /isn't a category you set/);
+  assert.equal(set.text, "There's no status Shipping: it's one of Needs you, In review, In progress, Waiting, Todo, Backlog, Done, Canceled.");
 
-  const done = await tool("queue_update", { item: 1, category: "done" }, "ses_lead");
+  const done = await tool("queue_update", { item: 1, status: "done" }, "ses_lead");
   assert.equal(done.text, 'Marked #1 "Write the tests" done.');
-  item = (await view("ses_lead")).items[0];
-  assert.equal(item.inProgress, false);
+  item = (await view("ses_lead")).items.find(each => each.number === 1);
   assert.deepEqual(item.sessions, []);
-  assert.equal(item.category, "done");
+  assert.equal(item.status, "done");
   assert.equal(typeof item.doneAt, "number");
+  // Canceled closes it the same way.
+  assert.equal((await tool("queue_update", { item: 2, status: "Canceled" }, "ses_lead")).text, 'Marked #2 "Only linked" canceled.');
+  item = (await view("ses_lead")).items.find(each => each.number === 2);
+  assert.deepEqual([item.status, item.sessions, typeof item.doneAt], ["canceled", [], "number"]);
 });
 
 // The Work Queue's sidebar (#711): its counts come with the view, so no client adds them up.
-test("with counts=1, the All view counts its items in progress, by category, source and computer, and what's deleted", async () => {
+test("with counts=1, the All view counts its open items, by status, priority, label, source and computer, and what's deleted", async () => {
+  await tool("queue_labels", { add: "Bugs" }, "ses_lead");
   await tool("queue_add", { title: "At it now", working: true }, "ses_lead");
-  await tool("queue_add", { title: "Next up" }, "ses_other");
-  await tool("queue_add", { title: "Some day", category: "later" }, "ses_other");
-  await tool("queue_add", { title: "Shipped", category: "done" }, "ses_lead");
+  await tool("queue_add", { title: "Next up", priority: "High", labels: ["Bugs"] }, "ses_other");
+  await tool("queue_add", { title: "Some day", status: "backlog" }, "ses_other");
+  await tool("queue_add", { title: "Shipped", status: "done" }, "ses_lead");
   await tool("queue_add", { title: "Dropped" }, "ses_lead");
   assert.equal((await route("DELETE", "kuvo/work-queue/items/5")).status, 200);
   active = new Set(["ses_lead"]);
 
   const all = (await route("GET", "kuvo/work-queue?owner=all&counts=1")).body;
-  // (Every category of the view, one with nothing in it too; this box's own items under its key,
-  // "" while it has none; no outside source's item here.)
-  assert.deepEqual(all.counts, { inProgress: 1, categories: { next: 2, later: 1, parked: 0, done: 1 }, sources: {}, computers: { "": 4 }, removed: 1 });
+  // (Every status, priority and label of the view, one with nothing in it too; this box's own
+  // items under its key, "" while it has none; no outside source's item here.)
+  const none = { "needs-you": 0, "in-review": 0, "in-progress": 0, waiting: 0, todo: 0, backlog: 0, done: 0, canceled: 0 };
+  assert.deepEqual(all.counts, { open: 3, statuses: { ...none, "in-progress": 1, todo: 1, backlog: 1, done: 1 }, priorities: { urgent: 0, high: 1, normal: 3, low: 0 }, labels: { lbl_bugs: 1 }, sources: {}, computers: { "": 4 }, removed: 1 });
   assert.equal(all.items.length, 4, "the view itself is as it was");
   // One owner's view counts its own; without counts=1, none are sent.
-  assert.deepEqual((await route("GET", "kuvo/work-queue?owner=ses_other&counts=1")).body.counts, { inProgress: 0, categories: { next: 1, later: 1, parked: 0, done: 0 }, sources: {}, computers: { "": 2 }, removed: 0 });
+  assert.deepEqual((await route("GET", "kuvo/work-queue?owner=ses_other&counts=1")).body.counts, { open: 2, statuses: { ...none, todo: 1, backlog: 1 }, priorities: { urgent: 0, high: 1, normal: 1, low: 0 }, labels: { lbl_bugs: 1 }, sources: {}, computers: { "": 2 }, removed: 0 });
   assert.equal((await view("all")).counts, undefined);
   // Its events say them too (through `box route`: its first line).
   const followed = await spawnRoute("GET", "kuvo/work-queue/events?owner=all&counts=1&glance=1");
-  assert.equal(JSON.parse(followed.raw.split("\n")[0]).counts.categories.next, 2);
+  assert.equal(JSON.parse(followed.raw.split("\n")[0]).counts.statuses.todo, 1);
 });
 
 test("a session is linked to three items at most: linking a fourth drops its oldest link", async () => {
@@ -243,16 +268,17 @@ test("a lead sees the queues of the sessions it oversees; handing an item moves 
 
   const handed = await tool("queue_hand", { item: "#1", to: "ses_child" }, "ses_lead");
   assert.equal(handed.isError, false, handed.text);
-  assert.equal(handed.text, 'Handed #1 "Build the sign-in" to Sign-in: it\'s in its queue now, linked to it, so it shows In progress while it works, and stays in your view.');
+  assert.equal(handed.text, 'Handed #1 "Build the sign-in" to Sign-in: it\'s in its queue now, linked to it, and stays in your view.');
   active = new Set(["ses_child"]);
   const after = await view("ses_lead");
   const moved = after.items.find(item => item.number === 1);
   assert.equal(moved.owner, "ses_child");
-  assert.equal(moved.inProgress, true, "its new owner is at work on it");
+  assert.deepEqual(moved.sessions, [{ session: "ses_child", title: "Sign-in", working: true }], "its new owner is at work on it");
+  assert.equal(moved.status, "todo", "and it's where it stood until that one says it's on it");
   assert.equal(moved.handedBy, "ses_lead");
   assert.equal(after.items.filter(item => item.number === 1).length, 1, "it lives once");
   assert.equal((await view("ses_child")).items.filter(item => item.number === 1).length, 1);
-  assert.match((await tool("queue_list", {}, "ses_lead")).text, /#1 "Build the sign-in" · in progress \("Sign-in" at work\) · in "Sign-in" \(ses_child\)/);
+  assert.match((await tool("queue_list", {}, "ses_lead")).text, /#1 "Build the sign-in" · "Sign-in" at work · in "Sign-in" \(ses_child\)/);
 
   // The lead changes what it oversees; another conversation can't.
   assert.equal((await tool("queue_update", { item: 1, note: "Use the new endpoint." }, "ses_lead")).isError, false);
@@ -280,12 +306,12 @@ test("a session sees the items linked to it that are someone else's, and can't c
   assert.equal(worker.owners.find(each => each.owner === "ses_lead")?.title, "Lead");
   assert.deepEqual(worker.items.find(item => item.number === 1).sessions, [{ session: "ses_other", title: "Release notes", working: false }]);
   active = new Set(["ses_other"]);
-  assert.equal((await view("ses_other")).items.find(item => item.number === 1).inProgress, true, "In progress while it works on it");
+  assert.deepEqual((await view("ses_other")).items.find(item => item.number === 1).sessions, [{ session: "ses_other", title: "Release notes", working: true }], "at work on it");
   // A session it isn't linked to doesn't see it.
   assert.equal((await view("ses_wide")).items.length, 0);
 
   // Seeing only: its agent can't change it, read it or list it, as before.
-  const update = await tool("queue_update", { item: 1, title: "Mine now", category: "later" }, "ses_other");
+  const update = await tool("queue_update", { item: 1, title: "Mine now", status: "backlog" }, "ses_other");
   assert.equal(update.isError, true);
   assert.match(update.text, /isn't in your Work Queue, nor in a session's you oversee/);
   assert.equal((await tool("queue_remove", { item: 1 }, "ses_other")).isError, true);
@@ -293,7 +319,7 @@ test("a session sees the items linked to it that are someone else's, and can't c
   assert.doesNotMatch((await tool("queue_list", {}, "ses_other")).text, /Build the sign-in/);
   const lead = (await view("ses_lead")).items.find(item => item.number === 1);
   assert.equal(lead.title, "Build the sign-in");
-  assert.equal(lead.category, "next");
+  assert.equal(lead.status, "todo");
 
   // Unlinked, it's gone from the worker's view.
   await tool("queue_update", { item: 1, unlink: ["ses_other"] }, "ses_lead");
@@ -341,20 +367,23 @@ test("deleted items go after 30 days, files and all", async () => {
   assert.deepEqual([seen.items.map(item => item.title), seen.removed.length], [["Something new"], 0]);
 });
 
-test("you reorder and move items between categories, never change what they say", async () => {
-  for (const title of ["A", "B", "C"]) await tool("queue_add", { title }, "ses_lead");
-  assert.equal((await route("POST", "kuvo/work-queue/items/3/move", { before: 1 })).status, 200);
+test("you reorder items and give them another status; what a change doesn't name stays as it was", async () => {
+  for (const title of ["A", "B", "C"]) await tool("queue_add", { title, body: `About ${title}.` }, "ses_lead");
+  assert.equal((await route("PATCH", "kuvo/work-queue/items/3", { before: 1 })).status, 200);
   assert.deepEqual((await view("ses_lead")).items.map(item => item.title), ["C", "A", "B"]);
-  assert.equal((await route("POST", "kuvo/work-queue/items/1/move", { after: "#2" })).status, 200);
+  assert.equal((await route("PATCH", "kuvo/work-queue/items/1", { after: "#2" })).status, 200);
   assert.deepEqual((await view("ses_lead")).items.map(item => item.title), ["C", "B", "A"]);
-  const parked = await route("POST", "kuvo/work-queue/items/2/move", { category: "Parked" });
-  assert.equal(parked.body.item.category, "parked");
-  assert.equal(parked.body.item.title, "B");
-  const wrong = await route("POST", "kuvo/work-queue/items/2/move", { category: "In progress" });
+  // By a status's name or its id; In progress is one you set, as any other.
+  const shelved = await route("PATCH", "kuvo/work-queue/items/2", { status: "Backlog" });
+  assert.equal(shelved.body.item.status, "backlog");
+  assert.equal(shelved.body.item.title, "B");
+  assert.equal((await route("PATCH", "kuvo/work-queue/items/2", { status: "in-progress" })).body.item.status, "in-progress");
+  const wrong = await route("PATCH", "kuvo/work-queue/items/2", { status: "Parked" });
   assert.equal(wrong.status, 400);
-  // (A client's request carries no title: there's nothing to change it with.)
-  await route("POST", "kuvo/work-queue/items/2/move", { title: "Renamed" });
-  assert.equal((await route("GET", "kuvo/work-queue/items/2")).body.item.title, "B");
+  // (The route that moved one between categories is gone.)
+  assert.equal((await route("POST", "kuvo/work-queue/items/2/move", { status: "todo" })).status, 404);
+  const kept = (await route("GET", "kuvo/work-queue/items/2")).body.item;
+  assert.deepEqual([kept.title, kept.body, kept.status], ["B", "About B.", "in-progress"]);
 });
 
 test("an item keeps what happened to it for its feed: work started and stopped, moves, done; who did each, and when", async () => {
@@ -364,25 +393,25 @@ test("an item keeps what happened to it for its feed: work started and stopped, 
   await tool("queue_add", { title: "Other" }, "ses_lead");
   const whole = async () => (await route("GET", "kuvo/work-queue/items/1")).body.item;
   const kinds = async () => (await whole()).events.map(({ at: _, ...event }) => event);
-  assert.deepEqual(await kinds(), [{ by: lead, kind: "started" }], "an agent that says it's working on it started work");
+  assert.deepEqual(await kinds(), [{ by: lead, kind: "started" }], "an agent that says it's working on it started work (added In progress: no move)");
   // Said again while it's at it: once.
   await tool("queue_update", { item: 1, working: true, progress_note: "Halfway" }, "ses_lead");
   assert.deepEqual(await kinds(), [{ by: lead, kind: "started" }]);
-  // You move it: to the top of another category, and within one.
-  await route("POST", "kuvo/work-queue/items/1/move", { category: "later", top: true });
-  await route("POST", "kuvo/work-queue/items/2/move", { category: "later" });
-  await route("POST", "kuvo/work-queue/items/1/move", { after: 2 });
+  // You move it: to the top of another status, and within one.
+  await route("PATCH", "kuvo/work-queue/items/1", { status: "backlog", top: true });
+  await route("PATCH", "kuvo/work-queue/items/2", { status: "backlog" });
+  await route("PATCH", "kuvo/work-queue/items/1", { after: 2 });
   // An agent moves it back, top first.
-  await tool("queue_update", { item: 1, category: "next", top: true }, "ses_lead");
+  await tool("queue_update", { item: 1, status: "todo", top: true }, "ses_lead");
   await tool("queue_update", { item: 1, working: false }, "ses_lead");
   // Stopped again when it isn't on it: nothing.
   await tool("queue_update", { item: 1, working: false }, "ses_lead");
-  await tool("queue_update", { item: 1, category: "done" }, "ses_lead");
+  await tool("queue_update", { item: 1, status: "done" }, "ses_lead");
   assert.deepEqual(await kinds(), [
     { by: lead, kind: "started" },
-    { by: { user: true }, kind: "moved", from: "next", to: "later", top: true },
-    { by: { user: true }, kind: "moved", from: "later", to: "later" },
-    { by: lead, kind: "moved", from: "later", to: "next", top: true },
+    { by: { user: true }, kind: "moved", from: "in-progress", to: "backlog", top: true },
+    { by: { user: true }, kind: "moved", from: "backlog", to: "backlog" },
+    { by: lead, kind: "moved", from: "backlog", to: "todo", top: true },
     { by: lead, kind: "stopped" },
     { by: lead, kind: "done" },
   ]);
@@ -390,17 +419,26 @@ test("an item keeps what happened to it for its feed: work started and stopped, 
   assert.ok(events.every(event => event.at >= before && event.at <= Date.now()), "when");
   assert.deepEqual(events.map(event => event.at), [...events.map(event => event.at)].sort((a, b) => a - b), "oldest first");
   // You mark one done too; a move out of Done is a move.
-  await route("POST", "kuvo/work-queue/items/2/move", { category: "done" });
-  await route("POST", "kuvo/work-queue/items/2/move", { category: "next" });
+  await route("PATCH", "kuvo/work-queue/items/2", { status: "done" });
+  await route("PATCH", "kuvo/work-queue/items/2", { status: "todo" });
   assert.deepEqual((await route("GET", "kuvo/work-queue/items/2")).body.item.events.map(({ at: _, ...event }) => event), [
-    { by: { user: true }, kind: "moved", from: "next", to: "later" },
+    { by: { user: true }, kind: "moved", from: "todo", to: "backlog" },
     { by: { user: true }, kind: "done" },
-    { by: { user: true }, kind: "moved", from: "done", to: "next" },
+    { by: { user: true }, kind: "moved", from: "done", to: "todo" },
   ]);
-  // Back to work on it once it's unlinked (Done unlinks everyone): started again.
-  await route("POST", "kuvo/work-queue/items/1/move", { category: "next" });
+  // Canceled is a move, as is out of it; only Done is `done`.
+  await route("PATCH", "kuvo/work-queue/items/2", { status: "canceled" });
+  await route("PATCH", "kuvo/work-queue/items/2", { status: "todo" });
+  assert.deepEqual((await route("GET", "kuvo/work-queue/items/2")).body.item.events.slice(3).map(({ at: _, ...event }) => event), [
+    { by: { user: true }, kind: "moved", from: "todo", to: "canceled" },
+    { by: { user: true }, kind: "moved", from: "canceled", to: "todo" },
+  ]);
+  // Back to work on it once it's unlinked (Done unlinks everyone): In progress by its agent, then
+  // started again.
+  await route("PATCH", "kuvo/work-queue/items/1", { status: "todo" });
   await tool("queue_update", { item: 1, working: true }, "ses_lead");
-  assert.equal((await whole()).events.at(-1).kind, "started");
+  assert.deepEqual((await kinds()).slice(-2), [{ by: lead, kind: "moved", from: "todo", to: "in-progress" }, { by: lead, kind: "started" }]);
+  assert.equal((await whole()).status, "in-progress");
   // Kept on the box with the item.
   const kept = JSON.parse(fs.readFileSync(path.join(queues, "queues", "ses_lead.json"), "utf8")).items.find(item => item.number === 1);
   assert.deepEqual(kept.events, (await whole()).events);
@@ -408,31 +446,31 @@ test("an item keeps what happened to it for its feed: work started and stopped, 
 
 test("you reordering one item again and again is one move in its feed; another's move between isn't folded in", async () => {
   for (const title of ["A", "B", "C"]) await tool("queue_add", { title }, "ses_lead");
-  await route("POST", "kuvo/work-queue/items/1/move", { after: 2 });
-  await route("POST", "kuvo/work-queue/items/1/move", { after: 3 });
-  await route("POST", "kuvo/work-queue/items/1/move", { top: true });
+  await route("PATCH", "kuvo/work-queue/items/1", { after: 2 });
+  await route("PATCH", "kuvo/work-queue/items/1", { after: 3 });
+  await route("PATCH", "kuvo/work-queue/items/1", { top: true });
   const events = async () => (await route("GET", "kuvo/work-queue/items/1")).body.item.events.map(({ at: _, ...event }) => event);
-  assert.deepEqual(await events(), [{ by: { user: true }, kind: "moved", from: "next", to: "next", top: true }]);
+  assert.deepEqual(await events(), [{ by: { user: true }, kind: "moved", from: "todo", to: "todo", top: true }]);
   await tool("queue_update", { item: 1, after: 2 }, "ses_lead");
-  await route("POST", "kuvo/work-queue/items/1/move", { after: 3 });
+  await route("PATCH", "kuvo/work-queue/items/1", { after: 3 });
   assert.deepEqual(await events(), [
-    { by: { user: true }, kind: "moved", from: "next", to: "next", top: true },
-    { by: { session: "ses_lead", name: "Lead" }, kind: "moved", from: "next", to: "next" },
-    { by: { user: true }, kind: "moved", from: "next", to: "next" },
+    { by: { user: true }, kind: "moved", from: "todo", to: "todo", top: true },
+    { by: { session: "ses_lead", name: "Lead" }, kind: "moved", from: "todo", to: "todo" },
+    { by: { user: true }, kind: "moved", from: "todo", to: "todo" },
   ]);
-  // A move to another category is never folded into a reorder.
-  await route("POST", "kuvo/work-queue/items/1/move", { category: "later" });
+  // A move to another status is never folded into a reorder.
+  await route("PATCH", "kuvo/work-queue/items/1", { status: "backlog" });
   assert.equal((await events()).length, 4);
-  // A move that leaves it where it was isn't one: to the top it's at, into its own category, after
+  // A move that leaves it where it was isn't one: to the top it's at, into its own status, after
   // the one it's after already; nor is another item moving past it.
-  await route("POST", "kuvo/work-queue/items/2/move", { category: "later" });
+  await route("PATCH", "kuvo/work-queue/items/2", { status: "backlog" });
   const before = await events();
-  await route("POST", "kuvo/work-queue/items/1/move", { top: true });
-  await route("POST", "kuvo/work-queue/items/1/move", { category: "later" });
-  await tool("queue_update", { item: 1, category: "later" }, "ses_lead");
-  await route("POST", "kuvo/work-queue/items/2/move", { after: 1 });
+  await route("PATCH", "kuvo/work-queue/items/1", { top: true });
+  await route("PATCH", "kuvo/work-queue/items/1", { status: "backlog" });
+  await tool("queue_update", { item: 1, status: "backlog" }, "ses_lead");
+  await route("PATCH", "kuvo/work-queue/items/2", { after: 1 });
   assert.deepEqual(await events(), before);
-  await route("POST", "kuvo/work-queue/items/2/move", { top: true });
+  await route("PATCH", "kuvo/work-queue/items/2", { top: true });
   assert.deepEqual(await events(), before, "item 2 moving above it says nothing of item 1");
 });
 
@@ -441,35 +479,36 @@ test("an item keeps the last 50 of what happened to it", async () => {
   const file = path.join(queues, "queues", "ses_lead.json");
   const kept = JSON.parse(fs.readFileSync(file, "utf8"));
   // (Older ones a box kept with a higher bound, or a newer box's kinds, as they came.)
-  kept.items[0].events = Array.from({ length: 70 }, (_, index) => ({ at: index + 1, by: { user: true }, kind: index % 2 ? "seen-upstream" : "moved", from: "next", to: "next" }));
+  kept.items[0].events = Array.from({ length: 70 }, (_, index) => ({ at: index + 1, by: { user: true }, kind: index % 2 ? "seen-upstream" : "moved", from: "todo", to: "todo" }));
   fs.writeFileSync(file, JSON.stringify(kept));
   assert.equal((await route("GET", "kuvo/work-queue/items/1")).body.item.events.length, 50, "read: the last 50");
   await tool("queue_update", { item: 1, working: true }, "ses_lead");
   const events = (await route("GET", "kuvo/work-queue/items/1")).body.item.events;
   assert.equal(events.length, 50);
-  assert.equal(events[0].at, 22, "the oldest go first");
-  assert.equal(events[48].kind, "seen-upstream", "a kind this box doesn't know is kept as it came");
-  assert.equal(events.at(-1).kind, "started");
+  // (Two more: it went In progress, and its work started.)
+  assert.equal(events[0].at, 23, "the oldest go first");
+  assert.equal(events[47].kind, "seen-upstream", "a kind this box doesn't know is kept as it came");
+  assert.deepEqual(events.slice(-2).map(event => event.kind), ["moved", "started"]);
   assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).items[0].events.length, 50);
   // Kept by when, its kind and who, of an event's size; what else it says as it came (a newer
   // box's), for a client to read.
   const now = JSON.parse(fs.readFileSync(file, "utf8"));
   now.items[0].events = [
-    { at: 100, by: { user: true }, kind: "moved", from: null, to: "next", top: false },
+    { at: 100, by: { user: true }, kind: "moved", from: null, to: "todo", top: false },
     { at: 101, by: { user: true }, kind: "x".repeat(41) },
     { at: 102, by: { session: "ses_lead", name: "L".repeat(600) }, kind: "started" },
-    { at: 103, by: { user: true }, kind: "moved", to: "next", note: "y".repeat(3000) },
+    { at: 103, by: { user: true }, kind: "moved", to: "todo", note: "y".repeat(3000) },
     { at: "104", by: { user: true }, kind: "moved" },
     { at: 105, kind: "moved" },
   ];
   fs.writeFileSync(file, JSON.stringify(now));
-  assert.deepEqual((await route("GET", "kuvo/work-queue/items/1")).body.item.events, [{ at: 100, by: { user: true }, kind: "moved", from: null, to: "next", top: false }]);
+  assert.deepEqual((await route("GET", "kuvo/work-queue/items/1")).body.item.events, [{ at: 100, by: { user: true }, kind: "moved", from: null, to: "todo", top: false }]);
 });
 
 test("an item added isn't moved, wherever it's put", async () => {
   await tool("queue_add", { title: "First" }, "ses_lead");
   await tool("queue_add", { title: "Second", before: 1 }, "ses_lead");
-  await tool("queue_add", { title: "Third", top: true, category: "later" }, "ses_lead");
+  await tool("queue_add", { title: "Third", top: true, status: "backlog" }, "ses_lead");
   assert.deepEqual((await view("ses_lead")).items.map(item => item.title), ["Second", "First", "Third"], "put where it was asked");
   for (const number of [2, 3]) assert.deepEqual((await route("GET", `kuvo/work-queue/items/${number}`)).body.item.events, []);
 });
@@ -509,7 +548,7 @@ test("work stopped is said when its link goes for it, and a start right after a 
   await tool("queue_add", { title: "Handed" }, "ses_lead");
   assert.equal((await tool("queue_hand", { item: 6, to: "ses_child" }, "ses_lead")).isError, false);
   await tool("queue_update", { item: 6, working: true }, "ses_child");
-  assert.deepEqual((await kinds(6)).map(([kind]) => kind), ["started"]);
+  assert.deepEqual((await kinds(6)).map(([kind]) => kind), ["moved", "started"], "In progress by it, then started");
   await tool("queue_add", { title: "Linked too" }, "ses_lead");
   await tool("queue_update", { item: 7, sessions: ["ses_other"] }, "ses_lead");
   await tool("queue_update", { item: 7, unlink: ["ses_other"] }, "ses_lead");
@@ -518,9 +557,9 @@ test("work stopped is said when its link goes for it, and a start right after a 
 
 test("a reorder isn't folded into the one before it across a note, and a move past another queue's item is one", async () => {
   for (const title of ["A", "B", "C"]) await tool("queue_add", { title }, "ses_lead");
-  await route("POST", "kuvo/work-queue/items/1/move", { after: 2 });
+  await route("PATCH", "kuvo/work-queue/items/1", { after: 2 });
   await tool("queue_update", { item: 1, note: "Why it waits." }, "ses_lead");
-  await route("POST", "kuvo/work-queue/items/1/move", { after: 3 });
+  await route("PATCH", "kuvo/work-queue/items/1", { after: 3 });
   assert.deepEqual((await route("GET", "kuvo/work-queue/items/1")).body.item.events.map(event => event.kind), ["moved", "moved"]);
   // (Its place is among every queue's items on the box, as All lists them: an agent moving it past
   // only another queue's item moves it.)
@@ -539,25 +578,26 @@ test("a stop with no start before it isn't said, so a start right after it is; n
   assert.deepEqual(await kinds(1), []);
   assert.deepEqual((await route("GET", "kuvo/work-queue/items/1")).body.item.sessions, [], "unlinked all the same");
   await tool("queue_update", { item: 1, working: true }, "ses_child");
-  assert.deepEqual(await kinds(1), ["started"]);
+  assert.deepEqual(await kinds(1), ["moved", "started"]);
   // Stopped with a note, back within two minutes: the stop stays, and the start is said.
   await tool("queue_update", { item: 1, working: false, note: "Blocked on the API key." }, "ses_child");
   await tool("queue_update", { item: 1, working: true }, "ses_child");
-  assert.deepEqual(await kinds(1), ["started", "stopped", "started"]);
+  assert.deepEqual(await kinds(1), ["moved", "started", "stopped", "started"]);
 });
 
 test("a session at work on an item before it was done starts again once it's back on it", async () => {
   await tool("queue_add", { title: "Again" }, "ses_lead");
   await tool("queue_hand", { item: 1, to: "ses_child" }, "ses_lead");
   await tool("queue_update", { item: 1, working: true }, "ses_child");
-  await tool("queue_update", { item: 1, category: "done" }, "ses_child");
-  await route("POST", "kuvo/work-queue/items/1/move", { category: "next" });
+  await tool("queue_update", { item: 1, status: "done" }, "ses_child");
+  await route("PATCH", "kuvo/work-queue/items/1", { status: "todo" });
   await tool("queue_update", { item: 1, sessions: ["ses_child"] }, "ses_lead");
   await tool("queue_update", { item: 1, working: true }, "ses_child");
   const kinds = async () => (await route("GET", "kuvo/work-queue/items/1")).body.item.events.map(event => event.kind);
-  assert.deepEqual(await kinds(), ["started", "done", "moved", "started"]);
+  // (Each time it says it's on it, the item goes In progress first: a move by it.)
+  assert.deepEqual(await kinds(), ["moved", "started", "done", "moved", "moved", "started"]);
   await tool("queue_update", { item: 1, working: false }, "ses_child");
-  assert.deepEqual(await kinds(), ["started", "done", "moved", "started", "stopped"]);
+  assert.deepEqual(await kinds(), ["moved", "started", "done", "moved", "moved", "started", "stopped"]);
 });
 
 test("what's kept of an item's history never folds back in time (a clock ahead on another computer)", async () => {
@@ -572,7 +612,7 @@ test("what's kept of an item's history never folds back in time (a clock ahead o
 });
 
 test("an item from before the box kept its history has none, and keeps what happens from now on", async () => {
-  write(path.join(queues, "queues", "ses_lead.json"), JSON.stringify({ owner: "ses_lead", items: [{ id: "wqi_AAAAAAAAAAAAAAAAAAAB", number: 7, title: "Old", body: "", category: "next", order: 0, notes: [{ at: 5, by: { user: true }, text: "From before." }], files: [], links: [], sessions: [], created: { at: 1, by: { user: true } }, updated: { at: 5, by: { user: true } } }] }));
+  write(path.join(queues, "queues", "ses_lead.json"), JSON.stringify({ owner: "ses_lead", items: [{ id: "wqi_AAAAAAAAAAAAAAAAAAAB", number: 7, title: "Old", body: "", status: "todo", order: 0, notes: [{ at: 5, by: { user: true }, text: "From before." }], files: [], links: [], sessions: [], created: { at: 1, by: { user: true } }, updated: { at: 5, by: { user: true } } }] }));
   const old = (await route("GET", "kuvo/work-queue/items/7")).body.item;
   assert.deepEqual(old.events, []);
   assert.equal(old.notes[0].text, "From before.");
@@ -580,26 +620,26 @@ test("an item from before the box kept its history has none, and keeps what happ
   // Written again by an unrelated change, it's as it was (nothing made up for it).
   await tool("queue_update", { item: 7, note: "Picked up." }, "ses_lead");
   assert.equal("events" in JSON.parse(fs.readFileSync(path.join(queues, "queues", "ses_lead.json"), "utf8")).items[0], false);
-  await route("POST", "kuvo/work-queue/items/7/move", { category: "parked" });
+  await route("PATCH", "kuvo/work-queue/items/7", { status: "backlog" });
   assert.deepEqual((await route("GET", "kuvo/work-queue/items/7")).body.item.events.map(event => event.kind), ["moved"]);
 });
 
-test("a view lists the categories in order, Done last, and each one's items by their place (as you and agents set it), not by number or when they were made", async () => {
+test("a view lists the statuses in order, the closed ones last, and each one's items by their place (as you and agents set it), not by number or when they were made", async () => {
   for (const title of ["A", "B", "C", "D"]) await tool("queue_add", { title }, "ses_lead");
-  await tool("queue_categories", { add: "Design" }, "ses_lead");
-  await tool("queue_update", { item: 4, category: "done" }, "ses_lead");
-  await tool("queue_add", { title: "E", category: "later" }, "ses_lead");
-  await tool("queue_add", { title: "F", category: "Design" }, "ses_lead");
-  await tool("queue_add", { title: "G", category: "parked" }, "ses_lead");
-  // An agent puts C first; you drag B below C, then drag A into Later, above E (a drop beside an
-  // item in another category moves it there).
+  await tool("queue_update", { item: 4, status: "done" }, "ses_lead");
+  await tool("queue_add", { title: "E", status: "backlog" }, "ses_lead");
+  await tool("queue_add", { title: "F", status: "In review" }, "ses_lead");
+  await tool("queue_add", { title: "G", status: "canceled" }, "ses_lead");
+  await tool("queue_add", { title: "H", status: "Needs you" }, "ses_lead");
+  // An agent puts C first; you drag B below C, then drag A into Backlog, above E (a drop beside an
+  // item of another status gives it that status).
   await tool("queue_update", { item: 3, top: true }, "ses_lead");
-  assert.equal((await route("POST", "kuvo/work-queue/items/2/move", { category: "next", after: 3 })).status, 200);
-  assert.equal((await route("POST", "kuvo/work-queue/items/1/move", { category: "later", before: 5 })).status, 200);
-  const listed = (await view("ses_lead")).items.map(item => `${item.category}:${item.title}`);
-  assert.deepEqual(listed, ["next:C", "next:B", "later:A", "later:E", "cat_design:F", "parked:G", "done:D"]);
+  assert.equal((await route("PATCH", "kuvo/work-queue/items/2", { status: "todo", after: 3 })).status, 200);
+  assert.equal((await route("PATCH", "kuvo/work-queue/items/1", { status: "backlog", before: 5 })).status, 200);
+  const listed = (await view("ses_lead")).items.map(item => `${item.status}:${item.title}`);
+  assert.deepEqual(listed, ["needs-you:H", "in-review:F", "todo:C", "todo:B", "backlog:A", "backlog:E", "done:D", "canceled:G"]);
   // Read again (a client opening the panel anew): the same order.
-  assert.deepEqual((await view("all")).items.map(item => `${item.category}:${item.title}`), listed);
+  assert.deepEqual((await view("all")).items.map(item => `${item.status}:${item.title}`), listed);
 });
 
 test("what acts as you answers only a client, never a command or an agent", async () => {
@@ -610,56 +650,78 @@ test("what acts as you answers only a client, never a command or an agent", asyn
     for await (const piece of handle({ method, path: pathname, headers: {}, body: body ? Buffer.from(JSON.stringify(body)) : undefined, ...extra }, undefined)) pieces.push(piece);
     return { status: pieces[0].head.status, body: JSON.parse(Buffer.concat(pieces.filter(each => each.body).map(each => each.body)).toString() || "null") };
   };
-  for (const [method, pathname, body] of [["DELETE", "kuvo/work-queue/items/1"], ["POST", "kuvo/work-queue/items/1/move", { category: "later" }], ["POST", "kuvo/work-queue/categories", { add: "Bugs" }], ["POST", "kuvo/work-queue/import", { owner: "ses_lead", files: ["/x.md"] }]]) {
+  for (const [method, pathname, body] of [["DELETE", "kuvo/work-queue/items/1"], ["PATCH", "kuvo/work-queue/items/1", { status: "backlog" }], ["POST", "kuvo/work-queue/items", { title: "Another" }], ["POST", "kuvo/work-queue/labels", { add: "Bugs" }], ["POST", "kuvo/work-queue/import", { owner: "ses_lead", files: ["/x.md"] }]]) {
     const refused = await ask(method, pathname, body);
     assert.equal(refused.status, 403, `${method} ${pathname}`);
   }
   assert.equal((await ask("GET", "kuvo/work-queue?owner=ses_lead")).status, 200, "reading isn't acting");
   // `box route`, which any command on this computer can run (an agent's too), without its Mac's proof.
-  for (const [method, pathname, body] of [["DELETE", "kuvo/work-queue/items/1"], ["POST", "kuvo/work-queue/items/1/restore"], ["POST", "kuvo/work-queue/categories", { add: "Bugs" }]]) {
+  for (const [method, pathname, body] of [["DELETE", "kuvo/work-queue/items/1"], ["POST", "kuvo/work-queue/items/1/restore"], ["PATCH", "kuvo/work-queue/items/1", { title: "Theirs" }], ["POST", "kuvo/work-queue/labels", { add: "Bugs" }]]) {
     assert.equal((await spawnRoute(method, pathname, body)).status, 403, `box route ${method} ${pathname}`);
   }
   assert.equal((await ask("DELETE", "kuvo/work-queue/items/1", undefined, { fromMac: true })).status, 403, "a Mac over SSH proves it's one");
   assert.equal((await ask("DELETE", "kuvo/work-queue/items/1", undefined, { fromApp: true })).status, 200, "this Mac's app is a client");
 });
 
-test("categories: the four built in, custom ones an agent adds between Later and Parked; you rename and remove them", async () => {
-  const added = await tool("queue_categories", { add: "Bugs" }, "ses_lead");
-  assert.equal(added.text, "Added the category Bugs. Categories now: Next, Later, Bugs, Parked, Done.");
-  assert.equal((await tool("queue_categories", { add: "Ideas", after: "Later" }, "ses_lead")).text, "Added the category Ideas. Categories now: Next, Later, Ideas, Bugs, Parked, Done.");
-  assert.equal((await tool("queue_categories", { add: "in progress" }, "ses_lead")).isError, true);
-  await tool("queue_add", { title: "Crash on start", category: "bugs" }, "ses_lead");
-  assert.equal((await view("ses_lead")).items[0].category, "cat_bugs");
+test("labels: none built in; an agent makes them, several on one item; you rename, recolour and remove them, and one removed comes off every item", async () => {
+  assert.match((await tool("queue_labels", {}, "ses_lead")).text, /^Labels \(one set for every queue; an item carries several\): none yet\./);
+  const added = await tool("queue_labels", { add: "Bugs", color: "coral" }, "ses_lead");
+  assert.equal(added.text, "Made the label Bugs. Labels now: Bugs (coral).");
+  // (With no colour said, one the fewest labels have.)
+  assert.equal((await tool("queue_labels", { add: "Ideas" }, "ses_lead")).text, "Made the label Ideas. Labels now: Bugs (coral), Ideas (orange).");
+  // A status isn't a label; nor is one made twice.
+  const status = await tool("queue_labels", { add: "in progress" }, "ses_lead");
+  assert.deepEqual(status, { text: "in progress is a status, not a label: set it on an item with status.", isError: true });
+  assert.equal((await tool("queue_labels", { add: "bugs" }, "ses_lead")).isError, true);
+  await tool("queue_add", { title: "Crash on start", labels: ["bugs", "Ideas"] }, "ses_lead");
+  let item = (await view("ses_lead")).items[0];
+  assert.deepEqual([item.status, item.labels], ["todo", ["lbl_bugs", "lbl_ideas"]]);
+  assert.match((await tool("queue_list", { label: "Bugs" }, "ses_lead")).text, /- #1 "Crash on start" · \[Bugs\] · \[Ideas\] · updated just now/);
+  // One that isn't a label is refused, never made.
+  const unknown = await tool("queue_add", { title: "Other", labels: ["Nope"] }, "ses_lead");
+  assert.equal(unknown.isError, true);
+  assert.match(unknown.text, /^There's no label Nope/);
+  assert.equal((await view("ses_lead")).items.length, 1);
 
-  const renamed = await route("POST", "kuvo/work-queue/categories", { rename: "Bugs", to: "Issues" });
-  assert.deepEqual(renamed.body.categories.map(each => each.name), ["Next", "Later", "Ideas", "Issues", "Parked", "Done"]);
-  const used = await route("POST", "kuvo/work-queue/categories", { remove: "Issues" });
-  assert.deepEqual([used.status, used.body.message], [400, "Issues still has 1 item in it: move it first."]);
-  assert.equal((await route("POST", "kuvo/work-queue/categories", { remove: "Next" })).status, 400);
-  await route("POST", "kuvo/work-queue/items/1/move", { category: "next" });
-  assert.equal((await route("POST", "kuvo/work-queue/categories", { remove: "Issues" })).status, 200);
-  fs.rmSync(path.join(queues, "categories.json"), { force: true });
+  const renamed = await route("POST", "kuvo/work-queue/labels", { change: "Bugs", name: "Issues", color: "pink" });
+  assert.deepEqual(renamed.body.labels, [{ id: "lbl_bugs", name: "Issues", color: "pink" }, { id: "lbl_ideas", name: "Ideas", color: "orange" }]);
+  assert.deepEqual(renamed.body.label, { id: "lbl_bugs", name: "Issues", color: "pink" });
+  assert.deepEqual((await route("GET", "kuvo/work-queue/labels")).body, { labels: renamed.body.labels });
+  assert.deepEqual((await view("ses_lead")).labels, renamed.body.labels, "a view lists them");
+  // Removed while an item has it: taken off that item, the others it has left.
+  const removed = await route("POST", "kuvo/work-queue/labels", { remove: "Issues" });
+  assert.deepEqual([removed.status, removed.body.labels.map(each => each.name)], [200, ["Ideas"]]);
+  item = (await view("ses_lead")).items[0];
+  assert.deepEqual(item.labels, ["lbl_ideas"]);
+  assert.equal((await route("POST", "kuvo/work-queue/labels", { remove: "Todo" })).status, 400, "no such label");
+  // (The categories' route is gone.)
+  assert.equal((await route("POST", "kuvo/work-queue/categories", { add: "Bugs" })).status, 404);
 });
 
-test("an item brought back into a category that's gone goes to Next", async () => {
-  await tool("queue_categories", { add: "Bugs" }, "ses_lead");
-  await tool("queue_add", { title: "Crash", category: "Bugs" }, "ses_lead");
+test("an item brought back after its label was removed comes back without it; one of a status this box doesn't know goes to Todo", async () => {
+  await tool("queue_labels", { add: "Bugs" }, "ses_lead");
+  await tool("queue_add", { title: "Crash", labels: ["Bugs"], status: "Waiting" }, "ses_lead");
   await route("DELETE", "kuvo/work-queue/items/1");
-  const used = await route("POST", "kuvo/work-queue/categories", { remove: "Bugs" });
-  assert.equal(used.status, 400, "what's deleted still counts");
-  // (As one kept from before deleted items counted: the category gone all the same.)
-  fs.rmSync(path.join(queues, "categories.json"), { force: true });
-  assert.equal((await route("POST", "kuvo/work-queue/items/1/restore")).body.item.category, "next");
-  // Its feed says so: moved to Next by the box.
+  const used = await route("POST", "kuvo/work-queue/labels", { remove: "Bugs" });
+  assert.equal(used.status, 200, "what's deleted doesn't hold a label");
+  const back = (await route("POST", "kuvo/work-queue/items/1/restore")).body.item;
+  assert.deepEqual([back.status, back.labels], ["waiting", []]);
+  // (A newer box's status, kept as it came while it was deleted.)
+  await route("DELETE", "kuvo/work-queue/items/1");
+  const file = path.join(queues, "queues", "ses_lead.json");
+  const kept = JSON.parse(fs.readFileSync(file, "utf8"));
+  kept.items[0].status = "triage";
+  fs.writeFileSync(file, JSON.stringify(kept));
+  assert.equal((await route("POST", "kuvo/work-queue/items/1/restore")).body.item.status, "todo");
+  // Its feed says so: moved to Todo by the box.
   const moved = (await route("GET", "kuvo/work-queue/items/1")).body.item.events.at(-1);
-  assert.deepEqual([moved.kind, moved.to, moved.by], ["moved", "next", { source: "kuvo", name: "Kuvo Code" }]);
-  assert.match(moved.from, /^cat_/);
+  assert.deepEqual([moved.kind, moved.from, moved.to, moved.by], ["moved", "triage", "todo", { source: "kuvo", name: "Kuvo Code" }]);
 });
 
 test("an item moved into the same place again and again keeps its place", async () => {
   for (const title of ["A", "B", "C"]) await tool("queue_add", { title }, "ses_lead");
   for (let round = 0; round < 70; round++) {
-    assert.equal((await route("POST", `kuvo/work-queue/items/${round % 2 ? 2 : 3}/move`, { after: 1 })).status, 200);
+    assert.equal((await route("PATCH", `kuvo/work-queue/items/${round % 2 ? 2 : 3}`, { after: 1 })).status, 200);
   }
   assert.deepEqual((await view("ses_lead")).items.map(item => item.title), ["A", "B", "C"]);
 });
@@ -704,7 +766,7 @@ test("refs say what each #n names, for chips: unknown ones are null", async () =
   active = new Set(["ses_lead"]);
   await tool("queue_update", { item: 1, working: true }, "ses_lead");
   const refs = (await route("GET", "kuvo/work-queue/refs?refs=1,%2399,abc")).body.refs;
-  assert.deepEqual(refs["1"], { id: refs["1"].id, number: 1, title: "Fix the login page", category: "next", inProgress: true, owner: "ses_lead" });
+  assert.deepEqual(refs["1"], { id: refs["1"].id, number: 1, title: "Fix the login page", status: "in-progress", owner: "ses_lead" });
   assert.equal(refs["#99"], null);
   assert.equal(refs.abc, null);
 });
@@ -726,25 +788,25 @@ test("a group chat's seats keep the group's queue", async () => {
 
 test("an agent imports its old backlog with its numbers; new items number after them", async () => {
   const imported = await tool("queue_import", { items: [
-    { number: 243, title: "The Work Queue", body: "Replaces BACKLOG.md.", category: "Next" },
+    { number: 243, title: "The Work Queue", body: "Replaces BACKLOG.md.", status: "Next" },
     { number: 12, title: "Update All alert", done: true },
-    { number: 7, title: "Someday", category: "nowhere" },
+    { number: 7, title: "Someday", status: "nowhere" },
     { title: "No number" },
   ] }, "ses_lead");
-  assert.equal(imported.text, "Imported 2 items with their numbers: 1 in Next, 1 in Done. Left out (2): #7 (there's no category nowhere); an item with no number.");
+  assert.equal(imported.text, "Imported 2 items with their numbers: 1 Todo, 1 Done. Left out (2): #7 (there's no status nowhere); an item with no number.");
   const next = await tool("queue_add", { title: "After the import" }, "ses_lead");
   assert.equal(numberIn(next.text), 244);
   const again = await tool("queue_import", { items: [{ number: 243, title: "The work queue" }] }, "ses_lead");
   assert.match(again.text, /Nothing was imported\. Left out \(1\): #243 \(already in the Work Queue here\)/);
   // Another item under a number given here already: kept, with a new number and a note.
   const clash = await tool("queue_import", { items: [{ number: 244, title: "Something else" }] }, "ses_lead");
-  assert.match(clash.text, /Imported 1 item with their numbers: 1 in Next\. Renumbered, as their own number is another item's or couldn't be kept \(each has a note saying why\): #244 is #245\./);
+  assert.match(clash.text, /Imported 1 item with their numbers: 1 Todo\. Renumbered, as their own number is another item's or couldn't be kept \(each has a note saying why\): #244 is #245\./);
   assert.match((await route("GET", "kuvo/work-queue/items/245")).body.item.notes[0].text, /^Imported as #244/);
   // The same backlog imported again doesn't make it twice.
   assert.match((await tool("queue_import", { items: [{ number: 244, title: "Something else" }] }, "ses_lead")).text, /^Nothing was imported\./);
 });
 
-test("a client imports BACKLOG.md files from the box: list lines starting with #n, categories from headings and sorted lines, the details file's text as bodies", async () => {
+test("a client imports BACKLOG.md files from the box: list lines starting with #n, statuses from headings and sorted lines, the details file's text as bodies", async () => {
   const backlog = path.join(home, "notes", "BACKLOG.md");
   const details = path.join(home, "notes", "BACKLOG-DETAILS.md");
   write(backlog, [
@@ -770,10 +832,10 @@ test("a client imports BACKLOG.md files from the box: list lines starting with #
   write(details, "- #5 [ ] FEATURE, user 11-07: the goal bar.\n- #5 DECIDED: expand in place.\n- #7 [ ] Voice, parked.\n");
   const done = await route("POST", "kuvo/work-queue/import", { owner: "ses_lead", files: [backlog, details] });
   assert.equal(done.status, 200, JSON.stringify(done.body));
-  assert.deepEqual(done.body.byCategory, { next: 3, later: 2, done: 2 });
+  assert.deepEqual(done.body.byStatus, { todo: 3, backlog: 2, done: 2 });
   assert.deepEqual(done.body.skipped.sort(), ["#306 (named with #305 on one line)", "#9 (named, but no line starts with it)", "#900 (named, but no line starts with it)"].sort());
   const items = Object.fromEntries((await view("ses_lead")).items.map(item => [item.number, item]));
-  assert.deepEqual(Object.fromEntries(Object.entries(items).map(([n, item]) => [n, item.category])), { 4: "later", 5: "next", 6: "next", 7: "later", 8: "done", 10: "done", 305: "next" });
+  assert.deepEqual(Object.fromEntries(Object.entries(items).map(([n, item]) => [n, item.status])), { 4: "backlog", 5: "todo", 6: "todo", 7: "backlog", 8: "done", 10: "done", 305: "todo" });
   assert.equal(items[5].title, "The goal bar opens a sheet.");
   assert.equal((await route("GET", "kuvo/work-queue/items/5")).body.item.body, "#5 The goal bar opens a sheet. More words here.\n\n#5 [ ] FEATURE, user 11-07: the goal bar.\n\n#5 DECIDED: expand in place.");
 });
@@ -925,7 +987,7 @@ test("a change from someone this box doesn't know the shape of (an outside track
 
 test("a queue of a kind this box doesn't know (a newer box's) is kept as it is: never shown, skipped or written over", async () => {
   const theirs = path.join(queues, "queues", "prj_storefront.json");
-  const text = JSON.stringify({ owner: "prj_storefront", items: [{ id: "wqi_projectprojectproj01", owner: "prj_storefront", title: "A project's", category: "next", order: 0, notes: [], files: [], links: [], sessions: [], created: { at: 1, by: { user: true } }, updated: { at: 1, by: { user: true } } }] });
+  const text = JSON.stringify({ owner: "prj_storefront", items: [{ id: "wqi_projectprojectproj01", owner: "prj_storefront", title: "A project's", status: "todo", order: 0, notes: [], files: [], links: [], sessions: [], created: { at: 1, by: { user: true } }, updated: { at: 1, by: { user: true } } }] });
   write(theirs, text);
   await tool("queue_add", { title: "Ours" }, "ses_lead");
   assert.equal(fs.readFileSync(theirs, "utf8"), text);
@@ -990,14 +1052,14 @@ test("a machine with no number left keeps its items waiting, shown without one, 
   // This box's primary: a Mac it names, that isn't answering.
   write(path.join(home, "run", "work-queue", "numbers.json"), JSON.stringify({ primary: "macKeyThatIsAway", leases: [] }));
   const added = await tool("queue_add", { title: "Offline idea" }, "ses_lead");
-  assert.match(added.text, /^Added "Offline idea" to Next\. It has no number yet/);
+  assert.match(added.text, /^Added "Offline idea" as Todo\. It has no number yet/);
   const item = (await view("ses_lead")).items[0];
   assert.equal(item.number, undefined);
   assert.ok(link.readNumbers(path.join(queues, "numbers.json")).asking, "an ask waits to go to the primary");
   assert.match((await tool("queue_list", {}, "ses_lead")).text, /\(1 open, 1 waiting for a number\)/);
   // Named by the id it was told, it can still be worked on.
   assert.match(added.text, new RegExp(`Name it as ${item.id} meanwhile`));
-  const done = await tool("queue_update", { item: item.id, category: "done" }, "ses_lead");
+  const done = await tool("queue_update", { item: item.id, status: "done" }, "ses_lead");
   assert.equal(done.text, `Marked "Offline idea" (${item.id}, no number yet) done.`);
 });
 
@@ -1006,7 +1068,7 @@ test("an import on a machine waits for the primary to grant its numbers: granted
   const away = { peer: { key: "macKeyThatIsAway", address: "a", kind: "mac", name: "Mac" } };
   write(file, JSON.stringify({ primary: "macKeyThatIsAway", leases: [] }));
   const imported = await tool("queue_import", { items: [{ number: 243, title: "The Work Queue" }, { number: 5, title: "Old one" }] }, "ses_lead");
-  assert.match(imported.text, /^Imported 2 items with their numbers: 2 in Next\. 2 wait for the primary computer to grant their numbers; until then they show as new\./);
+  assert.match(imported.text, /^Imported 2 items with their numbers: 2 Todo\. 2 wait for the primary computer to grant their numbers; until then they show as new\./);
   await tool("queue_add", { title: "Made meanwhile" }, "ses_lead");
   assert.deepEqual((await view("ses_lead")).items.map(item => [item.title, item.number ?? null, item.wanted ?? null]), [["The Work Queue", null, 243], ["Old one", null, 5], ["Made meanwhile", null, null]]);
   // The primary's answer: it had handed out #5 already.
@@ -1020,7 +1082,7 @@ test("an import on a machine waits for the primary to grant its numbers: granted
 });
 
 const BOX_KEY = "boxKeyOfThisOne".padEnd(43, "0");
-const told = (key, numbering) => write(path.join(queues, "peers", `${key.padEnd(43, "0")}.json`), JSON.stringify({ id: `wqt_${key}`, at: 1, heard: 1, items: [], owners: [], categories: [], ...numbering }));
+const told = (key, numbering) => write(path.join(queues, "peers", `${key.padEnd(43, "0")}.json`), JSON.stringify({ id: `wqt_${key}`, at: 1, heard: 1, items: [], owners: [], labels: [], ...numbering }));
 // A box that numbers from another (this one, as mini-local did), and its primary, with the mail
 // between them: an ask sent, and the primary's answer, given to the box now or later.
 function twoBoxes() {
@@ -1047,7 +1109,7 @@ test("three imports in a row on a box that numbers from another keep every numbe
   // As on mini-local: each batch's ask is answered while the next import goes on, so that answer
   // comes to an ask the import replaced; and an ask for more numbers is answered late the same way.
   const first = await tool("queue_import", { items: backlog(batches[0]) }, "ses_lead");
-  assert.match(first.text, /^Imported 150 items with their numbers: 150 in Next\. 150 wait for the primary computer to grant their numbers/);
+  assert.match(first.text, /^Imported 150 items with their numbers: 150 Todo\. 150 wait for the primary computer to grant their numbers/);
   let late = send();
   const second = await tool("queue_import", { items: backlog(batches[1]) }, "ses_lead");
   assert.equal(arrive(late), false, "an answer to the ask the import replaced");
@@ -1069,7 +1131,7 @@ test("a number that's another item's is renumbered, and the import says which an
   await tool("queue_import", { items: [{ number: 10, title: "Ten" }, { number: 11, title: "Eleven" }] }, "ses_lead");
   // Before the primary answers: the same again is the same item, waiting for its number.
   const again = await tool("queue_import", { items: [{ number: 10, title: "Ten" }, { number: 11, title: "Eleven" }, { number: 12, title: "Twelve" }] }, "ses_lead");
-  assert.equal(again.text, "Imported 1 item with their numbers: 1 in Next. 1 waits for the primary computer to grant its number; until then it shows as new. Left out (2): #10–11 (already in the Work Queue here).");
+  assert.equal(again.text, "Imported 1 item with their numbers: 1 Todo. 1 waits for the primary computer to grant its number; until then it shows as new. Left out (2): #10–11 (already in the Work Queue here).");
   // A different item under a number that's another's: a new number, said.
   const clash = await tool("queue_import", { items: [{ number: 11, title: "Not eleven" }] }, "ses_lead");
   assert.match(clash.text, /Renumbered, as their own number is another item's or couldn't be kept \(each has a note saying why\): #11 waits for a new number\./);
@@ -1131,7 +1193,7 @@ test("numbers an import waits for are never handed out meanwhile: not from a blo
 // them: blocks with no word of whom they went to.
 function brokenImport({ primary, file }) {
   const items = [];
-  const item = (title, number, importedAs, at) => ({ id: `wqi_${String(items.length).padStart(20, "0")}`, number, owner: "ses_lead", title, body: "", category: "next", order: items.length, notes: importedAs ? [{ at, by: { user: true }, text: `Imported as #${importedAs}, a number that couldn't be kept (another of your computers was given it already, or it's far past the numbers in use), so it has a new one.` }] : [], files: [], links: [], sessions: [], created: { at, by: { session: "ses_lead", name: "Lead" } }, updated: { at, by: { session: "ses_lead", name: "Lead" } }, ...(importedAs ? { importedAs } : {}) });
+  const item = (title, number, importedAs, at) => ({ id: `wqi_${String(items.length).padStart(20, "0")}`, number, owner: "ses_lead", title, body: "", status: "todo", order: items.length, notes: importedAs ? [{ at, by: { user: true }, text: `Imported as #${importedAs}, a number that couldn't be kept (another of your computers was given it already, or it's far past the numbers in use), so it has a new one.` }] : [], files: [], links: [], sessions: [], created: { at, by: { session: "ses_lead", name: "Lead" } }, updated: { at, by: { session: "ses_lead", name: "Lead" } }, ...(importedAs ? { importedAs } : {}) });
   for (const n of span(1, 150)) items.push(item(`Item ${n}`, n, undefined, 1));
   for (const n of span(151, 300)) items.push(n <= 200 ? item(`Item ${n}`, n + 150, n, 2) : item(`Item ${n}`, n, undefined, 2));
   for (const n of span(301, 448).filter(n => n !== 444)) items.push(n <= 400 ? item(`Item ${n}`, n + 148, n, 3) : item(`Item ${n}`, n, undefined, 3));
@@ -1202,7 +1264,7 @@ test("an item given its own number back waits for the one that has it to move, w
     // As an answer that came while an import went on leaves them: A has #10 back, and waits for H,
     // which has #10 and is asking for its own, #20.
     const at = 1;
-    const item = (id, title, number, extra) => ({ id, number, owner: "ses_lead", title, body: "", category: "next", order: 0, notes: [], files: [], links: [], sessions: [], created: { at, by: { user: true } }, updated: { at, by: { user: true } }, ...extra });
+    const item = (id, title, number, extra) => ({ id, number, owner: "ses_lead", title, body: "", status: "todo", order: 0, notes: [], files: [], links: [], sessions: [], created: { at, by: { user: true } }, updated: { at, by: { user: true } }, ...extra });
     write(path.join(queues, "queues", "ses_lead.json"), JSON.stringify({ owner: "ses_lead", items: [
       item("wqi_AAAAAAAAAAAAAAAAAAAA", "A", 5, { importedAs: 10, wanted: 10, backGranted: true }),
       item("wqi_HHHHHHHHHHHHHHHHHHHH", "H", 10, { importedAs: 20, wanted: 20 }),
@@ -1244,7 +1306,7 @@ test("a move carries its conversations' queues and their files, and the box it l
   const late = await tool("queue_hand", { item: 3, to: "Scout" }, "ses_lead");
   assert.deepEqual(late, { text: "That conversation is moving to another computer, with its Work Queue: try again once it's there.", isError: true });
   assert.equal((await tool("queue_update", { item: 1, note: "Meanwhile" }, "ses_scout")).isError, true);
-  assert.equal((await route("POST", "kuvo/work-queue/items/1/move", { category: "later" })).status, 400);
+  assert.equal((await route("PATCH", "kuvo/work-queue/items/1", { status: "backlog" })).status, 400);
   link.forgetWorkQueues(["ses_scout"]);
   fs.rmSync(record);
   await tool("queue_remove", { item: 3 }, "ses_lead");
@@ -1263,7 +1325,7 @@ test("a move carries its conversations' queues and their files, and the box it l
 
 test("what happened to an item goes with it when a move carries its queue", async () => {
   await tool("queue_add", { title: "Carried", working: true }, "ses_scout");
-  await route("POST", "kuvo/work-queue/items/1/move", { category: "later" });
+  await route("PATCH", "kuvo/work-queue/items/1", { status: "backlog" });
   const before = (await route("GET", "kuvo/work-queue/items/1")).body.item.events;
   assert.deepEqual(before.map(event => event.kind), ["started", "moved"]);
   const carried = JSON.parse(JSON.stringify(link.packWorkQueues(["ses_scout"])));
@@ -1271,13 +1333,22 @@ test("what happened to an item goes with it when a move carries its queue", asyn
   assert.equal((await route("GET", "kuvo/work-queue/items/1")).status, 404);
   link.placeWorkQueues(carried, ["ses_scout"], null);
   assert.deepEqual((await route("GET", "kuvo/work-queue/items/1")).body.item.events, before);
-  // One in a category this box doesn't keep (none came with it) lands in Next, its feed saying so.
+  // One of a status this box doesn't know (a newer box's) lands in Todo, its feed saying so; a
+  // label it has that didn't come with it is left off.
   link.forgetWorkQueues(["ses_scout"]);
-  link.placeWorkQueues({ ...carried, items: carried.items.map(item => ({ ...item, category: "cat_gone" })), categories: [] }, ["ses_scout"], null);
+  link.placeWorkQueues({ ...carried, items: carried.items.map(item => ({ ...item, status: "triage", labels: ["lbl_gone"] })), labels: [] }, ["ses_scout"], null);
   const landed = (await route("GET", "kuvo/work-queue/items/1")).body.item;
-  assert.equal(landed.category, "next");
+  assert.deepEqual([landed.status, landed.labels], ["todo", []]);
   assert.deepEqual(landed.events.at(-1).by, { source: "kuvo", name: "Kuvo Code" });
-  assert.deepEqual([landed.events.at(-1).from, landed.events.at(-1).to], ["cat_gone", "next"]);
+  assert.deepEqual([landed.events.at(-1).from, landed.events.at(-1).to], ["triage", "todo"]);
+  // One from a box that kept categories is said anew as it comes: Later is Backlog, and its custom
+  // category, come with it, a label.
+  link.forgetWorkQueues(["ses_scout"]);
+  const { status: _, labels: __, ...old } = carried.items[0];
+  link.placeWorkQueues({ items: [{ ...old, category: "cat_design" }, { ...old, id: "wqi_BBBBBBBBBBBBBBBBBBBB", number: 2, category: "later" }], categories: [{ id: "cat_design", name: "Design" }] }, ["ses_scout"], null);
+  const anew = await view("ses_scout");
+  assert.deepEqual(anew.items.map(item => [item.number, item.status, item.labels]), [[1, "todo", ["cat_design"]], [2, "backlog", []]]);
+  assert.deepEqual(anew.labels.map(each => [each.id, each.name]), [["cat_design", "Design"]]);
 });
 
 test("a client follows a queue: a line now, and one when it changes (another process's change too) or a linked session starts work", async () => {
@@ -1286,14 +1357,13 @@ test("a client follows a queue: a line now, and one when it changes (another pro
   const lines = link.engineHandler()({ method: "GET", path: "kuvo/work-queue/events?owner=ses_lead", headers: {}, fromApp: true }, undefined, stop.signal);
   assert.equal((await lines.next()).value.head.status, 200);
   const nextView = async () => JSON.parse(String((await lines.next()).value.body));
-  assert.deepEqual((await nextView()).items.map(item => [item.title, item.inProgress]), [["Watched", false]]);
+  assert.deepEqual((await nextView()).items.map(item => [item.title, item.status, item.sessions.map(each => each.working)]), [["Watched", "in-progress", [false]]]);
   await tool("queue_add", { title: "Another" }, "ses_lead");
   assert.deepEqual((await nextView()).items.map(item => item.title), ["Watched", "Another"]);
   active = new Set(["ses_lead"]);
-  assert.deepEqual((await nextView()).items.map(item => item.inProgress), [true, false]);
-  await route("POST", "kuvo/work-queue/categories", { add: "Bugs" });
-  assert.deepEqual((await nextView()).categories.map(each => each.name), ["Next", "Later", "Bugs", "Parked", "Done"]);
-  fs.rmSync(path.join(queues, "categories.json"), { force: true });
+  assert.deepEqual((await nextView()).items.map(item => item.sessions.map(each => each.working)), [[true], []]);
+  await route("POST", "kuvo/work-queue/labels", { add: "Bugs" });
+  assert.deepEqual((await nextView()).labels.map(each => each.name), ["Bugs"]);
   stop.abort();
   await lines.return();
 });
@@ -1323,10 +1393,10 @@ test("every agent kind gets the tools through its tool server: a machine's kuvo-
   const started = await send("initialize", { protocolVersion: "2025-06-18" });
   assert.match(started.instructions, /Keep work items in your Work Queue/);
   const listed = await send("tools/list", {});
-  assert.deepEqual(listed.tools.map(each => each.name).filter(name => name.startsWith("queue_")), ["queue_list", "queue_show", "queue_add", "queue_update", "queue_hand", "queue_remove", "queue_categories", "queue_import"]);
+  assert.deepEqual(listed.tools.map(each => each.name).filter(name => name.startsWith("queue_")), ["queue_list", "queue_show", "queue_add", "queue_update", "queue_hand", "queue_remove", "queue_labels", "queue_import"]);
   calling.set("ses_scout", { name: "queue_add", args: { title: "From Claude Code" } });
   const called = await send("tools/call", { name: "queue_add", arguments: { title: "From Claude Code" }, _meta: { "ai.opencode/sessionID": "ses_scout" } });
   assert.equal(called.isError, false, called.content[0].text);
-  assert.match(called.content[0].text, /^Added #1 "From Claude Code" to Next/);
+  assert.match(called.content[0].text, /^Added #1 "From Claude Code" as Todo/);
   mcp.kill();
 });

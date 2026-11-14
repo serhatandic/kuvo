@@ -40,6 +40,9 @@ export interface Told extends Numbering {
   items: ToldItem[];
   owners: OwnerFacts[];
   labels: Label[];
+  /** From a box that told categories (before statuses): its `labels` are what those became, never
+   * a primary's list for the boxes that number from it. */
+  beforeLabels?: boolean;
 }
 
 /** How many items a computer tells at most, and of its Done ones. */
@@ -136,8 +139,10 @@ export function toldOf(given: unknown, now = Date.now()): Omit<Told, "heard"> | 
   const latest = Math.min(given.at, now);
   const items = given.items.slice(0, MOST_TOLD).map(each => toldItemOf(each, latest)).filter((each): each is ToldItem => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
   const owners = (Array.isArray(given.owners) ? given.owners : []).slice(0, MOST_TOLD).map(ownerOf).filter((each): each is OwnerFacts => each !== null);
-  const labels = (Array.isArray(given.labels) ? given.labels : []).slice(0, MOST_LABELS).map(labelOf).filter((each): each is Label => each !== null);
-  return { id: given.id, at: Math.min(given.at, now), items, owners, labels, ...numberingOf(given) };
+  // COMPAT(0.7 queue-categories): a box from before statuses tells its custom categories (`categories`), labels here, named as it named them. Goes 3 months after 0.8.0.
+  const before = Array.isArray(given.labels) ? [] : Array.isArray(given.categories) ? given.categories : [];
+  const labels = [...(Array.isArray(given.labels) ? given.labels : []), ...before].slice(0, MOST_LABELS).map(labelOf).filter((each): each is Label => each !== null);
+  return { id: given.id, at: Math.min(given.at, now), items, owners, labels, ...numberingOf(given), ...(Array.isArray(given.labels) ? {} : { beforeLabels: true }) };
 }
 
 /** What the computer `key` last told, or null. */

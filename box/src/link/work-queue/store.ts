@@ -233,6 +233,33 @@ export function itemOf(given: unknown, owner: string): Item | null {
   };
 }
 
+// The items here kept with statuses before they're read (`migrate.ts`). Where that can't be done
+// now (a full disk, say), they're read as they are, each said anew as it's read, and it's tried
+// again at the next read: a view never fails over it, and nothing is written until it's done.
+let saidUnmoved = false;
+function migratedToRead(): void {
+  try {
+    migrateOnce();
+  } catch (error) {
+    if (!saidUnmoved) console.error(`Work Queue: its items couldn't be moved over to statuses yet (${(error as Error)?.message ?? error}): shown as they are, and tried again.`);
+    saidUnmoved = true;
+  }
+}
+/** For a test: as a box just started. */
+export function forgetUnmoved(): void {
+  saidUnmoved = false;
+}
+
+/** Nothing is changed (an item, a label) before the items here are kept with statuses, from a copy
+ * of what was kept: refused, in words, where that can't be done now. */
+export function migratedToChange(): void {
+  try {
+    migrateOnce();
+  } catch (error) {
+    throw new Refusal(`The Work Queue's items couldn't be moved over to statuses on this computer (${(error as Error)?.message ?? error}), so nothing was changed. Check ${WORK_QUEUE} (is the disk full?), then try again.`);
+  }
+}
+
 /** A queue file that's there but isn't one (cut short, changed by hand): `aside` true. Or one that
  * can't be read just now (too many files open, a disk error): left where it is. */
 export class UnreadableQueue extends Error {
@@ -244,7 +271,7 @@ export class UnreadableQueue extends Error {
 /** An owner's queue as it's kept: empty for one with none; `UnreadableQueue` for a file that's
  * there but can't be read as one, never read as empty (a change would write over what it holds). */
 export function readQueue(owner: string): Queue {
-  migrateOnce();
+  migratedToRead();
   const file = fileOf(owner);
   let text: string;
   try {
@@ -313,7 +340,7 @@ const readQueueOrNone = (owner: string): Queue => {
  * know, isn't one: it's read only when a move carries it, `readKeptQueue`, and never changed here
  * otherwise.) */
 export function owners(): string[] {
-  migrateOnce();
+  migratedToRead();
   return listOf(QUEUES).filter(name => name.endsWith(".json")).map(name => name.slice(0, -5)).filter(owner => OWNER.test(owner));
 }
 
@@ -434,7 +461,7 @@ export class Book {
  * following told. Deleted items past their 30 days go first (and their files). */
 export function changeQueues<T>(work: (book: Book) => T, now = Date.now(), { onItsOwn = false }: { onItsOwn?: boolean } = {}): T {
   fs.mkdirSync(WORK_QUEUE, { recursive: true, mode: 0o700 });
-  migrateOnce();
+  migratedToChange();
   const { value, changed } = locked(LOCK, () => {
     let book: Book;
     try {

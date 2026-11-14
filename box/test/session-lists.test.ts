@@ -587,7 +587,7 @@ test("a session that asks is in Needs you, its project's sums, its bot's now and
   // An item of the Work Queue the session that will ask is working on.
   mkdirSync(join(WORK_QUEUE, "queues"), { recursive: true })
   const queueFile = join(WORK_QUEUE, "queues", "ses_asks.json")
-  writeFileSync(queueFile, JSON.stringify({ owner: "ses_asks", items: [{ id: "wqi_aaaaaaaaaaaaaaaaaaaa", number: 7, title: "Limits", category: "next", order: 1, sessions: [{ session: "ses_asks", since: 1 }], created: { at: 1, by: { user: true } } }] }))
+  writeFileSync(queueFile, JSON.stringify({ owner: "ses_asks", items: [{ id: "wqi_aaaaaaaaaaaaaaaaaaaa", number: 7, title: "Limits", status: "todo", order: 1, labels: [], sessions: [{ session: "ses_asks", since: 1 }], created: { at: 1, by: { user: true } } }] }))
   const stop = keepList()
   const listed = (when: () => boolean) => new Promise<void>(done => {
     const look = () => { if (when()) { listFollowers.delete(look); done() } }

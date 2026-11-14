@@ -100,6 +100,8 @@ function migrate(): void {
       if (!fs.existsSync(BEFORE)) throw error;
     }
   }
+  // (Only from the copy: something else by its name is no copy to work from.)
+  if (!fs.statSync(path.join(BEFORE, "queues"), { throwIfNoEntry: false })?.isDirectory()) throw new Error(`${BEFORE} isn't the copy of what was kept`);
   const kept = jsonOf(path.join(BEFORE, "categories.json"));
   const custom = (isObject(kept) && Array.isArray(kept.custom) ? kept.custom : [])
     .filter((each: unknown): each is { id: string; name: string } => isObject(each) && typeof each.id === "string" && /^cat_[a-z0-9-]{1,40}$/.test(each.id) && typeof each.name === "string");
@@ -127,7 +129,7 @@ function migrate(): void {
   }
   // The labels: each custom category an item was in, in the colour it was drawn in, and Parked.
   // (Not one that's a status now, nor one nothing was in: no label is made that nothing has.)
-  if (!fs.existsSync(LABELS_FILE)) {
+  {
     const used = new Set(was.flatMap(each => (Array.isArray(each.said.labels) ? each.said.labels as string[] : [])));
     const made = [
       ...custom.filter(each => used.has(each.id)).map(each => ({ id: each.id, name: plainName(each.name).slice(0, 40) || each.id.slice(4), color: colorBefore(each.id) })),
@@ -135,7 +137,12 @@ function migrate(): void {
       ...[...used].filter(id => id !== PARKED_LABEL && !names.has(id)).sort().map(id => ({ id, name: id.slice(4).replace(/-/g, " "), color: colorBefore(id) })),
       ...(used.has(PARKED_LABEL) ? [{ id: PARKED_LABEL, name: "Parked", color: "graphite" }] : []),
     ];
-    if (made.length) writePrivate(LABELS_FILE, JSON.stringify({ labels: made }));
+    // (Beside any already there, a run cut off having made some: each once, as it was first made.)
+    const kept = jsonOf(LABELS_FILE);
+    const there: unknown[] = isObject(kept) && Array.isArray(kept.labels) ? kept.labels : [];
+    const has = new Set(there.flatMap(each => (isObject(each) && typeof each.id === "string" ? [each.id] : [])));
+    const more = made.filter(each => !has.has(each.id));
+    if (more.length) writePrivate(LABELS_FILE, JSON.stringify({ ...(isObject(kept) ? kept : {}), labels: [...there, ...more] }));
   }
   // Each queue as it's kept now: every item still under a category said anew, as worked out from
   // what was kept before (one added since, by an older box, on its own).
@@ -171,9 +178,11 @@ export function migrateOnce(): void {
   }
   // (A box with no Work Queue yet has nothing to move, and makes no folder for it.)
   if (!fs.existsSync(WORK_QUEUE)) return;
+  // (Said at once where nothing can be written there, a lock neither: never waited for.)
+  fs.accessSync(WORK_QUEUE, fs.constants.W_OK);
   locked(LOCK, () => {
     const again = jsonOf(MODEL_FILE);
     if (!(isObject(again) && typeof again.model === "number" && again.model >= MODEL)) migrate();
-  }, { stale: 60_000, wait: 30_000 });
+  }, { stale: 60_000, wait: 10_000 });
   done = true;
 }

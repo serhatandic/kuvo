@@ -67,7 +67,7 @@ before(() => {
   // This Mac leads a setup with lab, as it would once lab said it isn't shared.
   write(path.join(run, "work-queue", "numbers.json"), { primary: "self", next: 12, leases: [], since: 1_000 });
   link.writeLink({ phones: [], macPeers: [lab.peer], macMoved: [] });
-  write(path.join(run, "work-queue", "peers", `${lab.pub}.json`), { id: "wqt_labtoldlabtold", at: 1, heard: 1, kind: "machine", since: 50, items: [], owners: [], categories: [], primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: false });
+  write(path.join(run, "work-queue", "peers", `${lab.pub}.json`), { id: "wqt_labtoldlabtold", at: 1, heard: 1, kind: "machine", since: 50, items: [], owners: [], labels: [], primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: false });
   link.noteSetupNow(Date.now(), { soon: 0 });
   ours = link.readLink().setup.id;
   assert.ok(ours);

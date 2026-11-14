@@ -1710,8 +1710,10 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "wakes.edit": ["POST", "kuvo/wakes/ses_none/pause"],
     "wakes.events": ["POST", "kuvo/wakes/events"],
     work: ["GET", "kuvo/work"],
-    "work-queue": ["GET", "kuvo/work-queue/categories"],
+    "work-queue": ["GET", "kuvo/work-queue/labels"],
     "work-queue.counts": ["GET", "kuvo/work-queue?owner=all&counts=1"],
+    // (Statuses, priorities, labels and a search, on the view; a client's own add and change answer only a client.)
+    "work-queue.edit": ["GET", "kuvo/work-queue?owner=all&q=none"],
     "work-queue.elsewhere": ["POST", "kuvo/work-queue/refs"],
     // (What you do to an item another computer keeps, done there: on the item's routes.)
     "work-queue.forward": ["GET", "kuvo/work-queue/items/1"],

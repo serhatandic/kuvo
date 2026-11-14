@@ -6,7 +6,7 @@ import path from "node:path";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, textOf, writePrivate } from "../files";
-import { noteQueuesChanged, WORK_QUEUE } from "./store";
+import { migratedToChange, noteQueuesChanged, Refusal, WORK_QUEUE } from "./store";
 
 export const LABELS_FILE = path.join(WORK_QUEUE, "labels.json");
 const LOCK = path.join(WORK_QUEUE, ".labels.lock");
@@ -68,6 +68,13 @@ function colorFor(given: unknown): string | { refused: string } {
 export type LabelOutcome = { done: Label } | { refused: string };
 
 const change = (work: (kept: { labels: Label[]; fromPrimary: string[] }) => LabelOutcome): LabelOutcome => {
+  // (Not before the categories from before statuses are labels: `migrate.ts` makes them.)
+  try {
+    migratedToChange();
+  } catch (error) {
+    if (error instanceof Refusal) return { refused: error.message };
+    throw error;
+  }
   const outcome = locked(LOCK, () => {
     const kept = readKept();
     const outcome = work(kept);
@@ -124,7 +131,12 @@ export function changeLabel(which: unknown, { name, color }: { name?: unknown; c
 export function removeLabel(which: unknown, strip: (id: string) => void): LabelOutcome {
   const found = labelNamed(which);
   if (!found) return { refused: `There's no label ${String(which ?? "")}.` };
-  strip(found.id);
+  try {
+    strip(found.id);
+  } catch (error) {
+    if (error instanceof Refusal) return { refused: error.message };
+    throw error;
+  }
   return change(kept => {
     const index = kept.labels.findIndex(each => each.id === found.id);
     if (index < 0) return { refused: `There's no label ${found.name}.` };

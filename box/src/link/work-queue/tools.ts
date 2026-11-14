@@ -39,28 +39,28 @@ const refused = (text: string): ToolAnswer => ({ text, isError: true });
 const ITEM = { type: ["string", "integer"], description: "Like #243 or gh:owner/repo#12." };
 const ISSUE = { type: "string", description: "gh:owner/repo#12 or its URL." };
 const TOP = { type: "boolean", description: "At the top of its status." };
-const STATUS = { type: "string", description: "Needs you (the user must act), In review, In progress, Waiting (on something else), Todo, Backlog, Done or Canceled." };
+const STATUS = { type: "string", description: "Needs you (only the user can move it on), In review, In progress, Waiting, Todo, Backlog, Done or Canceled." };
 const PRIORITY = { type: "string", description: "Urgent, High, Normal or Low." };
-const LABELS = { type: "array", items: { type: "string" }, description: "All its labels, by name (replaces those it had; [] for none). queue_labels lists and makes them." };
-const ASSIGNEE = { type: ["string", "null"], description: "Who it's for: a bot's name or a coding agent (Claude Code, Codex…); null for no one. It doesn't hand it on: queue_hand does." };
-const DUE = { type: ["string", "null"], description: "The day it's due, YYYY-MM-DD; null for none." };
+const LABELS = { type: "array", items: { type: "string" }, description: "All its labels by name, replacing those it had ([]: none). See queue_labels." };
+const ASSIGNEE = { type: ["string", "null"], description: "Who it's for: a bot's or coding agent's name (null: no one). Doesn't hand it on." };
+const DUE = { type: ["string", "null"], description: "YYYY-MM-DD, or null." };
 const LINKS = { type: "array", items: { type: "string" }, description: "Web links (a PR, a doc)." };
 const FILES = { type: "array", items: { type: "string" }, description: "Full paths of files to keep with it (in the body: ![](name))." };
 const PROGRESS = { type: ["number", "null"], description: "0 to 1, where it can be counted." };
 const PROGRESS_NOTE = { type: ["string", "null"], description: "What's being done now, briefly." };
-const WORKING = { type: "boolean", description: "true: you're on it now (links you; Todo, Backlog or Waiting becomes In progress). false: you stopped (its status stays: set it)." };
+const WORKING = { type: "boolean", description: "true: you're on it now (Todo, Backlog or Waiting becomes In progress). false: you stopped (set its status)." };
 const NAMES = { type: "array", items: { type: "string" } };
 
 /** The tools, as a tool server lists them. */
 export const QUEUE_TOOLS = [
   {
     name: "queue_list",
-    description: "List your Work Queue (and those of sessions you oversee) by status. Open items only, unless done is true.",
+    description: "List your Work Queue (and those of sessions you oversee) by status: open items, unless done.",
     inputSchema: { type: "object", properties: {
-      status: { type: "string", description: "Only this status." },
-      label: { type: "string", description: "Only items with this label." },
+      status: { type: "string", description: "Only this one." },
+      label: { type: "string", description: "Only with this label." },
       query: { type: "string", description: "Words in the title, description or notes." },
-      done: { type: "boolean", description: "Include Done and Canceled ones." },
+      done: { type: "boolean", description: "Done and Canceled too." },
     }, additionalProperties: false },
   },
   {
@@ -70,7 +70,7 @@ export const QUEUE_TOOLS = [
   },
   {
     name: "queue_add",
-    description: "Add an item to your Work Queue (Todo, Normal priority, no labels, unless you say); you get its number. With issue, it's that GitHub issue or PR (no title).",
+    description: "Add an item to your Work Queue (Todo and Normal unless you say); you get its number. With issue, it's that GitHub issue or PR (no title).",
     inputSchema: { type: "object", properties: {
       title: { type: "string", description: "One short line." },
       issue: ISSUE,
@@ -90,7 +90,7 @@ export const QUEUE_TOOLS = [
   },
   {
     name: "queue_update",
-    description: "Change an item of yours (or of a session you oversee); only what you give changes. note adds a note; issue makes it that GitHub issue or PR.",
+    description: "Change an item of yours (or of a session you oversee): only what you give. note adds a note; issue makes it that GitHub issue or PR.",
     inputSchema: { type: "object", properties: {
       item: ITEM,
       issue: { type: "string" },
@@ -102,8 +102,8 @@ export const QUEUE_TOOLS = [
       assignee: ASSIGNEE,
       due: DUE,
       top: TOP,
-      before: { type: ["string", "integer"], description: "Just before this item (same status)." },
-      after: { type: ["string", "integer"], description: "Just after this item (same status)." },
+      before: { type: ["string", "integer"], description: "Just before this item." },
+      after: { type: ["string", "integer"], description: "Just after this item." },
       progress: PROGRESS,
       progress_note: PROGRESS_NOTE,
       note: { type: "string" },
@@ -125,19 +125,19 @@ export const QUEUE_TOOLS = [
   },
   {
     name: "queue_remove",
-    description: "Delete an item (the user can restore it for 30 days); undo restores one an agent deleted. For work that won't be done, set status Canceled instead.",
+    description: "Delete an item (the user can restore it for 30 days); undo restores one an agent deleted. Work that won't be done is status Canceled, not a delete.",
     inputSchema: { type: "object", properties: { item: ITEM, undo: { type: "boolean" } }, required: ["item"], additionalProperties: false },
   },
   {
     name: "queue_labels",
-    description: "List the labels (what kind of work an item is; one set for every queue), or change one thing: add makes one, rename or recolor changes one, remove deletes one and takes it off every item. Change them only as the user asked.",
+    description: "List the labels (kinds of work; one set for every queue), or make one change the user asked for: add a label, rename one (with to), recolor one (with color), or remove one (it comes off every item).",
     inputSchema: { type: "object", properties: {
-      add: { type: "string", description: "A new label's name." },
-      rename: { type: "string", description: "The label to rename (with to)." },
-      to: { type: "string", description: "Its new name." },
-      recolor: { type: "string", description: "The label to recolour (with color)." },
+      add: { type: "string" },
+      rename: { type: "string" },
+      to: { type: "string" },
+      recolor: { type: "string" },
       color: { type: "string", description: "coral, orange, amber, lime, mint, sky, indigo, violet, pink or graphite." },
-      remove: { type: "string", description: "The label to remove." },
+      remove: { type: "string" },
     }, additionalProperties: false },
   },
   {
@@ -159,7 +159,7 @@ export const QUEUE_TOOLS = [
 export const QUEUE_TOOL_NAMES: readonly string[] = QUEUE_TOOLS.map(tool => tool.name);
 
 /** What the tool servers add to what they tell agents, with the tools. */
-export const QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then status: Done (In review while it waits for a review, Needs you when only the user can move it on).";
+export const QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then status: Done (In review while it's reviewed, Needs you when only the user can move it on).";
 
 /** Who calls, as the queue knows them: the owner of the queue they write to, the session that
  * works when they say working, their name, and where their files may come from. */

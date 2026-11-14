@@ -5549,7 +5549,10 @@ working on (linked, its last word `started`) is `in-progress`. `moved` events na
 their categories became. Items keep their order: within a status, in the order of the categories
 they came from (Next, Later, the custom ones as listed, Parked), then their place there. A label
 is made only for a category some item was in. An item an older box hands, moves or tells later is
-said anew the same way as it comes (a custom category by its id, as its name isn't known).
+said anew the same way as it comes (a custom category by its id, as its name isn't known). Where the
+move can't be made now (a full disk), views still answer, each item said anew as it's read, and
+every change is refused (400, in words) until it's made: nothing is written under statuses
+without the copy.
 
 **Who sees what**: an owner's view is its own items, those of the sessions it oversees (started by
 it, or by those, put away ones too), and those it handed on, each living once in its owner's queue,

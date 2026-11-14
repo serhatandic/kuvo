@@ -8,7 +8,8 @@ import path from "node:path"
 // copy made first, in one step; each queue's file written whole; the same end after a run cut off.
 // (The scenarios with a client and agents: bridge-tests/work-queue-statuses.test.js.)
 
-const { WORK_QUEUE, allItems, changeQueues } = await import("../src/link/work-queue/store")
+const { WORK_QUEUE, allItems, changeQueues, Refusal } = await import("../src/link/work-queue/store")
+const { addLabel } = await import("../src/link/work-queue/labels")
 const { forgetMigrated } = await import("../src/link/work-queue/migrate")
 const { labels } = await import("../src/link/work-queue/labels")
 const { itemOf } = await import("../src/link/work-queue/store")
@@ -93,5 +94,27 @@ test("an item a computer from before statuses hands, moves or tells is said anew
   const summary = (n: number, category: string) => ({ id: `wqi_${String(n).padStart(20, "0")}`, number: n, owner: "ses_far", title: `Far ${n}`, category, order: n, inProgress: false, sessions: [], noteCount: 0, fileCount: 0, linkCount: 0, created: { at: 1, by: { user: true } }, updated: { at: 2, by: { user: true } } })
   const told = toldOf({ id: "wqt_0123456789abcdef", at: 5, kind: "mac", items: [summary(31, "next"), summary(32, "later"), summary(33, "cat_features")], owners: [], categories: [{ id: "cat_features", name: "Features" }] }, 10)!
   expect(told.items.map(each => [each.number, each.status, each.labels, each.priority])).toEqual([[31, "todo", [], "normal"], [32, "backlog", [], "normal"], [33, "todo", ["cat_features"], "normal"]])
-  expect(told.labels).toEqual([])
+  // Its custom categories are labels here, by the names it gave them; never a primary's list to take.
+  expect(told.labels).toEqual([{ id: "cat_features", name: "Features", color: "graphite" }])
+  expect(told.beforeLabels).toBe(true)
+  expect(toldOf({ id: "wqt_0123456789abcdef", at: 5, kind: "mac", items: [], owners: [], labels: [{ id: "lbl_bug", name: "Bug", color: "coral" }] }, 10)!.beforeLabels).toBeUndefined()
+})
+
+test("where the copy can't be made, items still read (each said anew) and nothing is changed until it can", () => {
+  const kept = keep()
+  // (The folder can't be written in: a full disk does the same to the copy.)
+  fs.chmodSync(WORK_QUEUE, 0o500)
+  try {
+    expect(Object.fromEntries(allItems().map(each => [each.number, each.status]))).toEqual({ 1: "todo", 2: "backlog", 3: "backlog", 4: "done", 5: "todo", 6: "needs-you", 7: "backlog", 8: "todo" })
+    expect(() => changeQueues(book => { book.find({ number: 1 })!.title = "Changed" })).toThrow(Refusal)
+    expect(() => changeQueues(() => {})).toThrow(/couldn't be moved over to statuses on this computer .*so nothing was changed/)
+    expect(addLabel("Bug")).toEqual({ refused: expect.stringContaining("couldn't be moved over to statuses") })
+    for (const [name, text] of Object.entries(kept)) expect(fs.readFileSync(path.join(WORK_QUEUE, name), "utf8")).toBe(text)
+    expect(fs.existsSync(path.join(WORK_QUEUE, "model.json"))).toBe(false)
+  } finally {
+    fs.chmodSync(WORK_QUEUE, 0o700)
+  }
+  // Once it can: moved over as ever, by their categories' names.
+  expect(stands()).toEqual(END)
+  expect(labels().map(each => each.name)).toEqual(["Tests & tooling", "Edge cases", "Parked"])
 })

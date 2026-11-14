@@ -222,9 +222,10 @@ function takeTold(sender: MailSender, given: unknown, reply: (payload: Record<st
   const primary = primaryOf(link);
   if ("self" in primary) movePast(Math.max(told.top ?? 0, ...told.items.map(item => item.number ?? 0)));
   else if ("peer" in primary && (primary.via ? primary.via.key === sender.key && told.primary?.key === primary.peer.key : primary.peer.key === sender.key)) {
-    // (Read only when a label it no longer has is one this box might keep.)
+    // (Read only when a label it no longer has is one this box might keep. Not from a primary that
+    // still tells categories: it has no labels to take yet.)
     let counts: Map<string, number> | null = null;
-    takePrimaryLabels(told.labels, id => {
+    if (!told.beforeLabels) takePrimaryLabels(told.labels, id => {
       if (!counts) {
         counts = new Map();
         for (const item of allItems()) for (const label of item.labels) counts.set(label, (counts.get(label) ?? 0) + 1);

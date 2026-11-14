@@ -13948,6 +13948,8 @@ function migrate() {
         throw error;
     }
   }
+  if (!fs51.statSync(path54.join(BEFORE, "queues"), { throwIfNoEntry: false })?.isDirectory())
+    throw new Error(`${BEFORE} isn't the copy of what was kept`);
   const kept = jsonOf(path54.join(BEFORE, "categories.json"));
   const custom = (isObject(kept) && Array.isArray(kept.custom) ? kept.custom : []).filter((each) => isObject(each) && typeof each.id === "string" && /^cat_[a-z0-9-]{1,40}$/.test(each.id) && typeof each.name === "string");
   const names = new Map(custom.map((each) => [each.id, each.name]));
@@ -13973,15 +13975,19 @@ function migrate() {
     group.sort((a, b) => placeOf(a.category, customIDs) - placeOf(b.category, customIDs) || a.order - b.order || a.id.localeCompare(b.id));
     group.forEach((each, index) => order.set(each.id, index));
   }
-  if (!fs51.existsSync(LABELS_FILE)) {
+  {
     const used = new Set(was.flatMap((each) => Array.isArray(each.said.labels) ? each.said.labels : []));
     const made = [
       ...custom.filter((each) => used.has(each.id)).map((each) => ({ id: each.id, name: plainName(each.name).slice(0, 40) || each.id.slice(4), color: colorBefore(each.id) })),
       ...[...used].filter((id) => id !== PARKED_LABEL && !names.has(id)).sort().map((id) => ({ id, name: id.slice(4).replace(/-/g, " "), color: colorBefore(id) })),
       ...used.has(PARKED_LABEL) ? [{ id: PARKED_LABEL, name: "Parked", color: "graphite" }] : []
     ];
-    if (made.length)
-      writePrivate(LABELS_FILE, JSON.stringify({ labels: made }));
+    const kept = jsonOf(LABELS_FILE);
+    const there = isObject(kept) && Array.isArray(kept.labels) ? kept.labels : [];
+    const has = new Set(there.flatMap((each) => isObject(each) && typeof each.id === "string" ? [each.id] : []));
+    const more = made.filter((each) => !has.has(each.id));
+    if (more.length)
+      writePrivate(LABELS_FILE, JSON.stringify({ ...isObject(kept) ? kept : {}, labels: [...there, ...more] }));
   }
   for (const name of queueFiles2(QUEUES)) {
     const file = path54.join(QUEUES, name);
@@ -14015,11 +14021,12 @@ function migrateOnce() {
   }
   if (!fs51.existsSync(WORK_QUEUE))
     return;
+  fs51.accessSync(WORK_QUEUE, fs51.constants.W_OK);
   locked(LOCK10, () => {
     const again = jsonOf(MODEL_FILE);
     if (!(isObject(again) && typeof again.model === "number" && again.model >= MODEL2))
       migrate();
-  }, { stale: 60000, wait: 30000 });
+  }, { stale: 60000, wait: 1e4 });
   done = true;
 }
 
@@ -14125,6 +14132,23 @@ function itemOf(given, owner) {
     ...isObject(given.removed) && typeof given.removed.at === "number" ? { removed: { at: given.removed.at, by: whoOf(given.removed.by) ?? { user: true } } } : {}
   };
 }
+var saidUnmoved = false;
+function migratedToRead() {
+  try {
+    migrateOnce();
+  } catch (error) {
+    if (!saidUnmoved)
+      console.error(`Work Queue: its items couldn't be moved over to statuses yet (${error?.message ?? error}): shown as they are, and tried again.`);
+    saidUnmoved = true;
+  }
+}
+function migratedToChange() {
+  try {
+    migrateOnce();
+  } catch (error) {
+    throw new Refusal(`The Work Queue's items couldn't be moved over to statuses on this computer (${error?.message ?? error}), so nothing was changed. Check ${WORK_QUEUE2} (is the disk full?), then try again.`);
+  }
+}
 
 class UnreadableQueue extends Error {
   owner;
@@ -14136,7 +14160,7 @@ class UnreadableQueue extends Error {
   }
 }
 function readQueue(owner) {
-  migrateOnce();
+  migratedToRead();
   const file = fileOf2(owner);
   let text;
   try {
@@ -14193,7 +14217,7 @@ var readQueueOrNone = (owner) => {
   }
 };
 function owners() {
-  migrateOnce();
+  migratedToRead();
   return listOf(QUEUES2).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)).filter((owner) => OWNER2.test(owner));
 }
 var readAll = () => onceEach(owners().map(readQueueOrNone));
@@ -14293,7 +14317,7 @@ class Book {
 }
 function changeQueues(work, now = Date.now(), { onItsOwn = false } = {}) {
   fs52.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
-  migrateOnce();
+  migratedToChange();
   const { value, changed } = locked(LOCK11, () => {
     let book;
     try {
@@ -14403,6 +14427,13 @@ function colorFor(given) {
   return COLOR.has(wanted) ? wanted : { refused: `${String(given)} isn't a label's colour: use ${LABEL_COLORS.join(", ")}.` };
 }
 var change3 = (work) => {
+  try {
+    migratedToChange();
+  } catch (error) {
+    if (error instanceof Refusal)
+      return { refused: error.message };
+    throw error;
+  }
   const outcome = locked(LOCK12, () => {
     const kept = readKept2();
     const outcome = work(kept);
@@ -14469,7 +14500,13 @@ function removeLabel(which, strip) {
   const found = labelNamed(which);
   if (!found)
     return { refused: `There's no label ${String(which ?? "")}.` };
-  strip(found.id);
+  try {
+    strip(found.id);
+  } catch (error) {
+    if (error instanceof Refusal)
+      return { refused: error.message };
+    throw error;
+  }
   return change3((kept) => {
     const index = kept.labels.findIndex((each) => each.id === found.id);
     if (index < 0)
@@ -14597,8 +14634,9 @@ function toldOf(given, now = Date.now()) {
   const latest = Math.min(given.at, now);
   const items = given.items.slice(0, MOST_TOLD).map((each) => toldItemOf(each, latest)).filter((each) => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
   const owners = (Array.isArray(given.owners) ? given.owners : []).slice(0, MOST_TOLD).map(ownerOf2).filter((each) => each !== null);
-  const labels = (Array.isArray(given.labels) ? given.labels : []).slice(0, MOST_LABELS).map(labelOf).filter((each) => each !== null);
-  return { id: given.id, at: Math.min(given.at, now), items, owners, labels, ...numberingOf(given) };
+  const before = Array.isArray(given.labels) ? [] : Array.isArray(given.categories) ? given.categories : [];
+  const labels = [...Array.isArray(given.labels) ? given.labels : [], ...before].slice(0, MOST_LABELS).map(labelOf).filter((each) => each !== null);
+  return { id: given.id, at: Math.min(given.at, now), items, owners, labels, ...numberingOf(given), ...Array.isArray(given.labels) ? {} : { beforeLabels: true } };
 }
 function readTold3(key) {
   if (!KEY.test(key))
@@ -26174,15 +26212,16 @@ function takeTold(sender, given, reply) {
     movePast(Math.max(told.top ?? 0, ...told.items.map((item) => item.number ?? 0)));
   else if ("peer" in primary && (primary.via ? primary.via.key === sender.key && told.primary?.key === primary.peer.key : primary.peer.key === sender.key)) {
     let counts = null;
-    takePrimaryLabels(told.labels, (id) => {
-      if (!counts) {
-        counts = new Map;
-        for (const item of allItems())
-          for (const label of item.labels)
-            counts.set(label, (counts.get(label) ?? 0) + 1);
-      }
-      return counts.get(id) ?? 0;
-    });
+    if (!told.beforeLabels)
+      takePrimaryLabels(told.labels, (id) => {
+        if (!counts) {
+          counts = new Map;
+          for (const item of allItems())
+            for (const label of item.labels)
+              counts.set(label, (counts.get(label) ?? 0) + 1);
+        }
+        return counts.get(id) ?? 0;
+      });
   }
   for (const tell of queueFollowers2)
     tell();
@@ -43656,7 +43695,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "67d2d56442af";
+var BRIDGE_VERSION = "94e536aad0c2";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -51825,26 +51864,26 @@ var refused7 = (text) => ({ text, isError: true });
 var ITEM = { type: ["string", "integer"], description: "Like #243 or gh:owner/repo#12." };
 var ISSUE = { type: "string", description: "gh:owner/repo#12 or its URL." };
 var TOP = { type: "boolean", description: "At the top of its status." };
-var STATUS = { type: "string", description: "Needs you (the user must act), In review, In progress, Waiting (on something else), Todo, Backlog, Done or Canceled." };
+var STATUS = { type: "string", description: "Needs you (only the user can move it on), In review, In progress, Waiting, Todo, Backlog, Done or Canceled." };
 var PRIORITY = { type: "string", description: "Urgent, High, Normal or Low." };
-var LABELS = { type: "array", items: { type: "string" }, description: "All its labels, by name (replaces those it had; [] for none). queue_labels lists and makes them." };
-var ASSIGNEE = { type: ["string", "null"], description: "Who it's for: a bot's name or a coding agent (Claude Code, Codex…); null for no one. It doesn't hand it on: queue_hand does." };
-var DUE = { type: ["string", "null"], description: "The day it's due, YYYY-MM-DD; null for none." };
+var LABELS = { type: "array", items: { type: "string" }, description: "All its labels by name, replacing those it had ([]: none). See queue_labels." };
+var ASSIGNEE = { type: ["string", "null"], description: "Who it's for: a bot's or coding agent's name (null: no one). Doesn't hand it on." };
+var DUE = { type: ["string", "null"], description: "YYYY-MM-DD, or null." };
 var LINKS = { type: "array", items: { type: "string" }, description: "Web links (a PR, a doc)." };
 var FILES4 = { type: "array", items: { type: "string" }, description: "Full paths of files to keep with it (in the body: ![](name))." };
 var PROGRESS = { type: ["number", "null"], description: "0 to 1, where it can be counted." };
 var PROGRESS_NOTE = { type: ["string", "null"], description: "What's being done now, briefly." };
-var WORKING = { type: "boolean", description: "true: you're on it now (links you; Todo, Backlog or Waiting becomes In progress). false: you stopped (its status stays: set it)." };
+var WORKING = { type: "boolean", description: "true: you're on it now (Todo, Backlog or Waiting becomes In progress). false: you stopped (set its status)." };
 var NAMES2 = { type: "array", items: { type: "string" } };
 var QUEUE_TOOLS = [
   {
     name: "queue_list",
-    description: "List your Work Queue (and those of sessions you oversee) by status. Open items only, unless done is true.",
+    description: "List your Work Queue (and those of sessions you oversee) by status: open items, unless done.",
     inputSchema: { type: "object", properties: {
-      status: { type: "string", description: "Only this status." },
-      label: { type: "string", description: "Only items with this label." },
+      status: { type: "string", description: "Only this one." },
+      label: { type: "string", description: "Only with this label." },
       query: { type: "string", description: "Words in the title, description or notes." },
-      done: { type: "boolean", description: "Include Done and Canceled ones." }
+      done: { type: "boolean", description: "Done and Canceled too." }
     }, additionalProperties: false }
   },
   {
@@ -51854,7 +51893,7 @@ var QUEUE_TOOLS = [
   },
   {
     name: "queue_add",
-    description: "Add an item to your Work Queue (Todo, Normal priority, no labels, unless you say); you get its number. With issue, it's that GitHub issue or PR (no title).",
+    description: "Add an item to your Work Queue (Todo and Normal unless you say); you get its number. With issue, it's that GitHub issue or PR (no title).",
     inputSchema: { type: "object", properties: {
       title: { type: "string", description: "One short line." },
       issue: ISSUE,
@@ -51874,7 +51913,7 @@ var QUEUE_TOOLS = [
   },
   {
     name: "queue_update",
-    description: "Change an item of yours (or of a session you oversee); only what you give changes. note adds a note; issue makes it that GitHub issue or PR.",
+    description: "Change an item of yours (or of a session you oversee): only what you give. note adds a note; issue makes it that GitHub issue or PR.",
     inputSchema: { type: "object", properties: {
       item: ITEM,
       issue: { type: "string" },
@@ -51886,8 +51925,8 @@ var QUEUE_TOOLS = [
       assignee: ASSIGNEE,
       due: DUE,
       top: TOP,
-      before: { type: ["string", "integer"], description: "Just before this item (same status)." },
-      after: { type: ["string", "integer"], description: "Just after this item (same status)." },
+      before: { type: ["string", "integer"], description: "Just before this item." },
+      after: { type: ["string", "integer"], description: "Just after this item." },
       progress: PROGRESS,
       progress_note: PROGRESS_NOTE,
       note: { type: "string" },
@@ -51909,19 +51948,19 @@ var QUEUE_TOOLS = [
   },
   {
     name: "queue_remove",
-    description: "Delete an item (the user can restore it for 30 days); undo restores one an agent deleted. For work that won't be done, set status Canceled instead.",
+    description: "Delete an item (the user can restore it for 30 days); undo restores one an agent deleted. Work that won't be done is status Canceled, not a delete.",
     inputSchema: { type: "object", properties: { item: ITEM, undo: { type: "boolean" } }, required: ["item"], additionalProperties: false }
   },
   {
     name: "queue_labels",
-    description: "List the labels (what kind of work an item is; one set for every queue), or change one thing: add makes one, rename or recolor changes one, remove deletes one and takes it off every item. Change them only as the user asked.",
+    description: "List the labels (kinds of work; one set for every queue), or make one change the user asked for: add a label, rename one (with to), recolor one (with color), or remove one (it comes off every item).",
     inputSchema: { type: "object", properties: {
-      add: { type: "string", description: "A new label's name." },
-      rename: { type: "string", description: "The label to rename (with to)." },
-      to: { type: "string", description: "Its new name." },
-      recolor: { type: "string", description: "The label to recolour (with color)." },
+      add: { type: "string" },
+      rename: { type: "string" },
+      to: { type: "string" },
+      recolor: { type: "string" },
       color: { type: "string", description: "coral, orange, amber, lime, mint, sky, indigo, violet, pink or graphite." },
-      remove: { type: "string", description: "The label to remove." }
+      remove: { type: "string" }
     }, additionalProperties: false }
   },
   {
@@ -51940,7 +51979,7 @@ var QUEUE_TOOLS = [
   }
 ];
 var QUEUE_TOOL_NAMES = QUEUE_TOOLS.map((tool) => tool.name);
-var QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then status: Done (In review while it waits for a review, Needs you when only the user can move it on).";
+var QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then status: Done (In review while it's reviewed, Needs you when only the user can move it on).";
 var why4 = (error) => String(error?.message ?? error);
 var placesOf2 = (folder) => ({ own: folder ?? null, others: folder ? readProjects().find((each) => each.directory === folder)?.folders ?? [] : [] });
 async function groupLivesHere(group, readBridge) {

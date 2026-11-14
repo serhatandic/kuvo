@@ -67,14 +67,18 @@ const carried = {
 // (The Work Queue's eight tools and their line, #243, came to about 1,250 tokens once trimmed from
 // 2,130: what every agent kind carries now to keep work items in the queue, not a file. #393's
 // GitHub items added ~220 to them, and #553 ~50 to what a bot is told, past six budgets; #579
-// trimmed both back.)
+// trimmed both back. #674's statuses, priorities, labels, assignees and due days, in place of
+// categories, cost 418 once their words were trimmed: 399 in the tools' schemas (status, priority,
+// labels, assignee and due on queue_add and queue_update, queue_list's status, label and query,
+// queue_labels' colours) and 19 in their line. The five kinds that carry the schemas are 420
+// higher for it; a Claude Code bot carries only the names and the line, and stays.)
 const budget: Record<keyof typeof carried, number> = {
-  "an engine session": 2_950,
-  "an engine session on Autopilot": 3_200,
-  "an engine bot": 5_400,
+  "an engine session": 3_370,
+  "an engine session on Autopilot": 3_620,
+  "an engine bot": 5_820,
   "a Claude Code bot": 2_650,
-  "a Codex bot": 4_600,
-  "a Cursor, Grok or Antigravity bot": 4_550,
+  "a Codex bot": 5_020,
+  "a Cursor, Grok or Antigravity bot": 4_970,
   "a bot's seat in a group chat": 650,
 }
 

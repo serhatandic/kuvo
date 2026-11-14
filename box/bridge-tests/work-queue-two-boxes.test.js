@@ -191,7 +191,7 @@ test("an item kept on a machine takes its number from this Mac and shows in this
   assert.match(own.text, /^Added #1 "Ship the release"/);
 
   // An agent on lab keeps one there (as its tool leaves it), with no number yet: lab asks this Mac.
-  write(path.join(machineHome, "run", "work-queue", "queues", "ses_far.json"), { owner: "ses_far", items: [{ id: "wqi_labitemlabitemlabi01", owner: "ses_far", title: "Port the importer", body: "", category: "next", order: 0, notes: [], files: [], links: [], sessions: [], created: { at: Date.now(), by: { session: "ses_far", name: "Importer" } }, updated: { at: Date.now(), by: { session: "ses_far", name: "Importer" } } }] });
+  write(path.join(machineHome, "run", "work-queue", "queues", "ses_far.json"), { owner: "ses_far", items: [{ id: "wqi_labitemlabitemlabi01", owner: "ses_far", title: "Port the importer", body: "", status: "todo", order: 0, labels: [], notes: [], files: [], links: [], sessions: [], created: { at: Date.now(), by: { session: "ses_far", name: "Importer" } }, updated: { at: Date.now(), by: { session: "ses_far", name: "Importer" } } }] });
   const numbered = await eventually(() => labQueue("ses_far")[0]?.number);
   assert.ok(numbered > 1, `#${numbered}: from a block this Mac gave, past its own`);
 
