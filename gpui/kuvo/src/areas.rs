@@ -400,6 +400,8 @@ impl AreaView {
         let dot = match computer.reach.as_str() {
             "connected" => c.success,
             "connecting" => c.warning,
+            // Known by another computer's word alone: this box can't say whether it's reached.
+            "unknown" => c.text_faint,
             _ => c.danger,
         };
         let (hover, selected_bg) = (c.hover, c.selected_card);
@@ -462,7 +464,7 @@ fn computer_key(computer: &Computer) -> String {
 }
 
 /// A computer's line under its name, from the box's facts: the one this window shows says so; one
-/// that isn't reached says that; else its system, or Kuvo Code's version there, as it said them.
+/// that isn't reached says that, one the box only knows of through another says through which; else its system, or Kuvo Code's version there, as it said them.
 pub fn computer_line(computer: &Computer) -> String {
     if computer.here {
         return "Shown in this window".into();
@@ -470,6 +472,8 @@ pub fn computer_line(computer: &Computer) -> String {
     match computer.reach.as_str() {
         "connected" => computer.system.clone().or_else(|| computer.version.as_ref().map(|version| format!("Kuvo Code {version}"))).unwrap_or_else(|| "Connected".into()),
         "connecting" => "Connecting…".into(),
+        // The box knows it only by another computer's word (`via: peer`): it says who, never that it's away.
+        "unknown" => computer.through.as_ref().map(|through| format!("Known through {through}")).unwrap_or_else(|| "Known through another computer".into()),
         _ => "Can’t be reached".into(),
     }
 }
@@ -602,8 +606,20 @@ pub fn views(client: &BoxClient, live: bool, cx: &mut App) -> Vec<(Area, gpui::E
 
 #[cfg(test)]
 mod tests {
-    use super::doing;
+    use super::{computer_line, doing};
     use kuvo_box::areas::BotNow;
+
+    /// A computer's line says what the box says of it: one it only knows of through another is
+    /// never said to be away.
+    #[test]
+    fn a_computers_line_says_how_the_box_reaches_it() {
+        let computer = |json: &str| serde_json::from_str::<kuvo_box::areas::Computer>(json).unwrap();
+        let line = |json: &str| computer_line(&computer(json));
+        assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","shared":false,"reach":"connected","system":"Ubuntu 24.04.1 LTS","via":"relay","working":0,"limits":[]}"#), "Ubuntu 24.04.1 LTS");
+        assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","shared":false,"reach":"connecting","via":"relay","working":0,"limits":[]}"#), "Connecting…");
+        assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","shared":false,"reach":"away","via":"relay","working":0,"limits":[]}"#), "Can’t be reached");
+        assert_eq!(line(r#"{"key":"b","name":"Studio","kind":"mac","shared":false,"reach":"unknown","via":"peer","through":"devbox","working":0,"limits":[]}"#), "Known through devbox");
+    }
 
     #[test]
     fn a_bot_says_what_its_doing_from_the_boxs_facts() {

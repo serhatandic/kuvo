@@ -132,7 +132,7 @@ pub struct Computer {
     /// A machine Macs of different setups share.
     #[serde(default)]
     pub shared: bool,
-    /// `connected`, `connecting` or `away`.
+    /// `connected`, `connecting`, `away`, or `unknown` (known by another computer's word alone).
     #[serde(default)]
     pub reach: String,
     /// Kuvo Code's version there, its engine's, and its system as people know it ("macOS 15.1").
@@ -484,12 +484,12 @@ mod tests {
         assert_eq!((counts.in_progress, counts.categories["next"], counts.sources["github"], counts.computers["k1"], counts.removed), (2, 6, 3, 4, 1));
         let said: Computers = serde_json::from_str(
             r#"{"computers":[{"key":"","name":"Studio","kind":"mac","here":true,"shared":false,"reach":"connected","version":"1.0.0","engine":"2.3.0","system":"macOS 15.1","via":"here","working":2,"limits":["claude"]},
-                {"key":"k1","name":"devbox","kind":"machine","id":"devbox","shared":true,"reach":"away","via":"peer","through":"Studio","working":0,"limits":[]},
+                {"key":"k1","name":"devbox","kind":"machine","id":"devbox","shared":true,"reach":"unknown","via":"peer","through":"Studio","working":0,"limits":[]},
                 {"key":"k2"}]}"#,
         )
         .unwrap();
         assert_eq!(said.computers.len(), 2, "one in a shape this can't read is left out");
         assert!(said.computers[0].here && said.computers[0].is_mac());
-        assert_eq!((said.computers[1].shared, said.computers[1].reach.as_str(), said.computers[1].through.as_deref()), (true, "away", Some("Studio")));
+        assert_eq!((said.computers[1].shared, said.computers[1].reach.as_str(), said.computers[1].through.as_deref()), (true, "unknown", Some("Studio")));
     }
 }
