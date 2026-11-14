@@ -3,7 +3,8 @@ import Foundation
 /// A computer's plan limits, as its box states them (`kuvo/agents/api/kuvo/limits`, KuvoLink's
 /// PROTOCOL.md "Plan limits"): one row per account signed in to Kuvo Code there, each coding agent's
 /// and each of the engine's, with its windows. What both apps show of them is worked out here:
-/// each row's name, the windows still current, the one closest to its limit, and as of when.
+/// each row's name, the windows still current, and as of when. How close a window is to its limit
+/// (`level`) and which two an account's rings are of (`rings`) are the box's word.
 public struct BoxLimits: Decodable, Hashable, Sendable {
     /// This box's own accounts.
     public var accounts: [LimitsAccount]
@@ -88,6 +89,46 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
     /// Every computer it's on hasn't been heard from for a while: its numbers are as last told,
     /// never live.
     public var away = false
+    /// The two circles a client draws for the account, as its box picks them (a row's alone,
+    /// `limits.rings`): the shortest window under a day and the longest of a day or more. Nil
+    /// outside a row; none in it for a plan with no windows.
+    public var rings: Rings?
+
+    /// One of an account's rings: the window it's of (by its `id`), how much of it is gone, when it
+    /// resets, and how close it is to its limit in the box's word.
+    public struct Ring: Decodable, Hashable, Sendable {
+        public var window: String
+        public var used: Double
+        public var resetsAt: Date?
+        public var level: LimitsLevel?
+
+        public init(window: String, used: Double, resetsAt: Date? = nil, level: LimitsLevel? = nil) {
+            self.window = window
+            self.used = used
+            self.resetsAt = resetsAt
+            self.level = level
+        }
+
+        private enum CodingKeys: String, CodingKey { case window, used, resetsAt, level }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            window = try container.decode(String.self, forKey: .window)
+            used = try container.decode(Double.self, forKey: .used)
+            resetsAt = try container.decodeIfPresent(Double.self, forKey: .resetsAt).map(Date.init(milliseconds:))
+            level = try? container.decodeIfPresent(LimitsLevel.self, forKey: .level)
+        }
+    }
+
+    public struct Rings: Decodable, Hashable, Sendable {
+        public var short: Ring?
+        public var long: Ring?
+
+        public init(short: Ring? = nil, long: Ring? = nil) {
+            self.short = short
+            self.long = long
+        }
+    }
 
     /// A computer an account is signed in on, as a box's row says.
     public struct Computer: Decodable, Hashable, Sendable {
@@ -282,7 +323,7 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
         self.problem = problem
     }
 
-    private enum CodingKeys: String, CodingKey { case provider, service, agent, account, label, identity, plan, windows, balance, extras, agentsReset, checked, next, problem, id, boxes, away }
+    private enum CodingKeys: String, CodingKey { case provider, service, agent, account, label, identity, plan, windows, balance, extras, agentsReset, checked, next, problem, id, boxes, away, rings }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -304,6 +345,7 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
         rowID = try? container.decodeIfPresent(String.self, forKey: .id)
         boxes = (try? container.decodeIfPresent(Readable<Computer>.self, forKey: .boxes))?.items ?? []
         away = (try? container.decodeIfPresent(Bool.self, forKey: .away)) ?? false
+        rings = try? container.decodeIfPresent(Rings.self, forKey: .rings)
     }
 
     /// Its row's name: "Claude", "Claude · Work" for one you added, "Copilot" for the engine's.
@@ -332,9 +374,23 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
         windows.filter { ($0.resetsAt ?? .distantFuture) > now }
     }
 
-    /// The window with the least left, as the bar shows it.
-    public func tightest(at now: Date) -> LimitsWindow? {
-        windows(at: now).max { $0.used < $1.used }
+    /// Its rings as a client draws them at `now`, the short one first: one whose reset has passed
+    /// is empty, in its place.
+    public func rings(at now: Date) -> [Ring] {
+        [rings?.short, rings?.long].compactMap { $0 }.map { ring in
+            (ring.resetsAt ?? .distantFuture) > now ? ring : Ring(window: ring.window, used: 0, resetsAt: ring.resetsAt, level: .calm)
+        }
+    }
+
+    /// The one of its rings a client with room for a single bar draws: the fuller of the two its box
+    /// picked (the short one where they're as full). None for a plan with no rings.
+    public func ring(at now: Date) -> Ring? {
+        rings(at: now).reduce(nil) { shown, ring in shown.map { ring.used > $0.used ? ring : $0 } ?? ring }
+    }
+
+    /// How close the account is to a limit, in the box's word: its rings' nearer one.
+    public func level(at now: Date) -> LimitsLevel? {
+        rings(at: now).compactMap(\.level).max()
     }
 
     /// When it was last heard of or read: its "as of" (a turn tells one window, the rest stay as read).
@@ -349,6 +405,18 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
     /// Read long ago, or every computer it's on is away (its numbers aren't live, however new).
     public func isOutdated(now: Date) -> Bool {
         away || (readAt(now: now).map { now.timeIntervalSince($0) > Self.outdatedAfter } ?? false)
+    }
+}
+
+/// How close a window is to its limit, in the box's word (`limits.rings`), the same in every
+/// client: a client colours by it and keeps no threshold of its own. In order, so the nearest of
+/// several is their greatest.
+public enum LimitsLevel: String, Decodable, Hashable, Sendable, Comparable {
+    case calm, near, over
+
+    public static func < (one: LimitsLevel, other: LimitsLevel) -> Bool {
+        let order: [LimitsLevel] = [.calm, .near, .over]
+        return (order.firstIndex(of: one) ?? 0) < (order.firstIndex(of: other) ?? 0)
     }
 }
 
@@ -368,6 +436,11 @@ public struct LimitsWindow: Decodable, Hashable, Sendable, Identifiable {
     public var read: Date
     /// `usage` (read from its maker) or `turn` (heard in a turn).
     public var source: String
+    /// How close it is to its limit, as its box says (a row's window; nil elsewhere, and for a
+    /// word a newer box says).
+    public var level: LimitsLevel?
+    /// Which of its account's rings it is, `short` or `long`, where it's one.
+    public var span: String?
 
     public struct Amount: Decodable, Hashable, Sendable {
         public var used: Double
@@ -376,7 +449,7 @@ public struct LimitsWindow: Decodable, Hashable, Sendable, Identifiable {
         public var unit: String
     }
 
-    private enum CodingKeys: String, CodingKey { case id, used, resetsAt, minutes, model, name, amount, read, source }
+    private enum CodingKeys: String, CodingKey { case id, used, resetsAt, minutes, model, name, amount, read, source, level, span }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -389,6 +462,8 @@ public struct LimitsWindow: Decodable, Hashable, Sendable, Identifiable {
         amount = try? container.decodeIfPresent(Amount.self, forKey: .amount)
         read = Date(milliseconds: try container.decode(Double.self, forKey: .read))
         source = try container.decodeIfPresent(String.self, forKey: .source) ?? "usage"
+        level = try? container.decodeIfPresent(LimitsLevel.self, forKey: .level)
+        span = try? container.decodeIfPresent(String.self, forKey: .span)
     }
 
     public init(id: String, used: Double, resetsAt: Date? = nil, minutes: Int? = nil, model: String? = nil, name: String? = nil, amount: Amount? = nil, read: Date, source: String = "usage") {

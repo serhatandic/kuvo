@@ -52,6 +52,26 @@ struct SignInMethodsTests {
         #expect(SignInAccounts.path(agents: true) == "kuvo/sign-in/accounts?agents=1")
     }
 
+    /// Which accounts Accounts lists, and each one's mark, are the box's word (`listed`, `service`):
+    /// as it's recorded for a provider, a web search service, an MCP server's sign-in and the
+    /// engine's Claude Agent, signed in and not. No client keeps the rule.
+    @Test func whichAccountsAreListedAndTheirMarksAreTheBoxsWord() throws {
+        let cases = try #require(try Self.vectors()["accounts"] as? [[String: Any]])
+        #expect(cases.count >= 6)
+        for each in cases {
+            let id = try #require((each["account"] as? [String: Any])?["id"] as? String)
+            var said: [String: Any] = ["id": id, "methods": [Any](), "environment": [Any](), "hint": "Connect", "kind": each["kind"]!, "listed": each["listed"]!]
+            if let service = each["service"] { said["service"] = service }
+            let read = try JSONDecoder().decode(SignInAccounts.self, from: JSONSerialization.data(withJSONObject: ["accounts": [said]]))
+            #expect(read.lists(id) == (each["listed"] as? Bool), "\(each["about"]!)")
+            #expect(read.services[id] == each["service"] as? String, "\(each["about"]!)")
+        }
+        // One its box didn't name, or said nothing of listing (none does now: the update gate), isn't listed.
+        let bare = try JSONDecoder().decode(SignInAccounts.self, from: Data(#"{"accounts":[{"id":"acme","methods":[],"environment":[],"hint":"Connect"}]}"#.utf8))
+        #expect(!bare.lists("acme") && !bare.lists("mistral"))
+        #expect(!SignInAccounts.none.lists("anthropic"))
+    }
+
     @Test func aFailedSignInsWordsComeWithItsStatus() throws {
         let json = #"{"status":"failed","message":"access_denied","failure":"The sign-in was turned down on its page. Try again to sign in."}"#
         let status = try JSONDecoder().decode(SignInStatus.self, from: Data(json.utf8))

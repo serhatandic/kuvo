@@ -45,13 +45,50 @@ struct PlanLimitsTests {
         let limits = try BoxLimits.decode(Data(answer.utf8))
         // Work's session reset after it was read: what's used now isn't known.
         #expect(limits.accounts[1].windows(at: now).isEmpty)
-        #expect(limits.accounts[1].tightest(at: now) == nil)
         #expect(limits.accounts[1].problem?.kind == "rate-limited")
-        #expect(limits.accounts[0].tightest(at: now)?.id == "five_hour")
+        #expect(limits.accounts[0].windows(at: now).map(\.id).first == "five_hour")
         // As of when it was last heard of; out of date once that's over half an hour.
         #expect(limits.accounts[0].readAt(now: now) == Date(timeIntervalSince1970: 1_794_160_000))
         #expect(!limits.accounts[0].isOutdated(now: Date(timeIntervalSince1970: 1_794_161_000)))
         #expect(limits.accounts[0].isOutdated(now: Date(timeIntervalSince1970: 1_794_162_000)))
+    }
+
+    // How close each window is to its limit, and which two an account's rings are of, are the
+    // box's word (`limits.rings`): a client draws them and keeps no threshold of its own.
+    @Test func ringsAndLevelsAreTheBoxsWord() throws {
+        let row = """
+        {"data": {"services": ["claude"], "accounts": [], "rows": [
+          {"id": "claude#a1", "provider": "claude-code", "service": "claude", "agent": "claude", "boxes": [],
+           "windows": [
+             {"id": "five_hour", "used": 0.42, "minutes": 300, "resetsAt": 1794180000000, "read": 1794160000000, "level": "calm", "span": "short"},
+             {"id": "seven_day", "used": 0.93, "minutes": 10080, "resetsAt": 1794600000000, "read": 1794150000000, "level": "over", "span": "long"},
+             {"id": "seven_day_fable", "used": 0.75, "minutes": 10080, "model": "Fable", "resetsAt": 1794600000000, "read": 1794150000000, "level": "near"}
+           ],
+           "rings": {"short": {"window": "five_hour", "used": 0.42, "resetsAt": 1794180000000, "level": "calm"},
+                     "long": {"window": "seven_day", "used": 0.93, "resetsAt": 1794600000000, "level": "over"}}},
+          {"id": "openrouter#b2", "provider": "openrouter", "service": "openrouter", "boxes": [], "windows": [], "balance": {"left": 12.5, "unit": "usd"}, "rings": {}},
+          {"id": "codex#c3", "provider": "codex-cli", "service": "codex", "agent": "codex", "boxes": [],
+           "windows": [{"id": "primary", "used": 0.2, "minutes": 300, "resetsAt": 1794180000000, "read": 1794160000000, "level": "later", "span": "short"}],
+           "rings": {"short": {"window": "primary", "used": 0.2, "resetsAt": 1794180000000, "level": "later"}}}
+        ]}}
+        """
+        let rows = try #require(try BoxLimits.decode(Data(row.utf8)).rows)
+        #expect(rows[0].windows.map(\.level) == [.calm, .over, .near])
+        #expect(rows[0].windows.map(\.span) == ["short", "long", nil])
+        #expect(rows[0].rings(at: now).map(\.window) == ["five_hour", "seven_day"])
+        // With room for one bar: the fuller of the two the box picked, and the account as near
+        // its limit as the nearer of them.
+        #expect(rows[0].ring(at: now)?.window == "seven_day")
+        #expect(rows[0].level(at: now) == .over)
+        // A ring whose reset has passed is drawn empty, in its place.
+        let later = Date(timeIntervalSince1970: 1_794_200_000)
+        #expect(rows[0].rings(at: later).map(\.used) == [0, 0.93])
+        #expect(rows[0].rings(at: later).map(\.level) == [.calm, .over])
+        // A plan with no windows has no rings, and no level.
+        #expect(rows[1].rings(at: now).isEmpty && rows[1].ring(at: now) == nil && rows[1].level(at: now) == nil)
+        // A word a newer box says for a level reads as none: its ring still shows.
+        #expect(rows[2].ring(at: now)?.window == "primary" && rows[2].level(at: now) == nil)
+        #expect(LimitsLevel.calm < .near && LimitsLevel.near < .over)
     }
 
     @Test func theEventCarriesTheAccountsAlone() throws {
@@ -104,7 +141,7 @@ struct PlanLimitsTests {
             .init(key: "mini", name: "mini-local", accounts: try box(claude("a1b2c3d4e5f60718", used: 0.45, read: 1_794_162_000))),
         ])
         #expect(rows.map(\.account.title) == ["Claude"])
-        #expect(rows[0].account.tightest(at: now)?.used == 0.53)
+        #expect(rows[0].account.windows(at: now).map(\.used).max() == 0.53)
         #expect(rows[0].account.readAt(now: now) == Date(timeIntervalSince1970: 1_794_164_000))
         #expect(rows[0].sources.map(\.box) == ["mac", "hetzner", "mini"])
     }
@@ -157,7 +194,7 @@ struct PlanLimitsTests {
             ].joined(separator: ","))),
         ])
         #expect(rows.map(\.account.title) == ["Claude", "Claude · Athas"])
-        #expect(rows.map { $0.account.tightest(at: now)?.used } == [0.5, 0.9])
+        #expect(rows.map { $0.account.windows(at: now).map(\.used).max() } == [0.5, 0.9])
     }
 
     @Test func aBoxThatDoesntSayWhoAnAccountIsStillShowsIt() throws {
@@ -280,7 +317,7 @@ struct PlanLimitsTests {
         #expect(listed == ["Claude +claude on here,lokum", "Claude · hetzner on hetzner"])
         let first = UsageListing.accounts(rows: rows)[0]
         #expect(first.id == "claude#aaaaaaaaaaaaaaaa")
-        #expect(first.account.tightest(at: now)?.used == 0.53)
+        #expect(first.account.windows(at: now).map(\.used).max() == 0.53)
         #expect(first.sources.map(\.box) == ["", "klokum"])
     }
 

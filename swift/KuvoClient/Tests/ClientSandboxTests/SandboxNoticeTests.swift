@@ -9,42 +9,46 @@ struct SandboxNoticeTests {
         try JSONDecoder().decode(SandboxState.self, from: Data(json.utf8))
     }
 
-    @Test func onIsAQuietLineAndAnythingElseSaysWhyWithItsFix() throws {
+    // Not on: the row is the box's own sentence (`why`) and its button's words (`actionLabel`),
+    // whatever the reason. No client keeps words for a reason.
+    @Test func onIsAQuietLineAndAnythingElseSaysTheBoxsWordsWithItsButton() throws {
         let on = try state(#"{"on": true, "able": true, "agents": false}"#).notice
         #expect(on.look == .on && on.title == nil && on.buttons.isEmpty)
 
-        let failed = try state(#"{"on": false, "reason": "checkFailed", "check": "readsOwn", "action": "retry", "route": "kuvo/sandbox/check", "failures": 1}"#).notice
+        let failed = try state(#"{"on": false, "reason": "checkFailed", "check": "readsOwn", "why": "Its check found that a command could still read Kuvo Code's files.", "action": "retry", "actionLabel": "Try Again", "route": "POST kuvo/sandbox/check", "failures": 1}"#).notice
         #expect(failed.look == .needsYou)
-        #expect(failed.title == "The sandbox’s check failed")
-        #expect(failed.detail.contains("could still read Kuvo Code’s files"))
-        #expect(failed.buttons.map(\.title) == ["Try Again"])
-        let again = try state(#"{"on": false, "reason": "checkFailed", "check": "writesOwn", "failures": 3}"#).notice
-        #expect(again.title == "The sandbox’s check failed again")
+        #expect(failed.title == "The sandbox isn’t on")
+        #expect(failed.detail == "Its check found that a command could still read Kuvo Code's files.")
+        #expect(failed.buttons == [.init(title: "Try Again", action: .check)])
+        let again = try state(#"{"on": false, "reason": "checkFailed", "check": "writesOwn", "why": "Its check failed.", "action": "retry", "actionLabel": "Try Again", "route": "POST kuvo/sandbox/check", "failures": 3}"#).notice
         #expect(again.buttons.map(\.action) == [.check, .report], "Report a Problem joins once it fails again")
-        // A Linux machine's check that found a command could reach your login's services.
-        #expect(try state(#"{"on": false, "reason": "checkFailed", "check": "services", "failures": 1}"#).notice.detail.contains("could still reach your login’s services"))
 
-        #expect(try state(#"{"on": false, "reason": "plugin", "action": "fix"}"#).notice.buttons == [.init(title: "Fix It", action: .check)])
-        #expect(try state(#"{"on": false, "reason": "waiting", "action": "restartEngine"}"#).notice.buttons == [.init(title: "Restart Engine…", action: .restartEngine(asking: true))])
-        #expect(try state(#"{"on": false, "reason": "engineDown", "action": "restartEngine"}"#).notice.buttons == [.init(title: "Restart Engine", action: .restartEngine(asking: false))])
-        let checking = try state(#"{"on": false, "reason": "checking"}"#).notice
-        #expect(checking.look == .checking && checking.buttons.isEmpty)
+        // The button's words are the box's, and an ellipsis says a client asks first.
+        #expect(try state(#"{"on": false, "reason": "plugin", "why": "Its plugin for the engine was changed or removed.", "action": "fix", "actionLabel": "Fix It", "route": "POST kuvo/sandbox/check"}"#).notice.buttons == [.init(title: "Fix It", action: .check)])
+        #expect(try state(#"{"on": false, "reason": "engineMissing", "why": "The engine isn't installed here yet.", "action": "retry", "actionLabel": "Check Again", "route": "POST kuvo/sandbox/check"}"#).notice.buttons == [.init(title: "Check Again", action: .check)])
+        #expect(try state(#"{"on": false, "reason": "waiting", "why": "Waiting for the engine to load it.", "action": "restartEngine", "actionLabel": "Restart Engine…", "route": "POST kuvo/engine/restart"}"#).notice.buttons
+                == [.init(title: "Restart Engine…", action: .restartEngine(asking: true))])
+        #expect(try state(#"{"on": false, "reason": "engineDown", "why": "The engine isn't running.", "action": "restartEngine", "actionLabel": "Restart Engine", "route": "POST kuvo/engine/restart"}"#).notice.buttons
+                == [.init(title: "Restart Engine", action: .restartEngine(asking: false))])
+        // Being checked: a quiet line, in the box's words.
+        let checking = try state(#"{"on": false, "reason": "checking", "why": "It's being checked.", "action": "retry", "actionLabel": "Try Again", "route": "POST kuvo/sandbox/check"}"#).notice
+        #expect(checking.look == .checking && checking.detail == "It's being checked." && checking.buttons.isEmpty)
+        // No words for a button: none is drawn.
+        #expect(try state(#"{"on": false, "reason": "plugin", "why": "Changed.", "action": "fix", "route": "POST kuvo/sandbox/check"}"#).notice.buttons.isEmpty)
     }
 
-    @Test func aComputerThatCantHaveItSaysWhatItNeeds() throws {
-        let linux = try state(#"{"on": false, "able": false, "reason": "kernel", "action": "help", "needs": "Linux 5.13", "why": "Linux 5.10 can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on)."}"#).notice
-        #expect(linux.title == "Linux 5.10 can’t sandbox commands")
-        #expect(linux.detail.contains("Linux 5.13 or later"))
-        #expect(linux.buttons.map(\.action) == [.help])
-        #expect(try state(#"{"on": false, "able": false, "reason": "macos", "action": "softwareUpdate"}"#).notice.buttons.map(\.action) == [.softwareUpdate])
-        // A Linux machine whose commands can't have a namespace of their own, from a box that
-        // doesn't run without one.
-        let namespaces = try state(#"{"on": false, "able": false, "reason": "namespaces", "action": "help", "needs": "user namespaces", "why": "This machine doesn't let commands have a namespace of their own."}"#)
-        #expect(namespaces.reason == .namespaces)
-        #expect(namespaces.notice.title == "This machine can’t sandbox commands")
-        #expect(namespaces.notice.detail.contains("until it allows user namespaces"))
-        #expect(namespaces.notice.buttons.map(\.action) == [.help])
-        #expect(try state(#"{"on": false, "able": false, "reason": "namespaces", "action": "help", "needs": "util-linux"}"#).notice.detail.contains("until it has util-linux"))
+    // A button with no route opens what the box names (`opens`): a web page from anywhere; an
+    // address that's that computer's own (`opensHere`) is marked so, for only an app on it to draw.
+    @Test func aComputerThatCantHaveItSaysWhyAndWhereToLook() throws {
+        let linux = try state(#"{"on": false, "able": false, "reason": "kernel", "action": "help", "actionLabel": "How to Check…", "opens": "https://www.kuvo.run/code/docs/machines/#sandbox", "needs": "Linux 5.13", "why": "Linux 5.10 can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on)."}"#).notice
+        #expect(linux.detail == "Linux 5.10 can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on).")
+        #expect(linux.buttons == [.init(title: "How to Check…", action: .help, opens: URL(string: "https://www.kuvo.run/code/docs/machines/#sandbox"))])
+        let mac = try state(#"{"on": false, "able": false, "reason": "macos", "why": "macOS's sandbox isn't on this Mac.", "action": "softwareUpdate", "actionLabel": "Software Update…", "opens": "x-apple.systempreferences:com.apple.Software-Update-Settings.extension", "opensHere": true}"#).notice
+        #expect(mac.buttons.map(\.action) == [.softwareUpdate])
+        #expect(mac.buttons.first?.opensHere == true)
+        // Never anything but a web page at another computer's word, nor a button with nowhere to go.
+        #expect(try state(#"{"on": false, "reason": "kernel", "why": "Too old.", "action": "help", "actionLabel": "How to Check…", "opens": "file:///etc/passwd"}"#).notice.buttons.isEmpty)
+        #expect(try state(#"{"on": false, "reason": "kernel", "why": "Too old.", "action": "help", "actionLabel": "How to Check…"}"#).notice.buttons.isEmpty)
     }
 
     @Test func aMachineWhereItCantKeepCommandsFromYourServicesSaysSo() throws {
@@ -53,21 +57,21 @@ struct SandboxNoticeTests {
         #expect(without.look == .needsYou, "not the green line that says all's well")
         #expect(without.title == "Commands can still reach your login’s services")
         #expect(without.detail.contains("Until it allows user namespaces, agents don’t use your vault here and goals don’t run on their own"))
-        #expect(without.buttons.map(\.action) == [.help])
+        #expect(without.buttons == [.init(title: "How to Check…", action: .help, opens: SandboxNotice.machinesHelp)])
         #expect(try state(#"{"on": true, "able": true, "agents": true, "gaps": ["services"], "needs": "util-linux"}"#).notice.detail.contains("Until it has util-linux"))
         // A gap a newer box adds reads as none.
         #expect(try state(#"{"on": true, "able": true, "agents": true, "gaps": ["later"]}"#).notice.detail.contains("can’t read your keys"))
     }
 
     @Test func aReasonFromANewerBoxShowsItsOwnWords() throws {
-        let newer = try state(#"{"on": false, "reason": "somethingNew", "why": "Its new part isn't ready.", "route": "kuvo/sandbox/check"}"#).notice
+        let newer = try state(#"{"on": false, "reason": "somethingNew", "why": "Its new part isn't ready.", "action": "somethingElse", "actionLabel": "Make It Ready", "route": "POST kuvo/sandbox/check"}"#).notice
         #expect(newer.look == .needsYou)
         #expect(newer.detail == "Its new part isn't ready.")
-        #expect(newer.buttons.map(\.action) == [.check])
-        // Its button does what the route it names does, or there's none.
-        let restarts = try state(#"{"on": false, "reason": "somethingNew", "route": "POST kuvo/engine/restart"}"#).notice
-        #expect(restarts.buttons.map(\.action) == [.restartEngine(asking: true)])
-        let unknown = try state(#"{"on": false, "reason": "somethingNew", "route": "POST kuvo/sandbox/somethingElse"}"#).notice
+        // An action it doesn't know either: its words, where it sends the check's route.
+        #expect(newer.buttons == [.init(title: "Make It Ready", action: .check)])
+        let known = try state(#"{"on": false, "reason": "somethingNew", "why": "Its new part isn't ready.", "action": "restartEngine", "actionLabel": "Restart Engine…", "route": "POST kuvo/engine/restart"}"#).notice
+        #expect(known.buttons.map(\.action) == [.restartEngine(asking: true)])
+        let unknown = try state(#"{"on": false, "reason": "somethingNew", "why": "Its new part isn't ready.", "action": "somethingElse", "actionLabel": "Do It", "route": "POST kuvo/sandbox/somethingElse"}"#).notice
         #expect(unknown.buttons.isEmpty)
     }
 }

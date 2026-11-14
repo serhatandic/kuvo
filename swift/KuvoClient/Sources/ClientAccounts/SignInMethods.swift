@@ -48,17 +48,30 @@ public struct SignInMethods: Decodable, Sendable, Equatable {
 }
 
 /// Every account a computer's engine (or its coding agents' bridge) lists, with its ways in, as its
-/// box says them (`kuvo/sign-in/accounts`): what Accounts' Sign In buttons and each card's hint go by.
+/// box says them (`kuvo/sign-in/accounts`): what Accounts' Sign In buttons and each card's hint go
+/// by, which of them Accounts lists as providers (`listed`), and each one's mark (`service`).
 public struct SignInAccounts: Decodable, Sendable, Equatable {
     /// By account.
     public let accounts: [String: SignInMethods]
+    /// The accounts Accounts lists as providers, as the box says (`sign-in.accounts.kinds`): not a
+    /// web search service's, an MCP server's, nor the engine's own way to a plan a coding agent
+    /// brings unless it's signed in. The box keeps the rule; a client lists these and no others.
+    public let listed: Set<String>
+    /// Each account's mark, by the plan limits' service ids ("copilot", "codex"); none for one
+    /// drawn by its name's first letter.
+    public let services: [String: String]
 
     private struct Entry: Decodable {
         let id: String
         let ways: SignInMethods
-        private enum CodingKeys: String, CodingKey { case id }
+        let listed: Bool
+        let service: String?
+        private enum CodingKeys: String, CodingKey { case id, listed, service }
         init(from decoder: Decoder) throws {
-            id = try decoder.container(keyedBy: CodingKeys.self).decode(String.self, forKey: .id)
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            listed = try container.decodeIfPresent(Bool.self, forKey: .listed) ?? false
+            service = try container.decodeIfPresent(String.self, forKey: .service)
             ways = try SignInMethods(from: decoder)
         }
     }
@@ -68,14 +81,21 @@ public struct SignInAccounts: Decodable, Sendable, Equatable {
     /// None said yet.
     public static let none = SignInAccounts(accounts: [:])
 
-    public init(accounts: [String: SignInMethods]) {
+    public init(accounts: [String: SignInMethods], listed: Set<String> = [], services: [String: String] = [:]) {
         self.accounts = accounts
+        self.listed = listed
+        self.services = services
     }
 
     public init(from decoder: Decoder) throws {
         let entries = try decoder.container(keyedBy: CodingKeys.self).decode([Entry].self, forKey: .accounts)
         accounts = Dictionary(entries.map { ($0.id, $0.ways) }) { first, _ in first }
+        listed = Set(entries.filter(\.listed).map(\.id))
+        services = Dictionary(entries.compactMap { entry in entry.service.map { (entry.id, $0) } }) { first, _ in first }
     }
+
+    /// Whether Accounts lists `id` as a provider, as its box says; false where it hasn't said.
+    public func lists(_ id: String) -> Bool { listed.contains(id) }
 
     /// Whether `id` has a way in a client can offer; false where its box hasn't said.
     public func offersSignIn(_ id: String) -> Bool {
