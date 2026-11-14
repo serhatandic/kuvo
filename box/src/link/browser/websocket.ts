@@ -8,9 +8,10 @@ import type { SocketEvents, SocketHandle } from "../relay/host";
 
 export function viewUpgrade(server: http.Server, password: string, connect: (events: SocketEvents) => SocketHandle = browserView): void {
   server.on("upgrade", (request, socket: Duplex, head) => {
+    socket.on("error", () => socket.destroy());
     const expected = Buffer.from("Basic " + Buffer.from(`opencode:${password}`).toString("base64"));
     const given = Buffer.from(request.headers.authorization ?? "");
-    const refuse = (status: number) => socket.end(`HTTP/1.1 ${status} Refused\r\nConnection: close\r\n\r\n`);
+    const refuse = (status: number) => socket.end(`HTTP/1.1 ${status} Refused\r\nConnection: close\r\n\r\n`, () => socket.destroy());
     if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) { refuse(401); return; }
     if (request.method !== "GET" || canonicalPath(request.url ?? "") !== "kuvo/browser/view") { refuse(403); return; }
     const key = request.headers["sec-websocket-key"];

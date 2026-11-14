@@ -42838,7 +42838,7 @@ import fs138 from "node:fs";
 import path145 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "2a4313e72397";
+var BRIDGE_VERSION = "b6e16fc418e3";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -54651,12 +54651,13 @@ async function runMacLink() {
 import crypto57 from "node:crypto";
 function viewUpgrade(server, password, connect = browserView) {
   server.on("upgrade", (request, socket, head) => {
+    socket.on("error", () => socket.destroy());
     const expected = Buffer.from("Basic " + Buffer.from(`opencode:${password}`).toString("base64"));
     const given = Buffer.from(request.headers.authorization ?? "");
     const refuse = (status) => socket.end(`HTTP/1.1 ${status} Refused\r
 Connection: close\r
 \r
-`);
+`, () => socket.destroy());
     if (given.length !== expected.length || !crypto57.timingSafeEqual(given, expected)) {
       refuse(401);
       return;
