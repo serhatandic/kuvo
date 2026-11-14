@@ -402,3 +402,19 @@ test("round3 NIT: an inactive picture class cannot retain the old view's slow ca
   await h.advance(100); await settle(h);
   assert.equal(h.c.heard.all.filter(m => m.method === "Kuvo.frame").length, 2);
 });
+
+test("round3 NIT: a raw viewer with no metrics does not claim a default layout", async t => {
+  const h = await page(t);
+  await call(h.c, "Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 2 }, "raw");
+  await call(h.c, "Kuvo.setStatus", { targetId: "P", working: true });
+  const viewer = await h.client(); await viewer.heard.until(m => m.method === "Kuvo.hello");
+  await call(viewer, "Kuvo.viewing");
+  await call(viewer, "Target.attachToTarget", { targetId: "P", flatten: true });
+  await call(viewer, "Page.startScreencast", { maxWidth: 900, maxHeight: 700 }, "raw");
+  const before = h.chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").length;
+  await call(h.c, "Kuvo.setStatus", { working: false });
+  await h.advance(5001); await settle(h);
+  assert.equal(h.chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").length, before);
+  await call(viewer, "Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 }, "raw");
+  assert.equal(h.chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").at(-1).params.width, 1600);
+});

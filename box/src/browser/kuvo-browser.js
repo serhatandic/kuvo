@@ -926,10 +926,10 @@ async function host() {
   let viewOrder = 0;
   const nativeSize = () => ({ ...sizeFor({}), scale: 2 });
   const viewerSize = client => client.rawView
-    ? client.rawMetrics?.get(client.view?.targetId) ?? nativeSize()
+    ? client.rawMetrics?.get(client.view?.targetId) ?? sizes.get(client.view?.targetId) ?? nativeSize()
     : { ...client.view, ...(client.requestedView ?? {}) };
   const restoreViewer = targetId => {
-    const latest = [...clients].filter(c => !c.closed && c.view?.targetId === targetId)
+    const latest = [...clients].filter(c => !c.closed && c.view?.targetId === targetId && (!c.rawView || c.rawMetrics?.has(targetId)))
       .sort((a, b) => (b.viewOrder ?? 0) - (a.viewOrder ?? 0))[0];
     return latest ? resize(targetId, viewerSize(latest), "viewer") : Promise.resolve();
   };

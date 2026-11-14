@@ -1,4 +1,4 @@
-// kuvo-browser e23987067c64bcb9
+// kuvo-browser e0ce0e8cd5a24bdc
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -102,7 +102,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "7056726c8302";
+const KEEPER = "bdf69c1597ce";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -945,10 +945,10 @@ async function host() {
   let viewOrder = 0;
   const nativeSize = () => ({ ...sizeFor({}), scale: 2 });
   const viewerSize = client => client.rawView
-    ? client.rawMetrics?.get(client.view?.targetId) ?? nativeSize()
+    ? client.rawMetrics?.get(client.view?.targetId) ?? sizes.get(client.view?.targetId) ?? nativeSize()
     : { ...client.view, ...(client.requestedView ?? {}) };
   const restoreViewer = targetId => {
-    const latest = [...clients].filter(c => !c.closed && c.view?.targetId === targetId)
+    const latest = [...clients].filter(c => !c.closed && c.view?.targetId === targetId && (!c.rawView || c.rawMetrics?.has(targetId)))
       .sort((a, b) => (b.viewOrder ?? 0) - (a.viewOrder ?? 0))[0];
     return latest ? resize(targetId, viewerSize(latest), "viewer") : Promise.resolve();
   };
