@@ -13,7 +13,7 @@ const { addLabel } = await import("../src/link/work-queue/labels")
 const { forgetMigrated } = await import("../src/link/work-queue/migrate")
 const { labels } = await import("../src/link/work-queue/labels")
 const { itemOf } = await import("../src/link/work-queue/store")
-const { toldOf } = await import("../src/link/work-queue/told")
+const { keepTold, readTold, toldOf } = await import("../src/link/work-queue/told")
 
 const before = path.join(WORK_QUEUE, "before-statuses")
 const fresh = () => {
@@ -121,4 +121,20 @@ test("where the copy can't be made, items still read (each said anew) and nothin
   // Once it can: moved over as ever, by their categories' names.
   expect(stands()).toEqual(END)
   expect(labels().map(each => each.name)).toEqual(["Tests & tooling", "Edge cases", "Parked"])
+})
+
+test("what a computer told is kept so a box from before statuses still reads it, and read back here without that", () => {
+  const key = "k".repeat(43)
+  const item = { id: "wqi_00000000000000000041", number: 41, owner: "ses_far", title: "Far", status: "backlog", order: 1, priority: "high", labels: ["lbl_parked"], sessions: [], noteCount: 0, fileCount: 0, linkCount: 0, created: { at: 1, by: { user: true } }, updated: { at: 2, by: { user: true } } }
+  const told = toldOf({ id: "wqt_0123456789abcdef", at: 5, kind: "mac", items: [item, { ...item, id: "wqi_00000000000000000042", number: 42, status: "done", labels: [] }], owners: [], labels: [{ id: "lbl_parked", name: "Parked", color: "graphite" }] }, 10)!
+  expect(keepTold(key, told, 20)).toBe(true)
+  const file = path.join(WORK_QUEUE, "peers", `${key}.json`)
+  const kept = JSON.parse(fs.readFileSync(fs.existsSync(file) ? file : path.join(WORK_QUEUE, "told", `${key}.json`), "utf8"))
+  // As such a box reads it: `categories`, and each item under a category it knows.
+  expect(kept.categories).toEqual([])
+  expect(kept.items.map((each: { number: number; category: string }) => [each.number, each.category])).toEqual([[41, "parked"], [42, "done"]])
+  // As this box reads it: by status, with neither.
+  const read = readTold(key)!
+  expect(read.items.map(each => [each.number, each.status, "category" in each])).toEqual([[41, "backlog", false], [42, "done", false]])
+  expect("categories" in read).toBe(false)
 })
