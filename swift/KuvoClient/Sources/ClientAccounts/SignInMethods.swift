@@ -116,6 +116,9 @@ public struct AccountSaid: Decodable, Sendable, Equatable {
     public let line: String
     public let actions: [Action]
     public let connections: [Connection]
+    /// Whether every sign-in the box listed could be read: only then does one's place in the list
+    /// say which it is.
+    private let placesHold: Bool
     /// One you added beside a coding agent's own sign-in: listed with its agent whether or not
     /// it's signed in.
     public let added: Bool
@@ -133,7 +136,9 @@ public struct AccountSaid: Decodable, Sendable, Equatable {
         state = State(rawValue: try container.decode(String.self, forKey: .state)) ?? .signedOut
         line = try container.decode(String.self, forKey: .line)
         actions = (try container.decodeIfPresent([Readable<Action>].self, forKey: .actions) ?? []).compactMap(\.item)
-        connections = (try container.decodeIfPresent([Readable<Connection>].self, forKey: .connections) ?? []).compactMap(\.item)
+        let listed = try container.decodeIfPresent([Readable<Connection>].self, forKey: .connections) ?? []
+        connections = listed.compactMap(\.item)
+        placesHold = connections.count == listed.count
         added = try container.decodeIfPresent(Bool.self, forKey: .added) ?? false
     }
 
@@ -147,7 +152,7 @@ public struct AccountSaid: Decodable, Sendable, Equatable {
     /// else the one at its place in the engine's list.
     public func connection(id: String?, at index: Int) -> Connection? {
         if let id, let found = connections.first(where: { $0.id == id }) { return found }
-        return connections.indices.contains(index) && connections[index].id == nil ? connections[index] : nil
+        return placesHold && connections.indices.contains(index) && connections[index].id == nil ? connections[index] : nil
     }
 }
 

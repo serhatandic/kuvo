@@ -386,6 +386,11 @@ impl SettingsView {
                         this.done(&key);
                         match done {
                             Ok((installed, read)) if installed.installed => {
+                                // (Installed, but its accounts couldn't be read again: said, rather
+                                // than a row that still offers Install with no word why.)
+                                if let Some(Err(error)) = &read {
+                                    this.problem = Some(format!("{name} is installed, but its accounts couldn’t be read again. {}", said(error)));
+                                }
                                 if let Some(read) = read {
                                     this.accounts = reading(read, &this.accounts);
                                 }

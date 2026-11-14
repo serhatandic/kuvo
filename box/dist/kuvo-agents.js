@@ -17635,7 +17635,7 @@ class CodexAgent {
         account = { installed: true, signedIn: false, message: "Sign in to Codex with ChatGPT or an OpenAI API key." };
       } else if (info.type === "chatgpt") {
         const plan = info.planType ? `ChatGPT ${String(info.planType).charAt(0).toUpperCase()}${String(info.planType).slice(1)}` : "ChatGPT";
-        account = { installed: true, signedIn: true, label: [info.email, plan].filter(Boolean).join(" \xB7 ") };
+        account = { installed: true, signedIn: true, label: [info.email, plan].filter(Boolean).join(" \xB7 "), ...info.email ? {} : { what: true } };
       } else {
         account = { installed: true, signedIn: true, label: info.type === "apiKey" ? "OpenAI API key" : String(info.type), what: true };
       }
@@ -36555,4 +36555,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 1978f17708aee13869be14d7ced0f17adf02ab6fb746a20e4e739371169b18f5
+// Built from Packages/Box/src/agents 55a34252efdb9e16a54032357b3fa5a2cb46852df0f95a30f7479ee4784bfd66

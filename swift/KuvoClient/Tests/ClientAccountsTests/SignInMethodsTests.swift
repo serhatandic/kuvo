@@ -116,6 +116,8 @@ struct SignInMethodsTests {
         let partly = try JSONDecoder().decode(SignInAccounts.self, from: Data(#"{"accounts":[{"id":"acme","methods":[],"environment":[],"hint":"Connect","state":"signedIn","line":"API key","actions":[{"id":"odd"},{"id":"disconnect","label":"Disconnect"}],"connections":[{"state":"signedIn"},{"state":"signedIn","line":"API key"}]}]}"#.utf8))
         #expect(partly.said["acme"]?.actions.map(\.id) == ["disconnect"] && partly.state("acme") == .signedIn)
         #expect(partly.said["acme"]?.connections.map(\.line) == ["API key"])
+        // (With one left out, a sign-in's place no longer says which it is: none is taken for another.)
+        #expect(partly.said["acme"]?.connection(id: nil, at: 0) == nil)
         #expect(SignInAccounts.none.said["acme"] == nil && SignInAccounts.none.state("acme") == .signedOut)
         #expect(AccountSaid.State.ended.needsYou && AccountSaid.State.problem.needsYou && !AccountSaid.State.signedIn.needsYou)
     }
