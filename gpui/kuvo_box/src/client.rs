@@ -86,7 +86,7 @@ pub enum Sent {
 /// The Work Queue's counts, as its panel shows them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkCounts {
-    /// Items not done ("24 open").
+    /// Items still open ("24 open"), as the box counts them.
     pub open: usize,
     /// Every item, done too.
     pub all: usize,
@@ -355,12 +355,13 @@ impl BoxClient {
 
     // MARK: Counts
 
-    /// The Work Queue's counts, every queue on the box (`owner=all`), read without asking GitHub.
+    /// The Work Queue's counts, every queue on the box (`owner=all`), read without asking GitHub:
+    /// how many are open is the box's count (`counts.open`).
     pub fn work_counts(&self) -> Result<WorkCounts> {
-        let view: Value = self.get("kuvo/work-queue?owner=all&glance=1")?;
-        let items = view.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
-        let open = items.iter().filter(|item| item.get("category").and_then(Value::as_str) != Some("done")).count();
-        Ok(WorkCounts { open, all: items.len() })
+        let view: Value = self.get("kuvo/work-queue?owner=all&glance=1&counts=1")?;
+        let all = view.get("items").and_then(Value::as_array).map_or(0, Vec::len);
+        let open = view.get("counts").and_then(|counts| counts.get("open")).and_then(Value::as_u64).unwrap_or(0) as usize;
+        Ok(WorkCounts { open, all })
     }
 
     /// How many asks wait on you in the box's browser (`kuvo/asks`: a sign-in, a code, an action).

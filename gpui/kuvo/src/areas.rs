@@ -1,5 +1,5 @@
 //! The sidebars of the areas past Sessions, beside the rail: Bots (its bots, with what each is
-//! doing now, and group chats), the Work Queue (In Progress and its categories, with the box's
+//! doing now, and group chats), the Work Queue (its statuses and labels, with the box's
 //! counts), Computers (yours, as the box lists them) and Settings (its sections). Each is its own
 //! view, kept while another area shows and drawn only while its own does; Bots and the Work Queue
 //! ask the box as they open, and the window hands Computers the list its title bar draws too.
@@ -19,12 +19,14 @@ use kuvo_box::bots::{BotsSaid, Elsewhere, Held, Refused};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconSize, StyledType, TypeSize,
     row::{NavRow, SectionHeader},
+    menu::{ContextMenuArea, Menu, MenuEntry, PopoverMenu},
     small::{count_badge, spinner, status_dot},
     theme::{radius, space},
 };
 
 use crate::area::Area;
 use crate::bots::{BotsEvent, BotsView, There};
+use crate::queue::marks::{label_dot, status_mark};
 use crate::queue::{Act as QueueAct, QueueEvent, QueueView};
 use crate::settings::{Pick, SettingsView};
 use crate::time;
@@ -182,14 +184,6 @@ impl AreaView {
         self.queue_page.as_ref()
     }
 
-    /// Whether the box takes an item added or rewritten by a client, as its `features` say.
-    pub fn set_writes(&mut self, writes: bool, cx: &mut Context<Self>) {
-        if let Some(page) = &self.queue_page {
-            page.update(cx, |page, cx| page.set_writes(writes, cx));
-            cx.notify();
-        }
-    }
-
     /// The area's own main view, for what's picked: a bot's page or New Bot, the Work Queue or one
     /// of its items. None where the page isn't in the app yet (a group chat, a computer).
     pub fn main(&self) -> Option<gpui::AnyView> {
@@ -303,7 +297,7 @@ impl AreaView {
                 }
             }
             Read::Queue(queue) => {
-                self.queue = reading(queue, &self.queue);
+                self.queue = reading(*queue, &self.queue);
                 // The same reading, handed to the page.
                 if let Some(page) = &self.queue_page {
                     let said = self.queue.clone();
@@ -362,10 +356,10 @@ impl AreaView {
             "elsewhere" => ready(&self.bots).and_then(|bots| bots.there().into_iter().find(|there| there.id == id).map(|there| there.name)),
             _ if key == "new" => Some("New Bot".into()),
             "group" => ready(&self.bots).and_then(|bots| bots.groups.iter().find(|group| group.id == id).map(|group| group.name.clone())),
-            "category" => ready(&self.queue).and_then(|queue| queue.categories.iter().find(|category| category.id == id).map(|category| category.name.clone())),
+            "status" => ready(&self.queue).and_then(|queue| queue.statuses.iter().find(|status| status.id == id).map(|status| status.name.clone())),
+            "label" => ready(&self.queue).and_then(|queue| queue.labels.iter().find(|label| label.id == id).map(|label| label.name.clone())),
             "computer" => ready(&self.computers).and_then(|computers| computers.iter().find(|computer| computer.key == id).map(|computer| computer.name.clone())),
             "item" => ready(&self.queue).and_then(|queue| queue.items.iter().chain(&queue.removed).find(|item| item.id == id).map(|item| item.title.clone())),
-            "progress" => Some("In Progress".into()),
             "this" => Some(self.this_box.to_string()),
             _ => Some(key.to_owned()),
         };
@@ -379,7 +373,7 @@ impl AreaView {
 
 enum Read {
     Bots(kuvo_box::Result<Bots>),
-    Queue(kuvo_box::Result<QueueSaid>),
+    Queue(Box<kuvo_box::Result<QueueSaid>>),
     Nothing,
 }
 
@@ -390,7 +384,7 @@ fn read(area: Area, client: &BoxClient) -> Read {
             let groups = client.groups().unwrap_or_default();
             Bots { bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups }
         })),
-        Area::Queue => Read::Queue(client.work_queue_view()),
+        Area::Queue => Read::Queue(Box::new(client.work_queue_view())),
         _ => Read::Nothing,
     }
 }
@@ -593,34 +587,85 @@ impl AreaView {
         let counts = &queue.counts;
         let count = |n: usize| div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(n.to_string());
         let mut rows = Vec::new();
-        let all = NavRow::new("queue-all", "All Items").icon(kuvo_ui::IconName::Queue).selected(self.selected.is_none()).on_click(cx.listener(|this, _, _, cx| {
+        let open = counts.open;
+        let all = NavRow::new("queue-all", "All Items").icon(kuvo_ui::IconName::Queue).trailing(div().debug_selector(move || format!("queue-open-{open}")).child(count(open))).selected(self.selected.is_none()).on_click(cx.listener(|this, _, _, cx| {
             this.select(None, cx);
             cx.emit(Picked);
         }));
         rows.push(div().debug_selector(|| "queue-all".into()).pb(space::S0_5).child(all).into_any_element());
-        let progress = NavRow::new("queue-progress", "In Progress")
-            .leading(if counts.in_progress > 0 { spinner("queue-spin", IconSize::Nav, c.text_muted).into_any_element() } else { Icon::new(kuvo_ui::IconName::Clock).color(c.icon).into_any_element() })
-            .trailing(count(counts.in_progress))
-            .selected(self.is_selected("progress"))
-            .on_click(self.row_click("progress".into(), cx));
-        rows.push(div().debug_selector(|| "queue-progress".into()).pb(space::S0_5).child(progress).into_any_element());
-        // Categories are the box's: one's made from here through its route.
-        let page = self.queue_page.clone();
-        let new_category = Button::icon_only("new-category", kuvo_ui::IconName::Plus, "New Category").ghost().size(ButtonSize::Small).tooltip("New Category").on_click(move |_, _, cx| {
-            if let Some(page) = &page {
-                page.update(cx, |page, cx| page.act(QueueAct::NewCategory, cx));
-            }
-        });
-        rows.push(SectionHeader::new("categories", "Categories").action(div().debug_selector(|| "new-category".into()).child(new_category)).into_any_element());
-        for category in &queue.categories {
-            let key = format!("category:{}", category.id);
-            let selector = format!("category-{}", category.id);
-            let row = NavRow::new(SharedString::from(selector.clone()), category.name.clone())
-                .leading(div().size(px(8.)).rounded(radius::PILL).bg(category_color(&category.id, cx)))
-                .trailing(count(counts.categories.get(&category.id).copied().unwrap_or(0)))
+        // Where items stand: the box's statuses, in its order, each with its count.
+        rows.push(SectionHeader::new("statuses", "Status").into_any_element());
+        for status in &queue.statuses {
+            let key = format!("status:{}", status.id);
+            let selector = format!("status-{}", status.id);
+            let counted = counts.statuses.get(&status.id).copied().unwrap_or(0);
+            let count_selector = format!("status-{}-count-{counted}", status.id);
+            let row = NavRow::new(SharedString::from(selector.clone()), status.name.clone())
+                .leading(status_mark(&status.id, cx))
+                .trailing(div().debug_selector(move || count_selector).child(count(counted)))
                 .selected(self.is_selected(&key))
                 .on_click(self.row_click(key, cx));
             rows.push(div().debug_selector(move || selector).pb(space::S0_5).child(row).into_any_element());
+        }
+        // Labels are the box's, and all yours: made from here, and each changed or removed from
+        // its own menu (a right-click), through the box's route.
+        let page = self.queue_page.clone();
+        let new_label = Button::icon_only("new-label", kuvo_ui::IconName::Plus, "New Label").ghost().size(ButtonSize::Small).tooltip("New Label").on_click(move |_, _, cx| {
+            if let Some(page) = &page {
+                page.update(cx, |page, cx| page.act(QueueAct::NewLabel, cx));
+            }
+        });
+        rows.push(SectionHeader::new("labels", "Labels").action(div().debug_selector(|| "new-label".into()).child(new_label)).into_any_element());
+        if queue.labels.is_empty() {
+            rows.push(div().debug_selector(|| "labels-none".into()).child(quiet("No labels yet. Make one with +, to say what kind of work an item is.", false, cx)).into_any_element());
+        }
+        for label in &queue.labels {
+            let key = format!("label:{}", label.id);
+            let selector = format!("label-{}", label.id);
+            let counted = counts.labels.get(&label.id).copied().unwrap_or(0);
+            let count_selector = format!("label-{}-count-{counted}", label.id);
+            let row = NavRow::new(SharedString::from(selector.clone()), label.name.clone())
+                .leading(div().flex().items_center().justify_center().size(px(16.)).child(label_dot(&label.color)))
+                .trailing(div().debug_selector(move || count_selector).child(count(counted)))
+                .selected(self.is_selected(&key))
+                .on_click(self.row_click(key, cx));
+            // Its menu: from a ••• that shows under the pointer, and from a right-click.
+            let (page, id) = (self.queue_page.clone(), label.id.clone());
+            let build = move |_: &mut Window, cx: &mut App| {
+                let (page, id) = (page.clone(), id.clone());
+                cx.new(|cx| {
+                    let act = |act: QueueAct| {
+                        let page = page.clone();
+                        move |_: &mut Window, cx: &mut App| {
+                            if let Some(page) = &page {
+                                page.update(cx, |page, cx| page.act(act.clone(), cx));
+                            }
+                        }
+                    };
+                    Menu::new(cx)
+                        .width(px(200.))
+                        .entry(MenuEntry::new("Edit Label…").icon(kuvo_ui::IconName::Pencil).on_select(act(QueueAct::EditLabel(id.clone()))))
+                        .entry(MenuEntry::new("Remove Label…").icon(kuvo_ui::IconName::Trash).destructive().on_select(act(QueueAct::RemoveLabel(id.clone()))))
+                })
+            };
+            let more_selector = format!("label-{}-more", label.id);
+            let hover = c.pressed;
+            let trigger = div()
+                .id(SharedString::from(more_selector.clone()))
+                .debug_selector(move || more_selector)
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(22.))
+                .rounded(radius::SMALL)
+                .hover(move |s| s.bg(hover))
+                // (Its press is its own: the row under it isn't picked.)
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .child(Icon::new(kuvo_ui::IconName::More).color(c.icon));
+            let more = PopoverMenu::new(SharedString::from(format!("label-more-{}", label.id)), trigger, build.clone()).align_right();
+            let row = row.hover_trailing(more);
+            let menu = ContextMenuArea::new(SharedString::from(format!("label-menu-{}", label.id)), row, build);
+            rows.push(div().debug_selector(move || selector).pb(space::S0_5).child(menu).into_any_element());
         }
         rows
     }
@@ -765,21 +810,6 @@ pub(crate) fn doing(now: &BotNow, at: f64) -> Option<String> {
             ago => format!("Finished {ago} ago"),
         }),
         (at_work, waiting) => at_work.or(waiting),
-    }
-}
-
-// BOX-NEEDED: a category's colour, said by the box (`color` on each of `categories`), once
-// categories are all the user's own: these are the built-in ones' by their ids.
-/// A category's dot, by KuvoClient's rule (`WorkItemChip.color(of:)`: Next teal, Later purple,
-/// Parked grey, Done green, a custom one's by its id), in the theme's nearest colours.
-pub fn category_color(id: &str, cx: &App) -> Hsla {
-    let c = &cx.theme().colors;
-    match id {
-        "next" => c.syntax.property,
-        "later" => c.syntax.type_name,
-        "parked" => c.text_faint,
-        "done" => c.success,
-        _ => c.syntax.number,
     }
 }
 

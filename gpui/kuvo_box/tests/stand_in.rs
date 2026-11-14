@@ -404,16 +404,17 @@ fn a_composer_sends_its_fields_and_asks_the_box_what_a_typed_text_means() {
 fn the_work_and_ask_counts() {
     let stand_in = StandInBox::start(|seen| match seen.route() {
         "kuvo/info" => Answer::json(200, mac_info(current_features())),
-        "kuvo/work-queue" => Answer::json(200, json!({ "owner": "all", "categories": [], "owners": [], "removed": [], "computers": [], "items": [
-            { "id": "a", "category": "next" }, { "id": "b", "category": "done" }, { "id": "c", "category": "later" }
-        ] })),
+        // (The count of what's open is the box's, whatever its list says.)
+        "kuvo/work-queue" => Answer::json(200, json!({ "owner": "all", "statuses": [], "priorities": [], "labels": [], "assignees": [], "owners": [], "removed": [], "computers": [], "items": [
+            { "id": "a", "status": "todo" }, { "id": "b", "status": "done" }, { "id": "c", "status": "backlog" }
+        ], "counts": { "open": 2, "statuses": {}, "priorities": {}, "labels": {}, "sources": {}, "computers": {}, "removed": 0 } })),
         "kuvo/asks" => Answer::json(200, json!({ "asks": [{ "id": "1", "kind": "signIn", "host": "x.com" }] })),
         _ => Answer::json(404, json!({})),
     });
     let (_home, _serve, client) = this_mac(&stand_in);
     assert_eq!(client.work_counts().unwrap(), kuvo_box::WorkCounts { open: 2, all: 3 });
     assert_eq!(client.asks_count().unwrap(), 1);
-    assert!(stand_in.seen().iter().any(|seen| seen.path == "kuvo/work-queue?owner=all&glance=1"));
+    assert!(stand_in.seen().iter().any(|seen| seen.path == "kuvo/work-queue?owner=all&glance=1&counts=1"));
 }
 
 #[test]
