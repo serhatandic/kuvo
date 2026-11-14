@@ -3682,6 +3682,9 @@
             "literal": "waiting"
            },
            {
+            "literal": "waiting.cards"
+           },
+           {
             "literal": "wakes"
            },
            {
@@ -4244,6 +4247,9 @@
            },
            {
             "literal": "waiting"
+           },
+           {
+            "literal": "waiting.cards"
            },
            {
             "literal": "wakes"

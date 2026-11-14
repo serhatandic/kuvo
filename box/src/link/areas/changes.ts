@@ -10,7 +10,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { askedArgsLater, ownArgs, ownArgsLater } from "../../shared/git";
+import { askedArgsLater, ownArgsLater } from "../../shared/git";
 import { parsed } from "../../shared/json";
 import type { GitBranches, GitChanges, GitChangesCount, GitFiles, GitStatus, PullRequestDraft } from "../../shared/routes/changes";
 import { K } from "../home";
@@ -286,15 +286,15 @@ function onDisk<T>(look: () => T): T | undefined {
 
 /** A file as it is now, for a discard to tell it hasn't changed since it was listed: what the index
  * has at its path, and its size and when it last changed on disk ("gone" without one). */
-export function stampOf(root: string, name: string, indexed: string | undefined, since?: bigint): string {
+export async function stampOf(root: string, name: string, indexed: string | undefined, since?: bigint): Promise<string> {
   const stat = onDisk(() => fs.lstatSync(path.join(root, name), { bigint: true }));
   // A repository of its own (a folder with its own `.git`): the folder's own size and time say
   // nothing of what's in it, so it's what its git says, its commit and everything not committed
   // there, that a discard must still find as it was.
   if (stat?.isDirectory() && kind(path.join(root, name, ".git"))) {
-    const inside = insideOf(path.join(root, name));
+    const inside = await insideOf(path.join(root, name));
     // (git couldn't say: a stamp nothing matches, so nothing of it is thrown away on a guess.)
-    if (!inside) return `${indexed ?? "-"}:repository-unread-${crypto.randomUUID()}`;
+    if (!inside) return `${indexed ?? "-"}:${UNREAD}-${crypto.randomUUID()}`;
     // (Changed once the list was being read, as a file is below.)
     return `${indexed ?? "-"}:repository-${inside.is}${since !== undefined && inside.newest >= since ? ":since" : ""}`;
   }
@@ -304,26 +304,21 @@ export function stampOf(root: string, name: string, indexed: string | undefined,
   return `${indexed ?? "-"}:${stat ? `${stat.size}-${stat.mtimeNs}` : "gone"}${fresh}`;
 }
 
+/** In the stamp of a repository inside this one that git couldn't read. */
+const UNREAD = "repository-unread";
+
 /** What a repository inside this one is now, for its stamp: its commit (none before its first) and a
  * hash of what its own `git status` says isn't committed there, each changed file with its size and
- * when it last changed (an edit that leaves status's own line the same is still seen); null when
- * git can't say. */
-function insideOf(folder: string): { is: string; newest: bigint } | null {
-  const run = (given: string[]) => {
-    const args = ownArgs(given, folder);
-    if (!args) return null;
-    try {
-      return execFileSync("git", args, { cwd: folder, env: { ...commandEnv(), GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" }, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 60_000, maxBuffer: 256 * 1024 * 1024 });
-    } catch {
-      return null;
-    }
-  };
+ * when it last changed (an edit that leaves status's own line the same is still seen; a file its
+ * own .gitignore names isn't looked at); null when git can't say. Never holding the box up: git is
+ * awaited, as every other read here is. */
+async function insideOf(folder: string): Promise<{ is: string; newest: bigint } | null> {
   // (Asked of that folder itself: a folder that isn't a repository's top would answer for this one.)
-  const top = run(["rev-parse", "--show-toplevel"])?.trim();
+  const top = (await text(folder, ["rev-parse", "--show-toplevel"]))?.trim();
   if (!top || realOr(top) !== realOr(folder)) return null;
-  const status = run(["-c", "core.quotepath=off", "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  const status = await text(folder, ["-c", "core.quotepath=off", "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
   if (status === null) return null;
-  const head = run(["rev-parse", "--verify", "-q", "HEAD"])?.trim() || "none";
+  const head = (await text(folder, ["rev-parse", "--verify", "-q", "HEAD"]))?.trim() || "none";
   const hash = crypto.createHash("sha256").update(status);
   let newest = 0n;
   for (const record of status.split("\0")) {
@@ -362,7 +357,9 @@ export async function staleDiscard(root: string, file: { path: string; oldPath?:
     return `${name} is in the last commit now, so it isn’t a new file any more. Look at it again before you discard it.`;
   }
   // Its index entry read as the list reads it, so the two stamps can match.
-  const now = stampOf(root, name, await indexEntryOf(root, name)) + (file.oldPath ? `|${stampOf(root, file.oldPath, undefined)}` : "");
+  const now = (await stampOf(root, name, await indexEntryOf(root, name))) + (file.oldPath ? `|${await stampOf(root, file.oldPath, undefined)}` : "");
+  // A repository inside this one that git can't read now: never thrown away on a guess, and said so.
+  if (now.includes(`:${UNREAD}-`)) return `git couldn’t read the repository inside ${name}, so it wasn’t discarded.`;
   if (now !== stamp) {
     return `${name} changed since it was listed. Look at it again before you discard it.`;
   }
@@ -443,7 +440,7 @@ export async function filesIn(directory: string): Promise<GitFiles | null> {
   const indexed = new Map<string, string>();
   // `changedSince`: a staged file changed again on disk since (or gone from it), whose discard
   // takes what's staged of it for good.
-  const add = (group: Group, path: string, status: Status, oldPath?: string, changedSince = false) => {
+  const add = async (group: Group, path: string, status: Status, oldPath?: string, changedSince = false) => {
     const scope = group === "staged" ? "staged" : group === "conflicted" ? "uncommitted" : "unstaged";
     const lines = group === "staged" ? staged.get(path) : group === "unstaged" ? unstaged.get(path) : undefined;
     // What `perform`'s discard does to it in its scope: a new file to the Trash, else back to what's
@@ -451,7 +448,7 @@ export async function filesIn(directory: string): Promise<GitFiles | null> {
     const discard = group === "conflicted" ? undefined : status === "added" ? "trash" : scope === "unstaged" ? "unstaged" : "head";
     // What a discard sends back, so it's refused once the file changed since.
     // A move's old path too, which its discard brings back.
-    const stamp = discard ? stampOf(root, path.replace(/\/$/, ""), indexed.get(path), since) + (oldPath ? `|${stampOf(root, oldPath, undefined, since)}` : "") : undefined;
+    const stamp = discard ? (await stampOf(root, path.replace(/\/$/, ""), indexed.get(path), since)) + (oldPath ? `|${await stampOf(root, oldPath, undefined, since)}` : "") : undefined;
     files.push({
       path, ...(oldPath ? { oldPath } : {}), group, status, scope, stage: stageOf(group), ...(lines ?? {}),
       ...(discard ? { discard, discards: discardsOf(status, oldPath, thereAt(root, path) && !changedSince), stamp } : {}), ...(path.endsWith("/") ? { repository: true as const } : {}),
@@ -465,7 +462,7 @@ export async function filesIn(directory: string): Promise<GitFiles | null> {
     const kind = record[0];
     // New files past the most a list shows are counted, not listed (an install with no .gitignore).
     if (kind === "?") {
-      if (untracked++ < NEW_FILES_MOST) add("untracked", record.slice(2), "added");
+      if (untracked++ < NEW_FILES_MOST) await add("untracked", record.slice(2), "added");
       else more++;
     }
     if (kind !== "1" && kind !== "2" && kind !== "u") continue;
@@ -476,13 +473,13 @@ export async function filesIn(directory: string): Promise<GitFiles | null> {
     const object = fields[7] ?? "";
     if (kind !== "u" && object && !/^0+$/.test(object)) indexed.set(name, object);
     if (kind === "u") {
-      add("conflicted", name, "modified");
+      await add("conflicted", name, "modified");
       continue;
     }
     const oldPath = kind === "2" ? records[++at] : undefined;
-    if (x !== ".") add("staged", name, changeOf(x), x === "R" ? oldPath : undefined, y !== ".");
+    if (x !== ".") await add("staged", name, changeOf(x), x === "R" ? oldPath : undefined, y !== ".");
     // Moved in what's staged, then changed again: the change is to the file where it is now.
-    if (y !== ".") add("unstaged", name, y === "A" ? "added" : changeOf(y));
+    if (y !== ".") await add("unstaged", name, y === "A" ? "added" : changeOf(y));
   }
   files.sort((a, b) => GROUPS.indexOf(a.group) - GROUPS.indexOf(b.group) || a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: "base" }));
   // What `commit` takes, as it decides it: what's staged anywhere in the repository, else everything

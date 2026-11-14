@@ -4299,6 +4299,7 @@ var FEATURES = [
   "vault",
   "vault.same",
   "waiting",
+  "waiting.cards",
   "wakes",
   "wakes.edit",
   "wakes.events",
@@ -38582,35 +38583,26 @@ function onDisk(look) {
     throw error;
   }
 }
-function stampOf(root, name, indexed, since) {
+async function stampOf(root, name, indexed, since) {
   const stat = onDisk(() => fs126.lstatSync(path131.join(root, name), { bigint: true }));
   if (stat?.isDirectory() && kind(path131.join(root, name, ".git"))) {
-    const inside = insideOf(path131.join(root, name));
+    const inside = await insideOf(path131.join(root, name));
     if (!inside)
-      return `${indexed ?? "-"}:repository-unread-${crypto48.randomUUID()}`;
+      return `${indexed ?? "-"}:${UNREAD}-${crypto48.randomUUID()}`;
     return `${indexed ?? "-"}:repository-${inside.is}${since !== undefined && inside.newest >= since ? ":since" : ""}`;
   }
   const fresh = since !== undefined && stat && stat.mtimeNs >= since ? ":since" : "";
   return `${indexed ?? "-"}:${stat ? `${stat.size}-${stat.mtimeNs}` : "gone"}${fresh}`;
 }
-function insideOf(folder) {
-  const run = (given) => {
-    const args = ownArgs(given, folder);
-    if (!args)
-      return null;
-    try {
-      return execFileSync3("git", args, { cwd: folder, env: { ...commandEnv(), GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" }, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 60000, maxBuffer: 256 * 1024 * 1024 });
-    } catch {
-      return null;
-    }
-  };
-  const top = run(["rev-parse", "--show-toplevel"])?.trim();
+var UNREAD = "repository-unread";
+async function insideOf(folder) {
+  const top = (await text4(folder, ["rev-parse", "--show-toplevel"]))?.trim();
   if (!top || realOr2(top) !== realOr2(folder))
     return null;
-  const status = run(["-c", "core.quotepath=off", "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  const status = await text4(folder, ["-c", "core.quotepath=off", "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
   if (status === null)
     return null;
-  const head = run(["rev-parse", "--verify", "-q", "HEAD"])?.trim() || "none";
+  const head = (await text4(folder, ["rev-parse", "--verify", "-q", "HEAD"]))?.trim() || "none";
   const hash = crypto48.createHash("sha256").update(status);
   let newest = 0n;
   for (const record of status.split("\x00")) {
@@ -38642,7 +38634,9 @@ async function staleDiscard(root, file, stamp) {
   if (file.status === "added" && (await text4(root, ["--literal-pathspecs", "ls-tree", "--name-only", "HEAD", "--", name]))?.trim() && (await git2(root, ["--literal-pathspecs", "ls-files", "--error-unmatch", "--", name])).ok) {
     return `${name} is in the last commit now, so it isn’t a new file any more. Look at it again before you discard it.`;
   }
-  const now = stampOf(root, name, await indexEntryOf(root, name)) + (file.oldPath ? `|${stampOf(root, file.oldPath, undefined)}` : "");
+  const now = await stampOf(root, name, await indexEntryOf(root, name)) + (file.oldPath ? `|${await stampOf(root, file.oldPath, undefined)}` : "");
+  if (now.includes(`:${UNREAD}-`))
+    return `git couldn’t read the repository inside ${name}, so it wasn’t discarded.`;
   if (now !== stamp) {
     return `${name} changed since it was listed. Look at it again before you discard it.`;
   }
@@ -38694,11 +38688,11 @@ async function filesIn2(directory) {
   let more = 0;
   let untracked = 0;
   const indexed = new Map;
-  const add = (group, path, status, oldPath, changedSince = false) => {
+  const add = async (group, path, status, oldPath, changedSince = false) => {
     const scope = group === "staged" ? "staged" : group === "conflicted" ? "uncommitted" : "unstaged";
     const lines = group === "staged" ? staged.get(path) : group === "unstaged" ? unstaged.get(path) : undefined;
     const discard = group === "conflicted" ? undefined : status === "added" ? "trash" : scope === "unstaged" ? "unstaged" : "head";
-    const stamp = discard ? stampOf(root, path.replace(/\/$/, ""), indexed.get(path), since) + (oldPath ? `|${stampOf(root, oldPath, undefined, since)}` : "") : undefined;
+    const stamp = discard ? await stampOf(root, path.replace(/\/$/, ""), indexed.get(path), since) + (oldPath ? `|${await stampOf(root, oldPath, undefined, since)}` : "") : undefined;
     files.push({
       path,
       ...oldPath ? { oldPath } : {},
@@ -38717,7 +38711,7 @@ async function filesIn2(directory) {
     const kind = record[0];
     if (kind === "?") {
       if (untracked++ < NEW_FILES_MOST)
-        add("untracked", record.slice(2), "added");
+        await add("untracked", record.slice(2), "added");
       else
         more++;
     }
@@ -38730,14 +38724,14 @@ async function filesIn2(directory) {
     if (kind !== "u" && object && !/^0+$/.test(object))
       indexed.set(name, object);
     if (kind === "u") {
-      add("conflicted", name, "modified");
+      await add("conflicted", name, "modified");
       continue;
     }
     const oldPath = kind === "2" ? records[++at] : undefined;
     if (x !== ".")
-      add("staged", name, changeOf(x), x === "R" ? oldPath : undefined, y !== ".");
+      await add("staged", name, changeOf(x), x === "R" ? oldPath : undefined, y !== ".");
     if (y !== ".")
-      add("unstaged", name, y === "A" ? "added" : changeOf(y));
+      await add("unstaged", name, y === "A" ? "added" : changeOf(y));
   }
   files.sort((a, b) => GROUPS.indexOf(a.group) - GROUPS.indexOf(b.group) || a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: "base" }));
   const commits = await hasStaged(root) ? "staged" : "all";
@@ -42870,7 +42864,7 @@ import fs138 from "node:fs";
 import path144 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "171d62224d59";
+var BRIDGE_VERSION = "7782c575861d";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";

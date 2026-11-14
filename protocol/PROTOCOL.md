@@ -2545,7 +2545,7 @@ before it uses it, and meanwhile says so. A box is older than a client needs whe
 `models.offered.sides`, `models.readiness`, `queue.items`, `sandbox.opens`, `sandbox.words`, `sessions.asks`,
 `sessions.list`, `sessions.mentions`, `sessions.models`, `sessions.needsYou`,
 `sessions.start.empty`, `sign-in.accounts.kinds`, `sign-in.codes`, `typed`, `usage.notices`,
-`waiting` and `work-queue.counts`
+`waiting`, `waiting.cards` and `work-queue.counts`
 (KuvoClient's `BoxGate.required`, and the same list in every client, gpui's `kuvo_box` too, so
 every client holds the same boxes; a box with `messages.send` has what came before it too,
 `sessions.move`, `projects.folders` and `sign-in.methods` among them, and names its chats folder in
@@ -6186,6 +6186,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `vault` | `kuvo/vault…`: the box's own vault of sign-ins, keys, files and notes its agents use without seeing a value ("Vault", bridge 0.9.100) |
 | `vault.same` | `POST kuvo/vault/items/<id>/same`: whether values given are the ones kept, without giving them ("Vault") |
 | `waiting` | `kuvo/waiting` and `…/events`: how many sessions, bots and Work Queue items wait on you ("What waits on you", #711) |
+| `waiting.cards` | What waits on you (`asked` in the session list, `bots.now.asking`, `kuvo/waiting`) counts a bot's own conversation and the cards the box keeps: a browser's ask, a bot's work ask, a proposed goal; no client adds them ("What waits on you", #718) |
 | `wakes` | `kuvo/wakes`, a session's, and cancelling one or sending it now |
 | `wakes.edit` | adding one (`POST kuvo/wakes/<session>`) and pausing them |
 | `wakes.events` | `kuvo/wakes/events`, and making a watch (`POST kuvo/wakes/<session>/watch`) |

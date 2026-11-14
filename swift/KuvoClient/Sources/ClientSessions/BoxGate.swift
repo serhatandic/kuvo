@@ -21,7 +21,7 @@ public enum BoxGate {
     /// and no client keeps an outbox of its own.
     /// Then #711's, for the desktop client's sidebar and Settings, which draw what the box says and
     /// keep no stand-in: `bots.now`, `computers`, `limits.rings`, `sandbox.words`,
-    /// `sessions.needsYou`, `sign-in.accounts.kinds`, `sign-in.codes`, `waiting` and
+    /// `sessions.needsYou`, `sign-in.accounts.kinds`, `sign-in.codes`, `waiting`, `waiting.cards` (#718: what waits on you counts the cards a client used to add itself) and
     /// `work-queue.counts`.
     /// Then #708's, for its side panel and the sandbox's row, which work nothing out from what the
     /// box lists: `file.text`, `git.branches.pullRequest`, `git.changes.binary`, `git.files.does`
@@ -63,6 +63,7 @@ public enum BoxGate {
         "typed",
         "usage.notices",
         "waiting",
+        "waiting.cards",
         "work-queue.counts",
     ]
 
