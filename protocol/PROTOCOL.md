@@ -8985,7 +8985,7 @@ newline JSON stream, including raw CDP compatibility.
 | client → box | `Kuvo.input` | `{targetId,kind,...}`; kind mouse, wheel, key, text or compose |
 | client → box | `Kuvo.upload` | `{targetId,files:[{name,data}]}`; data is base64, total decoded size ≤50 MiB |
 | box → client | `Kuvo.fileChooser` | `{targetId,mode}`, after Chrome opens a file chooser |
-| box → client | `Kuvo.external` | `{url}`, a typed address using another app's scheme |
+| box → client | `Kuvo.external` | `{targetId,url}`, a typed address using another app's scheme |
 | client → box | `Kuvo.hold` | existing `{targetId,on,mac?}` takeover vocabulary |
 
 The keeper also forwards its existing hello, ask, download, status and pointer facts.
@@ -8998,6 +8998,8 @@ wheel has x, y, deltaX and deltaY; key has type, key and code; text has text;
 compose has text, selectionStart, selectionEnd and optional replacement offsets.
 Modifiers may be CDP's bitmask or an array of `alt/control/meta/shift`.
 The keeper maps Control shortcuts to Command when Chrome runs on macOS.
+Clients must ask the user before opening an external app URL. Page-initiated external
+URLs go only to viewers of that page; a typed URL goes only to its requesting client.
 Coordinates are CSS page viewport coordinates, calculated by the client from the displayed
 frame's scale and letterbox. Files are written privately under `browser/tmp/upload-*`,
 given only to Chrome's current chooser and retained for a later form submission. They are

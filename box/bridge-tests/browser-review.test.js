@@ -112,3 +112,16 @@ test("a refused upload reports failure and navigation invalidates its old choose
   assert.match((await call(c, "Kuvo.upload", { targetId: "P", files })).error.message, /No file chooser/);
   assert.equal(chrome.all.filter(m => m.method === "DOM.setFileInputFiles").length, before);
 });
+
+test("page-initiated external URLs name their page and reach only that page's viewers", async () => {
+  const { c, client, event } = await page();
+  const observer = await client();
+  await observer.heard.until(m => m.method === "Kuvo.hello");
+  await call(c, "Kuvo.view", { targetId: "P", width: 393, height: 660 });
+  event("Page.frameRequestedNavigation", { url: "mailto:hello@example.com" }, "own");
+  const external = await c.heard.until(m => m.method === "Kuvo.external");
+  assert.equal(external.params.targetId, "P");
+  await call(observer, "Browser.getVersion");
+  assert.equal(observer.heard.all.filter(m => m.method === "Kuvo.external").length, 0);
+  await call(c, "Kuvo.view", { targetId: null });
+});

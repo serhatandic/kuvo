@@ -1007,7 +1007,7 @@ async function host() {
       if (p.input !== undefined) {
         const url = String(p.input).trim();
         if (/^(javascript|data|blob):/i.test(url)) throw Error("That address cannot be opened here.");
-        if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^(https?|file|about):/i.test(url)) send(client, { method: "Kuvo.external", params: { url } });
+        if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^(https?|file|about):/i.test(url)) send(client, { method: "Kuvo.external", params: { targetId: target, url } });
         else await ownCall("Page.navigate", { url: destination(url) ?? "about:blank" }, session);
       } else if (p.back || p.forward) {
         const h = await ownCall("Page.getNavigationHistory", {}, session);
@@ -1373,7 +1373,9 @@ async function host() {
       if (message.method === "Page.frameStoppedLoading" && message.params.frameId === page) loading.delete(page);
       if (message.method === "Page.javascriptDialogOpening") { dialogs.set(page, message.params); broadcast({ method: "Kuvo.dialog", params: { targetId: page, ...message.params } }); }
       if (message.method === "Page.javascriptDialogClosed") dialogs.delete(page);
-      if (message.method === "Page.frameRequestedNavigation" && /^[a-z][a-z0-9+.-]*:/i.test(message.params.url) && !/^(https?|file|about|javascript|data|blob):/i.test(message.params.url)) broadcast({ method: "Kuvo.external", params: { url: message.params.url } });
+      if (message.method === "Page.frameRequestedNavigation" && /^[a-z][a-z0-9+.-]*:/i.test(message.params.url) && !/^(https?|file|about|javascript|data|blob):/i.test(message.params.url)) for (const client of clients) {
+        if (client.view?.targetId === page) send(client, { method: "Kuvo.external", params: { targetId: page, url: message.params.url } });
+      }
       if (message.method === "Page.fileChooserOpened") { choosers.set(page, message.params); broadcast({ method: "Kuvo.fileChooser", params: { targetId: page, mode: message.params.mode } }); }
       if (message.method.startsWith("Page.")) announcePages();
     }

@@ -1,4 +1,4 @@
-// kuvo-browser 4c4819d8fc503595
+// kuvo-browser 089103426da0d206
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -101,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "6a9b80b069d2";
+const KEEPER = "7868aef1dc50";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -1025,7 +1025,7 @@ async function host() {
       if (p.input !== undefined) {
         const url = String(p.input).trim();
         if (/^(javascript|data|blob):/i.test(url)) throw Error("That address cannot be opened here.");
-        if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^(https?|file|about):/i.test(url)) send(client, { method: "Kuvo.external", params: { url } });
+        if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^(https?|file|about):/i.test(url)) send(client, { method: "Kuvo.external", params: { targetId: target, url } });
         else await ownCall("Page.navigate", { url: destination(url) ?? "about:blank" }, session);
       } else if (p.back || p.forward) {
         const h = await ownCall("Page.getNavigationHistory", {}, session);
@@ -1391,7 +1391,9 @@ async function host() {
       if (message.method === "Page.frameStoppedLoading" && message.params.frameId === page) loading.delete(page);
       if (message.method === "Page.javascriptDialogOpening") { dialogs.set(page, message.params); broadcast({ method: "Kuvo.dialog", params: { targetId: page, ...message.params } }); }
       if (message.method === "Page.javascriptDialogClosed") dialogs.delete(page);
-      if (message.method === "Page.frameRequestedNavigation" && /^[a-z][a-z0-9+.-]*:/i.test(message.params.url) && !/^(https?|file|about|javascript|data|blob):/i.test(message.params.url)) broadcast({ method: "Kuvo.external", params: { url: message.params.url } });
+      if (message.method === "Page.frameRequestedNavigation" && /^[a-z][a-z0-9+.-]*:/i.test(message.params.url) && !/^(https?|file|about|javascript|data|blob):/i.test(message.params.url)) for (const client of clients) {
+        if (client.view?.targetId === page) send(client, { method: "Kuvo.external", params: { targetId: page, url: message.params.url } });
+      }
       if (message.method === "Page.fileChooserOpened") { choosers.set(page, message.params); broadcast({ method: "Kuvo.fileChooser", params: { targetId: page, mode: message.params.mode } }); }
       if (message.method.startsWith("Page.")) announcePages();
     }
