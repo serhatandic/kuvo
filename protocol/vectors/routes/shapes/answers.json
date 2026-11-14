@@ -3861,6 +3861,9 @@
             "literal": "browser.data"
            },
            {
+            "literal": "browser.view"
+           },
+           {
             "literal": "btw"
            },
            {
@@ -4438,6 +4441,9 @@
            },
            {
             "literal": "browser.data"
+           },
+           {
+            "literal": "browser.view"
            },
            {
             "literal": "btw"
@@ -6661,6 +6667,17 @@
         }
        ]
       }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/browser/view",
+   "answers": {
+    "101": "bytes",
+    "426": {
+     "object": {
+      "message": "string"
      }
     }
    }

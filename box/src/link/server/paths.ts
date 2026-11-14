@@ -1,7 +1,7 @@
 // Which paths a phone may ask for, written one way (PROTOCOL.md, "Messages in a session"), held to protocol/vectors/link.json
 
 // The sockets a phone may open: a terminal's.
-const SOCKETS = [/^api\/pty\/[^/?]+\/connect(\?|$)/];
+const SOCKETS = [/^kuvo\/browser\/view$/, /^api\/pty\/[^/?]+\/connect(\?|$)/];
 export const REQUEST_HEADERS = ["content-type", "accept", "x-opencode-directory", "last-event-id"];
 export const RESPONSE_HEADERS = ["content-type", "cache-control"];
 

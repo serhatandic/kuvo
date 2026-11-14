@@ -1,0 +1,129 @@
+{
+  "about": "Live view examples. Text is newline JSON; binary pictures start with a uint32be JSON header length followed by that header and JPEG bytes. The socket path is checked by vectors/link.json.",
+  "commands": [
+    {
+      "id": 1,
+      "method": "Kuvo.view",
+      "params": {
+        "targetId": "P",
+        "width": 393,
+        "height": 660,
+        "scale": 3,
+        "quality": 75,
+        "maxFps": 60
+      }
+    },
+    {
+      "id": 2,
+      "method": "Kuvo.go",
+      "params": {
+        "targetId": "P",
+        "input": "https://example.com/agent"
+      }
+    },
+    {
+      "method": "Kuvo.frameAck",
+      "params": {
+        "frameId": 12
+      }
+    },
+    {
+      "id": 3,
+      "method": "Kuvo.input",
+      "params": {
+        "targetId": "P",
+        "kind": "text",
+        "text": "hello"
+      }
+    },
+    {
+      "id": 4,
+      "method": "Kuvo.upload",
+      "params": {
+        "targetId": "P",
+        "files": [
+          {
+            "name": "note.txt",
+            "data": "aGVsbG8="
+          }
+        ]
+      }
+    },
+    {
+      "method": "Kuvo.view",
+      "params": {
+        "targetId": null
+      }
+    }
+  ],
+  "facts": [
+    {
+      "method": "Kuvo.pages",
+      "params": {
+        "active": "P",
+        "pages": [
+          {
+            "targetId": "P",
+            "url": "https://example.com/agent",
+            "title": "Example",
+            "opener": null,
+            "session": "ses_agent",
+            "loading": false,
+            "canGoBack": false,
+            "canGoForward": false,
+            "working": true,
+            "held": false
+          }
+        ]
+      }
+    },
+    {
+      "method": "Kuvo.viewport",
+      "params": {
+        "targetId": "P",
+        "width": 1280,
+        "height": 800,
+        "scale": 1,
+        "by": "agent"
+      }
+    },
+    {
+      "method": "Kuvo.external",
+      "params": {
+        "targetId": "P",
+        "url": "mailto:hello@example.com"
+      }
+    }
+  ],
+  "phone": {
+    "scale": 1,
+    "quality": 50,
+    "maxFps": 15,
+    "maxUnacknowledged": 2
+  },
+  "binaryHeader": {
+    "method": "Kuvo.frame",
+    "params": {
+      "targetId": "P",
+      "frameId": 12,
+      "width": 393,
+      "height": 246,
+      "scrollX": 0,
+      "scrollY": 0
+    }
+  },
+  "sockets": [
+    {
+      "path": "kuvo/browser/view",
+      "allowed": true
+    },
+    {
+      "path": "kuvo/browser/view/other",
+      "allowed": false
+    },
+    {
+      "path": "kuvo/browser/%2e%2e/view",
+      "allowed": false
+    }
+  ]
+}

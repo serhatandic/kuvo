@@ -52,3 +52,8 @@ export async function* browserDataRoute(context: RouteContext, match: RegExpMatc
   const { sites } = await browserSites();
   return yield* json(200, { sites: site === null ? [] : sites.filter(each => each.site !== site) });
 }
+
+/** The ordinary HTTP path tells clients to open the authenticated socket. */
+export async function* browserViewRoute({ json }: RouteContext): AsyncGenerator<AnswerPiece> {
+  yield* json(426, { message: "Open this route as a WebSocket." });
+}

@@ -511,7 +511,7 @@ async function run(): Promise<void> {
       confirmed: confirmPhone,
       mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at)),
       handle: engineHandler(readEngineFile, { name: link!.name || os.hostname() }, readBridgeFile, changed => host.keepOnly(new Set((changed.phones ?? []).map(phone => phone.key))), hold),
-      connect: engineConnect(readEngineFile),
+      connect: engineConnect(readEngineFile, (): number => host.unsent?.() ?? 0),
       send: () => {},
     });
     current = host;
@@ -1189,3 +1189,6 @@ if (main) {
     process.exit(2);
   }
 }
+
+export { frameBudget, browserView } from "./browser/view";
+export { viewUpgrade } from "./browser/websocket";

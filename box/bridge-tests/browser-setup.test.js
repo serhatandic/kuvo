@@ -82,7 +82,9 @@ test("a fresh machine with no Mac gets a checked browser by itself the first tim
         const message = JSON.parse(out.slice(0, end));
         out = out.slice(end + 1);
         all.push(message);
-        if (message.method === "Kuvo.hello" || message.method === "Kuvo.error") resolve(all);
+        // Facts can follow the greeting in this same read. Keep the prefix we resolved,
+        // rather than exposing an array that this parser is still appending to.
+        if (message.method === "Kuvo.hello" || message.method === "Kuvo.error") resolve([...all]);
       }
     });
     view.on("exit", () => reject(new Error(`the live view ended: ${JSON.stringify(all)}`)));
