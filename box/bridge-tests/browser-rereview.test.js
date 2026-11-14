@@ -306,3 +306,21 @@ for (const phone of [false, true]) {
     assert.equal(notice.quality, phone ? 40 : 65);
   });
 }
+
+for (const raw of [false, true]) {
+  test("round3 S3: repeated " + (raw ? "raw" : "Kuvo") + " input cannot bypass a 15 fps capture floor", async t => {
+    const h = await page(t);
+    h.answer("Page.captureScreenshot", () => ({ data: "anBlZw==" }));
+    await call(h.c, "Kuvo.view", { targetId: "P", width: 393, height: 660, maxFps: 15 });
+    await capture(h);
+    const frame = h.c.heard.all.find(m => m.method === "Kuvo.frame");
+    await call(h.c, "Kuvo.frameAck", { frameId: frame.params.frameId });
+    const before = captures(h);
+    for (let i = 0; i < 50; i++) {
+      if (raw) await call(h.c, "Input.dispatchMouseEvent", { type: "mouseMoved", x: i, y: i }, "raw");
+      else await call(h.c, "Kuvo.input", { targetId: "P", kind: "mouse", type: "mouseMoved", x: i, y: i });
+      await h.advance(20); await settle(h);
+    }
+    assert.ok(captures(h) - before <= 15, "wakes must not encode still frames at input frequency");
+  });
+}

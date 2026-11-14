@@ -1,15 +1,16 @@
-// kuvo-browser 681d35cc24b7b62d
+// kuvo-browser b6d5c4048c2ed1d0
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
-  let digest = null, quiet = 0, nextAt = 0;
+  let digest = null, quiet = 0, nextAt = 0, floorAt = 0;
   return {
     due(now) { return now >= nextAt; },
-    dirty() { nextAt = 0; quiet = 0; },
+    dirty() { nextAt = floorAt; quiet = 0; },
     captured(image, now, fps) {
       const changed = image !== digest;
       digest = image;
       quiet = changed ? 0 : quiet + 1;
+      floorAt = now + 1000 / fps;
       nextAt = now + (changed ? 1000 / fps : Math.min(2000, 125 * 2 ** Math.min(quiet, 4)));
       return changed;
     },
@@ -101,7 +102,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "8695dd71b6ef";
+const KEEPER = "a61089b7240f";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
