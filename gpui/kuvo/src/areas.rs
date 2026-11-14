@@ -588,7 +588,7 @@ impl AreaView {
         let count = |n: usize| div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(n.to_string());
         let mut rows = Vec::new();
         let open = counts.open;
-        let all = NavRow::new("queue-all", "All Items").icon(kuvo_ui::IconName::Queue).trailing(div().debug_selector(move || format!("queue-open-{open}")).child(count(open))).selected(self.selected.is_none()).on_click(cx.listener(|this, _, _, cx| {
+        let all = NavRow::new("queue-all", "All Items").icon(kuvo_ui::IconName::Queue).trailing(div().debug_selector(move || format!("queue-open-{open}")).text_ui(TypeSize::Caption).text_color(c.text_faint).child(format!("{open} open"))).selected(self.selected.is_none()).on_click(cx.listener(|this, _, _, cx| {
             this.select(None, cx);
             cx.emit(Picked);
         }));

@@ -2,7 +2,7 @@
 
 ## Done (#674: statuses, priorities and labels in place of categories)
 
-Notes: `notes/screens-queue.md` (with the Zed study). Scenarios: `kuvo/tests/queue.rs` (34, real
+Notes: `notes/screens-queue.md` (with the Zed study). Scenarios: `kuvo/tests/queue.rs` (38, real
 clicks and keys against the stand-in), unit tests in `kuvo_box/src/work_queue.rs`,
 `kuvo/src/queue/mod.rs` and `kuvo/src/time.rs`. Shots: `shots/screens-queue-*-{light,dark}.png`
 (28 screens); `screens-area-queue` rendered again.
@@ -51,7 +51,7 @@ clicks and keys against the stand-in), unit tests in `kuvo_box/src/work_queue.rs
    an item's assignee, `q` with narrowed counts.
 9. Every read-only path for a box that takes no writing is gone (the update gate holds such a
    box), and so is every `BOX-NEEDED` in the Work Queue's code.
-10. `cargo build`, `cargo test --workspace` (304) and `cargo clippy --workspace --all-targets`
+10. `cargo build`, `cargo test --workspace` (309) and `cargo clippy --workspace --all-targets`
     clean, every run with `KUVO_*` unset and the stand-in box only.
 
 ## After the review
@@ -83,6 +83,32 @@ clicks and keys against the stand-in), unit tests in `kuvo_box/src/work_queue.rs
   bot's queue (`handedBy`), and `can` for a computer on an older Kuvo Code and for a shared
   machine, each with the box's sentence. A notice's words are asserted as the page draws them.
 
+## After the second review
+
+- **Days are the box's.** The view says its `today`; the due menu's Today, Tomorrow and In a week,
+  a row's and a chip's due words and the example day are counted from it. The app reads no clock
+  for a day (`utc_offset` is gone); a box that says no `today` gets a day typed and None, and due
+  days as written.
+- **Filters are the box's.** What narrows the list goes on the view's route: `q`, `computers`
+  (a key; empty for the box asked), `sources` (a kind), `owners`, and `labels` (the label whose
+  list shows). The app matches nothing itself, and the box's counts show under any of them (the
+  groups, the tabs, All's "N open"); the sidebar keeps the whole queue's.
+- **One narrowed view is asked for at a time**: what narrows the list when an answer comes is asked
+  next, so words typed quickly are a request for the first letter and one for the last, with no
+  timer; an answer for other words or filters is dropped, and "Loading…" or "Searching for …"
+  shows meanwhile.
+- **`can.assign`** decides the Assignee chip: a menu where it's true, a fact otherwise (an item
+  another computer keeps is assigned there).
+- **While a change to an item is on its way** its ••• (row and page), Mark Done and Restore wait;
+  a delete asked for anyway isn't sent.
+- **All says how many are open**: "19 open" on the sidebar's row and on the All tab alike (the
+  box's `counts.open`, of what's listed).
+- **A status the app has no mark for** is a group, a tab and a sidebar row under the box's name; an
+  item in a status the view doesn't list at all gets a group of its own after the rest, under the
+  id it came by.
+- **Your own list** is named as the box names it ("Your own" among owners; "In your own list" on
+  an item's page).
+
 ## BOX-NEEDED
 
 None. The box now says what the last note asked for, and the app draws it: what a new item starts
@@ -93,28 +119,26 @@ something can't be done (`can.why`: the tooltip of a chip that doesn't open, the
 its face from it; the view's `assignees` is only the fallback).
 
 Still awkward to draw from, for the box session to weigh (none blocks anything):
-- **Filters as the box's query parameters**: `q` narrows the counts; the computer, source and owner
-  filters are the app's, so no count shows over them. `computer=`, `source=`, `ownerIs=` (and
-  `label=`, `priority=`, `assignee=`) on the view would make them the box's, with counts.
+- **Priority and assignee aren't filters yet** (`priorities=`, `assignees=` on the view would be
+  the same work again; the app offers computer, source and owner, and a label's list).
 - **The colours a label may be** are listed in the app (`COLORS`, the protocol's ten): `colors` on
   the view would say them.
 - **Which closed status is "done"**: Mark Done and Mark Canceled send the protocol's ids (`done`,
   `canceled`), shown only where the view lists them. A `kind` on a status would say it.
 - **A status's or a priority's look** is drawn by its id (a newer box's status gets a plain ring).
-- **Relative days** ("today") are this computer's day, sent as `YYYY-MM-DD`.
 
 ## Left
 
-- **Not built:** filters by label, priority or assignee as chips (a label is a scope in the
-  sidebar; see the box note above); reordering within a status and Move to Top (`before`, `after`,
+- **Not built:** filters by priority or assignee, or by several labels at once (a label is a scope in
+  the sidebar; see the box note above); reordering within a status and Move to Top (`before`, `after`,
   `top`); drag and drop; an item's activity feed (`events`, `handed`); opening or saving a file;
   Import; handing an item on; the per-conversation queue; `#243` chips in conversations; the note
   when another computer is away in the list (`computers[].away`); `wanted`; a calendar for the due
   day; a tooltip with a shortcut on each chip (Capy's "P"); sorting.
 - **Not live:** the view is read as the area shows and after each change, not followed
   (`kuvo/work-queue/events`).
-- **The search asks the box on every change to what's typed** (no pause: tests take no clocks). On
-  a machine over SSH that's a request a keystroke; older ones are dropped, not stopped on the box.
+- **The search asks one at a time**, never one a letter; it doesn't wait for a pause in typing (tests
+  take no clocks), so the first letter typed is always asked for.
 - **Keyboard:** no walk through the rows, no ⌘F, no shortcut for New Item; Tab doesn't move between
   a sheet's fields. In a menu, a number picks only while nothing's typed in its line (a label's
   name may have numbers); a due day's numbers pick until its line is clicked into.

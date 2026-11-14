@@ -60,8 +60,10 @@ and what the Bots note read of modals and forms (`notes/screens-bots.md`).
 - The statuses, priorities, labels and who an item may be for are whatever the box lists, in its
   order; `closed` is the box's word for what's folded. Marks are drawn by id, a plain one for an
   id this doesn't know.
-- Every count shown is the box's (`counts`): `open`, each status's, each label's, `removed`. A
-  search's counts are the box's too, of what it found. Under a filter (the app's), no count shows.
+- Every count shown is the box's (`counts`): `open`, each status's, each label's, `removed`. What
+  narrows the list (a search, the filters, a label's list) is sent to the box (`q`, `computers`,
+  `sources`, `owners`, `labels`), and the counts over the list are the box's of what it listed.
+- Every day is counted from the box's `today`: the due menu's days and each due day's words.
 - What may be done to an item is the box's (`can`): nothing it leaves out is offered, and the app
   works none of it out. What the box refuses anyway is drawn in its words, over the list or that
   item's own page.

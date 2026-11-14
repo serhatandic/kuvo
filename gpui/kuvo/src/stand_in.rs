@@ -156,6 +156,18 @@ impl StandIn {
         self.state().queue.starts = Some((status.to_owned(), priority.to_owned()));
     }
 
+    /// The day its Work Queue says it is, whatever the moment it's asked at.
+    pub fn box_today(&self, day: &str) {
+        self.state().queue.today_said = Some(day.to_owned());
+    }
+
+    /// One of its Work Queue's items stands in a status its view doesn't list.
+    pub fn unlisted_status(&self) {
+        let mut state = self.state();
+        let now = state.made.unwrap_or_else(now_ms);
+        state.queue.add_unlisted_status(now);
+    }
+
     /// Its Work Queue lists a status this app has never heard of, with an item in it.
     pub fn newer_status(&self) {
         let mut state = self.state();

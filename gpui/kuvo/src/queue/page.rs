@@ -315,12 +315,15 @@ impl QueueView {
             // Late where the box says so (`overdue`): nothing of it is worked out here.
             let late = item.overdue;
             let late_selector = format!("item-{id}-due-late");
+            // (Counted from the box's today.)
+            let (words, id_) = (time::due_words(due, &self.today(0)), id.clone());
             div()
                 .debug_selector(move || selector)
                 .flex_none()
                 .text_ui(TypeSize::Caption)
                 .text_color(if late { c.danger } else { c.text_muted })
-                .child(time::due_words(due, &self.today(0)))
+                .child(words.clone())
+                .child(div().debug_selector(move || format!("item-{id_}-due:{words}")))
                 .when(late, |d| d.child(div().debug_selector(move || late_selector)))
         });
         let open = Act::Open(id.clone());
@@ -393,9 +396,14 @@ impl QueueView {
                 let selector = format!("item-{id}-restore");
                 div()
                     .debug_selector(move || selector)
-                    .child(Button::new(SharedString::from(format!("restore-{id}")), "Restore").size(ButtonSize::Small).loading(busy).on_click(cx.listener(move |this, _, _, cx| this.act(restore.clone(), cx))))
+                    .child(Button::new(SharedString::from(format!("restore-{id}")), "Restore").size(ButtonSize::Small).loading(busy).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.act(restore.clone(), cx))))
                     .into_any_element()
             })
+        } else if busy {
+            // A change to it is on its way: nothing more is offered (a delete, least of all) until
+            // the box answers.
+            let selector = format!("item-{id}-more-off");
+            Some(div().debug_selector(move || selector).flex().items_center().justify_center().size(px(28.)).opacity(0.4).child(Icon::new(IconName::More).color(c.icon)).into_any_element())
         } else {
             // Nothing may be done to it: why, in the box's words, where its ••• would be.
             self.item_menu(&item, cx).or_else(|| {
@@ -530,17 +538,19 @@ impl QueueView {
             let mark = priority_mark(facts.priority.as_deref().unwrap_or_default(), cx);
             chips.push(self.chip(&target, Field::Priority, mark, words, facts.priority.is_some(), facts.set, false, facts.why.as_ref(), cx));
         }
-        if facts.assignee.is_some() || facts.set {
+        if facts.assignee.is_some() || facts.assign {
             let (mark, words) = match &facts.assignee {
                 Some((_, id, name)) => (who_mark(facts.look.as_ref(), id, name, px(16.), cx), name.clone()),
                 None => (quiet(IconName::User), "Assignee".to_owned()),
             };
-            chips.push(self.chip(&target, Field::Assignee, mark, words, facts.assignee.is_some(), facts.set, false, facts.why.as_ref(), cx));
+            chips.push(self.chip(&target, Field::Assignee, mark, words, facts.assignee.is_some(), facts.assign, false, facts.why.as_ref(), cx));
         }
         if facts.due.is_some() || facts.set {
             let late = facts.late;
             let words = facts.due.as_ref().map_or_else(|| "Due date".to_owned(), |due| time::due_words(due, &self.today(0)));
-            chips.push(self.chip(&target, Field::Due, quiet(IconName::Clock), words, facts.due.is_some(), facts.set, late, facts.why.as_ref(), cx));
+            let selector = format!("chip-due:{words}");
+            let chip = self.chip(&target, Field::Due, quiet(IconName::Clock), words, facts.due.is_some(), facts.set, late, facts.why.as_ref(), cx);
+            chips.push(div().debug_selector(move || selector).flex_none().child(chip).into_any_element());
         }
         // Its labels, as the box's view names them: one by name, more by their dots and how many.
         let labels: Vec<_> = facts.labels.iter().filter_map(|label| self.label(label).cloned()).collect();
@@ -581,7 +591,14 @@ impl QueueView {
             }
             more.push(MenuItemSpec::Entry { label: "Delete".into(), icon: Some(IconName::Trash), checked: false, danger: true, act: Act::Delete(item.id.clone()) });
         }
-        let more = (!more.is_empty()).then(|| menu_of("item-more-popover".into(), icon_trigger("item-more", IconName::More, cx), more, this, 200.));
+        // (While a change to it is on its way, its menu waits: no delete over a change.)
+        let more = (!more.is_empty()).then(|| {
+            if busy {
+                div().debug_selector(|| "item-more-off".into()).flex().flex_none().items_center().justify_center().size(px(28.)).opacity(0.4).child(Icon::new(IconName::More).color(c.icon))
+            } else {
+                menu_of("item-more-popover".into(), icon_trigger("item-more", IconName::More, cx), more, this, 200.)
+            }
+        });
         // (What it says is changed where the box says it may be, once it's read whole.)
         let can_edit = item.can.edit && self.whole().is_some_and(|whole| !whole.told);
         let chips = self.chips(Target::Item(item.id.clone()), cx);
@@ -721,16 +738,46 @@ impl QueueView {
             .into_any_element()
     }
 
+    /// The whole queue's tab: "All", and how many of it are open.
+    fn tab_all(&self, open: usize, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let on = self.shown == Shown::List(Scope::All);
+        let selector = format!("tab-all-open-{open}");
+        div()
+            .id("tab-all")
+            .debug_selector(|| "tab-all".into())
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(space::S1_5)
+            .h(px(30.))
+            .px(px(10.))
+            .rounded(radius::NAV)
+            .cursor_pointer()
+            .text_ui(TypeSize::Small)
+            .when(on, |d| d.bg(c.card).shadow(cx.theme().card_shadow()).text_color(c.text).medium().child(div().debug_selector(|| "tab-all-on".into())))
+            .when(!on, |d| d.text_color(c.text_muted).hover(|s| s.bg(c.hover)))
+            .on_click(cx.listener(|this, _, _, cx| this.act(Act::Scope(Scope::All), cx)))
+            .child("All")
+            .child(div().debug_selector(move || selector).text_ui(TypeSize::Caption).text_color(c.text_faint).child(format!("{open} open")))
+            .into_any_element()
+    }
+
     /// The scope tabs (the whole queue, then each open status with the box's count, and what's
     /// shown where it's neither), the search, the filters and what's offered beside them.
     fn list_head(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let this = cx.entity().downgrade();
+        // All, with how many of them are open (the box's count, as the sidebar's row says it).
+        let open = self.view().map(|view| view.counts.open);
         let mut tabs = vec![self.tab("all", "All".into(), None, Scope::All, cx)];
+        if let Some(open) = open {
+            tabs[0] = self.tab_all(open, cx);
+        }
         if let Some(said) = self.queue() {
-            // The counts are the box's, of the view it listed (as a search narrowed it); a filter
-            // here shows less than it counted, so none shows then.
-            let counts = self.view().filter(|_| self.filters.is_empty()).map(|view| view.counts.statuses.clone());
+            // The counts are the box's, of the view it listed (as it narrowed it: a search, a
+            // filter, a label).
+            let counts = self.view().map(|view| view.counts.statuses.clone());
             let statuses = said.statuses.clone();
             for status in statuses.iter().filter(|status| !status.closed) {
                 tabs.push(self.tab(&status.id, status.name.clone(), counts.as_ref().and_then(|counts| counts.get(&status.id).copied()), Scope::Status(status.id.clone()), cx));

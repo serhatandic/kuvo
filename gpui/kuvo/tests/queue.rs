@@ -121,7 +121,8 @@ fn the_queue_lists_the_boxs_items_under_its_statuses_with_whats_closed_folded(cx
     // More labels than a row shows fold to how many more.
     assert!(shown(cx, "item-wqi_235-label-lbl_docs") && shown(cx, "item-wqi_235-label-lbl_launch") && shown(cx, "item-wqi_235-more-labels") && !shown(cx, "item-wqi_235-label-lbl_design"));
     // The counts are the box's: on the groups, the tabs and the sidebar's rows.
-    for count in ["group-todo-count-6", "group-done-count-12", "tab-todo-count-6", "status-todo-count-6", "status-canceled-count-2", "label-lbl_design-count-5", "queue-open-19"] {
+    // (All says how many are open, in the sidebar and on its tab alike.)
+    for count in ["group-todo-count-6", "group-done-count-12", "tab-todo-count-6", "status-todo-count-6", "status-canceled-count-2", "label-lbl_design-count-5", "queue-open-19", "tab-all-open-19"] {
         assert!(shown(cx, count), "{count}");
     }
 
@@ -162,6 +163,9 @@ fn the_tabs_and_the_sidebar_pick_the_same_scope(cx: &mut TestAppContext) {
     assert!(shown(cx, "tab-label-lbl_design-on") && shown(cx, "item-wqi_235") && shown(cx, "item-wqi_233") && shown(cx, "item-wqi_243") && !shown(cx, "item-wqi_234"));
     assert!(top(cx, "group-in-review") < top(cx, "group-todo"));
     assert_eq!(title(&workspace, cx).as_deref(), Some("Design"));
+    // Its list is the box's (`labels=`), with the box's counts of it.
+    assert_eq!(stand_in.seen_at("GET", "kuvo/work-queue").last().map(|seen| seen.path.clone()).as_deref(), Some("kuvo/work-queue?owner=all&counts=1&labels=lbl_design"));
+    assert!(shown(cx, "group-todo-count-4") && shown(cx, "group-in-review-count-1") && shown(cx, "tab-todo-count-4") && shown(cx, "tab-all-open-5"));
 
     // Back goes to the scope before, and All Items to the whole queue.
     keys(cx, "cmd-[");
@@ -200,35 +204,54 @@ fn the_search_is_the_boxs_and_shows_its_counts_of_what_it_found(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn the_filters_only_choose_which_of_the_boxs_items_show(cx: &mut TestAppContext) {
+fn the_filters_are_the_boxs_and_its_counts_are_of_what_it_lists(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (_workspace, page, cx) = queue(cx, &stand_in);
-    let asked = stand_in.seen_at("GET", "kuvo/work-queue").len();
-    // A filter the box's view offers, on as a chip to take off. The box counted its whole view, so
-    // no count shows over less than that.
+    let asked = |stand_in: &StandIn| stand_in.seen_at("GET", "kuvo/work-queue").last().map(|seen| seen.path.clone()).unwrap_or_default();
+    // A filter the box's view offers is sent to the box, on as a chip to take off; what's listed
+    // and every count over it are the box's answer. The sidebar keeps the whole queue's.
     click(cx, "queue-filter");
     click(cx, "menu-item-devbox");
-    assert!(shown(cx, "filter-0") && shown(cx, "item-wqi_236") && !shown(cx, "item-wqi_231"));
-    assert!(!shown(cx, "group-todo-count-6") && !shown(cx, "tab-todo-count-6") && shown(cx, "group-todo"));
+    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&computers=key_devbox");
+    assert!(shown(cx, "filter-0") && shown(cx, "item-wqi_236") && !shown(cx, "item-wqi_231") && !shown(cx, "group-backlog"));
+    for count in ["group-todo-count-1", "tab-todo-count-1", "tab-backlog-count-0", "tab-all-open-1", "status-todo-count-6", "queue-open-19"] {
+        assert!(shown(cx, count), "{count}");
+    }
     // Another of the same kind widens it; one of another kind narrows it.
     click(cx, "queue-filter");
     click(cx, "menu-item-studio-mini");
-    assert!(shown(cx, "item-wqi_236") && shown(cx, "item-wqi_242"));
+    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&computers=key_devbox,key_studio");
+    assert!(shown(cx, "item-wqi_236") && shown(cx, "item-wqi_242") && shown(cx, "tab-all-open-2"));
     click(cx, "queue-filter");
     click(cx, "menu-item-GitHub issues");
-    assert!(shown(cx, "queue-empty"));
+    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&computers=key_devbox,key_studio&sources=github");
+    assert!(shown(cx, "queue-empty") && shown(cx, "tab-all-open-0"));
     assert_eq!(page.read_with(cx, |page, _| page.filters().len()), 3);
     click(cx, "filters-clear");
-    assert!(!shown(cx, "queue-filters") && shown(cx, "item-wqi_231") && shown(cx, "group-todo-count-6"));
+    assert!(!shown(cx, "queue-filters") && shown(cx, "item-wqi_231") && shown(cx, "group-todo-count-6") && shown(cx, "tab-all-open-19"));
     // A source is its kind, as the box counts them: issues and pull requests are two filters.
     click(cx, "queue-filter");
     click(cx, "menu-item-GitHub pull requests");
+    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&sources=github-pr");
     assert!(shown(cx, "item-wqi_247") && !shown(cx, "item-wqi_233") && !shown(cx, "item-wqi_250"));
     click(cx, "queue-filter");
     click(cx, "menu-item-GitHub issues");
     assert!(shown(cx, "item-wqi_247") && shown(cx, "item-wqi_233") && shown(cx, "item-wqi_250") && !shown(cx, "item-wqi_234"));
-    // None of it asked the box again.
-    assert_eq!(stand_in.seen_at("GET", "kuvo/work-queue").len(), asked);
+    click(cx, "filters-clear");
+    // The box asked is the computer with no key; an owner is one the box names.
+    click(cx, "queue-filter");
+    click(cx, "menu-item-This Mac");
+    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&computers=");
+    assert!(shown(cx, "item-wqi_231") && !shown(cx, "item-wqi_236") && !shown(cx, "item-wqi_242") && shown(cx, "tab-all-open-15"));
+    click(cx, "queue-filter");
+    click(cx, "menu-item-Launch crew");
+    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&computers=&owners=grp_launch");
+    assert!(shown(cx, "item-wqi_235") && !shown(cx, "item-wqi_231") && shown(cx, "group-in-review-count-1"));
+    // With a search, both go to the box together.
+    click(cx, "queue-search");
+    cx.simulate_input("post");
+    assert_eq!(asked(&stand_in), "kuvo/work-queue?owner=all&counts=1&q=post&computers=&owners=grp_launch");
+    assert!(shown(cx, "item-wqi_235"));
 }
 
 #[gpui::test]
@@ -293,7 +316,15 @@ fn an_item_on_a_computer_thats_away_says_so_and_offers_nothing(cx: &mut TestAppC
     // One on a computer that answers is read there, whole, and changed there.
     click(cx, "item-back");
     click(cx, "item-wqi_236");
-    assert!(shown(cx, "item-elsewhere") && shown(cx, "item-no-body") && shown(cx, "item-finish") && shown(cx, "chip-assignee") && !shown(cx, "chip-status-fact"));
+    assert!(shown(cx, "item-elsewhere") && shown(cx, "item-no-body") && shown(cx, "item-finish") && !shown(cx, "chip-status-fact"));
+    // Who it's for is said, and isn't changed from here (`can.assign`): this box's view lists its own
+    // bots, and that computer's item is assigned there. Its other chips open.
+    assert!(shown(cx, "chip-assignee-fact"));
+    click(cx, "chip-assignee");
+    assert_eq!(menu(&page, cx), None);
+    click(cx, "chip-priority");
+    assert_eq!(menu(&page, cx), Some(Field::Priority));
+    keys(cx, "escape");
     assert_eq!(page.read_with(cx, |page, _| page.notice("item-elsewhere")).as_deref(), Some("Read from devbox. What you change here is changed there."));
 
     // One on a computer that runs an older Kuvo Code, and one on a machine shared outside your
@@ -801,13 +832,22 @@ fn assigning_your_own_item_to_a_bot_moves_it_to_that_bots_queue(cx: &mut TestApp
     keys(cx, "cmd-enter");
     assert_eq!(item_said(&stand_in, "wqi_263")["owner"], "usr_you");
     click(cx, "item-wqi_263");
-    assert!(page.read_with(cx, |page, _| page.facts_line()).is_some_and(|line| line.ends_with("In your own queue")));
+    assert!(page.read_with(cx, |page, _| page.facts_line()).is_some_and(|line| line.ends_with("In your own list")));
     // For a bot of this box, the box hands it on: it's in that bot's queue from then.
     click(cx, "chip-assignee");
     click(cx, "pick-bot_mira");
     let item = item_said(&stand_in, "wqi_263");
     assert_eq!((item["owner"].as_str(), item["handedBy"].as_str()), (Some("ses_mira"), Some("usr_you")));
     assert!(page.read_with(cx, |page, _| page.facts_line()).is_some_and(|line| line.ends_with("In Mira’s queue")));
+
+    // Your own list is an owner the box names ("Your own"): one to filter by, as any other.
+    click(cx, "item-back");
+    click(cx, "queue-new");
+    cx.simulate_input("Mine still");
+    keys(cx, "cmd-enter");
+    click(cx, "queue-filter");
+    click(cx, "menu-item-Your own");
+    assert!(shown(cx, "item-wqi_264") && !shown(cx, "item-wqi_263") && !shown(cx, "item-wqi_231"));
 }
 
 #[gpui::test]
@@ -851,6 +891,60 @@ fn a_status_this_app_has_never_heard_of_is_listed_as_the_box_says(cx: &mut TestA
     assert_eq!(menu(&page, cx), None);
     click(cx, "item-back");
     assert!(shown(cx, "item-wqi_234-status-blocked"));
+    // Its group holds both now, under the box's name for it, with the box's count; its own list too.
+    assert!(shown(cx, "group-blocked-count-2") && top(cx, "item-wqi_227") > top(cx, "group-blocked") && top(cx, "item-wqi_234") < top(cx, "group-todo"));
+    click(cx, "status-blocked");
+    assert!(shown(cx, "tab-blocked-on") && shown(cx, "item-wqi_227") && shown(cx, "item-wqi_234") && !shown(cx, "item-wqi_233"));
+}
+
+#[gpui::test]
+fn an_item_in_a_status_the_view_doesnt_list_isnt_hidden(cx: &mut TestAppContext) {
+    // One kept as it came from a newer box, in a status this box's view doesn't list: it has a
+    // group of its own, after the rest, under the name it came by.
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.unlisted_status();
+    let (_workspace, _page, cx) = queue(cx, &stand_in);
+    click(cx, "group-todo");
+    click(cx, "group-backlog");
+    assert!(shown(cx, "group-triage") && shown(cx, "item-wqi_226") && shown(cx, "item-wqi_226-status-triage"));
+    assert!(top(cx, "group-triage") > top(cx, "group-canceled") && top(cx, "group-triage") < top(cx, "group-deleted"));
+    click(cx, "item-wqi_226");
+    assert!(shown(cx, "item-head") && shown(cx, "chip-status"));
+}
+
+#[gpui::test]
+fn every_day_is_counted_from_the_boxs_today_never_this_computers(cx: &mut TestAppContext) {
+    // The box says it's the 16th (its own zone, or its own clock); this computer's is the 14th.
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.box_today("2026-11-16");
+    let (_workspace, _page, cx) = queue(cx, &stand_in);
+    // A row's due words follow the box: the 16th is today, and the 13th is no "Yesterday".
+    assert!(shown(cx, "item-wqi_231-due:Today") && shown(cx, "item-wqi_235-due:Nov 13") && !shown(cx, "item-wqi_235-due:Yesterday"));
+    // So do the chip on its page and the menu's days: Today, Tomorrow and In a week from the 16th.
+    click(cx, "item-wqi_234");
+    let sent = |stand_in: &StandIn| bodies(stand_in, "PATCH", "kuvo/work-queue/items/wqi_234").last().cloned();
+    click(cx, "chip-due");
+    keys(cx, "1");
+    assert_eq!(sent(&stand_in), Some(json!({ "due": "2026-11-16" })));
+    assert!(shown(cx, "chip-due:Today"));
+    click(cx, "chip-due");
+    assert!(shown(cx, "pick-today-on"));
+    keys(cx, "2");
+    assert_eq!(sent(&stand_in), Some(json!({ "due": "2026-11-17" })));
+    assert!(shown(cx, "chip-due:Tomorrow"));
+    click(cx, "chip-due");
+    keys(cx, "3");
+    assert_eq!(sent(&stand_in), Some(json!({ "due": "2026-11-23" })));
+    assert!(shown(cx, "chip-due:Nov 23"));
+    // A new item's too.
+    click(cx, "item-back");
+    click(cx, "queue-new");
+    click(cx, "chip-due");
+    keys(cx, "2");
+    assert!(shown(cx, "chip-due:Tomorrow"));
+    cx.simulate_input("Soon");
+    keys(cx, "cmd-enter");
+    assert_eq!(bodies(&stand_in, "POST", "kuvo/work-queue/items").last().map(|body| body["due"].clone()), Some(json!("2026-11-17")));
 }
 
 #[gpui::test]
@@ -1052,6 +1146,69 @@ mod live {
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
         assert_eq!(page.read_with(cx, |page, _| page.sheet().cloned()), None);
+    }
+
+    #[gpui::test]
+    fn words_typed_quickly_and_filters_ask_the_box_one_at_a_time(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (page, cx) = host(cx, &stand_in);
+        let asked = |stand_in: &StandIn| stand_in.seen_at("GET", "kuvo/work-queue").into_iter().map(|seen| seen.path.trim_start_matches("kuvo/work-queue?owner=all&counts=1").to_owned()).filter(|path| !path.is_empty()).collect::<Vec<_>>();
+        // Four letters before the box answers the first: a request for the first, and one for what's
+        // typed when it answers, never one a letter; what's drawn is the last's.
+        let field = page.read_with(cx, |page, _| page.search_field().clone());
+        for typed in ["d", "do", "doc", "docs"] {
+            field.update(cx, |field, cx| field.set_text(typed, cx));
+        }
+        cx.run_until_parked();
+        assert_eq!(asked(&stand_in), vec!["&q=d".to_owned(), "&q=docs".to_owned()]);
+        assert!(shown(cx, "item-wqi_239") && shown(cx, "tab-backlog-count-2") && !page.read_with(cx, |page, _| page.searching()));
+        // Two filters put on one after the other, the same way: an older answer never lands on the
+        // newer filters.
+        field.update(cx, |field, cx| field.set_text("", cx));
+        page.update(cx, |page, cx| {
+            page.act(Act::AddFilter(kuvo::queue::Filter::Computer { key: "key_devbox".into(), name: "devbox".into() }), cx);
+            page.act(Act::AddFilter(kuvo::queue::Filter::Computer { key: "key_studio".into(), name: "studio-mini".into() }), cx);
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(shown(cx, "search-loading") && !shown(cx, "item-wqi_239"));
+        cx.run_until_parked();
+        assert_eq!(asked(&stand_in).last().map(String::as_str), Some("&computers=key_devbox,key_studio"));
+        assert!(shown(cx, "item-wqi_236") && shown(cx, "item-wqi_242") && !shown(cx, "item-wqi_231") && shown(cx, "tab-all-open-2"));
+    }
+
+    #[gpui::test]
+    fn nothing_more_is_offered_for_an_item_while_a_change_to_it_is_on_its_way(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (page, cx) = host(cx, &stand_in);
+        assert!(shown(cx, "item-wqi_234-more"));
+        // A change sent, and drawn before the box answers: its row's ••• waits, and a delete asked
+        // for anyway isn't sent over the change.
+        page.update(cx, |page, cx| page.act(Act::Set { item: "wqi_234".into(), change: Box::new(ItemChange { priority: Some("high".into()), ..ItemChange::default() }) }, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(shown(cx, "item-wqi_234-more-off") && !shown(cx, "item-wqi_234-more") && shown(cx, "item-wqi_235-more"));
+        page.update(cx, |page, cx| page.act(Act::Delete("wqi_234".into()), cx));
+        cx.run_until_parked();
+        assert!(stand_in.seen_at("DELETE", "kuvo/work-queue/items/wqi_234").is_empty());
+        assert_eq!(item_said(&stand_in, "wqi_234")["priority"], "high");
+        assert!(shown(cx, "item-wqi_234-more") && !shown(cx, "item-wqi_234-more-off"));
+        // On its page the same: Mark Done and its ••• wait.
+        page.update(cx, |page, cx| page.show(Some("item:wqi_234"), cx));
+        cx.run_until_parked();
+        assert!(shown(cx, "item-more"));
+        page.update(cx, |page, cx| page.act(Act::Set { item: "wqi_234".into(), change: Box::new(ItemChange { priority: Some("low".into()), ..ItemChange::default() }) }, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(shown(cx, "item-more-off") && !shown(cx, "item-more"));
+        cx.run_until_parked();
+        assert!(shown(cx, "item-more"));
+        // A deleted one's Restore waits the same way while it's being brought back.
+        click(cx, "item-more");
+        click(cx, "menu-item-Delete");
+        page.update(cx, |page, cx| {
+            page.act(Act::Restore("wqi_234".into()), cx);
+            page.act(Act::Restore("wqi_234".into()), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(stand_in.seen_at("POST", "kuvo/work-queue/items/wqi_234/restore").len(), 1);
     }
 
     #[gpui::test]

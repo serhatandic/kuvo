@@ -106,6 +106,12 @@ pub fn day(ms: f64, ahead: i64, offset: i64) -> String {
     format!("{year:04}-{month:02}-{date:02}")
 }
 
+/// The day `offset` days after `day` (as the box writes one); none where `day` can't be read.
+pub fn day_after(day: &str, offset: i64) -> Option<String> {
+    let (year, month, date) = civil(parse_day(day)? + offset);
+    Some(format!("{year:04}-{month:02}-{date:02}"))
+}
+
 /// A due day in a few words, seen from `today` (both `YYYY-MM-DD`): "Today", "Tomorrow",
 /// "Yesterday", else "Nov 16" (with its year where it isn't this one). One this can't read is
 /// shown as written.
@@ -152,5 +158,6 @@ mod tests {
         let words = |due: &str| due_words(due, "2026-11-14");
         assert_eq!((words("2026-11-14"), words("2026-11-15"), words("2026-11-13"), words("2026-11-30"), words("2027-01-02"), words("soon")), ("Today".into(), "Tomorrow".into(), "Yesterday".into(), "Nov 30".into(), "Jan 2, 2027".into(), "soon".into()));
         assert_eq!(parse_day("2026-13-01"), None);
+        assert_eq!((day_after("2026-12-30", 7), day_after("today", 1)), (Some("2027-01-06".into()), None));
     }
 }

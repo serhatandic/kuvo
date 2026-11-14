@@ -129,8 +129,10 @@ pub(super) struct Facts {
     /// Its day is gone by, as the box says.
     pub late: bool,
     pub due: Option<String>,
-    /// Its status among the open ones, its priority, labels, assignee and due day may be changed.
+    /// Its status among the open ones, its priority, labels and due day may be changed.
     pub set: bool,
+    /// Who it's for may be said (among those the box's view lists).
+    pub assign: bool,
     /// It may be closed.
     pub close: bool,
 }
@@ -154,6 +156,7 @@ impl QueueView {
                     late: false,
                     due: draft.due.clone(),
                     set: true,
+                    assign: true,
                     close: true,
                 })
             }
@@ -171,6 +174,7 @@ impl QueueView {
                     late: item.overdue,
                     due: item.due.clone(),
                     set: item.can.set,
+                    assign: item.can.assign,
                     close: item.can.close,
                 };
                 // What's been asked of it and not answered yet (a change on its way, and one
@@ -244,12 +248,14 @@ impl QueueView {
                 picks
             }
             Field::Due => {
+                // Counted from the box's today, never this computer's clock (a box that hasn't said
+                // its day offers a day typed, and none).
                 let today = self.today(0);
                 let day = |key: &str, label: &str, offset: i64| {
                     let day = self.today(offset);
                     Pick { key: key.into(), label: label.into(), detail: Some(day_words(&day)), mark: Mark::Icon(IconName::Clock), checked: facts.due.as_ref() == Some(&day), value: Picked::Due(Some(day)), header: None }
                 };
-                let mut picks = vec![day("today", "Today", 0), day("tomorrow", "Tomorrow", 1), day("week", "In a week", 7)];
+                let mut picks = if today.is_empty() { Vec::new() } else { vec![day("today", "Today", 0), day("tomorrow", "Tomorrow", 1), day("week", "In a week", 7)] };
                 // A day set some other way is said as it is.
                 if let Some(due) = facts.due.as_ref().filter(|due| !picks.iter().any(|pick| pick.checked) && !due.is_empty()) {
                     picks.push(Pick { key: "set".into(), label: time::due_words(due, &today), detail: Some(due.clone()), mark: Mark::Icon(IconName::Clock), checked: true, value: Picked::Due(Some(due.clone())), header: None });
@@ -284,13 +290,17 @@ impl QueueView {
         // (Nothing of it may be changed: no menu.)
         let may = match field {
             Field::Status => facts.set || facts.close,
+            Field::Assignee => facts.assign,
             _ => facts.set,
         };
         if !may {
             return;
         }
-        // (A due day's line shows how a day is written, with one a fortnight from today.)
-        let placeholder = if field == Field::Due { format!("{}: {}", field.placeholder(), self.today(14)) } else { field.placeholder().to_owned() };
+        // (A due day's line shows how a day is written, with one a fortnight from the box's today.)
+        let placeholder = match self.today(14) {
+            example if field == Field::Due && !example.is_empty() => format!("{}: {example}", field.placeholder()),
+            _ => field.placeholder().to_owned(),
+        };
         self.picker_field.update(cx, |line, cx| {
             line.set_placeholder(placeholder);
             line.set_text("", cx);

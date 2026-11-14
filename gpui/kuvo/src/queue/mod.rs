@@ -6,8 +6,8 @@
 //! the box's (`kuvo/work-queue?owner=all&counts=1`, with `q` for a search;
 //! `kuvo/work-queue/items/<id>`): its statuses, priorities and labels, its order, its counts, and
 //! what may be done to each item (`can`). Every change goes to the box's route and what it answers
-//! is what's drawn after, or why not, in its words. The app decides nothing but what it draws: the
-//! filters only choose which of the box's items show.
+//! is what's drawn after, or why not, in its words. The app decides nothing but what it draws: a
+//! search, the filters and a label's list are sent to the box, which narrows its view by them.
 //!
 //! Drawn as Bots' and Settings' pages are: the page's rows worked out once each time what they're
 //! drawn from changes, then a virtual list that lays out only what's on screen.
@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, ListAlignment, ListState, Pixels, ScrollHandle, Size, Subscription, Task, px};
 use kuvo_box::BoxClient;
 use kuvo_box::accounts::said;
-use kuvo_box::work_queue::{File, Item, ItemChange, ItemSession, Label, Link, NewItem, QueueSaid, Who, Whole};
+use kuvo_box::work_queue::{File, Item, ItemChange, ItemSession, Label, Link, Narrow, NewItem, QueueSaid, Who, Whole};
 use kuvo_ui::{TextField, TextFieldEvent};
 
 pub use picker::{Field, Picker, Target};
@@ -72,7 +72,8 @@ pub enum Shown {
     Item(String),
 }
 
-/// A filter over the list, shown as a chip to take off.
+/// A filter over the list, shown as a chip to take off. The box applies it (`computers`, `sources`,
+/// `owners` on the view's route): the app only says which are on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Filter {
     /// Items on one computer (by its key; this box's own is empty).
@@ -99,23 +100,6 @@ impl Filter {
             (Filter::Source(kind), Filter::Source(other)) => kind == other,
             (Filter::Owner { owner, .. }, Filter::Owner { owner: other, .. }) => owner == other,
             _ => false,
-        }
-    }
-
-    fn kind(&self) -> u8 {
-        match self {
-            Filter::Computer { .. } => 0,
-            Filter::Source(_) => 1,
-            Filter::Owner { .. } => 2,
-        }
-    }
-
-    fn takes(&self, item: &Item) -> bool {
-        match self {
-            Filter::Computer { key, .. } => item.computer.as_ref().map_or("", |computer| computer.key.as_str()) == key,
-            // (By its kind, as the box counts them: an issue's and a pull request's are two.)
-            Filter::Source(kind) => item.source.as_ref().is_some_and(|source| &source.kind == kind),
-            Filter::Owner { owner, .. } => &item.owner == owner,
         }
     }
 }
@@ -234,6 +218,10 @@ pub struct QueueView {
     /// for: drawn only while they're what's searched for.
     found: Reading<QueueSaid>,
     found_for: String,
+    /// The narrowed view being asked for now (its route): one at a time.
+    narrow_flying: Option<String>,
+    /// Asked for again while one was on its way: asked when it answers.
+    narrow_again: bool,
     /// Changes to an item sent and not answered yet, and the latest wanted while one is on its
     /// way (sent when it answers), by the item's id.
     flying: HashMap<String, ItemChange>,
@@ -347,6 +335,8 @@ impl QueueView {
             query: String::new(),
             found: Reading::NotYet,
             found_for: String::new(),
+            narrow_flying: None,
+            narrow_again: false,
             flying: HashMap::new(),
             waiting: HashMap::new(),
             editing: None,
@@ -454,12 +444,10 @@ impl QueueView {
         self.now.unwrap_or_else(time::now_ms)
     }
 
-    /// Today, as the box writes a day: this computer's own day (a moment set from outside, in
-    /// tests and shots, is read as UTC's).
+    /// The day `offset` days from today, as the box writes a day. Today is the box's (`today` on
+    /// its view), never this computer's clock; nothing where the box hasn't said it.
     fn today(&self, offset: i64) -> String {
-        let now = self.now();
-        let ahead = if self.now.is_some() { 0 } else { kuvo_box::work_queue::utc_offset(now) };
-        time::day(now, ahead, offset)
+        self.queue().and_then(|said| time::day_after(&said.today, offset)).unwrap_or_default()
     }
 
     /// The box's view, as the sidebar read it.
@@ -478,21 +466,40 @@ impl QueueView {
         }
     }
 
-    /// What the list is drawn from: the box's view, or, while something's searched for, the view
-    /// the box narrowed by it.
+    /// What narrows the list now, for the box to apply: what's searched for, the filters that are
+    /// on, and the label whose list shows.
+    pub fn narrowing(&self) -> Narrow {
+        let mut by = Narrow { q: self.query.clone(), ..Narrow::default() };
+        for filter in &self.filters {
+            match filter {
+                Filter::Computer { key, .. } => by.computers.push(key.clone()),
+                Filter::Source(kind) => by.sources.push(kind.clone()),
+                Filter::Owner { owner, .. } => by.owners.push(owner.clone()),
+            }
+        }
+        if let Shown::List(Scope::Label(id)) = &self.shown {
+            by.labels.push(id.clone());
+        }
+        by
+    }
+
+    /// What the list is drawn from: the box's view, or, while anything narrows it, the view the
+    /// box narrowed by exactly that.
     fn view(&self) -> Option<&QueueSaid> {
-        if self.query.is_empty() {
+        let by = self.narrowing();
+        if by.is_empty() {
             return self.queue();
         }
         match &self.found {
-            Reading::Ready(found) if self.found_for == self.query => Some(found),
+            Reading::Ready(found) if self.found_for == by.route() => Some(found),
             _ => None,
         }
     }
 
-    /// Whether the box is yet to answer for what's searched for now.
+    /// Whether the box is yet to answer for what narrows the list now.
     pub fn searching(&self) -> bool {
-        !self.query.is_empty() && self.found_for != self.query
+        let by = self.narrowing();
+        !by.is_empty() && self.found_for != by.route()
     }
 
     /// The line at an item's page's foot (who added and changed it, whose queue it's in), as drawn.
@@ -511,27 +518,41 @@ impl QueueView {
         })
     }
 
-    /// Asks the box for the view narrowed by what's typed. A newer search replaces an older one
-    /// still on its way, and an answer is only ever taken for what's searched for now.
+    /// Asks the box for the view narrowed by what's typed and the filters on. One at a time: what
+    /// narrows it when an answer comes is asked next (so words typed quickly are a request for the
+    /// first and one for the last, not one a letter), and an answer is only ever taken for what
+    /// narrows the list now.
     fn search(&mut self, cx: &mut Context<Self>) {
-        let query = self.query.clone();
-        if query.is_empty() {
+        let by = self.narrowing();
+        if by.is_empty() {
             self.found = Reading::NotYet;
             self.found_for.clear();
-            self.tasks.remove("search");
             return;
         }
-        let asked = query.clone();
+        let route = by.route();
+        // (One's on its way: this is asked when it answers.)
+        if self.narrow_flying.is_some() {
+            self.narrow_again = true;
+            return;
+        }
+        self.narrow_flying = Some(route.clone());
+        self.narrow_again = false;
         self.run(
             "search",
-            move |client| client.work_queue_search(&asked),
-            move |this, read, _| {
-                if this.query == query {
-                    this.found_for = query;
+            move |client| client.work_queue_narrowed(&by),
+            move |this, read, cx| {
+                this.narrow_flying = None;
+                // Still what narrows the list: taken. Narrowed otherwise meanwhile: dropped.
+                if this.narrowing().route() == route {
+                    this.found_for = route;
                     this.found = match read {
                         Ok(found) => Reading::Ready(found),
                         Err(error) => Reading::Failed(error.to_string()),
                     };
+                }
+                // Asked for again meanwhile (other words, a filter, or a change to an item): now.
+                if this.narrow_again {
+                    this.search(cx);
                 }
             },
             cx,
@@ -560,6 +581,8 @@ impl QueueView {
             self.whole = Reading::NotYet;
             self.list.scroll_to(gpui::ListOffset::default());
             self.read(cx);
+            // (A label's list is the box's too: its items, and its counts of them.)
+            self.search(cx);
         }
         self.rebuild(cx);
     }
@@ -653,14 +676,6 @@ impl QueueView {
         !self.query.is_empty() || !self.filters.is_empty()
     }
 
-    /// Whether the filters take an item: every kind of filter picked, any one of a kind.
-    fn takes(&self, item: &Item) -> bool {
-        (0..3u8).all(|kind| {
-            let mut of_kind = self.filters.iter().filter(|filter| filter.kind() == kind).peekable();
-            of_kind.peek().is_none() || of_kind.any(|filter| filter.takes(item))
-        })
-    }
-
     /// Works the page's rows out again, from what it's drawn from now.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         let rows = match self.shown.clone() {
@@ -684,12 +699,13 @@ impl QueueView {
             Reading::Failed(why) => return Some(vec![Row::Note { key: "queue-failed".into(), words: format!("The Work Queue couldn’t be read: {why}"), busy: false }, Row::End]),
             Reading::Ready(_) => {}
         }
-        if self.query.is_empty() {
+        if self.narrowing().is_empty() {
             return None;
         }
-        // (What an older search found is never drawn under the words typed since.)
+        // (What the box answered for other words or filters is never drawn under these.)
         if self.searching() {
-            return Some(vec![Row::Note { key: "search-loading".into(), words: format!("Searching for “{}”…", self.query), busy: true }, Row::End]);
+            let words = if self.query.is_empty() { "Loading…".to_owned() } else { format!("Searching for “{}”…", self.query) };
+            return Some(vec![Row::Note { key: "search-loading".into(), words, busy: true }, Row::End]);
         }
         match &self.found {
             Reading::NotYet => Some(vec![Row::Note { key: "search-loading".into(), words: format!("Searching for “{}”…", self.query), busy: true }, Row::End]),
@@ -705,9 +721,9 @@ impl QueueView {
         let Some(said) = self.view() else { return Vec::new() };
         let narrowed = self.narrowed();
         let single = matches!(scope, Scope::Status(_));
-        // The counts are the box's, of the view it listed (whole, or as a search narrowed it):
-        // shown only where that's what's listed, so not under a label or a filter.
-        let counted = *scope == Scope::All && self.filters.is_empty();
+        // The counts are the box's, of the view it listed (whole, or as it narrowed it by a search,
+        // a filter or a label): each status's, wherever every status shows.
+        let counted = !single;
         let mut rows = Vec::new();
         for status in &said.statuses {
             if let Scope::Status(id) = scope
@@ -715,7 +731,7 @@ impl QueueView {
             {
                 continue;
             }
-            let items: Vec<&Item> = said.items.iter().filter(|item| item.status == status.id && self.takes(item)).filter(|item| !matches!(scope, Scope::Label(label) if !item.labels.contains(label))).collect();
+            let items: Vec<&Item> = said.items.iter().filter(|item| item.status == status.id).collect();
             if items.is_empty() {
                 continue;
             }
@@ -727,6 +743,25 @@ impl QueueView {
             if !folded {
                 let last = items.len() - 1;
                 rows.extend(items.into_iter().enumerate().map(|(ix, item)| Row::Item { item: Box::new(item.clone()), first: ix == 0, last: ix == last, deleted: false, busy: self.busy.contains(&item.id) }));
+            }
+        }
+        // An item in a status the view doesn't list (kept as it came from a newer box) isn't hidden:
+        // each such status is a group of its own, after the rest, under the name it came by.
+        if !single {
+            let mut unlisted: Vec<&str> = Vec::new();
+            for item in said.items.iter().filter(|item| !said.statuses.iter().any(|status| status.id == item.status)) {
+                if !unlisted.contains(&item.status.as_str()) {
+                    unlisted.push(&item.status);
+                }
+            }
+            for status in unlisted {
+                let items: Vec<&Item> = said.items.iter().filter(|item| item.status == status).collect();
+                let folded = !narrowed && self.is_folded(status);
+                rows.push(Row::Group { key: status.to_owned(), name: status.to_owned(), count: None, folded, first: rows.is_empty() });
+                if !folded {
+                    let last = items.len() - 1;
+                    rows.extend(items.into_iter().enumerate().map(|(ix, item)| Row::Item { item: Box::new(item.clone()), first: ix == 0, last: ix == last, deleted: false, busy: self.busy.contains(&item.id) }));
+                }
             }
         }
         if rows.is_empty() {
@@ -743,7 +778,7 @@ impl QueueView {
         }
         // What's deleted, the box keeps a while: under the whole queue, folded.
         if *scope == Scope::All {
-            let removed: Vec<&Item> = said.removed.iter().filter(|item| self.takes(item)).collect();
+            let removed: Vec<&Item> = said.removed.iter().collect();
             if !removed.is_empty() {
                 let folded = !narrowed && self.is_folded(DELETED);
                 rows.push(Row::Group { key: DELETED.into(), name: "Deleted".into(), count: counted.then_some(said.counts.removed), folded, first: false });
@@ -845,8 +880,8 @@ impl QueueView {
             facts.push(format!("Changed{} {}", by(&item.updated.by), ago(item.updated.at, now)));
         }
         match self.queue().and_then(|said| said.owners.iter().find(|owner| owner.owner == item.owner)) {
-            // (Your own queue: the items you added that are no conversation's.)
-            Some(owner) if owner.kind == "you" => facts.push("In your own queue".into()),
+            // (Your own: the items you added that are no conversation's.)
+            Some(owner) if owner.kind == "you" => facts.push("In your own list".into()),
             Some(owner) => facts.extend(owner.name().map(|owner| format!("In {owner}’s queue"))),
             None => {}
         }
@@ -872,8 +907,8 @@ impl QueueView {
         if !sources.is_empty() {
             groups.push(("Source".to_owned(), sources.into_iter().map(|kind| Filter::Source(kind.clone())).collect()));
         }
-        // (Your own queue is named here: the box gives it no title.)
-        let owners: Vec<Filter> = said.owners.iter().filter_map(|owner| Some(Filter::Owner { owner: owner.owner.clone(), name: owner.name().or_else(|| (owner.kind == "you").then(|| "You".to_owned()))? })).collect();
+        // (Each by the name the box gives it: your own list is "Your own".)
+        let owners: Vec<Filter> = said.owners.iter().filter_map(|owner| Some(Filter::Owner { owner: owner.owner.clone(), name: owner.name()? })).collect();
         if !owners.is_empty() {
             groups.push(("Owner".to_owned(), owners));
         }
@@ -902,14 +937,19 @@ impl QueueView {
                 if !self.filters.iter().any(|each| each.same(&filter)) {
                     self.filters.push(filter);
                     self.list.scroll_to(gpui::ListOffset::default());
+                    self.search(cx);
                 }
             }
             Act::RemoveFilter(ix) => {
                 if ix < self.filters.len() {
                     self.filters.remove(ix);
+                    self.search(cx);
                 }
             }
-            Act::ClearFilters => self.filters.clear(),
+            Act::ClearFilters => {
+                self.filters.clear();
+                self.search(cx);
+            }
             Act::Set { item, change } => {
                 // One at a time for an item: while one is on its way, the latest wanted waits
                 // behind it (what's said later wins, field by field) and goes when it answers.
@@ -922,6 +962,7 @@ impl QueueView {
                     self.change(&item, move |client| client.change_work_item(&asked, &change), cx);
                 }
             }
+            // (Neither while a change to it is on its way: `change` takes one at a time.)
             Act::Delete(item) => {
                 let asked = item.clone();
                 self.change(&item, move |client| client.delete_work_item(&asked), cx);

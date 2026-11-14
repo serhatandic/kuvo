@@ -57,7 +57,7 @@ cargo run -p kuvo                                       # this Mac's own box (Ku
   lists it (`kuvo/work-queue?owner=all&counts=1`), its items under the box's statuses (Needs you,
   In review, In progress, Waiting, Todo, Backlog; Done and Canceled folded) with the box's counts,
   each row with its priority, labels, who it's for and when it's due; scope tabs and a sidebar of
-  statuses and labels, a search the box answers (`q`), filters as chips to take off; an item's page
+  statuses and labels, a search and filters the box answers (`q`, `computers`, `sources`, `owners`, `labels`), the filters as chips to take off; an item's page
   (description as Markdown, progress, notes, files, links, the sessions working on it) whose chips
   change its status, priority, assignee, due day and labels; New Item, written like a message with
   a menu under each chip (a number picks a row) and Create more; Mark Done, Mark Canceled, Delete

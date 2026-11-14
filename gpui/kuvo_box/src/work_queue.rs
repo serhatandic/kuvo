@@ -69,9 +69,13 @@ pub struct Can {
     /// Change its title and description.
     #[serde(default)]
     pub edit: bool,
-    /// Change where it stands among the open statuses, its priority, labels, assignee and due day.
+    /// Change where it stands among the open statuses, its priority, labels and due day.
     #[serde(default)]
     pub set: bool,
+    /// Say who it's for, among the view's `assignees` (the bots of the box asked: an item another
+    /// computer keeps is assigned there).
+    #[serde(default)]
+    pub assign: bool,
     /// Close it: Done or Canceled.
     #[serde(default)]
     pub close: bool,
@@ -368,6 +372,8 @@ pub struct QueueSaid {
     pub assignees: Vec<Assignee>,
     /// What an item added with nothing said starts as.
     pub new: Option<Starts>,
+    /// The day it is on the box asked (`YYYY-MM-DD`): what every day here is counted from.
+    pub today: String,
     /// The items, in the box's order.
     pub items: Vec<Item>,
     pub owners: Vec<Owner>,
@@ -379,6 +385,38 @@ pub struct QueueSaid {
     pub counts: Counts,
     /// The words it was narrowed by, as the box says them back.
     pub q: Option<String>,
+}
+
+/// What a view is narrowed by, all of it the box's to apply: words to search for (`q`), and its
+/// filters, each a list of which any one may match: computers (by key; empty for the box asked),
+/// outside sources (by kind), owners, and labels (by id).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Narrow {
+    pub q: String,
+    pub computers: Vec<String>,
+    pub sources: Vec<String>,
+    pub owners: Vec<String>,
+    pub labels: Vec<String>,
+}
+
+impl Narrow {
+    pub fn is_empty(&self) -> bool {
+        *self == Narrow::default()
+    }
+
+    /// The view's route with what narrows it: `…&q=…&computers=a,b&sources=…&owners=…&labels=…`.
+    pub fn route(&self) -> String {
+        let mut route = "kuvo/work-queue?owner=all&counts=1".to_owned();
+        if !self.q.is_empty() {
+            route.push_str(&format!("&q={}", paths::query_value(&self.q)));
+        }
+        for (name, list) in [("computers", &self.computers), ("sources", &self.sources), ("owners", &self.owners), ("labels", &self.labels)] {
+            if !list.is_empty() {
+                route.push_str(&format!("&{name}={}", list.iter().map(|each| paths::query_value(each)).collect::<Vec<_>>().join(",")));
+            }
+        }
+        route
+    }
 }
 
 /// A new item, as written: what's left out is the box's to choose.
@@ -443,10 +481,10 @@ impl BoxClient {
         self.queue_view("kuvo/work-queue?owner=all&counts=1")
     }
 
-    /// The same view, with only the items every word of `words` is in (their titles, what they say
-    /// and their notes, as the box searches them), and its counts of those.
-    pub fn work_queue_search(&self, words: &str) -> Result<QueueSaid> {
-        self.queue_view(&format!("kuvo/work-queue?owner=all&counts=1&q={}", paths::query_value(words)))
+    /// The same view narrowed as `by` says (a search, filters), by the box: only the items it
+    /// leaves, and its counts of those.
+    pub fn work_queue_narrowed(&self, by: &Narrow) -> Result<QueueSaid> {
+        self.queue_view(&by.route())
     }
 
     fn queue_view(&self, path: &str) -> Result<QueueSaid> {
@@ -460,6 +498,7 @@ impl BoxClient {
             labels: read_all(answer.get("labels")),
             assignees: read_all(answer.get("assignees")),
             new: answer.get("new").cloned().and_then(|new| serde_json::from_value(new).ok()),
+            today: answer.get("today").and_then(Value::as_str).unwrap_or_default().to_owned(),
             items: read_all(answer.get("items")),
             owners: read_all(answer.get("owners")),
             removed: read_all(answer.get("removed")),
@@ -569,26 +608,6 @@ impl BoxClient {
     }
 }
 
-/// How far this computer's clock is from UTC at `at` (ms since 1970), in seconds: for the day a
-/// person means by "today" (a due day is a day, with no time or zone).
-pub fn utc_offset(at: f64) -> i64 {
-    #[cfg(unix)]
-    {
-        let seconds = (at / 1000.) as libc::time_t;
-        // SAFETY: `localtime_r` writes only into `local`, which is zeroed and of its own type.
-        let mut local: libc::tm = unsafe { std::mem::zeroed() };
-        if unsafe { libc::localtime_r(&seconds, &mut local) }.is_null() {
-            return 0;
-        }
-        local.tm_gmtoff as i64
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = at;
-        0
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,7 +616,7 @@ mod tests {
     fn an_item_reads_as_the_box_says_it_and_is_named_by_its_number_or_its_issue() {
         let item: Item = serde_json::from_str(
             r#"{"id":"wqi_1","number":243,"owner":"ses_a","title":"Fix it","status":"in-progress","order":1,"priority":"high","labels":["lbl_bug","lbl_web"],
-            "assignee":{"kind":"bot","id":"bot_mira","name":"Mira","look":{"color":"sky","shape":"round","face":"calm"}},"due":"2026-11-30","overdue":true,"can":{"edit":true,"set":true,"close":true,"delete":true,"restore":false,"later":true},
+            "assignee":{"kind":"bot","id":"bot_mira","name":"Mira","look":{"color":"sky","shape":"round","face":"calm"}},"due":"2026-11-30","overdue":true,"can":{"edit":true,"set":true,"assign":true,"close":true,"delete":true,"restore":false,"later":true},
             "progress":{"value":0.4,"note":"Writing the test"},"sessions":[{"session":"ses_a","title":"Fixing","working":true}],"noteCount":2,"fileCount":1,"linkCount":0,
             "created":{"at":5,"by":{"user":true}},"updated":{"at":9,"by":{"session":"ses_a","name":"Mira"}},"newer":{"kept":true}}"#,
         )
@@ -606,7 +625,7 @@ mod tests {
         assert!(item.at_work() && item.created.by.user && item.overdue);
         assert_eq!((item.status.as_str(), item.priority.as_str(), item.labels.len(), item.due.as_deref()), ("in-progress", "high", 2, Some("2026-11-30")));
         assert_eq!(item.assignee.as_ref().map(|assignee| (assignee.kind.as_str(), assignee.name.as_str(), assignee.look.as_ref().map(|look| look.color.as_str()))), Some(("bot", "Mira", Some("sky"))));
-        assert_eq!(item.can, Can { edit: true, set: true, close: true, delete: true, restore: false, why: None });
+        assert_eq!(item.can, Can { edit: true, set: true, assign: true, close: true, delete: true, restore: false, why: None });
         assert_eq!((item.updated.by.name.as_deref(), item.progress.as_ref().and_then(|progress| progress.value)), (Some("Mira"), Some(0.4)));
 
         // An issue is named by GitHub's name for it, never its old number; one waiting for a number
@@ -616,6 +635,15 @@ mod tests {
         assert_eq!((issue.can.delete, issue.can.why.as_deref()), (true, Some("It's closed on GitHub.")));
         let waiting: Item = serde_json::from_str(r#"{"id":"wqi_3","title":"New"}"#).unwrap();
         assert_eq!((waiting.label(), waiting.can), (None, Can::default()));
+    }
+
+    #[test]
+    fn a_view_is_narrowed_by_what_the_route_says() {
+        assert_eq!(Narrow::default().route(), "kuvo/work-queue?owner=all&counts=1");
+        // The box asked is the empty key among computers: said, where another is beside it.
+        let by = Narrow { q: "sign up".into(), computers: vec![String::new(), "key_1".into()], sources: vec!["github-pr".into()], owners: vec![], labels: vec!["lbl_a".into(), "lbl_b".into()] };
+        assert_eq!(by.route(), "kuvo/work-queue?owner=all&counts=1&q=sign%20up&computers=,key_1&sources=github-pr&labels=lbl_a,lbl_b");
+        assert!(Narrow::default().is_empty() && !by.is_empty());
     }
 
     #[test]
