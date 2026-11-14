@@ -90,7 +90,9 @@ public extension WorkQueue {
             properties.append(Property(kind: .category(tagsID), words: tags.joined(separator: " · "), help: nil))
         }
         if let owner = ownerWords(item.owner, in: view) {
-            properties.append(Property(kind: .owner(item.owner), words: "\(owner)’s queue", help: nil))
+            // (Your own list, of no conversation: as the box names it.)
+            let yours = view.owners.first { $0.owner == item.owner }?.kind == "you"
+            properties.append(Property(kind: .owner(item.owner), words: yours ? "\(owner) list" : "\(owner)’s queue", help: nil))
         }
         if let computer = computerName(of: item) {
             properties.append(Property(kind: .computer, words: "On \(computer)", help: "Kept on \(computer): changes to it are made there."))

@@ -49,15 +49,27 @@ public struct WorkAssignee: Codable, Hashable, Sendable {
 public struct WorkCan: Codable, Hashable, Sendable {
     public var edit: Bool
     public var set: Bool
+    /// Its assignee, from the view's list (false for an item another computer keeps).
+    public var assign: Bool = false
     public var close: Bool
     public var delete: Bool
     public var restore: Bool
     /// Where something can't be done, why, in the box's words.
     public var why: String?
 
-    public init(edit: Bool, set: Bool, close: Bool, delete: Bool, restore: Bool, why: String? = nil) {
+    private enum Keys: String, CodingKey { case edit, set, assign, close, delete, restore, why }
+
+    /// As the box says it: what it doesn't say may not be done.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: Keys.self)
+        let may = { (key: Keys) in (try? container.decodeIfPresent(Bool.self, forKey: key)) ?? false }
+        self.init(edit: may(.edit), set: may(.set), assign: may(.assign), close: may(.close), delete: may(.delete), restore: may(.restore), why: try? container.decodeIfPresent(String.self, forKey: .why))
+    }
+
+    public init(edit: Bool, set: Bool, assign: Bool = false, close: Bool, delete: Bool, restore: Bool, why: String? = nil) {
         self.edit = edit
         self.set = set
+        self.assign = assign
         self.close = close
         self.delete = delete
         self.restore = restore
@@ -685,7 +697,7 @@ public enum WorkQueue {
     /// where it wouldn't move.
     public static func place(of item: WorkItem, at index: Int, in section: Section) -> Place? {
         // (An issue's Done is its source's: it's never moved there, nor one its source made Done.)
-        guard let category = section.category, canMove(item), item.closesOn == nil || category != WorkCategory.done else { return nil }
+        guard let category = section.category, canMove(item), canClose(item) || !isClosing(category) else { return nil }
         let index = min(max(index, 0), section.items.count)
         // Where it is now, in this list: dropped just above or below itself, it stays.
         if let from = section.items.firstIndex(where: { $0.id == item.id }), index == from || index == from + 1 { return nil }
@@ -729,6 +741,8 @@ public enum WorkQueue {
         var moved = view.items.first { $0.id == item.id } ?? item
         view.items.removeAll { $0.id == item.id }
         moved.category = place.category
+        // (No move goes to In progress: it's that only while its status is.)
+        moved.inProgress = place.category == inProgressID
         // (Sections take each category's items in the list's order: where among the others it's put
         // is all that counts.)
         switch place {
@@ -796,18 +810,18 @@ public enum WorkQueue {
 
     /// Where an item may be moved to from a menu: every status but the one it has (In progress has
     /// a section of its own, and isn't one of `categories`), as far as the box says it may be
-    /// (`can`): none where its status can't be set, and neither Done nor Canceled where it can't be
-    /// closed here (an issue or a pull request, closed on GitHub).
+    /// (`can`): none where its status can't be set, or where the box said nothing of what may be
+    /// done; neither Done nor Canceled where it can't be closed here (an issue's, closed on GitHub).
     public static func moveTargets(for item: WorkItem, in categories: [WorkCategory]) -> [WorkCategory] {
         guard canMove(item) else { return [] }
-        // COMPAT(0.7 queue-categories): an item a box from before `can` answered with is judged as before (`closesOn`, `keptIn`). Goes 3 months after 0.8.0.
-        let closes = item.can?.close ?? (item.closesOn == nil)
-        return categories.filter { $0.id != item.category && (closes || ($0.id != WorkCategory.done && $0.id != WorkCategory.canceled)) }
+        return categories.filter { $0.id != item.category && (canClose(item) || !isClosing($0.id)) }
     }
 
-    /// Whether you can move it at all, as the box says (`can.set`); from a box's answer without
-    /// it, not one its source makes Done (`keptIn`).
-    public static func canMove(_ item: WorkItem) -> Bool { item.can?.set ?? (item.keptIn == nil) }
+    /// Whether you can move it at all, as the box says (`can.set`): not where it says nothing.
+    public static func canMove(_ item: WorkItem) -> Bool { item.can?.set == true }
+    /// Whether it may be closed here (Done, Canceled), as the box says (`can.close`).
+    public static func canClose(_ item: WorkItem) -> Bool { item.can?.close == true }
+    static func isClosing(_ category: String) -> Bool { category == WorkCategory.done || category == WorkCategory.canceled }
 }
 
 /// What both apps draw an item's name with, in a list or a chip: the mark of the service its source

@@ -6,7 +6,7 @@ import ClientSessions
 @Suite struct WorkQueueTests {
     static func item(_ number: Int?, _ title: String, _ category: String, order: Double = 1, owner: String = "ses_lead", inProgress: Bool = false, note: String? = nil) -> String {
         """
-        {"id":"wqi_\(number ?? 0)\(title.count)","\(number == nil ? "wanted" : "number")":\(number ?? 9),"owner":"\(owner)","title":"\(title)","status":"\(inProgress ? "in-progress" : category)","order":\(order),\(note.map { "\"progress\":{\"note\":\"\($0)\"}," } ?? "")"sessions":[{"session":"ses_child","title":"Sign-in","working":\(inProgress)}],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1000,"by":{"user":true}},"updated":{"at":2000,"by":{"session":"ses_child","name":"Sign-in"}}}
+        {"id":"wqi_\(number ?? 0)\(title.count)","\(number == nil ? "wanted" : "number")":\(number ?? 9),"owner":"\(owner)","title":"\(title)","status":"\(inProgress ? "in-progress" : category)","can":{"edit":true,"set":true,"assign":true,"close":true,"delete":true,"restore":false},"order":\(order),\(note.map { "\"progress\":{\"note\":\"\($0)\"}," } ?? "")"sessions":[{"session":"ses_child","title":"Sign-in","working":\(inProgress)}],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1000,"by":{"user":true}},"updated":{"at":2000,"by":{"session":"ses_child","name":"Sign-in"}}}
         """
     }
 
@@ -429,8 +429,8 @@ import ClientSessions
     @Test func anIssueClosedOnGitHubIsDoneWhereItWasKeptAndOnlyGitHubMovesItInOrOut() throws {
         let json = """
         {"owner":"ses_lead","statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false},{"id":"later","name":"Later","closed":false},{"id":"parked","name":"Parked","closed":false},{"id":"done","name":"Done","closed":true}],"owners":[],"removed":[],
-         "items":[{"id":"wqi_1","source":{"kind":"github","ref":"gh:kuvo/app#12","url":"https://github.com/kuvo/app/issues/12","name":"app#12"},"seen":{"state":"not_planned","at":5},"keptIn":"later","struck":true,"closesOn":"github","owner":"ses_lead","title":"Upload retries","status":"done","order":1,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}},
-                  {"id":"wqi_2","source":{"kind":"github-pr","ref":"gh:kuvo/app#57","name":"app#57"},"seen":{"state":"open","at":5},"closesOn":"github","owner":"ses_lead","title":"Keep the name","status":"next","order":2,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}}]}
+         "items":[{"id":"wqi_1","can":{"edit":false,"set":false,"assign":false,"close":false,"delete":true,"restore":false},"source":{"kind":"github","ref":"gh:kuvo/app#12","url":"https://github.com/kuvo/app/issues/12","name":"app#12"},"seen":{"state":"not_planned","at":5},"keptIn":"later","struck":true,"closesOn":"github","owner":"ses_lead","title":"Upload retries","status":"done","order":1,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}},
+                  {"id":"wqi_2","can":{"edit":false,"set":true,"assign":true,"close":false,"delete":true,"restore":false},"source":{"kind":"github-pr","ref":"gh:kuvo/app#57","name":"app#57"},"seen":{"state":"open","at":5},"closesOn":"github","owner":"ses_lead","title":"Keep the name","status":"next","order":2,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}}]}
         """
         let view = try JSONDecoder().decode(WorkQueueView.self, from: Data(json.utf8))
         let (closed, open) = (view.items[0], view.items[1])
