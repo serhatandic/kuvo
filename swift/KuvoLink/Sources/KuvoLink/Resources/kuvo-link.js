@@ -23239,6 +23239,8 @@ function canOf(item, { moving = false, away = false, older = false, apart = fals
     return { ...none, set: item.keptIn === undefined, delete: true, why: item.keptIn === undefined ? "Its title, its description and closing it are GitHub's." : "It's closed on GitHub: it's back where it stood once it's reopened there." };
   return { edit: true, set: true, close: true, delete: true, restore: false };
 }
+var todayHere = (now = new Date) => `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+var overdueOf = (item, today = todayHere()) => Boolean(item.due) && !item.removed && !isClosed(item.status) && item.due < today;
 function summaryOf(item, working, titles, assignables) {
   return withSeen({
     id: item.id,
@@ -23252,6 +23254,7 @@ function summaryOf(item, working, titles, assignables) {
     labels: item.labels,
     ...item.assignee ? { assignee: assigneeNamed(item.assignee, assignables) } : {},
     ...item.due ? { due: item.due } : {},
+    ...overdueOf(item) ? { overdue: true } : {},
     ...item.progress ? { progress: item.progress } : {},
     sessions: item.sessions.map((each) => ({ session: each.session, title: titles.get(each.session)?.title ?? "New Session", working: !item.removed && !isClosed(item.status) && working.has(each.session) })),
     noteCount: item.notes.length,
@@ -43796,7 +43799,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ecdfb68d4b22";
+var BRIDGE_VERSION = "d2fada61a696";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -52580,7 +52583,7 @@ async function viewOf2(owner, targets, facts, signal, cache, wait = GITHUB_WAIT,
     new: { status: "todo", priority: "normal" },
     items: byPlace([
       ...all.filter((item) => !item.removed && found(item)).map(summary),
-      ...elsewhere.items.filter(found).map(({ handedFrom: _, ...item }) => ({ ...item, labels: item.labels.filter((each) => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), older: older.has(item.computer.key), apart: shared }) }))
+      ...elsewhere.items.filter(found).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...overdueOf(item) ? { overdue: true } : {}, labels: item.labels.filter((each) => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), older: older.has(item.computer.key), apart: shared }) }))
     ]),
     owners: [...owners, ...elsewhere.owners.filter((each) => !named.has(each.owner))],
     removed: all.filter((item) => item.removed && found(item)).sort((a, b) => b.removed.at - a.removed.at).map(summary),

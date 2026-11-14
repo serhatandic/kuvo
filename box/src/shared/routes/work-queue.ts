@@ -51,6 +51,8 @@ export const QUEUE_ITEM = object({
   "assignee?": ASSIGNEE,
   /** The day it's due, `YYYY-MM-DD`. */
   "due?": string,
+  /** Its due day is past, as the box asked counts days, and it's open. */
+  "overdue?": bool,
   "can?": CAN,
   "progress?": PROGRESS,
   sessions: list(object({ session: string, title: string, working: bool })),

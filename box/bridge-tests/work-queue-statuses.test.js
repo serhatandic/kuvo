@@ -391,6 +391,12 @@ test("you add an item from a client: Todo and Normal unless said, numbered as an
   assert.equal((await view("all")).items.length, 5);
   // Only a client adds one this way: an agent has its tools.
   assert.equal((await route("POST", "kuvo/work-queue/items", { title: "Sneaky" }, {})).status, 403);
+  // The box says which are late: due before today, and still open.
+  const late = (await ok("POST", "kuvo/work-queue/items", { title: "Late", due: "2020-01-01" })).item;
+  assert.equal(late.overdue, true);
+  assert.equal((await ok("POST", "kuvo/work-queue/items", { title: "In time", due: "2999-01-01" })).item.overdue, undefined);
+  assert.equal((await ok("PATCH", `kuvo/work-queue/items/${late.id}`, { status: "done" })).item.overdue, undefined, "a closed one isn't late");
+
 });
 
 test("you change what an item says and where it stands; only what's sent changes", async () => {

@@ -29,7 +29,7 @@ import type { QueueCounts } from "../../shared/routes/work-queue";
 import { allItems, changeQueues, matching, OWNER, queueFollowers, readAll, WORK_QUEUE, type Item } from "../work-queue/store";
 import { readSeen, SEEN_FILE } from "../work-queue/github";
 import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/tools";
-import { canOf, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, summaryOf, type Facts, type ItemSummary } from "../work-queue/view";
+import { canOf, overdueOf, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, summaryOf, type Facts, type ItemSummary } from "../work-queue/view";
 import { forwardAct, takesChanges, type Acted } from "../work-queue/forward";
 import { actHere, addHere, fileOf, GITHUB_WAIT, withCan } from "../work-queue/acts";
 import type { AnswerPiece, RouteContext } from "../server/context";
@@ -115,7 +115,7 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
     new: { status: "todo", priority: "normal" },
     items: byPlace([
       ...all.filter(item => !item.removed && found(item)).map(summary),
-      ...elsewhere.items.filter(found).map(({ handedFrom: _, ...item }) => ({ ...item, labels: item.labels.filter(each => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), older: older.has(item.computer.key), apart: shared }) })),
+      ...elsewhere.items.filter(found).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...(overdueOf(item) ? { overdue: true } : {}), labels: item.labels.filter(each => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), older: older.has(item.computer.key), apart: shared }) })),
     ]),
     owners: [...owners, ...elsewhere.owners.filter(each => !named.has(each.owner))],
     removed: all.filter(item => item.removed && found(item)).sort((a, b) => b.removed!.at - a.removed!.at).map(summary),

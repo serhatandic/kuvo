@@ -105,6 +105,8 @@ export interface ItemSummary {
   /** Who it's for, by name; a bot of this box with its look (its face). */
   assignee?: Assignee & { name: string; look?: unknown };
   due?: string;
+  /** Its due day is past (by the day it is on the box asked), and it's neither closed nor deleted. */
+  overdue?: boolean;
   progress?: { value?: number; note?: string };
   sessions: SessionFacts[];
   /** What whoever asked may do to it (`canOf`): a client's view and its answers only. */
@@ -172,6 +174,14 @@ export function canOf(item: Pick<ItemSummary, "removed" | "handing" | "source" |
   return { edit: true, set: true, close: true, delete: true, restore: false };
 }
 
+/** The day it is here, `YYYY-MM-DD`. */
+export const todayHere = (now = new Date()): string => `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
+/** Whether an item is late: due before today (here), and still open. The box says so, so every
+ * client draws the same items late. */
+export const overdueOf = (item: { due?: string; status: string; removed?: unknown }, today = todayHere()): boolean =>
+  Boolean(item.due) && !item.removed && !isClosed(item.status) && item.due! < today;
+
 export function summaryOf(item: Item, working: Set<string>, titles: Map<string, { title: string }>, assignables?: Assignable[]): ItemSummary {
   return withSeen({
     id: item.id,
@@ -185,6 +195,7 @@ export function summaryOf(item: Item, working: Set<string>, titles: Map<string, 
     labels: item.labels,
     ...(item.assignee ? { assignee: assigneeNamed(item.assignee, assignables) } : {}),
     ...(item.due ? { due: item.due } : {}),
+    ...(overdueOf(item) ? { overdue: true } : {}),
     ...(item.progress ? { progress: item.progress } : {}),
     sessions: item.sessions.map(each => ({ session: each.session, title: titles.get(each.session)?.title ?? "New Session", working: !item.removed && !isClosed(item.status) && working.has(each.session) })),
     noteCount: item.notes.length,

@@ -5429,7 +5429,8 @@ number asked back), `owner` (`ses_…`,
 the box), `priority` (`urgent`, `high`, `normal` or `low`; always said, `normal` for one never
 set), `labels` (`[id]`, several; only ones the view's `labels` list), `assignee` (`{kind: bot|agent,
 id, name, look?}`, who it's for, a bot of the box asked with its `look`; missing for no one), `due` (`YYYY-MM-DD`, a day, no time or zone;
-missing for none), `can` (what whoever asked may do to it, below), `progress` (`{value?: 0…1,
+missing for none), `overdue` (true where its due day is before today on the box asked and it's
+neither closed nor deleted: a client draws it late, and works out no lateness itself), `can` (what whoever asked may do to it, below), `progress` (`{value?: 0…1,
 note?}`: how far, and what's being done now),
 `sessions` (`[{session, title, working}]`: the sessions working on it, and which are at work now;
 none at work on a closed or deleted one),
