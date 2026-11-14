@@ -1179,6 +1179,20 @@ function resetTime(at) {
 function isLimit(text) {
   return Boolean(text && /\b429\b|rate.?limit|usage limit|limit (?:was |has been )?reached|reached (?:its|your|the) (?:usage )?limit|quota|too many requests|resets? in|try again in|overloaded|capacity/i.test(text));
 }
+var ENGINE_SERVICES = {
+  anthropic: "claude",
+  "claude-agent": "claude",
+  "github-copilot": "copilot",
+  ollama: "ollama",
+  "ollama-cloud": "ollama",
+  openai: "codex",
+  opencode: "opencode",
+  "opencode-go": "opencode",
+  openrouter: "openrouter",
+  xai: "grok",
+  zai: "zai",
+  "zai-coding-plan": "zai"
+};
 
 // box/src/link/work/plan-limits.ts
 var AGENT_NAMES = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", grok: "Grok", antigravity: "Antigravity" };
@@ -7072,7 +7086,42 @@ function fenceWanted() {
 var checked = { able: false, passed: false, why: "It hasn't been checked yet.", reason: "checking" };
 var failures = 0;
 var lastProfiles = "";
+var WHY = {
+  kernel: "This Linux can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on).",
+  namespaces: "This machine doesn't let commands have a namespace of their own.",
+  macos: "macOS's sandbox isn't on this Mac.",
+  engineMissing: "The engine isn't installed here yet.",
+  checking: "It's being checked.",
+  checkFailed: "Its check failed.",
+  plugin: "Its plugin for the engine was changed or removed.",
+  engineDown: "The engine isn't running.",
+  waiting: "Waiting for the engine to load it."
+};
+function actionLabel(action, reason) {
+  switch (action) {
+    case "retry":
+      return reason === "engineMissing" ? "Check Again" : "Try Again";
+    case "fix":
+      return "Fix It";
+    case "restartEngine":
+      return reason === "engineDown" ? "Restart Engine" : "Restart Engine…";
+    case "help":
+      return "How to Check…";
+    case "softwareUpdate":
+      return "Software Update…";
+  }
+}
 function fenceState() {
+  const state = fenceNow();
+  if (state.on)
+    return state;
+  return {
+    ...state,
+    ...state.reason && !state.why ? { why: WHY[state.reason] } : {},
+    ...state.action ? { actionLabel: actionLabel(state.action, state.reason) } : {}
+  };
+}
+function fenceNow() {
   const said = bridgeSays();
   const base = { able: checked.able, agents: said === "none" || said === "inside", ...said === "outside" ? { outside: true } : {}, ...asksToRestart() ? { restart: true } : {} };
   if (!fenceWanted())
@@ -42609,7 +42658,7 @@ import fs138 from "node:fs";
 import path144 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f6fc2c1e6227";
+var BRIDGE_VERSION = "a0699a4e69a7";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -52799,6 +52848,52 @@ async function* providerModelsRoute(context) {
 var SIGN_IN_METHODS_ROUTE = "kuvo/sign-in/methods";
 var SIGN_IN_STATUS_ROUTE = "kuvo/sign-in/status";
 var SIGN_IN_ACCOUNTS_ROUTE = "kuvo/sign-in/accounts";
+var SIGN_IN_START_ROUTE = "kuvo/sign-in/start";
+var SEARCH_SERVICES = new Set(["exa", "firecrawl", "parallel", "tavily", "tinyfish"]);
+var AGENT_DUPLICATES = new Set(["claude-agent"]);
+function accountKind(account, agents = false) {
+  const id = typeof account.id === "string" ? account.id : "";
+  const source = account.metadata?.source;
+  if (agents)
+    return { kind: "provider", listed: true };
+  if (source === "mcp")
+    return { kind: "mcp", listed: false };
+  if (SEARCH_SERVICES.has(id))
+    return { kind: "search", listed: false };
+  if (AGENT_DUPLICATES.has(id))
+    return { kind: "agentDuplicate", listed: Array.isArray(account.connections) && account.connections.length > 0 };
+  return { kind: "provider", listed: true };
+}
+function serviceOf(account, agents = false) {
+  const id = typeof account.id === "string" ? account.id : "";
+  if (agents) {
+    const agent = account.metadata?.agent;
+    const kind = typeof agent === "string" && agent ? agent : id.split("@")[0].replace(/-code$/, "");
+    return AGENT_SERVICES.has(kind) ? kind : undefined;
+  }
+  return ENGINE_SERVICES[id];
+}
+var AGENT_SERVICES = new Set(["claude", "codex", "grok", "cursor", "antigravity"]);
+function userCodeOf(said) {
+  if (typeof said?.userCode === "string" && said.userCode)
+    return said.userCode;
+  if (typeof said?.url === "string") {
+    try {
+      const code = new URL(said.url).searchParams.get("user_code");
+      if (code)
+        return code;
+    } catch {}
+  }
+  const instructions = typeof said?.instructions === "string" ? said.instructions : "";
+  const shaped = instructions.match(/[A-Z0-9]{4}-[A-Z0-9]{4,5}/)?.[0];
+  if (shaped)
+    return shaped;
+  const at = instructions.toLowerCase().lastIndexOf("code:");
+  if (at < 0)
+    return;
+  const code = instructions.slice(at + "code:".length).trim();
+  return code && !/\s/.test(code) ? code : undefined;
+}
 var ORDER = { oauth: 0, external: 1, key: 2 };
 var KEY_LABEL = "Use an API key";
 var SIGN_IN_LABEL = "Sign in";
@@ -52875,7 +52970,38 @@ async function* accountsRoute2(context, query) {
   try {
     const listed = await call(place.target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, deadline]) : deadline);
     const accounts = (Array.isArray(listed) ? listed : []).filter((each) => typeof each?.id === "string");
-    return yield* json(200, { accounts: accounts.map((account) => ({ id: account.id, ...signInMethods(account) })) });
+    const agents = query.get("agents") === "1";
+    return yield* json(200, {
+      accounts: accounts.map((account) => {
+        const service = serviceOf(account, agents);
+        return { id: account.id, ...signInMethods(account), ...accountKind(account, agents), ...service ? { service } : {} };
+      })
+    });
+  } catch (error) {
+    if (deadline.aborted)
+      return yield* json(504, { message: "It didn't answer in time. Try again." });
+    const status = error?.status;
+    return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message: error instanceof Error && error.message ? error.message : "It didn't answer." });
+  }
+}
+async function* startRoute2(context, query) {
+  const { request, signal, json } = context;
+  if (request.method.toUpperCase() !== "POST")
+    return yield* json(405, {});
+  const integration = query.get("integration")?.trim() ?? "";
+  const given = parsed(request.body);
+  if (!integration || !isObject(given) || typeof given.methodID !== "string" || !given.methodID)
+    return yield* json(400, { message: "Say which account (integration) and which way in (methodID)." });
+  const place = placeOf2(query, context);
+  if ("down" in place)
+    return yield* json(503, { message: place.down });
+  const deadline = AbortSignal.timeout(120000);
+  try {
+    const started = await call(place.target, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, { methodID: given.methodID, ...isObject(given.answer) ? { answer: given.answer } : {} }, signal ? AbortSignal.any([signal, deadline]) : deadline);
+    if (!isObject(started))
+      return yield* json(502, { message: "The sign-in couldn't be started." });
+    const userCode = userCodeOf(started);
+    return yield* json(200, { ...started, ...userCode ? { userCode } : {} });
   } catch (error) {
     if (deadline.aborted)
       return yield* json(504, { message: "It didn't answer in time. Try again." });
@@ -52885,9 +53011,11 @@ async function* accountsRoute2(context, query) {
 }
 async function* signInRoute(context) {
   const { request, route, signal, json } = context;
+  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  if (route === SIGN_IN_START_ROUTE)
+    return yield* startRoute2(context, query);
   if (request.method.toUpperCase() !== "GET")
     return yield* json(405, {});
-  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
   if (route === SIGN_IN_ACCOUNTS_ROUTE)
     return yield* accountsRoute2(context, query);
   const integration = query.get("integration")?.trim() ?? "";
@@ -52926,7 +53054,8 @@ async function* signInRoute(context) {
     const status = said?.status;
     if (status !== "pending" && status !== "complete" && status !== "failed" && status !== "expired")
       return yield* json(502, { message: "The sign-in's status couldn't be read." });
-    return yield* json(200, { ...said, ...status === "failed" || status === "expired" ? { failure: failureWords(status, said?.message) } : {} });
+    const userCode = userCodeOf(said);
+    return yield* json(200, { ...said, ...userCode ? { userCode } : {}, ...status === "failed" || status === "expired" ? { failure: failureWords(status, said?.message) } : {} });
   } catch (error) {
     if (attempt === null ? deadline.aborted : error?.name === "TimeoutError")
       return yield* json(504, { message: "It didn't answer in time. Try again." });
@@ -54127,7 +54256,7 @@ var ROUTES = [
   { when: (route) => route.match(/^kuvo\/asks\/([^/]+)$/), answer: askAnswerRoute },
   { when: (route) => route.match(/^kuvo\/engine\/(start|restart)$/), answer: engineControlRoute },
   { when: (route) => route === "kuvo/sign-in/return", answer: signInReturnRoute },
-  { when: (route) => route === SIGN_IN_METHODS_ROUTE || route === SIGN_IN_STATUS_ROUTE || route === SIGN_IN_ACCOUNTS_ROUTE, answer: signInRoute },
+  { when: (route) => route === SIGN_IN_METHODS_ROUTE || route === SIGN_IN_STATUS_ROUTE || route === SIGN_IN_ACCOUNTS_ROUTE || route === SIGN_IN_START_ROUTE, answer: signInRoute },
   { when: (route) => route === "kuvo/claude-code", answer: claudeCodeRoute },
   { when: (route, request) => request.path.startsWith(AGENTS), answer: agentsRoute },
   { when: (route) => route === "kuvo/accounts/ended" || route === "kuvo/accounts/refreshable" || /^kuvo\/accounts\/[^/]+\/(forget|refresh)$/.test(route), answer: accountsRoute },

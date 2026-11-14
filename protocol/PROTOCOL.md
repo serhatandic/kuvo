@@ -8349,7 +8349,15 @@ it's empty.
   run, 126, rather than run with those open to them). A client says so beside it (`services`;
   the apps don't show `git` yet).
   When it isn't on, also `reason`, a word for a client to map rather than reading `why`, with what
-  you can do (`action`) and the box's route that does it (`route`, where there is one):
+  you can do (`action`) and the box's route that does it (`route`, where there is one). With
+  `sandbox.words` (#711), the words are the box's too, so no client keeps a table of them: `why`
+  is there for every `reason` (a sentence to show as it is), and `actionLabel` says the button's
+  words for `action`: `retry` "Try Again" ("Check Again" for `engineMissing`), `fix` "Fix It",
+  `restartEngine` "Restart Engine…" ("Restart Engine" for `engineDown`, where nothing runs to
+  stop), `help` "How to Check…", `softwareUpdate` "Software Update…". A client draws the button
+  with those words: one with a `route` sends it; `help` opens the docs on what a machine needs
+  and `softwareUpdate` the system's own (a client's to open, where it can). A state with no
+  `action` (Kuvo Code's own switch off) has no button.
 
   | `reason` | when | `action` | `route` |
   | --- | --- | --- | --- |

@@ -662,7 +662,8 @@ test("with Kuvo Code's own kill switch, the engine's plugin goes, and commands r
   try {
     const state = (await off.ask("GET", "kuvo/sandbox")).value;
     // Nothing a client offers: there's nothing you can do about it.
-    assert.deepEqual([state.on, state.reason, state.action], [false, undefined, undefined]);
+    assert.deepEqual([state.on, state.reason, state.action, state.actionLabel], [false, undefined, undefined, undefined]);
+    assert.equal(typeof state.why, "string");
     assert.equal(fs.existsSync(box.plugin), false);
     assert.equal(decidedBy(box), off.pid, "the agents bridge starts them, as before");
     assert.equal((await engineRuns(box, project, `cat ${JSON.stringify(path.join(box.home, "run", "engine.json"))}`)).status, 0);
@@ -1408,6 +1409,8 @@ test("turned off and on again, it isn't on until the engine has loaded it again"
     const state = (await running.ask("GET", "kuvo/sandbox")).value;
     assert.deepEqual([state.on, state.why], [false, "Waiting for the engine to load it."]);
     assert.deepEqual([state.reason, state.action, state.route], ["waiting", "restartEngine", "POST kuvo/engine/restart"]);
+    // (Its button's words are the box's, for every client alike: a restart stops what agents do, so it asks first.)
+    assert.equal(state.actionLabel, "Restart Engine…");
     // Its plugin changed under it: checked again, it's put back as it was.
     fs.writeFileSync(box.plugin, "// changed\n");
     const checked = await running.ask("POST", "kuvo/sandbox/check");
@@ -1813,6 +1816,7 @@ test("a check that doesn't finish in time leaves nothing outside the sandbox, an
     holdUp();
     const routed = routeOnce(box, { KUVO_TEST_SANDBOX_CHECK_HOLD: hold }, "POST", "kuvo/sandbox/check");
     assert.equal(routed.reason, "checking", routed.why);
+    assert.deepEqual([typeof routed.why, routed.actionLabel], ["string", "Try Again"]);
     await allInIt();
     letGo();
     const fence = path.join(box.home, "run", "fence");

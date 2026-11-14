@@ -8546,7 +8546,25 @@
          "environment": {
           "list": "string"
          },
-         "hint": "string"
+         "hint": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "provider"
+           },
+           {
+            "literal": "search"
+           },
+           {
+            "literal": "mcp"
+           },
+           {
+            "literal": "agentDuplicate"
+           }
+          ]
+         },
+         "listed": "bool",
+         "service?": "string"
         }
        }
       }
@@ -8565,6 +8583,42 @@
       "instructions?": "string",
       "userCode?": "string",
       "failure?": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/sign-in/start",
+   "answers": {
+    "200": {
+     "object": {
+      "attemptID?": "string",
+      "url?": "string",
+      "instructions?": "string",
+      "mode?": "string",
+      "acceptsCode?": "bool",
+      "userCode?": "string",
+      "time?": "any"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "502": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "504": {
+     "object": {
+      "message": "string"
      }
     }
    }
@@ -8833,6 +8887,7 @@
        ]
       },
       "route?": "string",
+      "actionLabel?": "string",
       "needs?": "string",
       "check?": {
        "oneOf": [
@@ -8938,6 +8993,7 @@
        ]
       },
       "route?": "string",
+      "actionLabel?": "string",
       "needs?": "string",
       "check?": {
        "oneOf": [
@@ -9043,6 +9099,7 @@
        ]
       },
       "route?": "string",
+      "actionLabel?": "string",
       "needs?": "string",
       "check?": {
        "oneOf": [
