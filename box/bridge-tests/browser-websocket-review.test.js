@@ -14,10 +14,12 @@ const { viewUpgrade } = await import("../../swift/KuvoLink/Sources/KuvoLink/Reso
 async function server(t) {
   const server = http.createServer();
   const calls = [];
+  let receive;
+  const received = new Promise(resolve => { receive = resolve; });
   let events;
   viewUpgrade(server, "secret", e => {
     events = e; queueMicrotask(e.open);
-    return { send(data) { calls.push(data); }, close() {} };
+    return { send(data) { calls.push(data); receive(data); }, close() {} };
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   t.after(() => server.close());
@@ -29,12 +31,19 @@ async function server(t) {
     const [response] = await once(socket, "data");
     return { socket, response: String(response) };
   }
-  return { open, calls, events: () => events };
+  return { open, calls, received, events: () => events };
 }
 function masked(opcode, data = Buffer.alloc(0), fin = true) {
-  const header = Buffer.from([opcode | (fin ? 128 : 0), 128 | data.length, 1, 2, 3, 4]);
-  return Buffer.concat([header, Buffer.from(data.map((n, i) => n ^ header[2 + i % 4]))]);
+  const n = data.length, header = Buffer.alloc(n < 126 ? 2 : n <= 65535 ? 4 : 10);
+  header[0] = opcode | (fin ? 128 : 0);
+  if (header.length === 2) header[1] = 128 | n;
+  else if (header.length === 4) { header[1] = 128 | 126; header.writeUInt16BE(n, 2); }
+  else { header[1] = 128 | 127; header.writeBigUInt64BE(BigInt(n), 2); }
+  const mask = Buffer.from([1, 2, 3, 4]), body = Buffer.from(data);
+  for (let i = 0; i < n; i++) body[i] ^= mask[i % 4];
+  return Buffer.concat([header, mask, body]);
 }
+
 test("resetting an upgrade refused with 401 cannot raise an unhandled socket error", async t => {
   const h = await server(t);
   const { socket, response } = await h.open("wrong");
@@ -74,4 +83,14 @@ test("a slow serve viewer skips and credits pictures while retaining text and it
   assert.equal(writes.length, 2);
   assert.match(writes[1].toString(), /"id":7/);
   assert.deepEqual(commands, [{ method: "Kuvo.frameAck", params: { frameId: 12 } }]);
+});
+
+test("a 50 MiB WebSocket upload arriving in small TCP chunks is forwarded intact", async t => {
+  const h = await server(t), { socket } = await h.open();
+  const payload = Buffer.from(JSON.stringify({ method: "Kuvo.upload", params: { targetId: "P", files: [{ name: "large", data: "a".repeat(50 * 1024 * 1024) }] } }) + "\n");
+  const frame = masked(1, payload);
+  for (let at = 0; at < frame.length; at += 8192) socket.write(frame.subarray(at, at + 8192));
+  const received = await h.received;
+  assert.equal(received.length, payload.length);
+  assert.equal(received.compare(payload), 0);
 });

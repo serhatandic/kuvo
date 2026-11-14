@@ -1,4 +1,5 @@
 // The same keeper stream for serve and paired relay clients. No engine or Chrome port.
+import { LineBuffer } from "./buffers";
 import net from "node:net";
 import path from "node:path";
 import { RUN, socketKey } from "../home";
@@ -15,7 +16,8 @@ export function frameBudget(count: number, now = Date.now(), ceiling = 100): boo
 }
 export function browserView(events: SocketEvents, relay = false, run = RUN, key = socketKey): SocketHandle {
   const socket = net.createConnection(path.join(run, "browser.sock"));
-  let buffer = "", input = "", opened = false, ended = false;
+  let opened = false, ended = false;
+  const incoming = new LineBuffer(80 * 1024 * 1024), input = new LineBuffer(72 * 1024 * 1024);
   const facts = new Map<string, Buffer>();
   let notice = 0;
   const flush = () => {
@@ -31,13 +33,9 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
   socket.on("connect", () => socket.write(JSON.stringify({ method: "Kuvo.key", params: { key: key() } }) + "\n"));
   socket.on("error", end);
   socket.on("close", () => end());
-  socket.setEncoding("utf8");
-  socket.on("data", (chunk: string) => {
-    buffer += chunk;
-    if (buffer.length > 80 * 1024 * 1024) return end(new Error("Browser message too large."));
-    let at: number;
-    while ((at = buffer.indexOf("\n")) >= 0) {
-      const line = buffer.slice(0, at); buffer = buffer.slice(at + 1);
+  socket.on("data", (chunk: Buffer) => {
+    try { incoming.feed(chunk, line => {
+      if (ended) return;
       let message: any;
       try { message = JSON.parse(line); } catch { return end(new Error("Invalid browser message.")); }
       if (!opened) {
@@ -54,11 +52,11 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
         // Binary fits one relay message; oversize pictures are dropped and credited locally.
         if ((relay && (frame.length > 60000 || !frameBudget(1, Date.now(), 80)))) {
           socket.write(JSON.stringify({ method: frame.length > 60000 ? "Kuvo.frameDropped" : "Kuvo.frameAck", params: { frameId: meta.frameId, ...(frame.length > 60000 ? { reason: "oversize" } : {}) } }) + "\n");
-          continue;
+          return;
         }
         events.binary(frame);
       } else {
-        if (message.id === undefined && !String(message.method).startsWith("Kuvo.")) continue;
+        if (message.id === undefined && !String(message.method).startsWith("Kuvo.")) return;
         const bytes = Buffer.from(line + "\n");
         if (!relay) events.text(bytes);
         else {
@@ -69,21 +67,18 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
           flush();
         }
       }
-    }
+    }); } catch (error) { end(error as Error); }
   });
   return {
     send(data) {
       if (!opened || ended) return;
-      input += data.toString("utf8");
-      if (input.length > 72 * 1024 * 1024) return end(new Error("Browser request too large."));
-      let at: number;
-      while ((at = input.indexOf("\n")) >= 0) {
-        const line = input.slice(0, at); input = input.slice(at + 1);
+      try { input.feed(data, line => {
+        if (ended) return;
         let message: any;
         try { message = JSON.parse(line); } catch { return end(new Error("Invalid browser request.")); }
         if (!message || typeof message !== "object" || !COMMANDS.has(message.method)) return end(new Error("Unknown view command."));
-        socket.write(JSON.stringify(message) + "\n");
-      }
+        socket.write(line + "\n");
+      }); } catch (error) { end(error as Error); }
     },
     close() { clearInterval(timer); ended = true; socket.destroy(); },
   };

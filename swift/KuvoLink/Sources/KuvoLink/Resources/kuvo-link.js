@@ -9468,6 +9468,80 @@ import path46 from "node:path";
 // box/src/link/areas/engine.ts
 import { spawn as spawn6 } from "node:child_process";
 
+// box/src/link/browser/buffers.ts
+class ChunkQueue {
+  chunks = [];
+  index = 0;
+  offset = 0;
+  length = 0;
+  append(chunk) {
+    if (chunk.length) {
+      this.chunks.push(chunk);
+      this.length += chunk.length;
+    }
+  }
+  peek(size) {
+    const out = Buffer.allocUnsafe(size);
+    let at = 0, index = this.index, offset = this.offset;
+    while (at < size) {
+      const chunk = this.chunks[index++];
+      const count = Math.min(size - at, chunk.length - offset);
+      chunk.copy(out, at, offset, offset + count);
+      at += count;
+      offset = 0;
+    }
+    return out;
+  }
+  drop(size) {
+    this.length -= size;
+    while (size) {
+      const chunk = this.chunks[this.index], count = Math.min(size, chunk.length - this.offset);
+      size -= count;
+      this.offset += count;
+      if (this.offset === chunk.length) {
+        this.index++;
+        this.offset = 0;
+      }
+    }
+    if (this.index > 64 && this.index * 2 >= this.chunks.length) {
+      this.chunks = this.chunks.slice(this.index);
+      this.index = 0;
+    }
+  }
+  read(size) {
+    const out = this.peek(size);
+    this.drop(size);
+    return out;
+  }
+}
+
+class LineBuffer {
+  limit;
+  chunks = [];
+  size = 0;
+  constructor(limit) {
+    this.limit = limit;
+  }
+  feed(chunk, line) {
+    let start = 0;
+    while (start < chunk.length) {
+      const at = chunk.indexOf(10, start), end = at < 0 ? chunk.length : at;
+      const piece = chunk.subarray(start, end);
+      this.size += piece.length;
+      if (this.size > this.limit)
+        throw new Error("Browser message too large.");
+      this.chunks.push(piece);
+      if (at >= 0) {
+        const text = Buffer.concat(this.chunks, this.size).toString("utf8");
+        this.chunks = [];
+        this.size = 0;
+        line(text);
+      }
+      start = end + 1;
+    }
+  }
+}
+
 // box/src/link/browser/view.ts
 import net3 from "node:net";
 import path35 from "node:path";
@@ -9486,7 +9560,8 @@ function frameBudget(count, now = Date.now(), ceiling = 100) {
 }
 function browserView(events, relay = false, run = RUN, key = socketKey) {
   const socket = net3.createConnection(path35.join(run, "browser.sock"));
-  let buffer = "", input = "", opened = false, ended = false;
+  let opened = false, ended = false;
+  const incoming = new LineBuffer(80 * 1024 * 1024), input = new LineBuffer(72 * 1024 * 1024);
   const facts = new Map;
   let notice = 0;
   const flush = () => {
@@ -9513,83 +9588,80 @@ function browserView(events, relay = false, run = RUN, key = socketKey) {
 `));
   socket.on("error", end);
   socket.on("close", () => end());
-  socket.setEncoding("utf8");
   socket.on("data", (chunk) => {
-    buffer += chunk;
-    if (buffer.length > 80 * 1024 * 1024)
-      return end(new Error("Browser message too large."));
-    let at;
-    while ((at = buffer.indexOf(`
-`)) >= 0) {
-      const line = buffer.slice(0, at);
-      buffer = buffer.slice(at + 1);
-      let message;
-      try {
-        message = JSON.parse(line);
-      } catch {
-        return end(new Error("Invalid browser message."));
-      }
-      if (!opened) {
-        if (message.method !== "Kuvo.hello")
-          return end(new Error("Browser refused connection."));
-        opened = true;
-        events.open();
-        socket.write(JSON.stringify({ method: "Kuvo.viewing" }) + `
-`);
-      }
-      if (message.method === "Kuvo.frame") {
-        const { data, ...meta } = message.params;
-        const jpeg = Buffer.from(data, "base64");
-        const header = Buffer.from(JSON.stringify({ method: "Kuvo.frame", params: meta }));
-        const length = Buffer.alloc(4);
-        length.writeUInt32BE(header.length);
-        const frame = Buffer.concat([length, header, jpeg]);
-        if (relay && (frame.length > 60000 || !frameBudget(1, Date.now(), 80))) {
-          socket.write(JSON.stringify({ method: frame.length > 60000 ? "Kuvo.frameDropped" : "Kuvo.frameAck", params: { frameId: meta.frameId, ...frame.length > 60000 ? { reason: "oversize" } : {} } }) + `
-`);
-          continue;
+    try {
+      incoming.feed(chunk, (line) => {
+        if (ended)
+          return;
+        let message;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          return end(new Error("Invalid browser message."));
         }
-        events.binary(frame);
-      } else {
-        if (message.id === undefined && !String(message.method).startsWith("Kuvo."))
-          continue;
-        const bytes = Buffer.from(line + `
+        if (!opened) {
+          if (message.method !== "Kuvo.hello")
+            return end(new Error("Browser refused connection."));
+          opened = true;
+          events.open();
+          socket.write(JSON.stringify({ method: "Kuvo.viewing" }) + `
 `);
-        if (!relay)
-          events.text(bytes);
-        else {
-          const state = ["Kuvo.pages", "Kuvo.status", "Kuvo.viewport", "Kuvo.pointer", "Kuvo.cursor"].includes(message.method);
-          const name = state ? message.method + ":" + (message.params?.targetId ?? "") : "notice:" + ++notice;
-          facts.set(name, bytes);
-          if (facts.size >= 64)
-            socket.pause();
-          flush();
         }
-      }
+        if (message.method === "Kuvo.frame") {
+          const { data, ...meta } = message.params;
+          const jpeg = Buffer.from(data, "base64");
+          const header = Buffer.from(JSON.stringify({ method: "Kuvo.frame", params: meta }));
+          const length = Buffer.alloc(4);
+          length.writeUInt32BE(header.length);
+          const frame = Buffer.concat([length, header, jpeg]);
+          if (relay && (frame.length > 60000 || !frameBudget(1, Date.now(), 80))) {
+            socket.write(JSON.stringify({ method: frame.length > 60000 ? "Kuvo.frameDropped" : "Kuvo.frameAck", params: { frameId: meta.frameId, ...frame.length > 60000 ? { reason: "oversize" } : {} } }) + `
+`);
+            return;
+          }
+          events.binary(frame);
+        } else {
+          if (message.id === undefined && !String(message.method).startsWith("Kuvo."))
+            return;
+          const bytes = Buffer.from(line + `
+`);
+          if (!relay)
+            events.text(bytes);
+          else {
+            const state = ["Kuvo.pages", "Kuvo.status", "Kuvo.viewport", "Kuvo.pointer", "Kuvo.cursor"].includes(message.method);
+            const name = state ? message.method + ":" + (message.params?.targetId ?? "") : "notice:" + ++notice;
+            facts.set(name, bytes);
+            if (facts.size >= 64)
+              socket.pause();
+            flush();
+          }
+        }
+      });
+    } catch (error) {
+      end(error);
     }
   });
   return {
     send(data) {
       if (!opened || ended)
         return;
-      input += data.toString("utf8");
-      if (input.length > 72 * 1024 * 1024)
-        return end(new Error("Browser request too large."));
-      let at;
-      while ((at = input.indexOf(`
-`)) >= 0) {
-        const line = input.slice(0, at);
-        input = input.slice(at + 1);
-        let message;
-        try {
-          message = JSON.parse(line);
-        } catch {
-          return end(new Error("Invalid browser request."));
-        }
-        if (!message || typeof message !== "object" || !COMMANDS.has(message.method))
-          return end(new Error("Unknown view command."));
-        socket.write(JSON.stringify(message) + `
+      try {
+        input.feed(data, (line) => {
+          if (ended)
+            return;
+          let message;
+          try {
+            message = JSON.parse(line);
+          } catch {
+            return end(new Error("Invalid browser request."));
+          }
+          if (!message || typeof message !== "object" || !COMMANDS.has(message.method))
+            return end(new Error("Unknown view command."));
+          socket.write(line + `
 `);
+        });
+      } catch (error) {
+        end(error);
       }
     },
     close() {
@@ -42842,7 +42914,7 @@ import fs138 from "node:fs";
 import path145 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e90cb0ab40e2";
+var BRIDGE_VERSION = "84c9fa43c280";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -54675,7 +54747,8 @@ Connection: close\r
       refuse(400);
       return;
     }
-    let pending = Buffer.alloc(0), fragment = [], fragmentSize = 0, fragmenting = false, opened = false;
+    const pending = new ChunkQueue;
+    let fragment = [], fragmentSize = 0, fragmenting = false, opened = false;
     let handle;
     const finish = () => {
       handle?.close();
@@ -54701,21 +54774,22 @@ Connection: close\r
       return true;
     };
     const read = (data) => {
-      pending = Buffer.concat([pending, data]);
+      pending.append(data);
       while (pending.length >= 2) {
-        const a = pending[0], b = pending[1], op = a & 15, fin = !!(a & 128);
+        const head = pending.peek(Math.min(14, pending.length));
+        const a = head[0], b = head[1], op = a & 15, fin = !!(a & 128);
         if (a & 112 || !(b & 128) || ![0, 1, 8, 9, 10].includes(op))
           return finish();
         let length = b & 127, offset = 2;
         if (length === 126) {
           if (pending.length < 4)
             return;
-          length = pending.readUInt16BE(2);
+          length = head.readUInt16BE(2);
           offset = 4;
         } else if (length === 127) {
           if (pending.length < 10)
             return;
-          const n = pending.readBigUInt64BE(2);
+          const n = head.readBigUInt64BE(2);
           if (n > 72n * 1024n * 1024n)
             return finish();
           length = Number(n);
@@ -54725,8 +54799,9 @@ Connection: close\r
           return finish();
         if (pending.length < offset + 4 + length)
           return;
-        const mask = pending.subarray(offset, offset + 4), body = Buffer.from(pending.subarray(offset + 4, offset + 4 + length));
-        pending = pending.subarray(offset + 4 + length);
+        const mask = head.subarray(offset, offset + 4);
+        pending.drop(offset + 4);
+        const body = pending.read(length);
         for (let i = 0;i < body.length; i++)
           body[i] = body[i] ^ mask[i % 4];
         if (op === 8) {

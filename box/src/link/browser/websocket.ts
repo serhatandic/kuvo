@@ -1,4 +1,5 @@
 // Minimal RFC 6455 transport. Authentication belongs to the upgrade, never the HTTP handler.
+import { ChunkQueue } from "./buffers";
 import crypto from "node:crypto";
 import type http from "node:http";
 import type { Duplex } from "node:stream";
@@ -17,7 +18,8 @@ export function viewUpgrade(server: http.Server, password: string, connect: (eve
     const key = request.headers["sec-websocket-key"];
     if (request.headers["sec-websocket-version"] !== "13" || typeof key !== "string" || !/^[A-Za-z0-9+/]{22}==$/.test(key)
       || request.headers.upgrade?.toLowerCase() !== "websocket" || !/\bupgrade\b/i.test(String(request.headers.connection))) { refuse(400); return; }
-    let pending = Buffer.alloc(0), fragment: Buffer[] = [], fragmentSize = 0, fragmenting = false, opened = false;
+    const pending = new ChunkQueue();
+    let fragment: Buffer[] = [], fragmentSize = 0, fragmenting = false, opened = false;
     let handle: SocketHandle | undefined;
     const finish = () => { handle?.close(); socket.destroy(); };
     const write = (opcode: number, data: Buffer) => {
@@ -32,22 +34,24 @@ export function viewUpgrade(server: http.Server, password: string, connect: (eve
       return true;
     };
     const read = (data: Buffer) => {
-      pending = Buffer.concat([pending, data]);
+      pending.append(data);
       while (pending.length >= 2) {
-        const a = pending[0]!, b = pending[1]!, op = a & 15, fin = !!(a & 128);
+        const head = pending.peek(Math.min(14, pending.length));
+        const a = head[0]!, b = head[1]!, op = a & 15, fin = !!(a & 128);
         if ((a & 112) || !(b & 128) || ![0, 1, 8, 9, 10].includes(op)) return finish();
         let length = b & 127, offset = 2;
-        if (length === 126) { if (pending.length < 4) return; length = pending.readUInt16BE(2); offset = 4; }
+        if (length === 126) { if (pending.length < 4) return; length = head.readUInt16BE(2); offset = 4; }
         else if (length === 127) {
           if (pending.length < 10) return;
-          const n = pending.readBigUInt64BE(2);
+          const n = head.readBigUInt64BE(2);
           if (n > 72n * 1024n * 1024n) return finish();
           length = Number(n); offset = 10;
         }
         if (length + fragmentSize > 72 * 1024 * 1024 || (op >= 8 && (!fin || length > 125))) return finish();
         if (pending.length < offset + 4 + length) return;
-        const mask = pending.subarray(offset, offset + 4), body = Buffer.from(pending.subarray(offset + 4, offset + 4 + length));
-        pending = pending.subarray(offset + 4 + length);
+        const mask = head.subarray(offset, offset + 4);
+        pending.drop(offset + 4);
+        const body = pending.read(length);
         for (let i = 0; i < body.length; i++) body[i] = body[i]! ^ mask[i % 4]!;
         if (op === 8) { write(8, body); handle?.close(); socket.end(); return; }
         if (op === 9) { write(10, body); continue; }

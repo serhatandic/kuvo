@@ -168,3 +168,12 @@ test("an input-reply burst is backpressured and delivered without cutting off a 
   assert.equal(h.heard.all.filter(m => m.id >= 1000 && m.id < 1250).length, 250);
   assert.equal(h.heard.all.some(m => m.ended), false);
 });
+
+test("large chunked view input and split UTF-8 are joined once at the line boundary", async t => {
+  const h = await keeperView(t);
+  const message = { id: 88, method: "Kuvo.upload", params: { targetId: "P", files: [{ name: "café", data: "a".repeat(2 * 1024 * 1024) }] } };
+  const bytes = Buffer.from(JSON.stringify(message) + "\n");
+  for (let at = 0; at < bytes.length; at += 101) h.view.send(bytes.subarray(at, at + 101));
+  const received = await h.commands.until(m => m.id === 88);
+  assert.deepEqual(received, message);
+});
