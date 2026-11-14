@@ -160,6 +160,7 @@ for (const raw of [false, true]) {
     } else await call(viewer, "Kuvo.view", { targetId: "P", width: 393, height: 660 });
     assert.equal(h.chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").at(-1).params.width, 1280);
     await call(h.c, "Kuvo.setStatus", { working: false });
+    await h.advance(5001); await settle(h);
     const restored = h.chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").at(-1);
     assert.deepEqual([restored.params.width, restored.params.height], [393, 660]);
   });
@@ -246,3 +247,25 @@ test("an in-flight picture is discarded if its source metrics change before deli
   await capture(h, 100);
   assert.equal(h.c.heard.all.filter(m => m.method === "Kuvo.frame").at(-1).params.data, "bmV3");
 });
+
+for (const raw of [false, true]) {
+  test("round3 MUST: consecutive tools keep a watched page at the agent size for " + (raw ? "raw" : "Kuvo") + " viewers", async t => {
+    const h = await page(t);
+    const viewer = await h.client(); await viewer.heard.until(m => m.method === "Kuvo.hello");
+    if (raw) {
+      await call(viewer, "Kuvo.viewing");
+      await call(viewer, "Target.attachToTarget", { targetId: "P", flatten: true });
+      await call(viewer, "Emulation.setDeviceMetricsOverride", { width: 900, height: 700, deviceScaleFactor: 2 }, "raw");
+      await call(viewer, "Page.startScreencast", { maxWidth: 900, maxHeight: 700 }, "raw");
+    } else await call(viewer, "Kuvo.view", { targetId: "P", width: 393, height: 660 });
+    for (let tool = 0; tool < 3; tool++) {
+      await call(h.c, "Kuvo.setStatus", { targetId: "P", working: true });
+      await call(h.c, "Kuvo.setStatus", { working: false });
+      await h.advance(1000); await settle(h);
+    }
+    const widths = h.chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").map(m => m.params.width);
+    assert.deepEqual(widths, [raw ? 900 : 393, 1280], "tool boundaries must not reflow the page");
+    await h.advance(5001); await settle(h);
+    assert.equal(h.chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").at(-1).params.width, raw ? 900 : 393);
+  });
+}

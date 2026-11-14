@@ -1,4 +1,4 @@
-// kuvo-browser c483eafd82f71484
+// kuvo-browser a007720a0f61e5e4
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -101,7 +101,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "9288d8629c18";
+const KEEPER = "c4fc7748b4a8";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -950,6 +950,22 @@ async function host() {
       .sort((a, b) => (b.viewOrder ?? 0) - (a.viewOrder ?? 0))[0];
     return latest ? resize(targetId, viewerSize(latest), "viewer") : Promise.resolve();
   };
+  // A tool finishing is not the agent finishing: preserve layout between successive tools.
+  const idleRestores = new Map();
+  const cancelRestore = targetId => {
+    clearTimeout(idleRestores.get(targetId));
+    idleRestores.delete(targetId);
+  };
+  const restoreAfterIdle = targetId => {
+    if (!targetId) return;
+    cancelRestore(targetId);
+    const timer = setTimeout(() => {
+      idleRestores.delete(targetId);
+      if (!workingIn(targetId)) restoreViewer(targetId).catch(() => {});
+    }, 5000);
+    timer.unref?.();
+    idleRestores.set(targetId, timer);
+  };
   let frameNumber = 0;
   const capturing = new Set(), frameClasses = new Map();
   const frameKey = v => JSON.stringify([v.targetId, v.width, v.height, v.scale, v.quality]);
@@ -1465,6 +1481,7 @@ async function host() {
       if (asked && hostOf(message.params.targetInfo.url) !== asked) passkeyCleared(message.params.targetInfo.targetId);
     }
     if (message.method === "Target.targetDestroyed") {
+      cancelRestore(message.params.targetId);
       clearUploads(message.params.targetId);
       targets.delete(message.params.targetId);
       agentSizes.delete(message.params.targetId);
@@ -1531,7 +1548,7 @@ async function host() {
       client.closed = true;
       if (!client.keyed) return;
       clients.delete(client);
-      if (client.status?.working && client.status.targetId) restoreViewer(client.status.targetId).catch(() => {});
+      if (client.status?.working && client.status.targetId) restoreAfterIdle(client.status.targetId);
       for (const sessionId of client.sessions) {
         owners.delete(sessionId);
         internal("Target.detachFromTarget", { sessionId });
@@ -1613,9 +1630,10 @@ async function host() {
           // Each helper's: the pages agents are at work in, all together.
           client.status = message.params ?? { working: false };
           if (client.status.working && client.status.targetId) {
+            cancelRestore(client.status.targetId);
             await resize(client.status.targetId, agentSizes.get(client.status.targetId) ?? { ...sizeFor({}), scale: 2 }, "agent");
           }
-          if (previousTarget && (!client.status.working || previousTarget !== client.status.targetId)) await restoreViewer(previousTarget);
+          if (previousTarget && (!client.status.working || previousTarget !== client.status.targetId)) restoreAfterIdle(previousTarget);
           status = everyStatus();
           announcePages();
           broadcast({ method: "Kuvo.status", params: status });

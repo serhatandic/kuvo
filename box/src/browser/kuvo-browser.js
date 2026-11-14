@@ -932,6 +932,22 @@ async function host() {
       .sort((a, b) => (b.viewOrder ?? 0) - (a.viewOrder ?? 0))[0];
     return latest ? resize(targetId, viewerSize(latest), "viewer") : Promise.resolve();
   };
+  // A tool finishing is not the agent finishing: preserve layout between successive tools.
+  const idleRestores = new Map();
+  const cancelRestore = targetId => {
+    clearTimeout(idleRestores.get(targetId));
+    idleRestores.delete(targetId);
+  };
+  const restoreAfterIdle = targetId => {
+    if (!targetId) return;
+    cancelRestore(targetId);
+    const timer = setTimeout(() => {
+      idleRestores.delete(targetId);
+      if (!workingIn(targetId)) restoreViewer(targetId).catch(() => {});
+    }, 5000);
+    timer.unref?.();
+    idleRestores.set(targetId, timer);
+  };
   let frameNumber = 0;
   const capturing = new Set(), frameClasses = new Map();
   const frameKey = v => JSON.stringify([v.targetId, v.width, v.height, v.scale, v.quality]);
@@ -1447,6 +1463,7 @@ async function host() {
       if (asked && hostOf(message.params.targetInfo.url) !== asked) passkeyCleared(message.params.targetInfo.targetId);
     }
     if (message.method === "Target.targetDestroyed") {
+      cancelRestore(message.params.targetId);
       clearUploads(message.params.targetId);
       targets.delete(message.params.targetId);
       agentSizes.delete(message.params.targetId);
@@ -1513,7 +1530,7 @@ async function host() {
       client.closed = true;
       if (!client.keyed) return;
       clients.delete(client);
-      if (client.status?.working && client.status.targetId) restoreViewer(client.status.targetId).catch(() => {});
+      if (client.status?.working && client.status.targetId) restoreAfterIdle(client.status.targetId);
       for (const sessionId of client.sessions) {
         owners.delete(sessionId);
         internal("Target.detachFromTarget", { sessionId });
@@ -1595,9 +1612,10 @@ async function host() {
           // Each helper's: the pages agents are at work in, all together.
           client.status = message.params ?? { working: false };
           if (client.status.working && client.status.targetId) {
+            cancelRestore(client.status.targetId);
             await resize(client.status.targetId, agentSizes.get(client.status.targetId) ?? { ...sizeFor({}), scale: 2 }, "agent");
           }
-          if (previousTarget && (!client.status.working || previousTarget !== client.status.targetId)) await restoreViewer(previousTarget);
+          if (previousTarget && (!client.status.working || previousTarget !== client.status.targetId)) restoreAfterIdle(previousTarget);
           status = everyStatus();
           announcePages();
           broadcast({ method: "Kuvo.status", params: status });
