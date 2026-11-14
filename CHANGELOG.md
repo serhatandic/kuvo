@@ -6,7 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
-- Discard Changes is refused, saying so, when an app can't tell whether the file changed since it listed it, so an agent's newer edits are never thrown away. An iPhone app from before this needs updating before it can discard.
+- Discard Changes is refused, saying so, when an app can't tell whether the file changed since it listed it, so an agent's newer edits are never thrown away. An iPhone app from before this needs updating before it can discard, and the old Mac app (before Kuvo Code 1.0) can no longer discard.
 - **Create Pull Request…** is offered only where one can be made: not on the branch pull requests go into, with no branch checked out, or in a repository with no `origin`. Asked for anyway in a repository with no `origin`, it says so before anything is pushed. Discarding a new or moved file you staged and then changed again says it can't be undone, as the staged version isn't kept anywhere.
 - Changes you make to a bot while its machine is away are kept by your Mac's background service rather than the app, so they reach the machine once it's back, also while Kuvo Code's window is closed; a change made on the machine meanwhile isn't undone by an older one that waited.
 - Your computers now decide usage alerts where they read the account, even with Kuvo Code closed. Your devices avoid repeat alerts using the same notification settings across your own computers, and your iPhone stays quiet when your Mac already showed an alert while its phone delivery was waiting. Devin alerts are unavailable because Devin has no sign-in in Kuvo Code’s background service; Usage settings now says so.
