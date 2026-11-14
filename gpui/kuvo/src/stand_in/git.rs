@@ -1,7 +1,7 @@
 //! The stand-in box's git and folders: made-up repositories answered as the box answers them
 //! (`kuvo/git/files` and its events, a file's diff, staging, committing, branches, Merge into…,
-//! pull requests) and a project's folders and files (`kuvo/folders?files=1`, `kuvo/file`). Nothing
-//! real is read or run: every answer is a fixture here.
+//! pull requests) and a project's folders and files (`kuvo/folders?files=1`, `kuvo/file/text`).
+//! Nothing real is read or run: every answer is a fixture here.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -80,6 +80,30 @@ fn file(path: &str, group: &str, status: &str, lines: Option<(u32, u32)>) -> Val
     file
 }
 
+/// A listed file with what the box says of its buttons (`git.files.does`): what its stage button
+/// does, and what its discard comes to (where a fixture doesn't say them itself).
+fn said(file: &Value) -> Value {
+    let mut file = file.clone();
+    let (group, status) = (file["group"].as_str().unwrap_or("").to_owned(), file["status"].as_str().unwrap_or("").to_owned());
+    if file["stage"].is_null() {
+        file["stage"] = json!(match group.as_str() {
+            "staged" => "unstage",
+            "conflicted" => "resolve",
+            _ => "stage",
+        });
+    }
+    if !file["discard"].is_null() && file["discards"].is_null() {
+        let kind = match status.as_str() {
+            "added" => "trash",
+            "renamed" if file["oldPath"].is_string() => "undoMove",
+            "deleted" => "restore",
+            _ => "changes",
+        };
+        file["discards"] = json!({ "kind": kind, "undoable": kind != "changes" });
+    }
+    file
+}
+
 impl Default for Git {
     fn default() -> Git {
         Git::new()
@@ -153,7 +177,9 @@ impl Git {
                 let repo = &self.repos[root];
                 let commits = if repo.files.iter().any(|file| file["group"] == json!("staged")) { "staged" } else { "all" };
                 let commits = if repo.staged_elsewhere > 0 { "staged" } else { commits };
-                let mut answer = json!({ "repository": true, "root": root, "branch": repo.branch, "files": repo.files, "uncommitted": !repo.files.is_empty(), "commits": commits, "stagedElsewhere": repo.staged_elsewhere });
+                let files: Vec<Value> = repo.files.iter().map(said).collect();
+                let takes = if commits == "staged" { repo.files.iter().filter(|file| file["group"] == json!("staged")).count() + repo.staged_elsewhere } else { repo.files.len() };
+                let mut answer = json!({ "repository": true, "root": root, "branch": repo.branch, "files": files, "uncommitted": !repo.files.is_empty(), "commits": commits, "stagedElsewhere": repo.staged_elsewhere, "takes": takes });
                 if let Some(underway) = repo.underway {
                     answer["underway"] = json!(underway);
                 }
@@ -175,7 +201,13 @@ impl Git {
                 let Some(root) = self.repo_of(&directory).map(str::to_owned) else { return found(200, json!({ "repository": false })) };
                 let path = text("path");
                 let patch = self.repos[&root].patches.get(&path).cloned().unwrap_or_else(|| default_patch(&path));
-                found(200, json!({ "repository": true, "root": root, "against": "HEAD", "patch": patch, "untracked": [], "hashes": {}, "uncommitted": true }))
+                let mut answer = json!({ "repository": true, "root": root, "against": "HEAD", "patch": patch, "untracked": [], "hashes": {}, "uncommitted": true });
+                // A picture's diff, as the box says one: binary.
+                if path.ends_with(".png") {
+                    answer["patch"] = json!(format!("diff --git a/{path} b/{path}\nBinary files a/{path} and b/{path} differ\n"));
+                    answer["binary"] = json!(true);
+                }
+                found(200, answer)
             }
             ("POST", "kuvo/git/stage" | "kuvo/git/unstage" | "kuvo/git/discard") => {
                 let root = text("root");
@@ -235,7 +267,9 @@ impl Git {
                 let directory = text("directory");
                 let Some(root) = self.repo_of(&directory) else { return found(200, json!({ "repository": false })) };
                 let repo = &self.repos[root];
-                let mut answer = json!({ "repository": true, "root": root, "current": repo.branch, "branches": repo.branches });
+                // A pull request from a branch of its own, never from the one they go into.
+                let offered = repo.branch.as_deref().is_some_and(|branch| branch != "main");
+                let mut answer = json!({ "repository": true, "root": root, "current": repo.branch, "branches": repo.branches, "pullRequest": offered });
                 if let Some(into) = &repo.into {
                     answer["worktree"] = json!({ "into": into });
                 }
@@ -288,9 +322,14 @@ impl Git {
         }
     }
 
-    /// A file's bytes as `kuvo/file` sends them.
-    pub fn bytes(&self, uri: &str) -> Option<Vec<u8>> {
-        self.contents.get(&super::percent_decode(uri.trim_start_matches("file://"))).cloned()
+    /// A file as `kuvo/file/text` answers for it: its text, or that it isn't text (the fixtures'
+    /// only one that isn't is a picture).
+    pub fn text(&self, uri: &str) -> Option<Value> {
+        let bytes = self.contents.get(&super::percent_decode(uri.trim_start_matches("file://")))?;
+        Some(match std::str::from_utf8(bytes) {
+            Ok(text) if !bytes.contains(&0) => json!({ "text": true, "encoding": "utf-8", "content": text }),
+            _ => json!({ "text": false }),
+        })
     }
 }
 

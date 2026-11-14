@@ -62,8 +62,9 @@ pub enum Act {
     SetOtherComputers(bool),
     /// The sandbox's button, at the route the box named.
     SandboxAction { method: String, path: String },
-    /// Opens a page, or a pane of the system's settings, as only an app on the computer can.
-    Open(&'static str),
+    /// Opens the address the box named (a page, or a pane of the system's settings), as only an
+    /// app on the computer can.
+    Open(String),
     RemoveAllowed(String),
     SetSearchEngine(String),
     SetTidies(bool),
@@ -180,6 +181,8 @@ pub struct Facts<'a> {
     pub busy: &'a [(String, String)],
     pub dark: bool,
     pub this_box: &'a str,
+    /// Whether the box is on the computer this app runs on.
+    pub here: bool,
 }
 
 impl Facts<'_> {
@@ -431,10 +434,6 @@ fn models(facts: &Facts) -> Vec<Block> {
 
 // MARK: Permissions
 
-/// The docs on what a machine needs for its sandbox, and the Mac's Software Update pane.
-pub const SANDBOX_HELP: &str = "https://www.kuvo.run/code/docs/machines/#sandbox";
-pub const SOFTWARE_UPDATE: &str = "x-apple.systempreferences:com.apple.Software-Update-Settings.extension";
-
 /// A mode's name, as every client says it (KuvoClient's `ApprovalWords`).
 fn mode_name(mode: &str) -> String {
     match mode {
@@ -477,16 +476,14 @@ fn permissions(facts: &Facts) -> Vec<Block> {
     }
     match facts.sandbox {
         Reading::Ready(sandbox) => {
-            // Why it's off and its button's words are the box's, drawn as they are. A button with
-            // a route sends it; the docs and the system's Software Update are this app's to open.
+            // Why it's off, its button's words and what it does are the box's, drawn as they are: a
+            // button with a route sends it, one with an address opens it. An address that's the
+            // box's computer's own (its Software Update) has a button only where this app runs
+            // on that computer.
             let detail = if sandbox.on { String::new() } else { sandbox.why.clone().unwrap_or_default() };
             let control = facts.busy("row-sandbox").unwrap_or_else(|| match sandbox.button() {
                 Some((label, SandboxDoes::Route { method, path })) => Control::Buttons(vec![(label, Act::SandboxAction { method, path })]),
-                Some((label, SandboxDoes::Help)) => Control::Buttons(vec![(label, Act::Open(SANDBOX_HELP))]),
-                // (The system's own pane: only where this app runs on a Mac, and right only while the
-                // window shows this computer's own box, as it does today. Left to move: the box
-                // naming the page a `help` opens, and whose Software Update a `softwareUpdate` is.)
-                Some((label, SandboxDoes::SoftwareUpdate)) if cfg!(target_os = "macos") => Control::Buttons(vec![(label, Act::Open(SOFTWARE_UPDATE))]),
+                Some((label, SandboxDoes::Open { address, here })) if !here || facts.here => Control::Buttons(vec![(label, Act::Open(address))]),
                 _ => Control::Text(if sandbox.on { "On".into() } else { "Off".into() }),
             });
             let state = Row::new("row-sandbox", "Sandbox", detail, control).warning(!sandbox.on);

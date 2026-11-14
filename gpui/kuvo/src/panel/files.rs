@@ -1,6 +1,7 @@
 //! Files: the session's folder as its box lists it, one folder at a time as each opens (`kuvo/folders`
 //! with `files=1`), folders first; a folder the box can't read says why, with Try Again. A file opens
-//! read-only, highlighted as the conversation's code blocks are.
+//! read-only, highlighted as the conversation's code blocks are, where the box says it's text
+//! (`kuvo/file/text`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -9,7 +10,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, actions, div, prelude::FluentBuilder as _, px, uniform_list,
 };
 use kuvo_box::BoxClient;
-use kuvo_box::folders::{Folder, Unreadable};
+use kuvo_box::folders::{FileText, Folder, Unreadable};
 use kuvo_ui::code_block::CodeBlock;
 use kuvo_ui::{ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize, theme::{radius, space}};
 
@@ -145,12 +146,12 @@ impl FilesView {
         let client = self.client.clone();
         let asked = path.to_owned();
         let path = path.to_owned();
-        run(self, self.live, cx, move || client.read_file(&asked), move |this, read, cx| {
+        run(self, self.live, cx, move || client.read_text(&asked), move |this, read, cx| {
             if this.opened.as_ref().map(|(at, _)| at) != Some(&path) {
                 return;
             }
             let shown = match read {
-                Ok(bytes) => Load::Ready(shown(bytes)),
+                Ok(file) => Load::Ready(shown(file)),
                 Err(error) if error.status() == Some(413) => Load::Ready(Shown::Unshown("Too big to show here.".into())),
                 Err(error) => Load::Failed(error.to_string()),
             };
@@ -342,18 +343,13 @@ fn join(folder: &str, name: &str) -> String {
     format!("{}/{name}", folder.trim_end_matches('/'))
 }
 
-/// A file's bytes as shown: text when it's text, else why it isn't.
-pub fn shown(bytes: Vec<u8>) -> Shown {
-    if bytes.contains(&0) {
+/// A file as shown: its text where the box says it's text, else that it isn't.
+pub fn shown(file: FileText) -> Shown {
+    if !file.text {
         return Shown::Unshown("Not a text file: nothing to show here.".into());
     }
-    match String::from_utf8(bytes) {
-        Ok(text) => {
-            let lines = text.lines().count();
-            Shown::Text { text, lines }
-        }
-        Err(_) => Shown::Unshown("Not a text file: nothing to show here.".into()),
-    }
+    let lines = file.content.lines().count();
+    Shown::Text { text: file.content, lines }
 }
 
 impl Focusable for FilesView {
@@ -407,9 +403,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn text_shows_and_anything_else_says_why() {
-        assert_eq!(shown(b"one\ntwo\n".to_vec()), Shown::Text { text: "one\ntwo\n".into(), lines: 2 });
-        assert!(matches!(shown(vec![0x89, b'P', 0, 1]), Shown::Unshown(_)));
-        assert!(matches!(shown(vec![0xff, 0xfe, b'a']), Shown::Unshown(_)));
+    fn text_shows_and_what_the_box_says_isnt_text_says_so() {
+        assert_eq!(shown(FileText { text: true, content: "one\ntwo\n".into() }), Shown::Text { text: "one\ntwo\n".into(), lines: 2 });
+        assert!(matches!(shown(FileText { text: false, content: String::new() }), Shown::Unshown(_)));
     }
 }

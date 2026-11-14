@@ -204,6 +204,10 @@ impl Transport for LocalServer {
         true
     }
 
+    fn here(&self) -> bool {
+        true
+    }
+
     fn describe(&self) -> String {
         self.label.clone()
     }

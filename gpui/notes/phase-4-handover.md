@@ -184,41 +184,28 @@ Fixed, each with a test that fails on the code before (box tests now 20):
 ## To move to the box later
 
 The user's rule: GPUI work leaves no logic in the client that the box ought to own, and adds no new
-box features outside a review's fixes; what's left is listed here, for a box session. The panel
-decides nothing about git beyond these (what's staged, the groups, the scopes, what a commit takes,
-what a discard does, a stale discard, merge and rebase states, where Merge goes and whether a pull
-request can be made are the box's), but it still works these out from the box's facts:
+box features outside a review's fixes. The panel decides nothing about git: what's staged, the
+groups, the scopes, what a commit takes, what a discard does, a stale discard, merge and rebase
+states, where Merge goes and whether a pull request can be made are the box's.
 
-1. **Which action a file's button takes.** `GET kuvo/git/files`, each file: `"stage": "stage" |
-   "unstage" | "resolve"`, what its stage button does (today the client maps `group`: staged →
-   Unstage, conflicted → Mark as Resolved, else Stage). View: Changes' row and file page
-   (`kuvo/src/panel/changes.rs`, `actions`).
-2. **How many files a commit takes.** `GET kuvo/git/files`: `"takes": <number>`, the files `commit()`
-   would take now, those outside the folder included (today the client counts staged rows plus
-   `stagedElsewhere`, or distinct paths plus `more`). View: Changes' foot (`commit_takes`).
-3. **"Restore" for a deleted file.** `GET kuvo/git/files`, each file's `discard`: a fourth value,
-   `restore`, for a deletion (the file comes back), in place of the client reading `status ==
-   "deleted"`. View: Changes' discard confirm (`confirm`).
-4. **A binary file's diff.** `POST kuvo/git/changes` with `path`: `"binary": true` (today the client
-   reads git's `Binary files … differ` line from the patch). View: Changes' file page (`open`,
-   `reload`).
-5. **Whether a file is text.** `GET kuvo/file` (or a viewer's route of its own): whether it's text and
-   in which encoding, so no client looks for NUL bytes or invalid UTF-8 (`files::shown`; the Mac's
-   `FileViewer` does the same). View: Files' viewer.
-6. **Whether a pull request can be made from here.** `POST kuvo/git/branches`: `"pullRequest": bool`
-   (false on the base itself, with no remote, on no branch), so Create Pull Request… isn't offered
-   only to be refused (today it shows on any branch, and the box's draft says why it can't). View:
-   Branches' card (`current`).
-7. **The Mac's own `.git` filter.** The Mac's Files panel leaves out `.git`, `.hg` and `.svn` itself
-   (`swift/KuvoCode/Views/Utilities/FilesView.swift`, `unlisted`); the box does it for `files=1`, so the
-   Mac could list folders through it.
-8. **"Undo Move" for a staged move.** `GET kuvo/git/files`, each file's `discard`: a value for a
-   staged move (its old path comes back, the new one goes to the Trash), in place of the client
-   reading `status == "renamed"` with `discard == "head"`. View: Changes' discard confirm
-   (`confirm`).
-9. **Whether a discard can be undone.** `GET kuvo/git/files`, each file: `"undoable": bool` (what
-   goes, goes to the Trash, or a file comes back), in place of the client deciding from `discard`
-   and `status`, which picks the plain or the red button. View: Changes' discard confirm.
+What the panel once worked out from the box's facts moved to the box in #708, and the app draws only
+these fields (each a name in the update gate, so no box without them is used):
+
+- `git.files.does`, on `GET kuvo/git/files`: each file's `stage` (`stage`, `unstage`, `resolve`: what
+  its button does), its `discards: {kind, undoable}` (`trash`, `restore`, `undoMove`, `changes`: the
+  words of the discard's confirm, and whether its button is drawn as destructive), and `takes`, how
+  many files a commit takes. Views: `changes.rs`' `actions`, `discard_words`, `commit_takes`.
+- `git.changes.binary`, on `POST kuvo/git/changes` with `path`: `binary`. View: `changes.rs`' `reload`.
+- `file.text`, `GET kuvo/file/text`: a file's text, or that it isn't text. View: `files.rs`' `shown`.
+  (The Mac's `FileViewer` still looks through the bytes itself: retired, left as it is.)
+- `git.branches.pullRequest`, on `POST kuvo/git/branches`: `pullRequest`. View: `branches.rs`'
+  `current`.
+- `sandbox.opens`, on `GET kuvo/sandbox`: `opens`, the address a button with no route opens, and
+  `opensHere` for one that's the box's computer's own (Software Update), drawn only where the app
+  runs on that computer (`BoxClient::here`). View: `settings/rows.rs`' sandbox row.
+- Version control's own folders (`.git`, `.hg`, `.svn`, a worktree's `.git` file) are left out of
+  `kuvo/folders?files=1` by the box; the app filters nothing. (The Mac's `FilesView` has a filter
+  of its own, `unlisted`: retired, left as it is.)
 
 Wanted from the box, not built (new features, not fixes): Stage All and Unstage All in one request;
 a branch's last commit and its time, and deleting a branch, in `kuvo/git/branches`; a Files filter

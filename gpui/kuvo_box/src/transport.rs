@@ -105,6 +105,12 @@ pub trait Transport: Send + Sync {
     /// read again on a timer by what follows it.
     fn streams(&self) -> bool;
 
+    /// Whether the box is on the computer this client runs on (its own server, not a machine's over
+    /// SSH): what a box says opens only on its own computer is opened only then.
+    fn here(&self) -> bool {
+        false
+    }
+
     /// Where it goes, in words (for a refusal of the client's own): "this Mac", a machine's name.
     fn describe(&self) -> String;
 }

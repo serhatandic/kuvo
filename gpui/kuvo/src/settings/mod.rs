@@ -252,6 +252,7 @@ impl SettingsView {
             busy: &self.busy,
             dark: self.dark,
             this_box: &self.this_box,
+            here: self.client.here(),
         }
     }
 
@@ -424,7 +425,7 @@ impl SettingsView {
                 |this, approval| this.approval = Reading::Ready(approval),
                 cx,
             ),
-            Act::Open(url) => cx.open_url(url),
+            Act::Open(url) => cx.open_url(&url),
             Act::SandboxAction { method, path } => {
                 self.set_busy("row-sandbox", "Working…");
                 self.run(
