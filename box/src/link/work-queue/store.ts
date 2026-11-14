@@ -15,7 +15,7 @@ import { listOf, locked, textOf, writePrivate } from "../files";
 import { RUN } from "../home";
 import { sourceKeyOf } from "./sources";
 import { migrateOnce } from "./migrate";
-import { categoryBefore, fromCategory, PRIORITY_ID } from "./statuses";
+import { categoryBefore, PRIORITY_ID, standing } from "./statuses";
 
 export const WORK_QUEUE = path.join(RUN, "work-queue");
 const QUEUES = path.join(WORK_QUEUE, "queues");
@@ -192,9 +192,9 @@ const eventKept = (each: Record<string, unknown>): boolean =>
  * box doesn't know (a newer box's) are kept as they are, so writing it here doesn't drop them. */
 export function itemOf(given: unknown, owner: string): Item | null {
   if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.title !== "string") return null;
-  // COMPAT(0.7 queue-categories): one under a category, as a box from before statuses hands or moves it (this box's own moved over in `migrate.ts`): said anew, never dropped. Goes 3 months after 0.8.0.
-  const before = typeof given.status === "string" && given.status ? null : fromCategory(given.category);
-  const labels = before ? (before.label ? [before.label] : []) : [...new Set((Array.isArray(given.labels) ? given.labels : []).filter((each): each is string => typeof each === "string" && /^(?:lbl|cat)_[a-z0-9-]{1,40}$/.test(each)))].slice(0, 20);
+  // COMPAT(0.7 queue-categories): one under a category, as a box from before statuses hands or moves it (this box's own moved over in `migrate.ts`), said anew, never dropped; and one such a box moved since (it changes only `category`), where that put it. Goes 3 months after 0.8.0.
+  const stands = standing(given);
+  const labels = stands.labels.slice(0, 20);
   const created = isObject(given.created) && typeof given.created.at === "number" ? { at: given.created.at, by: whoOf(given.created.by) ?? { user: true } as Who } : { at: 0, by: { user: true } as Who };
   const updated = isObject(given.updated) && typeof given.updated.at === "number" ? { at: given.updated.at, by: whoOf(given.updated.by) ?? created.by } : created;
   const list = <T>(value: unknown, keep: (each: Record<string, unknown>) => boolean): T[] => (Array.isArray(value) ? value.filter(each => isObject(each) && keep(each)) as T[] : []);
@@ -206,7 +206,7 @@ export function itemOf(given: unknown, owner: string): Item | null {
     owner,
     title: given.title,
     body: typeof given.body === "string" ? given.body : "",
-    status: before ? before.status : (given.status as string).slice(0, 40),
+    status: stands.status.slice(0, 40),
     order: typeof given.order === "number" && Number.isFinite(given.order) ? given.order : 0,
     ...(typeof given.priority === "string" && PRIORITY_ID.test(given.priority) && given.priority !== "normal" ? { priority: given.priority } : {}),
     labels,

@@ -57,6 +57,11 @@ export function priorityNamed(given: unknown): Priority | null {
   return PRIORITIES.find(each => each.id === wanted) ?? (wanted === "medium" || wanted === "none" ? PRIORITIES[2] : null);
 }
 
+/** A custom category's colour as the apps drew it before labels (by its id), in a label's colours.
+ * (Here, not in labels.ts: `migrate.ts` reads it as the store loads.) */
+export const colorBefore = (id: string): string =>
+  ["orange", "pink", "indigo", "mint", "coral", "amber"][[...id].reduce((sum, each) => (sum * 31 + (each.codePointAt(0) ?? 0)) & 0xFFFF, 0) % 6];
+
 /** The label that says an item was Parked, before statuses (`migrate.ts`). */
 export const PARKED_LABEL = "lbl_parked";
 
@@ -65,6 +70,27 @@ export const PARKED_LABEL = "lbl_parked";
  * one, Later for Backlog (Parked with that label), else Next. */
 export const categoryBefore = (item: { status: string; labels?: string[] }): string =>
   isClosed(item.status) ? "done" : item.status === "backlog" ? (item.labels?.includes(PARKED_LABEL) ? "parked" : "later") : "next";
+
+/** Where an item stands as it's read, by what it says: its `status` and labels, unless a box from
+ * before statuses moved it since. Such a box changes only `category` (it keeps `status` as a field
+ * it doesn't know), and this one always writes the category its status gives (`categoryBefore`):
+ * so a category that isn't that one is the later word, and the item stands where it puts it. One
+ * with no status at all is from before statuses. `name`: a custom category's name, where known. */
+export function standing(given: { status?: unknown; category?: unknown; labels?: unknown }, name?: (category: string) => string | undefined): { status: string; labels: string[] } {
+  const kept = (Array.isArray(given.labels) ? given.labels : []).filter((each): each is string => typeof each === "string" && /^(?:lbl|cat)_[a-z0-9-]{1,40}$/.test(each));
+  const named = typeof given.category === "string" ? name?.(given.category) : undefined;
+  if (typeof given.status !== "string" || !given.status) {
+    const before = fromCategory(given.category, named);
+    return { status: before.status, labels: before.label ? [before.label] : [] };
+  }
+  const labels = [...new Set(kept)];
+  // (A status this box doesn't know is a newer box's, with a category of its own choosing: as it came.)
+  if (typeof given.category !== "string" || !STATUS_ID.test(given.status) || given.category === categoryBefore({ status: given.status, labels })) return { status: given.status, labels };
+  const moved = fromCategory(given.category, named);
+  // (Out of Parked: its label goes with the move.)
+  const rest = moved.label === PARKED_LABEL ? labels : labels.filter(each => each !== PARKED_LABEL);
+  return { status: moved.status, labels: moved.label && !rest.includes(moved.label) ? [...rest, moved.label] : rest };
+}
 
 /** Where an item kept under a category (before statuses) stands now: its status, and the label its
  * category became. `name` is its custom category's name, where that's known. Next is Todo, Later

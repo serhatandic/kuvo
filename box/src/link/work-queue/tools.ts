@@ -150,7 +150,7 @@ export const QUEUE_TOOLS = [
         body: { type: "string" },
         status: { type: "string" },
         label: { type: "string" },
-        done: { type: "boolean" },
+        done: { type: "boolean", description: "Done, whatever status says." },
       }, required: ["number", "title"] } },
     }, required: ["items"], additionalProperties: false },
   },

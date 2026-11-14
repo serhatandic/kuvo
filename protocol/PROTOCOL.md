@@ -5546,9 +5546,15 @@ stands: Next is `todo`, Later `backlog`, Done `done`; Parked is `backlog` with t
 custom category becomes a label under its own id, in the colour the apps drew it in, on a `todo`
 item (`backlog` for "Correctness sweep" and "Edge cases"); an open item a session had said it was
 working on (linked, its last word `started`) is `in-progress`. `moved` events name the statuses
-their categories became. Items keep their order: within a status, in the order of the categories
-they came from (Next, Later, the custom ones as listed, Parked), then their place there. A label
-is made only for a category some item was in. An item an older box hands, moves or tells later is
+their categories became, with the label a custom category became beside each (`fromLabel`,
+`toLabel`: label ids), so a feed can still say where it came from. Items keep their order: within a status, in the order of the categories
+they came from (Next, Later, the custom ones as listed, Parked), then their place there. Every custom category
+becomes a label, one nothing was in too (but "Waiting on you", a status now); Parked only where an
+item was. One process moves them over (`.moving-to-statuses` while it does: another that comes
+meanwhile reads on and changes nothing; one left by a process cut off goes after two minutes), and
+the copy is on the disk, its folders too, before a queue is written. A run that finds
+`labels.json` there already (cut off after it, or `model.json` lost) adds only the labels an item
+it still has to move over names, never one removed since. An item an older box hands, moves or tells later is
 said anew the same way as it comes (a custom category by its id, as its name isn't known). Where the
 move can't be made now (a full disk), views still answer, each item said anew as it's read, and
 every change is refused (400, in words) until it's made: nothing is written under statuses
@@ -9132,7 +9138,11 @@ before connects (the box notes one: `run/attached`).
   says `category` (`done` for a closed one, `later` for Backlog, `parked` for Backlog with the
   label Parked, else `next`), so a box from before statuses that reads the folder for a while (a
   released Mac puts its own box over this one as it connects) or takes the item never drops it for
-  having none; a box with statuses reads only `status`. It sends such a box no client's change to
+  having none. A box with statuses goes by `status`, but where an item's `category` isn't the one
+  its status gives: then a box from before statuses moved it since (it changes only `category`),
+  and the item stands where that put it (`done`: Done; `next`: Todo; `later`: Backlog; `parked`:
+  Backlog with the label Parked), so what was done there isn't undone here. What a computer told
+  is kept the same way (`categories: []`, and each item's `category`), for such a box's views. It sends such a box no client's change to
   an item it keeps (`PATCH`: 409). (The box's own items
   moving over once, as it updates, isn't for released Macs: it stays.)
   <!-- compat: 0.7 queue-categories -->

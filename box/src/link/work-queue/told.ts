@@ -11,7 +11,7 @@ import { cut, plainName } from "../../shared/text";
 import { listOf, locked, writePrivate } from "../files";
 import { KEY } from "../peers/known";
 import { assigneeOf, dayOf, ITEM_ID, OWNER, WORK_QUEUE, whoOf as keptWho, type Who } from "./store";
-import { fromCategory, PRIORITY_ID, STATUS_ID } from "./statuses";
+import { categoryBefore, fromCategory, PRIORITY_ID, STATUS_ID } from "./statuses";
 import { LABEL_ID, labelOf, MOST_LABELS, type Label } from "./labels";
 import type { ItemSummary, OwnerFacts } from "./view";
 
@@ -156,11 +156,17 @@ export function readTold(key: string): Told | null {
       const again = toldOf(kept, Infinity);
       return again ? { ...again, heard: typeof kept.heard === "number" ? kept.heard : 0 } : null;
     }
-    return kept as unknown as Told;
+    // (Without what's kept only for a box from before statuses to read, `asToldKept`.)
+    const { categories: _, ...told } = kept;
+    return { ...told, items: kept.items.map(each => { if (!isObject(each) || !("category" in each)) return each; const { category: __, ...item } = each; return item; }) } as unknown as Told;
   } catch {
     return null;
   }
 }
+
+// What a computer told, as it goes to disk.
+// COMPAT(0.7 queue-categories): with `categories` and each item's `category`, as a box from before statuses reads them (a released Mac puts its own box over this one for a while), so its views of your other computers still answer; this box reads neither. Goes 3 months after 0.8.0.
+const asToldKept = (told: Told): Told & { categories: never[] } => ({ ...told, items: told.items.map(item => ({ ...item, category: categoryBefore(item) })), categories: [] });
 
 // (One process at a time changes what's kept: the link takes what's told, a route patches it.)
 const LOCK = path.join(WORK_QUEUE, ".told.lock");
@@ -174,7 +180,7 @@ export function keepTold(key: string, told: Omit<Told, "heard">, now = Date.now(
     // Older than what's kept: mail come late, unless it's a good while older (its clock was set
     // back), when it's the newer word after all.
     if (kept && kept.at > told.at && kept.at - told.at < 600_000 && kept.id !== told.id) return false;
-    writePrivate(fileOf(key), JSON.stringify({ ...told, heard: now } satisfies Told));
+    writePrivate(fileOf(key), JSON.stringify(asToldKept({ ...told, heard: now } satisfies Told)));
     return true;
   });
 }
@@ -198,7 +204,7 @@ export function patchTold(key: string, id: string, item: unknown, deleted: boole
       const others = kept.items.filter(each => each.id !== id);
       const items = deleted ? others
         : [...others, before ? { ...before, ...fresh, sessions: before.sessions, ...(before.progress ? { progress: before.progress } : {}), ...(before.handedFrom ? { handedFrom: before.handedFrom } : {}) } : fresh];
-      writePrivate(fileOf(key), JSON.stringify({ ...kept, items }));
+      writePrivate(fileOf(key), JSON.stringify(asToldKept({ ...kept, items })));
     });
   } catch {}
 }

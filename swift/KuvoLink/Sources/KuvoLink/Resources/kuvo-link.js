@@ -13846,8 +13846,23 @@ function priorityNamed(given) {
   const wanted = given.trim().toLowerCase();
   return PRIORITIES.find((each) => each.id === wanted) ?? (wanted === "medium" || wanted === "none" ? PRIORITIES[2] : null);
 }
+var colorBefore = (id) => ["orange", "pink", "indigo", "mint", "coral", "amber"][[...id].reduce((sum, each) => sum * 31 + (each.codePointAt(0) ?? 0) & 65535, 0) % 6];
 var PARKED_LABEL = "lbl_parked";
 var categoryBefore = (item) => isClosed(item.status) ? "done" : item.status === "backlog" ? item.labels?.includes(PARKED_LABEL) ? "parked" : "later" : "next";
+function standing(given, name) {
+  const kept = (Array.isArray(given.labels) ? given.labels : []).filter((each) => typeof each === "string" && /^(?:lbl|cat)_[a-z0-9-]{1,40}$/.test(each));
+  const named = typeof given.category === "string" ? name?.(given.category) : undefined;
+  if (typeof given.status !== "string" || !given.status) {
+    const before = fromCategory(given.category, named);
+    return { status: before.status, labels: before.label ? [before.label] : [] };
+  }
+  const labels = [...new Set(kept)];
+  if (typeof given.category !== "string" || !STATUS_ID.test(given.status) || given.category === categoryBefore({ status: given.status, labels }))
+    return { status: given.status, labels };
+  const moved = fromCategory(given.category, named);
+  const rest = moved.label === PARKED_LABEL ? labels : labels.filter((each) => each !== PARKED_LABEL);
+  return { status: moved.status, labels: moved.label && !rest.includes(moved.label) ? [...rest, moved.label] : rest };
+}
 function fromCategory(category, name) {
   if (category === "next")
     return { status: "todo" };
@@ -13873,6 +13888,7 @@ var QUEUES = path54.join(WORK_QUEUE, "queues");
 var CATEGORIES_FILE = path54.join(WORK_QUEUE, "categories.json");
 var LABELS_FILE = path54.join(WORK_QUEUE, "labels.json");
 var LOCK10 = path54.join(WORK_QUEUE, ".lock");
+var MOVING2 = path54.join(WORK_QUEUE, ".moving-to-statuses");
 var MODEL_FILE = path54.join(WORK_QUEUE, "model.json");
 var BEFORE = path54.join(WORK_QUEUE, "before-statuses");
 var MODEL2 = 2;
@@ -13894,10 +13910,16 @@ var queueFiles2 = (folder) => {
     return [];
   }
 };
-var colorBefore = (id) => ["orange", "pink", "indigo", "mint", "coral", "amber"][[...id].reduce((sum, each) => sum * 31 + (each.codePointAt(0) ?? 0) & 65535, 0) % 6];
 function migrateItem(item, name) {
-  if (typeof item.status === "string")
+  if (typeof item.status === "string") {
+    const stands = standing(item, name);
+    if (stands.status === item.status)
+      return;
+    item.status = stands.status;
+    item.labels = stands.labels;
+    item.category = categoryBefore(stands);
     return;
+  }
   const to = (category) => fromCategory(category, typeof category === "string" ? name(category) : undefined);
   const { status, label } = to(item.category);
   const sessions = (Array.isArray(item.sessions) ? item.sessions : []).flatMap((each) => isObject(each) && typeof each.session === "string" ? [each.session] : []);
@@ -13907,16 +13929,30 @@ function migrateItem(item, name) {
   for (const each of events) {
     if (each.kind !== "moved")
       continue;
-    if (typeof each.from === "string")
-      each.from = to(each.from).status;
-    if (typeof each.to === "string")
-      each.to = to(each.to).status;
+    for (const side of ["from", "to"]) {
+      if (typeof each[side] !== "string")
+        continue;
+      const now = to(each[side]);
+      each[side] = now.status;
+      if (now.label)
+        each[`${side}Label`] = now.label;
+    }
   }
   item.status = working ? "in-progress" : status;
   item.labels = label ? [label] : [];
   item.category = categoryBefore({ status: item.status, labels: item.labels });
 }
 var placeOf = (category, custom) => category === "next" ? 0 : category === "later" ? 1 : category === "parked" ? custom.length + 2 : category === "done" ? custom.length + 3 : typeof category === "string" && custom.includes(category) ? custom.indexOf(category) + 2 : custom.length + 2;
+var onDisk = (folder) => {
+  try {
+    const handle = fs51.openSync(folder, "r");
+    try {
+      fs51.fsyncSync(handle);
+    } finally {
+      fs51.closeSync(handle);
+    }
+  } catch {}
+};
 function migrate() {
   fs51.mkdirSync(WORK_QUEUE, { recursive: true, mode: 448 });
   const nothing = !queueFiles2(QUEUES).length && !fs51.existsSync(CATEGORIES_FILE);
@@ -13941,13 +13977,10 @@ function migrate() {
       copy(path54.join(QUEUES, name), path54.join(making, "queues", name));
     if (fs51.existsSync(CATEGORIES_FILE))
       copy(CATEGORIES_FILE, path54.join(making, "categories.json"));
-    try {
-      fs51.renameSync(making, BEFORE);
-    } catch (error) {
-      fs51.rmSync(making, { recursive: true, force: true });
-      if (!fs51.existsSync(BEFORE))
-        throw error;
-    }
+    onDisk(path54.join(making, "queues"));
+    onDisk(making);
+    fs51.renameSync(making, BEFORE);
+    onDisk(WORK_QUEUE);
   }
   if (!fs51.statSync(path54.join(BEFORE, "queues"), { throwIfNoEntry: false })?.isDirectory())
     throw new Error(`${BEFORE} isn't the copy of what was kept`);
@@ -13978,15 +14011,20 @@ function migrate() {
   }
   {
     const used = new Set(was.flatMap((each) => Array.isArray(each.said.labels) ? each.said.labels : []));
+    const becameStatus = (each) => fromCategory(each.id, each.name).label === undefined;
     const made = [
-      ...custom.filter((each) => used.has(each.id)).map((each) => ({ id: each.id, name: plainName(each.name).slice(0, 40) || each.id.slice(4), color: colorBefore(each.id) })),
+      ...custom.filter((each) => !becameStatus(each)).map((each) => ({ id: each.id, name: plainName(each.name).slice(0, 40) || each.id.slice(4), color: colorBefore(each.id) })),
       ...[...used].filter((id) => id !== PARKED_LABEL && !names.has(id)).sort().map((id) => ({ id, name: id.slice(4).replace(/-/g, " "), color: colorBefore(id) })),
       ...used.has(PARKED_LABEL) ? [{ id: PARKED_LABEL, name: "Parked", color: "graphite" }] : []
     ];
     const kept = jsonOf(LABELS_FILE);
     const there = isObject(kept) && Array.isArray(kept.labels) ? kept.labels : [];
     const has = new Set(there.flatMap((each) => isObject(each) && typeof each.id === "string" ? [each.id] : []));
-    const more = made.filter((each) => !has.has(each.id));
+    const needed = new Set(queueFiles2(QUEUES).flatMap((name) => {
+      const queue = jsonOf(path54.join(QUEUES, name));
+      return isObject(queue) && Array.isArray(queue.items) ? queue.items.flatMap((each) => isObject(each) && typeof each.status !== "string" ? fromCategory(each.category, typeof each.category === "string" ? names.get(each.category) : undefined).label ?? [] : []) : [];
+    }));
+    const more = made.filter((each) => !has.has(each.id) && (kept === null || needed.has(each.id)));
     if (more.length)
       writePrivate(LABELS_FILE, JSON.stringify({ ...isObject(kept) ? kept : {}, labels: [...there, ...more] }));
   }
@@ -13997,8 +14035,15 @@ function migrate() {
       continue;
     let changed = false;
     queue.items = queue.items.map((each) => {
-      if (!isObject(each) || typeof each.status === "string")
+      if (!isObject(each))
         return each;
+      if (typeof each.status === "string") {
+        const before = each.status;
+        migrateItem(each, (id) => names.get(id));
+        if (each.status !== before)
+          changed = true;
+        return each;
+      }
       changed = true;
       migrateItem(each, (id) => names.get(id));
       const place = typeof each.id === "string" ? order.get(each.id) : undefined;
@@ -14023,11 +14068,26 @@ function migrateOnce() {
   if (!fs51.existsSync(WORK_QUEUE))
     return;
   fs51.accessSync(WORK_QUEUE, fs51.constants.W_OK);
-  locked(LOCK10, () => {
-    const again = jsonOf(MODEL_FILE);
-    if (!(isObject(again) && typeof again.model === "number" && again.model >= MODEL2))
-      migrate();
-  }, { stale: 60000, wait: 1e4 });
+  try {
+    fs51.mkdirSync(MOVING2);
+  } catch (error) {
+    if (error.code !== "EEXIST")
+      throw error;
+    const since = fs51.statSync(MOVING2, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+    if (Date.now() - since < 120000)
+      throw new Error("another process is moving them over now");
+    fs51.rmSync(MOVING2, { recursive: true, force: true });
+    fs51.mkdirSync(MOVING2);
+  }
+  try {
+    locked(LOCK10, () => {
+      const again = jsonOf(MODEL_FILE);
+      if (!(isObject(again) && typeof again.model === "number" && again.model >= MODEL2))
+        migrate();
+    }, { stale: 60000, wait: 1e4 });
+  } finally {
+    fs51.rmSync(MOVING2, { recursive: true, force: true });
+  }
   done = true;
 }
 
@@ -14094,8 +14154,8 @@ var eventKept = (each) => typeof each.at === "number" && Number.isFinite(each.at
 function itemOf(given, owner) {
   if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.title !== "string")
     return null;
-  const before = typeof given.status === "string" && given.status ? null : fromCategory(given.category);
-  const labels = before ? before.label ? [before.label] : [] : [...new Set((Array.isArray(given.labels) ? given.labels : []).filter((each) => typeof each === "string" && /^(?:lbl|cat)_[a-z0-9-]{1,40}$/.test(each)))].slice(0, 20);
+  const stands = standing(given);
+  const labels = stands.labels.slice(0, 20);
   const created = isObject(given.created) && typeof given.created.at === "number" ? { at: given.created.at, by: whoOf(given.created.by) ?? { user: true } } : { at: 0, by: { user: true } };
   const updated = isObject(given.updated) && typeof given.updated.at === "number" ? { at: given.updated.at, by: whoOf(given.updated.by) ?? created.by } : created;
   const list = (value, keep) => Array.isArray(value) ? value.filter((each) => isObject(each) && keep(each)) : [];
@@ -14107,7 +14167,7 @@ function itemOf(given, owner) {
     owner,
     title: given.title,
     body: typeof given.body === "string" ? given.body : "",
-    status: before ? before.status : given.status.slice(0, 40),
+    status: stands.status.slice(0, 40),
     order: typeof given.order === "number" && Number.isFinite(given.order) ? given.order : 0,
     ...typeof given.priority === "string" && PRIORITY_ID.test(given.priority) && given.priority !== "normal" ? { priority: given.priority } : {},
     labels,
@@ -14401,7 +14461,7 @@ function labelOf(given) {
   if (!isObject(given) || typeof given.id !== "string" || !LABEL_ID.test(given.id) || typeof given.name !== "string")
     return null;
   const name = plainName(given.name).slice(0, MOST_NAME) || given.id.slice(4);
-  return { id: given.id, name, color: typeof given.color === "string" && COLOR.has(given.color) ? given.color : "graphite" };
+  return { id: given.id, name, color: typeof given.color === "string" && COLOR.has(given.color) ? given.color : given.color === undefined && given.id.startsWith("cat_") ? colorBefore(given.id) : "graphite" };
 }
 function readKept2() {
   try {
@@ -14651,11 +14711,18 @@ function readTold3(key) {
       const again = toldOf(kept, Infinity);
       return again ? { ...again, heard: typeof kept.heard === "number" ? kept.heard : 0 } : null;
     }
-    return kept;
+    const { categories: _, ...told } = kept;
+    return { ...told, items: kept.items.map((each) => {
+      if (!isObject(each) || !("category" in each))
+        return each;
+      const { category: __, ...item } = each;
+      return item;
+    }) };
   } catch {
     return null;
   }
 }
+var asToldKept = (told) => ({ ...told, items: told.items.map((item) => ({ ...item, category: categoryBefore(item) })), categories: [] });
 var LOCK13 = path57.join(WORK_QUEUE2, ".told.lock");
 function keepTold2(key, told, now = Date.now()) {
   if (!KEY.test(key))
@@ -14665,7 +14732,7 @@ function keepTold2(key, told, now = Date.now()) {
     const kept = readTold3(key);
     if (kept && kept.at > told.at && kept.at - told.at < 600000 && kept.id !== told.id)
       return false;
-    writePrivate(fileOf3(key), JSON.stringify({ ...told, heard: now }));
+    writePrivate(fileOf3(key), JSON.stringify(asToldKept({ ...told, heard: now })));
     return true;
   });
 }
@@ -14687,7 +14754,7 @@ function patchTold(key, id, item, deleted) {
         return;
       const others = kept.items.filter((each) => each.id !== id);
       const items = deleted ? others : [...others, before ? { ...before, ...fresh, sessions: before.sessions, ...before.progress ? { progress: before.progress } : {}, ...before.handedFrom ? { handedFrom: before.handedFrom } : {} } : fresh];
-      writePrivate(fileOf3(key), JSON.stringify({ ...kept, items }));
+      writePrivate(fileOf3(key), JSON.stringify(asToldKept({ ...kept, items })));
     });
   } catch {}
 }
@@ -23727,8 +23794,10 @@ function placeWorkQueues(carried, owners, opened) {
   const items = carried.items.flatMap((each) => isObject(each) && typeof each.owner === "string" && allowed.has(each.owner) ? [itemOf(each, each.owner)] : []).filter((each) => each !== null);
   if (!items.length)
     return;
+  const carriedLabels = new Set(items.flatMap((item) => item.labels));
   for (const each of [...Array.isArray(carried.labels) ? carried.labels : [], ...Array.isArray(carried.categories) ? carried.categories : []])
-    keepLabel(each);
+    if (isObject(each) && carriedLabels.has(String(each.id)))
+      keepLabel(each);
   const here = new Set(labels().map((each) => each.id));
   for (const item of items) {
     item.labels = item.labels.filter((each) => here.has(each));
@@ -25635,7 +25704,8 @@ async function handArrived(sender, given, reply, places, now = Date.now()) {
   });
   item.files = item.files.filter((file) => files.some((each) => each.name === file.name));
   for (const each of [...Array.isArray(given.labels) ? given.labels : [], ...Array.isArray(given.categories) ? given.categories : []])
-    keepLabel(each);
+    if (isObject(each) && item.labels.includes(String(each.id)))
+      keepLabel(each);
   const labelsHere = new Set(labels().map((each) => each.id));
   item.labels = item.labels.filter((each) => labelsHere.has(each));
   const kept = whoOf(given.by) ?? { name: "someone else" };
@@ -26003,8 +26073,12 @@ function keepDone(key, done, now) {
 }
 async function takeAct(sender, given, reply, run, now = Date.now()) {
   const act = actOf(given);
-  if (!act)
+  if (!act) {
+    if (isObject(given) && typeof given.id === "string" && ID2.test(given.id) && given.method === "POST" && given.action === "move" && peersOf(readLink()).some((each) => each.key === sender.key)) {
+      reply({ acted: { id: given.id, status: 409, value: { message: `${ownName()} keeps its Work Queue with statuses now: update the computer you're on, then move it.` } } });
+    }
     return;
+  }
   const link = readLink();
   const peer = peersOf(link).find((each) => each.key === sender.key);
   if (!peer)
@@ -35310,7 +35384,7 @@ function botOf4(session, kind, place) {
   const by = kuvoOf(session).by;
   return isObject(by) && typeof by.bot === "string" && by.bot ? by.bot : undefined;
 }
-var standing = (facts) => facts.asked !== undefined ? "asking" : facts.running ? "working" : null;
+var standing2 = (facts) => facts.asked !== undefined ? "asking" : facts.running ? "working" : null;
 function needsYou(sessions, asks) {
   return Object.entries(sessions).filter(([, facts]) => facts.asked !== undefined && (facts.kind === "project" || facts.kind === "chat") && !facts.archived && !facts.away).sort(([a, one], [b, other]) => other.asked - one.asked || a.localeCompare(b)).map(([session]) => ({ session, asks: asks?.get(session) ?? { kind: "other", summary: "waits on you" } }));
 }
@@ -35323,7 +35397,7 @@ function botsNow(sessions) {
     if (!facts.bot || facts.archived || facts.away)
       continue;
     const now = bots[facts.bot] ??= { working: 0, asking: 0 };
-    const stands = standing(facts);
+    const stands = standing2(facts);
     if (stands)
       now[stands] += 1;
     else if (facts.updated)
@@ -35345,7 +35419,7 @@ function listedProjects(sessions, place) {
     if (facts.kind !== "project" || facts.archived || facts.project === undefined)
       continue;
     newest.set(facts.project, Math.max(newest.get(facts.project) ?? 0, facts.updated));
-    const stands = facts.away ? null : standing(facts);
+    const stands = facts.away ? null : standing2(facts);
     if (!stands)
       continue;
     const sum = sums.get(facts.project) ?? { asking: 0, working: 0 };
@@ -39391,7 +39465,7 @@ async function oneFileIn(root, against, scope, compared, args, only) {
   const sizes = [];
   for (const side of sides) {
     if (side === "disk")
-      sizes.push(onDisk(() => fs127.statSync(path134.join(root, only.path)))?.size ?? 0);
+      sizes.push(onDisk2(() => fs127.statSync(path134.join(root, only.path)))?.size ?? 0);
     else {
       const size = (await text4(root, ["cat-file", "-s", side]))?.trim();
       if (size)
@@ -39403,7 +39477,7 @@ async function oneFileIn(root, against, scope, compared, args, only) {
   const ran = await git2(root, ["--literal-pathspecs", ...args, ...compared, "--", ...paths]);
   return ran.ok ? done(ran.out.toString("utf8")) : null;
 }
-function onDisk(look) {
+function onDisk2(look) {
   try {
     return look();
   } catch (error) {
@@ -39414,7 +39488,7 @@ function onDisk(look) {
   }
 }
 async function stampOf(root, name, indexed, since) {
-  const stat = onDisk(() => fs127.lstatSync(path134.join(root, name), { bigint: true }));
+  const stat = onDisk2(() => fs127.lstatSync(path134.join(root, name), { bigint: true }));
   if (stat?.isDirectory() && kind(path134.join(root, name, ".git"))) {
     const inside = await insideOf(path134.join(root, name));
     if (!inside)
@@ -39439,7 +39513,7 @@ async function insideOf(folder) {
     const name = record.slice(3);
     if (!name)
       continue;
-    const stat = onDisk(() => fs127.lstatSync(path134.join(folder, name), { bigint: true }));
+    const stat = onDisk2(() => fs127.lstatSync(path134.join(folder, name), { bigint: true }));
     if (stat && stat.mtimeNs > newest)
       newest = stat.mtimeNs;
     hash.update(`\x00${name}\x00${stat ? `${stat.size}-${stat.mtimeNs}` : "gone"}`);
@@ -43706,7 +43780,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f1f49216f6cd";
+var BRIDGE_VERSION = "2d48444a0889";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -51984,7 +52058,7 @@ var QUEUE_TOOLS = [
         body: { type: "string" },
         status: { type: "string" },
         label: { type: "string" },
-        done: { type: "boolean" }
+        done: { type: "boolean", description: "Done, whatever status says." }
       }, required: ["number", "title"] } }
     }, required: ["items"], additionalProperties: false }
   }

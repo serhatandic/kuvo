@@ -99,7 +99,7 @@ test("an item a computer from before statuses hands, moves or tells is said anew
   const told = toldOf({ id: "wqt_0123456789abcdef", at: 5, kind: "mac", items: [summary(31, "next"), summary(32, "later"), summary(33, "cat_features")], owners: [], categories: [{ id: "cat_features", name: "Features" }] }, 10)!
   expect(told.items.map(each => [each.number, each.status, each.labels, each.priority])).toEqual([[31, "todo", [], "normal"], [32, "backlog", [], "normal"], [33, "todo", ["cat_features"], "normal"]])
   // Its custom categories are labels here, by the names it gave them; never a primary's list to take.
-  expect(told.labels).toEqual([{ id: "cat_features", name: "Features", color: "graphite" }])
+  expect(told.labels).toEqual([{ id: "cat_features", name: "Features", color: expect.stringMatching(/^(orange|pink|indigo|mint|coral|amber)$/) }])
   expect(told.beforeLabels).toBe(true)
   expect(toldOf({ id: "wqt_0123456789abcdef", at: 5, kind: "mac", items: [], owners: [], labels: [{ id: "lbl_bug", name: "Bug", color: "coral" }] }, 10)!.beforeLabels).toBeUndefined()
 })

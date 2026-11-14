@@ -165,11 +165,11 @@ test("items kept under categories move over to statuses and labels once, with no
   assert.deepEqual(stands(11), ["backlog", []]);
   assert.deepEqual(stands(12), ["todo", []], "a deleted one too, where it's kept for bringing back");
   assert.equal(seen.removed.length, 1);
-  // The labels: each category an item was in, by its name; not the one that's a status now, nor
-  // the one nothing was in. None is built in.
+  // The labels: every category you had, by its name (one nothing was in too), but the one that's a
+  // status now; and Parked. None is built in.
   assert.deepEqual(seen.labels.map(each => [each.id, each.name]), [
     ["cat_architecture", "Architecture"], ["cat_security-privacy", "Security & privacy"], ["cat_features", "Features"],
-    ["cat_correctness-sweep", "Correctness sweep"], ["cat_edge-cases", "Edge cases"], ["lbl_parked", "Parked"],
+    ["cat_correctness-sweep", "Correctness sweep"], ["cat_edge-cases", "Edge cases"], ["cat_unused", "Never used"], ["lbl_parked", "Parked"],
   ]);
   for (const each of seen.labels) assert.match(each.color, /^(coral|orange|amber|lime|mint|sky|indigo|violet|pink|graphite)$/);
   assert.equal(seen.labels.at(-1).color, "graphite");
@@ -186,7 +186,8 @@ test("items kept under categories move over to statuses and labels once, with no
   }
   // What happened to it stays, its moves naming statuses.
   assert.deepEqual(kept.find(each => each.number === 10).events, [{ at: 55, by: YOU, kind: "moved", from: "backlog", to: "todo", top: true }, { at: 60, by: LEAD, kind: "started" }]);
-  assert.deepEqual(kept.find(each => each.number === 11).events.at(-1), { at: 80, by: YOU, kind: "moved", from: "todo", to: "backlog" });
+  // (And the label a category became, beside it: it still says it came from Architecture.)
+  assert.deepEqual(kept.find(each => each.number === 11).events.at(-1), { at: 80, by: YOU, kind: "moved", from: "todo", to: "backlog", fromLabel: "cat_architecture" });
   // Items keep their order: within a status, by the category they came from (Next, Later, the
   // custom ones as listed, Parked), then their place there.
   const order = status => seen.items.filter(item => item.status === status).map(item => item.number);
@@ -265,6 +266,70 @@ test("it's one way and once: what you change after isn't moved again, and the co
   assert.equal(seen.labels.some(each => each.id === "lbl_parked"), false, "a label removed isn't made again");
   assert.deepEqual(seen.items.find(item => item.number === 4).labels, []);
   for (const [name, text] of Object.entries(before.files)) assert.equal(fs.readFileSync(path.join(queues, "before-statuses", name), "utf8"), text, name);
+});
+
+test("what a box from before statuses does to an item meanwhile isn't undone: it reads it by its category, and its move is the later word", async () => {
+  keptBefore();
+  await view("all");
+  await ok("PATCH", "kuvo/work-queue/items/1", { status: "in-review" });
+  // A released Mac puts its own box over this one for a while. It reads every item (each says a
+  // category it knows), keeps `status` as a field it doesn't know, and changes only `category`.
+  const kept = read("queues/ses_lead.json");
+  for (const each of kept.items) assert.match(each.category, /^(next|later|parked|done)$/, `#${each.number}`);
+  const byOld = (number, change) => Object.assign(kept.items.find(each => each.number === number), change);
+  byOld(2, { category: "done", doneAt: 99 });   // marked Done there
+  byOld(3, { category: "next", doneAt: undefined });   // out of Done
+  byOld(5, { category: "later" });   // Architecture's, moved to Later
+  write(path.join(queues, "queues", "ses_lead.json"), JSON.stringify(kept));
+  let seen = await view("ses_lead");
+  const stands = number => { const item = seen.items.find(each => each.number === number); return [item.status, item.labels, item.doneAt]; };
+  assert.deepEqual(stands(2), ["done", [], 99]);
+  assert.deepEqual(stands(3), ["todo", [], undefined]);
+  assert.deepEqual(stands(5), ["backlog", ["cat_architecture"], undefined]);
+  assert.deepEqual(stands(1), ["in-review", [], undefined], "one it left alone stands as this box said");
+  assert.deepEqual(stands(4), ["backlog", ["lbl_parked"], undefined]);
+  // The next change here keeps it so.
+  await ok("PATCH", "kuvo/work-queue/items/4", { priority: "low" });
+  assert.deepEqual(read("queues/ses_lead.json").items.filter(each => [2, 3, 5].includes(each.number)).map(each => [each.number, each.status, each.category]), [[2, "done", "done"], [3, "todo", "next"], [5, "backlog", "later"]]);
+  seen = await view("ses_lead");
+  assert.deepEqual(stands(2), ["done", [], 99]);
+});
+
+test("its mark of being done lost, nothing is moved over twice and a label you removed stays removed", async () => {
+  const before = keptBefore();
+  await view("all");
+  await ok("POST", "kuvo/work-queue/labels", { remove: "Features" });
+  await ok("PATCH", "kuvo/work-queue/items/1", { status: "waiting" });
+  const kept = read("queues/ses_lead.json");
+  fs.rmSync(path.join(queues, "model.json"));
+  link.forgetQueueMigrated();
+  const seen = await view("all");
+  assert.equal(seen.labels.some(each => each.id === "cat_features"), false);
+  assert.equal(seen.items.find(item => item.number === 1).status, "waiting");
+  assert.deepEqual(read("queues/ses_lead.json"), kept);
+  for (const [name, text] of Object.entries(before.files)) assert.equal(fs.readFileSync(path.join(queues, "before-statuses", name), "utf8"), text, name);
+  assert.equal(read("model.json").model, 2);
+});
+
+test("one process moves the items over: another that comes meanwhile reads on, and changes nothing until it's done", async () => {
+  keptBefore();
+  // Another process is at it now.
+  fs.mkdirSync(path.join(queues, ".moving-to-statuses"));
+  const seen = await view("all");
+  assert.equal(seen.items.length + seen.removed.length, 14, "what's there still shows, each item said anew as it's read");
+  assert.equal(seen.items.find(item => item.number === 2).status, "backlog");
+  const refused = await route("PATCH", "kuvo/work-queue/items/1", { status: "done" });
+  assert.equal(refused.status, 400);
+  assert.match(refused.body.message, /couldn't be moved over to statuses on this computer \(another process is moving them over now\), so nothing was changed/);
+  assert.equal((await tool("queue_add", { title: "Not yet" }, "ses_lead")).isError, true);
+  assert.equal(fs.existsSync(path.join(queues, "before-statuses")), false, "it made no copy of its own beside the other's");
+  assert.equal(read("queues/ses_lead.json").items[0].status, undefined);
+  // It was cut off (its mark is old): this one carries on.
+  const old = new Date(Date.now() - 10 * 60_000);
+  fs.utimesSync(path.join(queues, ".moving-to-statuses"), old, old);
+  assert.equal((await ok("PATCH", "kuvo/work-queue/items/1", { status: "done" })).item.status, "done");
+  assert.equal(read("model.json").model, 2);
+  assert.equal(fs.existsSync(path.join(queues, ".moving-to-statuses")), false);
 });
 
 test("a queue file that can't be read is left as it is, and copied; the others move over", async () => {

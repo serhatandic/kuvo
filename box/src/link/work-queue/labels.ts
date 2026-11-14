@@ -7,6 +7,7 @@ import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, textOf, writePrivate } from "../files";
 import { migratedToChange, noteQueuesChanged, Refusal, WORK_QUEUE } from "./store";
+import { colorBefore } from "./statuses";
 
 export const LABELS_FILE = path.join(WORK_QUEUE, "labels.json");
 const LOCK = path.join(WORK_QUEUE, ".labels.lock");
@@ -24,11 +25,12 @@ export interface Label { id: string; name: string; color: string }
 /** A label's id: one made here (`lbl_…`), or a custom category's from before labels (`cat_…`). */
 export const LABEL_ID = /^(?:lbl|cat)_[a-z0-9-]{1,40}$/;
 
-/** A label as it was kept or came from another computer, or null for what isn't one. */
+/** A label as it was kept or came from another computer, or null for what isn't one. One with no
+ * colour said is a custom category from a box before labels: in the colour it was drawn in. */
 export function labelOf(given: unknown): Label | null {
   if (!isObject(given) || typeof given.id !== "string" || !LABEL_ID.test(given.id) || typeof given.name !== "string") return null;
   const name = plainName(given.name).slice(0, MOST_NAME) || given.id.slice(4);
-  return { id: given.id, name, color: typeof given.color === "string" && COLOR.has(given.color) ? given.color : "graphite" };
+  return { id: given.id, name, color: typeof given.color === "string" && COLOR.has(given.color) ? given.color : given.color === undefined && given.id.startsWith("cat_") ? colorBefore(given.id) : "graphite" };
 }
 
 // The labels as they're kept, in order; and which of them came from the primary

@@ -1318,7 +1318,9 @@ test("closed and gone issues are among the latest Done told to your other comput
   // A hundred Done before either, in the same queue.
   const file = path.join(queues, "queues", "ses_lead.json");
   const whole = read(file);
-  const { source: _, ...plain } = whole.items.find(item => item.source?.ref === "gh:kuvo-test/app#13");
+  // (Each as this box keeps one: without the category it also writes for a box from before
+  // statuses, which goes by an item's status, as it's written again.)
+  const { source: _, category: ___, ...plain } = whole.items.find(item => item.source?.ref === "gh:kuvo-test/app#13");
   const before = Date.parse("2026-11-01T00:00:00Z");
   whole.items.push(...Array.from({ length: 100 }, (__, index) => ({ ...plain, id: `wqi_done${String(index).padStart(16, "0")}`, title: `Done ${index}`, status: "done", doneAt: before, number: 5000 + index, order: 5000 + index })));
   write(file, whole);
