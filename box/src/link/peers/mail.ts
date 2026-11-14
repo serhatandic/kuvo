@@ -49,8 +49,9 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
     const agents = saysApart(sender.key, payload.agents) ? { ...payload.agents, computer: undefined } : payload.agents;
     if (takeAgents(sender, agents)) {
       writeAgents();
-      // (Its bots show in this box's list of those elsewhere: its followers hear at once.)
-      noteBotsChanged();
+      // (Its bots show in this box's list of those elsewhere: its followers hear at once. Only
+      // one of your own computers' do.)
+      if (!saysApart(sender.key, payload.agents)) noteBotsChanged();
     }
   }
   // Documents (PROTOCOL.md, "Documents"): given, in parts, or a digest of what it has.

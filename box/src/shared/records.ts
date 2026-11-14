@@ -81,6 +81,9 @@ export interface ToldAgents {
   setup?: string;
   /** It's a machine two people's Macs set up: never one of your own computers for plan limits' resets and usage totals. */
   shared?: true;
+  /** Where a bot deleted there ends up, as it said: the Finder's Trash, or Kuvo Code's own trash
+   * folder (`bots.deletes`). */
+  trash?: "trash" | "kuvo";
   /** What it says of itself (PROTOCOL.md, "Computers"). */
   computer?: ToldComputer;
 }

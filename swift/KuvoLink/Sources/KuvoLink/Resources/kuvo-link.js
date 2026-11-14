@@ -2633,18 +2633,21 @@ var BOT = object({
 });
 var BOT_ELSEWHERE = object({
   id: string,
-  session: string,
-  name: string,
+  "session?": string,
+  "name?": string,
   "look?": LOOK,
   "job?": string,
   box: string,
   computer: string,
-  kind: words("mac", "machine"),
-  deletes: DELETES
+  "kind?": words("mac", "machine"),
+  "deletes?": DELETES,
+  "waiting?": literal(true),
+  "refused?": literal(true),
+  "unlisted?": literal(true)
 });
-var HELD_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, "change?": map(any), "delete?": literal(true), since: number });
+var HELD_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, "change?": map(any), "delete?": literal(true), since: number, "waits?": string });
 var REFUSED_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, message: string, at: number });
-var BOTS2 = object({ bots: list(BOT), "held?": list(HELD_EDIT), "refused?": list(REFUSED_EDIT), elsewhere: list(BOT_ELSEWHERE) });
+var BOTS2 = object({ bots: list(BOT), "held?": list(HELD_EDIT), "refused?": list(REFUSED_EDIT), "elsewhere?": list(BOT_ELSEWHERE) });
 var HELD = object({ held: HELD_EDIT });
 var TEMPLATES = object({
   templates: list(object({ id: string, name: string, job: string, instructions: string, look: LOOK, "personality?": string, wantsProject: bool })),
@@ -2718,6 +2721,7 @@ function takeAgents(sender, given, file = PEER_AGENTS_FILE, lock = PEER_LOCK) {
       ...Array.isArray(given.boxes) ? { boxes: keptBoxes(given.boxes) } : {},
       ...typeof given.setup === "string" && SETUP_ID.test(given.setup) ? { setup: given.setup } : {},
       ...given.shared === true ? { shared: true } : {},
+      ...given.trash === "trash" || given.trash === "kuvo" ? { trash: given.trash } : {},
       ...computer ? { computer } : {}
     };
     writePrivate(file, JSON.stringify(all));
@@ -24068,7 +24072,7 @@ async function effortOf(model, given, readEngine, readBridge, signal) {
   try {
     agents = readBridge();
   } catch {}
-  const models = await usableModels(engine, agents, signal);
+  const models = runsWithAgents(model) ? await usableModels(null, agents, signal) : await usableModels(engine, null, signal);
   const listed = modelNamed(model, models);
   if (!listed && !models.length)
     return { status: 503, refused: `The efforts of ${model.id} can’t be read on ${HERE} now. Try again in a moment.` };
@@ -25752,7 +25756,7 @@ function whatDeleteTakes({ computer, folder, wakes, watching }) {
   const lines = [{ what: "conversation", words: "Its conversation is deleted." }];
   lines.push({
     what: "folder",
-    words: folder.to === "trash" ? "Its folder, with its memory and what it made there, goes to the Trash." : `Its folder, with its memory and what it made there, goes to Kuvo Code’s trash folder on ${computer}${folder.folder ? ` (${folder.folder})` : ""}.`
+    words: folder.to === "trash" ? `Its folder, with its memory and what it made there, goes to the Trash on ${computer}.` : folder.to === "kuvo" ? `Its folder, with its memory and what it made there, goes to Kuvo Code’s trash folder on ${computer}${folder.folder ? ` (${folder.folder})` : ""}.` : `Its folder, with its memory and what it made there, goes to the Trash on ${computer}, or to Kuvo Code’s trash folder there.`
   });
   if (wakes === undefined || watching === undefined)
     lines.push({ what: "wakes", words: "Its wake-ups and watches are cancelled." });
@@ -25771,24 +25775,24 @@ var shownName2 = (peer) => peer.kind === "machine" && plainName(peer.name) || co
 function botsElsewhere(link = readLink(), told = readPeerAgents()) {
   const heard = (peer) => told[peer.key]?.heard ?? told[peer.key]?.at ?? 0;
   const peers = peersOf(link).filter((peer) => told[peer.key] && !isApart(peer.key, link, told));
+  const bots = (peer) => (told[peer.key]?.list ?? []).filter((agent) => agent.kind === "bot" && agent.id && agent.name);
   const latest = new Map;
   for (const peer of peers) {
-    for (const agent of told[peer.key]?.list ?? []) {
-      if (agent.kind !== "bot" || !agent.id)
-        continue;
+    for (const agent of bots(peer)) {
       const other = latest.get(agent.id);
       if (!other || heard(peer) > heard(other))
         latest.set(agent.id, peer);
     }
   }
-  const bots = [];
+  const listed = [];
   for (const peer of peers) {
     const computer = shownName2(peer);
-    for (const agent of told[peer.key]?.list ?? []) {
-      if (agent.kind !== "bot" || !agent.id || !agent.name || latest.get(agent.id)?.key !== peer.key || botHere(agent.id))
+    const trash = told[peer.key]?.trash;
+    for (const agent of bots(peer)) {
+      if (latest.get(agent.id)?.key !== peer.key || botHere(agent.id))
         continue;
       latest.delete(agent.id);
-      bots.push({
+      listed.push({
         id: agent.id,
         session: agent.session,
         name: agent.name,
@@ -25797,14 +25801,37 @@ function botsElsewhere(link = readLink(), told = readPeerAgents()) {
         box: peer.key,
         computer,
         kind: peer.kind,
-        deletes: whatDeleteTakes({ computer, folder: peer.kind === "mac" ? { to: "trash" } : { to: "kuvo" } })
+        deletes: whatDeleteTakes({ computer, folder: trash ? { to: trash } : { to: "unsaid" } })
       });
     }
   }
-  return bots;
+  return listed;
 }
-function knownElsewhere(link = readLink(), told = readPeerAgents()) {
-  return new Map(botsElsewhere(link, told).map((bot) => [bot.id, { name: bot.name, ...bot.look ? { look: bot.look } : {} }]));
+var knownOf = (listed) => new Map(listed.map((bot) => [bot.id, { name: bot.name, ...bot.look ? { look: bot.look } : {} }]));
+var knownElsewhere = (link = readLink(), told = readPeerAgents()) => knownOf(botsElsewhere(link, told));
+var LOOK_WORDS = { color: LOOKS.colors, shape: LOOKS.shapes, face: LOOKS.faces };
+var lookIn = (change) => {
+  const look = change?.look;
+  return isObject(look) && Object.keys(LOOK_WORDS).every((part) => LOOK_WORDS[part].includes(look[part])) ? { color: look.color, shape: look.shape, face: look.face } : undefined;
+};
+function elsewhereSaid(listed, held, refused) {
+  const heldFor = new Map(held.map((each) => [each.bot, each]));
+  const refusedFor = new Map(refused.map((each) => [each.bot, each]));
+  const left = (bot, edit) => {
+    const name = typeof edit?.change?.name === "string" && edit.change.name ? edit.change.name : bot.name;
+    const look = lookIn(edit?.change) ?? bot.look;
+    return { ...name ? { name } : {}, ...look ? { look } : {} };
+  };
+  const marks = (id) => ({ ...heldFor.has(id) ? { waiting: true } : {}, ...refusedFor.has(id) ? { refused: true } : {} });
+  const all = listed.map(({ name: _name, look: _look, ...bot }) => ({ ...bot, ...left({ name: _name, look: _look }, heldFor.get(bot.id)), ...marks(bot.id) }));
+  const seen = new Set(listed.map((bot) => bot.id));
+  for (const each of [...held, ...refused]) {
+    if (seen.has(each.bot) || botHere(each.bot))
+      continue;
+    seen.add(each.bot);
+    all.push({ id: each.bot, ...left(each, heldFor.get(each.bot)), box: each.box, computer: each.computer, ...marks(each.bot), unlisted: true });
+  }
+  return all;
 }
 
 // box/src/link/bots/held.ts
@@ -25890,20 +25917,28 @@ var botOf3 = (bot, kept, known) => {
   const { name, look } = known.get(bot) ?? kept ?? {};
   return { ...name ? { name } : {}, ...look ? { look } : {} };
 };
-var viewOf = (held, link, known = knownElsewhere(link)) => ({
+var waitsOf = (held, link, told) => {
+  if (!held.change || !("effort" in held.change) || !held.to || !told[held.to] || (told[held.to]?.features ?? []).includes(EFFORT_FEATURE))
+    return;
+  const computer = nameOf4(held, link);
+  return `${computer} needs an update before it takes an effort: this goes once Kuvo Code is updated on ${computer}.`;
+};
+var viewOf = (held, link, known = knownElsewhere(link), told = readPeerAgents()) => ({
   bot: held.bot,
   box: held.to,
   computer: nameOf4(held, link),
   ...botOf3(held.bot, held.known, known),
+  ...waitsOf(held, link, told) ? { waits: waitsOf(held, link, told) } : {},
   ...held.delete ? { delete: true } : { change: held.change },
   since: held.since
 });
-function heldLists(link = readLink(), now = Date.now()) {
+function heldLists(link = readLink(), now = Date.now(), known) {
   if (!secretOf(link))
     return {};
-  const known = knownElsewhere(link);
+  const told = readPeerAgents();
+  known ??= knownElsewhere(link, told);
   return {
-    held: allHeld(link).map((each) => viewOf(each, link, known)),
+    held: allHeld(link).map((each) => viewOf(each, link, known, told)),
     refused: readRefused(now, link).map(({ bot, box, computer, name, look, message, at }) => ({ bot, box, computer, ...botOf3(bot, name ? { name, look } : undefined, known), message, at }))
   };
 }
@@ -26180,7 +26215,9 @@ async function takeBotEdit(sender, given, reply, steps, now = Date.now()) {
         const edited = editedTimes(bot);
         const lastEdited = (field) => field === "effort" && edited.model !== undefined ? Math.max(edited.model, edited.effort ?? 0) : edited[field];
         const fresh = Object.entries(given.change).filter(([field]) => FIELDS.includes(field) && !(times[field] !== undefined && lastEdited(field) !== undefined && times[field] <= lastEdited(field)));
-        done = fresh.length ? await changeWhatItCan(bot, fresh, times, steps) : { status: 200, value: {} };
+        const change = given.change;
+        const taken = "model" in change && !fresh.some(([field]) => field === "model") ? fresh.filter(([field]) => field !== "effort") : fresh;
+        done = taken.length ? await changeWhatItCan(bot, taken, times, steps) : { status: 200, value: {} };
       }
     } catch {
       done = { status: 503, value: { message: `Something went wrong on ${ownName()}.` } };
@@ -26199,8 +26236,12 @@ async function changeWhatItCan(bot, fields, times, steps) {
     return whole;
   const refused = [];
   let took = false;
-  for (const field of fields) {
-    const one = await steps.change(bot, Object.fromEntries([field]), times);
+  const together = fields.some(([field]) => field === "model") ? fields.filter(([field]) => field === "model" || field === "effort") : [];
+  const parts = [...fields.filter((field) => !together.includes(field)).map((field) => [field]), ...together.length ? [together] : []];
+  if (parts.length < 2)
+    return whole;
+  for (const part of parts) {
+    const one = await steps.change(bot, Object.fromEntries(part), times);
     if (one.status === 409 || one.status >= 500)
       return one;
     if (one.status < 300)
@@ -35542,7 +35583,8 @@ async function announce(host, readEngine, link = readLink(), now = Date.now(), a
   const where = { ...setup ? { setup } : {}, ...sharedMachine(link) ? { shared: true } : {} };
   const computer = sharedMachine(link) ? null : ownComputer();
   const told = computer ? readPeerAgents() : {};
-  const json = JSON.stringify([ownList, moved, boxes, where, computer && { ...computer, working: computer.working > 0 }]);
+  const trash = folderGoes().to;
+  const json = JSON.stringify([ownList, moved, boxes, where, computer && { ...computer, working: computer.working > 0 }, trash]);
   let have = null;
   for (const peer of peersOf(link)) {
     const last = toldPeers.get(peer.key);
@@ -35554,7 +35596,7 @@ async function announce(host, readEngine, link = readLink(), now = Date.now(), a
     let bytes = null, sent = [];
     for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
       sent = ownList.slice(0, count);
-      bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter((box) => box.key !== peer.key), ...where, ...computer && told[peer.key] && !isApart(peer.key, link, told) ? { computer } : {} }, ...docs, at: now, ...ask ? { ask: "agents" } : {} }, link);
+      bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter((box) => box.key !== peer.key), trash, ...where, ...computer && told[peer.key] && !isApart(peer.key, link, told) ? { computer } : {} }, ...docs, at: now, ...ask ? { ask: "agents" } : {} }, link);
       if (bytes)
         break;
     }
@@ -43012,7 +43054,7 @@ import fs138 from "node:fs";
 import path145 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "cca0aa8ad077";
+var BRIDGE_VERSION = "558552247f4d";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -46062,7 +46104,8 @@ function peerMail(sender, payload, host, places = () => ({ targets: [], bridge: 
     const agents = saysApart(sender.key, payload.agents) ? { ...payload.agents, computer: undefined } : payload.agents;
     if (takeAgents(sender, agents)) {
       writeAgents();
-      noteBotsChanged();
+      if (!saysApart(sender.key, payload.agents))
+        noteBotsChanged();
     }
   }
   if (isObject(payload.docs))
@@ -47467,7 +47510,11 @@ function botsWithNow(machine) {
   const now = botsNowHere();
   return listBots(machine).map((bot) => ({ ...bot, now: now[bot.id] ?? { working: 0, asking: 0 } }));
 }
-var botsSaid = (machine) => ({ bots: botsWithNow(machine), ...heldLists(), elsewhere: botsElsewhere() });
+function botsSaid(machine) {
+  const listed = botsElsewhere();
+  const lists = heldLists(undefined, undefined, knownOf(listed));
+  return { bots: botsWithNow(machine), ...lists, ...lists.held && lists.refused ? { elsewhere: elsewhereSaid(listed, lists.held, lists.refused) } : {} };
+}
 async function* botEventsRoute(context) {
   const { request, signal, info, json } = context;
   if (request.method.toUpperCase() !== "GET")

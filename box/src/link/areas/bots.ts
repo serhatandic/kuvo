@@ -5,7 +5,7 @@ import { parsed } from "../../shared/json";
 import { changeBot, deleteBot } from "../bots/edit";
 import { botFollowers, botHere } from "../bots/here";
 import { HELD, heldLists, holdEdit } from "../bots/held";
-import { botsElsewhere } from "../bots/elsewhere";
+import { botsElsewhere, elsewhereSaid, knownOf } from "../bots/elsewhere";
 import { botTemplates, NO_KIT, readKit } from "../bots/kit";
 import { listBots } from "../bots/list";
 import { makeBot, startingModelHere } from "../bots/make";
@@ -91,7 +91,12 @@ function botsWithNow(machine?: string) {
 
 /** What `kuvo/bots` and its events say: this box's bots, what it holds for your other computers and
  * what they refused, and the bots that live on them, as each last told this box. */
-const botsSaid = (machine?: string) => ({ bots: botsWithNow(machine), ...heldLists(), elsewhere: botsElsewhere() });
+function botsSaid(machine?: string) {
+  const listed = botsElsewhere();
+  const lists = heldLists(undefined, undefined, knownOf(listed));
+  // (None of the three while it can't check what it holds: a client keeps what it last heard.)
+  return { bots: botsWithNow(machine), ...lists, ...(lists.held && lists.refused ? { elsewhere: elsewhereSaid(listed, lists.held, lists.refused) } : {}) };
+}
 
 // Its bots followed: a line now, and again as they change (made, changed, deleted, a wake-up
 // added or sent), as a client shows them.

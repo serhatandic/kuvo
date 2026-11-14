@@ -6,8 +6,9 @@
 import type { BotDeletes } from "../../shared/routes/bots";
 
 /** Where a deleted bot's folder ends up: the Finder's Trash (a Mac whose app takes it there), or
- * Kuvo Code's own trash folder on that computer (`folder`, as it's written for you, where known). */
-export type FolderGoes = { to: "trash" } | { to: "kuvo"; folder?: string };
+ * Kuvo Code's own trash folder on that computer (`folder`, as it's written for you, where known);
+ * `unsaid` for a computer that hasn't told (one from before it did). */
+export type FolderGoes = { to: "trash" } | { to: "kuvo"; folder?: string } | { to: "unsaid" };
 
 const counted = (count: number, one: string, many: string): string => (count === 1 ? one : `${count} ${many}`);
 
@@ -20,8 +21,10 @@ export function whatDeleteTakes({ computer, folder, wakes, watching }: { compute
   lines.push({
     what: "folder",
     words: folder.to === "trash"
-      ? "Its folder, with its memory and what it made there, goes to the Trash."
-      : `Its folder, with its memory and what it made there, goes to Kuvo Code’s trash folder on ${computer}${folder.folder ? ` (${folder.folder})` : ""}.`,
+      ? `Its folder, with its memory and what it made there, goes to the Trash on ${computer}.`
+      : folder.to === "kuvo"
+        ? `Its folder, with its memory and what it made there, goes to Kuvo Code’s trash folder on ${computer}${folder.folder ? ` (${folder.folder})` : ""}.`
+        : `Its folder, with its memory and what it made there, goes to the Trash on ${computer}, or to Kuvo Code’s trash folder there.`,
   });
   if (wakes === undefined || watching === undefined) lines.push({ what: "wakes", words: "Its wake-ups and watches are cancelled." });
   else if (wakes || watching) {

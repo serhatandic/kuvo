@@ -4068,21 +4068,31 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     `keys` of its own, its place in the `groups` there, and its `sessions`, which stay. A client's
     confirm shows these lines as they are and writes none of its own; a `what` it doesn't know
     is a line all the same.
-  - **The bots of your other computers** (`bots.elsewhere`): `elsewhere`, `[{id, session, name,
-    look?, job?, box, computer, kind, deletes}]`, each bot your other computers list, as
-    each last told the box asked (their agents, "Peers"): its `job`'s line, the computer it lives
-    on by its key (`box`, as `kuvo/computers` has it) and by its name here (`computer`, a machine
-    by its name), that computer's `kind` (`mac` or `machine`) and `deletes`, what deleting it takes with it there (as far as its kind
-    says: a Mac's folder goes to the Trash, a machine's to Kuvo Code's trash folder; its wake-ups
-    aren't told between computers, so that line has no count). Only from your own computers:
-    nothing from one that isn't only yours (as "Held for another computer" goes), and never one
-    that lives on the box asked. One two computers list (moving from one to the other) is the
-    one's that told this box last. By computer, as the box knows them, then as each listed its
-    own. A client draws them from any box it reaches, and changes or deletes one through that
-    box (`PATCH` and `DELETE kuvo/bots/<id>`, which holds it for the bot's computer: "Held for
-    another computer"); what a personality or a model can be there is that computer's own to say
-    (`kuvo/bots/templates` and the models offered, asked of it). A `kuvo/bots/events` line follows
-    as a computer says its bots changed.
+  - **The bots of your other computers** (`bots.elsewhere`): `elsewhere`, `[{id, session?, name?,
+    look?, job?, box, computer, kind?, deletes?, waiting?, refused?, unlisted?}]`, each bot your
+    other computers list, as each last told the box asked (their agents, "Peers"), for a client
+    to draw as it is: its `job`'s line, the computer it lives on by its key (`box`, as
+    `kuvo/computers` has it) and by its name here (`computer`, a machine by its name), that
+    computer's `kind` (`mac` or `machine`) and `deletes`, what deleting it takes with it there
+    (its folder where that computer says its deleted bots' go, `trash` in its agents' mail: `trash`
+    for the Finder's Trash, `kuvo` for Kuvo Code's trash folder; one that hasn't said is said both
+    ways; its wake-ups aren't told between computers, so that line has no count). Its `name` and
+    `look` are as you left them: those a change held here gives it, over its computer's (the
+    computer's own are `name` and `look` on the `held` entry). `waiting: true` while the box holds
+    an edit for it, `refused: true` when its computer refused one lately. Then any bot the box
+    only holds an edit for, or heard a refusal of, that no computer lists now: `unlisted: true`,
+    with no `session`, `kind` or `deletes`, and a `name` or `look` only where the box knows one
+    (a client names one without as it likes, "A bot on <computer>"); a client offers no change
+    to one. Only from your own computers: nothing from one that isn't only yours (as "Held for
+    another computer" goes), and never one that lives on the box asked. One two computers list
+    (moving from one to the other) is the one's that told this box last. By computer, as the box
+    knows them, then as each listed its own. Left out, with `held` and `refused`, while the box
+    can't check what it holds: a client keeps what it last heard. A client draws them from any
+    box it reaches, and changes or deletes one through that box (`PATCH` and `DELETE
+    kuvo/bots/<id>`, which holds it for the bot's computer: "Held for another computer"); what a
+    personality or a model can be there is that computer's own to say (`kuvo/bots/templates` and
+    the models offered, asked of it). A `kuvo/bots/events` line follows as one of your computers
+    says its bots changed.
 - Making a bot as New Bot does, on the computer it's to live on. `GET kuvo/bots/templates` is
   what New Bot offers there: `{"templates": [{id, name, job, instructions, look, personality,
   wantsProject}], "personalities": [{id, name, description, custom}], "looks": {colors, shapes,
@@ -4113,7 +4123,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   names: one of that model's own as the box lists them (`efforts`, "The models offered"), null or
   `""` for the model's own; it's the model's `variant` from then on, and a `model` without one
   still means the model's own; 400 `{"message"}` for one that model hasn't, in words naming those
-  it has, or for a bot with no model; 422 for a model the box doesn't list (its account signed out there); 503 while the box can list no model's efforts,
+  it has, or for a bot with no model; 422 for a model the side it runs on (the engine, or the
+  coding agents) lists others but not it (its account signed out there); 503 while that side lists none (it isn't answering now),
   `job` as `{line, details}`, the whole job, which replaces the one it had: its line on one line,
   without a sentence's end; both `""` for none; 400 for one too long): `200 {"bot": <as kuvo/bots
   lists one>}` (null when it no longer lists here by then, a move begun meanwhile), after a coding agent's model for a bot on the engine has carried its conversation
@@ -4153,6 +4164,10 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   `bots.effort` (one that doesn't yet would drop it: it waits until it's updated); that computer
   takes it only if it was given after the bot's model last changed there; a `model` held after it
   without an `effort` of its own lets the held `effort` go, as a model alone means its own effort.
+  A model and the effort held with it are one there: where the model isn't taken (stale, or
+  refused), neither is its effort, which is never put on the model the bot has. While an edit
+  waits for that update though its computer answers, its `held` entry says so in words (`waits`),
+  for a client to show as they are.
   - `kuvo/bots` and its events add `held` (each as above, the first held first) and `refused`
     (`[{bot, box, computer, message, at}]`; each of both with the bot's `name` and `look`,
     `bots.elsewhere`: as its computer says them now, else as it last had by the time the edit was
@@ -4162,6 +4177,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     you left it, "waiting for <computer>"; why it wasn't taken). Neither is there while the box
     can't check its seals (this Mac's box before its app gives it its keys): a client keeps what it
     last heard. A bot moving to another computer meanwhile: what's held goes where it lists now.
+  - A box says where a bot deleted on it ends up in its agents' mail (`trash`: `trash` or `kuvo`,
+    "What deleting a bot takes with it"), which the boxes that list its bots word their lines by.
   - It goes as `{"botEdit": {id, bot, change?, ages?, delete?: true, at}}` (`id` `bte_…`, one for
     each version of what's held; `ages`, how long ago each field was given, ms, so no computer's
     clock is read by another's) to that computer (once it no longer lists the bot, or is no

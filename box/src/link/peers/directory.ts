@@ -84,6 +84,7 @@ export function takeAgents(sender: { key: string; kind: "mac" | "machine"; id?: 
       ...(Array.isArray(given.features) ? { features: keptFeatures(given.features) } : {}), ...(Array.isArray(given.moved) ? { moved: keptMoved(given.moved) } : {}),
       ...(Array.isArray(given.boxes) ? { boxes: keptBoxes(given.boxes) } : {}),
       ...(typeof given.setup === "string" && SETUP_ID.test(given.setup) ? { setup: given.setup } : {}), ...(given.shared === true ? { shared: true as const } : {}),
+      ...(given.trash === "trash" || given.trash === "kuvo" ? { trash: given.trash } : {}),
       ...(computer ? { computer } : {}) };
     writePrivate(file, JSON.stringify(all));
     return true;

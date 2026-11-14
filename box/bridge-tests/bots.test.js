@@ -140,8 +140,8 @@ test("kuvo/bots lists the machine's described bots, each as its folder is now", 
   });
   // One with no wake-ups or watches says nothing of them.
   assert.deepEqual(answer.json.bots[0].deletes.map(each => each.what), ["conversation", "folder", "keys", "groups", "sessions"]);
-  // (No other computer has told this box of its bots.)
-  assert.deepEqual(answer.json.elsewhere, []);
+  // (A box with no link of its own can't check what it holds: neither that nor the bots elsewhere is said.)
+  assert.equal("elsewhere" in answer.json || "held" in answer.json, false);
   assert.equal("personality" in answer.json.bots[1], false, "none: left out, as the Mac leaves it out");
   assert.equal("wakes" in answer.json.bots[0], false, "none waiting: left out, as the Mac leaves it out");
   assert.equal((await ask(handle, "PUT", "kuvo/bots")).status, 405);
@@ -802,6 +802,11 @@ test("a bot's effort is changed on its own, to one its model has here; one it ha
     const down = link.engineHandler(() => ({ port: 1, password: "p" }), { name: "my-server" }, () => null);
     const later = await ask(down, "PATCH", "kuvo/bots/bot_scout00001", { effort: "medium" });
     assert.deepEqual([later.status, later.json.message], [503, "The efforts of opus can’t be read on this machine now. Try again in a moment."]);
+    // The same with only its side down: its engine starting again while the coding agents answer
+    // isn't a model to sign in to, and passes (an edit held for it goes again rather than being refused).
+    const half = link.engineHandler(() => ({ port: 1, password: "p" }), { name: "my-server" }, () => ({ port: engine.port, password: "p" }));
+    const waits = await ask(half, "PATCH", "kuvo/bots/bot_scout00001", { effort: "medium" });
+    assert.deepEqual([waits.status, waits.json.message], [503, "The efforts of opus can’t be read on this machine now. Try again in a moment."]);
     // A bot with no model has none to set an effort for.
     write(path.join(folder, "bot.json"), JSON.stringify({ ...JSON.parse(kept), model: undefined }));
     const none = await ask(handle, "PATCH", "kuvo/bots/bot_scout00001", { effort: "high" });

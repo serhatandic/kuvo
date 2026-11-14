@@ -34,14 +34,14 @@
       ]
     },
     {
-      "name": "each bot says what deleting it takes with it, in the box's words; no other computer has told of its bots",
+      "name": "each bot says what deleting it takes with it, in the box's words; a box that can't check what it holds leaves the bots elsewhere out with it",
       "steps": [
         { "given": { "bot": { "id": "bot_ada", "name": "Ada", "session": "ses_ada" } } },
         { "given": { "bot": { "id": "bot_ben", "name": "Ben", "session": "ses_ben", "created": "2026-10-02T09:00:00Z" } } },
         { "given": { "wake": { "session": "ses_ben", "in": 7200, "note": "Morning digest", "letters": "AbC123" } } },
         {
           "send": "GET kuvo/bots",
-          "why": "A machine keeps a deleted bot's folder in Kuvo Code's trash folder, and names itself; a Mac's goes on to the Trash where its app answers to take it there.",
+          "why": "A machine keeps a deleted bot's folder in Kuvo Code's trash folder, and names itself; a Mac's goes on to the Trash where its app answers to take it there. Neither box here has a link of its own, so neither says what it holds, nor the bots elsewhere (a client keeps what it last heard).",
           "expect": { "status": 200, "json": {
             "bots": [
               { "id": "bot_ada", "deletes": [
@@ -57,7 +57,7 @@
                 { "what": "keys" }, { "what": "groups" }, { "what": "sessions" }
               ] }
             ],
-            "elsewhere": []
+            "elsewhere": "<absent>"
           } }
         }
       ]

@@ -238,10 +238,12 @@ async function effortOf(model: { id: string; providerID: string }, given: unknow
   let engine: Target | null = null, agents: Target | null = null;
   try { engine = readEngine(); } catch {}
   try { agents = readBridge(); } catch {}
-  const models = await usableModels(engine, agents, signal);
+  // Only the side it runs on: the engine's models, or the coding agents'.
+  const models = runsWithAgents(model) ? await usableModels(null, agents, signal) : await usableModels(engine, null, signal);
   const listed = modelNamed(model, models);
-  // (Nothing listed at all: its engine isn't answering, which passes. Listed, but not this model:
-  // it can't run here now (its account signed out), which doesn't pass by itself.)
+  // (That side lists nothing: it isn't answering now, its engine starting again say, which passes.
+  // It lists models, but not this one: it can't run here now (its account signed out), which
+  // doesn't pass by itself.)
   if (!listed && !models.length) return { status: 503, refused: `The efforts of ${model.id} can’t be read on ${HERE} now. Try again in a moment.` };
   if (!listed) return { status: 422, refused: `${model.id} can’t be used on ${HERE} now, so its effort can’t be set: sign in to it in Settings › Accounts, or choose another model.` };
   if (!listed.efforts.length) return { status: 400, refused: `${listed.name} has no efforts to choose from.` };

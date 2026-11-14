@@ -2433,7 +2433,8 @@
          "delete?": {
           "literal": true
          },
-         "since": "number"
+         "since": "number",
+         "waits?": "string"
         }
        }
       },
@@ -2528,12 +2529,12 @@
         }
        }
       },
-      "elsewhere": {
+      "elsewhere?": {
        "list": {
         "object": {
          "id": "string",
-         "session": "string",
-         "name": "string",
+         "session?": "string",
+         "name?": "string",
          "look?": {
           "object": {
            "color": {
@@ -2616,7 +2617,7 @@
          "job?": "string",
          "box": "string",
          "computer": "string",
-         "kind": {
+         "kind?": {
           "oneOf": [
            {
             "literal": "mac"
@@ -2626,7 +2627,7 @@
            }
           ]
          },
-         "deletes": {
+         "deletes?": {
           "list": {
            "object": {
             "what": "string",
@@ -2636,6 +2637,15 @@
             }
            }
           }
+         },
+         "waiting?": {
+          "literal": true
+         },
+         "refused?": {
+          "literal": true
+         },
+         "unlisted?": {
+          "literal": true
          }
         }
        }
@@ -3210,7 +3220,8 @@
         "delete?": {
          "literal": true
         },
-        "since": "number"
+        "since": "number",
+        "waits?": "string"
        }
       }
      }
@@ -3316,7 +3327,8 @@
         "delete?": {
          "literal": true
         },
-        "since": "number"
+        "since": "number",
+        "waits?": "string"
        }
       }
      }

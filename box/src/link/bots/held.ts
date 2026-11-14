@@ -37,6 +37,7 @@ import { fitsLook } from "./make";
 import type { BotChange } from "./edit";
 import type { HeldEdit, RefusedEdit } from "../../shared/routes/bots";
 import type { MailSender, Peer } from "../peers/known";
+import type { ToldAgents } from "../../shared/records";
 import type { LinkHost } from "../relay/host";
 import type { LinkState } from "../state";
 
@@ -170,11 +171,20 @@ const botOf = (bot: string, kept: KnownBot | undefined, known: Map<string, Known
   return { ...(name ? { name } : {}), ...(look ? { look } : {}) };
 };
 
-const viewOf = (held: Held, link: LinkState | null, known: Map<string, KnownBot> = knownElsewhere(link)): HeldEdit => ({
+// Why an edit hasn't gone to a computer that answers, in words: it holds an effort, which that
+// computer takes only once it's updated (`sendHeld`).
+const waitsOf = (held: Held, link: LinkState | null, told: Record<string, ToldAgents>): string | undefined => {
+  if (!held.change || !("effort" in held.change) || !held.to || !told[held.to] || (told[held.to]?.features ?? []).includes(EFFORT_FEATURE)) return undefined;
+  const computer = nameOf(held, link);
+  return `${computer} needs an update before it takes an effort: this goes once Kuvo Code is updated on ${computer}.`;
+};
+
+const viewOf = (held: Held, link: LinkState | null, known: Map<string, KnownBot> = knownElsewhere(link), told: Record<string, ToldAgents> = readPeerAgents()): HeldEdit => ({
   bot: held.bot,
   box: held.to,
   computer: nameOf(held, link),
   ...botOf(held.bot, held.known, known),
+  ...(waitsOf(held, link, told) ? { waits: waitsOf(held, link, told) } : {}),
   ...(held.delete ? { delete: true } : { change: held.change as Record<string, unknown> }),
   since: held.since,
 });
@@ -182,11 +192,12 @@ const viewOf = (held: Held, link: LinkState | null, known: Map<string, KnownBot>
 /** What's held here for your other computers, and what they refused lately, as `kuvo/bots` lists
  * them for clients to show; neither while this box can't tell its own from what's planted (this
  * Mac's box before its app gives it its keys), so a client keeps what it last heard. */
-export function heldLists(link: LinkState | null = readLink(), now = Date.now()): { held?: HeldEdit[]; refused?: RefusedEdit[] } {
+export function heldLists(link: LinkState | null = readLink(), now = Date.now(), known?: Map<string, KnownBot>): { held?: HeldEdit[]; refused?: RefusedEdit[] } {
   if (!secretOf(link)) return {};
-  const known = knownElsewhere(link);
+  const told = readPeerAgents();
+  known ??= knownElsewhere(link, told);
   return {
-    held: allHeld(link).map(each => viewOf(each, link, known)),
+    held: allHeld(link).map(each => viewOf(each, link, known, told)),
     refused: readRefused(now, link).map(({ bot, box, computer, name, look, message, at }) => ({ bot, box, computer, ...botOf(bot, name ? { name, look } : undefined, known), message, at })),
   };
 }
@@ -502,7 +513,10 @@ export async function takeBotEdit(sender: MailSender, given: unknown, reply: (pa
         const lastEdited = (field: string): number | undefined => (field === "effort" && edited.model !== undefined ? Math.max(edited.model, edited.effort ?? 0) : edited[field]);
         const fresh = Object.entries(given.change as Record<string, unknown>).filter(([field]) => (FIELDS as readonly string[]).includes(field)
           && !(times[field] !== undefined && lastEdited(field) !== undefined && times[field] <= lastEdited(field)!));
-        done = fresh.length ? await changeWhatItCan(bot, fresh, times, steps) : { status: 200, value: {} };
+        // (An effort given with a model is that model's: not for the one it has once that model isn't taken.)
+        const change = given.change as Record<string, unknown>;
+        const taken = "model" in change && !fresh.some(([field]) => field === "model") ? fresh.filter(([field]) => field !== "effort") : fresh;
+        done = taken.length ? await changeWhatItCan(bot, taken, times, steps) : { status: 200, value: {} };
       }
     } catch {
       done = { status: 503, value: { message: `Something went wrong on ${ownName()}.` } };
@@ -523,8 +537,12 @@ async function changeWhatItCan(bot: string, fields: [string, unknown][], times: 
   if (fields.length < 2 || (whole.status !== 400 && whole.status !== 422)) return whole;
   const refused: string[] = [];
   let took = false;
-  for (const field of fields) {
-    const one = await steps.change(bot, Object.fromEntries([field]) as BotChange, times);
+  // (A model and the effort given with it are one: an effort alone would be the old model's.)
+  const together = fields.some(([field]) => field === "model") ? fields.filter(([field]) => field === "model" || field === "effort") : [];
+  const parts = [...fields.filter(field => !together.includes(field)).map(field => [field]), ...(together.length ? [together] : [])];
+  if (parts.length < 2) return whole;
+  for (const part of parts) {
+    const one = await steps.change(bot, Object.fromEntries(part) as BotChange, times);
     // (One that can't be done now, its engine starting say: all of it again later, what was done
     // now skipped then by its time.)
     if (one.status === 409 || one.status >= 500) return one;
