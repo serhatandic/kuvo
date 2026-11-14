@@ -47,9 +47,119 @@ public struct SignInMethods: Decodable, Sendable, Equatable {
     }
 }
 
+/// How an account stands and what can be done with it, as its box says (`state`, `line`,
+/// `connections` and `actions` in `kuvo/sign-in/accounts`; PROTOCOL.md, `sign-in.accounts.state`).
+/// The box decides all of it; a client draws it, and keeps no rule for when a button shows.
+public struct AccountSaid: Decodable, Sendable, Equatable {
+    /// The fact its line words. One a newer box names that this client doesn't know reads as
+    /// `signedOut`.
+    public enum State: String, Sendable, Equatable {
+        case signedIn, signedOut, ended, notInstalled, unchecked, problem
+
+        /// Whether it needs you: its sign-in ended, or the one in use says something's wrong.
+        public var needsYou: Bool { self == .ended || self == .problem }
+    }
+
+    /// What a client asks before it does an action: the question, what it comes to, and the words
+    /// of the button that goes ahead.
+    public struct Confirm: Decodable, Sendable, Equatable {
+        public let title: String
+        public let message: String
+        public let label: String
+    }
+
+    /// Something that can be done with the account now.
+    public struct Action: Decodable, Sendable, Equatable, Identifiable {
+        /// `signIn`, `signInAgain`, `addAnother`, `disconnect`, `install`, `update`, `signOut`,
+        /// `rename`, `remove`; a client leaves out one it has no control for.
+        public let id: String
+        /// Its button's words.
+        public let label: String
+        /// There where a client asks first, in the box's words. A client marks such a button as
+        /// its platform does (an ellipsis); the label never carries one.
+        public let confirm: Confirm?
+        /// It only works on the box's computer (a sign-in whose page comes back to it): a client
+        /// elsewhere says where instead of offering it.
+        public let here: Bool
+
+        private enum CodingKeys: String, CodingKey { case id, label, confirm, here }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            label = try container.decode(String.self, forKey: .label)
+            confirm = try container.decodeIfPresent(Confirm.self, forKey: .confirm)
+            here = try container.decodeIfPresent(Bool.self, forKey: .here) ?? false
+        }
+    }
+
+    /// One of its sign-ins or keys, in the engine's order (the first is the one in use).
+    public struct Connection: Decodable, Sendable, Equatable {
+        /// The engine's id for one its box keeps.
+        public let id: String?
+        public let state: State
+        /// Who or what it is: "you@example.com", "API key", "From OPENAI_API_KEY".
+        public let line: String
+
+        private enum CodingKeys: String, CodingKey { case id, state, line }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decodeIfPresent(String.self, forKey: .id)
+            state = State(rawValue: try container.decode(String.self, forKey: .state)) ?? .signedOut
+            line = try container.decode(String.self, forKey: .line)
+        }
+    }
+
+    public let state: State
+    /// The account's status in a line, under its name.
+    public let line: String
+    public let actions: [Action]
+    public let connections: [Connection]
+    /// Whether every sign-in the box listed could be read: only then does one's place in the list
+    /// say which it is.
+    private let placesHold: Bool
+    /// One you added beside a coding agent's own sign-in: listed with its agent whether or not
+    /// it's signed in.
+    public let added: Bool
+
+    private enum CodingKeys: String, CodingKey { case state, line, actions, connections, added }
+
+    /// One of a list's items, or nothing where this client can't read it: the rest still come.
+    private struct Readable<Item: Decodable>: Decodable {
+        let item: Item?
+        init(from decoder: Decoder) throws { item = try? Item(from: decoder) }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        state = State(rawValue: try container.decode(String.self, forKey: .state)) ?? .signedOut
+        line = try container.decode(String.self, forKey: .line)
+        actions = (try container.decodeIfPresent([Readable<Action>].self, forKey: .actions) ?? []).compactMap(\.item)
+        let listed = try container.decodeIfPresent([Readable<Connection>].self, forKey: .connections) ?? []
+        connections = listed.compactMap(\.item)
+        placesHold = connections.count == listed.count
+        added = try container.decodeIfPresent(Bool.self, forKey: .added) ?? false
+    }
+
+    /// The action with `id`, where the box offers it now.
+    public func action(_ id: String) -> Action? { actions.first { $0.id == id } }
+
+    /// Its sign-in, where the box offers one now: Sign In, or Sign In Again.
+    public var signIn: Action? { actions.first { $0.id == "signIn" || $0.id == "signInAgain" } }
+
+    /// What the box says of one of its sign-ins: the one with the engine's `id`, where it has one,
+    /// else the one at its place in the engine's list.
+    public func connection(id: String?, at index: Int) -> Connection? {
+        if let id, let found = connections.first(where: { $0.id == id }) { return found }
+        return placesHold && connections.indices.contains(index) && connections[index].id == nil ? connections[index] : nil
+    }
+}
+
 /// Every account a computer's engine (or its coding agents' bridge) lists, with its ways in, as its
 /// box says them (`kuvo/sign-in/accounts`): what Accounts' Sign In buttons and each card's hint go
-/// by, which of them Accounts lists as providers (`listed`), and each one's mark (`service`).
+/// by, which of them Accounts lists as providers (`listed`), each one's mark (`service`), and how
+/// each stands with what can be done with it (`said`).
 public struct SignInAccounts: Decodable, Sendable, Equatable {
     /// By account.
     public let accounts: [String: SignInMethods]
@@ -60,12 +170,16 @@ public struct SignInAccounts: Decodable, Sendable, Equatable {
     /// Each account's mark, by the plan limits' service ids ("copilot", "codex"); none for one
     /// drawn by its name's first letter.
     public let services: [String: String]
+    /// How each account stands, its line and what can be done with it, as the box says
+    /// (`sign-in.accounts.state`); none for one it hasn't said.
+    public let said: [String: AccountSaid]
 
     private struct Entry: Decodable {
         let id: String
         let ways: SignInMethods
         let listed: Bool
         let service: String?
+        let said: AccountSaid?
         private enum CodingKeys: String, CodingKey { case id, listed, service }
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -73,6 +187,7 @@ public struct SignInAccounts: Decodable, Sendable, Equatable {
             listed = try container.decodeIfPresent(Bool.self, forKey: .listed) ?? false
             service = try container.decodeIfPresent(String.self, forKey: .service)
             ways = try SignInMethods(from: decoder)
+            said = try? AccountSaid(from: decoder)
         }
     }
 
@@ -81,10 +196,11 @@ public struct SignInAccounts: Decodable, Sendable, Equatable {
     /// None said yet.
     public static let none = SignInAccounts(accounts: [:])
 
-    public init(accounts: [String: SignInMethods], listed: Set<String> = [], services: [String: String] = [:]) {
+    public init(accounts: [String: SignInMethods], listed: Set<String> = [], services: [String: String] = [:], said: [String: AccountSaid] = [:]) {
         self.accounts = accounts
         self.listed = listed
         self.services = services
+        self.said = said
     }
 
     public init(from decoder: Decoder) throws {
@@ -92,15 +208,20 @@ public struct SignInAccounts: Decodable, Sendable, Equatable {
         accounts = Dictionary(entries.map { ($0.id, $0.ways) }) { first, _ in first }
         listed = Set(entries.filter(\.listed).map(\.id))
         services = Dictionary(entries.compactMap { entry in entry.service.map { (entry.id, $0) } }) { first, _ in first }
+        said = Dictionary(entries.compactMap { entry in entry.said.map { (entry.id, $0) } }) { first, _ in first }
     }
 
     /// Whether Accounts lists `id` as a provider, as its box says; false where it hasn't said.
     public func lists(_ id: String) -> Bool { listed.contains(id) }
 
-    /// Whether `id` has a way in a client can offer; false where its box hasn't said.
+    /// Whether `id` has a way in a client can offer; false where its box hasn't said. (What
+    /// Accounts offers for it is its `said` actions: this is for a sign-in offered elsewhere.)
     public func offersSignIn(_ id: String) -> Bool {
         accounts[id].map { !$0.methods.isEmpty } ?? false
     }
+
+    /// How `id` stands, as its box says: not signed in where it hasn't said.
+    public func state(_ id: String) -> AccountSaid.State { said[id]?.state ?? .signedOut }
 
     public static let route = "kuvo/sign-in/accounts"
 

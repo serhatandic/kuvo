@@ -242,7 +242,7 @@ export class GrokAgent implements Agent {
     return this.known.read(fresh, async () => {
       const status = await this.read(fresh)
       if (!status.signedIn) return { installed: true, signedIn: false, message: "Sign in to Grok with your SuperGrok plan." }
-      return { installed: true, signedIn: true, label: process.env.XAI_API_KEY ? "xAI API key" : "grok.com" }
+      return { installed: true, signedIn: true, label: process.env.XAI_API_KEY ? "xAI API key" : "grok.com", what: true }
     })
   }
 

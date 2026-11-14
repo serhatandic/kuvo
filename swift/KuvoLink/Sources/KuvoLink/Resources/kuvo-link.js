@@ -4307,6 +4307,7 @@ var FEATURES = [
   "setup.mainOnly",
   "shell.stop",
   "sign-in.accounts.kinds",
+  "sign-in.accounts.state",
   "sign-in.codes",
   "sign-in.methods",
   "sign-in.return",
@@ -43276,7 +43277,7 @@ import fs138 from "node:fs";
 import path146 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "90a0cbbd6d99";
+var BRIDGE_VERSION = "963a7ad08ed8";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -53506,6 +53507,102 @@ async function* providerModelsRoute(context) {
   return yield* json(status, value);
 }
 
+// box/src/link/areas/sign-in-state.ts
+var text6 = (value) => typeof value === "string" ? plainName(value) : "";
+function connectionSaid(connection, name, computer, ended) {
+  const status = isObject(connection.status) ? connection.status : {};
+  const label = text6(connection.label);
+  const kind = connection.method === "key" ? "API key" : connection.method === "external" ? `Credentials on ${computer}` : "";
+  const who = label && label !== name && label.toLowerCase() !== kind.toLowerCase() ? label : "";
+  const line = connection.type === "env" ? `From ${text6(connection.name) || "its environment"}` : kind ? who ? `${kind} · ${who}` : kind : who || "Signed in";
+  const trouble = status.status === "failed" ? text6(status.message) : "";
+  return {
+    ...connection.type === "credential" && typeof connection.id === "string" && connection.id ? { id: connection.id } : {},
+    state: ended || status.status === "needs_auth" ? "ended" : trouble ? "problem" : "signedIn",
+    line,
+    who,
+    signedInAs: connection.type !== "env" && !kind && who !== "",
+    what: connection.what === true,
+    trouble
+  };
+}
+function accountState(account, offered, { agents = false, ended, computer }) {
+  const id = typeof account.id === "string" ? account.id : "";
+  const name = text6(account.name) || id;
+  const meta = isObject(account.metadata) ? account.metadata : {};
+  const listed = (Array.isArray(account.connections) ? account.connections : []).filter(isObject);
+  const said = listed.map((each) => connectionSaid(each, name, computer, !agents && ended !== undefined && each.type === "credential" && each.id === ended));
+  const connections = said.map(({ id, state, line }) => ({ ...id ? { id } : {}, state, line }));
+  const inUse = said[0];
+  const savedInUse = said[listed.findIndex((each) => each.type === "credential")];
+  const signsIn = offered.methods.length > 0;
+  const added = agents && (id.includes("@") || typeof meta.accountID === "string" && meta.accountID !== "" && meta.accountID !== "default");
+  const installs = agents && meta.installed === false && typeof meta.install === "string" && meta.install !== "";
+  const state = installs ? "notInstalled" : (agents ? meta.signInEnded === true : inUse?.state === "ended" || savedInUse?.state === "ended") ? "ended" : inUse ? inUse.state === "problem" ? "problem" : "signedIn" : agents && meta.unchecked === true ? "unchecked" : "signedOut";
+  const line = (() => {
+    switch (state) {
+      case "notInstalled":
+        return `Not installed on ${computer}`;
+      case "ended":
+        return "Sign-in ended";
+      case "problem":
+        return inUse.trouble;
+      case "unchecked":
+        return "Couldn’t check just now";
+      case "signedIn": {
+        if (agents && meta.unchecked === true && !inUse.who)
+          return "Couldn’t check just now";
+        const first = inUse.signedInAs ? `Signed in ${inUse.what ? "with" : "as"} ${inUse.who}` : inUse.line;
+        return said.length > 1 ? `${first} · ${said.length} accounts` : first;
+      }
+      case "signedOut":
+        if (agents)
+          return "Not signed in";
+        if (!signsIn)
+          return offered.environment.length ? `Set ${offered.environment.join(" or ")} in your shell profile` : "Not signed in";
+        return offered.hint || "Not signed in";
+    }
+  })();
+  const actions = [];
+  const here = agents && meta.remoteSignIn !== true ? { here: true } : {};
+  const remove = {
+    id: "remove",
+    label: "Remove Account",
+    confirm: { title: `Remove ${name}?`, message: `It’s signed out on ${computer}, and its models leave the model picker. A turn running on it stops; its sessions stay.`, label: "Remove Account" }
+  };
+  if (agents) {
+    if (installs)
+      actions.push({ id: "install", label: "Install" });
+    else if (signsIn)
+      actions.push(said.length || state === "ended" ? { id: "signInAgain", label: "Sign In Again", ...here } : { id: "signIn", label: "Sign In", ...here });
+    const latest = text6(meta.latestVersion);
+    const updating = isObject(meta.programUpdate) && meta.programUpdate.state === "updating";
+    if (!added && !installs && meta.outdated === true && meta.updates === true && latest && !updating)
+      actions.push({ id: "update", label: `Update to ${latest}` });
+    if (meta.signsOut === true && said.length)
+      actions.push({ id: "signOut", label: "Sign Out" });
+    if (added)
+      actions.push({ id: "rename", label: "Rename" }, remove);
+    return { state, line, actions, connections, ...added ? { added: true } : {} };
+  }
+  if (!said.length) {
+    if (signsIn)
+      actions.push({ id: "signIn", label: "Sign In" });
+    return { state, line, actions, connections };
+  }
+  if (signsIn) {
+    if (state === "ended" || state === "problem" || said.some((each) => each.state === "ended"))
+      actions.push({ id: "signInAgain", label: "Sign In Again" });
+    actions.push({ id: "addAnother", label: "Add Another Account" });
+  }
+  if (meta.source !== "mcp" && listed.some((each) => each.type === "credential")) {
+    const stays = listed.filter((each) => each.type === "env").map((each) => text6(each.name)).filter(Boolean);
+    const message = stays.length ? `Its saved sign-ins and keys go from ${computer}. It stays signed in from ${stays.join(" and ")} in its shell’s environment, so its models stay.` : `Its sign-ins and keys go from ${computer}, and its models leave the model picker there. Sessions on its models stop until you sign in again.`;
+    actions.push({ id: "disconnect", label: "Disconnect", confirm: { title: `Disconnect ${name}?`, message, label: "Disconnect" } });
+  }
+  return { state, line, actions, connections };
+}
+
 // box/src/link/areas/sign-in.ts
 var SIGN_IN_METHODS_ROUTE = "kuvo/sign-in/methods";
 var SIGN_IN_STATUS_ROUTE = "kuvo/sign-in/status";
@@ -53630,10 +53727,13 @@ async function* accountsRoute2(context, query) {
     const listed = await call(place.target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, deadline]) : deadline);
     const accounts = (Array.isArray(listed) ? listed : []).filter((each) => typeof each?.id === "string");
     const agents = query.get("agents") === "1";
+    const ended = agents ? new Map : readEndedSignIns();
+    const computer = plainName(context.info.name) || "this computer";
     return yield* json(200, {
       accounts: accounts.map((account) => {
         const service = serviceOf(account, agents);
-        return { id: account.id, ...signInMethods(account), ...accountKind(account, agents), ...service ? { service } : {} };
+        const offered = signInMethods(account);
+        return { id: account.id, ...offered, ...accountKind(account, agents), ...service ? { service } : {}, ...accountState(account, offered, { agents, ended: ended.get(account.id), computer }) };
       })
     });
   } catch (error) {

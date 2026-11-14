@@ -1689,6 +1689,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "setup.mainOnly": ["GET", "kuvo/setup"],
     "shell.stop": ["POST", "kuvo/shell/sh_none/stop"],
     "sign-in.accounts.kinds": ["GET", "kuvo/sign-in/accounts"],
+    "sign-in.accounts.state": ["GET", "kuvo/sign-in/accounts"],
     "sign-in.codes": ["GET", "kuvo/sign-in/start?integration=openai"],
     "sign-in.methods": ["GET", "kuvo/sign-in/methods?integration=openai"],
     "sign-in.return": ["GET", "kuvo/sign-in/return"],

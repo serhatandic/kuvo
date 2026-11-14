@@ -250,6 +250,8 @@ export interface Connection {
   method?: string
   name?: string
   status?: { status: string; message: string; url?: string }
+  /** Its label says what it's signed in with, not who. */
+  what?: true
 }
 
 export interface Integration {

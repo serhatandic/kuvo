@@ -13649,7 +13649,7 @@ class AntigravityAgent {
         message: this.isInstalled ? "Sign in with your Google account." : `Sign in with your Google account. Kuvo Code downloads Google's Antigravity agent (about ${Math.round(release.bytes / 1e6)} MB) first.`
       };
     }
-    return { installed: this.isInstalled, signedIn: true, label: "Google account" };
+    return { installed: this.isInstalled, signedIn: true, label: "Google account", what: true };
   }
   ensureInstalled() {
     if (this.isInstalled)
@@ -14878,18 +14878,18 @@ class ClaudeAgent {
         if (!this.token()) {
           const console2 = await this.readStatus(this.consoleEnv());
           if (console2.loggedIn && console2.authMethod !== "claude.ai")
-            return { installed: true, signedIn: true, label: describe(console2) || "Anthropic Console" };
+            return { installed: true, signedIn: true, ...named4(console2, "Anthropic Console") };
           return { installed: true, signedIn: false, message: "Sign in to Claude Code with your Claude plan or an Anthropic Console account." };
         }
         const status = this.instance.home ? undefined : await this.readStatus().catch(() => {
           return;
         });
-        return { installed: true, signedIn: true, label: status?.loggedIn && describe(status) || "Claude plan" };
+        return { installed: true, signedIn: true, ...named4(status?.loggedIn ? status : undefined, "Claude plan") };
       }
       const status = await this.readStatus();
       if (!status.loggedIn)
         return { installed: true, signedIn: false, message: "Sign in to Claude Code with your Claude plan or an Anthropic Console account." };
-      return { installed: true, signedIn: true, label: describe(status) || "Claude Code" };
+      return { installed: true, signedIn: true, ...named4(status, "Claude Code") };
     });
     const turnedAway = this.turnedAway;
     if (!turnedAway)
@@ -16896,6 +16896,10 @@ function describe(status) {
   const who = status.email ?? (status.apiProvider && status.apiProvider !== "firstParty" ? status.apiProvider : undefined);
   return [who, plan].filter(Boolean).join(" \xB7 ");
 }
+function named4(status, otherwise) {
+  const described = status ? describe(status) : "";
+  return described && status?.email ? { label: described } : { label: described || otherwise, what: true };
+}
 
 // box/src/agents/agents/codex.ts
 import { existsSync as existsSync16, lstatSync as lstatSync7, mkdirSync as mkdirSync16, readdirSync as readdirSync16, readFileSync as readFileSync25, readlinkSync as readlinkSync2, rmSync as rmSync13, symlinkSync as symlinkSync2 } from "fs";
@@ -17631,9 +17635,9 @@ class CodexAgent {
         account = { installed: true, signedIn: false, message: "Sign in to Codex with ChatGPT or an OpenAI API key." };
       } else if (info.type === "chatgpt") {
         const plan = info.planType ? `ChatGPT ${String(info.planType).charAt(0).toUpperCase()}${String(info.planType).slice(1)}` : "ChatGPT";
-        account = { installed: true, signedIn: true, label: [info.email, plan].filter(Boolean).join(" \xB7 ") };
+        account = { installed: true, signedIn: true, label: [info.email, plan].filter(Boolean).join(" \xB7 "), ...info.email ? {} : { what: true } };
       } else {
-        account = { installed: true, signedIn: true, label: info.type === "apiKey" ? "OpenAI API key" : String(info.type) };
+        account = { installed: true, signedIn: true, label: info.type === "apiKey" ? "OpenAI API key" : String(info.type), what: true };
       }
       return account;
     });
@@ -19705,7 +19709,7 @@ class CursorAgent {
       } else {
         try {
           const me = await withTimeout2(sdk.Cursor.me({ apiKey }), 15000);
-          account = { installed: true, signedIn: true, label: me?.userEmail ?? (process.env.CURSOR_API_KEY ? "Cursor API key" : "Cursor account") };
+          account = { installed: true, signedIn: true, label: me?.userEmail ?? (process.env.CURSOR_API_KEY ? "Cursor API key" : "Cursor account"), ...me?.userEmail ? {} : { what: true } };
         } catch (error) {
           if (!(error instanceof sdk.AuthenticationError || error?.status === 401))
             throw error;
@@ -20948,7 +20952,7 @@ class GrokAgent {
       const status = await this.read(fresh);
       if (!status.signedIn)
         return { installed: true, signedIn: false, message: "Sign in to Grok with your SuperGrok plan." };
-      return { installed: true, signedIn: true, label: process.env.XAI_API_KEY ? "xAI API key" : "grok.com" };
+      return { installed: true, signedIn: true, label: process.env.XAI_API_KEY ? "xAI API key" : "grok.com", what: true };
     });
   }
   signsInRemotely = true;
@@ -33094,8 +33098,8 @@ class GroupRunner {
         this.changed(id);
         seat = undefined;
       }
-      const fresh = guest ? undefined : seatStartText(botID, kept.group, all, wrapUp, name, named4(all));
-      const text = guest ? guestText(botID, kept.group, all, namedIn?.author, name) : seat ? turnText(botID, kept.group, unheard, wrapUp, name, named4(unheard)) : fresh;
+      const fresh = guest ? undefined : seatStartText(botID, kept.group, all, wrapUp, name, named5(all));
+      const text = guest ? guestText(botID, kept.group, all, namedIn?.author, name) : seat ? turnText(botID, kept.group, unheard, wrapUp, name, named5(unheard)) : fresh;
       const last = all.at(-1);
       const home = this.home(bot.box);
       const result = await home.turn({
@@ -33107,7 +33111,7 @@ class GroupRunner {
         text,
         ...guest ? {} : { chatSize: new TextEncoder().encode(chatText(botID, kept.group, all, name)).length }
       }, (state) => this.heardOf(state, { id, botID, box: bot.box, guest, run, last: last?.id, retracted, own }), stopped.signal, {
-        shorter: seat ? () => turnText(botID, kept.group, unheard, wrapUp, name, named4(unheard), chatBudget) : undefined,
+        shorter: seat ? () => turnText(botID, kept.group, unheard, wrapUp, name, named5(unheard), chatBudget) : undefined,
         progress: (now) => {
           if (guest || bot.box || now.prompt === undefined || now.sent === undefined || stopped.signal.aborted)
             return;
@@ -33827,7 +33831,7 @@ _Earlier messages aren\u2019t here: this is the latest of the chat._
   }
 }
 var peerPrefix = (key) => key.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 8);
-function named4(unheard) {
+function named5(unheard) {
   const blocks = unheard.slice(-40).filter((message) => message.author === undefined).map((message) => message.named).filter((block) => typeof block === "string" && block.length > 0);
   if (blocks.length <= 1)
     return blocks[0];
@@ -34719,7 +34723,7 @@ async function integration(agent, fresh = false, auto) {
       modelsComplete: agent.listsEveryModel ? agent.listsEveryModel() : true
     },
     methods: agent.methods(),
-    connections: account.signedIn ? [{ type: "agent", label: account.label, method: "oauth", status: { status: "connected", message: account.label ? `Signed in as ${account.label}` : account.unchecked ? "Couldn't check the sign-in just now" : "Signed in" } }] : []
+    connections: account.signedIn ? [{ type: "agent", label: account.label, method: "oauth", ...account.what && account.label ? { what: true } : {}, status: { status: "connected", message: account.label ? `Signed in as ${account.label}` : account.unchecked ? "Couldn't check the sign-in just now" : "Signed in" } }] : []
   };
 }
 async function models(agents, hidden = false) {
@@ -36551,4 +36555,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 2fc517de374b4edebb284d0d5980f2d9aded51fefda46bd465ccb82491a22271
+// Built from Packages/Box/src/agents 55a34252efdb9e16a54032357b3fa5a2cb46852df0f95a30f7479ee4784bfd66

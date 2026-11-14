@@ -2,11 +2,13 @@
 //! engine's plans and providers (`api/integration`) and the coding agents' accounts
 //! (`kuvo/agents/api/integration`), with which of them Accounts lists, each one's mark, the ways in,
 //! their order and their words as the box says them (`kuvo/sign-in/accounts`,
-//! `kuvo/sign-in/methods`), a sign-in in the browser started through the box with its device code
+//! `kuvo/sign-in/methods`), how each account stands, the line under its name and what can be done
+//! with it, each with its button's and its confirm's words, as the box says them too
+//! (`sign-in.accounts.state`), a sign-in in the browser started through the box with its device code
 //! apart (`kuvo/sign-in/start`), how it goes (`kuvo/sign-in/status`, with what to say when it didn't
 //! work), and signing out through the engine's and the bridge's own routes. The engine does the
-//! signing in; nothing here reimplements it, decides a way in or what's listed, reads a code out of
-//! a page, or words a failure.
+//! signing in; nothing here reimplements it, decides a way in, what's listed, how an account stands
+//! or what it offers, reads a code out of a page, or words a failure.
 //!
 //! Never read here: a key or a sign-in's secret (`api/credential` lists them; this never asks it).
 
@@ -122,94 +124,78 @@ impl Ways {
     }
 }
 
-/// What an account is signed in with (a key, a sign-in, credentials on the computer, or a variable
-/// in the shell), and how it stands, as the engine says. Never its secret.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct Connection {
-    #[serde(rename = "type", default)]
-    pub kind: String,
-    #[serde(default)]
-    pub label: Option<String>,
-    /// `key`, `oauth` or `external`.
-    #[serde(default)]
-    pub method: Option<String>,
-    /// The variable, for one from the shell's environment.
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub status: Option<ConnectionStatus>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct ConnectionStatus {
-    #[serde(default)]
-    pub status: String,
-    #[serde(default)]
-    pub message: String,
-}
-
-/// One account the engine or the coding agents' bridge lists (`…/api/integration`).
+/// One account the engine or the coding agents' bridge lists (`…/api/integration`): its id and
+/// its name. How it's signed in is the box's to say (`state`, `line`), never read here.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Integration {
     pub id: String,
     pub name: String,
-    #[serde(default)]
-    pub connections: Vec<Connection>,
-    #[serde(default)]
-    pub metadata: Option<Value>,
 }
 
-impl Integration {
-    pub fn connected(&self) -> bool {
-        !self.connections.is_empty()
-    }
+/// How an account stands, as the box says (`state`): the fact its line words. One this client
+/// doesn't know reads as not signed in (PROTOCOL.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum State {
+    SignedIn,
+    /// Its sign-in ended: signed in again, it works.
+    Ended,
+    /// A coding agent's program isn't on the computer.
+    NotInstalled,
+    /// The agent couldn't say just now.
+    Unchecked,
+    /// The sign-in in use says something's wrong, in its own words (the line).
+    Problem,
+    #[default]
+    #[serde(other)]
+    SignedOut,
+}
 
-    fn meta(&self, key: &str) -> Option<&Value> {
-        self.metadata.as_ref().and_then(|metadata| metadata.get(key))
-    }
-
-    fn flag(&self, key: &str) -> bool {
-        self.meta(key).and_then(Value::as_bool).unwrap_or(false)
-    }
-
-    /// A coding agent's program isn't installed on this computer (`metadata.installed: false`).
-    pub fn needs_install(&self) -> bool {
-        self.meta("installed").and_then(Value::as_bool) == Some(false)
-    }
-
-    /// The installer the bridge would run, as its maker gives it.
-    pub fn install_command(&self) -> Option<&str> {
-        self.meta("install").and_then(Value::as_str)
-    }
-
-    /// Its maker ended the sign-in (`metadata.signInEnded`).
-    pub fn sign_in_ended(&self) -> bool {
-        self.flag("signInEnded")
-    }
-
-    /// A coding agent that can be signed out of from here (`metadata.signsOut`).
-    pub fn signs_out(&self) -> bool {
-        self.flag("signsOut")
-    }
-
-    /// An account you added beside an agent's own sign-in (`metadata.accountID`).
-    pub fn added(&self) -> bool {
-        self.meta("accountID").and_then(Value::as_str).is_some()
-    }
-
-    /// The agent couldn't say just now whether it's signed in (`metadata.unchecked`).
-    pub fn unchecked(&self) -> bool {
-        self.flag("unchecked")
-    }
-
-    /// Its program's version, as the bridge reads it.
-    pub fn version(&self) -> Option<&str> {
-        self.meta("version").and_then(Value::as_str)
+impl State {
+    /// Whether it needs you: drawn as a warning.
+    pub fn needs_you(self) -> bool {
+        matches!(self, State::Ended | State::Problem)
     }
 }
 
-/// An account as Accounts draws it: the engine's or the bridge's listing, the box's ways in, and
-/// its mark.
+/// What a client asks before it does an action, in the box's words.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Confirm {
+    pub title: String,
+    pub message: String,
+    /// The button that goes ahead.
+    pub label: String,
+}
+
+/// Something that can be done with an account now, as the box says: which, its button's words,
+/// its confirm where it asks first, and whether it only works on the box's computer.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Action {
+    /// `signIn`, `signInAgain`, `addAnother`, `disconnect`, `install`, `update`, `signOut`,
+    /// `rename`, `remove`.
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub confirm: Option<Confirm>,
+    #[serde(default)]
+    pub here: bool,
+}
+
+impl Action {
+    /// Whether a client offers it: one that only works on the box's computer, only where the
+    /// client runs there (`here`).
+    pub fn offered(&self, here: bool) -> bool {
+        here || !self.here
+    }
+
+    /// Whether it starts a sign-in from the account's ways in.
+    pub fn signs_in(&self) -> bool {
+        matches!(self.id.as_str(), "signIn" | "signInAgain" | "addAnother")
+    }
+}
+
+/// An account as Accounts draws it: the engine's or the bridge's listing, and what the box says
+/// of it (`kuvo/sign-in/accounts`): its ways in, its mark, how it stands, its line and its actions.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AccountEntry {
     pub side: Side,
@@ -217,22 +203,13 @@ pub struct AccountEntry {
     /// Its mark, by the plan limits' service ids (`claude`, `copilot`…), as the box says; none for
     /// one with no mark, drawn by its name's first letter.
     pub service: Option<String>,
-    /// The box's ways in (`kuvo/sign-in/accounts`); empty: none to offer, so no Sign In.
+    /// The box's ways in, for the sign-in sheet.
     pub ways: Ways,
-    /// The engine says its sign-in in use ended (`kuvo/accounts/ended`).
-    pub ended: bool,
-}
-
-impl AccountEntry {
-    /// Whether it can be signed in to from here.
-    pub fn offers_sign_in(&self) -> bool {
-        !self.ways.methods.is_empty()
-    }
-
-    /// Whether its sign-in ended, by the engine's word or the agent's.
-    pub fn sign_in_ended(&self) -> bool {
-        self.ended || self.integration.sign_in_ended()
-    }
+    pub state: State,
+    /// The line under its name.
+    pub line: String,
+    /// What can be done with it now, in the box's order.
+    pub actions: Vec<Action>,
 }
 
 /// Every account on this box, as Accounts lists them.
@@ -246,9 +223,6 @@ pub struct Accounts {
     /// Why the coding agents' bridge, or the engine, couldn't list its accounts just now (`503`).
     pub agents_down: Option<String>,
     pub engine_down: Option<String>,
-    /// The box couldn't say which sign-ins ended just now (`503`): none is marked, and a client
-    /// keeps what it last read.
-    pub ended_unknown: bool,
 }
 
 /// A sign-in under way, as the engine or the bridge started it.
@@ -330,7 +304,7 @@ struct Data<T> {
 
 impl BoxClient {
     /// One side's accounts, with the box's ways in.
-    fn side_accounts(&self, side: Side, ended: &[String]) -> Result<Vec<AccountEntry>> {
+    fn side_accounts(&self, side: Side) -> Result<Vec<AccountEntry>> {
         let listed_here: Data<Vec<Value>> = self.get(&format!("{}/integration", side.api()))?;
         let integrations: Vec<Integration> = listed_here.data.into_iter().filter_map(|value| serde_json::from_value(value).ok()).collect();
         #[derive(Deserialize)]
@@ -343,6 +317,12 @@ impl BoxClient {
             listed: bool,
             #[serde(default)]
             service: Option<String>,
+            #[serde(default)]
+            state: State,
+            #[serde(default)]
+            line: String,
+            #[serde(default, deserialize_with = "readable")]
+            actions: Vec<Action>,
         }
         #[derive(Deserialize)]
         struct Answer {
@@ -354,38 +334,27 @@ impl BoxClient {
             Side::Agents => "kuvo/sign-in/accounts?agents=1",
         };
         let ways: Vec<Entry> = self.get::<Answer>(route).map(|answer| answer.accounts)?;
-        // Those the box says Accounts lists (`listed`), each with its ways in and its mark.
+        // Those the box says Accounts lists (`listed`), each as the box says it.
         Ok(integrations
             .into_iter()
             .filter_map(|integration| {
                 let entry = ways.iter().find(|entry| entry.id == integration.id).filter(|entry| entry.listed)?;
-                let ended = ended.contains(&integration.id);
-                Some(AccountEntry { side, service: entry.service.clone(), ways: entry.ways.clone(), integration, ended })
+                Some(AccountEntry { side, service: entry.service.clone(), ways: entry.ways.clone(), state: entry.state, line: entry.line.clone(), actions: entry.actions.clone(), integration })
             })
             .collect())
     }
 
     /// Every account on this box: the coding agents' (where their bridge runs) and the engine's.
     pub fn sign_in_accounts(&self) -> Result<Accounts> {
-        #[derive(Deserialize)]
-        struct Ended {
-            #[serde(default)]
-            providers: Vec<String>,
-        }
-        let (ended, ended_unknown) = match self.get::<Ended>("kuvo/accounts/ended") {
-            Ok(ended) => (ended.providers, false),
-            Err(Error::Refused(refusal)) if refusal.status == 503 => (Vec::new(), true),
-            Err(error) => return Err(error),
-        };
         // Either side not running (503) leaves its accounts out, saying why; the other's stay.
-        let side = |side: Side| match self.side_accounts(side, &ended) {
+        let side = |side: Side| match self.side_accounts(side) {
             Ok(accounts) => Ok((accounts, None)),
             Err(Error::Refused(refusal)) if refusal.status == 503 => Ok((Vec::new(), Some(refusal.message))),
             Err(error) => Err(error),
         };
         let (engine, engine_down) = side(Side::Engine)?;
         let (agents, agents_down) = side(Side::Agents)?;
-        Ok(Accounts { agents, engine, agents_down, engine_down, ended_unknown })
+        Ok(Accounts { agents, engine, agents_down, engine_down })
     }
 
     /// An account's ways in, as the box offers them now.
@@ -512,6 +481,28 @@ mod tests {
             let attempt: Attempt = serde_json::from_value(started).unwrap();
             assert_eq!(attempt.user_code.as_deref(), case.get("userCode").and_then(Value::as_str), "{}", case["about"]);
         }
+    }
+
+    /// How an account stands and what can be done with it, read as `Vectors/sign-in.json`'s
+    /// `states` record the box saying them: every state and action there has a name here, and a
+    /// confirm's words come whole.
+    #[test]
+    fn an_accounts_state_and_actions_read_as_the_shared_vectors_say_them() {
+        let vectors: Value = serde_json::from_str(include_str!("../../../protocol/vectors/sign-in.json")).unwrap();
+        let cases = vectors["states"].as_array().unwrap();
+        assert!(cases.len() >= 41);
+        for case in cases {
+            let state: State = serde_json::from_value(case["state"].clone()).unwrap();
+            assert_eq!(state == State::SignedOut, case["state"] == "signedOut", "{}", case["about"]);
+            let actions: Vec<Action> = serde_json::from_value(case["actions"].clone()).unwrap();
+            for (action, said) in actions.iter().zip(case["actions"].as_array().unwrap()) {
+                assert_eq!(action.label, said["label"].as_str().unwrap());
+                assert_eq!(action.here, said["here"] == json!(true), "{}", case["about"]);
+                assert_eq!(action.confirm.as_ref().map(|confirm| (confirm.title.as_str(), confirm.message.as_str(), confirm.label.as_str())), said.get("confirm").map(|confirm| (confirm["title"].as_str().unwrap(), confirm["message"].as_str().unwrap(), confirm["label"].as_str().unwrap())));
+            }
+        }
+        // A state a newer box names reads as not signed in.
+        assert_eq!(serde_json::from_value::<State>(json!("somethingNew")).unwrap(), State::SignedOut);
     }
 
     #[test]

@@ -11,9 +11,12 @@ import type { Target } from "../../shared/records";
 import { pause } from "../../shared/wait";
 import { call } from "../engine/client";
 import { planHides } from "../work/model-rule";
+import { readEndedSignIns } from "./accounts";
 import { agentsDown } from "./agents-down";
 import { engineDown } from "./engine";
 import type { AnswerPiece, RouteContext } from "../server/context";
+import { plainName } from "../../shared/text";
+import { accountState } from "./sign-in-state";
 
 export const SIGN_IN_METHODS_ROUTE = "kuvo/sign-in/methods";
 export const SIGN_IN_STATUS_ROUTE = "kuvo/sign-in/status";
@@ -207,7 +210,7 @@ function placeOf(query: URLSearchParams, context: RouteContext): { target: Targe
 const MOST_WAIT = 25;
 
 /** `GET kuvo/sign-in/accounts[?agents=1]`: every account the engine (or the bridge) lists, with its
- * ways in. */
+ * ways in, how it stands and what can be done with it (sign-in-state.ts). */
 async function* accountsRoute(context: RouteContext, query: URLSearchParams): AsyncGenerator<AnswerPiece> {
   const { signal, json } = context;
   const place = placeOf(query, context);
@@ -217,10 +220,14 @@ async function* accountsRoute(context: RouteContext, query: URLSearchParams): As
     const listed = await call(place.target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, deadline]) : deadline);
     const accounts = (Array.isArray(listed) ? listed : []).filter((each): each is ListedAccount => typeof (each as ListedAccount | null)?.id === "string");
     const agents = query.get("agents") === "1";
+    // The engine's plans whose saved sign-in runs were refused with, as the box keeps them.
+    const ended = agents ? new Map<string, string>() : readEndedSignIns();
+    const computer = plainName(context.info.name) || "this computer";
     return yield* json(200, {
       accounts: accounts.map(account => {
         const service = serviceOf(account, agents);
-        return { id: account.id as string, ...signInMethods(account), ...accountKind(account, agents), ...(service ? { service } : {}) };
+        const offered = signInMethods(account);
+        return { id: account.id as string, ...offered, ...accountKind(account, agents), ...(service ? { service } : {}), ...accountState(account, offered, { agents, ended: ended.get(account.id as string), computer }) };
       }),
     });
   } catch (error) {

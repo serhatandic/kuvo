@@ -72,6 +72,56 @@ struct SignInMethodsTests {
         #expect(!SignInAccounts.none.lists("anthropic"))
     }
 
+    /// How an account stands and what can be done with it are the box's word (`state`, `line`,
+    /// `connections`, `actions`), as it's recorded for each case the box is held to: they come
+    /// through whole, a confirm with its words, and nothing is worked out here.
+    @Test func anAccountsStateLineAndActionsAreTheBoxsWord() throws {
+        let cases = try #require(try Self.vectors()["states"] as? [[String: Any]])
+        #expect(cases.count >= 41)
+        for each in cases {
+            let id = try #require((each["account"] as? [String: Any])?["id"] as? String)
+            let offered = try #require(each["offered"] as? [String: Any])
+            var answer = offered.merging(["id": id, "kind": "provider", "listed": true, "state": each["state"]!, "line": each["line"]!, "actions": each["actions"]!, "connections": each["connections"]!]) { $1 }
+            if let added = each["added"] { answer["added"] = added }
+            let read = try JSONDecoder().decode(SignInAccounts.self, from: JSONSerialization.data(withJSONObject: ["accounts": [answer]]))
+            let said = try #require(read.said[id], "\(each["about"]!)")
+            #expect(said.state.rawValue == each["state"] as? String, "\(each["about"]!)")
+            #expect(read.state(id) == said.state)
+            #expect(said.line == each["line"] as? String)
+            #expect(said.added == (each["added"] as? Bool ?? false), "\(each["about"]!)")
+            let actions = try #require(each["actions"] as? [[String: Any]])
+            #expect(said.actions.map(\.id) == actions.map { $0["id"] as? String }, "\(each["about"]!)")
+            #expect(said.actions.map(\.label) == actions.map { $0["label"] as? String })
+            #expect(said.actions.map(\.here) == actions.map { $0["here"] as? Bool ?? false })
+            for (action, box) in zip(said.actions, actions) {
+                let confirm = box["confirm"] as? [String: String]
+                #expect(action.confirm?.title == confirm?["title"] && action.confirm?.message == confirm?["message"] && action.confirm?.label == confirm?["label"])
+                #expect(said.action(action.id) == action)
+            }
+            let connections = try #require(each["connections"] as? [[String: Any]])
+            #expect(said.connections.map(\.line) == connections.map { $0["line"] as? String })
+            #expect(said.connections.map(\.state.rawValue) == connections.map { $0["state"] as? String })
+            // Each of the engine's sign-ins finds the box's word for it: by its id, else its place.
+            for (index, connection) in connections.enumerated() {
+                #expect(said.connection(id: connection["id"] as? String, at: index)?.line == connection["line"] as? String)
+            }
+            #expect(said.signIn?.id == actions.first { ["signIn", "signInAgain"].contains($0["id"] as? String) }?["id"] as? String)
+        }
+        // A state or an action a newer box names: not signed in, and the action as it comes, for a
+        // client to leave out. An account its box said nothing of has none.
+        let newer = try JSONDecoder().decode(SignInAccounts.self, from: Data(#"{"accounts":[{"id":"acme","methods":[],"environment":[],"hint":"Connect","state":"somethingNew","line":"A newer line","actions":[{"id":"somethingNew","label":"A Newer Thing"}],"connections":[]}]}"#.utf8))
+        #expect(newer.state("acme") == .signedOut && newer.said["acme"]?.line == "A newer line" && newer.said["acme"]?.actions.map(\.id) == ["somethingNew"])
+        #expect(newer.said["acme"]?.signIn == nil)
+        // An action this client can't read is left out; the account and its other actions stay.
+        let partly = try JSONDecoder().decode(SignInAccounts.self, from: Data(#"{"accounts":[{"id":"acme","methods":[],"environment":[],"hint":"Connect","state":"signedIn","line":"API key","actions":[{"id":"odd"},{"id":"disconnect","label":"Disconnect"}],"connections":[{"state":"signedIn"},{"state":"signedIn","line":"API key"}]}]}"#.utf8))
+        #expect(partly.said["acme"]?.actions.map(\.id) == ["disconnect"] && partly.state("acme") == .signedIn)
+        #expect(partly.said["acme"]?.connections.map(\.line) == ["API key"])
+        // (With one left out, a sign-in's place no longer says which it is: none is taken for another.)
+        #expect(partly.said["acme"]?.connection(id: nil, at: 0) == nil)
+        #expect(SignInAccounts.none.said["acme"] == nil && SignInAccounts.none.state("acme") == .signedOut)
+        #expect(AccountSaid.State.ended.needsYou && AccountSaid.State.problem.needsYou && !AccountSaid.State.signedIn.needsYou)
+    }
+
     @Test func aFailedSignInsWordsComeWithItsStatus() throws {
         let json = #"{"status":"failed","message":"access_denied","failure":"The sign-in was turned down on its page. Try again to sign in."}"#
         let status = try JSONDecoder().decode(SignInStatus.self, from: Data(json.utf8))

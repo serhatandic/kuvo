@@ -117,6 +117,50 @@ test("every account's ways in, for Accounts' Sign In buttons and the way in each
   assert.equal((await answer("GET", "kuvo/sign-in/accounts?agents=1", handlerOn(() => null))).status, 503);
 });
 
+test("how each account stands and what can be done with it, in the box's words: a sign-in the box saw end says so, with Sign In Again, until it's signed in again", async () => {
+  // Not signed in: its line names its way in, and Sign In. A coding agent's, with its sign-in's
+  // page coming back to its computer: Sign In only there.
+  const before = await answer("GET", "kuvo/sign-in/accounts");
+  assert.deepEqual(before.json.accounts.map(({ id, state, line, actions, connections }) => ({ id, state, line, actions, connections })).at(-1), {
+    id: "github-copilot", state: "signedOut", line: "Sign in with GitHub", actions: [{ id: "signIn", label: "Sign In" }], connections: [],
+  });
+  const agents = await answer("GET", "kuvo/sign-in/accounts?agents=1");
+  assert.deepEqual(agents.json.accounts.map(({ state, line, actions }) => ({ state, line, actions })), [{ state: "signedOut", line: "Not signed in", actions: [{ id: "signIn", label: "Sign In", here: true }] }]);
+
+  // Signed in with two accounts, the first in use.
+  const signedIn = await standIn(url => {
+    if (url === "/api/integration") return [{
+      id: "github-copilot", name: "GitHub Copilot", methods: [{ type: "oauth", id: "device", label: "Sign in with GitHub" }],
+      connections: [{ type: "credential", id: "cred_1", label: "you@example.com", method: "oauth" }, { type: "credential", id: "cred_2", label: "work@example.com", method: "oauth" }],
+    }];
+    if (url === "/api/provider") return [];
+    if (url === "/api/session/ses_1") return { id: "ses_1", model: { providerID: "github-copilot", id: "gpt-5" } };
+    return undefined;
+  });
+  const on = link.engineHandler(() => ({ pid: process.pid, ...signedIn, version: "2.0.32" }), { name: "Studio" }, () => null);
+  const copilot = async () => (await answer("GET", "kuvo/sign-in/accounts", on)).json.accounts[0];
+  const disconnect = { id: "disconnect", label: "Disconnect", confirm: { title: "Disconnect GitHub Copilot?", message: "Its sign-ins and keys go from Studio, and its models leave the model picker there. Sessions on its models stop until you sign in again.", label: "Disconnect" } };
+  const another = { id: "addAnother", label: "Add Another Account" };
+  let said = await copilot();
+  assert.deepEqual({ state: said.state, line: said.line, actions: said.actions, connections: said.connections }, {
+    state: "signedIn", line: "Signed in as you@example.com · 2 accounts", actions: [another, disconnect],
+    connections: [{ id: "cred_1", state: "signedIn", line: "you@example.com" }, { id: "cred_2", state: "signedIn", line: "work@example.com" }],
+  });
+
+  // A run on it is refused, and it couldn't be renewed: its sign-in ended, as the box keeps it.
+  await link.noteSignIn({ type: "session.execution.failed", data: { sessionID: "ses_1", error: { type: "provider.auth", message: "Request failed" } } }, signedIn);
+  said = await copilot();
+  assert.deepEqual({ state: said.state, line: said.line, actions: said.actions, connections: said.connections.map(each => each.state) }, {
+    state: "ended", line: "Sign-in ended", actions: [{ id: "signInAgain", label: "Sign In Again" }, another, disconnect], connections: ["ended", "signedIn"],
+  });
+  // The same as `kuvo/accounts/ended` says.
+  assert.deepEqual((await answer("GET", "kuvo/accounts/ended", on)).json, { providers: ["github-copilot"] });
+
+  // A step on its model ends well: it works after all.
+  await link.noteSignIn({ type: "session.step.ended", data: { sessionID: "ses_1" } }, signedIn);
+  assert.equal((await copilot()).state, "signedIn");
+});
+
 test("how a sign-in is going, as the engine says, with what to say once it ended without signing in", async () => {
   const status = async attempt => (await answer("GET", `kuvo/sign-in/status?integration=github-copilot&attempt=${attempt}`)).json;
   // Still going: as the engine says it, the page that came later too.
@@ -164,4 +208,5 @@ test("asked without saying which, or to change something: refused", async () => 
 test("kuvo/info says the box answers them", async () => {
   const info = await answer("GET", "kuvo/info");
   assert.ok(info.json.features.includes("sign-in.methods"));
+  assert.ok(info.json.features.includes("sign-in.accounts.state"));
 });

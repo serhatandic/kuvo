@@ -634,9 +634,9 @@ export class CodexAgent implements Agent {
         account = { installed: true, signedIn: false, message: "Sign in to Codex with ChatGPT or an OpenAI API key." }
       } else if (info.type === "chatgpt") {
         const plan = info.planType ? `ChatGPT ${String(info.planType).charAt(0).toUpperCase()}${String(info.planType).slice(1)}` : "ChatGPT"
-        account = { installed: true, signedIn: true, label: [info.email, plan].filter(Boolean).join(" · ") }
+        account = { installed: true, signedIn: true, label: [info.email, plan].filter(Boolean).join(" · "), ...(info.email ? {} : { what: true }) }
       } else {
-        account = { installed: true, signedIn: true, label: info.type === "apiKey" ? "OpenAI API key" : String(info.type) }
+        account = { installed: true, signedIn: true, label: info.type === "apiKey" ? "OpenAI API key" : String(info.type), what: true }
       }
       return account
     })

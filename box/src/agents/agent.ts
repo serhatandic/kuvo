@@ -23,6 +23,8 @@ export interface Account {
   signedIn: boolean
   /** Who's signed in, as the agent says: "you@example.com", "Max plan". */
   label?: string
+  /** The label says what it's signed in with ("OpenAI API key", "Google account"), not who. */
+  what?: boolean
   /** What's missing, in words: how to install it, or that it needs a sign-in. */
   message?: string
   /** It was signed in, and its maker ended the sign-in (it's to be signed in again). */

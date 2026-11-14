@@ -185,7 +185,7 @@ export async function integration(agent: Agent, fresh = false, auto?: Auto): Pro
     },
     methods: agent.methods(),
     connections: account.signedIn
-      ? [{ type: "agent", label: account.label, method: "oauth", status: { status: "connected", message: account.label ? `Signed in as ${account.label}` : account.unchecked ? "Couldn't check the sign-in just now" : "Signed in" } }]
+      ? [{ type: "agent", label: account.label, method: "oauth", ...(account.what && account.label ? { what: true as const } : {}), status: { status: "connected", message: account.label ? `Signed in as ${account.label}` : account.unchecked ? "Couldn't check the sign-in just now" : "Signed in" } }]
       : [],
   }
 }

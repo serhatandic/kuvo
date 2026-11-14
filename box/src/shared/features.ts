@@ -148,6 +148,7 @@ export const FEATURES = [
   "setup.mainOnly",
   "shell.stop",
   "sign-in.accounts.kinds",
+  "sign-in.accounts.state",
   "sign-in.codes",
   "sign-in.methods",
   "sign-in.return",

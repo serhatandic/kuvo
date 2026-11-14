@@ -29,6 +29,8 @@ public enum BoxGate {
     /// Then the desktop client's Bots area, which draws what the box says of a delete, of the bots
     /// on your other computers and of a model's effort, and writes none of it: `bots.deletes`,
     /// `bots.effort` and `bots.elsewhere`.
+    /// Then `sign-in.accounts.state` (#668): Accounts draws each account's state, line and actions
+    /// as the box says them, and no client decides when Disconnect, Sign In Again or Install show.
     public static let required: [String] = [
         "agent-tools.own",
         "bots.deletes",
@@ -65,6 +67,7 @@ public enum BoxGate {
         "sessions.needsYou",
         "sessions.start.empty",
         "sign-in.accounts.kinds",
+        "sign-in.accounts.state",
         "sign-in.codes",
         "typed",
         "usage.notices",

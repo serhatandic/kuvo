@@ -152,7 +152,9 @@ describe("an agent's sign-in that can't be checked just now", () => {
     const box = bridge([agent])
 
     claude("in")
-    expect((await box.account(agent)).connections[0]?.label).toBe("ada@example.com · Max plan")
+    // (Someone's sign-in isn't marked as a thing it's signed in with.)
+    expect((await box.account(agent)).connections[0]).toMatchObject({ label: "ada@example.com · Max plan" })
+    expect((await box.account(agent)).connections[0]).not.toHaveProperty("what")
     expect(await box.models(agent)).not.toEqual([])
 
     // Killed as it checks, or saying nothing it can go by.
@@ -217,7 +219,8 @@ describe("an agent's sign-in that can't be checked just now", () => {
     const box = bridge([agent])
 
     grok("in")
-    expect((await box.account(agent)).connections[0]?.label).toBe("grok.com")
+    // (What it's signed in with, not who: marked so, for the box's "Signed in with grok.com".)
+    expect((await box.account(agent)).connections[0]).toMatchObject({ label: "grok.com", what: true })
     expect(await box.models(agent)).toEqual(["grok-4.7", "grok-4.6"])
 
     for (const mode of ["killed", "silent"]) {
@@ -720,7 +723,7 @@ read again
       const sign = await agent.signIn("claudeai", { remote: true })
       await sign.complete!("good#state")
       for (let waited = 0; waited < 10_000 && sign.status().status === "pending"; waited += 50) await Bun.sleep(50)
-      expect((await bridge([agent]).account(agent)).connections[0]?.label).toBe("Claude plan")
+      expect((await bridge([agent]).account(agent)).connections[0]).toMatchObject({ label: "Claude plan", what: true })
     } finally {
       ClaudeAgent.keychain = keychain
     }

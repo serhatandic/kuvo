@@ -187,6 +187,12 @@ impl StandIn {
         self.state().settings.set_sandbox(sandbox);
     }
 
+    /// What its box says of an account from now on (`state`, `line`, `actions`), whatever the
+    /// account is: for a client drawing what a box says, a newer box's words among them.
+    pub fn set_account_said(&self, account: &str, said: Value) {
+        self.state().settings.set_account_said(account, said);
+    }
+
     /// Whether its bots can be read (`kuvo/bots` answers `503` while not).
     pub fn bots_readable(&self, readable: bool) {
         self.state().bots.down = !readable;
@@ -225,11 +231,6 @@ impl StandIn {
     /// Sign-ins under way are forgotten, as by an engine that started over.
     pub fn forget_sign_ins(&self) {
         self.state().settings.forget_sign_ins();
-    }
-
-    /// Whether it can say which sign-ins ended (`kuvo/accounts/ended` answers `503` while not).
-    pub fn ended_readable(&self, readable: bool) {
-        self.state().settings.ended_unreadable = !readable;
     }
 
     /// Whether the coding agents' bridge runs (it answers `503` while not).

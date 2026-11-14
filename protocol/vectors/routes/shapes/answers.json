@@ -4143,6 +4143,9 @@
             "literal": "sign-in.accounts.kinds"
            },
            {
+            "literal": "sign-in.accounts.state"
+           },
+           {
             "literal": "sign-in.codes"
            },
            {
@@ -4720,6 +4723,9 @@
            },
            {
             "literal": "sign-in.accounts.kinds"
+           },
+           {
+            "literal": "sign-in.accounts.state"
            },
            {
             "literal": "sign-in.codes"
@@ -9312,7 +9318,102 @@
           ]
          },
          "listed": "bool",
-         "service?": "string"
+         "service?": "string",
+         "state": {
+          "oneOf": [
+           {
+            "literal": "signedIn"
+           },
+           {
+            "literal": "signedOut"
+           },
+           {
+            "literal": "ended"
+           },
+           {
+            "literal": "notInstalled"
+           },
+           {
+            "literal": "unchecked"
+           },
+           {
+            "literal": "problem"
+           }
+          ]
+         },
+         "line": "string",
+         "actions": {
+          "list": {
+           "object": {
+            "id": {
+             "oneOf": [
+              {
+               "literal": "signIn"
+              },
+              {
+               "literal": "signInAgain"
+              },
+              {
+               "literal": "addAnother"
+              },
+              {
+               "literal": "disconnect"
+              },
+              {
+               "literal": "install"
+              },
+              {
+               "literal": "update"
+              },
+              {
+               "literal": "signOut"
+              },
+              {
+               "literal": "rename"
+              },
+              {
+               "literal": "remove"
+              }
+             ]
+            },
+            "label": "string",
+            "confirm?": {
+             "object": {
+              "title": "string",
+              "message": "string",
+              "label": "string"
+             }
+            },
+            "here?": {
+             "literal": true
+            }
+           }
+          }
+         },
+         "connections": {
+          "list": {
+           "object": {
+            "id?": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "signedIn"
+              },
+              {
+               "literal": "ended"
+              },
+              {
+               "literal": "problem"
+              }
+             ]
+            },
+            "line": "string"
+           }
+          }
+         },
+         "added?": {
+          "literal": true
+         }
         }
        }
       }
