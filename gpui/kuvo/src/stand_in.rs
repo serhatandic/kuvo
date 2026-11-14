@@ -187,8 +187,7 @@ impl StandIn {
     /// `bot` moves to `computer`: it no longer lists here, and a change to it is held for there.
     pub fn move_bot(&self, bot: &str, computer: &str) {
         let mut state = self.state();
-        let now = state.made.unwrap_or_else(now_ms);
-        state.bots.move_away(bot, computer, now);
+        state.bots.move_away(bot, computer);
         state.sync_bots();
     }
 

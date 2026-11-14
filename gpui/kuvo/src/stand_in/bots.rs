@@ -70,8 +70,8 @@ impl Bots {
             held: vec![json!({ "bot": "bot_scout", "box": "key_studio-mini", "computer": "studio-mini", "name": "Scout", "look": { "color": "amber", "shape": "gem", "face": "calm" }, "change": { "name": "Scout", "job": { "line": "Watches CI", "details": "" } }, "since": now - 2.0 * HOUR })],
             refused: Vec::new(),
             elsewhere: vec![
-                elsewhere("bot_scout", "ses_scout", "Scout", json!({ "color": "amber", "shape": "gem", "face": "calm" }), "Watches the checks", ("studio-mini", "mac"), now),
-                elsewhere("bot_wren", "ses_wren", "Wren", json!({ "color": "mint", "shape": "bloom", "face": "calm" }), "Builds the nightly", ("lab", "machine"), now),
+                elsewhere("bot_scout", "ses_scout", "Scout", json!({ "color": "amber", "shape": "gem", "face": "calm" }), "Watches the checks", ("studio-mini", "mac")),
+                elsewhere("bot_wren", "ses_wren", "Wren", json!({ "color": "mint", "shape": "bloom", "face": "calm" }), "Builds the nightly", ("lab", "machine")),
             ],
             made: HashMap::new(),
             next: 1,
@@ -88,11 +88,11 @@ impl Bots {
 
     /// `bot` moves to `computer` (a Mac): it no longer lists here but there, as that computer
     /// tells this box, and a change to it is held for there.
-    pub fn move_away(&mut self, bot: &str, computer: &str, now: f64) {
+    pub fn move_away(&mut self, bot: &str, computer: &str) {
         let Some(at) = self.bots.iter().position(|each| each["id"] == json!(bot)) else { return };
         let moved = self.bots.remove(at);
         self.elsewhere.retain(|each| each["id"] != json!(bot));
-        self.elsewhere.push(elsewhere(bot, moved["session"].as_str().unwrap_or_default(), moved["name"].as_str().unwrap_or_default(), moved["look"].clone(), moved["job"].as_str().unwrap_or_default(), (computer, "mac"), now));
+        self.elsewhere.push(elsewhere(bot, moved["session"].as_str().unwrap_or_default(), moved["name"].as_str().unwrap_or_default(), moved["look"].clone(), moved["job"].as_str().unwrap_or_default(), (computer, "mac")));
     }
 
     /// A bot that lives on another computer, as that computer last told this box.
@@ -314,7 +314,7 @@ fn unknown(body: &Value, projects: &[(String, String)]) -> Option<(u16, Value)> 
 }
 
 /// A bot on another computer, as that computer last told this box.
-fn elsewhere(id: &str, session: &str, name: &str, look: Value, job: &str, (computer, kind): (&str, &str), now: f64) -> Value {
+fn elsewhere(id: &str, session: &str, name: &str, look: Value, job: &str, (computer, kind): (&str, &str)) -> Value {
     let mut bot = json!({ "id": id, "session": session, "name": name, "look": look, "box": format!("key_{computer}"), "computer": computer, "kind": kind, "deletes": deletes(computer, kind == "mac", None) });
     if !job.is_empty() {
         bot["job"] = json!(job);
