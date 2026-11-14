@@ -190,3 +190,10 @@ test("relay pictures are skipped while host.unsent reports buffered connection t
   await h.heard.until(m => m.binary);
   assert.equal(h.heard.all.filter(m => m.binary).length, 1);
 });
+
+test("Mac-kind boxes do not advertise a keeper live view before their own browser is enabled", async () => {
+  const { macFeatures } = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+  assert.equal(macFeatures().includes("browser.view"), false);
+  assert.equal(macFeatures().includes("browser"), false);
+  assert.equal(macFeatures().includes("browser.data"), true);
+});

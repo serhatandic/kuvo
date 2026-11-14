@@ -18,6 +18,7 @@ export const MAC_FEATURES = [
  * sets up its own browser (a Mac's is the app's), and says which version its pieces run. One a line, in order. */
 export const MACHINE_FEATURES = [
   "browser",
+  "browser.view",
   "engine.start",
   "pieces",
   "update",

@@ -4324,6 +4324,7 @@ var MAC_FEATURES = [
 ];
 var MACHINE_FEATURES = [
   "browser",
+  "browser.view",
   "engine.start",
   "pieces",
   "update"
@@ -42915,7 +42916,7 @@ import fs138 from "node:fs";
 import path145 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "bf7cb99d4f49";
+var BRIDGE_VERSION = "677e0584240e";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";

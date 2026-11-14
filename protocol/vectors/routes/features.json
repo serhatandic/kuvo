@@ -52,7 +52,6 @@
           "box.update",
           "branch",
           "browser.data",
-          "browser.view",
           "btw",
           "btw.threads",
           "claude-code",
@@ -175,6 +174,7 @@
          ],
          "<excludes>": [
           "browser",
+          "browser.view",
           "engine.start",
           "pieces",
           "update"
