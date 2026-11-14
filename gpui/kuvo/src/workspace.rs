@@ -16,12 +16,13 @@ use kuvo_box::follow::{Follow, ListUpdate, Timing};
 use kuvo_box::models::StartIn;
 use kuvo_box::search::{Found, SEARCHED_FROM};
 use kuvo_box::sessions::project_name;
-use kuvo_box::areas::Waiting;
+use kuvo_box::areas::{Computer, Waiting};
+use kuvo_box::follow::Followed;
 use kuvo_box::{BoxClient, BoxInfo, Listing, Where};
 use kuvo_ui::{ActiveTheme, StyledType, TextField, TextFieldEvent, Theme, TypeSize, theme::radius};
 
 use crate::area::{Area, Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowQueue, ShowSessions, ShowSettings, ShowUsage};
-use crate::areas::{AreaView, Picked};
+use crate::areas::{AreaView, Picked, Reading};
 use crate::composer::{Composer, ComposerEvent, Target};
 use crate::conversation::ConversationView;
 use crate::rail::{self, Rings};
@@ -123,13 +124,19 @@ pub struct Workspace {
     area: Area,
     areas: Vec<(Area, Entity<AreaView>)>,
     rings: Entity<Rings>,
-    /// What waits on you in each area, as the box says it; `waiting_said` turns false once a box
-    /// says it doesn't say (one from before #711), so it isn't asked again.
-    waiting: Option<Waiting>,
-    waiting_said: bool,
+    /// How many things wait on you in each area, as the box counts them (`kuvo/waiting`): followed
+    /// where its box streams, else read again as its session list changes.
+    waiting: Waiting,
     waiting_task: Option<Task<()>>,
     /// The list changed while a read of what waits was on its way: read once more after it.
     waiting_again: bool,
+    /// Your computers, as the box lists them (`kuvo/computers`): the title bar's switcher and the
+    /// Computers area draw them. Followed where its box streams, else read as the box is reached
+    /// and as Computers opens.
+    computers: Reading<Vec<Computer>>,
+    computers_task: Option<Task<()>>,
+    _waiting_follow: Option<Follow<Followed<Waiting>>>,
+    _computers_follow: Option<Follow<Followed<kuvo_box::areas::Computers>>>,
     /// The area's sidebar folded away by its button (a wide window), or brought out (a narrow
     /// one, where it starts folded); and whether the window was narrow when last drawn.
     folded: bool,
@@ -192,10 +199,13 @@ impl Workspace {
             area: Area::Sessions,
             areas,
             rings,
-            waiting: None,
-            waiting_said: true,
+            waiting: Waiting::default(),
             waiting_task: None,
             waiting_again: false,
+            computers: Reading::NotYet,
+            computers_task: None,
+            _waiting_follow: None,
+            _computers_follow: None,
             folded: false,
             shown_narrow: false,
             narrow: false,
@@ -224,6 +234,38 @@ impl Workspace {
                     }
                 }
             }));
+            // Where the box streams, what waits on you and your computers are followed as they
+            // change; elsewhere they're read again (as the list changes, as Computers opens).
+            if client.streams() {
+                let follow = client.follow_waiting(Timing::default());
+                let updates = follow.updates().clone();
+                workspace._waiting_follow = Some(follow);
+                workspace.tasks.push(cx.spawn(async move |this, cx| {
+                    while let Ok(update) = updates.recv().await {
+                        let read = match update {
+                            Followed::Now(waiting) => Ok(waiting),
+                            Followed::Failed(error) => Err(error),
+                        };
+                        if this.update(cx, |this, cx| this.take_waiting(read, cx)).is_err() {
+                            break;
+                        }
+                    }
+                }));
+                let follow = client.follow_computers(Timing::default());
+                let updates = follow.updates().clone();
+                workspace._computers_follow = Some(follow);
+                workspace.tasks.push(cx.spawn(async move |this, cx| {
+                    while let Ok(update) = updates.recv().await {
+                        let read = match update {
+                            Followed::Now(said) => Ok(said.computers),
+                            Followed::Failed(error) => Err(error),
+                        };
+                        if this.update(cx, |this, cx| this.take_computers(read, cx)).is_err() {
+                            break;
+                        }
+                    }
+                }));
+            }
         }
         workspace
     }
@@ -245,6 +287,7 @@ impl Workspace {
         self.take_list(update, cx);
         self.landing.update(cx, |composer, cx| composer.read_at_once(cx));
         self.rings.update(cx, |rings, cx| rings.read_at_once(cx));
+        self.read_computers(cx);
     }
 
     /// Opens `session` and reads it at once, on this thread (shots and tests, against a stand-in).
@@ -279,10 +322,13 @@ impl Workspace {
                 for (_, view) in self.areas.clone() {
                     view.update(cx, |view, cx| view.set_this_box(name.clone(), cx));
                 }
-                // Reached (perhaps updated since): what it says of waits and accounts is asked again.
-                self.waiting_said = true;
+                // Reached (perhaps updated since): what it says of its accounts is asked again, and
+                // of your computers where they aren't followed.
                 if self.live {
                     self.rings.update(cx, |rings, cx| rings.read_again(cx));
+                    if self._computers_follow.is_none() {
+                        self.read_computers(cx);
+                    }
                 }
             }
             Err(kuvo_box::Error::NeedsUpdating { .. }) => self.box_state = BoxState::Updating,
@@ -325,8 +371,10 @@ impl Workspace {
                 // The panel's folder, as the list says it now (a session opened before the list had
                 // it, a worktree's folder said later).
                 self.place_panel(cx);
-                // What waits on you may have changed with it.
-                self.read_waiting(cx);
+                // What waits on you may have changed with it: asked again where it isn't followed.
+                if self._waiting_follow.is_none() {
+                    self.read_waiting(cx);
+                }
             }
             ListUpdate::Waiting(why) => self.lists = Lists::Waiting(why),
             ListUpdate::Held { .. } => {
@@ -860,9 +908,14 @@ impl Workspace {
         &self.rings
     }
 
-    /// What waits on you in each area, once the box says it.
-    pub fn waiting(&self) -> Option<&Waiting> {
-        self.waiting.as_ref()
+    /// How many things wait on you in each area, as the box counts them.
+    pub fn waiting(&self) -> Waiting {
+        self.waiting
+    }
+
+    /// Your computers, as the box lists them.
+    pub fn computers(&self) -> &Reading<Vec<Computer>> {
+        &self.computers
     }
 
     /// An area's sidebar view (none for Sessions, which the workspace draws itself).
@@ -899,6 +952,10 @@ impl Workspace {
                     let picked = view.read(cx).selected().map(str::to_owned);
                     self.record(Nav::Area(area, picked));
                     view.update(cx, |view, cx| view.shown(cx));
+                }
+                // Computers opens on the list as it is now, where it isn't followed.
+                if area == Area::Computers && self._computers_follow.is_none() {
+                    self.read_computers(cx);
                 }
                 // The keyboard stays in the window, where the areas' keys are.
                 window.focus(&self.focus, cx);
@@ -958,11 +1015,8 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Asks the box what waits on you (unless it's said it doesn't say).
+    /// Asks the box what waits on you.
     fn read_waiting(&mut self, cx: &mut Context<Self>) {
-        if !self.waiting_said {
-            return;
-        }
         let client = self.client.clone();
         if !self.live {
             let read = client.waiting();
@@ -987,17 +1041,40 @@ impl Workspace {
         }));
     }
 
-    fn take_waiting(&mut self, read: kuvo_box::Result<Option<Waiting>>, cx: &mut Context<Self>) {
-        match read {
-            Ok(Some(waiting)) => self.waiting = Some(waiting),
-            Ok(None) => {
-                self.waiting = None;
-                self.waiting_said = false;
-            }
-            // Couldn't be read now: what was said stands until it can.
-            Err(_) => {}
+    fn take_waiting(&mut self, read: kuvo_box::Result<Waiting>, cx: &mut Context<Self>) {
+        // Couldn't be read now: what was said stands until it can.
+        if let Ok(waiting) = read
+            && self.waiting != waiting
+        {
+            self.waiting = waiting;
+            cx.notify();
         }
-        cx.notify();
+    }
+
+    /// Asks the box for your computers (in the app, on another thread; in tests and shots, at once).
+    fn read_computers(&mut self, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        if !self.live {
+            let read = client.computers();
+            self.take_computers(read, cx);
+            return;
+        }
+        self.computers_task = Some(cx.spawn(async move |this, cx| {
+            let read = cx.background_executor().spawn(async move { client.computers() }).await;
+            this.update(cx, |this, cx| this.take_computers(read, cx)).ok();
+        }));
+    }
+
+    /// What the box said of your computers: kept, and handed to the Computers area.
+    fn take_computers(&mut self, read: kuvo_box::Result<Vec<Computer>>, cx: &mut Context<Self>) {
+        let computers = areas::reading(read, &self.computers);
+        if self.computers != computers {
+            self.computers = computers.clone();
+            if let Some(view) = self.area_view(Area::Computers).cloned() {
+                view.update(cx, |view, cx| view.set_computers(computers, cx));
+            }
+            cx.notify();
+        }
     }
 
     // MARK: Back and forward

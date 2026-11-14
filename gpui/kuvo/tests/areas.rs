@@ -78,10 +78,11 @@ fn only_the_area_on_screen_asks_the_box(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (_workspace, cx) = open(cx, stand_in.clone());
     assert!(stand_in.seen_at("GET", "kuvo/bots").is_empty());
-    assert!(stand_in.seen_at("GET", "kuvo/work-queue/categories").is_empty());
-    assert!(stand_in.seen_at("GET", "kuvo/machines").is_empty());
+    assert!(stand_in.seen_at("GET", "kuvo/work-queue").is_empty());
     click(cx, "rail-queue");
-    assert_eq!(stand_in.seen_at("GET", "kuvo/work-queue/categories").len(), 1);
+    // The Work Queue's view with its counts, across your computers, at a glance.
+    let asked: Vec<String> = stand_in.seen_at("GET", "kuvo/work-queue").into_iter().map(|seen| seen.path).collect();
+    assert_eq!(asked, vec!["kuvo/work-queue?owner=all&counts=1&glance=1".to_owned()]);
     assert!(stand_in.seen_at("GET", "kuvo/bots").is_empty());
 }
 
@@ -93,7 +94,7 @@ fn control_one_to_five_switch_areas_from_anywhere_in_the_window(cx: &mut TestApp
     for (keys, expected, shown) in [
         ("ctrl-2", Area::Bots, "bot-bot_inbox"),
         ("ctrl-3", Area::Queue, "category-next"),
-        ("ctrl-4", Area::Computers, "computer-machine-devbox"),
+        ("ctrl-4", Area::Computers, "computer-key_devbox"),
         ("ctrl-5", Area::Settings, "setting-General"),
         ("ctrl-1", Area::Sessions, "session-project-ses_limits"),
     ] {
@@ -190,7 +191,7 @@ fn needs_you_lists_whats_waiting_on_you_across_projects_with_what_each_asks(cx: 
     assert!(header.top() < limits.top() && limits.top() < cms.top() && cms.top() < website.top());
     assert!(bounds(cx, "needs-ses_signup").is_none(), "one at work isn't waiting on you");
     // The rail counts them on Sessions' icon.
-    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.waiting().map(|waiting| waiting.sessions)), Some(2));
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.waiting().sessions), 2);
 
     // A click opens it, from wherever the window was.
     click(cx, "rail-bots");
@@ -211,31 +212,73 @@ fn an_answered_ask_leaves_needs_you_as_the_box_says(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(bounds(cx, "needs-ses_cms").is_none());
     assert!(bounds(cx, "needs-ses_limits").is_some());
-    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.waiting().map(|waiting| waiting.sessions)), Some(1));
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.waiting().sessions), 1);
+}
+
+/// A project's badge and spinner are the box's sums (`projects[<dir>].{asking, working}`): how
+/// many of its sessions wait on you, else (folded) whether any is at work.
+#[gpui::test]
+fn a_project_shows_the_boxs_sums_of_who_waits_and_who_works(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    assert!(bounds(cx, "project-asking-API").is_some() && bounds(cx, "project-asking-Website").is_some());
+    assert!(bounds(cx, "project-asking-Mobile").is_none());
+    // The CMS question is answered: Website has one at work and none waiting. Folded, it spins.
+    stand_in.set_facts("ses_cms", |facts| {
+        facts.as_object_mut().unwrap().remove("asked");
+    });
+    workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "project-asking-Website").is_none());
+    assert!(bounds(cx, "project-working-Website").is_none(), "open, its own session's row spins");
+    click(cx, "project-Website");
+    assert!(bounds(cx, "project-working-Website").is_some());
+    // The one at work stops to ask: it waits, and isn't counted at work.
+    stand_in.set_facts("ses_signup", |facts| facts["asked"] = serde_json::json!(NOW));
+    workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "project-asking-Website").is_some() && bounds(cx, "project-working-Website").is_none());
+}
+
+/// A bot's row is drawn from what the box says it's doing now (`now`): a count where it waits on
+/// you, a spinner where it only works, neither where it does nothing.
+#[gpui::test]
+fn a_bots_row_shows_what_the_box_says_its_doing_now(cx: &mut TestAppContext) {
+    let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.waiting().bots), 2, "the rail's count is the box's");
+    click(cx, "rail-bots");
+    assert!(bounds(cx, "bot-asking-bot_mira").is_some(), "at work and waiting: the count");
+    assert!(bounds(cx, "bot-asking-bot_inbox").is_some());
+    for quiet in ["bot_release", "bot_docs"] {
+        assert!(bounds(cx, &format!("bot-asking-{quiet}")).is_none() && bounds(cx, &format!("bot-working-{quiet}")).is_none(), "{quiet}");
+    }
+}
+
+/// Computers lists your computers as the box does (`kuvo/computers`): the one this window shows
+/// first, then the others; a machine shared with another setup under its own header. No Mac is
+/// asked for its machines.
+#[gpui::test]
+fn computers_lists_yours_as_the_box_does_with_shared_machines_apart(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    click(cx, "rail-computers");
+    let this = bounds(cx, "computer-this").expect("this one");
+    let devbox = bounds(cx, "computer-key_devbox").expect("devbox");
+    let studio = bounds(cx, "computer-key_studio").expect("one that's away");
+    let header = bounds(cx, "header-shared").expect("Shared Machines");
+    let shared = bounds(cx, "computer-key_build").expect("a shared machine");
+    assert!(this.top() < devbox.top() && devbox.top() < studio.top() && studio.top() < header.top() && header.top() < shared.top());
+    assert!(stand_in.seen_at("GET", "kuvo/machines").is_empty());
+    click(cx, "computer-key_devbox");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("devbox"));
 }
 
 #[gpui::test]
-fn a_box_from_before_711_shows_no_needs_you_and_draws_no_counts(cx: &mut TestAppContext) {
-    let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.before_711();
-    let (workspace, cx) = open(cx, stand_in.clone());
-    assert!(bounds(cx, "header-Needs you").is_none());
-    assert!(workspace.read_with(cx, |workspace, _| workspace.waiting().is_none()));
-    // It isn't asked again with each list (only once the box is reached again).
-    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
-    let mut listing = kuvo_box::Listing::new();
-    listing.take(client.session_list(None).unwrap());
-    workspace.update(cx, |workspace, cx| workspace.take_list(kuvo_box::ListUpdate::Listing(listing), cx));
-    assert_eq!(stand_in.seen_at("GET", "kuvo/waiting").len(), 1);
-    // The project's own count, as before, still shows who waits.
-    assert!(bounds(cx, "session-project-ses_limits").is_some());
-    // Its bots show their jobs, not what they're doing.
-    click(cx, "rail-bots");
-    let bots = workspace.read_with(cx, |workspace, cx| workspace.area_view(Area::Bots).unwrap().read(cx).bots().clone());
-    match bots {
-        kuvo::areas::Reading::Ready(bots) => assert!(bots.bots.iter().all(|bot| bot.now.is_none())),
-        other => panic!("bots not read: {other:?}"),
-    }
+fn a_box_alone_lists_itself_and_no_shared_machines(cx: &mut TestAppContext) {
+    let (_workspace, cx) = open(cx, StandIn::empty(Replies::Never));
+    click(cx, "rail-computers");
+    assert!(bounds(cx, "computer-this").is_some());
+    assert!(bounds(cx, "header-shared").is_none());
 }
 
 #[gpui::test]
@@ -281,25 +324,16 @@ fn the_rings_show_each_account_and_the_rest_wait_behind_more(cx: &mut TestAppCon
     assert_eq!(title(&workspace, cx).as_deref(), Some("Usage"));
 }
 
-/// Two rings an account, where the box says which window is short and which long (#711): the
-/// 5-hour one outside, the week inside; an account with one such window, one ring; a box from
-/// before it, one ring for the fullest window.
+/// Two rings an account, as the box picks them (`rows[].rings`): its short window outside, its
+/// long one inside; an account whose plan has one window, one ring.
 #[gpui::test]
-fn an_account_has_a_ring_for_its_short_window_and_one_for_its_long(cx: &mut TestAppContext) {
+fn an_account_has_the_two_rings_the_box_says_or_the_one(cx: &mut TestAppContext) {
     let (_workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     assert!(bounds(cx, "ring-claude-Work-arc-0").is_some() && bounds(cx, "ring-claude-Work-arc-1").is_some());
     let (outer, inner) = (bounds(cx, "ring-claude-Work-arc-0").unwrap(), bounds(cx, "ring-claude-Work-arc-1").unwrap());
     assert!(inner.size.width < outer.size.width && outer.contains(&inner.center()), "the long window inside the short one");
-    assert!(bounds(cx, "ring-copilot-arc-0").is_none() || bounds(cx, "ring-copilot-arc-1").is_none());
-}
-
-#[gpui::test]
-fn a_box_from_before_711_draws_one_ring_an_account(cx: &mut TestAppContext) {
-    let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.before_711();
-    let (_workspace, cx) = open(cx, stand_in);
-    assert!(bounds(cx, "ring-claude-Work-arc-0").is_some());
-    assert!(bounds(cx, "ring-claude-Work-arc-1").is_none());
+    assert!(bounds(cx, "ring-claude-Work-arc-2").is_none(), "a model's own window is no ring");
+    assert!(bounds(cx, "ring-copilot-arc-0").is_some() && bounds(cx, "ring-copilot-arc-1").is_none(), "one window, one ring");
 }
 
 #[gpui::test]

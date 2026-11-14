@@ -133,8 +133,16 @@ fn accounts_lists_the_agents_and_providers_as_the_box_says_them(cx: &mut TestApp
     for row in ["account-claude-code", "account-claude-code@w0rk1a2b", "account-codex-cli", "account-cursor", "account-grok-cli", "account-github-copilot", "account-anthropic", "account-groq"] {
         assert!(shown(cx, row), "{row}");
     }
-    // Every account the box lists, none left out here: which aren't providers is the box's to say.
-    assert!(shown(cx, "account-tavily") && shown(cx, "account-linear"));
+    // Only those the box says Accounts lists (`listed`): a web search service, an MCP server's
+    // sign-in and the engine's own way to Claude's plan are left out, as it says.
+    for left_out in ["account-tavily", "account-linear", "account-claude-agent"] {
+        assert!(!shown(cx, left_out), "{left_out}");
+    }
+    // Each one's mark is the box's `service`; one it names none for shows its letter.
+    for marked in ["account-claude-code", "account-codex-cli", "account-github-copilot", "account-openrouter", "account-anthropic"] {
+        assert!(shown(cx, &format!("{marked}-mark")), "{marked}");
+    }
+    assert!(shown(cx, "account-gitlab-initial") && !shown(cx, "account-gitlab-mark"));
     // Signed in, ended, never: each says so, with the box's ways.
     assert!(shown(cx, "account-antigravity-sign-in-again"), "an agent whose sign-in ended");
     assert!(shown(cx, "account-gitlab-sign-in-again") && shown(cx, "account-gitlab-disconnect"), "an engine plan the box says ended");
@@ -158,7 +166,10 @@ fn signing_in_in_the_browser_follows_the_box_until_it_goes_through(cx: &mut Test
     click(cx, "account-gitlab-sign-in-again");
     // Its one way starts at once: the page opens, and it waits.
     assert!(matches!(step(&view, cx), Some(Step::Waiting { .. })));
-    assert_eq!(bodies(&stand_in, "POST", "api/integration/gitlab/connect/oauth"), vec![json!({ "methodID": "browser" })]);
+    // Started through the box, which starts it on its engine.
+    let started = stand_in.seen_at("POST", "kuvo/sign-in/start");
+    assert_eq!(started.iter().map(|seen| (seen.path.as_str(), seen.body.clone())).collect::<Vec<_>>(), vec![("kuvo/sign-in/start?integration=gitlab", Some(json!({ "methodID": "browser" })))]);
+    assert!(stand_in.seen_at("POST", "api/integration/gitlab/connect/oauth").is_empty());
     assert!(cx.opened_url().is_some_and(|url| url.starts_with("https://sign-in.stand-in.invalid/gitlab")));
     assert!(shown(cx, "sign-in-waiting"));
     tick(cx);
@@ -185,8 +196,12 @@ fn a_device_code_is_shown_and_copied_after_disconnecting(cx: &mut TestAppContext
     assert!(stand_in.seen_at("POST", "kuvo/accounts/github-copilot/forget").is_empty());
     click(cx, "confirm-go");
     assert_eq!(stand_in.seen_at("POST", "kuvo/accounts/github-copilot/forget").len(), 1);
-    // Now under Add a Provider: Connect, and its device code.
+    // Now under Add a Provider: Connect, and its device code, as the box says it apart when it
+    // starts the sign-in (the engine leaves it in its page's address, which this never reads).
+    let view = settings(&workspace, cx);
     click(cx, "account-github-copilot-connect");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/sign-in/start").len(), 1);
+    assert!(matches!(step(&view, cx), Some(Step::Waiting { attempt, .. }) if attempt.user_code.as_deref() == Some("WDJB-MJHT")));
     assert!(shown(cx, "sign-in-user-code"));
     assert_eq!(cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("WDJB-MJHT"), "copied for the page");
 }
@@ -199,7 +214,8 @@ fn a_code_pasted_back_finishes_an_agents_sign_in(cx: &mut TestAppContext) {
     click(cx, "account-claude-code-menu");
     click(cx, "menu-item-Sign In Again…");
     assert!(matches!(step(&view, cx), Some(Step::Waiting { .. })));
-    assert_eq!(bodies(&stand_in, "POST", "kuvo/agents/api/integration/claude-code/connect/oauth").len(), 1, "through the agents' bridge");
+    let started: Vec<String> = stand_in.seen_at("POST", "kuvo/sign-in/start").into_iter().map(|seen| seen.path).collect();
+    assert_eq!(started, vec!["kuvo/sign-in/start?integration=claude-code&agents=1".to_owned()], "through the box, on the agents' bridge");
     click(cx, "sign-in-paste");
     cx.simulate_input("wrong-code");
     click(cx, "sign-in-send-code");
@@ -350,8 +366,9 @@ fn permissions_show_the_boxs_approval_and_sandbox_and_change_through_it(cx: &mut
     assert!(!shown(cx, "allowed-alw_1") && shown(cx, "allowed-alw_2"));
 }
 
-/// The sandbox in the box's words alone: on, off with its `why` and the button it words (at the
-/// route it names), and off with nothing said.
+/// The sandbox in the box's words alone: on; off with its `why` and the button it words, which
+/// sends the route it names, or opens what only this app can (the docs, the Mac's Software
+/// Update); and off by Kuvo Code's own switch, with no button.
 #[gpui::test]
 fn the_sandbox_is_drawn_in_the_boxs_words(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
@@ -368,12 +385,29 @@ fn the_sandbox_is_drawn_in_the_boxs_words(cx: &mut TestAppContext) {
     click(cx, "row-sandbox-try-again");
     assert_eq!(stand_in.seen_at("POST", "kuvo/sandbox/check").len(), 1, "at the box's route");
 
-    // Off, and the box words nothing: one neutral line, no button of this app's own.
-    stand_in.set_sandbox(json!({ "on": false, "able": true, "agents": false, "reason": "engineDown", "action": "restartEngine", "route": "POST kuvo/engine/restart" }));
+    // A way out the box has no route for: the docs on what a machine needs, opened here.
+    stand_in.set_sandbox(json!({ "on": false, "able": false, "agents": false, "why": "Linux 5.4 can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on).", "reason": "kernel", "action": "help", "actionLabel": "How to Check…", "needs": "Linux 5.13" }));
     section(&workspace, cx, "Browser");
     section(&workspace, cx, "Permissions");
-    assert_eq!(line(&workspace, cx).as_deref(), Some("This needs your OK."));
-    assert!(!shown(cx, "row-sandbox-try-again") && !shown(cx, "row-sandbox-restart-engine"));
+    assert_eq!(line(&workspace, cx).as_deref(), Some("Linux 5.4 can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on)."));
+    click(cx, "row-sandbox-how-to-check");
+    assert_eq!(cx.opened_url().as_deref(), Some("https://www.kuvo.run/code/docs/machines/#sandbox"));
+    assert_eq!(stand_in.seen_at("POST", "kuvo/sandbox/check").len(), 1, "nothing more is sent");
+
+    // The Mac's own Software Update, where this app runs on a Mac.
+    stand_in.set_sandbox(json!({ "on": false, "able": false, "agents": false, "why": "macOS's sandbox isn't on this Mac.", "reason": "macos", "action": "softwareUpdate", "actionLabel": "Software Update…" }));
+    section(&workspace, cx, "Browser");
+    section(&workspace, cx, "Permissions");
+    assert_eq!(shown(cx, "row-sandbox-software-update"), cfg!(target_os = "macos"));
+
+    // Kuvo Code's own switch off: why, and no action, so no button.
+    stand_in.set_sandbox(json!({ "on": false, "able": true, "agents": false, "why": "Kuvo Code has it turned off on this computer for now." }));
+    section(&workspace, cx, "Browser");
+    section(&workspace, cx, "Permissions");
+    assert_eq!(line(&workspace, cx).as_deref(), Some("Kuvo Code has it turned off on this computer for now."));
+    for button in ["row-sandbox-try-again", "row-sandbox-how-to-check", "row-sandbox-software-update"] {
+        assert!(!shown(cx, button), "{button}");
+    }
 }
 
 #[gpui::test]

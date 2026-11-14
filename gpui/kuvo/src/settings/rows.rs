@@ -1,13 +1,13 @@
 //! What each Settings page lists, as rows worked out from the box's facts: their names and lines,
 //! and the control each has. Drawing is in `mod.rs`; nothing here reaches the box.
 //!
-//! The words are this app's (the Mac's, where it has them); every fact is the box's. Where the box
-//! doesn't say something a row needs, it's marked `BOX-NEEDED` and drawn plainly.
+//! The words are this app's (the Mac's, where it has them); every fact is the box's, and so are
+//! the words it gives (why the sandbox is off, its button's, a failure's).
 
 use kuvo_box::accounts::{AccountEntry, Accounts, Side};
 use kuvo_box::areas::Account;
 use kuvo_box::models::Offered;
-use kuvo_box::settings::{Allowed, Approval, BrowserSettings, Config, Sandbox, UsageSettings};
+use kuvo_box::settings::{Allowed, Approval, BrowserSettings, Config, Sandbox, SandboxDoes, UsageSettings};
 use kuvo_ui::IconName;
 
 use crate::areas::Reading;
@@ -62,6 +62,8 @@ pub enum Act {
     SetOtherComputers(bool),
     /// The sandbox's button, at the route the box named.
     SandboxAction { method: String, path: String },
+    /// Opens a page, or a pane of the system's settings, as only an app on the computer can.
+    Open(&'static str),
     RemoveAllowed(String),
     SetSearchEngine(String),
     SetTidies(bool),
@@ -305,9 +307,7 @@ fn agent_row(entry: &AccountEntry, facts: &Facts) -> Row {
         }
         if choices.is_empty() { Control::None } else { Control::Menu { shown: String::new(), choices } }
     });
-    // The agent's mark, by the bridge's `metadata.agent`.
-    let leading = integration.agent().map_or_else(|| Leading::Initial(name.clone()), |agent| Leading::Mark(agent.to_owned()));
-    Row::new(key, name, line, control).leading(leading).warning(warning)
+    Row::new(key, name.clone(), line, control).leading(mark(entry, name)).warning(warning)
 }
 
 fn provider_row(entry: &AccountEntry, facts: &Facts) -> Row {
@@ -333,8 +333,12 @@ fn provider_row(entry: &AccountEntry, facts: &Facts) -> Row {
         }
         Control::Buttons(buttons)
     });
-    // BOX-NEEDED: each account's mark, `service` (the limits' ids: `copilot`, `openrouter`…) on each account in `GET kuvo/sign-in/accounts`: until then the engine's providers show their first letter, never a mark matched by id here.
-    Row::new(key, name.clone(), line, control).leading(Leading::Initial(name)).warning(warning)
+    Row::new(key, name.clone(), line, control).leading(mark(entry, name)).warning(warning)
+}
+
+/// An account's mark: the box's `service`; its name's first letter where the box names none.
+fn mark(entry: &AccountEntry, name: String) -> Leading {
+    entry.service.clone().map_or(Leading::Initial(name), Leading::Mark)
 }
 
 fn accounts(facts: &Facts) -> Vec<Block> {
@@ -427,6 +431,10 @@ fn models(facts: &Facts) -> Vec<Block> {
 
 // MARK: Permissions
 
+/// The docs on what a machine needs for its sandbox, and the Mac's Software Update pane.
+pub const SANDBOX_HELP: &str = "https://www.kuvo.run/code/docs/machines/#sandbox";
+pub const SOFTWARE_UPDATE: &str = "x-apple.systempreferences:com.apple.Software-Update-Settings.extension";
+
 /// A mode's name, as every client says it (KuvoClient's `ApprovalWords`).
 fn mode_name(mode: &str) -> String {
     match mode {
@@ -469,10 +477,14 @@ fn permissions(facts: &Facts) -> Vec<Block> {
     }
     match facts.sandbox {
         Reading::Ready(sandbox) => {
-            // BOX-NEEDED: why it's off and what to do, as sentences in `GET kuvo/sandbox` (`why` for every `reason`, and `actionLabel` for its button): drawn only as the box words them; otherwise one neutral line, and no button.
-            let detail = if sandbox.on { String::new() } else { sandbox.why.clone().filter(|why| !why.trim().is_empty()).unwrap_or_else(|| "This needs your OK.".into()) };
+            // Why it's off and its button's words are the box's, drawn as they are. A button with
+            // a route sends it; the docs and the system's Software Update are this app's to open.
+            let detail = if sandbox.on { String::new() } else { sandbox.why.clone().unwrap_or_default() };
             let control = facts.busy("row-sandbox").unwrap_or_else(|| match sandbox.button() {
-                Some((label, method, path)) if !sandbox.on => Control::Buttons(vec![(label, Act::SandboxAction { method, path })]),
+                Some((label, SandboxDoes::Route { method, path })) => Control::Buttons(vec![(label, Act::SandboxAction { method, path })]),
+                Some((label, SandboxDoes::Help)) => Control::Buttons(vec![(label, Act::Open(SANDBOX_HELP))]),
+                // (The system's own pane: only where this app runs on a Mac.)
+                Some((label, SandboxDoes::SoftwareUpdate)) if cfg!(target_os = "macos") => Control::Buttons(vec![(label, Act::Open(SOFTWARE_UPDATE))]),
                 _ => Control::Text(if sandbox.on { "On".into() } else { "Off".into() }),
             });
             let state = Row::new("row-sandbox", "Sandbox", detail, control).warning(!sandbox.on);

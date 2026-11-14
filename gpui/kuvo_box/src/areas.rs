@@ -1,18 +1,17 @@
-//! What the rail's areas list, as a box says it (PROTOCOL.md): its bots (`kuvo/bots`) and group
-//! chats (`kuvo/groups`), the Work Queue's categories (`kuvo/work-queue`), the machines a Mac runs
-//! sessions on (`kuvo/machines`), and the plan limits of every account across your computers
-//! (`kuvo/agents/api/kuvo/limits`'s `rows`).
-//!
-//! Some of what the new sidebar draws the box doesn't say yet (#711): what a bot is doing now, the
-//! queue's counts, a limit's level, what waits on you in each area, and "Needs you". Each
-//! is read here as an optional field in the shape #711 is asked for, marked `BOX-NEEDED`; a box
-//! that doesn't send it leaves it `None`, and the app draws the plain form, working out nothing.
-//! Only the stand-in box sends them today.
+//! What the rail's areas list, as a box says it (PROTOCOL.md): its bots with what each is doing now
+//! (`kuvo/bots`) and group chats (`kuvo/groups`), the Work Queue's categories and counts
+//! (`kuvo/work-queue` with `counts=1`), your computers (`kuvo/computers`), the plan limits of every
+//! account across them with each one's rings and levels (`kuvo/agents/api/kuvo/limits`'s `rows`),
+//! and how many things wait on you in each area (`kuvo/waiting`). The box counts, levels and picks
+//! the rings; this reads them.
+
+use std::collections::HashMap;
 
 use serde::Deserialize;
 
 use crate::client::BoxClient;
-use crate::error::{Error, Result};
+use crate::error::Result;
+use crate::follow::{Follow, Followed, Timing, follow_lines};
 
 // MARK: Bots
 
@@ -28,17 +27,20 @@ pub struct Look {
     pub face: String,
 }
 
-/// What a bot is doing now, as facts: how many of its sessions are at work, and waiting on you.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// What a bot is doing now, as facts (`bots.now`): how many of its sessions are at work, how many
+/// wait on you, and, with neither, when the newest of them last changed (ms).
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 pub struct BotNow {
     #[serde(default)]
     pub working: usize,
     #[serde(default)]
     pub asking: usize,
+    #[serde(default)]
+    pub finished: Option<f64>,
 }
 
 /// One bot, as `kuvo/bots` lists it.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Bot {
     pub id: String,
     pub session: String,
@@ -51,9 +53,9 @@ pub struct Bot {
     pub paused: bool,
     #[serde(default)]
     pub machine: Option<String>,
-    // BOX-NEEDED: what a bot is doing now, `now: {working, asking}` (its sessions at work and waiting on you) on each bot in `GET kuvo/bots` (and `kuvo/bots/events`) (#711).
+    /// What it's doing now.
     #[serde(default)]
-    pub now: Option<BotNow>,
+    pub now: BotNow,
 }
 
 /// The last thing said in a group chat.
@@ -85,35 +87,85 @@ pub struct Category {
     pub built_in: bool,
 }
 
-/// How many items are in progress, and in each category, across your computers.
+/// The Work Queue's counts across your computers, as the box counts them (`work-queue.counts`): its
+/// items in progress, in each category (by its id), from each outside source (by its kind), on each
+/// computer (by its key), and how many are deleted.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct QueueCounts {
     #[serde(default, rename = "inProgress")]
     pub in_progress: usize,
     #[serde(default)]
-    pub categories: std::collections::HashMap<String, usize>,
+    pub categories: HashMap<String, usize>,
+    #[serde(default)]
+    pub sources: HashMap<String, usize>,
+    #[serde(default)]
+    pub computers: HashMap<String, usize>,
+    #[serde(default)]
+    pub removed: usize,
 }
 
-/// The Work Queue's categories, in the box's order, and (once the box says them) their counts.
+/// The Work Queue's categories, in the box's order, and its counts.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WorkQueue {
     pub categories: Vec<Category>,
-    pub counts: Option<QueueCounts>,
+    pub counts: QueueCounts,
 }
 
-// MARK: Machines
+// MARK: Computers
 
-/// A machine this Mac runs sessions on, as Settings › Machines lists it.
+/// One of your computers, as a box knows it (`kuvo/computers`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Machine {
-    pub id: String,
+pub struct Computer {
+    /// Its box's public key (`""` for the box itself while it has none).
+    #[serde(default)]
+    pub key: String,
     pub name: String,
-    /// `notConnected`, `connecting`, `reconnecting`, `installing`, `connected`, `failed`, `stopped`.
+    /// `mac` or `machine`.
     #[serde(default)]
-    pub connection: String,
-    /// How it stands, in the box's words.
+    pub kind: String,
+    /// The box that answered.
     #[serde(default)]
-    pub status: String,
+    pub here: bool,
+    /// A machine's name on its Mac.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// A machine Macs of different setups share.
+    #[serde(default)]
+    pub shared: bool,
+    /// `connected`, `connecting` or `away`.
+    #[serde(default)]
+    pub reach: String,
+    /// Kuvo Code's version there, its engine's, and its system as people know it ("macOS 15.1").
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub engine: Option<String>,
+    #[serde(default)]
+    pub system: Option<String>,
+    /// How the box that answers knows it: `here`, `relay`, or `peer` (`through` that one's name).
+    #[serde(default)]
+    pub via: String,
+    #[serde(default)]
+    pub through: Option<String>,
+    /// How many of its sessions are at work.
+    #[serde(default)]
+    pub working: usize,
+    /// The services whose plan limits it reads.
+    #[serde(default)]
+    pub limits: Vec<String>,
+}
+
+impl Computer {
+    pub fn is_mac(&self) -> bool {
+        self.kind == "mac"
+    }
+}
+
+/// Your computers, the answering box first.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct Computers {
+    #[serde(default, deserialize_with = "readable")]
+    pub computers: Vec<Computer>,
 }
 
 // MARK: Plan limits
@@ -127,13 +179,26 @@ pub enum Level {
     Over,
 }
 
-/// Which of an account's two rings a window is drawn as: the short one (a 5-hour session) outside,
-/// the long one (the week) inside.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Span {
-    Short,
-    Long,
+/// One of an account's two rings, as the box picks it (`limits.rings`): the window it shows, its
+/// share and when it starts over, and its level.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Ring {
+    /// The window's `id`.
+    pub window: String,
+    pub used: f32,
+    #[serde(default, rename = "resetsAt")]
+    pub resets_at: Option<f64>,
+    pub level: Level,
+}
+
+/// An account's rings: the short window (a 5-hour session) outside, the long one (the week) inside;
+/// one where its plan has one window, none where it has none.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+pub struct Rings {
+    #[serde(default, deserialize_with = "lenient")]
+    pub short: Option<Ring>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub long: Option<Ring>,
 }
 
 /// One window of a plan's limits.
@@ -150,15 +215,11 @@ pub struct LimitWindow {
     pub model: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
-    // BOX-NEEDED: a window's level, `windows[].level: calm|near|over` in `GET kuvo/agents/api/kuvo/limits`' rows, so every client colours alike (#711).
-    #[serde(default, deserialize_with = "lenient")]
-    pub level: Option<Level>,
-    // BOX-NEEDED: which ring a window is, `windows[].span: short|long` in `GET kuvo/agents/api/kuvo/limits`' rows (the short window outside, the long one inside), so no client works out which is which from its minutes (#711).
-    #[serde(default, deserialize_with = "lenient")]
-    pub span: Option<Span>,
+    /// How close it is to its limit, in the box's word.
+    pub level: Level,
 }
 
-/// A value a newer box may name in a way this doesn't know: none, not the whole window.
+/// A ring a newer box may say in a way this doesn't know: none, not the whole account.
 fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(deserializer: D) -> std::result::Result<Option<T>, D::Error> {
     let value = Option::<serde_json::Value>::deserialize(deserializer)?;
     Ok(value.and_then(|value| serde_json::from_value(value).ok()))
@@ -182,6 +243,9 @@ pub struct Account {
     pub plan: Option<String>,
     #[serde(default, deserialize_with = "readable")]
     pub windows: Vec<LimitWindow>,
+    /// The circles to draw for it, as the box picks them.
+    #[serde(default)]
+    pub rings: Rings,
 }
 
 /// A list's items this can read: one it can't is left out, not all of them (KuvoClient's `Readable`).
@@ -207,32 +271,15 @@ impl Account {
         }
     }
 
-    /// Its windows still current: one that started over since it was read is left out (what's used
-    /// now isn't known), as KuvoClient's `windows(at:)`.
-    pub fn windows_at(&self, now: f64) -> impl Iterator<Item = &LimitWindow> {
-        self.windows.iter().filter(move |window| window.resets_at.is_none_or(|at| at > now))
-    }
-
-    /// The rings to draw, outside first, each as its share and level: the box's short and long
-    /// windows where it says which is which (one where it has only one; a window that started over
-    /// since it was read keeps its place, empty: what's used now isn't known); else the window with
-    /// the least left, alone.
-    pub fn rings(&self, now: f64) -> Vec<(f32, Option<Level>)> {
-        let current = |window: &LimitWindow| window.resets_at.is_none_or(|at| at > now);
-        let spanned: Vec<(f32, Option<Level>)> = [Span::Short, Span::Long]
+    /// The rings to draw, outside first, each as its share and level: the box's short ring, then
+    /// its long one (one where it says one, none where none). One whose time has passed since it
+    /// was read keeps its place, empty: what's used now isn't known (PROTOCOL.md, "Rings and levels").
+    pub fn rings(&self, now: f64) -> Vec<(f32, Level)> {
+        [&self.rings.short, &self.rings.long]
             .into_iter()
-            .filter_map(|span| self.windows.iter().find(|window| window.span == Some(span)))
-            .map(|window| if current(window) { (window.used, window.level) } else { (0., None) })
-            .collect();
-        if spanned.is_empty() { self.tightest(now).map(|window| (window.used, window.level)).into_iter().collect() } else { spanned }
-    }
-
-    /// The window with the least left, as the ring shows it (KuvoClient's `tightest(at:)`).
-    pub fn tightest(&self, now: f64) -> Option<&LimitWindow> {
-        self.windows_at(now).fold(None, |most: Option<&LimitWindow>, window| match most {
-            Some(most) if most.used >= window.used => Some(most),
-            _ => Some(window),
-        })
+            .flatten()
+            .map(|ring| (if ring.resets_at.is_some_and(|at| at <= now) { 0. } else { ring.used }, ring.level))
+            .collect()
     }
 }
 
@@ -290,17 +337,8 @@ fn capitalized(word: &str) -> String {
 
 // MARK: What waits on you
 
-/// A session waiting on you, and what it asks, in a few words.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct NeedsYou {
-    pub session: String,
-    /// What it asks ("asks to run a command"), in the box's words.
-    #[serde(default)]
-    pub asks: String,
-}
-
-/// What waits on you in each area, across the box, and the sessions that do, in the box's order.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+/// How many things wait on you in each area, across the box, as it counts them (`kuvo/waiting`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 pub struct Waiting {
     #[serde(default)]
     pub sessions: usize,
@@ -308,8 +346,6 @@ pub struct Waiting {
     pub bots: usize,
     #[serde(default)]
     pub queue: usize,
-    #[serde(default, rename = "needsYou")]
-    pub needs_you: Vec<NeedsYou>,
 }
 
 impl BoxClient {
@@ -334,33 +370,28 @@ impl BoxClient {
         Ok(answer.groups.into_iter().filter_map(|group| serde_json::from_value(group).ok()).collect())
     }
 
-    /// The Work Queue's categories, in the box's order.
+    /// The Work Queue's categories, in the box's order, and its counts across your computers. Read
+    /// at a glance: nothing is fetched from GitHub for a count.
     pub fn work_queue(&self) -> Result<WorkQueue> {
         #[derive(Deserialize)]
         struct Answer {
             #[serde(default)]
             categories: Vec<Category>,
-            // BOX-NEEDED: the Work Queue's counts across your computers, `counts: {inProgress, categories: {<id>: n}}` in `GET kuvo/work-queue/categories` (and an events route) (#711).
             #[serde(default)]
-            counts: Option<QueueCounts>,
+            counts: QueueCounts,
         }
-        let answer: Answer = self.get("kuvo/work-queue/categories")?;
+        let answer: Answer = self.get("kuvo/work-queue?owner=all&counts=1&glance=1")?;
         Ok(WorkQueue { categories: answer.categories, counts: answer.counts })
     }
 
-    /// The machines this Mac runs sessions on (a machine's box has none: `Ok(vec![])` from one that
-    /// doesn't answer the route).
-    pub fn machines(&self) -> Result<Vec<Machine>> {
-        #[derive(Deserialize)]
-        struct Answer {
-            #[serde(default)]
-            machines: Vec<serde_json::Value>,
-        }
-        match self.get::<Answer>("kuvo/machines") {
-            Ok(answer) => Ok(answer.machines.into_iter().filter_map(|machine| serde_json::from_value(machine).ok()).collect()),
-            Err(Error::Refused(refusal)) if refusal.status == 404 => Ok(Vec::new()),
-            Err(error) => Err(error),
-        }
+    /// Your computers as one list, the box that answers first.
+    pub fn computers(&self) -> Result<Vec<Computer>> {
+        Ok(self.get::<Computers>("kuvo/computers")?.computers)
+    }
+
+    /// Follows your computers: the list now, and again as it changes.
+    pub fn follow_computers(&self, timing: Timing) -> Follow<Followed<Computers>> {
+        follow_lines(self, "kuvo-box computers", "kuvo/computers/events".into(), "kuvo/computers".into(), timing)
     }
 
     /// Every account across your computers, in the box's order (its limits' `rows`).
@@ -378,14 +409,14 @@ impl BoxClient {
         Ok(answer.data.rows.into_iter().filter_map(|row| serde_json::from_value(row).ok()).collect())
     }
 
-    /// What waits on you in each area. `Ok(None)` from a box that doesn't say yet.
-    pub fn waiting(&self) -> Result<Option<Waiting>> {
-        // BOX-NEEDED: what waits on you in each area, and the sessions that do with what each asks, a new `GET kuvo/waiting` (and `kuvo/waiting/events`, ndjson) → `{sessions, bots, queue, needsYou: [{session, asks}]}` across the box (`kuvo/attention` is taken: it's the client-in-use lease) (#711).
-        match self.get::<Waiting>("kuvo/waiting") {
-            Ok(waiting) => Ok(Some(waiting)),
-            Err(Error::Refused(refusal)) if refusal.status == 404 => Ok(None),
-            Err(error) => Err(error),
-        }
+    /// How many things wait on you in each area.
+    pub fn waiting(&self) -> Result<Waiting> {
+        self.get("kuvo/waiting")
+    }
+
+    /// Follows what waits on you: the counts now, and again as they change.
+    pub fn follow_waiting(&self, timing: Timing) -> Follow<Followed<Waiting>> {
+        follow_lines(self, "kuvo-box waiting", "kuvo/waiting/events".into(), "kuvo/waiting".into(), timing)
     }
 }
 
@@ -396,55 +427,69 @@ mod tests {
     #[test]
     fn a_bot_the_box_lists_in_an_unknown_shape_leaves_the_rest() {
         let bots: Vec<serde_json::Value> = serde_json::from_str(
-            r#"[{"id":"bot_1","session":"ses_1","name":"Mira","look":{"color":"sky","shape":"round","face":"calm"},"job":"Looks after the website","paused":false,"watching":0,"agents":false,"folder":"/x","jobDetails":""},
+            r#"[{"id":"bot_1","session":"ses_1","name":"Mira","look":{"color":"sky","shape":"round","face":"calm"},"job":"Looks after the website","paused":false,"watching":0,"agents":false,"folder":"/x","jobDetails":"","now":{"working":1,"asking":0}},
                 {"id":"bot_2","name":"No session"}]"#,
         )
         .unwrap();
         let read: Vec<Bot> = bots.into_iter().filter_map(|bot| serde_json::from_value(bot).ok()).collect();
         assert_eq!(read.len(), 1);
-        assert_eq!(read[0].now, None, "a box from before #711 says nothing of what it's doing");
+        assert_eq!(read[0].now, BotNow { working: 1, asking: 0, finished: None });
     }
 
     #[test]
-    fn a_limits_row_without_levels_reads_as_none() {
-        let row: Account = serde_json::from_str(r#"{"service":"claude","label":"Work","windows":[{"id":"five_hour","used":0.4,"read":1,"source":"usage"},{"id":"newer"}]}"#).unwrap();
-        assert_eq!(row.windows.len(), 1, "a window in a shape this can't read is left out");
-        assert_eq!(row.windows[0].level, None);
+    fn a_window_in_a_shape_this_cant_read_is_left_out() {
+        let row: Account = serde_json::from_str(r#"{"service":"claude","label":"Work","windows":[{"id":"five_hour","used":0.4,"read":1,"source":"usage","level":"calm","span":"short"},{"id":"newer"}],"rings":{"short":{"window":"five_hour","used":0.4,"level":"calm"}}}"#).unwrap();
+        assert_eq!(row.windows.len(), 1);
+        assert_eq!(row.windows[0].level, Level::Calm);
     }
 
-    /// Held to KuvoClient's `LimitsAccount.title`, `LimitsWindow.title` and `tightest(at:)`.
+    /// Held to KuvoClient's `LimitsAccount.title` and `LimitsWindow.title`.
     #[test]
-    fn accounts_and_windows_are_named_and_ringed_as_kuvoclient_does() {
+    fn accounts_and_windows_are_named_as_kuvoclient_does() {
         let row = |json: &str| serde_json::from_str::<Account>(json).unwrap();
         assert_eq!(row(r#"{"service":"claude","agent":"claude","label":"Work"}"#).title(), "Claude · Work");
         assert_eq!(row(r#"{"service":"codex"}"#).title(), "ChatGPT", "the engine's ChatGPT sign-in");
         assert_eq!(row(r#"{"service":"codex","agent":"codex"}"#).title(), "Codex");
         assert_eq!(row(r#"{"service":"opencode"}"#).title(), "OpenCode Go");
         assert_eq!(row(r#"{"service":"claude","agent":"claude","name":"Claude (studio)","label":"Work"}"#).title(), "Claude (studio)");
-        let window = |minutes: Option<u32>, model: Option<&str>, name: Option<&str>| LimitWindow { id: "w".into(), used: 0., resets_at: None, minutes, model: model.map(str::to_owned), name: name.map(str::to_owned), level: None, span: None };
+        let window = |minutes: Option<u32>, model: Option<&str>, name: Option<&str>| LimitWindow { id: "w".into(), used: 0., resets_at: None, minutes, model: model.map(str::to_owned), name: name.map(str::to_owned), level: Level::Calm };
         assert_eq!(window(Some(300), None, None).title(), "Session");
         assert_eq!(window(Some(10_080), Some("Sonnet"), None).title(), "Sonnet");
         assert_eq!(window(Some(43_200), None, None).title(), "Monthly");
         assert_eq!(window(None, None, Some("Premium requests")).title(), "Premium requests");
-        // The fullest window still current; one that started over since isn't counted.
-        let account = row(r#"{"service":"codex","windows":[{"id":"a","used":0.9,"resetsAt":100,"read":1},{"id":"b","used":0.4,"resetsAt":500,"read":1},{"id":"c","used":0.2,"read":1}]}"#);
-        assert_eq!(account.tightest(50.).map(|window| window.id.as_str()), Some("a"));
-        assert_eq!(account.tightest(200.).map(|window| window.id.as_str()), Some("b"));
-        assert_eq!(account.rings(50.), vec![(0.9, None)], "a box that doesn't say spans: one ring, the fullest");
     }
 
-    /// Two rings where the box says which window is short and which long; one where it has one.
+    /// The rings are the box's: its short one outside and its long one inside, each with its level;
+    /// one where it says one, none where none. Nothing is picked or levelled here.
     #[test]
-    fn the_rings_are_the_boxs_short_and_long_windows() {
+    fn the_rings_are_the_ones_the_box_says() {
         let row = |json: &str| serde_json::from_str::<Account>(json).unwrap();
-        let both = row(r#"{"service":"claude","windows":[{"id":"week","used":0.2,"span":"long"},{"id":"model","used":0.9},{"id":"five","used":0.5,"span":"short"}]}"#);
-        assert_eq!(both.rings(0.), vec![(0.5, None), (0.2, None)], "the short window outside, the long inside");
-        let one = row(r#"{"service":"grok","windows":[{"id":"week","used":0.2,"span":"long"}]}"#);
-        assert_eq!(one.rings(0.).len(), 1);
-        let started_over = row(r#"{"service":"codex","windows":[{"id":"five","used":0.5,"span":"short","resetsAt":10},{"id":"week","used":0.2,"span":"long"}]}"#);
-        assert_eq!(started_over.rings(20.), vec![(0., None), (0.2, None)], "one that started over keeps its place, empty");
-        // A span or level a newer box names otherwise leaves the window, unringed.
-        let newer = row(r#"{"service":"claude","windows":[{"id":"x","used":0.3,"span":"medium","level":"dire"}]}"#);
-        assert_eq!((newer.windows.len(), newer.windows[0].span, newer.windows[0].level), (1, None, None));
+        // The fullest window is a model's: it's no ring, as the box didn't pick it.
+        let both = row(r#"{"service":"claude","windows":[{"id":"week","used":0.2,"level":"calm","span":"long"},{"id":"model","used":0.95,"level":"over"},{"id":"five","used":0.75,"level":"near","span":"short"}],"rings":{"short":{"window":"five","used":0.75,"level":"near"},"long":{"window":"week","used":0.2,"level":"calm"}}}"#);
+        assert_eq!(both.rings(0.), vec![(0.75, Level::Near), (0.2, Level::Calm)], "the short window outside, the long inside");
+        let one = row(r#"{"service":"grok","windows":[{"id":"week","used":0.2,"level":"calm","span":"long"}],"rings":{"long":{"window":"week","used":0.2,"level":"calm"}}}"#);
+        assert_eq!(one.rings(0.), vec![(0.2, Level::Calm)]);
+        let none = row(r#"{"service":"ollama","windows":[],"rings":{}}"#);
+        assert!(none.rings(0.).is_empty());
+        let started_over = row(r#"{"service":"codex","rings":{"short":{"window":"five","used":0.5,"resetsAt":10,"level":"calm"},"long":{"window":"week","used":0.2,"level":"calm"}}}"#);
+        assert_eq!(started_over.rings(20.), vec![(0., Level::Calm), (0.2, Level::Calm)], "one that started over keeps its place, empty");
+        // A ring a newer box says in a way this can't read leaves the account, with its other ring.
+        let newer = row(r#"{"service":"claude","rings":{"short":{"window":"x","used":0.3,"level":"dire"},"long":{"window":"week","used":0.2,"level":"calm"}}}"#);
+        assert_eq!(newer.rings(0.), vec![(0.2, Level::Calm)]);
+    }
+
+    #[test]
+    fn the_work_queues_counts_and_your_computers_read_as_the_box_says_them() {
+        let counts: QueueCounts = serde_json::from_str(r#"{"inProgress":2,"categories":{"next":6,"done":0},"sources":{"github":3},"computers":{"":5,"k1":4},"removed":1}"#).unwrap();
+        assert_eq!((counts.in_progress, counts.categories["next"], counts.sources["github"], counts.computers["k1"], counts.removed), (2, 6, 3, 4, 1));
+        let said: Computers = serde_json::from_str(
+            r#"{"computers":[{"key":"","name":"Studio","kind":"mac","here":true,"shared":false,"reach":"connected","version":"1.0.0","engine":"2.3.0","system":"macOS 15.1","via":"here","working":2,"limits":["claude"]},
+                {"key":"k1","name":"devbox","kind":"machine","id":"devbox","shared":true,"reach":"away","via":"peer","through":"Studio","working":0,"limits":[]},
+                {"key":"k2"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(said.computers.len(), 2, "one in a shape this can't read is left out");
+        assert!(said.computers[0].here && said.computers[0].is_mac());
+        assert_eq!((said.computers[1].shared, said.computers[1].reach.as_str(), said.computers[1].through.as_deref()), (true, "away", Some("Studio")));
     }
 }

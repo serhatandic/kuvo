@@ -1,8 +1,8 @@
 //! The Sessions area's sidebar: the search, then what's waiting on you across projects ("Needs
-//! you", with what each asks, once the box says it), then the box's sessions as its list says them:
-//! pinned, each project with its sessions nested under it (newest first), and chats. A session at
-//! work shows a spinner; one waiting on you, a dot, and its project counts them. New Session and
-//! the computer it's on are the title bar's.
+//! you", in the box's order, with what each asks in its words), then the box's sessions as its list
+//! says them: pinned, each project with its sessions nested under it (newest first), and chats. A
+//! session at work shows a spinner; one waiting on you, a dot; its project shows the box's sums
+//! (how many wait, whether any is at work). New Session and the computer it's on are the title bar's.
 //!
 //! Searching shows sessions whose names have the words as you type, then, from three characters,
 //! the conversations the box finds them in (`kuvo/search`). The arrows walk the list (from the
@@ -108,14 +108,11 @@ pub fn lines(workspace: &Workspace, cx: &App) -> Vec<Line> {
     let listing = workspace.listing();
     let sidebar = listing.sidebar();
     let mut lines = Vec::new();
-    // BOX-NEEDED: the sessions waiting on you across projects, in the box's order, each with what it asks, `needsYou: [{session, asks}]` in `GET kuvo/waiting` (#711): no group until the box says it.
-    let needs: Vec<Line> = workspace
-        .waiting()
-        .map(|waiting| waiting.needs_you.iter().filter(|needs| listing.facts(&needs.session).is_some()).map(|needs| Line::Needs { id: needs.session.clone(), asks: needs.asks.clone() }).collect())
-        .unwrap_or_default();
-    if !needs.is_empty() {
+    // The sessions waiting on you across projects, as the box's list says them (`needsYou`): its
+    // order, and what each asks in its words.
+    if !listing.needs_you().is_empty() {
         lines.push(Line::Header("Needs you"));
-        lines.extend(needs);
+        lines.extend(listing.needs_you().iter().map(|needs| Line::Needs { id: needs.session.clone(), asks: needs.asks.summary.clone() }));
     }
     if !sidebar.pinned.is_empty() {
         lines.push(Line::Header("Pinned"));
@@ -255,7 +252,7 @@ fn line_row(workspace: &Workspace, line: &Line, cursor: bool, cx: &mut Context<W
     let listing = workspace.listing();
     let row: AnyElement = match line {
         Line::Header("Needs you") => {
-            let count = lines_needing(workspace);
+            let count = listing.needs_you().len();
             div()
                 .debug_selector(|| "header-Needs you".into())
                 .flex()
@@ -290,13 +287,14 @@ fn line_row(workspace: &Workspace, line: &Line, cursor: bool, cx: &mut Context<W
             let sidebar = listing.sidebar();
             let Some(group) = sidebar.projects.iter().find(|group| &group.directory == directory) else { return div().into_any_element() };
             let collapsed = workspace.is_collapsed(directory);
-            // BOX-NEEDED: a project's sums, `projects[<dir>].{asking, working}` in the sessions listing (`GET kuvo/sessions/list` and its events) (#711): phase 2 counts them here from each session's facts, left to move, not extended.
-            let asking = group.sessions.iter().filter(|id| listing.facts(id).is_some_and(|facts| facts.asked.is_some())).count();
-            let running = group.sessions.iter().any(|id| listing.facts(id).is_some_and(Facts::is_running));
+            // The project's sums are the box's (`projects[<dir>].{asking, working}`): how many of
+            // its sessions wait on you, and how many are at work.
+            let (asking, working) = listing.projects().get(directory).map_or((0, 0), |project| (project.asking, project.working));
+            let name = group.name.clone();
             let trailing: Option<AnyElement> = if asking > 0 {
-                Some(count_badge(asking, cx).into_any_element())
-            } else if collapsed && running {
-                Some(spinner(SharedString::from(format!("project-spin-{directory}")), IconSize::Nav, c.text_muted).into_any_element())
+                Some(div().debug_selector(move || format!("project-asking-{name}")).child(count_badge(asking, cx)).into_any_element())
+            } else if collapsed && working > 0 {
+                Some(div().debug_selector(move || format!("project-working-{name}")).child(spinner(SharedString::from(format!("project-spin-{directory}")), IconSize::Nav, c.text_muted)).into_any_element())
             } else {
                 None
             };
@@ -422,14 +420,9 @@ fn quiet(words: Option<&str>, busy: bool, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// How many sessions "Needs you" shows.
-fn lines_needing(workspace: &Workspace) -> usize {
-    workspace.waiting().map_or(0, |waiting| waiting.needs_you.iter().filter(|needs| workspace.listing().facts(&needs.session).is_some()).count())
-}
-
 /// Whether `session` shows in "Needs you".
 fn needs_you(workspace: &Workspace, session: &str) -> bool {
-    workspace.waiting().is_some_and(|waiting| waiting.needs_you.iter().any(|needs| needs.session == session)) && workspace.search_is_empty()
+    workspace.listing().needs_you().iter().any(|needs| needs.session == session) && workspace.search_is_empty()
 }
 
 /// A session waiting on you, on top: its title, then its project and what it asks, in the box's words.

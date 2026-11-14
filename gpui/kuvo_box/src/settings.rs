@@ -85,31 +85,52 @@ pub struct Approval {
 pub struct Sandbox {
     #[serde(default)]
     pub on: bool,
-    /// Why it's off, in the box's words, where it gives them.
+    /// Why it's off, in the box's words: there for every `reason`.
     #[serde(default)]
     pub why: Option<String>,
     /// `kernel`, `namespaces`, `macos`, `engineMissing`, `checking`, `checkFailed`, `plugin`,
     /// `engineDown`, `waiting`.
     #[serde(default)]
     pub reason: Option<String>,
-    /// `help`, `softwareUpdate`, `retry`, `fix`, `restartEngine`: a word for a client to map,
-    /// which this one doesn't (its button's words are the box's to say, below).
+    /// What you can do about it: `help`, `softwareUpdate`, `retry`, `fix`, `restartEngine`.
     #[serde(default)]
     pub action: Option<String>,
-    /// The box's route that does it (`POST kuvo/sandbox/check`).
+    /// The box's route that does it (`POST kuvo/sandbox/check`), where there is one; `help` and
+    /// `softwareUpdate` have none: they're a client's to open.
     #[serde(default)]
     pub route: Option<String>,
-    // BOX-NEEDED: the words of the button that does `action`, `actionLabel` in `GET kuvo/sandbox` (and `why` for every `reason`): KuvoClient's `SandboxNotice` words them in each client today; this draws a button only with the box's words and its `route`.
+    /// The words of the button that does `action`, as the box says them.
     #[serde(default, rename = "actionLabel")]
     pub action_label: Option<String>,
 }
 
+/// What the sandbox's button does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SandboxDoes {
+    /// Sends the box's own route.
+    Route { method: String, path: String },
+    /// A client's to open: the docs on what a machine needs (`help`).
+    Help,
+    /// A client's to open: the system's own Software Update (`softwareUpdate`).
+    SoftwareUpdate,
+}
+
 impl Sandbox {
-    /// What its button sends, where the box words one and names its route: `(method, path)`.
-    pub fn button(&self) -> Option<(String, String, String)> {
+    /// Its button while it's off: the box's words for it, and what it does. None where the box
+    /// names no action (Kuvo Code's own switch off), or one with no route that a client doesn't
+    /// know how to open.
+    pub fn button(&self) -> Option<(String, SandboxDoes)> {
+        if self.on {
+            return None;
+        }
         let label = self.action_label.clone().filter(|label| !label.trim().is_empty())?;
-        let (method, path) = self.route.as_deref()?.split_once(' ')?;
-        Some((label, method.to_owned(), path.to_owned()))
+        let does = match (self.route.as_deref().and_then(|route| route.split_once(' ')), self.action.as_deref()) {
+            (Some((method, path)), _) => SandboxDoes::Route { method: method.to_owned(), path: path.to_owned() },
+            (None, Some("help")) => SandboxDoes::Help,
+            (None, Some("softwareUpdate")) => SandboxDoes::SoftwareUpdate,
+            _ => return None,
+        };
+        Some((label, does))
     }
 }
 

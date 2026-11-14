@@ -115,13 +115,15 @@ impl SettingsView {
     fn row(&mut self, row: Row, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let Row { key, leading, title, detail, tone, control } = row;
+        let (mark, letter) = (format!("{key}-mark"), format!("{key}-initial"));
         let leading: Option<AnyElement> = match leading {
             Leading::None => None,
             Leading::Mark(service) => Some(match kuvo_ui::icon::mark_path(&service) {
-                Some(path) => div().flex().flex_none().items_center().justify_center().size(px(28.)).rounded(radius::PILL).bg(c.sunken).child(svg().path(path).size(px(16.)).text_color(kuvo_ui::icon::mark_color(&service).unwrap_or(c.text))).into_any_element(),
-                None => initial(&service, cx),
+                Some(path) => div().debug_selector(move || mark).flex().flex_none().items_center().justify_center().size(px(28.)).rounded(radius::PILL).bg(c.sunken).child(svg().path(path).size(px(16.)).text_color(kuvo_ui::icon::mark_color(&service).unwrap_or(c.text))).into_any_element(),
+                // A service a newer box names, with no mark here: its first letter.
+                None => div().debug_selector(move || letter).child(initial(&service, cx)).into_any_element(),
             }),
-            Leading::Initial(name) => Some(initial(&name, cx)),
+            Leading::Initial(name) => Some(div().debug_selector(move || letter).child(initial(&name, cx)).into_any_element()),
         };
         let control = self.control(&key, control, cx);
         let selector = key.clone();
@@ -236,17 +238,6 @@ fn initial(name: &str, cx: &App) -> AnyElement {
     div().flex().flex_none().items_center().justify_center().size(px(28.)).rounded(radius::PILL).bg(c.sunken).text_ui(TypeSize::Small).medium().text_color(c.text_muted).child(letter).into_any_element()
 }
 
-/// A level's colour, as the rail's rings draw it; quiet where the box doesn't say one yet.
-fn level_color(level: Option<Level>, cx: &App) -> Hsla {
-    let c = &cx.theme().colors;
-    match level {
-        Some(Level::Over) => c.danger,
-        Some(Level::Near) => c.warning,
-        Some(Level::Calm) => c.success,
-        None => c.text_muted,
-    }
-}
-
 /// An account's windows, as the rail's hover card shows them: each one's name, share and meter,
 /// and when it starts over.
 fn windows(key: &str, account: &Account, now: f64, cx: &App) -> AnyElement {
@@ -260,9 +251,9 @@ fn windows(key: &str, account: &Account, now: f64, cx: &App) -> AnyElement {
             let selector = format!("{key}-window-{ix}");
             // A window whose time has passed has started over: not read since (PROTOCOL.md).
             let over = window.resets_at.is_some_and(|at| at <= now);
-            // BOX-NEEDED: each window's level, `windows[].level` in `GET kuvo/agents/api/kuvo/limits`' rows (#711): the meter is quiet until the box says it.
-            let color = level_color(window.level, cx);
-            let calm = !matches!(window.level, Some(Level::Near | Level::Over));
+            // Its colour is the box's level, as the rail's rings.
+            let color = crate::rail::level_color(window.level, cx);
+            let calm = window.level == Level::Calm;
             let said = if over { "Not read since it started over".to_owned() } else { format!("{}% used", (window.used * 100.).round() as u32) };
             let resets = window.resets_at.filter(|_| !over).map(|at| format!("Starts over in {}", time::until(at, now)));
             div()

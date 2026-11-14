@@ -676,7 +676,8 @@ impl SignIn {
     fn waiting(&mut self, attempt: &Attempt, status: Option<&Status>, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let c = cx.theme().colors.clone();
         let mut out = Vec::new();
-        // BOX-NEEDED: a device sign-in's code as `userCode`, for the engine's plans too (Copilot, OpenCode, SuperGrok), on `POST …/connect/oauth`'s answer or `GET kuvo/sign-in/status`: the bridge says it for the agents, but the engine leaves it in its `url` or `instructions` (the Mac reads it out of them, KuvoClient's `OAuthAttempt.userCode`); until the box says it, such a sign-in shows its page and instructions without the code apart.
+        // The code its page asks for, as the box says it apart (`userCode`, when it started the
+        // sign-in or in its status since): shown as it is, never read out of the page here.
         let user_code = status.and_then(|status| status.user_code.clone()).or_else(|| attempt.user_code.clone());
         let instructions = status.and_then(|status| status.instructions.clone()).unwrap_or_else(|| attempt.instructions.clone());
         if attempt.mode == "code" {

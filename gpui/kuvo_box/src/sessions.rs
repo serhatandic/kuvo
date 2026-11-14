@@ -70,6 +70,9 @@ pub struct Facts {
     /// This copy isn't its box's own (it moved, or is on its way there).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub away: Option<bool>,
+    /// The bot it is, or works for, by its id (as `kuvo/bots` lists it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot: Option<String>,
 }
 
 impl Facts {
@@ -84,14 +87,38 @@ impl Facts {
     }
 }
 
-/// A project the lists show: its name where its list gives one, and when its newest session
-/// changed (none for one with none).
+/// A project the lists show: its name where its list gives one, when its newest session changed
+/// (none for one with none), and its sums as the box counts them: how many of its sessions wait on
+/// you, and how many are at work (never one that waits).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Project {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated: Option<f64>,
+    #[serde(default)]
+    pub asking: usize,
+    #[serde(default)]
+    pub working: usize,
+}
+
+/// What a session waiting on you asks, in a few words: its kind (`permission`, `question`,
+/// `sandbox`, `vault`, `other`; one a newer box names is shown the same way), and the box's words
+/// for it, written to follow a name ("asks to run a command").
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct Asks {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub summary: String,
+}
+
+/// A session waiting on you, as "Needs you" lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct NeedsYou {
+    pub session: String,
+    #[serde(default)]
+    pub asks: Asks,
 }
 
 /// A line from the box: whole (`full`), or what changed since the line before.
@@ -106,6 +133,10 @@ pub struct Line {
     pub gone: Option<Vec<String>>,
     #[serde(default)]
     pub projects: HashMap<String, Project>,
+    /// The sessions waiting on you that the lists show, the one that asked last first: whole in
+    /// every line.
+    #[serde(default, rename = "needsYou")]
+    pub needs_you: Vec<NeedsYou>,
     /// What the box couldn't read yet (`bridge`): its sessions are as last read.
     #[serde(default)]
     pub pending: Option<Vec<String>>,
@@ -117,6 +148,7 @@ pub struct Listing {
     at: Option<String>,
     sessions: HashMap<String, Facts>,
     projects: HashMap<String, Project>,
+    needs_you: Vec<NeedsYou>,
     /// What it said of sessions it has let go since (deleted there, or moved away), for a row a
     /// client still holds as it goes.
     former: HashMap<String, Facts>,
@@ -146,6 +178,11 @@ impl Listing {
         &self.projects
     }
 
+    /// "Needs you": the sessions waiting on you, in the box's order, each with what it asks.
+    pub fn needs_you(&self) -> &[NeedsYou] {
+        &self.needs_you
+    }
+
     /// What the box couldn't read yet (`["bridge"]`): its sessions there are as last read.
     pub fn pending(&self) -> &[String] {
         &self.pending
@@ -159,7 +196,7 @@ impl Listing {
     /// `line` taken in: a whole one in place of what was, else what changed. Whether anything did.
     pub fn take(&mut self, line: Line) -> bool {
         let was_read = self.at.is_some();
-        let before = (self.sessions.clone(), self.projects.clone(), std::mem::take(&mut self.pending));
+        let before = (self.sessions.clone(), self.projects.clone(), std::mem::take(&mut self.pending), std::mem::take(&mut self.needs_you));
         self.at = Some(line.at);
         if line.full == Some(true) {
             for (id, facts) in self.sessions.drain() {
@@ -185,18 +222,14 @@ impl Listing {
             self.former.clear();
         }
         self.projects = line.projects;
+        self.needs_you = line.needs_you;
         self.pending = line.pending.unwrap_or_default();
-        !was_read || before.0 != self.sessions || before.1 != self.projects || before.2 != self.pending
+        !was_read || before.0 != self.sessions || before.1 != self.projects || before.2 != self.pending || before.3 != self.needs_you
     }
 
     /// The sidebar a client draws from it ([`sidebar`]).
     pub fn sidebar(&self) -> Sidebar {
         sidebar(&self.sessions, &self.projects)
-    }
-
-    /// How many sessions wait on you, of those a client shows.
-    pub fn waiting_on_you(&self) -> usize {
-        self.sessions.values().filter(|facts| place(Some(facts)).is_some() && facts.asked.is_some()).count()
     }
 }
 

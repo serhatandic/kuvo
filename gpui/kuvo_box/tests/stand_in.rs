@@ -650,3 +650,23 @@ fn a_conversation_whose_stream_cant_be_opened_is_read_on_a_timer_meanwhile() {
         }
     }
 }
+
+/// What waits on you is followed as the box says it: its counts now, and again as they change
+/// (`kuvo/waiting/events`), with nothing counted here.
+#[test]
+fn what_waits_on_you_follows_the_boxs_counts() {
+    use kuvo_box::areas::Waiting;
+    use kuvo_box::follow::Followed;
+    let stand_in = StandInBox::start(|seen| match seen.route() {
+        "kuvo/info" => Answer::json(200, mac_info(current_features())),
+        _ => Answer::json(404, json!({})),
+    });
+    let lines = stand_in.stream_for("kuvo/waiting/events");
+    let (_home, _serve, client) = this_mac(&stand_in);
+    let follow = client.follow_waiting(at_once());
+    lines.send(json!({ "sessions": 2, "bots": 1, "queue": 0 }).to_string()).unwrap();
+    assert_eq!(follow.next_blocking(), Some(Followed::Now(Waiting { sessions: 2, bots: 1, queue: 0 })));
+    // An ask is answered: the box says its counts again.
+    lines.send(json!({ "sessions": 1, "bots": 1, "queue": 0 }).to_string()).unwrap();
+    assert_eq!(follow.next_blocking(), Some(Followed::Now(Waiting { sessions: 1, bots: 1, queue: 0 })));
+}

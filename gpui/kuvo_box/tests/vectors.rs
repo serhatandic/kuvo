@@ -35,6 +35,35 @@ fn every_case_of_the_box_answer_is_read_whole() {
     }
 }
 
+/// "Needs you" and each project's sums are the box's: read as it says them, in its order, with
+/// nothing counted or sorted here.
+#[test]
+fn needs_you_and_each_projects_sums_are_read_as_the_box_says_them() {
+    let vectors = vectors("session-lists.json");
+    let (mut asking, mut needing) = (0, 0);
+    for case in vectors["cases"].as_array().unwrap() {
+        let expect = &case["expect"];
+        let line: Line = serde_json::from_value(serde_json::json!({ "at": "1", "full": true, "sessions": expect["sessions"], "projects": expect["projects"], "needsYou": expect["needsYou"] })).unwrap();
+        let mut listing = Listing::new();
+        listing.take(line);
+        let said: Vec<(String, String, String)> = expect["needsYou"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|needs| (needs["session"].as_str().unwrap().to_owned(), needs["asks"]["kind"].as_str().unwrap().to_owned(), needs["asks"]["summary"].as_str().unwrap().to_owned()))
+            .collect();
+        let read: Vec<(String, String, String)> = listing.needs_you().iter().map(|needs| (needs.session.clone(), needs.asks.kind.clone(), needs.asks.summary.clone())).collect();
+        assert_eq!(read, said, "{}", case["name"]);
+        needing += read.len();
+        for (directory, project) in expect["projects"].as_object().into_iter().flatten() {
+            let read = &listing.projects()[directory];
+            assert_eq!((read.asking as u64, read.working as u64), (project["asking"].as_u64().unwrap(), project["working"].as_u64().unwrap()), "{}: {directory}", case["name"]);
+            asking += read.asking;
+        }
+    }
+    assert!(needing > 0 && asking > 0, "a case with a session waiting on you");
+}
+
 /// (Times are numbers: 590 and 590.0 are the same.)
 fn numbers_as_floats(value: Value) -> Value {
     match value {

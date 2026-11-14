@@ -1,10 +1,12 @@
 //! Accounts and signing in (PROTOCOL.md, "Signing in" and the coding agents' accounts): the
 //! engine's plans and providers (`api/integration`) and the coding agents' accounts
-//! (`kuvo/agents/api/integration`), with the ways in, their order and their words as the box says
-//! them (`kuvo/sign-in/accounts`, `kuvo/sign-in/methods`), how a sign-in goes
-//! (`kuvo/sign-in/status`, with what to say when it didn't work), and signing in and out through the
-//! engine's and the bridge's own routes. The engine does the signing in; nothing here reimplements
-//! it, decides a way in, or words a failure.
+//! (`kuvo/agents/api/integration`), with which of them Accounts lists, each one's mark, the ways in,
+//! their order and their words as the box says them (`kuvo/sign-in/accounts`,
+//! `kuvo/sign-in/methods`), a sign-in in the browser started through the box with its device code
+//! apart (`kuvo/sign-in/start`), how it goes (`kuvo/sign-in/status`, with what to say when it didn't
+//! work), and signing out through the engine's and the bridge's own routes. The engine does the
+//! signing in; nothing here reimplements it, decides a way in or what's listed, reads a code out of
+//! a page, or words a failure.
 //!
 //! Never read here: a key or a sign-in's secret (`api/credential` lists them; this never asks it).
 
@@ -204,18 +206,17 @@ impl Integration {
     pub fn version(&self) -> Option<&str> {
         self.meta("version").and_then(Value::as_str)
     }
-
-    /// Which coding agent's (`claude`, `codex`…), as the bridge says.
-    pub fn agent(&self) -> Option<&str> {
-        self.meta("agent").and_then(Value::as_str)
-    }
 }
 
-/// An account as Accounts draws it: the engine's or the bridge's listing, and the box's ways in.
+/// An account as Accounts draws it: the engine's or the bridge's listing, the box's ways in, and
+/// its mark.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AccountEntry {
     pub side: Side,
     pub integration: Integration,
+    /// Its mark, by the plan limits' service ids (`claude`, `copilot`…), as the box says; none for
+    /// one with no mark, drawn by its name's first letter.
+    pub service: Option<String>,
     /// The box's ways in (`kuvo/sign-in/accounts`); empty: none to offer, so no Sign In.
     pub ways: Ways,
     /// The engine says its sign-in in use ended (`kuvo/accounts/ended`).
@@ -240,7 +241,7 @@ pub struct Accounts {
     /// The coding agents' accounts, in the bridge's order. Empty where its bridge isn't running
     /// (`agents_down` says why).
     pub agents: Vec<AccountEntry>,
-    /// The engine's plans and providers, in its order, less those Accounts doesn't list.
+    /// The engine's plans and providers, in its order: those the box says Accounts lists.
     pub engine: Vec<AccountEntry>,
     /// Why the coding agents' bridge, or the engine, couldn't list its accounts just now (`503`).
     pub agents_down: Option<String>,
@@ -265,7 +266,7 @@ pub struct Attempt {
     /// It may end on a code to paste back instead (Claude Code's).
     #[serde(default, rename = "acceptsCode")]
     pub accepts_code: bool,
-    /// A device code to enter on the page.
+    /// The code its page asks for, as the box says it apart.
     #[serde(default, rename = "userCode")]
     pub user_code: Option<String>,
 }
@@ -337,6 +338,11 @@ impl BoxClient {
             id: String,
             #[serde(flatten)]
             ways: Ways,
+            /// Whether Accounts lists it, as the box decides (whatever `kind` it names).
+            #[serde(default)]
+            listed: bool,
+            #[serde(default)]
+            service: Option<String>,
         }
         #[derive(Deserialize)]
         struct Answer {
@@ -348,13 +354,13 @@ impl BoxClient {
             Side::Agents => "kuvo/sign-in/accounts?agents=1",
         };
         let ways: Vec<Entry> = self.get::<Answer>(route).map(|answer| answer.accounts)?;
-        // BOX-NEEDED: which of the engine's integrations are providers Accounts lists, `kind: "provider" | "search" | "agentDuplicate"` on each account in `GET kuvo/sign-in/accounts` (or the box leaving the rest out: web search services, MCP servers' sign-ins, the engine's own way to a plan a coding agent brings): until the box says, every account it lists is shown, none left out here.
+        // Those the box says Accounts lists (`listed`), each with its ways in and its mark.
         Ok(integrations
             .into_iter()
-            .map(|integration| {
-                let ways = ways.iter().find(|entry| entry.id == integration.id).map(|entry| entry.ways.clone()).unwrap_or_default();
+            .filter_map(|integration| {
+                let entry = ways.iter().find(|entry| entry.id == integration.id).filter(|entry| entry.listed)?;
                 let ended = ended.contains(&integration.id);
-                AccountEntry { side, integration, ways, ended }
+                Some(AccountEntry { side, service: entry.service.clone(), ways: entry.ways.clone(), integration, ended })
             })
             .collect())
     }
@@ -387,14 +393,15 @@ impl BoxClient {
         self.get(&format!("kuvo/sign-in/methods?integration={}{}", query_value(account), side.agents_query()))
     }
 
-    /// Starts a sign-in in the browser (`oauth`), with what its form asked.
+    /// Starts a sign-in in the browser (`oauth`), with what its form asked, through the box: its
+    /// answer is the engine's (or the bridge's) attempt, with the code its page asks for apart
+    /// (`userCode`) where it has one.
     pub fn start_sign_in(&self, side: Side, account: &str, method: &str, answer: Option<&Map<String, Value>>) -> Result<Attempt> {
         let mut body = json!({ "methodID": method });
         if let Some(answer) = answer.filter(|answer| !answer.is_empty()) {
             body["answer"] = Value::Object(answer.clone());
         }
-        let data: Data<Attempt> = self.value(&Request::post(format!("{}/integration/{}/connect/oauth", side.api(), segment(account)), body))?;
-        Ok(data.data)
+        self.value(&Request::post(format!("kuvo/sign-in/start?integration={}{}", query_value(account), side.agents_query()), body))
     }
 
     /// How a sign-in goes, as the box says (the engine's status, with its failure in words).
@@ -484,6 +491,26 @@ mod tests {
             let legacy = offered["methods"].as_array().unwrap().iter().filter(|method| method["legacy"] == json!(true)).count();
             assert_eq!(ways.legacy().count(), legacy);
             assert_eq!(ways.primary().count() + legacy, ways.methods.len());
+        }
+    }
+
+    /// A sign-in the box started reads with its device code apart, as `Vectors/sign-in.json`'s
+    /// `codes` record it: shown as the box says it, never read out of the page or instructions here.
+    #[test]
+    fn a_started_sign_ins_code_is_the_one_the_box_says() {
+        let vectors: Value = serde_json::from_str(include_str!("../../../protocol/vectors/sign-in.json")).unwrap();
+        let cases = vectors["codes"].as_array().unwrap();
+        assert!(cases.len() >= 4);
+        for case in cases {
+            // The box's answer: the attempt, with `userCode` where it found one.
+            let mut started = case["attempt"].clone();
+            started["attemptID"] = json!("att_1");
+            match case.get("userCode") {
+                Some(code) => started["userCode"] = code.clone(),
+                None => drop(started.as_object_mut().unwrap().remove("userCode")),
+            }
+            let attempt: Attempt = serde_json::from_value(started).unwrap();
+            assert_eq!(attempt.user_code.as_deref(), case.get("userCode").and_then(Value::as_str), "{}", case["about"]);
         }
     }
 

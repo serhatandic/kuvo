@@ -1,7 +1,8 @@
-//! The sidebars of the areas past Sessions, beside the rail: Bots (its bots and group chats), the
-//! Work Queue (In Progress and its categories), Computers (this one and the machines it runs
-//! sessions on) and Settings (its sections). Each is its own view, kept while another area shows
-//! and drawn only while its own does; only the area on screen asks the box anything, as it opens.
+//! The sidebars of the areas past Sessions, beside the rail: Bots (its bots, with what each is
+//! doing now, and group chats), the Work Queue (In Progress and its categories, with the box's
+//! counts), Computers (yours, as the box lists them) and Settings (its sections). Each is its own
+//! view, kept while another area shows and drawn only while its own does; Bots and the Work Queue
+//! ask the box as they open, and the window hands Computers the list its title bar draws too.
 //!
 //! None of these areas' pages is in the app yet: picking a row shows a plain page saying so.
 
@@ -10,7 +11,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Task, Window, div, prelude::FluentBuilder as _, px, rgb,
 };
 use kuvo_box::BoxClient;
-use kuvo_box::areas::{Bot, Group, Look, Machine, WorkQueue};
+use kuvo_box::areas::{Bot, BotNow, Computer, Group, Look, WorkQueue};
 use kuvo_ui::{
     ActiveTheme, Icon, IconSize, StyledType, TypeSize,
     row::{NavRow, SectionHeader},
@@ -47,7 +48,8 @@ pub struct AreaView {
     live: bool,
     bots: Reading<Bots>,
     queue: Reading<WorkQueue>,
-    machines: Reading<Vec<Machine>>,
+    /// Your computers, as the box lists them: the window's, handed here as it reads them.
+    computers: Reading<Vec<Computer>>,
     /// The box this window shows, as the Computers list names it first.
     this_box: SharedString,
     selected: Option<String>,
@@ -77,7 +79,7 @@ impl AreaView {
             })
         });
         let changes = settings.as_ref().map(|settings| cx.observe(settings, |_, _, cx| cx.notify()));
-        AreaView { area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, machines: Reading::NotYet, this_box: "This Mac".into(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_changes: changes }
+        AreaView { area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
@@ -106,6 +108,14 @@ impl AreaView {
         }
     }
 
+    /// Your computers, as the window read them.
+    pub fn set_computers(&mut self, computers: Reading<Vec<Computer>>, cx: &mut Context<Self>) {
+        if self.computers != computers {
+            self.computers = computers;
+            cx.notify();
+        }
+    }
+
     /// It's shown: its list is read from the box (in the app, on another thread; in tests and
     /// shots, at once). What was read before stays on screen meanwhile.
     pub fn shown(&mut self, cx: &mut Context<Self>) {
@@ -129,7 +139,6 @@ impl AreaView {
         match read {
             Read::Bots(bots) => self.bots = reading(bots, &self.bots),
             Read::Queue(queue) => self.queue = reading(queue, &self.queue),
-            Read::Machines(machines) => self.machines = reading(machines, &self.machines),
             Read::Nothing => {}
         }
         cx.notify();
@@ -173,7 +182,7 @@ impl AreaView {
             "bot" => ready(&self.bots).and_then(|bots| bots.bots.iter().find(|bot| bot.id == id).map(|bot| bot.name.clone())),
             "group" => ready(&self.bots).and_then(|bots| bots.groups.iter().find(|group| group.id == id).map(|group| group.name.clone())),
             "category" => ready(&self.queue).and_then(|queue| queue.categories.iter().find(|category| category.id == id).map(|category| category.name.clone())),
-            "machine" => ready(&self.machines).and_then(|machines| machines.iter().find(|machine| machine.id == id).map(|machine| machine.name.clone())),
+            "computer" => ready(&self.computers).and_then(|computers| computers.iter().find(|computer| computer.key == id).map(|computer| computer.name.clone())),
             "progress" => Some("In Progress".into()),
             "this" => Some(self.this_box.to_string()),
             _ => Some(key.to_owned()),
@@ -189,7 +198,6 @@ impl AreaView {
 enum Read {
     Bots(kuvo_box::Result<Bots>),
     Queue(kuvo_box::Result<WorkQueue>),
-    Machines(kuvo_box::Result<Vec<Machine>>),
     Nothing,
 }
 
@@ -201,13 +209,12 @@ fn read(area: Area, client: &BoxClient) -> Read {
             Bots { bots, groups }
         })),
         Area::Queue => Read::Queue(client.work_queue()),
-        Area::Computers => Read::Machines(client.machines()),
         _ => Read::Nothing,
     }
 }
 
 /// What a read makes of the list: what it read, or (failing) what was there, else why.
-fn reading<T: Clone>(read: kuvo_box::Result<T>, before: &Reading<T>) -> Reading<T> {
+pub fn reading<T: Clone>(read: kuvo_box::Result<T>, before: &Reading<T>) -> Reading<T> {
     match (read, before) {
         (Ok(value), _) => Reading::Ready(value),
         (Err(_), Reading::Ready(value)) => Reading::Ready(value.clone()),
@@ -268,13 +275,15 @@ impl AreaView {
         for bot in &bots.bots {
             let key = format!("bot:{}", bot.id);
             let selected = self.is_selected(&key);
-            // BOX-NEEDED: what a bot is doing now, `now: {working, asking}` on each bot in `GET kuvo/bots` (#711): until the box says it, its row shows its job.
-            let (working, asking) = bot.now.as_ref().map_or((0, 0), |now| (now.working, now.asking));
-            let words = doing(working, asking).unwrap_or_else(|| bot.job.clone());
+            // What it's doing now is the box's (`now`): its sessions at work and waiting on you,
+            // or when the newest finished; with none of them, its job.
+            let (working, asking) = (bot.now.working, bot.now.asking);
+            let words = doing(&bot.now, self.now()).unwrap_or_else(|| bot.job.clone());
+            let id = bot.id.clone();
             let trailing: Option<AnyElement> = if asking > 0 {
-                Some(count_badge(asking, cx).into_any_element())
+                Some(div().debug_selector(move || format!("bot-asking-{id}")).child(count_badge(asking, cx)).into_any_element())
             } else if working > 0 {
-                Some(spinner(SharedString::from(format!("bot-spin-{}", bot.id)), IconSize::Nav, c.text_muted).into_any_element())
+                Some(div().debug_selector(move || format!("bot-working-{id}")).child(spinner(SharedString::from(format!("bot-spin-{}", bot.id)), IconSize::Nav, c.text_muted)).into_any_element())
             } else {
                 None
             };
@@ -335,123 +344,148 @@ impl AreaView {
             Reading::Failed(why) => return vec![quiet(&format!("The Work Queue couldn’t be read: {why}"), false, cx)],
             Reading::Ready(queue) => queue,
         };
-        // BOX-NEEDED: the Work Queue's counts, `counts: {inProgress, categories: {<id>: n}}` in `GET kuvo/work-queue/categories` (#711): no counts drawn until the box says them.
-        let counts = queue.counts.as_ref();
-        let count = |n: Option<usize>| n.map(|n| div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(n.to_string()).into_any_element());
+        // The counts are the box's (`counts`, across your computers): none is counted here.
+        let counts = &queue.counts;
+        let count = |n: usize| div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(n.to_string());
         let mut rows = Vec::new();
-        let in_progress = counts.map(|counts| counts.in_progress);
-        let mut progress = NavRow::new("queue-progress", "In Progress")
-            .leading(if in_progress.unwrap_or(0) > 0 { spinner("queue-spin", IconSize::Nav, c.text_muted).into_any_element() } else { Icon::new(kuvo_ui::IconName::Clock).color(c.icon).into_any_element() })
+        let progress = NavRow::new("queue-progress", "In Progress")
+            .leading(if counts.in_progress > 0 { spinner("queue-spin", IconSize::Nav, c.text_muted).into_any_element() } else { Icon::new(kuvo_ui::IconName::Clock).color(c.icon).into_any_element() })
+            .trailing(count(counts.in_progress))
             .selected(self.is_selected("progress"))
             .on_click(self.row_click("progress".into(), cx));
-        if let Some(n) = count(in_progress) {
-            progress = progress.trailing(n);
-        }
         rows.push(div().debug_selector(|| "queue-progress".into()).pb(space::S0_5).child(progress).into_any_element());
         rows.push(SectionHeader::new("categories", "Categories").into_any_element());
         for category in &queue.categories {
             let key = format!("category:{}", category.id);
             let selector = format!("category-{}", category.id);
-            let mut row = NavRow::new(SharedString::from(selector.clone()), category.name.clone())
+            let row = NavRow::new(SharedString::from(selector.clone()), category.name.clone())
                 .leading(div().size(px(8.)).rounded(radius::PILL).bg(category_color(&category.id, cx)))
+                .trailing(count(counts.categories.get(&category.id).copied().unwrap_or(0)))
                 .selected(self.is_selected(&key))
                 .on_click(self.row_click(key, cx));
-            if let Some(n) = count(counts.map(|counts| counts.categories.get(&category.id).copied().unwrap_or(0))) {
-                row = row.trailing(n);
-            }
             rows.push(div().debug_selector(move || selector).pb(space::S0_5).child(row).into_any_element());
         }
         rows
     }
 
+    /// Your computers as the box lists them (`kuvo/computers`), the one this window shows first;
+    /// machines that Macs of different setups share, under their own header.
     fn computer_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let c = cx.theme().colors.clone();
-        // BOX-NEEDED: your computers and shared machines as one list, `GET kuvo/computers` (and events) → `[{key, name, kind, shared, reach, version, system, working}]` (#711): until then, this box and the machines it runs sessions on (`kuvo/machines`, a Mac's only).
         let mut rows = vec![SectionHeader::new("computers", "Your Computers").into_any_element()];
-        rows.push(computer_row("this", self.this_box.to_string(), "Shown in this window".into(), c.success, true, self.is_selected("this"), self.row_click("this".into(), cx), cx));
-        match &self.machines {
-            Reading::NotYet => rows.push(quiet("Loading machines…", true, cx)),
-            Reading::Failed(why) => rows.push(quiet(&format!("Machines couldn’t be read: {why}"), false, cx)),
-            Reading::Ready(machines) => {
-                for machine in machines {
-                    let key = format!("machine:{}", machine.id);
-                    let dot = match machine.connection.as_str() {
-                        "connected" => c.success,
-                        "failed" => c.danger,
-                        "connecting" | "reconnecting" | "installing" => c.warning,
-                        _ => c.text_faint,
-                    };
-                    let selected = self.is_selected(&key);
-                    rows.push(computer_row(&format!("machine-{}", machine.id), machine.name.clone(), machine.status.clone(), dot, false, selected, self.row_click(key, cx), cx));
-                }
+        let computers = match &self.computers {
+            Reading::NotYet => {
+                rows.push(quiet("Loading your computers…", true, cx));
+                return rows;
             }
+            Reading::Failed(why) => {
+                rows.push(quiet(&format!("Your computers couldn’t be read: {why}"), false, cx));
+                return rows;
+            }
+            Reading::Ready(computers) => computers,
+        };
+        let (shared, yours): (Vec<&Computer>, Vec<&Computer>) = computers.iter().partition(|computer| computer.shared);
+        rows.extend(yours.into_iter().map(|computer| self.computer_row(computer, cx)));
+        if !shared.is_empty() {
+            rows.push(div().debug_selector(|| "header-shared".into()).child(SectionHeader::new("shared", "Shared Machines")).into_any_element());
+            rows.extend(shared.into_iter().map(|computer| self.computer_row(computer, cx)));
         }
         rows
     }
-}
 
-#[allow(clippy::too_many_arguments)]
-fn computer_row(
-    id: &str,
-    name: String,
-    detail: String,
-    dot: Hsla,
-    mac: bool,
-    selected: bool,
-    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
-    cx: &App,
-) -> AnyElement {
-    let c = &cx.theme().colors;
-    let (hover, selected_bg) = (c.hover, c.selected_card);
-    let selector = format!("computer-{id}");
-    div()
-        .id(SharedString::from(selector.clone()))
-        .debug_selector(move || selector)
-        .flex()
-        .items_center()
-        .gap(space::S2)
-        .px(space::S2)
-        .py(space::S1_5)
-        .mb(space::S0_5)
-        .rounded(radius::NAV)
-        .cursor_pointer()
-        .map(|r| kuvo_ui::row::selected_card(r, selected, cx))
-        .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
-        .on_click(on_click)
-        .child(
+    fn computer_row(&self, computer: &Computer, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        // The one this window shows is picked as "this", by the window's own name for it.
+        let (key, id, name) = if computer.here { ("this".to_owned(), "this".to_owned(), self.this_box.to_string()) } else { (computer_key(computer), computer.key.clone(), computer.name.clone()) };
+        let selected = self.is_selected(&key);
+        let dot = match computer.reach.as_str() {
+            "connected" => c.success,
+            "connecting" => c.warning,
+            _ => c.danger,
+        };
+        let (hover, selected_bg) = (c.hover, c.selected_card);
+        let selector = format!("computer-{id}");
+        let working = (computer.working > 0).then(|| {
             div()
-                .relative()
                 .flex()
                 .flex_none()
                 .items_center()
-                .justify_center()
-                .size(px(28.))
-                .rounded(radius::NAV)
-                .bg(c.sunken)
-                .border_1()
-                .border_color(c.border)
-                .child(Icon::new(if mac { kuvo_ui::IconName::Computer } else { kuvo_ui::IconName::Terminal }).color(c.icon))
-                .child(div().absolute().bottom(px(-2.)).right(px(-2.)).size(px(9.)).rounded(radius::PILL).border_2().border_color(c.surface).bg(dot)),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .child(div().truncate().text_ui(TypeSize::Body).text_color(c.text).child(name))
-                .child(div().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(detail)),
-        )
-        .into_any_element()
+                .gap(space::S1)
+                .child(spinner(SharedString::from(format!("computer-spin-{id}")), IconSize::Nav, c.text_muted))
+                .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(computer.working.to_string()))
+        });
+        div()
+            .id(SharedString::from(selector.clone()))
+            .debug_selector(move || selector)
+            .flex()
+            .items_center()
+            .gap(space::S2)
+            .px(space::S2)
+            .py(space::S1_5)
+            .mb(space::S0_5)
+            .rounded(radius::NAV)
+            .cursor_pointer()
+            .map(|r| kuvo_ui::row::selected_card(r, selected, cx))
+            .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
+            .on_click(self.row_click(key, cx))
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(px(28.))
+                    .rounded(radius::NAV)
+                    .bg(c.sunken)
+                    .border_1()
+                    .border_color(c.border)
+                    .child(Icon::new(if computer.is_mac() { kuvo_ui::IconName::Computer } else { kuvo_ui::IconName::Terminal }).color(c.icon))
+                    .child(div().absolute().bottom(px(-2.)).right(px(-2.)).size(px(9.)).rounded(radius::PILL).border_2().border_color(c.surface).bg(dot)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().truncate().text_ui(TypeSize::Body).text_color(c.text).child(name))
+                    .child(div().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(computer_line(computer))),
+            )
+            .children(working)
+            .into_any_element()
+    }
 }
 
-/// What a bot is doing, in words, from the box's counts: "1 at work, 1 waiting on you"; none when
-/// it's doing nothing (its row shows its job).
-fn doing(working: usize, asking: usize) -> Option<String> {
-    let at_work = (working > 0).then(|| format!("{working} at work"));
-    let waiting = (asking > 0).then(|| if working > 0 { format!("{asking} waiting on you") } else { "Waiting on you".to_owned() });
+/// What a computer's row is picked by.
+fn computer_key(computer: &Computer) -> String {
+    format!("computer:{}", computer.key)
+}
+
+/// A computer's line under its name, from the box's facts: the one this window shows says so; one
+/// that isn't reached says that; else its system, or Kuvo Code's version there, as it said them.
+pub fn computer_line(computer: &Computer) -> String {
+    if computer.here {
+        return "Shown in this window".into();
+    }
+    match computer.reach.as_str() {
+        "connected" => computer.system.clone().or_else(|| computer.version.as_ref().map(|version| format!("Kuvo Code {version}"))).unwrap_or_else(|| "Connected".into()),
+        "connecting" => "Connecting…".into(),
+        _ => "Can’t be reached".into(),
+    }
+}
+
+/// What a bot is doing, in words, from the box's facts: "1 at work, 1 waiting on you", "Waiting
+/// on you", "2 at work"; with neither, "Finished 3h ago" from when its newest session last changed;
+/// none where the box says none of them (its row shows its job).
+fn doing(now: &BotNow, at: f64) -> Option<String> {
+    let at_work = (now.working > 0).then(|| format!("{} at work", now.working));
+    let waiting = (now.asking > 0).then(|| if now.working > 0 { format!("{} waiting on you", now.asking) } else { "Waiting on you".to_owned() });
     match (at_work, waiting) {
         (Some(at_work), Some(waiting)) => Some(format!("{at_work}, {waiting}")),
+        (None, None) => now.finished.map(|finished| match time::ago(finished, at).as_str() {
+            "now" => "Finished just now".to_owned(),
+            ago => format!("Finished {ago} ago"),
+        }),
         (at_work, waiting) => at_work.or(waiting),
     }
 }
@@ -569,12 +603,17 @@ pub fn views(client: &BoxClient, live: bool, cx: &mut App) -> Vec<(Area, gpui::E
 #[cfg(test)]
 mod tests {
     use super::doing;
+    use kuvo_box::areas::BotNow;
 
     #[test]
-    fn a_bot_says_what_its_doing_from_the_boxs_counts() {
-        assert_eq!(doing(1, 1).as_deref(), Some("1 at work, 1 waiting on you"));
-        assert_eq!(doing(0, 1).as_deref(), Some("Waiting on you"));
-        assert_eq!(doing(2, 0).as_deref(), Some("2 at work"));
-        assert_eq!(doing(0, 0), None);
+    fn a_bot_says_what_its_doing_from_the_boxs_facts() {
+        let now = |working, asking, finished| BotNow { working, asking, finished };
+        let hour = 3_600_000.;
+        assert_eq!(doing(&now(1, 1, None), 0.).as_deref(), Some("1 at work, 1 waiting on you"));
+        assert_eq!(doing(&now(0, 1, None), 0.).as_deref(), Some("Waiting on you"));
+        assert_eq!(doing(&now(2, 0, None), 0.).as_deref(), Some("2 at work"));
+        assert_eq!(doing(&now(0, 0, Some(hour)), 4. * hour).as_deref(), Some("Finished 3h ago"));
+        assert_eq!(doing(&now(0, 0, Some(hour)), hour).as_deref(), Some("Finished just now"));
+        assert_eq!(doing(&now(0, 0, None), 0.), None, "a bot with no session listed shows its job");
     }
 }
