@@ -871,6 +871,7 @@ async function host() {
   // Each page's title, as the browser last said.
   const titles = new Map();
   // Live view: one capture per size/quality class, independent of how many clients draw it.
+  const agentSizes = new Map();
   const sizes = new Map(), loading = new Set(), histories = new Map(), dialogs = new Map();
   const pages = () => ({ active, pages: [...targets].map(targetId => ({
     targetId, url: addresses.get(targetId) ?? "", title: titles.get(targetId) ?? "",
@@ -1002,6 +1003,7 @@ async function host() {
         : { ...sizeFor({ ...p, scale: p.deviceScaleFactor }), scale: finite(p.deviceScaleFactor, previous.scale, .25, 8) };
       client.rawMetrics ??= new Map();
       client.rawMetrics.set(target, size);
+      if (!client.viewer) agentSizes.set(target, size);
       await resize(target, size, client.viewer ? "viewer" : "agent");
       reply(); return true;
     }
@@ -1350,6 +1352,7 @@ async function host() {
     if (message.method === "Target.targetDestroyed") {
       clearUploads(message.params.targetId);
       targets.delete(message.params.targetId);
+      agentSizes.delete(message.params.targetId);
       sizes.delete(message.params.targetId); loading.delete(message.params.targetId); histories.delete(message.params.targetId); dialogs.delete(message.params.targetId); choosers.delete(message.params.targetId);
       openers.delete(message.params.targetId);
       for (const [frame, page] of framePages) if (page === message.params.targetId) framePages.delete(frame);
@@ -1488,6 +1491,9 @@ async function host() {
         case "Kuvo.setStatus":
           // Each helper's: the pages agents are at work in, all together.
           client.status = message.params ?? { working: false };
+          if (client.status.working && client.status.targetId) {
+            await resize(client.status.targetId, agentSizes.get(client.status.targetId) ?? sizeFor({}), "agent");
+          }
           status = everyStatus();
           announcePages();
           broadcast({ method: "Kuvo.status", params: status });

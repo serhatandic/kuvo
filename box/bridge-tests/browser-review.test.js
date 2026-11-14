@@ -144,3 +144,15 @@ test("localhost and ordinary hosts with ports navigate inside the page", async (
   assert.ok(urls.includes("https://example.com:8080"));
   assert.equal(c.heard.all.filter(m => m.method === "Kuvo.external").length, 0);
 });
+
+test("an agent resumes at its own remembered size after an idle phone view resized the page", async () => {
+  const { c: agent, client, chrome } = await page();
+  await call(agent, "Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1 }, "raw");
+  const phone = await client(); await phone.heard.until(m => m.method === "Kuvo.hello");
+  await call(phone, "Kuvo.view", { targetId: "P", width: 393, height: 660 });
+  assert.equal(chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").at(-1).params.width, 393);
+  await call(agent, "Kuvo.setStatus", { targetId: "P", working: true });
+  const restored = chrome.all.filter(m => m.method === "Emulation.setDeviceMetricsOverride").at(-1);
+  assert.deepEqual([restored.params.width, restored.params.height], [1280, 800]);
+  await call(phone, "Kuvo.view", { targetId: null });
+});
