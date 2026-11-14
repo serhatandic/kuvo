@@ -1561,7 +1561,7 @@ the same number and counts nothing.
 - **What a bot is doing now** (`bots.now`, #711): each bot in `GET kuvo/bots` and
   `kuvo/bots/events` has `now` `{working, asking, finished?}`: how many of its sessions (its own
   conversation, and those working for it: `bot` in the session list's facts; not archived, this
-  box's own copy) are at work, and wait on you (never both); and, with neither, `finished`, when
+  box's own copy) are at work (its own turn runs, or its turn is over while a command or subagent it left goes on: Background work, the same fact the session list's `running` says), and wait on you (never both); and, with neither, `finished`, when
   the newest of them last changed (ms; left out for a bot with no session listed). Its events say
   it again as its sessions start, ask, are answered and finish. Facts only: a client words them
   ("1 at work, 1 waiting on you", "Finished 3h ago") alike, a view. A bot made or changed

@@ -34566,7 +34566,8 @@ function readBoxKnows() {
   }
   return { projects, filed: filedProjects(projects), botSessions, botOf, away: new Set(awaySessions()), asks: readAsks2() };
 }
-function placeNow(running, sessions, known = readBoxKnows()) {
+function placeNow(turns, sessions, known = readBoxKnows(), background = Object.keys(readBackground())) {
+  const running = new Set([...turns, ...background]);
   const parents = new Map;
   for (const session of sessions)
     if (session.parentID)
@@ -34763,7 +34764,7 @@ function keepList() {
     known2 = null;
     scheduleWorkOut();
   };
-  const followers = [projectFollowers, botFollowers, moveFollowers, askFollowers2];
+  const followers = [projectFollowers, botFollowers, moveFollowers, askFollowers2, backgroundFollowers];
   for (const each of followers)
     each.add(again);
   const box = watchFolders([BOX], (...told) => {
@@ -42864,7 +42865,7 @@ import fs138 from "node:fs";
 import path144 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "7782c575861d";
+var BRIDGE_VERSION = "2eff676eba48";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";

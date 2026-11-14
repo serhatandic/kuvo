@@ -675,6 +675,32 @@ test("a session that asks is in Needs you, its project's sums, its bot's now and
     await noteListEvent("engine", target, { type: "session.execution.succeeded", data: { sessionID: "ses_works" } })
     await listed(() => !keptList()?.sessions.ses_works?.facts.running)
     expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toEqual({ working: 0, asking: 0, finished: 620 })
+
+    // Its turn over, but a command it started still runs (Background work): it's at work still, in
+    // the list, its project's count and its bot's, as every client's At work says; until it ends.
+    const { WORK_BACKGROUND, backgroundFollowers } = await import("../src/link/work/background")
+    const leftRunning = (commands: unknown[]) => {
+      mkdirSync(join(WORK_BACKGROUND, ".."), { recursive: true })
+      writeFileSync(WORK_BACKGROUND, JSON.stringify({ engine: { sessions: commands.length ? { ses_works: { commands, subagents: [], tasks: [] } } : {}, folders: [] } }))
+      for (const tell of backgroundFollowers) tell()
+    }
+    try {
+      leftRunning([{ id: "job_1", command: "npm test", started: Date.now() }])
+      await listed(() => keptList()?.sessions.ses_works?.facts.running === true)
+      expect(active.has("ses_works")).toBe(false)
+      expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toEqual({ working: 1, asking: 0 })
+      expect((await ask("kuvo/sessions/list")).lines[0].sessions.ses_works.running).toBe(true)
+      // One running past six hours no longer counts, though it may still run.
+      leftRunning([{ id: "job_1", command: "npm run dev", started: Date.now() - 7 * 3_600_000 }])
+      await listed(() => !keptList()?.sessions.ses_works?.facts.running)
+      leftRunning([{ id: "job_2", command: "npm test", started: Date.now() }])
+      await listed(() => keptList()?.sessions.ses_works?.facts.running === true)
+      leftRunning([])
+      await listed(() => !keptList()?.sessions.ses_works?.facts.running)
+      expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toMatchObject({ working: 0, asking: 0 })
+    } finally {
+      rmSync(WORK_BACKGROUND, { force: true })
+    }
   } finally {
     stop()
     forgetAsks()

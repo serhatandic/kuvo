@@ -28,6 +28,7 @@ import type { EngineSession } from "../engine/sessions";
 import type { ListedProject, NeedsYou, SessionFacts, SessionList } from "../../shared/routes/sessions";
 import type { Target } from "../../shared/records";
 import type { AnswerPiece, RouteContext } from "../server/context";
+import { backgroundFollowers, readBackground } from "../work/background";
 
 export const LIST_ROUTE = /^kuvo\/sessions\/list(\/events)?$/;
 export const LIST_FILE = path.join(RUN, "lists", "sessions.json");
@@ -124,8 +125,12 @@ export function readBoxKnows(): BoxKnows {
   return { projects, filed: filedProjects(projects), botSessions, botOf, away: new Set(awaySessions()), asks: readAsks() };
 }
 
-/** What the box knows beside its sessions, as it is now (`known`: as it was read last). */
-export function placeNow(running: ReadonlySet<string>, sessions: Iterable<EngineSession>, known: BoxKnows = readBoxKnows()): ListPlace {
+/** What the box knows beside its sessions, as it is now (`known`: as it was read last). At work
+ * (`running`): a session whose own turn runs, and one whose turn is over while something it left
+ * goes on, a command or a subagent (Background work, `work/background.ts`), so a session's row, its
+ * project's count and its bot's `now.working` say what every client's At work says. */
+export function placeNow(turns: ReadonlySet<string>, sessions: Iterable<EngineSession>, known: BoxKnows = readBoxKnows(), background: Iterable<string> = Object.keys(readBackground())): ListPlace {
+  const running = new Set([...turns, ...background]);
   const parents = new Map<string, string>();
   for (const session of sessions) if (session.parentID) parents.set(session.id, session.parentID);
   // (A subagent's ask is the conversation's it works for.)
@@ -333,7 +338,8 @@ export function keepList(): () => void {
   lastWrite = -Infinity;
   // (What the box knows read again, once, at the next working out.)
   const again = () => { known = null; scheduleWorkOut(); };
-  const followers = [projectFollowers, botFollowers, moveFollowers, askFollowers];
+  // (And as what a session left running starts and ends: it's at work meanwhile.)
+  const followers = [projectFollowers, botFollowers, moveFollowers, askFollowers, backgroundFollowers];
   for (const each of followers) each.add(again);
   // (Only what a list goes by: the box's other files, and what a bot keeps in its folder as it
   // works, change often and say nothing of it.)
