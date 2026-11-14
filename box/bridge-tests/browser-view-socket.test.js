@@ -204,3 +204,8 @@ test("opening a view socket never registers it as an ask-answering legacy viewer
   await h.commands.until(m => m.id === 19);
   assert.equal(h.commands.all.some(m => m.method === "Kuvo.viewing"), false);
 });
+
+test("external URL examples always identify the page whose viewers may handle them", () => {
+  const vectors = JSON.parse(fs.readFileSync(new URL("../../protocol/vectors/browser-view.json", import.meta.url)));
+  for (const fact of vectors.facts.filter(f => f.method === "Kuvo.external")) assert.equal(typeof fact.params.targetId, "string");
+});

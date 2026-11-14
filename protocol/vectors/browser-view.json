@@ -90,6 +90,7 @@
     {
       "method": "Kuvo.external",
       "params": {
+        "targetId": "P",
         "url": "mailto:hello@example.com"
       }
     }
