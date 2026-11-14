@@ -259,6 +259,9 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
   const acting: Acting = { who: caller.who, now, fileOps: [] };
   const facts = await factsOf(targets, signal);
   const overseen = overseenBy(caller.owner, facts.all);
+  // (An agent that still says category, as before statuses: told what to say, never left thinking
+  // it was taken.)
+  if (args.category !== undefined && name !== "queue_import") throw new Refusal(`Items have a status and labels now, not a category. Give status (${STATUSES.map(each => each.name).join(", ")}) for where it stands, and labels for what kind of work it is (queue_labels lists them).`);
   switch (name) {
     case "queue_list":
       return said(await listWords(caller, args, facts, overseen, targets));

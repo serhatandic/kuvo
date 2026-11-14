@@ -85,7 +85,7 @@ test("an item a computer from before statuses hands, moves or tells is said anew
   // As a hand-off or a move brings it whole.
   const whole = itemOf(item(21, "cat_security-privacy", { doneAt: undefined }), "ses_a")!
   expect([whole.status, whole.labels, whole.title, whole.notes.length, whole.number]).toEqual(["todo", ["cat_security-privacy"], "Item 21", 1, 21])
-  expect((whole as Record<string, unknown>).category).toBeUndefined()
+  expect((whole as unknown as Record<string, unknown>).category).toBeUndefined()
   expect(itemOf(item(22, "parked"), "ses_a")!.status).toBe("backlog")
   expect(itemOf(item(23, "cat_waiting-on-you"), "ses_a")!.status).toBe("needs-you")
   expect(itemOf(item(24, "done", { doneAt: 5 }), "ses_a")).toMatchObject({ status: "done", doneAt: 5 })

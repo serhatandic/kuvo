@@ -513,4 +513,8 @@ test("an agent says where its work stands: a status it sets, a priority, who it'
   assert.equal((await tool("queue_update", { item: 2, priority: "max" }, "ses_lead")).text, "There's no priority max: it's one of Urgent, High, Normal, Low.");
   assert.match((await tool("queue_update", { item: 2, assignee: "Nobody" }, "ses_lead")).text, /^There's no bot or coding agent Nobody here to assign it to\. It can be: Scout, Claude Code, Codex/);
   assert.equal((await tool("queue_update", { item: 2, assignee: null, due: null }, "ses_lead")).isError, false);
+  // An agent that still says category is told what to say, and nothing changes.
+  const old = await tool("queue_update", { item: 2, category: "done" }, "ses_lead");
+  assert.deepEqual([old.isError, old.text], [true, "Items have a status and labels now, not a category. Give status (Needs you, In review, In progress, Waiting, Todo, Backlog, Done, Canceled) for where it stands, and labels for what kind of work it is (queue_labels lists them)."]);
+  assert.match((await tool("queue_show", { item: 2 }, "ses_lead")).text, /^#2 "Write the notes" · In review/);
 });

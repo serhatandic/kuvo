@@ -151,12 +151,16 @@ export function givenItems(given: unknown): { items: Imported[]; skipped: string
       skipped.push(isObject(each) && each.number !== undefined ? `#${String(each.number)} (it needs a whole number of six digits at most, and a title)` : "an item with no number");
       continue;
     }
-    const status = isObject(each) && each.done === true ? "done" : isObject(each) && each.status !== undefined ? statusNamed(each.status)?.id : "todo";
+    // (Where it stands, by `status`; `category`, as an old backlog's tool call may still say it: a
+    // status by an old name, Next or Later, or a label.)
+    const where = isObject(each) ? each.status ?? each.category : undefined;
+    const asLabel = isObject(each) && each.status === undefined && where !== undefined && !statusNamed(where) ? labelNamed(where)?.id : undefined;
+    const status = isObject(each) && each.done === true ? "done" : asLabel ? "todo" : where !== undefined ? statusNamed(where)?.id : "todo";
     if (!status) {
-      skipped.push(`#${number} (there's no status ${String((each as Record<string, unknown>).status)})`);
+      skipped.push(`#${number} (there's no status ${String(where)})`);
       continue;
     }
-    const label = isObject(each) && each.label !== undefined ? labelNamed(each.label)?.id : undefined;
+    const label = isObject(each) && each.label !== undefined ? labelNamed(each.label)?.id : asLabel;
     if (isObject(each) && each.label !== undefined && !label) {
       skipped.push(`#${number} (there's no label ${String(each.label)}: queue_labels makes one)`);
       continue;

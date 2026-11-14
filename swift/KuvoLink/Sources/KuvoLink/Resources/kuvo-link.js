@@ -43656,7 +43656,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "1a8d64886f6e";
+var BRIDGE_VERSION = "67d2d56442af";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -51688,12 +51688,14 @@ function givenItems(given) {
       skipped.push(isObject(each) && each.number !== undefined ? `#${String(each.number)} (it needs a whole number of six digits at most, and a title)` : "an item with no number");
       continue;
     }
-    const status = isObject(each) && each.done === true ? "done" : isObject(each) && each.status !== undefined ? statusNamed(each.status)?.id : "todo";
+    const where = isObject(each) ? each.status ?? each.category : undefined;
+    const asLabel = isObject(each) && each.status === undefined && where !== undefined && !statusNamed(where) ? labelNamed(where)?.id : undefined;
+    const status = isObject(each) && each.done === true ? "done" : asLabel ? "todo" : where !== undefined ? statusNamed(where)?.id : "todo";
     if (!status) {
-      skipped.push(`#${number} (there's no status ${String(each.status)})`);
+      skipped.push(`#${number} (there's no status ${String(where)})`);
       continue;
     }
-    const label = isObject(each) && each.label !== undefined ? labelNamed(each.label)?.id : undefined;
+    const label = isObject(each) && each.label !== undefined ? labelNamed(each.label)?.id : asLabel;
     if (isObject(each) && each.label !== undefined && !label) {
       skipped.push(`#${number} (there's no label ${String(each.label)}: queue_labels makes one)`);
       continue;
@@ -52018,6 +52020,8 @@ async function run4(name, args, caller, targets, signal) {
   const acting = { who: caller.who, now, fileOps: [] };
   const facts = await factsOf(targets, signal);
   const overseen = overseenBy(caller.owner, facts.all);
+  if (args.category !== undefined && name !== "queue_import")
+    throw new Refusal(`Items have a status and labels now, not a category. Give status (${STATUSES.map((each) => each.name).join(", ")}) for where it stands, and labels for what kind of work it is (queue_labels lists them).`);
   switch (name) {
     case "queue_list":
       return said6(await listWords(caller, args, facts, overseen, targets));
