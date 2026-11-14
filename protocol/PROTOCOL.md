@@ -9014,16 +9014,24 @@ While an agent's status says it works in a page, a viewer cannot change that pag
 Otherwise the latest view or input sets it. Raw clients' device metrics, page scale and
 screencast calls go through that same rule. Raw agents' requested size is retained and restored
 when work resumes (the native default is 1280×800 at DPR 2). When the agent stops, the
-most recently shown or used viewer regains its requested size without needing input.
+most recently shown or used viewer regains its requested size after five seconds of agent
+idle, without needing input. A new working status cancels that pending restoration; individual
+tool boundaries do not repeatedly reflow the watched page. If the latest viewer leaves,
+restoration selects the remaining viewer. A raw viewer that never requested metrics does
+not claim a default page layout. Geometry changes to a page are ordered, including an
+idle restoration already in flight when another tool starts.
+
 A raw screencast's maxima limit its picture, without changing its CSS
 viewport or DPR; raw dimensions are left to Chrome rather than the new view's desktop
-limits. Non-size Emulation calls pass through. Detaching a raw session stops its captures. New view sockets do not register
-as clients able to answer browser asks.
+limits. Non-size Emulation calls pass through. Detaching a raw session stops its captures.
+New view sockets do not register as clients able to answer browser asks.
 The keeper captures once per target, dimensions, scale and quality class, with one capture
 in progress per class, and scales the picture without changing the working page's layout.
-Capture scale compensates for the source DPR. Identical pictures are not resent, and unchanged
+Capture scale compensates for the source DPR and never exceeds the source device pixels.
+Identical pictures are not resent, and unchanged
 classes back off to a two-second poll. Raw input, page commands, navigation and page
-events wake only the affected page immediately. Captures wait for pending source metrics,
+events wake only the affected page without bypassing the class's FPS floor. Captures wait
+for pending source metrics,
 and stale captures from before a source-size change are discarded. Reopening a still view
 gets a first picture even if its JPEG is unchanged.
 
@@ -9031,10 +9039,11 @@ On the new sockets a binary message is: four bytes of big-endian JSON header len
 that many UTF-8 bytes of `{method:"Kuvo.frame",params:{...}}`, then the JPEG.
 SSH retains base64 `params.data`. Binary avoids base64's expansion; relay frames larger
 than 60,000 bytes are dropped, never split. The next picture's scale halves first, down to
-0.5; quality then steps down by ten, to q40.
+1x; quality then steps down by ten, to q40 before scale falls below 1x.
 If needed, scale steps down further, to 0.125. Only that viewer receives Kuvo.viewQuality.
 After a displayed JPEG under 20,000 bytes and two seconds without a drop, quality/scale move
-gradually back toward the viewer's requested settings; adaptation never changes page layout.
+gradually back toward the viewer's requested settings; a later larger frame cancels pending
+recovery. Adaptation never changes page layout.
 Phone-sized views (width ≤600 CSS pixels)
 start at scale 1 and quality at most 50. New Kuvo views are capped at 15 fps. Legacy raw
 streams keep a 60 fps ceiling and their requested quality; narrow raw views are not phone-classed.
@@ -9044,13 +9053,14 @@ the live view shares a ceiling of about 100 messages/s across its relay viewers.
 Other box traffic retains the rest of that connection's budget. A nonzero host.unsent()
 skips pictures as a backstop. Every transport skip returns Kuvo.frameDropped, never a
 display acknowledgement. Drops clear that viewer's image digest and wake capture so a
-still picture can be retried when pressure clears. Reply bursts pause keeper reads rather
-than close a healthy
-viewer; a slow serve client skips and credits pictures but retains text. A serve connection
+still picture can be retried when pressure clears. Non-oversize drops back off per viewer
+from 100 ms, doubling to two seconds; a real display acknowledgement resets that history.
+Reply bursts pause keeper reads rather than close a healthy viewer; a slow serve client skips and credits pictures but retains text. A serve connection
 with more than 4 MiB queued for text is closed rather than allowing unbounded buffering.
 Awaited keeper calls expire after ten seconds. Frame credits and dialog answers bypass
-a client's ordered command queue, so they can release a click blocked by a dialog. New relay
-sockets
+a client's ordered command queue, so they can release a click blocked by a dialog. Stop
+also bypasses a pending navigation. Page-scoped errors retain their session id and Chrome's
+refusal text; a deadline failure is reported separately as a timeout. New relay sockets
 keep the one-message picture bound instead of an automatic multi-message 2x stopped-page
 refinement; the legacy local client retains its own sharp-screenshot path.
 
