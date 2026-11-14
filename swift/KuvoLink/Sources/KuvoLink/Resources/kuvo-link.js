@@ -9558,7 +9558,8 @@ function frameBudget(count, now = Date.now(), ceiling = 100) {
   messages += count;
   return true;
 }
-function browserView(events, relay = false, run = RUN, key = socketKey) {
+function browserView(events, relay = false, run = RUN, key = socketKey, options = {}) {
+  const budget = options.budget ?? ((count, ceiling = 100) => frameBudget(count, Date.now(), ceiling));
   const socket = net3.createConnection(path35.join(run, "browser.sock"));
   let opened = false, ended = false;
   const incoming = new LineBuffer(80 * 1024 * 1024), input = new LineBuffer(72 * 1024 * 1024);
@@ -9566,7 +9567,7 @@ function browserView(events, relay = false, run = RUN, key = socketKey) {
   let notice = 0;
   const flush = () => {
     for (const [name, bytes] of facts) {
-      if (!frameBudget(Math.ceil(bytes.length / 59000)))
+      if (!budget(Math.ceil(bytes.length / 59000)))
         break;
       facts.delete(name);
       events.text(bytes);
@@ -9614,7 +9615,7 @@ function browserView(events, relay = false, run = RUN, key = socketKey) {
           const length = Buffer.alloc(4);
           length.writeUInt32BE(header.length);
           const frame = Buffer.concat([length, header, jpeg]);
-          if (relay && (frame.length > 60000 || !frameBudget(1, Date.now(), 80))) {
+          if (relay && (frame.length > 60000 || (options.unsent?.() ?? 0) > 0 || !budget(1, 80))) {
             socket.write(JSON.stringify({ method: frame.length > 60000 ? "Kuvo.frameDropped" : "Kuvo.frameAck", params: { frameId: meta.frameId, ...frame.length > 60000 ? { reason: "oversize" } : {} } }) + `
 `);
             return;
@@ -10645,7 +10646,7 @@ async function endShellJob(job, url, headers, signal) {
   } catch {}
   return null;
 }
-function engineConnect(readEngine = readEngineFile) {
+function engineConnect(readEngine = readEngineFile, unsent = () => 0) {
   return (request, phone, events) => {
     let ended = false;
     const end = (error) => {
@@ -10661,7 +10662,7 @@ function engineConnect(readEngine = readEngineFile) {
     if (!socketAllowed(request.path))
       return refuse("That isn't available over the link.");
     if (canonicalPath(request.path) === "kuvo/browser/view")
-      return browserView(events, true);
+      return browserView(events, true, undefined, undefined, { unsent });
     let engine;
     try {
       engine = readEngine();
@@ -42914,7 +42915,7 @@ import fs138 from "node:fs";
 import path145 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "84c9fa43c280";
+var BRIDGE_VERSION = "bf7cb99d4f49";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -54681,7 +54682,7 @@ async function runMacLink() {
         confirmed: confirmPhone,
         mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces)),
         handle: macFront(engineHandler(readEngineFile, { name: config.name }, readBridgeFile, (changed) => host.keepOnly(new Set((changed.phones ?? []).map((phone) => phone.key))), macLink.hold)),
-        connect: engineConnect(readEngineFile),
+        connect: engineConnect(readEngineFile, () => host.unsent?.() ?? 0),
         send: () => {}
       });
       macLink.host = host;
@@ -55620,7 +55621,7 @@ async function run6() {
       confirmed: confirmPhone,
       mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at)),
       handle: engineHandler(readEngineFile, { name: link.name || os23.hostname() }, readBridgeFile, (changed) => host.keepOnly(new Set((changed.phones ?? []).map((phone) => phone.key))), hold),
-      connect: engineConnect(readEngineFile),
+      connect: engineConnect(readEngineFile, () => host.unsent?.() ?? 0),
       send: () => {}
     });
     current = host;

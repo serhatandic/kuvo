@@ -176,7 +176,7 @@ export async function endShellJob(job: ShellJob, url: string, headers: Record<st
 }
 
 // What LinkHost runs to open a socket: the engine's WebSocket at that path, with its password.
-export function engineConnect(readEngine: () => EngineRecord = readEngineFile): (request: LinkRequest, phone: SessionPhone, events: SocketEvents) => SocketHandle {
+export function engineConnect(readEngine: () => EngineRecord = readEngineFile, unsent: () => number = () => 0): (request: LinkRequest, phone: SessionPhone, events: SocketEvents) => SocketHandle {
   return (request, phone, events) => {
     let ended = false;
     const end = (error?: Error) => {
@@ -189,7 +189,7 @@ export function engineConnect(readEngine: () => EngineRecord = readEngineFile): 
       return { send() {}, close() {} };
     };
     if (!socketAllowed(request.path)) return refuse("That isn't available over the link.");
-    if (canonicalPath(request.path) === "kuvo/browser/view") return browserView(events, true);
+    if (canonicalPath(request.path) === "kuvo/browser/view") return browserView(events, true, undefined, undefined, { unsent });
     let engine: EngineRecord;
     try {
       engine = readEngine();

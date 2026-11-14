@@ -177,3 +177,16 @@ test("large chunked view input and split UTF-8 are joined once at the line bound
   const received = await h.commands.until(m => m.id === 88);
   assert.deepEqual(received, message);
 });
+
+test("relay pictures are skipped while host.unsent reports buffered connection traffic", async t => {
+  let unsent = 1;
+  const h = await keeperView(t, true, { unsent: () => unsent, budget: () => true });
+  const frame = id => ({ method: "Kuvo.frame", params: { targetId: "P", frameId: id, data: "anBlZw==", width: 1, height: 1, scrollX: 0, scrollY: 0 } });
+  h.emit(frame(1));
+  await h.commands.until(m => m.method === "Kuvo.frameAck" && m.params.frameId === 1);
+  assert.equal(h.heard.all.some(m => m.binary), false);
+  unsent = 0;
+  h.emit(frame(2));
+  await h.heard.until(m => m.binary);
+  assert.equal(h.heard.all.filter(m => m.binary).length, 1);
+});

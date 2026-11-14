@@ -14,7 +14,8 @@ export function frameBudget(count: number, now = Date.now(), ceiling = 100): boo
   messages += count;
   return true;
 }
-export function browserView(events: SocketEvents, relay = false, run = RUN, key = socketKey): SocketHandle {
+export function browserView(events: SocketEvents, relay = false, run = RUN, key = socketKey, options: { unsent?: () => number; budget?: (count: number, ceiling?: number) => boolean } = {}): SocketHandle {
+  const budget = options.budget ?? ((count: number, ceiling = 100) => frameBudget(count, Date.now(), ceiling));
   const socket = net.createConnection(path.join(run, "browser.sock"));
   let opened = false, ended = false;
   const incoming = new LineBuffer(80 * 1024 * 1024), input = new LineBuffer(72 * 1024 * 1024);
@@ -22,7 +23,7 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
   let notice = 0;
   const flush = () => {
     for (const [name, bytes] of facts) {
-      if (!frameBudget(Math.ceil(bytes.length / 59000))) break;
+      if (!budget(Math.ceil(bytes.length / 59000))) break;
       facts.delete(name); events.text(bytes);
     }
     if (facts.size < 32) socket.resume();
@@ -50,7 +51,7 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
         const length = Buffer.alloc(4); length.writeUInt32BE(header.length);
         const frame = Buffer.concat([length, header, jpeg]);
         // Binary fits one relay message; oversize pictures are dropped and credited locally.
-        if ((relay && (frame.length > 60000 || !frameBudget(1, Date.now(), 80)))) {
+        if ((relay && (frame.length > 60000 || (options.unsent?.() ?? 0) > 0 || !budget(1, 80)))) {
           socket.write(JSON.stringify({ method: frame.length > 60000 ? "Kuvo.frameDropped" : "Kuvo.frameAck", params: { frameId: meta.frameId, ...(frame.length > 60000 ? { reason: "oversize" } : {}) } }) + "\n");
           return;
         }
