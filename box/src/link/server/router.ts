@@ -7,7 +7,7 @@ import { processRuns as runs } from "../../shared/platform";
 import { accountsRoute, credentialsRoute } from "../areas/accounts";
 import { agentToolsRoute, startRoute } from "../areas/agent-tools";
 import { SESSION_FOLDERS_ROUTE, SESSION_MOVE_ROUTE, sessionFoldersRoute, sessionMoveRoute } from "../areas/session-move";
-import { SESSION_ACTION_ROUTE, sessionActionRoute } from "../areas/session-actions";
+import { DELETES_ROUTE, deletesRoute, SESSION_ACTION_ROUTE, sessionActionRoute } from "../areas/session-actions";
 import { foundRoute } from "../areas/found";
 import { searchRoute } from "../areas/search";
 import { memberComputersRoute, setupRoute } from "../areas/setup";
@@ -137,6 +137,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => SESSION_FOLDERS_ROUTE.test(route), answer: sessionFoldersRoute },
   // Pin, Rename, Archive and Delete, and what a session's menu offers (PROTOCOL.md, "A session's actions").
   { when: route => route.match(SESSION_ACTION_ROUTE), answer: sessionActionRoute },
+  { when: route => route === DELETES_ROUTE, answer: deletesRoute },
   { when: route => route === "kuvo/approval" || SESSION_APPROVAL_ROUTE.test(route) || SESSION_DECISIONS_ROUTE.test(route), answer: approvalRoute },
   { when: route => SESSION_AUTOPILOT_ROUTE.test(route), answer: autopilotRoute },
   // What a typed message means, and what "/" offers (PROTOCOL.md, "What a typed message means").

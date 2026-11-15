@@ -1587,7 +1587,8 @@ update gate.
   (only conversations count: never a subagent, a group chat's seat or a hidden run, such as a coding
   agent's engine run): "Its worktree is deleted too." where it runs in a worktree of its own (no
   other conversation open in it), "Its worktree and changes that weren’t committed are deleted
-  too." where that worktree has some (or git can't say) and no archived conversation left in it
+  too." where that worktree has some (or git can't say, or a session there is at work and may still
+  write some) and no archived conversation left in it
   keeps them for Restore Worktree, "The changes kept to restore its worktree are deleted too."
   where it's the last conversation of a removed worktree whose changes were kept, else "This
   can’t be undone." `rename`
@@ -1600,10 +1601,18 @@ update gate.
   notes goes too. Written only where it isn't so already.
 - `DELETE kuvo/sessions/<id>` → `200 {session}`: deleted where it runs, its own wake-ups and watches
   with it; one that's gone already is done too.
-- Every one: `400` for an id that isn't a session's; `409 {message}` for one moving to another computer ("It’s moving to another computer.
+- `POST kuvo/sessions/deletes {sessions: [<id>]}` → `200 {title, message, label}`: Delete All's
+  question for several at once (Settings › Archived Sessions), by the same rule over the whole set
+  (a worktree only they're in goes, and a removed one's kept changes go with the last of them):
+  "Delete 2 sessions?", "Their messages and undo snapshots go too." then what goes with their
+  worktrees, then "This can’t be undone.". For one, it's as that session's own Delete asks. Ids the
+  box doesn't list are left out; `400` for none given, `404` for none here, `503` while the engine
+  can't be read. A client then deletes each with `DELETE kuvo/sessions/<id>`.
+- Every one: `400` for an id that isn't a session's; `409 {message}` for a subagent's session, a group
+  chat's seat or a hidden run (each goes, and changes, with what it's part of); `409 {message}` for one moving to another computer ("It’s moving to another computer.
   Try again once it’s there."); `409 {message, computer}` for one that moved to another of your
-  computers in the last two days (`computer`, that box's key, which a client asks instead; the box
-  asked doesn't pass it on); `404` for no such conversation (but Delete); `502` where the engine or
+  computers in the last two days (`computer`, that box's key, which a client may ask instead; the
+  box asked doesn't pass it on, and no client follows it yet); `404` for no such conversation (but Delete); `502` where the engine or
   bridge didn't take it; `503` with neither running, and while the coding agents' bridge starts
   again for one the engine hasn't (whether it's one of theirs can't be told yet). `…/archive
   {archived: false}` for one the engine archived itself is `409 {message}`.
@@ -6437,8 +6446,8 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sandbox.reviews.whole` | `reviews` on `kuvo/sandbox/asks` lists every ask to work outside a conversation's folder, so a client shows one only once it's listed `yours` ("Sandbox") |
 | `sandbox.words` | `why` for every `reason` and `actionLabel`, its button's words, in `kuvo/sandbox` ("Sandbox", #711) |
 | `search` | `kuvo/search` |
+| `sessions.actions` | `GET kuvo/sessions/<id>/actions`, `POST …/pin`, `…/archive`, `…/rename` and `DELETE kuvo/sessions/<id>`: a session's menu, done by the box ("A session's actions", #668), and Delete All's question, `POST kuvo/sessions/deletes` |
 | `sessions.agents` | `POST kuvo/sessions/<id>/agents` |
-| `sessions.actions` | `GET kuvo/sessions/<id>/actions`, `POST …/pin`, `…/archive`, `…/rename` and `DELETE kuvo/sessions/<id>`: a session's menu, done by the box ("A session's actions", #668) |
 | `sessions.asks` | `kuvo/sessions/<id>/asks`, `…/events`, and answering one ("A conversation's asks") |
 | `sessions.chat` | A chat made, moved or with its metadata written since carries `kuvo.chat` in its metadata, naming the chats folder it's in; older ones go by their folder ("Chats") |
 | `sessions.glance` | `kuvo/sessions/glance`, `…/events`, and `session` in `POST kuvo/git/pull-request` ("A session at a glance") |

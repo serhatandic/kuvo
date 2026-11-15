@@ -165,6 +165,10 @@ test("the menu says what can be done, and what Delete takes with it", async () =
   engine.sessions.set("ses_tree", session("ses_tree", "In a tree", tree))
   const confirm = async () => (await ask(handler, "GET", "kuvo/sessions/ses_tree/actions")).json.actions.find((each: any) => each.id === "delete").confirm.message
   expect(await confirm()).toBe("Its worktree is deleted too.")
+  // Clean now, but at work there: it may still write some.
+  engine.asking.add("ses_tree")
+  expect(await confirm()).toBe("Its worktree and changes that weren’t committed are deleted too.")
+  engine.asking.clear()
   writeFileSync(join(tree, "notes.md"), "draft")
   expect(await confirm()).toBe("Its worktree and changes that weren’t committed are deleted too.")
   // An archived one left in it keeps what isn't committed; an open one keeps the worktree.
@@ -236,4 +240,37 @@ test("one that lives on another computer now is refused with where, for its box 
   const refused = await ask(handler, "POST", "kuvo/sessions/ses_gone/archive", { archived: true })
   expect(refused).toEqual({ status: 409, json: { message: "It’s on another of your computers now. Change it there.", computer: "otherbox" } })
   expect((await ask(handler, "DELETE", "kuvo/sessions/ses_gone")).status).toBe(409)
+})
+
+test("a subagent's session, a group chat's seat and a hidden run are refused in words: they go with what they're part of", async () => {
+  engine.sessions.set("ses_sub", { ...session("ses_sub", "Sub", root), parentID: "ses_plan" })
+  engine.sessions.set("ses_seat", session("ses_seat", "Seat", root, { kuvo: { seat: "grp_1" } }))
+  engine.sessions.set("ses_run", session("ses_run", "Run", root, { kuvo: { engineFor: "ses_codexcli" } }))
+  engine.sessions.set("ses_part", session("ses_part", "Part", root, { kuvo: { reviewPart: "rev_1" } }))
+  for (const id of ["ses_sub", "ses_seat", "ses_run", "ses_part"]) {
+    for (const [method, route, body] of [["DELETE", "", undefined], ["POST", "/archive", { archived: true }], ["GET", "/actions", undefined]] as const) {
+      const refused = await ask(handler, method, `kuvo/sessions/${id}${route}`, body)
+      expect(refused.status).toBe(409)
+      expect(refused.json.message).toMatch(/goes with that one|change the group chat/)
+    }
+  }
+  expect(engine.deleted).toEqual([])
+})
+
+test("Delete All asks once for the whole set, saying what goes with their worktrees", async () => {
+  engine.sessions.set("ses_a1", session("ses_a1", "One", root, { "kuvo.archived": true }))
+  engine.sessions.set("ses_a2", session("ses_a2", "Two", root, { "kuvo.archived": true }))
+  const plain = await ask(handler, "POST", "kuvo/sessions/deletes", { sessions: ["ses_a1", "ses_a2", "ses_unknown"] })
+  expect(plain.json).toEqual({ title: "Delete 2 sessions?", message: "Their messages and undo snapshots go too. This can’t be undone.", label: "Delete" })
+  // Both of a removed worktree's last conversations: its kept changes go with them, though either
+  // alone leaves the other to bring them back.
+  const gone = join(root, "removed-all")
+  mkdirSync(join(kuvo, "box"), { recursive: true })
+  writeFileSync(join(kuvo, "box", "worktrees.json"), JSON.stringify({ worktrees: [], restorable: [{ project: root, root: gone, folder: gone, branch: "old", head: "abc", snapshot: "def" }] }))
+  engine.sessions.set("ses_g1", session("ses_g1", "G1", gone, { "kuvo.archived": true }))
+  engine.sessions.set("ses_g2", session("ses_g2", "G2", gone, { "kuvo.archived": true }))
+  expect((await ask(handler, "GET", "kuvo/sessions/ses_g1/actions")).json.actions.find((each: any) => each.id === "delete").confirm.message).toBe("This can’t be undone.")
+  const both = await ask(handler, "POST", "kuvo/sessions/deletes", { sessions: ["ses_g1", "ses_g2"] })
+  expect(both.json.message).toBe("Their messages and undo snapshots go too. So are the changes kept to restore their worktrees. This can’t be undone.")
+  expect((await ask(handler, "POST", "kuvo/sessions/deletes", { sessions: [] })).status).toBe(400)
 })

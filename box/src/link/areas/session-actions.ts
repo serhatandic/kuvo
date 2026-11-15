@@ -13,8 +13,8 @@ import { withNotes } from "../../shared/session-notes";
 import { plainName } from "../../shared/text";
 import { call } from "../engine/client";
 import { inTurnOn, rewriteOn } from "../engine/notes";
-import { isArchived, isPinned } from "../lists/rule";
-import { listNow } from "../lists/sessions";
+import { isArchived, isPinned, kindOf } from "../lists/rule";
+import { listNow, placeNow } from "../lists/sessions";
 import { gitLater } from "../git";
 import { SESSION_WAKES } from "../home";
 import { MOVING } from "../bots/here";
@@ -31,6 +31,27 @@ import type { EngineSession } from "../engine/sessions";
 import type { Target } from "../../shared/records";
 import type { SessionAction, SessionActions } from "../../shared/routes/sessions";
 import type { AnswerPiece, RouteContext } from "../server/context";
+
+/** What Delete All asks of several sessions at once: `POST kuvo/sessions/deletes {sessions}`. */
+export const DELETES_ROUTE = "kuvo/sessions/deletes";
+
+/** `POST kuvo/sessions/deletes {sessions: [<id>]}` → `{title, message, label}`: what Delete asks of
+ * those sessions at once, in the box's words. Ids this box doesn't list are left out. */
+export async function* deletesRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
+  const { request, signal, json } = context;
+  if (request.method.toUpperCase() !== "POST") return yield* json(405, { message: "Ask with POST." });
+  const given = parsed(request.body);
+  const ids = isObject(given) && Array.isArray(given.sessions) ? [...new Set(given.sessions.filter((id): id is string => typeof id === "string"))] : null;
+  if (!ids?.length) return yield* json(400, { message: "Say which sessions (sessions, their ids)." });
+  const list = await listNow(context, signal).catch(() => null);
+  if (!list) return yield* json(503, { message: "The engine isn't running." });
+  const deleting = ids.flatMap(id => {
+    const facts = list.sessions[id]?.facts;
+    return facts ? [{ id, directory: facts.directory, title: facts.title }] : [];
+  });
+  if (!deleting.length) return yield* json(404, { message: "None of them is here." });
+  return yield* json(200, await deleteConfirm(deleting, context, signal));
+}
 
 /** `kuvo/sessions/<id>` (Delete), and its `actions`, `archive`, `pin` and `rename`. */
 export const SESSION_ACTION_ROUTE = /^kuvo\/sessions\/(ses[^/]+)(?:\/(actions|archive|pin|rename))?$/;
@@ -54,45 +75,72 @@ function livesElsewhere(session: string): { message: string; computer: string } 
 const engineArchived = (session: Partial<EngineSession>): boolean => Boolean(session.time?.archived);
 
 /** What can be done with a session now, in the order a menu offers them. */
-export function actionsOf(session: EngineSession, deletes: string): SessionAction[] {
-  const title = session.title || UNTITLED;
+export function actionsOf(session: EngineSession, confirm: { title: string; message: string; label: string }): SessionAction[] {
   if (isArchived(session)) {
     return [
       // (Not one the engine archived itself: only it can bring that back.)
       ...(engineArchived(session) ? [] : [{ id: "unarchive" as const, label: "Unarchive" }]),
-      { id: "delete", label: "Delete", destructive: true, confirm: { title: `Delete “${title}”?`, message: deletes, label: "Delete" } },
+      { id: "delete", label: "Delete", destructive: true, confirm },
     ];
   }
   return [
     isPinned(session) ? { id: "unpin", label: "Unpin" } : { id: "pin", label: "Pin" },
     { id: "rename", label: "Rename" },
     { id: "archive", label: "Archive" },
-    { id: "delete", label: "Delete", destructive: true, confirm: { title: `Delete “${title}”?`, message: deletes, label: "Delete" } },
+    { id: "delete", label: "Delete", destructive: true, confirm },
   ];
 }
 
-/** What Delete says goes with a session, by the rule the box's tidying of worktrees goes by
- * (`tidyWorktrees`: only conversations count, never a subagent, a group chat's seat or a hidden run
- * such as a coding agent's engine run): its worktree where no other conversation is open in it,
- * and what isn't committed there unless an archived one left in it keeps that for Restore Worktree;
- * a removed worktree's kept changes, where it's the last one that could bring them back; else that
- * it can't be undone. Where the others can't be read, it says the most that may go. */
-export async function deletesOf(session: EngineSession, context: Pick<RouteContext, "readEngine" | "bridge">, signal?: AbortSignal): Promise<string> {
-  const plain = "This can’t be undone.";
-  const directory = session.location?.directory ?? session.directory ?? "";
+/** One session Delete is asked about: its id, its folder and its title. */
+export interface Deleting { id: string; directory: string; title?: string }
+
+/** What Delete asks of `deleting` (one session, or several at once, as Delete All has them), by the
+ * rule the box's tidying of worktrees goes by (`tidyWorktrees`: only conversations count, never a
+ * subagent, a group chat's seat or a hidden run such as a coding agent's engine run), for each
+ * worktree they're in: the worktree goes where no other conversation is open in it, and with it
+ * what isn't committed there unless an archived one left in it keeps that for Restore Worktree (not
+ * known to be clean: git can't say, or something works there now and may still write); a removed
+ * worktree's kept changes go with the last conversation that could bring them back. Where the
+ * others can't be read, it says the most that may go. */
+export async function deleteConfirm(deleting: Deleting[], context: Pick<RouteContext, "readEngine" | "bridge">, signal?: AbortSignal): Promise<{ title: string; message: string; label: string }> {
   const inside = (folder: string, root: string) => folder === root || folder.startsWith(root + path.sep);
-  const tree = directory ? readWorktrees().find(each => inside(directory, each.root)) : undefined;
-  const removed = directory && !tree ? readRestorableWorktrees().find(each => inside(directory, each.root)) : undefined;
-  if (!tree && !removed) return plain;
-  const root = (tree ?? removed)!.root;
-  const list = await listNow(context, signal).catch(() => null);
-  const others = Object.entries(list?.sessions ?? {}).filter(([id, entry]) => id !== session.id && !NOT_CONVERSATIONS.has(entry.facts.kind) && inside(entry.facts.directory, root));
-  if (removed) return others.length || !removed.snapshot ? plain : "The changes kept to restore its worktree are deleted too.";
-  if (others.some(([, entry]) => !entry.facts.archived)) return plain;
-  if (others.length) return "Its worktree is deleted too.";
-  // (Not known to be clean, it may have some.)
-  const status = fs.existsSync(root) ? await gitLater(root, ["status", "--porcelain", "--untracked-files=normal"]) : null;
-  return status === "" ? "Its worktree is deleted too." : "Its worktree and changes that weren’t committed are deleted too.";
+  const asked = new Set(deleting.map(each => each.id));
+  const trees = readWorktrees(), removed = readRestorableWorktrees();
+  let list: Awaited<ReturnType<typeof listNow>> = null;
+  const listed = async () => (list ??= await listNow(context, signal).catch(() => null));
+  let worktrees = 0, uncommitted = false, kept = false;
+  const roots = new Set<string>();
+  for (const one of deleting) {
+    const live = one.directory ? trees.find(each => inside(one.directory, each.root)) : undefined;
+    const gone = one.directory && !live ? removed.find(each => inside(one.directory, each.root)) : undefined;
+    const tree = live ?? gone;
+    if (!tree || roots.has(tree.root)) continue;
+    roots.add(tree.root);
+    const there = Object.entries((await listed())?.sessions ?? {}).filter(([, entry]) => !NOT_CONVERSATIONS.has(entry.facts.kind) && inside(entry.facts.directory, tree.root));
+    const others = there.filter(([id]) => !asked.has(id));
+    if (gone) {
+      if (!others.length && gone.snapshot) kept = true;
+      continue;
+    }
+    if (others.some(([, entry]) => !entry.facts.archived)) continue;
+    worktrees += 1;
+    if (others.length) continue;
+    // (Not known to be clean, it may have some; at work there, it may write some yet.)
+    const status = fs.existsSync(tree.root) ? await gitLater(tree.root, ["status", "--porcelain", "--untracked-files=normal"]) : null;
+    if (status !== "" || there.some(([, entry]) => entry.facts.running)) uncommitted = true;
+  }
+  if (deleting.length === 1) {
+    const message = uncommitted ? "Its worktree and changes that weren’t committed are deleted too."
+      : worktrees ? "Its worktree is deleted too."
+      : kept ? "The changes kept to restore its worktree are deleted too."
+      : "This can’t be undone.";
+    return { title: `Delete “${deleting[0]!.title || UNTITLED}”?`, message, label: "Delete" };
+  }
+  const also = [
+    worktrees ? (worktrees === 1 ? "The worktree only they used is deleted too" : "The worktrees only they used are deleted too") + (uncommitted ? ", with changes that weren’t committed." : ".") : "",
+    kept ? "So are the changes kept to restore their worktrees." : "",
+  ].filter(Boolean);
+  return { title: `Delete ${deleting.length} sessions?`, message: ["Their messages and undo snapshots go too.", ...also, "This can’t be undone."].join(" "), label: "Delete" };
 }
 
 /** What a worktree's tidying doesn't count as a conversation in it. */
@@ -145,9 +193,15 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
   }
   const { target } = place;
   const session = place.data as EngineSession;
+  // Part of another conversation: it goes, and changes, with that one.
+  const kind = kindOf(session as EngineSession & { id: string }, placeNow(new Set(), [session]));
+  if (kind === "subagent") return yield* json(409, { message: "It’s a subagent’s, part of the conversation that started it: it goes with that one." });
+  if (kind === "seat") return yield* json(409, { message: "It’s a bot’s seat in a group chat: change the group chat instead." });
+  if (kind === "hidden") return yield* json(409, { message: "It’s part of another conversation’s work: it goes with that one." });
 
   if (action === "actions") {
-    const answer: SessionActions = { session: id, actions: actionsOf(session, await deletesOf(session, context, signal)) };
+    const deleting = { id, directory: session.location?.directory ?? session.directory ?? "", title: session.title };
+    const answer: SessionActions = { session: id, actions: actionsOf(session, await deleteConfirm([deleting], context, signal)) };
     if (moving) answer.held = MOVING;
     return yield* json(200, answer);
   }

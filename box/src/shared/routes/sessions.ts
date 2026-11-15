@@ -28,11 +28,15 @@ export type SessionMoved = Infer<typeof SESSION_MOVED>;
 /** One thing a session's menu offers (`kuvo/sessions/<id>/actions`): its id, the button's words,
  * whether it destroys something, and where a client asks first, the question, what it comes to and
  * the words of the button that goes ahead, all the box's. */
+/** What a client asks first, all in the box's words: the question, what it comes to, and the
+ * words of the button that goes ahead (Delete All's too: `POST kuvo/sessions/deletes`). */
+export const CONFIRM = object({ title: string, message: string, label: string });
+
 export const SESSION_ACTION = object({
   id: words("pin", "unpin", "rename", "archive", "unarchive", "delete"),
   label: string,
   "destructive?": literal(true),
-  "confirm?": object({ title: string, message: string, label: string }),
+  "confirm?": CONFIRM,
 });
 
 /** What a session's menu offers now, in order; with `held`, why none of it can be done now (it's
@@ -282,6 +286,7 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "POST kuvo/sessions/:id/agents", answers: { 200: CARRIED } },
   { route: "POST kuvo/sessions/:id/folders", answers: { 200: object({ session: string }), 404: REFUSED, 405: REFUSED, 502: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/move", answers: { 200: SESSION_MOVED, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 502: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/sessions/deletes", answers: { 200: CONFIRM, 400: REFUSED, 404: REFUSED, 405: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/sessions/:id/actions", answers: { 200: SESSION_ACTIONS, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: LIVES_ELSEWHERE, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/archive", answers: { 200: SESSION_CHANGED, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: LIVES_ELSEWHERE, 502: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/pin", answers: { 200: SESSION_CHANGED, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: LIVES_ELSEWHERE, 502: REFUSED, 503: REFUSED } },

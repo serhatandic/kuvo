@@ -2457,11 +2457,12 @@ var WORK_ROUTES = [
 var CARRIED = object({ session: string });
 var STARTED = object({ session: string, title: nullable(string), folder: string, project: nullable(string), "answer?": nullable(string), "got?": words("askFirst", "acceptEdits", "auto"), "info?": any, "worktree?": object({ project: string, root: string, "folder?": string, branch: string, "base?": string }) });
 var SESSION_MOVED = object({ session: string, directory: string, "info?": any });
+var CONFIRM = object({ title: string, message: string, label: string });
 var SESSION_ACTION = object({
   id: words("pin", "unpin", "rename", "archive", "unarchive", "delete"),
   label: string,
   "destructive?": literal(true),
-  "confirm?": object({ title: string, message: string, label: string })
+  "confirm?": CONFIRM
 });
 var SESSION_ACTIONS = object({ session: string, actions: list(SESSION_ACTION), "held?": string });
 var SESSION_CHANGED = object({ session: string, info: any });
@@ -2583,6 +2584,7 @@ var SESSION_ROUTES = [
   { route: "POST kuvo/sessions/:id/agents", answers: { 200: CARRIED } },
   { route: "POST kuvo/sessions/:id/folders", answers: { 200: object({ session: string }), 404: REFUSED2, 405: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
   { route: "POST kuvo/sessions/:id/move", answers: { 200: SESSION_MOVED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+  { route: "POST kuvo/sessions/deletes", answers: { 200: CONFIRM, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 503: REFUSED2 } },
   { route: "GET kuvo/sessions/:id/actions", answers: { 200: SESSION_ACTIONS, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 503: REFUSED2 } },
   { route: "POST kuvo/sessions/:id/archive", answers: { 200: SESSION_CHANGED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
   { route: "POST kuvo/sessions/:id/pin", answers: { 200: SESSION_CHANGED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
@@ -43842,7 +43844,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4ed1ed0db926";
+var BRIDGE_VERSION = "d3f386048b14";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -47420,6 +47422,26 @@ async function* sessionFoldersRoute(context) {
 // box/src/link/areas/session-actions.ts
 import fs144 from "node:fs";
 import path153 from "node:path";
+var DELETES_ROUTE = "kuvo/sessions/deletes";
+async function* deletesRoute(context) {
+  const { request, signal, json } = context;
+  if (request.method.toUpperCase() !== "POST")
+    return yield* json(405, { message: "Ask with POST." });
+  const given = parsed(request.body);
+  const ids = isObject(given) && Array.isArray(given.sessions) ? [...new Set(given.sessions.filter((id) => typeof id === "string"))] : null;
+  if (!ids?.length)
+    return yield* json(400, { message: "Say which sessions (sessions, their ids)." });
+  const list = await listNow(context, signal).catch(() => null);
+  if (!list)
+    return yield* json(503, { message: "The engine isn't running." });
+  const deleting = ids.flatMap((id) => {
+    const facts = list.sessions[id]?.facts;
+    return facts ? [{ id, directory: facts.directory, title: facts.title }] : [];
+  });
+  if (!deleting.length)
+    return yield* json(404, { message: "None of them is here." });
+  return yield* json(200, await deleteConfirm(deleting, context, signal));
+}
 var SESSION_ACTION_ROUTE = /^kuvo\/sessions\/(ses[^/]+)(?:\/(actions|archive|pin|rename))?$/;
 var UNTITLED = "New Session";
 
@@ -47434,40 +47456,60 @@ function livesElsewhere(session) {
   return { message: `It’s on ${plainName(name) || "another of your computers"} now. Change it there.`, computer: moved.key };
 }
 var engineArchived = (session) => Boolean(session.time?.archived);
-function actionsOf(session, deletes) {
-  const title = session.title || UNTITLED;
+function actionsOf(session, confirm) {
   if (isArchived3(session)) {
     return [
       ...engineArchived(session) ? [] : [{ id: "unarchive", label: "Unarchive" }],
-      { id: "delete", label: "Delete", destructive: true, confirm: { title: `Delete “${title}”?`, message: deletes, label: "Delete" } }
+      { id: "delete", label: "Delete", destructive: true, confirm }
     ];
   }
   return [
     isPinned(session) ? { id: "unpin", label: "Unpin" } : { id: "pin", label: "Pin" },
     { id: "rename", label: "Rename" },
     { id: "archive", label: "Archive" },
-    { id: "delete", label: "Delete", destructive: true, confirm: { title: `Delete “${title}”?`, message: deletes, label: "Delete" } }
+    { id: "delete", label: "Delete", destructive: true, confirm }
   ];
 }
-async function deletesOf(session, context, signal) {
-  const plain = "This can’t be undone.";
-  const directory = session.location?.directory ?? session.directory ?? "";
+async function deleteConfirm(deleting, context, signal) {
   const inside = (folder, root) => folder === root || folder.startsWith(root + path153.sep);
-  const tree = directory ? readWorktrees().find((each) => inside(directory, each.root)) : undefined;
-  const removed = directory && !tree ? readRestorableWorktrees().find((each) => inside(directory, each.root)) : undefined;
-  if (!tree && !removed)
-    return plain;
-  const root = (tree ?? removed).root;
-  const list = await listNow(context, signal).catch(() => null);
-  const others = Object.entries(list?.sessions ?? {}).filter(([id, entry]) => id !== session.id && !NOT_CONVERSATIONS.has(entry.facts.kind) && inside(entry.facts.directory, root));
-  if (removed)
-    return others.length || !removed.snapshot ? plain : "The changes kept to restore its worktree are deleted too.";
-  if (others.some(([, entry]) => !entry.facts.archived))
-    return plain;
-  if (others.length)
-    return "Its worktree is deleted too.";
-  const status = fs144.existsSync(root) ? await gitLater(root, ["status", "--porcelain", "--untracked-files=normal"]) : null;
-  return status === "" ? "Its worktree is deleted too." : "Its worktree and changes that weren’t committed are deleted too.";
+  const asked = new Set(deleting.map((each) => each.id));
+  const trees = readWorktrees(), removed = readRestorableWorktrees();
+  let list = null;
+  const listed = async () => list ??= await listNow(context, signal).catch(() => null);
+  let worktrees = 0, uncommitted = false, kept = false;
+  const roots = new Set;
+  for (const one of deleting) {
+    const live = one.directory ? trees.find((each) => inside(one.directory, each.root)) : undefined;
+    const gone = one.directory && !live ? removed.find((each) => inside(one.directory, each.root)) : undefined;
+    const tree = live ?? gone;
+    if (!tree || roots.has(tree.root))
+      continue;
+    roots.add(tree.root);
+    const there = Object.entries((await listed())?.sessions ?? {}).filter(([, entry]) => !NOT_CONVERSATIONS.has(entry.facts.kind) && inside(entry.facts.directory, tree.root));
+    const others = there.filter(([id]) => !asked.has(id));
+    if (gone) {
+      if (!others.length && gone.snapshot)
+        kept = true;
+      continue;
+    }
+    if (others.some(([, entry]) => !entry.facts.archived))
+      continue;
+    worktrees += 1;
+    if (others.length)
+      continue;
+    const status = fs144.existsSync(tree.root) ? await gitLater(tree.root, ["status", "--porcelain", "--untracked-files=normal"]) : null;
+    if (status !== "" || there.some(([, entry]) => entry.facts.running))
+      uncommitted = true;
+  }
+  if (deleting.length === 1) {
+    const message = uncommitted ? "Its worktree and changes that weren’t committed are deleted too." : worktrees ? "Its worktree is deleted too." : kept ? "The changes kept to restore its worktree are deleted too." : "This can’t be undone.";
+    return { title: `Delete “${deleting[0].title || UNTITLED}”?`, message, label: "Delete" };
+  }
+  const also = [
+    worktrees ? (worktrees === 1 ? "The worktree only they used is deleted too" : "The worktrees only they used are deleted too") + (uncommitted ? ", with changes that weren’t committed." : ".") : "",
+    kept ? "So are the changes kept to restore their worktrees." : ""
+  ].filter(Boolean);
+  return { title: `Delete ${deleting.length} sessions?`, message: ["Their messages and undo snapshots go too.", ...also, "This can’t be undone."].join(" "), label: "Delete" };
 }
 var NOT_CONVERSATIONS = new Set(["subagent", "seat", "hidden"]);
 function forgetWakes2(session) {
@@ -47531,8 +47573,16 @@ async function* sessionActionRoute(context, match) {
   }
   const { target } = place;
   const session = place.data;
+  const kind = kindOf(session, placeNow(new Set, [session]));
+  if (kind === "subagent")
+    return yield* json(409, { message: "It’s a subagent’s, part of the conversation that started it: it goes with that one." });
+  if (kind === "seat")
+    return yield* json(409, { message: "It’s a bot’s seat in a group chat: change the group chat instead." });
+  if (kind === "hidden")
+    return yield* json(409, { message: "It’s part of another conversation’s work: it goes with that one." });
   if (action === "actions") {
-    const answer = { session: id, actions: actionsOf(session, await deletesOf(session, context, signal)) };
+    const deleting = { id, directory: session.location?.directory ?? session.directory ?? "", title: session.title };
+    const answer = { session: id, actions: actionsOf(session, await deleteConfirm([deleting], context, signal)) };
     if (moving)
       answer.held = MOVING;
     return yield* json(200, answer);
@@ -55846,6 +55896,7 @@ var ROUTES = [
   { when: (route) => SESSION_MOVE_ROUTE.test(route), answer: sessionMoveRoute },
   { when: (route) => SESSION_FOLDERS_ROUTE.test(route), answer: sessionFoldersRoute },
   { when: (route) => route.match(SESSION_ACTION_ROUTE), answer: sessionActionRoute },
+  { when: (route) => route === DELETES_ROUTE, answer: deletesRoute },
   { when: (route) => route === "kuvo/approval" || SESSION_APPROVAL_ROUTE.test(route) || SESSION_DECISIONS_ROUTE.test(route), answer: approvalRoute },
   { when: (route) => SESSION_AUTOPILOT_ROUTE.test(route), answer: autopilotRoute },
   { when: (route) => route.match(TYPED_ROUTE), answer: typedRoute },
