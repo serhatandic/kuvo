@@ -68,9 +68,9 @@ pub enum Target {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ComposerEvent {
     /// A new conversation was started on the box (in `folder`, filed under `project`), and what
-    /// was written (`written`) sent to it: what the box said of it, or why it couldn't go, is for
-    /// the conversation's own composer.
-    Started { session: String, folder: Option<String>, project: Option<String>, written: String, sent: Result<Sent, String> },
+    /// was written (`written`) and its attached `files` sent to it: what the box said of it, or
+    /// why it couldn't go, is for the conversation's own composer.
+    Started { session: String, folder: Option<String>, project: Option<String>, written: String, files: Vec<PathBuf>, sent: Result<Sent, String> },
     /// A group chat took what was written, or stopped: it's to be read again.
     Wrote,
 }
@@ -347,12 +347,16 @@ impl Composer {
         }
     }
 
-    /// What became of `written`, sent from the landing view to the conversation this composer is
-    /// for: the box's answer (what goes back, its note), or, where it couldn't go, it and why.
-    pub fn take_sent(&mut self, written: &str, sent: Result<Sent, String>, cx: &mut Context<Self>) {
+    /// What became of `written` and its attached `files`, sent from the landing view to the
+    /// conversation this composer is for: the box's answer (what goes back, its note), or, where it
+    /// couldn't go, both and why.
+    pub fn take_sent(&mut self, written: &str, files: Vec<PathBuf>, sent: Result<Sent, String>, cx: &mut Context<Self>) {
         match sent {
-            Ok(sent) => self.sent(sent, written, cx),
-            Err(error) => self.put_back(written, Some(error), cx),
+            Ok(sent) => self.sent(sent, written, files, cx),
+            Err(error) => {
+                self.attach(files, cx);
+                self.put_back(written, Some(error), cx);
+            }
         }
         cx.notify();
     }
@@ -654,15 +658,16 @@ impl Composer {
                     cx.notify();
                 });
             }
-            Target::Session { id, .. } => {
+            Target::Session { id, place } => {
                 // (One at a time: `send` refuses another while this one's on its way.)
                 debug_assert!(self.on_its_way.is_none(), "a second send while one was on its way");
+                draft.place = self.place_known.then_some(place);
                 self.on_its_way = Some(draft.id.clone());
                 self.spawn(cx, move || client.send_draft(&id, &draft, None), move |this, result, cx| {
                     this.sending = false;
                     this.on_its_way = None;
                     match result {
-                        Ok(sent) => this.sent(sent, &text, cx),
+                        Ok(sent) => this.sent(sent, &text, files, cx),
                         Err(error) => {
                             this.attach(files, cx);
                             this.put_back(&text, Some(error.to_string()), cx)
@@ -683,13 +688,15 @@ impl Composer {
                     move |this, result, cx| {
                         this.sending = false;
                         match result {
-                            // Started: what was written, and what the box said of it, go with the
-                            // conversation; this composer is left empty for the next one.
+                            // Started: what was written, its attached files, and what the box said
+                            // of it go with the conversation; this composer is left empty for the
+                            // next one.
                             Ok((started, sent)) => cx.emit(ComposerEvent::Started {
                                 session: started.session,
                                 folder: started.folder,
                                 project: started.project,
                                 written: text.clone(),
+                                files,
                                 sent,
                             }),
                             Err(error) => {
@@ -704,10 +711,14 @@ impl Composer {
         }
     }
 
-    /// What the box did with a typed text, shown; what goes back to the composer, put back. What
-    /// this client is to do that it can't yet keeps what was written (`written`).
-    fn sent(&mut self, sent: Sent, written: &str, cx: &mut Context<Self>) {
+    /// What the box did with a typed text, shown; what goes back to the composer, put back. Files
+    /// stay attached unless the answer took them (`send` or `command`). What this client is to do
+    /// that it can't yet keeps what was written (`written`).
+    fn sent(&mut self, sent: Sent, written: &str, files: Vec<PathBuf>, cx: &mut Context<Self>) {
         let Sent::Typed { answer, .. } = sent else { return };
+        if !answer.takes_files() {
+            self.attach(files, cx);
+        }
         let Answer { restore, error, .. } = (*answer).clone();
         let note = said(&answer);
         if restore.is_none() && is_clients_to_do(&answer) {
@@ -1243,7 +1254,7 @@ fn ahead_of(front: &str, now: &str) -> String {
 /// Whether the box's answer leaves the client a step this one can't take yet: what was written is
 /// kept in the field rather than lost.
 fn is_clients_to_do(answer: &Answer) -> bool {
-    answer.shell.is_some() || answer.compact == Some(true) || answer.toggle_autopilot == Some(true) || answer.side_thread == Some(true) || answer.show_goal == Some(true)
+    answer.toggle_autopilot == Some(true) || answer.side_thread == Some(true) || answer.show_goal == Some(true)
 }
 
 /// What the box did with a typed text, as a line under the composer; and, for what's this
@@ -1260,10 +1271,10 @@ fn said(answer: &Answer) -> Option<Note> {
         return note(&format!("Switched to {mode}."), false);
     }
     if answer.shell.is_some() {
-        return note("Running a “!” command isn’t in this app yet: use Kuvo Code on your Mac or iPhone.", true);
+        return None;
     }
     if answer.compact == Some(true) {
-        return note("Compacting isn’t in this app yet: use Kuvo Code on your Mac or iPhone.", true);
+        return note("Compaction requested.", false);
     }
     if answer.toggle_autopilot == Some(true) {
         return note("Turning Autopilot on or off isn’t in this app yet.", true);
@@ -1395,6 +1406,30 @@ impl Render for Composer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn executed_composer_actions_are_not_restored_as_unsupported() {
+        for value in [serde_json::json!({"shell": "pwd"}), serde_json::json!({"compact": true})] {
+            let answer: Answer = serde_json::from_value(value).unwrap();
+            assert!(!is_clients_to_do(&answer));
+            assert!(!answer.takes_files());
+            assert!(said(&answer).is_none_or(|note| !note.warning));
+        }
+    }
+
+    #[test]
+    fn unsupported_composer_actions_stay_clients_to_do() {
+        for value in [
+            serde_json::json!({"toggleAutopilot": true}),
+            serde_json::json!({"sideThread": true}),
+            serde_json::json!({"showGoal": true}),
+        ] {
+            let answer: Answer = serde_json::from_value(value).unwrap();
+            assert!(is_clients_to_do(&answer));
+            assert!(!answer.takes_files());
+            assert!(said(&answer).is_some_and(|note| note.warning));
+        }
+    }
 
     #[test]
     fn the_mention_being_typed_is_read_from_the_end() {

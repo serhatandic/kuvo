@@ -134,6 +134,8 @@ struct State {
     engine_archived: HashSet<String>,
     /// Removed worktrees whose uncommitted changes were kept for Restore Worktree.
     kept_worktree_changes: HashSet<String>,
+    /// Sessions with a manual compaction queued to run when the current turn ends.
+    pending_compacts: HashSet<String>,
 }
 
 pub const NAME: &str = "Stand-in Mac";
@@ -1227,22 +1229,45 @@ fn offers() -> Value {
     })
 }
 
+fn typed_vectors() -> &'static Value {
+    static VECTORS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    VECTORS.get_or_init(|| serde_json::from_str(include_str!("../../../protocol/vectors/typed.json")).expect("protocol/vectors/typed.json"))
+}
+
+/// Matches `box/src/link/typed/words.ts`'s `shellCommand`: `"!"` at index 0 with a non-empty
+/// command after trimming.
+fn shell_command(text: &str) -> Option<&str> {
+    let command = text.strip_prefix('!')?.trim();
+    (!command.is_empty()).then_some(command)
+}
+
 /// What the box makes of a typed text, for the few the stand-in knows: as `typed/decide.ts` would.
 fn decide(text: &str) -> Value {
+    if let Some(vector) = typed_vectors()["shell"].as_array().and_then(|cases| cases.iter().find(|case| case["text"].as_str() == Some(text))) {
+        if let Some(shell) = vector["command"].as_str() {
+            return json!({ "shell": shell });
+        }
+        return json!({ "send": { "text": text, "quoted": true } });
+    }
+    if let Some(shell) = shell_command(text) {
+        return json!({ "shell": shell });
+    }
     let trimmed = text.trim();
-    if let Some(shell) = trimmed.strip_prefix('!') {
-        return json!({ "shell": shell.trim() });
+    if let Some(rest) = trimmed.strip_prefix('/') {
+        let (name, words) = rest.split_once(char::is_whitespace).map_or((rest, ""), |(name, words)| (name, words.trim()));
+        match name.to_lowercase().as_str() {
+            "plan" if words.is_empty() => return json!({ "keyword": "plan", "agent": "plan" }),
+            "plan" => return json!({ "keyword": "plan", "agent": "plan", "send": { "text": words, "typed": "/plan" } }),
+            "autopilot" if words.is_empty() => return json!({ "keyword": "autopilot", "toggleAutopilot": true }),
+            "compact" => return json!({ "keyword": "compact", "compact": true }),
+            "loop" if !words.starts_with("every") => {
+                return json!({ "keyword": "loop", "restore": { "text": text, "beside": "" }, "error": "Can’t tell how often from that. Start with one like “every 30 min” or “weekdays at 9”, or pick one from the list after /loop." })
+            }
+            "init" | "test" => return json!({ "command": { "name": name, "arguments": words } }),
+            _ => {}
+        }
     }
-    let rest = trimmed.trim_start_matches('/');
-    let (name, words) = rest.split_once(char::is_whitespace).map_or((rest, ""), |(name, words)| (name, words.trim()));
-    match name.to_lowercase().as_str() {
-        "plan" if words.is_empty() => json!({ "keyword": "plan", "agent": "plan" }),
-        "plan" => json!({ "keyword": "plan", "agent": "plan", "send": { "text": words, "typed": "/plan" } }),
-        "compact" => json!({ "keyword": "compact", "compact": true }),
-        "loop" if !words.starts_with("every") => json!({ "keyword": "loop", "restore": { "text": text, "beside": "" }, "error": "Can’t tell how often from that. Start with one like “every 30 min” or “weekdays at 9”, or pick one from the list after /loop." }),
-        "init" | "test" => json!({ "command": { "name": name, "arguments": words } }),
-        _ => json!({ "send": { "text": text, "quoted": true } }),
-    }
+    json!({ "send": { "text": text, "quoted": true } })
 }
 
 impl StandIn {
@@ -1433,6 +1458,7 @@ impl StandIn {
             ("POST", ["kuvo", "sessions", session, "stop"]) => {
                 let session = (*session).to_owned();
                 state.running.remove(&session);
+                state.pending_compacts.remove(&session);
                 if let Some(facts) = state.sessions.get_mut(&session) {
                     facts["running"] = json!(false);
                 }
@@ -1532,6 +1558,7 @@ impl StandIn {
                     state.models.remove(&session);
                     state.messages.remove(&session);
                     state.running.remove(&session);
+                    state.pending_compacts.remove(&session);
                     state.asks.remove(&session);
                     state.queues.remove(&session);
                     state.engine_archived.remove(&session);
@@ -1645,6 +1672,37 @@ impl StandIn {
                 state.told(&asking, Followed::Asks);
                 answer(200, json!({}))
             }
+            ("POST", ["api", "session", session, "shell"]) | ("POST", ["kuvo", "agents", "api", "session", session, "shell"]) => {
+                let Some(facts) = state.sessions.get(*session) else {
+                    return answer(404, json!({ "message": "There's no such session." }));
+                };
+                if State::is_subagent(facts) {
+                    return answer(400, json!({ "message": "This subagent works for the conversation that started it: run it there." }));
+                }
+                if state.sends_fail {
+                    return answer(503, json!({ "message": "The engine isn't answering. Try again in a moment." }));
+                }
+                let command = body["command"].as_str().unwrap_or("").trim();
+                if command.is_empty() {
+                    return answer(400, json!({ "message": "Type a command after the !." }));
+                }
+                let shell = state.id("shl");
+                let id = state.id("msg");
+                let now = now_ms();
+                state.emit("session.shell.started", json!({ "sessionID": session, "shell": { "id": shell, "command": command, "status": "running" } }));
+                // A fixture, never executed: the stand-in touches no process or filesystem.
+                let output = json!({ "output": "src/\nCargo.toml\nREADME.md\n", "truncated": false });
+                state.messages.entry((*session).to_owned()).or_default().push(json!({
+                    "type": "shell", "id": id, "time": { "created": now, "completed": now },
+                    "shellID": shell, "command": command, "status": "completed", "exit": 0, "output": output
+                }));
+                state.emit("session.shell.ended", json!({ "sessionID": session, "shell": { "id": shell, "command": command, "status": "completed", "exit": 0 }, "output": output }));
+                if let Some(facts) = state.sessions.get_mut(*session) {
+                    facts["updated"] = json!(now);
+                }
+                state.list_changed();
+                answer(200, json!({}))
+            }
             ("POST", ["kuvo", "sessions", session, "typed"]) if state.sessions.contains_key(*session) => {
                 let text = request.body.as_ref().and_then(|body| body["text"].as_str()).unwrap_or("");
                 answer(200, decide(text))
@@ -1689,6 +1747,40 @@ impl StandIn {
                     self.reply(session, words);
                 }
                 answer(200, json!({}))
+            }
+            ("POST", ["api", "session", session, "compact"]) | ("POST", ["kuvo", "agents", "api", "session", session, "compact"]) => {
+                let Some(facts) = state.sessions.get(*session) else {
+                    return answer(404, json!({ "message": "There's no such session." }));
+                };
+                if State::is_subagent(facts) {
+                    return answer(400, json!({ "message": "A subagent's conversation can't be summarized: summarize the conversation that started it." }));
+                }
+                if state.sends_fail {
+                    return answer(503, json!({ "message": "The engine isn't answering. Try again in a moment." }));
+                }
+                if state.running.contains(*session) {
+                    if state.pending_compacts.insert((*session).to_owned()) {
+                        let inbox_id = state.id("msg");
+                        state.emit("session.inbox.enqueued", json!({ "sessionID": session, "inboxID": inbox_id, "item": { "type": "compaction", "payload": {}, "delivery": "steer" } }));
+                    }
+                    return answer(200, json!({ "data": { "state": "waiting" } }));
+                }
+                if state.messages.get(*session).is_none_or(Vec::is_empty) {
+                    return answer(400, json!({ "message": "There’s nothing to summarize yet." }));
+                }
+                let id = state.id("msg");
+                let now = now_ms();
+                state.emit("session.compaction.started", json!({ "sessionID": session, "reason": "manual" }));
+                state.messages.entry((*session).to_owned()).or_default().push(json!({
+                    "type": "compaction", "id": id, "time": { "created": now, "completed": now },
+                    "status": "completed", "reason": "manual", "summary": "Kept the decisions and current work for the next turn."
+                }));
+                state.emit("session.compaction.ended", json!({ "sessionID": session }));
+                if let Some(facts) = state.sessions.get_mut(*session) {
+                    facts["updated"] = json!(now);
+                }
+                state.list_changed();
+                answer(200, json!({ "data": { "state": "compacting" } }))
             }
             ("POST", ["api", "session", session, "model"]) | ("POST", ["kuvo", "agents", "api", "session", session, "model"]) => {
                 let session = (*session).to_owned();
@@ -1784,6 +1876,17 @@ impl StandIn {
             let idle = state.id("msg");
             state.messages.entry(session.clone()).or_default().push(json!({ "type": "idle", "id": idle, "time": { "created": now }, "outcome": "succeeded" }));
             state.running.remove(&session);
+            if state.pending_compacts.remove(&session) {
+                let compact_id = state.id("msg");
+                state.emit("session.compaction.started", json!({ "sessionID": session, "reason": "manual" }));
+                state.messages.entry(session.clone()).or_default().push(json!({
+                    "type": "compaction", "id": compact_id, "time": { "created": now, "completed": now },
+                    "status": "completed", "reason": "manual", "summary": "Kept the decisions and current work for the next turn."
+                }));
+                state.emit("session.compaction.ended", json!({ "sessionID": session }));
+                let compact_idle = state.id("msg");
+                state.messages.entry(session.clone()).or_default().push(json!({ "type": "idle", "id": compact_idle, "time": { "created": now }, "outcome": "succeeded" }));
+            }
             if let Some(facts) = state.sessions.get_mut(&session) {
                 facts["running"] = json!(false);
                 facts["updated"] = json!(now);
@@ -1999,5 +2102,124 @@ impl Transport for StandIn {
 
     fn describe(&self) -> String {
         NAME.into()
+    }
+}
+
+#[cfg(test)]
+mod shell_tests {
+    use super::*;
+
+    #[test]
+    fn shell_joins_history_without_waking_agent_and_emits_lifecycle() {
+        let stand_in = StandIn::new(Replies::Never);
+        let (sender, receiver) = channel();
+        stand_in.state().events.insert(999, sender);
+        let before = stand_in.state().messages.get("ses_dark").map_or(0, Vec::len);
+        let response = stand_in.route(&Request::post("api/session/ses_dark/shell", json!({ "command": "  ls  " }))).unwrap();
+        assert_eq!(response.status, 200);
+        let state = stand_in.state();
+        let messages = &state.messages["ses_dark"];
+        assert_eq!(messages.len(), before + 1);
+        let shell = messages.last().unwrap();
+        assert_eq!(shell["type"], "shell");
+        assert_eq!(shell["command"], "ls");
+        assert_eq!(shell["status"], "completed");
+        assert_eq!(shell["exit"], 0);
+        assert!(!state.running.contains("ses_dark"));
+        let started: Value = serde_json::from_str(&receiver.try_recv().unwrap()).unwrap();
+        let ended: Value = serde_json::from_str(&receiver.try_recv().unwrap()).unwrap();
+        assert_eq!(started["type"], "session.shell.started");
+        assert_eq!(ended["type"], "session.shell.ended");
+        assert_eq!(started["data"]["shell"]["id"], shell["shellID"]);
+        assert_eq!(ended["data"]["output"], shell["output"]);
+    }
+
+    #[test]
+    fn shell_refusals_do_not_add_messages() {
+        let stand_in = StandIn::new(Replies::Never);
+        let before = stand_in.state().messages.get("ses_dark").map_or(0, Vec::len);
+        for (session, command, status) in [("missing", "ls", 404), ("ses_dark", "  ", 400), ("ses_sub", "ls", 400)] {
+            assert_eq!(stand_in.route(&Request::post(format!("api/session/{session}/shell"), json!({ "command": command }))).unwrap().status, status);
+        }
+        assert_eq!(stand_in.state().messages.get("ses_dark").map_or(0, Vec::len), before);
+    }
+
+    #[test]
+    fn typed_bang_matches_words_ts_and_protocol_vectors() {
+        let stand_in = StandIn::new(Replies::Never);
+        let cases = typed_vectors()["shell"].as_array().expect("shell vectors");
+        assert!(!cases.is_empty());
+        for case in cases {
+            let text = case["text"].as_str().unwrap();
+            let expected = case["command"].as_str();
+            assert_eq!(shell_command(text), expected, "shell_command({text:?})");
+            let response = stand_in.route(&Request::post("kuvo/sessions/ses_dark/typed", json!({ "text": text }))).unwrap();
+            assert_eq!(response.status, 200);
+            let answer: Value = serde_json::from_slice(&response.body).unwrap();
+            match expected {
+                Some(command) => assert_eq!(answer, json!({ "shell": command }), "vector {text:?}"),
+                None => assert_eq!(answer, json!({ "send": { "text": text, "quoted": true } }), "vector {text:?}"),
+            }
+        }
+        // Plain words without a leading '/' must not match keywords.
+        assert_eq!(decide("plan this"), json!({ "send": { "text": "plan this", "quoted": true } }));
+        assert_eq!(decide("/autopilot"), json!({ "keyword": "autopilot", "toggleAutopilot": true }));
+    }
+
+    #[test]
+    fn compact_waits_mid_turn_and_completes_at_rest() {
+        let stand_in = StandIn::new(Replies::Never);
+        let (sender, receiver) = channel();
+        stand_in.state().events.insert(999, sender);
+
+        // Mid-turn (`ses_signup` is running): /compact queues once and returns state: "waiting" without appending a completed row.
+        let before = stand_in.state().messages["ses_signup"].len();
+        let first = stand_in.route(&Request::post("api/session/ses_signup/compact", json!({}))).unwrap();
+        assert_eq!(first.status, 200);
+        assert_eq!(serde_json::from_slice::<Value>(&first.body).unwrap(), json!({ "data": { "state": "waiting" } }));
+        assert_eq!(stand_in.state().messages["ses_signup"].len(), before);
+        assert!(stand_in.state().pending_compacts.contains("ses_signup"));
+        let enqueued: Value = serde_json::from_str(&receiver.try_recv().unwrap()).unwrap();
+        assert_eq!(enqueued["type"], "session.inbox.enqueued");
+        assert_eq!(enqueued["data"]["item"]["type"], "compaction");
+
+        // Asking twice while waiting stays a single queued compaction.
+        let second = stand_in.route(&Request::post("kuvo/agents/api/session/ses_signup/compact", json!({}))).unwrap();
+        assert_eq!(second.status, 200);
+        assert_eq!(serde_json::from_slice::<Value>(&second.body).unwrap(), json!({ "data": { "state": "waiting" } }));
+        assert!(receiver.try_recv().is_err());
+
+        // Stopping the session drops the pending compaction.
+        stand_in.route(&Request::post("kuvo/sessions/ses_signup/stop", json!({}))).unwrap();
+        assert!(!stand_in.state().pending_compacts.contains("ses_signup"));
+        let _interrupted = receiver.try_recv().unwrap();
+
+        // At rest (`ses_recipes` is idle): /compact emits started/ended and appends a completed row.
+        let before_idle = stand_in.state().messages["ses_recipes"].len();
+        let at_rest = stand_in.route(&Request::post("api/session/ses_recipes/compact", json!({}))).unwrap();
+        assert_eq!(at_rest.status, 200);
+        assert_eq!(serde_json::from_slice::<Value>(&at_rest.body).unwrap(), json!({ "data": { "state": "compacting" } }));
+        assert_eq!(stand_in.state().messages["ses_recipes"].len(), before_idle + 1);
+        assert_eq!(stand_in.state().messages["ses_recipes"].last().unwrap()["type"], "compaction");
+        assert_eq!(stand_in.state().messages["ses_recipes"].last().unwrap()["status"], "completed");
+        let started: Value = serde_json::from_str(&receiver.try_recv().unwrap()).unwrap();
+        let ended: Value = serde_json::from_str(&receiver.try_recv().unwrap()).unwrap();
+        assert_eq!(started["type"], "session.compaction.started");
+        assert_eq!(ended["type"], "session.compaction.ended");
+    }
+
+    #[test]
+    fn compact_refuses_subagents_empty_sessions_and_down_engines() {
+        let stand_in = StandIn::new(Replies::Never);
+        assert_eq!(stand_in.route(&Request::post("api/session/missing/compact", json!({}))).unwrap().status, 404);
+        assert_eq!(stand_in.route(&Request::post("api/session/ses_sub/compact", json!({}))).unwrap().status, 400);
+
+        // Newly created empty session refuses /compact with 400.
+        let started = stand_in.route(&Request::post("kuvo/sessions", json!({}))).unwrap();
+        let new_id = serde_json::from_slice::<Value>(&started.body).unwrap()["session"].as_str().unwrap().to_owned();
+        assert_eq!(stand_in.route(&Request::post(format!("api/session/{new_id}/compact"), json!({}))).unwrap().status, 400);
+
+        stand_in.fail_sends();
+        assert_eq!(stand_in.route(&Request::post("api/session/ses_recipes/compact", json!({}))).unwrap().status, 503);
     }
 }
