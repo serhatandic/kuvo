@@ -159,3 +159,13 @@ your computers; Try Again never falls through to adding.
 there (nothing runs); the vault offers its first four SSH keys only; no box test for the vault
 path, cancel mid-copy, `inAnotherSetup` or a restart with `run/adding.json`; no desktop test for
 Set Up Again's row or a try card on a machine's page; the phone has no Add a Machine screen.
+
+**Seeding (the lead's word, 2026-11-15):** a computer that had no Kuvo Code starts with this
+box's settings and integrations' keys (`box adopt`'s seed, on the start script's stdin) and its
+accounts' keys and sign-ins that stay the same (`kuvo-link.js box seed` there), once; never a
+sign-in that renews itself, an integration's own sign-in, a bot's key or a Mac-only integration's.
+`add/seed.ts`; step `seeding`. Tested in `computers-add.test.js` (they arrive, 0600; the
+renewing one doesn't; none of it in the try, `adding.json`, `launch.env` or a log) and
+`box/test/add-seed.test.ts`. Linux's `sh` caught `$((` in the start script (fixed).
+Not ported: the Swift app's later two-way exchange of one account's sign-in between computers.
+
