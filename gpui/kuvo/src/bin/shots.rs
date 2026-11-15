@@ -11,6 +11,7 @@ use kuvo::panel::Tab;
 use kuvo_box::git::Group;
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo::bots::{Act as BotAct, BotsView};
+use kuvo::groups::{Act as GroupAct, GroupsView};
 use kuvo::queue::{Act as QueueAct, Field, Filter, QueueView, Target};
 use kuvo::settings::{SettingsView, sign_in::SignIn};
 use kuvo::{Workspace, bind_keys};
@@ -105,6 +106,18 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "bot-none", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     Screen { slug: "bot-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_narrow) },
     Screen { slug: "bot-first-run", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
+    // Group chats (`kuvo/src/groups`): one mid-discussion, "&" offering its bots, one paused with
+    // a wrap-up and a bot that left, an empty one, its editor, New Group and what the box turns down.
+    Screen { slug: "group-chat", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(group_chat) },
+    Screen { slug: "group-mention", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(group_mention) },
+    Screen { slug: "group-wrap-up", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(group_wrap_up) },
+    Screen { slug: "group-empty", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(group_empty) },
+    Screen { slug: "group-edit", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(group_edit) },
+    Screen { slug: "group-delete", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(group_delete) },
+    Screen { slug: "group-new", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(group_new) },
+    Screen { slug: "group-new-refused", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(group_new_refused) },
+    Screen { slug: "group-narrow", width: 760., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(group_chat) },
+    Screen { slug: "group-first-run", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     // The Work Queue (`kuvo/src/queue`): the queue under each scope, filtered and searched, an
     // item's page and its chips' menus, New Item with each of its menus, and the labels' sheets.
     Screen { slug: "queue", width: 1280., height: 1100., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_all) },
@@ -186,6 +199,56 @@ fn bots(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspa
 /// Bots' page view.
 fn bots_page(workspace: &Workspace, cx: &Context<Workspace>) -> gpui::Entity<BotsView> {
     workspace.area_view(Area::Bots).and_then(|view| view.read(cx).page().cloned()).expect("Bots")
+}
+/// The group chats' view.
+fn groups_view(workspace: &Workspace, cx: &Context<Workspace>) -> gpui::Entity<GroupsView> {
+    workspace.area_view(Area::Bots).and_then(|view| view.read(cx).groups().cloned()).expect("Bots")
+}
+fn group_chat(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Bots, "group:grp_launch", window, cx);
+}
+/// "&" in a chat's composer: its bots.
+fn group_mention(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Bots, "group:grp_planning", window, cx);
+    let chat = groups_view(workspace, cx).read(cx).chat("grp_planning").cloned().expect("the chat");
+    let field = chat.read(cx).composer().read(cx).field().clone();
+    field.update(cx, |field, cx| field.set_text("What’s on this week? &", cx));
+    window.focus(&field.focus_handle(cx), cx);
+}
+fn group_wrap_up(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Bots, "group:grp_design", window, cx);
+}
+fn group_empty(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Bots, "group:grp_planning", window, cx);
+}
+fn group_edit(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Bots, "edit-group:grp_launch", window, cx);
+}
+fn group_delete(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    group_edit(workspace, window, cx);
+    groups_view(workspace, cx).update(cx, |view, cx| view.act(GroupAct::Delete, cx));
+}
+/// New Group, named, two bots picked.
+fn group_new(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Bots, "new-group", window, cx);
+    let view = groups_view(workspace, cx);
+    let field = view.read(cx).name_field().clone();
+    field.update(cx, |field, cx| field.set_text("Support desk", cx));
+    view.update(cx, |view, cx| {
+        view.act(GroupAct::Toggle("bot_inbox".into()), cx);
+        view.act(GroupAct::Toggle("bot_mira".into()), cx);
+    });
+}
+/// New Group with one bot: the box's words.
+fn group_new_refused(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Bots, "new-group", window, cx);
+    let view = groups_view(workspace, cx);
+    let field = view.read(cx).name_field().clone();
+    field.update(cx, |field, cx| field.set_text("Support desk", cx));
+    view.update(cx, |view, cx| {
+        view.act(GroupAct::Toggle("bot_inbox".into()), cx);
+        view.act(GroupAct::Save, cx);
+    });
 }
 /// A bot with nothing under way and no sessions.
 fn bot_quiet(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {

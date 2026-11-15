@@ -14,6 +14,7 @@ pub mod composer;
 pub mod computers;
 pub mod conversation;
 pub mod entries;
+pub mod groups;
 mod landing;
 pub mod panel;
 pub mod queue;

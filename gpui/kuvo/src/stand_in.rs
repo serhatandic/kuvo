@@ -20,6 +20,7 @@ pub use crate::time::now_ms;
 pub mod areas;
 pub mod bots;
 pub mod git;
+pub mod groups;
 pub mod queue;
 pub mod settings;
 
@@ -114,6 +115,12 @@ struct State {
     bots: bots::Bots,
     /// Its Work Queue.
     queue: queue::Queue,
+    /// Its group chats, and those following one (`kuvo/groups/<id>/events`): the chat, and where
+    /// its lines go.
+    groups: groups::Groups,
+    group_followers: HashMap<u64, (String, Sender<String>)>,
+    /// Those following the chats' list (`kuvo/groups/events`).
+    groups_followers: HashMap<u64, Sender<String>>,
 }
 
 pub const NAME: &str = "Stand-in Mac";
@@ -303,6 +310,19 @@ impl StandIn {
         self.inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// Its group chats can't be reached now (503), or can again.
+    pub fn groups_readable(&self, readable: bool) {
+        self.state().groups.down = !readable;
+    }
+
+    /// `bot` says `text` in `group`, ending its turn (a reply come in), as followers hear it.
+    pub fn group_says(&self, group: &str, bot: &str, text: &str) {
+        let mut state = self.state();
+        let now = state.made.unwrap_or_else(now_ms) + 60_000.0;
+        state.groups.say(group, bot, text, now);
+        state.group_changed(group);
+    }
+
     /// Every request it was sent, in order.
     pub fn seen(&self) -> Vec<Seen> {
         self.state().seen.clone()
@@ -460,6 +480,7 @@ impl StandIn {
         state.git = Some(git::Git::new());
         state.bots = bots::Bots::sample(now);
         state.queue = queue::Queue::sample(now);
+        state.groups = groups::Groups::sample(now);
         state.sync_bots();
     }
 }
@@ -695,6 +716,20 @@ impl State {
         }
     }
 
+    /// Those following `group` hear it as it is now (one deleted: their follow ends).
+    fn group_changed(&mut self, group: &str) {
+        let line = self.groups.line(group);
+        self.group_followers.retain(|_, (followed, sender)| followed != group || line.as_ref().is_some_and(|line| sender.send(line.clone()).is_ok()));
+        let list = self.groups_list().to_string();
+        self.groups_followers.retain(|_, sender| sender.send(list.clone()).is_ok());
+    }
+
+    /// The chats as `kuvo/groups` lists them now.
+    fn groups_list(&self) -> Value {
+        let bots: Vec<Value> = self.bots.bots.iter().chain(&self.bots.elsewhere).cloned().collect();
+        self.groups.list(&bots)
+    }
+
     fn list_changed(&mut self) {
         self.at += 1;
         let line = self.line(true).to_string();
@@ -873,6 +908,18 @@ impl StandIn {
         if let Some((status, value)) = state.queue.answer(method, path, &body, made) {
             return answer(status, value);
         }
+        let made = state.made.unwrap_or_else(now_ms);
+        let bots: Vec<Value> = state.bots.bots.iter().chain(&state.bots.elsewhere).cloned().collect();
+        if let Some((status, value, changed)) = state.groups.answer(method, route, &body, &bots, if method == "GET" { made } else { now_ms() }) {
+            if let Some(group) = changed {
+                state.group_changed(&group);
+                if self.inner.replies == Replies::Live && method == "POST" && route == format!("kuvo/groups/{group}") {
+                    drop(state);
+                    self.group_reply(group);
+                }
+            }
+            return answer(status, value);
+        }
         if let Some((status, value)) = state.area(method, route) {
             return answer(status, value);
         }
@@ -1001,6 +1048,15 @@ impl StandIn {
                 };
                 answer(200, json!({ "mentions": mentions }))
             }
+            ("POST", ["kuvo", "sessions", session, "queue", "resume"]) => {
+                let bot = state.bots.bots.iter().find(|bot| bot["session"] == json!(session)).and_then(|bot| bot["id"].as_str()).map(str::to_owned);
+                if let Some(bot) = bot {
+                    for group in state.groups.resumed(&bot) {
+                        state.group_changed(&group);
+                    }
+                }
+                answer(200, json!({}))
+            }
             ("GET", ["kuvo", "sessions", session, "queue"]) if state.sessions.contains_key(*session) => {
                 answer(200, json!({ "paused": false, "held": [], "items": state.queues.get(*session).cloned().unwrap_or_default() }))
             }
@@ -1101,6 +1157,20 @@ impl StandIn {
 
     /// An answer streamed back as an engine streams one: the run starts, a step reads a file, its
     /// words come a few at a time, the step and the run end.
+    /// The bot talking in `group` answers a moment later, as a chat's bridge would have it.
+    fn group_reply(&self, group: String) {
+        let stand_in = self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(1500));
+            let mut state = stand_in.state();
+            let speaking = state.groups.line(&group).and_then(|line| serde_json::from_str::<Value>(&line).ok()).and_then(|chat| chat["speaking"].as_str().map(str::to_owned));
+            if let Some(bot) = speaking {
+                state.groups.say(&group, &bot, "Good question. Here’s how I see it: the first two are on track, and I’ll keep an eye on the third.", now_ms());
+                state.group_changed(&group);
+            }
+        });
+    }
+
     fn reply(&self, session: String, words: String) {
         let stand_in = self.clone();
         std::thread::spawn(move || {
@@ -1249,6 +1319,52 @@ impl Transport for StandIn {
             let inner = self.inner.clone();
             let closer = Closer::new(move || {
                 inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).git_followers.remove(&id);
+            });
+            if !hold(closer.clone()) {
+                closer.close();
+            }
+            return Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(Pieces { receiver, piece: Vec::new(), at: 0, sse: false }), closer });
+        }
+        // The chats, followed: as they are now, then the list again as it changes.
+        if route == "kuvo/groups/events" {
+            let (sender, receiver) = channel();
+            let id = {
+                let mut state = self.state();
+                state.seen.push(Seen { method: request.method.clone(), path: request.path.clone(), body: None });
+                let _ = sender.send(state.groups_list().to_string());
+                let id = state.next;
+                state.next += 1;
+                state.groups_followers.insert(id, sender);
+                id
+            };
+            let inner = self.inner.clone();
+            let closer = Closer::new(move || {
+                inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).groups_followers.remove(&id);
+            });
+            if !hold(closer.clone()) {
+                closer.close();
+            }
+            return Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(Pieces { receiver, piece: Vec::new(), at: 0, sse: false }), closer });
+        }
+        // One group chat, followed: as it is now, then a line as it changes.
+        if let ["kuvo", "groups", group, "events"] = parts.as_slice() {
+            let (sender, receiver) = channel();
+            let group = (*group).to_owned();
+            let id = {
+                let mut state = self.state();
+                state.seen.push(Seen { method: request.method.clone(), path: request.path.clone(), body: None });
+                let Some(line) = state.groups.line(&group) else {
+                    return Ok(Stream { status: 404, content_type: Some("application/json".into()), reader: Box::new(std::io::Cursor::new(json!({ "message": "There’s no such group chat here." }).to_string().into_bytes())), closer: Closer::nothing() });
+                };
+                let _ = sender.send(line);
+                let id = state.next;
+                state.next += 1;
+                state.group_followers.insert(id, (group, sender));
+                id
+            };
+            let inner = self.inner.clone();
+            let closer = Closer::new(move || {
+                inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).group_followers.remove(&id);
             });
             if !hold(closer.clone()) {
                 closer.close();

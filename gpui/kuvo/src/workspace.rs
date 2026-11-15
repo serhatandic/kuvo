@@ -156,6 +156,9 @@ pub struct Workspace {
     /// what Bots shows now.
     bot_chat: Option<BotChat>,
     in_bot_chat: bool,
+    /// Whether Bots' main view was on screen as the window was last drawn (a group chat there is
+    /// followed and marked read only while it is).
+    groups_on_screen: bool,
     /// How many things wait on you in each area, as the box counts them (`kuvo/waiting`): followed
     /// where its box streams, else read again as its session list changes.
     waiting: Waiting,
@@ -205,6 +208,13 @@ impl Workspace {
         }));
         // The Bots list as it's read again (a bot's conversation may be another session by then).
         if let Some((_, bots)) = areas.iter().find(|(area, _)| *area == Area::Bots) {
+            // A group chat picked takes the keyboard in its composer; New Group and Edit, in its name.
+            area_subscriptions.push(cx.subscribe_in(bots, window, |_: &mut Workspace, view, _: &Picked, window, cx| {
+                let groups = view.read(cx).groups().cloned().filter(|_| view.read(cx).selected().is_some_and(crate::areas::is_group_key));
+                if let Some(groups) = groups {
+                    window.focus(&groups.focus_handle(cx), cx);
+                }
+            }));
             area_subscriptions.push(cx.observe_in(bots, window, |this: &mut Workspace, _, window, cx| this.bots_changed(window, cx)));
         }
         let rings = cx.new(|cx| Rings::new(client.clone(), live, cx));
@@ -244,6 +254,7 @@ impl Workspace {
             rings,
             bot_chat: None,
             in_bot_chat: false,
+            groups_on_screen: false,
             waiting: Waiting::default(),
             waiting_task: None,
             waiting_again: false,
@@ -782,6 +793,8 @@ impl Workspace {
                     self.unsent.insert(session.clone());
                 }
             }
+            // (A group chat's composer is its chat's.)
+            ComposerEvent::Wrote => {}
         }
     }
 
@@ -1470,6 +1483,14 @@ impl Render for Workspace {
         }
         self.narrow = narrow;
 
+        // Bots' main view on screen or not, whichever way the window got there.
+        let groups_on_screen = self.area == Area::Bots && self.bot_chat().is_none() && !self.client.gate().is_held();
+        if self.groups_on_screen != groups_on_screen {
+            self.groups_on_screen = groups_on_screen;
+            if let Some(view) = self.area_view(Area::Bots).cloned() {
+                view.update(cx, |view, cx| view.set_on_screen(groups_on_screen, cx));
+            }
+        }
         let sessions = self.area == Area::Sessions;
         let held_content = self.client.gate().is_held()
             && (self.area != Area::Sessions && self.area != Area::Settings || self.area == Area::Sessions && matches!(self.open, Open::Conversation { .. }));

@@ -1,5 +1,4 @@
-//! What the stand-in box says of the rail's areas, in a box's own shapes (PROTOCOL.md): its bots,
-//! each with what it's doing now, and group chats; your
+//! What the stand-in box says of the rail's areas, in a box's own shapes (PROTOCOL.md): your
 //! computers; the accounts' limits, each row with its rings and every window its level; and how
 //! many things wait on you. As a box does, it counts, levels and picks the rings itself: the app
 //! draws what it says.
@@ -31,7 +30,6 @@ pub fn answer(areas: Areas, method: &str, route: &str, now: f64, needing: usize,
         return Some((503, json!({ "message": "The box isn’t answering." })));
     }
     let answer = match route {
-        "kuvo/groups" => json!({ "groups": if areas.empty { Vec::new() } else { groups(now) } }),
         "kuvo/computers" => json!({ "computers": computers(areas.empty || areas.computers_alone, areas.more_computers) }),
         "kuvo/agents/api/kuvo/limits" => json!({ "data": { "accounts": [], "services": ["claude", "codex", "copilot", "grok", "openrouter"], "rows": if areas.empty { Vec::new() } else { accounts(now) } } }),
         "kuvo/waiting" => json!({ "sessions": needing, "bots": bots_asking, "queue": 0 }),
@@ -49,13 +47,6 @@ pub fn asks_of(session: &str) -> Value {
         _ => ("other", "waits on you"),
     };
     json!({ "kind": kind, "summary": summary })
-}
-
-fn groups(now: f64) -> Vec<Value> {
-    vec![
-        json!({ "id": "grp_launch", "name": "Launch crew", "members": [], "discussing": false, "paused": false, "unread": true, "last": { "id": "m1", "text": "Shipped.", "time": now - HOUR, "kind": "message" } }),
-        json!({ "id": "grp_design", "name": "Design review", "members": [], "discussing": false, "paused": false, "unread": false, "last": { "id": "m2", "text": "Agreed.", "time": now - 2.0 * DAY, "kind": "message" } }),
-    ]
 }
 
 /// Your computers, the stand-in itself first: a machine at work, a Mac that's away, a Mac on an
