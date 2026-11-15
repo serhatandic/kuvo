@@ -35,3 +35,8 @@ path = "src/main.rs"
 name = "shots"
 path = "src/bin/shots.rs"
 required-features = ["shots"]
+
+[[bin]]
+name = "scroll_bench"
+path = "src/bin/scroll_bench.rs"
+required-features = ["shots"]
