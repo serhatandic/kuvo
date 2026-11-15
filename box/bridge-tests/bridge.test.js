@@ -1515,6 +1515,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
   // has now, never as one it doesn't have (403).
   const routes = {
     // One a line, in order (as `FEATURES` are), so branches that each add one merge cleanly.
+    "account-action-sheet-title": ["GET", "kuvo/sign-in/accounts"],
     "accounts.credentials": ["GET", "kuvo/accounts/credentials"],
     "accounts.ended": ["GET", "kuvo/accounts/ended"],
     "accounts.found": ["GET", "kuvo/accounts/found"],
@@ -1740,7 +1741,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "shell.stop": ["POST", "kuvo/shell/sh_none/stop"],
     "sign-in.accounts.kinds": ["GET", "kuvo/sign-in/accounts"],
     "sign-in.accounts.plan": ["GET", "kuvo/sign-in/accounts"],
-    "account-action-sheet-title": ["GET", "kuvo/sign-in/accounts"],
     "sign-in.accounts.state": ["GET", "kuvo/sign-in/accounts"],
     "sign-in.codes": ["GET", "kuvo/sign-in/start?integration=openai"],
     "sign-in.methods": ["GET", "kuvo/sign-in/methods?integration=openai"],
