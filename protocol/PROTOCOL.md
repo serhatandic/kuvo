@@ -1542,8 +1542,9 @@ the same number and counts nothing.
   status the view says is `closed`) and not deleted, and either in the status Needs you
   (`needs-you`: someone said it waits on you) or with a session linked to it (not archived, this
   box's own copy) that asks now, whatever its status still says (its agent waits on you before it
-  could say so). One rule, the box's, so a client's badge and its Needs you list come from the same
-  facts; a client counts nothing. While the engine can't be read, `sessions` and `bots` are zero
+  could say so). One rule, the box's; a client counts nothing. So the badge can be more than the
+  Needs you status's count (`counts.statuses`): an item in another status whose session asks is in
+  the badge, under its own status in a list (a view says which items' sessions ask: none yet). While the engine can't be read, `sessions` and `bots` are zero
   and `queue` counts only the items in Needs you. `405` for anything but `GET`.
 - `GET kuvo/waiting/events` (ndjson): the same now, and a line each time it changes (an ask comes
   or is answered, a bot or an item changes, an item's status among them); through `box route` it answers its first line, and a
@@ -5593,7 +5594,8 @@ before (a linked item is its owner's to change). A client shows them first, as "
 - `GET kuvo/work-queue?owner=<ses_…|grp_…|usr_you>` → `{owner, statuses, priorities, labels,
   colors, assignees, new, today, items, owners, removed, computers}`: `statuses` say which are
   `closed` (Done, Canceled): what a client folds, counts as not open and offers only where an item's
-  `can.close` says, never a list of its own; `colors` the colours a label may be; `new` (`{status, priority}`) is what an item
+  `can.close` says, never a list of its own (the first closed one, Done, is what finishing an item
+  sets: a client's one Mark button); `colors` the colours a label may be; `new` (`{status, priority}`) is what an item
   added with nothing said starts as, for a client's form to show; `today` (`YYYY-MM-DD`) the day it
   is on the box asked, which `overdue` goes by and a client counts days from ("Tomorrow", "Yesterday"),
   never its own clock; `items` in the statuses' order, then this box's first and each other computer's

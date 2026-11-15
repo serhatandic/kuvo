@@ -445,7 +445,7 @@ impl QueueView {
             let first = self.closing("").into_iter().next().map(|(id, _)| id);
             for (id, name) in self.closing(&item.status) {
                 let icon = if Some(&id) == first.as_ref() { IconName::Check } else { IconName::Close };
-                entries.push(MenuItemSpec::Entry { label: format!("Mark {name}").into(), icon: Some(icon), checked: false, danger: false, act: status(&id) });
+                entries.push(MenuItemSpec::Entry { label: format!("Mark {name}"), icon: Some(icon), checked: false, danger: false, act: status(&id) });
             }
         }
         if item.can.set {
@@ -586,7 +586,7 @@ impl QueueView {
         let finish = first.filter(|(id, _)| *id != item.status);
         let mut more = Vec::new();
         for (id, name) in closing.into_iter().filter(|(id, _)| *id != item.status) {
-            more.push(MenuItemSpec::Entry { label: format!("Mark {name}").into(), icon: Some(IconName::Close), checked: false, danger: false, act: status(&id) });
+            more.push(MenuItemSpec::Entry { label: format!("Mark {name}"), icon: Some(IconName::Close), checked: false, danger: false, act: status(&id) });
         }
         if item.can.delete {
             if !more.is_empty() {
@@ -962,7 +962,7 @@ impl QueueView {
             .into_any_element()
     }
 
-    /// A label's sheet: its name and its colour (one of the ten; a new one's is the box's choice
+    /// A label's sheet: its name and its colour (one of the view's `colors`; a new one's is the box's choice
     /// until one's picked), or, to remove it, what that does, asked first.
     fn label_sheet(&mut self, sheet: &Sheet, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();

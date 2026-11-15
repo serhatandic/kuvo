@@ -404,6 +404,13 @@ import ClientSessions
         // Asked with `counts=1`: the box's count, whatever is listed.
         let counted = try JSONDecoder().decode(WorkQueueView.self, from: Data((json + #","counts":{"open":7,"statuses":{},"priorities":{},"labels":{},"sources":{},"computers":{},"removed":0}}"#).utf8))
         #expect(WorkQueue.openCount(counted) == 7)
+        // Moved, the box's count follows at once: closed, one fewer open; opened again, one more.
+        let shelvedNow = WorkQueue.moving(counted.items[0], to: .top("shelved"), in: counted)
+        #expect(WorkQueue.openCount(shelvedNow) == 6)
+        #expect(WorkQueue.openCount(WorkQueue.moving(shelvedNow.items.first { $0.id == "wqi_1" }!, to: .top("todo"), in: shelvedNow)) == 7)
+        #expect(WorkQueue.openCount(WorkQueue.moving(counted.items[1], to: .top("canceled"), in: counted)) == 7, "closed to closed")
+        // VoiceOver says a closed one's status by its name.
+        #expect(WorkQueue.spokenRow(view.items[3], in: view, now: Date(timeIntervalSince1970: 0)).hasPrefix("T4, Work item 4, shelved, "))
     }
 
     @Test func onlyWhatTheBoxSaysMayBeDoneIsOffered() throws {

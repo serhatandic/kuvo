@@ -25,22 +25,6 @@ public struct WorkCategory: Codable, Hashable, Sendable, Identifiable {
         self.closed = closed
     }
 
-    private enum Keys: String, CodingKey { case id, name, builtIn, closed }
-
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: Keys.self)
-        self.init(id: try container.decode(String.self, forKey: .id), name: try container.decode(String.self, forKey: .name),
-                  builtIn: try container.decode(Bool.self, forKey: .builtIn), closed: try container.decode(Bool.self, forKey: .closed))
-    }
-
-    public func encode(to encoder: any Encoder) throws {
-        var container = encoder.container(keyedBy: Keys.self)
-        try container.encode(id, forKey: .id)
-        try container.encode(name, forKey: .name)
-        try container.encode(builtIn, forKey: .builtIn)
-        try container.encode(closed, forKey: .closed)
-    }
-
     /// The Done status's id: what a client draws its own mark for (a check), never what decides
     /// whether an item is closed (`closed` does).
     public static let done = "done"
@@ -317,8 +301,9 @@ public struct WorkItem: Hashable, Sendable, Decodable, Identifiable {
     public var doneAt: Double?
     public var removed: WorkStamp?
 
-    /// Closed (Done, Canceled), as the box's statuses said when its view was read
-    /// (`WorkQueueView.isClosed`, which a client that changes an item's status goes by).
+    /// Closed (Done, Canceled), as the box's statuses said when its view was read, or moved there
+    /// (`WorkQueue.moving`). Only an item that came in a view says it: one read on its own (a page's
+    /// `WorkItemDetail.item`) is never closed here, so go by `WorkQueueView.isClosed` there.
     public var isDone: Bool = false
     /// An outside source's name ("app#12"), "#243", or "New" while it waits for its number.
     public var name: String { source?.shownName ?? number.map { "#\($0)" } ?? "New" }
@@ -795,8 +780,13 @@ public enum WorkQueue {
         var view = view
         var moved = view.items.first { $0.id == item.id } ?? item
         view.items.removeAll { $0.id == item.id }
+        let wasClosed = view.isClosed(moved.category)
         moved.category = place.category
         moved.isDone = view.isClosed(place.category)
+        // (The box's count of what's open follows at once, until its next word.)
+        if let open = view.counts?.open, moved.isDone != wasClosed {
+            view.counts?.open = max(0, open + (moved.isDone ? -1 : 1))
+        }
         // (No move goes to In progress: it's that only while its status is.)
         moved.inProgress = place.category == inProgressID
         // (Sections take each category's items in the list's order: where among the others it's put
