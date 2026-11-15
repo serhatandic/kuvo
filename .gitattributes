@@ -11,9 +11,9 @@ swift/KuvoClient/Sources/ClientSessions/BoxGate+Required.swift merge=union
 gpui/kuvo_box/src/gate/required.rs merge=union
 protocol/gate-required.txt merge=union
 # What's built from sources and kept in git: two branches that both built one conflict on it, and
-# neither side is right after the merge. The kuvo-built driver keeps this side's, so the merge goes
-# on; build again after it and commit what that writes, as each script's `--check` (and the box's
-# suite, for the route vectors) fails on a file its sources don't build. The driver is set up once
+# neither side is right after the merge. The kuvo-built driver keeps the side checked out, so the
+# merge (or rebase, or cherry-pick) goes on; then scripts/check-built.sh says whether they match
+# their sources, and `--build` builds them again to commit. The driver is set up once
 # per clone by scripts/merge-setup.sh; a clone without it merges these as text, conflicting as
 # before. Never union here: it can leave a file that reads but is wrong.
 swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js merge=kuvo-built
