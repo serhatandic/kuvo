@@ -3,6 +3,7 @@
 // `POST kuvo/setup/judge`: what a Mac adding a computer found there over SSH, judged by this box.
 // `POST kuvo/setup/attached`: Kuvo Code on this computer attached to this box in place.
 // `POST kuvo/setup/welcomed {welcomed}`: you've had the first run with this box (or will again).
+// `GET kuvo/setup/ready`: whether a first run has anything to ask about your accounts here.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -18,6 +19,13 @@ import { setupView } from "../setup/view";
 import { engineRoute } from "../server/forward";
 import { onLinkWritten, readLink } from "../state";
 import { isWelcomed, setWelcomed } from "../setup/welcomed";
+import { firstRunReady, type Listed } from "../setup/ready";
+import { call } from "../engine/client";
+import { plainName } from "../../shared/text";
+import { listsHere } from "../work/model-rule";
+import { readEndedSignIns } from "./accounts";
+import type { ListedAccount } from "./sign-in";
+import type { Target } from "../../shared/records";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 // Those following it here: told as this process writes link.json; what another process wrote
@@ -59,6 +67,22 @@ export async function* setupRoute(context: RouteContext): AsyncGenerator<AnswerP
     return yield* json(200, { welcomed: isWelcomed() });
   }
   if (method !== "GET" && method !== "HEAD") return yield* json(405, {});
+  if (route === "kuvo/setup/ready") {
+    // Read as it's asked (the models as the box keeps them, model-rule.ts; the accounts anew):
+    // what a sign-in just changed is said the next time. A side not running, or not answering in
+    // time, can't say: never ready.
+    let engine: Target | null = null;
+    try { engine = context.readEngine(); } catch {}
+    const agents = context.bridge();
+    const accounts = async (target: Target | null): Promise<Listed> => {
+      if (!target) return null;
+      const deadline = AbortSignal.timeout(15_000);
+      const listed = await call(target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, deadline]) : deadline).catch(() => null);
+      return Array.isArray(listed) ? listed.filter((each): each is ListedAccount => typeof (each as ListedAccount | null)?.id === "string") : null;
+    };
+    const [lists, fromEngine, fromAgents] = await Promise.all([listsHere(engine, agents), accounts(engine), accounts(agents)]);
+    return yield* json(200, firstRunReady(lists, fromEngine, fromAgents, readEndedSignIns(), plainName(context.info.name) || "this computer"));
+  }
   if (route === "kuvo/setup/events") {
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
     return yield* followed(() => setupView(readLink()), followers, signal);

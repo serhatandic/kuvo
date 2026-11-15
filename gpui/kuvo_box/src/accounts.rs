@@ -213,6 +213,9 @@ pub struct AccountEntry {
     pub line: String,
     /// What can be done with it now, in the box's order.
     pub actions: Vec<Action>,
+    /// An account you added beside its agent's own (`added`): a first run lists each agent once,
+    /// by its own.
+    pub added: bool,
 }
 
 /// Every account on this box, as Accounts lists them.
@@ -327,6 +330,8 @@ impl BoxClient {
             line: String,
             #[serde(default, deserialize_with = "readable")]
             actions: Vec<Action>,
+            #[serde(default)]
+            added: bool,
         }
         #[derive(Deserialize)]
         struct Answer {
@@ -343,7 +348,7 @@ impl BoxClient {
             .into_iter()
             .filter_map(|integration| {
                 let entry = ways.iter().find(|entry| entry.id == integration.id).filter(|entry| entry.listed)?;
-                Some(AccountEntry { side, service: entry.service.clone(), plan: entry.plan, ways: entry.ways.clone(), state: entry.state, line: entry.line.clone(), actions: entry.actions.clone(), integration })
+                Some(AccountEntry { side, service: entry.service.clone(), plan: entry.plan, ways: entry.ways.clone(), state: entry.state, line: entry.line.clone(), actions: entry.actions.clone(), added: entry.added, integration })
             })
             .collect())
     }

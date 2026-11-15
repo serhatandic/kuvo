@@ -170,6 +170,11 @@ export const SETUP = object({
   welcomed: bool,
 });
 
+/** Whether a first run has anything to ask about your accounts here (`kuvo/setup/ready`): a model
+ * on one of your accounts runs and no plan needs you; with whether one runs, the plans that need
+ * you, by id, and the sides that can't say yet. */
+export const SETUP_READY = object({ ready: bool, runs: bool, needsYou: list(string), pending: list(words("engine", "agents")) });
+
 /** Whether you've had the first run with this box, as `POST kuvo/setup/welcomed` left it. */
 export const WELCOMED = object({ welcomed: bool });
 
@@ -331,6 +336,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "GET kuvo/setup/events", answers: { 200: SETUP } },
   { route: "POST kuvo/setup/judge", answers: { 200: JUDGED } },
   { route: "POST kuvo/setup/attached", answers: { 200: NOTHING } },
+  { route: "GET kuvo/setup/ready", answers: { 200: SETUP_READY } },
   { route: "POST kuvo/setup/welcomed", answers: { 200: WELCOMED, 400: object({ message: string }) } },
   { route: "GET kuvo/attention", answers: { 200: ATTENTION } },
   { route: "POST kuvo/attention", answers: { 200: object({ for: number }) } },

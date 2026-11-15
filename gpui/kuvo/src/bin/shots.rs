@@ -9,7 +9,10 @@ use gpui::{AppContext as _, Context, Focusable as _, HeadlessAppContext, Window,
 use kuvo::area::Area;
 use kuvo::panel::Tab;
 use kuvo_box::git::Group;
+use kuvo::first_run::{FirstRun, Step};
+use kuvo::stand_in::first_run::Scenario;
 use kuvo::stand_in::{Replies, StandIn};
+use kuvo::workspace::BoxState;
 use kuvo::bots::{Act as BotAct, BotsView};
 use kuvo::groups::{Act as GroupAct, GroupsView};
 use kuvo::queue::{Act as QueueAct, Field, Filter, QueueView, Target};
@@ -718,6 +721,128 @@ fn mouse(window: &mut Window, cx: &mut gpui::App, event: gpui::PlatformInput) {
     window.dispatch_event(event, cx);
 }
 
+/// A screen of the first run: the box it meets, the window's size, and what's done in it first.
+struct FirstRunScreen {
+    slug: &'static str,
+    scenario: Scenario,
+    size: (f32, f32),
+    /// Changes what the box says before the window reads it.
+    before: fn(&StandIn),
+    /// What's done in the first run once it's read.
+    then: fn(&mut FirstRun, &mut Context<FirstRun>),
+    /// What happens to the box after, the window reading it again (an update gate that closes).
+    after: fn(&StandIn),
+}
+
+fn nothing_before(_: &StandIn) {}
+fn nothing_then(_: &mut FirstRun, _: &mut Context<FirstRun>) {}
+
+fn to_agents(run: &mut FirstRun, cx: &mut Context<FirstRun>) {
+    run.go_on(cx);
+    if run.step() == Step::Where {
+        run.go_back(cx);
+    }
+}
+
+fn to_where(run: &mut FirstRun, cx: &mut Context<FirstRun>) {
+    to_agents(run, cx);
+    run.go_on(cx);
+}
+
+const FIRST_RUN: &[FirstRunScreen] = &[
+    FirstRunScreen { slug: "first-run-welcome", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
+    // A model runs already and nothing needs you: Get Started goes straight to where to work.
+    FirstRunScreen { slug: "first-run-welcome-ready", scenario: Scenario::Running, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
+    // Before the box has said whether the first run's been had: being reached, and not answering.
+    FirstRunScreen { slug: "first-run-starting", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
+    FirstRunScreen { slug: "first-run-unreachable", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
+    // The box stops answering mid-way.
+    FirstRunScreen { slug: "first-run-welcome-unreachable", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: |run, cx| run.set_box(BoxState::Unreachable("Kuvo Code isn’t answering on this Mac.".into()), "This Mac".into(), cx), after: nothing_before },
+    FirstRunScreen { slug: "first-run-agents", scenario: Scenario::Crowded, size: (1280., 900.), before: nothing_before, then: to_agents, after: nothing_before },
+    FirstRunScreen { slug: "first-run-agents-nothing", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: to_agents, after: nothing_before },
+    FirstRunScreen { slug: "first-run-agents-installing", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: |run, cx| { to_agents(run, cx); run.show_installing("agent-claude-code", cx); }, after: nothing_before },
+    FirstRunScreen { slug: "first-run-agents-bridge-down", scenario: Scenario::Crowded, size: (1280., 820.), before: |stand_in| stand_in.agents_running(false), then: to_agents, after: nothing_before },
+    // A sign-in in the browser, in place, with the code its page asks for.
+    FirstRunScreen { slug: "first-run-signing-in", scenario: Scenario::Nothing, size: (1280., 900.), before: nothing_before, then: |run, cx| { to_agents(run, cx); run.act("account-github-copilot", cx); }, after: nothing_before },
+    // An account with more than one way in: the box's ways, in place.
+    FirstRunScreen { slug: "first-run-signing-in-ways", scenario: Scenario::Crowded, size: (1280., 900.), before: nothing_before, then: |run, cx| { to_agents(run, cx); run.act("agent-cursor", cx); }, after: nothing_before },
+    FirstRunScreen { slug: "first-run-sign-in-failed", scenario: Scenario::Crowded, size: (1280., 900.), before: nothing_before, then: |run, cx| { to_agents(run, cx); run.act("account-poe", cx); if let Some((_, sheet)) = run.sign_in() { sheet.clone().update(cx, |sheet, cx| sheet.ask_now(cx)); } }, after: nothing_before },
+    FirstRunScreen { slug: "first-run-keys", scenario: Scenario::Crowded, size: (1280., 820.), before: nothing_before, then: |run, cx| { to_agents(run, cx); run.show_keys(cx); }, after: nothing_before },
+    FirstRunScreen { slug: "first-run-key-entry", scenario: Scenario::Crowded, size: (1280., 820.), before: nothing_before, then: |run, cx| { to_agents(run, cx); run.show_keys(cx); run.act("account-openai", cx); }, after: nothing_before },
+    FirstRunScreen { slug: "first-run-where", scenario: Scenario::Crowded, size: (1280., 900.), before: nothing_before, then: to_where, after: nothing_before },
+    FirstRunScreen { slug: "first-run-where-nothing", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: to_where, after: nothing_before },
+    FirstRunScreen { slug: "first-run-where-machine", scenario: Scenario::Crowded, size: (1280., 900.), before: nothing_before, then: |run, cx| { to_where(run, cx); run.pick_computer("key_devbox", cx); }, after: nothing_before },
+    FirstRunScreen { slug: "first-run-where-failed", scenario: Scenario::Running, size: (1280., 820.), before: |stand_in| stand_in.set_first_run(|first_run| first_run.folders_fail = true), then: to_where, after: nothing_before },
+    FirstRunScreen { slug: "first-run-where-many-computers", scenario: Scenario::Crowded, size: (1280., 820.), before: |stand_in| stand_in.more_computers(12), then: to_where, after: nothing_before },
+    FirstRunScreen { slug: "first-run-browse", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: |run, cx| { to_where(run, cx); run.browse(None, cx); }, after: nothing_before },
+    FirstRunScreen { slug: "first-run-browse-unreadable", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: |run, cx| { to_where(run, cx); run.browse(Some("/Users/sam/Desktop".into()), cx); }, after: nothing_before },
+    // The box turns out older than this app needs, mid-way.
+    FirstRunScreen { slug: "first-run-held", scenario: Scenario::Crowded, size: (1280., 820.), before: nothing_before, then: to_agents, after: |stand_in| stand_in.set_older(true) },
+    FirstRunScreen { slug: "first-run-narrow", scenario: Scenario::Crowded, size: (720., 480.), before: nothing_before, then: to_agents, after: nothing_before },
+    // Done: the window's own landing view, set to start where you picked.
+    FirstRunScreen { slug: "first-run-landing", scenario: Scenario::Running, size: (1280., 820.), before: nothing_before, then: |run, cx| { to_where(run, cx); run.go_on(cx); }, after: nothing_before },
+    FirstRunScreen { slug: "first-run-landing-nothing", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: |run, cx| { to_where(run, cx); run.pick_place(kuvo_box::models::StartIn::Chat, cx); run.go_on(cx); }, after: nothing_before },
+];
+
+/// Renders the first run's screens (`screens-first-run-*`).
+fn first_run_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
+    for screen in FIRST_RUN {
+        if !only.is_empty() && !only.iter().any(|slug| slug == screen.slug || slug == "first-run") {
+            continue;
+        }
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            cx.update(|cx| Theme::set_appearance(appearance, cx));
+            let stand_in = StandIn::first_run(Replies::Never, NOW, screen.scenario);
+            (screen.before)(&stand_in);
+            let client = BoxClient::new(stand_in.clone());
+            let window = cx.open_window(size(px(screen.size.0), px(screen.size.1)), |window, cx| cx.new(|cx| Workspace::new(client, false, window, cx)))?;
+            let any = window.into();
+            cx.update_window(any, |root, _, cx| {
+                let workspace = root.downcast::<Workspace>().expect("the workspace");
+                workspace.update(cx, |workspace, cx| {
+                    workspace.set_now(NOW, cx);
+                    if matches!(screen.slug, "first-run-starting" | "first-run-unreachable") {
+                        workspace.await_box(cx);
+                        if screen.slug == "first-run-unreachable" {
+                            workspace.connected(Err(kuvo_box::Error::NotRunning("Kuvo Code isn’t answering on this Mac.".into())), cx);
+                        }
+                        return;
+                    }
+                    workspace.read_at_once(cx);
+                    let run = workspace.first_run().cloned().expect("the first run");
+                    run.update(cx, |run, cx| (screen.then)(run, cx));
+                });
+            })?;
+            cx.run_until_parked();
+            (screen.after)(&stand_in);
+            cx.update_window(any, |root, window, cx| {
+                let workspace = root.downcast::<Workspace>().expect("the workspace");
+                workspace.update(cx, |workspace, cx| {
+                    if workspace.first_run().is_some() && stand_in_changed(screen) {
+                        workspace.read_at_once(cx);
+                    }
+                });
+                window.refresh();
+            })?;
+            cx.run_until_parked();
+            cx.update_window(any, |_, window, _| window.refresh())?;
+            cx.run_until_parked();
+            let image = cx.capture_screenshot(any)?;
+            let name = format!("screens-{}-{}.png", screen.slug, if appearance.is_dark() { "dark" } else { "light" });
+            image.save(out.join(&name))?;
+            println!("{name}: {}x{}", image.width(), image.height());
+            cx.update_window(any, |_, window, _| window.remove_window())?;
+            cx.run_until_parked();
+        }
+    }
+    Ok(())
+}
+
+/// Whether a screen changes its box after the first run is read (the window reads it again).
+fn stand_in_changed(screen: &FirstRunScreen) -> bool {
+    screen.slug == "first-run-held"
+}
+
 fn main() -> anyhow::Result<()> {
     let only: Vec<String> = std::env::args().skip(1).collect();
     let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../shots");
@@ -853,5 +978,5 @@ fn main() -> anyhow::Result<()> {
             cx.run_until_parked();
         }
     }
-    Ok(())
+    first_run_shots(&mut cx, &only, &out)
 }

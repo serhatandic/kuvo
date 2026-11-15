@@ -19,6 +19,7 @@ pub use crate::time::now_ms;
 
 pub mod areas;
 pub mod bots;
+pub mod first_run;
 pub mod git;
 pub mod groups;
 pub mod queue;
@@ -121,6 +122,8 @@ struct State {
     group_followers: HashMap<u64, (String, Sender<String>)>,
     /// Those following the chats' list (`kuvo/groups/events`).
     groups_followers: HashMap<u64, Sender<String>>,
+    /// What it says for a first run.
+    first_run: first_run::FirstRun,
     /// Sessions currently held because they are moving to another computer, with the box's words.
     held_sessions: HashMap<String, String>,
     /// Sessions archived by the engine itself (`time.archived`), which only it can unarchive.
@@ -153,6 +156,40 @@ impl StandIn {
     pub fn empty(replies: Replies) -> StandIn {
         let areas = areas::Areas { empty: true, ..areas::Areas::default() };
         StandIn { inner: Arc::new(Inner { state: Mutex::new(State { at: 1, next: 1, areas, queue: queue::Queue::none(), ..State::default() }), replies }) }
+    }
+
+    /// A box whose first run hasn't been had (`welcomed: false`), standing as `scenario` says: a
+    /// new computer with nothing on it, or the sample box with its sessions and your computers.
+    pub fn first_run(replies: Replies, now: f64, scenario: first_run::Scenario) -> StandIn {
+        use first_run::Scenario;
+        let stand_in = if scenario == Scenario::Nothing { Self::empty(replies) } else { Self::at(replies, now) };
+        {
+            let mut state = stand_in.state();
+            state.made = Some(now);
+            state.settings.finishes = replies == Replies::Live;
+            state.first_run.welcomed = false;
+            state.first_run.free = true;
+            match scenario {
+                Scenario::Nothing => {
+                    state.first_run.only_free = true;
+                    state.first_run.no_folders = true;
+                    state.settings.nothing_installed();
+                }
+                Scenario::Crowded => {}
+                Scenario::Running => state.settings.all_well(),
+            }
+        }
+        stand_in
+    }
+
+    /// Whether its first run's been had, as it says now.
+    pub fn welcomed(&self) -> bool {
+        self.state().first_run.welcomed
+    }
+
+    /// Changes what it says for a first run.
+    pub fn set_first_run(&self, change: impl FnOnce(&mut first_run::FirstRun)) {
+        change(&mut self.state().first_run);
     }
 
     /// A box from before the features required by the desktop app.
@@ -1040,7 +1077,7 @@ fn agents_models() -> Vec<(Value, Vec<&'static str>)> {
 }
 
 fn model_name(model: &Value) -> Option<String> {
-    models().into_iter().chain(agents_models()).find(|(each, _)| each["providerID"] == model["providerID"] && each["id"] == model["id"]).and_then(|(each, _)| each["name"].as_str().map(str::to_owned))
+    models().into_iter().chain(agents_models()).chain(first_run::free_models()).find(|(each, _)| each["providerID"] == model["providerID"] && each["id"] == model["id"]).and_then(|(each, _)| each["name"].as_str().map(str::to_owned))
 }
 
 /// The keywords and commands "/" offers.
@@ -1089,6 +1126,28 @@ impl StandIn {
         let mut state = self.state();
         state.seen.push(Seen { method: method.into(), path: path.into(), body: request.body.clone() });
         let segments: Vec<&str> = route.split('/').collect();
+        {
+            let (body, made) = (request.body.clone().unwrap_or(Value::Null), state.made.unwrap_or_else(now_ms));
+            // Whether a first run has anything to ask, as a box decides it (`kuvo/setup/ready`).
+            if !state.older && (method, route) == ("GET", "kuvo/setup/ready") {
+                if state.first_run.ready_fails {
+                    return answer(503, json!({ "message": "The box isn’t answering." }));
+                }
+                let runs = !state.first_run.only_free && !state.nothing_runs;
+                let needing = state.settings.needs_you();
+                let ready = state.first_run.ready_says.unwrap_or(runs && needing.as_ref().is_some_and(Vec::is_empty));
+                let pending: &[&str] = if needing.is_none() { &["agents"] } else { &[] };
+                return answer(200, json!({ "ready": ready, "runs": runs, "needsYou": needing.unwrap_or_default(), "pending": pending }));
+            }
+            // (A folder its git lists is git's to answer, with its files; the home's are these.)
+            let gits = route == "kuvo/folders" && query(path, "path").map(decoded).is_some_and(|folder| state.git.as_ref().is_some_and(|git| git.folders.contains_key(&folder)));
+            if !state.older
+                && !gits
+                && let Some((status, value)) = state.first_run.answer(method, route, &|name| query(path, name).map(decoded), &body, made)
+            {
+                return answer(status, value);
+            }
+        }
         if let Some(git) = state.git.as_mut() {
             if (method, route) == ("GET", "kuvo/file/text") {
                 let uri = query(path, "uri").map(decoded).unwrap_or_default();
@@ -1204,7 +1263,16 @@ impl StandIn {
                     }
                     model
                 };
+                // (A new computer: only the models that need no account run, and a new session
+                // starts on one of them.)
+                if state.first_run.only_free {
+                    let listed: Vec<Value> = first_run::free_models().into_iter().map(|model| with("engine", model)).collect();
+                    return answer(200, json!({ "models": listed, "known": { "engine": true, "agents": true }, "starting": first_run::free_start() }));
+                }
                 let mut listed: Vec<Value> = models().into_iter().map(|model| with("engine", model)).collect();
+                if state.first_run.free {
+                    listed.extend(first_run::free_models().into_iter().map(|model| with("engine", model)));
+                }
                 if !state.agents_unknown {
                     listed.extend(agents_models().into_iter().map(|model| with("agents", model)));
                 }

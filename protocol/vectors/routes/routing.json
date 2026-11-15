@@ -198,6 +198,7 @@
         { "send": "GET kuvo/setup/judge", "expect": { "status": 405 } },
         { "send": "GET kuvo/setup/attached", "why": "Kuvo Code on this computer saying it attached to this box is a POST.", "expect": { "status": 405 } },
         { "send": "GET kuvo/setup/welcomed", "why": "A client saying the first run is done is a POST.", "expect": { "status": 405 } },
+        { "send": "POST kuvo/setup/ready", "body": {}, "why": "Whether a first run has anything to ask is read.", "expect": { "status": 405 } },
         { "send": "POST kuvo/setup/welcomed", "body": {}, "why": "It says whether the first run is done, as welcomed.", "expect": { "status": 400 } }
       ]
     },

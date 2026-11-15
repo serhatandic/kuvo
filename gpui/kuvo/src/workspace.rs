@@ -30,6 +30,7 @@ use kuvo_ui::{
 use crate::area::{Area, Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowQueue, ShowSessions, ShowSettings, ShowUsage};
 use crate::areas::{AreaView, Go, Picked, Reading};
 use crate::composer::{Composer, ComposerEvent, Target};
+use crate::first_run::{Finished, FirstRun};
 use crate::conversation::ConversationView;
 use crate::rail::{self, Rings};
 use crate::session_menu::{
@@ -44,6 +45,8 @@ use crate::{NewSession, ShowChanges, ShowFiles, ToggleAppearance, TogglePanel, a
 const SEARCH_PAUSE: Duration = Duration::from_millis(300);
 /// How many conversations a search shows.
 const SEARCH_MOST: usize = 20;
+/// How long before a box that couldn't say whether the first run's been had is asked again.
+const WELCOME_AGAIN: Duration = Duration::from_secs(2);
 /// Narrower than this, the area's sidebar folds away (the rail stays).
 pub const NARROW: Pixels = px(820.);
 /// How far back the window remembers where it's been.
@@ -101,6 +104,16 @@ pub fn held_words(name: Option<&str>, here: bool) -> (String, String) {
         format!("Update Kuvo on {computer} to use it here.")
     };
     (title, next)
+}
+
+/// Whether the box says you've had the first run with it (`welcomed` in `kuvo/setup`).
+enum Welcome {
+    /// Not asked yet (or it couldn't say): asked as the box is reached.
+    Unknown,
+    Asking,
+    /// Not had yet: the window shows it, and nothing else.
+    FirstRun { run: Entity<FirstRun>, _finished: Subscription },
+    Had,
 }
 
 enum Open {
@@ -188,6 +201,16 @@ pub struct Workspace {
     /// Where the window has been, and where in that it is now.
     history: Vec<Nav>,
     at: usize,
+    /// The first run, while the box says it hasn't been had; and the keyboard to go to the
+    /// landing view once it's done.
+    welcome: Welcome,
+    /// Whether the box has answered that once (it had, it hadn't, or it couldn't say): until
+    /// then the window waits, saying how the box stands, rather than show the app and perhaps
+    /// take it away again.
+    welcome_answered: bool,
+    /// Why the box couldn't say, the last time it was asked (shown while it's asked again).
+    welcome_why: Option<String>,
+    focus_landing: bool,
     _sessions: Option<Follow<ListUpdate>>,
     tasks: Vec<Task<()>>,
     _landing: Subscription,
@@ -282,6 +305,11 @@ impl Workspace {
             narrow: false,
             history: vec![Nav::Landing],
             at: 0,
+            // (Tests and shots hand it what to show: asked in `read_at_once`.)
+            welcome: if live { Welcome::Unknown } else { Welcome::Had },
+            welcome_answered: !live,
+            welcome_why: None,
+            focus_landing: false,
             _sessions: None,
             tasks: Vec::new(),
             _landing: subscription,
@@ -360,6 +388,10 @@ impl Workspace {
         self.landing.update(cx, |composer, cx| composer.read_at_once(cx));
         self.rings.update(cx, |rings, cx| rings.read_at_once(cx));
         self.read_computers(cx);
+        if matches!(self.welcome, Welcome::Had | Welcome::Unknown) {
+            self.welcome = Welcome::Unknown;
+            self.ask_welcomed(cx);
+        }
     }
 
     /// Opens `session` and reads it at once, on this thread (shots and tests, against a stand-in).
@@ -423,6 +455,130 @@ impl Workspace {
             Err(kuvo_box::Error::NeedsUpdating { .. }) => self.box_state = BoxState::Held,
             Err(error) => self.box_state = BoxState::Unreachable(error.to_string()),
         }
+        self.box_changed(cx);
+        cx.notify();
+    }
+
+    // MARK: The first run
+
+    /// The first run, while the box says it hasn't been had.
+    pub fn first_run(&self) -> Option<&Entity<FirstRun>> {
+        match &self.welcome {
+            Welcome::FirstRun { run, .. } => Some(run),
+            _ => None,
+        }
+    }
+
+    /// How the box stands changed: the first run is told, and a box just reached is asked whether
+    /// it's been had, where that isn't known yet.
+    fn box_changed(&mut self, cx: &mut Context<Self>) {
+        if let Some(run) = self.first_run().cloned() {
+            let (state, name) = (self.box_state.clone(), self.box_name());
+            run.update(cx, |run, cx| run.set_box(state, name, cx));
+        }
+        if self.box_state == BoxState::Connected {
+            self.ask_welcomed(cx);
+        }
+    }
+
+    /// As the app's window starts: the box not reached yet, and not asked whether the first run's
+    /// been had (tests, which otherwise start on a box that has).
+    #[cfg(feature = "stand-in")]
+    pub fn await_box(&mut self, cx: &mut Context<Self>) {
+        self.welcome = Welcome::Unknown;
+        self.welcome_answered = false;
+        self.welcome_why = None;
+        self.box_state = BoxState::Connecting;
+        cx.notify();
+    }
+
+    /// Whether the window still waits to hear if the first run's been had: the box hasn't
+    /// answered that yet. One held for its update can't say: the window shows that instead.
+    pub fn awaits_box(&self) -> bool {
+        !self.welcome_answered && matches!(self.welcome, Welcome::Unknown | Welcome::Asking) && self.box_state != BoxState::Held
+    }
+
+    /// Asks the box whether you've had the first run with it, once.
+    fn ask_welcomed(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.welcome, Welcome::Unknown) {
+            return;
+        }
+        let client = self.client.clone();
+        if !self.live {
+            let said = client.welcomed();
+            self.take_welcomed(said, cx);
+            return;
+        }
+        self.welcome = Welcome::Asking;
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            let said = cx.background_executor().spawn(async move { client.welcomed() }).await;
+            this.update(cx, |this, cx| this.take_welcomed(said, cx)).ok();
+        }));
+    }
+
+    /// What the box said: not had yet, the window shows the first run. A box that couldn't say
+    /// (held for its update, or not answering) is asked again once it's reached; until then the
+    /// window is as it would be, saying how the box stands.
+    fn take_welcomed(&mut self, said: kuvo_box::Result<bool>, cx: &mut Context<Self>) {
+        // Only its word counts as an answer: a box that couldn't say (not answering just now, or
+        // held for its update, which never got the question) is asked again, the window still
+        // waiting, saying why, rather than showing the app a first run would then take away.
+        self.welcome_answered |= said.is_ok();
+        self.welcome_why = match &said {
+            Err(kuvo_box::Error::NeedsUpdating { .. }) | Ok(_) => None,
+            Err(error) => Some(kuvo_box::accounts::said(error)),
+        };
+        if self.live && self.welcome_why.is_some() {
+            self.tasks.push(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(WELCOME_AGAIN).await;
+                this.update(cx, |this, cx| this.ask_welcomed(cx)).ok();
+            }));
+        }
+        match said {
+            Ok(false) => {
+                let (client, live, state, name) = (self.client.clone(), self.live, self.box_state.clone(), self.box_name());
+                let (computers, now) = (self.computers.clone(), self.now);
+                let run = cx.new(|cx| {
+                    let mut run = FirstRun::new(client, live, state, name, cx);
+                    run.set_computers(computers, cx);
+                    if let Some(now) = now {
+                        run.set_now(now);
+                    }
+                    run
+                });
+                let finished = cx.subscribe(&run, |this: &mut Workspace, _, finished: &Finished, cx| this.finish_first_run(finished.place.clone(), cx));
+                self.welcome = Welcome::FirstRun { run, _finished: finished };
+            }
+            Ok(true) => self.welcome = Welcome::Had,
+            Err(_) => self.welcome = Welcome::Unknown,
+        }
+        cx.notify();
+    }
+
+    /// The first run is done: the box is told (so every client of it agrees, and one installed
+    /// again doesn't welcome you again), and the window opens on its landing view, set to start
+    /// where you picked.
+    fn finish_first_run(&mut self, place: StartIn, cx: &mut Context<Self>) {
+        self.welcome = Welcome::Had;
+        let client = self.client.clone();
+        if self.live {
+            // (Nothing waits on its answer: a box that didn't take it welcomes you once more.)
+            self.tasks.push(cx.background_executor().spawn(async move {
+                client.set_welcomed(true).ok();
+            }));
+        } else {
+            client.set_welcomed(true).ok();
+        }
+        self.area = Area::Sessions;
+        self.open = Open::Landing;
+        self.pick_place(place, cx);
+        let landing = self.landing.clone();
+        self.show_composer(Some(&landing), cx);
+        // (What was signed in to on the way: the rail's accounts are read again.)
+        if self.live {
+            self.rings.update(cx, |rings, cx| rings.read_again(cx));
+        }
+        self.focus_landing = true;
         cx.notify();
     }
 
@@ -488,6 +644,7 @@ impl Workspace {
                 self.lists = Lists::Failed(error.to_string());
             }
         }
+        self.box_changed(cx);
         cx.notify();
     }
 
@@ -532,6 +689,9 @@ impl Workspace {
     pub fn set_now(&mut self, now: f64, cx: &mut Context<Self>) {
         self.now = Some(now);
         self.rings.update(cx, |rings, _| rings.set_now(now));
+        if let Some(run) = self.first_run().cloned() {
+            run.update(cx, |run, _| run.set_now(now));
+        }
         for (_, view) in self.areas.clone() {
             view.update(cx, |view, cx| view.set_now(now, cx));
         }
@@ -1306,6 +1466,10 @@ impl Workspace {
         let computers = areas::reading(read, &self.computers);
         if self.computers != computers {
             self.computers = computers.clone();
+            if let Some(run) = self.first_run().cloned() {
+                let computers = computers.clone();
+                run.update(cx, |run, cx| run.set_computers(computers, cx));
+            }
             if let Some(view) = self.area_view(Area::Computers).cloned() {
                 view.update(cx, |view, cx| view.set_computers(computers, cx));
             }
@@ -2054,6 +2218,39 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let c = &theme.colors;
+        // The first run takes the whole window until it's done; while the box is first being
+        // asked whether it's been had, the window waits, empty, rather than show the app and
+        // take it away again.
+        if let Some(run) = self.first_run() {
+            return div().size_full().child(run.clone());
+        }
+        if self.awaits_box() {
+            // How the box stands, in the window's middle: being reached, or why it can't be.
+            let why = match (&self.box_state, &self.welcome_why) {
+                (BoxState::Unreachable(why), _) => Some(why.clone()),
+                (_, why) => why.clone(),
+            };
+            let words: AnyElement = match why {
+                Some(why) => div().debug_selector(|| "window-waiting-why".into()).max_w(px(420.)).text_color(c.text_muted).child(why.clone()).into_any_element(),
+                _ => div().flex().items_center().gap(space::S2).text_color(c.text_muted).child(kuvo_ui::small::spinner("window-waiting-spinner", kuvo_ui::IconSize::Nav, c.text_muted)).child("Starting…").into_any_element(),
+            };
+            return div()
+                .debug_selector(|| "window-waiting".into())
+                .size_full()
+                .flex()
+                .flex_col()
+                .bg(c.background)
+                .text_ui(TypeSize::Small)
+                .child(div().id("window-waiting-title-bar").h(px(title_bar::HEIGHT)).flex_none().on_mouse_down(MouseButton::Left, |event, window, _| {
+                    if event.click_count == 1 {
+                        window.start_window_move();
+                    }
+                }))
+                .child(div().flex_1().flex().items_center().justify_center().pb(px(96.)).child(words));
+        }
+        if std::mem::take(&mut self.focus_landing) {
+            window.focus(&self.landing.focus_handle(cx), cx);
+        }
         // A narrow window folds the area's sidebar away; brought out there, it folds again once
         // the window has been wide and narrows again.
         let narrow = window.viewport_size().width < NARROW;
