@@ -53,7 +53,7 @@ const NOT_NEW: Record<Exclude<InstallVerdict, "fresh" | "ours">, string> = {
   stuck: "Kuvo Code was moving your sessions to their new place on this Mac and stopped part way: that's finished first.",
   waits: "Another move is under way.",
   back: "Kuvo Code's sessions on this Mac were moved back: they move again when you ask.",
-  machine: "This computer is set up as one of your machines already: Kuvo Code uses the box that's here.",
+  machine: "This computer is set up as one of your machines already: Kuvo Code uses what's here.",
   two: "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: both stay as they are.",
 };
 
@@ -179,6 +179,7 @@ function tidyStaging(home: string, { verdict, verb }: Judgement, release: string
 const NOT_MOVED: Partial<Record<InstallVerdict, string>> = {
   fresh: "There's nothing of an earlier Kuvo Code's on this Mac to move.",
   machine: "This Mac is set up as one of your machines already: Kuvo Code uses what's here.",
+  two: "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.",
   back: "Kuvo Code's sessions on this Mac were moved back: they move again when you ask.",
   waits: "Another move is under way.",
 };

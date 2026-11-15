@@ -1,9 +1,10 @@
 import "./safety"
 import { afterAll, expect, test } from "bun:test"
+import { Database } from "bun:sqlite"
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { judgeInstall } from "../src/link/install/verdict"
 import { databaseWithLog, git, mac07, preferences, put, readJSON, REAL_ENGINE, recorded, rehome, rows, run, sha, snapshot } from "./rehome-run-world"
 
@@ -11,6 +12,8 @@ import { databaseWithLog, git, mac07, preferences, put, readJSON, REAL_ENGINE, r
 // (`kuvo-link.js rehome --run`, #713 piece 4), run as the installer runs it: a process of its
 // own, in a home folder of the test's own. The earlier Kuvo Code's folder is never changed.
 const mac = process.platform === "darwin"
+// (Room for the real engine, where a run names it: it takes seconds to start, a stand-in none.)
+const LIMIT = REAL_ENGINE ? 120_000 : 30_000
 const root = realpathSync(mkdtempSync(join(tmpdir(), "kuvo-run-")))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
@@ -55,7 +58,7 @@ test.if(mac)("a Mac of 0.7.2 moves whole: its sessions brought up to date and in
   expect(existsSync(join(m.K, "updates", "rehome", "kept"))).toBe(false)
   expect(existsSync(join(m.K, "updates", "install"))).toBe(false)
   expect(readJSON(join(m.K, "updates", "rehome", "state.json"))).toMatchObject({ state: "done", owed: [], counts: { sessions: 5, sessionsBefore: 5, projects: 3, messages: 13 } })
-})
+}, LIMIT)
 
 // What a clean move leaves, to hold the others to: made where the world held to it will be (what's
 // rewritten names its folders), then cleared away for it.
@@ -67,8 +70,9 @@ function cleanMove(at: string) {
   rmSync(m.home, { recursive: true, force: true })
   return result
 }
-// (The move's own records, and what the engine writes of its own as it's started: its log.)
-const moveOwn = (relative: string) => relative === "updates/rehome" || relative.startsWith("data/opencode/log")
+// (The move's own records, and what the engine writes of its own as it's started: its log; and,
+// with the real engine, its database's bytes, which hold when it ran. Its rows are held elsewhere.)
+const moveOwn = (relative: string) => relative === "updates/rehome" || relative.startsWith("data/opencode/log") || (REAL_ENGINE !== null && relative.startsWith("data/opencode/opencode.db"))
 
 const POINTS_BACK = ["after-plan", "after-install", "after-keys", "after-clone", "after-upgrade", "after-database", "after-rewrite", "after-check", "in-place", "after-place", "after-fix"]
 
@@ -93,7 +97,7 @@ test.if(mac)("stopped at any step before it's done, the move leaves both folders
     expect(snapshot(m.keychain), point).toEqual(clean.keychain)
     rmSync(m.home, { recursive: true, force: true })
   }
-}, 240_000)
+}, 600_000)
 
 test.if(mac)("stopped once it can only go forward, running it again finishes it: started, the app's own keys taken away", () => {
   for (const point of ["after-clear", "after-start"]) {
@@ -111,7 +115,7 @@ test.if(mac)("stopped once it can only go forward, running it again finishes it:
     expect(snapshot(m.keychain), point).toEqual(clean.keychain)
     rmSync(m.home, { recursive: true, force: true })
   }
-}, 120_000)
+}, 300_000)
 
 test.if(mac)("an earlier Kuvo Code that still has its database open refuses the move, saying to quit it; once it's quit, the move goes ahead", async () => {
   const m = mac07(root)
@@ -134,7 +138,7 @@ test.if(mac)("an earlier Kuvo Code that still has its database open refuses the 
   const moved = run(m)
   expect(moved.status, moved.errors + JSON.stringify(moved.said)).toBe(0)
   expect(snapshot(m.S)).toEqual(before)
-})
+}, LIMIT)
 
 test.if(mac)("a locked Keychain stops the move before anything's copied, saying to unlock it; unlocked, trying again moves everything", () => {
   const m = mac07(root, m => put(join(m.home, "keychain-locked"), ""))
@@ -149,7 +153,7 @@ test.if(mac)("a locked Keychain stops the move before anything's copied, saying 
   rmSync(join(m.home, "keychain-locked"))
   expect(run(m).said).toMatchObject({ result: "done", status: { tries: 0 } })
   expect(readdirSync(join(m.keychain, "helper")).length).toBe(2)
-})
+}, LIMIT)
 
 test.if(mac)("keys the helper can't read back are taken away again and nothing moves: the app's own stay where they were", () => {
   const m = mac07(root, m => put(join(m.home, "helper-cannot-read"), ""))
@@ -160,14 +164,14 @@ test.if(mac)("keys the helper can't read back are taken away again and nothing m
   expect(readdirSync(join(m.keychain, "app")).length).toBe(2)
   expect(existsSync(join(m.K, "updates", "rehome", "keychain.json"))).toBe(false)
   expect(existsSync(join(m.K, "box"))).toBe(false)
-})
+}, LIMIT)
 
 test.if(mac)("copies of this Mac's keys an earlier try left are taken away first, and the move goes on", () => {
   const m = mac07(root, m => put(join(m.keychain, "helper", "phone-link.key"), "an earlier box's"))
   expect(run(m).said).toMatchObject({ result: "done" })
   expect(readFileSync(join(m.keychain, "helper", "phone-link.key"), "utf8")).toBe("the link's key")
   expect(readFileSync(join(m.home, "helper-asked"), "utf8")).toContain("keys clear")
-})
+}, LIMIT)
 
 test.if(mac)("with no engine fetched (offline), the move says to go online and changes nothing", () => {
   const m = mac07(root, m => rmSync(m.engine, { recursive: true }))
@@ -175,7 +179,7 @@ test.if(mac)("with no engine fetched (offline), the move says to go online and c
   expect(refused.status).toBe(1)
   expect(refused.said).toMatchObject({ result: "refused", message: "Kuvo's engine couldn't be downloaded. Check that this Mac is online, then try again." })
   expect(existsSync(join(m.K, "box"))).toBe(false)
-})
+}, LIMIT)
 
 test.if(mac)("sessions last used by an engine nobody tried are refused before anything's copied, the database never opened where it is", () => {
   const m = mac07(root, m => {
@@ -188,7 +192,7 @@ test.if(mac)("sessions last used by an engine nobody tried are refused before an
   expect(refused.said).toMatchObject({ result: "refused", message: "Your sessions were last used by a version of Kuvo Code that this one can't bring along yet (51 20270101000000_later). Update Kuvo Code, then try again." })
   expect(snapshot(m.S)).toEqual(before)
   expect(existsSync(join(m.K, "updates", "rehome", "plan-database"))).toBe(false)
-})
+}, LIMIT)
 
 test.if(mac && !REAL_ENGINE)("an engine that can't bring the sessions up to date stops the move, which goes back", () => {
   const m = mac07(root, m => put(join(m.home, "world.json"), JSON.stringify({ S: m.S, home: m.home, rootCommit: m.rootCommit, cannotMigrate: true })))
@@ -199,7 +203,7 @@ test.if(mac && !REAL_ENGINE)("an engine that can't bring the sessions up to date
   expect(snapshot(m.S)).toEqual(before)
   expect(existsSync(join(m.K, "box"))).toBe(false)
   expect(existsSync(join(m.keychain, "helper"))).toBe(false)
-})
+}, LIMIT)
 
 test.if(mac)("something written in the earlier Kuvo Code's folder while it's copied sends the move back: nothing is left behind unsaid", () => {
   const m = mac07(root)
@@ -211,7 +215,7 @@ test.if(mac)("something written in the earlier Kuvo Code's folder while it's cop
   // The next try takes what was written too.
   expect(run(m).said).toMatchObject({ result: "done" })
   expect(readFileSync(join(m.K, "chats", "c1", "written-meanwhile.md"), "utf8")).toBe("new")
-})
+}, LIMIT)
 
 test.if(mac)("a Mac with nothing of an earlier Kuvo Code's but its browser's data still gets its box, with nothing to bring", () => {
   const m = mac07(root, m => {
@@ -224,7 +228,7 @@ test.if(mac)("a Mac with nothing of an earlier Kuvo Code's but its browser's dat
   expect(readFileSync(join(m.K, "box", "kind"), "utf8")).toBe("mac\n")
   expect(existsSync(join(m.K, "data"))).toBe(false)
   expect(snapshot(m.S)).toEqual(before)
-})
+}, LIMIT)
 
 test.if(mac)("run again once it's moved, nothing moves twice, and Move Back says there's nothing to put back", () => {
   const m = mac07(root)
@@ -235,7 +239,7 @@ test.if(mac)("run again once it's moved, nothing moves twice, and Move Back says
   expect(again.said).toMatchObject({ result: "done", status: { state: "done" } })
   expect(snapshot(m.K, moveOwn)).toEqual(K)
   expect(rehome(m, ["--back"]).said).toMatchObject({ result: "refused", message: "Kuvo on this Mac was moved from an earlier Kuvo Code, whose own folder is as it was: there's nothing to move back." })
-})
+}, LIMIT)
 
 test.if(mac)("saved sign-ins wait for Kuvo to answer on this Mac: until then they're still owed, never written anywhere, and the installer says to run the move again", () => {
   const m = mac07(root, m => put(join(m.home, "keychain-passwords.json"), JSON.stringify({ v: 1, logins: [{ host: "example.com", account: "me", password: "hunter22" }] })))
@@ -247,7 +251,7 @@ test.if(mac)("saved sign-ins wait for Kuvo to answer on this Mac: until then the
   const everything = Object.keys(snapshot(m.K)).filter(name => !name.startsWith("engine/")).map(name => { try { return readFileSync(join(m.K, name), "utf8") } catch { return "" } }).join("\n")
   expect(everything).not.toContain("hunter22")
   expect(judgeInstall(m.K, m.S)).toMatchObject({ verdict: "ours", verb: "move" })
-})
+}, LIMIT)
 
 /** A Mac that ran a keeper build: a box of the app's own in its folder (`S/box`), its engine's
  * database already the pinned engine's, its lists the box's own. */
@@ -296,7 +300,7 @@ test.if(mac)("a keeper build's own box moves the same way: its lists kept and wh
   expect(readFileSync(join(m.K, "attachments", "ses_a", "b 2.png"), "utf8")).toBe("PNGDATA")
   expect(readFileSync(join(m.K, "bin", "mcp-catalog.json"), "utf8")).toBe("the release's bin/mcp-catalog.json\n")
   expect(rows(join(m.K, "data", "opencode", "opencode.db")).session_v2.length).toBe(5)
-})
+}, LIMIT)
 
 test.if(!mac)("on Linux there's nothing to move: `--run` says so and makes nothing", () => {
   const home = join(root, "linux")
@@ -308,4 +312,51 @@ test.if(!mac)("on Linux there's nothing to move: `--run` says so and makes nothi
   expect(refused.said).toMatchObject({ result: "refused", message: "This machine's box is in its own home already: there's nothing to move." })
   expect(existsSync(join(K, "bin"))).toBe(false)
   expect(existsSync(join(K, "box"))).toBe(false)
-})
+}, LIMIT)
+
+test.if(mac)("an account added to Claude Code comes along: its folder, its history of each folder that moved, and its sign-in under its new name", () => {
+  // The Keychain its sign-in is in: a test's own file, never in your search list, nor your login keychain.
+  const keychain = join(root, "run-test.keychain-db")
+  spawnSync("/usr/bin/security", ["create-keychain", "-p", "test", keychain])
+  spawnSync("/usr/bin/security", ["unlock-keychain", "-p", "test", keychain])
+  const item = (folder: string) => `Claude Code-credentials-${sha("sha256", folder).slice(0, 8)}`
+  const valueOf = (service: string) => {
+    const found = spawnSync("/usr/bin/security", ["find-generic-password", "-s", service, "-w", keychain], { encoding: "utf8" })
+    return found.status === 0 ? found.stdout.replace(/\n$/, "") : null
+  }
+  try {
+    const slug = (folder: string) => folder.replace(/[^a-zA-Z0-9]/g, "-")
+    const m = mac07(root, m => {
+      const account = join(m.S, "agents", "claude", "accounts", "ab12cd34")
+      put(join(account, "projects", slug(m.chat), "c.jsonl"), "{}\n")
+      put(join(m.S, "agents", "store.json"), "{}")
+      spawnSync("/usr/bin/security", ["add-generic-password", "-U", "-a", "you", "-s", item(account), "-X", Buffer.from("{\"token\":\"t\"}").toString("hex"), keychain])
+    })
+    const before = snapshot(m.S)
+    const moved = run(m, { KUVO_TEST_REHOME_KEYCHAIN: keychain })
+    expect(moved.status, moved.errors + JSON.stringify(moved.said)).toBe(0)
+    expect(snapshot(m.S)).toEqual(before)
+    const account = join(m.K, "agents", "claude", "accounts", "ab12cd34")
+    expect(existsSync(join(account, "projects", slug(join(m.K, "chats", "c1")), "c.jsonl"))).toBe(true)
+    expect(valueOf(item(account))).toBe("{\"token\":\"t\"}")
+    expect(readJSON(join(m.K, "updates", "rehome", "state.json")).counts).toMatchObject({ accounts: 1, accountsBefore: 1 })
+  } finally {
+    spawnSync("/usr/bin/security", ["delete-keychain", keychain])
+  }
+}, LIMIT)
+
+test.if(mac && REAL_ENGINE !== null)("the real pinned engine makes of 0.7.2's database what the recording says it does: the same migrations, sessions and messages", () => {
+  const m = mac07(root)
+  expect(run(m).said).toMatchObject({ result: "done" })
+  const real = rows(join(m.K, "data", "opencode", "opencode.db"))
+  const file = join(m.home, "tmp", "recorded.db")
+  const made = new Database(file)
+  made.exec(recorded("engine-2.0.32-migrated", m))
+  made.close()
+  const told = rows(file)
+  expect(real.migration.map(each => each.id)).toEqual(told.migration.map(each => each.id))
+  expect(Object.keys(real).sort()).toEqual(Object.keys(told).sort())
+  expect(real.session_v2.map(each => [each.id, each.title, each.project_id.length]).sort()).toEqual(told.session_v2.map(each => [each.id, each.title, each.project_id.length]).sort())
+  expect(real.session_message.map(each => [each.id, each.session_id, each.type, each.seq])).toEqual(told.session_message.map(each => [each.id, each.session_id, each.type, each.seq]))
+  expect(real.session_inbox.map(each => each.id)).toEqual(told.session_inbox.map(each => each.id))
+}, LIMIT)

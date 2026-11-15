@@ -138,7 +138,7 @@ test.if(mac)("what 0.7.2 kept itself comes along: projects, worktrees, machines,
   ])
   expect(state.counts).toMatchObject({ sessions: 5, bots: 1, botsBefore: 1, wakeUps: 2, wakeUpsBefore: 2, groupChats: 1, groupChatsBefore: 0, worktreeRecords: 1, worktreeRecordsBefore: 0 })
   expect(moved.said!.status.dropped).toEqual(state.dropped)
-})
+}, 120_000)
 
 test.if(mac)("a bot of 0.6, which had no description in its folder, is one the box reads after the move", () => {
   const m = mac07(root, m => kept07(m, { described: false }))
@@ -148,7 +148,7 @@ test.if(mac)("a bot of 0.6, which had no description in its folder, is one the b
   })
   expect(readFileSync(join(m.K, "bots", "bot_a1", "session"), "utf8")).toBe("ses_bot_a1")
   expect(readFileSync(join(m.K, "bots", "bot_a1", "directory"), "utf8")).toBe(join(m.K, "bots", "bot_a1", "workspace"))
-})
+}, 120_000)
 
 test.if(mac)("\"Let my devices connect\" stays as this Mac's link had it set, with a relay of your own; a Mac that ran everything without asking is told new sessions start with Auto", () => {
   const m = mac07(root, m => preferences(m, { phoneLink: false, "phoneLink.relay": "wss://relay.example.test/" }))
@@ -156,7 +156,7 @@ test.if(mac)("\"Let my devices connect\" stays as this Mac's link had it set, wi
   expect(readJSON(join(m.K, "run", "mac-link.json"))).toMatchObject({ phones: false, relay: "wss://relay.example.test", app: "" })
   expect(existsSync(join(m.K, "box", "approval.json"))).toBe(false)
   expect(readJSON(join(m.K, "updates", "rehome", "state.json")).dropped).toEqual(["New sessions start with Auto, Kuvo's own default, where the earlier Kuvo Code ran everything without asking."])
-})
+}, 120_000)
 
 test.if(mac)("0.8.0-beta.1's own: personalities you removed stay removed, and a letter already seen stays seen", () => {
   const now = Date.now()
@@ -172,9 +172,9 @@ test.if(mac)("0.8.0-beta.1's own: personalities you removed stay removed, and a 
   expect(readJSON(join(m.K, "run", "outbox", "sending", "ltr_abcdef.json"))).toEqual({ from: null, to: "ses_there", text: "hello", wait: false, at: now, peer: "K".repeat(43) })
   expect(existsSync(join(m.K, "run", "outbox", "sending", "ltr_nokey1.json"))).toBe(false)
   expect(readJSON(join(m.K, "run", "letters-seen.json"))).toEqual({ ltr_seen01: now - 1000 })
-})
+}, 120_000)
 
 test("a property list reads as the app's preferences are kept: text, numbers, switches, lists, and what it kept as JSON", () => {
   const read = parsePlist(`<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "x">\n<plist version="1.0">\n<dict>\n\t<key>a &amp; b</key>\n\t<string>one &lt;two&gt;</string>\n\t<key>empty</key>\n\t<string></string>\n\t<key>n</key>\n\t<integer>3</integer>\n\t<key>r</key>\n\t<real>2.5</real>\n\t<key>on</key>\n\t<true/>\n\t<key>off</key>\n\t<false/>\n\t<key>list</key>\n\t<array>\n\t\t<string>x</string>\n\t\t<dict>\n\t\t\t<key>k</key>\n\t\t\t<string>v</string>\n\t\t</dict>\n\t</array>\n\t<key>none</key>\n\t<array/>\n\t<key>kept</key>\n\t<data>\n\t${Buffer.from(JSON.stringify({ deep: [1, "two"] })).toString("base64")}\n\t</data>\n\t<key>after</key>\n\t<string>still read</string>\n</dict>\n</plist>\n`)
   expect(read).toEqual({ "a & b": "one <two>", empty: "", n: 3, r: 2.5, on: true, off: false, list: ["x", { k: "v" }], none: [], kept: { deep: [1, "two"] }, after: "still read" })
-})
+}, 120_000)

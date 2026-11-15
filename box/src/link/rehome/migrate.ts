@@ -39,7 +39,7 @@ export async function migrateDatabases({ engine, data, scratch }: { engine: stri
   const before = tableCounts(database);
   fs.rmSync(scratch, { recursive: true, force: true });
   try {
-    const started = await startIsolated({ engine, data, scratch, what: "your sessions, to bring them up to date" });
+    const started = await startIsolated({ engine, data, scratch, what: "your sessions (to bring them up to date)" });
     await started.stop();
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });

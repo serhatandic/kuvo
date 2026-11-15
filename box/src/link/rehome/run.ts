@@ -55,6 +55,7 @@ export interface RunOutcome extends RehomeOutcome {
 
 const NO_ENGINE = "Kuvo's engine couldn't be downloaded. Check that this Mac is online, then try again.";
 const DAMAGED = "This copy of Kuvo Code is damaged. Download it again, then try again.";
+const TWO = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.";
 const NO_RELEASE = "Kuvo's own files weren't unpacked. Open Kuvo Code again to try again.";
 
 /** Why an engine database in the earlier Kuvo Code's folder can't be brought along, or null: its
@@ -91,6 +92,7 @@ function runRefusal({ appFolder, home }: Folders, plan: RunPlan, pinned: string 
   if (!exists(path.join(plan.engine, pinned, "opencode"))) return NO_ENGINE;
   // (Kuvo Code itself always brings what hands its keys over: one without it isn't whole.)
   if (real && !plan.keys) return DAMAGED;
+  if (!exists(appFolder)) return "There's nothing of an earlier Kuvo Code's on this Mac to move.";
   const old = runningIn(path.join(appFolder, "box", "run"));
   if (old.length) return `An earlier Kuvo Code is still running in the background on this Mac (${old.join(", ")}). Quit Kuvo Code wherever it's open, then try again.`;
   if (!plan.merge && runningIn(path.join(home, "run")).length) return "Kuvo is already running from ~/.kuvo-code on this Mac. Restart this Mac, then try again.";
@@ -228,7 +230,8 @@ export async function rehomeRun(folders: Folders, options: RunOptions): Promise<
     const now = Date.now();
     let pinned: string | null = null;
     try { pinned = checkedRelease(plan.release).engine; } catch {}
-    const refusal = plan.merge ? "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet." : runRefusal(folders, plan, pinned);
+    // (A machine's box here already, `two`: putting the two together isn't built. Nothing changes.)
+    const refusal = plan.merge ? TWO : runRefusal(folders, plan, pinned);
     if (refusal) {
       // (Counted, never waited for: trying again is yours.)
       noteRecord(home, { state: "failed", way: "move", tries: (readRecord(home).tries ?? 0) + 1, nextTry: null, failed: { at: now, step: "plan", message: refusal }, asked: null });

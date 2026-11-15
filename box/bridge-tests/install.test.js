@@ -207,7 +207,7 @@ test("beside a box that's here already, nothing is made, and the engine the inst
   const refused = install(where, "new");
   assert.equal(refused.status, 1);
   assert.equal(refused.said.result, "refused");
-  assert.equal(refused.said.message, "This computer is set up as one of your machines already: Kuvo Code uses the box that's here.");
+  assert.equal(refused.said.message, "This computer is set up as one of your machines already: Kuvo Code uses what's here.");
   assert.equal(read(path.join(where.K, "bin", "kuvo-start")), "#!/bin/sh\n", "its files as they were");
 });
 

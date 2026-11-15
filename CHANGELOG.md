@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Updating from Kuvo Code 0.7 brings your work along: your sessions, projects, worktrees, bots, group chats, personalities, machines, saved sign-ins and settings move into Kuvo's new place on this Mac. The earlier Kuvo Code's own folder is left exactly as it was, nothing runs until the move has succeeded, and anything it couldn't bring is said.
 - A newly set-up Mac can add computers and pair your devices: Kuvo Code on it now sets up what links it to them itself (before, only the old app did). **Let my devices connect** starts on for a newly set-up Mac, and after the move from Kuvo Code 0.7, unless that Mac's link already had the switch set, which stays as it was. Either way it reaches Kuvo's relay only once you add a computer or pair a device.
 - A computer’s time zone is under Settings › Clock. Git and Worktrees stay under Projects, and Archived Sessions and Storage stay under System with their own icons.
 
