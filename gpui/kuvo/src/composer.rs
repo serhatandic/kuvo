@@ -99,6 +99,7 @@ pub struct Composer {
     client: BoxClient,
     target: Target,
     field: Entity<TextField>,
+    field_held: bool,
     /// Whether the conversation has a run under way (Send turns to Stop with nothing written).
     running: bool,
     sending: bool,
@@ -191,6 +192,7 @@ impl Composer {
             client,
             target,
             field,
+            field_held: false,
             running: false,
             sending: false,
             live: read,
@@ -543,6 +545,7 @@ impl Composer {
 
     /// Sends what's written (or, in a new conversation, starts it on the box and sends it there).
     pub fn send(&mut self, cx: &mut Context<Self>) {
+        if self.client.gate().is_held() { return; }
         let text = self.text(cx);
         if (text.trim().is_empty() && self.attached.is_empty()) || self.sending {
             return;
@@ -930,7 +933,7 @@ impl Composer {
         let can_pick = self.can_pick();
         let this = cx.entity().downgrade();
         let current = model.clone();
-        let trigger = Button::new("model-chip", name).ghost().size(ButtonSize::Small).icon_after(IconName::ChevronDown);
+        let trigger = Button::new("model-chip", name).disabled(self.client.gate().is_held()).ghost().size(ButtonSize::Small).icon_after(IconName::ChevronDown);
         Some(
             PopoverMenu::new("model-menu", trigger, move |_, cx| {
                 let (offered, current, this) = (offered.clone(), current.clone(), this.clone());
@@ -972,7 +975,7 @@ impl Composer {
         }
         let label = model.variant.as_deref().map(effort_title).unwrap_or_else(|| "Default".into());
         let this = cx.entity().downgrade();
-        let trigger = Button::new("effort-chip", label).ghost().size(ButtonSize::Small).icon_after(IconName::ChevronDown);
+        let trigger = Button::new("effort-chip", label).disabled(self.client.gate().is_held()).ghost().size(ButtonSize::Small).icon_after(IconName::ChevronDown);
         Some(
             PopoverMenu::new("effort-menu", trigger, move |_, cx| {
                 let (efforts, model, this) = (efforts.clone(), model.clone(), this.clone());
@@ -1140,6 +1143,22 @@ fn said(answer: &Answer) -> Option<Note> {
 
 impl Render for Composer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let held = self.client.gate().is_held();
+        if self.field_held != held {
+            self.field_held = held;
+            let placeholder = if held {
+                "Can’t send until Kuvo is updated."
+            } else {
+                match &self.target {
+                    Target::Session { .. } => "Ask anything, / for commands",
+                    Target::New(_) => "What should we work on?",
+                }
+            };
+            self.field.update(cx, |field, cx| {
+                field.set_placeholder(placeholder);
+                field.set_disabled(held, cx);
+            });
+        }
         let theme = cx.theme().clone();
         let c = &theme.colors;
         let text = self.text(cx);
@@ -1155,7 +1174,7 @@ impl Render for Composer {
             Button::icon_only("send", IconName::ArrowUp, if empty { "Type to send" } else { "Send" })
                 .accent()
                 .pill()
-                .disabled(empty || self.sending)
+                .disabled(empty || self.sending || self.client.gate().is_held())
                 .loading(self.sending)
                 .on_click(cx.listener(|this, _, _, cx| this.send(cx)))
         };

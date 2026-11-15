@@ -26,7 +26,7 @@ use kuvo_ui::{TextField, TextFieldEvent};
 
 pub use picker::{Field, Picker, Target};
 
-use crate::areas::{Reading, reading};
+use crate::areas::Reading;
 use crate::time;
 
 /// The fold's key for what's deleted.
@@ -544,6 +544,7 @@ impl QueueView {
                     this.found_for = route;
                     this.found = match read {
                         Ok(found) => Reading::Ready(found),
+                        Err(kuvo_box::Error::NeedsUpdating { .. }) => Reading::Ready(Default::default()),
                         Err(error) => Reading::Failed(error.to_string()),
                     };
                 }
@@ -590,7 +591,16 @@ impl QueueView {
         let asked = item.clone();
         self.run("read-item", move |client| client.work_item(&asked), move |this, read, _| {
             if this.shown == Shown::Item(item) {
-                this.whole = reading(read, &this.whole);
+                this.whole = match (read, &this.whole) {
+                    (Ok(value), _) => Reading::Ready(value),
+                    (Err(_), Reading::Ready(value)) => Reading::Ready(value.clone()),
+                    (Err(kuvo_box::Error::NeedsUpdating { .. }), _) => {
+                        this.scope = Scope::All;
+                        this.shown = Shown::List(Scope::All);
+                        return;
+                    },
+                    (Err(error), _) => Reading::Failed(error.to_string()),
+                };
             }
         }, cx);
     }
@@ -922,6 +932,9 @@ impl QueueView {
 
     /// What a control asked for.
     pub fn act(&mut self, act: Act, cx: &mut Context<Self>) {
+        if self.client.gate().is_held() && matches!(act, Act::New | Act::NewLabel) {
+            return;
+        }
         match act {
             Act::Open(item) => cx.emit(QueueEvent::Select(Some(format!("item:{item}")))),
             Act::Back => cx.emit(QueueEvent::Select(self.scope.key())),

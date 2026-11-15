@@ -390,10 +390,11 @@ fn read(area: Area, client: &BoxClient) -> Read {
 }
 
 /// What a read makes of the list: what it read, or (failing) what was there, else why.
-pub fn reading<T: Clone>(read: kuvo_box::Result<T>, before: &Reading<T>) -> Reading<T> {
+pub fn reading<T: Clone + Default>(read: kuvo_box::Result<T>, before: &Reading<T>) -> Reading<T> {
     match (read, before) {
         (Ok(value), _) => Reading::Ready(value),
         (Err(_), Reading::Ready(value)) => Reading::Ready(value.clone()),
+        (Err(kuvo_box::Error::NeedsUpdating { .. }), _) => Reading::Ready(T::default()),
         (Err(error), _) => Reading::Failed(error.to_string()),
     }
 }
@@ -409,6 +410,9 @@ impl Render for AreaView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(settings) = self.settings.clone() {
             return div().id("area-settings").size_full().child(settings.update(cx, |settings, cx| settings.sidebar(cx)));
+        }
+        if self.client.gate().is_held() {
+            return div().id("area-frame").debug_selector(|| "held-area-sidebar".into()).size_full();
         }
         let rows = match self.area {
             Area::Bots => self.bots_rows(cx),
@@ -449,7 +453,7 @@ impl AreaView {
             .pr(space::S1)
             .mb(space::S1)
             .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child("Bots"))
-            .child(Button::icon_only("new-bot", kuvo_ui::IconName::Plus, "New Bot").ghost().size(ButtonSize::Small).selected(self.is_selected("new")).tooltip("New Bot").on_click(self.row_click("new".into(), cx)))
+            .child(Button::icon_only("new-bot", kuvo_ui::IconName::Plus, "New Bot").ghost().size(ButtonSize::Small).selected(self.is_selected("new")).tooltip("New Bot").disabled(self.client.gate().is_held()).on_click(self.row_click("new".into(), cx)))
             .into_any_element();
         let bots = match &self.bots {
             Reading::NotYet => return vec![header, quiet("Loading bots…", true, cx)],
@@ -610,7 +614,7 @@ impl AreaView {
         // Labels are the box's, and all yours: made from here, and each changed or removed from
         // its own menu (a right-click), through the box's route.
         let page = self.queue_page.clone();
-        let new_label = Button::icon_only("new-label", kuvo_ui::IconName::Plus, "New Label").ghost().size(ButtonSize::Small).tooltip("New Label").on_click(move |_, _, cx| {
+        let new_label = Button::icon_only("new-label", kuvo_ui::IconName::Plus, "New Label").ghost().size(ButtonSize::Small).tooltip("New Label").disabled(self.client.gate().is_held()).on_click(move |_, _, cx| {
             if let Some(page) = &page {
                 page.update(cx, |page, cx| page.act(QueueAct::NewLabel, cx));
             }
@@ -919,6 +923,12 @@ pub fn views(client: &BoxClient, live: bool, cx: &mut App) -> Vec<(Area, gpui::E
 mod tests {
     use super::{computer_line, doing};
     use kuvo_box::areas::BotNow;
+
+    #[test]
+    fn a_held_read_is_empty_without_an_area_error() {
+        let read = super::reading::<super::Bots>(Err(kuvo_box::Error::NeedsUpdating { missing: vec!["typed".into()] }), &super::Reading::NotYet);
+        assert!(matches!(read, super::Reading::Ready(bots) if bots.bots.is_empty()));
+    }
 
     /// A computer's line says what the box says of it: one it only knows of through another is
     /// never said to be away.

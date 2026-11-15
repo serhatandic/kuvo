@@ -53,7 +53,7 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
             Button::icon_only("new-session", IconName::Plus, "New Session")
                 .ghost()
                 .size(ButtonSize::Small)
-                .tooltip("⌘N")
+                .tooltip("⌘N").disabled(workspace.client().gate().is_held())
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(NewSession), cx)),
         );
     let panel_button = (workspace.area() == Area::Sessions).then(|| {
@@ -118,7 +118,7 @@ fn computer_switcher(workspace: &Workspace, cx: &App) -> AnyElement {
     let (dot, said) = match workspace.box_state() {
         BoxState::Connected => (None, None),
         BoxState::Connecting => (Some(c.text_faint), Some("Connecting…".to_owned())),
-        BoxState::Updating => (Some(c.warning), Some(kuvo_box::gate::UPDATING.to_owned())),
+        BoxState::Held => (None, None),
         BoxState::Unreachable(why) => (Some(c.danger), Some(why.clone())),
     };
     // A long name is cut, so back, forward and + stay at the sidebar's edge.

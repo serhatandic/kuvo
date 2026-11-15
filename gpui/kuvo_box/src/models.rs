@@ -165,7 +165,7 @@ pub struct Known {
 }
 
 /// The models offered, in the order a picker draws them, and the one a new session starts on.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct Offered {
     pub models: Vec<OfferedModel>,
     #[serde(default)]

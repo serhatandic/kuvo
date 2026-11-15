@@ -902,7 +902,7 @@ impl QueueView {
                         .children(filter)
                         .child(more)
                         .when(self.queue().is_some(), |d| {
-                            d.child(div().debug_selector(|| "queue-new".into()).child(Button::icon_only("queue-new", IconName::Plus, "New Item").primary().size(ButtonSize::Small).tooltip("New Item").on_click(cx.listener(|this, _, _, cx| this.act(Act::New, cx)))))
+                            d.child(div().debug_selector(|| "queue-new".into()).child(Button::icon_only("queue-new", IconName::Plus, "New Item").primary().size(ButtonSize::Small).tooltip("New Item").disabled(self.client.gate().is_held()).on_click(cx.listener(|this, _, _, cx| this.act(Act::New, cx)))))
                         }),
                 )
                 .children(chips),
@@ -1107,6 +1107,9 @@ fn menu_of(id: SharedString, trigger: impl IntoElement, entries: Vec<MenuItemSpe
 impl Render for QueueView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors.clone();
+        if self.client.gate().is_held() {
+            return div().id("queue-page").debug_selector(|| "held-area".into()).size_full().bg(c.sidebar);
+        }
         if let Some(focus) = self.wants_focus.take() {
             window.focus(&focus, cx);
         }

@@ -65,7 +65,7 @@ impl fmt::Display for Error {
         match self {
             Error::NotRunning(why) | Error::Unreachable(why) | Error::BadAnswer(why) => f.write_str(why),
             Error::Refused(refusal) => f.write_str(&refusal.message),
-            Error::NeedsUpdating { .. } => f.write_str(crate::gate::UPDATING),
+            Error::NeedsUpdating { .. } => f.write_str("This computer’s Kuvo is older than this app."),
         }
     }
 }

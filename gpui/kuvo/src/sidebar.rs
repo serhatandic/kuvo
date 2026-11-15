@@ -177,10 +177,13 @@ fn found_lines(workspace: &Workspace, query: &str) -> Vec<Line> {
 }
 
 pub fn render(workspace: &Workspace, window: &mut Window, cx: &mut Context<Workspace>) -> AnyElement {
+    if workspace.client().gate().is_held() {
+        return div().debug_selector(|| "held-sessions".into()).size_full().into_any_element();
+    }
     let lists: Vec<AnyElement> = match workspace.lists() {
         Lists::Loading => vec![quiet(Some("Loading sessions…"), true, cx)],
         Lists::Waiting(why) => vec![quiet(Some(&format!("Loading sessions… {why}")), true, cx)],
-        Lists::Held => vec![quiet(Some("Kuvo Code here is updating. Its sessions show once it has."), false, cx)],
+        Lists::Held => Vec::new(),
         Lists::Failed(why) if !workspace.listing().is_read() => vec![quiet(Some(why), false, cx)],
         _ => sessions(workspace, window, cx),
     };
@@ -303,7 +306,7 @@ fn line_row(workspace: &Workspace, line: &Line, cursor: bool, cx: &mut Context<W
                 .icon(if collapsed { IconName::ChevronRight } else { IconName::Folder })
                 .cursor(cursor)
                 .hover_trailing(
-                    Button::icon_only(SharedString::from(format!("new-in-{directory}")), IconName::Plus, format!("New session in {}", group.name))
+                    Button::icon_only(SharedString::from(format!("new-in-{directory}")), IconName::Plus, format!("New session in {}", group.name)).disabled(workspace.client().gate().is_held())
                         .size(ButtonSize::Small)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
