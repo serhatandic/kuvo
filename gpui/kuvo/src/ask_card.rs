@@ -1,6 +1,8 @@
 //! What a conversation waits on you for, as a card in the composer's place (as the Mac and the
-//! phone show it): a permission with what it would run or change and its numbered answers, or the
-//! agent's questions one at a time with their choices and a line for your own words. Each is drawn
+//! phone show it): a permission with what it would run or change and its numbered answers, the
+//! agent's questions one at a time with their choices and a line for your own words, or what the
+//! box asks you itself (a command outside the sandbox, something from the vault), drawn as a
+//! permission is, with the box's words and numbered answers. Each is drawn
 //! as the box words it (`sessions.asks`), and answered through the box. Where more than one waits,
 //! "2 of 3" pages through them; the one shown stays while others come and go (KuvoClient's
 //! `AskPlace`).
@@ -13,10 +15,11 @@ use gpui::{
     ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::BoxClient;
-use kuvo_box::asks::{Answer, Ask, Asks, Permission, Question};
+use kuvo_box::asks::{Answer, Ask, Asks, Choice, Permission, Question, Sandbox, Vault};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextField, TextFieldEvent, TypeSize,
     button::keycap,
+    menu::Tooltip,
     output::{DiffView, OutputWell, parse_patch},
     theme::{radius, space},
 };
@@ -77,14 +80,34 @@ impl AskPlace {
     }
 }
 
-/// One numbered answer on a card: its number, its words, what Always names (as code), and for a
-/// question that takes several, whether it's picked.
+/// One numbered answer on a card: its number, its words, what Always names (as code) and the words
+/// after it, for a question that takes several whether it's picked, and its hover text.
 struct AnswerRow {
     id: SharedString,
     number: usize,
     title: String,
     named: Option<String>,
+    after: Option<String>,
     checked: Option<bool>,
+    help: Option<String>,
+}
+
+impl AnswerRow {
+    /// One of an ask's choices, as the box words it.
+    fn of(choice: &Choice, at: usize) -> AnswerRow {
+        let id = match &choice.item {
+            Some(item) => format!("ask-choice-{}-{item}", choice.answer),
+            None => format!("ask-choice-{}", choice.answer),
+        };
+        AnswerRow { id: id.into(), number: at + 1, title: choice.title.clone(), named: choice.named.clone(), after: choice.after.clone(), checked: None, help: choice.help.clone() }
+    }
+}
+
+/// The answers this app offers for what the box asks itself: all of its choices but those that
+/// make a grant (`confirm`), which a client makes sure is you first, and this one can't ask for
+/// Touch ID yet.
+pub fn offered(choices: &[Choice]) -> Vec<Choice> {
+    choices.iter().filter(|choice| !choice.confirm).cloned().collect()
 }
 
 pub struct AskCard {
@@ -265,10 +288,22 @@ impl AskCard {
         }
     }
 
-    /// A permission's answer picked: Instead opens the line for your words first.
+    /// The numbered answers of the ask shown, as this app offers them: a permission's, or those of
+    /// what the box asks itself.
+    fn choices(&self) -> Vec<Choice> {
+        match self.shown() {
+            Some(Ask::Permission(permission)) => permission.choices.clone(),
+            Some(Ask::Sandbox(sandbox)) => offered(&sandbox.choices),
+            Some(Ask::Vault(vault)) => offered(&vault.choices),
+            _ => Vec::new(),
+        }
+    }
+
+    /// An answer picked (a permission's, or one of what the box asks itself): Instead opens the
+    /// line for your words first.
     pub fn choose(&mut self, at: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Ask::Permission(permission)) = self.shown() else { return };
-        let Some(choice) = permission.choices.get(at) else { return };
+        let choices = self.choices();
+        let Some(choice) = choices.get(at) else { return };
         if choice.answer == "instead" {
             self.instead = true;
             self.words.update(cx, |field, cx| field.set_text("", cx));
@@ -276,7 +311,7 @@ impl AskCard {
             cx.notify();
             return;
         }
-        let answer = Answer::permission(&choice.answer, None);
+        let answer = Answer::choice(choice);
         self.answer(answer, cx);
     }
 
@@ -408,14 +443,17 @@ impl AskCard {
             cx.stop_propagation();
             return;
         }
+        let numbered = matches!(self.shown(), Some(Ask::Permission(_) | Ask::Sandbox(_) | Ask::Vault(_)));
         match (self.shown().cloned(), key) {
-            (Some(Ask::Permission(_)), "enter") => self.choose(0, window, cx),
-            (Some(Ask::Permission(permission)), "escape") => {
-                if let Some(at) = permission.choices.iter().position(|choice| choice.answer == "instead") {
+            (Some(_), "enter") if numbered => self.choose(0, window, cx),
+            // Escape: a permission's Instead; Don't Allow for what the box asks itself.
+            (Some(_), "escape") if numbered => {
+                let choices = self.choices();
+                if let Some(at) = choices.iter().position(|choice| choice.answer == "instead").or_else(|| choices.iter().position(|choice| choice.answer == "reject")) {
                     self.choose(at, window, cx);
                 }
             }
-            (Some(Ask::Permission(_)), digit) if digit.len() == 1 && digit.as_bytes()[0].is_ascii_digit() && digit != "0" => {
+            (Some(_), digit) if numbered && digit.len() == 1 && digit.as_bytes()[0].is_ascii_digit() && digit != "0" => {
                 self.choose(digit.parse::<usize>().unwrap_or(1) - 1, window, cx);
             }
             (Some(Ask::Question(_)), digit) if digit.len() == 1 && digit.as_bytes()[0].is_ascii_digit() && digit != "0" => {
@@ -458,7 +496,7 @@ impl AskCard {
 
     /// A numbered answer: its keycap, its words (and what Always names, as code), picked or not.
     fn answer_row(&self, row: AnswerRow, on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static, cx: &mut Context<Self>) -> AnyElement {
-        let AnswerRow { id, number, title, named, checked } = row;
+        let AnswerRow { id, number, title, named, after, checked, help } = row;
         let c = cx.theme().colors.clone();
         let busy = self.answering.is_some();
         let (hover, pressed) = (c.hover, c.pressed);
@@ -482,6 +520,11 @@ impl AskCard {
             .children(checked.map(|checked| Icon::new(if checked { IconName::Check } else { IconName::Minus }).size(IconSize::Nav).color(if checked { c.accent } else { c.text_faint })))
             .child(div().flex_none().child(title))
             .children(named.map(|named| div().min_w_0().truncate().px(space::S1).rounded(radius::SMALL).bg(c.inline_code).text_mono(TypeSize::Small).child(named)))
+            .children(after.map(|after| div().flex_none().child(after)))
+            .when_some(help, |d, help| {
+                let help = SharedString::from(help);
+                d.tooltip(move |_, cx| Tooltip::new(help.clone()).build(cx))
+            })
             .into_any_element()
     }
 
@@ -532,10 +575,83 @@ impl AskCard {
                 );
                 continue;
             }
-            let row = AnswerRow { id: SharedString::from(format!("ask-choice-{}", choice.answer)), number: at + 1, title: choice.title.clone(), named: choice.named.clone(), checked: None };
-            choices.push(self.answer_row(row, move |this, window, cx| this.choose(at, window, cx), cx));
+            choices.push(self.answer_row(AnswerRow::of(choice, at), move |this, window, cx| this.choose(at, window, cx), cx));
         }
         parts.push(div().flex().flex_col().gap(space::S0_5).children(choices).into_any_element());
+        parts
+    }
+
+    /// The numbered answers of what the box asks itself, as this app offers them.
+    fn choice_rows(&self, choices: &[Choice], cx: &mut Context<Self>) -> AnyElement {
+        let rows: Vec<AnyElement> = offered(choices).iter().enumerate().map(|(at, choice)| self.answer_row(AnswerRow::of(choice, at), move |this, window, cx| this.choose(at, window, cx), cx)).collect();
+        div().flex().flex_col().gap(space::S0_5).children(rows).into_any_element()
+    }
+
+    /// Where a grant can't be made here (it needs Touch ID): said under the answers.
+    fn grants_elsewhere(choices: &[Choice], cx: &mut Context<Self>) -> Option<AnyElement> {
+        let c = cx.theme().colors.clone();
+        choices.iter().any(|choice| choice.confirm).then(|| {
+            div().debug_selector(|| "ask-grants-elsewhere".into()).text_ui(TypeSize::Caption).text_color(c.text_faint).child("To allow it from now on, answer on your iPhone: that asks for Face ID first, which this app can’t yet.").into_any_element()
+        })
+    }
+
+    /// A command the sandbox stopped: what stopped it, the command and what was refused, the
+    /// agent's reason, and its answers.
+    fn sandbox(&self, sandbox: &Sandbox, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let c = cx.theme().colors.clone();
+        let mut parts = vec![self.header(IconName::Shield, sandbox.title.clone().into(), false, cx)];
+        parts.push(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(sandbox.message.clone()).into_any_element());
+        parts.push(OutputWell::new(SharedString::from(format!("ask-command-{}", sandbox.id)), format!("$ {}", sandbox.command)).into_any_element());
+        // What the sandbox refused it, each with its tag; where it can't say, the error it got.
+        let stops: Vec<(String, String)> = if sandbox.stopped.is_empty() {
+            sandbox.error.iter().map(|error| ("Error".to_owned(), error.clone())).collect()
+        } else {
+            sandbox.stopped.iter().map(|stop| (stop.label.clone(), stop.detail.clone())).collect()
+        };
+        if !stops.is_empty() {
+            let rows = stops.into_iter().map(|(tag, detail)| {
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(space::S2)
+                    .child(div().flex_none().px(space::S1).rounded(radius::SMALL).bg(c.warning.opacity(0.15)).text_ui(TypeSize::Caption).medium().text_color(c.warning).child(tag))
+                    .child(div().min_w_0().text_mono(TypeSize::Small).text_color(c.text).child(detail))
+            });
+            parts.push(div().debug_selector(|| "ask-stopped".into()).flex().flex_col().gap(space::S1).children(rows).into_any_element());
+        }
+        if !sandbox.why.trim().is_empty() {
+            parts.push(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(space::S1)
+                    .text_ui(TypeSize::Small)
+                    .child(div().text_color(c.text_muted).child(format!("{}:", sandbox.asker)))
+                    .child(div().text_color(c.text).child(format!("“{}”", sandbox.why.trim())))
+                    .into_any_element(),
+            );
+        }
+        parts.push(self.choice_rows(&sandbox.choices, cx));
+        parts.extend(Self::grants_elsewhere(&sandbox.choices, cx));
+        parts
+    }
+
+    /// What the agent asks of the vault: an item to use or one it needs, its words, and its
+    /// answers (an item it needs, given by name).
+    fn vault(&self, vault: &Vault, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let c = cx.theme().colors.clone();
+        let mut parts = vec![self.header(IconName::Shield, vault.title.clone().into(), false, cx)];
+        if let Some(message) = vault.message.as_ref().filter(|message| !message.trim().is_empty()) {
+            parts.push(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(message.clone()).into_any_element());
+        }
+        if let Some(site) = &vault.site {
+            parts.push(div().flex().gap(space::S1).text_ui(TypeSize::Caption).text_color(c.text_faint).child("For").child(div().text_mono(TypeSize::Caption).child(site.clone())).into_any_element());
+        }
+        if let Some(note) = &vault.note {
+            parts.push(div().debug_selector(|| "ask-note".into()).text_ui(TypeSize::Small).text_color(c.text_muted).child(note.clone()).into_any_element());
+        }
+        parts.push(self.choice_rows(&vault.choices, cx));
+        parts.extend(Self::grants_elsewhere(&vault.choices, cx));
         parts
     }
 
@@ -559,7 +675,7 @@ impl AskCard {
                     _ => option.label.clone(),
                 };
                 let checked = asked.multiple.then(|| picked.contains(&option.value));
-                let row = AnswerRow { id: SharedString::from(format!("ask-option-{at}")), number: at + 1, title, named: None, checked };
+                let row = AnswerRow { id: SharedString::from(format!("ask-option-{at}")), number: at + 1, title, named: None, after: None, checked, help: None };
                 self.answer_row(row, move |this, _, cx| this.pick(at, cx), cx)
             })
             .collect();
@@ -597,6 +713,8 @@ impl Render for AskCard {
         let parts: Vec<AnyElement> = match self.shown().cloned() {
             Some(Ask::Permission(permission)) => self.permission(&permission, cx),
             Some(Ask::Question(question)) => self.question(&question, cx),
+            Some(Ask::Sandbox(sandbox)) => self.sandbox(&sandbox, cx),
+            Some(Ask::Vault(vault)) => self.vault(&vault, cx),
             Some(Ask::Other { title, message, dismiss, .. }) => vec![
                 self.header(IconName::Question, title.into(), dismiss, cx),
                 div().text_ui(TypeSize::Small).text_color(c.text_muted).child(message).into_any_element(),

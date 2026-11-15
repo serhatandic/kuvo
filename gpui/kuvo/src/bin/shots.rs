@@ -59,6 +59,9 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "select-drag-3", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "landing", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "asking", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    // What the box asks itself: a command outside the sandbox, an item from the vault.
+    Screen { slug: "asking-sandbox", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "asking-vault", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "question", width: 1280., height: 820., session: Some("ses_cms"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "slash", width: 1280., height: 820., session: Some("ses_recipes"), typed: Some("/"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "narrow", width: 860., height: 760., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -695,6 +698,12 @@ fn main() -> anyhow::Result<()> {
             let mut second = kuvo::stand_in::redis_permission();
             second["id"] = serde_json::json!("per_push");
             stand_in.set_asks("ses_limits", vec![kuvo::stand_in::redis_permission(), second]);
+            if screen.slug == "asking-sandbox" {
+                stand_in.set_asks("ses_limits", vec![kuvo::stand_in::sandbox_ask()]);
+            }
+            if screen.slug == "asking-vault" {
+                stand_in.set_asks("ses_limits", vec![kuvo::stand_in::vault_ask()]);
+            }
             // One computer turned down a change held for it, in its words.
             // A queue with many more labels than a menu shows at once.
             if screen.slug == "queue-new-many-labels" {

@@ -511,6 +511,38 @@ pub fn redis_permission() -> Value {
     })
 }
 
+/// A command the sandbox stopped in the rate limits' conversation, which its agent asks to run
+/// outside it: Always names the one folder it was stopped writing in.
+pub fn sandbox_ask() -> Value {
+    json!({
+        "id": "sq_redis", "kind": "sandbox", "session": "ses_limits", "title": "Scout wants to run a command outside the sandbox",
+        "message": "The sandbox stopped it from changing a file outside api.", "command": "brew install redis",
+        "stopped": [{ "label": "Write", "detail": "/opt/homebrew/Cellar/redis" }], "error": null,
+        "asker": "Scout", "why": "The rate limiter's tests need a local Redis server.",
+        "choices": [
+            { "answer": "once", "title": "Allow Once", "named": null, "placeholder": null, "help": "Runs it outside the sandbox this once", "spoken": "Allow once: run it outside the sandbox" },
+            { "answer": "always", "title": "Always Allow", "named": "/opt/homebrew/Cellar", "placeholder": null, "help": "Runs it, and from now on lets api’s commands write in /opt/homebrew/Cellar too, in the sandbox.", "spoken": "Always Allow /opt/homebrew/Cellar" },
+            { "answer": "reject", "title": "Don’t Allow", "named": null, "placeholder": null, "help": "It goes on without running it", "spoken": null }
+        ]
+    })
+}
+
+/// An item the rate limits' agent needs from the vault: Give for each item; Always Give makes a
+/// grant, which a client makes sure is you first.
+pub fn vault_ask() -> Value {
+    json!({
+        "id": "q_redis", "kind": "vault", "session": "ses_limits", "need": "item", "title": "Scout needs the staging Redis password",
+        "message": "To run the load test against staging.", "site": "redis.staging.example.com", "note": null,
+        "choices": [
+            { "answer": "once", "title": "Give", "named": "Staging Redis", "placeholder": null, "help": "Gives it “Staging Redis” this once", "spoken": "Give Staging Redis, this once", "item": "itm_redis" },
+            { "answer": "always", "title": "Always Give", "named": "Staging Redis", "placeholder": null, "help": "Gives it “Staging Redis”, and lets this project use it from now on, without asking", "spoken": "Always give Staging Redis", "item": "itm_redis", "confirm": true },
+            { "answer": "once", "title": "Give", "named": "Redis Cloud", "placeholder": null, "help": "Gives it “Redis Cloud” this once", "spoken": "Give Redis Cloud, this once", "item": "itm_cloud" },
+            { "answer": "always", "title": "Always Give", "named": "Redis Cloud", "placeholder": null, "help": null, "spoken": null, "item": "itm_cloud", "confirm": true },
+            { "answer": "reject", "title": "Don’t Allow", "named": null, "placeholder": null, "help": "It goes on without it", "spoken": null }
+        ]
+    })
+}
+
 /// What waits behind the sign-up fix's run: one of yours, and a letter from a bot.
 fn signup_queue() -> Vec<Value> {
     vec![
