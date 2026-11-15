@@ -3882,6 +3882,9 @@
             "literal": "attention"
            },
            {
+            "literal": "auto.lists"
+           },
+           {
             "literal": "autopilot"
            },
            {
@@ -4522,6 +4525,9 @@
            },
            {
             "literal": "attention"
+           },
+           {
+            "literal": "auto.lists"
            },
            {
             "literal": "autopilot"
