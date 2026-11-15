@@ -776,7 +776,7 @@ async function serve(): Promise<void> {
   // What's left of its bots' own keys gone (bots/own-keys.ts), before it says where it is too: all
   // of it where its keys are its own files; where its app keeps them, its bots' folders' settings
   // now, and the keys once its app answers (below).
-  if (KEYS_ON_HOST) { try { dropBotsOwnServers(); } catch {} } else await dropBotsOwnKeys().catch(() => {});
+  if (KEYS_ON_HOST) { try { dropBotsOwnServers(runningEngine); } catch {} } else await dropBotsOwnKeys(runningEngine).catch(() => {});
   // This Mac's notices for your phones, held while you're at a computer, as a machine's are.
   if (IS_MAC) macLink.hold = macNoticeHold();
   const server = serveBox(password, engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile, () => {}, macLink.hold));
@@ -1111,6 +1111,9 @@ if (main) {
     // its settings as its catalogs have them, before the engine reads them. (This Mac's app runs it
     // too, for what it prints, not as its box: `serve` did this, and there's no settings file here.)
     await upgradeIntegrations().catch(() => {});
+    // And what's left of its bots' own keys gone, before its engine reads their folders' settings
+    // (bots/own-keys.ts): a machine without a bridge does it here.
+    if (!IS_MAC) await dropBotsOwnKeys().catch(() => {});
     // What it learned before it kept it there (an older box's), or a copy taken away meanwhile.
     if (knowsEngineSettings()) {
       try { applyCompatibility(); } catch {}
@@ -1155,6 +1158,7 @@ if (main) {
       if (!needed(readLink())) {
         confirmUpdate();
         await upgradeIntegrations().catch(() => {});
+        await dropBotsOwnKeys(runningEngine).catch(() => {});
       }
     }
     console.log(JSON.stringify(outcome ?? { result: "current", message: "No offered release is due." }));

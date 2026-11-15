@@ -17,12 +17,13 @@ import path from "node:path";
 import { isObject } from "../../shared/json";
 import type { EngineRecord } from "../../shared/records";
 import { soon } from "../../shared/wait";
-import { readSettings, SERVERS, valueAt } from "../areas/config";
+import { ownsSettings, readSettings, SERVERS, valueAt } from "../areas/config";
 import { integrationCatalog } from "../areas/integrations";
 import { listOf, textOf, writePrivate } from "../files";
-import { BOTS, HERE, RUN } from "../home";
+import { BOTS, HERE, K, OWN_HOME_MAC, RUN } from "../home";
 import { KeysUnavailable } from "../host-interface";
 import { dropBotKeys, keyFilesWait, keyWork } from "../keys";
+import { readRecord } from "../rehome/state";
 import { updateOnTrial } from "../updates/update";
 
 /** The integrations a bot had a key of its own for, noted in its folder (`{"integrations": [ids]}`)
@@ -57,7 +58,14 @@ export function dropOwnServers(folder: string): string[] {
   const settingsFolder = path.join(folder, "workspace", ".opencode");
   const file = path.join(settingsFolder, "opencode.json");
   let settings: unknown;
-  try { settings = JSON.parse(textOf(file) ?? ""); } catch { return []; }
+  const text = textOf(file);
+  try {
+    settings = JSON.parse(text ?? "");
+  } catch {
+    // (Said, as its server will fail once its key has gone: it's yours to take out of the file.)
+    if (text && namesBotKey(text)) console.error(`kuvo-link: ${file} isn't plain JSON and names a key a bot had of its own, which is removed: take that server out of it.`);
+    return [];
+  }
   const servers = isObject(settings) && isObject(settings.mcp) && isObject(settings.mcp.servers) ? settings.mcp.servers : null;
   if (!isObject(settings) || !servers) return [];
   const gone = Object.keys(servers).filter(id => namesBotKey(servers[id]));
@@ -81,28 +89,31 @@ export function dropOwnServers(folder: string): string[] {
   return gone;
 }
 
-/** Of the integrations a bot had a key of its own for, those this box hasn't connected now, by
- * their names; none while its settings can't be read (never said of one that may be connected). */
-function notConnected(folder: string): string[] {
+/** Of the integrations noted for a bot, those this box hasn't connected now; null while that can't
+ * be told (its settings unreadable, or not its own yet), so nothing false is said or forgotten. */
+function stillToConnect(folder: string): { noted: string[]; left: string[] } | null {
   const noted = keysGoneOf(folder);
-  if (!noted.length) return [];
+  if (!noted.length) return { noted, left: [] };
   const { settings } = readSettings();
-  if (!settings) return [];
-  const missing = noted.filter(id => valueAt(settings, [...SERVERS, id]) === undefined);
-  if (!missing.length) return [];
+  if (!settings || !ownsSettings()) return null;
+  return { noted, left: noted.filter(id => valueAt(settings, [...SERVERS, id]) === undefined) };
+}
+
+/** Of the integrations a bot had a key of its own for, those this box hasn't connected now, by
+ * their names. Only integrations this box's catalog has: its note is a file in its own folder,
+ * which nothing else may put words in what it's told through. */
+function notConnected(folder: string): string[] {
+  const left = stillToConnect(folder)?.left ?? [];
+  if (!left.length) return [];
   const catalog = integrationCatalog();
-  return missing.map(id => { const title = catalog.find(entry => entry.id === id)?.title; return typeof title === "string" && title ? title : id; });
+  return left.flatMap(id => { const title = catalog.find(entry => entry.id === id)?.title; return typeof title === "string" && title ? [title] : []; });
 }
 
 /** Its note without the integrations this box has connected since (the bot uses them, as any
  * session does, and nothing more is said of them). As its run starts. */
 export function forgetConnectedKeys(folder: string): void {
-  const noted = keysGoneOf(folder);
-  if (!noted.length) return;
-  const { settings } = readSettings();
-  if (!settings) return;
-  const left = noted.filter(id => valueAt(settings, [...SERVERS, id]) === undefined);
-  if (left.length !== noted.length) try { noteKeysGone(folder, left); } catch {}
+  const now = stillToConnect(folder);
+  if (now && now.left.length !== now.noted.length) try { noteKeysGone(folder, now.left); } catch {}
 }
 
 const listed = (names: string[]): string => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
@@ -141,17 +152,24 @@ export function dropBotsOwnServers(engine: () => EngineRecord | null = () => nul
   }
 }
 
+/** Whether this Mac's box has just moved into a home of its own and its app's program still owes
+ * the Keychain: it deletes its originals only once it finds each one's copy beside it (the box's
+ * helper's), so no copy goes before that, or the move would never settle. */
+const keychainOwed = (): boolean => OWN_HOME_MAC && Boolean(readRecord(K).owed?.includes("keychain"));
+
 /** What's left here of bots' own keys, gone: every bot's folder's settings first (so none names a
  * key that's gone), then the keys, then the note of deleted bots' keys still to go
  * (`run/bot-keys-left.json`, an earlier box's). Whether it's all done: not while an update is on
  * trial (a key can't come back if the version before does: the box does this once the update is
- * confirmed), nor while this Mac's keys can't be reached (tried again: `keepBotsOwnKeysGone`).
+ * confirmed), nor while this Mac's keys can't be reached or its move into a home of its own still
+ * owes the Keychain (tried again: `keepBotsOwnKeysGone`).
  * Nothing to do, and nothing written, once it's done. `engine`: this box's, when it runs, for a
  * bot's conversation that's open there. */
 export function dropBotsOwnKeys(engine: () => EngineRecord | null = () => null): Promise<boolean> {
   return keyWork(async () => {
     if (updateOnTrial()) return false;
     dropBotsOwnServers(engine);
+    if (keychainOwed()) return false;
     try {
       await dropBotKeys();
     } catch (error) {

@@ -109,6 +109,14 @@ test("the files an earlier box wrote bots' own keys to go once the Keychain has 
     host.down = false;
   }
   assert.equal(read(path.join(botKeys, name)), "lin_scout", "its file stays while its host still keeps it");
+  // Just moved into this home, its app's program still to delete the Keychain's originals, which it
+  // does only once it finds each one's copy: no copy goes before that, or the move would never settle.
+  const record = path.join(box, "updates", "rehome", "state.json");
+  fs.mkdirSync(path.dirname(record), { recursive: true });
+  fs.writeFileSync(record, JSON.stringify({ owed: ["keychain", "agent"] }));
+  assert.equal(await link.dropBotsOwnKeys(), false);
+  assert.equal(host.keys.get(name), "lin_scout", "the helper's copy stays until the originals are gone");
+  fs.writeFileSync(record, JSON.stringify({ owed: ["agent"] }));
   assert.equal(await link.dropBotsOwnKeys(), true);
   assert.equal(host.keys.has(name), false);
   assert.equal(fs.existsSync(botKeys), false);

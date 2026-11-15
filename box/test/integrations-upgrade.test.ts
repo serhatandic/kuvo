@@ -12,7 +12,7 @@ import crypto from "node:crypto"
 import { changeSettings, SERVERS } from "../src/link/areas/config"
 import { upgradeIntegrations } from "../src/link/areas/integrations"
 import { addressOf, newKey, publicOf } from "../src/link/crypto/keys"
-import { BOT_KEYS, BOTS, BOX_KEYS, RUN, shownRoot } from "../src/link/home"
+import { BOX_KEYS, RUN, shownRoot } from "../src/link/home"
 import { keyWork } from "../src/link/keys"
 import { watchFolder } from "../src/shared/watch"
 // @ts-expect-error (The bridge tests' stand-in, in plain JavaScript.)
