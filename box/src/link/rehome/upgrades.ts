@@ -528,6 +528,11 @@ function said({ S, prefs, dropped }: Upgrade): void {
   if (terminals) dropped.push(`The terminal app chosen for ${terminals === 1 ? "a project" : `${terminals} projects`} isn't kept: Kuvo's own terminals open in the side panel.`);
   const moves = (Array.isArray(prefs.movesUnderWay) ? prefs.movesUnderWay : []).filter(each => isObject(each) && each.stage === "switched").length;
   if (moves) dropped.push(`${moves === 1 ? "A move" : `${moves} moves`} to another computer that hadn't finished cleaning up left ${moves === 1 ? "its" : "their"} original folder where it was.`);
+  // What the app still owed machines that were away: an account signed out here, files to clear there.
+  const signOuts = count(prefs.machineSignOuts);
+  if (signOuts) dropped.push(`You signed out of an account while ${signOuts === 1 ? "a machine was" : `${signOuts} machines were`} away: ${signOuts === 1 ? "it" : "they"} may still be signed in to it. Sign out there too once ${signOuts === 1 ? "it's" : "they're"} connected.`);
+  const cleanUps = count(prefs["machines.waiting"]);
+  if (cleanUps) dropped.push(`${cleanUps === 1 ? "A machine that was away still has" : `${cleanUps} machines that were away still have`} files of something you removed here (a bot, or Kuvo Code itself): remove them from there once connected.`);
   if (listOf(S).some(name => /\.unreadable-.*\.json$/.test(name))) dropped.push("The earlier Kuvo Code had set aside a list it couldn't read. It's still in its folder (a file named …unreadable…json).");
   if (["openrouter.json", "zai.json", "proxy.json"].some(name => exists(path.join(S, "Usage", name)))) dropped.push("API keys or a proxy you set up by hand for the usage panel (files in the earlier Kuvo Code's Usage folder) aren't brought along.");
   if (prefs.toolApproval !== "askFirst") dropped.push("New sessions start with Auto, Kuvo's own default, where the earlier Kuvo Code ran everything without asking.");

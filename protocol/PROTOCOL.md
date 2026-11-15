@@ -7568,7 +7568,8 @@ above. Only on a Mac.
 - **Said, not carried** (`dropped`, each only where it applies): messages typed and not sent;
   websites signed in to in the app's browser; changes to a machine's bot not yet sent there
   (`botEditsWaiting`: held edits are sealed with the link's secret); a project's terminal app;
-  a move left at `switched`; a list the app set aside as unreadable; usage keys or a proxy set
+  a move left at `switched`; sign-outs and clean-ups still owed to machines that were away
+  (`machineSignOuts`, `machines.waiting`); a list the app set aside as unreadable; usage keys or a proxy set
   up by hand (`Usage/*.json`); a group chat that couldn't be read; a machine's bot's seat in a
   group chat (it takes one again where it lives); messages for machines that were away; and,
   where new sessions ran everything without asking (`toolApproval` unset or `approveAll`),

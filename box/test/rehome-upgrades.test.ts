@@ -34,6 +34,7 @@ function kept07(m: Mac, { described = true }: { described?: boolean } = {}) {
     groupMemoryWaiting: { bot_a1: ["grp_gone"] },
     composerDrafts: { data: { "ses_1": { text: "half a thought", files: [] }, "ses_2": { text: "another", files: [] } } },
     botEditsWaiting: { bot_m1: ["name"] },
+    machineSignOuts: { mini: ["anthropic"] }, "machines.waiting": { mini: ["rm -rf x"], studio: ["rm -rf y"] },
     showTotalSpend: false, "openusage.notifications.underTenPercent": true, "openusage.codex.fallbackModel": "gpt-5.2",
     appearance: "dark", sessionsWidth: 280,
   })
@@ -135,6 +136,8 @@ test.if(mac)("what 0.7.2 kept itself comes along: projects, worktrees, machines,
     "Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along.",
     "A change you made to a bot on a machine that was away (a name, look, personality or model) wasn't sent there. Make it again once that machine is connected.",
     "The terminal app chosen for a project isn't kept: Kuvo's own terminals open in the side panel.",
+    "You signed out of an account while a machine was away: it may still be signed in to it. Sign out there too once it's connected.",
+    "2 machines that were away still have files of something you removed here (a bot, or Kuvo Code itself): remove them from there once connected.",
   ])
   expect(state.counts).toMatchObject({ sessions: 5, bots: 1, botsBefore: 1, wakeUps: 2, wakeUpsBefore: 2, groupChats: 1, groupChatsBefore: 0, worktreeRecords: 1, worktreeRecordsBefore: 0 })
   expect(moved.said!.status.dropped).toEqual(state.dropped)
