@@ -1081,7 +1081,7 @@ pub fn placeholder(area: Area, title: SharedString, cx: &App) -> AnyElement {
                 .text_center()
                 .text_ui(TypeSize::Body)
                 .text_color(c.text_muted)
-                .child("This page isn’t in this app yet. For now, open it in Kuvo Code on your Mac or iPhone."),
+                .child("Coming to the desktop app."),
         )
         .into_any_element()
 }

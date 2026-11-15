@@ -74,6 +74,6 @@ Left:
   number's field takes a number.
 - A row's key is its id alone, so a change in flight on one section would mark a row of the same
   id on another busy.
-- Wording: the window's own held notice still says "this app"; the other areas' placeholder
-  (`areas.rs`) and a sign-in the desktop app can't draw still send you to "Kuvo Code on your Mac or
-  iPhone". Settings' own placeholder says "Coming to the desktop app."
+- Wording: the window's own held notice still says "this app". Still pointing at "Kuvo Code on your
+  Mac or iPhone": the composer's notes for a "!" command and compacting (`composer.rs`) and an ask
+  the desktop app can't answer (`ask_card.rs`).
