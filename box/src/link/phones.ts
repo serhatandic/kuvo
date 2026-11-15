@@ -42,7 +42,7 @@ export function authorizePhone(key: Buffer, hello: PhoneHello | null | undefined
       delete link![slot];
       return link;
     }
-    pairPhone(link!, { key: encoded, name: String(hello!.name ?? "").slice(0, 100), added: Math.floor(Date.now() / 1000), from: "pair", address: address?.toString("base64url"), pairing: newPairing() });
+    pairPhone(link!, { key: encoded, name: String(hello!.name ?? "").slice(0, 100), added: Math.floor(Date.now() / 1000), from: "pair", address: address?.toString("base64url"), pairing: newPairing(), ...(hello!.client === "desktop" ? { kind: "desktop" as const } : {}) });
     delete link![slot];
     paired = true;
     return link;
@@ -148,6 +148,7 @@ export function foldPhones(link: LinkState, now = Date.now()): void {
         mac,
         address: typeof phone.address === "string" && ADDRESS.test(phone.address) ? phone.address : known.get(phone.key as string)?.address,
         pairing: typeof phone.pairing === "string" ? phone.pairing : "",
+        ...(phone.kind === "desktop" ? { kind: "desktop" as const } : {}),
       });
     }
   }
@@ -159,7 +160,7 @@ export function foldPhones(link: LinkState, now = Date.now()): void {
 
 // This box's own phones document: the phones paired here, and every removal it knows of.
 export const ownPhones = (link: LinkState) => ({
-  phones: (link.phones ?? []).filter(phone => phone.from === "pair").map(phone => ({ key: phone.key, name: phone.name ?? "", ...(phone.address ? { address: phone.address } : {}), pairing: phone.pairing ?? "" })),
+  phones: (link.phones ?? []).filter(phone => phone.from === "pair").map(phone => ({ key: phone.key, name: phone.name ?? "", ...(phone.address ? { address: phone.address } : {}), pairing: phone.pairing ?? "", ...(phone.kind === "desktop" ? { kind: "desktop" as const } : {}) })),
   removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing })),
 });
 

@@ -59,6 +59,7 @@ export const FEATURES = [
   "btw",
   "btw.threads",
   "claude-code",
+  "clients.kind",
   "computers",
   "computers.facts",
   "computers.manage",

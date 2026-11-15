@@ -22,7 +22,7 @@ export async function* phonesRoute(context: RouteContext): AsyncGenerator<Answer
   // TODO(types): not held to `Phones` (shared/routes/box.ts): a phone kept here may have no name
   // (`Phone.name` is optional in state.ts), which the shape's `name: string` doesn't allow.
   return yield* json(200, {
-    phones: (link?.phones ?? []).map(each => ({ key: each.key, name: each.name, added: each.added ?? null, pairing: each.pairing ?? "", you: each.key === asking })),
+    phones: (link?.phones ?? []).map(each => ({ key: each.key, name: each.name, added: each.added ?? null, pairing: each.pairing ?? "", kind: each.kind === "desktop" ? "desktop" as const : "phone" as const, you: each.key === asking })),
   });
 }
 

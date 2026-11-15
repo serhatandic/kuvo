@@ -149,7 +149,9 @@ export const BROWSER = object({
 });
 
 /** The phones paired here, `you` being the one asking. */
-export const PHONES = object({ phones: list(object({ key: string, name: string, added: nullable(number), pairing: string, you: bool })) });
+export const PHONES = object({ phones: list(object({ key: string, name: string, added: nullable(number), pairing: string, kind: words("phone", "desktop"), you: bool })) });
+/** Kuvo Code's desktop app paired as one of your devices (`kuvo/devices/pair`): the pairing it has. */
+export const DEVICE_PAIRED = object({ paired: literal(true), pairing: string });
 /** A link for another phone to pair with (good once), and when it ends, in seconds since 1970. */
 export const PAIRING = object({ link: string, ends: number });
 

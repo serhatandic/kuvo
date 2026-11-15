@@ -27,6 +27,8 @@ export interface Phone {
   /** Where it is on the relay, for its notifications. */
   address?: string;
   pairing?: string;
+  /** What it is, as it said (`clients.kind`): Kuvo Code's desktop app; none for a phone. */
+  kind?: "desktop";
 }
 
 /** A pairing link waiting: its token, good until `expires` (ms). */

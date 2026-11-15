@@ -1582,6 +1582,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (What a side question's routes take besides, on the coding agents' bridge.)
     "btw.threads": ["GET", "kuvo/agents/api/kuvo/btw"],
     "claude-code": ["GET", "kuvo/claude-code"],
+    // (What a client says it is as its session opens, listed with each paired device.)
+    "clients.kind": ["GET", "kuvo/phones"],
     computers: ["GET", "kuvo/computers"],
     // (What each computer answers and which of its sessions are at work, in kuvo/computers' answer.)
     "computers.facts": ["GET", "kuvo/computers"],
