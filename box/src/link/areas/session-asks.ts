@@ -208,8 +208,11 @@ export function sandboxAskShown(asked: SandboxAsk & { session: string }): Sandbo
   };
 }
 
-/** What the vault has to give, for a client that may see it: null for one that may not, with why. */
-type Givable = { items: Pick<VaultItem, "id" | "name">[] } | { note: string };
+/** What the vault has to give the client asking: its items, or why there are none to give (`note`);
+ * or, to one the vault doesn't answer, why it can't answer at all (`refused`). */
+type Givable = { items: Pick<VaultItem, "id" | "name">[] } | { note: string } | { refused: string };
+
+const NOT_A_CLIENT = "Answer it on your iPhone: only a device this computer’s vault knows can answer it.";
 
 /** What the agent asks of the vault, as its card shows it: to use an item (Allow Once, Always Allow
  * where it may be given for good, Don't Allow), or an item it needs (Give, and Always Give, for each
@@ -220,12 +223,15 @@ export function vaultAskShown(asked: VaultAsk & { session: string }, givable: Gi
   const forGood = !asked.group;
   const who = asked.botName ?? "this project";
   const reject = choice("reject", "Don’t Allow", { help: "It goes on without it" });
+  const title = asked.kind === "use" ? `${asker} wants to use ${asked.itemName ?? "an item"}` : `${asker} needs ${asked.need ?? "something from your vault"}`;
+  // (One the vault doesn't answer is offered nothing to answer with.)
+  if ("refused" in givable) return { id: asked.id, kind: "vault", session: asked.session, need: asked.kind, title, message: asked.why ?? null, site: asked.site ?? null, note: givable.refused, choices: [] };
   if (asked.kind === "use") {
     const item = asked.itemName ? `“${asked.itemName}”` : "it";
     const choices = [choice("once", "Allow Once", { help: `Lets it use ${item} this once`, spoken: `Allow once: let it use ${item}` })];
     if (forGood) choices.push(choice("always", "Always Allow", { help: `Lets ${who} use ${item} from now on, without asking`, spoken: `Always allow ${who} to use ${item}`, confirm: true }));
     choices.push(reject);
-    return { id: asked.id, kind: "vault", session: asked.session, need: "use", title: `${asker} wants to use ${asked.itemName ?? "an item"}`, message: asked.why ?? null, site: asked.site ?? null, note: null, choices };
+    return { id: asked.id, kind: "vault", session: asked.session, need: "use", title, message: asked.why ?? null, site: asked.site ?? null, note: null, choices };
   }
   const choices: AskChoice[] = [];
   for (const item of "items" in givable ? givable.items : []) {
@@ -234,24 +240,30 @@ export function vaultAskShown(asked: VaultAsk & { session: string }, givable: Gi
   }
   choices.push(reject);
   const note = "note" in givable ? givable.note : givable.items.length ? null : "There’s nothing in this computer’s vault to give it yet.";
-  return { id: asked.id, kind: "vault", session: asked.session, need: "item", title: `${asker} needs ${asked.need ?? "something from your vault"}`, message: asked.why ?? null, site: asked.site ?? null, note, choices };
+  return { id: asked.id, kind: "vault", session: asked.session, need: "item", title, message: asked.why ?? null, site: asked.site ?? null, note, choices };
 }
 
-/** What the vault has to give, to the client asking (`viewer`): its items by name, but only to one
- * the vault answers (a phone, this Mac's app, the Mac proving itself), and only while it's open. */
-async function givableTo(viewer: Viewer | undefined): Promise<Givable> {
-  if (!viewer || !clientOf(viewer)) return { note: "Give it an item in Kuvo Code on your Mac or iPhone." };
+/** What the vault has to give the client asking: nothing to one it doesn't answer (only a phone,
+ * this Mac's app, the Mac proving itself); else its items by name while it's open, those for the
+ * site asked about first. */
+async function givableTo(client: VaultClient, site: string | undefined): Promise<Givable> {
+  if (!client) return { refused: NOT_A_CLIENT };
   if (onHost()) await primeGenerations().catch(() => {});
   if (isLocked()) return { note: "This computer’s vault is locked: unlock it to give it an item." };
-  return { items: readItems().map(item => ({ id: item.id, name: item.name })).sort((a, b) => a.name.localeCompare(b.name)) };
+  const forSite = (sites: readonly string[]) => !!site && sites.some(each => each === site || site.endsWith("." + each) || each.endsWith("." + site));
+  return {
+    items: readItems()
+      .sort((a, b) => Number(forSite(b.sites)) - Number(forSite(a.sites)) || a.name.localeCompare(b.name))
+      .map(item => ({ id: item.id, name: item.name })),
+  };
 }
 
-/** Who reads the asks: what the vault goes by to say who's a client. */
-type Viewer = Pick<RouteContext, "request" | "phone">;
+/** The client asking, as the vault takes it (a proof is good once, so worked out once a request). */
+type VaultClient = ReturnType<typeof clientOf>;
 
 /** Everything `session` (on `target`, in `folder`) and its subagents wait on you for, oldest first:
  * not what Auto's reviewer took up. Throws `Unreached` when one asking can't be read. */
-async function asksOf(target: Target, session: string, folder: string, signal?: AbortSignal, place: { forConversation?: boolean; viewer?: Viewer } = {}): Promise<Found[]> {
+async function asksOf(target: Target, session: string, folder: string, signal?: AbortSignal, place: { forConversation?: boolean; client?: VaultClient } = {}): Promise<Found[]> {
   const wait = () => (signal ? AbortSignal.any([signal, AbortSignal.timeout(5_000)]) : AbortSignal.timeout(5_000));
   const reviewed = new Set(listAskReviews().filter(review => review.state !== "yours").map(review => review.id));
   const noted = askTimes();
@@ -311,8 +323,10 @@ async function asksOf(target: Target, session: string, folder: string, signal?: 
     found.push({ at: asked.at, ask: { shown: sandboxAskShown({ ...asked, session: asked.session }), target, asker: asked.session } });
   }
   const vault = listVaultAsks().filter(asked => asked.session && asking.has(asked.session));
-  const givable = vault.some(asked => asked.kind === "item") ? await givableTo(place.viewer) : { items: [] };
-  for (const asked of vault) found.push({ at: asked.at, ask: { shown: vaultAskShown({ ...asked, session: asked.session! }, givable), target, asker: asked.session! } });
+  for (const asked of vault) {
+    const givable = await givableTo(place.client ?? null, asked.kind === "item" ? asked.site : undefined);
+    found.push({ at: asked.at, ask: { shown: vaultAskShown({ ...asked, session: asked.session! }, givable), target, asker: asked.session! } });
+  }
   // Those a client answers first, oldest first; then those answered elsewhere (`other`), so a card
   // a client can answer shows ahead of one it can't. (Stable: what came at the same time, or
   // unnoted, stays in the order it was listed.)
@@ -334,6 +348,14 @@ async function placeOf(context: RouteContext, session: string) {
 
 const NONE = { message: "There's no such conversation here." };
 const GONE = { message: "It isn't waiting any more." };
+
+/** The long-running process's answer, or null where none answered it: nothing listens, or one from
+ * before it answered these routes (`404 {}`, until its keeper starts it again), so it's read here. */
+function heard(held: Awaited<ReturnType<typeof askHolder>>): Awaited<ReturnType<typeof askHolder>> {
+  if (!held) return null;
+  if (held.status === 404 && typeof (parsed(Buffer.from(held.body, "base64").toString("utf8")) as { message?: unknown } | null)?.message !== "string") return null;
+  return held;
+}
 
 /** A client's answer to a question, checked against what it asks, with the defaults of what it
  * didn't answer (its hidden fields' too), as the engine takes it; or why it doesn't fit. */
@@ -371,7 +393,7 @@ export async function* sessionAsksRoute(context: RouteContext, match: RegExpMatc
   // machine's kept server) has it read and answer them. With none listening, there are none, and
   // what the engine asks is read here.
   if (!events && !holdsVault()) {
-    const held = await askHolder(request, signal ?? undefined);
+    const held = heard(await askHolder(request, signal ?? undefined));
     if (held) return yield* [{ head: { status: held.status, headers: { "content-type": held.type || "application/json" } } }, { body: Buffer.from(held.body, "base64") }];
   }
   let place: Awaited<ReturnType<typeof placeOf>>;
@@ -383,19 +405,19 @@ export async function* sessionAsksRoute(context: RouteContext, match: RegExpMatc
   }
   if (!place) return yield* json(404, NONE);
   const { target, folder } = place;
-  const viewer: Viewer = { request, phone: context.phone };
-  const read = async () => ({ asks: (await asksOf(target, session, folder, signal ?? undefined, { forConversation: place.forConversation, viewer })).map(each => each.shown) });
+  const client = clientOf({ request, phone: context.phone });
+  const read = async () => ({ asks: (await asksOf(target, session, folder, signal ?? undefined, { forConversation: place.forConversation, client })).map(each => each.shown) });
   // Followed, where it runs is found again each time (its engine started again on another port);
   // in a process that doesn't keep the box's own asks, read by the one that does.
   const readAgain = async (): Promise<{ asks: SessionAsk[] } | undefined> => {
     if (!holdsVault()) {
-      const held = await askHolder({ ...request, method: "GET", path: `kuvo/sessions/${encodeURIComponent(session)}/asks`, body: Buffer.alloc(0) }, signal ?? undefined);
+      const held = heard(await askHolder({ ...request, method: "GET", path: `kuvo/sessions/${encodeURIComponent(session)}/asks`, body: Buffer.alloc(0) }, signal ?? undefined));
       if (held?.status === 200) return parsed(Buffer.from(held.body, "base64").toString("utf8")) as { asks: SessionAsk[] };
       if (held?.status === 404) return { asks: [] };
       if (held) return undefined;
     }
     const now = await placeOf(context, session);
-    return now ? { asks: (await asksOf(now.target, session, now.folder, signal ?? undefined, { forConversation: now.forConversation, viewer })).map(each => each.shown) } : { asks: [] };
+    return now ? { asks: (await asksOf(now.target, session, now.folder, signal ?? undefined, { forConversation: now.forConversation, client })).map(each => each.shown) } : { asks: [] };
   };
   if (!ask) {
     try {
@@ -418,7 +440,7 @@ export async function* sessionAsksRoute(context: RouteContext, match: RegExpMatc
   }
   let found: Found | undefined;
   try {
-    found = (await asksOf(target, session, folder, signal ?? undefined, { forConversation: place.forConversation, viewer })).find(each => each.shown.id === ask);
+    found = (await asksOf(target, session, folder, signal ?? undefined, { forConversation: place.forConversation, client })).find(each => each.shown.id === ask);
   } catch (error) {
     if (error instanceof Unreached) return yield* json(503, { message: error.message });
     throw error;
@@ -428,10 +450,15 @@ export async function* sessionAsksRoute(context: RouteContext, match: RegExpMatc
   // What the box asks itself is answered here, by one of the answers its card offers (the item it
   // gives with it): never put away unanswered.
   if (found.shown.kind === "sandbox" || found.shown.kind === "vault") {
+    // The vault answers only its clients, as `kuvo/vault/asks` does.
+    if (found.shown.kind === "vault" && !client) return yield* json(403, { message: NOT_A_CLIENT });
     const answer = isObject(given) ? given.answer : undefined;
     const item = isObject(given) && typeof given.item === "string" ? given.item : undefined;
     const picked = found.shown.choices.find(each => each.answer === answer && each.item === item);
     if (!picked || picked.answer === "instead") {
+      // (An item it no longer offers: the vault locked meanwhile, or the item's gone.)
+      if (found.shown.kind === "vault" && item && isLocked()) return yield* json(423, { message: "This computer’s vault is locked: unlock it to give it an item." });
+      if (found.shown.kind === "vault" && item && !itemByID(item)) return yield* json(404, { message: "That item isn't in this vault." });
       const offered = [...new Set(found.shown.choices.map(each => each.answer))].join(", ");
       return yield* json(400, { message: found.shown.kind === "vault" && found.shown.need === "item" && !item && answer !== "reject" ? "Say which item to give it." : `Answer ${offered}.` });
     }
@@ -439,14 +466,7 @@ export async function* sessionAsksRoute(context: RouteContext, match: RegExpMatc
     if (found.shown.kind === "sandbox") {
       return answerSandboxAsk(found.shown.id, { answer: as, client: clientName(context) }) ? yield* json(200, {}) : yield* json(404, GONE);
     }
-    // The vault answers only its clients, as `kuvo/vault/asks` does.
-    const client = clientOf(viewer);
-    if (!client) return yield* json(403, { message: "Only Kuvo Code on your Mac or iPhone can answer the vault." });
-    if (item) {
-      if (isLocked()) return yield* json(423, { message: "This computer’s vault is locked: unlock it to give it an item." });
-      if (!itemByID(item)) return yield* json(404, { message: "That item isn't in this vault." });
-    }
-    return answerVaultAsk(found.shown.id, { answer: as, ...(item ? { item } : {}), client: client.name, by: client.by }) ? yield* json(200, {}) : yield* json(404, GONE);
+    return answerVaultAsk(found.shown.id, { answer: as, ...(picked.item ? { item: picked.item } : {}), client: client!.name, by: client!.by }) ? yield* json(200, {}) : yield* json(404, GONE);
   }
   const at = `/api/session/${encodeURIComponent(found.asker)}`;
   let sent: { method: string; route: string; body?: unknown };

@@ -45116,7 +45116,7 @@ import fs145 from "node:fs";
 import path153 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "3643c3cc45e2";
+var BRIDGE_VERSION = "f0e9449875cd";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -52736,18 +52736,22 @@ function sandboxAskShown(asked) {
     choices
   };
 }
+var NOT_A_CLIENT = "Answer it on your iPhone: only a device this computer’s vault knows can answer it.";
 function vaultAskShown(asked, givable) {
   const asker = asked.botName ?? asked.sessionName ?? "An agent";
   const forGood = !asked.group;
   const who = asked.botName ?? "this project";
   const reject = choice("reject", "Don’t Allow", { help: "It goes on without it" });
+  const title = asked.kind === "use" ? `${asker} wants to use ${asked.itemName ?? "an item"}` : `${asker} needs ${asked.need ?? "something from your vault"}`;
+  if ("refused" in givable)
+    return { id: asked.id, kind: "vault", session: asked.session, need: asked.kind, title, message: asked.why ?? null, site: asked.site ?? null, note: givable.refused, choices: [] };
   if (asked.kind === "use") {
     const item = asked.itemName ? `“${asked.itemName}”` : "it";
     const choices = [choice("once", "Allow Once", { help: `Lets it use ${item} this once`, spoken: `Allow once: let it use ${item}` })];
     if (forGood)
       choices.push(choice("always", "Always Allow", { help: `Lets ${who} use ${item} from now on, without asking`, spoken: `Always allow ${who} to use ${item}`, confirm: true }));
     choices.push(reject);
-    return { id: asked.id, kind: "vault", session: asked.session, need: "use", title: `${asker} wants to use ${asked.itemName ?? "an item"}`, message: asked.why ?? null, site: asked.site ?? null, note: null, choices };
+    return { id: asked.id, kind: "vault", session: asked.session, need: "use", title, message: asked.why ?? null, site: asked.site ?? null, note: null, choices };
   }
   const choices = [];
   for (const item of "items" in givable ? givable.items : []) {
@@ -52757,16 +52761,19 @@ function vaultAskShown(asked, givable) {
   }
   choices.push(reject);
   const note = "note" in givable ? givable.note : givable.items.length ? null : "There’s nothing in this computer’s vault to give it yet.";
-  return { id: asked.id, kind: "vault", session: asked.session, need: "item", title: `${asker} needs ${asked.need ?? "something from your vault"}`, message: asked.why ?? null, site: asked.site ?? null, note, choices };
+  return { id: asked.id, kind: "vault", session: asked.session, need: "item", title, message: asked.why ?? null, site: asked.site ?? null, note, choices };
 }
-async function givableTo(viewer) {
-  if (!viewer || !clientOf(viewer))
-    return { note: "Give it an item in Kuvo Code on your Mac or iPhone." };
+async function givableTo(client, site) {
+  if (!client)
+    return { refused: NOT_A_CLIENT };
   if (onHost())
     await primeGenerations().catch(() => {});
   if (isLocked())
     return { note: "This computer’s vault is locked: unlock it to give it an item." };
-  return { items: readItems().map((item) => ({ id: item.id, name: item.name })).sort((a, b) => a.name.localeCompare(b.name)) };
+  const forSite = (sites) => !!site && sites.some((each) => each === site || site.endsWith("." + each) || each.endsWith("." + site));
+  return {
+    items: readItems().sort((a, b) => Number(forSite(b.sites)) - Number(forSite(a.sites)) || a.name.localeCompare(b.name)).map((item) => ({ id: item.id, name: item.name }))
+  };
 }
 async function asksOf(target, session, folder, signal, place = {}) {
   const wait = () => signal ? AbortSignal.any([signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000);
@@ -52828,9 +52835,10 @@ async function asksOf(target, session, folder, signal, place = {}) {
     found.push({ at: asked.at, ask: { shown: sandboxAskShown({ ...asked, session: asked.session }), target, asker: asked.session } });
   }
   const vault = listAsks().filter((asked) => asked.session && asking.has(asked.session));
-  const givable = vault.some((asked) => asked.kind === "item") ? await givableTo(place.viewer) : { items: [] };
-  for (const asked of vault)
+  for (const asked of vault) {
+    const givable = await givableTo(place.client ?? null, asked.kind === "item" ? asked.site : undefined);
     found.push({ at: asked.at, ask: { shown: vaultAskShown({ ...asked, session: asked.session }, givable), target, asker: asked.session } });
+  }
   const elsewhere = (ask) => ask.shown.kind === "other" ? 1 : 0;
   return found.sort((a, b) => elsewhere(a.ask) - elsewhere(b.ask) || a.at - b.at).map((each) => each.ask);
 }
@@ -52847,6 +52855,13 @@ async function placeOf2(context, session) {
 }
 var NONE = { message: "There's no such conversation here." };
 var GONE2 = { message: "It isn't waiting any more." };
+function heard2(held) {
+  if (!held)
+    return null;
+  if (held.status === 404 && typeof parsed(Buffer.from(held.body, "base64").toString("utf8"))?.message !== "string")
+    return null;
+  return held;
+}
 function questionAnswer(fields, questions, given) {
   if (!isObject(given))
     return { refused: "Send the answers, by each question's key." };
@@ -52885,7 +52900,7 @@ async function* sessionAsksRoute(context, match) {
   if (ask && !events ? method !== "POST" : method !== "GET")
     return yield* json(405, {});
   if (!events && !holdsVault()) {
-    const held = await askHolder(request, signal ?? undefined);
+    const held = heard2(await askHolder(request, signal ?? undefined));
     if (held)
       return yield* [{ head: { status: held.status, headers: { "content-type": held.type || "application/json" } } }, { body: Buffer.from(held.body, "base64") }];
   }
@@ -52900,11 +52915,11 @@ async function* sessionAsksRoute(context, match) {
   if (!place)
     return yield* json(404, NONE);
   const { target, folder } = place;
-  const viewer = { request, phone: context.phone };
-  const read = async () => ({ asks: (await asksOf(target, session, folder, signal ?? undefined, { forConversation: place.forConversation, viewer })).map((each) => each.shown) });
+  const client = clientOf({ request, phone: context.phone });
+  const read = async () => ({ asks: (await asksOf(target, session, folder, signal ?? undefined, { forConversation: place.forConversation, client })).map((each) => each.shown) });
   const readAgain = async () => {
     if (!holdsVault()) {
-      const held = await askHolder({ ...request, method: "GET", path: `kuvo/sessions/${encodeURIComponent(session)}/asks`, body: Buffer.alloc(0) }, signal ?? undefined);
+      const held = heard2(await askHolder({ ...request, method: "GET", path: `kuvo/sessions/${encodeURIComponent(session)}/asks`, body: Buffer.alloc(0) }, signal ?? undefined));
       if (held?.status === 200)
         return parsed(Buffer.from(held.body, "base64").toString("utf8"));
       if (held?.status === 404)
@@ -52913,7 +52928,7 @@ async function* sessionAsksRoute(context, match) {
         return;
     }
     const now = await placeOf2(context, session);
-    return now ? { asks: (await asksOf(now.target, session, now.folder, signal ?? undefined, { forConversation: now.forConversation, viewer })).map((each) => each.shown) } : { asks: [] };
+    return now ? { asks: (await asksOf(now.target, session, now.folder, signal ?? undefined, { forConversation: now.forConversation, client })).map((each) => each.shown) } : { asks: [] };
   };
   if (!ask) {
     try {
@@ -52946,7 +52961,7 @@ async function* sessionAsksRoute(context, match) {
   }
   let found;
   try {
-    found = (await asksOf(target, session, folder, signal ?? undefined, { forConversation: place.forConversation, viewer })).find((each) => each.shown.id === ask);
+    found = (await asksOf(target, session, folder, signal ?? undefined, { forConversation: place.forConversation, client })).find((each) => each.shown.id === ask);
   } catch (error) {
     if (error instanceof Unreached)
       return yield* json(503, { message: error.message });
@@ -52956,10 +52971,16 @@ async function* sessionAsksRoute(context, match) {
     return yield* json(404, GONE2);
   const given = parsed(request.body);
   if (found.shown.kind === "sandbox" || found.shown.kind === "vault") {
+    if (found.shown.kind === "vault" && !client)
+      return yield* json(403, { message: NOT_A_CLIENT });
     const answer = isObject(given) ? given.answer : undefined;
     const item = isObject(given) && typeof given.item === "string" ? given.item : undefined;
     const picked = found.shown.choices.find((each) => each.answer === answer && each.item === item);
     if (!picked || picked.answer === "instead") {
+      if (found.shown.kind === "vault" && item && isLocked())
+        return yield* json(423, { message: "This computer’s vault is locked: unlock it to give it an item." });
+      if (found.shown.kind === "vault" && item && !itemByID(item))
+        return yield* json(404, { message: "That item isn't in this vault." });
       const offered = [...new Set(found.shown.choices.map((each) => each.answer))].join(", ");
       return yield* json(400, { message: found.shown.kind === "vault" && found.shown.need === "item" && !item && answer !== "reject" ? "Say which item to give it." : `Answer ${offered}.` });
     }
@@ -52967,16 +52988,7 @@ async function* sessionAsksRoute(context, match) {
     if (found.shown.kind === "sandbox") {
       return answerSandboxAsk(found.shown.id, { answer: as, client: clientName(context) }) ? yield* json(200, {}) : yield* json(404, GONE2);
     }
-    const client = clientOf(viewer);
-    if (!client)
-      return yield* json(403, { message: "Only Kuvo Code on your Mac or iPhone can answer the vault." });
-    if (item) {
-      if (isLocked())
-        return yield* json(423, { message: "This computer’s vault is locked: unlock it to give it an item." });
-      if (!itemByID(item))
-        return yield* json(404, { message: "That item isn't in this vault." });
-    }
-    return answer4(found.shown.id, { answer: as, ...item ? { item } : {}, client: client.name, by: client.by }) ? yield* json(200, {}) : yield* json(404, GONE2);
+    return answer4(found.shown.id, { answer: as, ...picked.item ? { item: picked.item } : {}, client: client.name, by: client.by }) ? yield* json(200, {}) : yield* json(404, GONE2);
   }
   const at = `/api/session/${encodeURIComponent(found.asker)}`;
   let sent;

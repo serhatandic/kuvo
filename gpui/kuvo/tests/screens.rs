@@ -777,8 +777,12 @@ fn a_command_outside_the_sandbox_shows_as_its_card_and_is_answered_through_the_b
     }
     assert!(card_has_keys(&card, cx));
 
-    // Its number key picks Always: sent as the box offers it.
+    // Return answers nothing here (it would run the command outside the sandbox); its number key
+    // picks Always, sent as the box offers it.
     quiet(cx);
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(stand_in.seen_at("POST", "kuvo/sessions/ses_limits/asks/sq_redis").is_empty(), "Return answers nothing");
     cx.simulate_keystrokes("2");
     cx.run_until_parked();
     let answered = stand_in.seen_at("POST", "kuvo/sessions/ses_limits/asks/sq_redis");
@@ -813,6 +817,21 @@ fn an_item_the_vault_is_asked_for_is_given_by_name_and_a_grant_is_left_to_a_devi
     cx.run_until_parked();
     let answered = stand_in.seen_at("POST", "kuvo/sessions/ses_limits/asks/q_redis");
     assert_eq!(answered.last().and_then(|seen| seen.body.clone()), Some(json!({ "answer": "once", "item": "itm_cloud" })));
+}
+
+#[gpui::test]
+fn a_vault_this_app_cant_answer_says_where_to_and_leaves_the_composer(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let mut vault = kuvo::stand_in::vault_ask();
+    vault["choices"] = json!([]);
+    vault["note"] = json!("Answer it on your iPhone: only a device this computer’s vault knows can answer it.");
+    stand_in.set_asks("ses_limits", vec![vault]);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let (_, card) = open_asking(&workspace, "ses_limits", cx);
+    assert!(bounds(cx, "ask-note").is_some());
+    assert!(bounds(cx, "ask-choice-reject").is_none());
+    assert!(bounds(cx, "composer-card").is_some(), "the composer stays, under it");
+    assert!(!card_has_keys(&card, cx));
 }
 
 #[gpui::test]

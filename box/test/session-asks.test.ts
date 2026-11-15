@@ -274,8 +274,9 @@ test("what a subagent asks of the vault shows with its asks, and only the vault'
   })
   // Something on this computer that isn't one of your clients (not the app, a phone, nor the Mac
   // proving itself): refused, and it still waits.
-  const refused = await askAs(false, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "always" })
-  expect(refused.status).toBe(403)
+  // It's offered no answers, and none it sends is taken, Don't Allow neither.
+  expect((await askAs(false, "GET", "kuvo/sessions/ses_root/asks")).json.asks.find((each: any) => each.kind === "vault").choices).toEqual([])
+  for (const answer of ["always", "reject"]) expect((await askAs(false, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer })).status).toBe(403)
   expect((await ask(handler, "GET", "kuvo/sessions/ses_root/asks")).json.asks.some((each: any) => each.id === vault.id)).toBe(true)
   expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "always" })).status).toBe(200)
   expect(await answered).toEqual({ answer: "always", client: "Mac", by: "mac" })
@@ -284,11 +285,11 @@ test("what a subagent asks of the vault shows with its asks, and only the vault'
 
 test("an item a conversation needs from the vault is given from its card, one of the vault's items, to its clients alone", async () => {
   const { ask: askVault } = await import("../src/link/vault/asks")
-  const { addItem, forgetKeys, makeVault, VAULT_FOLDER } = await import("../src/link/vault/store")
+  const { addItem, forgetKeys, makeVault, unlockWith, VAULT_FOLDER } = await import("../src/link/vault/store")
   rmSync(VAULT_FOLDER, { recursive: true, force: true })
   forgetKeys()
   try {
-    makeVault()
+    const key = makeVault()
     const item = await addItem({ kind: "key", name: "OpenAI key", values: { key: "sk-test" } })
     const answered = askVault({ kind: "item", session: "ses_root", need: "an OpenAI API key", why: "To run the evals." })
     const vault = (await ask(handler, "GET", "kuvo/sessions/ses_root/asks")).json.asks.find((each: any) => each.kind === "vault")
@@ -300,11 +301,15 @@ test("an item a conversation needs from the vault is given from its card, one of
     ])
     // Read by what isn't a client: no item's name, and why.
     const hidden = (await askAs(false, "GET", "kuvo/sessions/ses_root/asks")).json.asks.find((each: any) => each.kind === "vault")
-    expect(hidden.choices.map((each: any) => each.answer)).toEqual(["reject"])
-    expect(hidden.note).toBe("Give it an item in Kuvo Code on your Mac or iPhone.")
+    expect(hidden.choices).toEqual([])
+    expect(hidden.note).toBe("Answer it on your iPhone: only a device this computer’s vault knows can answer it.")
     // Give needs the item; one it doesn't offer isn't taken.
     expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "once" })).json.message).toBe("Say which item to give it.")
-    expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "once", item: "itm_none" })).status).toBe(400)
+    expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "once", item: "itm_none" })).json).toEqual({ message: "That item isn't in this vault." })
+    // Locked meanwhile (the box started again): said so, and it still waits.
+    forgetKeys()
+    expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "once", item: item.id })).status).toBe(423)
+    unlockWith(key)
     expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "once", item: item.id })).status).toBe(200)
     expect(await answered).toEqual({ answer: "once", item: item.id, client: "Mac", by: "mac" })
   } finally {

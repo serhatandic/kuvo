@@ -401,7 +401,11 @@ impl AskCard {
     /// Whether the card leaves the composer usable below it: an ask this app can't answer (the
     /// box's own, a form it can't take) doesn't hold the conversation up.
     pub fn leaves_composer(&self) -> bool {
-        matches!(self.shown(), Some(Ask::Other { .. }))
+        match self.shown() {
+            Some(Ask::Other { .. }) => true,
+            Some(Ask::Vault(vault)) => offered(&vault.choices).is_empty(),
+            _ => false,
+        }
     }
 
     /// Puts the ask away unanswered (×).
@@ -445,7 +449,10 @@ impl AskCard {
         }
         let numbered = matches!(self.shown(), Some(Ask::Permission(_) | Ask::Sandbox(_) | Ask::Vault(_)));
         match (self.shown().cloned(), key) {
-            (Some(_), "enter") if numbered => self.choose(0, window, cx),
+            // Return: a permission's Allow Once. Never what the box asks itself (an item from the
+            // vault, a command outside the sandbox), as the Mac's cards had no default: only its
+            // number, or a click, answers it.
+            (Some(Ask::Permission(_)), "enter") => self.choose(0, window, cx),
             // Escape: a permission's Instead; Don't Allow for what the box asks itself.
             (Some(_), "escape") if numbered => {
                 let choices = self.choices();
@@ -591,7 +598,7 @@ impl AskCard {
     fn grants_elsewhere(choices: &[Choice], cx: &mut Context<Self>) -> Option<AnyElement> {
         let c = cx.theme().colors.clone();
         choices.iter().any(|choice| choice.confirm).then(|| {
-            div().debug_selector(|| "ask-grants-elsewhere".into()).text_ui(TypeSize::Caption).text_color(c.text_faint).child("To allow it from now on, answer on your iPhone: that asks for Face ID first, which this app can’t yet.").into_any_element()
+            div().debug_selector(|| "ask-grants-elsewhere".into()).text_ui(TypeSize::Caption).text_color(c.text_faint).child("To allow it from now on, answer on your iPhone, which makes sure it’s you first: this app can’t yet.").into_any_element()
         })
     }
 
