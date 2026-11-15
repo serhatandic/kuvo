@@ -68,6 +68,10 @@ struct State {
     at: u64,
     /// It stands in for a box on another computer.
     elsewhere: bool,
+    /// Its name, where it isn't the sample's own.
+    name: Option<String>,
+    /// The boxes of your other computers it reaches, by key.
+    peers: HashMap<String, StandIn>,
     older: bool,
     sessions: BTreeMap<String, Value>,
     projects: BTreeMap<String, Value>,
@@ -140,7 +144,44 @@ impl StandIn {
     pub fn at(replies: Replies, now: f64) -> StandIn {
         let stand_in = StandIn { inner: Arc::new(Inner { state: Mutex::new(State { at: 1, next: 1, ..State::default() }), replies }) };
         stand_in.fill(now);
+        stand_in.state().peers.insert("key_devbox".into(), StandIn::machine(replies, "devbox"));
         stand_in
+    }
+
+    /// One of your machines' boxes, as this app reaches it from another computer: a Linux
+    /// machine with settings of its own (its sandbox, its folders, one account).
+    fn machine(replies: Replies, name: &str) -> StandIn {
+        let stand_in = Self::empty(replies);
+        {
+            let mut state = stand_in.state();
+            state.elsewhere = true;
+            state.name = Some(name.to_owned());
+            state.settings.set_allowed(vec![json!({ "id": "alw_srv", "kind": "write", "path": "/srv/cache/billing", "at": 1_794_000_000_000.0_f64 }), json!({ "id": "alw_notes", "kind": "write", "path": "/home/sam/notes", "gone": true, "at": 1_793_000_000_000.0_f64 })]);
+            state.settings.set_browser("searchEngine", json!("google"));
+            state.settings.set_browser("never", json!([]));
+        }
+        stand_in
+    }
+
+    /// The box of another of your computers, as this one reaches it (`key`: its key in
+    /// `kuvo/computers`): what a test changes or reads there.
+    pub fn peer_box(&self, key: &str) -> Option<StandIn> {
+        self.state().peers.get(key).cloned()
+    }
+
+    /// It reaches none of your other computers' boxes, as the app does for now against a real one.
+    pub fn forget_peers(&self) {
+        self.state().peers.clear();
+    }
+
+    /// A section added to its settings (`kuvo/settings`), with its page.
+    pub fn add_settings_section(&self, section: Value, page: Value) {
+        self.state().settings.add_section(section, page);
+    }
+
+    /// A browser setting changes, as from another client meanwhile.
+    pub fn set_browser_setting(&self, key: &str, value: Value) {
+        self.state().settings.set_browser(key, value);
     }
 
     /// An empty box: no projects, no sessions.
@@ -690,6 +731,11 @@ impl State {
 
     /// The sessions waiting on you that the lists show, the one that asked last first, each with
     /// what it asks.
+    /// The computer's name, as its `kuvo/info` says it.
+    fn name(&self) -> String {
+        self.name.clone().unwrap_or_else(|| if self.elsewhere { "build-linux".into() } else { NAME.into() })
+    }
+
     fn needs_you(&self) -> Vec<Value> {
         let mut asked: Vec<(&String, f64)> = self
             .sessions
@@ -988,7 +1034,8 @@ impl StandIn {
             state.sync_bots();
             return answer(status, value);
         }
-        if let Some((status, value)) = state.settings.answer(method, route, &|name| query(path, name).map(decoded), &body) {
+        let (name, here) = (state.name(), !state.elsewhere);
+        if let Some((status, value)) = state.settings.answer(method, route, &|name| query(path, name).map(decoded), &body, &name, here) {
             return answer(status, value);
         }
         match (method, segments.as_slice()) {
@@ -997,7 +1044,7 @@ impl StandIn {
                 features.extend(["queue", "asks"]);
                 features.extend(state.queue.features());
                 if state.older { features.clear(); }
-                answer(200, json!({ "kind": if state.elsewhere { "linux" } else { "mac" }, "name": if state.elsewhere { "build-linux" } else { NAME }, "app": if state.older { "0.9.0" } else { "1.0.0" }, "engine": "2.3.0", "features": features, "agents": true, "started": 1.0, "chats": format!("{HOME}/.kuvo-code/chats") }))
+                answer(200, json!({ "kind": if state.elsewhere { "linux" } else { "mac" }, "name": state.name(), "app": if state.older { "0.9.0" } else { "1.0.0" }, "engine": "2.3.0", "features": features, "agents": true, "started": 1.0, "chats": format!("{HOME}/.kuvo-code/chats") }))
             }
             ("GET", ["kuvo", "sessions", "list"]) => answer(200, state.line(true)),
             ("GET", ["kuvo", "search"]) => {
@@ -1333,6 +1380,10 @@ impl Transport for StandIn {
     /// It stands in for this computer's own box, unless a test says it's another's.
     fn here(&self) -> bool {
         !self.state().elsewhere
+    }
+
+    fn peer(&self, key: &str) -> Option<Arc<dyn Transport>> {
+        self.state().peers.get(key).map(|peer| Arc::new(peer.clone()) as Arc<dyn Transport>)
     }
 
     fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {
