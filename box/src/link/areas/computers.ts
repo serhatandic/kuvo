@@ -272,15 +272,16 @@ async function* manage(context: RouteContext, key: string, action: string | unde
  * Kuvo Code's app to your devices since one it added was removed, is let do it again. The main
  * computer's own, and only for its own clients: a device paired with it, over the relay, or Kuvo
  * Code's app beside it, over the box's own server. Never `box route`, which an agent's command
- * could run, and never handed on from another box (no act carries it, work-queue/forward.ts): the
+ * could run, never a device the computer `key` itself vouched for, and never handed on from another box (no act carries it, work-queue/forward.ts): the
  * computer that's kept out can't let itself back in. */
 async function* allowDevices(context: RouteContext, key: string): AsyncGenerator<AnswerPiece> {
   const { request, phone, signal, json, info } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, { message: "Only POST." });
   const link = readLink();
   const asking = phone?.key?.toString("base64url");
-  const paired = asking !== undefined && (link?.phones ?? []).some(each => each.key === asking);
-  if (!paired && !fromLocalApp(request)) return yield* json(403, { message: "Only Kuvo Code on this computer, or one of your devices, allows a computer to add your devices again." });
+  const device = asking === undefined ? undefined : (link?.phones ?? []).find(each => each.key === asking);
+  // (Nor a device that same computer vouched for: whoever sits there would be allowing themselves.)
+  if ((!device && !fromLocalApp(request)) || (device?.by !== undefined && device.by === key)) return yield* json(403, { message: "Only Kuvo Code on this computer, or one of your devices, allows a computer to add your devices again." });
   const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
   const computer = computers.find(each => each.key === key);
   if (!computer) return yield* json(404, { message: "That isn't one of your computers." });

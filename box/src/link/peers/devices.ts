@@ -40,7 +40,7 @@ const namedDevice = (device: string): string => device || "Kuvo Code's app";
 /** What the box of `computer` is told when it vouches while kept from it (`device`, the one whose
  * removal did that), for its app to show as it is. `here`: this box, the main computer. */
 export const blockedVouch = (device: string, computer: string, here: string) => ({
-  message: `${namedDevice(device)} on ${computer} was removed from your devices, so ${computer} can't add Kuvo Code's app by itself now. Allow it again from ${here} or one of your devices: Computers, ${computer}.`,
+  message: `${namedDevice(device)} on ${computer} was removed from your devices, so ${computer} can't add Kuvo Code's app by itself now. Allow it again from Kuvo Code on ${here} or another computer's app: Computers, ${computer}.`,
   reason: "blocked",
 });
 

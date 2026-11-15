@@ -75,10 +75,15 @@ function noteRemoved(link: LinkState, key: string, pairing: string): void {
 const MOST_BLOCKED = 64;
 
 // A device taken off for good that a box vouched for (`by`, PROTOCOL.md "Paired phones",
-// `kuvo/devices/pair`): that box vouches for no other from now on, until you allow it again
-// (`allowVouching`). Whoever sits at that computer can't have its app make a new key and come back.
+// `kuvo/devices/pair`): every other device that box vouched for goes with it, by the pairing each
+// has now, noted among the removals as any removal is (so they're out on every computer), and
+// that box vouches for no other from now on, until you allow it again (`allowVouching`). Whoever
+// sits at that computer can't have its app make a new key and come back, nor keep one it had its
+// box vouch for before, which could ask for the computer to be allowed again.
 function blockVoucher(link: LinkState, phone: Phone, now: number): void {
   if (!phone.by) return;
+  for (const other of link.phones ?? []) if (other.by === phone.by && other.key !== phone.key) noteRemoved(link, other.key, other.pairing ?? "");
+  link.phones = (link.phones ?? []).filter(each => each.by !== phone.by);
   link.vouchBlocked = [...(link.vouchBlocked ?? []).filter(each => each.key !== phone.by), { key: phone.by, device: phone.name ?? "", at: now }].slice(-MOST_BLOCKED);
 }
 
@@ -106,8 +111,8 @@ function takeOff(link: LinkState, key: string, pairing?: string | null, now = Da
   const which = pairing == null ? (current?.pairing ?? "") : String(pairing);
   noteRemoved(link, key, which);
   if (!current || (current.pairing ?? "") !== which) return;
-  blockVoucher(link, current, now);
   link.phones = link.phones!.filter(phone => phone.key !== key);
+  blockVoucher(link, current, now);
 }
 
 // A new pairing id, made where a phone pairs.
@@ -180,6 +185,12 @@ export function foldPhones(link: LinkState, now = Date.now()): void {
       if (fits(entry, macs) && typeof entry.pairing === "string") noteRemoved(link, entry.key, entry.pairing);
     }
   }
+  // One paired here on a box's word that a removal in a document just took off (removed on another
+  // computer): the others that box vouched for go too, and it vouches for no other, as when it's
+  // removed here (`takeOff`).
+  for (const phone of [...(link.phones ?? [])]) {
+    if (phone.from === "pair" && link.phones!.includes(phone) && removedAlready(link, phone.key, phone.pairing ?? "")) blockVoucher(link, phone, now);
+  }
   const known = new Map((link.phones ?? []).map(phone => [phone.key, phone]));
   const signed = macs.filter(mac => macDoc(link, mac, "phones"));
   const listed: Phone[] = [];
@@ -210,9 +221,6 @@ export function foldPhones(link: LinkState, now = Date.now()): void {
   // One from before Macs were named: kept until a Mac signs its phones.
   if (!signed.length) for (const phone of link.phones ?? []) if (phone.from === "mac" && phone.mac == null) add(phone);
   for (const phone of link.phones ?? []) if (phone.from === "pair") add(phone);
-  // One paired here on a box's word that a removal in a document just took off (removed on another
-  // computer): that box vouches for no other, as when it's removed here (`takeOff`).
-  for (const phone of link.phones ?? []) if (phone.from === "pair" && removedAlready(link, phone.key, phone.pairing ?? "")) blockVoucher(link, phone, now);
   link.phones = listed;
 }
 

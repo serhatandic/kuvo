@@ -201,7 +201,7 @@ test("a member's box vouches for the app beside it to the main computer, and ans
   assert.deepEqual(await asked, { status: 409, body: { message: "This app was removed from your devices.", reason: "removed" } });
   // This computer is kept from adding its app (one it added was removed): the main computer's
   // words, and the reason the app goes by.
-  const keptOut = { message: "Lab screen on devbox was removed from your devices, so devbox can't add Kuvo Code's app by itself now. Allow it again from Studio or one of your devices: Computers, devbox.", reason: "blocked" };
+  const keptOut = { message: "Lab screen on devbox was removed from your devices, so devbox can't add Kuvo Code's app by itself now. Allow it again from Kuvo Code on Studio or another computer's app: Computers, devbox.", reason: "blocked" };
   asked = ask(APP, "POST", "kuvo/devices/pair", given);
   act = await vouchSent(mac);
   link.receiveMail(mailFrom(mac, { workQueue: { acted: { id: act.id, status: 409, value: keptOut } }, at: Date.now() }), undefined, takeMail);

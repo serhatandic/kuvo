@@ -1679,8 +1679,9 @@ machines; a client that wants every computer's facts asks the box that has it as
     say so at once. What was removed stays removed. **The main computer's own, for its own
     clients only**: a device paired with it, over the relay (a phone, or the desktop app's
     session), or Kuvo Code's app beside its box, over the box's own server (as for
-    `kuvo/devices/pair`). `403 {"message"}` from `box route` (a Mac over SSH, an agent's command)
-    and from anything else; `405` for anything but `POST`; `404` for a key the box doesn't list.
+    `kuvo/devices/pair`). `403 {"message"}` from `box route` (a Mac over SSH, an agent's command),
+    from a device the computer `<key>` itself vouched for (`by`, whether or not it's kept out
+    now: nobody at that computer allows it), and from anything else; `405` for anything but `POST`; `404` for a key the box doesn't list.
     It's never handed to another box: no act carries it (an ask by mail that names it is dropped,
     as any that isn't an act), so the computer kept out can't allow itself, and a member's box
     answers `409 {"message": "Allow it from <main>.", "primary": "<its key>"}`. `409 {"message"}`
@@ -9702,23 +9703,39 @@ On both, for a paired phone:
     computer's link.json alone: never in a phones document; none on one its own app or a token
     paired). When that device is removed, by any way the removal reaches the main computer's box
     (`kuvo/phones/remove` from a paired device there, from Kuvo Code's app beside it, or a removal
-    another box's phones document brings), it notes the box that vouched (`vouchBlocked` in
-    link.json: `[{key, device, at}]`, the box's key, the removed device's name and when, in
-    milliseconds; one entry a box, the newest 64) and from then on answers that box's vouch, for
-    any key, `409 {"message": "<Device> on <computer> was removed from your devices, so
-    <computer> can't add Kuvo Code's app by itself now. Allow it again from <main> or one of your
-    devices: Computers, <computer>.", "reason": "blocked"}`, which the member's box passes on to
-    its app as it is. A removal that names a pairing the device doesn't have now takes nothing
-    off and keeps no computer out. It lasts until you allow that computer again on the main
-    computer (`POST kuvo/computers/<key>/allow-devices`, "Computers"), which the computer kept out
-    can't ask for itself. Allowing it un-removes nothing: the key that was removed stays out, the
-    app there makes a new one on your word, and the vouch for that one is taken. (A key that's
-    let in now is still answered `200` with the pairing it has, and a removed one `removed`,
-    before this is looked at.)
-    **Not covered:** a desktop app the main computer's own box paired for the app beside it has
-    no voucher, so removing it keeps its key out and nothing more: that computer is the main one,
-    which pairs your devices itself. The same for a box in no setup. To keep a member out for
-    good, remove the computer (`DELETE kuvo/computers/<key>`): its box then vouches for nothing.
+    another box's phones document brings), the main computer's box:
+    - **removes every other device that same box vouched for** (all with that `by`), each by the
+      pairing it has now, noted among the removals as any removal is: its phones document carries
+      them, so they're out on every computer and their sessions end, and none is paired again by
+      asking (`reason: "removed"`). A second key someone there had the box vouch for earlier is
+      no way back in. What another computer vouched for, a phone, and what the main computer
+      paired itself are untouched;
+    - notes the box that vouched (`vouchBlocked` in link.json: `[{key, device, at}]`, the box's
+      key, the removed device's name and when, in milliseconds; one entry a box, the newest 64)
+      and from then on answers that box's vouch, for any new key, `409 {"message": "<Device> on
+      <computer> was removed from your devices, so <computer> can't add Kuvo Code's app by itself
+      now. Allow it again from Kuvo Code on <main> or another computer's app: Computers,
+      <computer>.", "reason": "blocked"}`, which the member's box passes on to its app as it is.
+
+    A removal that names a pairing the device doesn't have now takes nothing off and keeps no
+    computer out. It lasts until you allow that computer again on the main computer (`POST
+    kuvo/computers/<key>/allow-devices`, "Computers"), which neither the computer kept out nor a
+    device it vouched for can ask for. Allowing it un-removes nothing: the keys that were removed
+    stay out, the app there makes a new one on your word, and the vouch for that one is taken. (A
+    key that's let in now is still answered `200` with the pairing it has, and a removed one
+    `removed`, before this is looked at.)
+    **Not covered:**
+    - a desktop app the main computer's own box paired for the app beside it has no voucher, so
+      removing it keeps its key out and nothing more: that computer is the main one, which pairs
+      your devices itself. The same for a box in no setup;
+    - a device first vouched for and later paired again by token is the main computer's own from
+      then on (no `by`): removing it keeps no computer out;
+    - `by` and `vouchBlocked` are kept in the main computer's link.json alone, so **choosing a new
+      main computer drops them**: the new one knows neither who vouched for the devices it took
+      over nor which computer was kept out, and takes that computer's vouch again.
+
+    To keep a member out for good, remove the computer (`DELETE kuvo/computers/<key>`): its box
+    then vouches for nothing.
   - **At most 16 desktop apps** are paired this way at once: one more is `409 {"message"}` until
     one is removed, so a box that vouches never fills the list.
   - Every box of the setup lets the device in from the main computer's phones document, as it

@@ -368,6 +368,13 @@ test("the desktop app on a member's computer is paired through its own box and r
   const stray = link.publicOf(link.newKey()).toString("base64url");
   mailToMac(link.newKey(), { workQueue: { act: vouch(stray) }, at: Date.now() });
 
+  // Someone at the member's computer has its box vouch for a second key meanwhile: in, on both.
+  const twin = client({ name: "Lab twin", client: "desktop" });
+  const twinGiven = { key: twin.public, name: "Lab twin", kind: "desktop" };
+  assert.equal((await labApp("POST", "kuvo/devices/pair", twinGiven)).status, 200);
+  await eventually(() => (labLink()?.phones ?? []).some(each => each.key === twin.public));
+  assert.deepEqual([(await twin.open(main)).kind, (await twin.open(member)).kind], ["mac", "machine"]);
+
   // (6) Removed from the other device (the phone, on the member): its session there ends, both
   // boxes turn it away, and its app is never paired again by asking.
   assert.deepEqual(await phone.request("POST", "kuvo/phones/remove", { phones: [{ key: desk.public }] }), { status: 200, json: {} });
@@ -376,6 +383,13 @@ test("the desktop app on a member's computer is paired through its own box and r
   assert.deepEqual(await desk.open(main), { refused: true });
   const removed = { status: 409, json: { message: "This app was removed from your devices.", reason: "removed" } };
   assert.deepEqual(await labApp("POST", "kuvo/devices/pair", given), removed);
+  // The other key that computer vouched for went with it, removed as any device is: out on both
+  // boxes, and never paired again by asking, so nobody there is left with a way back in.
+  assert.ok(!(await ask("GET", "kuvo/phones")).json.phones.some(each => each.key === twin.public));
+  assert.deepEqual(await twin.open(main), { refused: true });
+  await eventually(() => !(labLink()?.phones ?? []).some(each => each.key === twin.public));
+  assert.deepEqual(await twin.open(member), { refused: true });
+  assert.deepEqual(await labApp("POST", "kuvo/devices/pair", twinGiven), removed);
   assert.deepEqual(await ask("POST", "kuvo/devices/pair", given, { fromApp: true, served: true }), removed);
   assert.deepEqual([await desk.open(main), await desk.open(member)], [{ refused: true }, { refused: true }]);
   // The phone is still in, on both.
@@ -388,7 +402,7 @@ test("the desktop app on a member's computer is paired through its own box and r
   const labKey = Buffer.from(labLink().key, "base64url");
   const second = client({ name: "Lab screen", client: "desktop" });
   const again = { key: second.public, name: "Second screen", kind: "desktop" };
-  const keptOut = removed => ({ status: 409, json: { message: `${removed} on lab was removed from your devices, so lab can't add Kuvo Code's app by itself now. Allow it again from Studio Mac or one of your devices: Computers, lab.`, reason: "blocked" } });
+  const keptOut = removed => ({ status: 409, json: { message: `${removed} on lab was removed from your devices, so lab can't add Kuvo Code's app by itself now. Allow it again from Kuvo Code on Studio Mac or another computer's app: Computers, lab.`, reason: "blocked" } });
   assert.deepEqual(await labApp("POST", "kuvo/devices/pair", again), keptOut("Lab screen"));
   assert.deepEqual(await second.open(main), { refused: true });
   // The main computer says so on that computer, with what allows it again, in its own words; the
@@ -407,7 +421,8 @@ test("the desktop app on a member's computer is paired through its own box and r
     { key: lab.key, sign: lab.sign, address: lab.address, name: "lab", id: "lab.example" },
     { key: attic.pub, sign: link.signingKeyOf(link.newSigningSeed()), address: attic.address.toString("base64url"), name: "attic", id: "attic.example" },
   ], moved: [] })).status, 200);
-  const fromAttic = vouch(link.publicOf(link.newKey()).toString("base64url"));
+  const loft = client({ name: "Someone's laptop", client: "desktop" });
+  const fromAttic = vouch(loft.public);
   mailAs(attic.on, atticKey, { workQueue: { act: fromAttic }, at: Date.now() });
   const atticPaired = await actedFor(fromAttic.id, atticKey, attic.address);
   assert.deepEqual(atticPaired, { id: fromAttic.id, status: 200, value: { paired: true, pairing: atticPaired.value?.pairing } });
@@ -442,6 +457,18 @@ test("the desktop app on a member's computer is paired through its own box and r
   assert.deepEqual(back, { status: 200, json: { paired: true, pairing: back.json.pairing } });
   assert.equal((await second.open(main)).kind, "mac");
   assert.deepEqual(await labApp("POST", "kuvo/devices/pair", given), removed);
+  // A device that computer vouched for never allows that computer: not now, and not while it's
+  // kept from it (were one left paired then), so nobody there allows themselves.
+  assert.deepEqual(await second.request("POST", allow), notFromHere);
+  link.updateLink(state => ({ ...state, vouchBlocked: [{ key: lab.key, device: "Lab screen", at: Date.now() }] }));
+  assert.deepEqual(await second.request("POST", allow), notFromHere);
+  assert.equal((await saidOf())[0]?.blocked, true, "still kept from it");
+  assert.deepEqual(await phone.request("POST", allow), { status: 200, json: {} });
+  // It vouches for one more.
+  const third = client({ name: "Third screen", client: "desktop" });
+  const more = { key: third.public, name: "Third screen", kind: "desktop" };
+  assert.equal((await labApp("POST", "kuvo/devices/pair", more)).status, 200);
+  assert.equal((await third.open(main)).kind, "mac");
 
   // Removed on the main computer itself, by a paired device: kept from it again, at once. A
   // removal of a pairing it doesn't have now takes nothing off, and keeps no computer from it.
@@ -449,15 +476,25 @@ test("the desktop app on a member's computer is paired through its own box and r
   assert.deepEqual(await saidOf(), [undefined, undefined]);
   assert.deepEqual(await phone.request("POST", "kuvo/phones/remove", { phones: [{ key: second.public }] }), { status: 200, json: {} });
   assert.equal((await saidOf())[0]?.words, "Second screen was removed from your devices. lab can't add Kuvo Code's app again until you allow it.");
-  const third = client({ name: "Third screen", client: "desktop" });
-  const more = { key: third.public, name: "Third screen", kind: "desktop" };
-  assert.deepEqual(await labApp("POST", "kuvo/devices/pair", more), keptOut("Second screen"));
-  // Allowed by Kuvo Code's app beside the main computer's box; then removed by that app: the same.
+  // The other one it vouched for is gone with it, for good; a new key is kept out.
+  assert.deepEqual([await second.open(main), await third.open(main)], [{ refused: true }, { refused: true }]);
+  assert.deepEqual(await labApp("POST", "kuvo/devices/pair", more), removed);
+  const fresh = (name, key = link.publicOf(link.newKey()).toString("base64url")) => ({ key, name, kind: "desktop" });
+  assert.deepEqual(await labApp("POST", "kuvo/devices/pair", fresh("Another")), keptOut("Second screen"));
+  // Allowed by Kuvo Code's app beside the main computer's box; then two it vouches for, and one
+  // removed by that app: the same, both gone.
   assert.deepEqual(await ask("POST", allow, undefined, { fromApp: true, served: true }), { status: 200, json: {} });
-  assert.equal((await labApp("POST", "kuvo/devices/pair", more)).status, 200);
-  assert.deepEqual(await ask("POST", "kuvo/phones/remove", { phones: [{ key: third.public }] }), { status: 200, json: {} });
-  assert.deepEqual(await labApp("POST", "kuvo/devices/pair", { ...more, key: link.publicOf(link.newKey()).toString("base64url") }), keptOut("Third screen"));
-  assert.deepEqual(link.readLink().vouchBlocked.map(each => [each.key, each.device]), [[lab.key, "Third screen"]], "one entry a computer");
+  const fourth = client({ name: "Fourth screen", client: "desktop" }), fifth = client({ name: "Fifth screen", client: "desktop" });
+  for (const each of [fourth, fifth]) assert.equal((await labApp("POST", "kuvo/devices/pair", fresh(each === fourth ? "Fourth screen" : "Fifth screen", each.public))).status, 200);
+  assert.deepEqual(await ask("POST", "kuvo/phones/remove", { phones: [{ key: fourth.public }] }), { status: 200, json: {} });
+  assert.deepEqual([await fourth.open(main), await fifth.open(main)], [{ refused: true }, { refused: true }]);
+  assert.deepEqual(await labApp("POST", "kuvo/devices/pair", fresh("Fifth screen", fifth.public)), removed);
+  assert.deepEqual(await labApp("POST", "kuvo/devices/pair", fresh("Another")), keptOut("Fourth screen"));
+  assert.deepEqual(link.readLink().vouchBlocked.map(each => [each.key, each.device]), [[lab.key, "Fourth screen"]], "one entry a computer");
+  // What another computer vouched for is untouched through all of it, and still let in; so is the phone.
+  assert.equal((await loft.open(main)).kind, "mac");
+  assert.equal((await ask("GET", "kuvo/phones")).json.phones.find(each => each.key === loft.public)?.name, "Someone's laptop");
+  assert.equal((await phone.open(main)).kind, "mac");
 
   // The app beside the main computer's own box is paired there at once, and the member lets it in too.
   const studio = client({ name: "Studio screen", client: "desktop" });
