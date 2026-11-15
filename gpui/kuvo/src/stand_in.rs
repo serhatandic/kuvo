@@ -146,15 +146,38 @@ impl StandIn {
         self.state().queue.down = !readable;
     }
 
-    /// What it says `category` counts, whatever its items are.
-    pub fn count_category(&self, category: &str, count: usize) {
-        self.state().queue.counted.push((category.to_owned(), count));
+    /// What it says `status` counts, whatever its items are.
+    pub fn count_status(&self, status: &str, count: usize) {
+        self.state().queue.counted.push((status.to_owned(), count));
     }
 
-    /// Whether it takes an item added or rewritten by a client (no box does yet: the routes are
-    /// proposed), and says so in its features.
-    pub fn queue_writable(&self, writable: bool) {
-        self.state().queue.read_only = !writable;
+    /// What it says an item added with nothing said starts as.
+    pub fn new_items_start(&self, status: &str, priority: &str) {
+        self.state().queue.starts = Some((status.to_owned(), priority.to_owned()));
+    }
+
+    /// The day its Work Queue says it is, whatever the moment it's asked at.
+    pub fn box_today(&self, day: &str) {
+        self.state().queue.today_said = Some(day.to_owned());
+    }
+
+    /// One of its Work Queue's items stands in a status its view doesn't list.
+    pub fn unlisted_status(&self) {
+        let mut state = self.state();
+        let now = state.made.unwrap_or_else(now_ms);
+        state.queue.add_unlisted_status(now);
+    }
+
+    /// Its Work Queue lists a status this app has never heard of, with an item in it.
+    pub fn newer_status(&self) {
+        let mut state = self.state();
+        let now = state.made.unwrap_or_else(now_ms);
+        state.queue.add_newer_status(now);
+    }
+
+    /// Its Work Queue has many more labels than a menu shows at once.
+    pub fn many_labels(&self) {
+        self.state().queue.add_many_labels();
     }
 
     /// Whether its list of computers can be read (else 503, as a box that isn't answering).
@@ -809,7 +832,7 @@ impl StandIn {
         }
         let body = request.body.clone().unwrap_or(Value::Null);
         let made = state.made.unwrap_or_else(now_ms);
-        if let Some((status, value)) = state.queue.answer(method, route, &body, made) {
+        if let Some((status, value)) = state.queue.answer(method, path, &body, made) {
             return answer(status, value);
         }
         if let Some((status, value)) = state.area(method, route) {

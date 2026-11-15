@@ -66,6 +66,70 @@ pub fn worked_for(ms: f64) -> String {
     format!("Worked for {length}")
 }
 
+/// The days from 1970-01-01 to a day of the calendar.
+pub fn day_number(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let of_era = year.rem_euclid(400);
+    let of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    era * 146_097 + of_era * 365 + of_era / 4 - of_era / 100 + of_year - 719_468
+}
+
+/// The day of the calendar that many days from 1970-01-01: its year, month and day.
+pub fn civil(days: i64) -> (i64, i64, i64) {
+    let days = days + 719_468;
+    let era = days.div_euclid(146_097);
+    let of_era = days.rem_euclid(146_097);
+    let year_of_era = (of_era - of_era / 1460 + of_era / 36_524 - of_era / 146_096) / 365;
+    let of_year = of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted = (5 * of_year + 2) / 153;
+    let day = of_year - (153 * shifted + 2) / 5 + 1;
+    let month = if shifted < 10 { shifted + 3 } else { shifted - 9 };
+    (year_of_era + era * 400 + i64::from(month <= 2), month, day)
+}
+
+/// A day as the box writes one (`YYYY-MM-DD`), read as its days from 1970-01-01.
+pub fn parse_day(day: &str) -> Option<i64> {
+    let mut parts = day.split('-');
+    let (year, month, date) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() || year.len() != 4 || month.len() != 2 || date.len() != 2 {
+        return None;
+    }
+    let (year, month, date): (i64, i64, i64) = (year.parse().ok()?, month.parse().ok()?, date.parse().ok()?);
+    ((1..=12).contains(&month) && (1..=31).contains(&date)).then(|| day_number(year, month, date))
+}
+
+/// The day `offset` days after the one a clock `ahead` seconds of UTC shows at `ms`, as the box
+/// writes a day (`YYYY-MM-DD`).
+pub fn day(ms: f64, ahead: i64, offset: i64) -> String {
+    let (year, month, date) = civil(((ms / 1000.) as i64 + ahead).div_euclid(86_400) + offset);
+    format!("{year:04}-{month:02}-{date:02}")
+}
+
+/// The day `offset` days after `day` (as the box writes one); none where `day` can't be read.
+pub fn day_after(day: &str, offset: i64) -> Option<String> {
+    let (year, month, date) = civil(parse_day(day)? + offset);
+    Some(format!("{year:04}-{month:02}-{date:02}"))
+}
+
+/// A due day in a few words, seen from `today` (both `YYYY-MM-DD`): "Today", "Tomorrow",
+/// "Yesterday", else "Nov 16" (with its year where it isn't this one). One this can't read is
+/// shown as written.
+pub fn due_words(due: &str, today: &str) -> String {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let (Some(day), Some(now)) = (parse_day(due), parse_day(today)) else { return due.to_owned() };
+    match day - now {
+        0 => "Today".into(),
+        1 => "Tomorrow".into(),
+        -1 => "Yesterday".into(),
+        _ => {
+            let ((year, month, date), (this_year, _, _)) = (civil(day), civil(now));
+            let month = MONTHS[(month - 1) as usize];
+            if year == this_year { format!("{month} {date}") } else { format!("{month} {date}, {year}") }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,5 +147,17 @@ mod tests {
         assert_eq!(worked_for(25_000.0), "Worked for 25s");
         assert_eq!(worked_for(190_000.0), "Worked for 3m 10s");
         assert_eq!(worked_for(3_900_000.0), "Worked for 1h 5m");
+    }
+
+    #[test]
+    fn a_due_day_reads_from_today() {
+        // 2026-11-14T02:13:20Z; a clock three hours behind UTC still shows the 13th.
+        let ms = 1_794_622_400_000.0;
+        assert_eq!((day(ms, 0, 0), day(ms, -3 * 3600, 0), day(ms, 0, 7), day(ms, 0, 20)), ("2026-11-14".into(), "2026-11-13".into(), "2026-11-21".into(), "2026-12-04".into()));
+        assert_eq!(civil(day_number(2028, 2, 29)), (2028, 2, 29));
+        let words = |due: &str| due_words(due, "2026-11-14");
+        assert_eq!((words("2026-11-14"), words("2026-11-15"), words("2026-11-13"), words("2026-11-30"), words("2027-01-02"), words("soon")), ("Today".into(), "Tomorrow".into(), "Yesterday".into(), "Nov 30".into(), "Jan 2, 2027".into(), "soon".into()));
+        assert_eq!(parse_day("2026-13-01"), None);
+        assert_eq!((day_after("2026-12-30", 7), day_after("today", 1)), (Some("2027-01-06".into()), None));
     }
 }

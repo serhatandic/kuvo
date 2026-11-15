@@ -521,7 +521,7 @@ test("the bridge is told which peers aren't your own computers for plan limits' 
   // but whose numbering mail does: not yours either.
   const queues = path.join(run, "work-queue", "peers");
   fs.mkdirSync(queues, { recursive: true });
-  fs.writeFileSync(path.join(queues, `${second.pub}.json`), JSON.stringify({ id: "wqt_secondtoldsecond", at: 1, heard: 1, kind: "machine", since: 50, items: [], owners: [], categories: [], shared: true }));
+  fs.writeFileSync(path.join(queues, `${second.pub}.json`), JSON.stringify({ id: "wqt_secondtoldsecond", at: 1, heard: 1, kind: "machine", since: 50, items: [], owners: [], labels: [], shared: true }));
   assert.deepEqual(apart(link.readLink()), { mac: false, second: true });
   fs.rmSync(queues, { recursive: true, force: true });
 });

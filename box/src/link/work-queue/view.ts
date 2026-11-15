@@ -1,7 +1,7 @@
 // What the Work Queue looks like to an owner (PROTOCOL.md, "The Work Queue"): its own items, those
 // of the sessions it oversees (started by it, or by those), and those it handed on, each living
-// once, in its owner's queue; with which of their sessions are at work now, which is what puts an
-// item In progress. The box states these facts; clients group and draw them.
+// once, in its owner's queue; with where each stands (its status), which of its sessions are at
+// work now, and what whoever asks may do to it. The box states these facts; clients draw them.
 
 import { placeOfSession } from "../letters/letter";
 import { listBots } from "../bots/list";
@@ -9,8 +9,10 @@ import { atWorkNow } from "../work/background";
 import { startedByOf, under, workSessions, worksFor } from "../work/tree";
 import type { Listed } from "../work/tree";
 import type { Target } from "../../shared/records";
-import type { Item, ItemEvent, ItemRef, KeptFile, Link, Note, Source, Who } from "./store";
-import { ITEM_ID } from "./store";
+import type { Assignee, Item, ItemEvent, ItemRef, KeptFile, Link, Note, Source, Who } from "./store";
+import { ITEM_ID, YOURS } from "./store";
+import { isClosed } from "./statuses";
+import { assigneeNamed, type Assignable } from "./assignees";
 import { issueAt, sourceKey } from "./sources";
 import { seenOf, withSeen, type Seen } from "./github";
 
@@ -39,10 +41,6 @@ export const inView = (owner: string, item: Item, overseen: Set<string>): boolea
 export const linkedTo = (owner: string, item: { sessions: { session: string }[]; removed?: unknown }): boolean =>
   !item.removed && item.sessions.some(each => each.session === owner);
 
-/** Whether the item is in progress: not done or deleted, and a session linked to it at work. */
-export const inProgress = (item: Item, working: Set<string>): boolean =>
-  !item.removed && item.category !== "done" && item.sessions.some(each => working.has(each.session));
-
 /** An item named in a tool's words or a route: `#243`, `243`, its id, or the GitHub issue or pull
  * request it is (`gh:owner/repo#12`, or its page). */
 export function refOf(given: unknown): ItemRef | null {
@@ -62,7 +60,7 @@ export interface SessionFacts { session: string; title: string; working: boolean
 /** An owner as a view names it: what it is, its title, the bot it is, and who started it. */
 export interface OwnerFacts {
   owner: string;
-  kind: "bot" | "session" | "group";
+  kind: "bot" | "session" | "group" | "you";
   title: string | null;
   bot?: { id: string; name: string };
   startedBy?: string;
@@ -100,11 +98,19 @@ export interface ItemSummary {
   wanted?: number;
   owner: string;
   title: string;
-  category: string;
+  status: string;
   order: number;
-  inProgress: boolean;
+  priority: string;
+  labels: string[];
+  /** Who it's for, by name; a bot of this box with its look (its face). */
+  assignee?: Assignee & { name: string; look?: unknown };
+  due?: string;
+  /** Its due day is past (by the day it is on the box asked), and it's neither closed nor deleted. */
+  overdue?: boolean;
   progress?: { value?: number; note?: string };
   sessions: SessionFacts[];
+  /** What whoever asked may do to it (`canOf`): a client's view and its answers only. */
+  can?: Can;
   noteCount: number;
   lastNote?: Note;
   fileCount: number;
@@ -113,7 +119,7 @@ export interface ItemSummary {
   source?: Source;
   /** Where its issue or pull request stands on GitHub, as last read (`github.ts`), and since when. */
   seen?: Seen;
-  /** The category it's kept in, while GitHub's word makes it Done (`category` "done"). */
+  /** The status it's kept with, while GitHub's word makes it Done (`status` "done"). */
   keptIn?: string;
   /** Its title struck through: closed on GitHub without being done (not planned, or unmerged). */
   struck?: boolean;
@@ -144,18 +150,54 @@ export interface ItemWhole extends ItemSummary {
   handed: { from: string; to: string; at: number }[];
 }
 
-export function summaryOf(item: Item, working: Set<string>, titles: Map<string, { title: string }>): ItemSummary {
+/** What a client may do to an item, so it offers nothing the box would refuse: `edit` its title
+ * and description (never an issue's: GitHub's); `set` where it stands among the open statuses, its
+ * priority, labels, due day and place; `assign` it to one of the view's `assignees` (those are the
+ * bots of the box asked: an item another computer keeps is assigned there); `close` it (Done or Canceled: never an issue's,
+ * which GitHub closes); `delete` it; `restore` it (a deleted one, and nothing else then). None
+ * of them while its conversation moves to another computer (`moving`), or its computer isn't
+ * answering (`away`); only `delete` while it's on its way to another computer. */
+export interface Can { edit: boolean; set: boolean; assign: boolean; close: boolean; delete: boolean; restore: boolean; why?: string }
+
+/** `why`: where something can't be done, the reason in words a client shows as they are. */
+export function canOf(item: Pick<ItemSummary, "removed" | "handing" | "source" | "seen" | "keptIn" | "computer">, { moving = false, away = false, apart = false }: { moving?: boolean; away?: boolean; apart?: boolean } = {}): Can {
+  const none = { edit: false, set: false, assign: false, close: false, delete: false, restore: false };
+  const there = item.computer?.name ?? "Its computer";
+  if (moving) return { ...none, why: "Its conversation is moving to another computer: it can be changed once it's there." };
+  if (away) return { ...none, why: `${there} isn't answering now (it may be asleep, off or offline): it can be changed once it's back.` };
+  // (A machine Macs share outside one setup hands nothing on to another computer.)
+  if (apart) return { ...none, why: `It's on ${there}: change it there.` };
+  if (item.removed) return { ...none, restore: true, why: "It's deleted: bring it back to change it." };
+  if (item.handing) return { ...none, delete: true, why: `It's on its way to ${item.handing.name || "a conversation"} on another computer: it can be changed there once it's arrived.` };
+  // (An issue GitHub closed stays Done until it's reopened there.)
+  if (item.source) return { ...none, set: item.keptIn === undefined, assign: item.keptIn === undefined && !item.computer, delete: true, why: item.keptIn === undefined ? "Its title, its description and closing it are GitHub's." : "It's closed on GitHub: it's back where it stood once it's reopened there." };
+  return { edit: true, set: true, assign: !item.computer, close: true, delete: true, restore: false };
+}
+
+/** The day it is here, `YYYY-MM-DD`. */
+export const todayHere = (now = new Date()): string => `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
+/** Whether an item is late: due before today (here), and still open. The box says so, so every
+ * client draws the same items late. */
+export const overdueOf = (item: { due?: string; status: string; removed?: unknown }, today = todayHere()): boolean =>
+  Boolean(item.due) && !item.removed && !isClosed(item.status) && item.due! < today;
+
+export function summaryOf(item: Item, working: Set<string>, titles: Map<string, { title: string }>, assignables?: Assignable[]): ItemSummary {
   return withSeen({
     id: item.id,
     ...(item.number !== undefined ? { number: item.number } : {}),
     ...(item.wanted !== undefined ? { wanted: item.wanted } : {}),
     owner: item.owner,
     title: item.title,
-    category: item.category,
+    status: item.status,
     order: item.order,
-    inProgress: inProgress(item, working),
+    priority: item.priority ?? "normal",
+    labels: item.labels,
+    ...(item.assignee ? { assignee: assigneeNamed(item.assignee, assignables) } : {}),
+    ...(item.due ? { due: item.due } : {}),
+    ...(overdueOf(item) ? { overdue: true } : {}),
     ...(item.progress ? { progress: item.progress } : {}),
-    sessions: item.sessions.map(each => ({ session: each.session, title: titles.get(each.session)?.title ?? "New Session", working: working.has(each.session) })),
+    sessions: item.sessions.map(each => ({ session: each.session, title: titles.get(each.session)?.title ?? "New Session", working: !item.removed && !isClosed(item.status) && working.has(each.session) })),
     noteCount: item.notes.length,
     ...(item.notes.length ? { lastNote: item.notes[item.notes.length - 1] } : {}),
     fileCount: item.files.length,
@@ -170,8 +212,8 @@ export function summaryOf(item: Item, working: Set<string>, titles: Map<string, 
   });
 }
 
-export function wholeOf(item: Item, working: Set<string>, titles: Map<string, { title: string }>): ItemWhole {
-  return { ...summaryOf(item, working, titles), body: item.body, notes: item.notes, events: item.events ?? [], files: item.files, links: item.links, handed: item.handed ?? [] };
+export function wholeOf(item: Item, working: Set<string>, titles: Map<string, { title: string }>, assignables?: Assignable[]): ItemWhole {
+  return { ...summaryOf(item, working, titles, assignables), body: item.body, notes: item.notes, events: item.events ?? [], files: item.files, links: item.links, handed: item.handed ?? [] };
 }
 
 /** The owners of `items`, and `owner` itself, as a view names them. */
@@ -181,6 +223,7 @@ export async function ownersOf(owner: string, items: Item[], facts: Facts, targe
   const bots = listBots();
   const owners: OwnerFacts[] = [...keys].map(key => {
     if (key.startsWith("grp_")) return { owner: key, kind: "group", title: null };
+    if (key === YOURS) return { owner: key, kind: "you", title: "Your own" };
     const found = named.get(key);
     const bot = bots.find(each => each.session === key);
     return {

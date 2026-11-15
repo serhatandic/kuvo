@@ -10,10 +10,12 @@ import { placeOfSession } from "../letters/letter";
 import { rootOf } from "../letters/tools";
 import { readProjects } from "../areas/projects";
 import { callerOf, isCalling } from "../vault/who";
-import { addCategory, categories, categoryNamed } from "./categories";
+import { addLabel, changeLabel, labelNamed, labels, removeLabel } from "./labels";
+import { isClosed, PRIORITIES, priorityName, statusName, statusNamed, STATUSES } from "./statuses";
+import { assigneeNamed } from "./assignees";
 import { importItems, importWords, givenItems } from "./import";
 import { numberWaiting, primaryOf } from "./numbers";
-import { addItem, applyFileOps, changeItem, handItem, linkSession, linkSource, Refusal, refuseHanding, refuseMoving, removeItem, restoreItem, stageFiles, startWork, stopWork, unlinkSessions, type Acting, type Fields, type FilePlaces } from "./ops";
+import { addItem, applyFileOps, stripLabel, changeItem, handItem, linkSession, linkSource, Refusal, refuseHanding, refuseMoving, removeItem, restoreItem, stageFiles, startWork, stopWork, unlinkSessions, type Acting, type Fields, type FilePlaces } from "./ops";
 import { allItems, byUser, changeQueues, matching, MOST_BODY, whoWords, type Book, type Item, type Who } from "./store";
 import { canonicalOf, readIssue, seenOf, sourceOf, withSeen, type IssueRead } from "./github";
 import { issueAt, refText, sameSource, sourceKey, sourceKeyOf, type IssueAt } from "./sources";
@@ -24,7 +26,7 @@ import { readPeerAgents } from "../peers/directory";
 import { awaySince } from "../peers/reach";
 import type { Peer } from "../peers/known";
 import { askGroups } from "../areas/groups";
-import { agoWords, factsOf, inProgress, inView, nameOf, overseenBy, ownersOf, refOf, sessionsNamed, type Facts } from "./view";
+import { agoWords, factsOf, inView, nameOf, overseenBy, ownersOf, refOf, sessionsNamed, type Facts } from "./view";
 import type { BridgeRecord, EngineRecord, Target } from "../../shared/records";
 import type { Caller } from "../vault/who";
 
@@ -36,24 +38,29 @@ const refused = (text: string): ToolAnswer => ({ text, isError: true });
 
 const ITEM = { type: ["string", "integer"], description: "Like #243 or gh:owner/repo#12." };
 const ISSUE = { type: "string", description: "gh:owner/repo#12 or its URL." };
-const TOP = { type: "boolean", description: "At the top of its category." };
-const CATEGORY = { type: "string", description: "Next, Later, Parked, Done or a custom one." };
+const TOP = { type: "boolean", description: "At the top of its status." };
+const STATUS = { type: "string", description: "Needs you (only the user can move it on), In review, In progress, Waiting, Todo, Backlog, Done or Canceled." };
+const PRIORITY = { type: "string", description: "Urgent, High, Normal or Low." };
+const LABELS = { type: "array", items: { type: "string" }, description: "All its labels by name, replacing those it had ([]: none)." };
+const ASSIGNEE = { type: ["string", "null"], description: "Who it's for: a bot's or coding agent's name (null: no one). Doesn't hand it on." };
+const DUE = { type: ["string", "null"], description: "YYYY-MM-DD, or null." };
 const LINKS = { type: "array", items: { type: "string" }, description: "Web links (a PR, a doc)." };
 const FILES = { type: "array", items: { type: "string" }, description: "Full paths of files to keep with it (in the body: ![](name))." };
 const PROGRESS = { type: ["number", "null"], description: "0 to 1, where it can be counted." };
 const PROGRESS_NOTE = { type: ["string", "null"], description: "What's being done now, briefly." };
-const WORKING = { type: "boolean", description: "You're on it now (false: you stopped)." };
+const WORKING = { type: "boolean", description: "true: you're on it now (Todo, Backlog or Waiting becomes In progress). false: you stopped (its status stays as it is)." };
 const NAMES = { type: "array", items: { type: "string" } };
 
 /** The tools, as a tool server lists them. */
 export const QUEUE_TOOLS = [
   {
     name: "queue_list",
-    description: "List your Work Queue (and those of sessions you oversee) by category, In progress first.",
+    description: "List your Work Queue (and those of sessions you oversee) by status: open items, unless done.",
     inputSchema: { type: "object", properties: {
-      category: { type: "string", description: "Only this one (or In progress)." },
-      query: { type: "string", description: "Words in the title or description." },
-      done: { type: "boolean", description: "Include Done ones." },
+      status: { type: "string", description: "Only this one." },
+      label: { type: "string", description: "Only with this label." },
+      query: { type: "string", description: "Words in it or its notes." },
+      done: { type: "boolean", description: "Done and Canceled too." },
     }, additionalProperties: false },
   },
   {
@@ -63,12 +70,16 @@ export const QUEUE_TOOLS = [
   },
   {
     name: "queue_add",
-    description: "Add an item to your Work Queue (at the bottom of Next by default); you get its number. With issue, it's that GitHub issue or PR (no title).",
+    description: "Add an item to your Work Queue (Todo and Normal unless you say); you get its number. With issue, it's that GitHub issue or PR (no title).",
     inputSchema: { type: "object", properties: {
       title: { type: "string", description: "One short line." },
       issue: ISSUE,
       body: { type: "string", description: "Markdown: what, why, what's decided." },
-      category: CATEGORY,
+      status: STATUS,
+      priority: PRIORITY,
+      labels: LABELS,
+      assignee: ASSIGNEE,
+      due: DUE,
       top: TOP,
       progress: PROGRESS,
       progress_note: PROGRESS_NOTE,
@@ -79,13 +90,17 @@ export const QUEUE_TOOLS = [
   },
   {
     name: "queue_update",
-    description: "Change an item of yours (or of a session you oversee): note adds a note; issue makes it that GitHub issue or PR.",
+    description: "Change an item of yours (or of a session you oversee): only what you give. note adds a note; issue makes it that GitHub issue or PR.",
     inputSchema: { type: "object", properties: {
       item: ITEM,
       issue: { type: "string" },
       title: { type: "string" },
       body: { type: "string", description: "Replaces the description." },
-      category: CATEGORY,
+      status: STATUS,
+      priority: PRIORITY,
+      labels: LABELS,
+      assignee: ASSIGNEE,
+      due: DUE,
       top: TOP,
       before: { type: ["string", "integer"], description: "Just before this item." },
       after: { type: ["string", "integer"], description: "Just after this item." },
@@ -110,13 +125,20 @@ export const QUEUE_TOOLS = [
   },
   {
     name: "queue_remove",
-    description: "Delete an item (the user can restore it for 30 days); undo restores one an agent deleted.",
+    description: "Delete an item (the user can restore it for 30 days); undo restores one an agent deleted. Work that won't be done: status Canceled.",
     inputSchema: { type: "object", properties: { item: ITEM, undo: { type: "boolean" } }, required: ["item"], additionalProperties: false },
   },
   {
-    name: "queue_categories",
-    description: "List the categories, or add a custom one the user asked for.",
-    inputSchema: { type: "object", properties: { add: { type: "string" }, after: { type: "string" } }, additionalProperties: false },
+    name: "queue_labels",
+    description: "List the labels (kinds of work; one set for every queue), or make one change the user asked for: add, rename (with to), recolor (with color) or remove (off every item).",
+    inputSchema: { type: "object", properties: {
+      add: { type: "string" },
+      rename: { type: "string" },
+      to: { type: "string" },
+      recolor: { type: "string" },
+      color: { type: "string", description: "coral, orange, amber, lime, mint, sky, indigo, violet, pink or graphite." },
+      remove: { type: "string" },
+    }, additionalProperties: false },
   },
   {
     name: "queue_import",
@@ -126,8 +148,9 @@ export const QUEUE_TOOLS = [
         number: { type: "integer" },
         title: { type: "string" },
         body: { type: "string" },
-        category: { type: "string" },
-        done: { type: "boolean" },
+        status: { type: "string", description: "Todo if none." },
+        label: { type: "string", description: "A label's name." },
+        done: { type: "boolean", description: "Done, whatever status says." },
       }, required: ["number", "title"] } },
     }, required: ["items"], additionalProperties: false },
   },
@@ -136,7 +159,7 @@ export const QUEUE_TOOLS = [
 export const QUEUE_TOOL_NAMES: readonly string[] = QUEUE_TOOLS.map(tool => tool.name);
 
 /** What the tool servers add to what they tell agents, with the tools. */
-export const QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then category: done.";
+export const QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then status: Done (In review while it's reviewed, Needs you when only the user can move it on).";
 
 /** Who calls, as the queue knows them: the owner of the queue they write to, the session that
  * works when they say working, their name, and where their files may come from. */
@@ -236,6 +259,9 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
   const acting: Acting = { who: caller.who, now, fileOps: [] };
   const facts = await factsOf(targets, signal);
   const overseen = overseenBy(caller.owner, facts.all);
+  // (An agent that still says category, as before statuses: told what to say, never left thinking
+  // it was taken.)
+  if (args.category !== undefined && name !== "queue_import") throw new Refusal(`Items have a status and labels now, not a category. Give status (${STATUSES.map(each => each.name).join(", ")}) for where it stands, and labels for what kind of work it is (queue_labels lists them).`);
   switch (name) {
     case "queue_list":
       return said(await listWords(caller, args, facts, overseen, targets));
@@ -256,23 +282,25 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       refuseMoving([caller.owner]);
       // (An issue or a pull request: read from GitHub first, outside the queue's lock.)
       const issue = args.issue !== undefined ? await issueFor(args.issue, caller, overseen) : null;
-      const fields = issue ? { ...args, title: issue.read.title } : args;
+      // (One added as its agent starts on it is In progress from the start, unless it says where it stands.)
+      const starting = args.working === true && !caller.seat && args.status === undefined;
+      const fields = { ...args, ...(issue ? { title: issue.read.title } : {}), ...(starting ? { status: "in-progress" } : {}) };
       const item = withFiles(args, caller, acting, () => change(book => {
         if (issue) refuseTaken(book.items(), issue.at, caller, overseen, undefined, issue.read.id);
         const made = addItem(book, caller.owner, fields as Fields, acting, primaryOf(), issue ? sourceOf(issue.at, issue.read) : undefined);
         if (issue) made.body = issue.body.slice(0, MOST_BODY);
-        if (args.working === true && !caller.seat) startWork(book, made, caller.session, acting);
+        if (args.working === true && !caller.seat && !isClosed(made.status)) startWork(book, made, caller.session, acting, { keep: args.status !== undefined });
         applyFileOps(acting);
         return made;
       }));
-      const where = categories().find(each => each.id === item.category)?.name ?? item.category;
+      const where = statusName(item.status);
       if (issue) {
         const ignored = [args.title !== undefined ? "title" : "", args.body !== undefined ? "body" : ""].filter(Boolean);
-        return said(`Added ${nameOf(item)} (${seenWords(issue.read.state)} on GitHub) to ${where}${args.working === true && !caller.seat ? ", linked to you: it shows In progress while you work" : ""}. Refer to it as ${item.source!.ref}. Its title and description are GitHub's, and it's Done once it's closed there${issue.read.kind === "github-pr" ? " or merged" : ""}.${ignored.length ? ` (The ${ignored.join(" and ")} you gave ${ignored.length === 1 ? "isn't" : "aren't"} used.)` : ""}`);
+        return said(`Added ${nameOf(item)} (${seenWords(issue.read.state)} on GitHub) as ${where}${args.working === true && !caller.seat ? ", linked to you" : ""}. Refer to it as ${item.source!.ref}. Its title and description are GitHub's, and it's Done once it's closed there${issue.read.kind === "github-pr" ? " or merged" : ""}.${ignored.length ? ` (The ${ignored.join(" and ")} you gave ${ignored.length === 1 ? "isn't" : "aren't"} used.)` : ""}`);
       }
       return said(item.number !== undefined
-        ? `Added #${item.number} "${item.title}" to ${where}${args.working === true ? ", linked to you: it shows In progress while you work" : ""}. Refer to it as #${item.number}.`
-        : `Added "${item.title}" to ${where}. It has no number yet: ${HERE} gets one from the user's primary computer, which isn't answering now. Name it as ${item.id} meanwhile.`);
+        ? `Added #${item.number} "${item.title}" as ${where}${args.working === true && !caller.seat ? ", linked to you" : ""}. Refer to it as #${item.number}.`
+        : `Added "${item.title}" as ${where}. It has no number yet: ${HERE} gets one from the user's primary computer, which isn't answering now. Name it as ${item.id} meanwhile.`);
     }
     case "queue_update": {
       // (Linking it to an issue or a pull request: read from GitHub first, outside the lock.)
@@ -297,8 +325,8 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         if (item.source && (args.title !== undefined || args.body !== undefined)) throw new Refusal(`${nameOf(item)} takes its title and description from GitHub: change them there.`);
         changeItem(book, item, args as Fields, acting);
         const named = (value: unknown) => (Array.isArray(value) ? value : value === undefined ? [] : [value]).map(String).filter(each => /^ses_[A-Za-z0-9]{1,60}$/.test(each));
-        if (item.category !== "done") {
-          if (args.working === true && !caller.seat) startWork(book, item, caller.session, acting);
+        if (!isClosed(item.status)) {
+          if (args.working === true && !caller.seat) startWork(book, item, caller.session, acting, { keep: args.status !== undefined });
           for (const session of named(args.sessions)) linkSession(book, item, session, now);
         }
         if (args.working === false) stopWork(item, caller.session, acting);
@@ -306,9 +334,9 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         applyFileOps(acting);
         return item;
       }));
-      const where = categories().find(each => each.id === item.category)?.name ?? item.category;
-      if (issue) return said(`${linkedFrom.number !== undefined ? `#${linkedFrom.number}` : "It"} is ${nameOf(item)} now (${seenWords(issue.read.state)} on GitHub), in ${where}: refer to it as ${item.source!.ref}${linkedFrom.number !== undefined ? ` (#${linkedFrom.number} still finds it)` : ""}. Its title and description are GitHub's (what it said before is kept as a note), and it's Done once it's closed there.`);
-      return said(item.category === "done" ? `Marked ${nameOf(item)} done.` : `Changed ${nameOf(item)} (${where}${item.sessions.length ? `, ${item.sessions.length} session${item.sessions.length === 1 ? "" : "s"} linked` : ""}).`);
+      const where = statusName(item.status);
+      if (issue) return said(`${linkedFrom.number !== undefined ? `#${linkedFrom.number}` : "It"} is ${nameOf(item)} now (${seenWords(issue.read.state)} on GitHub), ${where}: refer to it as ${item.source!.ref}${linkedFrom.number !== undefined ? ` (#${linkedFrom.number} still finds it)` : ""}. Its title and description are GitHub's (what it said before is kept as a note), and it's Done once it's closed there.`);
+      return said(item.status === "done" ? `Marked ${nameOf(item)} done.` : item.status === "canceled" ? `Marked ${nameOf(item)} canceled.` : `Changed ${nameOf(item)} (${where}${item.sessions.length ? `, ${item.sessions.length} session${item.sessions.length === 1 ? "" : "s"} linked` : ""}).`);
     }
     case "queue_hand": {
       const to = await handTarget(args.to, caller, targets);
@@ -326,7 +354,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         return item;
       });
       if (to.peer) return said(`Handing ${nameOf(item)} to ${to.name} on ${computerName(to.peer)}: it goes into its queue there, linked to it, as soon as that computer has it${awaySince(to.peer.key) !== null ? " (it isn't answering now: it goes once it's back)" : ""}, and stays in your view. Until then it's unchanged here.`);
-      return said(`Handed ${nameOf(item)} to ${to.name}: it's in its queue now${to.owner.startsWith("ses_") ? ", linked to it, so it shows In progress while it works" : ""}, and stays in your view.`);
+      return said(`Handed ${nameOf(item)} to ${to.name}: it's in its queue now${to.owner.startsWith("ses_") ? ", linked to it" : ""}, and stays in your view.`);
     }
     case "queue_remove": {
       const item = change(book => {
@@ -348,20 +376,25 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       });
       return said(args.undo === true ? `Brought back ${nameOf(item)}.` : `Deleted ${nameOf(item)}. The user can bring it back for 30 days.`);
     }
-    case "queue_categories": {
-      if (typeof args.add === "string" && args.add.trim()) {
-        const outcome = addCategory(args.add, args.after);
-        if ("refused" in outcome) return refused(outcome.refused);
-        return said(`Added the category ${outcome.done.name}. Categories now: ${categories().map(each => each.name).join(", ")}.`);
-      }
-      return said(`Categories (one set for every queue): ${categories().map(each => each.name).join(", ")}. In progress isn't one you set: an item shows In progress while a session linked to it is at work.`);
+    case "queue_labels": {
+      const asked = ["add", "rename", "recolor", "remove"].filter(each => typeof args[each] === "string" && (args[each] as string).trim());
+      const listed = () => (labels().length ? labels().map(each => `${each.name} (${each.color})`).join(", ") : "none yet");
+      if (!asked.length) return said(`Labels (one set for every queue; an item carries several): ${listed()}. Statuses aren't labels: ${STATUSES.map(each => each.name).join(", ")}. Priorities: ${PRIORITIES.map(each => each.name).join(", ")}.`);
+      if (asked.length > 1) return refused("One change a call: add, rename (with to), recolor (with color) or remove.");
+      if (statusNamed(args.add) || statusNamed(args.to)) return refused(`${String(args.add ?? args.to)} is a status, not a label: set it on an item with status.`);
+      const outcome = asked[0] === "add" ? addLabel(args.add, args.color)
+        : asked[0] === "rename" ? (typeof args.to === "string" && args.to.trim() ? changeLabel(args.rename, { name: args.to }) : { refused: "Say its new name (to)." })
+        : asked[0] === "recolor" ? (typeof args.color === "string" && args.color.trim() ? changeLabel(args.recolor, { color: args.color }) : { refused: "Say its new colour (color)." })
+        : removeLabel(args.remove, stripLabel);
+      if ("refused" in outcome) return refused(outcome.refused);
+      return said(`${asked[0] === "add" ? "Made" : asked[0] === "remove" ? "Removed (and took off every item here)" : "Changed"} the label ${outcome.done.name}. Labels now: ${listed()}.`);
     }
     case "queue_import": {
       const given = givenItems(args.items);
       if ("refused" in given) return refused(given.refused);
       refuseMoving([caller.owner]);
       const outcome = change(book => importItems(book, caller.owner, given.items, caller.who, primaryOf(), now));
-      return said(importWords(outcome, given.skipped, id => categoryNamed(id)?.name ?? id));
+      return said(importWords(outcome, given.skipped, statusName));
     }
   }
   return refused(`There's no tool ${name}.`);
@@ -455,70 +488,85 @@ async function handTarget(given: unknown, caller: QueueCaller, targets: Target[]
 // A conversation's name as another computer listed it.
 const peerName = (session: string): string | null => Object.values(readPeerAgents()).flatMap(told => told.list ?? []).find(agent => agent.session === session)?.name ?? null;
 
-// Where an item stands as a list shows it: In progress, its category (Done while GitHub says its
-// issue or pull request is closed), and its title (GitHub's, as last read).
-interface ShownItem { title: string; category: string; inProgress: boolean; source?: Item["source"]; seen?: { state: string; at: number; gone?: boolean }; keptIn?: string; doneAt?: number }
-const shownOf = (item: Item, working: Set<string>): ShownItem => withSeen<ShownItem>({ title: item.title, category: item.category, inProgress: inProgress(item, working), ...(item.source ? { source: item.source } : {}), ...(item.doneAt !== undefined ? { doneAt: item.doneAt } : {}) });
+// Where an item stands as a list shows it: its status (Done while GitHub says its issue or pull
+// request is closed), and its title (GitHub's, as last read).
+interface ShownItem { title: string; status: string; source?: Item["source"]; seen?: { state: string; at: number; gone?: boolean }; keptIn?: string; doneAt?: number }
+const shownOf = (item: Item): ShownItem => withSeen<ShownItem>({ title: item.title, status: item.status, ...(item.source ? { source: item.source } : {}), ...(item.doneAt !== undefined ? { doneAt: item.doneAt } : {}) });
 
-// How an item reads in a list: its name, where it stands, and whose it is when it isn't yours.
-function line(item: Item, facts: Facts, caller: QueueCaller, owners: Map<string, { title: string }>, now: number): string {
+// What else an item says of itself in a line: its priority (but Normal), labels, who it's for, when
+// it's due.
+const tagsOf = (item: { priority?: string; labels: string[]; assignee?: { kind: "bot" | "agent"; id: string; name?: string }; due?: string }, names: Map<string, string>): string => [
+  item.priority && item.priority !== "normal" ? priorityName(item.priority) : "",
+  ...item.labels.map(each => names.get(each) ?? "").filter(Boolean).map(each => `[${each}]`),
+  item.assignee ? `for ${item.assignee.name ?? assigneeNamed(item.assignee).name}` : "",
+  item.due ? `due ${item.due}` : "",
+].filter(Boolean).map(each => ` · ${each}`).join("");
+
+// How an item reads in a list: its name, what it says of itself, and whose it is when it isn't yours.
+function line(item: Item, facts: Facts, caller: QueueCaller, owners: Map<string, { title: string }>, names: Map<string, string>, now: number): string {
   const working = item.sessions.filter(each => facts.working.has(each.session));
-  const shown = shownOf(item, facts.working);
-  const state = shown.inProgress
-    ? `in progress (${working.map(each => `"${owners.get(each.session)?.title ?? "a session"}" at work`).join(", ")})${item.progress?.note ? `: ${item.progress.note}` : ""}`
-    : shown.category === "done" ? (item.source && shown.seen ? (shown.seen.gone ? "gone from GitHub" : `${seenWords(shown.seen.state)} on GitHub`) : `done ${agoWords(shown.doneAt ?? item.updated.at, now)}`) : "";
+  const shown = shownOf(item);
+  const state = shown.status === "done" ? (item.source && shown.seen ? (shown.seen.gone ? "gone from GitHub" : `${seenWords(shown.seen.state)} on GitHub`) : `done ${agoWords(shown.doneAt ?? item.updated.at, now)}`)
+    : shown.status === "canceled" ? `canceled ${agoWords(shown.doneAt ?? item.updated.at, now)}`
+    : `${working.length ? `${working.map(each => `"${owners.get(each.session)?.title ?? "a session"}" at work`).join(", ")}` : ""}${item.progress?.note ? `${working.length ? ": " : ""}${item.progress.note}` : ""}`;
   const progress = item.progress?.value !== undefined ? ` ${Math.round(item.progress.value * 100)}%` : "";
   const whose = item.owner === caller.owner ? "" : item.owner.startsWith("grp_") ? " · in the group's queue" : ` · in "${owners.get(item.owner)?.title ?? "another session"}" (${item.owner})`;
-  return `- ${nameOf({ ...item, title: shown.title })}${state ? ` · ${state}` : ""}${progress}${whose} · updated ${agoWords(item.updated.at, now)}`;
+  return `- ${nameOf({ ...item, title: shown.title })}${tagsOf(item, names)}${state ? ` · ${state}` : ""}${progress}${whose} · updated ${agoWords(item.updated.at, now)}`;
 }
+
+// Whether every word of `query` is in what an item says: its title, description and notes.
+const says = (item: { title: string; body?: string; notes?: { text: string }[]; lastNote?: { text: string } }, query: string): boolean => {
+  const text = [item.title, item.body ?? "", ...(item.notes ?? []).map(each => each.text), item.lastNote?.text ?? ""].join("\n").toLowerCase();
+  return query.split(/\s+/).filter(Boolean).every(word => text.includes(word));
+};
 
 async function listWords(caller: QueueCaller, args: Record<string, unknown>, facts: Facts, overseen: Set<string>, targets: Target[]): Promise<string> {
   const now = Date.now();
   const query = typeof args.query === "string" ? args.query.trim().toLowerCase() : "";
-  const wanted = typeof args.category === "string" && args.category.trim() ? args.category.trim() : null;
-  const progressOnly = wanted !== null && /^in[ -]?progress$/i.test(wanted);
-  const category = wanted && !progressOnly ? categoryNamed(wanted) : null;
-  if (wanted && !progressOnly && !category) throw new Refusal(`There's no category ${wanted}: queue_categories lists them.`);
+  const wanted = typeof args.status === "string" && args.status.trim() ? args.status.trim() : null;
+  const status = wanted ? statusNamed(wanted) : null;
+  if (wanted && !status) throw new Refusal(`There's no status ${wanted}: it's one of ${STATUSES.map(each => each.name).join(", ")}.`);
+  const label = typeof args.label === "string" && args.label.trim() ? labelNamed(args.label) : null;
+  if (typeof args.label === "string" && args.label.trim() && !label) throw new Refusal(`There's no label ${args.label}: queue_labels lists them.`);
+  const closedToo = args.done === true || Boolean(status?.closed);
   let items = allItems().filter(item => !item.removed && inView(caller.owner, item, overseen));
-  if (query) items = items.filter(item => item.title.toLowerCase().includes(query) || item.body.toLowerCase().includes(query));
+  if (query) items = items.filter(item => says(item, query));
+  if (label) items = items.filter(item => item.labels.includes(label.id));
   const { titles } = await ownersOf(caller.owner, items, facts, targets);
+  const far = itemsElsewhere(caller.owner);
+  const names = new Map([...far.labels, ...labels()].map(each => [each.id, each.name]));
   const sections: string[] = [];
-  const shown = (list: Item[]) => list.sort((a, b) => a.order - b.order).map(item => line(item, facts, caller, titles, now));
-  const states = new Map(items.map(item => [item.id, shownOf(item, facts.working)]));
-  const going = items.filter(item => states.get(item.id)!.inProgress);
-  if (!category && going.length) sections.push(`In progress:\n${shown(going).join("\n")}`);
-  for (const each of categories()) {
-    if (progressOnly || (category && category.id !== each.id)) continue;
-    if (each.id === "done" && !category && args.done !== true) continue;
-    let list = items.filter(item => states.get(item.id)!.category === each.id && (category || !states.get(item.id)!.inProgress));
-    if (each.id === "done") list = list.sort((a, b) => (states.get(b.id)!.doneAt ?? 0) - (states.get(a.id)!.doneAt ?? 0)).slice(0, 30);
-    if (list.length) sections.push(`${each.name}:\n${(each.id === "done" ? list.map(item => line(item, facts, caller, titles, now)) : shown(list)).join("\n")}`);
+  const states = new Map(items.map(item => [item.id, shownOf(item)]));
+  for (const each of STATUSES) {
+    if ((status && status.id !== each.id) || (each.closed && !closedToo)) continue;
+    let list = items.filter(item => states.get(item.id)!.status === each.id);
+    list = each.closed ? list.sort((a, b) => (states.get(b.id)!.doneAt ?? 0) - (states.get(a.id)!.doneAt ?? 0)).slice(0, 30) : list.sort((a, b) => a.order - b.order);
+    if (list.length) sections.push(`${each.name}:\n${list.map(item => line(item, facts, caller, titles, names, now)).join("\n")}`);
   }
   // On your other computers: the items of sessions you oversee there, and those you handed there.
-  let far = itemsElsewhere(caller.owner).items.filter(item => item.category !== "done" || args.done === true || category?.id === "done");
-  if (query) far = far.filter(item => item.title.toLowerCase().includes(query));
-  if (progressOnly) far = far.filter(item => item.inProgress);
-  else if (category) far = far.filter(item => item.category === category.id);
-  const farOwners = new Map(itemsElsewhere(caller.owner).owners.map(each => [each.owner, each]));
-  const farLines = far.sort((a, b) => a.order - b.order).map(item => {
+  let there = far.items.filter(item => !isClosed(item.status) || closedToo);
+  if (query) there = there.filter(item => says(item, query));
+  if (status) there = there.filter(item => item.status === status.id);
+  if (label) there = there.filter(item => item.labels.includes(label.id));
+  const farOwners = new Map(far.owners.map(each => [each.owner, each]));
+  const farLines = there.sort((a, b) => a.order - b.order).map(item => {
     const named = farOwners.get(item.owner);
     const whose = item.owner === caller.owner ? "" : item.owner.startsWith("grp_") ? " · in a group's queue" : ` · in "${named?.bot?.name ?? named?.title ?? "another session"}" (${item.owner})`;
-    const state = item.inProgress ? ` · in progress${item.progress?.note ? `: ${item.progress.note}` : ""}` : item.category === "done" ? " · done" : ` · ${categoryNamed(item.category)?.name ?? item.category}`;
-    return `- ${nameOf(item)}${state}${whose} · on ${item.computer.name}, updated ${agoWords(item.updated.at, now)}`;
+    return `- ${nameOf(item)} · ${statusName(item.status)}${tagsOf(item, names)}${item.progress?.note ? ` · ${item.progress.note}` : ""}${whose} · on ${item.computer.name}, updated ${agoWords(item.updated.at, now)}`;
   });
   if (farLines.length) sections.push(`On your other computers (as each last told it; changed there):\n${farLines.join("\n")}`);
   const waiting = items.filter(item => item.number === undefined).length;
-  const open = items.filter(item => states.get(item.id)!.category !== "done").length;
-  if (!sections.length) return query || wanted ? "Nothing in your Work Queue matches." : "Your Work Queue is empty. Add items with queue_add.";
+  const open = items.filter(item => !isClosed(states.get(item.id)!.status)).length;
+  if (!sections.length) return query || wanted || label ? "Nothing in your Work Queue matches." : "Your Work Queue is empty. Add items with queue_add.";
   return `Your Work Queue (${open} open${waiting ? `, ${waiting} waiting for a number` : ""}${farLines.length ? `, ${farLines.length} more on your other computers` : ""}):\n\n${sections.join("\n\n")}`;
 }
 
 // One on another of your computers, as it last told it.
 function farWords(item: ItemElsewhere, caller: QueueCaller): string {
   const now = Date.now();
-  const category = categoryNamed(item.category)?.name ?? item.category;
+  const names = new Map(itemsElsewhere(caller.owner).labels.map(each => [each.id, each.name]));
   return [
-    `${nameOf(item)} · ${item.inProgress ? `In progress (kept in ${category})` : category} · on ${item.computer.name}${item.owner === caller.owner ? "" : `, in the queue of ${item.owner}`}`,
+    `${nameOf(item)} · ${statusName(item.status)}${tagsOf(item, names)} · on ${item.computer.name}${item.owner === caller.owner ? "" : `, in the queue of ${item.owner}`}`,
     `Added ${agoWords(item.created.at, now)} by ${whoWords(item.created.by)}; updated ${agoWords(item.updated.at, now)}.`,
     item.progress ? `Progress: ${item.progress.value !== undefined ? `${Math.round(item.progress.value * 100)}%` : ""}${item.progress.value !== undefined && item.progress.note ? " · " : ""}${item.progress.note ?? ""}` : "",
     item.sessions.length ? `Sessions on it: ${item.sessions.map(each => `"${each.title}" (${each.session}) ${each.working ? "at work" : "not at work"}`).join("; ")}` : "",
@@ -530,11 +578,12 @@ async function showWords(item: Item, facts: Facts, targets: Target[], caller: Qu
   const now = Date.now();
   const named = await sessionsNamed([item.owner, ...item.sessions.map(each => each.session), ...(item.handed ?? []).flatMap(each => [each.from, each.to])], facts, targets);
   const title = (key: string) => (key.startsWith("grp_") ? "the group chat" : `"${named.get(key)?.title ?? "a session"}"`);
-  const shown = shownOf(item, facts.working);
-  const category = categories().find(each => each.id === item.category)?.name ?? item.category;
+  const shown = shownOf(item);
+  const status = statusName(item.status);
   const read = seenOf(item.source);
+  const names = new Map(labels().map(each => [each.id, each.name]));
   const parts = [
-    `${nameOf({ ...item, title: shown.title })} · ${shown.inProgress ? `In progress (kept in ${category})` : shown.category === "done" && item.category !== "done" ? `Done (kept in ${category})` : category}${item.removed ? " · DELETED" : ""}${item.owner === caller.owner ? "" : ` · in ${title(item.owner)}'s queue (${item.owner})`}`,
+    `${nameOf({ ...item, title: shown.title })} · ${shown.status === "done" && item.status !== "done" ? `Done (kept as ${status})` : status}${tagsOf(item, names)}${item.removed ? " · DELETED" : ""}${item.owner === caller.owner ? "" : ` · in ${title(item.owner)}'s queue (${item.owner})`}`,
     item.source ? `On GitHub: ${read?.value ? read.gone ? `gone, or no longer visible to gh here, since ${agoWords(read.at, now)} (${seenWords(read.value.state)} before)` : `${seenWords(read.value.state)}, as read ${agoWords(read.at, now)}` : "not read yet"} · ${item.source.url ?? item.source.ref}${item.number !== undefined ? ` · was #${item.number}` : ""}` : "",
     `Added ${agoWords(item.created.at, now)} by ${whoWords(item.created.by)}; updated ${agoWords(item.updated.at, now)}.`,
     item.progress ? `Progress: ${item.progress.value !== undefined ? `${Math.round(item.progress.value * 100)}%` : ""}${item.progress.value !== undefined && item.progress.note ? " · " : ""}${item.progress.note ?? ""}` : "",

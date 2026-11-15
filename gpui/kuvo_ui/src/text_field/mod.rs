@@ -25,7 +25,7 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::theme::{ActiveTheme, StyledType, radius, space};
-use layout::{FIELD_TYPE, Layout, TextElement};
+use layout::{FieldType, Layout, TextElement};
 
 actions!(
     text_field,
@@ -183,6 +183,8 @@ pub struct TextField {
     lines: Option<(usize, usize)>,
     /// Return submits rather than adding a line.
     submits: bool,
+    /// The type its text is set in.
+    kind: FieldType,
     /// Drawn without its own border and fill (inside a composer card).
     bare: bool,
     disabled: bool,
@@ -220,6 +222,7 @@ impl TextField {
             marked: None,
             lines: None,
             submits: true,
+            kind: FieldType::default(),
             bare: false,
             disabled: false,
             error: None,
@@ -242,6 +245,13 @@ impl TextField {
 
     pub fn placeholder(mut self, text: impl Into<SharedString>) -> Self {
         self.placeholder = text.into();
+        self
+    }
+
+    /// Set as a title: the page's title size, in the medium weight (what names a thing being
+    /// written, over the body under it).
+    pub fn title(mut self) -> Self {
+        self.kind = FieldType { size: crate::theme::TypeSize::Title, weight: Some(crate::theme::MEDIUM) };
         self
     }
 
@@ -773,7 +783,7 @@ impl TextField {
     }
 
     fn scroll_wheel(&mut self, event: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let delta = event.delta.pixel_delta(FIELD_TYPE.line_height());
+        let delta = event.delta.pixel_delta(self.kind.size.line_height());
         self.scroll -= if self.lines.is_some() { delta.y } else { delta.x };
         cx.notify();
     }
@@ -962,8 +972,11 @@ impl Render for TextField {
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_scroll(cx.listener(Self::scroll_wheel))
             .w_full()
-            .text_ui(FIELD_TYPE)
+            .text_ui(self.kind.size)
             .text_color(c.text);
+        if let Some(weight) = self.kind.weight {
+            field = field.font_weight(weight);
+        }
 
         let edge = if self.error.is_some() {
             c.danger

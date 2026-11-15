@@ -1,6 +1,6 @@
 // What your other computers told this one of their Work Queues (PROTOCOL.md, "The Work Queue",
 // "Across your computers"): each one's items as summaries, the owners they name, their custom
-// categories, and how each numbers (when it was set up, and its primary). Kept in
+// labels, and how each numbers (when it was set up, and its primary). Kept in
 // `run/work-queue/peers/<key>.json`, the newest from each, so the All view and a lead's view have
 // them, as of when they were told, while that computer sleeps.
 
@@ -10,7 +10,9 @@ import { isObject } from "../../shared/json";
 import { cut, plainName } from "../../shared/text";
 import { listOf, locked, writePrivate } from "../files";
 import { KEY } from "../peers/known";
-import { ITEM_ID, OWNER, WORK_QUEUE, whoOf as keptWho, type Who } from "./store";
+import { assigneeOf, dayOf, ITEM_ID, OWNER, WORK_QUEUE, whoOf as keptWho, type Who } from "./store";
+import { PRIORITY_ID, STATUS_ID } from "./statuses";
+import { LABEL_ID, labelOf, MOST_LABELS, type Label } from "./labels";
 import type { ItemSummary, OwnerFacts } from "./view";
 
 export const TOLD = path.join(WORK_QUEUE, "peers");
@@ -30,14 +32,14 @@ export interface Numbering {
 export type ToldItem = ItemSummary & { handedFrom?: string[] };
 
 /** What a computer last told: as of when (its clock, `at`), when it was heard (this one's), its
- * items, the owners they name, its custom categories, and how it numbers. */
+ * items, the owners they name, its labels, and how it numbers. */
 export interface Told extends Numbering {
   id: string;
   at: number;
   heard: number;
   items: ToldItem[];
   owners: OwnerFacts[];
-  categories: { id: string; name: string }[];
+  labels: Label[];
 }
 
 /** How many items a computer tells at most, and of its Done ones. */
@@ -46,7 +48,6 @@ export const MOST_TOLD_DONE = 100;
 
 const fileOf = (key: string) => path.join(TOLD, `${key}.json`);
 const SESSION = /^ses_[A-Za-z0-9]{1,60}$/;
-const CATEGORY = /^(?:next|later|parked|done|cat_[a-z0-9-]{1,40})$/;
 const KIND = (value: unknown): "mac" | "machine" | null => (value === "mac" || value === "machine" ? value : null);
 const count = (value: unknown) => (typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0);
 const time = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0);
@@ -61,7 +62,10 @@ const stamp = (value: unknown) => (isObject(value) ? { at: time(value.at), by: w
 export function toldItemOf(given: unknown, latest = Infinity): ToldItem | null {
   if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.owner !== "string" || !OWNER.test(given.owner)) return null;
   const title = words(given.title, 200);
-  const category = typeof given.category === "string" && CATEGORY.test(given.category) ? given.category : "next";
+  // (Where it stands: a status this box knows, else Todo.)
+  const status = typeof given.status === "string" && STATUS_ID.test(given.status) ? given.status : "todo";
+  const labels = (Array.isArray(given.labels) ? given.labels : []).filter((each): each is string => typeof each === "string" && LABEL_ID.test(each)).slice(0, 20);
+  const assignee = assigneeOf(given.assignee);
   const progress = isObject(given.progress)
     ? { ...(typeof given.progress.value === "number" && given.progress.value >= 0 && given.progress.value <= 1 ? { value: given.progress.value } : {}), ...(typeof given.progress.note === "string" ? { note: words(given.progress.note, 300) } : {}) }
     : undefined;
@@ -73,20 +77,23 @@ export function toldItemOf(given: unknown, latest = Infinity): ToldItem | null {
     : undefined;
   // (A GitHub issue's page only on GitHub: a client opens it.)
   if (source?.url && /^github/.test(source.kind) && !/^https:\/\/github\.com\//.test(source.url)) delete source.url;
-  // (What GitHub said of it there, and when; with the category it keeps while that makes it Done.)
+  // (What GitHub said of it there, and when; with the status it keeps while that makes it Done.)
   const seen = source && isObject(given.seen) && typeof given.seen.state === "string" && /^[a-z_]{1,20}$/.test(given.seen.state)
     // (Never later than when it was told, nor than now: a clock set ahead there wins no read here.)
     ? { state: given.seen.state, at: Math.min(time(given.seen.at), latest), ...(typeof given.seen.checked === "number" ? { checked: Math.min(time(given.seen.checked), latest) } : {}), ...(given.seen.gone === true ? { gone: true } : {}) } : undefined;
-  const keptIn = seen && typeof given.keptIn === "string" && CATEGORY.test(given.keptIn) ? given.keptIn : undefined;
+  const keptIn = seen && typeof given.keptIn === "string" && STATUS_ID.test(given.keptIn) ? given.keptIn : undefined;
   return {
     id: given.id,
     ...(whole(given.number) ? { number: whole(given.number) } : {}),
     ...(whole(given.wanted) ? { wanted: whole(given.wanted) } : {}),
     owner: given.owner,
     title: title || "Untitled",
-    category,
+    status,
     order: typeof given.order === "number" && Number.isFinite(given.order) ? given.order : 0,
-    inProgress: given.inProgress === true,
+    priority: typeof given.priority === "string" && PRIORITY_ID.test(given.priority) ? given.priority : "normal",
+    labels,
+    ...(assignee ? { assignee: { ...assignee, name: words(isObject(given.assignee) ? given.assignee.name : "", 100) || assignee.id } } : {}),
+    ...(dayOf(given.due) ? { due: dayOf(given.due)! } : {}),
     ...(progress && Object.keys(progress).length ? { progress } : {}),
     sessions,
     noteCount: count(given.noteCount),
@@ -107,7 +114,7 @@ export function toldItemOf(given: unknown, latest = Infinity): ToldItem | null {
 
 const ownerOf = (given: unknown): OwnerFacts | null => {
   if (!isObject(given) || typeof given.owner !== "string" || !OWNER.test(given.owner)) return null;
-  const kind = given.kind === "bot" || given.kind === "group" ? given.kind : "session";
+  const kind = given.kind === "bot" || given.kind === "group" || given.kind === "you" ? given.kind : "session";
   const bot = isObject(given.bot) && typeof given.bot.id === "string" && /^bot_[A-Za-z0-9]{1,60}$/.test(given.bot.id) ? { id: given.bot.id, name: words(given.bot.name, 100) } : undefined;
   return { owner: given.owner, kind, title: typeof given.title === "string" ? words(given.title, 200) : null, ...(bot ? { bot } : {}), ...(typeof given.startedBy === "string" && SESSION.test(given.startedBy) ? { startedBy: given.startedBy } : {}) };
 };
@@ -123,13 +130,15 @@ export function numberingOf(given: Record<string, unknown>): Numbering {
 /** What a computer told, as it came, cleaned: null for what isn't. */
 export function toldOf(given: unknown, now = Date.now()): Omit<Told, "heard"> | null {
   if (!isObject(given) || typeof given.id !== "string" || !/^wqt_[A-Za-z0-9_-]{8,40}$/.test(given.id) || typeof given.at !== "number" || !Array.isArray(given.items)) return null;
+  // (Only from a box that keeps statuses and labels: what another says of its queue isn't read as
+  // an empty list of labels, which would take a primary's off every item here.)
+  if (!Array.isArray(given.labels)) return null;
   const seen = new Set<string>();
   const latest = Math.min(given.at, now);
   const items = given.items.slice(0, MOST_TOLD).map(each => toldItemOf(each, latest)).filter((each): each is ToldItem => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
   const owners = (Array.isArray(given.owners) ? given.owners : []).slice(0, MOST_TOLD).map(ownerOf).filter((each): each is OwnerFacts => each !== null);
-  const categories = (Array.isArray(given.categories) ? given.categories : []).filter(each => isObject(each) && typeof each.id === "string" && /^cat_[a-z0-9-]{1,40}$/.test(each.id) && typeof each.name === "string")
-    .slice(0, 30).map(each => ({ id: each.id as string, name: words(each.name, 40) || (each.id as string).slice(4) }));
-  return { id: given.id, at: Math.min(given.at, now), items, owners, categories, ...numberingOf(given) };
+  const labels = (Array.isArray(given.labels) ? given.labels : []).slice(0, MOST_LABELS).map(labelOf).filter((each): each is Label => each !== null);
+  return { id: given.id, at: Math.min(given.at, now), items, owners, labels, ...numberingOf(given) };
 }
 
 /** What the computer `key` last told, or null. */
@@ -138,6 +147,7 @@ export function readTold(key: string): Told | null {
   try {
     const kept = JSON.parse(fs.readFileSync(fileOf(key), "utf8"));
     if (!isObject(kept) || typeof kept.at !== "number" || !Array.isArray(kept.items)) return null;
+    if (!Array.isArray(kept.labels)) return null;
     return kept as unknown as Told;
   } catch {
     return null;
@@ -179,7 +189,7 @@ export function patchTold(key: string, id: string, item: unknown, deleted: boole
       if (before && before.updated.at > answered) return;
       const others = kept.items.filter(each => each.id !== id);
       const items = deleted ? others
-        : [...others, before ? { ...before, ...fresh, sessions: before.sessions, inProgress: before.inProgress, ...(before.progress ? { progress: before.progress } : {}), ...(before.handedFrom ? { handedFrom: before.handedFrom } : {}) } : fresh];
+        : [...others, before ? { ...before, ...fresh, sessions: before.sessions, ...(before.progress ? { progress: before.progress } : {}), ...(before.handedFrom ? { handedFrom: before.handedFrom } : {}) } : fresh];
       writePrivate(fileOf(key), JSON.stringify({ ...kept, items }));
     });
   } catch {}

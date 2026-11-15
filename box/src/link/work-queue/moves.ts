@@ -6,16 +6,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
-import { categories, keepCategory } from "./categories";
-import { categoryNamed } from "./categories";
-import { intoNext } from "./ops";
+import { keepLabel, labels } from "./labels";
+import { statusNamed } from "./statuses";
+import { intoTodo } from "./ops";
 import { changeQueues, FILE_NAME, filesOf, itemOf, OWNER, readKeptQueue, readQueueSettingAside, type Item } from "./store";
 
-/** What a move carries: each owner's items, the custom categories they're in, and which items
+/** What a move carries: each owner's items, the labels they have, and which items
  * have files (packed beside `move.json`, in `work-queue/<item>/`). */
 export interface CarriedQueues {
   items: Item[];
-  categories: { id: string; name: string }[];
+  labels: { id: string; name: string; color: string }[];
   withFiles: string[];
 }
 
@@ -24,10 +24,10 @@ export function packWorkQueues(owners: readonly string[]): CarriedQueues | null 
   // (One of a kind a newer box keeps goes only when it reads whole here: else it stays, as it is.)
   const items = owners.flatMap(owner => (OWNER.test(owner) ? readQueueSettingAside(owner).items : readKeptQueue(owner)?.items ?? []));
   if (!items.length) return null;
-  const used = new Set(items.map(item => item.category));
+  const used = new Set(items.flatMap(item => item.labels));
   return {
     items,
-    categories: categories().filter(each => !each.builtIn && used.has(each.id)).map(({ id, name }) => ({ id, name })),
+    labels: labels().filter(each => used.has(each.id)),
     withFiles: items.filter(item => item.files.length && fs.existsSync(filesOf(item.id))).map(item => item.id),
   };
 }
@@ -50,14 +50,20 @@ export const filesSize = (carried: CarriedQueues | undefined): number => (carrie
 
 /** What came with a move put in place: the items of `owners` it brought (any other owner's left
  * out, and each checked as one read from this box's own files), their files from
- * `opened/work-queue`, and the custom categories they're in (Next for one this box can't keep). */
+ * `opened/work-queue`, and the labels they have (one this box can't keep is left off; Todo for
+ * a status it doesn't know). */
 export function placeWorkQueues(carried: unknown, owners: readonly string[], opened: string | null): void {
   if (!isObject(carried) || !Array.isArray(carried.items)) return;
   const allowed = new Set(owners);
   const items = carried.items.flatMap(each => (isObject(each) && typeof each.owner === "string" && allowed.has(each.owner) ? [itemOf(each, each.owner)] : [])).filter((each): each is Item => each !== null);
   if (!items.length) return;
-  for (const each of Array.isArray(carried.categories) ? carried.categories : []) if (isObject(each) && typeof each.id === "string" && typeof each.name === "string") keepCategory(each.id, each.name);
-  for (const item of items) if (!categoryNamed(item.category)) intoNext(item, item.category, Date.now());
+  const carriedLabels = new Set(items.flatMap(item => item.labels));
+  for (const each of Array.isArray(carried.labels) ? carried.labels : []) if (isObject(each) && carriedLabels.has(String(each.id))) keepLabel(each);
+  const here = new Set(labels().map(each => each.id));
+  for (const item of items) {
+    item.labels = item.labels.filter(each => here.has(each));
+    if (!statusNamed(item.status)) intoTodo(item, item.status, Date.now());
+  }
   changeQueues(book => {
     for (const item of items) {
       // (Into a queue of a kind a newer box keeps here that this one can't read whole: refused, so

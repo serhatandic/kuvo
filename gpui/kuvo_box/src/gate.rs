@@ -49,6 +49,7 @@ pub const REQUIRED: &[&str] = &[
     "waiting",
     "waiting.cards",
     "work-queue.counts",
+    "work-queue.edit",
 ];
 
 /// The state's title, wherever it shows.

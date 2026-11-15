@@ -9,6 +9,7 @@ import path from "node:path";
 import { botFollowers, botHere } from "../bots/here";
 import { followed, followersOf } from "../follow";
 import { allItems, queueFollowers, WORK_QUEUE } from "../work-queue/store";
+import { isClosed } from "../work-queue/statuses";
 import type { BotNow, SessionFacts, WaitingOnYou } from "../../shared/routes/sessions";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
@@ -33,7 +34,7 @@ export function waitingOf(list: Kept | null): WaitingOnYou {
     sessions: waitingSessions(facts),
     bots: Object.entries(botsNow(facts)).filter(([id, now]) => now.asking > 0 && botHere(id) !== null).length,
     // (The queues are read only while something waits at all.)
-    queue: asking.size ? allItems().filter(item => !item.removed && item.category !== "done" && item.sessions.some(linked => asking.has(linked.session))).length : 0,
+    queue: asking.size ? allItems().filter(item => !item.removed && !isClosed(item.status) && item.sessions.some(linked => asking.has(linked.session))).length : 0,
   };
 }
 

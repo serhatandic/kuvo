@@ -1,11 +1,9 @@
 //! What the rail's areas list, as a box says it (PROTOCOL.md): its bots with what each is doing now
-//! (`kuvo/bots`) and group chats (`kuvo/groups`), the Work Queue's categories and counts
+//! (`kuvo/bots`) and group chats (`kuvo/groups`), the Work Queue's counts
 //! (`kuvo/work-queue` with `counts=1`), your computers (`kuvo/computers`), the plan limits of every
 //! account across them with each one's rings and levels (`kuvo/agents/api/kuvo/limits`'s `rows`),
 //! and how many things wait on you in each area (`kuvo/waiting`). The box counts, levels and picks
 //! the rings; this reads them.
-
-use std::collections::HashMap;
 
 use serde::Deserialize;
 
@@ -104,33 +102,6 @@ pub struct Group {
     pub unread: bool,
     #[serde(default)]
     pub last: Option<GroupLast>,
-}
-
-// MARK: The Work Queue
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct Category {
-    pub id: String,
-    pub name: String,
-    #[serde(default, rename = "builtIn")]
-    pub built_in: bool,
-}
-
-/// The Work Queue's counts across your computers, as the box counts them (`work-queue.counts`): its
-/// items in progress, in each category (by its id), from each outside source (by its kind), on each
-/// computer (by its key), and how many are deleted.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
-pub struct QueueCounts {
-    #[serde(default, rename = "inProgress")]
-    pub in_progress: usize,
-    #[serde(default)]
-    pub categories: HashMap<String, usize>,
-    #[serde(default)]
-    pub sources: HashMap<String, usize>,
-    #[serde(default)]
-    pub computers: HashMap<String, usize>,
-    #[serde(default)]
-    pub removed: usize,
 }
 
 // MARK: Computers
@@ -503,9 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn the_work_queues_counts_and_your_computers_read_as_the_box_says_them() {
-        let counts: QueueCounts = serde_json::from_str(r#"{"inProgress":2,"categories":{"next":6,"done":0},"sources":{"github":3},"computers":{"":5,"k1":4},"removed":1}"#).unwrap();
-        assert_eq!((counts.in_progress, counts.categories["next"], counts.sources["github"], counts.computers["k1"], counts.removed), (2, 6, 3, 4, 1));
+    fn your_computers_read_as_the_box_says_them() {
         let said: Computers = serde_json::from_str(
             r#"{"computers":[{"key":"","name":"Studio","kind":"mac","here":true,"shared":false,"reach":"connected","version":"1.0.0","engine":"2.3.0","system":"macOS 15.1","via":"here","working":2,"limits":["claude"]},
                 {"key":"k1","name":"devbox","kind":"machine","id":"devbox","shared":true,"reach":"unknown","via":"peer","through":"Studio","working":0,"limits":[]},

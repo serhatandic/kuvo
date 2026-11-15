@@ -79,7 +79,7 @@ const mailTo = to => sent.filter(bytes => k(bytes.subarray(1, 17)) === to.addres
   .map(bytes => JSON.parse(link.openOneWay(link.readFrame(bytes.subarray(17)).body, to.key, link.publicOf(self.key)).payload.toString("utf8")));
 // What lab told of how it numbers, as its Work Queue's mail leaves it here (a box that knows setups
 // says whether it's shared).
-const labTold = numbering => write(path.join(queues, "peers", `${lab.pub}.json`), { id: "wqt_labtoldlabtold", at: 1, heard: 1, kind: "machine", since: 50, items: [], owners: [], categories: [], shared: false, ...numbering });
+const labTold = numbering => write(path.join(queues, "peers", `${lab.pub}.json`), { id: "wqt_labtoldlabtold", at: 1, heard: 1, kind: "machine", since: 50, items: [], owners: [], labels: [], shared: false, ...numbering });
 
 const handle = link.engineHandler(() => target);
 async function route(method, pathname) {
@@ -223,7 +223,7 @@ test("what a machine tells of how it numbers is looked at as it comes: lab, now 
   link.noteSetupNow(Date.now(), { soon: 0 });
   assert.equal(link.readLink().setup, undefined, "held back by lab, an older box");
   // lab's next word, by mail, as its updated box tells it.
-  const told = { id: "wqt_labupdatedlabupdat", at: Date.now(), kind: "machine", since: 50, top: 0, primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: false, items: [], owners: [], categories: [] };
+  const told = { id: "wqt_labupdatedlabupdat", at: Date.now(), kind: "machine", since: 50, top: 0, primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: false, items: [], owners: [], labels: [] };
   await link.takeWorkQueueMail(lab.peer, { told }, host, () => ({ targets: [target], bridge: false }));
   const led = ownPeers().setup;
   assert.ok(led, "leads now, not at its next minute");
@@ -232,7 +232,7 @@ test("what a machine tells of how it numbers is looked at as it comes: lab, now 
   link.updateLink(current => ({ ...current, macPeers: [lab.peer, added.peer] }));
   link.noteSetupNow(Date.now(), { soon: 0 });
   assert.deepEqual(ownPeers().setup, led);
-  write(path.join(queues, "peers", `${added.pub}.json`), { id: "wqt_vpstoldvpstold", at: 1, heard: 1, kind: "machine", since: 60, items: [], owners: [], categories: [], primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: true });
+  write(path.join(queues, "peers", `${added.pub}.json`), { id: "wqt_vpstoldvpstold", at: 1, heard: 1, kind: "machine", since: 60, items: [], owners: [], labels: [], primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: true });
   link.noteSetupNow(Date.now(), { soon: 0 });
   assert.equal(ownPeers().setup, undefined, "stepped aside");
 });
@@ -244,7 +244,7 @@ test("kuvo/setup and the card name the machines holding this Mac back (heldBy); 
   // lab, an older box, hasn't said whether it's shared; vps never told this Mac anything; old says
   // it's shared, but hasn't answered for four days, and the relay found it away within the hour.
   labTold({ primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: undefined });
-  write(path.join(queues, "peers", `${old.pub}.json`), { id: "wqt_oldtoldoldtold", at: 1, heard: 1, kind: "machine", since: 60, items: [], owners: [], categories: [], primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: true });
+  write(path.join(queues, "peers", `${old.pub}.json`), { id: "wqt_oldtoldoldtold", at: 1, heard: 1, kind: "machine", since: 60, items: [], owners: [], labels: [], primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: true });
   write(path.join(run, "peer-reach.json"), { [old.pub]: Date.now() - 4 * 86_400_000 });
   write(path.join(run, "peer-reach-checked.json"), { [old.pub]: Date.now() - 60_000 });
   link.noteSetupNow(Date.now(), { soon: 0 });

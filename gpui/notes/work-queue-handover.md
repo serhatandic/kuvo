@@ -1,148 +1,186 @@
 # The Work Queue: handover
 
-## Done
+## Done (#674: statuses, priorities and labels in place of categories)
 
-Notes: `notes/screens-queue.md` (with the Zed study). Scenarios: `kuvo/tests/queue.rs` (19, real
-clicks and keys against the stand-in), unit tests in `kuvo_box/src/work_queue.rs` and
-`kuvo/src/queue/mod.rs`. Shots: `shots/screens-queue-*-{light,dark}.png` (17 screens);
-`screens-area-queue` rendered again.
+Notes: `notes/screens-queue.md` (with the Zed study). Scenarios: `kuvo/tests/queue.rs` (38, real
+clicks and keys against the stand-in), unit tests in `kuvo_box/src/work_queue.rs`,
+`kuvo/src/queue/mod.rs` and `kuvo/src/time.rs`. Shots: `shots/screens-queue-*-{light,dark}.png`
+(28 screens); `screens-area-queue` rendered again.
 
 1. **The queue** (`kuvo/src/queue/`): the box's view across your computers
-   (`GET kuvo/work-queue?owner=all&counts=1`), its items under the box's categories in the box's
-   order, each wearing its category as a chip (#674); scope tabs (All, In Progress, each category,
-   with the box's counts) that pick the same scope as the sidebar's rows; a search; filters as
-   chips to take off (computer, outside source, owner); a line where nothing's listed; Done and
-   Deleted folded.
-2. **An item's page** (`GET kuvo/work-queue/items/<id>`): what names it and how it stands, its
-   title, its category as a menu, progress, Description as Markdown, the sessions working on it
-   (each opens in Sessions), links (opened in the browser), files, notes, who added and changed it
-   and whose queue it's in; one on another computer says whether it was read there or is as last
-   told (`told`); a deleted one, with Restore; one on its way to another computer (`handing`).
-3. **What you do**, each through the box's route, its answer drawn, its refusal in its words:
-   moving an item between categories and Mark Done (`POST …/items/<id>/move {category}`), Delete
-   and Restore (`DELETE …/items/<id>`, `POST …/restore`), New Category, Rename and Remove
-   (`POST kuvo/work-queue/categories {add | rename, to | remove}`).
-4. **Adding an item and editing its title and description** are drawn and tested against two
-   routes no box has yet (below): New Item and Edit… show only where the box's `features` name
-   `work-queue.edit`. Against today's box neither shows: the + is there, off, saying why when rested
-   on, and the queue's foot says who adds items.
-5. `kuvo_box::work_queue`: typed reads and sends for all of the above.
-6. The stand-in box answers these in the box's shapes (`kuvo/src/stand_in/queue.rs`): its queue is
-   state (moved, done, deleted, restored, added, rewritten, categories), with an item on a
-   computer that answers, one on a computer that's away, and two GitHub issues.
-7. `cargo build`, `cargo test --workspace` and `cargo clippy --workspace --all-targets` clean, every
-   run with `KUVO_*` unset and the stand-in box only.
+   (`GET kuvo/work-queue?owner=all&counts=1`), its items under the box's statuses in the box's
+   order (a status with nothing leaves no header), Done, Canceled and Deleted folded (whatever the
+   box says is `closed`), each row with its status mark, `#n`, title, what's being done on it,
+   priority (none for Normal), labels (two, then "+N"; one in a narrow window), who it's for (a
+   bot's still face from the view's `assignees`, else an initial), its due day, its computer and
+   when it changed. Tabs: All, each open status with the box's count, and a tab for a closed
+   status or a label while that's what shows. The sidebar: All Items (the box's `open`), Status
+   (every status with its count), Labels (each with its count, + to make one, and its own menu, from a ••• under the pointer
+   or a right-click, to edit or remove).
+2. **The search is the box's** (`…&q=<words>`): each change to what's typed asks the box; the
+   list, the tabs and the group headers show the narrowed view and its counts, the sidebar keeps
+   the whole queue's. A newer search replaces one on its way, and an answer is only taken for what's
+   typed now. Filters (computer, source, owner) stay view state: they choose which of the box's
+   items show, and no count shows over a filtered list.
+3. **New Item** (`screens-queue-new*`): written like a message (a title line, a description, no
+   boxed form), chips under it (Status, Priority, Assignee, Due date, Labels), each opening a menu
+   of what the box's view offers; a number picks a row (1 to 9), typing narrows, Up/Down/Return,
+   Escape closes the menu alone; Labels picks several and makes one from what's typed; Due date has
+   Today, Tomorrow, In a week, a day typed, None; Create more; ⌘↩ creates; Escape closes.
+   `POST kuvo/work-queue/items` with no owner: whose queue is the box's to decide.
+4. **An item's page**: the same chips change it (`PATCH kuvo/work-queue/items/<id>`, one field a
+   pick; `null` clears an assignee or a due day); Edit… (title and description, the same sheet
+   without chips), Mark Done, Mark Canceled, Delete, Restore.
+5. **`can` decides what's offered**, on rows and pages: `edit` (Edit…), `set` (the chips' menus,
+   the open statuses), `close` (Mark Done, Mark Canceled, the closed statuses in the menu),
+   `delete`, `restore`. A chip that says nothing and can't be set isn't drawn; a row with nothing
+   to do has no •••, and a mark there that says why. Why (`can.why`) is the box's sentence, drawn
+   as it is: on that mark and on a chip that doesn't open (rested on), and in the page's notice.
+   What the box still refuses is drawn in its words.
+6. **Labels**: New Label (a name, one of the ten colours or the box's choice), Edit Label (rename,
+   recolour), Remove (asked first, saying it comes off every item), each
+   `POST kuvo/work-queue/labels`. No labels at all is said in the sidebar and in the Labels menu.
+7. `kuvo_box::work_queue`: `Status`, `Priority`, `Label`, `Assignee`, `Can`, `Counts`, the item's
+   new fields, `work_queue_view`, `work_queue_search`, `add_work_item`, `change_work_item`,
+   `add_label`, `change_label`, `remove_label`. Gone: `WRITES`, `Category`, moves, categories.
+   `work_counts` reads the box's `counts.open`.
+8. The stand-in box (`kuvo/src/stand_in/queue.rs`) answers all of it in the box's shapes, with
+   state: the fixed statuses, labels made/changed/removed, POST and PATCH, `can` (an item on a
+   computer that's away: all false; issues: no edit, no close; one on its way to another computer:
+   delete only; a deleted one: restore only; each with the box's `why`), `new`, a bot's `look` on
+   an item's assignee, `q` with narrowed counts.
+9. Every read-only path for a box that takes no writing is gone (the update gate holds such a
+   box), and so is every `BOX-NEEDED` in the Work Queue's code.
+10. `cargo build`, `cargo test --workspace` (309) and `cargo clippy --workspace --all-targets`
+    clean, every run with `KUVO_*` unset and the stand-in box only.
+
+## After the review
+
+- **Late is the box's** (`overdue` on an item): a due day is red only where the box says so; the
+  app's own rule is gone.
+- **The Source filter is by kind**, as the box counts them: "GitHub issues" (`github`) and "GitHub
+  pull requests" (`github-pr`) are two.
+- **A change's answer keeps the sessions the app knew** for that item (the box answers a change
+  with each "New Session", none at work) until the view is read again.
+- **A pick while a change is on its way waits behind it** (the latest wanted, field by field) and
+  is sent when it answers; the chips and the menu show what's wanted meanwhile, so two labels
+  picked quickly are both put on. A refusal drops what waited.
+- **A search's result is drawn only for the words it answered**; other words typed show "Searching
+  for …" until the box answers.
+- **A chip that can't be changed is drawn as a fact** (no edge, no fill, quiet words), with the
+  box's why when rested on.
+- **A coding agent wears its own mark** (the rail's, by its id), an initial only where Kuvo has
+  none.
+- **New Item's title is set as a title** (`TextField::title`: the page's title size, medium), over
+  the description.
+- **Edit Item sends only what changed**, and nothing where nothing did.
+- After a chip's menu closes the keyboard is back in the field it was in (title or description).
+- A due day's line shows a day a fortnight from today; the tabs' end fades where they're cut, and
+  so does a long menu's; a dark sheet's chips and divider have the stronger edge; "As studio-mini
+  last reported it."
+- The stand-in answers as the box does: `overdue`, sources by kind (it has a pull request), a
+  change's answer without session facts, an item of your own assigned to a bot handed to that
+  bot's queue (`handedBy`), and `can` for a computer on an older Kuvo Code and for a shared
+  machine, each with the box's sentence. A notice's words are asserted as the page draws them.
+
+## After the second review
+
+- **Days are the box's.** The view says its `today`; the due menu's Today, Tomorrow and In a week,
+  a row's and a chip's due words and the example day are counted from it. The app reads no clock
+  for a day (`utc_offset` is gone); a box that says no `today` gets a day typed and None, and due
+  days as written.
+- **Filters are the box's.** What narrows the list goes on the view's route: `q`, `computers`
+  (a key; empty for the box asked), `sources` (a kind), `owners`, and `labels` (the label whose
+  list shows). The app matches nothing itself, and the box's counts show under any of them (the
+  groups, the tabs, All's "N open"); the sidebar keeps the whole queue's.
+- **One narrowed view is asked for at a time**: what narrows the list when an answer comes is asked
+  next, so words typed quickly are a request for the first letter and one for the last, with no
+  timer; an answer for other words or filters is dropped, and "Loading…" or "Searching for …"
+  shows meanwhile.
+- **`can.assign`** decides the Assignee chip: a menu where it's true, a fact otherwise (an item
+  another computer keeps is assigned there).
+- **While a change to an item is on its way** its ••• (row and page), Mark Done and Restore wait;
+  a delete asked for anyway isn't sent.
+- **All says how many are open**: "19 open" on the sidebar's row and on the All tab alike (the
+  box's `counts.open`, of what's listed).
+- **A status the app has no mark for** is a group, a tab and a sidebar row under the box's name; an
+  item in a status the view doesn't list at all gets a group of its own after the rest, under the
+  id it came by.
+- **Your own list** is named as the box names it ("Your own" among owners; "In your own list" on
+  an item's page).
 
 ## BOX-NEEDED
 
-Each is marked `// BOX-NEEDED:` in the code. The first is what scope 3 asked for and the box
-doesn't do; the rest are #674's direction (category chips, dynamic categories, no defaults).
+None. The box now says what the last note asked for, and the app draws it: what a new item starts
+as (`new: {status, priority}` on the view: New Item's preselected chips, shown and sent), why
+something can't be done (`can.why`: the tooltip of a chip that doesn't open, the mark where a row's
+••• would be, and the page's notice, in the box's words; nothing is worked out from
+`computers[].away` any more), and a bot's `look` on an item's `assignee` (rows and the page draw
+its face from it; the view's `assignees` is only the fallback).
 
-| What | Proposed (route) | Where it's marked; what's drawn meanwhile |
-|---|---|---|
-| A client adds an item, and changes an item's title and description. Today the protocol says clients "never change what they say": only agents' tools do (`queue_add`, `queue_update`). | `POST kuvo/work-queue/items {title, body, category?}` → `{item}`; `PATCH kuvo/work-queue/items/<item> {title?, body?}` → `{item}`; feature `work-queue.edit`; 409/503 `{message, computer}` as a move has. The box decides whose queue a user's item goes in (the app sends no owner), what a title may be, and refuses an issue's (GitHub's). | `kuvo_box/src/work_queue.rs` (`WRITES`). The forms are built; shown only where the feature is named. |
-| Done as a state, not a category (and "In progress", Parked: decisions below). | `state` on each item (`open`, `done`, more later) and `POST …/items/<item>/state`; or keep the move. | `kuvo/src/queue/mod.rs` (`DONE`). Done is the protocol's `done` category: folded, checked, and Mark Done is a move there. |
-| No built-in categories: every one renamed and removed like any other, none made by default. | `builtIn` gone (or false for all) in `kuvo/work-queue/categories`; `{rename}` and `{remove}` taking any. | `kuvo/src/queue/page.rs` (`list_head`). Rename and Remove are offered for those the box says aren't `builtIn`. |
-| A category's colour. | `color` on each of `categories` (one of the looks' names). | `kuvo/src/areas.rs` (`category_color`): the built-in four by id (KuvoClient's rule, there before), one colour for every custom one. |
-| What may be done to each item, so nothing is offered that the box will refuse. | `can: {finish, move, edit, delete}` on each item of `kuvo/work-queue` and `…/items/<id>`. | `kuvo/src/queue/page.rs` (`move_targets`). Two things are drawn from the box's facts: `closesOn` hides Mark Done and Done as a target (as the protocol says); a deleted item is offered only Restore. Everything else is offered and the box's refusal drawn: Edit… on a GitHub issue, anything on an item whose computer is away or that's on its way to another. |
-| A search of what items say and their notes. | `GET kuvo/work-queue?owner=all&q=<words>` → the same view, narrowed (with its counts). | `kuvo/src/queue/mod.rs` (`takes`). The search finds titles and numbers only (the list carries no descriptions). |
-
-Not marked in code, for the box session to weigh with these:
-- **More than one chip on an item** (decision below): `categories: [ids]` beside `category`. The row
-  and the page draw one chip from `category` (or `doneAs`).
-- **Counts for a narrowed view**: with the search or a filter on, the list shows no counts (the
-  box counted the whole view; the app counts nothing).
-
-## Review
-
-One reviewer pass; the MUST and every SHOULD fixed, each with a scenario (written after the fix,
-not run against the code before it):
-- **MUST:** rules about what may be done to an item sat in the app unmarked (no move for one on
-  its way elsewhere, none out of Done for a GitHub issue, no new item into Done). The two the
-  protocol doesn't state are gone (the box refuses, in its words); what's left is in one place
-  (`move_targets`, `can_finish`), marked `BOX-NEEDED` and listed above.
-- A refusal that came after you'd gone to another item showed over that item's page: it shows
-  over the list or its own item's page only
-  (`live::a_refusal_that_comes_after_youve_gone_shows_over_no_other_items_page`).
-- A change the box took, whose re-read then failed, drew the item back where it was: the sidebar's
-  copy takes what the box answered first (`a_change_whose_reread_fails_keeps_what_the_box_answered`).
-- Nothing ran the page the app's way: three `live::` scenarios do (an item read after you've gone
-  on, the refusal above, a sheet's answer).
-- Two assertions read the stand-in's counts, not what's drawn: the count drawn is asserted now, and
-  with a box whose count differs from its list (`every_count_drawn_is_the_boxs_never_the_apps`).
-- A sheet's save could be dropped by a later sheet's, and its answer taken by a sheet reopened:
-  each opening has its own number, and its answer is its own (`live::a_sheets_answer_is_its_own_openings`).
-- NITs fixed: a move to where an item already is asks nothing; Remove Category waits for its
-  answer; a filter is the same filter whatever its computer is called now; the bar shows wherever
-  the box gives a share; the old glance-only reader (`BoxClient::work_queue`) is gone; a test's
-  name; the sentence for a box that takes no writing is also on the + itself.
-- NITs left: leaving a page drops a sheet's typed text, unasked (Bots' too); an item whose
-  category the box doesn't list isn't drawn under All (the protocol says the box prevents it); the
-  GitHub filter takes `github-pr` too (the box counts sources by `github`); on an item's page no
-  sidebar row is picked; in a narrow window the tabs are cut at the search with nothing saying
-  they scroll.
+Still awkward to draw from, for the box session to weigh (none blocks anything):
+- **Priority and assignee aren't filters yet** (`priorities=`, `assignees=` on the view would be
+  the same work again; the app offers computer, source and owner, and a label's list).
+- **The colours a label may be** are listed in the app (`COLORS`, the protocol's ten): `colors` on
+  the view would say them.
+- **Which closed status is "done"**: Mark Done and Mark Canceled send the protocol's ids (`done`,
+  `canceled`), shown only where the view lists them. A `kind` on a status would say it.
+- **A status's or a priority's look** is drawn by its id (a newer box's status gets a plain ring).
 
 ## Left
 
-- **Not built:** an item's activity feed (`events`, `handed`; the feed's order is KuvoClient's
-  rule, not ported); opening or saving a file (`…/files/<name>`: rows show name and size only);
-  reordering within a category and Move to Top (`before`, `after`, `top`); drag and drop; Import;
-  handing an item on; the per-conversation queue (a session's own view, "Working on"); `#243`
-  chips in conversations (`refs`); the note when another computer is away (`computers[].away`);
-  `wanted` (an item waiting for its number shows none).
+- **Not built:** filters by priority or assignee, or by several labels at once (a label is a scope in
+  the sidebar; see the box note above); reordering within a status and Move to Top (`before`, `after`,
+  `top`); drag and drop; an item's activity feed (`events`, `handed`); opening or saving a file;
+  Import; handing an item on; the per-conversation queue; `#243` chips in conversations; the note
+  when another computer is away in the list (`computers[].away`); `wanted`; a calendar for the due
+  day; a tooltip with a shortcut on each chip (Capy's "P"); sorting.
 - **Not live:** the view is read as the area shows and after each change, not followed
-  (`kuvo/work-queue/events`): an item at work elsewhere doesn't update on a page left open.
-- **The rail's count** for the queue is the box's `kuvo/waiting` as before.
-- **Keyboard:** no walk through the rows, no ⌘F for the search, no shortcut for New Item; Tab
-  doesn't move between a sheet's fields (the text field has no tab stops yet).
-- **Left in the client, view words:** the tabs' and rows' names, "In progress", "Done", "At work",
-  "Added by … · Changed by …", "On <computer>" and its lines, "Nothing in … yet.", the foot's
-  sentence on a box that takes no writing, "From GitHub" (a source's kind named).
-- The search and the filters are view state in the app: they pick which of the box's items show.
+  (`kuvo/work-queue/events`).
+- **The search asks one at a time**, never one a letter; it doesn't wait for a pause in typing (tests
+  take no clocks), so the first letter typed is always asked for.
+- **Keyboard:** no walk through the rows, no ⌘F, no shortcut for New Item; Tab doesn't move between
+  a sheet's fields. In a menu, a number picks only while nothing's typed in its line (a label's
+  name may have numbers); a due day's numbers pick until its line is clicked into.
+- **Left in the client, view words:** "At work", "Mark Done", "Mark Canceled", "Open"/"Closed" over
+  the status menu, "No one", "Bot"/"Coding agent", Today/Tomorrow/In a week and "Nov 16", the
+  empty lines, "From GitHub", "In your own queue".
 - No VoiceOver labels (GPUI has none here yet); larger text not tried.
-- The phone: no change (the GPUI app isn't shipped). Docs and CHANGELOG: none needed (nothing
-  users run changes).
+- The phone and the Mac app: not this piece. Docs and CHANGELOG: none needed for the GPUI app
+  (not shipped); the box's change has its own.
+
+## Edge cases left
+
+- A row's trailing things (labels, face, due day, computer, when) aren't in slots of a fixed
+  width, so they don't line up in columns from row to row.
+- A label an item wears that the view doesn't list isn't drawn (a rename in flight).
+- A menu taller than the room under its chip is moved up over the chip, not flipped above it.
+- Leaving a page drops a sheet's typed text, unasked (Bots' too).
+- A due day typed for a new item is only checked by the box at Create.
+- "Create more" keeps the chips as picked for the next item (only the text clears).
 
 ## Decisions for the user
 
-Built without drafts (the lead's brief: build, with shots); each is cheap to change. Shots are in
-`gpui/shots/`.
+Built without drafts (the design was settled from Capy's shots); each is cheap to change. Shots
+are in `gpui/shots/`.
 
-**#674: the open design points**
-- **Can an item carry more than one chip?** Options: (a) one category, as now; (b) several, as
-  labels (GitHub, Linear). Recommended: (b), with states apart (next point): then a chip only ever
-  says what kind of work it is, and "where it stands" is never a chip. The row has room for two or
-  three before they fold to "+2". Needs the box (`categories: [ids]`).
-- **What Done, "In progress" and Parked become.** Recommended: states, not chips. Open → Done is a
-  state you set (Mark Done); In progress stays what the box works out (a session at work), never
-  set by hand; Parked becomes a state too ("Parked", folded like Done, as the reference folds
-  Canceled). Then tabs are states (Open, In Progress, Parked, Done) and chips are categories, and
-  the page already reads that way. The other way (all chips) loses "folded Done" unless one chip
-  is special again.
-- **How items in an old Next or Later move over.** Recommended: Next and Later stay as two
-  ordinary categories with their items, renamed or removed like any other once empty; no item
-  moves by itself. A box with no categories at all then shows one flat list (the page handles
-  that: no headers). The other way (drop them, items left with no chip) loses the order people
-  already keep.
-
-**This piece**
-- **Adding and editing from the app** (`screens-queue-new`, `-edit`) changes the protocol's rule
-  that only agents write items. Recommended: yes, for title and description, with the box
-  refusing an issue's. Until the box has it, the app shows neither (`screens-queue-read-only`).
-- **The tabs repeat the sidebar's rows** (All, In Progress, each category): one scope, two places,
-  so a narrow window (sidebar folded) keeps them (`screens-queue-narrow`). Recommended: keep until
-  the states decision, then tabs become states and the sidebar keeps categories.
-- **An item has a page**, opened from its row, with the way back; the Mac splits the panel.
+- **Tabs are All and the six open statuses**; Done and Canceled are in the sidebar and folded in
+  the list (`screens-queue`). Other way: Capy's "For you / Assigned / All". Recommended: keep
+  (statuses are what the box counts; "for you" is Needs you).
+- **A status with nothing has no header** (the reference keeps Done and Canceled as empty folded
+  cards). Recommended: keep; its tab and sidebar row still show it at 0.
+- **Status and priority marks are drawn, not icons** (rings, bars; no new icon files), in the
+  theme's red, green and amber. A look question: recommended to keep until an icon pass.
+- **New Item preselects what the box says a new item starts as** (`new`: Todo and Normal), as Capy
+  does; from a status's list it starts there, from a label's with that label. Recommended: keep.
+- **Return in the title goes to the description; ⌘↩ creates** (Linear's and Capy's way).
   Recommended: keep.
-- **Every group folds**; folded, it's a card (`screens-queue-done`). Done and Deleted start
-  folded; searching or filtering unfolds everything.
-- **The chip on a row repeats its group's header** while the list is grouped by category. Kept
-  because #674 asks for a chip on each item, and it's what remains once grouping goes.
-- **Delete isn't asked first** (it's kept under Deleted, with Restore). Recommended: keep.
-- **Filters:** computer, source, owner; one of a kind widens, another kind narrows. Category isn't
-  a filter chip (the tabs do it).
-- **New Item is a + with a tooltip**, to leave the tabs room. Recommended: keep.
-- **The foot's sentence on a box that takes no writing**, and all wording here: the user's to
-  settle.
-- **Category colours** are the four built-in ones' and one for all custom ones: a look question
-  once categories are all the user's own.
+- **A label's menu is a ••• that shows under the pointer on its row** (and a right-click, and •••
+  on its own list). Recommended: keep.
+- **Removing a label is asked first; deleting an item isn't** (it's kept under Deleted, with
+  Restore). Recommended: keep.
+- **Mark Canceled is in •••**, Mark Done a button. Recommended: keep.
+- **A row shows two labels, then "+N"** (one in a narrow window). Recommended: keep.
+- **Overdue is red** on an open item's due day. Recommended: keep.
+- **Wording** throughout ("Needs you" and the rest are the box's; the app's are listed above): the
+  user's to settle.

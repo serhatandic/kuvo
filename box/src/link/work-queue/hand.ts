@@ -19,8 +19,9 @@ import { frozen } from "../moves/records";
 import { peersOf, removedBoxes } from "../peers/known";
 import { awaySince } from "../peers/reach";
 import { readLink } from "../state";
-import { categories, categoryNamed, keepCategory } from "./categories";
-import { intoNext, linkSession } from "./ops";
+import { keepLabel, labels } from "./labels";
+import { isClosed, statusNamed } from "./statuses";
+import { intoTodo, linkSession } from "./ops";
 import {
   allItems, changeQueues, FILE_NAME, filesOf, itemOf, MOST_FILE, MOST_HANDED_FILES, MOST_ITEMS, noteHanded, OWNER, placeIn, Refusal, WORK_QUEUE, whoOf,
   type Book, type Item, type Who,
@@ -62,8 +63,8 @@ export function handElsewhere(item: Item, to: Elsewhere, who: Who, now: number):
 // When each hand-off last went, and where, in this process: again each minute until it's had.
 const sent = new Map<string, { at: number; key: string }>();
 
-// What goes for `item`: it whole (without where it's going), its files' bytes, and the custom
-// category it's in.
+// What goes for `item`: it whole (without where it's going), its files' bytes, and the labels it
+// has.
 function handPayload(item: Item): Record<string, unknown> {
   const { handing, ...rest } = item;
   const files = item.files.flatMap(file => {
@@ -73,8 +74,8 @@ function handPayload(item: Item): Record<string, unknown> {
       return [];
     }
   });
-  const category = categories().find(each => each.id === item.category && !each.builtIn);
-  return { hand: { id: handing!.id, to: handing!.to, from: item.owner, by: handing!.by, at: handing!.at, item: rest, files, ...(category ? { categories: [{ id: category.id, name: category.name }] } : {}) } };
+  const has = labels().filter(each => item.labels.includes(each.id));
+  return { hand: { id: handing!.id, to: handing!.to, from: item.owner, by: handing!.by, at: handing!.at, item: rest, files, ...(has.length ? { labels: has } : {}) } };
 }
 
 // The items on their way to another computer, as last read: read again when the queues change, and
@@ -276,7 +277,10 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     return bytes.length <= MOST_FILE ? [{ name: each.name, bytes }] : [];
   });
   item.files = item.files.filter(file => files.some(each => each.name === file.name));
-  for (const each of Array.isArray(given.categories) ? given.categories : []) if (isObject(each) && typeof each.id === "string" && typeof each.name === "string") keepCategory(each.id, each.name);
+  // (Its labels this box doesn't have yet come with it; one it can't keep is left off.)
+  for (const each of Array.isArray(given.labels) ? given.labels : []) if (isObject(each) && item.labels.includes(String(each.id))) keepLabel(each);
+  const labelsHere = new Set(labels().map(each => each.id));
+  item.labels = item.labels.filter(each => labelsHere.has(each));
   const kept = whoOf(given.by) ?? { name: "someone else" };
   const by: Who = typeof (kept as { name?: unknown }).name === "string" ? { ...kept, name: plainName((kept as { name: string }).name).slice(0, 100) } as Who : kept;
   let refused: string | null = null;
@@ -305,17 +309,17 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
       twinHere = twin;
       return;
     }
-    if (book.queue(owner).items.filter(each => !each.removed && each.category !== "done").length >= MOST_ITEMS) {
+    if (book.queue(owner).items.filter(each => !each.removed && !isClosed(each.status)).length >= MOST_ITEMS) {
       refused = `That queue has ${MOST_ITEMS} open items already.`;
       return;
     }
-    if (!categoryNamed(item.category)) intoNext(item, item.category, now);
+    if (!statusNamed(item.status)) intoTodo(item, item.status, now);
     item.owner = owner;
-    item.order = placeIn(book.items(), item.category);
+    item.order = placeIn(book.items(), item.status);
     delete item.removed;
     book.queue(owner).items.push(item);
     noteHanded(item, from, owner, now);
-    if (owner.startsWith("ses_") && item.category !== "done") linkSession(book, item, owner, now);
+    if (owner.startsWith("ses_") && !isClosed(item.status)) linkSession(book, item, owner, now);
     item.updated = { at: now, by };
     fs.rmSync(filesOf(item.id), { recursive: true, force: true });
     for (const file of files) {

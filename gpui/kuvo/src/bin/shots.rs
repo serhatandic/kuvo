@@ -11,7 +11,7 @@ use kuvo::panel::Tab;
 use kuvo_box::git::Group;
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo::bots::{Act as BotAct, BotsView};
-use kuvo::queue::{Act as QueueAct, Filter, QueueView};
+use kuvo::queue::{Act as QueueAct, Field, Filter, QueueView, Target};
 use kuvo::settings::{SettingsView, sign_in::SignIn};
 use kuvo::{Workspace, bind_keys};
 use kuvo_box::accounts::Side;
@@ -95,24 +95,35 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "bot-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_narrow) },
     Screen { slug: "bot-first-run", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     // The Work Queue (`kuvo/src/queue`): the queue under each scope, filtered and searched, an
-    // item's page, and the sheets.
+    // item's page and its chips' menus, New Item with each of its menus, and the labels' sheets.
     Screen { slug: "queue", width: 1280., height: 1100., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_all) },
-    Screen { slug: "queue-progress", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_progress) },
-    Screen { slug: "queue-category", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_category) },
-    Screen { slug: "queue-done", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_done) },
+    Screen { slug: "queue-status", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_status) },
+    Screen { slug: "queue-label", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_label) },
+    Screen { slug: "queue-done", width: 1280., height: 1100., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_done) },
     Screen { slug: "queue-filtered", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_filtered) },
     Screen { slug: "queue-search", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_search) },
     Screen { slug: "queue-item", width: 1280., height: 1500., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
+    Screen { slug: "queue-item-status", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item_status) },
+    Screen { slug: "queue-item-labels", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item_labels) },
     Screen { slug: "queue-item-elsewhere", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item_elsewhere) },
     Screen { slug: "queue-item-done", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item_done) },
     Screen { slug: "queue-new", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new) },
+    Screen { slug: "queue-new-status", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_status) },
+    Screen { slug: "queue-new-priority", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_priority) },
+    Screen { slug: "queue-new-assignee", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_assignee) },
+    Screen { slug: "queue-new-due", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_due) },
+    Screen { slug: "queue-new-labels", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_labels) },
+    Screen { slug: "queue-new-no-labels", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_labels) },
+    Screen { slug: "queue-new-many-labels", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_labels) },
     Screen { slug: "queue-edit", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_edit) },
-    Screen { slug: "queue-new-category", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_category) },
+    Screen { slug: "queue-label-new", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_label_new) },
+    Screen { slug: "queue-label-edit", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_label_edit) },
+    Screen { slug: "queue-label-remove", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_label_remove) },
     Screen { slug: "queue-refused", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_refused) },
-    Screen { slug: "queue-read-only", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_all) },
     Screen { slug: "queue-first-run", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_all) },
     Screen { slug: "queue-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_narrow) },
     Screen { slug: "queue-item-narrow", width: 760., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item_narrow) },
+    Screen { slug: "queue-new-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_narrow) },
     // Settings (`kuvo/src/settings`): each section, the search, a section not in this app yet, and
     // each step of signing in.
     Screen { slug: "settings-general", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(general) },
@@ -215,7 +226,7 @@ fn bot_narrow(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<W
 }
 
 fn queue(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    pick(workspace, Area::Queue, "category:next", window, cx);
+    pick(workspace, Area::Queue, "status:todo", window, cx);
 }
 
 /// The Work Queue's page view.
@@ -225,20 +236,19 @@ fn queue_page(workspace: &Workspace, cx: &Context<Workspace>) -> gpui::Entity<Qu
 fn queue_all(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     workspace.show_area(Area::Queue, window, cx);
 }
-fn queue_progress(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    pick(workspace, Area::Queue, "progress", window, cx);
+fn queue_status(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Queue, "status:todo", window, cx);
 }
-fn queue_category(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    pick(workspace, Area::Queue, "category:cat_design", window, cx);
+fn queue_label(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Queue, "label:lbl_design", window, cx);
 }
-/// Done unfolded, and what's deleted.
+/// What's closed unfolded, and what's deleted.
 fn queue_done(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     queue_all(workspace, window, cx);
     queue_page(workspace, cx).update(cx, |page, cx| {
-        page.act(QueueAct::Fold("next".into()), cx);
-        page.act(QueueAct::Fold("later".into()), cx);
-        page.act(QueueAct::Fold("done".into()), cx);
-        page.act(QueueAct::Fold("deleted".into()), cx);
+        for fold in ["todo", "backlog", "done", "canceled", "deleted"] {
+            page.act(QueueAct::Fold(fold.into()), cx);
+        }
     });
 }
 fn queue_filtered(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -256,6 +266,15 @@ fn queue_search(workspace: &mut Workspace, window: &mut Window, cx: &mut Context
 fn queue_item(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Queue, "item:wqi_231", window, cx);
 }
+/// Changing an item on its page: its status's menu, and its labels'.
+fn queue_item_status(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_item(workspace, window, cx);
+    queue_page(workspace, cx).update(cx, |page, cx| page.act(QueueAct::Pick { target: Target::Item("wqi_231".into()), field: Field::Status }, cx));
+}
+fn queue_item_labels(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_item(workspace, window, cx);
+    queue_page(workspace, cx).update(cx, |page, cx| page.act(QueueAct::Pick { target: Target::Item("wqi_231".into()), field: Field::Labels }, cx));
+}
 /// One on a computer that's away, as it last told it.
 fn queue_item_elsewhere(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Queue, "item:wqi_242", window, cx);
@@ -264,29 +283,66 @@ fn queue_item_elsewhere(workspace: &mut Workspace, window: &mut Window, cx: &mut
 fn queue_item_done(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Queue, "item:wqi_250", window, cx);
 }
-fn queue_new(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+/// New Item, written.
+fn queue_writing(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) -> gpui::Entity<QueueView> {
     queue_all(workspace, window, cx);
     let page = queue_page(workspace, cx);
     page.update(cx, |page, cx| page.act(QueueAct::New, cx));
     let (title, body) = page.read_with(cx, |page, _| (page.item_fields().0.clone(), page.item_fields().1.clone()));
     title.update(cx, |field, cx| field.set_text("A status page for the API", cx));
     body.update(cx, |field, cx| field.set_text("Uptime for the last 90 days, and what's wrong now.\n\n- One line per service\n- Incidents, newest first", cx));
+    page
+}
+fn queue_new(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_writing(workspace, window, cx);
+}
+/// New Item with one of its chips' menus open.
+fn queue_new_with(field: Field, workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let page = queue_writing(workspace, window, cx);
+    page.update(cx, |page, cx| page.act(QueueAct::Pick { target: Target::New, field }, cx));
+}
+fn queue_new_status(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_new_with(Field::Status, workspace, window, cx);
+}
+fn queue_new_priority(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_new_with(Field::Priority, workspace, window, cx);
+}
+fn queue_new_assignee(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_new_with(Field::Assignee, workspace, window, cx);
+}
+fn queue_new_due(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_new_with(Field::Due, workspace, window, cx);
+}
+fn queue_new_labels(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_new_with(Field::Labels, workspace, window, cx);
+}
+fn queue_new_narrow(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_new_with(Field::Priority, workspace, window, cx);
+    workspace.rail_pressed(Area::Queue, window, cx);
 }
 fn queue_edit(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     queue_item(workspace, window, cx);
     queue_page(workspace, cx).update(cx, |page, cx| page.act(QueueAct::Edit, cx));
 }
-fn queue_new_category(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+fn queue_label_new(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     queue_all(workspace, window, cx);
     let page = queue_page(workspace, cx);
-    page.update(cx, |page, cx| page.act(QueueAct::NewCategory, cx));
+    page.update(cx, |page, cx| page.act(QueueAct::NewLabel, cx));
     let name = page.read_with(cx, |page, _| page.name_field().clone());
-    name.update(cx, |field, cx| field.set_text("Bugs", cx));
+    name.update(cx, |field, cx| field.set_text("Performance", cx));
+}
+fn queue_label_edit(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_label(workspace, window, cx);
+    queue_page(workspace, cx).update(cx, |page, cx| page.act(QueueAct::EditLabel("lbl_design".into()), cx));
+}
+fn queue_label_remove(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_label(workspace, window, cx);
+    queue_page(workspace, cx).update(cx, |page, cx| page.act(QueueAct::RemoveLabel("lbl_design".into()), cx));
 }
 /// A change the box turned down: an item on a computer that isn't answering.
 fn queue_refused(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    pick(workspace, Area::Queue, "category:later", window, cx);
-    queue_page(workspace, cx).update(cx, |page, cx| page.act(QueueAct::Move { item: "wqi_242".into(), category: "next".into() }, cx));
+    pick(workspace, Area::Queue, "status:waiting", window, cx);
+    queue_page(workspace, cx).update(cx, |page, cx| page.act(QueueAct::Delete("wqi_242".into()), cx));
 }
 fn queue_narrow(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     queue_all(workspace, window, cx);
@@ -493,9 +549,9 @@ fn main() -> anyhow::Result<()> {
             second["id"] = serde_json::json!("per_push");
             stand_in.set_asks("ses_limits", vec![kuvo::stand_in::redis_permission(), second]);
             // One computer turned down a change held for it, in its words.
-            // A box as every box is today: it takes no item added or rewritten by a client.
-            if screen.slug == "queue-read-only" {
-                stand_in.queue_writable(false);
+            // A queue with many more labels than a menu shows at once.
+            if screen.slug == "queue-new-many-labels" {
+                stand_in.many_labels();
             }
             if screen.slug == "bot-waiting" {
                 stand_in.refuse_bot_edit("bot_scout", "studio-mini", "studio-mini has no personality “Ship’s Cook”.");

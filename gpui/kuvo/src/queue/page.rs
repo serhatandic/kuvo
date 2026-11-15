@@ -1,52 +1,36 @@
 //! Drawing the Work Queue's main view: the list's head (scope tabs, the search, the filters as
-//! chips to take off), its items as rows in raised cards under each category, an item's page, and
-//! the sheets over them (a new item, an item rewritten, a category named).
+//! chips to take off), its items as rows in raised cards under each status, an item's page with its
+//! chips, and the sheets over them (a new item, an item rewritten, a label made, changed, removed).
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window, div, list,
-    prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window, anchored, deferred,
+    div, list, point, prelude::FluentBuilder as _, px,
 };
-use kuvo_box::work_queue::{File, Item, ItemSession, Link};
+use kuvo_box::work_queue::{File, Item, ItemChange, ItemSession, Link};
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize,
     button::{Button, ButtonSize},
     markdown::Markdown,
-    menu::{Menu, MenuEntry, PopoverMenu},
-    small::{Chip, spinner},
+    menu::{Menu, MenuEntry, PopoverMenu, Tooltip},
+    small::{Chip, Switch, spinner},
     theme::{radius, space},
 };
 
-use super::{Act, DELETED, DONE, QueueView, Row, Scope, Sheet, Shown, Tone, size_words, source_name};
-use crate::areas::category_color;
+use super::marks::{label_chip, label_dot, priority_mark, status_mark, who_mark};
+use super::{Act, CANCELED, COLORS, DELETED, DONE, Field, NORMAL, QueueView, Row, Scope, Sheet, Shown, Target, Tone, size_words, source_name};
+use crate::areas::look_tint;
 use crate::bots::dim;
+use crate::time;
 
 /// The widest the page's cards grow.
 const PAGE_WIDTH: f32 = 880.;
 
+/// A window narrower than this shows less on a row (one label, no computer).
+const NARROW: f32 = 900.;
+
 /// A column as wide as the page's cards, in the middle.
 fn column(body: impl IntoElement) -> gpui::Div {
     div().w_full().flex().justify_center().px(space::S8).child(div().w_full().max_w(px(PAGE_WIDTH)).child(body))
-}
-
-/// A category's chip: its dot and its name (or what the box shows in its place).
-fn category_chip(id: &str, name: String, cx: &App) -> AnyElement {
-    let c = &cx.theme().colors;
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(space::S1_5)
-        .h(px(22.))
-        .max_w(px(180.))
-        .px(space::S2)
-        .rounded(radius::PILL)
-        .border_1()
-        .border_color(c.border)
-        .text_ui(TypeSize::Caption)
-        .text_color(c.text_muted)
-        .child(div().size(px(7.)).flex_none().rounded(radius::PILL).bg(category_color(id, cx)))
-        .child(div().truncate().child(name))
-        .into_any_element()
 }
 
 /// A quiet icon to press: a menu's trigger.
@@ -65,24 +49,6 @@ fn icon_trigger(id: &str, icon: IconName, cx: &App) -> gpui::Stateful<gpui::Div>
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .child(Icon::new(icon).color(c.icon))
-}
-
-/// How an item stands, as a small mark: at work, done, or open.
-fn state_mark(item: &Item, busy: bool, cx: &App) -> AnyElement {
-    let c = &cx.theme().colors;
-    let id = item.id.clone();
-    let mark: AnyElement = if busy {
-        spinner(SharedString::from(format!("item-busy-{id}")), IconSize::Nav, c.text_muted).into_any_element()
-    } else if item.in_progress {
-        let selector = format!("item-working-{id}");
-        div().debug_selector(move || selector).child(spinner(SharedString::from(format!("item-spin-{id}")), IconSize::Nav, c.accent)).into_any_element()
-    } else if item.category == DONE {
-        let selector = format!("item-done-{id}");
-        div().debug_selector(move || selector).child(Icon::new(IconName::Check).color(c.success)).into_any_element()
-    } else {
-        div().size(px(11.)).rounded(radius::PILL).border_1().border_color(c.text_faint).into_any_element()
-    };
-    div().flex().flex_none().items_center().justify_center().size(px(20.)).child(mark).into_any_element()
 }
 
 /// What names an item where its number would be: `#243`, or an issue's own name beside a link mark.
@@ -152,7 +118,7 @@ impl QueueView {
                             .hover(|s| s.bg(c.hover))
                             .on_click(cx.listener(move |this, _, _, cx| this.act(act.clone(), cx)))
                             .child(Icon::new(if folded { IconName::ChevronRight } else { IconName::ChevronDown }).color(c.icon))
-                            .child(if key == DELETED { Icon::new(IconName::Trash).color(c.icon).into_any_element() } else { div().size(px(8.)).flex_none().rounded(radius::PILL).bg(category_color(&key, cx)).into_any_element() })
+                            .child(if key == DELETED { Icon::new(IconName::Trash).color(c.icon).into_any_element() } else { status_mark(&key, cx) })
                             .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child(name))
                             .children(count.map(|count| {
                                 let selector = format!("group-{key}-count-{count}");
@@ -161,8 +127,8 @@ impl QueueView {
                     )
                     .into_any_element()
             }
-            Row::Item { item, category, first, last, deleted, busy } => self.item_row(*item, category, first, last, deleted, busy, cx),
-            Row::Empty(words) => div().debug_selector(|| "queue-empty".into()).h(px(160.)).flex().items_center().justify_center().text_center().text_ui(TypeSize::Body).text_color(c.text_muted).child(words).into_any_element(),
+            Row::Item { item, first, last, deleted, busy } => self.item_row(*item, first, last, deleted, busy, cx),
+            Row::Empty(words) => div().debug_selector(|| "queue-empty".into()).h(px(160.)).flex().items_center().justify_center().text_center().text_ui(TypeSize::Body).text_color(c.text_muted).child(div().max_w(px(420.)).child(words)).into_any_element(),
             Row::Note { key, words, busy } => div()
                 .debug_selector(move || key)
                 .pt(space::S3)
@@ -198,7 +164,7 @@ impl QueueView {
                         .child(to),
                 )
                 .into_any_element(),
-            Row::Head { item, category, busy } => self.head(*item, category, busy, cx),
+            Row::Head { item, busy } => self.head(*item, busy, cx),
             Row::Notice { key, tone, title, words, act } => {
                 let icon = match tone {
                     Tone::Waiting => IconName::Clock,
@@ -225,8 +191,8 @@ impl QueueView {
                                     .flex()
                                     .flex_col()
                                     .gap(space::S0_5)
-                                    .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
-                                    .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words)),
+                                    .when(!title.is_empty(), |d| d.child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(title)))
+                                    .when(!words.is_empty(), |d| d.child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words))),
                             )
                             .children(act.map(|(label, act)| Button::new("notice-act", label).size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.act(act.clone(), cx))))),
                     )
@@ -284,17 +250,82 @@ impl QueueView {
         column(body).into_any_element()
     }
 
-    /// One item in the list: how it stands, what names it, its title (and what's being done on it
-    /// now), its category's chip, where it is, when it last changed; it opens its page.
-    #[allow(clippy::too_many_arguments)]
-    fn item_row(&mut self, item: Item, category: String, first: bool, last: bool, deleted: bool, busy: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// One item in the list: its status, what names it, its title (and what's being done on it
+    /// now), its priority, labels, who it's for, when it's due, where it is, when it last changed;
+    /// it opens its page.
+    fn item_row(&mut self, item: Item, first: bool, last: bool, deleted: bool, busy: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let id = item.id.clone();
+        let narrow = self.viewport.width < px(NARROW);
         // What's being done on it now, as the box says: its progress note, else the session at work.
-        let doing = item.progress.as_ref().and_then(|progress| progress.note.clone()).filter(|note| !note.is_empty()).or_else(|| item.sessions.iter().find(|session| session.working).map(|session| session.title.clone())).filter(|_| item.in_progress);
+        let doing = item.progress.as_ref().and_then(|progress| progress.note.clone()).filter(|note| !note.is_empty()).or_else(|| item.sessions.iter().find(|session| session.working).map(|session| session.title.clone())).filter(|_| item.at_work());
         let value = item.progress.as_ref().and_then(|progress| progress.value);
         let ago = (item.updated.at > 0.).then(|| crate::time::ago(item.removed.as_ref().map_or(item.updated.at, |removed| removed.at), self.now()));
-        let (selector, title_selector, chip_selector) = (format!("item-{id}"), format!("item-{id}-title"), format!("item-{id}-chip"));
+        let (selector, title_selector) = (format!("item-{id}"), format!("item-{id}-title"));
+        let mark: AnyElement = if busy {
+            div().flex().flex_none().items_center().justify_center().size(px(16.)).child(spinner(SharedString::from(format!("item-busy-{id}")), IconSize::Nav, c.text_muted)).into_any_element()
+        } else {
+            let selector = format!("item-{id}-status-{}", item.status);
+            div().debug_selector(move || selector).flex_none().child(status_mark(&item.status, cx)).into_any_element()
+        };
+        // Its priority, where one was set (Normal is no mark).
+        let priority = (!item.priority.is_empty() && item.priority != NORMAL).then(|| {
+            let selector = format!("item-{id}-priority-{}", item.priority);
+            div().debug_selector(move || selector).flex_none().child(priority_mark(&item.priority, cx))
+        });
+        // Its labels, as the box's view names them: the first ones, then how many more.
+        let labels: Vec<_> = item.labels.iter().filter_map(|label| self.label(label).cloned()).collect();
+        let fits = if narrow { 1 } else { 2 };
+        let mut chips: Vec<AnyElement> = labels
+            .iter()
+            .take(fits)
+            .map(|label| {
+                let selector = format!("item-{id}-label-{}", label.id);
+                div().debug_selector(move || selector).flex_none().child(label_chip(&label.name, &label.color, cx)).into_any_element()
+            })
+            .collect();
+        if labels.len() > fits {
+            let selector = format!("item-{id}-more-labels");
+            chips.push(
+                div()
+                    .debug_selector(move || selector)
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .h(px(22.))
+                    .px(space::S1_5)
+                    .rounded(radius::PILL)
+                    .border_1()
+                    .border_color(c.border)
+                    .text_ui(TypeSize::Caption)
+                    .text_color(c.text_muted)
+                    .child(format!("+{}", labels.len() - fits))
+                    .into_any_element(),
+            );
+        }
+        // Who it's for: a bot's face where the box's view gives its look.
+        let who = item.assignee.as_ref().map(|assignee| {
+            // (Its look as the item says it; else as the view lists who an item may be for.)
+            let look = assignee.look.clone().or_else(|| self.queue().and_then(|said| said.assignees.iter().find(|each| each.kind == assignee.kind && each.id == assignee.id)).and_then(|each| each.look.clone()));
+            let selector = format!("item-{id}-assignee");
+            div().debug_selector(move || selector).flex_none().child(who_mark(look.as_ref(), &assignee.id, &assignee.name, px(18.), cx))
+        });
+        let due = item.due.as_ref().map(|due| {
+            let selector = format!("item-{id}-due");
+            // Late where the box says so (`overdue`): nothing of it is worked out here.
+            let late = item.overdue;
+            let late_selector = format!("item-{id}-due-late");
+            // (Counted from the box's today.)
+            let (words, id_) = (time::due_words(due, &self.today(0)), id.clone());
+            div()
+                .debug_selector(move || selector)
+                .flex_none()
+                .text_ui(TypeSize::Caption)
+                .text_color(if late { c.danger } else { c.text_muted })
+                .child(words.clone())
+                .child(div().debug_selector(move || format!("item-{id_}-due:{words}")))
+                .when(late, |d| d.child(div().debug_selector(move || late_selector)))
+        });
         let open = Act::Open(id.clone());
         let main = div()
             .id(SharedString::from(selector.clone()))
@@ -310,7 +341,7 @@ impl QueueView {
             .min_h(px(44.))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| this.act(open.clone(), cx)))
-            .child(state_mark(&item, busy, cx))
+            .child(mark)
             .child(
                 div()
                     .flex_1()
@@ -335,21 +366,62 @@ impl QueueView {
                                     .child(item.title.clone()),
                             ),
                     )
-                    .children(doing.map(|doing| div().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(doing))),
+                    .children(doing.map(|doing| {
+                        let selector = format!("item-working-{id}");
+                        div()
+                            .debug_selector(move || selector)
+                            .flex()
+                            .items_center()
+                            .gap(space::S1_5)
+                            .child(spinner(SharedString::from(format!("item-spin-{id}")), IconSize::Nav, c.text_muted))
+                            .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(doing))
+                    })),
             )
             .children(value.map(|value| bar(value, Some(48.), cx)))
-            .children(item.computer.as_ref().map(|computer| Chip::new(SharedString::from(format!("item-{id}-computer")), crate::bots::computer_name(&computer.name).to_owned()).icon(IconName::Computer)))
-            .when(!category.is_empty(), |d| d.child(div().debug_selector(move || chip_selector).flex_none().child(category_chip(&item.category, category, cx))))
+            // (What the box shows in place of its status while GitHub makes it Done.)
+            .children(item.done_as.clone().filter(|_| !narrow).map(|words| div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(words)))
+            .children(priority)
+            .children(chips)
+            .children(who)
+            .children(due)
+            .children(item.computer.as_ref().filter(|_| !narrow).map(|computer| {
+                let selector = format!("item-{id}-computer");
+                div().debug_selector(move || selector).flex_none().child(Chip::new(SharedString::from(format!("item-{id}-computer")), crate::bots::computer_name(&computer.name).to_owned()).icon(IconName::Computer))
+            }))
             .children(ago.map(|ago| div().flex_none().w(px(30.)).text_right().text_ui(TypeSize::Caption).text_color(c.text_faint).child(ago)));
-        let trailing: AnyElement = if deleted {
-            let restore = Act::Restore(id.clone());
-            let selector = format!("item-{id}-restore");
-            div()
-                .debug_selector(move || selector)
-                .child(Button::new(SharedString::from(format!("restore-{id}")), "Restore").size(ButtonSize::Small).loading(busy).on_click(cx.listener(move |this, _, _, cx| this.act(restore.clone(), cx))))
-                .into_any_element()
+        let trailing: Option<AnyElement> = if deleted {
+            // (Brought back where the box says it may be.)
+            item.can.restore.then(|| {
+                let restore = Act::Restore(id.clone());
+                let selector = format!("item-{id}-restore");
+                div()
+                    .debug_selector(move || selector)
+                    .child(Button::new(SharedString::from(format!("restore-{id}")), "Restore").size(ButtonSize::Small).loading(busy).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.act(restore.clone(), cx))))
+                    .into_any_element()
+            })
+        } else if busy {
+            // A change to it is on its way: nothing more is offered (a delete, least of all) until
+            // the box answers.
+            let selector = format!("item-{id}-more-off");
+            Some(div().debug_selector(move || selector).flex().items_center().justify_center().size(px(28.)).opacity(0.4).child(Icon::new(IconName::More).color(c.icon)).into_any_element())
         } else {
-            self.item_menu(&item, cx)
+            // Nothing may be done to it: why, in the box's words, where its ••• would be.
+            self.item_menu(&item, cx).or_else(|| {
+                let why = item.can.why.clone()?;
+                let selector = format!("item-{id}-why");
+                Some(
+                    div()
+                        .id(SharedString::from(selector.clone()))
+                        .debug_selector(move || selector)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(28.))
+                        .tooltip(move |_, cx| Tooltip::new(why.clone()).build(cx))
+                        .child(Icon::new(IconName::Info).color(c.text_faint))
+                        .into_any_element(),
+                )
+            })
         };
         card_row(first, last, cx)
             .when(first && last, |d| d.shadow(cx.theme().card_shadow()))
@@ -357,100 +429,179 @@ impl QueueView {
             .items_center()
             .hover(|s| s.bg(c.hover))
             .child(main)
-            .child(div().flex_none().pr(space::S3).child(trailing))
+            // (Its place is kept where nothing may be done, so the rows' ends line up.)
+            .child(div().flex_none().w(px(40.)).pr(space::S3).flex().justify_end().children(trailing).when(deleted, |d| d.w_auto()))
             .into_any_element()
     }
 
-    // BOX-NEEDED: what may be done to each item, said by the box (`can: {finish, move, edit,
-    // delete}` on an item, `kuvo/work-queue`). Until then two things are drawn from its facts: one
-    // whose Done is someone else's (`closesOn`) is offered no Done, as the protocol says; a deleted
-    // one is offered only Restore. Everything else is offered, and the box's refusal is drawn.
-    /// The categories an item may be moved to, as the box lists them.
-    fn move_targets(&self, item: &Item) -> Vec<MenuItemSpec> {
-        if item.removed.is_some() {
-            return Vec::new();
-        }
-        self.categories()
-            .iter()
-            .filter(|category| !(item.closes_on.is_some() && category.id == DONE))
-            .map(|category| MenuItemSpec::Entry { label: category.name.clone(), icon: None, checked: category.id == item.category, danger: false, act: Act::Move { item: item.id.clone(), category: category.id.clone() } })
-            .collect()
-    }
-
-    /// Whether Mark Done is offered: where the box keeps a Done, it isn't there, and Done isn't
-    /// someone else's.
-    fn can_finish(&self, item: &Item) -> bool {
-        item.removed.is_none() && item.category != DONE && item.closes_on.is_none() && self.categories().iter().any(|category| category.id == DONE)
-    }
-
-    /// What you do to an item, as a menu's entries: mark it done, move it to another of the box's
-    /// categories, delete it.
+    /// What you do to an item from its row, as a menu's entries: only what the box says may be done
+    /// (`can`). Close it (Done, Canceled), set where it stands among the open statuses, delete it.
     fn item_entries(&self, item: &Item) -> Vec<MenuItemSpec> {
         let mut entries = Vec::new();
-        if self.can_finish(item) {
-            entries.push(MenuItemSpec::Entry { label: "Mark Done".into(), icon: Some(IconName::Check), checked: false, danger: false, act: Act::Move { item: item.id.clone(), category: DONE.into() } });
-            entries.push(MenuItemSpec::Separator);
+        let status = |id: &str| Act::Set { item: item.id.clone(), change: Box::new(ItemChange { status: Some(id.to_owned()), ..ItemChange::default() }) };
+        if item.can.close {
+            if item.status != DONE && self.lists_status(DONE) {
+                entries.push(MenuItemSpec::Entry { label: "Mark Done".into(), icon: Some(IconName::Check), checked: false, danger: false, act: status(DONE) });
+            }
+            if item.status != CANCELED && self.lists_status(CANCELED) {
+                entries.push(MenuItemSpec::Entry { label: "Mark Canceled".into(), icon: Some(IconName::Close), checked: false, danger: false, act: status(CANCELED) });
+            }
         }
-        let targets = self.move_targets(item);
-        if !targets.is_empty() {
-            entries.push(MenuItemSpec::Header("Move to".into()));
-            entries.extend(targets);
-            entries.push(MenuItemSpec::Separator);
+        if item.can.set {
+            let open: Vec<MenuItemSpec> = self
+                .queue()
+                .map(|said| said.statuses.iter().filter(|each| !each.closed && each.id != item.status).map(|each| MenuItemSpec::Entry { label: each.name.clone(), icon: None, checked: false, danger: false, act: status(&each.id) }).collect())
+                .unwrap_or_default();
+            if !open.is_empty() {
+                if !entries.is_empty() {
+                    entries.push(MenuItemSpec::Separator);
+                }
+                entries.push(MenuItemSpec::Header("Move to".into()));
+                entries.extend(open);
+            }
         }
-        if item.removed.is_none() {
+        if item.can.delete {
+            if !entries.is_empty() {
+                entries.push(MenuItemSpec::Separator);
+            }
             entries.push(MenuItemSpec::Entry { label: "Delete".into(), icon: Some(IconName::Trash), checked: false, danger: true, act: Act::Delete(item.id.clone()) });
         }
         entries
     }
 
-    fn item_menu(&mut self, item: &Item, cx: &mut Context<Self>) -> AnyElement {
+    /// An item's ••• on its row; none where the box says nothing may be done to it.
+    fn item_menu(&mut self, item: &Item, cx: &mut Context<Self>) -> Option<AnyElement> {
         let this = cx.entity().downgrade();
         let entries = self.item_entries(item);
+        if entries.is_empty() {
+            return None;
+        }
         let id = format!("item-{}-more", item.id);
         let trigger = icon_trigger(&id, IconName::More, cx);
-        menu_of(SharedString::from(format!("{id}-popover")), trigger, entries, this, 220.).into_any_element()
+        Some(menu_of(SharedString::from(format!("{id}-popover")), trigger, entries, this, 220.).into_any_element())
     }
 
-    /// An item's page's head: what names it and how it stands, what you do to it, its title, and
-    /// its category as a menu to move it by.
-    fn head(&mut self, item: Item, category: String, busy: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// One chip: its mark and what it says, opening its menu where the box says it may be changed.
+    #[allow(clippy::too_many_arguments)]
+    fn chip(&mut self, target: &Target, field: Field, mark: AnyElement, words: String, set: bool, enabled: bool, danger: bool, why: Option<&String>, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let selector = format!("chip-{}", field.slug());
+        let open = self.picker.as_ref().is_some_and(|picker| &picker.target == target && picker.field == field);
+        let act = Act::Pick { target: target.clone(), field };
+        let chip = div()
+            .id(SharedString::from(selector.clone()))
+            .debug_selector(move || selector)
+            .flex()
+            .items_center()
+            .gap(space::S1_5)
+            .h(px(28.))
+            .max_w(px(240.))
+            .px(px(10.))
+            .rounded(radius::NAV)
+            .text_ui(TypeSize::Small)
+            // One that opens a menu is a control: a card with an edge (a stronger one on a dark
+            // sheet, where the quiet one is lost). One that can't be changed is a fact: no edge,
+            // no fill, quieter words.
+            .when(enabled, |d| d.border_1().border_color(if open || cx.theme().appearance.is_dark() { c.border_strong } else { c.border }).bg(c.card).text_color(if danger { c.danger } else if set { c.text } else { c.text_muted }))
+            .when(!enabled, |d| {
+                let selector = format!("chip-{}-fact", field.slug());
+                d.px(space::S1).text_color(if danger { c.danger } else { c.text_muted }).child(div().debug_selector(move || selector))
+            })
+            .when(open, |d| d.bg(c.hover))
+            .when(enabled, |d| d.cursor_pointer().hover(|s| s.bg(c.hover)).on_click(cx.listener(move |this, _, _, cx| this.act(act.clone(), cx))))
+            // One that doesn't open says why, in the box's words, when rested on.
+            .when_some(why.filter(|_| !enabled).cloned(), |d, why| d.tooltip(move |_, cx| Tooltip::new(why.clone()).build(cx)))
+            .child(mark)
+            .child(div().truncate().child(words));
+        // Its menu, under it (over it where there's no room below).
+        let menu = open.then(|| {
+            let menu = self.picker_view(cx);
+            div().absolute().top_full().left_0().child(deferred(anchored().anchor(gpui::Anchor::TopLeft).offset(point(px(0.), space::S1)).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2))
+        });
+        div().relative().flex_none().child(chip).children(menu).into_any_element()
+    }
+
+    /// An item's chips (a new one's, or one that's there): its status, priority, who it's for, when
+    /// it's due and its labels. One that says nothing and can't be changed isn't drawn.
+    pub(super) fn chips(&mut self, target: Target, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let Some(facts) = self.facts(&target) else { return div().into_any_element() };
+        let quiet = |icon: IconName| div().flex().flex_none().items_center().justify_center().size(px(16.)).child(Icon::new(icon).color(c.icon)).into_any_element();
+        let mut chips = Vec::new();
+        {
+            let words = facts.status_words.clone().or_else(|| facts.status.as_ref().and_then(|id| self.status_name(id))).unwrap_or_else(|| "Status".into());
+            let mark = facts.status.as_ref().map_or_else(|| status_mark("", cx), |id| status_mark(id, cx));
+            chips.push(self.chip(&target, Field::Status, mark, words, facts.status.is_some(), facts.set || facts.close, false, facts.why.as_ref(), cx));
+        }
+        if facts.priority.is_some() || facts.set {
+            let words = facts.priority.as_ref().and_then(|id| self.priority_name(id)).unwrap_or_else(|| "Priority".into());
+            let mark = priority_mark(facts.priority.as_deref().unwrap_or_default(), cx);
+            chips.push(self.chip(&target, Field::Priority, mark, words, facts.priority.is_some(), facts.set, false, facts.why.as_ref(), cx));
+        }
+        if facts.assignee.is_some() || facts.assign {
+            let (mark, words) = match &facts.assignee {
+                Some((_, id, name)) => (who_mark(facts.look.as_ref(), id, name, px(16.), cx), name.clone()),
+                None => (quiet(IconName::User), "Assignee".to_owned()),
+            };
+            chips.push(self.chip(&target, Field::Assignee, mark, words, facts.assignee.is_some(), facts.assign, false, facts.why.as_ref(), cx));
+        }
+        if facts.due.is_some() || facts.set {
+            let late = facts.late;
+            let words = facts.due.as_ref().map_or_else(|| "Due date".to_owned(), |due| time::due_words(due, &self.today(0)));
+            let selector = format!("chip-due:{words}");
+            let chip = self.chip(&target, Field::Due, quiet(IconName::Clock), words, facts.due.is_some(), facts.set, late, facts.why.as_ref(), cx);
+            chips.push(div().debug_selector(move || selector).flex_none().child(chip).into_any_element());
+        }
+        // Its labels, as the box's view names them: one by name, more by their dots and how many.
+        let labels: Vec<_> = facts.labels.iter().filter_map(|label| self.label(label).cloned()).collect();
+        if !labels.is_empty() || facts.set {
+            let dots = div().flex().flex_none().items_center().gap(px(3.)).children(labels.iter().take(4).map(|label| label_dot(&label.color)));
+            let (mark, words) = match labels.as_slice() {
+                [] => (div().flex().flex_none().items_center().justify_center().size(px(16.)).child(div().size(px(8.)).rounded(radius::PILL).border_1().border_color(c.text_faint)).into_any_element(), "Labels".to_owned()),
+                [one] => (dots.into_any_element(), one.name.clone()),
+                many => (dots.into_any_element(), format!("{} labels", many.len())),
+            };
+            chips.push(self.chip(&target, Field::Labels, mark, words, !labels.is_empty(), facts.set, false, facts.why.as_ref(), cx));
+        }
+        div().debug_selector(|| "item-chips".into()).flex().flex_wrap().items_center().gap(space::S2).children(chips).into_any_element()
+    }
+
+    /// An item's page's head: what names it and whether it's at work, what you do to it (only what
+    /// the box says may be done), its title, and its chips.
+    fn head(&mut self, item: Item, busy: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let this = cx.entity().downgrade();
-        let done = item.category == DONE;
         let state: Option<(AnyElement, &str)> = if busy {
             Some((spinner("head-busy", IconSize::Nav, c.text_muted).into_any_element(), "Saving…"))
-        } else if item.in_progress {
-            Some((spinner("head-spin", IconSize::Nav, c.accent).into_any_element(), "In progress"))
-        } else if done {
-            Some((Icon::new(IconName::Check).color(c.success).into_any_element(), "Done"))
+        } else if item.at_work() {
+            Some((spinner("head-spin", IconSize::Nav, c.text_muted).into_any_element(), "At work"))
         } else {
             None
         };
-        let can_finish = self.can_finish(&item);
-        let finish = Act::Move { item: item.id.clone(), category: DONE.into() };
-        // Its category, as a menu of the box's categories.
-        let moves = self.move_targets(&item);
-        let chip = category_chip(&item.category, if category.is_empty() { "No category".into() } else { category }, cx);
-        let category_control: AnyElement = if moves.is_empty() {
-            div().debug_selector(|| "item-category".into()).child(chip).into_any_element()
-        } else {
-            let trigger = div()
-                .id("item-category")
-                .debug_selector(|| "item-category".into())
-                .flex()
-                .items_center()
-                .gap(space::S1)
-                .cursor_pointer()
-                .child(chip)
-                .child(Icon::new(IconName::ChevronDown).color(c.icon));
-            let mut entries = vec![MenuItemSpec::Header("Move to".into())];
-            entries.extend(moves);
-            menu_of("item-category-popover".into(), trigger, entries, this.clone(), 220.).into_any_element()
-        };
-        let more = (item.removed.is_none()).then(|| {
-            let trigger = icon_trigger("item-more", IconName::More, cx);
-            menu_of("item-more-popover".into(), trigger, vec![MenuItemSpec::Entry { label: "Delete".into(), icon: Some(IconName::Trash), checked: false, danger: true, act: Act::Delete(item.id.clone()) }], this, 180.)
+        let status = |id: &str| Act::Set { item: item.id.clone(), change: Box::new(ItemChange { status: Some(id.to_owned()), ..ItemChange::default() }) };
+        let can_finish = item.can.close && item.status != DONE && self.lists_status(DONE);
+        let finish = status(DONE);
+        let mut more = Vec::new();
+        if item.can.close && item.status != CANCELED && self.lists_status(CANCELED) {
+            more.push(MenuItemSpec::Entry { label: "Mark Canceled".into(), icon: Some(IconName::Close), checked: false, danger: false, act: status(CANCELED) });
+        }
+        if item.can.delete {
+            if !more.is_empty() {
+                more.push(MenuItemSpec::Separator);
+            }
+            more.push(MenuItemSpec::Entry { label: "Delete".into(), icon: Some(IconName::Trash), checked: false, danger: true, act: Act::Delete(item.id.clone()) });
+        }
+        // (While a change to it is on its way, its menu waits: no delete over a change.)
+        let more = (!more.is_empty()).then(|| {
+            if busy {
+                div().debug_selector(|| "item-more-off".into()).flex().flex_none().items_center().justify_center().size(px(28.)).opacity(0.4).child(Icon::new(IconName::More).color(c.icon))
+            } else {
+                menu_of("item-more-popover".into(), icon_trigger("item-more", IconName::More, cx), more, this, 200.)
+            }
         });
+        // (What it says is changed where the box says it may be, once it's read whole.)
+        let can_edit = item.can.edit && self.whole().is_some_and(|whole| !whole.told);
+        let chips = self.chips(Target::Item(item.id.clone()), cx);
         div()
             .debug_selector(|| "item-head".into())
             .pt(space::S3)
@@ -469,10 +620,7 @@ impl QueueView {
                     .when(can_finish, |d| {
                         d.child(div().debug_selector(|| "item-finish".into()).child(Button::new("item-finish", "Mark Done").icon(IconName::Check).size(ButtonSize::Small).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.act(finish.clone(), cx)))))
                     })
-                    // (What an item says is a client's to change only where the box takes it.)
-                    .when(self.writes && item.removed.is_none() && self.whole().is_some_and(|whole| !whole.told), |d| {
-                        d.child(div().debug_selector(|| "item-edit".into()).child(Button::new("item-edit", "Edit…").icon(IconName::Pencil).size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.act(Act::Edit, cx)))))
-                    })
+                    .when(can_edit, |d| d.child(div().debug_selector(|| "item-edit".into()).child(Button::new("item-edit", "Edit…").icon(IconName::Pencil).size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.act(Act::Edit, cx))))))
                     .children(more),
             )
             .child(
@@ -484,7 +632,7 @@ impl QueueView {
                     .when(item.struck, |d| d.line_through())
                     .child(item.title.clone()),
             )
-            .child(div().flex().items_center().gap(space::S2).pt(space::S1).child(category_control))
+            .child(div().pt(space::S1).child(chips))
             .into_any_element()
     }
 
@@ -583,24 +731,76 @@ impl QueueView {
             .when(!on, |d| d.text_color(c.text_muted).hover(|s| s.bg(c.hover)))
             .on_click(cx.listener(move |this, _, _, cx| this.act(Act::Scope(scope.clone()), cx)))
             .child(name)
-            .children(count.map(|count| div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(count.to_string())))
+            .children(count.map(|count| {
+                let selector = format!("tab-{key}-count-{count}");
+                div().debug_selector(move || selector).text_ui(TypeSize::Caption).text_color(c.text_faint).child(count.to_string())
+            }))
             .into_any_element()
     }
 
-    /// The scope tabs (the whole queue, what's in progress, each of the box's categories with the
-    /// box's count), the search, the filters and what's offered beside them.
+    /// The whole queue's tab: "All", and how many of it are open.
+    fn tab_all(&self, open: usize, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let on = self.shown == Shown::List(Scope::All);
+        let selector = format!("tab-all-open-{open}");
+        div()
+            .id("tab-all")
+            .debug_selector(|| "tab-all".into())
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(space::S1_5)
+            .h(px(30.))
+            .px(px(10.))
+            .rounded(radius::NAV)
+            .cursor_pointer()
+            .text_ui(TypeSize::Small)
+            .when(on, |d| d.bg(c.card).shadow(cx.theme().card_shadow()).text_color(c.text).medium().child(div().debug_selector(|| "tab-all-on".into())))
+            .when(!on, |d| d.text_color(c.text_muted).hover(|s| s.bg(c.hover)))
+            .on_click(cx.listener(|this, _, _, cx| this.act(Act::Scope(Scope::All), cx)))
+            .child("All")
+            .child(div().debug_selector(move || selector).text_ui(TypeSize::Caption).text_color(c.text_faint).child(format!("{open} open")))
+            .into_any_element()
+    }
+
+    /// The scope tabs (the whole queue, then each open status with the box's count, and what's
+    /// shown where it's neither), the search, the filters and what's offered beside them.
     fn list_head(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let this = cx.entity().downgrade();
+        // All, with how many of them are open (the box's count, as the sidebar's row says it).
+        let open = self.view().map(|view| view.counts.open);
         let mut tabs = vec![self.tab("all", "All".into(), None, Scope::All, cx)];
+        if let Some(open) = open {
+            tabs[0] = self.tab_all(open, cx);
+        }
         if let Some(said) = self.queue() {
-            let counts = said.counts.clone();
-            let categories = said.categories.clone();
-            tabs.push(self.tab("progress", "In Progress".into(), Some(counts.in_progress), Scope::Progress, cx));
-            for category in categories {
-                tabs.push(self.tab(&category.id, category.name.clone(), counts.categories.get(&category.id).copied(), Scope::Category(category.id.clone()), cx));
+            // The counts are the box's, of the view it listed (as it narrowed it: a search, a
+            // filter, a label).
+            let counts = self.view().map(|view| view.counts.statuses.clone());
+            let statuses = said.statuses.clone();
+            for status in statuses.iter().filter(|status| !status.closed) {
+                tabs.push(self.tab(&status.id, status.name.clone(), counts.as_ref().and_then(|counts| counts.get(&status.id).copied()), Scope::Status(status.id.clone()), cx));
+            }
+            // A closed status or a label shown: its own tab, beside All (where a narrow window still
+            // shows it), so where you are is said here too.
+            match self.shown.clone() {
+                Shown::List(Scope::Status(id)) if self.is_closed(&id) => {
+                    let name = self.status_name(&id).unwrap_or_default();
+                    let tab = self.tab(&id, name, counts.as_ref().and_then(|counts| counts.get(&id).copied()), Scope::Status(id.clone()), cx);
+                    tabs.insert(1, tab);
+                }
+                Shown::List(Scope::Label(id)) => {
+                    if let Some(label) = self.label(&id).cloned() {
+                        let tab = self.tab(&format!("label-{id}"), label.name, None, Scope::Label(id), cx);
+                        tabs.insert(1, tab);
+                    }
+                }
+                _ => {}
             }
         }
+        // (As they were last drawn: how far they scroll, and how far they have.)
+        let tabs_cut = self.tabs_scroll.max_offset().x + self.tabs_scroll.offset().x > px(1.);
         let search = div()
             .debug_selector(|| "queue-search".into())
             .flex()
@@ -633,17 +833,14 @@ impl QueueView {
             }
             menu_of("queue-filter-popover".into(), icon_trigger("queue-filter", IconName::Sliders, cx), entries, this.clone(), 240.)
         });
-        // Categories are the box's to keep: made here, and one you made renamed or removed.
-        let mut more = vec![MenuItemSpec::Entry { label: "New Category…".into(), icon: Some(IconName::Plus), checked: false, danger: false, act: Act::NewCategory }];
-        if let Shown::List(Scope::Category(id)) = &self.shown
-            && let Some(category) = self.categories().iter().find(|category| &category.id == id)
-            // BOX-NEEDED: no built-in categories (every one renamed and removed like any other):
-            // today the box keeps Next, Later, Parked and Done (`builtIn`) and refuses both.
-            && !category.built_in
+        // Labels are the box's to keep: made here, and the one shown changed or removed.
+        let mut more = vec![MenuItemSpec::Entry { label: "New Label…".into(), icon: Some(IconName::Plus), checked: false, danger: false, act: Act::NewLabel }];
+        if let Shown::List(Scope::Label(id)) = &self.shown
+            && let Some(label) = self.label(id)
         {
             more.push(MenuItemSpec::Separator);
-            more.push(MenuItemSpec::Entry { label: format!("Rename {}…", category.name), icon: Some(IconName::Pencil), checked: false, danger: false, act: Act::RenameCategory(id.clone()) });
-            more.push(MenuItemSpec::Entry { label: format!("Remove {}", category.name), icon: Some(IconName::Trash), checked: false, danger: true, act: Act::RemoveCategory(id.clone()) });
+            more.push(MenuItemSpec::Entry { label: format!("Edit {}…", label.name), icon: Some(IconName::Pencil), checked: false, danger: false, act: Act::EditLabel(id.clone()) });
+            more.push(MenuItemSpec::Entry { label: format!("Remove {}…", label.name), icon: Some(IconName::Trash), checked: false, danger: true, act: Act::RemoveLabel(id.clone()) });
         }
         let more = menu_of("queue-more-popover".into(), icon_trigger("queue-more", IconName::More, cx), more, this, 240.);
         let chips = (!self.filters.is_empty()).then(|| {
@@ -686,17 +883,22 @@ impl QueueView {
                         .items_center()
                         .gap(space::S2)
                         // (The tabs scroll sideways where the box has more categories than fit.)
-                        .child(div().id("queue-tabs").flex_1().min_w_0().flex().items_center().gap(space::S1).py(space::S1).overflow_x_scroll().children(tabs))
+                        .child(
+                            div()
+                                .relative()
+                                .flex_1()
+                                .min_w_0()
+                                .child(div().id("queue-tabs").track_scroll(&self.tabs_scroll).w_full().flex().items_center().gap(space::S1).py(space::S1).overflow_x_scroll().children(tabs))
+                                // More tabs than fit: the last fades, so it's seen that they scroll.
+                                .when(tabs_cut, |d| {
+                                    d.child(div().debug_selector(|| "queue-tabs-more".into()).absolute().top_0().bottom_0().right_0().w(px(36.)).bg(gpui::linear_gradient(90., gpui::linear_color_stop(c.sidebar.opacity(0.), 0.), gpui::linear_color_stop(c.sidebar, 1.))))
+                                }),
+                        )
                         .child(search)
                         .children(filter)
                         .child(more)
-                        .when(self.writes, |d| {
+                        .when(self.queue().is_some(), |d| {
                             d.child(div().debug_selector(|| "queue-new".into()).child(Button::icon_only("queue-new", IconName::Plus, "New Item").primary().size(ButtonSize::Small).tooltip("New Item").on_click(cx.listener(|this, _, _, cx| this.act(Act::New, cx)))))
-                        })
-                        // A box that takes no item from a client: the + is there, off, and says why
-                        // where it's looked for.
-                        .when(!self.writes && self.queue().is_some(), |d| {
-                            d.child(div().debug_selector(|| "queue-new-off".into()).child(Button::icon_only("queue-new-off", IconName::Plus, "New Item").size(ButtonSize::Small).disabled(true).tooltip(format!("Agents add items on {}. Adding one from here isn’t in Kuvo Code there yet.", self.this_box))))
                         }),
                 )
                 .children(chips),
@@ -706,59 +908,110 @@ impl QueueView {
 
     // MARK: Sheets
 
-    fn sheet_content(&mut self, sheet: Sheet, cx: &mut Context<Self>) -> AnyElement {
+    /// New Item and Edit Item, as a composer: a title line, a description under it, a new item's
+    /// chips, and what's done with it at the foot (⌘↩).
+    fn item_sheet(&mut self, new: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        let label = |words: &'static str| div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words);
-        let item_fields = |this: &QueueView| div().flex().flex_col().gap(space::S2).child(label("Title")).child(div().debug_selector(|| "sheet-title-field".into()).child(this.title.clone())).child(div().pt(space::S2).child(label("Description"))).child(div().debug_selector(|| "sheet-body-field".into()).child(this.body.clone()));
-        let (title, width, body, save): (String, f32, AnyElement, &'static str) = match &sheet {
-            Sheet::New => {
-                // Where it goes: one of the box's categories, or the box's own choice.
-                let picked = self.form_category.clone();
-                let shown = picked.as_ref().and_then(|id| self.category_name(id)).unwrap_or_else(|| "Chosen for you".into());
-                let entries: Vec<MenuItemSpec> = self.categories().iter().map(|category| MenuItemSpec::Entry { label: category.name.clone(), icon: None, checked: picked.as_ref() == Some(&category.id), danger: false, act: Act::FormCategory(category.id.clone()) }).collect();
-                let trigger = div()
-                    .id("sheet-category")
-                    .debug_selector(|| "sheet-category".into())
+        let saving = self.saving;
+        let chips = new.then(|| self.chips(Target::New, cx));
+        let create_more = self.create_more;
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
                     .flex()
                     .items_center()
-                    .gap(space::S2)
-                    .w(px(220.))
-                    .h(px(32.))
-                    .px(space::S3)
-                    .rounded(radius::NAV)
-                    .border_1()
-                    .border_color(c.border_strong)
-                    .bg(c.card)
-                    .cursor_pointer()
-                    .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(shown))
-                    .child(Icon::new(IconName::ChevronDown).color(c.icon));
-                let category = menu_of("sheet-category-popover".into(), trigger, entries, cx.entity().downgrade(), 220.);
-                ("New Item".into(), 560., item_fields(self).child(div().pt(space::S2).child(label("Category"))).child(category).into_any_element(), "Add Item")
-            }
-            Sheet::Edit(_) => ("Edit Item".into(), 560., item_fields(self).into_any_element(), "Save"),
-            Sheet::NewCategory => ("New Category".into(), 400., div().debug_selector(|| "sheet-name-field".into()).child(self.name.clone()).into_any_element(), "Add Category"),
-            Sheet::RenameCategory(id) => (format!("Rename {}", self.category_name(id).unwrap_or_default()), 400., div().debug_selector(|| "sheet-name-field".into()).child(self.name.clone()).into_any_element(), "Save"),
-        };
+                    .pl(space::S5)
+                    .pr(space::S3)
+                    .pt(space::S3)
+                    .child(div().debug_selector(|| "sheet-title".into()).flex_1().text_ui(TypeSize::Small).text_color(c.text_muted).child(if new { "New Item" } else { "Edit Item" }))
+                    .child(Button::icon_only("sheet-close", IconName::Close, "Close").ghost().size(ButtonSize::Small).disabled(saving).on_click(cx.listener(|this, _, _, cx| this.close_sheet(cx)))),
+            )
+            .child(div().debug_selector(|| "sheet-title-field".into()).px(space::S5).pt(space::S1).child(self.title.clone()))
+            .child(div().debug_selector(|| "sheet-body-field".into()).px(space::S5).pt(space::S1).pb(space::S3).child(self.body.clone()))
+            .children(chips.map(|chips| div().px(space::S5).pb(space::S4).child(chips)))
+            // Why the box turned it down, in its words.
+            .children(self.sheet_error.clone().map(|error| div().debug_selector(|| "sheet-error".into()).px(space::S5).pb(space::S3).text_ui(TypeSize::Small).text_color(c.danger).child(error)))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space::S4)
+                    .px(space::S5)
+                    .py(space::S3)
+                    .border_t_1()
+                    // (On a dark sheet the quiet edge is lost: the stronger one.)
+                    .border_color(if cx.theme().appearance.is_dark() { c.border_strong } else { c.border })
+                    // What it last made, while it stays open for the next.
+                    .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).children(self.created.clone().filter(|_| new).map(|made| div().debug_selector(|| "sheet-created".into()).child(made))))
+                    .when(new, |d| {
+                        d.child(Switch::new("create-more", create_more).label("Create more").on_change({
+                            let this = cx.entity().downgrade();
+                            move |on, _, cx| {
+                                this.update(cx, |this, cx| this.act(Act::CreateMore(on), cx)).ok();
+                            }
+                        }))
+                    })
+                    .child(div().debug_selector(|| "sheet-save".into()).child(Button::new("sheet-save", if new { "Create" } else { "Save" }).primary().shortcut("⌘↩").loading(saving).on_click(cx.listener(|this, _, _, cx| this.save_sheet(cx))))),
+            )
+            .into_any_element()
+    }
+
+    /// A label's sheet: its name and its colour (one of the ten; a new one's is the box's choice
+    /// until one's picked), or, to remove it, what that does, asked first.
+    fn label_sheet(&mut self, sheet: &Sheet, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
         let saving = self.saving;
+        let name_of = |id: &String| self.label(id).map(|label| label.name.clone()).unwrap_or_default();
+        let (title, save, danger) = match sheet {
+            Sheet::NewLabel => ("New Label".to_owned(), "Add Label", false),
+            Sheet::EditLabel(_) => ("Edit Label".to_owned(), "Save", false),
+            Sheet::RemoveLabel(id) => (format!("Remove {}?", name_of(id)), "Remove", true),
+            _ => (String::new(), "Save", false),
+        };
+        let body: AnyElement = if danger {
+            div().debug_selector(|| "sheet-removes".into()).text_ui(TypeSize::Small).text_color(c.text_muted).child("It comes off every item that has it. The items themselves stay as they are.").into_any_element()
+        } else {
+            let picked = self.label_color.clone();
+            let swatches = COLORS.iter().map(|color| {
+                let on = picked.as_deref() == Some(*color);
+                let selector = format!("color-{color}");
+                let act = Act::LabelColor(Some((*color).to_owned()));
+                div()
+                    .id(SharedString::from(selector.clone()))
+                    .debug_selector(move || selector)
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(px(26.))
+                    .rounded(radius::PILL)
+                    .border(px(1.5))
+                    .border_color(if on { c.text } else { gpui::transparent_black() })
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| this.act(act.clone(), cx)))
+                    .child(div().size(px(16.)).rounded(radius::PILL).bg(look_tint(color)))
+                    .when(on, |d| {
+                        let selector = format!("color-{color}-on");
+                        d.child(div().debug_selector(move || selector))
+                    })
+            });
+            div()
+                .flex()
+                .flex_col()
+                .gap(space::S3)
+                .child(div().debug_selector(|| "sheet-name-field".into()).child(self.name.clone()))
+                .child(div().flex().items_center().gap(space::S1).children(swatches))
+                .when(picked.is_none(), |d| d.child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("A colour is chosen for it unless you pick one.")))
+                .into_any_element()
+        };
+        let go = Button::new("sheet-save", save).loading(saving).on_click(cx.listener(|this, _, _, cx| this.save_sheet(cx)));
         div()
-            .debug_selector(|| "queue-sheet".into())
-            .track_focus(&self.sheet_focus)
-            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
-                    this.close_sheet(cx);
-                }
-            }))
-            .w(px(width))
-            .max_w_full()
             .flex()
             .flex_col()
             .gap(space::S3)
             .p(space::S6)
-            .rounded(radius::CARD)
-            .bg(c.elevated)
-            .border_1()
-            .border_color(c.border)
-            .shadow(cx.theme().elevated_shadow())
             .child(div().debug_selector(|| "sheet-title".into()).text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
             .child(body)
             // Why the box turned it down, in its words.
@@ -770,8 +1023,37 @@ impl QueueView {
                     .gap(space::S2)
                     .pt(space::S2)
                     .child(Button::new("sheet-cancel", "Cancel").disabled(saving).on_click(cx.listener(|this, _, _, cx| this.close_sheet(cx))))
-                    .child(div().debug_selector(|| "sheet-save".into()).child(Button::new("sheet-save", save).primary().loading(saving).on_click(cx.listener(|this, _, _, cx| this.save_sheet(cx))))),
+                    .child(div().debug_selector(|| "sheet-save".into()).child(if danger { go.destructive() } else { go.primary() })),
             )
+            .into_any_element()
+    }
+
+    fn sheet_content(&mut self, sheet: Sheet, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let (width, body) = match &sheet {
+            Sheet::New => (640., self.item_sheet(true, cx)),
+            Sheet::Edit(_) => (640., self.item_sheet(false, cx)),
+            Sheet::NewLabel | Sheet::EditLabel(_) | Sheet::RemoveLabel(_) => (400., self.label_sheet(&sheet, cx)),
+        };
+        // Return confirms a label's sheet from anywhere in it (a colour just picked, a removal asked).
+        let enter_saves = matches!(sheet, Sheet::NewLabel | Sheet::EditLabel(_) | Sheet::RemoveLabel(_));
+        div()
+            .debug_selector(|| "queue-sheet".into())
+            .track_focus(&self.sheet_focus)
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| match event.keystroke.key.as_str() {
+                "escape" => this.close_sheet(cx),
+                // ⌘↩ (Ctrl and Return elsewhere) saves from any of its fields.
+                "enter" if event.keystroke.modifiers.secondary(cx) || enter_saves => this.save_sheet(cx),
+                _ => {}
+            }))
+            .w(px(width))
+            .max_w_full()
+            .rounded(radius::CARD)
+            .bg(c.elevated)
+            .border_1()
+            .border_color(c.border)
+            .shadow(cx.theme().elevated_shadow())
+            .child(body)
             .into_any_element()
     }
 }
@@ -823,6 +1105,20 @@ impl Render for QueueView {
         if let Some(focus) = self.wants_focus.take() {
             window.focus(&focus, cx);
         }
+        self.viewport = window.viewport_size();
+        // Which of an item's two fields has the keyboard: where it goes back to after a menu.
+        for field in [&self.title, &self.body] {
+            let focus = gpui::Focusable::focus_handle(field.read(cx), cx);
+            if focus.is_focused(window) {
+                self.text_focus = Some(focus);
+            }
+        }
+        // A chip's menu is open: a press anywhere else closes it, and does nothing more.
+        let viewport = self.viewport;
+        let scrim = self.picker.is_some().then(|| {
+            deferred(anchored().position(point(px(0.), px(0.))).child(div().id("picker-scrim").debug_selector(|| "picker-scrim".into()).w(viewport.width).h(viewport.height).occlude().on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.act(Act::ClosePicker, cx)))))
+                .with_priority(1)
+        });
         let listing = matches!(self.shown, Shown::List(_));
         let head = listing.then(|| self.list_head(cx));
         let page = list(self.list.clone(), cx.processor(|this, ix, _, cx| this.row(ix, cx))).size_full();
@@ -852,8 +1148,10 @@ impl Render for QueueView {
             )
         });
         let sheet = self.sheet.clone().map(|sheet| {
+            // An item is written near the top, so its chips' menus have room under them.
+            let high = matches!(sheet, Sheet::New | Sheet::Edit(_));
             let content = self.sheet_content(sheet, cx);
-            div().id("queue-sheet-layer").absolute().inset_0().flex().items_center().justify_center().p(space::S6).bg(dim(cx)).occlude().child(content)
+            div().id("queue-sheet-layer").absolute().inset_0().flex().justify_center().p(space::S6).when(high, |d| d.items_start().pt(px(88.))).when(!high, |d| d.items_center()).bg(dim(cx)).occlude().child(content)
         });
         div()
             .id("queue-page")
@@ -868,5 +1166,6 @@ impl Render for QueueView {
             .children(head)
             .child(div().flex_1().min_h_0().child(page))
             .children(sheet)
+            .children(scrim)
     }
 }

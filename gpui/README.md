@@ -54,13 +54,15 @@ cargo run -p kuvo                                       # this Mac's own box (Ku
   for another computer saying "Waiting for <computer>"; New Bot (the + beside Bots) from what the
   box offers (`kuvo/bots/templates`); Delete, asked first.
 - **The Work Queue** (⌃3, `notes/screens-queue.md`): the queue across your computers as the box
-  lists it (`kuvo/work-queue?owner=all&counts=1`), its items under the box's categories with the
-  box's counts, each wearing its category as a chip; scope tabs (All, In Progress, each category),
-  a search, filters as chips to take off, Done and Deleted folded; an item's page (description as
-  Markdown, progress, notes, files, links, the sessions working on it); moving an item, Mark Done,
-  Delete and Restore, and making, renaming and removing a category, each through the box's routes.
-  New Item and Edit… show only where the box's `features` name `work-queue.edit`, which no box
-  does yet (`notes/work-queue-handover.md`).
+  lists it (`kuvo/work-queue?owner=all&counts=1`), its items under the box's statuses (Needs you,
+  In review, In progress, Waiting, Todo, Backlog; Done and Canceled folded) with the box's counts,
+  each row with its priority, labels, who it's for and when it's due; scope tabs and a sidebar of
+  statuses and labels, a search and filters the box answers (`q`, `computers`, `sources`, `owners`, `labels`), the filters as chips to take off; an item's page
+  (description as Markdown, progress, notes, files, links, the sessions working on it) whose chips
+  change its status, priority, assignee, due day and labels; New Item, written like a message with
+  a menu under each chip (a number picks a row) and Create more; Mark Done, Mark Canceled, Delete
+  and Restore; and making, renaming, recolouring and removing labels. Each change goes through the
+  box's routes, and only what the box says may be done to an item (`can`) is offered.
 - **Settings** (⌃5, `notes/screens-settings.md`): "Search settings…" over its sections; General
   (the theme), Accounts (every coding agent and provider the box lists, signed in or not, and
   signing in each way the box offers: in the browser, a device code, a code pasted back, a key,
@@ -136,9 +138,9 @@ view, a run streaming in and paging back. The rail and its areas' are `kuvo/test
 folding the sidebar by its button and in a narrow window, "Needs you", back and forward, the
 rings), against the stand-in's sample bots, queue, computers and accounts. Bots' are `kuvo/tests/bots.rs` (a bot's page and its sessions, its conversation, each change
 and what the box answers, an edit held for another computer, New Bot, Delete), against the
-stand-in's made-up bots. The Work Queue's are `kuvo/tests/queue.rs` (the queue under its categories, the tabs, the search and
-the filters, an item's page, moving, finishing, deleting and restoring, adding and rewriting, categories,
-an item on another computer, a box that takes no writing), against the stand-in's made-up queue. Settings' are `kuvo/tests/settings.rs` (each section, the search, each way of signing in, failing,
+stand-in's made-up bots. The Work Queue's are `kuvo/tests/queue.rs` (the queue under its statuses, the tabs, the box's search and
+the filters, an item's page and each of its chips, New Item with each chip's menu and Create more, closing, deleting and
+restoring, what the box says may be done, labels, an item on a computer that's away), against the stand-in's made-up queue. Settings' are `kuvo/tests/settings.rs` (each section, the search, each way of signing in, failing,
 cancelling, installing, signing out, Disconnect), against the stand-in's made-up accounts and
 settings (no key is real). The side panel's are `kuvo/tests/panel.rs`, against the
 stand-in's made-up repositories (no git runs). The follows' threads are left off: what they'd hand the

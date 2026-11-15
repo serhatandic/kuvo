@@ -10,10 +10,12 @@ import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { accountHome, APP_FOLDER, BOTS, homeFolder, K, OWN_HOME_MAC } from "../home";
 import { APP_TEMPORARY_PATTERN } from "../fence/policy";
-import { categoryNamed } from "./categories";
+import { labelNamed, MOST_LABELS_EACH } from "./labels";
+import { isClosed, priorityNamed, PRIORITIES, statusName, statusNamed, STATUSES } from "./statuses";
+import { assigneeFor } from "./assignees";
 import { takeNumber, type Primary } from "./numbers";
 import {
-  FILES, filesOf, matching, MOST_BODY, MOST_EVENTS, MOST_FILE, MOST_FILES, MOST_ITEMS, MOST_LINKS, MOST_NOTE, MOST_NOTES, MOST_TITLE, newItemID, noteHanded, placeBeside, placeIn, Refusal,
+  changeQueues, dayOf, FILES, filesOf, matching, MOST_BODY, MOST_EVENTS, MOST_FILE, MOST_FILES, MOST_ITEMS, MOST_LINKS, MOST_NOTE, MOST_NOTES, MOST_TITLE, newItemID, noteHanded, placeBeside, placeIn, Refusal,
   type Book, type Item, type ItemEvent, type KeptFile, type Source, type Who,
 } from "./store";
 import { nameOf, refOf } from "./view";
@@ -169,12 +171,28 @@ const linksOf = (value: unknown): { url: string; title?: string }[] => {
   });
 };
 
-/** A category an agent or you named for an item, or why not. */
-export function categoryFor(given: unknown): string {
-  if (typeof given === "string" && /^\s*in[ -]?progress\s*$/i.test(given)) refuse("In progress isn't a category you set: an item is in progress while a session linked to it is at work. Link one with working: true (or sessions).");
-  const found = categoryNamed(given);
-  if (!found) return refuse(`There's no category ${String(given ?? "")}: queue_categories lists them.`);
+/** A status an agent or you named for an item, or why not. */
+export function statusFor(given: unknown): string {
+  const found = statusNamed(given);
+  if (!found) return refuse(`There's no status ${String(given ?? "")}: it's one of ${STATUSES.map(each => each.name).join(", ")}.`);
   return found.id;
+}
+
+/** A priority named for an item (none kept for Normal), or why not. */
+function priorityFor(given: unknown): string | undefined {
+  if (given === null) return undefined;
+  const found = priorityNamed(given);
+  if (!found) return refuse(`There's no priority ${String(given ?? "")}: it's one of ${PRIORITIES.map(each => each.name).join(", ")}.`);
+  return found.id === "normal" ? undefined : found.id;
+}
+
+/** The labels named for an item (by name or id; all of them, in place of those it had), or why not. */
+function labelsFor(given: unknown): string[] {
+  const named = given === null ? [] : Array.isArray(given) ? given : [given];
+  const ids = named.map(each => labelNamed(each)?.id ?? refuse(`There's no label ${String(each ?? "")}: queue_labels lists them, and makes one.`));
+  const once = [...new Set(ids)];
+  if (once.length > MOST_LABELS_EACH) refuse(`An item carries ${MOST_LABELS_EACH} labels at most.`);
+  return once;
 }
 
 /** `session` linked to `item`, its oldest other link dropped when it has `LINKS_EACH` already
@@ -189,7 +207,7 @@ export function linkSession(book: Book, item: Item, session: string, now: number
   item.sessions.push({ session, since: now });
 }
 
-// Reorders within one category by the same one, each soon after the last, are one move in the feed.
+// Reorders within one status by the same one, each soon after the last, are one move in the feed.
 const FOLD_REORDERS = 10 * 60_000;
 // A session that stops and starts again this soon never stopped, as the feed says it.
 const FOLD_RESTART = 2 * 60_000;
@@ -198,7 +216,7 @@ const FOLD_RESTART = 2 * 60_000;
 const sameWho = (a: Who, b: Who): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 /** What happened to `item` kept with it, its last `MOST_EVENTS`. A reorder right after the same
- * one's reorder in the same category is folded into it; a start right after the same one's stop
+ * one's reorder in the same status is folded into it; a start right after the same one's stop
  * is no stop at all: each with nothing said between (no note, no hand-off), and never back in time
  * (a clock ahead on another computer). */
 export function noteEvent(item: Item, event: ItemEvent): void {
@@ -240,13 +258,23 @@ export function unlinkSessions(item: Item, sessions: Iterable<string>, now: numb
   }
 }
 
-/** `session` at work on `item`, as its agent said (`working: true`): linked to it, and kept as
- * having started, unless it's at it already (linked, its last word that it started). */
-export function startWork(book: Book, item: Item, session: string, { who, now }: Pick<Acting, "who" | "now">): void {
+/** `session` at work on `item`, as its agent said (`working: true`): linked to it, the item In
+ * progress, and kept as having started, unless it's at it already (linked, its last word that it
+ * started). */
+export function startWork(book: Book, item: Item, session: string, { who, now }: Pick<Acting, "who" | "now">, { keep = false }: { keep?: boolean } = {}): void {
   const linked = item.sessions.some(each => each.session === session);
   linkSession(book, item, session, now);
+  // (Work that starts on one not started yet makes it In progress, unless the same call said where
+  // it stands, `keep`: one In review, or that needs you, stays as its agent last said.)
+  if (!keep && STARTS_FROM.has(item.status)) {
+    const from = item.status;
+    item.status = "in-progress";
+    item.order = placeIn(book.items().filter(each => each.id !== item.id), "in-progress");
+    noteEvent(item, { at: now, by: who, kind: "moved", from, to: "in-progress" });
+  }
   if (!linked || lastWord(item, session)?.kind !== "started") noteEvent(item, { at: now, by: who, kind: "started" });
 }
+const STARTS_FROM = new Set(["todo", "backlog", "waiting"]);
 
 /** `session` no longer at work on `item`, as its agent said (`working: false`): unlinked, and kept
  * as having stopped, when its last word was that it started. */
@@ -254,20 +282,34 @@ export function stopWork(item: Item, session: string, { who, now }: Pick<Acting,
   unlinkSessions(item, [session], now, who);
 }
 
-/** Who moves an item the box itself moves (one whose category isn't kept here goes to Next). */
+/** Who moves an item the box itself moves (one whose status isn't known here goes to Todo). */
 export const THE_BOX: Who = { source: "kuvo", name: "Kuvo Code" };
 
-/** `item`, whose category `from` this box doesn't keep, in Next, said in its feed. */
-export function intoNext(item: Item, from: string, now: number): void {
-  item.category = "next";
-  noteEvent(item, { at: now, by: THE_BOX, kind: "moved", from, to: "next" });
+/** `item`, whose status `from` this box doesn't know (a newer box's), in Todo, said in its feed. */
+export function intoTodo(item: Item, from: string, now: number): void {
+  item.status = "todo";
+  noteEvent(item, { at: now, by: THE_BOX, kind: "moved", from, to: "todo" });
+}
+
+/** A label taken off every item here (it's being removed): those deleted too. */
+export function stripLabel(id: string): void {
+  changeQueues(book => {
+    for (const item of book.items()) if (item.labels.includes(id)) item.labels = item.labels.filter(each => each !== id);
+  });
 }
 
 /** What an add or a change gives: the fields, as the tools name them. */
 export interface Fields {
   title?: unknown;
   body?: unknown;
-  category?: unknown;
+  status?: unknown;
+  priority?: unknown;
+  /** All its labels, in place of those it had. */
+  labels?: unknown;
+  /** Who it's for; null for no one. */
+  assignee?: unknown;
+  /** The day it's due (`YYYY-MM-DD`); null for none. */
+  due?: unknown;
   top?: unknown;
   before?: unknown;
   after?: unknown;
@@ -289,8 +331,8 @@ export function applyFileOps(acting: Acting): void {
   for (const op of acting.fileOps.splice(0)) op();
 }
 
-// (An issue or a pull request closed on GitHub is Done, whatever category it's kept in.)
-const openIn = (book: Book, owner: string) => book.queue(owner).items.filter(item => !item.removed && item.category !== "done" && !(item.source && doneByRead(seenOf(item.source)))).length;
+// (An issue or a pull request closed on GitHub is Done, whatever status it's kept with.)
+const openIn = (book: Book, owner: string) => book.queue(owner).items.filter(item => !item.removed && !isClosed(item.status) && !(item.source && doneByRead(seenOf(item.source)))).length;
 
 /** A new item in `owner`'s queue: numbered now if there's a number to give, else once one comes;
  * an outside source's (`source`, an issue or a pull request) never. */
@@ -298,28 +340,29 @@ export function addItem(book: Book, owner: string, fields: Fields, acting: Actin
   const title = plainName(text(fields.title ?? "", MOST_TITLE * 4, "The title")).slice(0, MOST_TITLE);
   if (!title) refuse("Say what it is (title), in a line.");
   if (openIn(book, owner) >= MOST_ITEMS) refuse(`Your queue has ${MOST_ITEMS} open items already: mark some done or remove them first.`);
-  const category = fields.category === undefined ? "next" : categoryFor(fields.category);
-  if (source && category === "done") refuseDone(source.ref);
+  const status = fields.status === undefined ? "todo" : statusFor(fields.status);
+  if (source && isClosed(status)) refuseDone(source.ref);
   const { now, who } = acting;
   const item: Item = {
     id: newItemID(),
     owner,
     title,
     body: "",
-    category,
-    order: placeIn(book.items(), category, { top: fields.top === true }),
+    status,
+    order: placeIn(book.items(), status, { top: fields.top === true }),
+    labels: [],
     notes: [],
     files: [],
     links: [],
     sessions: [],
     created: { at: now, by: who },
     updated: { at: now, by: who },
-    ...(category === "done" ? { doneAt: now } : {}),
+    ...(isClosed(status) ? { doneAt: now } : {}),
     ...(source ? { source } : {}),
   };
   book.queue(owner).items.push(item);
   // (Its details as a change makes them, so the same checks hold: where it's put isn't a move.)
-  changeItem(book, item, { ...fields, title: undefined, category: undefined, top: undefined }, acting, { added: true });
+  changeItem(book, item, { ...fields, title: undefined, status: undefined, top: undefined }, acting, { added: true });
   // (An outside source's item is named by its ref, never numbered.)
   if (item.source) return item;
   const number = takeNumber(primary);
@@ -328,13 +371,22 @@ export function addItem(book: Book, owner: string, fields: Fields, acting: Actin
 }
 
 // Done asked of an issue or a pull request: GitHub's to say.
-const refuseDone = (name: string): never => refuse(`${name} is Done once it's closed on GitHub (or, a pull request, merged): close it there, or let the pull request that fixes it close it.`);
+const refuseDone = (name: string): never => refuse(`${name} is Done or Canceled once it's closed on GitHub (or, a pull request, merged): close it there, or let the pull request that fixes it close it.`);
+
+/** An issue or a pull request GitHub has closed (or that's gone from it) stands as Done until it's
+ * open there again: where it stands isn't set here meanwhile (nor, from a client, anything else of
+ * it: `can.set`). */
+export function refuseClosedThere(item: Item): void {
+  if (item.source && doneByRead(seenOf(item.source))) refuse(seenOf(item.source)!.gone
+    ? `${nameOf(item)} is gone from GitHub (or gh here can no longer see it), so it's Done: it's back where it stood once GitHub shows it again.`
+    : `${nameOf(item)} is closed on GitHub, so it's Done: it's back where it stood once it's reopened there.`);
+}
 
 /** `item` changed as `fields` say. */
 export function changeItem(book: Book, item: Item, fields: Fields, acting: Acting, { added = false }: { added?: boolean } = {}): void {
   const { who, now } = acting;
-  // (Where it is among its category's items: a move that leaves it there isn't one.)
-  const placeNow = () => ({ category: item.category, index: book.items().filter(each => each.id !== item.id && !each.removed && each.category === item.category && each.order < item.order).length });
+  // (Where it is among its status's items: a move that leaves it there isn't one.)
+  const placeNow = () => ({ status: item.status, index: book.items().filter(each => each.id !== item.id && !each.removed && each.status === item.status && each.order < item.order).length });
   const was = placeNow();
   if (fields.title !== undefined) {
     const title = plainName(text(fields.title, MOST_TITLE * 4, "The title")).slice(0, MOST_TITLE);
@@ -342,17 +394,15 @@ export function changeItem(book: Book, item: Item, fields: Fields, acting: Actin
     item.title = title;
   }
   if (fields.body !== undefined) item.body = text(fields.body, MOST_BODY, "The description (body)");
-  if (fields.category !== undefined) {
-    const category = categoryFor(fields.category);
+  if (fields.status !== undefined) {
+    const status = statusFor(fields.status);
     // (An issue's or a pull request's Done is GitHub's: never set, nor left, here.)
-    if (item.source && category === "done") refuseDone(nameOf(item));
-    if (item.source && doneByRead(seenOf(item.source))) refuse(seenOf(item.source)!.gone
-      ? `${nameOf(item)} is gone from GitHub (or gh here can no longer see it), so it's Done: it's back in its place once GitHub shows it again.`
-      : `${nameOf(item)} is closed on GitHub, so it's Done: it's back in its place once it's reopened there.`);
-    if (category !== item.category) {
-      item.category = category;
-      item.order = placeIn(book.items(), category, { top: fields.top === true });
-      if (category === "done") {
+    if (item.source && isClosed(status)) refuseDone(nameOf(item));
+    refuseClosedThere(item);
+    if (status !== item.status) {
+      item.status = status;
+      item.order = placeIn(book.items().filter(each => each.id !== item.id), status, { top: fields.top === true });
+      if (isClosed(status)) {
         item.doneAt = now;
         item.sessions = [];
       } else {
@@ -360,25 +410,40 @@ export function changeItem(book: Book, item: Item, fields: Fields, acting: Actin
       }
     }
   }
+  if (fields.priority !== undefined) {
+    const priority = priorityFor(fields.priority);
+    if (priority) item.priority = priority;
+    else delete item.priority;
+  }
+  if (fields.labels !== undefined) item.labels = labelsFor(fields.labels);
+  if (fields.assignee !== undefined) {
+    const assignee = assigneeFor(fields.assignee);
+    if (assignee) item.assignee = assignee;
+    else delete item.assignee;
+  }
+  if (fields.due !== undefined) {
+    if (fields.due === null || fields.due === "") delete item.due;
+    else item.due = dayOf(fields.due) ?? refuse("due is a day, like 2026-11-30 (or null for none).");
+  }
   const beside = (given: unknown) => {
     const ref = refOf(given);
     const all = ref ? matching(book.items(), ref).filter(each => !each.removed && each.id !== item.id) : [];
-    // (Where two computers gave one number twice, the one in this item's category.)
-    const found = all.find(each => each.category === item.category) ?? all[0];
+    // (Where two computers gave one number twice, the one of this item's status.)
+    const found = all.find(each => each.status === item.status) ?? all[0];
     if (!found) refuse(`There's no other item ${String(given)} to put it beside.`);
-    if (found!.category !== item.category) refuse(`${nameOf(found!)} is in another category: move it there first (category).`);
+    if (found!.status !== item.status) refuse(`${nameOf(found!)} is ${statusName(found!.status)}, not ${statusName(item.status)}: give it that status first (status).`);
     return found!;
   };
   if (fields.before !== undefined) item.order = placeBeside(book.items(), beside(fields.before), false, item);
   else if (fields.after !== undefined) item.order = placeBeside(book.items(), beside(fields.after), true, item);
-  else if (fields.top === true && fields.category === undefined) item.order = placeIn(book.items().filter(each => each.id !== item.id), item.category, { top: true });
+  else if (fields.top === true && fields.status === undefined) item.order = placeIn(book.items().filter(each => each.id !== item.id), item.status, { top: true });
   const placed = placeNow();
   if (added) {
     // (An item just added isn't moved, wherever it's put.)
-  } else if (placed.category !== was.category && placed.category === "done") noteEvent(item, { at: now, by: who, kind: "done" });
-  else if (placed.category !== was.category || placed.index !== was.index) {
+  } else if (placed.status !== was.status && placed.status === "done") noteEvent(item, { at: now, by: who, kind: "done" });
+  else if (placed.status !== was.status || placed.index !== was.index) {
     const top = placed.index === 0 && (fields.top === true || fields.before !== undefined || fields.after !== undefined);
-    noteEvent(item, { at: now, by: who, kind: "moved", from: was.category, to: placed.category, ...(top ? { top: true as const } : {}) });
+    noteEvent(item, { at: now, by: who, kind: "moved", from: was.status, to: placed.status, ...(top ? { top: true as const } : {}) });
   }
   if (fields.progress !== undefined) {
     if (fields.progress === null) {
@@ -437,7 +502,7 @@ export function changeItem(book: Book, item: Item, fields: Fields, acting: Actin
  * description; what the item said before is kept as a note. */
 export function linkSource(item: Item, source: Source, title: string, body: string, { who, now }: Acting): void {
   if (item.source) refuse(`${nameOf(item)} is ${item.source.ref} already: one item is one issue or pull request.`);
-  if (item.category === "done") refuse(`${nameOf(item)} is Done: move it out of Done first (category), or add the issue as an item of its own (queue_add with issue).`);
+  if (isClosed(item.status)) refuse(`${nameOf(item)} is ${statusName(item.status)}: give it an open status first (status), or add the issue as an item of its own (queue_add with issue).`);
   const before = item.body.trim();
   item.source = source;
   item.title = plainName(title).slice(0, MOST_TITLE) || item.title;
@@ -455,11 +520,11 @@ export function removeItem(item: Item, who: Who, now: number): void {
   item.updated = { at: now, by: who };
 }
 
-/** `item` brought back, at the end of its category (Next, for one whose category is gone). */
+/** `item` brought back, at the end of its status's items (Todo, for a status this box doesn't know). */
 export function restoreItem(book: Book, item: Item, who: Who, now: number): void {
   delete item.removed;
-  if (!categoryNamed(item.category)) intoNext(item, item.category, now);
-  item.order = placeIn(book.items(), item.category);
+  if (!statusNamed(item.status)) intoTodo(item, item.status, now);
+  item.order = placeIn(book.items(), item.status);
   item.updated = { at: now, by: who };
 }
 
@@ -470,6 +535,6 @@ export function handItem(book: Book, item: Item, to: string, who: Who, now: numb
   if (openIn(book, to) >= MOST_ITEMS) refuse(`That queue has ${MOST_ITEMS} open items already.`);
   book.give(item, to);
   noteHanded(item, from, to, now);
-  if (to.startsWith("ses_") && item.category !== "done") linkSession(book, item, to, now);
+  if (to.startsWith("ses_") && !isClosed(item.status)) linkSession(book, item, to, now);
   item.updated = { at: now, by: who };
 }

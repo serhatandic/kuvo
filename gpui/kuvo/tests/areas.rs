@@ -95,7 +95,7 @@ fn control_one_to_five_switch_areas_from_anywhere_in_the_window(cx: &mut TestApp
     click(cx, "session-project-ses_limits");
     for (keys, expected, shown) in [
         ("ctrl-2", Area::Bots, "bot-bot_inbox"),
-        ("ctrl-3", Area::Queue, "category-next"),
+        ("ctrl-3", Area::Queue, "status-todo"),
         ("ctrl-4", Area::Computers, "computer-key_devbox"),
         ("ctrl-5", Area::Settings, "setting-General"),
         ("ctrl-1", Area::Sessions, "session-project-ses_limits"),
@@ -318,7 +318,7 @@ fn back_and_forward_go_where_the_window_has_been(cx: &mut TestAppContext) {
     click(cx, "session-project-ses_signup");
     click(cx, "session-project-ses_dark");
     click(cx, "rail-queue");
-    click(cx, "category-later");
+    click(cx, "status-backlog");
 
     cx.simulate_keystrokes("cmd-[");
     assert_eq!((area(&workspace, cx), title(&workspace, cx).as_deref()), (Area::Queue, Some("Work Queue")));
@@ -331,7 +331,7 @@ fn back_and_forward_go_where_the_window_has_been(cx: &mut TestAppContext) {
     click(cx, "back");
     assert_eq!(opened(&workspace, cx).as_deref(), Some("ses_signup"));
     cx.simulate_keystrokes("cmd-] cmd-] cmd-]");
-    assert_eq!((area(&workspace, cx), title(&workspace, cx).as_deref()), (Area::Queue, Some("Later")));
+    assert_eq!((area(&workspace, cx), title(&workspace, cx).as_deref()), (Area::Queue, Some("Backlog")));
     assert!(!workspace.read_with(cx, |workspace, _| workspace.can_go_forward()));
 
     // Going somewhere new drops what was ahead.

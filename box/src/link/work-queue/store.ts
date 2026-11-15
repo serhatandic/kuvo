@@ -14,14 +14,18 @@ import { isObject } from "../../shared/json";
 import { listOf, locked, textOf, writePrivate } from "../files";
 import { RUN } from "../home";
 import { sourceKeyOf } from "./sources";
+import { migrateOnce } from "./migrate";
+import { fromCategory, PRIORITY_ID } from "./statuses";
 
 export const WORK_QUEUE = path.join(RUN, "work-queue");
 const QUEUES = path.join(WORK_QUEUE, "queues");
 export const FILES = path.join(WORK_QUEUE, "files");
 const LOCK = path.join(WORK_QUEUE, ".lock");
 
-/** An owner's key: a conversation's address, or a group chat's id. */
-export const OWNER = /^(?:ses_[A-Za-z0-9]{1,60}|grp_[a-z0-9]{1,60})$/;
+/** Your own queue's key: the items you added from a client that are no conversation's (yet). */
+export const YOURS = "usr_you";
+/** An owner's key: a conversation's address, a group chat's id, or your own queue's. */
+export const OWNER = /^(?:ses_[A-Za-z0-9]{1,60}|grp_[a-z0-9]{1,60}|usr_you)$/;
 /** A queue file's owner as a newer box may name one (another kind than this box knows): its queue is
  * kept as it is, and goes along, never skipped or written over. */
 export const KEPT_OWNER = /^[a-z]{2,10}_[A-Za-z0-9_-]{1,80}$/;
@@ -63,7 +67,7 @@ export const byUser = (who: Who): boolean => (who as Record<string, unknown>).us
 
 export interface Note { at: number; by: Who; text: string }
 /** Something that happened to an item, for its feed: a session `started` or `stopped` work on it
- * (as its agent said), it `moved` (`from` and `to` its categories, `top` when it went to the top),
+ * (as its agent said), it `moved` (`from` and `to` its statuses, `top` when it went to the top),
  * it was `done`. A newer box may keep other kinds, kept as they came. */
 export interface ItemEvent { at: number; by: Who; kind: string; from?: string; to?: string; top?: true }
 export interface KeptFile { name: string; size: number; type: string; at: number }
@@ -82,6 +86,19 @@ export type ItemRef = { id: string } | { number: number } | { source: string };
  * until that computer has it. */
 export interface Handing { id: string; to: string; key: string; name: string; at: number; by: Who; sent?: number; missing?: number }
 
+/** Who an item is for: a bot (its id), or a coding agent (its kind). */
+export interface Assignee { kind: "bot" | "agent"; id: string }
+
+export const assigneeOf = (given: unknown): Assignee | null =>
+  isObject(given) && (given.kind === "bot" || given.kind === "agent") && typeof given.id === "string" && /^[A-Za-z0-9_.-]{1,80}$/.test(given.id) ? { kind: given.kind, id: given.id } : null;
+
+/** A day as an item keeps it (`YYYY-MM-DD`, one there is), or null. */
+export const dayOf = (given: unknown): string | null => {
+  if (typeof given !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(given.trim())) return null;
+  const day = new Date(`${given.trim()}T00:00:00Z`);
+  return Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== given.trim() ? null : given.trim();
+};
+
 /** One item, as it's kept. */
 export interface Item {
   id: string;
@@ -89,8 +106,18 @@ export interface Item {
   owner: string;
   title: string;
   body: string;
-  category: string;
+  /** Where it stands: one of `statuses.ts` (or one a newer box keeps, kept as it is). */
+  status: string;
+  /** Its place among every owner's items of its status here. */
   order: number;
+  /** How much it matters; none kept is Normal. */
+  priority?: string;
+  /** Its labels, by id (`labels.ts`). */
+  labels: string[];
+  /** Who it's for: a bot, or a coding agent. */
+  assignee?: Assignee;
+  /** The day it's due, `YYYY-MM-DD`. */
+  due?: string;
   progress?: { value?: number; note?: string };
   notes: Note[];
   /** What happened to it, oldest first (none for an item from before the box kept them). */
@@ -146,7 +173,7 @@ export const whoOf = (given: unknown): Who | null => {
 export const FILE_NAME = /^(?!\.\.?$)[^/\\\0]{1,200}$/;
 
 // What this box knows of an item: every other field a newer box wrote is kept as it was.
-const KNOWN = new Set(["id", "number", "owner", "title", "body", "category", "order", "progress", "notes", "events", "files", "links", "sessions", "handed", "handedBy", "wanted", "importedAs", "backGranted", "stays", "source", "handing", "created", "updated", "doneAt", "removed"]);
+const KNOWN = new Set(["id", "number", "owner", "title", "body", "category", "status", "priority", "labels", "assignee", "due", "order", "progress", "notes", "events", "files", "links", "sessions", "handed", "handedBy", "wanted", "importedAs", "backGranted", "stays", "source", "handing", "created", "updated", "doneAt", "removed"]);
 
 const handingOf = (given: unknown): Handing | null => {
   if (!isObject(given) || typeof given.id !== "string" || !/^wqh_[A-Za-z0-9_-]{8,40}$/.test(given.id) || typeof given.to !== "string" || !OWNER.test(given.to)
@@ -164,7 +191,11 @@ const eventKept = (each: Record<string, unknown>): boolean =>
 /** An item as it was read (or as a move brought it), checked: null for one that isn't. Fields this
  * box doesn't know (a newer box's) are kept as they are, so writing it here doesn't drop them. */
 export function itemOf(given: unknown, owner: string): Item | null {
-  if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.title !== "string" || typeof given.category !== "string") return null;
+  if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.title !== "string") return null;
+  // (One still under a category, read before this box could move its items over to statuses,
+  // `migrate.ts`: said anew as it's read, never dropped.)
+  const before = typeof given.status === "string" && given.status ? null : fromCategory(given.category);
+  const labels = before ? (before.label ? [before.label] : []) : [...new Set((Array.isArray(given.labels) ? given.labels : []).filter((each): each is string => typeof each === "string" && /^(?:lbl|cat)_[a-z0-9-]{1,40}$/.test(each)))].slice(0, 20);
   const created = isObject(given.created) && typeof given.created.at === "number" ? { at: given.created.at, by: whoOf(given.created.by) ?? { user: true } as Who } : { at: 0, by: { user: true } as Who };
   const updated = isObject(given.updated) && typeof given.updated.at === "number" ? { at: given.updated.at, by: whoOf(given.updated.by) ?? created.by } : created;
   const list = <T>(value: unknown, keep: (each: Record<string, unknown>) => boolean): T[] => (Array.isArray(value) ? value.filter(each => isObject(each) && keep(each)) as T[] : []);
@@ -176,8 +207,12 @@ export function itemOf(given: unknown, owner: string): Item | null {
     owner,
     title: given.title,
     body: typeof given.body === "string" ? given.body : "",
-    category: given.category,
+    status: before ? before.status : (given.status as string).slice(0, 40),
     order: typeof given.order === "number" && Number.isFinite(given.order) ? given.order : 0,
+    ...(typeof given.priority === "string" && PRIORITY_ID.test(given.priority) && given.priority !== "normal" ? { priority: given.priority } : {}),
+    labels,
+    ...(assigneeOf(given.assignee) ? { assignee: assigneeOf(given.assignee)! } : {}),
+    ...(dayOf(given.due) ? { due: dayOf(given.due)! } : {}),
     ...(isObject(given.progress) ? { progress: { ...(typeof given.progress.value === "number" ? { value: given.progress.value } : {}), ...(typeof given.progress.note === "string" ? { note: given.progress.note } : {}) } } : {}),
     notes: list<Note>(given.notes, each => typeof each.at === "number" && typeof each.text === "string" && whoOf(each.by) !== null),
     ...(Array.isArray(given.events) ? { events: list<ItemEvent>(given.events, eventKept).slice(-MOST_EVENTS) } : {}),
@@ -199,6 +234,35 @@ export function itemOf(given: unknown, owner: string): Item | null {
   };
 }
 
+// The items here kept with statuses before they're read (`migrate.ts`). Where that can't be done
+// now (a full disk, say), they're read as they are, each said anew as it's read, and it's tried
+// again at the next read: a view never fails over it, and nothing is written until it's done.
+let saidUnmoved = false;
+function migratedToRead(): void {
+  try {
+    migrateOnce();
+  } catch (error) {
+    if (!saidUnmoved) console.error(`Work Queue: its items couldn't be moved over to statuses yet (${(error as Error)?.message ?? error}): shown as they are, and tried again.`);
+    saidUnmoved = true;
+  }
+}
+/** For a test: as a box just started. */
+export function forgetUnmoved(): void {
+  saidUnmoved = false;
+}
+
+/** Nothing is changed (an item, a label) before the items here are kept with statuses, from a copy
+ * of what was kept: refused, in words, where that can't be done now. */
+export function migratedToChange(): void {
+  try {
+    migrateOnce();
+  } catch (error) {
+    const why = String((error as Error)?.message ?? error);
+    if (/another process/.test(why)) throw new Refusal("The Work Queue's items are being moved over to statuses on this computer right now, so nothing was changed. Try again in a moment (two minutes at most, if what was moving them was cut off).");
+    throw new Refusal(`The Work Queue's items couldn't be moved over to statuses on this computer (${why}), so nothing was changed. Check ${WORK_QUEUE} (is the disk full?), then try again.`);
+  }
+}
+
 /** A queue file that's there but isn't one (cut short, changed by hand): `aside` true. Or one that
  * can't be read just now (too many files open, a disk error): left where it is. */
 export class UnreadableQueue extends Error {
@@ -210,6 +274,7 @@ export class UnreadableQueue extends Error {
 /** An owner's queue as it's kept: empty for one with none; `UnreadableQueue` for a file that's
  * there but can't be read as one, never read as empty (a change would write over what it holds). */
 export function readQueue(owner: string): Queue {
+  migratedToRead();
   const file = fileOf(owner);
   let text: string;
   try {
@@ -278,6 +343,7 @@ const readQueueOrNone = (owner: string): Queue => {
  * know, isn't one: it's read only when a move carries it, `readKeptQueue`, and never changed here
  * otherwise.) */
 export function owners(): string[] {
+  migratedToRead();
   return listOf(QUEUES).filter(name => name.endsWith(".json")).map(name => name.slice(0, -5)).filter(owner => OWNER.test(owner));
 }
 
@@ -398,6 +464,7 @@ export class Book {
  * following told. Deleted items past their 30 days go first (and their files). */
 export function changeQueues<T>(work: (book: Book) => T, now = Date.now(), { onItsOwn = false }: { onItsOwn?: boolean } = {}): T {
   fs.mkdirSync(WORK_QUEUE, { recursive: true, mode: 0o700 });
+  migratedToChange();
   const { value, changed } = locked(LOCK, () => {
     let book: Book;
     try {
@@ -450,21 +517,21 @@ export const refNames = (ref: ItemRef, item: Pick<Item, "id" | "number" | "sourc
 /** The folder an item's files are kept in. */
 export const filesOf = (item: string) => path.join(FILES, item);
 
-/** The place at the end of a category (or its start, `top`), among every owner's items here. */
-export function placeIn(items: Item[], category: string, { top = false }: { top?: boolean } = {}): number {
-  const orders = items.filter(item => item.category === category && !item.removed).map(item => item.order);
+/** The place at the end of a status's items (or its start, `top`), among every owner's here. */
+export function placeIn(items: Item[], status: string, { top = false }: { top?: boolean } = {}): number {
+  const orders = items.filter(item => item.status === status && !item.removed).map(item => item.order);
   if (!orders.length) return 0;
   return top ? Math.min(...orders) - 1 : Math.max(...orders) + 1;
 }
 
-/** The place just before (or after) `beside` in its category, for `moving`. Where two places are
- * too close to put one between, the category is numbered afresh first, in the order it has. */
+/** The place just before (or after) `beside` among its status's items, for `moving`. Where two
+ * places are too close to put one between, they're numbered afresh first, in the order they have. */
 export function placeBeside(items: Item[], beside: Item, after: boolean, moving?: Item): number {
-  const others = () => items.filter(item => item.category === beside.category && !item.removed && item.id !== beside.id && item.id !== moving?.id).map(item => item.order).sort((a, b) => a - b);
+  const others = () => items.filter(item => item.status === beside.status && !item.removed && item.id !== beside.id && item.id !== moving?.id).map(item => item.order).sort((a, b) => a - b);
   const neighbor = () => (after ? others().find(order => order > beside.order) : [...others()].reverse().find(order => order < beside.order));
   let next = neighbor();
   if (next !== undefined && Math.abs(next - beside.order) < 1e-6) {
-    items.filter(item => item.category === beside.category && !item.removed).sort((a, b) => a.order - b.order).forEach((item, index) => { item.order = index; });
+    items.filter(item => item.status === beside.status && !item.removed).sort((a, b) => a.order - b.order).forEach((item, index) => { item.order = index; });
     next = neighbor();
   }
   return next === undefined ? beside.order + (after ? 1 : -1) : (beside.order + next) / 2;

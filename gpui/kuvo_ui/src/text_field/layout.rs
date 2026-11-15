@@ -18,8 +18,19 @@ use smallvec::SmallVec;
 use super::TextField;
 use crate::theme::{ActiveTheme, TypeSize, UI_FONT};
 
-/// The type a field's text is set in.
-pub(super) const FIELD_TYPE: TypeSize = TypeSize::Body;
+/// The type a field's text is set in: its size (the body's unless told otherwise) and, where it
+/// has one of its own, its weight.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct FieldType {
+    pub size: TypeSize,
+    pub weight: Option<gpui::FontWeight>,
+}
+
+impl Default for FieldType {
+    fn default() -> Self {
+        FieldType { size: TypeSize::Body, weight: None }
+    }
+}
 
 /// The shaped text of a field, kept from the last paint so clicks, IME and arrow keys can map
 /// between positions and offsets.
@@ -33,6 +44,8 @@ pub(super) struct Layout {
     /// The top of each paragraph, from the top of the text.
     pub tops: Vec<Pixels>,
     pub line_height: Pixels,
+    /// The type it was shaped in.
+    pub kind: FieldType,
     /// The width the text wraps at (`None` for one line).
     pub wrap: Option<Pixels>,
     /// Where the text's top-left is drawn, in window coordinates (scroll included).
@@ -62,7 +75,7 @@ impl Layout {
             self.content_height = self.line_height;
         } else {
             let shown = if self.masked { dots(text) } else { text.to_owned() };
-            let (lines, starts, tops, height) = shape(&shown, if self.masked { None } else { marked }, gpui::black(), self.wrap, window);
+            let (lines, starts, tops, height) = shape(&shown, if self.masked { None } else { marked }, gpui::black(), self.wrap, self.kind, window);
             self.lines = lines;
             self.starts = starts;
             self.tops = tops;
@@ -182,10 +195,14 @@ pub(super) fn shape(
     marked: Option<&Range<usize>>,
     color: Hsla,
     width: Option<Pixels>,
+    kind: FieldType,
     window: &Window,
 ) -> (SmallVec<[WrappedLine; 1]>, Vec<usize>, Vec<Pixels>, Pixels) {
     let style = window.text_style();
-    let font = gpui::Font { family: UI_FONT.into(), ..style.font() };
+    let mut font = gpui::Font { family: UI_FONT.into(), ..style.font() };
+    if let Some(weight) = kind.weight {
+        font.weight = weight;
+    }
     let run = TextRun {
         len: text.len(),
         font,
@@ -209,10 +226,10 @@ pub(super) fn shape(
         .collect(),
         _ => vec![run],
     };
-    let line_height = FIELD_TYPE.line_height();
+    let line_height = kind.size.line_height();
     let lines = window
         .text_system()
-        .shape_text(SharedString::from(text.to_string()), FIELD_TYPE.size(), &runs, width, None)
+        .shape_text(SharedString::from(text.to_string()), kind.size.size(), &runs, width, None)
         .unwrap_or_default();
     let mut starts = Vec::with_capacity(lines.len());
     let mut tops = Vec::with_capacity(lines.len());
@@ -260,7 +277,8 @@ impl Element for TextElement {
         cx: &mut App,
     ) -> (LayoutId, ()) {
         let field = self.field.read(cx);
-        let line_height = FIELD_TYPE.line_height();
+        let kind = field.kind;
+        let line_height = kind.size.line_height();
         let mut style = Style::default();
         style.size.width = relative(1.).into();
         let Some((min_lines, max_lines)) = field.lines else {
@@ -273,7 +291,7 @@ impl Element for TextElement {
                 gpui::AvailableSpace::Definite(w) => Some(w),
                 _ => None,
             });
-            let (_, _, _, height) = shape(&text, None, gpui::black(), width, window);
+            let (_, _, _, height) = shape(&text, None, gpui::black(), width, kind, window);
             let rows = ((height / line_height).round() as usize).clamp(min_lines, max_lines);
             Size { width: width.unwrap_or_default(), height: line_height * rows as f32 }
         });
@@ -301,8 +319,8 @@ impl Element for TextElement {
             };
             let wrap = multi.then_some(bounds.size.width);
             let (lines, starts, tops, content_height) =
-                shape(&text, if field.masked { None } else { field.marked.as_ref() }, color, wrap, window);
-            let line_height = FIELD_TYPE.line_height();
+                shape(&text, if field.masked { None } else { field.marked.as_ref() }, color, wrap, field.kind, window);
+            let line_height = field.kind.size.line_height();
 
             // Keep the caret in view: vertically for many lines, sideways for one.
             let first_width = lines.first().map(|l| l.width()).unwrap_or_default();
@@ -313,6 +331,7 @@ impl Element for TextElement {
                 starts: if showing_placeholder { vec![0] } else { starts },
                 tops: if showing_placeholder { vec![px(0.)] } else { tops },
                 line_height,
+                kind: field.kind,
                 wrap,
                 origin: bounds.origin,
                 content_height: if showing_placeholder { line_height } else { content_height },

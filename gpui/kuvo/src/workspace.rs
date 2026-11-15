@@ -357,12 +357,9 @@ impl Workspace {
                 self.box_state = BoxState::Connected;
                 let name = self.box_name();
                 let kind = self.info.as_ref().map(|info| info.kind.clone()).unwrap_or_default();
-                // (What a client may write in the Work Queue is the box's to say, by a feature's name.)
-                let writes = self.info.as_ref().is_some_and(|info| info.has(kuvo_box::work_queue::WRITES));
                 for (_, view) in self.areas.clone() {
                     view.update(cx, |view, cx| {
                         view.set_this_box(name.clone(), &kind, cx);
-                        view.set_writes(writes, cx);
                     });
                 }
                 // Reached (perhaps updated since): what it says of its accounts is asked again, and
