@@ -252,8 +252,9 @@ export type Found = Infer<typeof FOUND>;
 
 /** What can be done with one of your computers from the box that lists it (`computers.manage`):
  * which, its button's words, and where a client asks first, the question, what it comes to and the
- * words of the button that goes ahead, all the box's. */
-export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove"), label: string, "confirm?": object({ title: string, message: string, label: string }) });
+ * words of the button that goes ahead, all the box's; `why`, it can't be done now, in words a
+ * client shows beside it. */
+export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
 export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
 
 /** One of your computers, as a box knows it (`kuvo/computers`, PROTOCOL.md "Computers"): its key

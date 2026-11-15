@@ -26,6 +26,8 @@ pub struct Areas {
     /// What renaming or removing says instead of doing it, as a box that can't ask the computer
     /// writing its record says (`503`).
     pub manage_refused: Option<String>,
+    /// The old Kuvo Code app is open on the Mac that writes your machines' records: removing waits.
+    pub old_app: bool,
 }
 
 /// Its answer to `method route`, if it's one of the areas' routes. `needing`: how many of its
@@ -84,6 +86,10 @@ pub fn manage(areas: &mut Areas, method: &str, route: &str) -> Option<((u16, Val
         ("PATCH", false) => "rename",
         _ => return Some(((405, json!({ "message": if connect { "Only POST." } else { "Rename (PATCH) or remove (DELETE)." } })), false)),
     };
+    let waits = computer["actions"].as_array().and_then(|actions| actions.iter().find(|action| action["id"] == json!(wanted))).and_then(|action| action["why"].as_str().map(str::to_owned));
+    if let Some(why) = waits {
+        return Some(((409, json!({ "message": why })), false));
+    }
     if !offers(wanted) {
         return Some(((409, json!({ "message": format!("{} can’t be {} from here.", computer["name"].as_str().unwrap_or_default(), if wanted == "connect" { "connected to" } else { wanted }) })), false));
     }
@@ -110,6 +116,15 @@ fn listed(areas: &Areas) -> Vec<Value> {
         .into_iter()
         .filter(|computer| !areas.removed.iter().any(|key| computer["key"] == json!(key)))
         .map(|mut computer| {
+            // (Removing waits while the old app is open on the Mac, saying so.)
+            if areas.old_app {
+                let name = computer["name"].as_str().unwrap_or_default().to_owned();
+                for action in computer["actions"].as_array_mut().into_iter().flatten() {
+                    if action["id"] == json!("remove") {
+                        *action = json!({ "id": "remove", "label": "Remove", "why": format!("Quit the old Kuvo Code app on {} first: it keeps its own list of machines, and would add {name} back.", super::NAME) });
+                    }
+                }
+            }
             if areas.reaching.iter().any(|key| computer["key"] == json!(key)) {
                 computer["reach"] = json!("connecting");
                 if let Some(actions) = computer["actions"].as_array_mut() {

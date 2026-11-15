@@ -22,7 +22,7 @@ import { keptList, listFollowers, listNow } from "../lists/sessions";
 import { MOST_AT_WORK, PEER_AGENTS_FILE, readPeerAgents, vouchedOf } from "../peers/directory";
 import { isApart } from "../peers/apart";
 import { namedBoxes, ownKey, peersOf } from "../peers/known";
-import { actionsOf, givenName, MOST_NAME, oldAppAttached, removeHere, renameHere, whyNot, writerFacts, writerOf } from "../peers/manage";
+import { actionsOf, givenName, MOST_NAME, oldAppAttached, refusal, removeHere, renameHere, writerFacts, writerOf } from "../peers/manage";
 import { offRelay } from "../letters/leave";
 import { plainName } from "../../shared/text";
 import { awaySince, PEER_REACH, readReach } from "../peers/reach";
@@ -222,7 +222,7 @@ async function* manage(context: RouteContext, key: string, connect: boolean): As
   const name = what === "rename" ? givenName((parsed(request.body) as Body<"name">)?.name) : null;
   if (what === "rename" && !name) return yield* json(400, { message: `Give it a name of up to ${MOST_NAME} characters.` });
   const link = readLink();
-  const why = whyNot(computer, what, here, link);
+  const why = refusal(computer, what, here, link);
   if (why) return yield* json(409, { message: why });
   const writer = writerOf(link)!;
   if (writer.here) {

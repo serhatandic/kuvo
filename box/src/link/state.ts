@@ -112,6 +112,8 @@ export const macLink: {
   /** Stops this Mac's box's part among your other computers (`runMacPeers`). */
   stopPeers?: (() => void) | null;
   wake: (() => void) | null;
+  /** When this Mac's app last said its link's config (the old app, as it attaches). */
+  appSaid?: number;
   statusFollowers: Set<() => void>;
   phoneFollowers: Set<() => void>;
 } = { config: null, overlay: null, status: { state: "off" }, host: null, wake: null, statusFollowers: new Set(), phoneFollowers: new Set() };

@@ -173,9 +173,10 @@ async function oldAppOpens() {
 test("while the old Kuvo Code app is attached to this Mac's box, removing a machine isn't offered or taken, from here or another computer, saying why; once it's quit, a removal holds when the app opens again", async () => {
   fresh();
   const quit = await oldAppOpens();
-  const listed = (await link.listComputers("Studio", null)).find(each => each.key === attic.pub);
-  assert.deepEqual(listed.actions.map(action => action.id), ["rename"], "renaming holds: the app keeps names it didn't change");
   const why = "Quit the old Kuvo Code app on Studio first: it keeps its own list of machines, and would add attic back.";
+  const listed = (await link.listComputers("Studio", null)).find(each => each.key === attic.pub);
+  // Renaming holds (the app keeps names it didn't change); Remove says why it waits.
+  assert.deepEqual(listed.actions, [{ id: "rename", label: "Rename" }, { id: "remove", label: "Remove", why }]);
   assert.deepEqual(await ask("DELETE", `kuvo/computers/${attic.pub}`), { status: 409, body: { message: why } });
   const [forwarded] = await handed(devbox, { method: "DELETE", item: attic.pub });
   assert.deepEqual([forwarded.status, forwarded.value], [409, { message: why }]);
@@ -187,9 +188,14 @@ test("while the old Kuvo Code app is attached to this Mac's box, removing a mach
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
   assert.deepEqual(names(), ["devbox", "mini", "attic"]);
 
+  // Attaching again, it says its link's config first: attached from then, before it follows.
+  await quit();
+  assert.equal((await ask("PUT", "kuvo/link/config", { phones: true, machines: true, relay: "wss://relay.test", name: "Studio", app: "0.9.200" })).status, 200);
+  assert.deepEqual(await ask("DELETE", `kuvo/computers/${attic.pub}`), { status: 409, body: { message: why } });
+  link.macLink.appSaid = undefined;
+  await (await oldAppOpens())();
   // Quit: removed now; and the app opening again saves the list it reads (without it) and says the
   // machines it still keeps bridges for (with it): it stays removed.
-  await quit();
   assert.deepEqual(await ask("DELETE", `kuvo/computers/${attic.pub}`), { status: 200, body: {} });
   const reopened = await oldAppOpens();
   fs.writeFileSync(path.join(home, "machines.json"), fs.readFileSync(path.join(home, "machines.json")));

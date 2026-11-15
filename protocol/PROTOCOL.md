@@ -438,8 +438,9 @@ connection.
   `shared: true` (it's a machine set up by Macs that aren't all in one setup), by which the receiver counts it as one of
   your own computers, for resets, Always Allow and usage totals, only within one setup (#701; "Plan
   limits", "Across your computers", Whose), and `computer` (`{version?, engine?, system?,
-  working}`: Kuvo Code's version there, its engine's, its system as people know it, and how many
-  of its sessions are at work, for `kuvo/computers`, "Computers"; only to a peer that's one of
+  working, atWork?, oldApp?}`: Kuvo Code's version there, its engine's, its system as people know
+  it, how many of its sessions are at work and which, and, on a Mac's box, that the old app is
+  attached to it, for `kuvo/computers`, "Computers"; only to a peer that's one of
   your own computers, #701, once that peer has said what it is (never in the first mail to one),
   and never by a shared machine; one from a peer that isn't yours is dropped as its mail is taken; told again at its next round, within a
   minute, as it starts or stops working at all, else with the rest). A box sends its bots and its 40 latest
@@ -1535,9 +1536,10 @@ machines; a client that wants every computer's facts asks the box that has it as
   - `limits`: the services whose plan limits it reads (`claude`, `codex`…), as the answering
     box's limits rows say (`rows[].boxes`); `[]` while its coding agents' bridge doesn't run;
   - `actions` (`computers.manage`): what can be done with it from this box now, in the order to
-    offer them, `{id, label, confirm?}`, as accounts' are ("Signing in"): `label` the button's
-    words, `confirm` `{title, message, label}` where a client asks first (its question, what it
-    comes to, its button), all the box's. `rename` (a machine whose record the writer keeps, below:
+    offer them, `{id, label, confirm?, why?}`, as accounts' are ("Signing in"): `label` the
+    button's words, `confirm` `{title, message, label}` where a client asks first (its question,
+    what it comes to, its button), all the box's; `why`, it can't be done now, in words a client
+    shows beside it, its button not taken (asked anyway, it's refused with those words). `rename` (a machine whose record the writer keeps, below:
     never a Mac, which goes by its own name, nor one shared with another setup but on the Mac that
     set it up, which keeps its own record of it), `connect` (a peer
     this box reaches through the relay that's `away`, while no try is under way) and `remove` (as
@@ -1580,10 +1582,12 @@ machines; a client that wants every computer's facts asks the box that has it as
     and writes all of it back, `machines.json` and `kuvo/link/peers`, so a removal there wouldn't
     hold): the box that writes a machine's record takes no removal, from a client of its own or
     handed from another box: `409 {"message": "Quit the old Kuvo Code app on <Mac> first: it keeps
-    its own list of machines, and would add <machine> back."}`, and offers no `remove` meanwhile.
-    It tells its peers so with its agents (`computer.oldApp: true`, "Peers"), so they offer none
-    either, within a minute. Renaming goes on: the old app keeps a name it didn't change. The box
-    counts the app attached while it follows `kuvo/link/status/events`, which only that app does.
+    its own list of machines, and would add <machine> back."}`, and its `remove` says so meanwhile
+    (`why`, those words). It tells its peers so with its agents (`computer.oldApp: true`, "Peers"),
+    so theirs say it too, within a minute (not while that Mac is away: it's away then). Renaming
+    goes on: the old app keeps a name it didn't change. The box counts the app attached while it
+    follows `kuvo/link/status/events` (which only that app does), and for a minute after it says
+    its link's config (`kuvo/link/config`, the first thing it does as it attaches, again too).
   - The writer checks what's handed to it as the asking box does: a machine shared with another
     setup is renamed and removed only from that Mac itself (`409`).
   - Your phones are given a machine by the name you gave it (`kuvo/hosts`, from the box while the

@@ -87,12 +87,15 @@ enum Item {
     /// Sessions at work there, as its box counts them; `open`: they're this window's, under Sessions.
     Working { count: usize, open: bool },
     /// One of Manage's rows: what it does (none: not in this app yet), and its words while it's under way.
-    Action { key: String, title: String, button: String, act: Option<Manage>, busy: Option<String>, first: bool, last: bool },
+    Action { key: String, title: String, button: String, act: Option<Manage>, busy: Option<String>, why: Option<String>, first: bool, last: bool },
     Note { key: String, words: String, busy: bool },
     AddForm,
     AddFoot,
     End,
 }
+
+/// One of Manage's rows as the box offers it: its key, title, button, what it does, and why it waits.
+type Offered = (&'static str, String, String, Option<Manage>, Option<String>);
 
 /// What the box is asked to do, off this thread.
 type Work = Box<dyn FnOnce(&BoxClient) -> kuvo_box::Result<()> + Send>;
@@ -359,18 +362,20 @@ impl ComputersView {
         let count = facts.len();
         items.extend(facts.into_iter().enumerate().map(|(ix, (key, title, value))| Item::Fact { key: key.into(), title: title.into(), value, first: ix == 0, last: ix + 1 == count }));
         // What can be done with it, as its box offers it here (`actions`), in its order and words.
-        let actions: Vec<(&'static str, String, String, Option<Manage>)> = computer
+        let actions: Vec<Offered> = computer
             .actions
             .iter()
             .filter_map(|action| {
                 // (Marked as the platform marks a button that asks first.)
                 let label = if action.confirm.is_some() { format!("{}…", action.label) } else { action.label.clone() };
-                let act = |what| Some(Manage { what, key: computer.key.clone(), confirm: action.confirm.clone() });
+                // (One the box says can't be done now isn't done here: its words say why.)
+                let act = |what| action.why.is_none().then(|| Manage { what, key: computer.key.clone(), confirm: action.confirm.clone() });
+                let why = action.why.clone();
                 Some(match action.id.as_str() {
                     // (Renaming waits on its design: drawn, not done; it opens an editor, hence "…".)
-                    "rename" => ("action-rename", "Name".to_owned(), format!("{}…", action.label), None),
-                    "connect" => (What::Connect.row(), "Connection".to_owned(), label, act(What::Connect)),
-                    "remove" => (What::Remove.row(), "Remove".to_owned(), label, act(What::Remove)),
+                    "rename" => ("action-rename", "Name".to_owned(), format!("{}…", action.label), None, why),
+                    "connect" => (What::Connect.row(), "Connection".to_owned(), label, act(What::Connect), why),
+                    "remove" => (What::Remove.row(), "Remove".to_owned(), label, act(What::Remove), why),
                     _ => return None,
                 })
             })
@@ -378,10 +383,15 @@ impl ComputersView {
         if !actions.is_empty() {
             items.push(Item::Group("Manage".into()));
             let count = actions.len();
-            items.extend(actions.into_iter().enumerate().map(|(ix, (key, title, button, act))| {
+            let whys: Vec<String> = actions.iter().filter_map(|(_, _, _, _, why)| why.clone()).collect();
+            items.extend(actions.into_iter().enumerate().map(|(ix, (key, title, button, act, why))| {
                 let busy = self.busy.get(&(computer.key.clone(), key)).map(|(words, _)| words.clone());
-                Item::Action { key: key.into(), title, button, act, busy, first: ix == 0, last: ix + 1 == count }
+                Item::Action { key: key.into(), title, button, act, busy, why, first: ix == 0, last: ix + 1 == count }
             }));
+            // What waits, and why, in the box's words.
+            for (ix, why) in whys.into_iter().enumerate() {
+                items.push(Item::Note { key: if ix == 0 { "manage-why".into() } else { format!("manage-why-{ix}") }, words: why, busy: false });
+            }
         }
         items.push(Item::End);
         items
@@ -542,12 +552,12 @@ impl ComputersView {
                     .when(open, |d| d.child(Button::new("at-work-show", "Show in Sessions").size(ButtonSize::Small).on_click(cx.listener(|_, _, _, cx| cx.emit(ComputersEvent::Sessions)))))
                     .into_any_element()
             }
-            Item::Action { key, title, button, act, busy, first, last } => {
+            Item::Action { key, title, button, act, busy, why, first, last } => {
                 let button = Button::new(SharedString::from(format!("{key}-button")), busy.clone().unwrap_or(button)).size(ButtonSize::Small);
                 let button = match act {
                     Some(_) if busy.is_some() => button.disabled(true),
                     Some(act) => button.on_click(cx.listener(move |this, _, _, cx| this.manage(act.clone(), cx))),
-                    None => button.disabled(true).tooltip(NOT_YET),
+                    None => button.disabled(true).tooltip(why.map(SharedString::from).unwrap_or(NOT_YET.into())),
                 };
                 card_row(key.clone(), first, last, cx).child(div().flex_1().min_w_0().text_ui(TypeSize::Body).text_color(c.text).child(title)).child(button).into_any_element()
             }

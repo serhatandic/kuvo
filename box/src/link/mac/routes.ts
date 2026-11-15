@@ -126,6 +126,8 @@ export async function* macLinkRoute(route: string, request: LinkRequest, signal:
       if (!isObject(given) || typeof given.phones !== "boolean" || typeof given.machines !== "boolean" || !relay || !["ws:", "wss:"].includes(relay.protocol)) {
         return yield* json(400, { message: "Say whether the phone link is on (phones) and there are machines (machines), and the relay." });
       }
+      // (Said by the old app as it attaches: it counts attached from now, `oldAppAttached`.)
+      macLink.appSaid = Date.now();
       const config = { phones: given.phones, machines: given.machines, relay: relay.toString().replace(/\/$/, ""), name: String(given.name ?? "Mac").slice(0, 100), app: String(given.app ?? "") };
       const before = macLink.config;
       macLink.config = config;

@@ -27461,6 +27461,7 @@ async function* macLinkRoute(route, request, signal) {
       if (!isObject(given) || typeof given.phones !== "boolean" || typeof given.machines !== "boolean" || !relay || !["ws:", "wss:"].includes(relay.protocol)) {
         return yield* json(400, { message: "Say whether the phone link is on (phones) and there are machines (machines), and the relay." });
       }
+      macLink.appSaid = Date.now();
       const config = { phones: given.phones, machines: given.machines, relay: relay.toString().replace(/\/$/, ""), name: String(given.name ?? "Mac").slice(0, 100), app: String(given.app ?? "") };
       const before = macLink.config;
       macLink.config = config;
@@ -27661,7 +27662,8 @@ function writtenMachines(link, writer) {
   const boxes = writer.here ? peersOf(link) : namedBoxes(link);
   return new Set(boxes.filter((box) => box.kind === "machine").map((box) => box.key));
 }
-var oldAppAttached = () => IS_MAC && macLink.statusFollowers.size > 0;
+var OLD_APP_GRACE = 60000;
+var oldAppAttached = (now = Date.now()) => IS_MAC && (macLink.statusFollowers.size > 0 || now - (macLink.appSaid ?? -Infinity) < OLD_APP_GRACE);
 var oldAppWords = (mac, name) => `Quit the old Kuvo Code app on ${mac} first: it keeps its own list of machines, and would add ${name} back.`;
 function writerFacts(link = readLink()) {
   const writer = writerOf(link);
@@ -27672,7 +27674,7 @@ function writerFacts(link = readLink()) {
     machines: writtenMachines(link, writer),
     takes: Boolean(writer && (writer.here || (told?.features ?? []).includes(MANAGE_FEATURE))),
     reachable,
-    oldApp: Boolean(writer && (writer.here ? oldAppAttached() : told?.computer?.oldApp === true))
+    oldApp: Boolean(writer && (writer.here ? oldAppAttached() : told?.computer?.oldApp === true && awaySince(writer.key) === null))
   };
 }
 function whyNot(computer, what, here, link = readLink(), facts = writerFacts(link)) {
@@ -27693,9 +27695,15 @@ function whyNot(computer, what, here, link = readLink(), facts = writerFacts(lin
     return `${name} isn't one of ${writer.here ? here : writer.name}’s machines, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
   if (!facts.takes)
     return `${writer.name} needs a newer Kuvo Code to ${what} your machines. Update it, then try again.`;
-  if (what === "remove" && facts.oldApp)
-    return oldAppWords(writer.here ? here : writer.name, name);
   return null;
+}
+function waitsFor(computer, here, facts) {
+  if (!facts.oldApp || !facts.writer)
+    return null;
+  return oldAppWords(facts.writer.here ? here : facts.writer.name, computer.name || "it");
+}
+function refusal(computer, what, here, link = readLink(), facts = writerFacts(link)) {
+  return whyNot(computer, what, here, link, facts) ?? (what === "remove" ? waitsFor(computer, here, facts) : null);
 }
 function actionsOf(computer, here, trying, link = readLink(), facts = writerFacts(link)) {
   const actions = [];
@@ -27705,7 +27713,8 @@ function actionsOf(computer, here, trying, link = readLink(), facts = writerFact
   if (computer.via === "relay" && computer.reach === "away" && !trying)
     actions.push({ id: "connect", label: "Connect" });
   if (!whyNot(computer, "remove", here, link, facts)) {
-    actions.push({ id: "remove", label: "Remove", confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } });
+    const waits = waitsFor(computer, here, facts);
+    actions.push({ id: "remove", label: "Remove", ...waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } } });
   }
   return actions;
 }
@@ -37461,7 +37470,7 @@ async function* manage(context, key, connect) {
   if (what === "rename" && !name)
     return yield* json(400, { message: `Give it a name of up to ${MOST_NAME2} characters.` });
   const link = readLink();
-  const why = whyNot(computer, what, here, link);
+  const why = refusal(computer, what, here, link);
   if (why)
     return yield* json(409, { message: why });
   const writer = writerOf(link);
@@ -40978,7 +40987,7 @@ async function perform(action, root, file, scope) {
     return failed;
   return scope === "unstaged" ? run(["restore", "--worktree", "--", ...paths]) : run(["restore", "--source=HEAD", "--staged", "--worktree", "--", file.path]);
 }
-var refusal = (root, author = {}) => async (args) => {
+var refusal2 = (root, author = {}) => async (args) => {
   const ran = await git2(root, args, "yours", author);
   if (ran.ok)
     return null;
@@ -40986,7 +40995,7 @@ var refusal = (root, author = {}) => async (args) => {
 ` + ran.said).trim();
   return words || `git ${args[0]} failed.`;
 };
-async function pushFrom(root, said = refusal(root)) {
+async function pushFrom(root, said = refusal2(root)) {
   const pushed = await said(["push"]);
   return pushed?.includes("no upstream branch") ? said(["push", "-u", "origin", "HEAD"]) : pushed;
 }
@@ -40994,7 +41003,7 @@ async function commit2(directory, message, push, author) {
   const root = (await text4(directory, ["rev-parse", "--show-toplevel"]))?.trim();
   if (!root)
     return { failed: "Not a git repository.", committed: false };
-  const said = refusal(root, author);
+  const said = refusal2(root, author);
   if (!await hasStaged(root)) {
     const relative = path140.relative(realOr2(root), realOr2(directory));
     const failed = await said(["add", "-A", "--", relative && !relative.startsWith("..") ? relative : "."]);
@@ -41060,7 +41069,7 @@ async function switchBranch(directory, branch, create) {
   const { root } = found;
   if (!root)
     return "This folder has no checkout of its own to switch. Switch branches in one of its worktrees.";
-  return refusal(root)(["switch", ...create ? ["-c"] : [], branch]);
+  return refusal2(root)(["switch", ...create ? ["-c"] : [], branch]);
 }
 async function statusIn(directory) {
   const found = await repositoryOf3(directory);
@@ -41117,7 +41126,7 @@ async function mergeInto(directory, given, author = {}) {
   const why = await unready(directory, branch, into);
   if (why)
     return { status: 409, failed: why };
-  const said = refusal(target, author);
+  const said = refusal2(target, author);
   const failed = await said(["merge", "--no-edit", branch]);
   if (!failed)
     return { into };
@@ -41250,7 +41259,7 @@ async function pullRequest(directory, title, body) {
   if ("failed" in way)
     return way;
   const { root, branch, base, remote } = way;
-  const pushed = await refusal(root)(["push", "-u", "origin", "HEAD"]);
+  const pushed = await refusal2(root)(["push", "-u", "origin", "HEAD"]);
   if (pushed)
     return { status: 422, failed: pushed };
   const page = remote ? webPage(remote) : null;
@@ -44819,7 +44828,7 @@ import fs145 from "node:fs";
 import path152 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d4a8f96bfb73";
+var BRIDGE_VERSION = "574d122268ad";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -49433,7 +49442,7 @@ async function* claudeCodeRoute({ request, readEngine, json }) {
 import fs152 from "node:fs";
 import path161 from "node:path";
 var byName = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
-function refusal2(at, error) {
+function refusal3(at, error) {
   const code = error?.code;
   if (code === "ENOENT")
     return { status: 404, value: { message: `There's no folder ${at} here.`, reason: "No such folder" } };
@@ -49460,7 +49469,7 @@ async function listTree(requestPath, limit = TREE_LIMIT, signal, timeout) {
   try {
     await fs152.promises.readdir(at);
   } catch (error) {
-    return refusal2(at, error);
+    return refusal3(at, error);
   }
   const listed = await gitNamesLater(at, ["-c", "core.quotepath=off", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], limit, signal, timeout);
   if (signal?.aborted)
@@ -49518,7 +49527,7 @@ function listFolders(requestPath) {
   try {
     entries = fs152.readdirSync(at, { withFileTypes: true });
   } catch (error) {
-    return refusal2(at, error);
+    return refusal3(at, error);
   }
   const hidden = query.get("hidden") === "1";
   const asks = at === home ? promptedFolders() : new Set;
@@ -57017,7 +57026,7 @@ function helperPlist(app) {
 </plist>
 `;
 }
-function refusal3() {
+function refusal4() {
   if (process.platform !== "darwin")
     return "Only a Mac's own box runs under Kuvo Code Box.";
   if (APP_FOLDER || recordedKind() !== "mac")
@@ -57043,7 +57052,7 @@ function helperStatus() {
   return { helper: fs175.existsSync(helperProgram()), agent, loaded };
 }
 function installHelperAgent({ load, app }) {
-  const why = refusal3();
+  const why = refusal4();
   if (why)
     return { written: false, loaded: false, message: why };
   const tools = launchTools();
@@ -57075,7 +57084,7 @@ function installHelperAgent({ load, app }) {
 }
 function startHelperAgent({ app, ifMissing = false }) {
   const mac = process.platform === "darwin" && !APP_FOLDER && recordedKind() === "mac";
-  const why = refusal3();
+  const why = refusal4();
   if (why)
     return { started: false, mac, message: why };
   const status = helperStatus();

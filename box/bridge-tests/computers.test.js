@@ -194,6 +194,19 @@ test("what you do to a machine can't reach the Mac that writes its record: refus
   assert.deepEqual(ids(computers.here), []);
 });
 
+test("while the old app is attached to the Mac that writes your machines' records, a machine's Remove says to quit it first, as that Mac told; not while that Mac is away", async () => {
+  fresh();
+  tell(mac, { features: MAC_TAKES, computer: { version: "1.1.0", working: 0, oldApp: true } });
+  let remove = (await listed()).second.actions.find(action => action.id === "remove");
+  assert.deepEqual(remove, { id: "remove", label: "Remove", why: "Quit the old Kuvo Code app on Studio first: it keeps its own list of machines, and would add second back." });
+  assert.deepEqual(await ask("DELETE", `kuvo/computers/${second.pub}`), { status: 409, body: { message: remove.why } });
+  // The Mac away: that's what's said, not what it last said of its app.
+  fs.writeFileSync(path.join(run, "peer-reach.json"), JSON.stringify({ [mac.pub]: Date.now() }));
+  remove = (await listed()).second.actions.find(action => action.id === "remove");
+  assert.equal(remove.why, undefined);
+  assert.equal((await ask("DELETE", `kuvo/computers/${second.pub}`)).status, 503);
+});
+
 test("Connect, for a computer that's away: this box tells it its agents and asks for theirs, says it's being reached, and its answer brings it back", async t => {
   fresh();
   tell(second, { features: MAC_TAKES, computer: { version: "1.1.0", working: 1 } });

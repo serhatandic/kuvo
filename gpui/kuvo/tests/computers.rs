@@ -240,3 +240,20 @@ fn a_refusal_is_shown_in_the_boxs_words(cx: &mut TestAppContext) {
     click(cx, "computer-key_studio");
     assert!(!shown(cx, "manage-problem"));
 }
+
+/// While the old app is open on the Mac that keeps your machines' records, Remove waits and says
+/// why, in the box's words, and sends nothing.
+#[gpui::test]
+fn remove_waits_for_the_old_app_and_says_so(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.old_app_open();
+    let (_workspace, page, cx) = open(cx, stand_in.clone());
+    click(cx, "computer-key_devbox");
+    assert!(shown(cx, "action-remove"));
+    assert_eq!(
+        said(&page, cx, "manage-why").map(|(words, _)| words).as_deref(),
+        Some("Quit the old Kuvo Code app on Stand-in Mac first: it keeps its own list of machines, and would add devbox back.")
+    );
+    click(cx, "action-remove-button");
+    assert!(!shown(cx, "computers-confirm") && stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").is_empty(), "nothing asked, nothing sent");
+}

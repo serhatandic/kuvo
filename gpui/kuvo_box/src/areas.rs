@@ -161,7 +161,21 @@ pub struct Computer {
     pub features: Option<Vec<String>>,
     /// What can be done with it from this box now, in the box's order and words.
     #[serde(default, deserialize_with = "readable")]
-    pub actions: Vec<crate::accounts::Action>,
+    pub actions: Vec<ComputerAction>,
+}
+
+/** What can be done with a computer from the box that lists it, in the box's words. */
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ComputerAction {
+    /// `rename`, `connect` or `remove`.
+    pub id: String,
+    pub label: String,
+    /// Where it asks first, the box's question.
+    #[serde(default)]
+    pub confirm: Option<crate::accounts::Confirm>,
+    /// It can't be done now: why, to show beside it.
+    #[serde(default)]
+    pub why: Option<String>,
 }
 
 /// A session at work on a computer: its id there, and its title.
@@ -184,7 +198,7 @@ impl Computer {
     }
 
     /// What the box offers to do with it, by id (`rename`, `connect`, `remove`).
-    pub fn action(&self, id: &str) -> Option<&crate::accounts::Action> {
+    pub fn action(&self, id: &str) -> Option<&ComputerAction> {
         self.actions.iter().find(|action| action.id == id)
     }
 }
@@ -537,6 +551,8 @@ mod tests {
         let facts: Computer = serde_json::from_str(r#"{"key":"k3","name":"mini","kind":"machine","reach":"connected","via":"relay","atWork":[{"id":"ses_1","title":"Ship it"},{"id":"ses_2"},{"title":"no id"}],"actions":[{"id":"connect","label":"Connect"},{"label":"no id"}],"limits":[]}"#).unwrap();
         assert_eq!((facts.working, facts.at_work.len(), facts.at_work[1].title.as_deref()), (None, 2, None));
         assert_eq!((facts.actions.len(), facts.action("connect").map(|action| action.label.as_str())), (1, Some("Connect")));
+        let waits: Computer = serde_json::from_str(r#"{"key":"k4","name":"attic","actions":[{"id":"remove","label":"Remove","why":"Quit the old app first."}]}"#).unwrap();
+        assert_eq!(waits.action("remove").and_then(|action| action.why.as_deref()), Some("Quit the old app first."));
     }
 
     /// A computer is older only where the list says what it has, and lacks something the gate needs.

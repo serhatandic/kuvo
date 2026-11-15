@@ -224,6 +224,11 @@ impl StandIn {
         self.state().areas.manage_refused = Some(words.to_owned());
     }
 
+    /// The old Kuvo Code app is open on this Mac: removing a machine waits, saying so.
+    pub fn old_app_open(&self) {
+        self.state().areas.old_app = true;
+    }
+
     /// Whether its list of computers can be read (else 503, as a box that isn't answering).
     pub fn computers_readable(&self, readable: bool) {
         self.state().areas.computers_down = !readable;

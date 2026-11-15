@@ -26,6 +26,7 @@ import type { Act, Acted } from "../work-queue/forward";
 import { isApart } from "./apart";
 import { readPeerAgents } from "./directory";
 import { macsOf, namedBoxes, peersOf } from "./known";
+import { awaySince } from "./reach";
 import type { MailSender, Peer } from "./known";
 
 /** What a box's agents' mail says when it renames and removes the machines it writes for others. */
@@ -70,9 +71,14 @@ export interface WriterFacts {
   oldApp: boolean;
 }
 
+/** How long after the old app last said its link's config (`kuvo/link/config`, the first thing it
+ * does as it attaches) it counts as attached, with no follow yet. */
+export const OLD_APP_GRACE = 60_000;
+
 /** Whether the old Kuvo Code app (the Mac app before 1.0) is attached to this Mac's box now: it,
- * and only it, follows the box's link (`kuvo/link/status/events`) for as long as it's open. */
-export const oldAppAttached = (): boolean => IS_MAC && macLink.statusFollowers.size > 0;
+ * and only it, follows the box's link (`kuvo/link/status/events`) for as long as it's open, and
+ * says its link's config first, as it attaches or attaches again. */
+export const oldAppAttached = (now = Date.now()): boolean => IS_MAC && (macLink.statusFollowers.size > 0 || now - (macLink.appSaid ?? -Infinity) < OLD_APP_GRACE);
 
 /** Why a removal isn't taken while the old app is attached to the Mac `mac` (its name). */
 export const oldAppWords = (mac: string, name: string): string => `Quit the old Kuvo Code app on ${mac} first: it keeps its own list of machines, and would add ${name} back.`;
@@ -82,7 +88,8 @@ export function writerFacts(link: LinkState | null = readLink()): WriterFacts {
   const reachable = Boolean(writer && (writer.here || peersOf(link).some(peer => peer.key === writer.key)));
   const told = writer && !writer.here ? readPeerAgents()[writer.key] : undefined;
   return { writer, machines: writtenMachines(link, writer), takes: Boolean(writer && (writer.here || (told?.features ?? []).includes(MANAGE_FEATURE))), reachable,
-    oldApp: Boolean(writer && (writer.here ? oldAppAttached() : told?.computer?.oldApp === true)) };
+    // (A writer that's away is said to be away: what it last said of its app may be long over.)
+    oldApp: Boolean(writer && (writer.here ? oldAppAttached() : told?.computer?.oldApp === true && awaySince(writer.key) === null)) };
 }
 
 /** Why `computer` can't be renamed (`rename`) or removed (`remove`) from this box, in words a client
@@ -99,8 +106,20 @@ export function whyNot(computer: Pick<ListedComputer, "key" | "name" | "kind" | 
   if (!facts.reachable) return `${here} can't reach ${(writer as { name: string }).name}, which keeps your machines' records: ${what} ${name} from there.`;
   if (!computer.key || !facts.machines.has(computer.key)) return `${name} isn't one of ${writer.here ? here : writer.name}’s machines, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
   if (!facts.takes) return `${(writer as { name: string }).name} needs a newer Kuvo Code to ${what} your machines. Update it, then try again.`;
-  if (what === "remove" && facts.oldApp) return oldAppWords(writer.here ? here : writer.name, name);
   return null;
+}
+
+/** Why removing `computer` waits now, where it would be offered otherwise: the old app attached to
+ * the writer's box. */
+function waitsFor(computer: Pick<ListedComputer, "name">, here: string, facts: WriterFacts): string | null {
+  if (!facts.oldApp || !facts.writer) return null;
+  return oldAppWords(facts.writer.here ? here : facts.writer.name, computer.name || "it");
+}
+
+/** Why `computer` can't be removed (or renamed) from this box now, all of it: what `whyNot` says,
+ * or that it waits for the old app to be quit. */
+export function refusal(computer: Pick<ListedComputer, "key" | "name" | "kind" | "here" | "shared" | "apart" | "via">, what: "rename" | "remove", here: string, link: LinkState | null = readLink(), facts: WriterFacts = writerFacts(link)): string | null {
+  return whyNot(computer, what, here, link, facts) ?? (what === "remove" ? waitsFor(computer, here, facts) : null);
 }
 
 /** What can be done with `computer` from this box now, in the order to offer them. `trying`: it's
@@ -111,7 +130,9 @@ export function actionsOf(computer: ListedComputer, here: string, trying: boolea
   if (!whyNot(computer, "rename", here, link, facts)) actions.push({ id: "rename", label: "Rename" });
   if (computer.via === "relay" && computer.reach === "away" && !trying) actions.push({ id: "connect", label: "Connect" });
   if (!whyNot(computer, "remove", here, link, facts)) {
-    actions.push({ id: "remove", label: "Remove", confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } });
+    // (Offered, and while it waits for the old app to be quit, said why rather than left out.)
+    const waits = waitsFor(computer, here, facts);
+    actions.push({ id: "remove", label: "Remove", ...(waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } }) });
   }
   return actions;
 }
