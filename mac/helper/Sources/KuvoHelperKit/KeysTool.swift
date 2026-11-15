@@ -14,7 +14,14 @@ import Security
 /// box's move: only while a move holds its lock (`updates/rehome/lock/pid`), and only run by the
 /// very process that holds it. Its own build is signed by a team, and gives the keys only to a
 /// helper signed by that team, in the box's `bin` or the release its move unpacked
-/// (`updates/install`): places in the box's home that only you and the box change.
+/// (`updates/install`).
+///
+/// **What that holds against, and what it doesn't (#713 piece 4 settles the rest; until then no
+/// `kuvo-keys` is signed with a real identity, scripts/build-helper.sh):** all of it rests on the
+/// box's home being closed to whoever asks, which is true only of a command under the sandbox,
+/// and of another user. A program of yours outside the sandbox can write the move's lock itself
+/// and run this, and can put another program in the helper's place between `copy`'s check and
+/// the copies being made (the check is of a path, and so is what the Keychain is told to trust).
 ///
 /// - `kuvo-keys copy --home <box> --helper <Kuvo Helper.app>`: each of the app's items copied
 ///   under the helper's names, trusting only that helper (`KeychainMove.copy`).
@@ -73,14 +80,16 @@ public enum KeysTool {
             case ["copy"]:
                 // Only Kuvo Helper itself is given the keys: signed by the team that signed this
                 // (never one signed ad hoc, which anything could be, but in the tests' own build).
-                // And only one in the box's `bin` or the release its move unpacked, where no session's
-                // command can put another in its place between this check and the copies being made.
+                // And only one in the box's `bin` or the release its move unpacked, where no command
+                // under the sandbox can put another in its place between this check and the copies
+                // being made. (A program of yours outside the sandbox can: piece 4's to close.)
                 guard let helperBundle, helperBundle.hasPrefix("/"), let trusted = inside(home, helperBundle, under: ["bin", "updates/install"]),
                       BoxHelperBundle.isGenuine(trusted, identifier: helper, adHocMatch: !pinned), let seal = BoxHelperBundle.cdhash(trusted) else {
                     usage("Copying needs \(BoxHelperBundle.name) itself, in this Mac’s box and signed by Kuvo Code’s team: --helper <its bundle>.")
                 }
                 let copied = try move.copy(trusting: trusted)
-                // The same helper still, now that each copy names it: one changed meanwhile is said.
+                // The same helper still, now that each copy names it: one changed meanwhile is said
+                // (one changed and put back in between isn't seen).
                 // (The journal stays at `copied`: the helper's `uncopy` takes away the copies it can,
                 // and any it can't, made for something else, stay as leftovers that stop the next copy.)
                 guard BoxHelperBundle.cdhash(trusted) == seal, BoxHelperBundle.isGenuine(trusted, identifier: helper, adHocMatch: !pinned) else {
@@ -154,6 +163,11 @@ public enum KeysTool {
     /// The sign-ins 0.7 kept as internet passwords, written whole for the box; how many. One the
     /// Keychain lists but won't give out stops it with nothing written: none is left behind
     /// unsaid. The Keychain's own stay as they are.
+    ///
+    /// The file holds them as plain text (`0600`): any program of yours outside the sandbox can
+    /// read it for as long as it's there, where the Keychain kept them from all but Kuvo Code.
+    /// Not to ship as it is: #713 piece 4 hands them over another way (Keychain items trusting
+    /// only the helper, as `copy` makes, or a pipe to the box's server), before anything runs this.
     static func handOverPasswords(keychain: HostKeychain, home: URL) throws -> Int {
         guard !keychain.isLocked, let found = keychain.internetPasswords(creator: creator) else {
             throw KeychainMove.Failure.refused("your saved sign-ins", errSecInteractionNotAllowed)

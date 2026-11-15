@@ -7410,7 +7410,8 @@ runs under **Kuvo Helper**, a small signed program of Kuvo Code's own with no bo
 Swift, for macOS only (a box on Linux needs none), in a package of its own (`mac/helper`), and
 built on its own by `scripts/build-helper.sh <folder>`, with no app built or needed: `Kuvo
 Helper.app`, signed with the hardened runtime and its own entitlements, so it can be notarized as
-it is. The box's release brings it into `bin/Kuvo Helper.app`, and it runs from there. Its bundle
+it is (and `kuvo-keys`, below, ad hoc only: signed with a real identity only when asked, `KEYS=1`,
+which nothing does yet). The box's release brings it into `bin/Kuvo Helper.app`, and it runs from there. Its bundle
 ID is the app's with `.box` after it (`run.kuvo.code.box`); an update keeps that, its signer and
 its place, which is what macOS keeps your permissions and its Keychain items by. (Until #713 it
 was named Kuvo Code Box, in no release.)
@@ -7440,7 +7441,9 @@ was named Kuvo Code Box, in no release.)
   start` opens it itself: `open -g -j -n <bin/Kuvo Helper.app> --args keep --home <box>`, through
   Launch Services, so it's its own program to macOS as launchd's would be (never the child of
   whatever asked, which would make that what macOS asks about). It answers `{started: true, mac,
-  disabled: true, opened: true, message}`, exit 0: the helper runs the box until you log out, and
+  disabled: true, opened: true, message}`, exit 0: macOS was asked to open it and took that, which
+  is all `opened` says (whether the helper then keeps the box is in its own records:
+  `run/helper-trouble`, `run/permissions.json`). Opened so, it runs the box until you log out, and
   isn't started at login until it's switched on again, which `message` says. One running already
   keeps the box (its lock); the one opened goes at once. Where macOS doesn't open it: `{started:
   false, disabled: true, message}`, exit 1. `--if-missing` never opens one. No client opens the
@@ -7474,13 +7477,15 @@ was named Kuvo Code Box, in no release.)
 - **What macOS allows** (`box.permissions`). Everything the box runs is asked about, and allowed,
   as Kuvo Helper, and only the helper can ask macOS what it's allowed. It does (neither call asks
   you anything) as it starts and every ten seconds, and writes `run/permissions.json` when that
-  changes or the note's gone: `{"v": 1, "pid": <its own>, "screenRecording": bool, "accessibility": bool}`, `0600`,
-  taken away as it goes. The box says it:
+  changes or the note's gone: `{"v": 1, "pid": <its own>, "started": <when its process started, in
+  seconds>, "screenRecording": bool, "accessibility": bool}`, `0600`, taken away as it goes. The box says it:
   - `GET kuvo/box/permissions` → `{applies, name, known, screenRecording, accessibility}`.
     `applies`: whether this box runs under such a program (a Mac's own box in a home of its own);
     `name`: what System Settings lists it as (`"Kuvo Helper"`), null where it doesn't apply;
     `known`: whether the helper runs now and has said (a note whose `pid` isn't a running process
-    of yours, or that isn't as above, says nothing); each permission `true` or `false`, null while not `known`.
+    of yours that started when `started` says, to within three seconds, as `ps` has it, says
+    nothing: a helper killed where it stood leaves its note, and its number goes to another
+    process; nor does one that isn't as above); each permission `true` or `false`, null while not `known`.
     `405` for anything but `GET`: nothing here grants anything, which only you do, in System
     Settings › Privacy & Security.
   - A machine's box (Linux, or a Mac set up as one) and a Mac's box still in its app's folder
@@ -7543,7 +7548,10 @@ was named Kuvo Code Box, in no release.)
   on stderr. All but `check` take the box's `run/helper.lock`, refusing while the helper keeps the
   box (its host interface may be changing those keys). `back` takes only Kuvo Code itself for `--app`, signed by the helper's team: a helper
   signed ad hoc (a local build) refuses, as anything can be signed so (the tests' own build aside).
-- **`kuvo-keys`** (#713, for a box's move that no Swift keeper runs; nothing runs it yet): the
+- **`kuvo-keys`** (#713, for a box's move that no Swift keeper runs; nothing runs it yet, and
+  **none is signed with a real identity yet**: `scripts/build-helper.sh` makes one only ad hoc,
+  for its tests, unless asked with `KEYS=1`, and no release asks, until #713 piece 4 settles the
+  two limits said below): the
   app's side of the Keychain's move as a small program of its own, built beside the helper from
   the same package (`scripts/build-helper.sh`) and signed with Kuvo Code's own identifier
   (`run.kuvo.code`) and team, which is what the items Kuvo Code made go by: it reads them without
@@ -7563,9 +7571,12 @@ was named Kuvo Code Box, in no release.)
     signed by the team that signed `kuvo-keys`; never one signed ad hoc), in the box's `bin` or
     the release its move unpacked (`updates/install`), where it really is (links followed), every
     folder from the home down to it and inside it yours and closed to others' writes. Those are
-    places no session's command writes to (a session's own folders are elsewhere in the home), so
-    none can put another program in its place between the check and the copies. It checks the
-    helper again once the copies are made: changed meanwhile, exit 1, `reason` `helper-changed`,
+    places no command under the sandbox writes to (a session's own folders are elsewhere in the
+    home), so none of those can put another program in its place between the check and the
+    copies. **Only under the sandbox:** the check is of a path, and so is what the Keychain is
+    told to trust, so a program of yours outside the sandbox can change what's there in between
+    (and put it back before the second check). Piece 4 closes that or says why it needn't. It
+    checks the helper again once the copies are made: changed meanwhile, exit 1, `reason` `helper-changed`,
     and the copies aren't to be used (the helper's `uncopy` takes away those it can; any it can't
     stay as leftovers, which stop the next copy). `{"copied": <how many>}`.
   - `kuvo-keys delete-originals --home <box>`: the app's own taken away once the move can't go
@@ -7575,6 +7586,10 @@ was named Kuvo Code Box, in no release.)
     `{"v": 1, "logins": [{host, account, password, modified?}]}`, `modified` in milliseconds.
     `{"passwords": <how many>}`. The Keychain's own stay; one it lists but won't give out stops it
     with nothing written. The box takes the file into its vault and deletes it (not built yet).
+    **Not to ship as it is:** the file is plain text any program of yours outside the sandbox
+    reads while it's there, where the Keychain kept these from all but Kuvo Code. Piece 4 hands
+    them over another way (Keychain items trusting only the helper, as `copy` makes, or a pipe to
+    the box's server) before anything runs this.
   One line of JSON; exit 0 once done; 1 with `{"error", "reason"}` (and the error on stderr) where
   it wasn't, `reason` one of `refused` (the Keychain won't without asking: locked, say),
   `leftovers` (items an earlier box left under the helper's names: the helper's `keys clear`

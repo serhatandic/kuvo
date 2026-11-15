@@ -78,8 +78,9 @@ codesign "$@" "$FRAMEWORK"
 # Kuvo Helper, the helper this Mac's box runs under in ~/.kuvo-code, built on its own
 # (scripts/build-helper.sh, from mac/helper) and signed with the same identity, its own entitlements
 # and the hardened runtime, then put in Contents/Helpers before the app that seals it: notarized with
-# the app, and packed into the box's release from it. (kuvo-keys, built beside it, is the desktop
-# app's to carry: this app moves its own keys.)
+# the app, and packed into the box's release from it. (No kuvo-keys: build-helper.sh makes none
+# with a real identity unless asked with KEYS=1, and this never asks. This app moves its own keys,
+# and no signed kuvo-keys is to exist until #713 piece 4 settles what keeps it to the box's move.)
 info() { /usr/libexec/PlistBuddy -c "Print :$1" "$APP/Contents/Info.plist"; }
 HELPER_BUILD=$(mktemp -d "${TMPDIR:-/tmp}/kuvo-helper.XXXXXXXX")
 trap 'rm -rf "$HELPER_BUILD"' EXIT

@@ -416,12 +416,16 @@ public final class BoxHelper {
     var permissionsFile: URL { run.appending(path: "permissions.json") }
 
     /// What macOS allows this program, written for the box when it changes (and first): facts only,
-    /// with this process's number, so the box can tell a record left by one that's gone.
+    /// with this process's number and when it started (in seconds, as the kernel has it), so the
+    /// box can tell a record left by one that's gone, whoever has its number now.
     func notePermissions() {
         let now = allowed()
         // (Written again where the note's gone: whatever took it away, the box hears again.)
         guard now != notedPermissions || !FileManager.default.fileExists(atPath: permissionsFile.path(percentEncoded: false)) else { return }
-        let record: [String: Any] = ["v": 1, "pid": Int(getpid()), "screenRecording": now.screenRecording, "accessibility": now.accessibility]
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(getpid(), PROC_PIDTBSDINFO, 0, &info, size) == size else { return }
+        let record: [String: Any] = ["v": 1, "pid": Int(getpid()), "started": Int(info.pbi_start_tvsec), "screenRecording": now.screenRecording, "accessibility": now.accessibility]
         guard let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]), (try? PrivateFile.write(data, to: permissionsFile)) != nil else { return }
         notedPermissions = now
     }

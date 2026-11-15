@@ -145,7 +145,7 @@ test("helper start: the whole start through the helper, its launch agent put in 
   write(path.join(where.tools, "launchctl"), `#!/bin/sh\necho "$*" >>"${where.home}/launchctl"\ncase "$1" in print) exit 113 ;; bootstrap) echo "Bootstrap failed: 5: Input/output error" >&2; exit 5 ;; print-disabled) printf '\\t"run.kuvo.code.machine" => disabled\\n' ;; esac\n`, 0o755);
   const off = helper(where, ["start"]);
   assert.equal(off.status, 0, off.stderr);
-  assert.deepEqual(off.said, { started: true, mac: true, disabled: true, opened: true, message: "Kuvo Helper is turned off in System Settings › General › Login Items, so it was opened for now: it runs this Mac's box until you log out. Turn it on there to start it at login." });
+  assert.deepEqual(off.said, { started: true, mac: true, disabled: true, opened: true, message: "Kuvo Helper is turned off in System Settings › General › Login Items, so it was opened for now, to run this Mac's box until you log out. Turn it on there to start it at login." });
   assert.deepEqual(read(path.join(where.home, "opened")).trim().split("\n"), ["-g", "-j", "-n", path.join(where.K, "bin", "Kuvo Helper.app"), "--args", "keep", "--home", where.K]);
   // --if-missing leaves one switched off as it is: not opened.
   fs.rmSync(path.join(where.home, "opened"));
@@ -260,24 +260,32 @@ test("kuvo/box/permissions: what macOS allows Kuvo Helper, as the helper running
   const where = home("mac");
   const box = await served(where);
   const facts = path.join(where.run, "permissions.json");
+  // (When this test's process started, as the helper notes its own.)
+  const started = Math.floor(Date.now() / 1000 - process.uptime());
   const unknown = { applies: true, name: "Kuvo Helper", known: false, screenRecording: null, accessibility: null };
   // No helper has said: it applies here, and nothing's known.
   assert.deepEqual(await box.ask("kuvo/box/permissions"), { status: 200, body: unknown });
   // The helper running this box (a stand-in: this test's own process) noted what it's allowed.
-  write(facts, JSON.stringify({ v: 1, pid: process.pid, screenRecording: true, accessibility: false }));
+  write(facts, JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: true, accessibility: false }));
   assert.deepEqual((await box.ask("kuvo/box/permissions")).body, { applies: true, name: "Kuvo Helper", known: true, screenRecording: true, accessibility: false });
   // Granted since: the helper notes it again, and the box says it as it's asked.
-  write(facts, JSON.stringify({ v: 1, pid: process.pid, screenRecording: true, accessibility: true }));
+  write(facts, JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: true, accessibility: true }));
   assert.equal((await box.ask("kuvo/box/permissions")).body.accessibility, true);
+  // A helper killed where it stood left its note, and its number went to another process of yours
+  // (here this test's, which started at another time than the note says its writer did).
+  for (const other of [started - 3600, started + 600]) {
+    write(facts, JSON.stringify({ v: 1, pid: process.pid, started: other, screenRecording: true, accessibility: true }));
+    assert.deepEqual((await box.ask("kuvo/box/permissions")).body, unknown, String(other));
+  }
   // A note left by a helper that's gone (it ended without taking it away) says nothing of now.
   const gone = spawnSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" });
-  write(facts, JSON.stringify({ v: 1, pid: Number(gone.stdout.trim()), screenRecording: true, accessibility: true }));
+  write(facts, JSON.stringify({ v: 1, pid: Number(gone.stdout.trim()), started, screenRecording: true, accessibility: true }));
   assert.deepEqual((await box.ask("kuvo/box/permissions")).body, unknown);
   // Nor one whose number is someone else's process now (launchd's here), not yours to signal.
-  write(facts, JSON.stringify({ v: 1, pid: 1, screenRecording: true, accessibility: true }));
+  write(facts, JSON.stringify({ v: 1, pid: 1, started, screenRecording: true, accessibility: true }));
   assert.deepEqual((await box.ask("kuvo/box/permissions")).body, unknown);
   // Nor one that isn't the helper's (half written, another version's, not facts).
-  for (const text of ["{", "[]", JSON.stringify({ v: 2, pid: process.pid, screenRecording: true, accessibility: true }), JSON.stringify({ v: 1, pid: process.pid, screenRecording: "yes", accessibility: true }), JSON.stringify({ v: 1, pid: 0, screenRecording: true, accessibility: true })]) {
+  for (const text of ["{", "[]", JSON.stringify({ v: 2, pid: process.pid, started, screenRecording: true, accessibility: true }), JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: "yes", accessibility: true }), JSON.stringify({ v: 1, pid: 0, started, screenRecording: true, accessibility: true }), JSON.stringify({ v: 1, pid: process.pid, screenRecording: true, accessibility: true })]) {
     write(facts, text);
     assert.deepEqual((await box.ask("kuvo/box/permissions")).body, unknown, text);
   }
@@ -289,7 +297,7 @@ test("kuvo/box/permissions: what macOS allows Kuvo Helper, as the helper running
 test("kuvo/box/permissions: a machine's box runs under no such program, and says so", async () => {
   const where = home("machine", { helper: false });
   // (Whatever a file there says: nothing here is the helper's word.)
-  write(path.join(where.run, "permissions.json"), JSON.stringify({ v: 1, pid: process.pid, screenRecording: true, accessibility: true }));
+  write(path.join(where.run, "permissions.json"), JSON.stringify({ v: 1, pid: process.pid, started: Math.floor(Date.now() / 1000 - process.uptime()), screenRecording: true, accessibility: true }));
   const box = await served(where);
   assert.deepEqual(await box.ask("kuvo/box/permissions"), { status: 200, body: { applies: false, name: null, known: false, screenRecording: null, accessibility: null } });
   await box.stop();

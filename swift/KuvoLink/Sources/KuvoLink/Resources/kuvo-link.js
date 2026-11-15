@@ -45487,7 +45487,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "34f68729148d";
+var BRIDGE_VERSION = "3129c56993bd";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -57432,6 +57432,7 @@ async function* appIconRoute(context) {
 }
 
 // box/src/link/permissions.ts
+import { spawnSync as spawnSync13 } from "node:child_process";
 import fs178 from "node:fs";
 import path185 from "node:path";
 
@@ -57755,7 +57756,7 @@ function startHelperAgent({ app, ifMissing = false }) {
       return null;
     const opened = spawnSync12(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "ignore", "pipe"] });
     if (opened.status === 0) {
-      return { started: true, mac, disabled: true, opened: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items, so it was opened for now: it runs this Mac's box until you log out. Turn it on there to start it at login.` };
+      return { started: true, mac, disabled: true, opened: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items, so it was opened for now, to run this Mac's box until you log out. Turn it on there to start it at login.` };
     }
     return { started: false, mac, disabled: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items, and macOS didn't open it: ${(opened.stderr || "").trim().slice(0, 300) || opened.error?.message || "it said nothing"}. Turn it on there, then try again.` };
   };
@@ -57814,6 +57815,20 @@ function runs(pid) {
     return false;
   }
 }
+function startedAt(pid) {
+  const asked = spawnSync13("/bin/ps", ["-o", "etime=", "-p", String(pid)], { encoding: "utf8", timeout: 1e4, stdio: ["ignore", "pipe", "ignore"] });
+  const ran = asked.status === 0 ? (asked.stdout ?? "").trim().match(/^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$/) : null;
+  if (!ran)
+    return null;
+  const seconds = Number(ran[1] ?? 0) * 86400 + Number(ran[2] ?? 0) * 3600 + Number(ran[3]) * 60 + Number(ran[4]);
+  return Date.now() / 1000 - seconds;
+}
+function wroteIt(pid, started) {
+  if (!runs(pid))
+    return false;
+  const began = startedAt(pid);
+  return began !== null && Math.abs(began - started) <= 3;
+}
 function boxPermissions() {
   const applies = process.platform === "darwin" && !APP_FOLDER && recordedKind() === "mac";
   const unknown = { applies, name: applies ? HELPER_NAME : null, known: false, screenRecording: null, accessibility: null };
@@ -57825,7 +57840,9 @@ function boxPermissions() {
   } catch {
     return unknown;
   }
-  if (!isObject(noted) || noted.v !== 1 || typeof noted.pid !== "number" || !Number.isInteger(noted.pid) || noted.pid <= 0 || !runs(noted.pid))
+  if (!isObject(noted) || noted.v !== 1 || typeof noted.pid !== "number" || !Number.isInteger(noted.pid) || noted.pid <= 0)
+    return unknown;
+  if (typeof noted.started !== "number" || !Number.isFinite(noted.started) || !wroteIt(noted.pid, noted.started))
     return unknown;
   if (typeof noted.screenRecording !== "boolean" || typeof noted.accessibility !== "boolean")
     return unknown;

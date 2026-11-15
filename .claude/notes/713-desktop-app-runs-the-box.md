@@ -472,6 +472,34 @@ Sized in wall-clock session hours, start to merge-ready, review included.
    question 7 asks whether that's acceptable.
 6. **The legacy keychain is "effectively deprecated"** (TN3137), as #333 noted.
 
+## 8a. Piece 1 as built, and what it leaves piece 4 (2026-11-15)
+
+Built: `mac/helper/` (Kuvo Helper and `kuvo-keys`), `scripts/build-helper.sh`, `helper start`
+opening the helper with Login Items off, `kuvo/box/permissions`. PROTOCOL.md, "This Mac's box:
+its helper", says each as it is. Three things piece 4 settles before anything runs `kuvo-keys`:
+
+1. **No `kuvo-keys` signed with a real identity exists, on purpose.** `build-helper.sh` makes one
+   only ad hoc (its tests) unless asked with `KEYS=1`; `build-app.sh` never asks, and nothing else
+   does. Signed as Kuvo Code by its team it reads 0.7's Keychain items with no prompt, and its
+   guard (the move's lock, `updates/rehome/lock/pid`, naming the process that started it, a
+   process older than the lock) holds only against what can't write in `~/.kuvo-code`: a command
+   under the sandbox, another user. Any other program of yours can write that lock and run it:
+   `passwords` (plain text), `delete-originals`, `copy`. That's wider than 0.7 is today. Piece 4
+   picks the guard (a caller signed by the team; the desktop app running it itself on the box's
+   word; or it written down, with the user's yes, that 0.7 already gives these to same-user code),
+   and only then does a release pass `KEYS=1`.
+2. **`passwords` writes plain text** (`updates/rehome/passwords.json`, `0600`). Not to ship so:
+   hand 0.7's sign-ins over as Keychain items trusting only the helper (as `copy` makes them), or
+   down a pipe to the box's server. When the Keychain's own go is piece 4's too (going back to
+   0.7.2 within 30 days needs them).
+3. **`copy`'s helper check can be raced by a same-user program outside the sandbox.** The check
+   is of a path (`bin` or `updates/install` in the home, yours alone, genuine before and after),
+   and `SecTrustedApplicationCreateFromPath` reads the path again. Closed only under the sandbox.
+   Piece 4: with the guard of 1 it may be enough; else trust by requirement, not by path.
+
+Also for piece 4: `kuvo-keys` must be run directly by the process holding the move's lock
+(`spawnSync` from it, no shell between, not from `serve` later), or it exits 2.
+
 ## 9. Questions only the user can answer
 
 1. **Who keeps this Mac's box?**

@@ -107,7 +107,8 @@ export function installHelperAgent({ load, app }: { load: boolean; app: string }
  * running as it is: one that found the box moving went, and launchd leaves it so until it's
  * asked). Switched off in Login Items, launchd won't: the box opens the helper itself then (`open
  * -g -j -n`, through Launch Services, so it's its own program to macOS as launchd's would be, never
- * this process's child), for until you log out, and says so (`disabled`, `opened`). `ifMissing`: one
+ * this process's child), for until you log out, and says so (`disabled`, `opened`: macOS was asked
+ * and took it, which isn't yet the helper keeping the box). `ifMissing`: one
  * in place is left as it is, loaded or not (switched off in Login Items, it stays off, and isn't
  * opened). `mac`: whether it's a Mac's own box in a home of its own, which only its helper starts. */
 export function startHelperAgent({ app, ifMissing = false }: { app: string; ifMissing?: boolean }): { started: boolean; mac: boolean; left?: boolean; disabled?: boolean; opened?: boolean; message: string } {
@@ -125,7 +126,9 @@ export function startHelperAgent({ app, ifMissing = false }: { app: string; ifMi
     if (disabled.status !== 0 || !new RegExp(`"${LAUNCH_AGENT.replace(/\./g, "\\.")}"\\s*=>\\s*(disabled|true)`).test(disabled.stdout ?? "")) return null;
     const opened = spawnSync(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "ignore", "pipe"] });
     if (opened.status === 0) {
-      return { started: true, mac, disabled: true, opened: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items, so it was opened for now: it runs this Mac's box until you log out. Turn it on there to start it at login.` };
+      // (Asked of macOS, which took it: whether it then keeps the box is the helper's to say, in
+      // its own records. Nothing here says it runs.)
+      return { started: true, mac, disabled: true, opened: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items, so it was opened for now, to run this Mac's box until you log out. Turn it on there to start it at login.` };
     }
     return { started: false, mac, disabled: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items, and macOS didn't open it: ${(opened.stderr || "").trim().slice(0, 300) || opened.error?.message || "it said nothing"}. Turn it on there, then try again.` };
   };

@@ -3,7 +3,8 @@
 # Mac's box runs under in ~/.kuvo-code, and kuvo-keys, the one-time hand-over of Kuvo Code 0.7's
 # Keychain items to it, from their own package (mac/helper), on their own: no app is built or
 # needed. Both signed, so they can be notarized as they are and packed into the box's release.
-#   scripts/build-helper.sh <folder>      makes <folder>/Kuvo Helper.app and <folder>/kuvo-keys
+#   scripts/build-helper.sh <folder>      makes <folder>/Kuvo Helper.app, and <folder>/kuvo-keys
+#                                         for an ad hoc build (or when asked: KEYS, below)
 #   SIGN_IDENTITY      codesigning identity (default "-": ad hoc, for local use); with one, a
 #                      secure timestamp too, as notarization requires. The hardened runtime always.
 #   APP_ID             Kuvo Code's bundle ID (default run.kuvo.code): kuvo-keys is signed with it,
@@ -13,6 +14,14 @@
 #   ICON               an .icns for the helper (Kuvo Code's: what Login Items and macOS's
 #                      questions show); none, and it has macOS's plain one
 #   MIN_SYSTEM         the oldest macOS it runs on (default 26.0)
+#   KEYS               1: kuvo-keys built and signed with SIGN_IDENTITY too. Without it, a build
+#                      signed with a real identity makes NO kuvo-keys, and nothing asks for one
+#                      yet (scripts/build-app.sh never does): signed as Kuvo Code by its team, it
+#                      reads Kuvo Code's Keychain items with no prompt, and what keeps it to the
+#                      box's move (the move's lock) holds only against a sandboxed command, not
+#                      against another program of yours. No signed kuvo-keys is to exist until
+#                      #713 piece 4 settles that guard. An ad hoc build (tests) always has one:
+#                      it's no one to the Keychain.
 #   HELPER_EXECUTABLE, KEYS_EXECUTABLE   each built already (a test's debug build), not built here
 # The helper's identifier, its signer and its place stay the same from version to version: macOS
 # keeps what you allowed it, and its Keychain items, by them. Nothing here installs or runs it.
@@ -53,9 +62,14 @@ if [ "$SIGN_IDENTITY" != "-" ] && [ -n "${HELPER_EXECUTABLE:-}${KEYS_EXECUTABLE:
     exit 2
 fi
 if [ -n "${HELPER_EXECUTABLE:-}" ]; then EXECUTABLE=$HELPER_EXECUTABLE; else EXECUTABLE=$(built KuvoHelper); fi
-if [ -n "${KEYS_EXECUTABLE:-}" ]; then KEYS=$KEYS_EXECUTABLE; else KEYS=$(built kuvo-keys); fi
+WITH_KEYS=0
+if [ "$SIGN_IDENTITY" = "-" ] || [ "${KEYS:-}" = 1 ]; then WITH_KEYS=1; fi
+KEYS_BUILT=""
+if [ "$WITH_KEYS" = 1 ]; then
+    if [ -n "${KEYS_EXECUTABLE:-}" ]; then KEYS_BUILT=$KEYS_EXECUTABLE; else KEYS_BUILT=$(built kuvo-keys); fi
+    test -x "$KEYS_BUILT" || { echo "No kuvo-keys at $KEYS_BUILT" >&2; exit 1; }
+fi
 test -x "$EXECUTABLE" || { echo "No KuvoHelper at $EXECUTABLE" >&2; exit 1; }
-test -x "$KEYS" || { echo "No kuvo-keys at $KEYS" >&2; exit 1; }
 
 # Each made beside where it goes, then put in place whole.
 NEW="$OUT.new"
@@ -64,9 +78,11 @@ rm -rf "$NEW" "$NEW_KEYS"
 trap 'rm -rf "$NEW" "$NEW_KEYS"' EXIT
 mkdir -p "$NEW/Contents/MacOS" "$NEW/Contents/Resources"
 cp "$EXECUTABLE" "$NEW/Contents/MacOS/$NAME"
-cp "$KEYS" "$NEW_KEYS"
 [ -n "${HELPER_EXECUTABLE:-}" ] || strip -rSTx "$NEW/Contents/MacOS/$NAME"
-[ -n "${KEYS_EXECUTABLE:-}" ] || strip -rSTx "$NEW_KEYS"
+if [ "$WITH_KEYS" = 1 ]; then
+    cp "$KEYS_BUILT" "$NEW_KEYS"
+    [ -n "${KEYS_EXECUTABLE:-}" ] || strip -rSTx "$NEW_KEYS"
+fi
 INFO="$NEW/Contents/Info.plist"
 # Its names, and what macOS says as it asks, for what the box's agents and integrations reach.
 cp "$PACKAGE/Info.plist" "$INFO"
@@ -89,11 +105,19 @@ fi
 codesign "$@" --identifier "$HELPER_ID" --entitlements "$PACKAGE/KuvoHelper.entitlements" "$NEW"
 codesign --verify --strict --deep "$NEW"
 # kuvo-keys is Kuvo Code itself to the Keychain: its identifier, and no entitlements.
-codesign "$@" --identifier "$APP_ID" "$NEW_KEYS"
-codesign --verify --strict "$NEW_KEYS"
+if [ "$WITH_KEYS" = 1 ]; then
+    codesign "$@" --identifier "$APP_ID" "$NEW_KEYS"
+    codesign --verify --strict "$NEW_KEYS"
+fi
 
 rm -rf "$OUT"
 mv "$NEW" "$OUT"
-mv -f "$NEW_KEYS" "$FOLDER/kuvo-keys"
+# (Never one left from an earlier build beside a helper it wasn't built with.)
+rm -f "$FOLDER/kuvo-keys"
+if [ "$WITH_KEYS" = 1 ]; then
+    mv -f "$NEW_KEYS" "$FOLDER/kuvo-keys"
+    echo "Built $OUT ($HELPER_ID) and $FOLDER/kuvo-keys ($APP_ID)"
+else
+    echo "Built $OUT ($HELPER_ID); no kuvo-keys (signed with a real identity only with KEYS=1)"
+fi
 trap - EXIT
-echo "Built $OUT ($HELPER_ID) and $FOLDER/kuvo-keys ($APP_ID)"

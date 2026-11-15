@@ -684,6 +684,11 @@ private final class InTheTests {}
         let noted = json(facts)
         #expect(noted["v"] as? Int == 1)
         #expect(noted["pid"] as? Int == Int(helper.process.processIdentifier), "whose word it is: the box tells one left by a helper that's gone")
+        // And when that process started, to the second: its number alone could be another's later.
+        let began = try #require(noted["started"] as? Int)
+        #expect(abs(Double(began) - Date().timeIntervalSince1970) < 120, "\(began)")
+        let etime = try Self.ran("/bin/ps", ["-o", "etime=", "-p", "\(helper.process.processIdentifier)"]).output.trimmingCharacters(in: .whitespaces).split(separator: ":").compactMap { Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        #expect(etime.count == 2 && abs(Date().timeIntervalSince1970 - (etime[0] * 60 + etime[1]) - Double(began)) <= 3, "as `ps` says of it, which is how the box checks: \(etime)")
         #expect(noted["screenRecording"] as? Bool == true)
         #expect(noted["accessibility"] as? Bool == false)
         #expect((try FileManager.default.attributesOfItem(atPath: facts.path)[.posixPermissions] as? Int) == 0o600)
