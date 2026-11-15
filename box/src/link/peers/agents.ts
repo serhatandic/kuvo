@@ -148,9 +148,10 @@ const ownFeatures = (): readonly string[] => (IS_MAC ? macFeatures() : FEATURES)
 // Tells each peer this box's agents: when they change, and every ten minutes, with a digest of
 // its documents to each that takes them, so one that missed what was given gets it then (PROTOCOL.md,
 // "Documents"). `told` remembers what went to whom, and when. `ask`: just connected, so each is
-// told, and asked for theirs.
+// told, and asked for theirs. `only`: that peer alone, told and asked now (Connect, as a client
+// asks it of one that's away: `reach-again.ts`).
 export const toldPeers = new Map<string, ToldPeer>();
-export async function announce(host: Pick<LinkHost, "send">, readEngine: () => Target, link: LinkState | null = readLink(), now = Date.now(), ask = false): Promise<void> {
+export async function announce(host: Pick<LinkHost, "send">, readEngine: () => Target, link: LinkState | null = readLink(), now = Date.now(), ask = false, only?: string): Promise<void> {
   if (!link?.key) return;
   await refreshOwn(readEngine, link);
   if (!ownList) return;
@@ -162,8 +163,8 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
   // one of your own computers for plan limits' resets and usage totals only within one setup.
   const setup = followedSetup(link)?.id;
   const where = { ...(setup ? { setup } : {}), ...(sharedMachine(link) ? { shared: true as const } : {}) };
-  // And what it is and runs, and how many of its sessions are at work ("Computers"): told again
-  // at once as it starts or stops working at all, else with the rest (every ten minutes).
+  // And what it is and runs, and which of its sessions are at work ("Computers"): told again at
+  // once (each round) as one starts or stops working, else with the rest (every ten minutes).
   // Only between your own computers: a machine Macs of different setups share tells none, and no
   // box tells a peer that isn't one of yours (`isApart`), nor one that hasn't said what it is yet
   // (its first word says whether it's shared, or of another setup).
@@ -172,9 +173,11 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
   // And where a bot deleted here ends up (the Trash, or Kuvo Code's trash folder), so a box that
   // lists this one's bots says what deleting one takes with it as this computer would.
   const trash = folderGoes().to;
-  const json = JSON.stringify([ownList, moved, boxes, where, computer && { ...computer, working: computer.working > 0 }, trash]);
+  const json = JSON.stringify([ownList, moved, boxes, where, computer && { ...computer, working: undefined }, trash]);
   let have: DigestEntry[] | false | null = null;
   for (const peer of peersOf(link)) {
+    if (only !== undefined && peer.key !== only) continue;
+    if (only !== undefined) ask = true;
     const last = toldPeers.get(peer.key);
     if (!ask && last && last.json === json && now - last.at < 600_000) continue;
     // Not as it connects: `docsChanged` greets each with its digest then.

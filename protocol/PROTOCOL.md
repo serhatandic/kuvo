@@ -438,8 +438,9 @@ connection.
   `shared: true` (it's a machine set up by Macs that aren't all in one setup), by which the receiver counts it as one of
   your own computers, for resets, Always Allow and usage totals, only within one setup (#701; "Plan
   limits", "Across your computers", Whose), and `computer` (`{version?, engine?, system?,
-  working}`: Kuvo Code's version there, its engine's, its system as people know it, and how many
-  of its sessions are at work, for `kuvo/computers`, "Computers"; only to a peer that's one of
+  working, atWork?, oldApp?}`: Kuvo Code's version there, its engine's, its system as people know
+  it, how many of its sessions are at work and which, and, on a Mac's box, that the old app is
+  attached to it, for `kuvo/computers`, "Computers"; only to a peer that's one of
   your own computers, #701, once that peer has said what it is (never in the first mail to one),
   and never by a shared machine; one from a peer that isn't yours is dropped as its mail is taken; told again at its next round, within a
   minute, as it starts or stops working at all, else with the rest). A box sends its bots and its 40 latest
@@ -1521,7 +1522,8 @@ machines; a client that wants every computer's facts asks the box that has it as
     setup, #701): it tells nothing of what it runs, and a client files it apart from yours. A box
     only such a peer vouches for (the other person's Mac beside a shared machine) isn't listed;
   - `reach`: `connected` (the box itself; a peer heard from in the last half hour), `connecting`
-    (a peer not heard from yet since this box knew of it), `away` (the relay said it isn't
+    (a peer not heard from yet since this box knew of it, or being reached again: Connect, below,
+    asked in the last 20 seconds and no word since), `away` (the relay said it isn't
     there, `run/peer-reach.json`, or nothing came from it for half an hour) or `unknown` (a box
     known only by a peer's word: this box can't say). As this box last heard: one that's itself
     off the relay still says `connected` of a peer heard in the last half hour;
@@ -1529,15 +1531,86 @@ machines; a client that wants every computer's facts asks the box that has it as
     people know it ("macOS 15.1", "Ubuntu 24.04.1 LTS"), as that box said them with its agents
     (`agents.computer`, "Peers"); left out for one that hasn't said (a box from before this, one
     known only by a peer's word);
+  - `features?` (`computers.facts`): what its box answers, as its `kuvo/info` says (this box's
+    own) or as it said with its agents: whole, so a client applies its update gate to it ("The
+    update gate") and calls it older where a name it needs is missing. Left out for one that hasn't
+    said, one that isn't one of your own computers, and one whose list is longer than peers keep
+    (300 names, "Peers"): it can't be said what's missing then, and a client doesn't call it older;
   - `via`: how the box that answers knows it: `here` (itself), `relay` (a peer it talks to) or
     `peer` (by another computer's word alone, `through` that one's name);
-  - `working`: how many of its sessions are at work (conversations, not their subagents, never
-    one that waits on you), its own from its session list, a peer's as it last said (`0` for one
-    that's away or unknown, and for one that isn't one of your own computers, which says none:
-    nothing there can be seen at work now);
+  - `working?` and `atWork?` (`computers.facts`): how many of its sessions are at work
+    (conversations, not their subagents, never one that waits on you), and which, newest first,
+    each `{id, title?}` (its session's id on that computer, and its title): its own from its session
+    list (the first 100), a peer's as it last said (the first 20; a peer tells which as they change,
+    at most once a minute). `0` and `[]` for one that's away (nothing there can be seen at work
+    now); both left out for one that never said (a box from before this, one known only by a
+    peer's word, one that isn't one of your own computers): a client says nothing of what's at
+    work there, never "nothing";
   - `limits`: the services whose plan limits it reads (`claude`, `codex`…), as the answering
-    box's limits rows say (`rows[].boxes`); `[]` while its coding agents' bridge doesn't run.
+    box's limits rows say (`rows[].boxes`); `[]` while its coding agents' bridge doesn't run;
+  - `actions` (`computers.manage`): what can be done with it from this box now, in the order to
+    offer them, `{id, label, confirm?, why?}`, as accounts' are ("Signing in"): `label` the
+    button's words, `confirm` `{title, message, label}` where a client asks first (its question,
+    what it comes to, its button), all the box's; `why`, it can't be done now, in words a client
+    shows beside it, its button not taken (asked anyway, it's refused with those words). `rename` (a machine whose record the writer keeps, below:
+    never a Mac, which goes by its own name, nor one shared with another setup but on the Mac that
+    set it up, which keeps its own record of it), `connect` (a peer
+    this box reaches through the relay that's `away`, while no try is under way) and `remove` (as
+    `rename`, never the box itself). A client draws the ids it has a control for.
   `405` for anything but `GET`.
+- **Managing them** (`computers.manage`, #735), from any box, with no client or Mac's app open. A
+  machine's record (its name, that it's one of your computers) is in the peers document of the Mac
+  that set it up, which your other computers take it from ("Your setup"): so one box writes it, as
+  one numbers the Work Queue. The **writer** is this Mac's box for its own machines (a Mac that isn't
+  a member of another's setup); for every other box, its setup's main computer, or the one Mac
+  that set up a machine in no setup; none on a machine Macs of different setups share, or one more
+  than one Mac set up outside a setup. A Mac's box reaches only its own machines, never another Mac,
+  so on a Mac that's a member of another Mac's setup nothing is offered, and asked it says to do it
+  from the main computer (a known gap until a member Mac can hand it on). A box that isn't the writer hands what you do to it by mail,
+  as a Work Queue item's change goes to the computer that keeps it ("The Work Queue", Done where
+  it's kept: `{workQueue: {act: {id, area: "computers", method, item: <key>, body?, at}}}`, answered
+  `{acted}`), once the writer's agents name `computers.manage`, and answers with what it said; the
+  change reaches every computer with the writer's peers document. Two boxes renaming at once are
+  done in turn there: neither change is lost, and of two names for one machine the later is kept.
+  Each is the same done twice, so one the writer took and was cut short by a restart is done again
+  when it's asked again (never answered as in doubt, as a Work Queue item's change is).
+  - `PATCH kuvo/computers/<key> {"name"}`: renamed (1 to 100 characters, spaces and control
+    characters folded): `200 {name}`. The writer keeps it apart from what its app says of its
+    machines (`peerNames` in link.json), so the app saying them again keeps it (one missing from
+    its list for a moment too), until the app names it otherwise (renamed there) or it's removed; a machine lists itself by the name its writer's
+    record gives it.
+  - `DELETE kuvo/computers/<key>`: removed, as a Mac's app removes one: off the writer's peers
+    document, named among those you removed (`left`, which the machine hears and lets that Mac go),
+    and off that Mac's list of machines (`machines.json`); its app listing it again
+    (`kuvo/link/peers`), or setting it up as it connects (`kuvo/link/setup?key=`), doesn't bring it
+    back (`removedHere` in link.json) until it's added again: on that Mac's list of machines
+    (`machines.json`) once more. It keeps running there, as a box of its own, with its sessions. `200
+    {}`, and the same for one removed already.
+  - `POST kuvo/computers/<key>/connect`: this box's own, for a peer that's `away`: its link tells
+    that computer its agents now, asking for theirs (`run/reach-again.json`, sent by the process
+    that holds the relay connection, as `box route` leaves it), so its answer marks it back
+    (`noteHeard`), and it's listed `connecting` for 20 seconds meanwhile. `202 {}`; `503` while this
+    box is off the relay itself.
+  - **While the old app is attached** (the Mac app before 1.0, which keeps its own list of machines
+    and writes all of it back, `machines.json` and `kuvo/link/peers`, so a removal there wouldn't
+    hold): the box that writes a machine's record takes no removal, from a client of its own or
+    handed from another box: `409 {"message": "Quit the old Kuvo Code app on <Mac> first: it keeps
+    its own list of machines, and would add <machine> back."}`, and its `remove` says so meanwhile
+    (`why`, those words). It tells its peers so with its agents (`computer.oldApp: true`, "Peers"),
+    so theirs say it too, within a minute (not while that Mac is away: it's away then). Renaming
+    goes on: the old app keeps a name it didn't change. The box counts the app attached while it
+    follows `kuvo/link/status/events` (which only that app does), and for a minute after it says
+    its link's config (`kuvo/link/config`, the first thing it does as it attaches, again too).
+  - The writer checks what's handed to it as the asking box does: a machine shared with another
+    setup is renamed and removed only from that Mac itself (`409`).
+  - Your phones are given a machine by the name you gave it (`kuvo/hosts`, from the box while the
+    old app isn't open).
+  - Refused in words a client shows as they are: `400 {"message"}` for a name that isn't one, `404`
+    for a key that isn't one of the computers this box lists, `409` for what isn't offered there
+    (with why: a Mac, the box itself, shared with another setup, not the writer's machine, a writer
+    that needs a newer Kuvo Code, already connected or being reached), `503` where the writer can't
+    be asked now (it isn't answering, this box is off the relay, or no answer came in time, so
+    whether it was done can't be told), and `405` for another method.
 - `GET kuvo/computers/events` (ndjson): the same now, and a line as it changes (a peer's word, one
   going away or coming back, this box's sessions starting or stopping work, and every 15 seconds
   for the rest); through `box route` a client asks again instead.
@@ -2618,13 +2691,13 @@ new version without cutting a turn:
 A client never keeps an older box's way of doing something (#679): it brings a box up to date
 before it uses it, and meanwhile says so. A box is older than a client needs when its `kuvo/info`
 `features` lack any name the client uses with no way around it (or it has no `kuvo/info`): today
-`agent-tools.own`, `bots.deletes`, `bots.effort`, `bots.elsewhere`, `bots.held`, `bots.now`, `computers`, `file.text`, `folders.suggested`, `folders.tree`, `git.branches`,
+`agent-tools.own`, `bots.deletes`, `bots.effort`, `bots.elsewhere`, `bots.held`, `bots.now`, `computers`, `computers.facts`, `computers.manage`, `file.text`, `folders.suggested`, `folders.tree`, `git.branches`,
 `git.branches.pullRequest`, `git.branches.worktree`, `git.changes.binary`, `git.changes.path`,
 `git.files`, `git.files.does`, `git.merge`, `git.pull-request`,
 `git.status`, `limits.rings`, `messages.commands`, `messages.send`, `models.offered`, `models.offered.folder`,
 `models.offered.free`, `models.offered.sides`, `models.readiness`, `queue.items`, `queue.removed.keyword`, `queue.stop.arriving`, `sandbox.opens`, `sandbox.words`, `sessions.actions`, `sessions.asks`,
 `sessions.list`, `sessions.mentions`, `sessions.models`, `sessions.needsYou`,
-`sessions.start.empty`, `setup.welcomed`, `sign-in.accounts.kinds`, `sign-in.accounts.plan`, `sign-in.accounts.state`, `sign-in.codes`, `typed`, `usage.notices`,
+`sessions.start.empty`, `settings`, `setup.welcomed`, `sign-in.accounts.kinds`, `sign-in.accounts.plan`, `sign-in.accounts.state`, `sign-in.codes`, `typed`, `usage.notices`,
 `waiting`, `waiting.cards`, `work-queue.counts` and `work-queue.edit`
 (KuvoClient's `BoxGate.required`, and the same list in every client, gpui's `kuvo_box` too, so
 every client holds the same boxes; a box with `messages.send` has what came before it too,
@@ -6446,6 +6519,8 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `btw.threads` | a side question's `thread`, follow-ups and a thread's removal (bridge 0.9.98) |
 | `claude-code` | `kuvo/claude-code` (a Mac only, before #341) |
 | `computers` | `kuvo/computers` and `…/events`: your computers as one list, from any box ("Computers", #711) |
+| `computers.facts` | `features`, `working` (left out where never said) and `atWork` on each of `kuvo/computers`' computers ("Computers", #735) |
+| `computers.manage` | `actions` on each of `kuvo/computers`' computers, `PATCH` and `DELETE kuvo/computers/<key>` (done by the box that writes the machine's record, or handed to it) and `POST kuvo/computers/<key>/connect` ("Computers", Managing them, #735) |
 | `config` | `kuvo/config` |
 | `config.apply` | `POST kuvo/config/apply` |
 | `engine.restart` | `POST kuvo/engine/restart` |
@@ -6540,6 +6615,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sessions.needsYou` | `needsYou`, each project's `asking` and `working`, and each session's `bot`, in `kuvo/sessions/list` ("Session lists", #711) |
 | `sessions.start` | `POST kuvo/sessions`: a session started with a task (bridge 0.9.100) |
 | `sessions.start.empty` | `POST kuvo/sessions` from a client without a task, `agent`, `model` as `{providerID, id, variant?}`, and `info` and `worktree` in its answer (#341) |
+| `settings` | `kuvo/settings`, `kuvo/settings/<section>`, `…/events`, a row changed with `PATCH` and an action done with `POST …/<row>/<action>`: the box's settings as it describes them, Permissions and Browser first ("A box's settings", #727) |
 | `setup` | `kuvo/setup`, `…/events`: your setup and its main computer ("Your setup") |
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
 | `setup.welcomed` | `welcomed` in `kuvo/setup`, and `POST kuvo/setup/welcomed`: whether you've had the first run with this box ("Your setup", #733) |
@@ -7790,6 +7866,99 @@ answers in time. A machine's start scripts run it once before starting the engin
 it read in `run/login-path`, which the link and the coding agents' bridge go by; the bridge reads it
 again only after it installs or updates an agent (a .bashrc that starts an `ssh-agent` when there's
 none would leave one running with each read). This Mac's app reads its own shell's for its engine.
+
+### A box's settings
+
+A box describes its own settings (`settings`, #727), so every client (the desktop app, the phone,
+a Linux or Windows client later) draws each of them by its kind, in the box's words, and writes
+no settings page of its own. Every box answers it alike, a Mac's and a machine's. Each page is made
+from the box's existing routes, and each change goes through them as a client of them would
+(`kuvo/approval`, `kuvo/sandbox`, `kuvo/sandbox/allowed`, `kuvo/config`, `kuvo/browser/settings`),
+so a client still on those (the phone) sees every change kept just as they keep it. Shapes:
+`box/src/shared/routes/settings-pages.ts`.
+
+- `GET kuvo/settings`: `{sections}`, in order, each `{id, title, group, icon, line, keywords}`:
+  the heading it's under in a sidebar (`group`), its icon by name (`shield`, `globe`, …: a set every
+  client has; one a client hasn't, it draws with its own), and the words search finds it by besides
+  its title and line. Today `permissions` and `browser`; the rest come page by page.
+- `GET kuvo/settings/<section>`: `{id, title, line?, groups, notes?}`; `404 {message}` for a section
+  this box hasn't. A group is `{id, title?, note?, rows}`, a card with its heading and the words
+  under it; `notes` are `{words, tone}` (`quiet` or `warning`) after the groups: what couldn't be
+  read, said plainly, and what isn't on the page yet. A row is `{id, title, line?, tone?, kind,
+  value?, can?, revision, confirm?, busy?}` and its kind's fields:
+
+  | `kind` | Its fields | What a client draws |
+  |---|---|---|
+  | `switch` | `value`: true or false | A switch |
+  | `choice` | `value`: a choice's `id`; `choices: [{id, title, line?}]` | A menu |
+  | `text`, `number`, `folder` | `value`, `placeholder?`, `min?`, `max?` | A field (a folder's opens the box's folder picker, `kuvo/folders`) |
+  | `secret` | `set`: whether one is set; never its value | A field written only; Replace and Remove once set |
+  | `status` | `value`: words | The words, on the right |
+  | `actions` | `actions` | Buttons (past one, a menu) |
+  | `list` | `items`: rows; `add?`: an action; `empty?`: words for none | The rows in its card, or its `empty` words |
+  | `meter` | `windows: [{title, used, resets?}]` (`used` 0 to 1, `resets` ms since 1970) | Usage windows |
+  | `open` | `section` (this box's) or `address` | A row with › |
+  | `steps` | `start`: an action | A flow the box leads (to come, with Accounts) |
+  | `custom` | `name` | What only an installed app draws; any other client shows its `can`'s why |
+
+  `can` is `true` where it can be changed from here, or `{why}`, in words to show beside it (it's
+  still drawn, never hidden); a row with nothing to change (a `status`) has none, or `{why}` where
+  what it shows is changed elsewhere (a settings file written by hand). An action is
+  `{id, title, style?, confirm?, opens?, can?}`: `style` `destructive`; `confirm` `{title, body,
+  button}`, asked first in the box's words (a row's own `confirm` is asked before a change to it);
+  `opens` an address the client opens itself, sending nothing (an address of the box's own computer,
+  its Software Update, is only given to the app beside it, `fromApp`; any other client gets `can:
+  {why}` instead); `can` absent where it can be done. `busy` says in words that a change is under
+  way there. A box newer than a client may send a kind the client doesn't know: it draws the row's
+  title and line, and says a newer Kuvo Code changes it. `revision` is a hash of what the row is
+  and what governs whether it can be changed (its value, `can`, its choices' and actions' ids, a
+  list's items' revisions; a `secret`'s, whether one is set; whether `can` holds, not its why), never its words: the same value set
+  again, a computer renamed or a line reworded leaves it.
+- `PATCH kuvo/settings/<section> {row, value, was}`: one row changed, `was` its `revision` as read.
+  The answer is the page again (`200`), or a refusal in the box's words: `400` for a value that
+  doesn't fit (a switch's isn't true or false, a choice's isn't one of its choices) or a body without
+  `row` or `was`; `403` where `can` says why not (that `why`); `404` for a row not on the page now;
+  `409 {message: "It changed since you read it.", page}` where the row changed since (by another
+  client, an agent, a route of its own): only that row's revision counts, so a change to one row
+  never refuses another's. A refusal of the route underneath passes on with its status and words; a
+  `409` without `page` is one of those (a settings file that can't be used), never a stale reading:
+  `page` is what marks a stale answer, and its `message` is words to show.
+  A box makes one change to a section at a time, each checked against the page as it is then, in
+  its long-running process whichever process is asked (`box route` over SSH passes a change on to
+  it, as it does Also Allowed; on a machine with none running, reached over SSH alone, the process
+  asked makes it).
+- `POST kuvo/settings/<section>/<row>/<action> {was}`: what a row (or a list's item) offers, the
+  same answers; `400` for one that `opens`, which the client opens itself.
+- `GET kuvo/settings/<section>/events`: the page, a line now and one each time it changes (a change
+  here, another process's to the files it's made from, and every fifteen seconds for the rest),
+  never twice the same.
+- Who's asking: the box treats every client alike, but for what opens only on its own computer
+  (above), offered only to a request from the app beside its box (`x-kuvo-from: app`, over its own
+  server). Nothing in a page depends on which client asks otherwise.
+
+The sections now:
+
+- **Permissions** (`permissions`): Approval (`default-mode`, the mode a new conversation starts in,
+  a `status`; `full-access`, a `switch` turned off here, asked first, and turned on only in a
+  conversation, its `can` saying so; `auto-held-engine`, `auto-held-agents`, why Auto asks first for
+  now; `other-computers`, `kuvo/approval`'s `otherComputers`), When the Agent Wants To (`when-<kind>`
+  for `edit`, `shell`, `read`, `external_directory`, `webfetch`, `websearch`, `subagent` and `skill`:
+  a `choice` of `allow`, `ask` or `deny`, the one that applies with no rule titled `(Default)`: a rule
+  for everything at the front of the engine's `permissions` in `kuvo/config`, the rest left as they
+  are; picking the default takes that rule away (none is ever written for it, so the engine's own,
+  Plan mode not editing, still apply), and picking what applies already writes nothing. A rule of
+  yours that says what applies anyway (it holds in Plan mode too) is titled `(Your Rule)`, with
+  `default` beside it to take it away),
+  Sandbox (`sandbox`: its state, and its button as `kuvo/sandbox` names it, done by the route it
+  names: `retry` and `fix` check it again; `restartEngine` restarts the engine, asked first where
+  that stops work, on a Mac only while its keeper runs the box, the app restarting it otherwise
+  (`can` says so); `help` and `softwareUpdate` open their page), and Also Allowed (`allowed`, a `list` of `allowed-<id>`, each
+  with `remove`). Rules for particular commands or files, approvals saved with Always and blocks
+  aren't on it yet.
+- **Browser** (`browser`): `search-engine` (a `choice`), `tidies` and `offers` (`switch`es), and
+  Never Offered (`never`, a `list` of `never-<site>`, each with `offer-again`, which takes that one
+  site out and leaves the rest as they are then): `kuvo/browser/settings`,
+  the box's browser. How the side panel's own browser keeps its data is each client's.
 
 ### Personalities
 

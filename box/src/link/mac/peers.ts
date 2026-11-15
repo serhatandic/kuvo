@@ -12,6 +12,7 @@ import { noteSetupNow } from "../setup/lead";
 import { pushQueues } from "../work-queue/across";
 import { forwardsSoon, sendForwards } from "../work-queue/forward";
 import { heldSoon, sendHeld } from "../bots/held";
+import { reachAgainSoon, sendReachAgain } from "../peers/reach-again";
 import { handUpkeepSoon } from "../work-queue/hand";
 import { atWorkForSure, settleStarted } from "../work-queue/started";
 import { attentionGiven } from "../notices/hold";
@@ -61,6 +62,8 @@ export function runMacPeers(): void {
   forwardsSoon.send = () => { try { sendForwards(macLink.host); } catch {} };
   // Edits to bots on your machines held here, to each as it answers.
   heldSoon.send = () => { try { sendHeld(macLink.host); } catch {} };
+  // A computer that's away, reached again as a client asks (Connect): told and asked now.
+  reachAgainSoon.send = () => macReachAgain();
   const rounds = [
     setInterval(() => {
       const host = macLink.host;
@@ -71,6 +74,7 @@ export function runMacPeers(): void {
       macSendOutbox();
       forwardsSoon.send();
       heldSoon.send();
+      macReachAgain();
       // The rows of sessions here whose lead lives on another computer, told to it as they change.
       const host = macLink.host;
       if (host?.welcomed) pushRows(host, readLink(), peerTargets()).catch(() => {});
@@ -89,9 +93,16 @@ export function runMacPeers(): void {
     outboxSoon.send = () => {};
     forwardsSoon.send = () => {};
     heldSoon.send = () => {};
+    reachAgainSoon.send = () => {};
     stop.abort();
     for (const round of rounds) clearInterval(round);
   };
+}
+
+// Connect's asks, told now to each computer asked of, with this Mac's box on the relay.
+function macReachAgain(): void {
+  const host = macLink.host;
+  sendReachAgain(Boolean(host?.welcomed), key => void announce(host!, readEngineFile, readLink(), Date.now(), true, key).catch(() => {}));
 }
 
 // Stops them (a test's, as it ends).

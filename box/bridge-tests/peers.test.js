@@ -582,11 +582,11 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   let { status, body } = await ask();
   assert.equal(status, 200);
   const [own, ...others] = body.computers;
-  assert.deepEqual({ ...own, system: "said" }, { key: here.pub, name: "devbox", kind: "machine", here: true, shared: false, reach: "connected", via: "here", system: "said", working: 0, limits: [] });
-  // (Its peers by name.)
+  assert.deepEqual({ ...own, system: "said", features: "said" }, { key: here.pub, name: "devbox", kind: "machine", here: true, shared: false, reach: "connected", via: "here", system: "said", features: "said", working: 0, atWork: [], limits: [], actions: [] });
+  // (Its peers by name: what's at work on one that never said isn't claimed.)
   assert.deepEqual(others, [
-    { key: mac.pub, name: "mac", kind: "mac", shared: false, reach: "connecting", via: "relay", working: 0, limits: [] },
-    { key: second.pub, name: "second", kind: "machine", id: "second", shared: false, reach: "connected", via: "relay", version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", working: 2, limits: [] },
+    { key: mac.pub, name: "mac", kind: "mac", shared: false, reach: "connecting", via: "relay", limits: [], actions: [] },
+    { key: second.pub, name: "second", kind: "machine", id: "second", shared: false, reach: "connected", via: "relay", version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", working: 2, limits: [], actions: [] },
   ]);
 
   // One the relay says isn't there: away, and nothing there counts as at work now.
@@ -596,8 +596,9 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   assert.equal((await ask("POST")).status, 405);
 
   // What a peer says of itself is kept only at a size it would have.
-  assert.deepEqual(link.keptComputer({ version: "v".repeat(41), engine: 7, system: "s".repeat(81), working: -3 }), { working: 0 });
-  assert.deepEqual(link.keptComputer({ version: "1.0.0", working: 1e9 }), { version: "1.0.0", working: 0 });
+  // (A count it couldn't have isn't one: left out, as one never said.)
+  assert.deepEqual(link.keptComputer({ version: "v".repeat(41), engine: 7, system: "s".repeat(81), working: -3 }), {});
+  assert.deepEqual(link.keptComputer({ version: "1.0.0", working: 1e9 }), { version: "1.0.0" });
   assert.equal(link.keptComputer("mac"), undefined);
   // Not heard from for half an hour: away.
   const kept = JSON.parse(fs.readFileSync(path.join(run, "peer-agents.json"), "utf8"));
@@ -619,8 +620,8 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   ({ body } = await ask());
   assert.deepEqual(body.computers.slice(1).map(each => [each.name, each.apart, each.version, each.working, each.reach, each.through]), [
     ["mac", undefined, "1.0.0", 1, "connected", undefined],
-    ["second", true, undefined, 0, "connected", undefined],
-    ["attic", undefined, undefined, 0, "unknown", "mac"],
+    ["second", true, undefined, undefined, "connected", undefined],
+    ["attic", undefined, undefined, undefined, "unknown", "mac"],
   ]);
   const again = [];
   await link.announce({ send: bytes => again.push(bytes) }, () => target, link.readLink(), Date.now(), true);

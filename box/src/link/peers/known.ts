@@ -245,13 +245,28 @@ export function ownListed(): { session: string; name: string | null }[] {
 // This box's peers now: every box its Macs name, itself left out.
 export function peersOf(link: LinkState | null | undefined): Peer[] {
   if (!link) return [];
-  // This Mac's box: its machines, as its app set them up (`kuvo/link/peers`).
-  if (IS_MAC) return (Array.isArray(link.macPeers) ? link.macPeers : []).filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer);
+  // This Mac's box: its machines, as its app set them up (`kuvo/link/peers`), by the names you gave them.
+  if (IS_MAC) return (Array.isArray(link.macPeers) ? link.macPeers : []).filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(peer => renamed(link, peer));
   const own = ownKey(link);
   const byKey = new Map<string, Peer>();
   for (const word of macWords(link)) {
     for (const peer of word.boxes) if (fitsPeer(peer) && peer.key !== own && !byKey.has(peer.key)) byKey.set(peer.key, cleanPeer(peer));
   }
+  return [...byKey.values()];
+}
+
+// A machine of this Mac by the name you gave it, where you gave one.
+const renamed = (link: LinkState, peer: Peer): Peer => {
+  const name = link.peerNames?.[peer.key];
+  return typeof name === "string" && name ? { ...peer, name } : peer;
+};
+
+/** The boxes this box's Macs name (in a setup, its main computer's word alone), itself among them:
+ * what each is called there, and what it is. A Mac's box names its own machines (`peersOf`). */
+export function namedBoxes(link: LinkState | null | undefined): Peer[] {
+  if (!link || IS_MAC) return [];
+  const byKey = new Map<string, Peer>();
+  for (const word of macWords(link)) for (const box of word.boxes) if (fitsPeer(box) && !byKey.has(box.key)) byKey.set(box.key, cleanPeer(box));
   return [...byKey.values()];
 }
 

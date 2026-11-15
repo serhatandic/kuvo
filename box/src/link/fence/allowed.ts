@@ -20,7 +20,9 @@ import { writePrivate } from "../files";
 import { accountHome, BOTS, BOX, CHATS, RUN } from "../home";
 import { askedAbout, fencePolicy, realish } from "./policy";
 
-const FILE = path.join(BOX, "sandbox-allowed.json");
+/** Where Also Allowed is kept: a client follows it changing (`kuvo/settings`). */
+export const ALLOWED_FILE = path.join(BOX, "sandbox-allowed.json");
+const FILE = ALLOWED_FILE;
 const FOR_LAUNCHER = path.join(realish(path.join(RUN, "fence")), "allowed");
 /** How many folders a project's commands may be given: the profile's places for them on a Mac. */
 export const MOST_FOLDERS = 8;

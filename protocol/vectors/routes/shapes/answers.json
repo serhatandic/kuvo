@@ -3608,6 +3608,9 @@
          "version?": "string",
          "engine?": "string",
          "system?": "string",
+         "features?": {
+          "list": "string"
+         },
          "via": {
           "oneOf": [
            {
@@ -3622,9 +3625,45 @@
           ]
          },
          "through?": "string",
-         "working": "number",
+         "working?": "number",
+         "atWork?": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title?": "string"
+           }
+          }
+         },
          "limits": {
           "list": "string"
+         },
+         "actions": {
+          "list": {
+           "object": {
+            "id": {
+             "oneOf": [
+              {
+               "literal": "rename"
+              },
+              {
+               "literal": "connect"
+              },
+              {
+               "literal": "remove"
+              }
+             ]
+            },
+            "label": "string",
+            "confirm?": {
+             "object": {
+              "title": "string",
+              "message": "string",
+              "label": "string"
+             }
+            },
+            "why?": "string"
+           }
+          }
          }
         }
        }
@@ -3685,6 +3724,9 @@
          "version?": "string",
          "engine?": "string",
          "system?": "string",
+         "features?": {
+          "list": "string"
+         },
          "via": {
           "oneOf": [
            {
@@ -3699,9 +3741,45 @@
           ]
          },
          "through?": "string",
-         "working": "number",
+         "working?": "number",
+         "atWork?": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title?": "string"
+           }
+          }
+         },
          "limits": {
           "list": "string"
+         },
+         "actions": {
+          "list": {
+           "object": {
+            "id": {
+             "oneOf": [
+              {
+               "literal": "rename"
+              },
+              {
+               "literal": "connect"
+              },
+              {
+               "literal": "remove"
+              }
+             ]
+            },
+            "label": "string",
+            "confirm?": {
+             "object": {
+              "title": "string",
+              "message": "string",
+              "label": "string"
+             }
+            },
+            "why?": "string"
+           }
+          }
          }
         }
        }
@@ -3709,6 +3787,102 @@
      }
     },
     "405": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "PATCH kuvo/computers/:key",
+   "answers": {
+    "200": {
+     "object": {
+      "name": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "500": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "DELETE kuvo/computers/:key",
+   "answers": {
+    "200": {
+     "object": {}
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "500": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/computers/:key/connect",
+   "answers": {
+    "202": {
+     "object": {}
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
      "object": {
       "message": "string"
      }
@@ -3874,6 +4048,12 @@
            },
            {
             "literal": "computers"
+           },
+           {
+            "literal": "computers.facts"
+           },
+           {
+            "literal": "computers.manage"
            },
            {
             "literal": "config"
@@ -4147,6 +4327,9 @@
            },
            {
             "literal": "sessions.start.empty"
+           },
+           {
+            "literal": "settings"
            },
            {
             "literal": "setup"
@@ -4485,6 +4668,12 @@
             "literal": "computers"
            },
            {
+            "literal": "computers.facts"
+           },
+           {
+            "literal": "computers.manage"
+           },
+           {
             "literal": "config"
            },
            {
@@ -4756,6 +4945,9 @@
            },
            {
             "literal": "sessions.start.empty"
+           },
+           {
+            "literal": "settings"
            },
            {
             "literal": "setup"
@@ -12621,6 +12813,2715 @@
           "map": "string"
          },
          "imported": "bool"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/settings",
+   "answers": {
+    "200": {
+     "object": {
+      "sections": {
+       "list": {
+        "object": {
+         "id": "string",
+         "title": "string",
+         "group": "string",
+         "icon": "string",
+         "line": "string",
+         "keywords": {
+          "list": "string"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/settings/:section",
+   "answers": {
+    "200": {
+     "object": {
+      "id": "string",
+      "title": "string",
+      "line?": "string",
+      "groups": {
+       "list": {
+        "object": {
+         "id": "string",
+         "title?": "string",
+         "note?": "string",
+         "rows": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title": "string",
+            "line?": "string",
+            "tone?": {
+             "oneOf": [
+              {
+               "literal": "quiet"
+              },
+              {
+               "literal": "warning"
+              }
+             ]
+            },
+            "kind": {
+             "oneOf": [
+              {
+               "literal": "switch"
+              },
+              {
+               "literal": "choice"
+              },
+              {
+               "literal": "text"
+              },
+              {
+               "literal": "number"
+              },
+              {
+               "literal": "folder"
+              },
+              {
+               "literal": "secret"
+              },
+              {
+               "literal": "status"
+              },
+              {
+               "literal": "actions"
+              },
+              {
+               "literal": "list"
+              },
+              {
+               "literal": "meter"
+              },
+              {
+               "literal": "open"
+              },
+              {
+               "literal": "steps"
+              },
+              {
+               "literal": "custom"
+              }
+             ]
+            },
+            "value?": "any",
+            "can?": {
+             "oneOf": [
+              {
+               "literal": true
+              },
+              {
+               "object": {
+                "why": "string"
+               }
+              }
+             ]
+            },
+            "revision": "string",
+            "confirm?": {
+             "object": {
+              "title": "string",
+              "body": "string",
+              "button": "string"
+             }
+            },
+            "busy?": "string",
+            "choices?": {
+             "list": {
+              "object": {
+               "id": "string",
+               "title": "string",
+               "line?": "string"
+              }
+             }
+            },
+            "placeholder?": "string",
+            "min?": "number",
+            "max?": "number",
+            "set?": "bool",
+            "actions?": {
+             "list": {
+              "object": {
+               "id": "string",
+               "title": "string",
+               "style?": {
+                "oneOf": [
+                 {
+                  "literal": "default"
+                 },
+                 {
+                  "literal": "destructive"
+                 }
+                ]
+               },
+               "confirm?": {
+                "object": {
+                 "title": "string",
+                 "body": "string",
+                 "button": "string"
+                }
+               },
+               "opens?": "string",
+               "can?": {
+                "oneOf": [
+                 {
+                  "literal": true
+                 },
+                 {
+                  "object": {
+                   "why": "string"
+                  }
+                 }
+                ]
+               }
+              }
+             }
+            },
+            "windows?": {
+             "list": {
+              "object": {
+               "title": "string",
+               "used": "number",
+               "resets?": "number"
+              }
+             }
+            },
+            "section?": "string",
+            "address?": "string",
+            "start?": {
+             "object": {
+              "id": "string",
+              "title": "string",
+              "style?": {
+               "oneOf": [
+                {
+                 "literal": "default"
+                },
+                {
+                 "literal": "destructive"
+                }
+               ]
+              },
+              "confirm?": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              },
+              "opens?": "string",
+              "can?": {
+               "oneOf": [
+                {
+                 "literal": true
+                },
+                {
+                 "object": {
+                  "why": "string"
+                 }
+                }
+               ]
+              }
+             }
+            },
+            "name?": "string",
+            "items?": {
+             "list": {
+              "object": {
+               "id": "string",
+               "title": "string",
+               "line?": "string",
+               "tone?": {
+                "oneOf": [
+                 {
+                  "literal": "quiet"
+                 },
+                 {
+                  "literal": "warning"
+                 }
+                ]
+               },
+               "kind": {
+                "oneOf": [
+                 {
+                  "literal": "switch"
+                 },
+                 {
+                  "literal": "choice"
+                 },
+                 {
+                  "literal": "text"
+                 },
+                 {
+                  "literal": "number"
+                 },
+                 {
+                  "literal": "folder"
+                 },
+                 {
+                  "literal": "secret"
+                 },
+                 {
+                  "literal": "status"
+                 },
+                 {
+                  "literal": "actions"
+                 },
+                 {
+                  "literal": "list"
+                 },
+                 {
+                  "literal": "meter"
+                 },
+                 {
+                  "literal": "open"
+                 },
+                 {
+                  "literal": "steps"
+                 },
+                 {
+                  "literal": "custom"
+                 }
+                ]
+               },
+               "value?": "any",
+               "can?": {
+                "oneOf": [
+                 {
+                  "literal": true
+                 },
+                 {
+                  "object": {
+                   "why": "string"
+                  }
+                 }
+                ]
+               },
+               "revision": "string",
+               "confirm?": {
+                "object": {
+                 "title": "string",
+                 "body": "string",
+                 "button": "string"
+                }
+               },
+               "busy?": "string",
+               "choices?": {
+                "list": {
+                 "object": {
+                  "id": "string",
+                  "title": "string",
+                  "line?": "string"
+                 }
+                }
+               },
+               "placeholder?": "string",
+               "min?": "number",
+               "max?": "number",
+               "set?": "bool",
+               "actions?": {
+                "list": {
+                 "object": {
+                  "id": "string",
+                  "title": "string",
+                  "style?": {
+                   "oneOf": [
+                    {
+                     "literal": "default"
+                    },
+                    {
+                     "literal": "destructive"
+                    }
+                   ]
+                  },
+                  "confirm?": {
+                   "object": {
+                    "title": "string",
+                    "body": "string",
+                    "button": "string"
+                   }
+                  },
+                  "opens?": "string",
+                  "can?": {
+                   "oneOf": [
+                    {
+                     "literal": true
+                    },
+                    {
+                     "object": {
+                      "why": "string"
+                     }
+                    }
+                   ]
+                  }
+                 }
+                }
+               },
+               "windows?": {
+                "list": {
+                 "object": {
+                  "title": "string",
+                  "used": "number",
+                  "resets?": "number"
+                 }
+                }
+               },
+               "section?": "string",
+               "address?": "string",
+               "start?": {
+                "object": {
+                 "id": "string",
+                 "title": "string",
+                 "style?": {
+                  "oneOf": [
+                   {
+                    "literal": "default"
+                   },
+                   {
+                    "literal": "destructive"
+                   }
+                  ]
+                 },
+                 "confirm?": {
+                  "object": {
+                   "title": "string",
+                   "body": "string",
+                   "button": "string"
+                  }
+                 },
+                 "opens?": "string",
+                 "can?": {
+                  "oneOf": [
+                   {
+                    "literal": true
+                   },
+                   {
+                    "object": {
+                     "why": "string"
+                    }
+                   }
+                  ]
+                 }
+                }
+               },
+               "name?": "string"
+              }
+             }
+            },
+            "add?": {
+             "object": {
+              "id": "string",
+              "title": "string",
+              "style?": {
+               "oneOf": [
+                {
+                 "literal": "default"
+                },
+                {
+                 "literal": "destructive"
+                }
+               ]
+              },
+              "confirm?": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              },
+              "opens?": "string",
+              "can?": {
+               "oneOf": [
+                {
+                 "literal": true
+                },
+                {
+                 "object": {
+                  "why": "string"
+                 }
+                }
+               ]
+              }
+             }
+            },
+            "empty?": "string"
+           }
+          }
+         }
+        }
+       }
+      },
+      "notes?": {
+       "list": {
+        "object": {
+         "words": "string",
+         "tone": {
+          "oneOf": [
+           {
+            "literal": "quiet"
+           },
+           {
+            "literal": "warning"
+           }
+          ]
+         }
+        }
+       }
+      }
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/settings/:section/events",
+   "answers": {
+    "200": {
+     "object": {
+      "id": "string",
+      "title": "string",
+      "line?": "string",
+      "groups": {
+       "list": {
+        "object": {
+         "id": "string",
+         "title?": "string",
+         "note?": "string",
+         "rows": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title": "string",
+            "line?": "string",
+            "tone?": {
+             "oneOf": [
+              {
+               "literal": "quiet"
+              },
+              {
+               "literal": "warning"
+              }
+             ]
+            },
+            "kind": {
+             "oneOf": [
+              {
+               "literal": "switch"
+              },
+              {
+               "literal": "choice"
+              },
+              {
+               "literal": "text"
+              },
+              {
+               "literal": "number"
+              },
+              {
+               "literal": "folder"
+              },
+              {
+               "literal": "secret"
+              },
+              {
+               "literal": "status"
+              },
+              {
+               "literal": "actions"
+              },
+              {
+               "literal": "list"
+              },
+              {
+               "literal": "meter"
+              },
+              {
+               "literal": "open"
+              },
+              {
+               "literal": "steps"
+              },
+              {
+               "literal": "custom"
+              }
+             ]
+            },
+            "value?": "any",
+            "can?": {
+             "oneOf": [
+              {
+               "literal": true
+              },
+              {
+               "object": {
+                "why": "string"
+               }
+              }
+             ]
+            },
+            "revision": "string",
+            "confirm?": {
+             "object": {
+              "title": "string",
+              "body": "string",
+              "button": "string"
+             }
+            },
+            "busy?": "string",
+            "choices?": {
+             "list": {
+              "object": {
+               "id": "string",
+               "title": "string",
+               "line?": "string"
+              }
+             }
+            },
+            "placeholder?": "string",
+            "min?": "number",
+            "max?": "number",
+            "set?": "bool",
+            "actions?": {
+             "list": {
+              "object": {
+               "id": "string",
+               "title": "string",
+               "style?": {
+                "oneOf": [
+                 {
+                  "literal": "default"
+                 },
+                 {
+                  "literal": "destructive"
+                 }
+                ]
+               },
+               "confirm?": {
+                "object": {
+                 "title": "string",
+                 "body": "string",
+                 "button": "string"
+                }
+               },
+               "opens?": "string",
+               "can?": {
+                "oneOf": [
+                 {
+                  "literal": true
+                 },
+                 {
+                  "object": {
+                   "why": "string"
+                  }
+                 }
+                ]
+               }
+              }
+             }
+            },
+            "windows?": {
+             "list": {
+              "object": {
+               "title": "string",
+               "used": "number",
+               "resets?": "number"
+              }
+             }
+            },
+            "section?": "string",
+            "address?": "string",
+            "start?": {
+             "object": {
+              "id": "string",
+              "title": "string",
+              "style?": {
+               "oneOf": [
+                {
+                 "literal": "default"
+                },
+                {
+                 "literal": "destructive"
+                }
+               ]
+              },
+              "confirm?": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              },
+              "opens?": "string",
+              "can?": {
+               "oneOf": [
+                {
+                 "literal": true
+                },
+                {
+                 "object": {
+                  "why": "string"
+                 }
+                }
+               ]
+              }
+             }
+            },
+            "name?": "string",
+            "items?": {
+             "list": {
+              "object": {
+               "id": "string",
+               "title": "string",
+               "line?": "string",
+               "tone?": {
+                "oneOf": [
+                 {
+                  "literal": "quiet"
+                 },
+                 {
+                  "literal": "warning"
+                 }
+                ]
+               },
+               "kind": {
+                "oneOf": [
+                 {
+                  "literal": "switch"
+                 },
+                 {
+                  "literal": "choice"
+                 },
+                 {
+                  "literal": "text"
+                 },
+                 {
+                  "literal": "number"
+                 },
+                 {
+                  "literal": "folder"
+                 },
+                 {
+                  "literal": "secret"
+                 },
+                 {
+                  "literal": "status"
+                 },
+                 {
+                  "literal": "actions"
+                 },
+                 {
+                  "literal": "list"
+                 },
+                 {
+                  "literal": "meter"
+                 },
+                 {
+                  "literal": "open"
+                 },
+                 {
+                  "literal": "steps"
+                 },
+                 {
+                  "literal": "custom"
+                 }
+                ]
+               },
+               "value?": "any",
+               "can?": {
+                "oneOf": [
+                 {
+                  "literal": true
+                 },
+                 {
+                  "object": {
+                   "why": "string"
+                  }
+                 }
+                ]
+               },
+               "revision": "string",
+               "confirm?": {
+                "object": {
+                 "title": "string",
+                 "body": "string",
+                 "button": "string"
+                }
+               },
+               "busy?": "string",
+               "choices?": {
+                "list": {
+                 "object": {
+                  "id": "string",
+                  "title": "string",
+                  "line?": "string"
+                 }
+                }
+               },
+               "placeholder?": "string",
+               "min?": "number",
+               "max?": "number",
+               "set?": "bool",
+               "actions?": {
+                "list": {
+                 "object": {
+                  "id": "string",
+                  "title": "string",
+                  "style?": {
+                   "oneOf": [
+                    {
+                     "literal": "default"
+                    },
+                    {
+                     "literal": "destructive"
+                    }
+                   ]
+                  },
+                  "confirm?": {
+                   "object": {
+                    "title": "string",
+                    "body": "string",
+                    "button": "string"
+                   }
+                  },
+                  "opens?": "string",
+                  "can?": {
+                   "oneOf": [
+                    {
+                     "literal": true
+                    },
+                    {
+                     "object": {
+                      "why": "string"
+                     }
+                    }
+                   ]
+                  }
+                 }
+                }
+               },
+               "windows?": {
+                "list": {
+                 "object": {
+                  "title": "string",
+                  "used": "number",
+                  "resets?": "number"
+                 }
+                }
+               },
+               "section?": "string",
+               "address?": "string",
+               "start?": {
+                "object": {
+                 "id": "string",
+                 "title": "string",
+                 "style?": {
+                  "oneOf": [
+                   {
+                    "literal": "default"
+                   },
+                   {
+                    "literal": "destructive"
+                   }
+                  ]
+                 },
+                 "confirm?": {
+                  "object": {
+                   "title": "string",
+                   "body": "string",
+                   "button": "string"
+                  }
+                 },
+                 "opens?": "string",
+                 "can?": {
+                  "oneOf": [
+                   {
+                    "literal": true
+                   },
+                   {
+                    "object": {
+                     "why": "string"
+                    }
+                   }
+                  ]
+                 }
+                }
+               },
+               "name?": "string"
+              }
+             }
+            },
+            "add?": {
+             "object": {
+              "id": "string",
+              "title": "string",
+              "style?": {
+               "oneOf": [
+                {
+                 "literal": "default"
+                },
+                {
+                 "literal": "destructive"
+                }
+               ]
+              },
+              "confirm?": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              },
+              "opens?": "string",
+              "can?": {
+               "oneOf": [
+                {
+                 "literal": true
+                },
+                {
+                 "object": {
+                  "why": "string"
+                 }
+                }
+               ]
+              }
+             }
+            },
+            "empty?": "string"
+           }
+          }
+         }
+        }
+       }
+      },
+      "notes?": {
+       "list": {
+        "object": {
+         "words": "string",
+         "tone": {
+          "oneOf": [
+           {
+            "literal": "quiet"
+           },
+           {
+            "literal": "warning"
+           }
+          ]
+         }
+        }
+       }
+      }
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "PATCH kuvo/settings/:section",
+   "answers": {
+    "200": {
+     "object": {
+      "id": "string",
+      "title": "string",
+      "line?": "string",
+      "groups": {
+       "list": {
+        "object": {
+         "id": "string",
+         "title?": "string",
+         "note?": "string",
+         "rows": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title": "string",
+            "line?": "string",
+            "tone?": {
+             "oneOf": [
+              {
+               "literal": "quiet"
+              },
+              {
+               "literal": "warning"
+              }
+             ]
+            },
+            "kind": {
+             "oneOf": [
+              {
+               "literal": "switch"
+              },
+              {
+               "literal": "choice"
+              },
+              {
+               "literal": "text"
+              },
+              {
+               "literal": "number"
+              },
+              {
+               "literal": "folder"
+              },
+              {
+               "literal": "secret"
+              },
+              {
+               "literal": "status"
+              },
+              {
+               "literal": "actions"
+              },
+              {
+               "literal": "list"
+              },
+              {
+               "literal": "meter"
+              },
+              {
+               "literal": "open"
+              },
+              {
+               "literal": "steps"
+              },
+              {
+               "literal": "custom"
+              }
+             ]
+            },
+            "value?": "any",
+            "can?": {
+             "oneOf": [
+              {
+               "literal": true
+              },
+              {
+               "object": {
+                "why": "string"
+               }
+              }
+             ]
+            },
+            "revision": "string",
+            "confirm?": {
+             "object": {
+              "title": "string",
+              "body": "string",
+              "button": "string"
+             }
+            },
+            "busy?": "string",
+            "choices?": {
+             "list": {
+              "object": {
+               "id": "string",
+               "title": "string",
+               "line?": "string"
+              }
+             }
+            },
+            "placeholder?": "string",
+            "min?": "number",
+            "max?": "number",
+            "set?": "bool",
+            "actions?": {
+             "list": {
+              "object": {
+               "id": "string",
+               "title": "string",
+               "style?": {
+                "oneOf": [
+                 {
+                  "literal": "default"
+                 },
+                 {
+                  "literal": "destructive"
+                 }
+                ]
+               },
+               "confirm?": {
+                "object": {
+                 "title": "string",
+                 "body": "string",
+                 "button": "string"
+                }
+               },
+               "opens?": "string",
+               "can?": {
+                "oneOf": [
+                 {
+                  "literal": true
+                 },
+                 {
+                  "object": {
+                   "why": "string"
+                  }
+                 }
+                ]
+               }
+              }
+             }
+            },
+            "windows?": {
+             "list": {
+              "object": {
+               "title": "string",
+               "used": "number",
+               "resets?": "number"
+              }
+             }
+            },
+            "section?": "string",
+            "address?": "string",
+            "start?": {
+             "object": {
+              "id": "string",
+              "title": "string",
+              "style?": {
+               "oneOf": [
+                {
+                 "literal": "default"
+                },
+                {
+                 "literal": "destructive"
+                }
+               ]
+              },
+              "confirm?": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              },
+              "opens?": "string",
+              "can?": {
+               "oneOf": [
+                {
+                 "literal": true
+                },
+                {
+                 "object": {
+                  "why": "string"
+                 }
+                }
+               ]
+              }
+             }
+            },
+            "name?": "string",
+            "items?": {
+             "list": {
+              "object": {
+               "id": "string",
+               "title": "string",
+               "line?": "string",
+               "tone?": {
+                "oneOf": [
+                 {
+                  "literal": "quiet"
+                 },
+                 {
+                  "literal": "warning"
+                 }
+                ]
+               },
+               "kind": {
+                "oneOf": [
+                 {
+                  "literal": "switch"
+                 },
+                 {
+                  "literal": "choice"
+                 },
+                 {
+                  "literal": "text"
+                 },
+                 {
+                  "literal": "number"
+                 },
+                 {
+                  "literal": "folder"
+                 },
+                 {
+                  "literal": "secret"
+                 },
+                 {
+                  "literal": "status"
+                 },
+                 {
+                  "literal": "actions"
+                 },
+                 {
+                  "literal": "list"
+                 },
+                 {
+                  "literal": "meter"
+                 },
+                 {
+                  "literal": "open"
+                 },
+                 {
+                  "literal": "steps"
+                 },
+                 {
+                  "literal": "custom"
+                 }
+                ]
+               },
+               "value?": "any",
+               "can?": {
+                "oneOf": [
+                 {
+                  "literal": true
+                 },
+                 {
+                  "object": {
+                   "why": "string"
+                  }
+                 }
+                ]
+               },
+               "revision": "string",
+               "confirm?": {
+                "object": {
+                 "title": "string",
+                 "body": "string",
+                 "button": "string"
+                }
+               },
+               "busy?": "string",
+               "choices?": {
+                "list": {
+                 "object": {
+                  "id": "string",
+                  "title": "string",
+                  "line?": "string"
+                 }
+                }
+               },
+               "placeholder?": "string",
+               "min?": "number",
+               "max?": "number",
+               "set?": "bool",
+               "actions?": {
+                "list": {
+                 "object": {
+                  "id": "string",
+                  "title": "string",
+                  "style?": {
+                   "oneOf": [
+                    {
+                     "literal": "default"
+                    },
+                    {
+                     "literal": "destructive"
+                    }
+                   ]
+                  },
+                  "confirm?": {
+                   "object": {
+                    "title": "string",
+                    "body": "string",
+                    "button": "string"
+                   }
+                  },
+                  "opens?": "string",
+                  "can?": {
+                   "oneOf": [
+                    {
+                     "literal": true
+                    },
+                    {
+                     "object": {
+                      "why": "string"
+                     }
+                    }
+                   ]
+                  }
+                 }
+                }
+               },
+               "windows?": {
+                "list": {
+                 "object": {
+                  "title": "string",
+                  "used": "number",
+                  "resets?": "number"
+                 }
+                }
+               },
+               "section?": "string",
+               "address?": "string",
+               "start?": {
+                "object": {
+                 "id": "string",
+                 "title": "string",
+                 "style?": {
+                  "oneOf": [
+                   {
+                    "literal": "default"
+                   },
+                   {
+                    "literal": "destructive"
+                   }
+                  ]
+                 },
+                 "confirm?": {
+                  "object": {
+                   "title": "string",
+                   "body": "string",
+                   "button": "string"
+                  }
+                 },
+                 "opens?": "string",
+                 "can?": {
+                  "oneOf": [
+                   {
+                    "literal": true
+                   },
+                   {
+                    "object": {
+                     "why": "string"
+                    }
+                   }
+                  ]
+                 }
+                }
+               },
+               "name?": "string"
+              }
+             }
+            },
+            "add?": {
+             "object": {
+              "id": "string",
+              "title": "string",
+              "style?": {
+               "oneOf": [
+                {
+                 "literal": "default"
+                },
+                {
+                 "literal": "destructive"
+                }
+               ]
+              },
+              "confirm?": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              },
+              "opens?": "string",
+              "can?": {
+               "oneOf": [
+                {
+                 "literal": true
+                },
+                {
+                 "object": {
+                  "why": "string"
+                 }
+                }
+               ]
+              }
+             }
+            },
+            "empty?": "string"
+           }
+          }
+         }
+        }
+       }
+      },
+      "notes?": {
+       "list": {
+        "object": {
+         "words": "string",
+         "tone": {
+          "oneOf": [
+           {
+            "literal": "quiet"
+           },
+           {
+            "literal": "warning"
+           }
+          ]
+         }
+        }
+       }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "page?": {
+       "object": {
+        "id": "string",
+        "title": "string",
+        "line?": "string",
+        "groups": {
+         "list": {
+          "object": {
+           "id": "string",
+           "title?": "string",
+           "note?": "string",
+           "rows": {
+            "list": {
+             "object": {
+              "id": "string",
+              "title": "string",
+              "line?": "string",
+              "tone?": {
+               "oneOf": [
+                {
+                 "literal": "quiet"
+                },
+                {
+                 "literal": "warning"
+                }
+               ]
+              },
+              "kind": {
+               "oneOf": [
+                {
+                 "literal": "switch"
+                },
+                {
+                 "literal": "choice"
+                },
+                {
+                 "literal": "text"
+                },
+                {
+                 "literal": "number"
+                },
+                {
+                 "literal": "folder"
+                },
+                {
+                 "literal": "secret"
+                },
+                {
+                 "literal": "status"
+                },
+                {
+                 "literal": "actions"
+                },
+                {
+                 "literal": "list"
+                },
+                {
+                 "literal": "meter"
+                },
+                {
+                 "literal": "open"
+                },
+                {
+                 "literal": "steps"
+                },
+                {
+                 "literal": "custom"
+                }
+               ]
+              },
+              "value?": "any",
+              "can?": {
+               "oneOf": [
+                {
+                 "literal": true
+                },
+                {
+                 "object": {
+                  "why": "string"
+                 }
+                }
+               ]
+              },
+              "revision": "string",
+              "confirm?": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              },
+              "busy?": "string",
+              "choices?": {
+               "list": {
+                "object": {
+                 "id": "string",
+                 "title": "string",
+                 "line?": "string"
+                }
+               }
+              },
+              "placeholder?": "string",
+              "min?": "number",
+              "max?": "number",
+              "set?": "bool",
+              "actions?": {
+               "list": {
+                "object": {
+                 "id": "string",
+                 "title": "string",
+                 "style?": {
+                  "oneOf": [
+                   {
+                    "literal": "default"
+                   },
+                   {
+                    "literal": "destructive"
+                   }
+                  ]
+                 },
+                 "confirm?": {
+                  "object": {
+                   "title": "string",
+                   "body": "string",
+                   "button": "string"
+                  }
+                 },
+                 "opens?": "string",
+                 "can?": {
+                  "oneOf": [
+                   {
+                    "literal": true
+                   },
+                   {
+                    "object": {
+                     "why": "string"
+                    }
+                   }
+                  ]
+                 }
+                }
+               }
+              },
+              "windows?": {
+               "list": {
+                "object": {
+                 "title": "string",
+                 "used": "number",
+                 "resets?": "number"
+                }
+               }
+              },
+              "section?": "string",
+              "address?": "string",
+              "start?": {
+               "object": {
+                "id": "string",
+                "title": "string",
+                "style?": {
+                 "oneOf": [
+                  {
+                   "literal": "default"
+                  },
+                  {
+                   "literal": "destructive"
+                  }
+                 ]
+                },
+                "confirm?": {
+                 "object": {
+                  "title": "string",
+                  "body": "string",
+                  "button": "string"
+                 }
+                },
+                "opens?": "string",
+                "can?": {
+                 "oneOf": [
+                  {
+                   "literal": true
+                  },
+                  {
+                   "object": {
+                    "why": "string"
+                   }
+                  }
+                 ]
+                }
+               }
+              },
+              "name?": "string",
+              "items?": {
+               "list": {
+                "object": {
+                 "id": "string",
+                 "title": "string",
+                 "line?": "string",
+                 "tone?": {
+                  "oneOf": [
+                   {
+                    "literal": "quiet"
+                   },
+                   {
+                    "literal": "warning"
+                   }
+                  ]
+                 },
+                 "kind": {
+                  "oneOf": [
+                   {
+                    "literal": "switch"
+                   },
+                   {
+                    "literal": "choice"
+                   },
+                   {
+                    "literal": "text"
+                   },
+                   {
+                    "literal": "number"
+                   },
+                   {
+                    "literal": "folder"
+                   },
+                   {
+                    "literal": "secret"
+                   },
+                   {
+                    "literal": "status"
+                   },
+                   {
+                    "literal": "actions"
+                   },
+                   {
+                    "literal": "list"
+                   },
+                   {
+                    "literal": "meter"
+                   },
+                   {
+                    "literal": "open"
+                   },
+                   {
+                    "literal": "steps"
+                   },
+                   {
+                    "literal": "custom"
+                   }
+                  ]
+                 },
+                 "value?": "any",
+                 "can?": {
+                  "oneOf": [
+                   {
+                    "literal": true
+                   },
+                   {
+                    "object": {
+                     "why": "string"
+                    }
+                   }
+                  ]
+                 },
+                 "revision": "string",
+                 "confirm?": {
+                  "object": {
+                   "title": "string",
+                   "body": "string",
+                   "button": "string"
+                  }
+                 },
+                 "busy?": "string",
+                 "choices?": {
+                  "list": {
+                   "object": {
+                    "id": "string",
+                    "title": "string",
+                    "line?": "string"
+                   }
+                  }
+                 },
+                 "placeholder?": "string",
+                 "min?": "number",
+                 "max?": "number",
+                 "set?": "bool",
+                 "actions?": {
+                  "list": {
+                   "object": {
+                    "id": "string",
+                    "title": "string",
+                    "style?": {
+                     "oneOf": [
+                      {
+                       "literal": "default"
+                      },
+                      {
+                       "literal": "destructive"
+                      }
+                     ]
+                    },
+                    "confirm?": {
+                     "object": {
+                      "title": "string",
+                      "body": "string",
+                      "button": "string"
+                     }
+                    },
+                    "opens?": "string",
+                    "can?": {
+                     "oneOf": [
+                      {
+                       "literal": true
+                      },
+                      {
+                       "object": {
+                        "why": "string"
+                       }
+                      }
+                     ]
+                    }
+                   }
+                  }
+                 },
+                 "windows?": {
+                  "list": {
+                   "object": {
+                    "title": "string",
+                    "used": "number",
+                    "resets?": "number"
+                   }
+                  }
+                 },
+                 "section?": "string",
+                 "address?": "string",
+                 "start?": {
+                  "object": {
+                   "id": "string",
+                   "title": "string",
+                   "style?": {
+                    "oneOf": [
+                     {
+                      "literal": "default"
+                     },
+                     {
+                      "literal": "destructive"
+                     }
+                    ]
+                   },
+                   "confirm?": {
+                    "object": {
+                     "title": "string",
+                     "body": "string",
+                     "button": "string"
+                    }
+                   },
+                   "opens?": "string",
+                   "can?": {
+                    "oneOf": [
+                     {
+                      "literal": true
+                     },
+                     {
+                      "object": {
+                       "why": "string"
+                      }
+                     }
+                    ]
+                   }
+                  }
+                 },
+                 "name?": "string"
+                }
+               }
+              },
+              "add?": {
+               "object": {
+                "id": "string",
+                "title": "string",
+                "style?": {
+                 "oneOf": [
+                  {
+                   "literal": "default"
+                  },
+                  {
+                   "literal": "destructive"
+                  }
+                 ]
+                },
+                "confirm?": {
+                 "object": {
+                  "title": "string",
+                  "body": "string",
+                  "button": "string"
+                 }
+                },
+                "opens?": "string",
+                "can?": {
+                 "oneOf": [
+                  {
+                   "literal": true
+                  },
+                  {
+                   "object": {
+                    "why": "string"
+                   }
+                  }
+                 ]
+                }
+               }
+              },
+              "empty?": "string"
+             }
+            }
+           }
+          }
+         }
+        },
+        "notes?": {
+         "list": {
+          "object": {
+           "words": "string",
+           "tone": {
+            "oneOf": [
+             {
+              "literal": "quiet"
+             },
+             {
+              "literal": "warning"
+             }
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/settings/:section/:row/:action",
+   "answers": {
+    "200": {
+     "object": {
+      "id": "string",
+      "title": "string",
+      "line?": "string",
+      "groups": {
+       "list": {
+        "object": {
+         "id": "string",
+         "title?": "string",
+         "note?": "string",
+         "rows": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title": "string",
+            "line?": "string",
+            "tone?": {
+             "oneOf": [
+              {
+               "literal": "quiet"
+              },
+              {
+               "literal": "warning"
+              }
+             ]
+            },
+            "kind": {
+             "oneOf": [
+              {
+               "literal": "switch"
+              },
+              {
+               "literal": "choice"
+              },
+              {
+               "literal": "text"
+              },
+              {
+               "literal": "number"
+              },
+              {
+               "literal": "folder"
+              },
+              {
+               "literal": "secret"
+              },
+              {
+               "literal": "status"
+              },
+              {
+               "literal": "actions"
+              },
+              {
+               "literal": "list"
+              },
+              {
+               "literal": "meter"
+              },
+              {
+               "literal": "open"
+              },
+              {
+               "literal": "steps"
+              },
+              {
+               "literal": "custom"
+              }
+             ]
+            },
+            "value?": "any",
+            "can?": {
+             "oneOf": [
+              {
+               "literal": true
+              },
+              {
+               "object": {
+                "why": "string"
+               }
+              }
+             ]
+            },
+            "revision": "string",
+            "confirm?": {
+             "object": {
+              "title": "string",
+              "body": "string",
+              "button": "string"
+             }
+            },
+            "busy?": "string",
+            "choices?": {
+             "list": {
+              "object": {
+               "id": "string",
+               "title": "string",
+               "line?": "string"
+              }
+             }
+            },
+            "placeholder?": "string",
+            "min?": "number",
+            "max?": "number",
+            "set?": "bool",
+            "actions?": {
+             "list": {
+              "object": {
+               "id": "string",
+               "title": "string",
+               "style?": {
+                "oneOf": [
+                 {
+                  "literal": "default"
+                 },
+                 {
+                  "literal": "destructive"
+                 }
+                ]
+               },
+               "confirm?": {
+                "object": {
+                 "title": "string",
+                 "body": "string",
+                 "button": "string"
+                }
+               },
+               "opens?": "string",
+               "can?": {
+                "oneOf": [
+                 {
+                  "literal": true
+                 },
+                 {
+                  "object": {
+                   "why": "string"
+                  }
+                 }
+                ]
+               }
+              }
+             }
+            },
+            "windows?": {
+             "list": {
+              "object": {
+               "title": "string",
+               "used": "number",
+               "resets?": "number"
+              }
+             }
+            },
+            "section?": "string",
+            "address?": "string",
+            "start?": {
+             "object": {
+              "id": "string",
+              "title": "string",
+              "style?": {
+               "oneOf": [
+                {
+                 "literal": "default"
+                },
+                {
+                 "literal": "destructive"
+                }
+               ]
+              },
+              "confirm?": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              },
+              "opens?": "string",
+              "can?": {
+               "oneOf": [
+                {
+                 "literal": true
+                },
+                {
+                 "object": {
+                  "why": "string"
+                 }
+                }
+               ]
+              }
+             }
+            },
+            "name?": "string",
+            "items?": {
+             "list": {
+              "object": {
+               "id": "string",
+               "title": "string",
+               "line?": "string",
+               "tone?": {
+                "oneOf": [
+                 {
+                  "literal": "quiet"
+                 },
+                 {
+                  "literal": "warning"
+                 }
+                ]
+               },
+               "kind": {
+                "oneOf": [
+                 {
+                  "literal": "switch"
+                 },
+                 {
+                  "literal": "choice"
+                 },
+                 {
+                  "literal": "text"
+                 },
+                 {
+                  "literal": "number"
+                 },
+                 {
+                  "literal": "folder"
+                 },
+                 {
+                  "literal": "secret"
+                 },
+                 {
+                  "literal": "status"
+                 },
+                 {
+                  "literal": "actions"
+                 },
+                 {
+                  "literal": "list"
+                 },
+                 {
+                  "literal": "meter"
+                 },
+                 {
+                  "literal": "open"
+                 },
+                 {
+                  "literal": "steps"
+                 },
+                 {
+                  "literal": "custom"
+                 }
+                ]
+               },
+               "value?": "any",
+               "can?": {
+                "oneOf": [
+                 {
+                  "literal": true
+                 },
+                 {
+                  "object": {
+                   "why": "string"
+                  }
+                 }
+                ]
+               },
+               "revision": "string",
+               "confirm?": {
+                "object": {
+                 "title": "string",
+                 "body": "string",
+                 "button": "string"
+                }
+               },
+               "busy?": "string",
+               "choices?": {
+                "list": {
+                 "object": {
+                  "id": "string",
+                  "title": "string",
+                  "line?": "string"
+                 }
+                }
+               },
+               "placeholder?": "string",
+               "min?": "number",
+               "max?": "number",
+               "set?": "bool",
+               "actions?": {
+                "list": {
+                 "object": {
+                  "id": "string",
+                  "title": "string",
+                  "style?": {
+                   "oneOf": [
+                    {
+                     "literal": "default"
+                    },
+                    {
+                     "literal": "destructive"
+                    }
+                   ]
+                  },
+                  "confirm?": {
+                   "object": {
+                    "title": "string",
+                    "body": "string",
+                    "button": "string"
+                   }
+                  },
+                  "opens?": "string",
+                  "can?": {
+                   "oneOf": [
+                    {
+                     "literal": true
+                    },
+                    {
+                     "object": {
+                      "why": "string"
+                     }
+                    }
+                   ]
+                  }
+                 }
+                }
+               },
+               "windows?": {
+                "list": {
+                 "object": {
+                  "title": "string",
+                  "used": "number",
+                  "resets?": "number"
+                 }
+                }
+               },
+               "section?": "string",
+               "address?": "string",
+               "start?": {
+                "object": {
+                 "id": "string",
+                 "title": "string",
+                 "style?": {
+                  "oneOf": [
+                   {
+                    "literal": "default"
+                   },
+                   {
+                    "literal": "destructive"
+                   }
+                  ]
+                 },
+                 "confirm?": {
+                  "object": {
+                   "title": "string",
+                   "body": "string",
+                   "button": "string"
+                  }
+                 },
+                 "opens?": "string",
+                 "can?": {
+                  "oneOf": [
+                   {
+                    "literal": true
+                   },
+                   {
+                    "object": {
+                     "why": "string"
+                    }
+                   }
+                  ]
+                 }
+                }
+               },
+               "name?": "string"
+              }
+             }
+            },
+            "add?": {
+             "object": {
+              "id": "string",
+              "title": "string",
+              "style?": {
+               "oneOf": [
+                {
+                 "literal": "default"
+                },
+                {
+                 "literal": "destructive"
+                }
+               ]
+              },
+              "confirm?": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              },
+              "opens?": "string",
+              "can?": {
+               "oneOf": [
+                {
+                 "literal": true
+                },
+                {
+                 "object": {
+                  "why": "string"
+                 }
+                }
+               ]
+              }
+             }
+            },
+            "empty?": "string"
+           }
+          }
+         }
+        }
+       }
+      },
+      "notes?": {
+       "list": {
+        "object": {
+         "words": "string",
+         "tone": {
+          "oneOf": [
+           {
+            "literal": "quiet"
+           },
+           {
+            "literal": "warning"
+           }
+          ]
+         }
+        }
+       }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "page?": {
+       "object": {
+        "id": "string",
+        "title": "string",
+        "line?": "string",
+        "groups": {
+         "list": {
+          "object": {
+           "id": "string",
+           "title?": "string",
+           "note?": "string",
+           "rows": {
+            "list": {
+             "object": {
+              "id": "string",
+              "title": "string",
+              "line?": "string",
+              "tone?": {
+               "oneOf": [
+                {
+                 "literal": "quiet"
+                },
+                {
+                 "literal": "warning"
+                }
+               ]
+              },
+              "kind": {
+               "oneOf": [
+                {
+                 "literal": "switch"
+                },
+                {
+                 "literal": "choice"
+                },
+                {
+                 "literal": "text"
+                },
+                {
+                 "literal": "number"
+                },
+                {
+                 "literal": "folder"
+                },
+                {
+                 "literal": "secret"
+                },
+                {
+                 "literal": "status"
+                },
+                {
+                 "literal": "actions"
+                },
+                {
+                 "literal": "list"
+                },
+                {
+                 "literal": "meter"
+                },
+                {
+                 "literal": "open"
+                },
+                {
+                 "literal": "steps"
+                },
+                {
+                 "literal": "custom"
+                }
+               ]
+              },
+              "value?": "any",
+              "can?": {
+               "oneOf": [
+                {
+                 "literal": true
+                },
+                {
+                 "object": {
+                  "why": "string"
+                 }
+                }
+               ]
+              },
+              "revision": "string",
+              "confirm?": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              },
+              "busy?": "string",
+              "choices?": {
+               "list": {
+                "object": {
+                 "id": "string",
+                 "title": "string",
+                 "line?": "string"
+                }
+               }
+              },
+              "placeholder?": "string",
+              "min?": "number",
+              "max?": "number",
+              "set?": "bool",
+              "actions?": {
+               "list": {
+                "object": {
+                 "id": "string",
+                 "title": "string",
+                 "style?": {
+                  "oneOf": [
+                   {
+                    "literal": "default"
+                   },
+                   {
+                    "literal": "destructive"
+                   }
+                  ]
+                 },
+                 "confirm?": {
+                  "object": {
+                   "title": "string",
+                   "body": "string",
+                   "button": "string"
+                  }
+                 },
+                 "opens?": "string",
+                 "can?": {
+                  "oneOf": [
+                   {
+                    "literal": true
+                   },
+                   {
+                    "object": {
+                     "why": "string"
+                    }
+                   }
+                  ]
+                 }
+                }
+               }
+              },
+              "windows?": {
+               "list": {
+                "object": {
+                 "title": "string",
+                 "used": "number",
+                 "resets?": "number"
+                }
+               }
+              },
+              "section?": "string",
+              "address?": "string",
+              "start?": {
+               "object": {
+                "id": "string",
+                "title": "string",
+                "style?": {
+                 "oneOf": [
+                  {
+                   "literal": "default"
+                  },
+                  {
+                   "literal": "destructive"
+                  }
+                 ]
+                },
+                "confirm?": {
+                 "object": {
+                  "title": "string",
+                  "body": "string",
+                  "button": "string"
+                 }
+                },
+                "opens?": "string",
+                "can?": {
+                 "oneOf": [
+                  {
+                   "literal": true
+                  },
+                  {
+                   "object": {
+                    "why": "string"
+                   }
+                  }
+                 ]
+                }
+               }
+              },
+              "name?": "string",
+              "items?": {
+               "list": {
+                "object": {
+                 "id": "string",
+                 "title": "string",
+                 "line?": "string",
+                 "tone?": {
+                  "oneOf": [
+                   {
+                    "literal": "quiet"
+                   },
+                   {
+                    "literal": "warning"
+                   }
+                  ]
+                 },
+                 "kind": {
+                  "oneOf": [
+                   {
+                    "literal": "switch"
+                   },
+                   {
+                    "literal": "choice"
+                   },
+                   {
+                    "literal": "text"
+                   },
+                   {
+                    "literal": "number"
+                   },
+                   {
+                    "literal": "folder"
+                   },
+                   {
+                    "literal": "secret"
+                   },
+                   {
+                    "literal": "status"
+                   },
+                   {
+                    "literal": "actions"
+                   },
+                   {
+                    "literal": "list"
+                   },
+                   {
+                    "literal": "meter"
+                   },
+                   {
+                    "literal": "open"
+                   },
+                   {
+                    "literal": "steps"
+                   },
+                   {
+                    "literal": "custom"
+                   }
+                  ]
+                 },
+                 "value?": "any",
+                 "can?": {
+                  "oneOf": [
+                   {
+                    "literal": true
+                   },
+                   {
+                    "object": {
+                     "why": "string"
+                    }
+                   }
+                  ]
+                 },
+                 "revision": "string",
+                 "confirm?": {
+                  "object": {
+                   "title": "string",
+                   "body": "string",
+                   "button": "string"
+                  }
+                 },
+                 "busy?": "string",
+                 "choices?": {
+                  "list": {
+                   "object": {
+                    "id": "string",
+                    "title": "string",
+                    "line?": "string"
+                   }
+                  }
+                 },
+                 "placeholder?": "string",
+                 "min?": "number",
+                 "max?": "number",
+                 "set?": "bool",
+                 "actions?": {
+                  "list": {
+                   "object": {
+                    "id": "string",
+                    "title": "string",
+                    "style?": {
+                     "oneOf": [
+                      {
+                       "literal": "default"
+                      },
+                      {
+                       "literal": "destructive"
+                      }
+                     ]
+                    },
+                    "confirm?": {
+                     "object": {
+                      "title": "string",
+                      "body": "string",
+                      "button": "string"
+                     }
+                    },
+                    "opens?": "string",
+                    "can?": {
+                     "oneOf": [
+                      {
+                       "literal": true
+                      },
+                      {
+                       "object": {
+                        "why": "string"
+                       }
+                      }
+                     ]
+                    }
+                   }
+                  }
+                 },
+                 "windows?": {
+                  "list": {
+                   "object": {
+                    "title": "string",
+                    "used": "number",
+                    "resets?": "number"
+                   }
+                  }
+                 },
+                 "section?": "string",
+                 "address?": "string",
+                 "start?": {
+                  "object": {
+                   "id": "string",
+                   "title": "string",
+                   "style?": {
+                    "oneOf": [
+                     {
+                      "literal": "default"
+                     },
+                     {
+                      "literal": "destructive"
+                     }
+                    ]
+                   },
+                   "confirm?": {
+                    "object": {
+                     "title": "string",
+                     "body": "string",
+                     "button": "string"
+                    }
+                   },
+                   "opens?": "string",
+                   "can?": {
+                    "oneOf": [
+                     {
+                      "literal": true
+                     },
+                     {
+                      "object": {
+                       "why": "string"
+                      }
+                     }
+                    ]
+                   }
+                  }
+                 },
+                 "name?": "string"
+                }
+               }
+              },
+              "add?": {
+               "object": {
+                "id": "string",
+                "title": "string",
+                "style?": {
+                 "oneOf": [
+                  {
+                   "literal": "default"
+                  },
+                  {
+                   "literal": "destructive"
+                  }
+                 ]
+                },
+                "confirm?": {
+                 "object": {
+                  "title": "string",
+                  "body": "string",
+                  "button": "string"
+                 }
+                },
+                "opens?": "string",
+                "can?": {
+                 "oneOf": [
+                  {
+                   "literal": true
+                  },
+                  {
+                   "object": {
+                    "why": "string"
+                   }
+                  }
+                 ]
+                }
+               }
+              },
+              "empty?": "string"
+             }
+            }
+           }
+          }
+         }
+        },
+        "notes?": {
+         "list": {
+          "object": {
+           "words": "string",
+           "tone": {
+            "oneOf": [
+             {
+              "literal": "quiet"
+             },
+             {
+              "literal": "warning"
+             }
+            ]
+           }
+          }
+         }
         }
        }
       }

@@ -1,15 +1,20 @@
 //! The Computers area's main view: your computers side by side (how each stands, what it runs,
 //! the Kuvo Code it has), a computer's page, and Add a Machine. Every fact is its box's
-//! (`kuvo/computers`, PROTOCOL.md "Computers"); what no box offers yet (renaming, reconnecting,
-//! removing, adding a machine) is drawn as not in this app yet, never done here instead.
+//! (`kuvo/computers`, PROTOCOL.md "Computers"), and so is what can be done with each (`actions`:
+//! connecting again, removing, each with the box's words), done by the box, never here instead.
+//! Renaming waits on its design, and adding a machine on the box (#636): drawn as not in this app yet.
 //!
 //! Picked by the area's sidebar: nothing (all of them), `this` (the computer this window shows),
 //! `computer:<key>` (another), or `add` (Add a Machine).
 
+use std::collections::HashMap;
+
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, Hsla, InteractiveElement, IntoElement, ListAlignment, ListState, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, list,
-    prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Hsla, InteractiveElement, IntoElement, ListAlignment, ListState, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
+    Task, Window, div, list, prelude::FluentBuilder as _, px,
 };
+use kuvo_box::BoxClient;
+use kuvo_box::accounts::{Confirm, said};
 use kuvo_box::areas::Computer;
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize,
@@ -20,6 +25,7 @@ use kuvo_ui::{
 };
 
 use crate::areas::Reading;
+use crate::settings::page::{ConfirmIds, confirm_card, sheet};
 use crate::workspace::held_words;
 
 /// The widest the page's cards grow (Settings' width).
@@ -56,6 +62,8 @@ pub enum ComputersEvent {
     Select(Option<String>),
     /// The Sessions area, where this window's own sessions at work are.
     Sessions,
+    /// The box did something to your computers: the list is read again where it isn't followed.
+    ReadAgain,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -78,15 +86,58 @@ enum Item {
     Fact { key: String, title: String, value: String, first: bool, last: bool },
     /// Sessions at work there, as its box counts them; `open`: they're this window's, under Sessions.
     Working { count: usize, open: bool },
-    Action { key: String, title: String, button: String, first: bool, last: bool },
+    /// One of Manage's rows: what it does (none: not in this app yet), and its words while it's under way.
+    Action { key: String, title: String, button: String, act: Option<Manage>, busy: Option<String>, why: Option<String>, first: bool, last: bool },
     Note { key: String, words: String, busy: bool },
     AddForm,
     AddFoot,
     End,
 }
 
+/// One of Manage's rows as the box offers it: its key, title, button, what it does, and why it waits.
+type Offered = (&'static str, String, String, Option<Manage>, Option<String>);
+
+/// What the box is asked to do, off this thread.
+type Work = Box<dyn FnOnce(&BoxClient) -> kuvo_box::Result<()> + Send>;
+
+/// What one of Manage's buttons does, as the box offered it for a computer (by its key), asked
+/// first where the box gives a confirm.
+#[derive(Clone, Debug, PartialEq)]
+struct Manage {
+    what: What,
+    key: String,
+    confirm: Option<Confirm>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum What {
+    Connect,
+    Remove,
+}
+
+impl What {
+    /// Its row on the page.
+    fn row(self) -> &'static str {
+        match self {
+            What::Connect => "action-reconnect",
+            What::Remove => "action-remove",
+        }
+    }
+}
+
 pub struct ComputersView {
+    client: BoxClient,
+    /// Run against a live box (off this thread), else at once (tests and shots).
+    live: bool,
     computers: Reading<Vec<Computer>>,
+    /// The actions under way, by computer and row: their words meanwhile, and the work.
+    busy: HashMap<(String, &'static str), (String, Task<()>)>,
+    /// What the box last refused, in its words, over the page it was asked on.
+    problem: Option<(Shown, String)>,
+    /// The confirm open: its words, and what going ahead does.
+    confirm: Option<(Confirm, Manage)>,
+    confirm_focus: FocusHandle,
+    focus_confirm: bool,
     this_box: String,
     this_kind: String,
     /// The window shows this Mac's own box (as `held_words` takes it).
@@ -100,7 +151,7 @@ pub struct ComputersView {
 impl EventEmitter<ComputersEvent> for ComputersView {}
 
 impl ComputersView {
-    pub fn new(this_mac: bool, cx: &mut Context<Self>) -> ComputersView {
+    pub fn new(client: BoxClient, live: bool, this_mac: bool, cx: &mut Context<Self>) -> ComputersView {
         // It takes no typing while nothing could be done with it (BOX-NEEDED below, `add_items`).
         let host = cx.new(|cx| {
             let mut field = TextField::new(cx).placeholder("my-server or user@host");
@@ -108,7 +159,14 @@ impl ComputersView {
             field
         });
         let mut view = ComputersView {
+            client,
+            live,
             computers: Reading::NotYet,
+            busy: HashMap::new(),
+            problem: None,
+            confirm: None,
+            confirm_focus: cx.focus_handle(),
+            focus_confirm: false,
             this_box: "This Mac".into(),
             this_kind: String::new(),
             this_mac,
@@ -137,10 +195,16 @@ impl ComputersView {
         })
     }
 
+    /// The confirm open, as drawn: its question, what it comes to, and its button.
+    pub fn confirm_words(&self) -> Option<(String, String, String)> {
+        self.confirm.as_ref().map(|(confirm, _)| (confirm.title.clone(), confirm.message.clone(), confirm.label.clone()))
+    }
+
     pub fn show(&mut self, key: Option<&str>, cx: &mut Context<Self>) {
         let shown = Shown::from_key(key);
         if self.shown != shown {
             self.shown = shown;
+            self.confirm = None;
             // Each page opens at its top.
             self.list.scroll_to(gpui::ListOffset::default());
             self.rebuild(cx);
@@ -249,18 +313,23 @@ impl ComputersView {
         if let Some(notice) = self.notice(&computer) {
             items.push(notice);
         }
-        // What's at work there, as its box counts it (`working`). This window's own are under
-        // Sessions. BOX-NEEDED: which sessions those are (an `atWork` fact on `kuvo/sessions/list`,
-        // or their ids on the `here` computer), to list them here without a copy of the box's rule;
-        // and `working` left out for a peer that never said it (an older box says 0), drawn as not
-        // said. Meanwhile an older computer's count isn't drawn.
-        let unknown = computer.reach == "away" || computer.reach == "unknown" || computer.apart || computer.is_older();
-        if !unknown && !computer.reach.is_empty() {
+        if let Some((on, problem)) = &self.problem
+            && *on == self.shown
+        {
+            items.push(Item::Notice { key: "manage-problem".into(), tone: Tone::Attention, title: "That couldn’t be done".into(), words: problem.clone() });
+        }
+        // What's at work there, as its box counts it, where it said (`working`); none is claimed of
+        // one that never said. One that's away has no At Work (a drawing choice: its notice says
+        // why, and the box's 0 there means "nothing seen", not "nothing at work"). This window's
+        // own are under Sessions.
+        // (Which ones, `atWork`, waits on its design: the count is drawn as before.)
+        let working = computer.working.filter(|_| computer.reach != "away");
+        if let Some(working) = working {
             items.push(Item::Group("At Work".into()));
-            if computer.working == 0 {
+            if working == 0 {
                 items.push(Item::Note { key: "at-work-none".into(), words: format!("Nothing is at work on {name} now."), busy: false });
             } else {
-                items.push(Item::Working { count: computer.working, open: computer.here });
+                items.push(Item::Working { count: working, open: computer.here });
                 if !computer.here {
                     // Not built: a window that shows another computer's box (`BoxClient::machine`).
                     items.push(Item::Note { key: "at-work-elsewhere".into(), words: "Opening another computer’s sessions isn’t in this app yet.".into(), busy: false });
@@ -292,22 +361,85 @@ impl ComputersView {
         ];
         let count = facts.len();
         items.extend(facts.into_iter().enumerate().map(|(ix, (key, title, value))| Item::Fact { key: key.into(), title: title.into(), value, first: ix == 0, last: ix + 1 == count }));
-        // What can be done with it. BOX-NEEDED: routes on every box to rename a computer, connect
-        // to one again and remove one (`kuvo/machines…` is a Mac's app's own, answered only while
-        // it's open), each said as offered on `kuvo/computers` (`can`), as the Work Queue's items say it.
-        items.push(Item::Group("Manage".into()));
-        let mut actions = vec![("action-rename", "Name".to_owned(), "Rename…")];
-        if computer.reach == "away" {
-            actions.push(("action-reconnect", "Connection".to_owned(), "Connect"));
+        // What can be done with it, as its box offers it here (`actions`), in its order and words.
+        let actions: Vec<Offered> = computer
+            .actions
+            .iter()
+            .filter_map(|action| {
+                // (Marked as the platform marks a button that asks first.)
+                let label = if action.confirm.is_some() { format!("{}…", action.label) } else { action.label.clone() };
+                // (One the box says can't be done now isn't done here: its words say why.)
+                let act = |what| action.why.is_none().then(|| Manage { what, key: computer.key.clone(), confirm: action.confirm.clone() });
+                let why = action.why.clone();
+                Some(match action.id.as_str() {
+                    // (Renaming waits on its design: drawn, not done; it opens an editor, hence "…".)
+                    "rename" => ("action-rename", "Name".to_owned(), format!("{}…", action.label), None, why),
+                    "connect" => (What::Connect.row(), "Connection".to_owned(), label, act(What::Connect), why),
+                    "remove" => (What::Remove.row(), "Remove".to_owned(), label, act(What::Remove), why),
+                    _ => return None,
+                })
+            })
+            .collect();
+        if !actions.is_empty() {
+            items.push(Item::Group("Manage".into()));
+            let count = actions.len();
+            let whys: Vec<String> = actions.iter().filter_map(|(_, _, _, _, why)| why.clone()).collect();
+            items.extend(actions.into_iter().enumerate().map(|(ix, (key, title, button, act, why))| {
+                let busy = self.busy.get(&(computer.key.clone(), key)).map(|(words, _)| words.clone());
+                Item::Action { key: key.into(), title, button, act, busy, why, first: ix == 0, last: ix + 1 == count }
+            }));
+            // What waits, and why, in the box's words.
+            for (ix, why) in whys.into_iter().enumerate() {
+                items.push(Item::Note { key: if ix == 0 { "manage-why".into() } else { format!("manage-why-{ix}") }, words: why, busy: false });
+            }
         }
-        if !computer.here {
-            actions.push(("action-remove", "Remove".to_owned(), "Remove…"));
-        }
-        let count = actions.len();
-        items.extend(actions.into_iter().enumerate().map(|(ix, (key, title, button))| Item::Action { key: key.into(), title, button: button.into(), first: ix == 0, last: ix + 1 == count }));
-        items.push(Item::Note { key: "manage-not-yet".into(), words: "Renaming, connecting again and removing computers aren’t in this app yet.".into(), busy: false });
         items.push(Item::End);
         items
+    }
+
+    /// Does what a Manage button offers: asked first where the box says to, then done by the box;
+    /// the list is read again (followed, it comes by itself). A refusal is shown in the box's words.
+    fn manage(&mut self, act: Manage, cx: &mut Context<Self>) {
+        if let Some(confirm) = act.confirm.clone() {
+            self.focus_confirm = true;
+            self.confirm = Some((confirm, act));
+            return self.rebuild(cx);
+        }
+        let row = act.what.row();
+        let busy = (act.key.clone(), row);
+        if self.busy.contains_key(&busy) {
+            return;
+        }
+        let (words, work): (&str, Work) = match act.what {
+            What::Remove => ("Removing…", Box::new(move |client| client.remove_computer(&act.key))),
+            What::Connect => ("Connecting…", Box::new(move |client| client.connect_computer(&act.key))),
+        };
+        self.problem = None;
+        let on = self.shown.clone();
+        let done_with = busy.clone();
+        let then = move |this: &mut ComputersView, done: kuvo_box::Result<()>, cx: &mut Context<ComputersView>| {
+            this.busy.remove(&done_with);
+            match done {
+                Ok(()) => cx.emit(ComputersEvent::ReadAgain),
+                Err(error) => this.problem = Some((on, said(&error))),
+            }
+        };
+        let client = self.client.clone();
+        if !self.live {
+            let done = work(&client);
+            then(self, done, cx);
+            return self.rebuild(cx);
+        }
+        let task = cx.spawn(async move |this, cx| {
+            let done = cx.background_executor().spawn(async move { work(&client) }).await;
+            this.update(cx, |this, cx| {
+                then(this, done, cx);
+                this.rebuild(cx);
+            })
+            .ok();
+        });
+        self.busy.insert(busy, (words.to_owned(), task));
+        self.rebuild(cx);
     }
 
     /// Why a computer stands as it does, where that's more than "connected".
@@ -420,10 +552,15 @@ impl ComputersView {
                     .when(open, |d| d.child(Button::new("at-work-show", "Show in Sessions").size(ButtonSize::Small).on_click(cx.listener(|_, _, _, cx| cx.emit(ComputersEvent::Sessions)))))
                     .into_any_element()
             }
-            Item::Action { key, title, button, first, last } => card_row(key.clone(), first, last, cx)
-                .child(div().flex_1().min_w_0().text_ui(TypeSize::Body).text_color(c.text).child(title))
-                .child(Button::new(SharedString::from(format!("{key}-button")), button).size(ButtonSize::Small).disabled(true).tooltip(NOT_YET))
-                .into_any_element(),
+            Item::Action { key, title, button, act, busy, why, first, last } => {
+                let button = Button::new(SharedString::from(format!("{key}-button")), busy.clone().unwrap_or(button)).size(ButtonSize::Small);
+                let button = match act {
+                    Some(_) if busy.is_some() => button.disabled(true),
+                    Some(act) => button.on_click(cx.listener(move |this, _, _, cx| this.manage(act.clone(), cx))),
+                    None => button.disabled(true).tooltip(why.map(SharedString::from).unwrap_or(NOT_YET.into())),
+                };
+                card_row(key.clone(), first, last, cx).child(div().flex_1().min_w_0().text_ui(TypeSize::Body).text_color(c.text).child(title)).child(button).into_any_element()
+            }
             Item::Note { key, words, busy } => div()
                 .debug_selector(move || key)
                 .pt(space::S2)
@@ -459,14 +596,14 @@ impl ComputersView {
         let id = if computer.here { "this".to_owned() } else { computer.key.clone() };
         let selector = format!("computers-row-{id}");
         let version = computer.version.as_ref().map(|version| format!("Kuvo Code {version}"));
-        let working = (computer.working > 0).then(|| {
+        let working = computer.working.filter(|working| *working > 0).map(|working| {
             div()
                 .flex()
                 .flex_none()
                 .items_center()
                 .gap(space::S1)
                 .child(spinner(SharedString::from(format!("computers-row-spin-{id}")), IconSize::Nav, c.text_muted))
-                .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(format!("{} at work", computer.working)))
+                .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(format!("{working} at work")))
         });
         card_row(selector.clone(), first, last, cx)
             .id(SharedString::from(selector))
@@ -662,8 +799,35 @@ pub fn tile(computer: &Computer, size: gpui::Pixels, cx: &App) -> AnyElement {
 }
 
 impl Render for ComputersView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors.clone();
+        if std::mem::take(&mut self.focus_confirm) && self.confirm.is_some() {
+            window.focus(&self.confirm_focus, cx);
+        }
+        // The box's confirm, as Settings draws one: its question, what it comes to, its button.
+        let confirm = self.confirm.clone().map(|(confirm, act)| {
+            let card = confirm_card(
+                ConfirmIds { card: "computers-confirm", cancel: "computers-confirm-cancel", go: "computers-confirm-go" },
+                &self.confirm_focus,
+                (confirm.title, confirm.message, confirm.label),
+                cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                    this.confirm = None;
+                    cx.notify();
+                }),
+                cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                    if event.keystroke.key == "escape" {
+                        this.confirm = None;
+                        cx.notify();
+                    }
+                }),
+                cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                    this.confirm = None;
+                    this.manage(Manage { confirm: None, ..act.clone() }, cx);
+                }),
+                cx,
+            );
+            sheet(card, cx)
+        });
         let selector = match self.shown {
             Shown::All => "computers-page",
             Shown::Add => "add-machine-page",
@@ -672,9 +836,11 @@ impl Render for ComputersView {
         div()
             .id("computers-page")
             .debug_selector(move || selector.into())
+            .relative()
             .size_full()
             .bg(c.sidebar)
             .child(list(self.list.clone(), cx.processor(|this, ix, _, cx| this.item(ix, cx))).size_full())
+            .children(confirm)
     }
 }
 

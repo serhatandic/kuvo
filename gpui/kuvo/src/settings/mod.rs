@@ -6,7 +6,7 @@
 //! changes (the box's facts, the search, a change on its way), then a virtual list that lays out
 //! only the rows on screen. Each group of rows is one card.
 
-mod page;
+pub(crate) mod page;
 mod rows;
 pub mod sign_in;
 

@@ -22,6 +22,7 @@ import { PROJECT_ROUTES } from "./projects";
 import { SANDBOX_ROUTES } from "./sandbox";
 import { SESSION_ROUTES } from "./sessions";
 import { SETTINGS_ROUTES } from "./settings";
+import { SETTINGS_PAGE_ROUTES } from "./settings-pages";
 import { SKILL_ROUTES } from "./skills";
 import { TYPED_ROUTES } from "./typed";
 import { WAKE_ROUTES } from "./wakes";
@@ -58,6 +59,7 @@ export const ROUTES: RouteShape[] = [
   ...SANDBOX_ROUTES,
   ...SESSION_ROUTES,
   ...SETTINGS_ROUTES,
+  ...SETTINGS_PAGE_ROUTES,
   ...SKILL_ROUTES,
   ...TYPED_ROUTES,
   ...MESSAGE_ROUTES,

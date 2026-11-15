@@ -225,6 +225,17 @@ impl StandIn {
         self.state().areas.more_computers = more;
     }
 
+    /// What renaming and removing say (`503`) instead of doing it, as a box that can't ask the
+    /// computer that writes the record says it.
+    pub fn manage_refused(&self, words: &str) {
+        self.state().areas.manage_refused = Some(words.to_owned());
+    }
+
+    /// The old Kuvo Code app is open on this Mac: removing a machine waits, saying so.
+    pub fn old_app_open(&self) {
+        self.state().areas.old_app = true;
+    }
+
     /// Whether its list of computers can be read (else 503, as a box that isn't answering).
     pub fn computers_readable(&self, readable: bool) {
         self.state().areas.computers_down = !readable;
@@ -660,7 +671,7 @@ impl State {
 
     /// One of the areas' answers (`kuvo/waiting`, `kuvo/computers`…), as it is now.
     fn area(&self, method: &str, route: &str) -> Option<(u16, Value)> {
-        areas::answer(self.areas, method, route, self.made.unwrap_or_else(now_ms), self.needs_you().len(), self.bots.asking())
+        areas::answer(&self.areas, method, route, self.made.unwrap_or_else(now_ms), self.needs_you().len(), self.bots.asking())
     }
 
     /// Each bot's own conversation is one of the box's sessions (kind `bot`, which the lists show
@@ -922,6 +933,14 @@ impl StandIn {
             return answer(status, value);
         }
         if let Some((status, value)) = state.area(method, route) {
+            return answer(status, value);
+        }
+        if let Some(((status, value), changed)) = areas::manage(&mut state.areas, method, route) {
+            // Those following your computers hear the list as it is now.
+            if changed && let Some((_, now)) = state.area("GET", "kuvo/computers") {
+                let line = now.to_string();
+                state.computers.retain(|_, sender| sender.send(line.clone()).is_ok());
+            }
             return answer(status, value);
         }
         let projects: Vec<(String, String)> = state.projects.iter().map(|(directory, project)| (directory.clone(), project["name"].as_str().unwrap_or_default().to_owned())).collect();

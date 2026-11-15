@@ -250,20 +250,30 @@ export type Credentials = Infer<typeof CREDENTIALS>;
 export type ModelsRefreshed = Infer<typeof MODELS_REFRESHED>;
 export type Found = Infer<typeof FOUND>;
 
+/** What can be done with one of your computers from the box that lists it (`computers.manage`):
+ * which, its button's words, and where a client asks first, the question, what it comes to and the
+ * words of the button that goes ahead, all the box's; `why`, it can't be done now, in words a
+ * client shows beside it. */
+export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
+export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
+
 /** One of your computers, as a box knows it (`kuvo/computers`, PROTOCOL.md "Computers"): its key
  * (`""` for the box itself while it has none), name and kind; `here`, the box that answered; `id`,
  * a machine's name on its Mac; whether it's a machine Macs of different setups share; `apart`, it
  * isn't one of your own computers (such a machine, or a box of another setup); whether it's
- * heard from (`connected`), not yet (`connecting`), not lately (`away`), or not this box's to say (`unknown`: one known by a peer's word alone); Kuvo Code's version
- * there, its engine's and its system, as it said them; how this box knows it (`here`, itself;
- * `relay`, a peer it talks to; `peer`, by another computer's word alone, `through` that one); how
- * many of its sessions are at work; and the services whose plan limits it reads. */
+ * heard from (`connected`), not yet or being reached again (`connecting`), not lately (`away`), or not this box's to say (`unknown`: one known by a peer's word alone); Kuvo Code's version
+ * there, its engine's and its system, as it said them; what its box answers (`features`, as it
+ * said them, whole); how this box knows it (`here`, itself; `relay`, a peer it talks to; `peer`, by
+ * another computer's word alone, `through` that one); how many of its sessions are at work and
+ * which (the first few, by id and title), where it said; the services whose plan limits it reads;
+ * and what can be done with it from here (`actions`). */
 export const LISTED_COMPUTER = object({
   key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
   shared: bool, "apart?": literal(true), reach: words("connected", "connecting", "away", "unknown"),
-  "version?": string, "engine?": string, "system?": string,
+  "version?": string, "engine?": string, "system?": string, "features?": list(string),
   via: words("here", "relay", "peer"), "through?": string,
-  working: number, limits: list(string),
+  "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string),
+  actions: list(COMPUTER_ACTION),
 });
 export const COMPUTERS = object({ computers: list(LISTED_COMPUTER) });
 export type ListedComputer = Infer<typeof LISTED_COMPUTER>;
@@ -281,6 +291,9 @@ const FILE_REFUSED = object({ message: string });
 export const BOX_ROUTES: RouteShape[] = [
   { route: "GET kuvo/computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
   { route: "GET kuvo/computers/events", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
+  { route: "PATCH kuvo/computers/:key", answers: { 200: object({ name: string }), 400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
+  { route: "DELETE kuvo/computers/:key", answers: { 200: NOTHING, 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
+  { route: "POST kuvo/computers/:key/connect", answers: { 202: NOTHING, 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
   { route: "GET kuvo/info", answers: { 200: INFO } },
   { route: "GET kuvo/update", answers: { 200: UPDATE } },
   { route: "POST kuvo/update", answers: { 202: UPDATE } },

@@ -776,3 +776,92 @@ fn a_first_run_reads_the_boxs_folders_and_says_when_its_done() {
     let said: Vec<_> = stand_in.seen().into_iter().filter(|seen| seen.route() == "kuvo/setup/welcomed").collect();
     assert_eq!((said[0].method.as_str(), said[0].body.clone()), ("POST", Some(json!({ "welcomed": true }))));
 }
+
+/// A box's settings as it describes them (PROTOCOL.md, "A box's settings", #727): its sections
+/// and a page read as the box says them, a change sent with the row's own revision, one the box
+/// finds stale answered with its page now, one it refuses said in its words, what a row does, and
+/// the page followed as it changes. Nothing about any setting is known here.
+#[test]
+fn a_boxs_settings_are_read_changed_and_followed_as_the_box_says_them() {
+    use kuvo_box::follow::Followed;
+    use kuvo_box::settings_pages::{Can, Changed, Kind};
+    let page = |offers: bool, revision: &str| json!({ "id": "browser", "title": "Browser", "groups": [
+        { "id": "browser", "rows": [
+            { "id": "search-engine", "title": "Search engine", "kind": "choice", "value": "google", "choices": [{ "id": "google", "title": "Google" }, { "id": "kagi", "title": "Kagi" }], "can": true, "revision": "se1" },
+            { "id": "offers", "title": "Offer to save sign-ins", "kind": "switch", "value": offers, "can": true, "revision": revision }
+        ] },
+        { "id": "never", "rows": [{ "id": "never", "title": "Never Offered", "kind": "list", "revision": "nv1", "empty": "None yet.", "items": [
+            { "id": "never-localhost:3000", "title": "localhost:3000", "kind": "actions", "revision": "lh1", "actions": [{ "id": "offer-again", "title": "Offer Again" }] }
+        ] }] }
+    ] });
+    let held = "Turn it on in a conversation: pick Full Access in its mode menu, and confirm it there.";
+    let stand_in = StandInBox::start(move |seen| match (seen.method.as_str(), seen.route()) {
+        (_, "kuvo/info") => Answer::json(200, mac_info(current_features())),
+        ("GET", "kuvo/settings") => Answer::json(200, json!({ "sections": [
+            { "id": "permissions", "title": "Permissions", "group": "Agents & Tools", "icon": "shield", "line": "What agents may do without asking.", "keywords": ["sandbox"] },
+            { "id": "browser", "title": "Browser", "group": "System", "icon": "globe", "line": "The browser's search engine.", "keywords": [] }
+        ] })),
+        ("GET", "kuvo/settings/browser") => Answer::json(200, page(true, "of1")),
+        ("PATCH", "kuvo/settings/browser") => match seen.body.as_ref().and_then(|body| body["was"].as_str()) {
+            Some("of1") => Answer::json(200, page(false, "of2")),
+            _ => Answer::json(409, json!({ "message": "It changed since you read it.", "page": page(false, "of2") })),
+        },
+        ("PATCH", "kuvo/settings/permissions") => Answer::json(403, json!({ "message": held })),
+        ("PATCH", "kuvo/settings/engine") => Answer::json(409, json!({ "message": "The engine's settings file can't be changed from here: line 2." })),
+        ("POST", "kuvo/settings/browser/never-localhost%3A3000/offer-again") => Answer::json(200, page(true, "of1")),
+        _ => Answer::json(404, json!({})),
+    });
+    let lines = stand_in.stream_for("kuvo/settings/browser/events");
+    let (_home, _serve, client) = this_mac(&stand_in);
+    client.connect().expect("kuvo/info");
+
+    let sections = client.settings_sections().expect("the sections");
+    assert_eq!(sections.iter().map(|section| (section.id.as_str(), section.icon.as_str())).collect::<Vec<_>>(), vec![("permissions", "shield"), ("browser", "globe")]);
+
+    let read = client.settings_page("browser").expect("the page");
+    let offers = read.row("offers").expect("its row").clone();
+    assert_eq!((offers.kind, offers.is_on(), offers.can.clone()), (Kind::Switch, true, Some(Can::Yes)));
+    assert_eq!(read.row("search-engine").and_then(|row| row.chosen()).map(|choice| choice.title.as_str()), Some("Google"));
+
+    // Changed from the revision it was read at: the box's page after it.
+    match client.change_setting("browser", &offers, json!(false)).expect("changed") {
+        Changed::Done(now) => assert!(!now.row("offers").unwrap().is_on()),
+        other => panic!("done, not {other:?}"),
+    }
+    assert_eq!(stand_in.seen().last().and_then(|seen| seen.body.clone()), Some(json!({ "row": "offers", "value": false, "was": "of1" })));
+    // From a reading made before: the box says so, with the page as it is now.
+    let stale = kuvo_box::settings_pages::Row { revision: "of0".into(), ..offers.clone() };
+    match client.change_setting("browser", &stale, json!(true)).expect("answered") {
+        Changed::Stale { message, page } => {
+            assert_eq!(message, "It changed since you read it.");
+            assert_eq!(page.row("offers").map(|row| row.revision.as_str()), Some("of2"));
+        }
+        other => panic!("stale, not {other:?}"),
+    }
+    // One it can't change from here: refused in the box's words.
+    match client.change_setting("permissions", &offers, json!(true)) {
+        Err(Error::Refused(refusal)) => assert_eq!((refusal.status, refusal.message.as_str()), (403, held)),
+        other => panic!("refused, not {other:?}"),
+    }
+    // A 409 of the route underneath (no page): a refusal in its words, not a stale reading.
+    match client.change_setting("engine", &offers, json!(true)) {
+        Err(Error::Refused(refusal)) => assert_eq!(refusal.status, 409),
+        other => panic!("refused, not {other:?}"),
+    }
+    // What a list's row offers, sent to its own route, its id kept one part of the path.
+    let site = read.row("never-localhost:3000").expect("the site").clone();
+    assert!(matches!(client.setting_action("browser", &site, &site.actions[0]).expect("done"), Changed::Done(_)));
+    assert_eq!(stand_in.seen().last().and_then(|seen| seen.body.clone()), Some(json!({ "was": "lh1" })));
+
+    let follow = client.follow_settings_page("browser", at_once());
+    lines.send(page(true, "of1").to_string()).unwrap();
+    match follow.next_blocking() {
+        Some(Followed::Now(now)) => assert!(now.row("offers").unwrap().is_on()),
+        other => panic!("the page, not {other:?}"),
+    }
+    lines.send(page(false, "of2").to_string()).unwrap();
+    match follow.next_blocking() {
+        Some(Followed::Now(now)) => assert!(!now.row("offers").unwrap().is_on()),
+        other => panic!("the page again, not {other:?}"),
+    }
+}
