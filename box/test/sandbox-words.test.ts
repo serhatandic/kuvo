@@ -27,3 +27,25 @@ test("no reason's sentence says plugin: a changed setup is Kuvo's part in the en
   expect(WHY.plugin).toBe("Kuvo’s part in the engine was changed or removed.")
   for (const sentence of Object.values(WHY)) expect(sentence.toLowerCase()).not.toContain("plugin")
 })
+
+// #668 5c: on, but where commands can still reach your login's services (a Linux machine without
+// user namespaces), the box says why and names the docs' page; and once the check has failed twice
+// in a row, what a report of it says. No client keeps either sentence or the address.
+test("on with commands reaching your login's services: why, and the page on what the machine needs", async () => {
+  const { worded } = await import("../src/link/fence/state")
+  const services = worded({ on: true, able: true, agents: true, gaps: ["services"], needs: "util-linux" })
+  expect(services).toMatchObject({ on: true, action: "help", actionLabel: "How to Check…", opens: "https://www.kuvo.run/code/docs/machines/#sandbox" })
+  expect(services.why).toContain("Until it has util-linux, agents don’t use your vault here and goals don’t run on their own.")
+  expect(worded({ on: true, able: true, agents: true, gaps: ["services"], needs: "user namespaces" }).why).toContain("Until it allows user namespaces,")
+  // On and whole, or with only git's files kept apart: nothing to say.
+  expect(worded({ on: true, able: true, agents: true })).toEqual({ on: true, able: true, agents: true })
+  expect(worded({ on: true, able: true, agents: true, gaps: ["git"] })).toEqual({ on: true, able: true, agents: true, gaps: ["git"] })
+})
+
+test("a check that failed twice in a row says what a report of it says; once, it doesn't", async () => {
+  const { worded } = await import("../src/link/fence/state")
+  const failed = (failures: number) => worded({ on: false, able: true, agents: false, reason: "checkFailed", action: "retry", route: "POST kuvo/sandbox/check", check: "readsOwn", failures })
+  expect(failed(1).report).toBeUndefined()
+  expect(failed(2).report).toBe("The sandbox’s check failed 2 times in a row: Its check failed. (check: readsOwn)")
+  expect(failed(3)).toMatchObject({ why: "Its check failed.", actionLabel: "Try Again" })
+})

@@ -212,7 +212,7 @@ final class BoxPlanLimits {
             providerID: account.service,
             name: account.title,
             plan: account.plan,
-            meters: account.windows(at: now).map { window in
+            meters: account.current.map { window in
                 HostLimitRow.Meter(
                     title: window.title, fraction: window.used, resetsAt: window.resetsAt, periodMinutes: window.minutes,
                     count: window.amount.map { (used: $0.used, limit: $0.limit, unit: $0.unit) }

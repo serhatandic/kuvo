@@ -54,13 +54,17 @@ public struct SandboxState: Codable, Equatable, Sendable {
     public var check: Check?
     /// Checks failed in a row.
     public var failures: Int?
+    /// Its check failed often enough that a client offers Report a Problem (`sandbox.report`): what a
+    /// report of it says, in the box's words. None, no Report a Problem.
+    public var report: String?
     /// It asks you, once, to restart the agents started before it was on (`SandboxRoutes.restart`).
     public var restart: Bool?
     /// While it's on, what it can't keep commands from here (a newer box's words left out).
     public var gaps: [Gap]?
 
     public init(on: Bool, why: String? = nil, able: Bool = true, agents: Bool = false, outside: Bool? = nil, reason: Reason? = nil, action: Action? = nil, route: String? = nil, needs: String? = nil, check: Check? = nil, failures: Int? = nil, restart: Bool? = nil, gaps: [Gap]? = nil,
-                actionLabel: String? = nil, opens: String? = nil, opensHere: Bool? = nil) {
+                actionLabel: String? = nil, opens: String? = nil, opensHere: Bool? = nil, report: String? = nil) {
+        self.report = report
         self.actionLabel = actionLabel
         self.opens = opens
         self.opensHere = opensHere
@@ -95,6 +99,7 @@ public struct SandboxState: Codable, Equatable, Sendable {
         needs = try keys.decodeIfPresent(String.self, forKey: .needs)
         check = try? keys.decodeIfPresent(Check.self, forKey: .check)
         failures = try keys.decodeIfPresent(Int.self, forKey: .failures)
+        report = try? keys.decodeIfPresent(String.self, forKey: .report)
         restart = try? keys.decodeIfPresent(Bool.self, forKey: .restart)
         gaps = (try? keys.decodeIfPresent([String].self, forKey: .gaps))?.compactMap(Gap.init(rawValue:))
     }

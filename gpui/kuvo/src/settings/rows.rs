@@ -329,7 +329,7 @@ fn usage(facts: &Facts) -> Vec<Block> {
         .enumerate()
         .map(|(ix, account)| {
             let detail = account.plan.clone().map(|plan| format!("{plan} plan")).unwrap_or_default();
-            Row::new(format!("usage-{ix}"), account.title(), detail, Control::Windows(account.clone())).leading(Leading::Mark(account.service.clone()))
+            Row::new(format!("usage-{ix}"), account.title.clone(), detail, Control::Windows(account.clone())).leading(Leading::Mark(account.service.clone()))
         })
         .collect();
     vec![Block::Group("Limits".into(), rows)]
@@ -430,14 +430,15 @@ fn permissions(facts: &Facts) -> Vec<Block> {
             // button with a route sends it, one with an address opens it. An address that's the
             // box's computer's own (its Software Update) has a button only where this app runs
             // on that computer.
-            let detail = if sandbox.on { String::new() } else { sandbox.why.clone().unwrap_or_default() };
+            // (On, but with commands still reaching your login's services: why and its page, as off.)
+            let detail = if sandbox.needs_you() { sandbox.why.clone().unwrap_or_default() } else { String::new() };
             let control = facts.busy("row-sandbox").unwrap_or_else(|| match sandbox.button() {
                 Some((label, SandboxDoes::Route { method, path })) => Control::Buttons(vec![(label, Act::SandboxAction { method, path })]),
                 // (Another computer's box has this one open a web page only, never anything else.)
                 Some((label, SandboxDoes::Open { address, here })) if if here { facts.here } else { is_page(&address) } => Control::Buttons(vec![(label, Act::Open(address))]),
                 _ => Control::Text(if sandbox.on { "On".into() } else { "Off".into() }),
             });
-            let state = Row::new("row-sandbox", "Sandbox", detail, control).warning(!sandbox.on);
+            let state = Row::new("row-sandbox", "Sandbox", detail, control).warning(sandbox.needs_you());
             blocks.push(Block::Group("Sandbox".into(), vec![state]));
         }
         reading => blocks.extend(unread(reading, "note-sandbox", "the sandbox")),

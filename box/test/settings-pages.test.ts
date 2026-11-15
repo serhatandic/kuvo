@@ -412,3 +412,15 @@ test("a page followed is said again as it changes", async () => {
     events.stop()
   }
 })
+
+// #668: on, on a machine whose commands can still reach your login's services, the row warns with
+// the box's words and the page it names, as for off; only git's files kept apart, it's a quiet On.
+test("the sandbox's row warns while commands can still reach your login's services", async () => {
+  const { sandboxRow } = await import("../src/link/areas/settings-pages")
+  const { worded } = await import("../src/link/fence/state")
+  const services = worded({ on: true, able: true, agents: true, gaps: ["services"], needs: "user namespaces" })
+  expect(sandboxRow(services, "devbox", false)).toMatchObject({ value: "On", tone: "warning", line: services.why, kind: "actions", actions: [{ id: "help", title: "How to Check…", opens: "https://www.kuvo.run/code/docs/machines/#sandbox" }] })
+  const git = sandboxRow(worded({ on: true, able: true, agents: true, gaps: ["git"] }), "devbox", false)
+  expect(git).toMatchObject({ value: "On", kind: "status", line: "Agents' commands here run in it." })
+  expect("tone" in git).toBe(false)
+})
