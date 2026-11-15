@@ -208,6 +208,16 @@ impl StandIn {
         self.state().queue.add_many_labels();
     }
 
+    /// Its list of computers has this computer alone.
+    pub fn computers_alone(&self) {
+        self.state().areas.computers_alone = true;
+    }
+
+    /// `more` machines listed after the sample's (a long list).
+    pub fn more_computers(&self, more: usize) {
+        self.state().areas.more_computers = more;
+    }
+
     /// Whether its list of computers can be read (else 503, as a box that isn't answering).
     pub fn computers_readable(&self, readable: bool) {
         self.state().areas.computers_down = !readable;

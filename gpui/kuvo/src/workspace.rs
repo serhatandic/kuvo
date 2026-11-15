@@ -82,6 +82,21 @@ pub enum BoxState {
     Unreachable(String),
 }
 
+/// What's said of a computer whose box the update gate holds: its title, and what brings it up to
+/// date. `name`: the computer's (none: "This computer"); `here`: it's this Mac's own box. The window's
+/// notice and the Computers area's page say it in the same words.
+pub fn held_words(name: Option<&str>, here: bool) -> (String, String) {
+    let subject = name.filter(|name| !name.is_empty()).unwrap_or("This computer");
+    let title = format!("{subject}’s Kuvo is older than this app");
+    let next = if here {
+        "It updates with Kuvo 1.0.".to_owned()
+    } else {
+        let computer = if subject == "This computer" { "this computer" } else { subject };
+        format!("Update Kuvo on {computer} to use it here.")
+    };
+    (title, next)
+}
+
 enum Open {
     Landing,
     Conversation { view: Entity<ConversationView>, session: String },
@@ -185,6 +200,7 @@ impl Workspace {
             cx.subscribe_in(view, window, |this: &mut Workspace, _, go: &Go, window, cx| match go {
                 Go::BotChat { bot, session, draft } => this.open_bot_chat(bot, session, draft.as_deref(), window, cx),
                 Go::Session(session) => this.open_session_now(session, window, cx),
+                Go::Sessions => this.show_area(Area::Sessions, window, cx),
             })
         }));
         // The Bots list as it's read again (a bot's conversation may be another session by then).
@@ -474,15 +490,7 @@ impl Workspace {
             return None;
         }
         let name = self.info.as_ref().map(|_| self.box_name().to_string());
-        let subject = name.as_deref().filter(|name| !name.is_empty()).unwrap_or("This computer");
-        let title = format!("{subject}’s Kuvo is older than this app");
-        let next = if self.client.here() {
-            "It updates with Kuvo 1.0.".to_owned()
-        } else {
-            let computer = if subject == "This computer" { "this computer" } else { subject };
-            format!("Update Kuvo on {computer} to use it here.")
-        };
-        Some((title, next))
+        Some(held_words(name.as_deref(), self.client.here()))
     }
 
     pub fn now(&self) -> f64 {

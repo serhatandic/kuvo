@@ -40,6 +40,7 @@ pub const REQUIRED: &[&str] = &[
     "queue.stop.arriving",
     "sandbox.opens",
     "sandbox.words",
+    "sessions.actions",
     "sessions.asks",
     "sessions.list",
     "sessions.mentions",

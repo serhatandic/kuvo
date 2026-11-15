@@ -107,7 +107,7 @@ pub struct Group {
 // MARK: Computers
 
 /// One of your computers, as a box knows it (`kuvo/computers`).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct Computer {
     /// Its box's public key (`""` for the box itself while it has none).
     #[serde(default)]
@@ -149,11 +149,23 @@ pub struct Computer {
     /// The services whose plan limits it reads.
     #[serde(default)]
     pub limits: Vec<String>,
+    /// What its box has (its `kuvo/info` `features`), for the update gate.
+    // BOX-NEEDED: `features` on each of `kuvo/computers`' peers (as it said them with its agents,
+    // "Peers"), so a client can say which of your computers it would hold. No box says it yet: the
+    // stand-in does, and a list without it holds none.
+    #[serde(default)]
+    pub features: Option<Vec<String>>,
 }
 
 impl Computer {
     pub fn is_mac(&self) -> bool {
         self.kind == "mac"
+    }
+
+    /// Its box is older than this client needs (the update gate, PROTOCOL.md): this client would
+    /// hold it. Only where the list says what it has; one that doesn't say isn't called older.
+    pub fn is_older(&self) -> bool {
+        self.features.as_deref().is_some_and(|features| !crate::gate::missing(features).is_empty())
     }
 }
 
@@ -318,7 +330,7 @@ fn agent_name(agent: &str) -> Option<&'static str> {
 }
 
 /// The engine's services by their plans' names (KuvoClient's `AccountNames.services`).
-fn service_name(service: &str) -> Option<&'static str> {
+pub fn service_name(service: &str) -> Option<&'static str> {
     Some(match service {
         "codex" => "ChatGPT",
         "grok" => "SuperGrok",
@@ -484,5 +496,14 @@ mod tests {
         assert_eq!(said.computers.len(), 2, "one in a shape this can't read is left out");
         assert!(said.computers[0].here && said.computers[0].is_mac());
         assert_eq!((said.computers[1].shared, said.computers[1].reach.as_str(), said.computers[1].through.as_deref()), (true, "unknown", Some("Studio")));
+    }
+
+    /// A computer is older only where the list says what it has, and lacks something the gate needs.
+    #[test]
+    fn a_computer_is_older_only_where_the_list_says_it_lacks_what_the_gate_needs() {
+        let computer = |features: Option<Vec<String>>| super::Computer { name: "devbox".into(), features, ..Default::default() };
+        assert!(!computer(None).is_older(), "one that doesn't say isn't called older");
+        assert!(computer(Some(vec!["typed".into()])).is_older());
+        assert!(!computer(Some(crate::gate::REQUIRED.iter().map(|name| (*name).to_owned()).collect())).is_older());
     }
 }

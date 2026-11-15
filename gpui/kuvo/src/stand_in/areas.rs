@@ -15,6 +15,10 @@ pub struct Areas {
     pub empty: bool,
     /// Its list of computers can't be read now (503).
     pub computers_down: bool,
+    /// Its list of computers has this computer alone (the rest of the sample stays).
+    pub computers_alone: bool,
+    /// So many more machines listed (a long list).
+    pub more_computers: usize,
 }
 
 /// Its answer to `method route`, if it's one of the areas' routes. `needing`: how many of its
@@ -28,7 +32,7 @@ pub fn answer(areas: Areas, method: &str, route: &str, now: f64, needing: usize,
     }
     let answer = match route {
         "kuvo/groups" => json!({ "groups": if areas.empty { Vec::new() } else { groups(now) } }),
-        "kuvo/computers" => json!({ "computers": computers(areas.empty) }),
+        "kuvo/computers" => json!({ "computers": computers(areas.empty || areas.computers_alone, areas.more_computers) }),
         "kuvo/agents/api/kuvo/limits" => json!({ "data": { "accounts": [], "services": ["claude", "codex", "copilot", "grok", "openrouter"], "rows": if areas.empty { Vec::new() } else { accounts(now) } } }),
         "kuvo/waiting" => json!({ "sessions": needing, "bots": bots_asking, "queue": 0 }),
         _ => return None,
@@ -54,9 +58,9 @@ fn groups(now: f64) -> Vec<Value> {
     ]
 }
 
-/// Your computers, the stand-in itself first: a machine at work, a Mac that's away, and a
-/// machine shared with another setup.
-fn computers(alone: bool) -> Vec<Value> {
+/// Your computers, the stand-in itself first: a machine at work, a Mac that's away, a Mac on an
+/// older Kuvo Code, and a machine shared with another setup; `more` machines after them.
+fn computers(alone: bool, more: usize) -> Vec<Value> {
     let mut computers = vec![json!({
         "key": "key_stand_in", "name": super::NAME, "kind": "mac", "here": true, "shared": false, "reach": "connected",
         "version": "1.0.0", "engine": "2.3.0", "system": "macOS 15.1", "via": "here", "working": 1, "limits": ["claude", "codex", "copilot", "grok", "openrouter"],
@@ -65,9 +69,25 @@ fn computers(alone: bool) -> Vec<Value> {
         computers.extend([
             json!({ "key": "key_devbox", "name": "devbox", "kind": "machine", "id": "devbox", "shared": false, "reach": "connected", "version": "1.0.0", "engine": "2.3.0", "system": "Ubuntu 24.04.1 LTS", "via": "relay", "working": 2, "limits": ["claude"] }),
             json!({ "key": "key_studio", "name": "studio-mini", "kind": "mac", "shared": false, "reach": "away", "version": "1.0.0", "engine": "2.3.0", "system": "macOS 15.1", "via": "relay", "working": 0, "limits": [] }),
+            // STAND-IN: `features` isn't on `kuvo/computers` yet (BOX-NEEDED, gpui/notes/computers-handover.md):
+            // the stand-in says one for this Mac alone, from before the desktop app's gate.
+            json!({ "key": "key_old", "name": "old-mini", "kind": "mac", "shared": false, "reach": "connected", "version": "0.9.180", "engine": "1.14.0", "system": "macOS 14.6", "via": "relay", "working": 0, "limits": ["claude"], "features": ["sessions.list", "messages.send"] }),
             json!({ "key": "key_build", "name": "build-box", "kind": "machine", "id": "build-box", "shared": true, "apart": true, "reach": "connected", "system": "Debian 12", "via": "relay", "working": 0, "limits": [] }),
         ]);
     }
+    let reaches = ["connected", "connected", "away", "connecting", "unknown"];
+    computers.extend((0..more).map(|ix| {
+        let reach = reaches[ix % reaches.len()];
+        let mut computer = json!({ "key": format!("key_more_{ix}"), "name": format!("worker-{:02}", ix + 1), "kind": "machine", "id": format!("worker-{:02}", ix + 1), "shared": false, "reach": reach, "via": if reach == "unknown" { "peer" } else { "relay" }, "working": if reach == "connected" { ix % 3 } else { 0 }, "limits": [] });
+        if reach == "unknown" {
+            computer["through"] = json!("devbox");
+        } else {
+            computer["version"] = json!("1.0.0");
+            computer["engine"] = json!("2.3.0");
+            computer["system"] = json!(if ix % 2 == 0 { "Ubuntu 24.04.1 LTS" } else { "Debian 12" });
+        }
+        computer
+    }));
     computers
 }
 
