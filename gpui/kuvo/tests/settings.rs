@@ -120,7 +120,7 @@ fn settings_opens_on_your_own_and_the_foot_row_goes_to_the_computers(cx: &mut Te
     click(cx, "settings-foot");
     assert!(shown(cx, "settings-computer") && !shown(cx, "settings-yours-title"));
     assert_eq!(stand_in.seen_at("GET", "kuvo/settings").len(), 1);
-    assert!(shown(cx, "row-time-zone"), "its General");
+    assert!(shown(cx, "row-time-zone"), "its Clock");
     // Only the page on screen asks the box anything.
     assert!(stand_in.seen_at("GET", "kuvo/settings/browser").is_empty());
     for (name, row) in [("Accounts", "account-claude-code"), ("Usage", "usage-0"), ("Models", "model-0"), ("Permissions", "row-sandbox"), ("Browser", "row-search-engine")] {
@@ -257,7 +257,7 @@ fn sections_that_couldnt_be_read_say_so_and_are_asked_for_again(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn a_computer_without_the_open_section_shows_its_general(cx: &mut TestAppContext) {
+fn a_computer_without_the_open_section_shows_its_clock(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (added, page) = kuvo::stand_in::settings::every_kind();
     stand_in.add_settings_section(added, page);
@@ -265,8 +265,8 @@ fn a_computer_without_the_open_section_shows_its_general(cx: &mut TestAppContext
     section(&workspace, cx, "samples");
     click(cx, "settings-computer");
     click(cx, "menu-item-devbox");
-    // devbox's box has no such section: its General, and no page that never comes.
-    assert_eq!(title(&workspace, cx).as_deref(), Some("General"));
+    // devbox's box has no such section: its Clock, and no page that never comes.
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Clock"));
     assert!(shown(cx, "row-time-zone"));
 }
 
@@ -849,7 +849,7 @@ fn escape_closes_the_sign_in_and_the_confirm(cx: &mut TestAppContext) {
     // The sidebar waits under the dimming (drawn as the sheet opens, by the area's own view): a
     // section clicked there isn't opened.
     assert!(shown(cx, "settings-sidebar-dim"));
-    click(cx, "setting-general");
+    click(cx, "setting-clock");
     assert!(shown(cx, "sign-in") && !shown(cx, "row-theme"));
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
@@ -992,7 +992,7 @@ mod live {
 #[gpui::test]
 fn lowering_a_budget_asks_before_sending_and_cancel_sends_nothing(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.add_settings_section(json!({"id":"storage", "title":"Storage", "group":"System", "icon":"file"}), json!({
+    stand_in.add_settings_section(json!({"id":"storage", "title":"Storage", "group":"System", "icon":"drive"}), json!({
         "id":"storage","title":"Storage","groups":[{"id":"copies","rows":[{
             "id":"budget","title":"Budget","kind":"number","value":2000000000,"can":true,"unit":{"name":"GiB","factor":1073741824,"decimals":2,"rounding":"nearest"},
             "confirm":{"title":"Ordinary question","body":"Generic words.","button":"Save"},
@@ -1021,7 +1021,7 @@ fn lowering_a_budget_asks_before_sending_and_cancel_sends_nothing(cx: &mut TestA
 #[gpui::test]
 fn a_described_list_search_filters_items_without_sending_a_change(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.add_settings_section(json!({"id":"archived","title":"Archived Sessions","group":"Projects","icon":"clock"}), json!({
+    stand_in.add_settings_section(json!({"id":"archived","title":"Archived Sessions","group":"System","icon":"archive"}), json!({
         "id":"archived","title":"Archived Sessions","groups":[{"id":"sessions","title":"Kuvo Code","rows":[{
             "id":"sessions","title":"Archived Sessions","kind":"list",
             "search":{"placeholder":"Search sessions…","empty":"No sessions match {query}."},
@@ -1049,7 +1049,7 @@ fn a_described_list_search_filters_items_without_sending_a_change(cx: &mut TestA
 #[gpui::test]
 fn a_rounded_unit_field_keeps_untouched_bytes_and_ordinary_confirmation_has_no_attestation(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.add_settings_section(json!({"id":"storage","title":"Storage","group":"System","icon":"file"}), json!({
+    stand_in.add_settings_section(json!({"id":"storage","title":"Storage","group":"System","icon":"drive"}), json!({
         "id":"storage","title":"Storage","groups":[{"id":"copies","rows":[{
             "id":"budget","title":"Budget","kind":"number","value":1073741831,"can":true,
             "unit":{"name":"GiB","factor":1073741824,"decimals":2,"rounding":"nearest"},

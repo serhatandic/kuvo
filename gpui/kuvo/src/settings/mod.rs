@@ -253,7 +253,7 @@ impl SettingsView {
             live,
             side: Side::Yours,
             yours: "appearance".into(),
-            section: "general".into(),
+            section: "clock".into(),
             computer: None,
             computers: Reading::NotYet,
             standing: Standing::Reached,
@@ -520,7 +520,7 @@ impl SettingsView {
         cx.emit(Pick { place, record: true });
     }
 
-    /// The picker: another computer's settings, at the section open (its General where it has
+    /// The picker: another computer's settings, at the section open (its Clock where it has
     /// no such section, once its box says what it has). Only Settings changes, never the window.
     pub(crate) fn pick_computer(&mut self, key: Option<String>, cx: &mut Context<Self>) {
         cx.emit(Pick { place: box_key(key.as_deref().unwrap_or_default(), &self.section), record: true });
@@ -664,7 +664,7 @@ impl SettingsView {
         }
     }
 
-    /// The computer's box said its sections: one open that it hasn't goes to its General (or its
+    /// The computer's box said its sections: one open that it hasn't goes to its Clock (or its
     /// first), as after switching from a computer that had it.
     fn settle(&mut self, cx: &mut Context<Self>) {
         if self.side != Side::Computer || !matches!(self.sections, Reading::Ready(_)) {
@@ -674,7 +674,7 @@ impl SettingsView {
         if entries.iter().any(|entry| entry.id == self.section) {
             return;
         }
-        if let Some(to) = entries.iter().find(|entry| entry.id == "general").or(entries.first()) {
+        if let Some(to) = entries.iter().find(|entry| entry.id == "clock").or(entries.first()) {
             cx.emit(Pick { place: box_key(self.computer.as_deref().unwrap_or_default(), &to.id), record: false });
         }
     }

@@ -471,7 +471,7 @@ impl AreaView {
         cx.notify();
     }
 
-    /// Settings shows the section picked (its first, General, for none); Bots, what's picked.
+    /// Settings shows the section picked (its first, Clock, for none); Bots, what's picked.
     fn show_section(&mut self, cx: &mut Context<Self>) {
         if let (Some(settings), Some(place)) = (&self.settings, self.selected.clone()) {
             settings.update(cx, |settings, cx| settings.set_place(&place, cx));
