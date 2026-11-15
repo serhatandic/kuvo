@@ -929,6 +929,26 @@ mod live {
     use gpui::{AppContext as _, Context, IntoElement, ParentElement, Render, Styled, Window, div};
     use kuvo::settings::Pick;
 
+    // These tests exercise asynchronous requests on GPUI's executor. A streaming
+    // transport also starts a real follow thread, whose channel wakes are outside
+    // the test scheduler. Use the supported request/response path so every answer
+    // is driven by that scheduler, including pages discovered during a search.
+    struct RequestBox(StandIn);
+
+    impl kuvo_box::transport::Transport for RequestBox {
+        fn send(&self, request: &kuvo_box::transport::Request) -> kuvo_box::Result<kuvo_box::transport::Response> {
+            kuvo_box::transport::Transport::send(&self.0, request)
+        }
+
+        fn open(&self, _: &kuvo_box::transport::Request, _: &dyn Fn(kuvo_box::transport::Closer) -> bool) -> kuvo_box::Result<kuvo_box::transport::Stream> {
+            panic!("these tests use scheduler-driven requests")
+        }
+
+        fn streams(&self) -> bool { false }
+        fn here(&self) -> bool { kuvo_box::transport::Transport::here(&self.0) }
+        fn describe(&self) -> String { kuvo_box::transport::Transport::describe(&self.0) }
+    }
+
     struct Host {
         settings: Entity<SettingsView>,
     }
@@ -946,7 +966,7 @@ mod live {
             Theme::init(Appearance::Light, cx);
             kuvo::bind_keys(cx);
         });
-        let client = BoxClient::new(StandIn::at(Replies::Never, NOW));
+        let client = BoxClient::new(RequestBox(StandIn::at(Replies::Never, NOW)));
         let (host, cx) = cx.add_window_view(|_, cx| {
             let settings = cx.new(|cx| SettingsView::new(client, true, cx));
             cx.subscribe(&settings, |host: &mut Host, _, pick: &Pick, cx| host.settings.update(cx, |settings, cx| settings.set_place(&pick.place, cx))).detach();
@@ -954,7 +974,7 @@ mod live {
         });
         cx.simulate_resize(size(px(1280.), px(1400.)));
         // The computer's settings, opened and searched before its box has said anything.
-        host.update(cx, |host, cx| host.settings.update(cx, |settings, cx| settings.set_place("Models", cx)));
+        host.update(cx, |host, cx| host.settings.update(cx, |settings, cx| settings.set_place("Clock", cx)));
         click(cx, "settings-search");
         cx.simulate_input("copilot");
         cx.run_until_parked();
@@ -972,7 +992,7 @@ mod live {
             kuvo::bind_keys(cx);
         });
         let stand_in = StandIn::at(Replies::Never, NOW);
-        let client = BoxClient::new(stand_in.clone());
+        let client = BoxClient::new(RequestBox(stand_in.clone()));
         let (host, cx) = cx.add_window_view(|_, cx| {
             let settings = cx.new(|cx| SettingsView::new(client, true, cx));
             cx.subscribe(&settings, |host: &mut Host, _, pick: &Pick, cx| host.settings.update(cx, |settings, cx| settings.set_place(&pick.place, cx))).detach();
