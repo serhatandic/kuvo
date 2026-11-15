@@ -13,7 +13,7 @@ use kuvo::launch::{Attached, Launch, Opens, Stage};
 use kuvo::stand_in::first_run::Scenario;
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo_box::install::stand_in::Bundle;
-use kuvo_box::install::{Installer, OnlyAttaches, Progress, Verb};
+use kuvo_box::install::{Installer, OnlyAttaches, Progress, Step, Verb};
 use kuvo_ui::{Appearance, Theme};
 
 const NOW: f64 = 1_794_650_000_000.0;
@@ -152,10 +152,10 @@ fn setting_up_is_said_on_this_mac_s_row_in_the_welcome_card(cx: &mut TestAppCont
     // While the installer works, the row says so; with the box's words for a step once it sends any.
     launch.update(cx, |launch, cx| {
         launch.progress(Progress::Running { verb: Verb::New, verdict: Some("fresh".into()) }, cx);
-        launch.progress(Progress::Step { step: "checking".into(), title: None }, cx);
+        launch.progress(Progress::Step(Step { step: "checking".into(), ..Step::default() }), cx);
     });
     assert_eq!(line(&launch, cx), "Setting up Kuvo…");
-    launch.update(cx, |launch, cx| launch.progress(Progress::Step { step: "engine".into(), title: Some("Downloading the engine".into()) }, cx));
+    launch.update(cx, |launch, cx| launch.progress(Progress::Step(Step { step: "engine".into(), title: Some("Downloading the engine".into()), ..Step::default() }), cx));
     assert_eq!(line(&launch, cx), "Setting up Kuvo · Downloading the engine");
     cx.run_until_parked();
     assert!(shown(cx, "launch-computer") && shown(cx, "launch-next"));
@@ -219,10 +219,10 @@ fn what_the_box_refuses_is_said_in_its_words_with_try_again(cx: &mut TestAppCont
 }
 
 #[gpui::test]
-fn an_earlier_kuvo_code_s_sessions_the_box_wont_move_yet_are_said_so(cx: &mut TestAppContext) {
+fn a_move_the_box_refuses_is_said_in_its_words(cx: &mut TestAppContext) {
     let made = tempfile::tempdir().unwrap();
     let (bundle, installer) = carried(made.path());
-    let not_yet = "Moving an earlier Kuvo Code's sessions into their new place isn't in this version yet.";
+    let not_yet = "This Mac has 2.1 GB free, and moving needs 6.4 GB. Free up some space, then try again.";
     bundle.says("status", None, 0, &[r#"{"verdict":"app-07","verb":"move","status":{}}"#]);
     bundle.says("move", None, 1, &[&format!(r#"{{"result":"refused","message":"{not_yet}","verdict":"app-07","verb":"move","status":{{}}}}"#)]);
     let here = Here::default();
@@ -230,7 +230,48 @@ fn an_earlier_kuvo_code_s_sessions_the_box_wont_move_yet_are_said_so(cx: &mut Te
     assert_eq!(verbs(&bundle), ["status", "move"]);
     assert_eq!(line(&launch, cx), "Couldn’t move your sessions");
     assert_eq!(message(&launch, cx).as_deref(), Some(not_yet));
-    assert!(shown(cx, "launch-again") && !opened(&launch, cx));
+    // Said plainly, as nothing of the earlier Kuvo Code runs meanwhile.
+    assert!(shown(cx, "launch-again") && shown(cx, "launch-note") && !opened(&launch, cx));
+}
+
+#[gpui::test]
+fn an_earlier_kuvo_code_s_sessions_are_moved_and_the_app_opens(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, installer) = carried(made.path());
+    bundle.says("status", None, 0, &[r#"{"verdict":"app-07","verb":"move","status":{}}"#]);
+    bundle.says("move", None, 0, &[r#"{"step":"plan","title":"Getting ready","index":1,"of":12}"#, r#"{"step":"done","title":"Starting Kuvo on this Mac","index":12,"of":12}"#, DONE]);
+    let here = Here::default();
+    here.answers(&StandIn::at(Replies::Never, NOW));
+    let (launch, cx) = open(cx, installer, &here);
+    assert_eq!(verbs(&bundle), ["status", "move"]);
+    assert!(opened(&launch, cx));
+    assert!(shown(cx, "rail-settings"));
+}
+
+#[gpui::test]
+fn a_move_still_at_work_from_an_earlier_open_is_drawn_where_it_is_until_its_done(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, installer) = carried(made.path());
+    // The app quit while the box moved: the move went on by itself, and says where it is.
+    let waits = |step: &str, title: &str, index: u32| format!(r#"{{"verdict":"waits","verb":null,"status":{{"progress":{{"step":"{step}","title":"{title}","index":{index},"of":12}}}}}}"#);
+    bundle.says("status", None, 0, &[&waits("clone", "Copying your sessions and settings", 3)]);
+    let here = Here::default();
+    let (launch, cx) = open(cx, installer, &here);
+    assert!(shown(cx, "first-run-card") && shown(cx, "launch-steps") && !shown(cx, "launch-again"));
+    assert_eq!(line(&launch, cx), "Moving your sessions · Copying your sessions and settings");
+    assert_eq!(launch.read_with(cx, |launch, _| launch.at()), Some((3, 12)));
+    // Asked again in a moment: further on, the same card.
+    bundle.says("status", None, 0, &[&waits("check", "Checking the copy", 8)]);
+    wait(cx, Duration::from_secs(2));
+    assert_eq!(line(&launch, cx), "Moving your sessions · Checking the copy");
+    assert_eq!(launch.read_with(cx, |launch, _| launch.at()), Some((8, 12)));
+    // Done: the box says this Mac's Kuvo is here, and the app opens. `move` was never run by
+    // this open of the app: the box's own run finished it.
+    bundle.says("status", None, 0, &[r#"{"verdict":"ours","verb":null,"status":{}}"#]);
+    here.answers(&StandIn::at(Replies::Never, NOW));
+    wait(cx, Duration::from_secs(2));
+    assert!(opened(&launch, cx));
+    assert_eq!(verbs(&bundle), ["status", "status", "status"]);
 }
 
 #[gpui::test]

@@ -29,6 +29,8 @@ use crate::{Home, title_bar};
 /// didn't start.
 const STARTS_WITHIN: Duration = Duration::from_secs(60);
 const ASKED_EVERY: Duration = Duration::from_millis(500);
+/// How often a move still at work from an earlier open is asked about.
+const MOVE_ASKED_EVERY: Duration = Duration::from_secs(2);
 
 /// This computer, as the window names it before any box has said its name.
 pub const HERE: &str = if cfg!(target_os = "macos") { "This Mac" } else { "This computer" };
@@ -52,8 +54,9 @@ pub struct Opens {
 pub enum Stage {
     /// The installer is asked what this computer holds; or a box that's here is being reached.
     Asking,
-    /// It's being set up (`new`) or moved (`move`). `title`: the box's words for its step.
-    SettingUp { verb: Verb, title: Option<SharedString> },
+    /// It's being set up (`new`) or moved (`move`). `title`: the box's words for its step; `at`:
+    /// which step that is, of how many, where the box says (a move's).
+    SettingUp { verb: Verb, title: Option<SharedString>, at: Option<(u32, u32)> },
     /// Made or started: its server is up in a moment.
     Starting,
     /// It went no further: `line` says what, `message` why, in the box's words where it gave
@@ -103,6 +106,12 @@ impl Launch {
         self.stage = Stage::Asking;
         self.card = false;
         cx.notify();
+        self.ask(window, cx);
+    }
+
+    /// Asks the installer what this computer holds and runs what it names, what's drawn left as
+    /// it is until it says.
+    fn ask(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let installer = match self.opens.installer.clone() {
             Ok(installer) => installer,
             // A build that installs nothing only attaches, and says so where there's nothing to
@@ -131,11 +140,12 @@ impl Launch {
                 // A Mac whose Kuvo is here and only needs starting again stays quiet: nothing is
                 // being set up for whoever sees it.
                 self.card = verdict.as_deref() != Some("ours");
-                self.stage = Stage::SettingUp { verb, title: None };
+                self.stage = Stage::SettingUp { verb, title: None, at: None };
             }
-            Progress::Step { title, .. } => {
-                if let Stage::SettingUp { title: shown, .. } = &mut self.stage {
-                    *shown = title.map(SharedString::from);
+            Progress::Step(step) => {
+                if let Stage::SettingUp { title, at, .. } = &mut self.stage {
+                    *title = step.title.map(SharedString::from);
+                    *at = step.index.zip(step.of);
                 }
             }
         }
@@ -155,8 +165,22 @@ impl Launch {
             // Whatever stopped it, a box that answers here is still the user's to use (an earlier
             // build's that keeps running until it's moved; one whose update couldn't be checked).
             End::NotStarted => self.attach(Some("Kuvo is set up, but isn’t running".into()), said, None, window, cx),
+            // A move the box still runs in a process of its own (the app quit while it worked):
+            // drawn where it is, and asked about again until it's done.
+            End::Waits if outcome.progress.is_some() => {
+                let step = outcome.progress.unwrap_or_default();
+                self.card = true;
+                self.stage = Stage::SettingUp { verb: Verb::Move, title: step.title.map(SharedString::from), at: step.index.zip(step.of) };
+                cx.notify();
+                self._work = Some(cx.spawn_in(window, async move |this, cx| {
+                    cx.background_executor().timer(MOVE_ASKED_EVERY).await;
+                    this.update_in(cx, |this, window, cx| this.ask(window, cx)).ok();
+                }));
+            }
             End::Waits => self.attach(Some("Waiting for another move to finish".into()), said, None, window, cx),
-            End::Stopped => self.attach(Some(if outcome.ran == Some(Verb::Move) { "Couldn’t move your sessions" } else { "Couldn’t set up Kuvo" }.into()), said, None, window, cx),
+            // (A move that stopped leaves nothing running where no earlier box answers: said.)
+            End::Stopped if outcome.ran == Some(Verb::Move) => self.attach(Some("Couldn’t move your sessions".into()), said, Some(format!("Nothing runs on {HERE_IN_WORDS} until this is done.").into()), window, cx),
+            End::Stopped => self.attach(Some("Couldn’t set up Kuvo".into()), said, None, window, cx),
             End::Broken => self.attach(Some("Couldn’t set up Kuvo".into()), Some(format!("Kuvo couldn’t be set up on {HERE_IN_WORDS}. {}", outcome.message.unwrap_or_default()).trim().to_owned().into()), None, window, cx),
         }
     }
@@ -237,7 +261,7 @@ impl Launch {
     /// What this computer's row says now, and whether it's still at work.
     pub fn line(&self) -> (SharedString, bool) {
         match &self.stage {
-            Stage::SettingUp { verb, title } => {
+            Stage::SettingUp { verb, title, .. } => {
                 let doing = if *verb == Verb::Move { "Moving your sessions" } else { "Setting up Kuvo" };
                 (title.as_ref().map_or_else(|| format!("{doing}…"), |title| format!("{doing} · {title}")).into(), true)
             }
@@ -254,13 +278,21 @@ impl Launch {
         }
     }
 
+    /// How far a move is, where the box says: its step, of how many.
+    pub fn at(&self) -> Option<(u32, u32)> {
+        match &self.stage {
+            Stage::SettingUp { at, .. } => *at,
+            _ => None,
+        }
+    }
+
     /// This computer's row in the Welcome card: what's happening to it, or what went wrong.
     fn row(&self, cx: &App) -> AnyElement {
         let c = &cx.theme().colors;
         let (line, working) = self.line();
         let color = if working { c.text_muted } else { c.danger };
         let trailing: AnyElement = if working { spinner("launch-working", IconSize::Nav, c.text_muted).into_any_element() } else { Icon::new(IconName::Warning).color(c.danger).into_any_element() };
-        div()
+        let row = div()
             .debug_selector(|| "launch-computer".into())
             .flex()
             .items_center()
@@ -270,6 +302,15 @@ impl Launch {
             .child(icon_tile(IconName::Computer, cx))
             .child(two_lines(HERE, line, color, cx))
             .child(trailing)
+            .into_any_element();
+        // A move's steps as a thin bar under the row: how far it is, by the box's count.
+        let Some((index, of)) = self.at().filter(|(_, of)| *of > 0) else { return row };
+        let done = (index.min(of) as f32 / of as f32).clamp(0., 1.);
+        div()
+            .flex()
+            .flex_col()
+            .child(row)
+            .child(div().debug_selector(|| "launch-steps".into()).mx(space::S4).mb(space::S3).h(px(3.)).rounded(px(2.)).bg(c.border).child(div().h_full().w(gpui::relative(done)).rounded(px(2.)).bg(c.text_muted)))
             .into_any_element()
     }
 

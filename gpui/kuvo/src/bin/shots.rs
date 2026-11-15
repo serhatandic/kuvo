@@ -1142,8 +1142,8 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
         Ok(())
     };
     let offline = "The engine couldn’t be downloaded. Check that this Mac is online, then try again.";
-    let not_yet = "Moving an earlier Kuvo Code’s sessions into their new place isn’t in this version yet.";
-    for slug in ["launch-setting-up", "launch-starting", "launch-done", "launch-failed", "launch-move-refused", "launch-failed-narrow", "launch-not-running"] {
+    let not_yet = "This Mac has 2.1 GB free, and moving needs 6.4 GB. Free up some space, then try again.";
+    for slug in ["launch-setting-up", "launch-moving", "launch-starting", "launch-done", "launch-failed", "launch-move-refused", "launch-failed-narrow", "launch-not-running"] {
         if !wanted(slug, "launch") {
             continue;
         }
@@ -1167,10 +1167,11 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
             cx.update_window(any, |root, _, cx| {
                 let launch = root.downcast::<Launch>().expect("the launch");
                 launch.update(cx, |launch, cx| match slug {
-                    "launch-setting-up" => launch.show(Stage::SettingUp { verb: Verb::New, title: None }, true, cx),
+                    "launch-setting-up" => launch.show(Stage::SettingUp { verb: Verb::New, title: None, at: None }, true, cx),
+                    "launch-moving" => launch.show(Stage::SettingUp { verb: Verb::Move, title: Some("Copying your sessions and settings".into()), at: Some((3, 12)) }, true, cx),
                     "launch-starting" => launch.show(Stage::Starting, true, cx),
                     "launch-failed" | "launch-failed-narrow" => launch.show(Stage::Stopped { line: "Couldn’t set up Kuvo".into(), message: offline.into(), note: None }, true, cx),
-                    "launch-move-refused" => launch.show(Stage::Stopped { line: "Couldn’t move your sessions".into(), message: not_yet.into(), note: None }, true, cx),
+                    "launch-move-refused" => launch.show(Stage::Stopped { line: "Couldn’t move your sessions".into(), message: not_yet.into(), note: Some("Nothing runs on this Mac until this is done.".into()) }, true, cx),
                     "launch-done" => {
                         let home = launch.home().cloned().expect("the app, open");
                         home.update(cx, |home, cx| {

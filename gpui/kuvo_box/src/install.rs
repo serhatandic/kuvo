@@ -124,10 +124,29 @@ pub enum Progress {
     Asking,
     /// Running what `status` named, for a computer that holds `verdict`.
     Running { verb: Verb, verdict: Option<String> },
-    /// A step of it. `title`: the box's words for it, where it sends any.
-    // BOX-NEEDED: the installer names its steps (`checking`, `engine`) but has no words for them,
-    // so the window says only that it's setting up. `{"step", "title"}` would be drawn as it is.
-    Step { step: String, title: Option<String> },
+    /// A step of it, in the box's words where it sends any (a move's steps: `title`, and where it
+    /// is among them, `index` of `of`).
+    // BOX-NEEDED: the installer's own first steps (`checking`, `engine`) have no words, so the
+    // window says only that it's setting up. `{"step", "title"}` would be drawn as it is.
+    Step(Step),
+}
+
+/// A step, as the box says it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Step {
+    pub step: String,
+    pub title: Option<String>,
+    /// Where it is among the steps (from 1), and how many there are.
+    pub index: Option<u32>,
+    pub of: Option<u32>,
+}
+
+impl Step {
+    /// A step out of what the box said: a line of the installer's, or a move's `progress`.
+    fn said(said: &Value) -> Option<Step> {
+        let count = |name: &str| said.get(name).and_then(Value::as_u64).and_then(|count| u32::try_from(count).ok());
+        Some(Step { step: said.get("step")?.as_str()?.to_owned(), title: said.get("title").and_then(Value::as_str).map(str::to_owned), index: count("index"), of: count("of") })
+    }
 }
 
 /// How setting up ended.
@@ -155,6 +174,16 @@ pub struct Outcome {
     /// What was run after `status`.
     pub ran: Option<Verb>,
     pub message: Option<String>,
+    /// Where a move stands that's still at work in a process of its own (`status.progress`): one
+    /// an app that quit left running, to draw while it's waited for.
+    pub progress: Option<Step>,
+}
+
+impl Outcome {
+    /// An outcome with no move still at work behind it.
+    pub fn new(end: End, verdict: Option<String>, ran: Option<Verb>, message: Option<String>) -> Outcome {
+        Outcome { end, verdict, ran, message, progress: None }
+    }
 }
 
 impl Installer {
@@ -218,8 +247,12 @@ impl Installer {
         if let Some(stdout) = child.stdout.take() {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let Ok(Value::Object(said)) = serde_json::from_str::<Value>(&line) else { continue };
-                if let Some(step) = said.get("step").and_then(Value::as_str) {
-                    on(Progress::Step { step: step.to_owned(), title: said.get("title").and_then(Value::as_str).map(str::to_owned) });
+                // (An answer names its result or its verdict; a step neither.)
+                if said.get("result").is_none()
+                    && said.get("verdict").is_none()
+                    && let Some(step) = Step::said(&Value::Object(said.clone()))
+                {
+                    on(Progress::Step(step));
                     continue;
                 }
                 let word = |name: &str| said.get(name).and_then(Value::as_str).map(str::to_owned);
@@ -252,22 +285,26 @@ impl Installer {
         on(Progress::Asking);
         let (exit, status) = match self.run(Verb::Status, on) {
             Ran::Answered { exit, answer } => (exit, answer),
-            Ran::Broken(why) => return Outcome { end: End::Broken, verdict: None, ran: None, message: Some(why) },
+            Ran::Broken(why) => return Outcome { end: End::Broken, verdict: None, ran: None, message: Some(why), progress: None },
         };
         if let Some(end) = stopped(exit, &status) {
-            return Outcome { end, verdict: status.verdict, ran: None, message: status.message };
+            return Outcome { end, verdict: status.verdict, ran: None, message: status.message, progress: None };
         }
         let verb = match status.verb.as_deref() {
-            None => return Outcome { end: if status.verdict.as_deref() == Some("waits") { End::Waits } else { End::Attach }, verdict: status.verdict, ran: None, message: status.message },
+            None => {
+                let waits = status.verdict.as_deref() == Some("waits");
+                let progress = waits.then(|| status.status.get("progress").and_then(Step::said)).flatten();
+                return Outcome { end: if waits { End::Waits } else { End::Attach }, verdict: status.verdict, ran: None, message: status.message, progress };
+            }
             Some("new") => Verb::New,
             Some("move") => Verb::Move,
             // (A release newer than this app would name only what this app carries: its own.)
-            Some(other) => return Outcome { end: End::Broken, verdict: status.verdict, ran: None, message: Some(format!("Its installer asked for “{other}”, which this app doesn’t know.")) },
+            Some(other) => return Outcome { end: End::Broken, verdict: status.verdict, ran: None, message: Some(format!("Its installer asked for “{other}”, which this app doesn’t know.")), progress: None },
         };
         on(Progress::Running { verb, verdict: status.verdict.clone() });
         let (exit, answer) = match self.run(verb, on) {
             Ran::Answered { exit, answer } => (exit, answer),
-            Ran::Broken(why) => return Outcome { end: End::Broken, verdict: status.verdict, ran: Some(verb), message: Some(why) },
+            Ran::Broken(why) => return Outcome { end: End::Broken, verdict: status.verdict, ran: Some(verb), message: Some(why), progress: None },
         };
         let verdict = answer.verdict.clone().or(status.verdict);
         let end = match stopped(exit, &answer) {
@@ -275,7 +312,7 @@ impl Installer {
             None if answer.started == Some(false) => End::NotStarted,
             None => End::Started,
         };
-        Outcome { end, verdict, ran: Some(verb), message: answer.message }
+        Outcome { end, verdict, ran: Some(verb), message: answer.message, progress: None }
     }
 }
 

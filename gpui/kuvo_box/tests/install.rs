@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use kuvo_box::install::stand_in::Bundle;
-use kuvo_box::install::{End, Installer, Outcome, Progress, Verb};
+use kuvo_box::install::{End, Installer, Outcome, Progress, Step, Verb};
 
 const TRIAL: &str = "run.kuvo.code.trial713.p5";
 const ROOT: &str = ".kuvo-trial713-p5";
@@ -36,14 +36,14 @@ fn a_new_mac_is_set_up_and_its_steps_are_handed_on() {
     bundle.says("status", None, 0, &[r#"{"verdict":"fresh","verb":"new","status":{"state":"none"}}"#]);
     bundle.says("new", None, 0, &[r#"{"step":"checking"}"#, r#"{"step":"engine","title":"Downloading the engine"}"#, r#"{"result":"done","verdict":"ours","started":true,"status":{}}"#]);
     let (outcome, drawn) = set_up(&installer);
-    assert_eq!(outcome, Outcome { end: End::Started, verdict: Some("ours".into()), ran: Some(Verb::New), message: None });
+    assert_eq!(outcome, Outcome::new(End::Started, Some("ours".into()), Some(Verb::New), None));
     assert_eq!(
         drawn,
         vec![
             Progress::Asking,
             Progress::Running { verb: Verb::New, verdict: Some("fresh".into()) },
-            Progress::Step { step: "checking".into(), title: None },
-            Progress::Step { step: "engine".into(), title: Some("Downloading the engine".into()) },
+            Progress::Step(Step { step: "checking".into(), ..Step::default() }),
+            Progress::Step(Step { step: "engine".into(), title: Some("Downloading the engine".into()), ..Step::default() }),
         ]
     );
     // Asked as the protocol says: the verb, the app's bundle, the copy's own root.
@@ -58,7 +58,7 @@ fn a_mac_with_its_kuvo_already_only_attaches() {
     for verdict in ["ours", "machine", "two", "back"] {
         bundle.says("status", None, 0, &[&format!(r#"{{"verdict":"{verdict}","verb":null,"status":{{}}}}"#)]);
         let (outcome, _) = set_up(&installer);
-        assert_eq!(outcome, Outcome { end: End::Attach, verdict: Some(verdict.into()), ran: None, message: None }, "{verdict}");
+        assert_eq!(outcome, Outcome::new(End::Attach, Some(verdict.into()), None, None), "{verdict}");
     }
     // Nothing but `status` was ever run.
     assert!(asked(&bundle).iter().all(|line| line.starts_with("status ")), "{:?}", asked(&bundle));
@@ -70,7 +70,7 @@ fn its_helper_not_in_place_is_started_by_new() {
     let (bundle, installer) = bundle(made.path());
     bundle.says("status", None, 0, &[r#"{"verdict":"ours","verb":"new","status":{}}"#]);
     bundle.says("new", None, 0, &[r#"{"result":"nothing","verdict":"ours","started":true,"status":{}}"#]);
-    assert_eq!(set_up(&installer).0, Outcome { end: End::Started, verdict: Some("ours".into()), ran: Some(Verb::New), message: None });
+    assert_eq!(set_up(&installer).0, Outcome::new(End::Started, Some("ours".into()), Some(Verb::New), None));
 }
 
 #[test]
@@ -82,12 +82,28 @@ fn an_earlier_kuvo_code_s_data_is_handed_to_move_and_its_refusal_said() {
         bundle.says("status", None, 0, &[&format!(r#"{{"verdict":"{verdict}","verb":"move","status":{{}}}}"#)]);
         bundle.says("move", None, 1, &[&format!(r#"{{"result":"refused","message":"{refusal}","verdict":"{verdict}","verb":"move","status":{{}}}}"#)]);
         let (outcome, drawn) = set_up(&installer);
-        assert_eq!(outcome, Outcome { end: End::Stopped, verdict: Some(verdict.into()), ran: Some(Verb::Move), message: Some(refusal.into()) }, "{verdict}");
+        assert_eq!(outcome, Outcome::new(End::Stopped, Some(verdict.into()), Some(Verb::Move), Some(refusal.into())), "{verdict}");
         assert_eq!(drawn.last(), Some(&Progress::Running { verb: Verb::Move, verdict: Some(verdict.into()) }));
     }
-    // A move that's done (once the box has it) starts the box, as a new one does.
-    bundle.says("move", None, 0, &[r#"{"result":"done","verdict":"ours","started":true,"status":{}}"#]);
-    assert_eq!(set_up(&installer).0.end, End::Started);
+    // A move that's done starts Kuvo, as a new one does; each of its steps is handed on in the
+    // box's words, with its place among them.
+    bundle.says("move", None, 0, &[r#"{"step":"plan","title":"Getting ready","index":1,"of":12}"#, r#"{"step":"clone","title":"Copying your sessions and settings","index":3,"of":12}"#, r#"{"result":"done","verdict":"ours","started":true,"status":{}}"#]);
+    let (outcome, drawn) = set_up(&installer);
+    assert_eq!(outcome.end, End::Started);
+    assert_eq!(drawn.last(), Some(&Progress::Step(Step { step: "clone".into(), title: Some("Copying your sessions and settings".into()), index: Some(3), of: Some(12) })));
+}
+
+#[test]
+fn a_move_still_at_work_from_an_earlier_open_says_where_it_is() {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, installer) = bundle(made.path());
+    // The app quit while the box moved; the move went on in a process of its own.
+    bundle.says("status", None, 0, &[r#"{"verdict":"waits","verb":null,"status":{"progress":{"step":"check","title":"Checking the copy","index":8,"of":12}}}"#]);
+    let (outcome, _) = set_up(&installer);
+    assert_eq!(outcome.end, End::Waits);
+    assert_eq!(outcome.progress, Some(Step { step: "check".into(), title: Some("Checking the copy".into()), index: Some(8), of: Some(12) }));
+    // Nothing was run beside it.
+    assert_eq!(asked(&bundle).len(), 1);
 }
 
 #[test]
@@ -96,7 +112,7 @@ fn what_the_box_refuses_or_fails_is_said_in_its_words() {
     let (bundle, installer) = bundle(made.path());
     // The shell's own part failing at `status`, with no verdict: nothing else is run.
     bundle.says("status", None, 1, &[r#"{"result":"failed","message":"This copy of Kuvo Code is damaged. Download it again, then try again."}"#]);
-    assert_eq!(set_up(&installer).0, Outcome { end: End::Stopped, verdict: None, ran: None, message: Some("This copy of Kuvo Code is damaged. Download it again, then try again.".into()) });
+    assert_eq!(set_up(&installer).0, Outcome::new(End::Stopped, None, None, Some("This copy of Kuvo Code is damaged. Download it again, then try again.".into())));
     assert_eq!(asked(&bundle).len(), 1);
     // `new` failing part way, after a step.
     bundle.says("status", None, 0, &[r#"{"verdict":"fresh","verb":"new","status":{}}"#]);

@@ -417,6 +417,8 @@ platform crates, to be checked when the client is built there).
 | schemars_derive | 1.2.3 | MIT |
 | scopeguard | 1.2.0 | MIT OR Apache-2.0 |
 | seahash | 4.1.0 | MIT |
+| security-framework | 3.7.0 | MIT OR Apache-2.0 |
+| security-framework-sys | 2.17.0 | MIT OR Apache-2.0 |
 | semver | 1.0.28 | MIT OR Apache-2.0 |
 | serde | 1.0.229 | MIT OR Apache-2.0 |
 | serde_core | 1.0.229 | MIT OR Apache-2.0 |
