@@ -2,11 +2,13 @@
 // branch of its own, kept by this box (`box/worktrees.json`): made, named after their session,
 // listed and removed here, from a Mac (through `box route`) or a phone, with the Mac closed too.
 
+import { inTurn, lockedIn } from "../../shared/session-notes";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { askedArgs } from "../../shared/git";
-import { parsed } from "../../shared/json";
+import { CHANGED_SINCE } from "./config";
+import { parsed, sortedJSON, isObject } from "../../shared/json";
 import type { Fields } from "../../shared/json";
 import type { EngineRecord, Target } from "../../shared/records";
 import type { ListedRestorable, ListedWorktree, WorktreeRecordShape, Worktrees, WorktreesWhere } from "../../shared/routes/worktrees";
@@ -16,7 +18,7 @@ import { isHiddenRun } from "../engine/sessions";
 import type { EngineSession } from "../engine/sessions";
 import { followed } from "../follow";
 import { BY_KUVO, firstCommit, gitAsked, gitIn, gitLater, sizeLater } from "../git";
-import { ENGINE_DATA, homeFolder } from "../home";
+import { ENGINE_DATA, RUN, homeFolder } from "../home";
 import type { AnswerPiece, JSONAnswer, RouteContext } from "../server/context";
 import { readProjects } from "./projects";
 import { branchPrefixHere } from "./git-words";
@@ -32,6 +34,7 @@ interface SessionsHere {
 /** What a client sends `kuvo/worktrees…`, as it comes: a new one's project, one an older Mac kept, one to remove (`path`, `forget`, `discard`), or one to restore (`folder`, where
  * its sessions ran). Each is checked as it's used. */
 export interface WorktreesBody {
+  was?: unknown;
   project?: unknown;
   root?: unknown;
   folder?: unknown;
@@ -309,9 +312,13 @@ export async function answerWorktrees(method: string, requestPath: string, body:
   if (route === "kuvo/worktrees/restore") return restoreTree(body?.folder, engine, signal, bridge);
   const tree = list.find(each => each.root === body?.path);
   if (!tree) return { status: 404, value: message("That worktree isn't on this machine any more.") };
-  if (route === "kuvo/worktrees/remove") return removeTree(tree, { discard: body?.discard !== false, forget: body?.forget === true }, engine, signal, bridge);
+  if (route === "kuvo/worktrees/remove") return removingInTurn(tree.root, () => removeTree(tree, { discard: body?.discard !== false, forget: body?.forget === true, ...(body && "was" in body ? { was: body.was } : {}) }, engine, signal, bridge));
   return { status: 404, value: {} };
 }
+
+// All removals of one root share a turn across this box's processes, old calls included.
+const removalLocks = lockedIn(path.join(RUN, "worktree-removals"));
+const removingInTurn = <T>(root: string, work: () => Promise<T>): Promise<T> => inTurn("worktree-removals", root, work, removalLocks);
 
 /** Whether a session is archived, as a client marks it or the engine does. */
 const isArchived = (session: EngineSession) => Boolean(session.time?.archived || session.metadata?.["kuvo.archived"] === true || session.metadata?.kuvo?.archived === true);
@@ -370,6 +377,7 @@ function listedRestorable(tree: RestorableWorktree): ListedRestorable {
  * made for a session that never started (`forget`), and whether it's kept for Restore Worktree
  * first (`keep`: a session that ran there stays, archived). */
 interface Removal {
+  was?: unknown;
   discard: boolean;
   forget?: boolean;
   keep?: boolean;
@@ -382,6 +390,14 @@ async function removeTree(tree: WorktreeRecord, removal: Removal, engine: Target
   const message = (text: string) => ({ message: text });
   const here = known ?? await sessionsHere(engine, signal, bridge);
   if (!here) return { status: 503, value: message(engine?.port ? `It couldn't be told whether an agent is working in the worktree of ${tree.branch}, so it stays. Try again in a moment.` : `The engine isn't running, so the worktree of ${tree.branch} stays. Try again once it's started.`) };
+  if ("was" in removal) {
+    const was = removal.was;
+    const record = readWorktrees().find(each => each.root === tree.root) ?? null;
+    const status = fs.existsSync(tree.root) ? gitIn(tree.root, ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]) : null;
+    const ahead = tree.base && fs.existsSync(tree.root) ? gitIn(tree.root, ["rev-list", "--count", `${tree.base}..HEAD`]) : null;
+    const now = { record, ...(status !== null ? { uncommitted: status.length > 0 } : {}), ...(ahead !== null && /^\d+$/.test(ahead) ? { ahead: Number(ahead) } : {}) };
+    if (!isObject(was) || sortedJSON(now) !== sortedJSON(was)) return { status: 409, value: message(CHANGED_SINCE) };
+  }
   const { sessions, active } = here;
   if (sessions.some(session => inside(folderOf(session), tree.root) && active.has(session.id))) {
     return { status: 409, value: message(`An agent is still working in the worktree of ${tree.branch}, so it stays. Stop it first, then remove the worktree.`) };

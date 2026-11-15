@@ -29164,16 +29164,22 @@ async function artifactRoutes(store, method, parts, query, body, signal) {
   }
   if (first === "storage") {
     if (!second && method === "POST") {
-      const { budget } = await body() ?? {};
+      const given = await body() ?? {};
+      const { budget } = given;
       if (typeof budget !== "number" || !Number.isFinite(budget) || budget < 0)
         return message(400, "Say the budget for older versions, in bytes (budget).");
+      if ("was" in given && given.was !== store.storage().budget)
+        return message(409, "It changed since you read it.");
       store.setBudget(budget);
       return json11(store.storage());
     }
     if (!second)
       return method === "GET" ? json11(store.storage()) : message(405, "Read it with GET, or set its budget with POST.");
     if (second === "clear" && method === "POST") {
-      const { before } = await body() ?? {};
+      const given = await body() ?? {};
+      const { before } = given;
+      if ("was" in given && given.was !== store.storage().older)
+        return message(409, "It changed since you read it.");
       const at = typeof before === "number" ? new Date(before * 1000).toISOString() : undefined;
       return json11({ cleared: store.clearOlder(at), ...store.storage() });
     }
@@ -36757,4 +36763,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents c99629b01dc8ffcebbaa5987c1142669c315fc5a2f8ed4f4f5fc1a13a6520a2b
+// Built from Packages/Box/src/agents dfdd64873cfac54a44ebe21a85b18b1ae2ab671d8156efc36e6f46798d611e88

@@ -12,13 +12,24 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
+import { listRoute, LIST_ROUTE } from "../lists/sessions";
+import { sessionActionRoute, SESSION_ACTION_ROUTE, deletesRoute } from "./session-actions";
+import { artifactsRoute } from "./artifacts";
+import { homeFolder } from "../home";
+import { workAsksRoute, WORK_ASKS_ROUTE } from "./work";
+import { PROJECTS_FILE, readProjects } from "./projects";
+import { WORK_SETTINGS_FILE } from "../work/settings";
+import { WORKTREES_FILE, readWorktrees } from "./worktree-records";
+import { worktreesRoute } from "./worktrees";
 import { isObject, parsed, sortedJSON } from "../../shared/json";
 import type { SettingAction, SettingCan, SettingGroup, SettingItem, SettingRow, SettingsPage, SettingsSection } from "../../shared/routes/settings-pages";
 import { SEARCH_ENGINES } from "../../shared/routes/browser";
 import { approvalRoute } from "./approval";
-import { CHANGED_SINCE, CONFIG_FILE } from "./config";
+import { CHANGED_SINCE, CONFIG_FILE, readSettings } from "./config";
 import { engineControl } from "./engine";
 import { sandboxRoute } from "./sandbox";
+import { GIT_SETTINGS, DEFAULT_BRANCH_PREFIX, cleanBranchPrefix } from "./git-words";
 import { settingsRoute } from "./settings";
 import { BROWSER_DATA_ROUTE, browserDataRoute } from "../browser/routes";
 import { browserSettingsFiles, offerAgain } from "../browser/settings";
@@ -53,18 +64,26 @@ const SECTIONS: SettingsSection[] = [
     line: "The browser's search engine, and offering to save sign-ins.",
     keywords: ["search engine", "google", "duckduckgo", "sign-ins", "passwords", "tabs", "never offered"],
   },
+  { id: "git", title: "Git", group: "System", icon: "branch",
+    line: "How sessions' branches are named, and commit messages and pull requests are written.",
+    keywords: ["branch prefix", "worktree", "commit", "pull request", "instructions"],
+  },
+  { id: "worktrees", title: "Worktrees", group: "System", icon: "folder", line: "Where new projects and worktrees go, and sessions’ own copies of a project.", keywords: ["projects", "folders", "branches", "remove"] },
+  { id: "storage", title: "Storage", group: "System", icon: "drive", line: "Copies of what agents made, and how much older versions keep.", keywords: ["copies", "older versions", "budget", "disk", "clear"] },
+  { id: "archived", title: "Archived Sessions", group: "System", icon: "archive", line: "Sessions out of the sidebar, still searchable; bring them back or delete them.", keywords: ["archive", "unarchive", "delete", "sessions"] },
 ];
 
 // MARK: Rows
 
 /** A row's revision: a hash of what it is and what governs whether it can be changed (its value,
- * `can`, its choices' and actions' ids, a list's items' revisions), never its words, so a computer
+ * `can`, its choices' and actions' ids, a list's items' revisions), never its display words (confirmation words do count), so a computer
  * renamed or a line reworded changes none. A `secret`'s, of whether one is set (it has no value). */
-function revised<Row extends Omit<SettingItem, "revision"> & { items?: readonly SettingItem[] }>(row: Row): Row & { revision: string } {
+export function revised<Row extends Omit<SettingItem, "revision"> & { items?: readonly SettingItem[] }>(row: Row): Row & { revision: string } {
   // (Whether it can be, not why not: a why names the computer.)
   const can = (value: SettingCan | undefined) => (value === undefined ? undefined : value === true);
-  const action = (each: SettingAction | undefined) => each && { id: each.id, can: can(each.can), opens: each.opens };
+  const action = (each: SettingAction | undefined) => each && { id: each.id, can: can(each.can), opens: each.opens, confirm: each.confirm };
   const governs = {
+    confirmBelow: row.confirmBelow?.value, min: row.min, max: row.max,
     kind: row.kind, value: row.kind === "secret" ? undefined : row.value, can: can(row.can), set: row.set,
     choices: row.choices?.map(choice => choice.id), actions: row.actions?.map(action),
     start: action(row.start), section: row.section, address: row.address, name: row.name,
@@ -375,6 +394,194 @@ async function browserAct(context: RouteContext, at: SettingItem, action: Settin
   return null;
 }
 
+// MARK: Git
+
+const GIT_ROWS = [
+  { id: "branch-prefix", key: "branchPrefix", group: "Branches", groupId: "branches", title: "Branch prefix", line: "How a session’s own branch in a worktree starts.", placeholder: "None" },
+  { id: "commit-instructions", key: "commitInstructions", group: "Commit Messages", groupId: "commit-messages", title: "Instructions", line: "Added when Suggest a Message in Changes asks the model for one.", placeholder: "For example: Start with the area changed, like “ui: …”, and never mention tickets." },
+  { id: "pull-request-instructions", key: "pullRequestInstructions", group: "Pull Requests", groupId: "pull-requests", title: "Instructions", line: "Added when Create Pull Request writes the title and description.", placeholder: "For example: Add a Testing section, and link the issue if the branch names one." },
+] as const;
+
+async function gitPage(context: RouteContext): Promise<SettingsPage> {
+  const read = await asked(context, settingsRoute, "GET", "kuvo/config");
+  if (read.status !== 200) return { id: "git", title: "Git", groups: [], notes: [{ words: said(read, "This computer's settings couldn't be read."), tone: "warning" }] };
+  return { id: "git", title: "Git", groups: GIT_ROWS.map(each => {
+    const value = read.value[GIT_SETTINGS[each.key][0]];
+    return { id: each.groupId, title: each.group, ...(each.key === "branchPrefix" ? {} : { note: each.line }), rows: [row({
+      id: each.id, title: each.title, ...(each.key === "branchPrefix" ? { line: each.line } : { lines: { min: 3, max: 8 } }), placeholder: each.placeholder,
+      kind: "text", value: typeof value === "string" ? each.key === "branchPrefix" ? cleanBranchPrefix(value) : value.trim() : each.key === "branchPrefix" ? DEFAULT_BRANCH_PREFIX : "",
+      can: typeof value === "string" || value === undefined ? true : { why: "This value is set in the settings file as something other than text. Change it there." },
+    })] };
+  }) };
+}
+
+async function gitChange(context: RouteContext, at: SettingItem, value: unknown): Promise<Refused | null> {
+  const each = GIT_ROWS.find(each => each.id === at.id);
+  if (!each) return { status: 400, message: "That isn't something to change." };
+  const path = [...GIT_SETTINGS[each.key]];
+  const read = await asked(context, settingsRoute, "GET", "kuvo/config");
+  if (read.status !== 200) return refusal(read);
+  const was = read.value[path[0]!] ?? null;
+  value = each.key === "branchPrefix" ? cleanBranchPrefix(String(value)) : String(value).trim();
+  const written = await asked(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path, value, was }] });
+  if (written.status === 409 && written.value.message === CHANGED_SINCE) return STALE;
+  return refusal(written);
+}
+
+// MARK: Worktrees
+
+const workAnswer = (context: RouteContext) => workAsksRoute(context, context.route.match(WORK_ASKS_ROUTE)!);
+const unreadPage = (id: string, title: string, answer: { status: number; value: any }): SettingsPage => ({ id, title, groups: [], notes: [{ words: said(answer, "This computer's settings couldn't be read."), tone: "warning" }] });
+const staleOrRefusal = (answer: { status: number; value: any }): Refused | null => answer.status === 409 && answer.value.message === CHANGED_SINCE ? STALE : refusal(answer);
+
+async function worktreesPage(context: RouteContext): Promise<SettingsPage> {
+  const config = await asked(context, settingsRoute, "GET", "kuvo/config");
+  if (config.status !== 200) return unreadPage("worktrees", "Worktrees", config);
+  const work = await asked(context, workAnswer, "GET", "kuvo/work/settings");
+  if (work.status !== 200) return unreadPage("worktrees", "Worktrees", work);
+  for (const file of [WORK_SETTINGS_FILE, WORKTREES_FILE, PROJECTS_FILE]) {
+    const checked = readSettings(file);
+    if (checked.problem) return unreadPage("worktrees", "Worktrees", { status: 409, value: { message: checked.problem } });
+  }
+  const chosen = config.value.worktree?.directory;
+  const where = await asked(context, worktreesRoute, "GET", `kuvo/worktrees/where${typeof chosen === "string" ? `?directory=${encodeURIComponent(chosen)}` : ""}`);
+  if (where.status !== 200) return unreadPage("worktrees", "Worktrees", where);
+  const listed = await asked(context, worktreesRoute, "GET", "kuvo/worktrees");
+  if (listed.status !== 200) return unreadPage("worktrees", "Worktrees", listed);
+  let engineRuns = false;
+  try { engineRuns = Boolean(context.readEngine()?.port); } catch {}
+  const projects = where.value.projects ?? [];
+  const commonPlace = projects.length > 0 && projects.every((each: any) => each.folder === projects[0].folder);
+  const shownPlaces = commonPlace ? [projects.find((each: any) => each.inside && !each.ignored) ?? projects[0]] : projects.slice(0, 5);
+  const places: SettingRow[] = projects.length ? shownPlaces.map((each: any) => row({
+    id: `place-${each.project}`, title: commonPlace ? "New worktrees go in" : each.name,
+    kind: "status", value: each.folder ?? "Known once the engine runs",
+    ...(each.exists === false && each.canMake === false ? { line: "Kuvo Code can’t create this folder. Choose another one.", tone: "warning" as const } : each.inside && !each.ignored ? { line: `It’s inside ${commonPlace ? each.name + "’s" : "this project’s"} repository, so git would list each worktree as new files there. Choose a folder outside it.`, tone: "warning" as const } : {}),
+  })) : [row({ id: "worktrees-place", title: "New worktrees go in", kind: "status", value: chosen || where.value.default })];
+  if (!commonPlace && projects.length > 5) places.push(row({ id: "more-worktree-projects", title: `And ${projects.length - 5} more ${projects.length - 5 === 1 ? "project" : "projects"}`, kind: "status" }));
+  return { id: "worktrees", title: "Worktrees", groups: [
+    { id: "new-projects", title: "New Projects", note: "Where projects your bots make go. A bot asks you before it makes one, and Kuvo Code never deletes them.", rows: [row({ id: "projects-folder", title: "Folder", kind: "folder", value: work.value.projectsFolder ?? "", placeholder: "None", folder: { choose: "Choose a Folder…", clear: "None", prompt: "Choose", message: "Choose where new projects go. Each one is a folder in it." }, can: true })] },
+    { id: "new-worktrees", title: "New Worktrees", rows: [row({ id: "worktrees-folder", title: "Folder", kind: "folder", value: typeof chosen === "string" ? chosen : "", placeholder: "Kuvo Code’s Folder", folder: { choose: "Choose a Folder…", clear: "Kuvo Code’s Folder", prompt: "Choose", message: "Choose where new worktrees go. Each one is a folder in it." }, can: (config.value.worktree === undefined || isObject(config.value.worktree)) && (chosen === undefined || typeof chosen === "string") ? true : { why: "This folder is set in the settings file as something other than text. Change it there." } }), ...places] },
+    { id: "session-worktrees", title: "Worktrees", note: "Removing one deletes its folder and anything in it that isn’t committed. Its branch stays if it isn’t merged yet.", rows: [row({ id: "worktrees", title: "Worktrees", kind: "list", empty: "None yet. Choose Worktree in a new session’s composer to give it one.", items: listed.value.worktrees.map((tree: any) => item({
+      id: `tree-${tree.path}`, title: tree.branch, line: `${tree.projectName} · ${tree.sessions} ${tree.sessions === 1 ? "session" : "sessions"}`,
+      kind: "actions", value: { record: readWorktrees().find(record => record.root === tree.path), uncommitted: tree.uncommitted, ahead: tree.ahead },
+      actions: [{ id: "remove", title: "Remove…", style: "destructive", can: tree.working ? { why: `An agent is still working in the worktree of ${tree.branch}, so it stays. Stop it first, then remove the worktree.` } : engineRuns ? true : { why: `The engine isn't running, so the worktree of ${tree.branch} stays. Try again once it's started.` }, confirm: { title: `Remove the worktree for ${tree.branch}?`, body: worktreeRemovalWords(tree), button: "Remove" } }],
+    })) })] },
+  ] };
+}
+
+export function worktreeRemovalWords(tree: { uncommitted?: boolean; ahead?: number; branch: string }): string {
+  const note = tree.uncommitted === true ? "Its folder is deleted, with changes in it that aren’t committed." : tree.uncommitted === false ? "Its folder is deleted. Git sees nothing in it that isn’t committed." : "Its folder and anything in it that isn’t committed are deleted.";
+  return note + (tree.ahead && tree.ahead > 0 ? ` ${tree.branch} keeps its ${tree.ahead} ${tree.ahead === 1 ? "commit" : "commits"} not merged yet.` : "") + " Its sessions stay, without a folder to run in.";
+}
+
+export async function worktreesChange(context: RouteContext, at: SettingItem, value: unknown): Promise<Refused | null> {
+  const typed = String(value).trim();
+  if (at.id === "projects-folder") return staleOrRefusal(await asked(context, workAnswer, "PATCH", "kuvo/work/settings", { projectsFolder: typed || null, was: { projectsFolder: at.value || null } }));
+  if (at.id !== "worktrees-folder") return { status: 400, message: "That isn't something to change." };
+  const config = await asked(context, settingsRoute, "GET", "kuvo/config");
+  if (config.status !== 200) return refusal(config);
+  if ((config.value.worktree?.directory ?? "") !== at.value) return STALE;
+  const folder = typed ? typed.replace(/^~(?=$|\/)/, homeFolder()) : null;
+  if (folder && !path.isAbsolute(folder)) return { status: 400, message: "Give a full path to the folder." };
+  return staleOrRefusal(await asked(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["worktree", "directory"], value: folder ? path.resolve(folder) : null, was: config.value.worktree?.directory ?? null }] }));
+}
+
+async function worktreesAct(context: RouteContext, at: SettingItem, action: SettingAction): Promise<Refused | null> {
+  if (action.id !== "remove" || !at.id.startsWith("tree-")) return noActions();
+  return staleOrRefusal(await asked(context, worktreesRoute, "POST", "kuvo/worktrees/remove", { path: at.id.slice(5), was: at.value }));
+}
+
+// MARK: Storage (the box-backed What Agents Made group)
+
+const fileSize = (bytes: number): string => {
+  const units = ["bytes", "KB", "MB", "GB", "TB"];
+  const scale = bytes > 0 ? Math.min(4, Math.floor(Math.log10(bytes) / 3)) : 0;
+  return `${new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(bytes / 1000 ** scale)} ${units[scale]}`;
+};
+
+async function storagePage(context: RouteContext): Promise<SettingsPage> {
+  const read = await asked(context, artifactsRoute, "GET", "kuvo/artifacts/storage");
+  if (read.status !== 200) return unreadPage("storage", "Storage", read);
+  const kept = read.value;
+  return { id: "storage", title: "Storage", groups: [{ id: "agents-made", title: "What Agents Made", rows: [
+    row({ id: "copies", title: "Copies of what agents made", line: "Each version of the files agents write or change, so you can see what changed and put one back. Never what looks like a secret, and only the changes for code git keeps.", kind: "status", value: kept.copies, unit: "bytes" }),
+    row({ id: "older-budget", title: "Older versions keep up to", line: "Past it, the oldest go first. The newest version of each file, memory, skills and what’s kept always stay.", kind: "number", value: kept.budget, unit: "bytes", min: 0, can: true,
+      suggestions: [256, 512, 1024, 2048, 5120, 10240].map(mb => ({ value: mb * 1024 ** 2, title: fileSize(mb * 1024 ** 2) })),
+      confirmBelow: { value: kept.older, confirm: { title: "Keep less of older versions?", body: `Older versions take ${fileSize(kept.older)} now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.`, button: "Keep up to" } },
+    }),
+    row({ id: "older-copies", title: "Older versions", line: kept.older === 0 ? "None kept." : `${fileSize(kept.older)} now.`, kind: "actions", value: kept.older,
+      actions: [{ id: "clear", title: "Clear…", style: "destructive", can: kept.older > 0 ? true : { why: "None kept." }, confirm: { title: "Clear older versions?", body: "Their copies go; each stays listed, without one. The newest version of each file, memory, skills and what’s kept stay.", button: "Clear" } }],
+    }),
+  ] }], ...(kept.low ? { notes: [{ words: `The disk is nearly full, so only the newest version of each file keeps a copy until ${fileSize(kept.floor)} is free again.`, tone: "warning" as const }] } : {}) };
+}
+
+async function storageChange(context: RouteContext, at: SettingItem, value: unknown): Promise<Refused | null> {
+  if (at.id !== "older-budget") return { status: 400, message: "That isn't something to change." };
+  return staleOrRefusal(await asked(context, artifactsRoute, "POST", "kuvo/artifacts/storage", { budget: Math.floor(Number(value)), was: at.value }));
+}
+
+async function storageAct(context: RouteContext, at: SettingItem, action: SettingAction): Promise<Refused | null> {
+  if (at.id !== "older-copies" || action.id !== "clear") return noActions();
+  return staleOrRefusal(await asked(context, artifactsRoute, "POST", "kuvo/artifacts/storage/clear", { was: at.value }));
+}
+
+// MARK: Archived Sessions
+
+const sessionsAnswer = (context: RouteContext) => listRoute(context, context.route.match(LIST_ROUTE)!);
+const sessionAnswer = (context: RouteContext) => sessionActionRoute(context, context.route.match(SESSION_ACTION_ROUTE)!);
+
+async function archivedPage(context: RouteContext): Promise<SettingsPage> {
+  const read = await asked(context, sessionsAnswer, "GET", "kuvo/sessions/list");
+  if (read.status !== 200) return unreadPage("archived", "Archived Sessions", read);
+  if (read.value.pending?.length) return unreadPage("archived", "Archived Sessions", { status: 503, value: { message: "Some sessions can't be read right now. Try again in a moment." } });
+  const archived = Object.entries(read.value.sessions as Record<string, any>).filter(([, facts]) => facts.archived && ["project", "chat", "bot"].includes(facts.kind) && !facts.away).sort((a, b) => b[1].updated - a[1].updated);
+  const groups = new Map<string, SettingItem[]>();
+  const chats = new Set<string>();
+  let held: string | undefined;
+  const states: { id: string; was: { updated: number; archived: boolean; confirm: unknown } }[] = [];
+  for (const [id, facts] of archived) {
+    const menu = await asked(context, sessionAnswer, "GET", `kuvo/sessions/${encodeURIComponent(id)}/actions`);
+    if (menu.status !== 200) return unreadPage("archived", "Archived Sessions", menu);
+    held ??= menu.value.held;
+    const was = { updated: facts.updated, archived: true, confirm: menu.value.actions.find((each: any) => each.id === "delete")?.confirm };
+    states.push({ id, was });
+    const actions: SettingAction[] = menu.value.actions.map((each: any) => ({
+      id: each.id, title: each.label, ...(each.destructive ? { style: "destructive" } : {}),
+      ...(each.confirm ? { confirm: { title: each.confirm.title, body: each.confirm.message, button: each.confirm.label } } : {}),
+      ...(menu.value.held ? { can: { why: menu.value.held } } : {}),
+    }));
+    const project = facts.project ?? facts.directory;
+    if (facts.kind === "chat") chats.add(project);
+    const rows = groups.get(project) ?? [];
+    rows.push(item({ id: `session-${id}`, title: facts.title || "New Session", line: new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: zoneHere(readZoneSetting()).zone }).format(new Date(facts.updated)), kind: "actions", value: was, actions }));
+    groups.set(project, rows);
+  }
+  const all = states.length ? await asked(context, deletesRoute, "POST", "kuvo/sessions/deletes", { sessions: states.map(each => each.id) }) : null;
+  if (all && all.status !== 200) return unreadPage("archived", "Archived Sessions", all);
+  const projects = readProjects();
+  const projectTitle = (project: string) => chats.has(project) ? "Chats" : read.value.projects[project]?.name ?? projects.find(each => each.directory === project)?.name ?? path.basename(project);
+  return { id: "archived", title: "Archived Sessions", groups: [
+    { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "None yet. Right-click a session in the sidebar and choose Archive to put it away." }, ...(all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {}) }] })] },
+    ...[...groups].map(([project, items]) => ({ id: `project-${project}`, title: projectTitle(project), rows: [row({ id: `archived-${project}`, title: projectTitle(project), kind: "list", items, search: { placeholder: "Search archived sessions", empty: "No archived session matches “{query}”." } })] })),
+  ], ...(states.length ? {} : { notes: [{ words: "None yet. Right-click a session in the sidebar and choose Archive to put it away.", tone: "quiet" as const }] }) };
+}
+
+async function archivedAct(context: RouteContext, at: SettingItem, action: SettingAction): Promise<Refused | null> {
+  if (at.id === "delete-all" && action.id === "delete-all") {
+    for (const each of at.value as { id: string; was: unknown }[]) {
+      const done = staleOrRefusal(await asked(context, sessionAnswer, "DELETE", `kuvo/sessions/${encodeURIComponent(each.id)}`, { was: each.was }));
+      if (done) return done;
+    }
+    return null;
+  }
+  if (!at.id.startsWith("session-")) return noActions();
+  const id = encodeURIComponent(at.id.slice(8));
+  if (action.id === "delete") return staleOrRefusal(await asked(context, sessionAnswer, "DELETE", `kuvo/sessions/${id}`, { was: at.value }));
+  if (action.id === "unarchive") return staleOrRefusal(await asked(context, sessionAnswer, "POST", `kuvo/sessions/${id}/archive`, { archived: false, was: at.value }));
+  return noActions();
+}
+
 // MARK: General
 
 /** A zone's name as a menu shows it: "Europe/Istanbul" as "Europe › Istanbul", "America/New_York" as
@@ -445,7 +652,7 @@ async function generalChange(_context: RouteContext, at: SettingItem, value: unk
   }
 }
 
-async function generalAct(): Promise<Refused | null> {
+async function noActions(): Promise<Refused | null> {
   return { status: 404, message: "That isn't something it does." };
 }
 
@@ -462,7 +669,7 @@ interface Section {
 const mtime = (file: string): number => { try { return fs.statSync(file).mtimeMs; } catch { return 0; } };
 
 const PAGES: Record<string, Section> = {
-  general: { read: generalPage, change: generalChange, act: generalAct, look: () => `${mtime(ZONE_FILE)} ${ownClock()}` },
+  general: { read: generalPage, change: generalChange, act: noActions, look: () => `${mtime(ZONE_FILE)} ${ownClock()}` },
   permissions: {
     read: permissionsPage, change: permissionsChange, act: permissionsAct,
     look: () => {
@@ -472,6 +679,10 @@ const PAGES: Record<string, Section> = {
     },
   },
   browser: { read: browserPage, change: browserChange, act: browserAct, look: () => browserSettingsFiles().map(mtime).join(" ") },
+  git: { read: gitPage, change: gitChange, act: noActions, look: () => `${mtime(CONFIG_FILE)}` },
+  worktrees: { read: worktreesPage, change: worktreesChange, act: worktreesAct, look: () => String(Math.floor(Date.now() / 1000)) },
+  storage: { read: storagePage, change: storageChange, act: storageAct, look: () => String(Math.floor(Date.now() / 1000)) },
+  archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) },
 };
 
 // Told as a change is made here, so a page followed shows it at once.
@@ -480,6 +691,9 @@ const changed = () => { for (const told of [...followers]) told(); };
 
 /** Whether a value fits a row of its kind: a switch's true or false, one of a choice's choices. */
 function fits(at: SettingItem, value: unknown): boolean {
+  if (at.kind === "number") return typeof value === "number" && Number.isFinite(value) && (at.min === undefined || value >= at.min) && (at.max === undefined || value <= at.max);
+  if (at.kind === "folder") return typeof value === "string";
+  if (at.kind === "text") return typeof value === "string";
   if (at.kind === "switch") return typeof value === "boolean";
   if (at.kind === "choice") return typeof value === "string" && (at.choices ?? []).some(choice => choice.id === value);
   return false;
@@ -561,7 +775,7 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
       if (at.can === undefined) return { status: 400, value: { message: "That isn't something to change." } };
       const why = whyNot(at.can);
       if (why) return { status: 403, value: { message: why } };
-      if (!("value" in given) || !fits(at, given.value)) return { status: 400, value: { message: at.kind === "choice" ? "Pick one of its choices." : "Send true or false." } };
+      if (!("value" in given) || !fits(at, given.value)) return { status: 400, value: { message: at.kind === "choice" ? "Pick one of its choices." : (at.kind === "text" || at.kind === "folder") ? "Send text." : at.kind === "number" ? "Send a number within its limits." : "Send true or false." } };
       done = await section.change(context, at, given.value);
     }
     if (done?.stale) return { status: 409, value: { message: done.message, page: await section.read(context) } };

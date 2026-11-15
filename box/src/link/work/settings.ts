@@ -4,7 +4,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { isObject } from "../../shared/json";
+import { CHANGED_SINCE } from "../areas/config";
+import { isObject, sortedJSON } from "../../shared/json";
 import { locked, textOf, writePrivate } from "../files";
 import { BOX, homeFolder } from "../home";
 
@@ -95,4 +96,31 @@ export function workSettings(file = WORK_SETTINGS_FILE, awake?: { now: boolean }
   const folder = projectsFolder(file);
   const suggested = folder ? null : suggestedFolder();
   return { projectsFolder: folder, ...(suggested ? { suggested } : {}), ...(awake ? { keepsAwake: keepsAwakeSetting(file), awakeNow: awake.now } : {}) };
+}
+
+
+/** Optional field-level compare-and-set for settings pages. Old calls retain their original path. */
+export function patchWorkSettings(given: Record<string, unknown>, file = WORK_SETTINGS_FILE): { status: number; message?: string } {
+  const change: Record<string, unknown> = {};
+  if ("projectsFolder" in given) {
+    if (given.projectsFolder === null) change.projectsFolder = null;
+    else {
+      const checked = folderGiven(given.projectsFolder);
+      if ("refused" in checked) return { status: 400, message: checked.refused };
+      change.projectsFolder = checked.folder;
+    }
+  }
+  if ("keepsAwake" in given) {
+    if (typeof given.keepsAwake !== "boolean") return { status: 400, message: KEEPS_AWAKE_REFUSED };
+    change.keepsAwake = given.keepsAwake;
+  }
+  return locked(`${file}.lock`, () => {
+    let kept: Record<string, unknown> = {};
+    try { const read = JSON.parse(textOf(file) ?? "{}"); if (isObject(read)) kept = read; } catch {}
+    const was = given.was;
+    if (!isObject(was)) return { status: 400, message: "Send was as the fields you read." };
+    if (Object.keys(change).some(key => !(key in was) || sortedJSON(key === "projectsFolder" ? projectsFolder(file) : keepsAwakeSetting(file)) !== sortedJSON(was[key]))) return { status: 409, message: CHANGED_SINCE };
+    writePrivate(file, JSON.stringify({ ...kept, ...change }, null, 2));
+    return { status: 200 };
+  });
 }

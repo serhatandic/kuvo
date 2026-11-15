@@ -15,6 +15,9 @@ import { ask, follow } from "./route-answer"
 
 const { engineHandler } = await import("../src/link/server/router")
 const { APPROVAL_FILE } = await import("../src/link/work/approval")
+const { PROJECTS_FILE } = await import("../src/link/areas/projects")
+const { WORK_SETTINGS_FILE } = await import("../src/link/work/settings")
+const { BRANCH_PREFIX_FILE, WORKTREES_FILE } = await import("../src/link/areas/worktree-records")
 const { CONFIG_FILE } = await import("../src/link/areas/config")
 const { ALLOWED_FILE } = await import("../src/link/fence/allowed")
 const { BROWSER_FOLDER } = await import("../src/link/browser/history")
@@ -38,7 +41,7 @@ const write = (file: string, value: unknown) => {
   writeFileSync(file, JSON.stringify(value))
 }
 beforeEach(() => {
-  for (const file of files) rmSync(file, { force: true })
+  for (const file of [...files, BRANCH_PREFIX_FILE, WORK_SETTINGS_FILE, WORKTREES_FILE, PROJECTS_FILE]) rmSync(file, { force: true })
   // A machine's own settings, as Kuvo Code makes them once (`ownsSettings`).
   write(CONFIG_FILE, { permissions: [{ action: "shell", resource: "git push *", effect: "ask" }] })
 })
@@ -60,6 +63,10 @@ test("the box lists its sections, each with what a sidebar and search show", asy
     ["general", "General", "General", "settings"],
     ["permissions", "Permissions", "Agents & Tools", "shield"],
     ["browser", "Browser", "System", "globe"],
+    ["git", "Git", "System", "branch"],
+    ["worktrees", "Worktrees", "System", "folder"],
+    ["storage", "Storage", "System", "drive"],
+    ["archived", "Archived Sessions", "System", "archive"],
   ])
   expect(json.sections[0].keywords).toContain("time zone")
   expect(json.sections[1].keywords).toContain("sandbox")
@@ -423,4 +430,213 @@ test("the sandbox's row warns while commands can still reach your login's servic
   const git = sandboxRow(worded({ on: true, able: true, agents: true, gaps: ["git"] }), "devbox", false)
   expect(git).toMatchObject({ value: "On", kind: "status", line: "Agents' commands here run in it." })
   expect("tone" in git).toBe(false)
+})
+
+test("Git rows wrap config, with independent revisions and stale writes refused", async () => {
+  const shown = await page("git")
+  expect(shown.groups.flatMap((g: any) => g.rows.map((r: any) => [r.id, r.kind, r.title, r.value]))).toEqual([
+    ["branch-prefix", "text", "Branch prefix", "kuvo/"],
+    ["commit-instructions", "text", "Instructions", ""],
+    ["pull-request-instructions", "text", "Instructions", ""],
+  ])
+})
+
+test("Git writes with independent revisions and refuses stale changes", async () => {
+  const shown = await page("git")
+  const prefix = rowOf(shown, "branch-prefix")
+  expect((await change("git", prefix, "feature/")).status).toBe(200)
+  expect((await ask(handler, "GET", "kuvo/config")).json.branch_prefix).toBe("feature/")
+  expect((await change("git", prefix, "other/")).status).toBe(409)
+  expect((await change("git", rowOf(shown, "commit-instructions"), "Use imperative mood")).status).toBe(200)
+})
+
+test("Git keeps an explicitly empty prefix", async () => {
+  expect((await change("git", rowOf(await page("git"), "branch-prefix"), "")).status).toBe(200)
+  expect((await ask(handler, "GET", "kuvo/config")).json.branch_prefix).toBe("")
+})
+test("Git events follow both the page and existing config route", async () => {
+  const events = follow(handler, "kuvo/settings/git/events")
+  try {
+    const first = await events.next()
+    await change("git", rowOf(first, "branch-prefix"), "session/")
+    expect(rowOf(await events.next(), "branch-prefix").value).toBe("session/")
+    await ask(handler, "PATCH", "kuvo/config", { changes: [{ path: ["pull_request_instructions"], value: "Include testing" }] })
+    expect(rowOf(await events.next(), "pull-request-instructions").value).toBe("Include testing")
+  } finally { events.stop() }
+})
+test("Git warns without rows when its settings cannot be read", async () => {
+  writeFileSync(CONFIG_FILE, "{broken")
+  const shown = await page("git")
+  expect(shown.groups).toEqual([])
+  expect(shown.notes[0]).toMatchObject({ tone: "warning" })
+  expect(shown.notes[0].words).toContain("settings")
+})
+
+test("Git refuses a non-text setting without touching the file", async () => {
+  write(CONFIG_FILE, { branch_prefix: false })
+  const before = kept(CONFIG_FILE)
+  const prefix = rowOf(await page("git"), "branch-prefix")
+  expect(prefix.can.why).toContain("other than text")
+  expect((await change("git", prefix, "feature/")).status).toBe(403)
+  expect(kept(CONFIG_FILE)).toBe(before)
+})
+
+test("Git cleans the prefix and trims instructions as they are used", async () => {
+  let shown = await page("git")
+  shown = (await change("git", rowOf(shown, "branch-prefix"), " /bad prefix../ ")).json
+  expect(rowOf(shown, "branch-prefix").value).toBe("badprefix./")
+  shown = (await change("git", rowOf(shown, "commit-instructions"), "  Keep it short\n ")).json
+  expect(rowOf(shown, "commit-instructions").value).toBe("Keep it short")
+  expect((await ask(handler, "GET", "kuvo/config")).json).toMatchObject({ branch_prefix: "badprefix./", commit_instructions: "Keep it short" })
+})
+
+test("Git requires text", async () => {
+  const answer = await change("git", rowOf(await page("git"), "branch-prefix"), false)
+  expect([answer.status, answer.json.message]).toEqual([400, "Send text."])
+})
+
+test("Git wording and multi-line hints match its Swift sections", async () => {
+  const shown = await page("git")
+  expect(shown.groups.map((g: any) => [g.id, g.title, g.note])).toEqual([
+    ["branches", "Branches", undefined],
+    ["commit-messages", "Commit Messages", "Added when Suggest a Message in Changes asks the model for one."],
+    ["pull-requests", "Pull Requests", "Added when Create Pull Request writes the title and description."],
+  ])
+  expect(shown.groups.flatMap((g: any) => g.rows.map((r: any) => [r.title, r.line, r.placeholder, r.lines]))).toEqual([
+    ["Branch prefix", "How a session’s own branch in a worktree starts.", "None", undefined],
+    ["Instructions", undefined, "For example: Start with the area changed, like “ui: …”, and never mention tickets.", { min: 3, max: 8 }],
+    ["Instructions", undefined, "For example: Add a Testing section, and link the issue if the branch names one.", { min: 3, max: 8 }],
+  ])
+  const { revised } = await import("../src/link/areas/settings-pages")
+  const original = rowOf(shown, "commit-instructions")
+  expect(revised({ ...original, title: "Reworded", line: "Reworded", lines: { min: 4, max: 9 } }).revision).toBe(original.revision)
+})
+
+test("Git events follow the old one-time settings migration route", async () => {
+  const events = follow(handler, "kuvo/settings/git/events")
+  try {
+    await events.next()
+    const moved = await ask(handler, "POST", "kuvo/git/settings/move", { branchPrefix: "moved/", commitInstructions: "Keep it short" })
+    expect(moved.status).toBe(200)
+    expect(moved.json.moved).toBe(true)
+    const next = await events.next()
+    expect(rowOf(next, "branch-prefix").value).toBe("moved/")
+    expect(rowOf(next, "commit-instructions").value).toBe("Keep it short")
+  } finally { events.stop() }
+})
+
+
+test("Worktrees words, folders and removal confirmation match Swift", async () => {
+  const shown = await page("worktrees")
+  expect(shown.groups.map((g: any) => [g.id, g.title, g.note])).toEqual([
+    ["new-projects", "New Projects", "Where projects your bots make go. A bot asks you before it makes one, and Kuvo Code never deletes them."],
+    ["new-worktrees", "New Worktrees", undefined],
+    ["session-worktrees", "Worktrees", "Removing one deletes its folder and anything in it that isn’t committed. Its branch stays if it isn’t merged yet."],
+  ])
+  expect(rowOf(shown, "projects-folder")).toMatchObject({ title: "Folder", kind: "folder", placeholder: "None", value: "" })
+  expect(rowOf(shown, "worktrees-folder")).toMatchObject({ title: "Folder", kind: "folder", placeholder: "Kuvo Code’s Folder", value: "" })
+  expect(rowOf(shown, "projects-folder").folder).toEqual({ choose: "Choose a Folder…", clear: "None", prompt: "Choose", message: "Choose where new projects go. Each one is a folder in it." })
+  expect(rowOf(shown, "worktrees-folder").folder).toEqual({ choose: "Choose a Folder…", clear: "Kuvo Code’s Folder", prompt: "Choose", message: "Choose where new worktrees go. Each one is a folder in it." })
+  expect(rowOf(shown, "worktrees-place").title).toBe("New worktrees go in")
+  expect(rowOf(shown, "worktrees").empty).toBe("None yet. Choose Worktree in a new session’s composer to give it one.")
+  const { worktreeRemovalWords, revised } = await import("../src/link/areas/settings-pages")
+  expect(worktreeRemovalWords({ branch: "topic", uncommitted: true, ahead: 2 })).toBe("Its folder is deleted, with changes in it that aren’t committed. topic keeps its 2 commits not merged yet. Its sessions stay, without a folder to run in.")
+  expect(worktreeRemovalWords({ branch: "topic", uncommitted: false })).toBe("Its folder is deleted. Git sees nothing in it that isn’t committed. Its sessions stay, without a folder to run in.")
+  const original = rowOf(shown, "projects-folder")
+  expect(revised({ ...original, line: "Reworded" }).revision).toBe(original.revision)
+})
+
+test("Worktrees writes through both routes, refuses stale revisions, and unrelated folders still write", async () => {
+  const shown = await page("worktrees")
+  const projects = rowOf(shown, "projects-folder")
+  expect((await change("worktrees", projects, outside)).status).toBe(200)
+  expect((await ask(handler, "GET", "kuvo/work/settings")).json.projectsFolder).toBe(outside)
+  expect((await change("worktrees", projects, "")).status).toBe(409)
+  expect((await change("worktrees", rowOf(shown, "worktrees-folder"), ` ${outside}/../${outside.split("/").at(-1)} `)).status).toBe(200)
+  expect((await ask(handler, "GET", "kuvo/config")).json.worktree.directory).toBe(outside)
+  const wrong = await change("worktrees", rowOf(await page("worktrees"), "projects-folder"), false)
+  expect([wrong.status, wrong.json.message]).toEqual([400, "Send text."])
+})
+
+test("work settings optional was is atomic and old calls remain valid", async () => {
+  expect((await ask(handler, "PATCH", "kuvo/work/settings", { projectsFolder: outside })).status).toBe(200)
+  const before = kept(WORK_SETTINGS_FILE)
+  const stale = await ask(handler, "PATCH", "kuvo/work/settings", { projectsFolder: null, was: { projectsFolder: null } })
+  expect([stale.status, stale.json.message]).toEqual([409, "It changed since you read it."])
+  expect(kept(WORK_SETTINGS_FILE)).toBe(before)
+  expect((await ask(handler, "PATCH", "kuvo/work/settings", { projectsFolder: null, was: { projectsFolder: outside } })).status).toBe(200)
+})
+
+test("Worktrees explains a field it cannot replace and warns on unreadable files", async () => {
+  write(CONFIG_FILE, { worktree: { directory: false } })
+  const before = kept(CONFIG_FILE)
+  const folder = rowOf(await page("worktrees"), "worktrees-folder")
+  expect(folder.can.why).toContain("other than text")
+  expect((await change("worktrees", folder, outside)).status).toBe(403)
+  expect(kept(CONFIG_FILE)).toBe(before)
+  for (const file of [WORK_SETTINGS_FILE, WORKTREES_FILE, PROJECTS_FILE]) {
+    writeFileSync(file, "{broken")
+    const shown = await page("worktrees")
+    expect(shown.groups).toEqual([])
+    expect(shown.notes[0].tone).toBe("warning")
+    rmSync(file)
+  }
+})
+
+test("Worktrees events follow config and work settings routes", async () => {
+  const events = follow(handler, "kuvo/settings/worktrees/events")
+  try {
+    await events.next()
+    await ask(handler, "PATCH", "kuvo/work/settings", { projectsFolder: outside })
+    expect(rowOf(await events.next(), "projects-folder").value).toBe(outside)
+    await ask(handler, "PATCH", "kuvo/config", { changes: [{ path: ["worktree", "directory"], value: outside }] })
+    expect(rowOf(await events.next(), "worktrees-folder").value).toBe(outside)
+    write(WORKTREES_FILE, { worktrees: [{ root: join(outside, "missing"), project: outside, branch: "topic" }] })
+    const tree = rowOf(await events.next(), `tree-${join(outside, "missing")}`)
+    expect(tree.actions[0]).toMatchObject({ title: "Remove…", confirm: { title: "Remove the worktree for topic?", button: "Remove" } })
+    expect(tree.actions[0].can.why).toBe("The engine isn't running, so the worktree of topic stays. Try again once it's started.")
+    const before = kept(WORKTREES_FILE)
+    const refused = await act("worktrees", tree, "remove")
+    expect([refused.status, refused.json.message]).toEqual([403, tree.actions[0].can.why])
+    expect(kept(WORKTREES_FILE)).toBe(before)
+  } finally { events.stop() }
+})
+
+
+test("Worktrees events follow old record and removal routes, with optional stale protection", async () => {
+  const fake = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch() { return Response.json({ data: [] }) } })
+  const target = { port: fake.port!, password: "test", pid: process.pid }
+  const live = engineHandler(() => target as any, { name: "devbox" }, noEngine as any)
+  const root = join(outside, "recorded")
+  mkdirSync(root, { recursive: true })
+  const record = { root, folder: root, project: outside, branch: "topic" }
+  const events = follow(live, "kuvo/settings/worktrees/events")
+  try {
+    await events.next()
+    expect((await ask(live, "POST", "kuvo/worktrees/record", record)).status).toBe(200)
+    const shown = await events.next()
+    const tree = rowOf(shown, `tree-${root}`)
+    expect(tree.actions[0].confirm).toMatchObject({ title: "Remove the worktree for topic?", button: "Remove" })
+    const before = kept(WORKTREES_FILE)
+    const stale = await ask(live, "POST", "kuvo/worktrees/remove", { path: root, was: {} })
+    expect([stale.status, stale.json.message]).toEqual([409, "It changed since you read it."])
+    expect(kept(WORKTREES_FILE)).toBe(before)
+    // Gone on disk: old remove call still forgets the record without needing was.
+    rmSync(root, { recursive: true, force: true })
+    expect((await ask(live, "POST", "kuvo/worktrees/remove", { path: root })).status).toBe(200)
+    expect(rowOf(await events.next(), "worktrees").items).toEqual([])
+  } finally { events.stop(); fake.stop(true) }
+})
+
+test("Worktree folder changes refuse a config edit after the page read", async () => {
+  const original = rowOf(await page("worktrees"), "worktrees-folder")
+  write(CONFIG_FILE, { worktree: { directory: outside } })
+  const before = kept(CONFIG_FILE)
+  const { worktreesChange } = await import("../src/link/areas/settings-pages")
+  const context = { request: { fromApp: true }, info: {}, readEngine: noEngine, bridge: () => null,
+    json: (status: number, value: unknown) => [{ head: { status, headers: {} } }, { body: Buffer.from(JSON.stringify(value)) }],
+  } as any
+  expect(await worktreesChange(context, original, "")).toMatchObject({ status: 409, stale: true })
+  expect(await worktreesChange(context, { ...original, id: "unexpected" }, "")).toMatchObject({ status: 400 })
+  expect(kept(CONFIG_FILE)).toBe(before)
 })

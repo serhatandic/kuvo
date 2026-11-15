@@ -39,12 +39,23 @@ const ROW_FIELDS = {
   "value?": any,
   /** Absent for a row with nothing to change (a `status`). */
   "can?": SETTING_CAN,
-  /** A hash of the row as the box gave it, sent back as `was` with a change to it. */
+  /** A hash of the row, including action confirmation words, sent back as `was` with a change to it. */
   revision: string,
   "confirm?": SETTING_CONFIRM,
   /** A change under way there, in words ("Restarting…"), until the page's events say it's done. */
   "busy?": string,
   "choices?": list(SETTING_CHOICE),
+  /** Preferred visible lines for a multi-line text editor; presentation only, outside revisions. */
+  "lines?": object({ min: number, max: number }),
+  /** A folder picker’s words, including how to clear the choice. */
+  "folder?": object({ choose: string, clear: string, prompt: string, message: string }),
+  /** Client-side filtering of a list by its title and its items’ title and line; empty replaces {query} with the query. */
+  "search?": object({ placeholder: string, empty: string }),
+  /** Number/status values in bytes; clients format them as file sizes. */
+  "unit?": words("bytes"),
+  "suggestions?": list(object({ value: number, title: string })),
+  /** Ask only when the proposed number is below this threshold. */
+  "confirmBelow?": object({ value: number, confirm: SETTING_CONFIRM }),
   "placeholder?": string, "min?": number, "max?": number,
   /** A `secret`'s: whether one is set (never its value). */
   "set?": bool,

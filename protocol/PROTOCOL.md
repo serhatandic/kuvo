@@ -6729,7 +6729,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sessions.needsYou` | `needsYou`, each project's `asking` and `working`, and each session's `bot`, in `kuvo/sessions/list` ("Session lists", #711) |
 | `sessions.start` | `POST kuvo/sessions`: a session started with a task (bridge 0.9.100) |
 | `sessions.start.empty` | `POST kuvo/sessions` from a client without a task, `agent`, `model` as `{providerID, id, variant?}`, and `info` and `worktree` in its answer (#341) |
-| `settings` | `kuvo/settings`, `kuvo/settings/<section>`, `…/events`, a row changed with `PATCH` and an action done with `POST …/<row>/<action>`: the box's settings as it describes them, Permissions and Browser first ("A box's settings", #727) |
+| `settings` | `kuvo/settings`, `kuvo/settings/<section>`, `…/events`, a row changed with `PATCH` and an action done with `POST …/<row>/<action>`: the box's settings as it describes them, General, Permissions, Browser, Git, Worktrees, Storage and Archived Sessions ("A box's settings", #727) |
 | `setup` | `kuvo/setup`, `…/events`: your setup and its main computer ("Your setup") |
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
 | `setup.ready` | `GET kuvo/setup/ready`: whether a first run has anything to ask about your accounts here, decided by the box ("Your setup") |
@@ -8070,7 +8070,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
 - `GET kuvo/settings`: `{sections}`, in order, each `{id, title, group, icon, line, keywords}`:
   the heading it's under in a sidebar (`group`), its icon by name (`shield`, `globe`, …: a set every
   client has; one a client hasn't, it draws with its own), and the words search finds it by besides
-  its title and line. Today `general`, `permissions` and `browser`; the rest come page by page.
+  its title and line. Today `general`, `permissions`, `browser`, `git`, `worktrees`, `storage` and `archived`; the rest come page by page.
 - `GET kuvo/settings/<section>`: `{id, title, line?, groups, notes?}`; `404 {message}` for a section
   this box hasn't. A group is `{id, title?, note?, rows}`, a card with its heading and the words
   under it; `notes` are `{words, tone}` (`quiet` or `warning`) after the groups: what couldn't be
@@ -8081,11 +8081,11 @@ so a client still on those (the phone) sees every change kept just as they keep 
   |---|---|---|
   | `switch` | `value`: true or false | A switch |
   | `choice` | `value`: a choice's `id`; `choices: [{id, title, line?}]` | A menu |
-  | `text`, `number`, `folder` | `value`, `placeholder?`, `min?`, `max?` | A field (a folder's opens the box's folder picker, `kuvo/folders`) |
+  | `text`, `number`, `folder` | `value`, `placeholder?`, `min?`, `max?`, `lines?: {min, max}`, `folder?: {choose, clear, prompt, message}`, `unit?: "bytes"`, `suggestions?: [{value, title}]`, `confirmBelow?: {value, confirm}` | A field (text may request a multi-line editor with its preferred visible line range; presentation only, outside revisions; byte values use file size formatting; numeric suggestions are common values, not limits; a number below confirmBelow.value requires its confirmation, whose button appends the formatted proposed value) (a folder opens the box's picker, `kuvo/folders`, with its own choose/clear button words, picker prompt and message; clearing sends empty text) |
   | `secret` | `set`: whether one is set; never its value | A field written only; Replace and Remove once set |
-  | `status` | `value`: words | The words, on the right |
+  | `status` | `value`: words, or a number with `unit?: "bytes"` | The words or formatted file size, on the right |
   | `actions` | `actions` | Buttons (past one, a menu) |
-  | `list` | `items`: rows; `add?`: an action; `empty?`: words for none | The rows in its card, or its `empty` words |
+  | `list` | `items`: rows; `add?`: an action; `empty?`: words for none; `search?: {placeholder, empty}` | The rows in its card, or its `empty` words |
   | `meter` | `windows: [{title, used, resets?}]` (`used` 0 to 1, `resets` ms since 1970) | Usage windows |
   | `open` | `section` (this box's) or `address` | A row with › |
   | `steps` | `start`: an action | A flow the box leads (to come, with Accounts) |
@@ -8102,7 +8102,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
   way there. A box newer than a client may send a kind the client doesn't know: it draws the row's
   title and line, and says a newer Kuvo Code changes it. `revision` is a hash of what the row is
   and what governs whether it can be changed (its value, `can`, its choices' and actions' ids, a
-  list's items' revisions; a `secret`'s, whether one is set; whether `can` holds, not its why), never its words: the same value set
+  list's items' revisions; a `secret`'s, whether one is set; whether `can` holds, not its why; action confirmations, so a growing destructive warning makes a reading stale), never its display words: the same value set
   again, a computer renamed or a line reworded leaves it.
 - `PATCH kuvo/settings/<section> {row, value, was}`: one row changed, `was` its `revision` as read.
   The answer is the page again (`200`), or a refusal in the box's words: `400` for a value that
@@ -8155,6 +8155,54 @@ The sections now:
   Never Offered (`never`, a `list` of `never-<site>`, each with `offer-again`, which takes that one
   site out and leaves the rest as they are then): `kuvo/browser/settings`,
   the box's browser. How the side panel's own browser keeps its data is each client's.
+
+- **Git** (`git`): Branches (`branch-prefix`, “Branch prefix”), Commit Messages
+  (`commit-instructions`, “Instructions”) and Pull Requests (`pull-request-instructions`,
+  “Instructions”), all `text` rows wrapping `kuvo/config`'s `branch_prefix`,
+  `commit_instructions` and `pull_request_instructions`. An unset prefix shows `kuvo/`;
+  empty text means no prefix. Page writes clean the prefix as git uses it and trim instructions;
+  the old config route stays unchanged. Instructions are added when suggesting a commit message or
+  writing a pull request. Changes use the existing config route with that field's `was`,
+  leaving unrelated fields alone. Unavailable settings say why in `can`. Page events follow
+  config changes, including the old Git settings migration route.
+
+- **Worktrees** (`worktrees`): New Projects (`projects-folder`, Folder), New Worktrees
+  (`worktrees-folder`, Folder, and the resolved places), and Worktrees (a list with Remove…,
+  confirmed with the box's words). Folder rows accept text; empty clears the choice.
+  Project folders wrap `kuvo/work/settings`, worktree folders `kuvo/config`, and removal
+  `kuvo/worktrees/remove`. Sources that cannot be read give no rows and a warning.
+  Polling each second covers the settings, project and worktree records, engine lists and
+  the folders' live git and disk state.
+  `PATCH kuvo/work/settings` accepts optional `was: {projectsFolder?, keepsAwake?}` for
+  the fields being written, compared under the file's lock; absent `was` keeps its old behavior.
+  A mismatch answers `409 {message: "It changed since you read it."}`.
+  `POST kuvo/worktrees/remove` accepts optional `was: {record, uncommitted?, ahead?}`, the worktree record and git facts read;
+  removals of one root share a turn across box processes and compare the record and git facts before removal. Absent `was`
+  keeps its old behavior. A mismatch answers the same 409, mapped to a stale page.
+
+- **Storage** (`storage`): the box-backed What Agents Made group only: copies (status in bytes),
+  older-budget (number in bytes, with the Swift page's common budgets and confirmation when
+  lowering below what older copies take), and older-copies (Clear…, with confirmation).
+  `POST kuvo/artifacts/storage {budget, was?}` compares optional `was` with the budget before
+  setting it; `POST kuvo/artifacts/storage/clear {was?}` compares with older copies' bytes before
+  clearing. Mismatches answer `409 {message: "It changed since you read it."}`. Both checks and
+  writes run synchronously in the bridge's event loop. Without `was`, both behave as before.
+  Page writes floor byte counts as the store does. Polling each second reads the bridge again,
+  covering its settings, copies and live disk usage. An unavailable bridge gives no rows and a warning.
+  The native Mac-only measurement, session cleanup links and log/download deletion groups have
+  no box routes and are not included here.
+
+- **Archived Sessions** (`archived`): archived sessions grouped by project, from
+  `kuvo/sessions/list`; each row uses `kuvo/sessions/<id>/actions` verbatim, including
+  Unarchive, Delete and the box's confirmation words. Delete All’s confirmation comes from
+  `POST kuvo/sessions/deletes`; confirmed deletion calls each existing session DELETE route.
+  No session rules are added here. A list may offer `search: {placeholder, empty}` for client-side
+  filtering by list title and item title and line (`{query}` in empty is replaced with the query). A missing source gives no rows and a warning.
+  Session archive/pin routes accept optional `was: {updated, archived}`; DELETE additionally
+  requires the current Delete `confirm: {title, message, label}` in `was`. These are compared
+  inside the existing session turn before mutation. Mismatch answers `409 {message:
+  "It changed since you read it."}`; absent `was` preserves old calls. Page events poll every
+  second, covering session lists, live session actions, moves, worktree confirmations and time zone.
 
 ### Your time zone
 

@@ -5,7 +5,7 @@ import { spawn as spawn17 } from "node:child_process";
 import crypto62 from "node:crypto";
 import fs180 from "node:fs";
 import os23 from "node:os";
-import path188 from "node:path";
+import path189 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // box/src/shared/text.ts
@@ -2696,7 +2696,7 @@ var WORK_ROUTES = [
   { route: "GET kuvo/work/asks/events", answers: { 200: WORK_ASKS } },
   { route: "POST kuvo/work/asks/:id", answers: { 200: WORK_ASK_ANSWERED, 400: REFUSED, 404: REFUSED } },
   { route: "GET kuvo/work/settings", answers: { 200: WORK_SETTINGS } },
-  { route: "PATCH kuvo/work/settings", answers: { 200: WORK_SETTINGS, 400: REFUSED } },
+  { route: "PATCH kuvo/work/settings", answers: { 200: WORK_SETTINGS, 400: REFUSED, 409: REFUSED } },
   { route: "GET kuvo/work/unanswering", answers: { 200: UNANSWERING_LIST } },
   { route: "GET kuvo/work/goals", answers: { 200: GOAL_PLANS } },
   { route: "GET kuvo/work/goals/events", answers: { 200: GOAL_PLANS } },
@@ -11567,6 +11567,39 @@ function workSettings(file = WORK_SETTINGS_FILE, awake) {
   const folder = projectsFolder(file);
   const suggested = folder ? null : suggestedFolder();
   return { projectsFolder: folder, ...suggested ? { suggested } : {}, ...awake ? { keepsAwake: keepsAwakeSetting(file), awakeNow: awake.now } : {} };
+}
+function patchWorkSettings(given, file = WORK_SETTINGS_FILE) {
+  const change = {};
+  if ("projectsFolder" in given) {
+    if (given.projectsFolder === null)
+      change.projectsFolder = null;
+    else {
+      const checked = folderGiven(given.projectsFolder);
+      if ("refused" in checked)
+        return { status: 400, message: checked.refused };
+      change.projectsFolder = checked.folder;
+    }
+  }
+  if ("keepsAwake" in given) {
+    if (typeof given.keepsAwake !== "boolean")
+      return { status: 400, message: KEEPS_AWAKE_REFUSED };
+    change.keepsAwake = given.keepsAwake;
+  }
+  return locked(`${file}.lock`, () => {
+    let kept = {};
+    try {
+      const read = JSON.parse(textOf(file) ?? "{}");
+      if (isObject(read))
+        kept = read;
+    } catch {}
+    const was = given.was;
+    if (!isObject(was))
+      return { status: 400, message: "Send was as the fields you read." };
+    if (Object.keys(change).some((key) => !(key in was) || sortedJSON(key === "projectsFolder" ? projectsFolder(file) : keepsAwakeSetting(file)) !== sortedJSON(was[key])))
+      return { status: 409, message: CHANGED_SINCE };
+    writePrivate(file, JSON.stringify({ ...kept, ...change }, null, 2));
+    return { status: 200 };
+  });
 }
 
 // box/src/link/work/awake.ts
@@ -20714,9 +20747,11 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
   if (!tree)
     return { status: 404, value: message("That worktree isn't on this machine any more.") };
   if (route === "kuvo/worktrees/remove")
-    return removeTree(tree, { discard: body?.discard !== false, forget: body?.forget === true }, engine, signal, bridge);
+    return removingInTurn(tree.root, () => removeTree(tree, { discard: body?.discard !== false, forget: body?.forget === true, ...body && "was" in body ? { was: body.was } : {} }, engine, signal, bridge));
   return { status: 404, value: {} };
 }
+var removalLocks = lockedIn(path83.join(RUN, "worktree-removals"));
+var removingInTurn = (root, work) => inTurn("worktree-removals", root, work, removalLocks);
 var isArchived2 = (session) => Boolean(session.time?.archived || session.metadata?.["kuvo.archived"] === true || session.metadata?.kuvo?.archived === true);
 var folderOf2 = (session) => session.location?.directory ?? session.directory;
 var snapshotRef = (root, commit) => `refs/kuvo/worktrees/${path83.basename(root).replace(/[^A-Za-z0-9_-]+/g, "-")}-${commit.slice(0, 12)}`;
@@ -20762,6 +20797,15 @@ async function removeTree(tree, removal, engine, signal, bridge, known) {
   const here = known ?? await sessionsHere(engine, signal, bridge);
   if (!here)
     return { status: 503, value: message(engine?.port ? `It couldn't be told whether an agent is working in the worktree of ${tree.branch}, so it stays. Try again in a moment.` : `The engine isn't running, so the worktree of ${tree.branch} stays. Try again once it's started.`) };
+  if ("was" in removal) {
+    const was = removal.was;
+    const record = readWorktrees().find((each) => each.root === tree.root) ?? null;
+    const status = fs79.existsSync(tree.root) ? gitIn(tree.root, ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]) : null;
+    const ahead = tree.base && fs79.existsSync(tree.root) ? gitIn(tree.root, ["rev-list", "--count", `${tree.base}..HEAD`]) : null;
+    const now = { record, ...status !== null ? { uncommitted: status.length > 0 } : {}, ...ahead !== null && /^\d+$/.test(ahead) ? { ahead: Number(ahead) } : {} };
+    if (!isObject(was) || sortedJSON(now) !== sortedJSON(was))
+      return { status: 409, value: message(CHANGED_SINCE) };
+  }
   const { sessions, active } = here;
   if (sessions.some((session) => inside2(folderOf2(session), tree.root) && active.has(session.id))) {
     return { status: 409, value: message(`An agent is still working in the worktree of ${tree.branch}, so it stays. Stop it first, then remove the worktree.`) };
@@ -45380,7 +45424,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "deb13493f627";
+var BRIDGE_VERSION = "f1bcfa4c09c7";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -48644,6 +48688,14 @@ var UNTITLED = "New Session";
 
 class Moving extends Error {
 }
+
+class Stale extends Error {
+}
+var sessionActionState = (session, confirm) => ({ updated: session.time.updated, archived: isArchived3(session), ...confirm === undefined ? {} : { confirm } });
+var checkWas = (given, session) => {
+  if ("was" in given && (!session?.id || sortedJSON(isObject(given.was) ? { updated: given.was.updated, archived: given.was.archived } : given.was) !== sortedJSON(sessionActionState(session))))
+    throw new Stale;
+};
 function livesElsewhere(session) {
   const moved = movedAway().find((each) => each.session === session);
   if (!moved)
@@ -48732,7 +48784,8 @@ async function* sessionActionRoute(context, match) {
     return yield* json(405, { message: "Ask with GET." });
   if (action !== null && action !== "actions" && method !== "POST")
     return yield* json(405, { message: "Change it with POST." });
-  const given = action === "actions" || action === null ? {} : parsed(request.body);
+  const decoded = parsed(request.body);
+  const given = action === "actions" ? {} : action === null ? isObject(decoded) ? decoded : {} : decoded;
   if (!isObject(given))
     return yield* json(400, { message: "Send what changes as JSON." });
   if (action === "archive" && typeof given.archived !== "boolean")
@@ -48765,7 +48818,7 @@ async function* sessionActionRoute(context, match) {
     if (record?.port && !context.bridge())
       return yield* json(503, { message: "The coding agents on this computer are starting. Try again in a moment." });
     if (action === null)
-      return yield* json(200, { session: id });
+      return yield* "was" in given ? json(409, { message: CHANGED_SINCE }) : json(200, { session: id });
     return yield* json(404, { message: "That conversation isn't here." });
   }
   const { target } = place;
@@ -48789,9 +48842,26 @@ async function* sessionActionRoute(context, match) {
       await inTurnOn(target, id, async () => {
         if (frozen().has(id))
           throw new Moving;
+        if ("was" in given) {
+          let now;
+          try {
+            now = await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, signal);
+          } catch (error) {
+            if (error.status === 404)
+              throw new Stale;
+            throw error;
+          }
+          if (!now?.id)
+            throw new Stale;
+          const confirm = await deleteConfirm([{ id, directory: now.location?.directory ?? now.directory ?? "", title: now.title }], context, signal);
+          if (sortedJSON(given.was) !== sortedJSON(sessionActionState(now, confirm)))
+            throw new Stale;
+        }
         return call(target, "DELETE", `/api/session/${encodeURIComponent(id)}`, undefined, signal);
       }, signal);
     } catch (error) {
+      if (error instanceof Stale)
+        return yield* json(409, { message: CHANGED_SINCE });
       if (error instanceof Moving)
         return yield* json(409, { message: MOVING });
       return yield* json(502, { message: `It couldn't be deleted: ${String(error?.message ?? error)}` });
@@ -48824,12 +48894,15 @@ async function* sessionActionRoute(context, match) {
     done = await rewriteOn(target, id, (now) => {
       if (frozen().has(id))
         throw new Moving;
+      checkWas(given, now);
       if ((action === "pin" ? isPinned(now) : isArchived3(now)) === value)
         return null;
       const nested = action === "archive" && value === false && isObject(now.metadata?.kuvo) && "archived" in now.metadata.kuvo;
       return { metadata: withNotes(now.metadata, nested ? { archived: undefined } : null, { [key]: value }) };
     }, signal);
   } catch (error) {
+    if (error instanceof Stale)
+      return yield* json(409, { message: CHANGED_SINCE });
     if (error instanceof Moving)
       return yield* json(409, { message: MOVING });
     return yield* json(502, { message: `It couldn't be changed: ${String(error?.message ?? error)}` });
@@ -56551,16 +56624,230 @@ async function* settingsRoute(context) {
 
 // box/src/link/areas/settings-pages.ts
 import crypto58 from "node:crypto";
-import fs173 from "node:fs";
+import fs174 from "node:fs";
+import path182 from "node:path";
+
+// box/src/link/areas/work.ts
+import fs172 from "node:fs";
+var WORK_ROUTE = /^kuvo\/(?:work(?:\/events|\/oversight(?:\/events)?|\/background(?:\/events)?)?|bots\/([^/]+)\/stop-all)$/;
+var WORK_ASKS_ROUTE = /^kuvo\/work\/(?:settings|unanswering|asks(?:\/([^/]+))?)$/;
+var GOALS_ROUTE = /^kuvo\/work\/goals(?:\/([^/]+))?$/;
+var APP_ICON_ROUTE = "kuvo/work/apps/icon";
+async function botWork(bot, context) {
+  const { readEngine, bridge, signal } = context;
+  const targets = targetsOf({ readEngine, bridge });
+  const work = ofBot(bot, await workSessions(targets, signal ?? undefined));
+  const working = await atWorkNow(targets, signal ?? undefined);
+  const sessions = [];
+  const shown = work.slice(0, 60);
+  const asked = workAccounts(shown.map((each) => ({ id: each.data.id, target: each.target, provider: each.data.model?.providerID })), signal ?? undefined);
+  for (let at = 0;at < shown.length; at += 8) {
+    sessions.push(...await Promise.all(shown.slice(at, at + 8).map((each) => describeWork(each, working, { replies: true, signal: signal ?? undefined }))));
+  }
+  const answered = work.flatMap((each) => answersOn(each.data.metadata).map((answer) => ({ ...answer, session: each.data.id }))).sort((a, b) => b.at - a.at).slice(0, 100);
+  const accounts = await asked;
+  const midnight = startOfDay(Date.now());
+  const today = work.filter((each) => (each.data.time?.created ?? 0) >= midnight);
+  const cost = today.reduce((sum, each) => sum + (typeof each.data.cost === "number" ? each.data.cost : 0), 0);
+  return {
+    bot,
+    sessions: sessions.map(({ askID: _, replyBeforeStop, lastReply, ...described }) => {
+      const account = accounts.get(described.session);
+      const shown = !replyBeforeStop && lastReply ? { ...described, lastReply } : described;
+      return account ? { ...shown, account } : shown;
+    }),
+    answered,
+    today: {
+      started: today.length,
+      working: sessions.filter((each) => each.state === "working" || each.state === "asking").length,
+      tokens: today.reduce((sum, each) => sum + (each.data.tokens?.input ?? 0) + (each.data.tokens?.output ?? 0) + (each.data.tokens?.reasoning ?? 0), 0),
+      ...cost > 0 ? { cost } : {}
+    },
+    limits: botLimits(bot),
+    asks: workAsks().filter((ask) => ask.bot === bot),
+    projects: readProjects().filter((project) => !project.removed && project.madeBy?.bot === bot)
+  };
+}
+async function* workRoute(context, match) {
+  const { request, readEngine, bridge, signal, json } = context;
+  const method = request.method.toUpperCase();
+  const route = request.path.split("?")[0];
+  if (route === "kuvo/work/events") {
+    if (method !== "GET")
+      return yield* json(405, {});
+    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+    return yield* followed(() => ({ changed: readWorkChanges() }), workFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
+  }
+  if (route === "kuvo/work/background" || route === "kuvo/work/background/events") {
+    if (method !== "GET")
+      return yield* json(405, {});
+    if (route === "kuvo/work/background")
+      return yield* json(200, { sessions: readBackground() });
+    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+    return yield* followed(() => ({ sessions: readBackground() }), backgroundFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
+  }
+  if (route === "kuvo/work/oversight" || route === "kuvo/work/oversight/events") {
+    if (method !== "GET")
+      return yield* json(405, {});
+    if (route === "kuvo/work/oversight")
+      return yield* json(200, { marks: readOversight() });
+    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+    return yield* followed(() => ({ marks: readOversight() }), oversightFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
+  }
+  if (route === "kuvo/work") {
+    if (method !== "GET")
+      return yield* json(405, {});
+    const bot = new URLSearchParams(request.path.split("?")[1] ?? "").get("bot") ?? "";
+    if (!bot)
+      return yield* json(400, { message: "Name the bot: kuvo/work?bot=<id>." });
+    if (!botHere(bot))
+      return yield* json(404, { message: "There's no such bot here." });
+    try {
+      readEngine();
+    } catch {
+      return yield* json(503, { message: "The engine isn't running." });
+    }
+    return yield* json(200, await botWork(bot, context));
+  }
+  if (method !== "POST")
+    return yield* json(405, {});
+  const bot = decodeURIComponent(match[1] ?? "");
+  if (!botHere(bot))
+    return yield* json(404, { message: "There's no such bot here." });
+  const targets = targetsOf({ readEngine, bridge });
+  if (!targets.length)
+    return yield* json(503, { message: "The engine isn't running." });
+  const stopped = await stopBotWork(bot, targets, signal ?? undefined);
+  return yield* json(200, { stopped });
+}
+async function* workAsksRoute(context, match) {
+  const { request, readEngine, bridge, signal, json } = context;
+  const method = request.method.toUpperCase();
+  const route = request.path.split("?")[0];
+  if (route === "kuvo/work/unanswering") {
+    if (method !== "GET")
+      return yield* json(405, {});
+    const held = unansweringNow();
+    const listed = held.some((each) => each.paid || each.free) ? await Promise.resolve().then(() => call(readEngine(), "GET", "/api/model", undefined, signal)).catch(() => null) : null;
+    return yield* json(200, unansweringList(held, Array.isArray(listed) ? listed : null));
+  }
+  if (route === "kuvo/work/settings") {
+    const awake = () => keepsMacAwakeItself() ? { now: awakeForWork() } : undefined;
+    if (method === "GET")
+      return yield* json(200, workSettings(undefined, awake()));
+    if (method !== "PATCH")
+      return yield* json(405, {});
+    const given = parsed(request.body);
+    const keepsAwake = keepsMacAwakeItself() && isObject(given) && "keepsAwake" in given;
+    if (!isObject(given) || !("projectsFolder" in given) && !keepsAwake) {
+      return yield* json(400, { message: keepsMacAwakeItself() ? "Send {projectsFolder}: a full path, or null; or {keepsAwake}: true or false." : "Send {projectsFolder}: a full path, or null." });
+    }
+    if (keepsAwake && typeof given.keepsAwake !== "boolean")
+      return yield* json(400, { message: KEEPS_AWAKE_REFUSED });
+    if ("projectsFolder" in given && given.projectsFolder !== null) {
+      const checked = folderGiven(given.projectsFolder);
+      if ("refused" in checked)
+        return yield* json(400, { message: checked.refused });
+    }
+    if ("was" in given) {
+      const changed = patchWorkSettings({ ...keepsAwake ? { keepsAwake: given.keepsAwake } : {}, ..."projectsFolder" in given ? { projectsFolder: given.projectsFolder } : {}, was: given.was });
+      return yield* changed.status === 200 ? json(200, workSettings(undefined, awake())) : json(changed.status, { message: changed.message });
+    }
+    if (keepsAwake)
+      setKeepsAwake(given.keepsAwake);
+    if ("projectsFolder" in given) {
+      const set = setProjectsFolder(given.projectsFolder);
+      if ("refused" in set)
+        return yield* json(400, { message: set.refused });
+    }
+    return yield* json(200, workSettings(undefined, awake()));
+  }
+  if (route === "kuvo/work/asks" || match[1] === "events") {
+    if (method !== "GET")
+      return yield* json(405, {});
+    if (route === "kuvo/work/asks")
+      return yield* json(200, { asks: workAsks() });
+    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+    return yield* followed(() => ({ asks: workAsks() }), askFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
+  }
+  if (method !== "POST")
+    return yield* json(405, {});
+  const given = parsed(request.body);
+  const outcome = await answerWork(decodeURIComponent(match[1] ?? ""), isObject(given) ? given : {}, () => targetsOf({ readEngine, bridge }));
+  if ("refused" in outcome)
+    return yield* json(outcome.refused.status, { message: outcome.refused.message });
+  return yield* json(200, { answer: outcome.answered.answer, text: outcome.answered.text, isError: outcome.answered.isError });
+}
+async function* newProjectRoute(context) {
+  const { request, json } = context;
+  if (request.method.toUpperCase() !== "POST")
+    return yield* json(405, {});
+  const given = parsed(request.body);
+  if (!isObject(given))
+    return yield* json(400, { message: "Send {name}, and git or clone." });
+  const outcome = await makeProject(given, null);
+  if ("refused" in outcome) {
+    const { status, ...refusal } = outcome.refused;
+    return yield* json(status, refusal);
+  }
+  return yield* json(201, { project: outcome.made.project, text: madeWords(outcome.made, HERE) });
+}
+async function* goalsRoute(context, match) {
+  const { request, readEngine, bridge, signal, json } = context;
+  const method = request.method.toUpperCase();
+  if (!match[1] || match[1] === "events") {
+    if (method !== "GET")
+      return yield* json(405, {});
+    if (!match[1])
+      return yield* json(200, { goals: goalPlans() });
+    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+    return yield* followed(() => ({ goals: goalPlans() }), goalFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
+  }
+  if (method !== "POST")
+    return yield* json(405, {});
+  const given = parsed(request.body);
+  const targets = () => targetsOf({ readEngine, bridge });
+  if (match[1] === "ask") {
+    if (!isObject(given) || typeof given.session !== "string" || !botOfConversation(given.session))
+      return yield* json(400, { message: "Send {session, goal}: a bot's conversation, and the goal in your words." });
+    const outcome = await askGoal(given.session, typeof given.goal === "string" ? given.goal : "", targets);
+    if ("refused" in outcome)
+      return yield* json(outcome.refused.status, { message: outcome.refused.message });
+    return yield* json(200, outcome);
+  }
+  const outcome = await answerGoal(decodeURIComponent(match[1]), isObject(given) ? given : {}, targets);
+  if ("refused" in outcome) {
+    const { status, ...refusal } = outcome.refused;
+    return yield* json(status, refusal);
+  }
+  return yield* json(200, outcome);
+}
+async function* appIconRoute(context) {
+  const { request, json } = context;
+  if (request.method.toUpperCase() !== "GET")
+    return yield* json(405, {});
+  const id = new URLSearchParams(request.path.split("?")[1] ?? "").get("app");
+  if (!isAppID(id))
+    return yield* json(400, { message: "Name the app by its id: kuvo/work/apps/icon?app=<id>." });
+  const file = appIcon(id);
+  let bytes = null;
+  try {
+    bytes = file ? fs172.readFileSync(file) : null;
+  } catch {}
+  if (!bytes)
+    return yield* json(404, { message: "There's no icon for that app here." });
+  yield { head: { status: 200, headers: { "content-type": "image/png", "content-length": String(bytes.length) } } };
+  yield { body: bytes };
+}
 
 // box/src/link/mac/keeper-runs.ts
-import fs172 from "node:fs";
+import fs173 from "node:fs";
 import path181 from "node:path";
 var boxAnswers = (route) => route === "kuvo/engine/restart" && keeperRuns2();
 function keeperRuns2() {
   let pid = 0;
   try {
-    pid = Number(JSON.parse(fs172.readFileSync(path181.join(RUN, "keeper.json"), "utf8"))?.pid);
+    pid = Number(JSON.parse(fs173.readFileSync(path181.join(RUN, "keeper.json"), "utf8"))?.pid);
   } catch {
     return false;
   }
@@ -56600,12 +56887,26 @@ var SECTIONS = [
     icon: "globe",
     line: "The browser's search engine, and offering to save sign-ins.",
     keywords: ["search engine", "google", "duckduckgo", "sign-ins", "passwords", "tabs", "never offered"]
-  }
+  },
+  {
+    id: "git",
+    title: "Git",
+    group: "System",
+    icon: "branch",
+    line: "How sessions' branches are named, and commit messages and pull requests are written.",
+    keywords: ["branch prefix", "worktree", "commit", "pull request", "instructions"]
+  },
+  { id: "worktrees", title: "Worktrees", group: "System", icon: "folder", line: "Where new projects and worktrees go, and sessions’ own copies of a project.", keywords: ["projects", "folders", "branches", "remove"] },
+  { id: "storage", title: "Storage", group: "System", icon: "drive", line: "Copies of what agents made, and how much older versions keep.", keywords: ["copies", "older versions", "budget", "disk", "clear"] },
+  { id: "archived", title: "Archived Sessions", group: "System", icon: "archive", line: "Sessions out of the sidebar, still searchable; bring them back or delete them.", keywords: ["archive", "unarchive", "delete", "sessions"] }
 ];
 function revised(row) {
   const can = (value) => value === undefined ? undefined : value === true;
-  const action = (each) => each && { id: each.id, can: can(each.can), opens: each.opens };
+  const action = (each) => each && { id: each.id, can: can(each.can), opens: each.opens, confirm: each.confirm };
   const governs = {
+    confirmBelow: row.confirmBelow?.value,
+    min: row.min,
+    max: row.max,
     kind: row.kind,
     value: row.kind === "secret" ? undefined : row.value,
     can: can(row.can),
@@ -56897,6 +57198,225 @@ async function browserAct(context, at, action) {
   offerAgain(at.id.slice(6));
   return null;
 }
+var GIT_ROWS = [
+  { id: "branch-prefix", key: "branchPrefix", group: "Branches", groupId: "branches", title: "Branch prefix", line: "How a session’s own branch in a worktree starts.", placeholder: "None" },
+  { id: "commit-instructions", key: "commitInstructions", group: "Commit Messages", groupId: "commit-messages", title: "Instructions", line: "Added when Suggest a Message in Changes asks the model for one.", placeholder: "For example: Start with the area changed, like “ui: …”, and never mention tickets." },
+  { id: "pull-request-instructions", key: "pullRequestInstructions", group: "Pull Requests", groupId: "pull-requests", title: "Instructions", line: "Added when Create Pull Request writes the title and description.", placeholder: "For example: Add a Testing section, and link the issue if the branch names one." }
+];
+async function gitPage(context) {
+  const read = await asked8(context, settingsRoute, "GET", "kuvo/config");
+  if (read.status !== 200)
+    return { id: "git", title: "Git", groups: [], notes: [{ words: said8(read, "This computer's settings couldn't be read."), tone: "warning" }] };
+  return { id: "git", title: "Git", groups: GIT_ROWS.map((each) => {
+    const value = read.value[GIT_SETTINGS[each.key][0]];
+    return { id: each.groupId, title: each.group, ...each.key === "branchPrefix" ? {} : { note: each.line }, rows: [row({
+      id: each.id,
+      title: each.title,
+      ...each.key === "branchPrefix" ? { line: each.line } : { lines: { min: 3, max: 8 } },
+      placeholder: each.placeholder,
+      kind: "text",
+      value: typeof value === "string" ? each.key === "branchPrefix" ? cleanBranchPrefix(value) : value.trim() : each.key === "branchPrefix" ? DEFAULT_BRANCH_PREFIX : "",
+      can: typeof value === "string" || value === undefined ? true : { why: "This value is set in the settings file as something other than text. Change it there." }
+    })] };
+  }) };
+}
+async function gitChange(context, at, value) {
+  const each = GIT_ROWS.find((each) => each.id === at.id);
+  if (!each)
+    return { status: 400, message: "That isn't something to change." };
+  const path = [...GIT_SETTINGS[each.key]];
+  const read = await asked8(context, settingsRoute, "GET", "kuvo/config");
+  if (read.status !== 200)
+    return refusal4(read);
+  const was = read.value[path[0]] ?? null;
+  value = each.key === "branchPrefix" ? cleanBranchPrefix(String(value)) : String(value).trim();
+  const written = await asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path, value, was }] });
+  if (written.status === 409 && written.value.message === CHANGED_SINCE)
+    return STALE;
+  return refusal4(written);
+}
+var workAnswer = (context) => workAsksRoute(context, context.route.match(WORK_ASKS_ROUTE));
+var unreadPage = (id, title, answer) => ({ id, title, groups: [], notes: [{ words: said8(answer, "This computer's settings couldn't be read."), tone: "warning" }] });
+var staleOrRefusal = (answer) => answer.status === 409 && answer.value.message === CHANGED_SINCE ? STALE : refusal4(answer);
+async function worktreesPage(context) {
+  const config = await asked8(context, settingsRoute, "GET", "kuvo/config");
+  if (config.status !== 200)
+    return unreadPage("worktrees", "Worktrees", config);
+  const work = await asked8(context, workAnswer, "GET", "kuvo/work/settings");
+  if (work.status !== 200)
+    return unreadPage("worktrees", "Worktrees", work);
+  for (const file of [WORK_SETTINGS_FILE, WORKTREES_FILE, PROJECTS_FILE]) {
+    const checked = readSettings(file);
+    if (checked.problem)
+      return unreadPage("worktrees", "Worktrees", { status: 409, value: { message: checked.problem } });
+  }
+  const chosen = config.value.worktree?.directory;
+  const where = await asked8(context, worktreesRoute, "GET", `kuvo/worktrees/where${typeof chosen === "string" ? `?directory=${encodeURIComponent(chosen)}` : ""}`);
+  if (where.status !== 200)
+    return unreadPage("worktrees", "Worktrees", where);
+  const listed = await asked8(context, worktreesRoute, "GET", "kuvo/worktrees");
+  if (listed.status !== 200)
+    return unreadPage("worktrees", "Worktrees", listed);
+  let engineRuns = false;
+  try {
+    engineRuns = Boolean(context.readEngine()?.port);
+  } catch {}
+  const projects = where.value.projects ?? [];
+  const commonPlace = projects.length > 0 && projects.every((each) => each.folder === projects[0].folder);
+  const shownPlaces = commonPlace ? [projects.find((each) => each.inside && !each.ignored) ?? projects[0]] : projects.slice(0, 5);
+  const places = projects.length ? shownPlaces.map((each) => row({
+    id: `place-${each.project}`,
+    title: commonPlace ? "New worktrees go in" : each.name,
+    kind: "status",
+    value: each.folder ?? "Known once the engine runs",
+    ...each.exists === false && each.canMake === false ? { line: "Kuvo Code can’t create this folder. Choose another one.", tone: "warning" } : each.inside && !each.ignored ? { line: `It’s inside ${commonPlace ? each.name + "’s" : "this project’s"} repository, so git would list each worktree as new files there. Choose a folder outside it.`, tone: "warning" } : {}
+  })) : [row({ id: "worktrees-place", title: "New worktrees go in", kind: "status", value: chosen || where.value.default })];
+  if (!commonPlace && projects.length > 5)
+    places.push(row({ id: "more-worktree-projects", title: `And ${projects.length - 5} more ${projects.length - 5 === 1 ? "project" : "projects"}`, kind: "status" }));
+  return { id: "worktrees", title: "Worktrees", groups: [
+    { id: "new-projects", title: "New Projects", note: "Where projects your bots make go. A bot asks you before it makes one, and Kuvo Code never deletes them.", rows: [row({ id: "projects-folder", title: "Folder", kind: "folder", value: work.value.projectsFolder ?? "", placeholder: "None", folder: { choose: "Choose a Folder…", clear: "None", prompt: "Choose", message: "Choose where new projects go. Each one is a folder in it." }, can: true })] },
+    { id: "new-worktrees", title: "New Worktrees", rows: [row({ id: "worktrees-folder", title: "Folder", kind: "folder", value: typeof chosen === "string" ? chosen : "", placeholder: "Kuvo Code’s Folder", folder: { choose: "Choose a Folder…", clear: "Kuvo Code’s Folder", prompt: "Choose", message: "Choose where new worktrees go. Each one is a folder in it." }, can: (config.value.worktree === undefined || isObject(config.value.worktree)) && (chosen === undefined || typeof chosen === "string") ? true : { why: "This folder is set in the settings file as something other than text. Change it there." } }), ...places] },
+    { id: "session-worktrees", title: "Worktrees", note: "Removing one deletes its folder and anything in it that isn’t committed. Its branch stays if it isn’t merged yet.", rows: [row({ id: "worktrees", title: "Worktrees", kind: "list", empty: "None yet. Choose Worktree in a new session’s composer to give it one.", items: listed.value.worktrees.map((tree) => item({
+      id: `tree-${tree.path}`,
+      title: tree.branch,
+      line: `${tree.projectName} · ${tree.sessions} ${tree.sessions === 1 ? "session" : "sessions"}`,
+      kind: "actions",
+      value: { record: readWorktrees().find((record) => record.root === tree.path), uncommitted: tree.uncommitted, ahead: tree.ahead },
+      actions: [{ id: "remove", title: "Remove…", style: "destructive", can: tree.working ? { why: `An agent is still working in the worktree of ${tree.branch}, so it stays. Stop it first, then remove the worktree.` } : engineRuns ? true : { why: `The engine isn't running, so the worktree of ${tree.branch} stays. Try again once it's started.` }, confirm: { title: `Remove the worktree for ${tree.branch}?`, body: worktreeRemovalWords(tree), button: "Remove" } }]
+    })) })] }
+  ] };
+}
+function worktreeRemovalWords(tree) {
+  const note = tree.uncommitted === true ? "Its folder is deleted, with changes in it that aren’t committed." : tree.uncommitted === false ? "Its folder is deleted. Git sees nothing in it that isn’t committed." : "Its folder and anything in it that isn’t committed are deleted.";
+  return note + (tree.ahead && tree.ahead > 0 ? ` ${tree.branch} keeps its ${tree.ahead} ${tree.ahead === 1 ? "commit" : "commits"} not merged yet.` : "") + " Its sessions stay, without a folder to run in.";
+}
+async function worktreesChange(context, at, value) {
+  const typed = String(value).trim();
+  if (at.id === "projects-folder")
+    return staleOrRefusal(await asked8(context, workAnswer, "PATCH", "kuvo/work/settings", { projectsFolder: typed || null, was: { projectsFolder: at.value || null } }));
+  if (at.id !== "worktrees-folder")
+    return { status: 400, message: "That isn't something to change." };
+  const config = await asked8(context, settingsRoute, "GET", "kuvo/config");
+  if (config.status !== 200)
+    return refusal4(config);
+  if ((config.value.worktree?.directory ?? "") !== at.value)
+    return STALE;
+  const folder = typed ? typed.replace(/^~(?=$|\/)/, homeFolder()) : null;
+  if (folder && !path182.isAbsolute(folder))
+    return { status: 400, message: "Give a full path to the folder." };
+  return staleOrRefusal(await asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["worktree", "directory"], value: folder ? path182.resolve(folder) : null, was: config.value.worktree?.directory ?? null }] }));
+}
+async function worktreesAct(context, at, action) {
+  if (action.id !== "remove" || !at.id.startsWith("tree-"))
+    return noActions();
+  return staleOrRefusal(await asked8(context, worktreesRoute, "POST", "kuvo/worktrees/remove", { path: at.id.slice(5), was: at.value }));
+}
+var fileSize = (bytes) => {
+  const units = ["bytes", "KB", "MB", "GB", "TB"];
+  const scale = bytes > 0 ? Math.min(4, Math.floor(Math.log10(bytes) / 3)) : 0;
+  return `${new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(bytes / 1000 ** scale)} ${units[scale]}`;
+};
+async function storagePage(context) {
+  const read = await asked8(context, artifactsRoute, "GET", "kuvo/artifacts/storage");
+  if (read.status !== 200)
+    return unreadPage("storage", "Storage", read);
+  const kept = read.value;
+  return { id: "storage", title: "Storage", groups: [{ id: "agents-made", title: "What Agents Made", rows: [
+    row({ id: "copies", title: "Copies of what agents made", line: "Each version of the files agents write or change, so you can see what changed and put one back. Never what looks like a secret, and only the changes for code git keeps.", kind: "status", value: kept.copies, unit: "bytes" }),
+    row({
+      id: "older-budget",
+      title: "Older versions keep up to",
+      line: "Past it, the oldest go first. The newest version of each file, memory, skills and what’s kept always stay.",
+      kind: "number",
+      value: kept.budget,
+      unit: "bytes",
+      min: 0,
+      can: true,
+      suggestions: [256, 512, 1024, 2048, 5120, 10240].map((mb) => ({ value: mb * 1024 ** 2, title: fileSize(mb * 1024 ** 2) })),
+      confirmBelow: { value: kept.older, confirm: { title: "Keep less of older versions?", body: `Older versions take ${fileSize(kept.older)} now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.`, button: "Keep up to" } }
+    }),
+    row({
+      id: "older-copies",
+      title: "Older versions",
+      line: kept.older === 0 ? "None kept." : `${fileSize(kept.older)} now.`,
+      kind: "actions",
+      value: kept.older,
+      actions: [{ id: "clear", title: "Clear…", style: "destructive", can: kept.older > 0 ? true : { why: "None kept." }, confirm: { title: "Clear older versions?", body: "Their copies go; each stays listed, without one. The newest version of each file, memory, skills and what’s kept stay.", button: "Clear" } }]
+    })
+  ] }], ...kept.low ? { notes: [{ words: `The disk is nearly full, so only the newest version of each file keeps a copy until ${fileSize(kept.floor)} is free again.`, tone: "warning" }] } : {} };
+}
+async function storageChange(context, at, value) {
+  if (at.id !== "older-budget")
+    return { status: 400, message: "That isn't something to change." };
+  return staleOrRefusal(await asked8(context, artifactsRoute, "POST", "kuvo/artifacts/storage", { budget: Math.floor(Number(value)), was: at.value }));
+}
+async function storageAct(context, at, action) {
+  if (at.id !== "older-copies" || action.id !== "clear")
+    return noActions();
+  return staleOrRefusal(await asked8(context, artifactsRoute, "POST", "kuvo/artifacts/storage/clear", { was: at.value }));
+}
+var sessionsAnswer = (context) => listRoute(context, context.route.match(LIST_ROUTE));
+var sessionAnswer = (context) => sessionActionRoute(context, context.route.match(SESSION_ACTION_ROUTE));
+async function archivedPage(context) {
+  const read = await asked8(context, sessionsAnswer, "GET", "kuvo/sessions/list");
+  if (read.status !== 200)
+    return unreadPage("archived", "Archived Sessions", read);
+  if (read.value.pending?.length)
+    return unreadPage("archived", "Archived Sessions", { status: 503, value: { message: "Some sessions can't be read right now. Try again in a moment." } });
+  const archived = Object.entries(read.value.sessions).filter(([, facts]) => facts.archived && ["project", "chat", "bot"].includes(facts.kind) && !facts.away).sort((a, b) => b[1].updated - a[1].updated);
+  const groups = new Map;
+  const chats = new Set;
+  let held;
+  const states = [];
+  for (const [id, facts] of archived) {
+    const menu = await asked8(context, sessionAnswer, "GET", `kuvo/sessions/${encodeURIComponent(id)}/actions`);
+    if (menu.status !== 200)
+      return unreadPage("archived", "Archived Sessions", menu);
+    held ??= menu.value.held;
+    const was = { updated: facts.updated, archived: true, confirm: menu.value.actions.find((each) => each.id === "delete")?.confirm };
+    states.push({ id, was });
+    const actions = menu.value.actions.map((each) => ({
+      id: each.id,
+      title: each.label,
+      ...each.destructive ? { style: "destructive" } : {},
+      ...each.confirm ? { confirm: { title: each.confirm.title, body: each.confirm.message, button: each.confirm.label } } : {},
+      ...menu.value.held ? { can: { why: menu.value.held } } : {}
+    }));
+    const project = facts.project ?? facts.directory;
+    if (facts.kind === "chat")
+      chats.add(project);
+    const rows = groups.get(project) ?? [];
+    rows.push(item({ id: `session-${id}`, title: facts.title || "New Session", line: new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: zoneHere(readZoneSetting()).zone }).format(new Date(facts.updated)), kind: "actions", value: was, actions }));
+    groups.set(project, rows);
+  }
+  const all = states.length ? await asked8(context, deletesRoute, "POST", "kuvo/sessions/deletes", { sessions: states.map((each) => each.id) }) : null;
+  if (all && all.status !== 200)
+    return unreadPage("archived", "Archived Sessions", all);
+  const projects = readProjects();
+  const projectTitle = (project) => chats.has(project) ? "Chats" : read.value.projects[project]?.name ?? projects.find((each) => each.directory === project)?.name ?? path182.basename(project);
+  return { id: "archived", title: "Archived Sessions", groups: [
+    { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "None yet. Right-click a session in the sidebar and choose Archive to put it away." }, ...all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {} }] })] },
+    ...[...groups].map(([project, items]) => ({ id: `project-${project}`, title: projectTitle(project), rows: [row({ id: `archived-${project}`, title: projectTitle(project), kind: "list", items, search: { placeholder: "Search archived sessions", empty: "No archived session matches “{query}”." } })] }))
+  ], ...states.length ? {} : { notes: [{ words: "None yet. Right-click a session in the sidebar and choose Archive to put it away.", tone: "quiet" }] } };
+}
+async function archivedAct(context, at, action) {
+  if (at.id === "delete-all" && action.id === "delete-all") {
+    for (const each of at.value) {
+      const done = staleOrRefusal(await asked8(context, sessionAnswer, "DELETE", `kuvo/sessions/${encodeURIComponent(each.id)}`, { was: each.was }));
+      if (done)
+        return done;
+    }
+    return null;
+  }
+  if (!at.id.startsWith("session-"))
+    return noActions();
+  const id = encodeURIComponent(at.id.slice(8));
+  if (action.id === "delete")
+    return staleOrRefusal(await asked8(context, sessionAnswer, "DELETE", `kuvo/sessions/${id}`, { was: at.value }));
+  if (action.id === "unarchive")
+    return staleOrRefusal(await asked8(context, sessionAnswer, "POST", `kuvo/sessions/${id}/archive`, { archived: false, was: at.value }));
+  return noActions();
+}
 var zoneTitle = (zone) => zone.replaceAll("_", " ").split("/").join(" › ");
 function zoneNames() {
   let names = [];
@@ -56957,18 +57477,18 @@ async function generalChange(_context, at, value) {
     return { status: 503, message: "Your time zone couldn't be changed here just now: try again in a moment." };
   }
 }
-async function generalAct() {
+async function noActions() {
   return { status: 404, message: "That isn't something it does." };
 }
 var mtime2 = (file) => {
   try {
-    return fs173.statSync(file).mtimeMs;
+    return fs174.statSync(file).mtimeMs;
   } catch {
     return 0;
   }
 };
 var PAGES2 = {
-  general: { read: generalPage, change: generalChange, act: generalAct, look: () => `${mtime2(ZONE_FILE)} ${ownClock()}` },
+  general: { read: generalPage, change: generalChange, act: noActions, look: () => `${mtime2(ZONE_FILE)} ${ownClock()}` },
   permissions: {
     read: permissionsPage,
     change: permissionsChange,
@@ -56982,7 +57502,11 @@ var PAGES2 = {
       return `${mtime2(APPROVAL_FILE)} ${mtime2(CONFIG_FILE)} ${mtime2(ALLOWED_FILE)} ${fence}`;
     }
   },
-  browser: { read: browserPage, change: browserChange, act: browserAct, look: () => browserSettingsFiles().map(mtime2).join(" ") }
+  browser: { read: browserPage, change: browserChange, act: browserAct, look: () => browserSettingsFiles().map(mtime2).join(" ") },
+  git: { read: gitPage, change: gitChange, act: noActions, look: () => `${mtime2(CONFIG_FILE)}` },
+  worktrees: { read: worktreesPage, change: worktreesChange, act: worktreesAct, look: () => String(Math.floor(Date.now() / 1000)) },
+  storage: { read: storagePage, change: storageChange, act: storageAct, look: () => String(Math.floor(Date.now() / 1000)) },
+  archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) }
 };
 var followers2 = new Set;
 var changed5 = () => {
@@ -56990,6 +57514,12 @@ var changed5 = () => {
     told();
 };
 function fits4(at, value) {
+  if (at.kind === "number")
+    return typeof value === "number" && Number.isFinite(value) && (at.min === undefined || value >= at.min) && (at.max === undefined || value <= at.max);
+  if (at.kind === "folder")
+    return typeof value === "string";
+  if (at.kind === "text")
+    return typeof value === "string";
   if (at.kind === "switch")
     return typeof value === "boolean";
   if (at.kind === "choice")
@@ -57084,7 +57614,7 @@ async function* settingsPageRoute(context, match) {
       if (why)
         return { status: 403, value: { message: why } };
       if (!("value" in given) || !fits4(at, given.value))
-        return { status: 400, value: { message: at.kind === "choice" ? "Pick one of its choices." : "Send true or false." } };
+        return { status: 400, value: { message: at.kind === "choice" ? "Pick one of its choices." : at.kind === "text" || at.kind === "folder" ? "Send text." : at.kind === "number" ? "Send a number within its limits." : "Send true or false." } };
       done = await section.change(context, at, given.value);
     }
     if (done?.stale)
@@ -57155,235 +57685,26 @@ async function* movePlacesRoute(context) {
   return yield* json(200, places);
 }
 
-// box/src/link/areas/work.ts
-import fs174 from "node:fs";
-var WORK_ROUTE = /^kuvo\/(?:work(?:\/events|\/oversight(?:\/events)?|\/background(?:\/events)?)?|bots\/([^/]+)\/stop-all)$/;
-var WORK_ASKS_ROUTE = /^kuvo\/work\/(?:settings|unanswering|asks(?:\/([^/]+))?)$/;
-var GOALS_ROUTE = /^kuvo\/work\/goals(?:\/([^/]+))?$/;
-var APP_ICON_ROUTE = "kuvo/work/apps/icon";
-async function botWork(bot, context) {
-  const { readEngine, bridge, signal } = context;
-  const targets = targetsOf({ readEngine, bridge });
-  const work = ofBot(bot, await workSessions(targets, signal ?? undefined));
-  const working = await atWorkNow(targets, signal ?? undefined);
-  const sessions = [];
-  const shown = work.slice(0, 60);
-  const asked = workAccounts(shown.map((each) => ({ id: each.data.id, target: each.target, provider: each.data.model?.providerID })), signal ?? undefined);
-  for (let at = 0;at < shown.length; at += 8) {
-    sessions.push(...await Promise.all(shown.slice(at, at + 8).map((each) => describeWork(each, working, { replies: true, signal: signal ?? undefined }))));
-  }
-  const answered = work.flatMap((each) => answersOn(each.data.metadata).map((answer) => ({ ...answer, session: each.data.id }))).sort((a, b) => b.at - a.at).slice(0, 100);
-  const accounts = await asked;
-  const midnight = startOfDay(Date.now());
-  const today = work.filter((each) => (each.data.time?.created ?? 0) >= midnight);
-  const cost = today.reduce((sum, each) => sum + (typeof each.data.cost === "number" ? each.data.cost : 0), 0);
-  return {
-    bot,
-    sessions: sessions.map(({ askID: _, replyBeforeStop, lastReply, ...described }) => {
-      const account = accounts.get(described.session);
-      const shown = !replyBeforeStop && lastReply ? { ...described, lastReply } : described;
-      return account ? { ...shown, account } : shown;
-    }),
-    answered,
-    today: {
-      started: today.length,
-      working: sessions.filter((each) => each.state === "working" || each.state === "asking").length,
-      tokens: today.reduce((sum, each) => sum + (each.data.tokens?.input ?? 0) + (each.data.tokens?.output ?? 0) + (each.data.tokens?.reasoning ?? 0), 0),
-      ...cost > 0 ? { cost } : {}
-    },
-    limits: botLimits(bot),
-    asks: workAsks().filter((ask) => ask.bot === bot),
-    projects: readProjects().filter((project) => !project.removed && project.madeBy?.bot === bot)
-  };
-}
-async function* workRoute(context, match) {
-  const { request, readEngine, bridge, signal, json } = context;
-  const method = request.method.toUpperCase();
-  const route = request.path.split("?")[0];
-  if (route === "kuvo/work/events") {
-    if (method !== "GET")
-      return yield* json(405, {});
-    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followed(() => ({ changed: readWorkChanges() }), workFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
-  }
-  if (route === "kuvo/work/background" || route === "kuvo/work/background/events") {
-    if (method !== "GET")
-      return yield* json(405, {});
-    if (route === "kuvo/work/background")
-      return yield* json(200, { sessions: readBackground() });
-    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followed(() => ({ sessions: readBackground() }), backgroundFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
-  }
-  if (route === "kuvo/work/oversight" || route === "kuvo/work/oversight/events") {
-    if (method !== "GET")
-      return yield* json(405, {});
-    if (route === "kuvo/work/oversight")
-      return yield* json(200, { marks: readOversight() });
-    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followed(() => ({ marks: readOversight() }), oversightFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
-  }
-  if (route === "kuvo/work") {
-    if (method !== "GET")
-      return yield* json(405, {});
-    const bot = new URLSearchParams(request.path.split("?")[1] ?? "").get("bot") ?? "";
-    if (!bot)
-      return yield* json(400, { message: "Name the bot: kuvo/work?bot=<id>." });
-    if (!botHere(bot))
-      return yield* json(404, { message: "There's no such bot here." });
-    try {
-      readEngine();
-    } catch {
-      return yield* json(503, { message: "The engine isn't running." });
-    }
-    return yield* json(200, await botWork(bot, context));
-  }
-  if (method !== "POST")
-    return yield* json(405, {});
-  const bot = decodeURIComponent(match[1] ?? "");
-  if (!botHere(bot))
-    return yield* json(404, { message: "There's no such bot here." });
-  const targets = targetsOf({ readEngine, bridge });
-  if (!targets.length)
-    return yield* json(503, { message: "The engine isn't running." });
-  const stopped = await stopBotWork(bot, targets, signal ?? undefined);
-  return yield* json(200, { stopped });
-}
-async function* workAsksRoute(context, match) {
-  const { request, readEngine, bridge, signal, json } = context;
-  const method = request.method.toUpperCase();
-  const route = request.path.split("?")[0];
-  if (route === "kuvo/work/unanswering") {
-    if (method !== "GET")
-      return yield* json(405, {});
-    const held = unansweringNow();
-    const listed = held.some((each) => each.paid || each.free) ? await Promise.resolve().then(() => call(readEngine(), "GET", "/api/model", undefined, signal)).catch(() => null) : null;
-    return yield* json(200, unansweringList(held, Array.isArray(listed) ? listed : null));
-  }
-  if (route === "kuvo/work/settings") {
-    const awake = () => keepsMacAwakeItself() ? { now: awakeForWork() } : undefined;
-    if (method === "GET")
-      return yield* json(200, workSettings(undefined, awake()));
-    if (method !== "PATCH")
-      return yield* json(405, {});
-    const given = parsed(request.body);
-    const keepsAwake = keepsMacAwakeItself() && isObject(given) && "keepsAwake" in given;
-    if (!isObject(given) || !("projectsFolder" in given) && !keepsAwake) {
-      return yield* json(400, { message: keepsMacAwakeItself() ? "Send {projectsFolder}: a full path, or null; or {keepsAwake}: true or false." : "Send {projectsFolder}: a full path, or null." });
-    }
-    if (keepsAwake && typeof given.keepsAwake !== "boolean")
-      return yield* json(400, { message: KEEPS_AWAKE_REFUSED });
-    if ("projectsFolder" in given && given.projectsFolder !== null) {
-      const checked = folderGiven(given.projectsFolder);
-      if ("refused" in checked)
-        return yield* json(400, { message: checked.refused });
-    }
-    if (keepsAwake)
-      setKeepsAwake(given.keepsAwake);
-    if ("projectsFolder" in given) {
-      const set = setProjectsFolder(given.projectsFolder);
-      if ("refused" in set)
-        return yield* json(400, { message: set.refused });
-    }
-    return yield* json(200, workSettings(undefined, awake()));
-  }
-  if (route === "kuvo/work/asks" || match[1] === "events") {
-    if (method !== "GET")
-      return yield* json(405, {});
-    if (route === "kuvo/work/asks")
-      return yield* json(200, { asks: workAsks() });
-    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followed(() => ({ asks: workAsks() }), askFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
-  }
-  if (method !== "POST")
-    return yield* json(405, {});
-  const given = parsed(request.body);
-  const outcome = await answerWork(decodeURIComponent(match[1] ?? ""), isObject(given) ? given : {}, () => targetsOf({ readEngine, bridge }));
-  if ("refused" in outcome)
-    return yield* json(outcome.refused.status, { message: outcome.refused.message });
-  return yield* json(200, { answer: outcome.answered.answer, text: outcome.answered.text, isError: outcome.answered.isError });
-}
-async function* newProjectRoute(context) {
-  const { request, json } = context;
-  if (request.method.toUpperCase() !== "POST")
-    return yield* json(405, {});
-  const given = parsed(request.body);
-  if (!isObject(given))
-    return yield* json(400, { message: "Send {name}, and git or clone." });
-  const outcome = await makeProject(given, null);
-  if ("refused" in outcome) {
-    const { status, ...refusal } = outcome.refused;
-    return yield* json(status, refusal);
-  }
-  return yield* json(201, { project: outcome.made.project, text: madeWords(outcome.made, HERE) });
-}
-async function* goalsRoute(context, match) {
-  const { request, readEngine, bridge, signal, json } = context;
-  const method = request.method.toUpperCase();
-  if (!match[1] || match[1] === "events") {
-    if (method !== "GET")
-      return yield* json(405, {});
-    if (!match[1])
-      return yield* json(200, { goals: goalPlans() });
-    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followed(() => ({ goals: goalPlans() }), goalFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
-  }
-  if (method !== "POST")
-    return yield* json(405, {});
-  const given = parsed(request.body);
-  const targets = () => targetsOf({ readEngine, bridge });
-  if (match[1] === "ask") {
-    if (!isObject(given) || typeof given.session !== "string" || !botOfConversation(given.session))
-      return yield* json(400, { message: "Send {session, goal}: a bot's conversation, and the goal in your words." });
-    const outcome = await askGoal(given.session, typeof given.goal === "string" ? given.goal : "", targets);
-    if ("refused" in outcome)
-      return yield* json(outcome.refused.status, { message: outcome.refused.message });
-    return yield* json(200, outcome);
-  }
-  const outcome = await answerGoal(decodeURIComponent(match[1]), isObject(given) ? given : {}, targets);
-  if ("refused" in outcome) {
-    const { status, ...refusal } = outcome.refused;
-    return yield* json(status, refusal);
-  }
-  return yield* json(200, outcome);
-}
-async function* appIconRoute(context) {
-  const { request, json } = context;
-  if (request.method.toUpperCase() !== "GET")
-    return yield* json(405, {});
-  const id = new URLSearchParams(request.path.split("?")[1] ?? "").get("app");
-  if (!isAppID(id))
-    return yield* json(400, { message: "Name the app by its id: kuvo/work/apps/icon?app=<id>." });
-  const file = appIcon(id);
-  let bytes = null;
-  try {
-    bytes = file ? fs174.readFileSync(file) : null;
-  } catch {}
-  if (!bytes)
-    return yield* json(404, { message: "There's no icon for that app here." });
-  yield { head: { status: 200, headers: { "content-type": "image/png", "content-length": String(bytes.length) } } };
-  yield { body: bytes };
-}
-
 // box/src/link/permissions.ts
 import { spawnSync as spawnSync13 } from "node:child_process";
 import fs178 from "node:fs";
-import path185 from "node:path";
+import path186 from "node:path";
 
 // box/src/link/helper.ts
 import { spawnSync as spawnSync12 } from "node:child_process";
 import fs177 from "node:fs";
-import path184 from "node:path";
+import path185 from "node:path";
 
 // box/src/link/uninstall.ts
 import { spawnSync as spawnSync11 } from "node:child_process";
 import fs176 from "node:fs";
-import path183 from "node:path";
+import path184 from "node:path";
 
 // box/src/link/serve-kept.ts
 import fs175 from "node:fs";
-import path182 from "node:path";
-var SERVE_NEEDED = () => path182.join(RUN, "serve.needed");
-var SERVE_FILE = () => path182.join(RUN, "serve.json");
+import path183 from "node:path";
+var SERVE_NEEDED = () => path183.join(RUN, "serve.needed");
+var SERVE_FILE = () => path183.join(RUN, "serve.json");
 var SERVE_ROLE = /kuvo-link\.js serve(\s|$)/;
 var KEPT_ROLE = /kuvo-link\.js serve --kept(\s|$)/;
 function runningServe() {
@@ -57429,13 +57750,13 @@ async function* serveRoute({ request, json }) {
 var LAUNCH_AGENT = "run.kuvo.code.machine";
 var REBOOT_TAG = "# kuvo-code: starts its engine again after a restart";
 function launchTools() {
-  if (REAL_BOX && located(K) === located(path183.join(accountHome(), ".kuvo-code"))) {
-    return { launchctl: "/bin/launchctl", crontab: "crontab", open: "/usr/bin/open", agents: path183.join(accountHome(), "Library", "LaunchAgents") };
+  if (REAL_BOX && located(K) === located(path184.join(accountHome(), ".kuvo-code"))) {
+    return { launchctl: "/bin/launchctl", crontab: "crontab", open: "/usr/bin/open", agents: path184.join(accountHome(), "Library", "LaunchAgents") };
   }
   const tools = IN_TEST_FOLDER ? process.env.KUVO_TEST_UNINSTALL_TOOLS : undefined;
-  if (!tools || !path183.isAbsolute(tools))
+  if (!tools || !path184.isAbsolute(tools))
     return null;
-  return { launchctl: path183.join(tools, "launchctl"), crontab: path183.join(tools, "crontab"), open: path183.join(tools, "open"), agents: path183.join(homeFolder(), "Library", "LaunchAgents") };
+  return { launchctl: path184.join(tools, "launchctl"), crontab: path184.join(tools, "crontab"), open: path184.join(tools, "open"), agents: path184.join(homeFolder(), "Library", "LaunchAgents") };
 }
 var run5 = (program, args, input) => spawnSync11(program, args, { input, encoding: "utf8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
 function crontab(tools) {
@@ -57452,7 +57773,7 @@ function starts() {
     return { launchAgent: false, crontab: false, checked: false };
   const table = crontab(tools);
   return {
-    launchAgent: process.platform === "darwin" && fs176.existsSync(path183.join(tools.agents, `${LAUNCH_AGENT}.plist`)),
+    launchAgent: process.platform === "darwin" && fs176.existsSync(path184.join(tools.agents, `${LAUNCH_AGENT}.plist`)),
     crontab: table !== null && table.includes(REBOOT_TAG),
     checked: true
   };
@@ -57460,7 +57781,7 @@ function starts() {
 var escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 var RECORDS = [
   ["box.pid", /kuvo-start(-keeper)? keep(\s|$)/, "keeper"],
-  ["engine.json", new RegExp(`${escaped(path183.join(K, "engine"))}/`), "engine"],
+  ["engine.json", new RegExp(`${escaped(path184.join(K, "engine"))}/`), "engine"],
   ["agents.pid", /kuvo-agents/, "coding agents"],
   ["link.pid", /kuvo-link\.js run(\s|$)/, "link"],
   ["serve.json", SERVE_ROLE, "server"],
@@ -57469,7 +57790,7 @@ var RECORDS = [
 function recorded(file, role) {
   let text = "";
   try {
-    text = fs176.readFileSync(path183.join(RUN, file), "utf8");
+    text = fs176.readFileSync(path184.join(RUN, file), "utf8");
   } catch {
     return null;
   }
@@ -57484,7 +57805,7 @@ function running4() {
   return RECORDS.filter(([file, role]) => recorded(file, role) !== null).map(([, , what]) => what);
 }
 function ownKeeper() {
-  const keeper = path183.join(K, "bin", "kuvo-start");
+  const keeper = path184.join(K, "bin", "kuvo-start");
   let text = "";
   try {
     text = fs176.readFileSync(keeper, "utf8");
@@ -57492,7 +57813,7 @@ function ownKeeper() {
     return null;
   }
   const named = text.match(/^K="\$HOME\/([^"/]+)"/m)?.[1];
-  return named === path183.basename(K) ? keeper : null;
+  return named === path184.basename(K) ? keeper : null;
 }
 function uninstallCheck() {
   const link = readLink();
@@ -57514,7 +57835,7 @@ function uninstall() {
   let crontabLine = false;
   const startsAgain = [];
   if (tools && process.platform === "darwin") {
-    const plist = path183.join(tools.agents, `${LAUNCH_AGENT}.plist`);
+    const plist = path184.join(tools.agents, `${LAUNCH_AGENT}.plist`);
     if (fs176.existsSync(plist)) {
       const uid = process.getuid?.() ?? 0;
       run5(tools.launchctl, ["bootout", `gui/${uid}/${LAUNCH_AGENT}`]);
@@ -57542,12 +57863,12 @@ function uninstall() {
   }
   fs176.mkdirSync(RUN, { recursive: true, mode: 448 });
   for (const file of ["serve.needed", "link.needed"])
-    fs176.rmSync(path183.join(RUN, file), { force: true });
-  fs176.writeFileSync(path183.join(RUN, "off"), "");
+    fs176.rmSync(path184.join(RUN, file), { force: true });
+  fs176.writeFileSync(path184.join(RUN, "off"), "");
   const keeper = ownKeeper();
   let stopped = true;
   if (keeper) {
-    const off = spawnSync11("sh", [keeper, "off"], { cwd: K, encoding: "utf8", timeout: 120000, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: path183.dirname(K) } });
+    const off = spawnSync11("sh", [keeper, "off"], { cwd: K, encoding: "utf8", timeout: 120000, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: path184.dirname(K) } });
     stopped = off.status === 0;
   }
   const told = [];
@@ -57576,13 +57897,13 @@ function uninstallCommand(args) {
     console.error("Usage: kuvo-link.js uninstall [--check]");
     return 2;
   }
-  if (APP_FOLDER || path183.basename(path183.dirname(path183.resolve(K))).toLowerCase().startsWith("run.kuvo.code")) {
+  if (APP_FOLDER || path184.basename(path184.dirname(path184.resolve(K))).toLowerCase().startsWith("run.kuvo.code")) {
     const message = "This Mac's box runs in Kuvo Code's own folder: remove Kuvo Code itself (its background work goes with it).";
     console.log(JSON.stringify({ result: "refused", message }));
     console.error(message);
     return 1;
   }
-  if (!fs176.existsSync(path183.join(K, "bin", "kuvo-start")) && !fs176.existsSync(RUN)) {
+  if (!fs176.existsSync(path184.join(K, "bin", "kuvo-start")) && !fs176.existsSync(RUN)) {
     const message = `There's no Kuvo Code box in ${K}.`;
     console.log(JSON.stringify({ result: "refused", message }));
     console.error(message);
@@ -57601,8 +57922,8 @@ function uninstallCommand(args) {
 
 // box/src/link/helper.ts
 var HELPER_NAME = "Kuvo Helper";
-var helperBundle = () => path184.join(K, "bin", `${HELPER_NAME}.app`);
-var helperProgram = () => path184.join(helperBundle(), "Contents", "MacOS", HELPER_NAME);
+var helperBundle = () => path185.join(K, "bin", `${HELPER_NAME}.app`);
+var helperProgram = () => path185.join(helperBundle(), "Contents", "MacOS", HELPER_NAME);
 var xml = (text) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 function helperPlist(app) {
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -57632,7 +57953,7 @@ function refusal5() {
 }
 function helperStatus() {
   const tools = launchTools();
-  const plist = tools ? path184.join(tools.agents, `${LAUNCH_AGENT}.plist`) : null;
+  const plist = tools ? path185.join(tools.agents, `${LAUNCH_AGENT}.plist`) : null;
   let agent = false;
   try {
     agent = plist !== null && fs177.readFileSync(plist, "utf8").includes(`<string>${xml(helperProgram())}</string>`);
@@ -57649,7 +57970,7 @@ function installHelperAgent({ load, app }) {
   if (why)
     return { written: false, loaded: false, message: why };
   const tools = launchTools();
-  const plist = path184.join(tools.agents, `${LAUNCH_AGENT}.plist`);
+  const plist = path185.join(tools.agents, `${LAUNCH_AGENT}.plist`);
   fs177.mkdirSync(tools.agents, { recursive: true });
   const temporary = `${plist}.${process.pid}.new`;
   fs177.writeFileSync(temporary, helperPlist(app), { mode: 420 });
@@ -57702,7 +58023,7 @@ function startHelperAgent({ app, ifMissing = false }) {
     return { started: false, mac, left: true, message: `${HELPER_NAME}'s launch agent is in place: it's left as it is.` };
   const refusedBy = (what, said) => openedInstead() ?? { started: false, mac, message: `launchd didn't ${what} ${HELPER_NAME}: ${(said.stderr || "").trim().slice(0, 300) || "it said nothing"}.` };
   if (status.loaded === false) {
-    const loaded = run(["bootstrap", domain, path184.join(tools.agents, `${LAUNCH_AGENT}.plist`)]);
+    const loaded = run(["bootstrap", domain, path185.join(tools.agents, `${LAUNCH_AGENT}.plist`)]);
     if (loaded.status !== 0)
       return refusedBy("load", loaded);
   }
@@ -57769,7 +58090,7 @@ function boxPermissions() {
     return unknown;
   let noted;
   try {
-    noted = parsed(fs178.readFileSync(path185.join(K, "run", "permissions.json"), "utf8"));
+    noted = parsed(fs178.readFileSync(path186.join(K, "run", "permissions.json"), "utf8"));
   } catch {
     return unknown;
   }
@@ -57789,11 +58110,11 @@ async function* permissionsRoute({ request, json }) {
 
 // box/src/link/mac/app.ts
 import fs179 from "node:fs";
-import path186 from "node:path";
-var APP_FILE = () => path186.join(RUN, "app.json");
-var OPENING_FILE = () => path186.join(RUN, "app-opening.json");
-var FAILED_FILE = () => path186.join(RUN, "app-open-failed.json");
-var UPDATING_FILE = () => path186.join(RUN, "app-updating");
+import path187 from "node:path";
+var APP_FILE = () => path187.join(RUN, "app.json");
+var OPENING_FILE = () => path187.join(RUN, "app-opening.json");
+var FAILED_FILE = () => path187.join(RUN, "app-open-failed.json");
+var UPDATING_FILE = () => path187.join(RUN, "app-updating");
 var WAIT = 30000;
 var REST = 5 * 60000;
 var UPDATING_FOR = 2 * 60000;
@@ -57811,10 +58132,10 @@ function readJSON2(file) {
   }
 }
 function bundleOf2(given) {
-  if (typeof given !== "string" || given.length > 1024 || given.includes("\x00") || !path186.isAbsolute(given))
+  if (typeof given !== "string" || given.length > 1024 || given.includes("\x00") || !path187.isAbsolute(given))
     return null;
   const bundle = given.replace(/\/+$/, "");
-  return bundle.endsWith(".app") && path186.normalize(bundle) === bundle ? bundle : null;
+  return bundle.endsWith(".app") && path187.normalize(bundle) === bundle ? bundle : null;
 }
 function toolsOf(given) {
   if (!isObject(given) || typeof given.url !== "string" || typeof given.token !== "string")
@@ -58653,7 +58974,7 @@ function keepGroupSettings(bridge = bridgeTarget, every = (round) => {
   });
 }
 // box/src/link/places.ts
-import path187 from "node:path";
+import path188 from "node:path";
 function boxPlaces() {
   return {
     layout: APP_FOLDER ? "app" : "own",
@@ -58668,11 +58989,11 @@ function boxPlaces() {
     updates: UPDATES,
     search: SEARCH,
     apps: APPS,
-    browser: path187.join(K, "browser"),
-    trash: path187.join(K, "trash"),
-    temporary: path187.join(K, "t"),
+    browser: path188.join(K, "browser"),
+    trash: path188.join(K, "trash"),
+    temporary: path188.join(K, "t"),
     engineData: ENGINE_DATA,
-    engineConfig: ENGINE_CONFIG ?? path187.join(K, "config"),
+    engineConfig: ENGINE_CONFIG ?? path188.join(K, "config"),
     settingsFile: CONFIG_FILE,
     engineLayerFile: ENGINE_LAYER_FILE,
     defaultsPlugin: DEFAULTS_PLUGIN,
@@ -58758,9 +59079,9 @@ async function run6() {
   fs180.writeFileSync(VERSION_FILE, BRIDGE_VERSION, { mode: 384 });
   const saved = savedLoginPath(K);
   if (saved)
-    process.env.PATH = joinPath(path188.join(K, "bin"), saved);
+    process.env.PATH = joinPath(path189.join(K, "bin"), saved);
   for (const folder of ["present", "connected"])
-    fs180.rmSync(path188.join(RUN, folder), { recursive: true, force: true });
+    fs180.rmSync(path189.join(RUN, folder), { recursive: true, force: true });
   try {
     keepJobs();
   } catch {}
@@ -59255,7 +59576,7 @@ async function serve() {
     } catch {}
   try {
     if (APP_FOLDER)
-      writePrivate(path188.join(RUN, SERVED_FILE), JSON.stringify({ app: MAC_APP_VERSION, bridge: BRIDGE_VERSION, at: Date.now() }));
+      writePrivate(path189.join(RUN, SERVED_FILE), JSON.stringify({ app: MAC_APP_VERSION, bridge: BRIDGE_VERSION, at: Date.now() }));
     else
       clearKept(K);
   } catch {}
@@ -59492,7 +59813,7 @@ if (main) {
     const offered = args.includes("--offered");
     const test = option("--key") && (option("--url") || from || offered) && !REAL_BOX ? { url: option("--url"), keys: [option("--key")], blocked: null } : {};
     const step = (running) => noteUpdate({ running });
-    const outcome = offered ? await takeOffer({ step, ...test }) : from && !path188.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now: args.includes("--now"), from, step, ...test });
+    const outcome = offered ? await takeOffer({ step, ...test }) : from && !path189.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now: args.includes("--now"), from, step, ...test });
     if (outcome && !(offered && outcome.result === "busy"))
       noteUpdate({ running: null, ...outcome.result === "updated" ? {} : { last: { at: Date.now(), ...outcome } } });
     if (outcome?.result === "updated") {

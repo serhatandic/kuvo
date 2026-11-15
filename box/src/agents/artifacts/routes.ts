@@ -92,14 +92,19 @@ export async function artifactRoutes(store: ArtifactStore | undefined, method: s
   if (first === "storage") {
     if (!second && method === "POST") {
       // Your budget for older versions, in bytes (Settings › Storage).
-      const { budget } = (await body()) ?? {}
+      const given = (await body()) ?? {}
+      const { budget } = given
       if (typeof budget !== "number" || !Number.isFinite(budget) || budget < 0) return message(400, "Say the budget for older versions, in bytes (budget).")
+      // No await between comparing and writing: all bridge requests use this store's event loop.
+      if ("was" in given && given.was !== store.storage().budget) return message(409, "It changed since you read it.")
       store.setBudget(budget)
       return json(store.storage())
     }
     if (!second) return method === "GET" ? json(store.storage()) : message(405, "Read it with GET, or set its budget with POST.")
     if (second === "clear" && method === "POST") {
-      const { before } = (await body()) ?? {}
+      const given = (await body()) ?? {}
+      const { before } = given
+      if ("was" in given && given.was !== store.storage().older) return message(409, "It changed since you read it.")
       const at = typeof before === "number" ? new Date(before * 1000).toISOString() : undefined
       return json({ cleared: store.clearOlder(at), ...store.storage() })
     }

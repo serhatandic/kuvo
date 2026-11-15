@@ -13418,6 +13418,53 @@
               }
              }
             },
+            "lines?": {
+             "object": {
+              "min": "number",
+              "max": "number"
+             }
+            },
+            "folder?": {
+             "object": {
+              "choose": "string",
+              "clear": "string",
+              "prompt": "string",
+              "message": "string"
+             }
+            },
+            "search?": {
+             "object": {
+              "placeholder": "string",
+              "empty": "string"
+             }
+            },
+            "unit?": {
+             "oneOf": [
+              {
+               "literal": "bytes"
+              }
+             ]
+            },
+            "suggestions?": {
+             "list": {
+              "object": {
+               "value": "number",
+               "title": "string"
+              }
+             }
+            },
+            "confirmBelow?": {
+             "object": {
+              "value": "number",
+              "confirm": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              }
+             }
+            },
             "placeholder?": "string",
             "min?": "number",
             "max?": "number",
@@ -13595,6 +13642,53 @@
                   "id": "string",
                   "title": "string",
                   "line?": "string"
+                 }
+                }
+               },
+               "lines?": {
+                "object": {
+                 "min": "number",
+                 "max": "number"
+                }
+               },
+               "folder?": {
+                "object": {
+                 "choose": "string",
+                 "clear": "string",
+                 "prompt": "string",
+                 "message": "string"
+                }
+               },
+               "search?": {
+                "object": {
+                 "placeholder": "string",
+                 "empty": "string"
+                }
+               },
+               "unit?": {
+                "oneOf": [
+                 {
+                  "literal": "bytes"
+                 }
+                ]
+               },
+               "suggestions?": {
+                "list": {
+                 "object": {
+                  "value": "number",
+                  "title": "string"
+                 }
+                }
+               },
+               "confirmBelow?": {
+                "object": {
+                 "value": "number",
+                 "confirm": {
+                  "object": {
+                   "title": "string",
+                   "body": "string",
+                   "button": "string"
+                  }
                  }
                 }
                },
@@ -13864,6 +13958,53 @@
               }
              }
             },
+            "lines?": {
+             "object": {
+              "min": "number",
+              "max": "number"
+             }
+            },
+            "folder?": {
+             "object": {
+              "choose": "string",
+              "clear": "string",
+              "prompt": "string",
+              "message": "string"
+             }
+            },
+            "search?": {
+             "object": {
+              "placeholder": "string",
+              "empty": "string"
+             }
+            },
+            "unit?": {
+             "oneOf": [
+              {
+               "literal": "bytes"
+              }
+             ]
+            },
+            "suggestions?": {
+             "list": {
+              "object": {
+               "value": "number",
+               "title": "string"
+              }
+             }
+            },
+            "confirmBelow?": {
+             "object": {
+              "value": "number",
+              "confirm": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              }
+             }
+            },
             "placeholder?": "string",
             "min?": "number",
             "max?": "number",
@@ -14041,6 +14182,53 @@
                   "id": "string",
                   "title": "string",
                   "line?": "string"
+                 }
+                }
+               },
+               "lines?": {
+                "object": {
+                 "min": "number",
+                 "max": "number"
+                }
+               },
+               "folder?": {
+                "object": {
+                 "choose": "string",
+                 "clear": "string",
+                 "prompt": "string",
+                 "message": "string"
+                }
+               },
+               "search?": {
+                "object": {
+                 "placeholder": "string",
+                 "empty": "string"
+                }
+               },
+               "unit?": {
+                "oneOf": [
+                 {
+                  "literal": "bytes"
+                 }
+                ]
+               },
+               "suggestions?": {
+                "list": {
+                 "object": {
+                  "value": "number",
+                  "title": "string"
+                 }
+                }
+               },
+               "confirmBelow?": {
+                "object": {
+                 "value": "number",
+                 "confirm": {
+                  "object": {
+                   "title": "string",
+                   "body": "string",
+                   "button": "string"
+                  }
                  }
                 }
                },
@@ -14310,6 +14498,53 @@
               }
              }
             },
+            "lines?": {
+             "object": {
+              "min": "number",
+              "max": "number"
+             }
+            },
+            "folder?": {
+             "object": {
+              "choose": "string",
+              "clear": "string",
+              "prompt": "string",
+              "message": "string"
+             }
+            },
+            "search?": {
+             "object": {
+              "placeholder": "string",
+              "empty": "string"
+             }
+            },
+            "unit?": {
+             "oneOf": [
+              {
+               "literal": "bytes"
+              }
+             ]
+            },
+            "suggestions?": {
+             "list": {
+              "object": {
+               "value": "number",
+               "title": "string"
+              }
+             }
+            },
+            "confirmBelow?": {
+             "object": {
+              "value": "number",
+              "confirm": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              }
+             }
+            },
             "placeholder?": "string",
             "min?": "number",
             "max?": "number",
@@ -14487,6 +14722,53 @@
                   "id": "string",
                   "title": "string",
                   "line?": "string"
+                 }
+                }
+               },
+               "lines?": {
+                "object": {
+                 "min": "number",
+                 "max": "number"
+                }
+               },
+               "folder?": {
+                "object": {
+                 "choose": "string",
+                 "clear": "string",
+                 "prompt": "string",
+                 "message": "string"
+                }
+               },
+               "search?": {
+                "object": {
+                 "placeholder": "string",
+                 "empty": "string"
+                }
+               },
+               "unit?": {
+                "oneOf": [
+                 {
+                  "literal": "bytes"
+                 }
+                ]
+               },
+               "suggestions?": {
+                "list": {
+                 "object": {
+                  "value": "number",
+                  "title": "string"
+                 }
+                }
+               },
+               "confirmBelow?": {
+                "object": {
+                 "value": "number",
+                 "confirm": {
+                  "object": {
+                   "title": "string",
+                   "body": "string",
+                   "button": "string"
+                  }
                  }
                 }
                },
@@ -14764,6 +15046,53 @@
                 }
                }
               },
+              "lines?": {
+               "object": {
+                "min": "number",
+                "max": "number"
+               }
+              },
+              "folder?": {
+               "object": {
+                "choose": "string",
+                "clear": "string",
+                "prompt": "string",
+                "message": "string"
+               }
+              },
+              "search?": {
+               "object": {
+                "placeholder": "string",
+                "empty": "string"
+               }
+              },
+              "unit?": {
+               "oneOf": [
+                {
+                 "literal": "bytes"
+                }
+               ]
+              },
+              "suggestions?": {
+               "list": {
+                "object": {
+                 "value": "number",
+                 "title": "string"
+                }
+               }
+              },
+              "confirmBelow?": {
+               "object": {
+                "value": "number",
+                "confirm": {
+                 "object": {
+                  "title": "string",
+                  "body": "string",
+                  "button": "string"
+                 }
+                }
+               }
+              },
               "placeholder?": "string",
               "min?": "number",
               "max?": "number",
@@ -14941,6 +15270,53 @@
                     "id": "string",
                     "title": "string",
                     "line?": "string"
+                   }
+                  }
+                 },
+                 "lines?": {
+                  "object": {
+                   "min": "number",
+                   "max": "number"
+                  }
+                 },
+                 "folder?": {
+                  "object": {
+                   "choose": "string",
+                   "clear": "string",
+                   "prompt": "string",
+                   "message": "string"
+                  }
+                 },
+                 "search?": {
+                  "object": {
+                   "placeholder": "string",
+                   "empty": "string"
+                  }
+                 },
+                 "unit?": {
+                  "oneOf": [
+                   {
+                    "literal": "bytes"
+                   }
+                  ]
+                 },
+                 "suggestions?": {
+                  "list": {
+                   "object": {
+                    "value": "number",
+                    "title": "string"
+                   }
+                  }
+                 },
+                 "confirmBelow?": {
+                  "object": {
+                   "value": "number",
+                   "confirm": {
+                    "object": {
+                     "title": "string",
+                     "body": "string",
+                     "button": "string"
+                    }
                    }
                   }
                  },
@@ -15207,6 +15583,53 @@
               }
              }
             },
+            "lines?": {
+             "object": {
+              "min": "number",
+              "max": "number"
+             }
+            },
+            "folder?": {
+             "object": {
+              "choose": "string",
+              "clear": "string",
+              "prompt": "string",
+              "message": "string"
+             }
+            },
+            "search?": {
+             "object": {
+              "placeholder": "string",
+              "empty": "string"
+             }
+            },
+            "unit?": {
+             "oneOf": [
+              {
+               "literal": "bytes"
+              }
+             ]
+            },
+            "suggestions?": {
+             "list": {
+              "object": {
+               "value": "number",
+               "title": "string"
+              }
+             }
+            },
+            "confirmBelow?": {
+             "object": {
+              "value": "number",
+              "confirm": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              }
+             }
+            },
             "placeholder?": "string",
             "min?": "number",
             "max?": "number",
@@ -15384,6 +15807,53 @@
                   "id": "string",
                   "title": "string",
                   "line?": "string"
+                 }
+                }
+               },
+               "lines?": {
+                "object": {
+                 "min": "number",
+                 "max": "number"
+                }
+               },
+               "folder?": {
+                "object": {
+                 "choose": "string",
+                 "clear": "string",
+                 "prompt": "string",
+                 "message": "string"
+                }
+               },
+               "search?": {
+                "object": {
+                 "placeholder": "string",
+                 "empty": "string"
+                }
+               },
+               "unit?": {
+                "oneOf": [
+                 {
+                  "literal": "bytes"
+                 }
+                ]
+               },
+               "suggestions?": {
+                "list": {
+                 "object": {
+                  "value": "number",
+                  "title": "string"
+                 }
+                }
+               },
+               "confirmBelow?": {
+                "object": {
+                 "value": "number",
+                 "confirm": {
+                  "object": {
+                   "title": "string",
+                   "body": "string",
+                   "button": "string"
+                  }
                  }
                 }
                },
@@ -15661,6 +16131,53 @@
                 }
                }
               },
+              "lines?": {
+               "object": {
+                "min": "number",
+                "max": "number"
+               }
+              },
+              "folder?": {
+               "object": {
+                "choose": "string",
+                "clear": "string",
+                "prompt": "string",
+                "message": "string"
+               }
+              },
+              "search?": {
+               "object": {
+                "placeholder": "string",
+                "empty": "string"
+               }
+              },
+              "unit?": {
+               "oneOf": [
+                {
+                 "literal": "bytes"
+                }
+               ]
+              },
+              "suggestions?": {
+               "list": {
+                "object": {
+                 "value": "number",
+                 "title": "string"
+                }
+               }
+              },
+              "confirmBelow?": {
+               "object": {
+                "value": "number",
+                "confirm": {
+                 "object": {
+                  "title": "string",
+                  "body": "string",
+                  "button": "string"
+                 }
+                }
+               }
+              },
               "placeholder?": "string",
               "min?": "number",
               "max?": "number",
@@ -15838,6 +16355,53 @@
                     "id": "string",
                     "title": "string",
                     "line?": "string"
+                   }
+                  }
+                 },
+                 "lines?": {
+                  "object": {
+                   "min": "number",
+                   "max": "number"
+                  }
+                 },
+                 "folder?": {
+                  "object": {
+                   "choose": "string",
+                   "clear": "string",
+                   "prompt": "string",
+                   "message": "string"
+                  }
+                 },
+                 "search?": {
+                  "object": {
+                   "placeholder": "string",
+                   "empty": "string"
+                  }
+                 },
+                 "unit?": {
+                  "oneOf": [
+                   {
+                    "literal": "bytes"
+                   }
+                  ]
+                 },
+                 "suggestions?": {
+                  "list": {
+                   "object": {
+                    "value": "number",
+                    "title": "string"
+                   }
+                  }
+                 },
+                 "confirmBelow?": {
+                  "object": {
+                   "value": "number",
+                   "confirm": {
+                    "object": {
+                     "title": "string",
+                     "body": "string",
+                     "button": "string"
+                    }
                    }
                   }
                  },
@@ -17674,6 +18238,11 @@
      }
     },
     "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
      "object": {
       "message": "string"
      }
