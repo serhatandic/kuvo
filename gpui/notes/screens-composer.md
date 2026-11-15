@@ -33,9 +33,8 @@ phase 3, `crates/agent_ui/src/mention_set.rs`, `completion_provider.rs` (`comple
   as fields (`kuvo/sessions/<id>/send`); "/" and "!" to the box first (`…/typed`), which says
   what they mean and what's sent. What the box puts back goes back in the field, with its reason
   under it; what it did shows as a line under the composer ("Switched to Plan.", a side question
-  asked, a handoff being written). What's this client's to do that it can't yet (a "!" command,
-  compacting, Autopilot, goals, side threads) says so plainly, and what was written stays in the
-  field.
+  asked, a handoff being written). What's this client's to do that it can't yet (Autopilot,
+  goals, side threads) says so plainly, and what was written stays in the field.
 - "/" lists what the box offers there (`GET …/typed`), names starting with what's typed first,
   then those containing it, each by name (as KuvoClient's `SlashCommands.matches`), scrolling
   past eight: ↑↓

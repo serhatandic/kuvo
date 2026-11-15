@@ -8467,7 +8467,7 @@ The sections now:
   keeps its old behavior. A mismatch answers the same 409, mapped to a stale page.
 
 - **Storage** (`storage`): the box-backed What Agents Made group only: copies (status in bytes),
-  older-budget (number in bytes, with the Swift page's common budgets and confirmation when
+  older-budget (number in bytes, with decimal suggestions of 0.25, 0.5, 1, 2, 5 and 10 GB and confirmation when
   lowering below what older copies take), and older-copies (Clear…, with confirmation).
   `POST kuvo/artifacts/storage {budget, was?, wasOlder?, confirmed?}` compares optional `was` with the budget
   and `wasOlder` with older copies’ bytes atomically before
