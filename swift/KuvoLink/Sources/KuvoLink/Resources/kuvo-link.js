@@ -10029,6 +10029,15 @@ function changeBrowserSettings(change, folder = BROWSER_FOLDER) {
     writePrivate(keepsTabsFile(folder), "");
   return null;
 }
+function offerAgain(site, folder = BROWSER_FOLDER) {
+  const kept = readKept2(folder);
+  const never = Array.isArray(kept.never) ? kept.never : [];
+  if (!never.includes(site))
+    return false;
+  kept.never = never.filter((each) => each !== site);
+  writePrivate(settingsFile(folder), JSON.stringify(kept));
+  return true;
+}
 
 // box/src/link/browser/sites.ts
 import fs38 from "node:fs";
@@ -43933,7 +43942,7 @@ import fs140 from "node:fs";
 import path148 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "1cf0932f66d1";
+var BRIDGE_VERSION = "fd8796fe53a5";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -51372,7 +51381,7 @@ function keepSshAgents(watch = watchFolder) {
 var VAULT_SOCKET = path169.join(RUN, "vault.sock");
 var holding4 = false;
 var holdsVault = () => holding4;
-var heldHere = (route) => /^kuvo\/(vault|sandbox\/(asks|tools|allowed|stopped))(\/|\?|$)/.test(route);
+var heldHere = (route) => /^kuvo\/(vault|sandbox\/(asks|tools|allowed|stopped)|settings\/[^/?]+)(\/|\?|$)/.test(route);
 var MOST4 = 8 * 1024 * 1024;
 var KEY3 = "x-kuvo-vault-key";
 var AUTH = "x-kuvo-vault-auth";
@@ -55155,7 +55164,22 @@ var SECTIONS = [
   }
 ];
 function revised(row) {
-  const revision = crypto58.createHash("sha256").update(sortedJSON(row)).digest("base64url").slice(0, 16);
+  const action = (each) => each && { id: each.id, can: each.can, opens: each.opens };
+  const governs = {
+    kind: row.kind,
+    value: row.kind === "secret" ? undefined : row.value,
+    can: row.can,
+    set: row.set,
+    choices: row.choices?.map((choice) => choice.id),
+    actions: row.actions?.map(action),
+    start: action(row.start),
+    section: row.section,
+    address: row.address,
+    name: row.name,
+    items: row.items?.map((each) => each.revision),
+    add: action(row.add)
+  };
+  const revision = crypto58.createHash("sha256").update(sortedJSON(governs)).digest("base64url").slice(0, 16);
   return { ...row, revision };
 }
 var item = (row) => revised(row);
@@ -55247,15 +55271,13 @@ async function permissionsPage(context) {
     const can = listed ? true : { why: NOT_A_LIST };
     const rows = ACTIONS.map((action) => {
       const chosen = choiceIn(rules, action.id);
-      const fallback = EFFECTS.find((effect) => effect.id === engineDefault(action.id)).title;
       const choices = [
-        ...EFFECTS,
-        ...chosen && !EFFECTS.some((effect) => effect.id === chosen) ? [{ id: chosen, title: "Set by a Newer Engine" }] : [],
-        { id: "default", title: `Default (${fallback})` }
+        ...EFFECTS.map((effect) => effect.id === engineDefault(action.id) ? { ...effect, title: `${effect.title} (Default)` } : effect),
+        ...chosen && !EFFECTS.some((effect) => effect.id === chosen) ? [{ id: chosen, title: "Set by a Newer Engine" }] : []
       ];
       if (!listed)
         return row({ id: `when-${action.id}`, title: action.title, ..."line" in action ? { line: action.line } : {}, kind: "status", value: "Set in Its Settings File", can });
-      return row({ id: `when-${action.id}`, title: action.title, ..."line" in action ? { line: action.line } : {}, kind: "choice", value: chosen ?? "default", choices, can });
+      return row({ id: `when-${action.id}`, title: action.title, ..."line" in action ? { line: action.line } : {}, kind: "choice", value: chosen ?? engineDefault(action.id), choices, can });
     });
     groups.push({ id: "when", title: "When the Agent Wants To", note: listed ? "For every session and mode. Don't Allow holds even in Full Access. Codex, Cursor, Grok and Antigravity may read files without asking." : NOT_A_LIST, rows });
   } else {
@@ -55344,11 +55366,13 @@ async function permissionsChange(context, at, value) {
       const was = read.value.permissions ?? null;
       if (was !== null && !Array.isArray(was))
         return { status: 403, message: NOT_A_LIST };
-      if ((choiceIn(was ?? [], action) ?? "default") !== at.value)
+      if ((choiceIn(was ?? [], action) ?? engineDefault(action)) !== at.value)
         return STALE;
       const items = (Array.isArray(was) ? was : []).filter((each) => !(isRule2(each) && each.action === action && each.resource === "*"));
-      if (value !== "default")
+      if (value !== engineDefault(action))
         items.unshift({ action, resource: "*", effect: value });
+      if (sortedJSON(items) === sortedJSON(was ?? []))
+        return null;
       const written = await asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["permissions"], value: items.length ? items : null, was }] });
       if (written.status === 409 && written.value?.problem === undefined && written.value?.message === CHANGED_SINCE)
         continue;
@@ -55427,12 +55451,8 @@ async function browserChange(context, at, value) {
 async function browserAct(context, at, action) {
   if (!at.id.startsWith("never-") || action.id !== "offer-again")
     return { status: 404, message: "That isn't something it does." };
-  const read = await asked8(context, browserAnswer, "GET", "kuvo/browser/settings");
-  if (read.status !== 200)
-    return refusal3(read);
-  const host = at.id.slice(6);
-  const never = Array.isArray(read.value.never) ? read.value.never : [];
-  return refusal3(await asked8(context, browserAnswer, "PATCH", "kuvo/browser/settings", { never: never.filter((each) => each !== host) }));
+  offerAgain(at.id.slice(6));
+  return null;
 }
 var mtime2 = (file) => {
   try {
@@ -55517,6 +55537,12 @@ async function* settingsPageRoute(context, match) {
     return yield* json(200, await section.read(context));
   if (rowPart !== undefined ? method !== "POST" : method !== "PATCH") {
     return yield* json(405, { message: rowPart !== undefined ? "Do it with POST." : "Read it with GET, or change a row with PATCH." });
+  }
+  if (!holdsVault()) {
+    const answer = await askHolder(request, signal);
+    if (!answer)
+      return yield* json(503, { message: "This computer's box isn't running its own process: try again in a moment." });
+    return yield* [{ head: { status: answer.status, headers: { "content-type": answer.type || "application/json" } } }, { body: Buffer.from(answer.body, "base64") }];
   }
   const body = parsed(request.body);
   const given = isObject(body) ? body : {};

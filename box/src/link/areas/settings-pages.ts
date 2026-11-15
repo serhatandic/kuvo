@@ -21,13 +21,14 @@ import { engineControl } from "./engine";
 import { sandboxRoute } from "./sandbox";
 import { settingsRoute } from "./settings";
 import { BROWSER_DATA_ROUTE, browserDataRoute } from "../browser/routes";
-import { browserSettingsFiles } from "../browser/settings";
+import { browserSettingsFiles, offerAgain } from "../browser/settings";
 import { ALLOWED_FILE } from "../fence/allowed";
 import { fenceState, SOFTWARE_UPDATE } from "../fence/state";
 import { followedLive } from "../follow";
 import { APPROVAL_FILE } from "../work/approval";
 import { IS_MAC } from "../home";
 import { boxAnswers } from "../mac/keeper-runs";
+import { askHolder, holdsVault } from "../vault/holder";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 export const SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+))?)?$/;
@@ -47,9 +48,18 @@ const SECTIONS: SettingsSection[] = [
 
 // MARK: Rows
 
-/** A row's revision: a hash of the row as given (its items' too), without its own. */
+/** A row's revision: a hash of what it is and what governs whether it can be changed (its value,
+ * `can`, its choices' and actions' ids, a list's items' revisions), never its words, so a computer
+ * renamed or a line reworded changes none. A `secret`'s, of whether one is set (it has no value). */
 function revised<Row extends Omit<SettingItem, "revision"> & { items?: readonly SettingItem[] }>(row: Row): Row & { revision: string } {
-  const revision = crypto.createHash("sha256").update(sortedJSON(row)).digest("base64url").slice(0, 16);
+  const action = (each: SettingAction | undefined) => each && { id: each.id, can: each.can, opens: each.opens };
+  const governs = {
+    kind: row.kind, value: row.kind === "secret" ? undefined : row.value, can: row.can, set: row.set,
+    choices: row.choices?.map(choice => choice.id), actions: row.actions?.map(action),
+    start: action(row.start), section: row.section, address: row.address, name: row.name,
+    items: row.items?.map(each => each.revision), add: action((row as { add?: SettingAction }).add),
+  };
+  const revision = crypto.createHash("sha256").update(sortedJSON(governs)).digest("base64url").slice(0, 16);
   return { ...row, revision };
 }
 
@@ -164,15 +174,15 @@ async function permissionsPage(context: RouteContext): Promise<SettingsPage> {
     const can = listed ? true as const : { why: NOT_A_LIST };
     const rows = ACTIONS.map(action => {
       const chosen = choiceIn(rules, action.id);
-      const fallback = EFFECTS.find(effect => effect.id === engineDefault(action.id))!.title;
+      // What it does with no rule of yours is marked: picking that takes your rule away, so the
+      // engine's own rules (Plan mode doesn't edit) stay.
       const choices = [
-        ...EFFECTS,
+        ...EFFECTS.map(effect => (effect.id === engineDefault(action.id) ? { ...effect, title: `${effect.title} (Default)` } : effect)),
         // (One a newer engine set, shown as it is, and kept unless another is picked.)
         ...(chosen && !EFFECTS.some(effect => effect.id === chosen) ? [{ id: chosen, title: "Set by a Newer Engine" }] : []),
-        { id: "default", title: `Default (${fallback})` },
       ];
       if (!listed) return row({ id: `when-${action.id}`, title: action.title, ...("line" in action ? { line: action.line } : {}), kind: "status", value: "Set in Its Settings File", can });
-      return row({ id: `when-${action.id}`, title: action.title, ...("line" in action ? { line: action.line } : {}), kind: "choice", value: chosen ?? "default", choices, can });
+      return row({ id: `when-${action.id}`, title: action.title, ...("line" in action ? { line: action.line } : {}), kind: "choice", value: chosen ?? engineDefault(action.id), choices, can });
     });
     groups.push({ id: "when", title: "When the Agent Wants To", note: listed ? "For every session and mode. Don't Allow holds even in Full Access. Codex, Cursor, Grok and Antigravity may read files without asking." : NOT_A_LIST, rows });
   } else {
@@ -257,9 +267,12 @@ async function permissionsChange(context: RouteContext, at: SettingItem, value: 
       const was = read.value.permissions ?? null;
       if (was !== null && !Array.isArray(was)) return { status: 403, message: NOT_A_LIST };
       // (This one changed since it was read, by hand or another client: refused, the page now.)
-      if ((choiceIn(was ?? [], action) ?? "default") !== at.value) return STALE;
+      if ((choiceIn(was ?? [], action) ?? engineDefault(action)) !== at.value) return STALE;
+      // What it does with no rule: none (yours taken away, never one written for it). Nothing
+      // written where nothing changes.
       const items = (Array.isArray(was) ? was : []).filter((each: unknown) => !(isRule(each) && each.action === action && each.resource === "*"));
-      if (value !== "default") items.unshift({ action, resource: "*", effect: value });
+      if (value !== engineDefault(action)) items.unshift({ action, resource: "*", effect: value });
+      if (sortedJSON(items) === sortedJSON(was ?? [])) return null;
       const written = await asked(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["permissions"], value: items.length ? items : null, was }] });
       if (written.status === 409 && written.value?.problem === undefined && written.value?.message === CHANGED_SINCE) continue;
       return refusal(written);
@@ -335,11 +348,9 @@ async function browserChange(context: RouteContext, at: SettingItem, value: unkn
 
 async function browserAct(context: RouteContext, at: SettingItem, action: SettingAction): Promise<Refused | null> {
   if (!at.id.startsWith("never-") || action.id !== "offer-again") return { status: 404, message: "That isn't something it does." };
-  const read = await asked(context, browserAnswer, "GET", "kuvo/browser/settings");
-  if (read.status !== 200) return refusal(read);
-  const host = at.id.slice(6);
-  const never: string[] = Array.isArray(read.value.never) ? read.value.never : [];
-  return refusal(await asked(context, browserAnswer, "PATCH", "kuvo/browser/settings", { never: never.filter(each => each !== host) }));
+  // (That one alone: a site said Never to meanwhile stays.)
+  offerAgain(at.id.slice(6));
+  return null;
 }
 
 // MARK: Sections
@@ -416,14 +427,20 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
   if (rowPart !== undefined ? method !== "POST" : method !== "PATCH") {
     return yield* json(405, { message: rowPart !== undefined ? "Do it with POST." : "Read it with GET, or change a row with PATCH." });
   }
+  // Made by the box's long-running process, whichever is asked (`box route` over SSH passes it on),
+  // so every change to a section is checked in turn against the page as it is then.
+  if (!holdsVault()) {
+    const answer = await askHolder(request, signal);
+    if (!answer) return yield* json(503, { message: "This computer's box isn't running its own process: try again in a moment." });
+    return yield* [{ head: { status: answer.status, headers: { "content-type": answer.type || "application/json" } } }, { body: Buffer.from(answer.body, "base64") }];
+  }
   const body = parsed(request.body);
   const given = isObject(body) ? body : {};
   const rowId = rowPart !== undefined ? idOf(rowPart) : given.row;
   if (typeof rowId !== "string" || !rowId) return yield* json(400, { message: "Name the row to change (row)." });
   if (typeof given.was !== "string") return yield* json(400, { message: "Send the row's revision as it was read (was)." });
-  // One change to a section at a time here, each checked against the page as it is then: the row's
-  // own revision, whether it can be changed from here, the value; then made. (Another of the box's
-  // processes, `box route`, is held to what the routes underneath check.)
+  // One change to a section at a time, each checked against the page as it is then: the row's own
+  // revision, whether it can be changed from here, the value; then made.
   const { status, value } = await inTurn(id!, async (): Promise<{ status: number; value: unknown }> => {
     const page = await section.read(context);
     const at = rowsOf(page).find(each => each.id === rowId);

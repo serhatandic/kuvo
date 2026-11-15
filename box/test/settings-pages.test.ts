@@ -156,9 +156,9 @@ test("letting your other computers start work here is kept as kuvo/approval keep
 test("what agents may do is the engine's permissions, each choice a rule for everything, the others left as they are", async () => {
   let shown = await page("permissions")
   const shell = rowOf(shown, "when-shell")
-  expect([shell.kind, shell.value]).toEqual(["choice", "default"])
-  expect(shell.choices.map((choice: any) => choice.title)).toEqual(["Allow", "Ask First", "Don't Allow", "Default (Allow)"])
-  expect(rowOf(shown, "when-external_directory").choices.at(-1).title).toBe("Default (Ask First)")
+  expect([shell.kind, shell.value]).toEqual(["choice", "allow"])
+  expect(shell.choices.map((choice: any) => choice.title)).toEqual(["Allow (Default)", "Ask First", "Don't Allow"])
+  expect(rowOf(shown, "when-external_directory").choices.map((choice: any) => choice.title)).toEqual(["Allow", "Ask First (Default)", "Don't Allow"])
 
   // Written as the Mac's Settings wrote it through kuvo/config: at the front, the rest kept.
   shown = (await change("permissions", shell, "deny")).json
@@ -170,9 +170,9 @@ test("what agents may do is the engine's permissions, each choice a rule for eve
   // Another rule changed by hand meanwhile doesn't hold up a change to this choice.
   const read = await page("permissions")
   write(CONFIG_FILE, { permissions: [{ action: "shell", resource: "*", effect: "deny" }, { action: "read", resource: "*.pem", effect: "deny" }] })
-  shown = (await change("permissions", rowOf(read, "when-shell"), "default")).json
+  shown = (await change("permissions", rowOf(read, "when-shell"), "allow")).json
   expect(JSON.parse(readFileSync(CONFIG_FILE, "utf8")).permissions).toEqual([{ action: "read", resource: "*.pem", effect: "deny" }])
-  expect(rowOf(shown, "when-shell").value).toBe("default")
+  expect(rowOf(shown, "when-shell").value).toBe("allow")
 
   // This choice changed by hand since it was read: refused, with the page now; another choice read
   // at the same time still goes.
@@ -197,6 +197,64 @@ test("what agents may do is the engine's permissions, each choice a rule for eve
   expect(unlistedPage.groups.find((group: any) => group.id === "when").note).toContain("aren't a list of rules")
   expect((await change("permissions", unlisted, "deny")).status).toBe(403)
   expect(JSON.parse(readFileSync(CONFIG_FILE, "utf8")).permissions).toEqual({ shell: "ask" })
+})
+
+test("picking what an action does with no rule writes none, so Plan mode's own rule (no edits) is never widened", async () => {
+  // Nothing set for edits: Allow is what applies, and picking it writes nothing at all.
+  const untouched = readFileSync(CONFIG_FILE, "utf8")
+  const edit = rowOf(await page("permissions"), "when-edit")
+  expect(edit.value).toBe("allow")
+  const same = await change("permissions", edit, "allow")
+  expect(same.status).toBe(200)
+  expect(readFileSync(CONFIG_FILE, "utf8")).toBe(untouched)
+  // A rule for edits written by hand that allows them everywhere: picking Allow takes it away
+  // (the engine's own rules then apply), never one written for it.
+  write(CONFIG_FILE, { permissions: [{ action: "edit", resource: "*", effect: "allow" }, { action: "shell", resource: "git push *", effect: "ask" }] })
+  await change("permissions", rowOf(await page("permissions"), "when-edit"), "allow")
+  expect(JSON.parse(readFileSync(CONFIG_FILE, "utf8")).permissions).toEqual([{ action: "shell", resource: "git push *", effect: "ask" }])
+  // Don't Allow, then back: the rule comes and goes.
+  await change("permissions", rowOf(await page("permissions"), "when-edit"), "deny")
+  expect(JSON.parse(readFileSync(CONFIG_FILE, "utf8")).permissions[0]).toEqual({ action: "edit", resource: "*", effect: "deny" })
+  await change("permissions", rowOf(await page("permissions"), "when-edit"), "allow")
+  expect(JSON.parse(readFileSync(CONFIG_FILE, "utf8")).permissions).toEqual([{ action: "shell", resource: "git push *", effect: "ask" }])
+})
+
+test("a row's revision is its value's: the same value set through the old route, or the computer renamed, leaves it", async () => {
+  const before = await page("browser")
+  await ask(handler, "PATCH", "kuvo/browser/settings", { searchEngine: "google", offersToSave: true })
+  const after = await page("browser")
+  for (const id of ["search-engine", "tidies", "offers", "never"]) expect(rowOf(after, id).revision).toBe(rowOf(before, id).revision)
+  const permissions = await page("permissions")
+  await ask(handler, "PATCH", "kuvo/approval", { otherComputers: true })
+  const renamed = engineHandler(noEngine as any, { name: "devbox-2" }, noEngine as any)
+  const again = (await ask(renamed, "GET", "kuvo/settings/permissions")).json
+  expect(rowOf(again, "other-computers").line).toContain("devbox-2")
+  expect(rowOf(again, "other-computers").revision).toBe(rowOf(permissions, "other-computers").revision)
+  // And a change from the earlier reading still goes.
+  expect((await change("permissions", rowOf(permissions, "other-computers"), false)).status).toBe(200)
+})
+
+test("two changes to one row from the same reading, at once: one is made, the other told it's stale", async () => {
+  const read = await page("browser")
+  const engine = rowOf(read, "search-engine")
+  const answers = await Promise.all([change("browser", engine, "kagi"), change("browser", engine, "bing")])
+  expect(answers.map(answer => answer.status).sort()).toEqual([200, 409])
+  const made = answers.find(answer => answer.status === 200)!
+  expect((await ask(handler, "GET", "kuvo/browser/settings")).json.searchEngine).toBe(rowOf(made.json, "search-engine").value)
+})
+
+test("a page followed is said again when its settings change through the old routes, or by hand in the file", async () => {
+  const events = follow(handler, "kuvo/settings/permissions/events")
+  try {
+    const first = await events.next()
+    expect(rowOf(first, "other-computers").value).toBe(true)
+    await ask(handler, "PATCH", "kuvo/approval", { otherComputers: false })
+    expect(rowOf(await events.next(), "other-computers").value).toBe(false)
+    write(CONFIG_FILE, { permissions: [{ action: "webfetch", resource: "*", effect: "deny" }] })
+    expect(rowOf(await events.next(), "when-webfetch").value).toBe("deny")
+  } finally {
+    events.stop()
+  }
 })
 
 test("Also Allowed lists the folders given, and one removed from its row is gone from kuvo/sandbox/allowed", async () => {
@@ -249,6 +307,21 @@ test("over SSH, Also Allowed is read and removed through the process that holds 
   expect(done.status).toBe(200)
   expect(rowOf(done.json, "allowed").items).toEqual([])
   expect(JSON.parse(readFileSync(ALLOWED_FILE, "utf8")).allowed).toEqual([])
+})
+
+test("over SSH, two changes to one row from the same reading go through one process: one is made, the other told it's stale", async () => {
+  // Each a `box route` of its own, as the desktop over SSH and another client at once.
+  const read = (await boxRoute("GET", "kuvo/settings/browser")).json
+  const engine = rowOf(read, "search-engine")
+  const answers = await Promise.all(["kagi", "bing"].map(value => boxRoute("PATCH", "kuvo/settings/browser", { row: engine.id, value, was: engine.revision })))
+  expect(answers.map(answer => answer.status).sort()).toEqual([200, 409])
+  expect(answers.find(answer => answer.status === 409)!.json.page).toBeDefined()
+  // Made by the process holding the box (this test's, named devbox), never by the one asked, which
+  // checks only what it alone saw: its answer is the holder's page.
+  const permissions = (await boxRoute("GET", "kuvo/settings/permissions")).json
+  const done = await boxRoute("PATCH", "kuvo/settings/permissions", { row: "other-computers", value: false, was: rowOf(permissions, "other-computers").revision })
+  expect(done.status).toBe(200)
+  expect(rowOf(done.json, "other-computers").line).toBe("Their bots and agents can start sessions on devbox.")
 })
 
 test("the sandbox's row is what kuvo/sandbox says, and its button does what that names", async () => {

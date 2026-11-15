@@ -7800,8 +7800,10 @@ so a client still on those (the phone) sees every change kept just as they keep 
   its Software Update, is only given to the app beside it, `fromApp`; any other client gets `can:
   {why}` instead); `can` absent where it can be done. `busy` says in words that a change is under
   way there. A box newer than a client may send a kind the client doesn't know: it draws the row's
-  title and line, and says a newer Kuvo Code changes it. `revision` is a hash of the row as given
-  (a list's items too).
+  title and line, and says a newer Kuvo Code changes it. `revision` is a hash of what the row is
+  and what governs whether it can be changed (its value, `can`, its choices' and actions' ids, a
+  list's items' revisions; a `secret`'s, whether one is set), never its words: the same value set
+  again, a computer renamed or a line reworded leaves it.
 - `PATCH kuvo/settings/<section> {row, value, was}`: one row changed, `was` its `revision` as read.
   The answer is the page again (`200`), or a refusal in the box's words: `400` for a value that
   doesn't fit (a switch's isn't true or false, a choice's isn't one of its choices) or a body without
@@ -7811,9 +7813,9 @@ so a client still on those (the phone) sees every change kept just as they keep 
   never refuses another's. A refusal of the route underneath passes on with its status and words; a
   `409` without `page` is one of those (a settings file that can't be used), never a stale reading:
   `page` is what marks a stale answer, and its `message` is words to show.
-  A box makes one change to a section at a time, each checked against the page as it is then
-  (a change through another of its processes, `box route` over SSH, is held to what the route
-  underneath checks).
+  A box makes one change to a section at a time, each checked against the page as it is then, in
+  its long-running process whichever process is asked (`box route` over SSH passes a change on to
+  it, as it does Also Allowed; with that process not running, `503` in words).
 - `POST kuvo/settings/<section>/<row>/<action> {was}`: what a row (or a list's item) offers, the
   same answers; `400` for one that `opens`, which the client opens itself.
 - `GET kuvo/settings/<section>/events`: the page, a line now and one each time it changes (a change
@@ -7830,8 +7832,10 @@ The sections now:
   conversation, its `can` saying so; `auto-held-engine`, `auto-held-agents`, why Auto asks first for
   now; `other-computers`, `kuvo/approval`'s `otherComputers`), When the Agent Wants To (`when-<kind>`
   for `edit`, `shell`, `read`, `external_directory`, `webfetch`, `websearch`, `subagent` and `skill`:
-  a `choice` of `allow`, `ask`, `deny` or `default`, kept as the Mac's Settings kept it, a rule for
-  everything at the front of the engine's `permissions` in `kuvo/config`, the rest left as they are),
+  a `choice` of `allow`, `ask` or `deny`, the one that applies with no rule titled `(Default)`: a rule
+  for everything at the front of the engine's `permissions` in `kuvo/config`, the rest left as they
+  are; picking the default takes that rule away (none is ever written for it, so the engine's own,
+  Plan mode not editing, still apply), and picking what applies already writes nothing),
   Sandbox (`sandbox`: its state, and its button as `kuvo/sandbox` names it, done by the route it
   names: `retry` and `fix` check it again; `restartEngine` restarts the engine, asked first where
   that stops work, on a Mac only while its keeper runs the box, the app restarting it otherwise
@@ -7839,7 +7843,8 @@ The sections now:
   with `remove`). Rules for particular commands or files, approvals saved with Always and blocks
   aren't on it yet.
 - **Browser** (`browser`): `search-engine` (a `choice`), `tidies` and `offers` (`switch`es), and
-  Never Offered (`never`, a `list` of `never-<site>`, each with `offer-again`): `kuvo/browser/settings`,
+  Never Offered (`never`, a `list` of `never-<site>`, each with `offer-again`, which takes that one
+  site out and leaves the rest as they are then): `kuvo/browser/settings`,
   the box's browser. How the side panel's own browser keeps its data is each client's.
 
 ### Personalities

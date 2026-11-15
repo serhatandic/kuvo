@@ -82,3 +82,14 @@ export function changeBrowserSettings(change: unknown, folder = BROWSER_FOLDER):
   if (change.tidiesAgentTabs === false) writePrivate(keepsTabsFile(folder), "");
   return null;
 }
+
+/** A site you said Never to offered again: that one taken out of the list, the rest as they are
+ * now (read and written at once). False where it wasn't there. */
+export function offerAgain(site: string, folder = BROWSER_FOLDER): boolean {
+  const kept = readKept(folder);
+  const never = Array.isArray(kept.never) ? kept.never : [];
+  if (!never.includes(site)) return false;
+  kept.never = never.filter(each => each !== site);
+  writePrivate(settingsFile(folder), JSON.stringify(kept));
+  return true;
+}
