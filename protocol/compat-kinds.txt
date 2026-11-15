@@ -1,0 +1,21 @@
+# What each item of PROTOCOL.md's "For released Macs" is kept for at 1.0 ("What 1.0 keeps of this"),
+# one a line: `<version> <item> <kind>`. scripts/compat.sh says it beside each item, and
+# box/bridge-tests/compat.test.js holds every marker's last sentence to it.
+#   stays  keeps a box right while a Mac from before 1.0 still connects; goes on the user's word
+#   next   no released client needs it, but the box's own tests still lean on it, or it isn't
+#          studied yet; decided in #717's next part
+# An item not named here is what an earlier version left, taken in once: it keeps its date from
+# before until the box's move carries it (#713) or it goes.
+0.7 engine-stop stays
+0.7 files stays
+0.7 keeper stays
+0.7 keeper-number stays
+0.7 leave-running stays
+0.7 visits stays
+beta.1 box-read-change stays
+beta.1 deleted-bots stays
+beta.1 mac-moves stays
+beta.1 peers-list stays
+0.7 bot-json-job next
+0.7 limits-own-numbers next
+0.7 own-envelope next

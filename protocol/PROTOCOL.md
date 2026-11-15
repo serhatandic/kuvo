@@ -7986,7 +7986,8 @@ box's routes, the same way from a Mac and from a phone (`kuvo/config`), one chan
 `run/.config.lock`. A Mac reaches any of a machine's routes that answer once (never a stream) over
 SSH: `kuvo-link.js box route` takes `{method, path, body?}` on stdin and prints `{status, body}`,
 answered as a phone's request is: once (a followed route's first line), and bytes that aren't text
-as `{status, bodyBase64, type}`. (`kuvo-link.js box key` sets one of its keys.) This Mac's own settings are its box's too
+as `{status, bodyBase64, type}`. (`kuvo-link.js box read | change` are the same, for Kuvo Code
+0.8.0-beta.1, which uses them; `key` sets one of its keys.) This Mac's own settings are its box's too
 ("This Mac's box").
 
 What some providers need from the engine until opencode handles it is each box's own too: a
@@ -9611,7 +9612,8 @@ machine:
 - A machine set up by 0.8.0-beta.1 has a bridge that updates itself from the newest release, so
   it may carry this box before its Mac has taken 1.0.
 
-So what's kept is of two kinds, and only these:
+So what's kept is of these kinds, and only these (`protocol/compat-kinds.txt` names each item's;
+one not named there is of the second):
 - **What keeps the box's work, files and peers right while such a Mac still connects** (its files
   put over the box's, its Stop, its visits holding updates back, its list of peers). It goes on the
   user's word, once no Mac from before 1.0 connects.
@@ -9619,13 +9621,18 @@ So what's kept is of two kinds, and only these:
   machine the box does it as it starts or as a Mac connects; on this Mac it's the box's move into
   its own home that carries it ("Moving this Mac's box", #713), which is where each of those goes
   as it's built.
+- **Three that are neither, not decided yet** (#717's next part): messages a client writes the
+  blocks of itself, which no released client sends through a box but the box's own tests still do;
+  plan limits' own numbers for a client from before `rows`; and a bot's job written to its
+  `bot.json` too. They protect nothing a user keeps.
 
-What only gave such a Mac its own screens and buttons against a newer box is gone: its Update
-button for an agent's program (`POST …/integration/<provider>/update` is no route now), the
-beta's `kuvo-link.js box read` and `box change` (its Settings for a machine read nothing until it
-updates), and the branch prefix it sent with a worktree (the computer's own names the branch). An
-item's marker says which kind it is; the dates below ("three months after 0.8.0", "once 0.8.0 is
-out") are from before 1.0 took 0.8.0's place and hold only until the item moves or goes as above.
+What only gave such a Mac its own buttons against a newer box is gone: its Update button for an
+agent's program (`POST …/integration/<provider>/update` is no route now, and the button says it
+couldn't), and the branch prefix it sent with a worktree (the computer's own names the branch).
+A marker in the code ends with what its item's kind says, but in the files whose bytes are the
+box's release (the keeper's shell, the browser's keeper), where it keeps the date it had. The
+dates below ("three months after 0.8.0", "once 0.8.0 is out") are from before 1.0 took 0.8.0's
+place and hold only until the item moves or goes as above.
 
 **Session lists.** A released Mac doesn't read `kuvo/sessions/list`: it works its lists out from
 the engine's `api/session` as it did, which the box answers as before; nothing here changes for it.
@@ -9753,11 +9760,13 @@ can go three months after 0.8.0 ships.
     another computer"), then gone from the preferences.
   - Machines' bots' keys of their own, which it kept in your Keychain: gone from the Keychain
     (bots have no keys of their own now: "Bots have no keys of their own").
-- What it kept of machines' group chats as it last saw them (`machine-groups.json`, from 0.7.0),
-  what it learned of GitHub Copilot's Claude models (`copilotClaudeModels` in its preferences) and
-  the moves it ran itself (`movesUnderWay` there) aren't carried: each box keeps its own group
-  chats, learns its models' ways itself ("Settings per box"), and lifts a `moving` hold a move cut
-  short left in a folder as it starts (`kuvo/moves`). No client keeps a copy of a box's state.
+- **Nothing takes these in now, and whether the move does is its inventory's to say (#713)**: what
+  it kept of machines' group chats as it last saw them (`machine-groups.json` and
+  `machine-groups/<id>.json`, from 0.7.0; a copy of what each machine keeps, but the last one of a
+  machine that's gone for good); what it learned of GitHub Copilot's Claude models
+  (`copilotClaudeModels` in its preferences), which each box learns itself ("Settings per box");
+  and the moves it ran itself (`movesUnderWay` there), whose `moving` hold in a folder a box lifts
+  as it starts (`kuvo/moves`).
 - The letters it sent its agents' way and those it had delivered (`agent-letters.json`,
   `agent-letters-seen.json`, 0.8.0-beta.1), and the messages it kept for a machine that was away
   (`agent-messages.json`), handed to the box's outbox (`kuvo/link/letters/take`).
@@ -9806,8 +9815,9 @@ can go three months after 0.8.0 ships.
   keeps ("kuvo/bots").
   <!-- compat: beta.1 deleted-bots -->
 - It reads and changes a machine's settings with `kuvo-link.js box read` and `box change` over SSH,
-  which no box has now (`box route` does it, "Settings per box"): that Mac's Settings for the
-  machine read and change nothing until it updates. The machine's settings stay as they are.
+  and sets its keys with `box key` ("Settings per box"), which `box route` does for later Macs.
+  Everything its Settings change on a machine goes this way, so they stay while it connects.
+  <!-- compat: beta.1 box-read-change -->
 - It runs moves itself, over SSH, and its peers document's `moved` says where each conversation it
   moves lives now. A box takes that word under its own boxes' ("Peers", `moved`).
   <!-- compat: beta.1 mac-moves -->

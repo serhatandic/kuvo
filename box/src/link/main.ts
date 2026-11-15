@@ -560,7 +560,8 @@ async function run(): Promise<void> {
 }
 
 // `kuvo-link.js box <command>`: a Mac's way to a machine's own settings, over SSH, the same way a
-// phone's goes (one answer, JSON, on stdout). `adopt` (a seed on stdin), `key <name>` (its value on stdin; none removes it), `route` (a request,
+// phone's goes (one answer, JSON, on stdout). `adopt` (a seed on stdin), `read`, `change`
+// ({changes} on stdin), `key <name>` (its value on stdin; none removes it), `route` (a request,
 // {method, path, body?}, answered as a phone's is: {status, body}).
 async function box(command: string): Promise<void> {
   const input = async (): Promise<string> => {
@@ -590,6 +591,17 @@ async function box(command: string): Promise<void> {
       // whether or not this box has a bridge or starts its engine again. (Stays when adopting goes.)
       await upgradeIntegrations().catch(() => {});
       return say({ ...adopted, settings: readSettings().settings ?? adopted.settings });
+    }
+    // COMPAT(beta.1 box-read-change): `box read`, `box change` and `box key`, which beta.1 runs over SSH for everything its Settings change on a machine (`box route` took their place). Goes on the user's word, once no Mac from before 1.0 connects.
+    case "read": {
+      const { settings, problem } = readSettings();
+      return say(problem ? { status: 409, message: problem } : { status: 200, settings, own: ownsSettings() });
+    }
+    case "change": {
+      let given: { changes?: unknown } | null = {};
+      try { given = JSON.parse(await input()); } catch {}
+      // (Checked there.)
+      return say(ownsSettings() ? changeSettings(given?.changes) : { status: 409, message: "This machine's settings aren't its own yet." });
     }
     case "key": {
       const name = process.argv[4];
@@ -675,7 +687,7 @@ async function box(command: string): Promise<void> {
       return say({ status: 200, ...met });
     }
     default:
-      console.error("Usage: kuvo-link.js box adopt | key <name> | route | reconnect <server> | personalities | update-status | update-now");
+      console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | update-status | update-now");
       process.exit(2);
   }
 }

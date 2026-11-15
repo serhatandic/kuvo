@@ -45378,7 +45378,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "9bd8c1661e9b";
+var BRIDGE_VERSION = "cab7a75faa85";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -58960,6 +58960,17 @@ async function box(command) {
       await upgradeIntegrations().catch(() => {});
       return say({ ...adopted, settings: readSettings().settings ?? adopted.settings });
     }
+    case "read": {
+      const { settings, problem } = readSettings();
+      return say(problem ? { status: 409, message: problem } : { status: 200, settings, own: ownsSettings() });
+    }
+    case "change": {
+      let given = {};
+      try {
+        given = JSON.parse(await input());
+      } catch {}
+      return say(ownsSettings() ? changeSettings(given?.changes) : { status: 409, message: "This machine's settings aren't its own yet." });
+    }
     case "key": {
       const name = process.argv[4];
       const value = await input();
@@ -59043,7 +59054,7 @@ async function box(command) {
       return say({ status: 200, ...met });
     }
     default:
-      console.error("Usage: kuvo-link.js box adopt | key <name> | route | reconnect <server> | personalities | update-status | update-now");
+      console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | update-status | update-now");
       process.exit(2);
   }
 }

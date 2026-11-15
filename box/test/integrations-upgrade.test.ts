@@ -274,8 +274,8 @@ test("a machine's bridge starting, with no Mac: the running box does it, before 
 test("a Mac's change over SSH as the bridge starts, each its own process: the same settings whichever gets there first", async () => {
   const phone = { path: [...SERVERS, "notion", "disabled"], value: true }
   const { settings } = await machineStarts(oldServers(MACHINE), { alsoAtStart: async env => {
-    const change = Bun.spawn([process.execPath, main, "box", "route"], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" })
-    change.stdin.write(JSON.stringify({ method: "PATCH", path: "kuvo/config", body: { changes: [...macChanges(["todoist", "mine"], MACHINE), phone] } }))
+    const change = Bun.spawn([process.execPath, main, "box", "change"], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" })
+    change.stdin.write(JSON.stringify({ changes: [...macChanges(["todoist", "mine"], MACHINE), phone] }))
     await change.stdin.end()
     expect(JSON.parse(await new Response(change.stdout).text()).status).toBe(200)
     await change.exited
