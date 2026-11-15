@@ -458,7 +458,7 @@ fn a_machine_whose_commands_reach_your_services_says_so_in_the_boxs_words(cx: &m
     assert_eq!(settings(&workspace, cx).read_with(cx, |view, _| view.row_detail("row-sandbox")).as_deref(), Some(""));
     assert!(!shown(cx, "row-sandbox-how-to-check"));
     // Whether it warns is the box's one fact (#739), not this app's rule: a gap a newer box names,
-    // with `needsYou`, warns with its words; the same state without it is a quiet On.
+    // with `needsYou`, warns with its words.
     stand_in.set_sandbox(json!({ "on": true, "needsYou": true, "able": true, "agents": true, "gaps": ["later"], "why": "Commands run in the sandbox, but not all of it is kept here yet." }));
     section(&workspace, cx, "Browser");
     section(&workspace, cx, "Permissions");

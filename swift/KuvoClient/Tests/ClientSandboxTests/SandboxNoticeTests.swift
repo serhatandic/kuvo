@@ -72,6 +72,8 @@ struct SandboxNoticeTests {
         #expect(newer.look == .needsYou && newer.title == "Sandbox")
         #expect(newer.detail == "Commands run in the sandbox, but not all of it is kept here yet.")
         #expect(newer.buttons.map(\.action) == [.help])
+        // Off with no word of it never reads as on.
+        #expect(try state(#"{"on": false, "why": "Off for now."}"#).notice.look != .on)
     }
 
     @Test func aReasonFromANewerBoxShowsItsOwnWords() throws {

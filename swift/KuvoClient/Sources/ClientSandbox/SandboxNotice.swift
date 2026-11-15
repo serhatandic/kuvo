@@ -60,8 +60,9 @@ extension SandboxState {
         // Being checked is a quiet line.
         if !on, reason == .checking { return SandboxNotice(look: .checking, title: nil, detail: why ?? "Checking the sandbox…", buttons: []) }
         // Whether it needs you is the box's word (`needsYou`): off, or on while commands can still
-        // reach your login's services. Why and its button are the box's too.
-        guard needsYou else { return SandboxNotice(look: .on, title: nil, detail: "Agents’ commands run in a sandbox: they can’t read your keys or sign-ins.", buttons: []) }
+        // reach your login's services. Why and its button are the box's too. (Never the line that
+        // says commands run in it where the box says it isn't on.)
+        guard needsYou || !on else { return SandboxNotice(look: .on, title: nil, detail: "Agents’ commands run in a sandbox: they can’t read your keys or sign-ins.", buttons: []) }
         if on { return SandboxNotice(look: .needsYou, title: "Sandbox", detail: why ?? "", buttons: button.map { [$0] } ?? []) }
         // (Report a Problem, where the box says what a report of it says.)
         let report: [SandboxNotice.Button] = self.report != nil ? [.init(title: "Report a Problem…", action: .report)] : []
