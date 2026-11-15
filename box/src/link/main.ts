@@ -251,6 +251,11 @@ export { MAC_LINK_FILE, savedMacConfig, stopMacLink } from "./mac/link";
 export { macNoticeHold, macTell } from "./mac/notices";
 export { LETTER_WAIT, macSendOutbox, runMacPeers, stopMacPeers } from "./mac/peers";
 export { setMacPeers } from "./mac/routes";
+// Adding a computer over SSH (the bridge's tests').
+export { allTries, forgetTries } from "./add/tries";
+export { adding } from "./areas/computers-add";
+export { KNOWN_HOSTS, fingerprintOf } from "./add/ssh";
+export { RELEASE_FILES } from "./add/files";
 export { engineHandler } from "./server/router";
 export { connectOnce, fromRelay, nextTry } from "./relay/connection";
 export { MAC_APP_ROUTES, macAppAnswers, macFront, runMacLink } from "./mac/relay";

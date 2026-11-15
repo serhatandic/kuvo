@@ -114,6 +114,40 @@ listed so a slow copy is seen in place; the fingerprint is a question with butto
 - **The phone's Add a Machine**: no UI in this task.
 - **0.7-Mac compatibility on the machine** (`bin/.own`, `mac-installing`).
 
-## Where it is
+## Where I am (2026-11-15, paused for pacing at the lead's word)
 
-(Updated as pieces land.)
+**Done and committed (box, first piece):**
+- `box/src/link/add/` (`address.ts`, `ssh.ts`, `files.ts`, `scripts.ts`, `tries.ts`, `flow.ts`),
+  `areas/computers-add.ts`, the routes of §2, feature `computers.add` (in `FEATURES` only),
+  `setup`/`uninstall` in a computer's `actions`, `setupGift` factored out of `kuvo/link/setup`.
+- `box/bridge-tests/computers-add.test.js`: 8 scenarios, passing on this Mac (one run:
+  `scripts/test-box.sh bridge computers-add.test.js`). Stand-in `ssh`; real keeper, launcher, link.
+- `bun run check` clean; `route-shapes.sh` and `build-box.sh` run and their files committed.
+
+**Not done yet, in order:**
+1. Box: `box/test/add-address.test.ts` (addresses, `Include`), a test holding `RELEASE_FILES` to
+   `release/files.ts`, the vault-key path (written in `ssh.ts` `vaultAgent`, not tested), and the
+   engine fetched for another kind of computer (`files.ts` `engineFor`, not tested).
+2. Not run yet: `compat.test.js`, `bridge.test.js`, `computers*.test.js`, `mac-machines.test.js`,
+   `setup-*.test.js`, `route-shapes --check`, `scripts/compat.sh`, `check-built.sh`, lokum (Linux).
+3. The feature name in `gpui/kuvo_box/src/gate/required.rs`, `BoxGate+Required.swift`,
+   `protocol/gate-required.txt`, the phone's `DemoBox+Features.swift`; PROTOCOL.md ("Computers",
+   Adding one); docs/footprint.md (`ssh/known_hosts`, `run/ssh`, `cache/engine-packs`).
+4. Desktop (gpui): nothing built. §3 is the plan; Zed's flow is summarized there.
+5. The before-proof (main + only the new test), the reviewer pass, kuvo-web docs (branch
+   `docs/636`), CHANGELOG, phone compile.
+
+**Decided while building (differs from §1 or adds to it):**
+- A try stopped as it starts, on a computer that had no Kuvo Code before, is uninstalled again
+  there, so nothing runs that no computer of yours knows of.
+- Uninstall on a machine another Mac still uses only lets this computer go and leaves it running.
+- #603's "Restarting…": I read it as the step's words for Set Up Again ("Restarting Kuvo Code
+  there") and the stopped try's "Stopping…", not a new `reach` value on `kuvo/computers` (clients
+  decode that as a closed set). To confirm with the lead.
+- `launch.env` gets no `KUVO_TZ` (the zone is the box's own setting now).
+
+**Open questions for the user (so far):**
+- This Mac's link needs a relay and keys before it can add (`macLink.config`, said by the old app
+  today). The desktop app doesn't say them yet (#713/#742): until it does, a Mac that never ran
+  the old app answers "isn't linked to your other computers yet".
+- A machine in another setup: asked "Add Anyway" (it becomes shared), or refused until #183?

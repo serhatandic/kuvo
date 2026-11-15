@@ -36,6 +36,7 @@ import { GLANCE_ROUTE, glanceRoute } from "../areas/glance";
 import { LIST_ROUTE, listRoute } from "../lists/sessions";
 import { WAITING_ROUTE, waitingRoute } from "../areas/waiting";
 import { COMPUTERS_ROUTE, computersRoute } from "../areas/computers";
+import { COMPUTERS_ADD_ROUTE, computersAddRoute } from "../areas/computers-add";
 import { SESSION_MODELS_ROUTE, sessionModelsRoute } from "../areas/session-models";
 import { MODELS_OFFERED_ROUTE, modelsOfferedRoute } from "../areas/models-offered";
 import { READ_ALL_ROUTE, readAllRoute } from "../areas/read-all";
@@ -164,6 +165,8 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route.match(GLANCE_ROUTE), answer: glanceRoute },
   { when: route => route.match(LIST_ROUTE), answer: listRoute },
   { when: route => route.match(WAITING_ROUTE), answer: waitingRoute },
+  // Adding one over SSH, before a computer's own routes, which it starts like (PROTOCOL.md, "Computers", Adding one).
+  { when: route => route.match(COMPUTERS_ADD_ROUTE), answer: computersAddRoute },
   { when: route => route.match(COMPUTERS_ROUTE), answer: computersRoute },
   // What a session's model button shows, and whether its model can run (PROTOCOL.md, "A session's model").
   { when: route => route === SESSION_MODELS_ROUTE, answer: sessionModelsRoute },

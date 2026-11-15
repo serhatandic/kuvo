@@ -30,6 +30,8 @@ import { awaySince, PEER_REACH, readReach } from "../peers/reach";
 import { askReachAgain, REACH_AGAIN, readTries, tryingSince } from "../peers/reach-again";
 import { ownName } from "../letters/start";
 import { forwardAct } from "../work-queue/forward";
+import { sshActions } from "../add/flow";
+import { tryFollowers } from "../add/tries";
 import { sharedMachine } from "../setup/settle";
 import { macLink, readLink } from "../state";
 import { boxVersion } from "../updates/update";
@@ -149,7 +151,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const withActions = (): ListedComputer[] => {
     const here = computers[0]!.name;
     const facts = writerFacts(link);
-    return computers.map(computer => ({ ...computer, limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), actions: actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts) }));
+    return computers.map(computer => ({ ...computer, limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), actions: [...actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...sshActions(computer as ListedComputer, here)] }));
   };
   // A machine Macs of different setups share lists itself alone: the others there aren't all one
   // person's computers (as `kuvo/setup` refuses there).
@@ -258,7 +260,9 @@ export async function* computersRoute(context: RouteContext, match: RegExpMatchA
       told();
     };
     listFollowers.add(listTold);
-    return () => { listFollowers.delete(listTold); };
+    // (And what's under way with one over SSH, which changes what's offered for it.)
+    tryFollowers.add(told);
+    return () => { listFollowers.delete(listTold); tryFollowers.delete(told); };
   };
   return yield* followedLive(read, listen, signal,
     { look: () => `${mtime(PEER_AGENTS_FILE)} ${mtime(PEER_REACH)} ${mtime(LINK_FILE)} ${mtime(REACH_AGAIN)} ${oldAppAttached()}` });
