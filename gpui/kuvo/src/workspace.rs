@@ -967,19 +967,21 @@ impl Workspace {
 
     fn composer_event(&mut self, event: &ComposerEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
-            ComposerEvent::Started { session, project, written, sent, .. } => {
+            ComposerEvent::Started { session, project, written, files, sent, .. } => {
                 // What the box said of what was written (or why it didn't go) goes to the new
                 // conversation's own composer; the landing one is left empty.
                 self.started.insert(session.clone(), project.clone());
                 let composer = self.composer_for(session, window, cx);
-                composer.update(cx, |composer, cx| composer.take_sent(written, sent.clone(), cx));
+                composer.update(cx, |composer, cx| composer.take_sent(written, files.clone(), sent.clone(), cx));
                 // Opened, unless you've gone to another conversation meanwhile, or started
                 // writing the next one.
-                let writing_next = !self.landing.read(cx).field().read(cx).text().trim().is_empty();
+                let writing_next = !self.landing.read(cx).field().read(cx).text().trim().is_empty() || !self.landing.read(cx).attached().is_empty();
                 if self.is_landing() && !writing_next {
                     self.open_session(session, window, cx);
                 } else if self.opened() != Some(session.as_str())
-                    && (composer.read(cx).field().read(cx).error().is_some() || !composer.read(cx).field().read(cx).text().is_empty())
+                    && (composer.read(cx).field().read(cx).error().is_some()
+                        || !composer.read(cx).field().read(cx).text().is_empty()
+                        || !composer.read(cx).attached().is_empty())
                 {
                     // You're elsewhere: what didn't go waits there, marked in the sidebar.
                     self.unsent.insert(session.clone());

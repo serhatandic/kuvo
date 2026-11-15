@@ -49,7 +49,7 @@ type Panel = fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
 
 const SCREENS: &[Screen] = &[
     Screen { slug: "composer-shell", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "composer-compact", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "composer-compact", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "held-box-sessions", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "held-box", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     Screen { slug: "conversation", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -948,10 +948,6 @@ fn main() -> anyhow::Result<()> {
                 stand_in.hold_session("ses_dark", Some("Moving to Studio…"));
             }
             let client = BoxClient::new(stand_in);
-            if screen.slug == "composer-shell" || screen.slug == "composer-compact" {
-                let text = if screen.slug == "composer-shell" { "! ls" } else { "/compact" };
-                client.send_draft("ses_signup", &kuvo_box::Draft::new("shot-command", text), None)?;
-            }
             let window = cx.open_window(size(px(screen.width), px(screen.height)), |window, cx| cx.new(|cx| Workspace::new(client, false, window, cx)))?;
             let any = window.into();
             cx.update_window(any, |root, window, cx| {
@@ -988,6 +984,30 @@ fn main() -> anyhow::Result<()> {
                 });
             })?;
             cx.run_until_parked();
+            if screen.slug == "composer-shell" || screen.slug == "composer-compact" {
+                let text = if screen.slug == "composer-shell" { "! ls" } else { "/compact" };
+                let session = screen.session.expect("a session");
+                cx.update_window(any, |root, _window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    workspace.update(cx, |workspace, cx| {
+                        let composer = workspace.conversation().expect("the conversation").read(cx).composer().clone();
+                        composer.update(cx, |composer, cx| {
+                            composer.field().clone().update(cx, |field, cx| field.set_text(text, cx));
+                            composer.send(cx);
+                        });
+                    });
+                })?;
+                cx.run_until_parked();
+                cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.open_read_at_once(session, window, cx);
+                        let field = workspace.conversation().expect("the conversation").read(cx).composer().read(cx).field().clone();
+                        window.focus(&field.focus_handle(cx), cx);
+                    });
+                })?;
+                cx.run_until_parked();
+            }
             // (After the search's change has come through, which leaves the list.)
             cx.update_window(any, |root, window, cx| {
                 let workspace = root.downcast::<Workspace>().expect("the workspace");

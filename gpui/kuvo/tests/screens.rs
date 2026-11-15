@@ -324,14 +324,48 @@ fn a_conversation_that_isnt_there_says_so(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn a_shell_command_runs_on_the_box_and_clears_the_composer(cx: &mut TestAppContext) {
-    let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
     let composer = open_session(&workspace, "ses_limits", cx);
+    let where_gets_before = stand_in.seen_at("GET", "api/session/ses_limits").len();
     // The box decides what to run; the client sends it and follows the conversation.
     cx.simulate_input("!ls -la");
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
-    assert_eq!(typed(&composer, cx).0, "");
+    assert_eq!(typed(&composer, cx), (String::new(), None));
     assert!(composer.read_with(cx, |composer, _| composer.note().is_none()));
+    assert_eq!(stand_in.seen_at("POST", "api/session/ses_limits/shell").last().and_then(|seen| seen.body.as_ref()).map(|body| &body["command"]), Some(&json!("ls -la")));
+    assert_eq!(stand_in.seen_at("GET", "api/session/ses_limits").len(), where_gets_before, "place is known; no extra where_is GET");
+
+    // Re-read into ConversationView and verify the rendered shell entry and output well.
+    workspace.update_in(cx, |workspace, window, cx| workspace.open_read_at_once("ses_limits", window, cx));
+    cx.run_until_parked();
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let shell_id = view.read_with(cx, |view, _| {
+        view.entries().iter().find_map(|entry| match entry {
+            Entry::Message(message) => match message.as_ref() {
+                Message::Shell(run) if run.command == "ls -la" => {
+                    assert_eq!(run.status, "completed");
+                    assert!(run.output.as_ref().is_some_and(|out| out.output.contains("Cargo.toml")));
+                    Some(run.id.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+    }).expect("shell entry in ConversationView");
+    assert!(bounds(cx, &format!("entry-{shell_id}")).is_some(), "shell row rendered");
+    assert!(bounds(cx, &format!("shell-{shell_id}")).is_some(), "shell header rendered");
+    assert!(bounds(cx, &format!("shell-output-{shell_id}")).is_some(), "shell output well rendered");
+    let units = view.read_with(cx, |view, _| view.units());
+    assert!(units.iter().any(|(row, items)| row == &shell_id && items.iter().any(|unit| unit.text.contains("Cargo.toml"))), "shell output is in rendered units");
+
+    // A /shell refusal puts the command text and the box's error back in the composer.
+    stand_in.fail_sends();
+    cx.simulate_input("!pwd");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(typed(&composer, cx), ("!pwd".to_owned(), Some("The engine isn't answering. Try again in a moment.".to_owned())));
 }
 
 #[gpui::test]
@@ -1355,4 +1389,161 @@ fn a_composer_follows_its_conversations_folder_from_the_list(cx: &mut TestAppCon
     workspace.update(cx, |workspace, cx| workspace.read_at_once(cx));
     cx.run_until_parked();
     assert_eq!(composer.read_with(cx, |composer, _| composer.folder().map(str::to_owned)), Some("/Users/sam/Projects/api-moved".to_owned()));
+}
+
+#[gpui::test]
+fn compaction_shows_its_row_active_status_and_refusals_in_composer(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let composer = open_session(&workspace, "ses_recipes", cx);
+    let where_gets_before = stand_in.seen_at("GET", "api/session/ses_recipes").len();
+
+    // Idle conversation: /compact succeeds, shows its note, and adds a compaction row.
+    cx.simulate_input("/compact");
+    cx.simulate_keystrokes("escape enter");
+    cx.run_until_parked();
+    assert_eq!(typed(&composer, cx), (String::new(), None));
+    assert_eq!(composer.read_with(cx, |composer, _| composer.note().cloned()), Some(kuvo::composer::Note { text: "Compaction requested.".into(), warning: false }));
+    assert_eq!(stand_in.seen_at("POST", "api/session/ses_recipes/compact").len(), 1);
+    assert_eq!(stand_in.seen_at("GET", "api/session/ses_recipes").len(), where_gets_before, "place is known; no extra where_is GET");
+
+    workspace.update_in(cx, |workspace, window, cx| workspace.open_read_at_once("ses_recipes", window, cx));
+    cx.run_until_parked();
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let compact_id = view.read_with(cx, |view, _| {
+        view.entries().iter().find_map(|entry| match entry {
+            Entry::Message(message) => match message.as_ref() {
+                Message::Other { id, kind, raw, .. } if kind == "compaction" => {
+                    assert_eq!(raw["status"], "completed");
+                    Some(id.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+    }).expect("compaction entry in ConversationView");
+    assert!(bounds(cx, &format!("entry-{compact_id}")).is_some(), "compaction row rendered");
+    assert_eq!(kuvo::entries::compaction_label(Some("completed")), "Conversation compacted");
+
+    // While a compaction since the last idle is running, the bottom status row reads "Summarizing the conversation…".
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    let mut active = read_now(&client, "ses_recipes").unwrap();
+    let running_compaction: Message = serde_json::from_value(json!({
+        "type": "compaction", "id": "msg_cmp_run", "time": { "created": NOW + 100.0 }, "status": "running", "reason": "manual"
+    })).unwrap();
+    active.catch_up(vec![running_compaction], None, &[], Some(true));
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(active), cx));
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |view, _| view.entries().last().cloned()), Some(Entry::Working { summarizing: true }));
+    assert!(bounds(cx, "entry-working").is_some(), "summarizing row rendered");
+    assert_eq!(kuvo::entries::working_label(true), "Summarizing the conversation…");
+
+    // A /compact refusal restores the command and shows the error in the composer.
+    stand_in.fail_sends();
+    cx.simulate_input("/compact");
+    cx.simulate_keystrokes("escape enter");
+    cx.run_until_parked();
+    assert_eq!(typed(&composer, cx), ("/compact".to_owned(), Some("The engine isn't answering. Try again in a moment.".to_owned())));
+}
+
+#[gpui::test]
+fn a_step_this_app_cant_take_yet_keeps_what_was_written(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let composer = open_session(&workspace, "ses_limits", cx);
+
+    cx.simulate_input("/autopilot");
+    cx.simulate_keystrokes("escape enter");
+    cx.run_until_parked();
+    assert_eq!(typed(&composer, cx), ("/autopilot".to_owned(), None));
+    assert_eq!(composer.read_with(cx, |composer, _| composer.note().cloned()), Some(kuvo::composer::Note { text: "Turning Autopilot on or off isn’t in this app yet.".into(), warning: true }));
+    assert!(stand_in.seen_at("POST", "kuvo/sessions/ses_limits/send").is_empty());
+}
+
+#[gpui::test]
+fn attachments_stay_for_non_file_taking_sends_and_new_session_failures(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let folder = std::env::temp_dir().join(format!("kuvo-attach-keep-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let note = folder.join("spec.md");
+    std::fs::write(&note, "keep me").unwrap();
+
+    // Existing session: "!" command, /compact, typed refusal, and client-todo keep attached files.
+    let recipes = open_session(&workspace, "ses_recipes", cx);
+    recipes.update(cx, |composer, cx| composer.attach([note.clone()], cx));
+    cx.run_until_parked();
+
+    cx.simulate_input("!ls");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(recipes.read_with(cx, |composer, _| composer.attached().to_vec()), std::slice::from_ref(&note), "! command keeps files");
+
+    cx.simulate_input("/compact");
+    cx.simulate_keystrokes("escape enter");
+    cx.run_until_parked();
+    assert_eq!(recipes.read_with(cx, |composer, _| composer.attached().to_vec()), std::slice::from_ref(&note), "/compact keeps files");
+
+    cx.simulate_input("/loop now");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(recipes.read_with(cx, |composer, _| composer.attached().to_vec()), std::slice::from_ref(&note), "typed refusal keeps files");
+    assert_eq!(typed(&recipes, cx).0, "/loop now");
+    cx.simulate_keystrokes("cmd-a backspace");
+
+    cx.simulate_input("/autopilot");
+    cx.simulate_keystrokes("escape enter");
+    cx.run_until_parked();
+    assert_eq!(recipes.read_with(cx, |composer, _| composer.attached().to_vec()), std::slice::from_ref(&note), "client-todo keeps files");
+    cx.simulate_keystrokes("cmd-a backspace");
+
+    // A typed answer that sends (`/plan ...`) consumes the attached files.
+    cx.simulate_input("/plan ship it");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(recipes.read_with(cx, |composer, _| composer.attached().is_empty()), "send consumes files");
+
+    // Target::New: /compact fails after start_session (empty session -> 400); files carry to the opened session.
+    workspace.update_in(cx, |workspace, window, cx| workspace.new_session(None, window, cx));
+    cx.run_until_parked();
+    let landing = workspace.read_with(cx, |workspace, _| workspace.landing().clone());
+    let landing_field = landing.read_with(cx, |composer, _| composer.field().clone());
+    cx.update(|window, cx| window.focus(&landing_field.focus_handle(cx), cx));
+    landing.update(cx, |composer, cx| composer.attach([note.clone()], cx));
+    cx.simulate_input("/compact");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(landing.read_with(cx, |composer, _| composer.attached().is_empty()), "landing composer cleared after Started");
+    let opened = workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)).expect("new session opens");
+    assert!(opened.starts_with("ses_new"));
+    let new_composer = workspace.read_with(cx, |workspace, cx| workspace.conversation().unwrap().read(cx).composer().clone());
+    assert_eq!(typed(&new_composer, cx), ("/compact".to_owned(), Some("There’s nothing to summarize yet.".to_owned())));
+    assert_eq!(new_composer.read_with(cx, |composer, _| composer.attached().to_vec()), std::slice::from_ref(&note), "failed /compact on Target::New restores files");
+
+    // Target::New: "!" command succeeds after start_session; files still stay attached on the opened session.
+    workspace.update_in(cx, |workspace, window, cx| workspace.new_session(None, window, cx));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.focus(&landing_field.focus_handle(cx), cx));
+    landing.update(cx, |composer, cx| composer.attach([note.clone()], cx));
+    cx.simulate_input("!ls");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let shell_composer = workspace.read_with(cx, |workspace, cx| workspace.conversation().unwrap().read(cx).composer().clone());
+    assert_eq!(typed(&shell_composer, cx), (String::new(), None));
+    assert_eq!(shell_composer.read_with(cx, |composer, _| composer.attached().to_vec()), std::slice::from_ref(&note), "! command on Target::New keeps files");
+
+    // Target::New: failed plain send after start_session restores both text and files.
+    stand_in.fail_sends();
+    workspace.update_in(cx, |workspace, window, cx| workspace.new_session(None, window, cx));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.focus(&landing_field.focus_handle(cx), cx));
+    landing.update(cx, |composer, cx| composer.attach([note.clone()], cx));
+    cx.simulate_input("Check this file");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let failed_composer = workspace.read_with(cx, |workspace, cx| workspace.conversation().unwrap().read(cx).composer().clone());
+    assert_eq!(typed(&failed_composer, cx), ("Check this file".to_owned(), Some("The engine isn't answering. Try again in a moment.".to_owned())));
+    assert_eq!(failed_composer.read_with(cx, |composer, _| composer.attached().to_vec()), std::slice::from_ref(&note), "failed send on Target::New restores files");
+
+    std::fs::remove_dir_all(&folder).ok();
 }

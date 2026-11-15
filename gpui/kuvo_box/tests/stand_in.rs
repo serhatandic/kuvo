@@ -917,3 +917,30 @@ fn shell_drafts_send_the_box_command_to_the_sessions_engine() {
         assert_eq!(last.body, Some(json!({ "command": "printf hello" })));
     }
 }
+
+#[test]
+fn drafts_with_known_place_skip_where_is_for_shell_and_compact() {
+    for (agents, text, route) in [
+        (false, "!pwd", "api/session/ses_known/shell"),
+        (true, "/compact", "kuvo/agents/api/session/ses_known/compact"),
+    ] {
+        let stand_in = StandInBox::start(move |seen| match (seen.method.as_str(), seen.route()) {
+            (_, "kuvo/info") => Answer::json(200, mac_info(current_features())),
+            ("POST", "kuvo/sessions/ses_known/typed") => Answer::json(
+                200,
+                if text.starts_with('!') { json!({ "shell": "pwd" }) } else { json!({ "compact": true }) },
+            ),
+            ("POST", "api/session/ses_known/shell") if !agents => Answer::json(200, json!({})),
+            ("POST", "kuvo/agents/api/session/ses_known/compact") if agents => Answer::json(200, json!({ "data": { "state": "compacting" } })),
+            _ => panic!("unexpected request: {} {}", seen.method, seen.route()),
+        });
+        let (_home, _serve, client) = this_mac(&stand_in);
+        client.connect().unwrap();
+        let mut draft = Draft::new("draft_known", text);
+        draft.place = Some(if agents { Where::Agents } else { Where::Engine });
+        client.send_draft("ses_known", &draft, None).unwrap();
+        let seen = stand_in.seen();
+        let routes: Vec<&str> = seen.iter().map(|s| s.route()).collect();
+        assert_eq!(routes, ["kuvo/info", "kuvo/sessions/ses_known/typed", route]);
+    }
+}

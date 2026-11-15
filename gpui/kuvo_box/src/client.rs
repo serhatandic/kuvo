@@ -50,6 +50,9 @@ pub struct Draft {
     pub reviewer: Option<ModelRef>,
     /// Now, or after the run under way.
     pub delivery: Delivery,
+    /// Where the conversation lives on its box, when known: saves `send_draft` a `where_is` lookup
+    /// for `!` and `/compact`.
+    pub place: Option<Where>,
 }
 
 impl Draft {
@@ -66,6 +69,7 @@ impl Draft {
             refusal: None,
             reviewer: None,
             delivery: Delivery::Steer,
+            place: None,
         }
     }
 }
@@ -307,11 +311,22 @@ impl BoxClient {
             reviewer: draft.reviewer.clone(),
         };
         let answer = self.typed(session, &ask)?;
+        let mut place = draft.place;
+        let mut resolve = || -> Result<Where> {
+            match place {
+                Some(known) => Ok(known),
+                None => {
+                    let found = self.where_is(session)?;
+                    place = Some(found);
+                    Ok(found)
+                }
+            }
+        };
         if answer.compact == Some(true) {
-            self.compact_session(session, self.where_is(session)?)?;
+            self.compact_session(session, resolve()?)?;
         }
         if let Some(command) = &answer.shell {
-            self.run_shell(session, self.where_is(session)?, command)?;
+            self.run_shell(session, resolve()?, command)?;
             return Ok(Sent::Typed { answer: Box::new(answer), message: None });
         }
         let mut sending = Sending { id: Some(draft.id.clone()), files: draft.files.clone(), notes: draft.notes.clone(), delivery: Some(draft.delivery), ..Sending::default() };
