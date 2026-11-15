@@ -161,6 +161,18 @@ impl StandIn {
         stand_in
     }
 
+    /// A running summary for the screenshot fixture.
+    pub fn running_compaction(&self) {
+        let mut state = self.state();
+        state.running.insert("ses_recipes".into());
+        state.sessions.get_mut("ses_recipes").unwrap()["running"] = json!(true);
+        state.messages.get_mut("ses_recipes").unwrap().push(json!({
+            "type": "compaction", "id": "msg_cmp_running", "status": "running",
+            "time": {"created": 1_794_650_000_000.0}, "title": "Compacting conversation…",
+            "workingTitle": "Summarizing the conversation…"
+        }));
+    }
+
     /// What runs on the stand-in's machine: a project with a lead's session at work and one
     /// finished, each with a short conversation.
     fn fill_machine(&self, now: f64) {

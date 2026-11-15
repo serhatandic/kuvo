@@ -650,7 +650,7 @@ impl GroupChatView {
             };
             let after: Vec<String> = task.after.iter().filter_map(|bot| self.name_of(bot)).collect();
             let stopped = task.state == "working" && self.chat.stopped.contains(&task.bot);
-            let state = if stopped { format!("Waiting: {name}’s conversation is stopped") } else { task.title.clone() };
+            let state = task.title.clone();
             let tone = match task.state.as_str() {
                 "done" => c.success,
                 "failed" => c.danger,

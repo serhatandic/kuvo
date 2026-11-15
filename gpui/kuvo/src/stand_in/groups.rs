@@ -98,7 +98,7 @@ impl Groups {
         wrap["kind"] = json!("wrapUp");
         wrap["tasks"] = json!([
             { "id": "tk_1", "bot": "bot_mira", "task": "Tighten the spacing on the pricing cards", "state": "done", "title": "Done", "started": now - 2.0 * day + 30.0 * minute, "finished": now - 2.0 * day + hour },
-            { "id": "tk_2", "bot": "bot_inbox", "task": "Draft answers for the five questions support gets most", "state": "working", "title": "Working", "started": now - 2.0 * day + 30.0 * minute, "after": [] },
+            { "id": "tk_2", "bot": "bot_inbox", "task": "Draft answers for the five questions support gets most", "state": "working", "title": "Waiting: Inbox Helper’s conversation is stopped", "started": now - 2.0 * day + 30.0 * minute, "after": [] },
         ]);
         let design = Chat {
             id: "grp_design".into(),

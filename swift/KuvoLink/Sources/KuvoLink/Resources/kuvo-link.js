@@ -5377,6 +5377,7 @@ var FEATURES = [
   "computers.facts",
   "computers.manage",
   "computers.reach",
+  "computers.words",
   "config",
   "config.apply",
   "devices.allow",
@@ -5413,6 +5414,7 @@ var FEATURES = [
   "groups.make",
   "groups.mentions",
   "groups.seats",
+  "groups.task-title",
   "handoff",
   "integrations",
   "keys",
@@ -5424,6 +5426,7 @@ var FEATURES = [
   "limits.titles",
   "mcp.catalog",
   "messages.commands",
+  "messages.compaction-words",
   "messages.send",
   "models.offered",
   "models.offered.folder",
@@ -40701,6 +40704,12 @@ function reachOf(link, address) {
     return {};
   return { address, relay: link.relay };
 }
+function computerWords(computer, here) {
+  const { reach, name, through, working } = computer;
+  const title = { connected: "Connected", connecting: "Connecting", away: "Can’t be reached", unknown: "Not reached directly" }[reach];
+  const notice = reach === "away" ? { title: `${name} can’t be reached`, detail: `${here} hasn’t heard from it for a while: it may be asleep, off, or offline. It shows here again by itself once it’s back, with what it runs.` } : reach === "connecting" ? { title: `Connecting to ${name}…`, detail: `${here} hasn’t heard from it yet.` } : reach === "unknown" ? { title: `Known through ${through ?? "another computer"}`, detail: `${here} doesn’t reach ${name} itself, so how it stands and what it runs can’t be said here.` } : undefined;
+  return { title, ...notice ? { detail: notice.detail, notice } : {}, ...working !== undefined ? { workingTitle: `${working} ${working === 1 ? "session" : "sessions"} at work` } : {} };
+}
 async function listComputers(name, bridge, signal, now = Date.now()) {
   let link = null;
   try {
@@ -40734,7 +40743,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
   const withActions = () => {
     const here = computers[0].name;
     const facts = writerFacts(link);
-    return computers.map((computer) => ({ ...computer, limitServices: computer.limits.map((id) => ({ id, title: serviceTitle(id) })), actions: [...actionsOf(computer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...sshActions(computer, here)] }));
+    return computers.map((computer) => ({ ...computer, ...computerWords(computer, here), limitServices: computer.limits.map((id) => ({ id, title: serviceTitle(id) })), actions: [...actionsOf(computer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...sshActions(computer, here)] }));
   };
   if (sharedMachine(link))
     return withActions();
@@ -48210,7 +48219,7 @@ import fs158 from "node:fs";
 import path166 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ba54a8f2ed0a";
+var BRIDGE_VERSION = "7fe2913f8ae6";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync10 } from "node:child_process";
@@ -52078,6 +52087,19 @@ function snippet(text, at, length) {
 import fs163 from "node:fs";
 import path172 from "node:path";
 
+// box/src/shared/compaction-words.ts
+function compactionWords(value) {
+  if (!isObject(value) || value.type !== "compaction")
+    return value;
+  const title = value.status === "running" ? "Compacting conversation…" : value.status === "completed" ? "Conversation compacted" : value.status === "failed" ? "Couldn’t compact conversation" : "Conversation compaction";
+  return { ...value, title, ...value.status === "running" ? { workingTitle: "Summarizing the conversation…" } : {} };
+}
+function compactionPage(value) {
+  if (!isObject(value))
+    return value;
+  return { ...value, data: Array.isArray(value.data) ? value.data.map(compactionWords) : compactionWords(value.data) };
+}
+
 // box/src/link/server/sent-once.ts
 var BUSY = "This computer is busy: its engine didn't answer in time. Try again in a moment.";
 var SENDING_PATIENCE = { ms: 120000 };
@@ -52324,6 +52346,13 @@ async function* forward(target, path, request, signal, allows, naming = null, do
       if (archived)
         await stopIfWaiting(target, decodeURIComponent(changed[1]));
     }
+  }
+  if (method === "GET" && response.ok && /^\/?api\/session\/[^/]+\/message(?:\/[^/?]+)?(?:\?|$)/.test(path)) {
+    const body = Buffer.from(JSON.stringify(compactionPage(await response.json())));
+    delete out["content-length"];
+    yield { head: { status: response.status, headers: out } };
+    yield { body };
+    return;
   }
   yield { head: { status: response.status, headers: out } };
   if (!response.body)

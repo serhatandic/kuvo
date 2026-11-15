@@ -33380,7 +33380,10 @@ var plainName = (text) => String(text ?? "").replace(/[\u0000-\u001f\u007f\u200E
 var newGroupID = () => "grp_" + Array.from(crypto.getRandomValues(new Uint8Array(10)), (byte) => "abcdefghijklmnopqrstuvwxyz0123456789"[byte % 36]).join("");
 var failed = (status) => status === 409 ? 409 : status >= 500 ? 503 : 404;
 var present = (value) => Object.fromEntries(Object.entries(value).filter(([, each]) => each !== null && each !== undefined));
-function clientMessage(message, withSteps = true) {
+function taskTitle(state) {
+  return { proposed: "Not started", waiting: "Waiting", working: "Working", done: "Done", failed: "Didn\u2019t finish" }[state] ?? state;
+}
+function clientMessage(message, withSteps = true, stopped = [], nameOf = () => "A bot") {
   if (!message)
     return;
   const { named: _named, steps, time, tasks, author, ...rest } = message;
@@ -33390,7 +33393,7 @@ function clientMessage(message, withSteps = true) {
     time: seconds3(time),
     ...withSteps && steps ? { steps } : {},
     ...tasks ? {
-      tasks: tasks.map(({ started, finished, lost: _lost, ...task }) => ({ ...task, ...started ? { started: seconds3(started) } : {}, ...finished ? { finished: seconds3(finished) } : {} }))
+      tasks: tasks.map(({ started, finished, lost: _lost, ...task }) => ({ ...task, title: task.state === "working" && stopped.includes(task.bot) ? `Waiting: ${nameOf(task.bot)}\u2019s conversation is stopped` : taskTitle(task.state), ...started ? { started: seconds3(started) } : {}, ...finished ? { finished: seconds3(finished) } : {} }))
     } : {}
   };
 }
@@ -33434,18 +33437,18 @@ function list2(runner, store) {
     discussing: Boolean(state.discussing),
     paused: Boolean(state.paused),
     unread: Boolean(fromBot && (!group.viewed || Date.parse(fromBot.time) > Date.parse(group.viewed))),
-    last: clientMessage(said, false),
+    last: clientMessage(said, false, state.stopped, (id) => anyMember(id, runner, store)?.name ?? "A bot"),
     meeting: group.meeting ? present({ ...group.meeting, next: seconds3(group.meeting.next) }) : undefined
   }));
   return { groups };
 }
-function chat(runner, id, withMessages = true) {
+function chat(runner, store, id, withMessages = true) {
   const found = runner.get(id);
   if (!found || found.status !== "active")
     return;
   const { messages, state } = found;
   return {
-    ...withMessages ? { messages: messages.slice(-300).map((each) => clientMessage(each)) } : {},
+    ...withMessages ? { messages: messages.slice(-300).map((each) => clientMessage(each, true, state.stopped, (id) => anyMember(id, runner, store)?.name ?? "A bot")) } : {},
     speaking: state.speaking,
     discussing: Boolean(state.discussing),
     paused: Boolean(state.paused),
@@ -33460,8 +33463,13 @@ function following(read, chat, signal) {
     start(controller) {
       let lastState = "";
       let lastMessages;
+      let lastStopped;
       const look = (withMessages) => {
-        const now = read(withMessages || lastMessages === undefined);
+        let now = read(withMessages || lastMessages === undefined);
+        const stopped = JSON.stringify(now?.stopped ?? []);
+        if (now && lastStopped !== undefined && stopped !== lastStopped)
+          now = read(true);
+        lastStopped = stopped;
         if (!now) {
           stop();
           try {
@@ -33534,9 +33542,9 @@ async function linkRoutes(runner, store, method, parts, body, signal) {
   if (!/^grp_[a-z0-9]+$/.test(id))
     return json13({}, 404);
   if (method === "GET" && (!action || action === "events")) {
-    if (!chat(runner, id))
+    if (!chat(runner, store, id))
       return json13({}, 404);
-    return action ? following((withMessages) => chat(runner, id, withMessages), id, signal) : json13(chat(runner, id));
+    return action ? following((withMessages) => chat(runner, store, id, withMessages), id, signal) : json13(chat(runner, store, id));
   }
   if (method === "PATCH" && !action) {
     const given = await body().catch(() => {
@@ -36791,4 +36799,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 984fd1f3847da23aba52b3f26f23d16e9c33fafdcada8283fcab5ea69bca63e7
+// Built from Packages/Box/src/agents 8574f1af614dc9de7084dda8e0ae2e641785975e080ff9dab4366d6dfc6e0a9b

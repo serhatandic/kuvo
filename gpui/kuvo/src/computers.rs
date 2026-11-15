@@ -87,7 +87,7 @@ enum Item {
     Notice { key: String, tone: Tone, title: String, words: String },
     Fact { key: String, title: String, value: String, first: bool, last: bool },
     /// Sessions at work there, as its box counts them; `open`: they're this window's, under Sessions.
-    Working { count: usize, open: bool },
+    Working { title: String, open: bool },
     /// One of Manage's rows: what it does (none: not in this app yet), and its words while it's under way.
     Action { key: String, title: String, button: String, act: Option<Manage>, busy: Option<String>, why: Option<String>, first: bool, last: bool },
     Note { key: String, words: String, busy: bool },
@@ -245,7 +245,7 @@ impl ComputersView {
         self.items.iter().find_map(|item| match item {
             Item::Notice { key: at, title, words, .. } if at == key => Some((title.clone(), words.clone())),
             Item::Fact { key: at, title, value, .. } if at == key => Some((title.clone(), value.clone())),
-            Item::Working { count, .. } if key == "fact-at-work" => Some((if *count == 1 { "1 session at work".to_owned() } else { format!("{count} sessions at work") }, String::new())),
+            Item::Working { title, .. } if key == "fact-at-work" => Some((title.clone(), String::new())),
             Item::Note { key: at, words, .. } if at == key => Some((words.clone(), String::new())),
             _ => None,
         })
@@ -585,7 +585,7 @@ impl ComputersView {
             if working == 0 {
                 items.push(Item::Note { key: "at-work-none".into(), words: format!("Nothing is at work on {name} now."), busy: false });
             } else {
-                items.push(Item::Working { count: working, open: computer.here });
+                items.push(Item::Working { title: computer.working_title.clone().unwrap_or_default(), open: computer.here });
                 if !computer.here {
                     // (The window shows another computer from the title bar's computer menu.)
                     items.push(Item::Note { key: "at-work-elsewhere".into(), words: format!("To open them, pick {name} in the computer menu at the top of the window."), busy: false });
@@ -725,23 +725,12 @@ impl ComputersView {
                 words: "Someone else’s setup shares this machine, so what runs there isn’t shown.".into(),
             });
         }
-        let this = &self.this_box;
-        match computer.reach.as_str() {
-            "away" => Some(Item::Notice {
-                key: "notice-away".into(),
-                tone: Tone::Waiting,
-                title: format!("{name} can’t be reached"),
-                words: format!("{this} hasn’t heard from it for a while: it may be asleep, off, or offline. It shows here again by itself once it’s back, with what it runs."),
-            }),
-            "connecting" => Some(Item::Notice { key: "notice-connecting".into(), tone: Tone::Waiting, title: format!("Connecting to {name}…"), words: format!("{this} hasn’t heard from it yet.") }),
-            "unknown" => Some(Item::Notice {
-                key: "notice-unknown".into(),
-                tone: Tone::Info,
-                title: format!("Known through {}", computer.through.as_deref().unwrap_or("another computer")),
-                words: format!("{this} doesn’t reach {name} itself, so how it stands and what it runs can’t be said here."),
-            }),
-            _ => None,
-        }
+        computer.notice.as_ref().map(|notice| Item::Notice {
+            key: format!("notice-{}", computer.reach),
+            tone: if computer.reach == "unknown" { Tone::Info } else { Tone::Waiting },
+            title: notice.title.clone(),
+            words: notice.detail.clone(),
+        })
     }
 
     /// A computer picked that the list doesn't have (gone since, or not read yet).
@@ -812,11 +801,10 @@ impl ComputersView {
                     .when(!value.is_empty(), |d| d.child(div().debug_selector(move || value_selector).flex_shrink_0().max_w(px(360.)).text_right().text_ui(TypeSize::Body).text_color(c.text_muted).child(value)))
                     .into_any_element()
             }
-            Item::Working { count, open } => {
-                let sessions = if count == 1 { "1 session at work".to_owned() } else { format!("{count} sessions at work") };
+            Item::Working { title, open } => {
                 card_row("fact-at-work".into(), true, true, cx)
                     .child(div().flex().flex_none().items_center().justify_center().size(px(20.)).child(spinner("at-work-spin", IconSize::Nav, c.text_muted)))
-                    .child(div().flex_1().min_w_0().text_ui(TypeSize::Body).text_color(c.text).child(sessions))
+                    .child(div().flex_1().min_w_0().text_ui(TypeSize::Body).text_color(c.text).child(title))
                     .when(open, |d| d.child(Button::new("at-work-show", "Show in Sessions").size(ButtonSize::Small).on_click(cx.listener(|_, _, _, cx| cx.emit(ComputersEvent::Sessions)))))
                     .into_any_element()
             }
@@ -1161,17 +1149,9 @@ fn standing(computer: &Computer) -> String {
 }
 
 /// How a computer stands, in a word or two.
-fn state_words(computer: &Computer) -> &'static str {
-    if computer.is_older() {
-        return "Needs an update";
-    }
-    match computer.reach.as_str() {
-        "connected" => "Connected",
-        "connecting" => "Connecting",
-        "away" => "Can’t be reached",
-        "unknown" => "Not reached directly",
-        _ => "Listed",
-    }
+fn state_words(computer: &Computer) -> &str {
+    if computer.is_older() { return "Needs an update"; }
+    &computer.title
 }
 
 /// How a computer's reach is drawn: green connected, amber connecting or older, red away, faint

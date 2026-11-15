@@ -301,6 +301,9 @@ fn listed(areas: &Areas) -> Vec<Value> {
             }
             if areas.reaching.iter().any(|key| computer["key"] == json!(key)) {
                 computer["reach"] = json!("connecting");
+                computer["title"] = json!("Connecting");
+                computer["detail"] = json!("Studio hasn’t heard from it yet.");
+                computer["notice"] = json!({"title": format!("Connecting to {}…", computer["name"].as_str().unwrap()), "detail": "Studio hasn’t heard from it yet."});
                 if let Some(actions) = computer["actions"].as_array_mut() {
                     actions.retain(|action| action["id"] != json!("connect"));
                 }
@@ -354,6 +357,19 @@ fn computers(alone: bool, more: usize) -> Vec<Value> {
         }
         computer
     }));
+    for computer in &mut computers {
+        let reach = computer["reach"].as_str().unwrap_or("connected");
+        let title = match reach { "away" => "Can’t be reached", "connecting" => "Connecting", "unknown" => "Not reached directly", _ => "Connected" };
+        computer["title"] = json!(title);
+        if let Some(count) = computer["working"].as_u64() {
+            computer["workingTitle"] = json!(format!("{count} {} at work", if count == 1 { "session" } else { "sessions" }));
+        }
+        if computer["reach"] == "away" {
+            let detail = "Studio hasn’t heard from it for a while: it may be asleep, off, or offline. It shows here again by itself once it’s back, with what it runs.";
+            computer["detail"] = json!(detail);
+            computer["notice"] = json!({"title": format!("{} can’t be reached", computer["name"].as_str().unwrap()), "detail": detail});
+        }
+    }
     computers
 }
 
