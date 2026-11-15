@@ -135,7 +135,7 @@ fn a_computer_this_app_doesnt_reach_says_why_and_cant_be_picked(cx: &mut TestApp
 fn when_this_apps_computer_was_blocked_the_boxs_words_show_whole_on_computers(cx: &mut TestAppContext) {
     // The nearest box refuses to pair this app, in the main computer's words (its app was removed,
     // and its box may add none until it's allowed again).
-    let words = "Kuvo on MacBook was removed from your devices, so MacBook can’t add Kuvo Code’s app by itself now. Allow it again from Mac mini or one of your devices: Computers, MacBook.";
+    let words = "Kuvo on MacBook was removed from your devices, so MacBook can’t add Kuvo Code’s app by itself now. Allow it again from Kuvo Code on Mac mini or another computer’s app: Computers, MacBook.";
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (home, cx) = open(cx, stand_in);
     let workspace = workspace(&home, cx);
