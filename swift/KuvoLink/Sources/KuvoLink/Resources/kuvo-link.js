@@ -5828,6 +5828,9 @@ function said6({ S, prefs, dropped }) {
     dropped.push(`${theirWorktrees === 1 ? "A worktree" : `${theirWorktrees} worktrees`} on your machines may show ${theirWorktrees === 1 ? "its" : "their"} sessions under another project: the earlier Kuvo Code kept which project ${theirWorktrees === 1 ? "it" : "each"} belonged to on this Mac.`);
   if (Object.keys(prefs).some((key) => key.startsWith("machines.unreadable-")))
     dropped.push("The earlier Kuvo Code had set aside a list of machines it couldn't read. It isn't brought along: add any machine that's missing again.");
+  const keyed = strings(prefs["kuvo.usage.connectedProviders.v1"]).filter((id) => /openrouter|zai|z\.ai/i.test(id)).length;
+  if (keyed)
+    dropped.push("An API key you pasted into the usage panel (OpenRouter's or Z.ai's) isn't brought along. Paste it again in the usage panel.");
   const starred = typeof prefs.favoriteModels === "string" && prefs.favoriteModels !== "";
   if (starred || prefs.lastModelRef !== undefined || prefs.lastModel !== undefined)
     dropped.push(starred ? "Your starred models, and the model new sessions start with, are chosen again in the new app." : "The model new sessions start with is chosen again in the new app.");
@@ -14997,7 +15000,7 @@ function rehomeStatus(home, now = Date.now()) {
     asked: kept.asked ?? null,
     from: kept.from ?? underWay?.from ?? null,
     to: kept.to ?? underWay?.to ?? null,
-    progress: underWay && underWay.way === "move" && underWay.run ? progressOf(underWay.step) : null,
+    progress: underWay && underWay.way === "move" && underWay.run ? progressOf(underWay.step) : phaseProgress(home),
     dropped: Array.isArray(kept.dropped) ? kept.dropped.filter((each) => typeof each === "string") : []
   };
 }
@@ -15014,6 +15017,27 @@ var STEP_TITLES = {
   fix: "Reconnecting your worktrees",
   clear: "Finishing up"
 };
+var phaseFile = (home) => path43.join(rehomeFolder(home), "run.phase");
+function notePhase(home, phase) {
+  if (phase === null)
+    return void fs39.rmSync(phaseFile(home), { force: true });
+  fs39.mkdirSync(rehomeFolder(home), { recursive: true, mode: 448 });
+  fs39.writeFileSync(phaseFile(home), phase, { mode: 384 });
+}
+function phaseProgress(home) {
+  let phase = "";
+  try {
+    phase = fs39.readFileSync(phaseFile(home), "utf8").trim();
+  } catch {
+    return null;
+  }
+  if (!holdsLock(home) && !heldByAnother(home))
+    return null;
+  const of = STEPS.length - 1;
+  if (phase === "plan")
+    return progressOf("plan");
+  return phase === "settle" ? { step: "done", title: "Starting Kuvo on this Mac", index: of, of } : null;
+}
 function progressOf(step) {
   const shown = STEPS.filter((each) => each !== "done");
   const at = step === "done" ? "clear" : step;
@@ -51628,7 +51652,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "880f9e7ca5cf";
+var BRIDGE_VERSION = "834cc86b1fae";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -53533,6 +53557,7 @@ function settleStart(home, options) {
   return { owes, bundle, app, started, message };
 }
 async function settle5(home, options) {
+  notePhase(home, "settle");
   const { owes, bundle, app, started, message } = settleStart(home, options);
   let said = message;
   if (owes("passwords") && !owes("start")) {
@@ -53559,6 +53584,7 @@ async function settle5(home, options) {
   }
   if (!owes("start"))
     fs167.rmSync(path175.join(home, "updates", "install"), { recursive: true, force: true });
+  notePhase(home, null);
   return { result: "done", status: rehomeStatus(home), ...started !== undefined ? { started } : {}, ...said ? { message: said } : {} };
 }
 async function rehomeRun(folders, options) {
@@ -53566,6 +53592,14 @@ async function rehomeRun(folders, options) {
   if (process.platform !== "darwin")
     return { result: "refused", message: NOTHING_TO_MOVE, status: rehomeStatus(home) };
   return locked2(home, options.waiting ?? (() => {}), async () => {
+    try {
+      return await whole();
+    } finally {
+      notePhase(home, null);
+    }
+  });
+  async function whole() {
+    notePhase(home, "plan");
     const earlier = await resumed(home, RUN_REWRITER);
     if (earlier && earlier.result === "stuck")
       return { ...earlier, message: STUCK };
@@ -53618,7 +53652,7 @@ async function rehomeRun(folders, options) {
     if (outcome.result === "stuck")
       return { ...outcome, message: STUCK };
     return outcome.result === "done" ? settle5(home, options) : outcome;
-  });
+  }
 }
 
 // box/src/link/rehome/command.ts
