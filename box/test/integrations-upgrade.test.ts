@@ -12,7 +12,7 @@ import crypto from "node:crypto"
 import { changeSettings, SERVERS } from "../src/link/areas/config"
 import { upgradeIntegrations } from "../src/link/areas/integrations"
 import { addressOf, newKey, publicOf } from "../src/link/crypto/keys"
-import { BOT_KEYS, BOTS, BOX_KEYS, RUN, shownRoot } from "../src/link/home"
+import { BOX_KEYS, RUN, shownRoot } from "../src/link/home"
 import { keyWork } from "../src/link/keys"
 import { watchFolder } from "../src/shared/watch"
 // @ts-expect-error (The bridge tests' stand-in, in plain JavaScript.)
@@ -409,30 +409,4 @@ test("a package its maker's server replaces stays off if you turned it off, with
   const was = written()
   await upgrade()
   expect(written()).toBe(was)
-})
-
-test("a bot's own key for a package its maker's server replaces goes with it, and its folder's copy of the server; its others stay", async () => {
-  const folder = join(BOTS, "mira", "workspace", ".opencode")
-  const own = `${FIGMA}__MIRA`, other = `${TODOIST}__MIRA`
-  const botSettings = join(folder, "opencode.json")
-  mkdirSync(folder, { recursive: true })
-  mkdirSync(BOT_KEYS, { recursive: true })
-  writeFileSync(join(BOT_KEYS, own), "bot-tok")
-  writeFileSync(join(BOT_KEYS, other), "bot-tok")
-  const todoistHers = { type: "local", environment: { TODOIST_API_KEY: `{file:${BOT_KEYS}/${other}}` } }
-  writeFileSync(botSettings, JSON.stringify({ mcp: { servers: {
-    figma: { type: "local", environment: { FIGMA_API_KEY: `{file:${BOT_KEYS}/${own}}` } },
-    todoist: todoistHers,
-  } } }))
-  try {
-    write(oldServers())
-    await upgrade()
-    expect(existsSync(join(BOT_KEYS, own))).toBe(false)
-    expect(existsSync(join(BOT_KEYS, other))).toBe(true)
-    expect(JSON.parse(readFileSync(botSettings, "utf8")).mcp.servers).toEqual({ todoist: todoistHers })
-    expect(read().mcp.servers.figma).toEqual(pinned("figma"))
-  } finally {
-    rmSync(join(BOTS, "mira"), { recursive: true, force: true })
-    rmSync(join(BOT_KEYS, other), { force: true })
-  }
 })

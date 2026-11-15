@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { script, standInHost } from "./bot-keys-scenarios.js";
+import { script, standInHost } from "./box-stand-ins.js";
 import { integrationScenarios } from "./integrations-scenarios.js";
 import { removeAtEnd } from "./at-end.js";
 
@@ -140,7 +140,7 @@ test("new keys saved while another client removes it don't bring it back", async
 });
 
 test("this Mac's box without its app refuses keys rather than keep them in files", async () => {
-  const { served } = await import("./bot-keys-scenarios.js");
+  const { served } = await import("./box-stand-ins.js");
   const box = await served({ ...process.env, KUVO_HOST_PASSWORD: PASSWORD, KUVO_HOST_URL: "" });
   const refused = await box.route("PUT", "kuvo/keys/KUVO_KEY_TODOIST_API_KEY", { value: "tok_nowhere" });
   assert.deepEqual(refused, { status: 503, value: { message: "Kuvo Code isn't answering for this Mac's keys. Try again in a moment." } });

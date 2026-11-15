@@ -19,7 +19,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { script } from "./bot-keys-scenarios.js";
+import { script } from "./box-stand-ins.js";
 import { runningAs } from "./running-as.js";
 import { NO_BUN, testBun } from "./bun-for-tests.js";
 import { atEnd, removeAtEnd } from "./at-end.js";

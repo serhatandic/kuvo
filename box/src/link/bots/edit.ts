@@ -10,7 +10,6 @@ import { call } from "../engine/client";
 import { textOf } from "../files";
 import { BOTS, HERE, IS_MAC, K, RUN } from "../home";
 import { hostTrash } from "../host-interface";
-import { botVariable, deleteKey, keyNames } from "../keys";
 import { botPersonalities } from "../personalities/library";
 import { BOT_STEP, botHere, botLook, botModel, changeDescription, isModel, isMoving, MOVING, noteBotsChanged, sameModel } from "./here";
 import { givenJob, jobOf, writeJob } from "./jobs";
@@ -251,42 +250,6 @@ async function effortOf(model: { id: string; providerID: string }, given: unknow
   return { variant: given };
 }
 
-// Bots deleted here whose keys of their own are still to go (`run/bot-keys-left.json`): where the
-// keys couldn't be reached as one was deleted (this Mac's app not answering), they go the next time
-// they can be, as the box starts or another bot is deleted.
-const KEYS_LEFT_FILE = path.join(RUN, "bot-keys-left.json");
-function keysLeft(): string[] {
-  try {
-    const listed = JSON.parse(textOf(KEYS_LEFT_FILE) ?? "");
-    return Array.isArray(listed?.bots) ? listed.bots.filter((each: unknown) => typeof each === "string" && /^bot_[A-Za-z0-9]+$/.test(each)) : [];
-  } catch {
-    return [];
-  }
-}
-function noteKeysLeft(id: string, left: boolean): void {
-  const bots = keysLeft().filter(each => each !== id);
-  if (left) bots.push(id);
-  try {
-    fs.mkdirSync(RUN, { recursive: true });
-    if (!bots.length) return fs.rmSync(KEYS_LEFT_FILE, { force: true });
-    fs.writeFileSync(`${KEYS_LEFT_FILE}.new`, JSON.stringify({ bots }));
-    fs.renameSync(`${KEYS_LEFT_FILE}.new`, KEYS_LEFT_FILE);
-  } catch {}
-}
-export async function forgetLeftKeys(): Promise<void> {
-  for (const id of keysLeft()) {
-    if (botHere(id)) {
-      // Here again (a move brought it back): its keys are its own.
-      noteKeysLeft(id, false);
-      continue;
-    }
-    try {
-      for (const name of await keyNames({ suffix: botVariable("", id) })) await deleteKey(name);
-      noteKeysLeft(id, false);
-    } catch {}
-  }
-}
-
 // What a bot deleted here still has elsewhere (`run/bots-left.json`): its place in the group chats
 // here, and its conversation, where its coding agents' bridge or its engine wasn't answering as it
 // was deleted. They go the next time they can be, as the box finds its engine or its bridge again.
@@ -394,8 +357,8 @@ function noteDeleted(id: string): void {
 }
 
 // `DELETE kuvo/bots/<id>`, as the Mac's Delete Bot…: a bot that lives here goes, its folder (its
-// memory, wake-ups and what it made) to Kuvo Code's trash here, then its keys of its own, its
-// place in the group chats here and its conversation. It's noted for the Mac (`noteDeleted`) first,
+// memory, wake-ups and what it made) to Kuvo Code's trash here, then its place in the group chats
+// here and its conversation. It's noted for the Mac (`noteDeleted`) first,
 // so it lets the bot go too. Once its folder has gone, the rest is done whatever becomes of the
 // phone's request.
 export async function deleteBot(id: string, readEngine: () => Target, readBridge: () => Target | null): Promise<DeletedAnswer> {
@@ -428,10 +391,6 @@ export async function deleteBot(id: string, readEngine: () => Target, readBridge
     await hostTrash(trashed).catch(() => {});
     if (!fs.existsSync(trashed)) try { fs.rmdirSync(path.dirname(trashed)); } catch {}
   }
-  // Its keys of its own (`KUVO_KEY_…__<ID>`). Where they can't be reached now (this Mac's app not
-  // answering), the bot is deleted all the same, and its keys go once they can be.
-  noteKeysLeft(id, true);
-  await forgetLeftKeys();
   // Its place in the group chats here and its conversation; what can't be reached now (its engine
   // or its coding agents restarting) goes once it can be. (Gone from its folder, it's deleted whole,
   // whatever becomes of the phone's request.)

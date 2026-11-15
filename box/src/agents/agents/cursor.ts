@@ -367,7 +367,7 @@ class CursorThread implements Thread {
     // Kuvo Code's own tools (the panel's browser, show_in_panel, messages to other agents), as the
     // other agents have them: what they do goes to this conversation (through the relay, in the sandbox).
     const tools = fenced ? relayedTools(this.session.id, this) : kuvoTools(this.session.id)
-    // And the computer's MCP servers (yours, the integrations', a bot's with its own keys), through
+    // And the computer's MCP servers (yours and the integrations'), through
     // the relay, which keeps their keys.
     // (Those set right since the relay stood in for them, at new addresses, which start it again.)
     const computer = await computerServers(cwd)

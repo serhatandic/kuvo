@@ -1,5 +1,5 @@
 {
-  "about": "kuvo/bots, its templates, making, changing and deleting a bot, and a bot's keys of its own (PROTOCOL.md, kuvo/bots and \"Bots' own keys\"), as both boxes answer them for the bots that live there.",
+  "about": "kuvo/bots, its templates, making, changing and deleting a bot (PROTOCOL.md, kuvo/bots), as both boxes answer them for the bots that live there.",
   "scenarios": [
     {
       "name": "kuvo/bots lists each bot with its look, job, wake-ups and watches",
@@ -47,14 +47,13 @@
               { "id": "bot_ada", "deletes": [
                 { "what": "conversation", "words": "Its conversation is deleted." },
                 { "what": "folder", "words": "<string>" },
-                { "what": "keys", "words": "Any keys of its own are removed." },
                 { "what": "groups", "words": "<string>" },
                 { "what": "sessions", "words": "The sessions it started stay.", "kept": true }
               ] },
               { "id": "bot_ben", "deletes": [
                 { "what": "conversation" }, { "what": "folder" },
                 { "what": "wakes", "words": "Its wake-up is cancelled." },
-                { "what": "keys" }, { "what": "groups" }, { "what": "sessions" }
+                { "what": "groups" }, { "what": "sessions" }
               ] }
             ],
             "elsewhere": "<absent>"
@@ -223,34 +222,17 @@
       ]
     },
     {
-      "name": "a bot's keys of its own: listed, given, read back and taken away",
+      "name": "a bot has no keys of its own: the routes that kept them are gone",
+      "why": "Bots use the integrations of the computer they live on, as every session does (PROTOCOL.md, \"Bots have no keys of their own\"): a client that still asks is told there's no such route, never answered as if a key were kept.",
       "steps": [
         { "given": { "bot": { "id": "bot_ada", "name": "Ada", "session": "ses_ada" } } },
-        {
-          "send": "GET kuvo/bots/bot_ada/keys",
-          "expect": { "status": 200, "json": { "keys": { "<includes>": [
-            { "integration": "todoist", "own": false, "shared": false, "title": "Todoist", "symbol": "checkmark.circle",
-              "keys": [ { "name": "TODOIST_API_KEY", "label": "API token", "prompt": "<string>" } ], "help": "<string>" }
-          ] } } }
-        },
-        { "send": "PUT kuvo/bots/bot_ada/keys/todoist", "body": { "keys": {} }, "expect": { "status": 400, "json": { "message": "<string>" } } },
+        { "send": "GET kuvo/bots/bot_ada/keys", "expect": { "status": 404, "json": { "message": "Bots use this computer's integrations now." } } },
+        { "send": "PUT kuvo/bots/bot_ada/keys/todoist", "body": { "keys": { "TODOIST_API_KEY": "tok_ada" } }, "expect": { "status": 404, "json": { "message": "Bots use this computer's integrations now." } } },
         { "send": "GET kuvo/bots/bot_ada/keys/todoist", "expect": { "status": 404 } },
-        { "send": "PUT kuvo/bots/bot_ada/keys/todoist", "body": { "keys": { "TODOIST_API_KEY": " tok_ada " } }, "expect": { "status": 200, "json": { "integration": "todoist", "own": true, "shared": false } } },
-        { "send": "GET kuvo/bots/bot_ada/keys/todoist", "expect": { "status": 200, "json": { "keys": { "TODOIST_API_KEY": "tok_ada" } } } },
-        { "send": "GET kuvo/bots/bot_ada/keys", "expect": { "status": 200, "json": { "keys": { "<includes>": [ { "integration": "todoist", "own": true } ] } } } },
-        { "send": "DELETE kuvo/bots/bot_ada/keys/todoist", "expect": { "status": 200, "json": {} } },
         { "send": "DELETE kuvo/bots/bot_ada/keys/todoist", "expect": { "status": 404 } },
-        { "send": "GET kuvo/bots/bot_ada/keys/nothing", "expect": { "status": 404, "json": { "message": "<string>" } } },
-        { "send": "GET kuvo/bots/bot_nobody/keys", "expect": { "status": 404, "json": { "message": "<string>" } } },
-        { "send": "POST kuvo/bots/bot_ada/keys", "expect": { "status": 405 } }
-      ]
-    },
-    {
-      "name": "a bot that works in a project uses the project's keys",
-      "steps": [
-        { "given": { "repository": { "as": "shop" } } },
-        { "given": { "bot": { "id": "bot_ci", "name": "Fixer", "session": "ses_ci", "project": "{{shop}}" } } },
-        { "send": "GET kuvo/bots/bot_ci/keys", "expect": { "status": 409, "json": { "message": "Fixer works in a project, so it uses the keys that project's sessions use." } } }
+        { "send": "DELETE kuvo/bots/bot_ada/keys", "expect": { "status": 404 } },
+        { "send": "POST kuvo/bots/keys/refresh", "expect": { "status": 404, "json": { "message": "Bots use this computer's integrations now." } } },
+        { "send": "GET kuvo/box/kept-keys?bot=bot_ada", "expect": { "status": 404 } }
       ]
     }
   ]

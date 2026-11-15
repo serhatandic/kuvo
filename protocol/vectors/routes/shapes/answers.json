@@ -2966,14 +2966,6 @@
    }
   },
   {
-   "route": "POST kuvo/bots/keys/refresh",
-   "answers": {
-    "200": {
-     "object": {}
-    }
-   }
-  },
-  {
    "route": "PATCH kuvo/bots/:id",
    "answers": {
     "200": {
@@ -3492,76 +3484,6 @@
    }
   },
   {
-   "route": "GET kuvo/bots/:id/keys",
-   "answers": {
-    "200": {
-     "object": {
-      "keys": {
-       "list": {
-        "object": {
-         "integration": "string",
-         "own": "bool",
-         "shared": "bool",
-         "title": "string",
-         "symbol": "string",
-         "keys": {
-          "list": {
-           "object": {
-            "name": "string",
-            "label": "string",
-            "prompt": "string"
-           }
-          }
-         },
-         "help?": "string"
-        }
-       }
-      }
-     }
-    }
-   }
-  },
-  {
-   "route": "DELETE kuvo/bots/:id/keys",
-   "answers": {
-    "200": {
-     "object": {}
-    }
-   }
-  },
-  {
-   "route": "GET kuvo/bots/:id/keys/:integration",
-   "answers": {
-    "200": {
-     "object": {
-      "keys": {
-       "map": "string"
-      }
-     }
-    }
-   }
-  },
-  {
-   "route": "PUT kuvo/bots/:id/keys/:integration",
-   "answers": {
-    "200": {
-     "object": {
-      "integration": "string",
-      "own": "bool",
-      "shared": "bool"
-     }
-    }
-   }
-  },
-  {
-   "route": "DELETE kuvo/bots/:id/keys/:integration",
-   "answers": {
-    "200": {
-     "object": {}
-    }
-   }
-  },
-  {
    "route": "GET kuvo/computers",
    "answers": {
     "200": {
@@ -3985,9 +3907,6 @@
            },
            {
             "literal": "bots.job"
-           },
-           {
-            "literal": "bots.keys"
            },
            {
             "literal": "bots.make"
@@ -4627,9 +4546,6 @@
            },
            {
             "literal": "bots.job"
-           },
-           {
-            "literal": "bots.keys"
            },
            {
             "literal": "bots.make"

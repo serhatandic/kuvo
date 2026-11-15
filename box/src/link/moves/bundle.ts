@@ -1,5 +1,5 @@
 // What a move carries from one box to another, in one file (`bundle.tgz`): `move.json` (its
-// conversations as the engine exports them, a bot's own keys, a group chat as its bridge held it)
+// conversations as the engine exports them, a group chat as its bridge held it)
 // and its folder (a bot's, or a chat's wake-ups'). Made on the box it leaves, put in place on the box
 // it goes to: its conversations under their own IDs, its folder where that box keeps them.
 
@@ -10,7 +10,6 @@ import path from "node:path";
 import { isObject } from "../../shared/json";
 import type { Target } from "../../shared/records";
 import type { MoveKind } from "../../shared/routes/moves";
-import { answerBotKeys } from "../areas/bot-keys";
 import { askGroups } from "../areas/groups";
 import { chatNotes } from "../engine/chats";
 import { asked, call } from "../engine/client";
@@ -39,8 +38,6 @@ export interface Contents {
   exports: unknown[];
   /** The folder's name in the bundle (a bot's ID, a chat's session), when it carries one. */
   folder?: string;
-  /** A bot's own keys, by integration. */
-  keys?: Record<string, Record<string, string>>;
   /** A group chat as its bridge held it. */
   group?: { group: unknown; messages: unknown };
   wasPaused: boolean;
@@ -140,22 +137,6 @@ export function conversationHash(exports: unknown[]): string {
   const hash = crypto.createHash("sha256");
   for (const each of exports) hash.update(JSON.stringify(isObject(each) ? [isObject(each.info) ? each.info.id : null, each.messages ?? null] : null)).update("\n");
   return hash.digest("base64url");
-}
-
-/** A bot's own keys here, by integration (null when they can't be read now). */
-export async function keysOf(bot: string): Promise<Record<string, Record<string, string>> | null> {
-  const listed = await answerBotKeys("GET", `kuvo/bots/${bot}/keys`, null, null);
-  const each = (listed.value as { keys?: unknown } | null)?.keys;
-  if (listed.status !== 200 || !Array.isArray(each)) return listed.status === 409 ? {} : null;
-  const keys: Record<string, Record<string, string>> = {};
-  for (const entry of each as { integration?: unknown; own?: unknown }[]) {
-    if (entry.own !== true || typeof entry.integration !== "string") continue;
-    const read = await answerBotKeys("GET", `kuvo/bots/${bot}/keys/${encodeURIComponent(entry.integration)}`, null, null);
-    const values = (read.value as { keys?: unknown } | null)?.keys;
-    if (read.status !== 200 || !isObject(values)) return null;
-    keys[entry.integration] = values as Record<string, string>;
-  }
-  return keys;
 }
 
 /** What `pack` throws for one more than `MOST_BUNDLE`, before it packs any of it. */

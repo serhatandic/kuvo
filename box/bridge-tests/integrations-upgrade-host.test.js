@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { script, served, standInHost } from "./bot-keys-scenarios.js";
+import { script, served, standInHost } from "./box-stand-ins.js";
 import { removeAtEnd } from "./at-end.js";
 import { appears } from "./vault-waits.js";
 
@@ -85,10 +85,8 @@ test("its app not answering: that one waits, still naming its key, the rest go o
   assert.equal(host.keys.has(FIGMA), false);
 });
 
-test("a key its app can't take away: the server waits, and the next start finishes, a bot's own key with it", async () => {
+test("a key its app can't take away: the server waits, and the next start finishes", async () => {
   start();
-  const own = `${FIGMA}__MIRA`;
-  host.keys.set(own, "bot-token");
   host.failing = new Set(["/keys/delete"]);
   try {
     await link.upgradeIntegrations();
@@ -101,7 +99,6 @@ test("a key its app can't take away: the server waits, and the next start finish
   await link.upgradeIntegrations();
   assert.deepEqual(servers().figma, figmaNow);
   assert.equal(host.keys.has(FIGMA), false);
-  assert.equal(host.keys.has(own), false);
 });
 
 test("this Mac's box starting, as its app or keeper starts it: up to date before it says where it is, so before its engine starts; a key to take away after", { timeout: 60_000 }, async () => {

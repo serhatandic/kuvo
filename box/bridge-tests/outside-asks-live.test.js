@@ -16,7 +16,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { script } from "./bot-keys-scenarios.js";
+import { script } from "./box-stand-ins.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
 const binary = process.env.OPENCODE_TEST_BINARY;

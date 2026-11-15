@@ -33,7 +33,6 @@
         { "send": "GET kuvo/skill-library?from=phone", "expect": { "status": 200, "json": { "repositories": "<array>" } } },
         { "send": "GET kuvo/integrations?from=phone", "expect": { "status": 200, "json": { "integrations": "<array>" } } },
         { "send": "GET kuvo/worktrees?from=phone", "expect": { "status": 200, "json": { "worktrees": [] } } },
-        { "send": "GET kuvo/bots/bot_ada/keys?from=phone", "expect": { "status": 200, "json": { "keys": "<array>" } } },
         { "send": "GET kuvo/accounts/credentials?from=phone", "expect": { "status": 200, "json": { "credentials": [] } } },
         { "send": "PATCH kuvo/bots/bot_ada?from=phone", "body": { "name": "Ada Lovelace" }, "expect": { "status": 200, "json": { "bot": { "name": "Ada Lovelace" } } } },
         { "send": "POST kuvo/wakes/ses_ada/pause?from=phone", "body": { "paused": true }, "expect": { "status": 200, "json": { "paused": true } } }

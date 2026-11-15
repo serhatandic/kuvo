@@ -9,8 +9,8 @@ import type { EngineRecord, Target } from "../../shared/records";
 import type { Integration, IntegrationAdded, IntegrationHealth, Integrations } from "../../shared/routes/integrations";
 import { soon } from "../../shared/wait";
 import { call } from "../engine/client";
-import { listOf, locked, writePrivate } from "../files";
-import { BOTS, CONFIG_LOCK, INTEGRATION_DATA, IS_MAC, K, OWN_HOME_MAC, OWN_RUNTIME, SCRIPT } from "../home";
+import { locked } from "../files";
+import { CONFIG_LOCK, INTEGRATION_DATA, IS_MAC, K, OWN_HOME_MAC, OWN_RUNTIME, SCRIPT } from "../home";
 import { answeringOnce } from "../once";
 import { KeysUnavailable, siteSignIns } from "../host-interface";
 import { siteSignInsHere, type SignInCookie } from "../browser/sites";
@@ -190,9 +190,8 @@ export function upgradeBeforeEngine(catalogFile = INTEGRATIONS_FILE, file = CONF
 /** Added integrations and MCP servers brought up to date from the catalogs this box has now, by the
  * box and only the box, with or without a client there.
  *
- * A package's key goes before its maker's server takes its place, as nothing names the key after, and
- * its bots' own keys for it with it: where they can't be taken away now (this Mac's app not answering),
- * that one waits for the next start. So does it while an update is on trial, as a key can't come back
+ * A package's key goes before its maker's server takes its place, as nothing names the key after:
+ * where it can't be taken away now (this Mac's app not answering), that one waits for the next start. So does it while an update is on trial, as a key can't come back
  * if the keeper puts the version before back (the box does this again once its update is confirmed).
  * What's left can be undone: that version's catalog puts it back, if it brings them up to date too. */
 export function upgradeIntegrations(catalogFile = INTEGRATIONS_FILE, file = CONFIG_FILE, lock = CONFIG_LOCK, popularFile = CATALOG_FILE, mac = IS_MAC): Promise<void> {
@@ -205,7 +204,6 @@ export function upgradeIntegrations(catalogFile = INTEGRATIONS_FILE, file = CONF
       if (!isObject(server) || !leftForItsMaker(entry, server)) continue;
       const variables = [...new Set(JSON.stringify(server).match(/KUVO_KEY_[A-Z0-9_]+/g) ?? [])];
       try {
-        await droppingBotsKeys(entry.id, variables);
         for (const name of variables) await deleteKey(name);
         keysGone.add(entry.id);
       } catch {}
@@ -272,42 +270,6 @@ async function integrationEntries(catalog: CatalogIntegration[], engine: EngineR
     return shown;
   });
   return { entries, engineDown };
-}
-
-/** Its bots' own keys for it (`KUVO_KEY_<ID>_<NAME>__<BOT>`) and their folders' settings naming its server, gone. */
-function dropBotsIntegration(entry: CatalogIntegration): Promise<void> {
-  return keyWork(() => droppingBotsIntegration(entry));
-}
-
-async function droppingBotsIntegration(entry: CatalogIntegration): Promise<void> {
-  await droppingBotsKeys(entry.id, Object.values(entry.variables ?? {}).filter(variable => STORED_KEY.test(variable)));
-}
-
-/** Within `keyWork`: bots' own keys for `own`, and their folders' settings naming server `id`, gone. */
-async function droppingBotsKeys(id: string, own: string[]): Promise<void> {
-  // Their settings first, so none names a key that's gone if one can't be taken away.
-  const named: string[] = [];
-  for (const variable of own) named.push(...await keyNames({ prefix: `${variable}__` }));
-  for (const bot of listOf(BOTS)) {
-    const folder = path.join(BOTS, bot, "workspace", ".opencode");
-    const file = path.join(folder, "opencode.json");
-    let settings: { mcp?: { servers?: Record<string, unknown>; [more: string]: unknown }; [more: string]: unknown };
-    try { settings = JSON.parse(fs.readFileSync(file, "utf8")); } catch { continue; }
-    // Only its server as the bot's own keys made it, as the Mac's BotKeys has it: one written
-    // there by hand stays.
-    const server = settings?.mcp?.servers?.[id];
-    if (!server || !own.some(variable => JSON.stringify(server).includes(`${variable}__`))) continue;
-    // (Its servers are there: it has this one.)
-    delete settings.mcp!.servers![id];
-    if (!Object.keys(settings.mcp!.servers!).length) delete settings.mcp!.servers;
-    if (!Object.keys(settings.mcp!).length) delete settings.mcp;
-    if (Object.keys(settings).length) writePrivate(file, JSON.stringify(settings));
-    else {
-      fs.rmSync(file, { force: true });
-      try { fs.rmdirSync(folder); } catch {}
-    }
-  }
-  for (const name of named) await deleteKey(name);
 }
 
 /** Whether this box keeps every one of `variables`. */
@@ -414,13 +376,15 @@ async function integrationsAnswer(method: string, requestPath: string, body: Bod
       });
       return { status: 200, value: {} };
     }
-    // Bots here with keys of their own for it stop using it first: where their keys can't be taken
-    // away, nothing goes, rather than leave a bot using an integration you removed.
-    try {
-      await dropBotsIntegration(entry);
-    } catch (error) {
-      if (!(error instanceof KeysUnavailable)) throw error;
-      return { status: 503, value: { message: `${entry.title} wasn't removed: its bots' own keys for it couldn't be taken away. ${error.message}` } };
+    // Where its keys can't be reached now (this Mac's app not answering), nothing goes, rather than
+    // leave it removed with its key still kept.
+    if (Object.values(entry.variables ?? {}).some(variable => STORED_KEY.test(variable))) {
+      try {
+        await keyNames();
+      } catch (error) {
+        if (!(error instanceof KeysUnavailable)) throw error;
+        return { status: 503, value: { message: `${entry.title} wasn't removed: its key couldn't be taken away. ${error.message}` } };
+      }
     }
     // Its sign-in as the engine has it, asked before it leaves the settings.
     let signIn: string | undefined;

@@ -1153,7 +1153,7 @@ class ClaudeThread implements Thread {
       this.cut.push(...this.wakingWork)
       this.close()
     }
-    // The computer's MCP servers (yours, the integrations', a bot's with its own keys), through the
+    // The computer's MCP servers (yours and the integrations'), through the
     // relay, which keeps their keys: another set of them is told to the same Claude Code.
     const computer = await computerServers(this.session.location.directory)
     // (Those set right since the relay stood in for them first, so their addresses are new.)

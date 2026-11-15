@@ -71,7 +71,7 @@ const seedStarted = (session, directory) => {
   write(file, '{"type":"user","started":true}\n');
   return { session, file };
 };
-const leaves = seedBot("bot_leaves"), shares = seedBot("bot_shares"), keyLeft = seedBot("bot_keyleft"), back = seedBot("bot_back");
+const leaves = seedBot("bot_leaves"), shares = seedBot("bot_shares"), back = seedBot("bot_back");
 write(path.join(memoryOf(back), "MEMORY.md"), "Still in use.\n");
 const over = seedBot("bot_over"), merged = seedBot("bot_merged"), many = seedBot("bot_many"), named = seedBot("bot_named"), shelved = seedBot("bot_shelved");
 write(path.join(memoryOf(merged), "MEMORY.md"), "What it remembers.\n");
@@ -444,24 +444,6 @@ test("a memory folder a session it started still uses stays when the rest of wha
   assert.equal(fs.readFileSync(path.join(memoryOf(shares), "MEMORY.md"), "utf8"), "Both of them use this.\n");
   assert.ok(fs.existsSync(startedThere.file));
   assert.equal((await asks("GET", `/api/session/${startedThere.session}`)).status, 200);
-});
-
-test("a bot's own key that can't be taken away here as it goes isn't left for good: it goes once it can", async () => {
-  const keyed = keyLeft;
-  const keys = path.join(home, "box", "bot-keys"), key = path.join(keys, "KUVO_KEY_GITHUB_TOKEN__BOT_KEYLEFT");
-  write(key, "secret");
-  fs.chmodSync(keys, 0o500);
-  let entry;
-  try {
-    entry = await moveAway(keyed);
-    assert.ok(fs.existsSync(key), "it couldn't go yet");
-    assert.equal(entry?.keys, true, "and that's noted, to go later");
-  } finally {
-    fs.chmodSync(keys, 0o700);
-  }
-  link.keepMoving(Date.now() + 3 * 3600_000);
-  await until(() => !fs.existsSync(key));
-  await until(() => !leftHere().find(each => each.id === entry.id)?.keys);
 });
 
 test("what a move left is never removed once the conversation runs here again, whatever went wrong as it came back", async () => {

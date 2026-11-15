@@ -31,7 +31,6 @@ export function whatDeleteTakes({ computer, folder, wakes, watching }: { compute
     const parts = [...(wakes ? [counted(wakes, "wake-up", "wake-ups")] : []), ...(watching ? [counted(watching, "watch", "watches")] : [])];
     lines.push({ what: "wakes", words: `Its ${parts.join(" and ")} ${wakes + watching === 1 ? "is" : "are"} cancelled.` });
   }
-  lines.push({ what: "keys", words: "Any keys of its own are removed." });
   lines.push({ what: "groups", words: `It leaves the group chats on ${computer}.` });
   lines.push({ what: "sessions", words: "The sessions it started stay.", kept: true });
   return lines;

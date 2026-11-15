@@ -14,7 +14,6 @@ import { memberComputersRoute, setupRoute } from "../areas/setup";
 import { changesRoute } from "../areas/changes";
 import { askAnswerRoute, asksRoute } from "../areas/asks";
 import { appNoticeRoute, attentionRoute } from "../areas/attention";
-import { botKeysRefreshRoute, botKeysRoute } from "../areas/bot-keys";
 import { arrivedRoute, botEventsRoute, botRoute, botsRoute, botTemplatesRoute, newBotRoute, retellRoute } from "../areas/bots";
 import { CARRY_ROUTE, carryRoute } from "../areas/carry";
 import { claudeCodeRoute } from "../areas/claude-code";
@@ -67,7 +66,7 @@ import { boxUpdateRoute, updateRoute } from "../updates/update";
 import { permissionsRoute } from "../permissions";
 import { rehomeRoute } from "../rehome/route";
 import { appOpenRoute, appRoute } from "../mac/app";
-import { keptKeysRoute, proofRoute } from "../mac/app-keys";
+import { proofRoute } from "../mac/app-keys";
 import { serveRoute } from "../serve-kept";
 import { browserRoute } from "../browser/install";
 import { browserViewRoute, BROWSER_DATA_ROUTE, browserDataRoute } from "../browser/routes";
@@ -111,7 +110,6 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route === "kuvo/box/serve", answer: serveRoute },
   // What its app asks of the keys a Mac's box in a home of its own holds (PROTOCOL.md, "Its keys").
   { when: route => route === "kuvo/box/proof", answer: proofRoute },
-  { when: route => route === "kuvo/box/kept-keys", answer: keptKeysRoute },
   // (A machine's: this Mac's agents browse in its app's panel.)
   { when: route => !IS_MAC && route === "kuvo/browser", answer: browserRoute },
   // Its browser's live view, a machine's (PROTOCOL.md, "The browser's live view"): a Mac's box says
@@ -204,9 +202,9 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route.match(WORK_ASKS_ROUTE), answer: workAsksRoute },
   { when: route => route.match(GOALS_ROUTE), answer: goalsRoute },
   { when: route => route === APP_ICON_ROUTE, answer: appIconRoute },
-  // (Before the bot keys' route, which would take "keys" for a bot.)
-  { when: route => route === "kuvo/bots/keys/refresh", answer: botKeysRefreshRoute },
-  { when: route => /^kuvo\/bots\/[^/]+\/keys(\/[^/]+)?$/.test(route), answer: botKeysRoute },
+  // Bots' own keys, which no box keeps now (PROTOCOL.md, "Bots have no keys of their own"): said in
+  // words, for a client from before that still asks.
+  { when: route => route === "kuvo/bots/keys/refresh" || /^kuvo\/bots\/[^/]+\/keys(\/[^/]+)?$/.test(route), answer: ({ json }: RouteContext) => json(404, { message: "Bots use this computer's integrations now." }) },
   { when: route => route.match(CARRY_ROUTE), answer: carryRoute },
   { when: (route, request) => ["PATCH", "DELETE"].includes(request.method.toUpperCase()) && route.match(/^kuvo\/bots\/([^/]+)$/), answer: botRoute },
   { when: route => GROUP_ROUTE.test(route), answer: groupsRoute },
