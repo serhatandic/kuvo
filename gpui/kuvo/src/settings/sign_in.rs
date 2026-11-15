@@ -67,6 +67,7 @@ pub struct SignIn {
     side: Side,
     account: String,
     name: String,
+    sheet_title: String,
     ways: Ways,
     step: Step,
     /// "Other ways to sign in" opened.
@@ -116,6 +117,7 @@ impl SignIn {
             side,
             account: account.to_owned(),
             name: name.to_owned(),
+            sheet_title: String::new(),
             ways: Ways::default(),
             step: Step::Loading,
             others: false,
@@ -135,10 +137,22 @@ impl SignIn {
         }
     }
 
-    /// Drawn in place, under its account's row, with no card or title of its own.
+    /// The title supplied for the selected account action.
+    pub fn sheet_title(mut self, title: String) -> Self {
+        self.sheet_title = title;
+        self
+    }
+
     pub fn in_place(mut self) -> SignIn {
         self.in_place = true;
         self
+    }
+
+    pub fn title(&self) -> String {
+        match &self.step {
+            Step::Done => format!("{} is connected", self.name),
+            _ => self.sheet_title.clone(),
+        }
     }
 
     pub fn step(&self) -> &Step {
@@ -503,10 +517,7 @@ impl Render for SignIn {
                 _ => window.focus(&self.focus, cx),
             }
         }
-        let title = match &self.step {
-            Step::Done => format!("{} is connected", self.name),
-            _ => format!("Sign In to {}", self.name),
-        };
+        let title = self.title();
         let body: Vec<AnyElement> = match self.step.clone() {
             Step::Loading => vec![working("Getting the ways to sign in…", cx)],
             Step::Choose => self.choose(cx),
