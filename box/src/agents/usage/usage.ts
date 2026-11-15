@@ -9,6 +9,7 @@
 //
 // Nothing here reads a sign-in: an account is named as its plan limits name it (`Limits.identity`).
 
+import { spendTitle } from "../../shared/account-names"
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs"
@@ -447,6 +448,7 @@ export class Usage {
     return {
       zone: asked,
       services: this.services,
+      serviceTitles: Object.fromEntries([...new Set([...this.services, ...Object.keys(totals)])].map(service => [service, spendTitle(service)])),
       ...(scanned ? { scanned } : {}),
       // Codex's fallback model, as this box prices its own logs with it, and those it may be.
       pricing: { codex: { fallback: this.settings?.codexFallback ?? null, chosen: this.settings?.chosen ?? false, choices: this.pricing.current().fallbackOptions("codex") } },

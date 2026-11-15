@@ -7,7 +7,7 @@ import Testing
 struct UsageHistoryTests {
     /// Two Claude accounts, one on two computers; a row and a model from a newer box this copy can't read.
     let answer = """
-    {"data": {"zone": "Europe/Istanbul", "services": ["claude"], "scanned": 1794484800000,
+    {"data": {"zone": "Europe/Istanbul", "services": ["claude"], "serviceTitles": {"claude": "The Box Word"}, "scanned": 1794484800000,
       "rows": [
         {"id": "claude#aaaaaaaaaaaaaaaa", "service": "claude", "provider": "claude-code", "agent": "claude", "account": "default",
          "identity": "aaaaaaaaaaaaaaaa", "scanned": 1794484800000,
@@ -31,6 +31,7 @@ struct UsageHistoryTests {
     @Test func aBoxsAnswerReadsWhatItCanAndLeavesOutWhatItCant() throws {
         struct Envelope: Decodable { var data: BoxUsage }
         let usage = try JSONDecoder().decode(Envelope.self, from: Data(answer.utf8)).data
+        #expect(usage.serviceTitles["claude"] == "The Box Word")
         #expect(usage.zone == "Europe/Istanbul")
         #expect(usage.services == ["claude"])
         #expect(usage.rows.map(\.id) == ["claude#aaaaaaaaaaaaaaaa", "claude#bbbbbbbbbbbbbbbb"])

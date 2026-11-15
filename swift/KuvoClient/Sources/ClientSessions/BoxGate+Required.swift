@@ -43,6 +43,7 @@ extension BoxGate {
         "models.offered.free", // #733
         "models.offered.sides",
         "models.readiness",
+        "names.titles",
         "queue.items", // the desktop client draws the queue as the box says it
         "queue.removed.keyword", // #668: a queued message taken back keeps its keyword
         "queue.stop.arriving", // #668: Stop holds what's still on its way, so no client waits for it

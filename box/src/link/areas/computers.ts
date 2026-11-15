@@ -1,3 +1,4 @@
+import { serviceTitle } from "../../shared/account-names";
 // Your computers, as this box knows them (PROTOCOL.md, "Computers", `kuvo/computers`): itself, its
 // peers (the boxes its Macs name), and the boxes those vouch for (plan limits only). What each is,
 // whether it's heard from, what it runs and answers, which of its sessions are at work, which
@@ -129,7 +130,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const atWork = atWorkHere();
   // (A machine by the name its Macs' records give it, renamed there, else its own.)
   const named = !IS_MAC && own ? namedBoxes(link).find(box => box.key === own)?.name : undefined;
-  const computers: Omit<ListedComputer, "actions">[] = [{
+  const computers: Omit<ListedComputer, "actions" | "limitServices">[] = [{
     key: own ?? "",
     name: (IS_MAC ? macLink.config?.name : named || name) || name || os.hostname(),
     kind: IS_MAC ? "mac" : "machine",
@@ -148,7 +149,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const withActions = (): ListedComputer[] => {
     const here = computers[0]!.name;
     const facts = writerFacts(link);
-    return computers.map(computer => ({ ...computer, actions: actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts) }));
+    return computers.map(computer => ({ ...computer, limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), actions: actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts) }));
   };
   // A machine Macs of different setups share lists itself alone: the others there aren't all one
   // person's computers (as `kuvo/setup` refuses there).

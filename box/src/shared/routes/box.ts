@@ -290,7 +290,7 @@ export const LISTED_COMPUTER = object({
   shared: bool, "apart?": literal(true), reach: words("connected", "connecting", "away", "unknown"),
   "version?": string, "engine?": string, "system?": string, "features?": list(string),
   via: words("here", "relay", "peer"), "through?": string,
-  "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string),
+  "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string), limitServices: list(object({ id: string, title: string })),
   actions: list(COMPUTER_ACTION),
 });
 export const COMPUTERS = object({ computers: list(LISTED_COMPUTER) });

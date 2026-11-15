@@ -78,12 +78,13 @@ struct BotWorkTests {
         }
         // A coding agent's account you named, its own sign-in, the engine's Copilot plan, and a
         // provider by its own name; each as the usage panel names it.
-        #expect(WorkWords.about(try item("claude-code@acc1", #""account": {"name": "Claude Code", "label": "Athas"},"#), model: "Opus 5.5")
+        #expect(WorkWords.about(try item("claude-code@acc1", #""account": {"name": "Claude Code", "title": "Claude · Athas", "label": "Athas"},"#), model: "Opus 5.5")
             == ["Opus 5.5 · high · Claude · Athas · Kuvo Code", "Opus 5.5 · high · Kuvo Code"])
-        #expect(WorkWords.about(try item("claude-code", #""account": {"name": "Claude Code"},"#), model: "Opus 5.5").first == "Opus 5.5 · high · Claude · Kuvo Code")
-        #expect(WorkWords.about(try item("codex-cli@work", #""account": {"name": "Codex", "label": "Work"},"#), model: "GPT-5.5").first == "GPT-5.5 · high · Codex · Work · Kuvo Code")
-        #expect(WorkWords.about(try item("github-copilot", #""account": {"name": "GitHub Copilot"},"#), model: "Opus 5.5").first == "Opus 5.5 · high · Copilot · Kuvo Code")
+        #expect(WorkWords.about(try item("claude-code", #""account": {"name": "Claude Code", "title": "Claude"},"#), model: "Opus 5.5").first == "Opus 5.5 · high · Claude · Kuvo Code")
+        #expect(WorkWords.about(try item("codex-cli@work", #""account": {"name": "Codex", "title": "Codex · Work", "label": "Work"},"#), model: "GPT-5.5").first == "GPT-5.5 · high · Codex · Work · Kuvo Code")
+        #expect(WorkWords.about(try item("github-copilot", #""account": {"name": "GitHub Copilot", "title": "Copilot"},"#), model: "Opus 5.5").first == "Opus 5.5 · high · Copilot · Kuvo Code")
         #expect(WorkWords.about(try item("anthropic", #""account": {"name": "Anthropic"},"#), model: "Opus 5.5").first == "Opus 5.5 · high · Anthropic · Kuvo Code")
+        #expect(WorkWords.account(.init(name: "Provider", label: "Work", title: "The box words")) == "The box words")
         // Custom Auto, or a box from before it said: as before.
         #expect(WorkWords.about(try item("auto", ""), model: "Auto") == ["Auto · high · Kuvo Code"])
     }

@@ -1661,6 +1661,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (The check before a move holds anything, which a box asks of another in its mail.)
     "moves.check": ["GET", "kuvo/moves/places?kind=bot&id=bot_none"],
     named: ["GET", "kuvo/named"],
+    "names.titles": ["GET", "kuvo/computers"],
     personalities: ["GET", "kuvo/personalities"],
     "personalities.events": ["POST", "kuvo/personalities/events"],
     phones: ["GET", "kuvo/phones"],

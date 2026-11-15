@@ -21368,6 +21368,12 @@ async function branchRoutes(places, method, parts, body) {
   }
 }
 
+// box/src/shared/account-names.ts
+var cards = { claude: "Claude", codex: "Codex", cursor: "Cursor", antigravity: "Antigravity", copilot: "Copilot", grok: "Grok", opencode: "OpenCode", openrouter: "OpenRouter", zai: "Z.ai", ollama: "Ollama" };
+function spendTitle(service) {
+  return Object.hasOwn(cards, service) ? cards[service] : service.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 // box/src/agents/usage/usage.ts
 import { execFileSync as execFileSync2 } from "child_process";
 import { createHash as createHash15 } from "crypto";
@@ -25062,6 +25068,7 @@ class Usage {
     return {
       zone: asked,
       services: this.services,
+      serviceTitles: Object.fromEntries([...new Set([...this.services, ...Object.keys(totals)])].map((service) => [service, spendTitle(service)])),
       ...scanned ? { scanned } : {},
       pricing: { codex: { fallback: this.settings?.codexFallback ?? null, chosen: this.settings?.chosen ?? false, choices: this.pricing.current().fallbackOptions("codex") } },
       rows: rows.map(({ slots, yours: _, yoursAway: _away, yoursCut: _cut, ...row }) => ({ ...row, days: grouped(row.service, daysIn(slots, asked, now)) })),
@@ -36763,4 +36770,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents dfdd64873cfac54a44ebe21a85b18b1ae2ab671d8156efc36e6f46798d611e88
+// Built from Packages/Box/src/agents 976076faace17a4d2c5a5ffc9122b81db76ce0009cf5b596114e7cef41455f3d

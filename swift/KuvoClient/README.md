@@ -33,8 +33,7 @@ The rules for what a message says, the same in both apps. Foundation only: no vi
 `kuvo/accounts/found` (`Found`), and the rows offered from it, each with the one thing it needs
 (`Offers`). Only the Mac's first launch offers them now: a computer is set up on the Mac before a
 phone pairs with it, so the phone, which had a sheet of its own for this, doesn't use them.
-`AccountNames` is what both apps call each provider's accounts in a word ("Claude", "Copilot"),
-the same in the usage panel and the work bar. `UsageSpend` and `UsageLayout` are what the usage
+The box names accounts in work (`account.title`) and spend cards (`serviceTitles`); clients draw those words. `UsageSpend` and `UsageLayout` are what the usage
 panel shows of a box's facts (PROTOCOL.md, "Usage history"): a service's Today, Yesterday and Last
 30 Days and its trend, from one box's totals, and the cards in the order your computers keep. `EngineProviders` is which of the engine's
 integrations Accounts lists as providers: no web search services, and not the engine's own

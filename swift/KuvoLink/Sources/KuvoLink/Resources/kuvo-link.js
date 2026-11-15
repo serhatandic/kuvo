@@ -2548,7 +2548,7 @@ var ANSWER = object({
   by: object({ "bot?": string, name: string }),
   at: number
 });
-var WORK_ACCOUNT = object({ name: string, "label?": string });
+var WORK_ACCOUNT = object({ name: string, title: string, "label?": string });
 var WORK_SESSION = object({
   session: string,
   title: string,
@@ -4598,6 +4598,7 @@ var FEATURES = [
   "moves.agents",
   "moves.check",
   "named",
+  "names.titles",
   "personalities",
   "personalities.events",
   "phones",
@@ -36378,6 +36379,29 @@ linkedFollowers.add(() => {
     tell();
 });
 
+// box/src/shared/account-names.ts
+var short4 = {
+  "claude-code": "Claude",
+  "codex-cli": "Codex",
+  "grok-cli": "Grok",
+  cursor: "Cursor",
+  antigravity: "Antigravity",
+  "github-copilot": "Copilot",
+  openrouter: "OpenRouter",
+  zai: "Z.ai",
+  "zai-coding-plan": "Z.ai",
+  "opencode-go": "OpenCode Go"
+};
+function workAccountTitle(provider, name, label) {
+  const base = provider.split("@")[0];
+  const title = Object.hasOwn(short4, base) ? short4[base] : name;
+  return label && label !== title ? `${title} · ${label}` : title;
+}
+function serviceTitle(id) {
+  const names = { codex: "ChatGPT", grok: "SuperGrok", copilot: "Copilot", openrouter: "OpenRouter", zai: "Z.ai", ollama: "Ollama", opencode: "OpenCode Go" };
+  return Object.hasOwn(names, id) ? names[id] : id.charAt(0).toUpperCase() + id.slice(1);
+}
+
 // box/src/link/areas/computers.ts
 import fs122 from "node:fs";
 import os14 from "node:os";
@@ -37983,7 +38007,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
   const withActions = () => {
     const here = computers[0].name;
     const facts = writerFacts(link);
-    return computers.map((computer) => ({ ...computer, actions: actionsOf(computer, here, tryingSince(computer.key, now, tries) !== null, link, facts) }));
+    return computers.map((computer) => ({ ...computer, limitServices: computer.limits.map((id) => ({ id, title: serviceTitle(id) })), actions: actionsOf(computer, here, tryingSince(computer.key, now, tries) !== null, link, facts) }));
   };
   if (sharedMachine(link))
     return withActions();
@@ -45424,7 +45448,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f1bcfa4c09c7";
+var BRIDGE_VERSION = "a3b6ba878096";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -53099,7 +53123,7 @@ async function accountsOn(target, signal) {
       continue;
     const name = each.name.trim();
     const label = isObject(each.metadata) && each.metadata.source === "agent" && typeof each.metadata.accountLabel === "string" ? each.metadata.accountLabel.trim() : "";
-    accounts.set(each.id, label ? { name, label } : { name });
+    accounts.set(each.id, { name, title: workAccountTitle(each.id, name, label), ...label ? { label } : {} });
   }
   return accounts;
 }

@@ -759,10 +759,10 @@ test("a client sees which account each of a bot's sessions runs on, as Settings 
   const work = await route("GET", "kuvo/work?bot=bot_pixel00001");
   assert.equal(work.status, 200);
   assert.deepEqual(Object.fromEntries(work.body.sessions.map(each => [each.title, each.account ?? null])), {
-    "On the work key": { name: "Anthropic" },
-    "On DeepSeek": { name: "DeepSeek" },
-    "On Claude Code": { name: "Claude Code" },
-    "On Athas": { name: "Claude Code", label: "Athas" },
+    "On the work key": { name: "Anthropic", title: "Anthropic" },
+    "On DeepSeek": { name: "DeepSeek", title: "DeepSeek" },
+    "On Claude Code": { name: "Claude Code", title: "Claude" },
+    "On Athas": { name: "Claude Code", title: "Claude · Athas", label: "Athas" },
     "On Auto": null,
     "On a gone plan": null,
   });

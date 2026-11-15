@@ -41,6 +41,7 @@ pub const REQUIRED: &[&str] = &[
     "models.offered.free",
     "models.offered.sides",
     "models.readiness",
+    "names.titles",
     "queue.items",
     "queue.removed.keyword",
     "queue.stop.arriving",

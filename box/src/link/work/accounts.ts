@@ -3,6 +3,7 @@
 // you gave it ("Work"; its own sign-in has none). The engine's sign-ins have no name of yours, so
 // none is said. Custom Auto picks one each turn, so its sessions say none.
 
+import { workAccountTitle } from "../../shared/account-names";
 import { isObject } from "../../shared/json";
 import type { Target } from "../../shared/records";
 import type { WorkAccount } from "../../shared/routes/work";
@@ -23,7 +24,7 @@ async function accountsOn(target: Target, signal?: AbortSignal): Promise<Map<str
     const name = each.name.trim();
     // A coding agent's account you added: the name you gave it.
     const label = isObject(each.metadata) && each.metadata.source === "agent" && typeof each.metadata.accountLabel === "string" ? each.metadata.accountLabel.trim() : "";
-    accounts.set(each.id, label ? { name, label } : { name });
+    accounts.set(each.id, { name, title: workAccountTitle(each.id, name, label), ...(label ? { label } : {}) });
   }
   return accounts;
 }

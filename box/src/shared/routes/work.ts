@@ -30,7 +30,7 @@ export const ANSWER = object({
 /** The account a session runs on, as Settings › Accounts lists it where it runs: its provider's
  * name ("Claude Code", "GitHub Copilot"), and for a coding agent's account you added, the name you
  * gave it (`label`, "Work"). */
-export const WORK_ACCOUNT = object({ name: string, "label?": string });
+export const WORK_ACCOUNT = object({ name: string, title: string, "label?": string });
 
 /** One of a bot's sessions: its address, title, folder and project (left out for a chat), the
  * session that started it, how deep it is (1 for the bot's own), its model and mode (left out when

@@ -117,6 +117,7 @@ export const FEATURES = [
   "moves.agents",
   "moves.check",
   "named",
+  "names.titles",
   "personalities",
   "personalities.events",
   "phones",
