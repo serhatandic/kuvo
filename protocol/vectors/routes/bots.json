@@ -226,11 +226,13 @@
       "why": "Bots use the integrations of the computer they live on, as every session does (PROTOCOL.md, \"Bots have no keys of their own\"): a client that still asks is told there's no such route, never answered as if a key were kept.",
       "steps": [
         { "given": { "bot": { "id": "bot_ada", "name": "Ada", "session": "ses_ada" } } },
-        { "send": "GET kuvo/bots/bot_ada/keys", "expect": { "status": 404 } },
-        { "send": "PUT kuvo/bots/bot_ada/keys/todoist", "body": { "keys": { "TODOIST_API_KEY": "tok_ada" } }, "expect": { "status": 404 } },
+        { "send": "GET kuvo/bots/bot_ada/keys", "expect": { "status": 404, "json": { "message": "Bots use this computer's integrations now." } } },
+        { "send": "PUT kuvo/bots/bot_ada/keys/todoist", "body": { "keys": { "TODOIST_API_KEY": "tok_ada" } }, "expect": { "status": 404, "json": { "message": "Bots use this computer's integrations now." } } },
         { "send": "GET kuvo/bots/bot_ada/keys/todoist", "expect": { "status": 404 } },
+        { "send": "DELETE kuvo/bots/bot_ada/keys/todoist", "expect": { "status": 404 } },
         { "send": "DELETE kuvo/bots/bot_ada/keys", "expect": { "status": 404 } },
-        { "send": "POST kuvo/bots/keys/refresh", "expect": { "status": 404 } }
+        { "send": "POST kuvo/bots/keys/refresh", "expect": { "status": 404, "json": { "message": "Bots use this computer's integrations now." } } },
+        { "send": "GET kuvo/box/kept-keys?bot=bot_ada", "expect": { "status": 404 } }
       ]
     }
   ]

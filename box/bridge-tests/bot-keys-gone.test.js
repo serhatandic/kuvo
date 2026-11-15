@@ -61,6 +61,8 @@ function before() {
   for (const name of ["box", "bots/bot_scout", "bots/bot_atlas", "run"]) fs.rmSync(path.join(home, name), { recursive: true, force: true });
   write(settingsFile, JSON.stringify({ mcp: { servers: { todoist: todoistYours } } }));
   write(path.join(shared, TODOIST), "tok_yours");
+  // (A key of your own whose name has BOT in it, which is no bot's.)
+  write(path.join(shared, "KUVO_KEY_SLACK_BOT_TOKEN"), "xoxb_yours");
   bot("bot_scout", "Scout");
   write(folderSettings("bot_scout"), JSON.stringify({ instructions: ["notes.md"], mcp: { servers: { todoist: own(todoistYours, TODOIST, "bot_scout"), github: own(githubYours, GITHUB, "bot_scout"), notes } } }));
   write(path.join(botKeys, `${TODOIST}__BOT_SCOUT`), "tok_scout");
@@ -98,6 +100,7 @@ test("a bot that had keys of its own: they're removed from where the machine kep
   assert.equal(fs.existsSync(botKeys), false, "every bot's own key, a deleted bot's too, and their folder");
   assert.equal(fs.existsSync(path.join(home, "run", "bot-keys-left.json")), false);
   assert.equal(read(path.join(shared, TODOIST)), "tok_yours", "your own key stays");
+  assert.equal(read(path.join(shared, "KUVO_KEY_SLACK_BOT_TOKEN")), "xoxb_yours", "and one of yours that only has BOT in its name");
   assert.deepEqual(json(settingsFile), { mcp: { servers: { todoist: todoistYours } } }, "and your connection as it was");
   // Its folder no longer names a server for either: its conversation gets the computer's own
   // Todoist, your connection. What you wrote there by hand stays.
@@ -157,13 +160,76 @@ test("while an update is on trial nothing is removed (a key can't come back with
   assert.deepEqual(json(folderSettings("bot_scout")).mcp.servers, { notes });
 });
 
-test("a bot's folder's settings that named only its own keys go with them, and ones that aren't plain JSON are left alone", async () => {
+test("a bot's folder's settings that named only its own keys go with them; ones with comments, as the engine reads them, are put right too, and left as they are when they name none", async () => {
   before();
   write(folderSettings("bot_scout"), JSON.stringify({ mcp: { servers: { github: own(githubYours, GITHUB, "bot_scout") } } }));
   write(folderSettings("bot_atlas"), "// mine\n{}");
+  bot("bot_notes", "Notes");
+  write(path.join(botKeys, `${GITHUB}__BOT_NOTES`), "ghp_notes");
+  write(folderSettings("bot_notes"), `// Mine: "quoted // not a comment" stays text.
+{
+  /* its servers */
+  "instructions": ["a // b", "c, ]"],
+  "mcp": { "servers": {
+    "github": ${JSON.stringify(own(githubYours, GITHUB, "bot_notes"))}, // its own
+    "notes": ${JSON.stringify(notes)},
+  }, },
+}
+`);
   assert.equal(await link.dropBotsOwnKeys(), true);
   assert.equal(fs.existsSync(path.dirname(folderSettings("bot_scout"))), false, "the file, and the folder made for it");
   assert.equal(read(folderSettings("bot_atlas")), "// mine\n{}");
+  assert.deepEqual(json(folderSettings("bot_notes")), { instructions: ["a // b", "c, ]"], mcp: { servers: { notes } } });
+  assert.equal(fs.existsSync(botKeys), false);
+  fs.rmSync(folderOf("bot_notes"), { recursive: true });
+});
+
+test("settings that can't be read at all keep the key they name, and the bot is told to tell you, until the file is put right", async t => {
+  before();
+  const broken = `{ "mcp": { "servers": { "github": ${JSON.stringify(own(githubYours, GITHUB, "bot_scout"))} `;
+  write(folderSettings("bot_scout"), broken);
+  assert.equal(await link.dropBotsOwnKeys(), true, "all it can do is done");
+  assert.equal(read(folderSettings("bot_scout")), broken, "left as it is");
+  assert.deepEqual(fs.readdirSync(botKeys), [`${GITHUB}__BOT_SCOUT`], "the key it names stays, so its server still works; every other goes");
+  const engine = await engineTelling(t);
+  await link.freshenBot(engine.target, "ses_bot_scout");
+  assert.match(engine.told.get("ses_bot_scout"), /Your folder's settings file \(.*bot_scout\/workspace\/\.opencode\/opencode\.json\) can't be read: it isn't valid JSON\./);
+  assert.match(engine.told.get("ses_bot_scout"), /Tell the user so plainly/);
+
+  // Put right: at the box's next start its server and key go, and it's told as any bot is.
+  write(folderSettings("bot_scout"), broken + "} } }");
+  assert.equal(await link.dropBotsOwnKeys(), true);
+  assert.equal(fs.existsSync(botKeys), false);
+  assert.equal(fs.existsSync(folderSettings("bot_scout")), false);
+  await link.freshenBot(engine.target, "ses_bot_scout");
+  assert.doesNotMatch(engine.told.get("ses_bot_scout"), /can't be read/);
+});
+
+test("where a bot's folder's settings can't be rewritten, no key goes yet (they'd name a key that's gone): it's done once they can be", { skip: process.getuid?.() === 0 }, async () => {
+  before();
+  const folder = path.dirname(folderSettings("bot_scout"));
+  fs.chmodSync(folder, 0o500);
+  try {
+    assert.equal(await link.dropBotsOwnKeys(), false);
+    assert.equal(read(path.join(botKeys, `${TODOIST}__BOT_SCOUT`)), "tok_scout");
+    assert.equal(read(path.join(botKeys, `${TODOIST}__BOT_GONE`)), "tok_gone", "none at all, until every bot's settings are right");
+  } finally {
+    fs.chmodSync(folder, 0o700);
+  }
+  assert.equal(await link.dropBotsOwnKeys(), true);
+  assert.equal(fs.existsSync(botKeys), false);
+  assert.deepEqual(json(folderSettings("bot_scout")).mcp.servers, { notes });
+});
+
+test("a key named as a bot's own among the machine's own keys, or where an earlier Mac's start left its keys, goes too", async () => {
+  before();
+  write(path.join(shared, `${GITHUB}__BOT_SCOUT`), "ghp_stray");
+  write(path.join(home, "keys", `${GITHUB}__BOT_SCOUT`), "ghp_older");
+  write(path.join(home, "keys", GITHUB), "ghp_sent_by_a_mac");
+  assert.equal(await link.dropBotsOwnKeys(), true);
+  assert.deepEqual(fs.readdirSync(shared).sort(), ["KUVO_KEY_SLACK_BOT_TOKEN", TODOIST]);
+  assert.deepEqual(fs.readdirSync(path.join(home, "keys")), [GITHUB], "only those named as a bot's");
+  fs.rmSync(path.join(home, "keys"), { recursive: true });
 });
 
 test("a machine with no bridge to start (no phone, no Mac connected) removes them as its engine is about to start", () => {
@@ -185,8 +251,9 @@ test("as its box starts, with no client there, they go; and the routes that kept
     for (const [method, route, body] of [
       ["GET", "kuvo/bots/bot_scout/keys"], ["DELETE", "kuvo/bots/bot_scout/keys"], ["GET", "kuvo/bots/bot_scout/keys/todoist"],
       ["PUT", "kuvo/bots/bot_scout/keys/todoist", { keys: { API_KEY: "tok_again" } }], ["DELETE", "kuvo/bots/bot_scout/keys/todoist"],
-      ["POST", "kuvo/bots/keys/refresh"], ["GET", "kuvo/box/kept-keys?bot=bot_scout"],
-    ]) assert.equal((await box.route(method, route, body)).status, 404, `${method} ${route}`);
+      ["POST", "kuvo/bots/keys/refresh"],
+    ]) assert.deepEqual(await box.route(method, route, body), { status: 404, value: { message: "Bots use this computer's integrations now." } }, `${method} ${route}: said in words, for a client from before`);
+    assert.equal((await box.route("GET", "kuvo/box/kept-keys?bot=bot_scout")).status, 404);
     assert.equal(fs.existsSync(botKeys), false, "nothing kept for it");
     // The bot itself is still there, and listed without a word of keys.
     const listed = (await box.route("GET", "kuvo/bots")).value.bots.find(each => each.id === "bot_scout");

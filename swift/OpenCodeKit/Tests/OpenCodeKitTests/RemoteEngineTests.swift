@@ -129,9 +129,8 @@ struct RemoteEngineTests {
             defer { try? FileManager.default.removeItem(at: home) }
             let root = home.appending(path: RemoteEngineInstaller.root)
             let sent = root.appending(path: "keys/KUVO_KEY_SENT")
-            let botKey = root.appending(path: "box/bot-keys/KUVO_KEY_GITHUB_TOKEN__BOT_SCOUT")
             let shared = root.appending(path: "box/keys/KUVO_KEY_GITHUB_TOKEN")
-            for file in [sent, botKey, shared] {
+            for file in [sent, shared] {
                 try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try Data("secret".utf8).write(to: file)
             }
@@ -147,7 +146,6 @@ struct RemoteEngineTests {
             try stdin.fileHandleForWriting.close()
             process.waitUntilExit()
             #expect(!FileManager.default.fileExists(atPath: sent.path), "what a Mac sent before goes: \(shell)")
-            #expect(FileManager.default.fileExists(atPath: botKey.path), "a bot's own key stays: \(shell)")
             #expect(FileManager.default.fileExists(atPath: shared.path), "the box's shared key stays: \(shell)")
         }
     }

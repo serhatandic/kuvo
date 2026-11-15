@@ -199,6 +199,9 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route.match(WORK_ASKS_ROUTE), answer: workAsksRoute },
   { when: route => route.match(GOALS_ROUTE), answer: goalsRoute },
   { when: route => route === APP_ICON_ROUTE, answer: appIconRoute },
+  // Bots' own keys, which no box keeps now (PROTOCOL.md, "Bots have no keys of their own"): said in
+  // words, for a client from before that still asks.
+  { when: route => route === "kuvo/bots/keys/refresh" || /^kuvo\/bots\/[^/]+\/keys(\/[^/]+)?$/.test(route), answer: ({ json }: RouteContext) => json(404, { message: "Bots use this computer's integrations now." }) },
   { when: route => route.match(CARRY_ROUTE), answer: carryRoute },
   { when: (route, request) => ["PATCH", "DELETE"].includes(request.method.toUpperCase()) && route.match(/^kuvo\/bots\/([^/]+)$/), answer: botRoute },
   { when: route => GROUP_ROUTE.test(route), answer: groupsRoute },

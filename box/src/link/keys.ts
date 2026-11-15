@@ -12,7 +12,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { lockedWhile } from "../shared/files";
 import { textOf, listOf, locked, writeSecret } from "./files";
-import { BOT_KEYS, BOX_KEYS, CONFIG_LOCK, KEYS_ON_HOST, RUN, writesKeyFiles } from "./home";
+import { BOT_KEYS, BOX_KEYS, CONFIG_LOCK, K, KEYS_ON_HOST, RUN, writesKeyFiles } from "./home";
+
+/** Where a Mac's start once left a machine's keys (`keys`, compat/adopt-settings.ts). */
+const LEGACY_KEYS = path.join(K, "keys");
 import { KeysUnavailable, NOT_ANSWERING, appHost, askHost } from "./host-interface";
 
 /** The only names the box ever asks for. */
@@ -118,17 +121,24 @@ function removeKeyFile(name: string): void {
  * (`box/bot-keys`, and the folder), this Mac's Keychain items (through its app or its helper,
  * `keys/delete`, which takes the app's own file of each away too), and the files a Mac's box in a
  * home of its own wrote them to (`box/bot-keys`). Nothing else is touched: no key of the box's own
- * has such a name. Within `keyWork`. Throws `KeysUnavailable` where its host can't be asked now
- * (what could go has gone, and the rest goes the next time). */
-export async function dropBotKeys(): Promise<void> {
+ * has such a name (`KUVO_KEY_SLACK_BOT_TOKEN` isn't one: a bot's has `__BOT_`, and the box refuses
+ * `__` in a key of its own). Also one so named among the box's own (`box/keys`) or where an earlier
+ * Mac's start left its keys (`keys`), which nothing reads. But for `keep`: those a bot's folder's
+ * settings name while they can't be read. Within `keyWork`. Throws `KeysUnavailable` where its host
+ * can't be asked now (what could go has gone, and the rest goes the next time). */
+export async function dropBotKeys(keep: Set<string> = new Set()): Promise<void> {
   const host = keyHost();
   if (host) {
     const answer = await askHost(host, "keys/names", {});
     if (!Array.isArray(answer.names)) throw new KeysUnavailable("This Mac's keys couldn't be read.");
-    for (const name of answer.names) if (typeof name === "string" && BOT_KEY.test(name)) await askHost(host, "keys/delete", { name });
+    for (const name of answer.names) if (typeof name === "string" && BOT_KEY.test(name) && !keep.has(name)) await askHost(host, "keys/delete", { name });
   }
   // (The files only once its host has let them go: one it still keeps says so by its file.)
-  fs.rmSync(BOT_KEYS, { recursive: true, force: true });
+  for (const folder of [BOT_KEYS, BOX_KEYS, LEGACY_KEYS]) {
+    for (const name of listOf(folder)) if (BOT_KEY.test(name) && !keep.has(name)) fs.rmSync(path.join(folder, name), { force: true });
+  }
+  // (Their folder too, unless one's kept in it.)
+  if (!listOf(BOT_KEYS).some(name => keep.has(name))) fs.rmSync(BOT_KEYS, { recursive: true, force: true });
 }
 
 // A key changed on the host and its file, one at a time across this box's processes (`serve`, a

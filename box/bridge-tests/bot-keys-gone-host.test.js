@@ -41,6 +41,7 @@ function before() {
   write(settings, JSON.stringify({ mcp: { servers: { todoist: { type: "local", command: ["kuvo-npx", "@doist/todoist-mcp@1.0.0"], environment: { API_KEY: `{file:${keyFiles}/${TODOIST}__BOT_SCOUT}` } }, notes } } }));
   host.keys.clear();
   host.keys.set(TODOIST, "tok_yours");
+  host.keys.set("KUVO_KEY_SLACK_BOT_TOKEN", "xoxb_yours");
   host.keys.set(`${TODOIST}__BOT_SCOUT`, "tok_scout");
   host.keys.set("KUVO_KEY_GITHUB_TOKEN__BOT_HERALD0001", "ghp_a_machines_bot");
   host.keys.set(`${TODOIST}__BOT_GONE`, "tok_gone");
@@ -50,7 +51,7 @@ function before() {
 test("the keys this Mac's Keychain kept for bots go, every one, never read; your own stay, and the bot's folder stops naming its own", async () => {
   before();
   assert.equal(await link.dropBotsOwnKeys(), true);
-  assert.deepEqual([...host.keys], [[TODOIST, "tok_yours"]]);
+  assert.deepEqual([...host.keys], [[TODOIST, "tok_yours"], ["KUVO_KEY_SLACK_BOT_TOKEN", "xoxb_yours"]]);
   assert.deepEqual(JSON.parse(fs.readFileSync(settings, "utf8")), { mcp: { servers: { notes } } });
   // Only their names were asked for, and only they were taken away: no key's value was read.
   assert.deepEqual(host.asked.map(each => each.call).sort().filter((call, i, all) => all.indexOf(call) === i), ["/keys/delete", "/keys/names"]);
@@ -83,7 +84,7 @@ test("as this Mac's box starts: its bots' folders before it says where it is, th
   try {
     assert.deepEqual(JSON.parse(fs.readFileSync(settings, "utf8")), { mcp: { servers: { notes } } }, "before its engine starts");
     await gone;
-    assert.deepEqual([...host.keys], [[TODOIST, "tok_yours"]]);
+    assert.deepEqual([...host.keys], [[TODOIST, "tok_yours"], ["KUVO_KEY_SLACK_BOT_TOKEN", "xoxb_yours"]]);
     assert.equal((await box.route("GET", "kuvo/bots/bot_scout/keys")).status, 404);
   } finally {
     host.onDelete = null;
