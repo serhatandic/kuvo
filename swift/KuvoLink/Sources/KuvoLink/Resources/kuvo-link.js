@@ -9503,22 +9503,23 @@ function writeKeyFile(name, value) {
 function removeKeyFile(name) {
   locked(CONFIG_LOCK, () => fs33.rmSync(keyFile(name), { force: true }));
 }
-async function dropBotKeys(keep = new Set) {
+async function dropBotKeys(keep = []) {
+  const kept = (name) => keep.some((end) => name.endsWith(end));
   const host = keyHost();
   if (host) {
     const answer = await askHost(host, "keys/names", {});
     if (!Array.isArray(answer.names))
       throw new KeysUnavailable("This Mac's keys couldn't be read.");
     for (const name of answer.names)
-      if (typeof name === "string" && BOT_KEY.test(name) && !keep.has(name))
+      if (typeof name === "string" && BOT_KEY.test(name) && !kept(name))
         await askHost(host, "keys/delete", { name });
   }
   for (const folder of [BOT_KEYS, BOX_KEYS, LEGACY_KEYS]) {
     for (const name of listOf(folder))
-      if (BOT_KEY.test(name) && !keep.has(name))
+      if (BOT_KEY.test(name) && !kept(name))
         fs33.rmSync(path37.join(folder, name), { force: true });
   }
-  if (!listOf(BOT_KEYS).some((name) => keep.has(name)))
+  if (!listOf(BOT_KEYS).some(kept))
     fs33.rmSync(BOT_KEYS, { recursive: true, force: true });
 }
 var KEY_FILES_LOCK = path37.join(RUN, ".key-files.lock");
@@ -10980,9 +10981,12 @@ function giveLock(home) {
 var GONE_FILE = "keys-gone.json";
 var namesBotKey = (server) => /KUVO_KEY_[A-Z0-9_]+__BOT_[A-Z0-9]+/.test(JSON.stringify(server) ?? "");
 function settingsValue(text) {
+  if (text.charCodeAt(0) === 65279)
+    text = text.slice(1);
   try {
     return JSON.parse(text);
   } catch {}
+  const after = /(?:\s|\/\/[^\n\r\u2028\u2029]*|\/\*[\s\S]*?\*\/)*/y;
   let plain = "";
   for (let i = 0;i < text.length; i++) {
     const char = text[i];
@@ -10993,8 +10997,8 @@ function settingsValue(text) {
       plain += text.slice(i, end + 1);
       i = end;
     } else if (char === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== `
-`)
+      while (i < text.length && !`
+\r\u2028\u2029`.includes(text[i]))
         i++;
       plain += `
 `;
@@ -11005,8 +11009,9 @@ function settingsValue(text) {
       i = end + 1;
       plain += " ";
     } else if (char === ",") {
-      const rest = text.slice(i + 1).replace(/^(\s|\/\/[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)*/, "");
-      if (!/^[\]}]/.test(rest))
+      after.lastIndex = i + 1;
+      after.test(text);
+      if (!"]}".includes(text[after.lastIndex] ?? " "))
         plain += char;
     } else {
       plain += char;
@@ -11015,15 +11020,17 @@ function settingsValue(text) {
   return JSON.parse(plain);
 }
 var settingsFileOf = (folder) => path43.join(folder, "workspace", ".opencode", "opencode.json");
-function keysNamedUnread(folder) {
-  const text = textOf(settingsFileOf(folder));
-  if (!text?.trim())
-    return [];
+var ownSuffix = (folder) => `__${path43.basename(folder).toUpperCase().replace(/[^\p{L}\p{N}]/gu, "_")}`;
+function stillNamesOwnKey(folder) {
+  const file = settingsFileOf(folder);
+  const text = textOf(file);
+  if (text === null)
+    return fs39.existsSync(file);
+  let named = text;
   try {
-    settingsValue(text);
-    return [];
+    named = JSON.stringify(settingsValue(text)) ?? "";
   } catch {}
-  return [...new Set(text.match(/KUVO_KEY_[A-Z0-9_]+__BOT_[A-Z0-9]+/g) ?? [])];
+  return new RegExp(`KUVO_KEY_[A-Z0-9_]+${ownSuffix(folder)}(?![A-Z0-9_])`).test(named);
 }
 function keysGoneOf(folder) {
   try {
@@ -11112,11 +11119,11 @@ function keysGoneNote(folder) {
   return notConnectedNote(folder) + unreadNote(folder);
 }
 function unreadNote(folder) {
-  if (!keysNamedUnread(folder).length)
+  if (updateOnTrial() || !stillNamesOwnKey(folder))
     return "";
   return `
 
-Your folder's settings file (${settingsFileOf(folder)}) can't be read: it isn't valid JSON. It names a key of your own for one of its servers, and Kuvo Code no longer keeps keys for single bots, so that server and its key are to go, which Kuvo Code can't do while the file can't be read. Tell the user so plainly the next time you talk: once the file is put right, or that server is taken out of it, the key is removed and you use the integrations connected on ${HERE}, as every session there does.`;
+Your folder's settings file (${settingsFileOf(folder)}) names a key of your own for one of its servers. Kuvo Code no longer keeps keys for single bots, so that server and its key are to go, but Kuvo Code couldn't change the file: it can't be read as JSON, or can't be opened or written. Tell the user so plainly the next time you talk: once the file is put right, or that server is taken out of it, the key is removed the next time Kuvo Code starts on ${HERE}, and you use the integrations connected there, as every session does.`;
 }
 function notConnectedNote(folder) {
   const names = notConnected(folder);
@@ -11135,8 +11142,7 @@ function reconnectIn(engine, folder, id) {
 }
 function dropBotsOwnServers(engine = () => null) {
   if (updateOnTrial())
-    return { all: false, keep: [] };
-  let all = true;
+    return [];
   const keep = [];
   for (const bot of listOf(BOTS)) {
     const folder = path43.join(BOTS, bot);
@@ -11144,10 +11150,11 @@ function dropBotsOwnServers(engine = () => null) {
     try {
       gone = dropOwnServers(folder);
     } catch (error) {
-      all = false;
-      console.error(`kuvo-link: ${bot}'s folder's settings couldn't be put right: ${String(error?.message ?? error)}`);
+      if (!saidNotPlain.has(folder) && saidNotPlain.add(folder))
+        console.error(`kuvo-link: ${bot}'s folder's settings couldn't be put right, so its own keys stay: ${String(error?.message ?? error)}`);
     }
-    keep.push(...keysNamedUnread(folder));
+    if (stillNamesOwnKey(folder))
+      keep.push(ownSuffix(folder));
     if (!gone.length)
       continue;
     let running = null;
@@ -11158,7 +11165,7 @@ function dropBotsOwnServers(engine = () => null) {
       for (const id of gone)
         reconnectIn(running, folder, id);
   }
-  return { all, keep };
+  return keep;
 }
 function keychainOwed() {
   if (!OWN_HOME_MAC)
@@ -11170,9 +11177,7 @@ function dropBotsOwnKeys(engine = () => null) {
   return keyWork(async () => {
     if (updateOnTrial())
       return false;
-    const { all, keep } = dropBotsOwnServers(engine);
-    if (!all)
-      return false;
+    const keep = dropBotsOwnServers(engine);
     if (keychainOwed()) {
       if (!saidOwed)
         console.error("kuvo-link: bots' own keys wait in this Mac's Keychain until Kuvo Code has finished moving its keys to its box: tried again later.");
@@ -11180,7 +11185,7 @@ function dropBotsOwnKeys(engine = () => null) {
       return false;
     }
     try {
-      await dropBotKeys(new Set(keep));
+      await dropBotKeys(keep);
     } catch (error) {
       if (!(error instanceof KeysUnavailable))
         throw error;
@@ -45372,7 +45377,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "44084643f18e";
+var BRIDGE_VERSION = "1b2b5eedf620";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";

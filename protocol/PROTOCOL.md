@@ -3791,17 +3791,19 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   - Each bot's folder's settings (`bots/<id>/workspace/.opencode/opencode.json`) lose the servers
     that name such a key (`KUVO_KEY_…__BOT_<ID>`), first, so none names a key that's gone; the rest
     of the file stays as you wrote it, and a file left empty goes. It's read as the engine reads
-    it (comments, a comma after the last of a list) and written plain. Where one can't be written,
-    no key goes yet (tried again); one that can't be read at all is left, with the keys it names,
-    and that bot is told to tell you, until the file is put right. Its conversation then gets the
+    it (comments, a comma after the last of a list) and written plain. A bot whose settings can't be
+    put right (not readable even so, or a file that can't be opened or written) keeps its own
+    keys, and its settings as they are, and is told to tell you; they go at the box's next start
+    once the file is put right. Its conversation then gets the
     computer's own server for that integration: your connection.
   - The keys go from where they were kept, every one, whichever bot's: a machine's files
     (`~/.kuvo-code/box/bot-keys`, and the folder); a Mac's Keychain items named `<variable>__BOT_<ID>`
     (through its host's `keys/delete`: "Host interface"; those an earlier Kuvo Code kept there for
     machines' bots too), and the files a Mac's box in a home of its own wrote them to
     (`box/bot-keys`); and any file so named among a machine's own keys (`box/keys`) or where an
-    earlier Mac's start left them (`~/.kuvo-code/keys`). (The engine gives a server whose key file
-    is gone an empty key, so its service turns it down: no settings are left naming one.) Where a Mac's keys can't be reached, it's tried again while the box runs (a
+    earlier Mac's start left them (`~/.kuvo-code/keys`). (The engine gives a
+    server whose key file is gone an empty key, so its service turns it down: no settings are
+    left naming one.) Where a Mac's keys can't be reached, it's tried again while the box runs (a
     minute later, then twice as long each time, twice a day at most); so is it while a Mac's box
     that just moved into a home of its own still owes the Keychain (`kuvo/box/rehome`'s `owed`):
     its app deletes its originals only once it finds each one's copy, so no copy goes before. No key of the computer's own

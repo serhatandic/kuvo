@@ -58,7 +58,7 @@ const own = (server, variable, id) => JSON.parse(JSON.stringify(server).replaceA
  * for both, beside a server and instructions you wrote in its folder by hand; Atlas names a server
  * of its own by hand, with no key of the box's; and a deleted bot's key was still to go. */
 function before() {
-  for (const name of ["box", "bots/bot_scout", "bots/bot_atlas", "run"]) fs.rmSync(path.join(home, name), { recursive: true, force: true });
+  for (const name of ["box", "bots/bot_scout", "bots/bot_atlas", "bots/bot_notes", "run"]) fs.rmSync(path.join(home, name), { recursive: true, force: true });
   write(settingsFile, JSON.stringify({ mcp: { servers: { todoist: todoistYours } } }));
   write(path.join(shared, TODOIST), "tok_yours");
   // (A key of your own whose name has BOT in it, which is no bot's.)
@@ -166,7 +166,8 @@ test("a bot's folder's settings that named only its own keys go with them; ones 
   write(folderSettings("bot_atlas"), "// mine\n{}");
   bot("bot_notes", "Notes");
   write(path.join(botKeys, `${GITHUB}__BOT_NOTES`), "ghp_notes");
-  write(folderSettings("bot_notes"), `// Mine: "quoted // not a comment" stays text.
+  // (With a byte order mark and a comment ended by a lone return, as some editors leave them.)
+  write(folderSettings("bot_notes"), `\uFEFF// Mine: "quoted // not a comment" stays text.\r// more
 {
   /* its servers */
   "instructions": ["a // b", "c, ]"],
@@ -181,38 +182,40 @@ test("a bot's folder's settings that named only its own keys go with them; ones 
   assert.equal(read(folderSettings("bot_atlas")), "// mine\n{}");
   assert.deepEqual(json(folderSettings("bot_notes")), { instructions: ["a // b", "c, ]"], mcp: { servers: { notes } } });
   assert.equal(fs.existsSync(botKeys), false);
-  fs.rmSync(folderOf("bot_notes"), { recursive: true });
 });
 
-test("settings that can't be read at all keep the key they name, and the bot is told to tell you, until the file is put right", async t => {
+test("a bot whose settings can't be read at all keeps its own keys (never another bot's), and is told to tell you, until the file is put right", async t => {
   before();
-  const broken = `{ "mcp": { "servers": { "github": ${JSON.stringify(own(githubYours, GITHUB, "bot_scout"))} `;
+  // (It names a deleted bot's key too, which is none of its own.)
+  const broken = `{ "x": "${TODOIST}__BOT_GONE", "mcp": { "servers": { "github": ${JSON.stringify(own(githubYours, GITHUB, "bot_scout"))} `;
   write(folderSettings("bot_scout"), broken);
   assert.equal(await link.dropBotsOwnKeys(), true, "all it can do is done");
   assert.equal(read(folderSettings("bot_scout")), broken, "left as it is");
-  assert.deepEqual(fs.readdirSync(botKeys), [`${GITHUB}__BOT_SCOUT`], "the key it names stays, so its server still works; every other goes");
+  assert.deepEqual(fs.readdirSync(botKeys).sort(), [`${GITHUB}__BOT_SCOUT`, `${TODOIST}__BOT_SCOUT`], "its own stay, so its server still works; every other bot's goes");
   const engine = await engineTelling(t);
   await link.freshenBot(engine.target, "ses_bot_scout");
-  assert.match(engine.told.get("ses_bot_scout"), /Your folder's settings file \(.*bot_scout\/workspace\/\.opencode\/opencode\.json\) can't be read: it isn't valid JSON\./);
+  assert.match(engine.told.get("ses_bot_scout"), /Your folder's settings file \(.*bot_scout\/workspace\/\.opencode\/opencode\.json\) names a key of your own/);
   assert.match(engine.told.get("ses_bot_scout"), /Tell the user so plainly/);
 
   // Put right: at the box's next start its server and key go, and it's told as any bot is.
   write(folderSettings("bot_scout"), broken + "} } }");
   assert.equal(await link.dropBotsOwnKeys(), true);
   assert.equal(fs.existsSync(botKeys), false);
-  assert.equal(fs.existsSync(folderSettings("bot_scout")), false);
+  assert.deepEqual(json(folderSettings("bot_scout")), { x: `${TODOIST}__BOT_GONE` }, "its server gone, the rest as you wrote it");
   await link.freshenBot(engine.target, "ses_bot_scout");
-  assert.doesNotMatch(engine.told.get("ses_bot_scout"), /can't be read/);
+  assert.doesNotMatch(engine.told.get("ses_bot_scout"), /settings file/);
 });
 
-test("where a bot's folder's settings can't be rewritten, no key goes yet (they'd name a key that's gone): it's done once they can be", { skip: process.getuid?.() === 0 }, async () => {
+test("a bot whose settings can't be rewritten keeps its own keys (its settings would name a key that's gone) and is told; the others' go, and its own once the file can be changed", { skip: process.getuid?.() === 0 }, async t => {
   before();
   const folder = path.dirname(folderSettings("bot_scout"));
   fs.chmodSync(folder, 0o500);
   try {
-    assert.equal(await link.dropBotsOwnKeys(), false);
-    assert.equal(read(path.join(botKeys, `${TODOIST}__BOT_SCOUT`)), "tok_scout");
-    assert.equal(read(path.join(botKeys, `${TODOIST}__BOT_GONE`)), "tok_gone", "none at all, until every bot's settings are right");
+    assert.equal(await link.dropBotsOwnKeys(), true);
+    assert.deepEqual(fs.readdirSync(botKeys).sort(), [`${GITHUB}__BOT_SCOUT`, `${TODOIST}__BOT_SCOUT`], "its own stay; a deleted bot's goes all the same");
+    const engine = await engineTelling(t);
+    await link.freshenBot(engine.target, "ses_bot_scout");
+    assert.match(engine.told.get("ses_bot_scout"), /Kuvo Code couldn't change the file/);
   } finally {
     fs.chmodSync(folder, 0o700);
   }

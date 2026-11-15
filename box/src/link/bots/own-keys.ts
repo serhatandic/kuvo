@@ -34,9 +34,13 @@ const GONE_FILE = "keys-gone.json";
 const namesBotKey = (server: unknown): boolean => /KUVO_KEY_[A-Z0-9_]+__BOT_[A-Z0-9]+/.test(JSON.stringify(server) ?? "");
 
 /** A settings file's text as the engine reads it (JSONC: comments, and a comma after the last of a
- * list): its value. Throws for what isn't that either. */
+ * list; a little more is let through, like a lone comma, which changes nothing it's written back
+ * as): its value. Throws for what isn't that either. */
 export function settingsValue(text: string): unknown {
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   try { return JSON.parse(text); } catch {}
+  // (Past a comma: the space and comments before what comes next.)
+  const after = /(?:\s|\/\/[^\n\r\u2028\u2029]*|\/\*[\s\S]*?\*\/)*/y;
   let plain = "";
   for (let i = 0; i < text.length; i++) {
     const char = text[i]!;
@@ -47,7 +51,7 @@ export function settingsValue(text: string): unknown {
       plain += text.slice(i, end + 1);
       i = end;
     } else if (char === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== "\n") i++;
+      while (i < text.length && !"\n\r\u2028\u2029".includes(text[i]!)) i++;
       plain += "\n";
     } else if (char === "/" && text[i + 1] === "*") {
       const end = text.indexOf("*/", i + 2);
@@ -55,9 +59,10 @@ export function settingsValue(text: string): unknown {
       i = end + 1;
       plain += " ";
     } else if (char === ",") {
-      // (One before what closes its list goes: looked for past the space and comments after it.)
-      const rest = text.slice(i + 1).replace(/^(\s|\/\/[^\n]*(\n|$)|\/\*[\s\S]*?\*\/)*/, "");
-      if (!/^[\]}]/.test(rest)) plain += char;
+      // (One before what closes its list goes.)
+      after.lastIndex = i + 1;
+      after.test(text);
+      if (!"]}".includes(text[after.lastIndex] ?? " ")) plain += char;
     } else {
       plain += char;
     }
@@ -67,14 +72,22 @@ export function settingsValue(text: string): unknown {
 
 const settingsFileOf = (folder: string): string => path.join(folder, "workspace", ".opencode", "opencode.json");
 
-/** The keys of its own a bot's folder's settings name while they can't be read at all (not JSON,
- * nor as the engine reads them): its settings can't be put right, so those keys stay, and the bot
- * is told (`keysGoneNote`). None otherwise. */
-export function keysNamedUnread(folder: string): string[] {
-  const text = textOf(settingsFileOf(folder));
-  if (!text?.trim()) return [];
-  try { settingsValue(text); return []; } catch {}
-  return [...new Set(text.match(/KUVO_KEY_[A-Z0-9_]+__BOT_[A-Z0-9]+/g) ?? [])];
+/** How a bot's own keys end, by its folder (`…__BOT_<ID>`, as an earlier box named them). */
+const ownSuffix = (folder: string): string => `__${path.basename(folder).toUpperCase().replace(/[^\p{L}\p{N}]/gu, "_")}`;
+
+/** Whether a bot's folder's settings still name a key of its own, as they are now: ones that
+ * couldn't be put right (not settings the engine could read either, or a file that can't be
+ * opened or written). Its keys stay for as long, so its server goes on working, and the bot is
+ * told to tell you (`keysGoneNote`). Only its own: what it says of another bot's keys counts for
+ * nothing. */
+function stillNamesOwnKey(folder: string): boolean {
+  const file = settingsFileOf(folder);
+  const text = textOf(file);
+  // (There, but not to be read: it may.)
+  if (text === null) return fs.existsSync(file);
+  let named = text;
+  try { named = JSON.stringify(settingsValue(text)) ?? ""; } catch {}
+  return new RegExp(`KUVO_KEY_[A-Z0-9_]+${ownSuffix(folder)}(?![A-Z0-9_])`).test(named);
 }
 
 /** The integrations a bot (its folder) had a key of its own for, as noted there. */
@@ -98,8 +111,7 @@ function noteKeysGone(folder: string, ids: string[]): void {
  * as it was (what you wrote there by hand stays; a file left empty goes): the integrations they
  * were for, which are noted in its folder. Read as the engine reads it (comments, a last comma),
  * and written plain where a server goes (your comments there go with it); settings that can't be
- * read at all are left alone, with the keys they name (`keysNamedUnread`). Throws where the file
- * can't be written. */
+ * read at all are left alone (`stillNamesOwnKey`). Throws where the file can't be written. */
 export function dropOwnServers(folder: string): string[] {
   const file = settingsFileOf(folder);
   const settingsFolder = path.dirname(file);
@@ -170,10 +182,11 @@ export function keysGoneNote(folder: string): string {
   return notConnectedNote(folder) + unreadNote(folder);
 }
 
-/** While its folder's settings can't be read and name a key of its own (which stays for that). */
+/** While its folder's settings still name a key of its own that the box couldn't take out of them
+ * (`stillNamesOwnKey`; not while an update is on trial, when nothing's taken out yet). */
 function unreadNote(folder: string): string {
-  if (!keysNamedUnread(folder).length) return "";
-  return `\n\nYour folder's settings file (${settingsFileOf(folder)}) can't be read: it isn't valid JSON. It names a key of your own for one of its servers, and Kuvo Code no longer keeps keys for single bots, so that server and its key are to go, which Kuvo Code can't do while the file can't be read. Tell the user so plainly the next time you talk: once the file is put right, or that server is taken out of it, the key is removed and you use the integrations connected on ${HERE}, as every session there does.`;
+  if (updateOnTrial() || !stillNamesOwnKey(folder)) return "";
+  return `\n\nYour folder's settings file (${settingsFileOf(folder)}) names a key of your own for one of its servers. Kuvo Code no longer keeps keys for single bots, so that server and its key are to go, but Kuvo Code couldn't change the file: it can't be read as JSON, or can't be opened or written. Tell the user so plainly the next time you talk: once the file is put right, or that server is taken out of it, the key is removed the next time Kuvo Code starts on ${HERE}, and you use the integrations connected there, as every session does.`;
 }
 
 function notConnectedNote(folder: string): string {
@@ -192,11 +205,11 @@ function reconnectIn(engine: EngineRecord, folder: string, id: string): void {
 }
 
 /** Every bot's folder's settings here without the servers that name a key of its own (not while an
- * update is on trial). By itself as this Mac's box starts, before it says where it is, so before
+ * update is on trial): how the keys end of the bots whose settings couldn't be put right, which
+ * stay. By itself as this Mac's box starts, before it says where it is, so before
  * its engine starts: its keys, which its app may not answer for yet, go after. */
-export function dropBotsOwnServers(engine: () => EngineRecord | null = () => null): { all: boolean; keep: string[] } {
-  if (updateOnTrial()) return { all: false, keep: [] };
-  let all = true;
+export function dropBotsOwnServers(engine: () => EngineRecord | null = () => null): string[] {
+  if (updateOnTrial()) return [];
   const keep: string[] = [];
   for (const bot of listOf(BOTS)) {
     const folder = path.join(BOTS, bot);
@@ -204,18 +217,17 @@ export function dropBotsOwnServers(engine: () => EngineRecord | null = () => nul
     try {
       gone = dropOwnServers(folder);
     } catch (error) {
-      // (Its settings still name its keys: none goes until they're put right, tried again.)
-      all = false;
-      console.error(`kuvo-link: ${bot}'s folder's settings couldn't be put right: ${String((error as Error | null)?.message ?? error)}`);
+      if (!saidNotPlain.has(folder) && saidNotPlain.add(folder)) console.error(`kuvo-link: ${bot}'s folder's settings couldn't be put right, so its own keys stay: ${String((error as Error | null)?.message ?? error)}`);
     }
-    keep.push(...keysNamedUnread(folder));
+    // (Its settings still name its keys: those stay, until they're put right.)
+    if (stillNamesOwnKey(folder)) keep.push(ownSuffix(folder));
     if (!gone.length) continue;
     // (A server already running there has its key in memory: connected again, it's the box's own.)
     let running: EngineRecord | null = null;
     try { running = engine(); } catch {}
     if (running?.port) for (const id of gone) reconnectIn(running, folder, id);
   }
-  return { all, keep };
+  return keep;
 }
 
 /** Whether this Mac's box has just moved into a home of its own and its app's program still owes
@@ -229,8 +241,7 @@ function keychainOwed(): boolean {
 }
 
 /** What's left here of bots' own keys, gone: every bot's folder's settings first (so none names a
- * key that's gone: where one couldn't be written, no key goes yet, and one that can't be read
- * keeps the keys it names), then the keys, then the note of deleted bots' keys still to go
+ * key that's gone: a bot whose settings couldn't be put right keeps its own), then the keys, then the note of deleted bots' keys still to go
  * (`run/bot-keys-left.json`, an earlier box's). Whether it's all done: not while an update is on
  * trial (a key can't come back if the version before does: the box does this once the update is
  * confirmed), nor while this Mac's keys can't be reached or its move into a home of its own still
@@ -240,15 +251,14 @@ function keychainOwed(): boolean {
 export function dropBotsOwnKeys(engine: () => EngineRecord | null = () => null): Promise<boolean> {
   return keyWork(async () => {
     if (updateOnTrial()) return false;
-    const { all, keep } = dropBotsOwnServers(engine);
-    if (!all) return false;
+    const keep = dropBotsOwnServers(engine);
     if (keychainOwed()) {
       if (!saidOwed) console.error("kuvo-link: bots' own keys wait in this Mac's Keychain until Kuvo Code has finished moving its keys to its box: tried again later.");
       saidOwed = true;
       return false;
     }
     try {
-      await dropBotKeys(new Set(keep));
+      await dropBotKeys(keep);
     } catch (error) {
       if (!(error instanceof KeysUnavailable)) throw error;
       return false;
