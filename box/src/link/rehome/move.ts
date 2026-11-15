@@ -37,6 +37,10 @@ export const BESIDE: readonly (readonly [string, string])[] = [
   ["engine", "engine"], ["integrations", "integrations"], ["bots", "bots"], ["wakes", "wakes"], ["groups", "groups"], ["chats", "Chats"],
   ["agents", "agents"], ["phone-link.json", "phone-link.json"],
 ];
+/** And what a move the box runs itself takes too, which the keeper's left to the app: the app's
+ * list of bots (the box takes a job kept only there as it starts, `bots/jobs.ts`), and the files
+ * an imported engine's settings name (`{file:…}`, `opencode-files`). */
+const BESIDE_WHOLE: readonly (readonly [string, string])[] = [["bots.json", "bots.json"], ["opencode-files", "opencode-files"]];
 /** The files the app's sessions sent (`Attachments`), merged with the box's own (`attachments`). */
 const APP_ATTACHMENTS = "Attachments";
 /** Its processes' records in `run`, made anew where it runs next (and the record of the last start
@@ -155,12 +159,12 @@ export function planMove({ appFolder, home }: Folders, release: string, { engine
   const stage = (name: string) => path.join(staging(home), `${placements.length}-${name}`);
   // (`whole`, a move the box runs itself: `box` and `run` too where the app had no box of its own,
   // and each place beside it whether or not it's there, for what its upgrades write there.)
-  const own = new Set([...listOf(box), ...(whole ? ["box", "run"] : [])]);
+  const own = new Set([...listOf(box), ...(whole ? ["box", "run", "machines.json"] : [])]);
   for (const name of [...own].sort()) {
     if (name === "bin") continue;
     placements.push({ from: path.join(box, name), to: path.join(home, name), staged: stage(name), ...(name === "run" ? { run: true } : {}) });
   }
-  for (const [name, there] of BESIDE) {
+  for (const [name, there] of whole ? [...BESIDE, ...BESIDE_WHOLE] : BESIDE) {
     // (The engine from the installer's, where it's given: never an earlier Kuvo Code's.)
     if (name === "engine" && engine) continue;
     const from = path.join(appFolder, there);
@@ -518,7 +522,7 @@ async function carryOn(journal: Journal, rewriter: Rewriter): Promise<void> {
   // release's engine.
   if (journal.run && at("upgrade")) {
     stepTo(journal, "upgrade");
-    noteRecord(home, { dropped: upgradeStaged(journal.run, move) });
+    noteRecord(home, { dropped: await upgradeStaged(journal.run, move) });
     stopPoint("after-upgrade");
   }
   if (journal.run && at("database")) {

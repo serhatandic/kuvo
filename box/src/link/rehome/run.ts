@@ -18,6 +18,7 @@ import { isObject } from "../../shared/json";
 import { processRuns } from "../../shared/platform";
 import { sleep } from "../../shared/wait";
 import { OWN_RUNTIME, accountHome, located } from "../home";
+import { checkedRelease } from "../install/command";
 import { appBoxThere, machineBoxThere } from "../install/verdict";
 import { launchTools } from "../uninstall";
 import { databasesIn, schemaMark } from "./database";
@@ -41,8 +42,6 @@ export interface RunOptions {
   /** The release the installer unpacked, and the folder its engine's version is in. */
   release: string;
   engine: string;
-  /** The engine's version the release names. */
-  pinned: string;
   waiting?: () => void;
 }
 
@@ -54,6 +53,7 @@ export interface RunOutcome extends RehomeOutcome {
 
 const NO_ENGINE = "Kuvo's engine couldn't be downloaded. Check that this Mac is online, then try again.";
 const DAMAGED = "This copy of Kuvo Code is damaged. Download it again, then try again.";
+const NO_RELEASE = "Kuvo's own files weren't unpacked. Open Kuvo Code again to try again.";
 
 /** Why an engine database in the earlier Kuvo Code's folder can't be brought along, or null: its
  * schema read from a clone of it (its log and index with it), in the move's own folder. */
@@ -81,10 +81,11 @@ function schemaRefusal(appFolder: string, home: string): string | null {
 
 /** Why the move can't go ahead now, or null: checked before anything changes, each in words that
  * say what to do. */
-function runRefusal({ appFolder, home }: Folders, plan: RunPlan, pinned: string): string | null {
+function runRefusal({ appFolder, home }: Folders, plan: RunPlan, pinned: string | null): string | null {
   const real = located(home) === located(path.join(accountHome(), ".kuvo-code"));
   if (real !== (plan.id === "run.kuvo.code")) return real ? "Only Kuvo Code itself moves into ~/.kuvo-code: a copy moves into a home of its own." : "Kuvo Code itself moves into ~/.kuvo-code only.";
-  if (releaseRefusal(plan.release)) return DAMAGED;
+  // (The release whole, every file as it says, with its helper; and its engine, fetched.)
+  if (pinned === null || releaseRefusal(plan.release)) return exists(plan.release) ? DAMAGED : NO_RELEASE;
   if (!exists(path.join(plan.engine, pinned, "opencode"))) return NO_ENGINE;
   // (Kuvo Code itself always brings what hands its keys over: one without it isn't whole.)
   if (real && !plan.keys) return DAMAGED;
@@ -203,14 +204,16 @@ export async function rehomeRun(folders: Folders, options: RunOptions): Promise<
     };
     if (plan.source === "app-box") await stopOldKeeper(appFolder);
     const now = Date.now();
-    const refusal = plan.merge ? "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet." : runRefusal(folders, plan, options.pinned);
+    let pinned: string | null = null;
+    try { pinned = checkedRelease(plan.release).engine; } catch {}
+    const refusal = plan.merge ? "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet." : runRefusal(folders, plan, pinned);
     if (refusal) {
       // (Counted, never waited for: trying again is yours.)
       noteRecord(home, { state: "failed", way: "move", tries: (readRecord(home).tries ?? 0) + 1, nextTry: null, failed: { at: now, step: "plan", message: refusal }, asked: null });
       return { result: "refused", message: refusal, status: rehomeStatus(home) };
     }
     // (Only this release's engine goes into the box: never a download cut short, nor another version's.)
-    for (const name of fs.readdirSync(plan.engine)) if (name !== options.pinned) fs.rmSync(path.join(plan.engine, name), { recursive: true, force: true });
+    for (const name of fs.readdirSync(plan.engine)) if (name !== pinned) fs.rmSync(path.join(plan.engine, name), { recursive: true, force: true });
     const outcome = await run({
       v: 1, way: "move", began: now, step: "plan", from: appFolder, to: home,
       ...planMove(folders, plan.release, { engine: plan.engine, whole: true }), kept: path.join(rehomeFolder(home), "kept", stamp(now)),

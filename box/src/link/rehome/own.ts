@@ -18,7 +18,7 @@ type Kind = "json" | "lines-json" | "path" | "lines";
 
 /** What isn't the box's to rewrite, by its place in a box's home (a glob's `*` one name). */
 const NOT_OURS = [
-  "engine", "data", "state", "cache", "workspace", "attachments", "chats", "integrations", "trash", "browser", "apps", "t", "bin", "moved-*",
+  "engine", "data", "state", "cache", "workspace", "attachments", "chats", "integrations", "trash", "browser", "apps", "t", "bin", "moved-*", "opencode-files",
   "box/vault", "box/keys", "box/bot-keys", "box/branch-backups/*/store",
   // (Made anew as the box starts.)
   "run/fence",

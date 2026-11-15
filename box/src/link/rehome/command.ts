@@ -17,7 +17,7 @@
 
 import path from "node:path";
 import { accountHome, homeFolder, K, located } from "../home";
-import { bundleID, checkedRelease } from "../install/command";
+import { bundleID } from "../install/command";
 import { appFolderOf, homeOfRoot, keeperFailed, newReadiness, NOTHING_TO_MOVE, rehome, rehomeBack, rehomeNew, rehomeReady, rehomeResume, settled, type RehomeOutcome } from "./move";
 import { rehomeRun } from "./run";
 import { moveUnderWay, rehomeStatus } from "./state";
@@ -64,12 +64,7 @@ export async function rehomeCommand(root: string | undefined, args: string[]): P
         say({ result: "refused", message: NOTHING_TO_MOVE, status: rehomeStatus(home) });
         return 1;
       }
-      let pinned: string;
-      try { pinned = checkedRelease(release).engine; } catch (error) {
-        say({ result: "refused", message: error instanceof Error ? error.message : String(error), status: rehomeStatus(home) });
-        return 1;
-      }
-      const outcome = await rehomeRun({ appFolder: path.join(homeFolder(), "Library", "Application Support", id), home }, { bundle, id, release, engine, pinned, waiting });
+      const outcome = await rehomeRun({ appFolder: path.join(homeFolder(), "Library", "Application Support", id), home }, { bundle, id, release, engine, waiting });
       say(outcome);
       return EXIT[outcome.result];
     }

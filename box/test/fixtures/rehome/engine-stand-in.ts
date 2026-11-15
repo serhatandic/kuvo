@@ -20,8 +20,9 @@ const file = `${process.env.XDG_DATA_HOME}/opencode/opencode.db`
   const mark = before.query("SELECT count(*) || ' ' || max(id) AS mark FROM migration").get() as { mark: string }
   before.close()
   if (mark.mark === "50 20261010180456_project_time_archived") {
-    if (process.env.STAND_IN_CANNOT_MIGRATE) process.exit(1)
-    const { S, home, rootCommit } = JSON.parse(readFileSync(process.env.STAND_IN_WORLD!, "utf8")) as { S: string; home: string; rootCommit: string }
+    const { S, home, rootCommit, cannotMigrate } = JSON.parse(readFileSync(process.env.STAND_IN_WORLD!, "utf8")) as { S: string; home: string; rootCommit: string; cannotMigrate?: boolean }
+    // (One that can't, for a test: it stops as it starts, as an engine that failed to migrate would.)
+    if (cannotMigrate) { console.error("migration failed"); process.exit(1) }
     const sql = readFileSync(join(import.meta.dir, "engine-2.0.32-migrated.sql"), "utf8")
       .replaceAll("@S_URL@", pathToFileURL(S).href.slice("file://".length)).replaceAll("@S@", S).replaceAll("@HOME@", home)
       .replaceAll("@ROOT6@", rootCommit.slice(0, 6)).replaceAll("@ROOT@", rootCommit)

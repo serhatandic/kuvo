@@ -245,3 +245,22 @@ export function rows(file: string): Record<string, any[]> {
     db.close()
   }
 }
+
+const xml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+/** A value as a property list writes it: what the app kept as `Data` (`{ data: … }`, compact JSON) as `<data>`. */
+function plistValue(value: unknown): string {
+  if (typeof value === "string") return `<string>${xml(value)}</string>`
+  if (typeof value === "boolean") return value ? "<true/>" : "<false/>"
+  if (typeof value === "number") return Number.isInteger(value) ? `<integer>${value}</integer>` : `<real>${value}</real>`
+  if (Array.isArray(value)) return `<array>${value.map(plistValue).join("")}</array>`
+  const object = value as Record<string, unknown>
+  if (Object.keys(object).length === 1 && "data" in object) return `<data>${Buffer.from(JSON.stringify(object.data)).toString("base64")}</data>`
+  return `<dict>${Object.entries(object).map(([key, inner]) => `<key>${xml(key)}</key>${plistValue(inner)}`).join("")}</dict>`
+}
+/** The app's preferences, written as macOS keeps them (a binary property list). */
+export function preferences(mac: Mac, values: Record<string, unknown>) {
+  const file = join(mac.home, "Library", "Preferences", `${APP_ID}.plist`)
+  put(file, `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">${plistValue(values)}</plist>\n`)
+  const converted = spawnSync("/usr/bin/plutil", ["-convert", "binary1", file], { encoding: "utf8" })
+  if (converted.status !== 0) throw new Error(converted.stderr)
+}

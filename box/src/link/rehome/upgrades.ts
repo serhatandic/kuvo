@@ -1,10 +1,549 @@
 // What an earlier Kuvo Code kept in its own files and preferences, brought into the box's own
-// files in the staged copy (#713 piece 4; the inventory: `.claude/notes/713-piece-4-inventory.md`).
+// files (#713 piece 4; the inventory: `.claude/notes/713-piece-4-inventory.md`). Kuvo Code 0.5 to
+// 0.7.2 and 0.8.0-beta.1 had no box: their app kept your projects, machines, worktrees' records,
+// group chats, personalities and settings itself, and a later app gave each to its box as it
+// opened. No such app runs any more, so the box's move does it: each upgrade reads the app's
+// folder and its preferences, never writing there, and writes into the staged copy alone, before
+// its paths are rewritten (so what it writes names the old place, as everything cloned does).
+//
+// Each can run again over what it wrote (a move tried again clones afresh; a box that had some of
+// it already, a keeper build's, keeps its own). What isn't carried is said, in words a client
+// shows once (`state.json`'s `dropped`).
+// Platform: a Mac's alone (the preferences are a property list `plutil` or `defaults` reads).
 
-import type { MoveContext } from "./rewrite";
+import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { UsageSettings } from "../../agents/usage/settings";
+import { isObject } from "../../shared/json";
+import { accountHome, homeFolder, located } from "../home";
+import { mergePersonalities } from "../personalities/library";
+import { placementOf, type MoveContext } from "./rewrite";
 import type { RunPlan } from "./state";
 
-/** Every upgrade, run in the staged copy: what wasn't carried, in words to show once. */
-export function runUpgrades(_run: RunPlan, _move: MoveContext): string[] {
-  return [];
+type Prefs = Record<string, unknown>;
+
+const exists = (file: string): boolean => { try { fs.lstatSync(file); return true; } catch { return false; } };
+const isFolder = (file: string): boolean => { try { return fs.statSync(file).isDirectory(); } catch { return false; } };
+const listOf = (folder: string): string[] => { try { return fs.readdirSync(folder); } catch { return []; } };
+const readJSON = (file: string): unknown => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return undefined; } };
+const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filter((each): each is string => typeof each === "string") : []);
+const stringMap = (value: unknown): Record<string, string> => (isObject(value) ? Object.fromEntries(Object.entries(value).filter((each): each is [string, string] => typeof each[1] === "string")) : {});
+function writeWhole(file: string, text: string): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.${process.pid}.new`;
+  fs.writeFileSync(temporary, text, { mode: 0o600 });
+  fs.renameSync(temporary, file);
+}
+
+// The app's preferences
+
+/** A property list in XML, read: dictionaries, arrays, strings, numbers, booleans, and data
+ * (`<data>`: what the app kept as JSON is read as JSON, else left as its bytes' text). */
+export function parsePlist(xml: string): unknown {
+  const unescape = (text: string) => text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+  const tokens = /<(\/?)([a-z]+)(\/?)>([^<]*)/g;
+  const body = xml.slice(Math.max(0, xml.indexOf("<plist")));
+  tokens.lastIndex = body.indexOf(">") + 1;
+  const next = () => {
+    const found = tokens.exec(body);
+    return found ? { closes: found[1] === "/", name: found[2], empty: found[3] === "/", text: found[4] } : null;
+  };
+  const value = (token: NonNullable<ReturnType<typeof next>>): unknown => {
+    if (token.name === "true") return true;
+    if (token.name === "false") return false;
+    if (token.name === "dict") {
+      const dict: Record<string, unknown> = {};
+      if (token.empty) return dict;
+      for (let each = next(); each && !(each.closes && each.name === "dict"); each = next()) {
+        if (each.name !== "key") continue;
+        const key = unescape(each.text);
+        next();
+        const inner = next();
+        if (inner) dict[key] = value(inner);
+      }
+      return dict;
+    }
+    if (token.name === "array") {
+      const list: unknown[] = [];
+      if (token.empty) return list;
+      for (let each = next(); each && !(each.closes && each.name === "array"); each = next()) list.push(value(each));
+      return list;
+    }
+    const text = token.empty ? "" : token.text;
+    if (!token.empty) next();
+    if (token.name === "integer" || token.name === "real") return Number(text);
+    if (token.name === "data") {
+      const bytes = Buffer.from(text.replace(/\s+/g, ""), "base64").toString("utf8");
+      try { return JSON.parse(bytes); } catch { return bytes; }
+    }
+    return unescape(text);
+  };
+  const first = next();
+  return first ? value(first) : {};
+}
+
+/** The earlier Kuvo Code's preferences (`~/Library/Preferences/<its ID>.plist`): asked of the
+ * system for the real one (what it has may be newer than the file), read from the file for a
+ * copy's. Nothing where there are none. */
+export function appPreferences(appFolder: string): Prefs {
+  const id = path.basename(appFolder);
+  const file = path.join(path.dirname(path.dirname(appFolder)), "Preferences", `${id}.plist`);
+  const real = located(homeFolder()) === located(accountHome()) && id === "run.kuvo.code";
+  const asked = real
+    ? spawnSync("/usr/bin/defaults", ["export", id, "-"], { encoding: "utf8", timeout: 30_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] })
+    : exists(file) ? spawnSync("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 30_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }) : null;
+  if (!asked || asked.status !== 0 || !asked.stdout) return {};
+  const read = parsePlist(asked.stdout);
+  return isObject(read) ? read : {};
+}
+
+// One upgrade's world
+
+interface Upgrade {
+  /** The earlier Kuvo Code's folder (read, never written), and where the box will be. */
+  S: string;
+  home: string;
+  prefs: Prefs;
+  /** Where a place in the box's home (`box/projects.json`, `groups`) is staged, its folders made. */
+  staged(name: string): string;
+  /** What wasn't carried, in words a client shows once. */
+  dropped: string[];
+}
+
+/** A folder as the app named one of this Mac's, or null for a machine's (`ssh://…`, that machine's
+ * own) and what isn't a path. */
+const here = (folder: unknown): string | null => (typeof folder === "string" && path.isAbsolute(folder) ? folder : null);
+
+// Projects, worktrees, machines
+
+/** The projects you opened (`projectFolders`, in the sidebar's order, and `projectSettings`: each
+ * one's name, extra folders and Run command) into the box's list (`box/projects.json`). One the
+ * box has already keeps its own. Bots' folders were never projects. */
+function projects({ prefs, staged, S }: Upgrade): void {
+  const order = strings(prefs.projectFolders);
+  const settings = isObject(prefs.projectSettings) ? prefs.projectSettings : {};
+  const bots = (folder: string) => folder.startsWith(path.join(S, "bots") + "/") || folder.includes("/.kuvo-code/bots/");
+  const folders = [...new Set([...order, ...Object.keys(settings)])].filter(folder => here(folder) && !bots(folder));
+  if (!folders.length) return;
+  const file = staged("box/projects.json");
+  const kept = readJSON(file);
+  const list: Record<string, unknown>[] = isObject(kept) && Array.isArray(kept.projects) ? kept.projects.filter(isObject) : [];
+  const known = new Set(list.map(each => each.directory));
+  for (const directory of folders) {
+    if (known.has(directory)) continue;
+    const given = isObject(settings[directory]) ? settings[directory] : {};
+    const name = typeof given.name === "string" ? given.name.trim() : "";
+    const run = typeof given.run === "string" ? given.run.trim() : "";
+    list.push({
+      directory,
+      ...(name && name !== path.basename(directory) ? { name } : {}),
+      folders: [...new Set(strings(given.folders).filter(folder => path.isAbsolute(folder) && folder !== directory))],
+      ...(run ? { run } : {}),
+      // (One whose settings were kept for a session's sake, not in the sidebar: removed, as it was.)
+      ...(order.includes(directory) ? {} : { removed: true }),
+    });
+  }
+  writeWhole(file, JSON.stringify({ version: 1, projects: list }, null, 2));
+}
+
+/** The worktrees the app kept for its sessions (`worktrees`) and those it removed
+ * (`removedWorktrees`, which say where an archived session belongs) into the box's records
+ * (`box/worktrees.json`). One whose folder is gone isn't a worktree any more. */
+function worktrees({ prefs, staged }: Upgrade): void {
+  const kept = isObject(prefs.worktrees) ? prefs.worktrees : {};
+  const removed = stringMap(prefs.removedWorktrees);
+  if (!Object.keys(kept).length && !Object.keys(removed).length) return;
+  const file = staged("box/worktrees.json");
+  const had = readJSON(file);
+  const records: Record<string, unknown>[] = isObject(had) && Array.isArray(had.worktrees) ? had.worktrees.filter(isObject) : [];
+  const handedOver = stringMap(isObject(had) ? had.handedOver : null);
+  const gone = stringMap(isObject(had) ? had.removed : null);
+  for (const [folder, record] of Object.entries(kept).sort(([a], [b]) => a.localeCompare(b))) {
+    if (!isObject(record)) continue;
+    const project = here(record.project), root = here(record.root);
+    if (!here(folder) || !project || !root || typeof record.branch !== "string" || !record.branch || !isFolder(root)) continue;
+    if (records.some(each => each.root === root)) continue;
+    records.push({ project, root, folder, branch: record.branch, ...(typeof record.base === "string" && record.base ? { base: record.base } : {}) });
+  }
+  for (const [folder, project] of Object.entries(removed).sort(([a], [b]) => a.localeCompare(b))) {
+    if (!here(folder) || !here(project) || folder === project) continue;
+    if (records.some(each => each.root === folder || each.folder === folder) || folder in gone || folder in handedOver) continue;
+    handedOver[folder] = project;
+  }
+  writeWhole(file, JSON.stringify({
+    worktrees: records, removed: gone, restorable: isObject(had) && Array.isArray(had.restorable) ? had.restorable : [],
+    ...(Object.keys(handedOver).length ? { handedOver } : {}),
+  }, null, 2));
+}
+
+/** Your machines (`machines`: each one's address for `ssh`, its other addresses, its key file)
+ * into the box's list (`machines.json`), beside those it has. */
+function machines({ prefs, staged }: Upgrade): void {
+  const listed = [...(Array.isArray(prefs["machines.unsaved"]) ? prefs["machines.unsaved"] : []), ...(Array.isArray(prefs.machines) ? prefs.machines : [])]
+    .filter((each): each is Record<string, unknown> => isObject(each) && typeof each.destination === "string" && each.destination.length > 0);
+  if (!listed.length) return;
+  const file = staged("machines.json");
+  const had = readJSON(file);
+  const list: Record<string, unknown>[] = Array.isArray(had) ? had.filter(isObject) : [];
+  for (const machine of listed) {
+    if (list.some(each => each.destination === machine.destination)) continue;
+    list.push({
+      destination: machine.destination,
+      ...(strings(machine.otherAddresses).length ? { otherAddresses: strings(machine.otherAddresses) } : {}),
+      ...(typeof machine.identity === "string" && machine.identity ? { identity: machine.identity } : {}),
+      ...(typeof machine.reachedAt === "string" && machine.reachedAt ? { reachedAt: machine.reachedAt } : {}),
+    });
+  }
+  writeWhole(file, JSON.stringify(list));
+}
+
+// Settings
+
+/** The engine's settings in the staged copy, as plain JSON, or null where they aren't (comments, a
+ * damaged file): then nothing's written into them. */
+function settingsOf(file: string): Record<string, unknown> | null {
+  if (!exists(file)) return {};
+  const read = readJSON(file);
+  return isObject(read) ? read : null;
+}
+const writeSettings = (file: string, settings: Record<string, unknown>) => writeWhole(file, JSON.stringify(settings, null, 2) + "\n");
+
+/** A key named where the app wrote its files for the engine (its temporary folder), or in the
+ * engine's environment as a version before did, named where this box writes them (`box/keys`, as
+ * `areas/config.ts` names them). */
+function keysNamedIn(value: unknown, keys: string): unknown {
+  if (typeof value === "string") return value.replace(/\{(?:env|file):[^{}]*?(KUVO_KEY_[A-Za-z0-9_]+)\}/g, (_, name) => `{file:${keys}/${name}}`);
+  if (Array.isArray(value)) return value.map(each => keysNamedIn(each, keys));
+  if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, keysNamedIn(inner, keys)]));
+  return value;
+}
+
+/** The engine's settings: integrations' keys named where the box writes them now, and Settings ›
+ * Git from the app's preferences (the branch prefix, and what commits and pull requests are told),
+ * each only where the settings have none, once (`box/git.json` says it's done). */
+function engineSettings({ prefs, staged, home, dropped }: Upgrade): void {
+  const file = staged("config/opencode/opencode.json");
+  const settings = settingsOf(file);
+  const account = homeFolder();
+  const shown = home.startsWith(account + "/") ? "~" + home.slice(account.length) : home;
+  const git = { branch_prefix: prefs["git.branchPrefix"], commit_instructions: prefs["git.commitInstructions"], pull_request_instructions: prefs["git.pullRequestInstructions"] };
+  const offered = Object.entries(git).filter((each): each is [string, string] => typeof each[1] === "string" && (each[0] === "branch_prefix" || each[1].trim() !== ""));
+  if (settings === null) {
+    if (offered.length) dropped.push("Your Git settings (the branch prefix, and what commits and pull requests are told) weren't brought along, because the engine's settings file couldn't be read. Set them again in Settings › Git.");
+    let text = "";
+    try { text = fs.readFileSync(file, "utf8"); } catch {}
+    if (text.includes("KUVO_KEY_")) dropped.push("Your integrations' keys are safe, but the engine's settings file couldn't be read to point at them: add each integration's key again in Settings › Integrations.");
+    return;
+  }
+  let next = keysNamedIn(settings, `${shown}/box/keys`) as Record<string, unknown>;
+  const gitFile = staged("box/git.json");
+  const kept = readJSON(gitFile);
+  if (offered.length && !(isObject(kept) && kept.moved === true)) {
+    for (const [key, value] of offered) if (next[key] === undefined) next = { ...next, [key]: key === "branch_prefix" ? value : value.trim() };
+    writeWhole(gitFile, JSON.stringify({ ...(isObject(kept) ? kept : {}), moved: true }));
+  }
+  if (JSON.stringify(next) !== JSON.stringify(settings)) writeSettings(file, next);
+  // A bot's own settings name its keys the same way.
+  for (const bot of listOf(staged("bots"))) {
+    const own = path.join(staged("bots"), bot, "workspace", ".opencode", "opencode.json");
+    const had = exists(own) ? readJSON(own) : undefined;
+    if (!isObject(had)) continue;
+    const renamed = keysNamedIn(had, `${shown}/box/keys`);
+    if (JSON.stringify(renamed) !== JSON.stringify(had)) writeSettings(own, renamed as Record<string, unknown>);
+  }
+}
+
+/** The box's own settings the app kept: Keep This Mac Awake where it was off (`box/work.json`),
+ * Ask First where new sessions started with it (`box/approval.json`), and what the app added to
+ * the engine's settings once, so that what you took out stays out (`box/defaults-added`). */
+function boxSettings({ prefs, staged }: Upgrade): void {
+  const merged = (name: string, change: Record<string, unknown>) => {
+    const file = staged(name);
+    const had = readJSON(file);
+    writeWhole(file, JSON.stringify({ ...(isObject(had) ? had : {}), ...change }, null, 2));
+  };
+  if (prefs.keepsAwake === false) merged("box/work.json", { keepsAwake: false });
+  if (prefs.toolApproval === "askFirst") {
+    const had = readJSON(staged("box/approval.json"));
+    if (!(isObject(had) && typeof had.last === "string")) merged("box/approval.json", { last: "askFirst" });
+  }
+  const marks = [...(prefs["engine.defaultsAdded"] === true ? ["websearch"] : []), ...(prefs["engine.searchMovedToExa"] === true ? ["search-exa"] : []), ...(prefs["engine.botMemoryRuleAdded"] === true ? ["bot-memory"] : [])];
+  if (marks.length) {
+    const file = staged("box/defaults-added");
+    let done: string[] = [];
+    try { done = fs.readFileSync(file, "utf8").split("\n").filter(Boolean); } catch {}
+    writeWhole(file, [...new Set([...done, ...marks])].join("\n") + "\n");
+  }
+}
+
+/** The relay everyone's on, where no app of this Mac's said another (`mac/link.ts`'s). */
+const DEFAULT_RELAY = "wss://kuvolink.porigam.com.tr";
+
+/** "Let my devices connect" as this Mac's link had it set (`phoneLink`, and a relay of your own,
+ * `phoneLink.relay`), kept as the box keeps what its app said (`run/mac-link.json`). Never set, it
+ * isn't written: the box's own start is on. A copy's home takes no relay it wasn't given. */
+function link({ prefs, staged, home }: Upgrade): void {
+  const set = typeof prefs.phoneLink === "boolean";
+  const own = typeof prefs["phoneLink.relay"] === "string" ? (prefs["phoneLink.relay"] as string).replace(/\/+$/, "") : "";
+  let relay = "";
+  try { if (own && ["ws:", "wss:"].includes(new URL(own).protocol)) relay = own; } catch {}
+  if (!set && !relay) return;
+  const file = staged("run/mac-link.json");
+  if (exists(file)) return;
+  const real = located(home) === located(path.join(accountHome(), ".kuvo-code"));
+  if (!relay && !real) return;
+  const named = spawnSync("/usr/sbin/scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] });
+  writeWhole(file, JSON.stringify({ phones: set ? prefs.phoneLink : true, relay: relay || DEFAULT_RELAY, name: (named.status === 0 ? named.stdout.trim().slice(0, 100) : "") || "Mac", app: "" }));
+}
+
+// Bots, personalities, group chats
+
+interface OldBot { id: string; name: string; job: string; instructions: string; look: unknown; machine?: string; project?: string; folder: string; sessionID: string; created: string; model?: unknown; personality?: string; agents?: boolean; updated?: string }
+
+/** The app's list of bots (`bots.json`), those that read as bots. */
+function listedBots(S: string): OldBot[] {
+  const list = readJSON(path.join(S, "bots.json"));
+  return (Array.isArray(list) ? list : []).filter((bot): bot is OldBot => isObject(bot) && typeof bot.id === "string" && /^bot_[A-Za-z0-9]+$/.test(bot.id) && typeof bot.name === "string" && typeof bot.folder === "string" && typeof bot.sessionID === "string");
+}
+
+/** Each of this Mac's bots described where the box reads it, in its folder: `bot.json` (0.6 wrote
+ * none), its session, where it works, and that it runs with the coding agents, each where it's
+ * missing. (The list itself moves beside the bots' folder, `bots.json`, where the box takes a
+ * job kept only there as it starts.) */
+function bots({ S, staged }: Upgrade): void {
+  for (const bot of listedBots(S)) {
+    if (bot.machine) continue;
+    const folder = path.join(staged("bots"), bot.id);
+    if (!isFolder(folder)) continue;
+    const described = readJSON(path.join(folder, "bot.json"));
+    if (!(isObject(described) && described.kuvo === 1 && described.id === bot.id && typeof described.name === "string")) {
+      writeWhole(path.join(folder, "bot.json"), JSON.stringify({
+        created: bot.created, id: bot.id, job: typeof bot.job === "string" ? bot.job : "", kuvo: 1, look: bot.look,
+        ...(bot.model !== undefined ? { model: bot.model } : {}), name: bot.name,
+        ...(bot.personality ? { personality: bot.personality } : {}), ...(bot.project ? { project: bot.project } : {}),
+        updated: bot.updated ?? bot.created,
+      }, null, 2));
+    }
+    const text = (name: string) => { try { return fs.readFileSync(path.join(folder, name), "utf8").trim(); } catch { return ""; } };
+    if (text("session") !== bot.sessionID) writeWhole(path.join(folder, "session"), bot.sessionID);
+    if (!exists(path.join(folder, "directory"))) writeWhole(path.join(folder, "directory"), bot.project ?? path.join(bot.folder, "workspace"));
+    if (bot.agents === true && !exists(path.join(folder, "via"))) writeWhole(path.join(folder, "via"), "bridge");
+  }
+}
+
+/** The personalities you made (`personalities.json`, and from 0.8.0-beta.1 those you removed) met
+ * with the box's library (`bots/personalities.json`), by its own rule. */
+function personalities({ S, staged }: Upgrade): void {
+  const made = readJSON(path.join(S, "personalities.json")), removed = readJSON(path.join(S, "personalities-removed.json"));
+  if (!Array.isArray(made) && !Array.isArray(removed)) return;
+  const file = staged("bots/personalities.json");
+  const had = readJSON(file);
+  const library = mergePersonalities(isObject(had) ? had : null, {
+    personalities: (Array.isArray(made) ? made : []).filter(isObject).map(each => ({ ...each, updated: Number(each.updated) || 0 })),
+    removed: Array.isArray(removed) ? removed : [],
+  });
+  if (!library.personalities.length && !library.removed.length) return;
+  writeWhole(file, JSON.stringify({ kuvo: 1, ...library }, null, 2) + "\n");
+}
+
+const isDate = (value: unknown): value is string => typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:?\d\d)$/.test(value) && Number.isFinite(Date.parse(value));
+const KINDS = ["message", "wrapUp", "note", "meeting"], STATES = ["proposed", "waiting", "working", "done", "failed"];
+
+/** A chat's messages as the app kept them (`groups/<id>.json`), those the box's bridge takes: it
+ * turns a whole chat down for one message it can't read. */
+function chatMessages(file: string): Record<string, unknown>[] {
+  const read = readJSON(file);
+  const kept: Record<string, unknown>[] = [];
+  for (const each of Array.isArray(read) ? read : []) {
+    if (!isObject(each) || typeof each.id !== "string" || typeof each.text !== "string" || !isDate(each.time)) continue;
+    const message: Record<string, unknown> = { ...each };
+    if (message.kind === undefined) message.kind = "message";
+    else if (!KINDS.includes(message.kind as string)) continue;
+    if (message.author === null) delete message.author;
+    else if (message.author !== undefined && typeof message.author !== "string") continue;
+    if (message.tasks !== undefined && !(Array.isArray(message.tasks) && message.tasks.every(task => isObject(task) && typeof task.id === "string" && typeof task.bot === "string" && typeof task.task === "string" && STATES.includes(task.state as string)))) continue;
+    kept.push(message);
+  }
+  return kept;
+}
+
+/** This Mac's group chats, which the app ran itself (`groups.json`, each chat's messages in
+ * `groups/<id>.json`), written as the coding agents' bridge keeps them: each chat's messages
+ * first, its record last (`groups/<id>/group.json`). A seat it made on a machine for a bot there
+ * is taken out of the chat, so that bot's next turn makes one where it lives. What a bot was
+ * still to forget goes with them (`groupMemoryWaiting` → `groups/pending-memory.json`). A chat
+ * that's there already is left as it is. */
+function groupChats({ S, prefs, staged, dropped }: Upgrade): void {
+  const root = staged("groups");
+  const waiting = isObject(prefs.groupMemoryWaiting) ? prefs.groupMemoryWaiting : null;
+  if (waiting) {
+    const file = path.join(root, "pending-memory.json");
+    const had = readJSON(file);
+    const merged: Record<string, string[]> = {};
+    for (const source of [isObject(had) ? had : {}, waiting]) for (const [bot, chats] of Object.entries(source)) merged[bot] = [...new Set([...(merged[bot] ?? []), ...strings(chats)])].sort();
+    writeWhole(file, JSON.stringify(Object.fromEntries(Object.entries(merged).sort(([a], [b]) => a.localeCompare(b)))));
+  }
+  const list = readJSON(path.join(S, "groups.json"));
+  if (!Array.isArray(list)) return;
+  const held = new Set((Array.isArray(prefs.movesUnderWay) ? prefs.movesUnderWay : []).filter(each => isObject(each) && each.kind === "group").map(each => (each as { id: unknown }).id));
+  const onMachine = new Map(listedBots(S).filter(bot => bot.machine).map(bot => [bot.id, bot.machine!]));
+  const before = readJSON(path.join(root, "imported.json"));
+  const deleted = new Set(strings(isObject(before) ? before.ids : null));
+  let seats = 0, failed = 0;
+  for (const chat of list) {
+    if (!isObject(chat) || typeof chat.id !== "string" || !/^grp_[a-z0-9]+$/.test(chat.id)) continue;
+    const folder = path.join(root, chat.id);
+    if (exists(path.join(folder, "group.json")) || deleted.has(chat.id)) continue;
+    if (!Array.isArray(chat.members) || !chat.members.every(member => typeof member === "string")) { failed++; continue; }
+    // (The old file of its messages is beside its folder now, under the same name: `<id>.json`.)
+    const messages = chatMessages(path.join(S, "groups", `${chat.id}.json`));
+    const group: Record<string, unknown> = {
+      id: chat.id, name: typeof chat.name === "string" && chat.name ? chat.name : "Group Chat", members: chat.members,
+      seats: stringMap(chat.seats), heard: stringMap(chat.heard),
+      created: isDate(chat.created) ? chat.created : (messages[0]?.time as string | undefined) ?? new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+      ...(typeof chat.purpose === "string" && chat.purpose ? { purpose: chat.purpose } : {}),
+      ...(Array.isArray(chat.agentSeats) && chat.agentSeats.every(seat => typeof seat === "string") ? { agentSeats: chat.agentSeats } : {}),
+      ...(isDate(chat.viewed) ? { viewed: chat.viewed } : {}),
+      ...(Object.keys(stringMap(chat.retracted)).length ? { retracted: stringMap(chat.retracted) } : {}),
+    };
+    const meeting = chat.meeting;
+    if (isObject(meeting) && isDate(meeting.next) && typeof meeting.topic === "string") {
+      group.meeting = { next: meeting.next, topic: meeting.topic, ...(typeof meeting.every === "string" ? { every: meeting.every } : {}), ...(Number.isInteger(meeting.at) ? { at: meeting.at } : {}), ...(Number.isInteger(meeting.weekday) ? { weekday: meeting.weekday } : {}) };
+    }
+    // A machine's bot's seat was a session on that machine, which only the app's window knew of.
+    for (const [bot, seat] of Object.entries(group.seats as Record<string, string>)) {
+      if (!onMachine.has(bot)) continue;
+      delete (group.seats as Record<string, string>)[bot];
+      delete (group.heard as Record<string, string>)[bot];
+      if (Array.isArray(group.agentSeats)) group.agentSeats = group.agentSeats.filter(each => each !== seat);
+      seats++;
+    }
+    writeWhole(path.join(folder, "messages.json"), JSON.stringify(messages, null, 2));
+    writeWhole(path.join(folder, "group.json"), JSON.stringify({ kuvo: 1, status: held.has(chat.id) ? "held" : "active", group }, null, 2));
+    // (Its old file, cloned with the folder, isn't the bridge's: only the folder is.)
+    fs.rmSync(path.join(root, `${chat.id}.json`), { force: true });
+  }
+  if (failed) dropped.push(`${failed === 1 ? "One group chat" : `${failed} group chats`} couldn't be read, and ${failed === 1 ? "wasn't" : "weren't"} brought along. ${failed === 1 ? "It's" : "They're"} still in the earlier Kuvo Code's folder (groups.json).`);
+  if (seats) dropped.push(`In your group chats, ${seats === 1 ? "a bot on one of your machines takes its seat" : `${seats} bots on your machines take their seats`} again at ${seats === 1 ? "its" : "their"} next turn: the conversation ${seats === 1 ? "it" : "they"} had there before stays on that machine, unused.`);
+}
+
+// Letters, usage
+
+/** Messages kept for an agent on a machine that was away (`agent-messages.json`), and from
+ * 0.8.0-beta.1 the letters on their way and those seen (`agent-letters.json`,
+ * `agent-letters-seen.json`), into the box's outbox, for the machines whose boxes talk to others
+ * (as the app's own hand-over went: `phone-link.json` says which). The rest are said. */
+function letters({ S, staged, dropped }: Upgrade): void {
+  const waiting = readJSON(path.join(S, "agent-messages.json")), mailed = readJSON(path.join(S, "agent-letters.json")), seen = readJSON(path.join(S, "agent-letters-seen.json"));
+  if (!Array.isArray(waiting) && !Array.isArray(mailed) && !isObject(seen)) return;
+  const hosts = readJSON(path.join(S, "phone-link.json"));
+  const machineKeys = isObject(hosts) && isObject(hosts.machines) ? hosts.machines : {};
+  const keyOf = (machine: unknown): string | null => {
+    const host = typeof machine === "string" ? machineKeys[machine] : null;
+    return isObject(host) && host.peers === true && host.anotherMac !== true && typeof host.key === "string" && host.key ? host.key : null;
+  };
+  const LETTER_ID = /^[A-Za-z0-9_-]{6,80}$/;
+  const now = Date.now();
+  let left = 0;
+  const send = (id: string, letter: { from?: unknown; to: unknown; text: unknown; at?: unknown; answers?: unknown }, machine: unknown) => {
+    const peer = keyOf(machine);
+    if (!peer || !LETTER_ID.test(id) || typeof letter.to !== "string" || typeof letter.text !== "string") { left++; return; }
+    writeWhole(path.join(staged("run"), "outbox", "sending", `${id}.json`), JSON.stringify({
+      from: typeof letter.from === "string" ? letter.from : null, to: letter.to, text: letter.text.slice(0, 32_000), wait: false,
+      at: Number.isFinite(letter.at) ? letter.at : now, peer, ...(typeof letter.answers === "string" ? { answers: letter.answers } : {}),
+    }));
+  };
+  for (const each of Array.isArray(mailed) ? mailed.filter(isObject) : []) send(String(each.id ?? ""), each as never, each.machine);
+  for (const each of Array.isArray(waiting) ? waiting.filter(isObject) : []) {
+    const id = "wtg_" + crypto.createHash("sha256").update(`${typeof each.from === "string" ? each.from : ""}\0${each.to}\0${each.text}`).digest().subarray(0, 16).toString("hex");
+    send(id, each as never, each.machine);
+  }
+  if (isObject(seen)) {
+    const file = path.join(staged("run"), "letters-seen.json");
+    const had = readJSON(file);
+    const marks: Record<string, number> = {};
+    for (const source of [isObject(had) ? had : {}, seen]) {
+      for (const [id, at] of Object.entries(source)) if (LETTER_ID.test(id) && typeof at === "number" && now - at < 2 * 86_400_000) marks[id] = Math.max(marks[id] ?? 0, at);
+    }
+    if (Object.keys(marks).length) writeWhole(file, JSON.stringify(marks));
+  }
+  if (left) dropped.push(`${left === 1 ? "A message" : `${left} messages`} one of your agents sent to an agent on a machine that was away ${left === 1 ? "wasn't" : "weren't"} delivered, and ${left === 1 ? "isn't" : "aren't"} brought along.`);
+}
+
+/** The usage panel's settings the app kept (how its cards are laid out, total spend, its
+ * notifications, Codex's fallback model) into the box's (`agents/usage/settings.json`), by the
+ * box's own import: once, and only the parts no box has set. */
+function usage({ prefs, staged }: Upgrade): void {
+  const parts: Record<string, unknown> = {};
+  const placed = prefs["openusage.layout.v1"];
+  if (Array.isArray(placed)) {
+    parts.layout = {
+      placed: placed.map(each => (isObject(each) ? each.descriptorID : each)).filter(each => typeof each === "string"),
+      providerOrder: strings(prefs["openusage.layout.v1.providerOrder"]), metricOrder: isObject(prefs["openusage.layout.v1.metricOrderByProvider"]) ? prefs["openusage.layout.v1.metricOrderByProvider"] : {},
+      pinned: strings(prefs["openusage.layout.v1.menuBarPins"]), expanded: strings(prefs["openusage.layout.v1.expandedMetrics"]),
+      expandOnEnable: strings(prefs["openusage.layout.v1.expandOnEnable"]), seeded: strings(prefs["openusage.layout.v1.seededDefaults"]),
+    };
+  }
+  const spend = { show: prefs.showTotalSpend, period: prefs["openusage.totalSpend.period"], metric: prefs["openusage.totalSpend.metric"] };
+  if (Object.values(spend).some(each => each !== undefined)) {
+    parts.totalSpend = { show: typeof spend.show === "boolean" ? spend.show : true, ...(typeof spend.period === "string" ? { period: spend.period } : {}), ...(typeof spend.metric === "string" ? { metric: spend.metric } : {}) };
+  }
+  const notices = ["underTenPercent", "healthyToClose", "closeToRunningOut"];
+  if (notices.some(name => typeof prefs[`openusage.notifications.${name}`] === "boolean")) parts.notifications = Object.fromEntries(notices.map(name => [name, prefs[`openusage.notifications.${name}`] === true]));
+  if (typeof prefs["openusage.codex.fallbackModel"] === "string" && prefs["openusage.codex.fallbackModel"]) parts.codexFallback = prefs["openusage.codex.fallbackModel"];
+  if (!Object.keys(parts).length) return;
+  const file = path.join(staged("agents"), "usage", "settings.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  new UsageSettings(file).take(parts);
+}
+
+// What isn't carried
+
+/** What the earlier Kuvo Code kept that the move doesn't carry, said where it applies to this Mac. */
+function said({ S, prefs, dropped }: Upgrade): void {
+  const count = (value: unknown) => (isObject(value) ? Object.keys(value).length : Array.isArray(value) ? value.length : 0);
+  const drafts = count(prefs.composerDrafts);
+  if (drafts) dropped.push(`${drafts === 1 ? "A message" : `${drafts} messages`} you'd typed but not sent ${drafts === 1 ? "wasn't" : "weren't"} brought along.`);
+  if (exists(path.join(S, "Browser", "history.json"))) dropped.push("Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along.");
+  const edits = count(prefs.botEditsWaiting) + count(prefs.botEditOutbox);
+  if (edits) dropped.push(`${edits === 1 ? "A change" : `${edits} changes`} you made to ${edits === 1 ? "a bot" : "bots"} on a machine that was away (a name, look, personality or model) ${edits === 1 ? "wasn't" : "weren't"} sent there. Make ${edits === 1 ? "it" : "them"} again once that machine is connected.`);
+  const terminals = isObject(prefs.projectSettings) ? Object.values(prefs.projectSettings).filter(each => isObject(each) && typeof each.terminal === "string" && each.terminal).length : 0;
+  if (terminals) dropped.push(`The terminal app chosen for ${terminals === 1 ? "a project" : `${terminals} projects`} isn't kept: Kuvo's own terminals open in the side panel.`);
+  const moves = (Array.isArray(prefs.movesUnderWay) ? prefs.movesUnderWay : []).filter(each => isObject(each) && each.stage === "switched").length;
+  if (moves) dropped.push(`${moves === 1 ? "A move" : `${moves} moves`} to another computer that hadn't finished cleaning up left ${moves === 1 ? "its" : "their"} original folder where it was.`);
+  if (listOf(S).some(name => /\.unreadable-.*\.json$/.test(name))) dropped.push("The earlier Kuvo Code had set aside a list it couldn't read. It's still in its folder (a file named …unreadable…json).");
+  if (["openrouter.json", "zai.json", "proxy.json"].some(name => exists(path.join(S, "Usage", name)))) dropped.push("API keys or a proxy you set up by hand for the usage panel (files in the earlier Kuvo Code's Usage folder) aren't brought along.");
+  if (prefs.toolApproval !== "askFirst") dropped.push("New sessions start with Auto, Kuvo's own default, where the earlier Kuvo Code ran everything without asking.");
+}
+
+/** Every upgrade, in the staged copy: what wasn't carried, in words to show once. One that fails
+ * stops the move (it goes back): nothing is left half brought along. */
+export function runUpgrades(_run: RunPlan, move: MoveContext): string[] {
+  const made = new Set<string>();
+  const upgrade: Upgrade = {
+    S: move.appFolder,
+    home: move.home,
+    prefs: appPreferences(move.appFolder),
+    staged(name) {
+      const [top, ...rest] = name.split("/");
+      const placement = placementOf(move, top);
+      if (!placement) throw new Error(`Nothing of the move's goes to ${top}.`);
+      // (A place the app never had, made as its folder would be: yours alone.)
+      const folder = rest.length ? path.join(placement.staged, ...rest.slice(0, -1)) : path.dirname(placement.staged);
+      if (!made.has(folder)) {
+        fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+        made.add(folder);
+      }
+      return path.join(placement.staged, ...rest);
+    },
+    dropped: [],
+  };
+  // (Places that are folders: there before what's written in them.)
+  for (const name of ["box", "run", "bots", "groups", "agents"]) fs.mkdirSync(upgrade.staged(name), { recursive: true, mode: 0o700 });
+  for (const each of [projects, worktrees, machines, engineSettings, boxSettings, link, bots, personalities, groupChats, letters, usage, said]) each(upgrade);
+  // (A place nothing was written in isn't made: a Mac with no bots gets no bots' folder from this.)
+  for (const name of ["groups", "agents", "bots", "run"]) try { fs.rmdirSync(upgrade.staged(name)); } catch {}
+  return upgrade.dropped;
 }

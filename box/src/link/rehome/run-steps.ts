@@ -14,7 +14,6 @@ import { databaseCounts, databasesIn, tableCounts } from "./database";
 import { migrateDatabases } from "./migrate";
 import { placementOf, stagedEngine, type MoveContext } from "./rewrite";
 import type { RunPlan } from "./state";
-import { runUpgrades } from "./upgrades";
 
 /** The helper's name, as its release brings it (`helper.ts`'s, which this can't load: the move's
  * own files are read by tests that load nothing else of the box). */
@@ -134,7 +133,10 @@ export async function migrateStaged(_run: RunPlan, move: MoveContext): Promise<v
 
 /** What an earlier Kuvo Code kept in its own files and preferences, brought into the box's own in
  * the staged copy (`upgrades.ts`): what it didn't carry, in words to show once. */
-export function upgradeStaged(run: RunPlan, move: MoveContext): string[] {
+export async function upgradeStaged(run: RunPlan, move: MoveContext): Promise<string[]> {
+  // (Loaded as it's needed: it reads with the box's own readers, which the move's own files,
+  // loaded alone by its tests, don't bring.)
+  const { runUpgrades } = await import("./upgrades");
   return runUpgrades(run, move);
 }
 
