@@ -1,6 +1,5 @@
 // Bots (PROTOCOL.md, `kuvo/bots`): the bots that live on the box asked, New Bot's templates, a bot
-// made, changed, deleted, brought here from another computer and told what it is now, and its keys
-// of its own ("Bots' own keys").
+// made, changed, deleted, brought here from another computer and told what it is now.
 
 import { any, bool, type Infer, list, literal, map, NOTHING, nullable, number, object, type RouteShape, string, words } from "../shape";
 import { LIMITS } from "./work";
@@ -18,7 +17,7 @@ export const LOOK = object({ color: words(...LOOKS.colors), shape: words(...LOOK
 export const MODEL = object({ id: string, providerID: string, "variant?": string });
 
 /** What deleting a bot takes with it, in the words of the box that says it (`bots.deletes`): one
- * line for each thing, by what it is (`conversation`, `folder`, `wakes`, `keys`, `groups`,
+ * line for each thing, by what it is (`conversation`, `folder`, `wakes`, `groups`,
  * `sessions`; a client draws one it doesn't know all the same), `kept` for what stays. */
 export const DELETES = list(object({ what: string, words: string, "kept?": literal(true) }));
 
@@ -111,26 +110,6 @@ export const MADE = object({ bot: BOT, firstMessage: nullable(string) });
  * not list now). */
 export const CHANGED = object({ bot: nullable(BOT) });
 
-/** The integrations a bot here can have keys of its own for, as Edit Bot shows them: whether it
- * has its own and whether the box has shared ones, the integration's name and symbol, the keys it
- * takes and where to get them (`help`, left out when there's nothing to say). */
-export const BOT_KEYS = object({
-  keys: list(object({
-    integration: string,
-    own: bool,
-    shared: bool,
-    title: string,
-    symbol: string,
-    keys: list(object({ name: string, label: string, prompt: string })),
-    "help?": string,
-  })),
-});
-/** A bot's own keys for one integration, by their names. */
-export const BOT_KEY_VALUES = object({ keys: map(string) });
-/** One integration's keys of a bot's own, just kept: it has them now, and whether the box has
- * shared ones too. */
-export const BOT_KEY_KEPT = object({ integration: string, own: bool, shared: bool });
-
 export type BotLook = Infer<typeof LOOK>;
 export type BotModel = Infer<typeof MODEL>;
 export type ListedBot = Infer<typeof BOT>;
@@ -138,9 +117,6 @@ export type Bots = Infer<typeof BOTS>;
 export type BotTemplates = Infer<typeof TEMPLATES>;
 export type MadeBot = Infer<typeof MADE>;
 export type ChangedBot = Infer<typeof CHANGED>;
-export type BotKeys = Infer<typeof BOT_KEYS>;
-export type BotKeyValues = Infer<typeof BOT_KEY_VALUES>;
-export type BotKeyKept = Infer<typeof BOT_KEY_KEPT>;
 export type BotDeletes = Infer<typeof DELETES>;
 export type BotElsewhere = Infer<typeof BOT_ELSEWHERE>;
 export type HeldEdit = Infer<typeof HELD_EDIT>;
@@ -151,13 +127,7 @@ export const BOT_ROUTES: RouteShape[] = [
   { route: "POST kuvo/bots", answers: { 201: MADE } },
   { route: "GET kuvo/bots/templates", answers: { 200: TEMPLATES } },
   { route: "POST kuvo/bots/retell", answers: { 200: NOTHING } },
-  { route: "POST kuvo/bots/keys/refresh", answers: { 200: NOTHING } },
   { route: "PATCH kuvo/bots/:id", answers: { 200: CHANGED, 202: HELD } },
   { route: "DELETE kuvo/bots/:id", answers: { 200: NOTHING, 202: HELD } },
   { route: "POST kuvo/bots/:id/arrived", answers: { 200: CHANGED } },
-  { route: "GET kuvo/bots/:id/keys", answers: { 200: BOT_KEYS } },
-  { route: "DELETE kuvo/bots/:id/keys", answers: { 200: NOTHING } },
-  { route: "GET kuvo/bots/:id/keys/:integration", answers: { 200: BOT_KEY_VALUES } },
-  { route: "PUT kuvo/bots/:id/keys/:integration", answers: { 200: BOT_KEY_KEPT } },
-  { route: "DELETE kuvo/bots/:id/keys/:integration", answers: { 200: NOTHING } },
 ];

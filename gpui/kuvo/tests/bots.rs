@@ -458,7 +458,7 @@ fn deleting_a_bot_is_asked_first(cx: &mut TestAppContext) {
     let lines = page.read_with(cx, |page, _| page.deletes());
     let listed = said(&stand_in)["bots"].as_array().and_then(|all| all.iter().find(|bot| bot["id"] == json!("bot_docs")).cloned()).expect("listed");
     assert_eq!(lines.iter().map(|line| json!(line.words)).collect::<Vec<_>>(), listed["deletes"].as_array().unwrap().iter().map(|line| line["words"].clone()).collect::<Vec<_>>());
-    assert!(lines.len() >= 5 && lines.iter().any(|line| line.words.contains("goes to the Trash")) && lines.last().is_some_and(|line| line.kept));
+    assert!(lines.len() >= 4 && lines.iter().any(|line| line.words.contains("goes to the Trash")) && lines.last().is_some_and(|line| line.kept));
     assert!(shown(cx, "sheet-delete-0") && shown(cx, &format!("sheet-delete-{}", lines.len() - 1)) && !shown(cx, &format!("sheet-delete-{}", lines.len())));
     // Return doesn't delete: only its button does.
     cx.simulate_keystrokes("enter");

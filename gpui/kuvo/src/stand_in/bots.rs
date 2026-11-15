@@ -379,7 +379,6 @@ fn deletes(computer: &str, mac: bool, watching: Option<u64>) -> Value {
         Some(1) => lines.push(json!({ "what": "wakes", "words": "Its watch is cancelled." })),
         Some(count) => lines.push(json!({ "what": "wakes", "words": format!("Its {count} watches are cancelled.") })),
     }
-    lines.push(json!({ "what": "keys", "words": "Any keys of its own are removed." }));
     lines.push(json!({ "what": "groups", "words": format!("It leaves the group chats on {computer}.") }));
     lines.push(json!({ "what": "sessions", "words": "The sessions it started stay.", "kept": true }));
     Value::Array(lines)

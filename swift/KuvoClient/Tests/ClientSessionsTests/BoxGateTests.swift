@@ -80,12 +80,10 @@ struct BoxGateTests {
     }
 
     // This Mac's own box, held after an update, still holds its app's keys: the vault's proof for
-    // one of your machines and a bot's kept keys are asked of it, while its projects wait.
+    // one of your machines is asked of it, while its projects wait.
     @Test func aHeldOwnBoxStillAnswersForItsAppsKeys() {
         #expect(BoxGate.isAllowed("kuvo/box/proof"))
-        #expect(BoxGate.isAllowed("kuvo/box/kept-keys?bot=bot_1"))
         #expect(!BoxGate.isAllowed("kuvo/box/proof/extra"))
-        #expect(!BoxGate.isAllowed("kuvo/box/kept-keysx"))
         #expect(!BoxGate.isAllowed("kuvo/projects"))
     }
 

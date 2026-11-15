@@ -10,7 +10,7 @@ import { DEFAULTS_PLUGIN, keptFolders } from "./engine/defaults";
 import { ENGINE_LAYER_FILE } from "./engine/compatibility";
 import { appTemporary, sandboxCaches } from "./fence/policy";
 import {
-  APP_FOLDER, APP_KEY_FILES, attachmentRoots, BOT_KEYS, BOTS, BOX, BOX_KEYS, CHATS, ENGINE_CONFIG, ENGINE_DATA, INTEGRATION_DATA, IS_MAC, K, KIND_FILE,
+  APP_FOLDER, APP_KEY_FILES, attachmentRoots, BOTS, BOX, BOX_KEYS, CHATS, ENGINE_CONFIG, ENGINE_DATA, INTEGRATION_DATA, IS_MAC, K, KIND_FILE,
   RUN, SEARCH, SESSION_WAKES, SSH_AGENTS, UPDATES, WAKE_COMMAND,
 } from "./home";
 import { LIST_FILE, PHONE_LINK_FILE } from "./mac/machines";
@@ -34,7 +34,6 @@ export function boxPlaces() {
     box: BOX,
     vault: VAULT_FOLDER,
     keyFiles: APP_KEY_FILES ?? BOX_KEYS,
-    botKeyFiles: APP_KEY_FILES ?? BOT_KEYS,
     updates: UPDATES,
     search: SEARCH,
     apps: APPS,

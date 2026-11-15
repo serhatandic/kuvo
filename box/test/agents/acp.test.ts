@@ -1172,11 +1172,11 @@ describe.skipIf(!canFence)("The computer's MCP servers, for an ACP agent in the 
     for (const server of given) expect(server.url).toBe(`http://127.0.0.1:${relay}/mcp/${server.name}`)
   })
 
-  test("a bot's own key (Edit Bot › Keys) is the one its server gets, in place of yours, from the agent's next message on", async () => {
+  test("a server its folder's own settings name with another key (a project's) gets that one, in place of the computer's, from the agent's next message on", async () => {
     const agent = trying({ files: ["server", "files"] })
     const id = await run(agent)
     expect(words(id)).toBe(`files=key:${KEYS.shared}`)
-    // Given to the bot now, while the same Grok goes on.
+    // Named in its folder now, while the same Grok goes on.
     servers.botLayer = servers.botFiles()
     forgetServers()
     send(id, "again")

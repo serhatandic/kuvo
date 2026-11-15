@@ -938,7 +938,7 @@ until it's answered:
 
 1. The box it leaves holds it, waits until its conversations are settled (no turn running, nothing
    in their inbox but what a Stop held there; a minute at most), and packs one file: `move.json` (its conversations as the
-   engine exports them, root first; a bot's own keys; a group chat as its bridge held it, `POST
+   engine exports them, root first; a group chat as its bridge held it, `POST
    api/kuvo/groups/<id>/hold`; `queues`, by conversation, each one paused or with something
    waiting on the box ("The queue"), bridge 0.9.137: `{paused, held, waiting: [{shown, message}]}`,
    what waits as it's shown and whole, in the order it would go: what waits on the box, and for one
@@ -965,8 +965,7 @@ until it's answered:
    a chat's `directory` its chats folder; each conversation imported under its own ID (noted first;
    they must be one conversation and its subagents', rooted at the chat or at the conversation a
    bot's folder names, none of them on this box already); their `queues` kept paused in place of
-   any there (what waits, whole, in its order; a file only as a `data:` link); a bot's keys given
-   (one this box can't keep, and it's `failed`, so the bot stays where it was with it); a group chat put there
+   any there (what waits, whole, in its order; a file only as a `data:` link); a group chat put there
    held (`PUT api/kuvo/groups/<id>`, `status: "held"`); with a coding agent, on the agents bridge
    (`carry/place`). → `arrived {hash, digest?}` (`digest`, what's in place, with a coding agent), or `failed {message}`,
    what it set up gone again; the message says only what's wrong with what came, never what this box
@@ -2742,7 +2741,7 @@ Kuvo Code.
 
 - **Held**: a client sends a held box nothing but `kuvo/info`, `kuvo/update` and `kuvo/box/update`,
   its Mac's app's own registration (`kuvo/box/app`, "This Mac's app") and the keys it holds for
-  that app (`kuvo/box/proof` and `kuvo/box/kept-keys`, "This Mac's box: its keys, for its app"),
+  that app (`kuvo/box/proof`, "This Mac's box: its keys, for its app"),
   and what keeps work already under way there going, so a session waiting on you can be answered:
   its engine (`api/…`) and coding agents' bridge (`kuvo/agents/…`), the tool calls of the agents at
   work there (`kuvo/agent-tools`; a tool that box hasn't is said to the agent as waiting for the
@@ -3709,7 +3708,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   (its page comes back to `127.0.0.1:19876`: `kuvo/sign-in/return`), and the approvals saved for
   a project with `GET api/permission/saved?projectID=` and `DELETE api/permission/saved/<id>`.
 - `kuvo/keys`: the computer's own integrations' keys (`KUVO_KEY_<INTEGRATION>_<NAME>`, as its
-  settings name them; a bot's own aren't among them). `GET kuvo/keys` lists them, `{"keys":
+  settings name them). `GET kuvo/keys` lists them, `{"keys":
   [name]}`; `GET kuvo/keys/<name>` answers `{"value"}` (404 for none, 400 for a name that
   isn't a shared key's), `PUT` with `{"value"}` sets one and `DELETE` removes it. This Mac's box
   keeps them in its Keychain, through its app ("Host interface"; `503 {"message"}` while the app
@@ -3761,19 +3760,18 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     over `box route`, in a process of its own, `kuvo-link.js box reconnect <id>`). `200 {"integration"}`, as listed; `400 {"message"}` without the keys it needs;
     `404` for none; `409 {"message"}` for one used on its site, a settings file that can't be
     changed, or one removed while its keys were saved; `503 {"message"}` when its keys can't be kept (this Mac's Keychain, through its app).
-  - `DELETE kuvo/integrations/<id>` removes it, as Remove… does: bots' own keys for it there first
-    (each computer keeps its bots' keys itself: "Bots' own keys"), then it, its sign-in, what its
+  - `DELETE kuvo/integrations/<id>` removes it, as Remove… does: it, its sign-in, what its
     server kept and its keys. `200 {}`; for one not added, `200 {}` when keys of it were left (a
     Remove that couldn't take them away: they go now), else `404`; `409 {"message"}` for a settings
-    file that can't be changed, `503 {"message"}` when its bots' keys can't be taken away (nothing
-    removed) or its own can't (removed, with its key still kept, which Remove again takes). A
+    file that can't be changed, `503 {"message"}` when its keys can't be reached (nothing removed)
+    or can't be taken away after (removed, with its key still kept, which Remove again takes). A
     Mac's Remove… is its box's, through `BoxClient` (a machine's through `box route`).
   - Brought up to date by the box and only the box, from the catalogs it has, with no client
     there: a package's pinned version, Code Mode off unless it says otherwise, keys named where the
     computer reads them, Chrome DevTools on a Mac as it's offered now (a newer version or your options
     stay), and Code Mode off on every other MCP server that doesn't say, but for Kuvo Code's own. A
     package whose maker now runs its own server is replaced by that server, staying off if you turned
-    it off and with the Code Mode you chose, its key and bots' own keys for it taken away first.
+    it off and with the Code Mode you chose, its key taken away first.
     That one waits where a key can't be taken away now (this Mac's app not answering), and while an
     update is on trial, as a key can't come back with the version before: the box does it once the
     update is confirmed, or at its next start.
@@ -3782,35 +3780,44 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     update's confirmed. This Mac's as its box starts, before it says where it is, so before its engine
     starts; a key to take away comes after that, and the engine takes the change as it runs. There's
     no write once they're up to date.
-- Bots' own keys, as Edit Bot shows and changes them: a key a bot has of its own for an
-  integration you bring a key for, used only in its conversation, kept on the computer the bot
-  lives on (a Mac's bots' in its Keychain, which its box reaches through the app: "Host
-  interface"; a machine's in `~/.kuvo-code/box/bot-keys`, with the Mac closed too). Each computer
-  answers for its own bots; a Mac asked about a machine's
-  bot answers `409 {"message"}`. A bot that works in a project uses that project's keys, and
-  answers `409 {"message"}`. Where a box's keys can't be reached (this Mac's app not answering),
-  `503 {"message"}`. Its folder's settings name each key's file where the engine reads it: on a
-  machine `{file:~/.kuvo-code/box/bot-keys/<variable>__<BOT>}`; on this Mac in the app's folder
-  for them (`KUVO_KEYS`), each named by its variable.
-  - `GET kuvo/bots/<id>/keys` → `{"keys": [{integration, own, shared, title, symbol, keys, help?}]}`:
-    each integration a bot can have a key of its own for (those you bring a key for, `token` and
-    `package` ones with keys), whether it has its own, whether the computer has a shared one, and,
-    as `kuvo/integrations` has them, its name, symbol, the keys it takes (`[{name, label,
-    prompt}]`) and where to get them.
-  - `kuvo/bots/<id>/keys/<integration>`: `GET` → `{"keys": {"<name>": "<value>"}}`, its own (`404`
-    for none); `PUT {"keys": {"<name>": "<value>"}}` gives it its own, all of them (`400
-    {"message"}` without), and its folder's settings name the integration's server with them, which
-    connects again a moment later in its folder: `200 {integration, own, shared}`; `DELETE` takes
-    them away (`404` for none). `409 {"message"}`, with nothing changed, when its folder's settings
-    aren't plain JSON.
-  - `DELETE kuvo/bots/<id>/keys` takes away every one, as it moves off the computer, those left
-    from integrations no longer there too.
-  - `POST kuvo/bots/keys/refresh` writes every bot's folder's settings again as its keys and the
-    box's integrations are now (bridge 0.9.46), as a client asks after it changes the box's
-    catalog (`bin/integrations.json`): `200 {}`. A box also does it as it starts. (A Mac before
-    0.9.46 ran `kuvo-link.js box bot-keys-refresh` over SSH, which still does the same.)
-  - Moving a bot (Move to Computer), its keys go with it: read where it lived, given where it
-    goes, then taken away where it was.
+- Bots have no keys of their own (#726). A bot uses the integrations of the computer it lives on,
+  as every session there does. (Until then a bot could have a key of its own for an integration you
+  bring a key for, `kuvo/bots/<id>/keys…` and `kuvo/bots/keys/refresh`, feature `bots.keys`: those
+  routes are gone, `404 {"message": "Bots use this computer's integrations now."}` for a client
+  from before, and so is `kuvo-link.js box bot-keys-refresh`.) What an earlier box kept of
+  them, each box takes away itself, with no client there, as it starts (a machine also as its
+  engine is about to start, `engine-config`, bridge or not) and once an update on trial is confirmed
+  (never while it's on trial: a key can't come back with the version before):
+  - Each bot's folder's settings (`bots/<id>/workspace/.opencode/opencode.json`) lose the servers
+    that name such a key (`KUVO_KEY_…__BOT_<ID>`), first, so none names a key that's gone; the rest
+    of the file stays as you wrote it, and a file left empty goes. It's read as the engine reads
+    it (comments, a comma after the last of a list) and written plain. A bot whose settings can't be
+    put right (not readable even so, or a file that can't be opened or written) keeps its own
+    keys, and its settings as they are, and is told to tell you; they go at the box's next start
+    once the file is put right. Its conversation then gets the
+    computer's own server for that integration: your connection.
+  - The keys go from where they were kept, every one, whichever bot's: a machine's files
+    (`~/.kuvo-code/box/bot-keys`, and the folder); a Mac's Keychain items named `<variable>__BOT_<ID>`
+    (through its host's `keys/delete`: "Host interface"; those an earlier Kuvo Code kept there for
+    machines' bots too), and the files a Mac's box in a home of its own wrote them to
+    (`box/bot-keys`); and any file so named among a machine's own keys (`box/keys`) or where an
+    earlier Mac's start left them (`~/.kuvo-code/keys`). (The engine gives a
+    server whose key file is gone an empty key, so its service turns it down: no settings are
+    left naming one.) Where a Mac's keys can't be reached, it's tried again while the box runs (a
+    minute later, then twice as long each time, twice a day at most); so is it while a Mac's box
+    that just moved into a home of its own still owes the Keychain (`kuvo/box/rehome`'s `owed`):
+    its app deletes its originals only once it finds each one's copy, so no copy goes before. No key of the computer's own
+    is touched, and `run/bot-keys-left.json` (deleted bots' keys still to go) goes with them.
+  - An integration a bot had a key of its own for is noted in its folder
+    (`bots/<id>/keys-gone.json`, `{"integrations": [id]}`, which moves with it). While the computer
+    it lives on hasn't that integration connected, what the bot is told ("What a box makes and
+    tells its bots with") ends with a paragraph saying so: it had its own key for it, it isn't
+    connected on this computer, and when its work needs it, it says so plainly and asks you to
+    connect it in Settings › Integrations. Only integrations the box's catalog has are named, and
+    nothing is said while the box can't tell (its settings unreadable, or not its own yet). Once
+    it's connected the paragraph and the note go, as the bot's next run starts.
+  - A bot that moves here from a box that still kept such keys (Move to Computer): the keys in its
+    bundle are never kept, and its folder's settings are put right as above as it's placed.
 - Skills, as Settings › Skills has them, each computer its own, kept by its box: the folder its
   engine reads them from (a machine's `~/.kuvo-code/config/opencode/skills`, with the Mac closed
   too; this Mac's box's, the app's engine's own, where a Mac has always kept them, named to it as
@@ -4402,10 +4409,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   empty name, or a look or personality there isn't; 422 for a model it can't use where it lives
   (the one it has is always kept); 404 for no such bot; 409 while it moves; 503 when it couldn't
   be changed (the engine is stopped). `DELETE kuvo/bots/<id>` deletes it as Delete Bot… does: its
-  conversation, wake-ups, keys of its own and folder (to Kuvo Code's trash folder on a machine; on
+  conversation, wake-ups and folder (to Kuvo Code's trash folder on a machine; on
   a Mac on to the Finder's Trash, through the app: "Host interface"); it leaves the group chats
-  there too. `200 {}`, 404, or 409 `{"message"}` while it moves. Keys of its own that can't be
-  reached as it's deleted (this Mac's app not answering) go the next time they can be. A machine's box notes a deleted
+  there too. `200 {}`, 404, or 409 `{"message"}` while it moves. A machine's box notes a deleted
   bot in `~/.kuvo-code/bots/deleted.json`, for a Mac of 0.8.0-beta.1 or earlier.
 - **Held for another computer** (`bots.held`): `PATCH` or `DELETE kuvo/bots/<id>` asked of a box the
   bot doesn't live on, for a bot one of its other computers lists (their agents, "Peers"), is
@@ -4480,8 +4486,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   settings aren't its own yet keeps the rules it runs with; and its folder here), and what it's told here, one at a time with its other
   tellings. `200 {"bot"}`; 404 for no such bot here; 409 without the box's words, and 503 when its
   conversation here didn't take it, both of which the box puts right as the bot's next run starts
-  (its folder and clock are set either way). Its keys of its own go with it through
-  `kuvo/bots/<id>/keys…` on both computers. (An earlier client sends `{timeZone}`, which is
+  (its folder and clock are set either way). (An earlier client sends `{timeZone}`, which is
   ignored.)
 - What a box makes and tells its bots with: its words, the same file on every box of a version
   (`bin/bot-words.json`, KuvoLink's `Resources/bot-words.json`), which a client puts beside the
@@ -6575,12 +6580,11 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `bots.events` | `kuvo/bots/events` |
 | `bots.held` | `PATCH` and `DELETE kuvo/bots/<id>` for a bot on another computer, held there and handed on (`202`, `held` and `refused` in `kuvo/bots`); in a peer's agents' mail, it takes `botEdit` |
 | `bots.job` | a bot's job as its box's record: `jobDetails` in `kuvo/bots`, `job` in `PATCH kuvo/bots/<id>` |
-| `bots.keys` | `kuvo/bots/<id>/keys…` |
 | `bots.make` | `kuvo/bots/templates` and `POST kuvo/bots` |
 | `bots.now` | `now` on each bot in `kuvo/bots` and `kuvo/bots/events`: its sessions at work and waiting on you ("What waits on you", #711) |
 | `box.app` | `kuvo/box/app` and `kuvo/box/app/open`: this Mac's app registering with a Mac's box in a home of its own, and opened by it for its agents' browser ("This Mac's box: this Mac's app") |
 | `box.app.host` | `kuvo/box/app`'s `host`: the app's own host interface, where a Mac's box in a home of its own sends a phone's ask of the Mac's own routes and asks what the panel's browser is signed in to ("This Mac's app") |
-| `box.appKeys` | `kuvo/box/proof` and `kuvo/box/kept-keys`: what this Mac's app asks of the keys a Mac's box in a home of its own holds ("This Mac's box: its keys, for its app"); `bin/integrations-mac.json` read there |
+| `box.appKeys` | `kuvo/box/proof`: what this Mac's app asks of the keys a Mac's box in a home of its own holds ("This Mac's box: its keys, for its app"); `bin/integrations-mac.json` read there |
 | `box.helper` | `kuvo-link.js helper install [--load] [--app <bundle ID>] \| status`: the launch agent that starts Kuvo Code Box, a Mac's box's helper, at login ("This Mac's box: its helper"); `kuvo-start serve`; `serve` saying where it answers in `run/serve.json` |
 | `box.ownHome` | a Mac's box can run in a home of its own, laid out as a machine's (`box/kind`, "This Mac's box: a home of its own"); there, `keepsAwake` and `awakeNow` in `kuvo/work/settings` |
 | `box.rehome` | `kuvo/box/rehome`: moving this Mac's box into a home of its own, and back ("This Mac's box: moving this Mac's box"); `kuvo-link.js rehome`, and `here`'s `moving` |
@@ -6926,7 +6930,7 @@ own keeps:
 - its keys in the Mac's Keychain, through its host ("Host interface"), as in the app's folder, from
   every process of its own (`serve`, a client's `box route`) whatever its environment says. What
   the engine reads them from, the box writes itself, where a machine keeps its keys
-  (`box/keys/<variable>`, a bot's own in `box/bot-keys`, each `0600`; its settings name them
+  (`box/keys/<variable>`, each `0600`; its settings name them
   `{file:~/.kuvo-code/box/keys/<variable>}`): each once its host kept or removed it (one its host
   still keeps stays), under one lock across its processes (`run/.key-files.lock`); and, while
   `serve` runs, as it starts and twice a day after (a minute later while its host can't list them),
@@ -7310,7 +7314,7 @@ CLI.
 into a home of its own, its keys are its helper's copies in your Keychain ("This Mac's box: its
 helper"), which the app can't read, and must never make anew: a key made by the app would be
 another Mac to every phone, machine and peer. So the app reads none of them, and asks the box for
-what it did with them. Both routes answer only Kuvo Code on this Mac (`x-kuvo-from: app` over the
+what it did with them. Its route answers only Kuvo Code on this Mac (`x-kuvo-from: app` over the
 box's own server, to the password in `run/serve.json`), `403` to anyone else (a phone, or `box
 route`), and `409` on any other box. That password is in a file only you can read, which the sandbox
 keeps agents' commands from, as it keeps them from `run/host.json`, whose host interface gives the
@@ -7324,12 +7328,6 @@ app's keeper's before the move.
   proof}`, as the app made them before: `mac` the Mac's public link key, `at` now (ms), a nonce of
   its own. Its keys come from its link once it's on, else from its host (`link/identity`), never made
   here; `503 {"message"}` while the Keychain can't give them. `400` for anything else asked.
-- **`kuvo/box/kept-keys?bot=<id>`**: for released Macs ("For released Macs", `0.7 bot-keys-keychain`), the keys of its own an earlier
-  Kuvo Code kept in this Mac's Keychain for a bot on one of your machines (`<variable>__<BOT>`), which
-  the app gives that machine as it connects: `GET` answers `{keys: {<variable>: <value>}}`; `DELETE
-  {names}` takes those away once the machine has them (`400` for a name `GET` doesn't list). `409`
-  for a bot that's this box's own (its keys are `kuvo/bots/<id>/keys`), `503 {"message"}` while the
-  Keychain can't be reached. Goes 3 months after 0.8.0.
 - **The app's other uses**, through the routes every client has: the vault's values it fills or
   shows (`kuvo/vault/items/<id>/values`, noted `shown` in the vault's activity, as Kuvo Code on this
   Mac), whether a password you signed in with is the saved one (`kuvo/vault/items/<id>/same`, which
@@ -9106,8 +9104,7 @@ it's empty.
   writes and reads files with its own tools then: the bridge offers none (`fs` false in
   `initialize`), since it would write outside the sandbox.
   Every agent also gets the computer's MCP servers, sandbox on or off: those the engine has for the
-  conversation's folder (`GET /api/config` with it, read in the engine's order, so a bot's folder's
-  own keys, from Edit Bot › Keys, win over this computer's), but those turned off. They reach them
+  conversation's folder (`GET /api/config` with it, read in the engine's order), but those turned off. They reach them
   through the same relay, at `/mcp/<name>` with the session's key: the agent is told only that
   address (Claude Code over its pipe, Codex in its thread's settings, Cursor in its agent's, an ACP
   agent in `mcpServers` when it takes HTTP), never a server's command, address or keys. A URL's
@@ -9642,8 +9639,9 @@ can go three months after 0.8.0 ships.
 - Your personalities (`personalities.json`, `personalities-removed.json`), moved to the box's
   library. A copy stays there, so going back to an earlier one finds them, and what it changed
   there is taken in again as this one starts. <!-- compat: 0.7 mac-personalities -->
-- Machines' bots' keys of their own, which it kept in your Keychain: each given to its machine,
-  then gone from the Keychain. <!-- compat: 0.7 bot-keys-keychain -->
+- Machines' bots' keys of their own, which it kept in your Keychain: gone from the Keychain, as
+  its box starts (bots have no keys of their own now: "Bots have no keys of their own").
+  <!-- compat: 0.7 bot-keys-keychain -->
 - Edits to machines' bots it kept while they were away (`botEditOutbox` in its preferences, and
   `botEditsWaiting` from before it): each handed to this Mac's box once at launch (`PATCH` or
   `DELETE kuvo/bots/<id>?on=<machine>`), which holds it for that machine ("Held for another

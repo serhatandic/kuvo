@@ -13,7 +13,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { boxRoute, script, served } from "./bot-keys-scenarios.js";
+import { boxRoute, script, served } from "./box-stand-ins.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-own-home-keys-")));
@@ -156,37 +156,6 @@ test("while its Keychain can't give the keys, it says so and signs nothing: it n
     host.identity = { ...identity };
   }
   assert.equal(fs.existsSync(path.join(box, "run", "link.json")) && JSON.parse(fs.readFileSync(path.join(box, "run", "link.json"), "utf8")).sign !== undefined, false, "no key written anywhere");
-});
-
-test("the keys an earlier Kuvo Code kept for a machine's bot: given to the app, and taken away once the machine has them", async () => {
-  host.keys.set("KUVO_KEY_TODOIST_API_KEY__BOT_SCOUT", "tok_scout");
-  host.keys.set("KUVO_KEY_LINEAR_TOKEN__BOT_SCOUT", "lin_scout");
-  host.keys.set("KUVO_KEY_TODOIST_API_KEY__BOT_HERALD", "tok_herald");
-  host.keys.set("KUVO_KEY_TODOIST_API_KEY", "tok_shared");
-  const { status, value } = await ask("GET", "kuvo/box/kept-keys?bot=bot_scout");
-  assert.equal(status, 200);
-  assert.deepEqual(value.keys, { KUVO_KEY_TODOIST_API_KEY__BOT_SCOUT: "tok_scout", KUVO_KEY_LINEAR_TOKEN__BOT_SCOUT: "lin_scout" }, "that bot's own alone");
-
-  // Only those it gave: another bot's, or a shared key, isn't taken away this way.
-  for (const names of [["KUVO_KEY_TODOIST_API_KEY__BOT_HERALD"], ["KUVO_KEY_TODOIST_API_KEY"], "KUVO_KEY_TODOIST_API_KEY__BOT_SCOUT"]) {
-    assert.equal((await ask("DELETE", "kuvo/box/kept-keys?bot=bot_scout", { names })).status, 400);
-  }
-  assert.equal((await ask("DELETE", "kuvo/box/kept-keys?bot=bot_scout", { names: ["KUVO_KEY_TODOIST_API_KEY__BOT_SCOUT"] })).status, 200);
-  assert.deepEqual([...host.keys.keys()].sort(), ["KUVO_KEY_LINEAR_TOKEN__BOT_SCOUT", "KUVO_KEY_TODOIST_API_KEY", "KUVO_KEY_TODOIST_API_KEY__BOT_HERALD"]);
-  assert.equal((await ask("GET", "kuvo/box/kept-keys?bot=bot_herald", undefined, "mac")).status, 403, "never over box route");
-  assert.equal((await ask("GET", "kuvo/box/kept-keys?bot=bot_herald", undefined, "phone")).status, 403);
-  assert.equal((await ask("GET", "kuvo/box/kept-keys")).status, 400);
-});
-
-test("a bot that's this box's own keeps its keys: they're its, at kuvo/bots/<id>/keys", async () => {
-  const folder = path.join(box, "bots", "bot_local");
-  fs.mkdirSync(path.join(folder, "workspace"), { recursive: true });
-  fs.writeFileSync(path.join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id: "bot_local", name: "Local", job: "", look: {}, project: null, created: 0, updated: 0 }));
-  fs.writeFileSync(path.join(folder, "session"), "ses_local");
-  host.keys.set("KUVO_KEY_TODOIST_API_KEY__BOT_LOCAL", "tok_local");
-  assert.equal((await ask("GET", "kuvo/box/kept-keys?bot=bot_local")).status, 409);
-  assert.equal((await ask("DELETE", "kuvo/box/kept-keys?bot=bot_local", { names: ["KUVO_KEY_TODOIST_API_KEY__BOT_LOCAL"] })).status, 409);
-  assert.equal(host.keys.get("KUVO_KEY_TODOIST_API_KEY__BOT_LOCAL"), "tok_local");
 });
 
 test("its integrations are the Mac's own catalog, those that use the Mac's apps among them", () => {

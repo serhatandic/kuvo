@@ -16,6 +16,7 @@ import { approvalOf, approvalRules } from "../work/approval";
 import { botHere, isMoving, noteBotsChanged } from "./here";
 import { jobOf } from "./jobs";
 import { botInstructions, NO_KIT, readKit } from "./kit";
+import { forgetConnectedKeys, keysGoneNote } from "./own-keys";
 import { writeZoneFiles } from "../zone/setting";
 import { listBots } from "./list";
 import type { Target } from "../../shared/records";
@@ -57,11 +58,12 @@ export function noteTold(folder: string, changes: Told): void {
 }
 
 // What a bot here is told now: the kit's words, with its name, folder, personality and project,
-// and its job as its memory has it.
+// and its job as its memory has it; and, while an integration it had a key of its own for isn't
+// connected here, that it's so (`keysGoneNote`).
 export function toldNow(kit: BotKit, here: BotHere, described: BotDescription = here.described): string {
   const personality = botPersonalities(kit).find(each => each.id === described.personality)?.instruction;
   const job = jobOf(here);
-  return botInstructions(kit, described.name, here.folder, personality, described.project, { line: job.line, section: job.details });
+  return botInstructions(kit, described.name, here.folder, personality, described.project, { line: job.line, section: job.details }) + keysGoneNote(here.folder);
 }
 
 // Tells a bot's conversation (on `target`) `text`, and notes it. Whether it got there.
@@ -97,6 +99,7 @@ async function freshenOne(target: Target, sessionID: string): Promise<void> {
   settleFolder(here, kit);
   if (!kit) return;
   const told = toldOf(here.folder);
+  forgetConnectedKeys(here.folder);
   const text = toldNow(kit, here);
   // What its conversation has now, where that can be read: one that told it something else (a Mac
   // of an earlier version) is put right; otherwise what was last told it here.

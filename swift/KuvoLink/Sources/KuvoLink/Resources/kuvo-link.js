@@ -2962,19 +2962,6 @@ var TEMPLATES = object({
 });
 var MADE = object({ bot: BOT, firstMessage: nullable(string) });
 var CHANGED = object({ bot: nullable(BOT) });
-var BOT_KEYS2 = object({
-  keys: list(object({
-    integration: string,
-    own: bool,
-    shared: bool,
-    title: string,
-    symbol: string,
-    keys: list(object({ name: string, label: string, prompt: string })),
-    "help?": string
-  }))
-});
-var BOT_KEY_VALUES = object({ keys: map(string) });
-var BOT_KEY_KEPT = object({ integration: string, own: bool, shared: bool });
 
 // box/src/link/peers/directory.ts
 var PEER_AGENTS_FILE = path13.join(RUN, "peer-agents.json");
@@ -4532,7 +4519,6 @@ var FEATURES = [
   "bots.events",
   "bots.held",
   "bots.job",
-  "bots.keys",
   "bots.make",
   "bots.now",
   "box.app",
@@ -8763,16 +8749,2481 @@ ${kit.identityNote}`);
   return part ? text.replace("⟦jobPart⟧", () => part) : text.replace(/(\n\n)?⟦jobPart⟧/, "");
 }
 
+// box/src/link/bots/own-keys.ts
+import fs39 from "node:fs";
+import path43 from "node:path";
+
+// box/src/link/areas/integrations.ts
+import { spawn as spawn4 } from "node:child_process";
+import fs37 from "node:fs";
+import path41 from "node:path";
+
+// box/src/link/once.ts
+var answersOnce = false;
+function answerOnce() {
+  answersOnce = true;
+}
+var answeringOnce = () => answersOnce;
+
+// box/src/link/host-interface.ts
+import crypto13 from "node:crypto";
+import fs29 from "node:fs";
+import path33 from "node:path";
+class KeysUnavailable extends Error {
+}
+var HOST_FILE = path33.join(RUN, "host.json");
+var NOT_ANSWERING = "Kuvo Code isn't answering for this Mac's keys. Try again in a moment.";
+function appHost() {
+  if (!KEYS_ON_HOST)
+    return null;
+  try {
+    const text = fs29.readFileSync(HOST_FILE, "utf8");
+    const said = JSON.parse(text);
+    if (typeof said?.url === "string" && said.url && typeof said?.password === "string" && said.password) {
+      return { url: said.url.replace(/\/+$/, ""), password: said.password, said: text };
+    }
+  } catch {}
+  return LAUNCH_HOST && { ...LAUNCH_HOST, said: "launch" };
+}
+function openAppHost() {
+  if (!OWN_HOME_MAC)
+    return appHost();
+  try {
+    const host = JSON.parse(fs29.readFileSync(path33.join(RUN, "app.json"), "utf8"))?.host;
+    if (typeof host?.url === "string" && host.url && typeof host?.password === "string" && host.password) {
+      return { url: host.url.replace(/\/+$/, ""), password: host.password, said: `app ${host.url} ${host.password}` };
+    }
+  } catch {}
+  return null;
+}
+function helloProof(password, nonce, url) {
+  const reached = new URL(url);
+  return crypto13.createHmac("sha256", password).update(`kuvo-host-hello\x00${nonce}\x00${reached.hostname}:${reached.port || 80}`).digest("hex");
+}
+var provenBy = null;
+var vaultProvenBy = null;
+function forgetHostProof() {
+  provenBy = null;
+  vaultProvenBy = null;
+}
+async function proveHost(host, signal) {
+  if (provenBy === host.said)
+    return;
+  const nonce = crypto13.randomBytes(32).toString("hex");
+  let proof = null;
+  try {
+    const response = await fetch(`${host.url}/hello`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nonce }),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000)
+    });
+    const answer = await response.json().catch(() => null);
+    if (response.ok && typeof answer?.proof === "string")
+      proof = Buffer.from(answer.proof);
+  } catch {}
+  const expected = Buffer.from(helloProof(host.password, nonce, host.url));
+  if (!proof || proof.length !== expected.length || !crypto13.timingSafeEqual(proof, expected))
+    throw new KeysUnavailable(NOT_ANSWERING);
+  if (host.said.startsWith("app "))
+    return;
+  provenBy = host.said;
+}
+async function proveVaultHost(host) {
+  if (!HOST_VAULT_SECRET) {
+    throw new KeysUnavailable(OWN_HOME_MAC ? "This Mac's vault can only be reached by its running box, not by a one-off command." : "Kuvo Code on this Mac didn't give its vault its secret. Quit Kuvo Code and open it again.");
+  }
+  if (vaultProvenBy === host.said)
+    return;
+  const nonce = crypto13.randomBytes(32).toString("hex");
+  let proof = null;
+  try {
+    const response = await fetch(`${host.url}/hello`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nonce, vault: true }),
+      signal: AbortSignal.timeout(15000)
+    });
+    const answer = await response.json().catch(() => null);
+    if (response.ok && typeof answer?.vaultProof === "string")
+      proof = Buffer.from(answer.vaultProof);
+  } catch {}
+  const reached = new URL(host.url);
+  const expected = Buffer.from(crypto13.createHmac("sha256", HOST_VAULT_SECRET).update(`kuvo-host-vault\x00${nonce}\x00${reached.hostname}:${reached.port || 80}`).digest("hex"));
+  if (!proof || proof.length !== expected.length || !crypto13.timingSafeEqual(proof, expected))
+    throw new KeysUnavailable(NOT_ANSWERING);
+  vaultProvenBy = host.said;
+}
+var vaultAuth = (call, body, at) => crypto13.createHmac("sha256", HOST_VAULT_SECRET ?? "").update(`kuvo-host-vault-call\x00${call}\x00${crypto13.createHash("sha256").update(body).digest("hex")}\x00${at}`).digest("hex");
+async function hostTrash(folder) {
+  const host = appHost();
+  if (!host)
+    return;
+  await proveHost(host);
+  const response = await fetch(`${host.url}/trash`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json" },
+    body: JSON.stringify({ path: folder }),
+    signal: AbortSignal.timeout(15000)
+  });
+  await response.body?.cancel().catch(() => {});
+}
+async function askHost(host, call, body, missing = false) {
+  await proveHost(host);
+  const sent = JSON.stringify(body);
+  const vault = call.startsWith("vault/");
+  if (vault)
+    await proveVaultHost(host);
+  const at = Date.now();
+  let response;
+  try {
+    response = await fetch(`${host.url}/${call}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json", ...vault ? { "x-kuvo-vault-auth": vaultAuth(call, sent, at), "x-kuvo-vault-at": String(at) } : {} },
+      body: sent,
+      signal: AbortSignal.timeout(["keys/get", "keys/set", "link/identity", "vault/get", "vault/set"].includes(call) ? 120000 : 15000)
+    });
+  } catch {
+    forgetHostProof();
+    throw new KeysUnavailable(NOT_ANSWERING);
+  }
+  if (missing && response.status === 404) {
+    await response.body?.cancel().catch(() => {});
+    return null;
+  }
+  let answer = null;
+  try {
+    answer = await response.json();
+  } catch {}
+  if (response.status < 200 || response.status > 299) {
+    const said = typeof answer?.message === "string" && answer.message.trim() ? ` ${oneLine(answer.message, 300)}` : "";
+    throw new KeysUnavailable(`This Mac's keys couldn't be reached (${response.status}).${said}`);
+  }
+  return answer ?? {};
+}
+async function siteSignIns() {
+  const host = openAppHost();
+  if (!host)
+    return null;
+  try {
+    const answer = await askHost(host, "sites/signed-in", {});
+    return isObject(answer?.sites) ? answer.sites : null;
+  } catch {
+    return null;
+  }
+}
+async function linkHost(call, body) {
+  const host = appHost();
+  if (!host)
+    return null;
+  try {
+    return await askHost(host, call, body ?? {});
+  } catch {
+    return null;
+  }
+}
+
+// box/src/link/browser/sites.ts
+import fs32 from "node:fs";
+import { createRequire } from "node:module";
+import path36 from "node:path";
+
+// box/src/link/browser/history.ts
+import fs30 from "node:fs";
+import path34 from "node:path";
+var BROWSER_FOLDER = path34.join(K, "browser");
+var HISTORY_LIMIT = 300;
+var ICON_LIMIT = 128 * 1024;
+var historyFile = (folder) => path34.join(folder, "history.json");
+var iconsFolder = (folder) => path34.join(folder, "icons");
+var journal = (folder) => path34.join(folder, "visits.jsonl");
+var lock = (folder) => path34.join(folder, ".history.lock");
+function siteKey(address) {
+  let url;
+  try {
+    url = new URL(address);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:" || !url.hostname)
+    return null;
+  const host = url.hostname.replace(/^www\./, "");
+  return url.port ? `${host}:${url.port}` : host;
+}
+var isIconName = (key) => /^[a-z0-9][a-z0-9.-]{0,252}(:\d{1,5})?$/.test(key) && !key.includes("..");
+var score = (site, now) => site.visits / (1 + (now - site.lastVisit) / 86400000 / 14);
+function isKept(value) {
+  const site = value;
+  return typeof site?.host === "string" && typeof site.url === "string" && typeof site.title === "string" && Number.isFinite(site.visits) && Number.isFinite(site.lastVisit);
+}
+function readKept3(folder) {
+  try {
+    const sites = JSON.parse(fs30.readFileSync(historyFile(folder), "utf8"))?.sites;
+    return Array.isArray(sites) ? sites.filter(isKept) : [];
+  } catch {
+    return [];
+  }
+}
+function writeKept(folder, sites) {
+  writePrivate(historyFile(folder), JSON.stringify({ sites }));
+}
+function limited(sites) {
+  return sites.length > HISTORY_LIMIT ? [...sites].sort((a, b) => b.lastVisit - a.lastVisit).slice(0, HISTORY_LIMIT) : sites;
+}
+function visited(sites, address, title, at) {
+  const host = siteKey(address);
+  if (!host)
+    return sites;
+  const named = title.trim() === address ? "" : title.trim().slice(0, 300);
+  const url = address.slice(0, 2000);
+  const found = sites.find((site) => site.host === host);
+  if (!found)
+    return limited([...sites, { host, url, title: named, visits: 1, lastVisit: at }]);
+  found.visits += 1;
+  found.lastVisit = Math.max(found.lastVisit, at);
+  let front = false;
+  try {
+    front = new URL(address).pathname.length <= 1;
+  } catch {}
+  if (front || !found.title) {
+    found.url = url;
+    found.title = named;
+  }
+  return sites;
+}
+function iconType(bytes) {
+  const starts = (...head) => head.every((byte, i) => bytes[i] === byte);
+  if (starts(137, 80, 78, 71))
+    return "image/png";
+  if (starts(0, 0, 1, 0))
+    return "image/x-icon";
+  if (starts(255, 216, 255))
+    return "image/jpeg";
+  if (starts(71, 73, 70, 56))
+    return "image/gif";
+  if (starts(82, 73, 70, 70) && bytes[8] === 87 && bytes[9] === 69 && bytes[10] === 66 && bytes[11] === 80)
+    return "image/webp";
+  return null;
+}
+function keepIcon(folder, key, bytes) {
+  if (!isIconName(key) || bytes.length === 0 || bytes.length > ICON_LIMIT || !iconType(bytes))
+    return false;
+  writePrivate(path34.join(iconsFolder(folder), key), bytes);
+  return true;
+}
+function folding(folder) {
+  let sites = readKept3(folder);
+  const taking = `${journal(folder)}.folding-${process.pid}-${Date.now()}`;
+  try {
+    fs30.renameSync(journal(folder), taking);
+  } catch {}
+  const taken = listOf(folder).filter((name) => name.startsWith("visits.jsonl.folding-")).sort().map((name) => path34.join(folder, name));
+  if (!taken.length)
+    return sites;
+  for (const file of taken) {
+    let text = "";
+    try {
+      text = fs30.readFileSync(file, "utf8");
+    } catch {}
+    for (const line of text.split(`
+`)) {
+      let note;
+      try {
+        note = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (typeof note?.url !== "string")
+        continue;
+      const at = typeof note.at === "number" && Number.isFinite(note.at) ? note.at : Date.now();
+      if (typeof note.icon === "string") {
+        const key = siteKey(note.url);
+        if (key)
+          try {
+            keepIcon(folder, key, Buffer.from(note.icon, "base64"));
+          } catch {}
+      } else {
+        sites = visited(sites, note.url, typeof note.title === "string" ? note.title : "", at);
+      }
+    }
+  }
+  writeKept(folder, sites);
+  for (const file of taken)
+    fs30.rmSync(file, { force: true });
+  return sites;
+}
+function readHistory(folder = BROWSER_FOLDER, now = Date.now()) {
+  const sites = fs30.existsSync(folder) ? locked(lock(folder), () => folding(folder)) : [];
+  const icons = new Set(listOf(iconsFolder(folder)));
+  return {
+    sites: [...sites].sort((a, b) => score(b, now) - score(a, now) || b.lastVisit - a.lastVisit).map((site) => ({ ...site, icon: icons.has(site.host) }))
+  };
+}
+function foldHistory(folder = BROWSER_FOLDER) {
+  if (fs30.existsSync(folder))
+    locked(lock(folder), () => {
+      folding(folder);
+    });
+}
+function forgetHistory(host, folder = BROWSER_FOLDER) {
+  if (!fs30.existsSync(folder))
+    return;
+  locked(lock(folder), () => {
+    if (host === null) {
+      for (const name of listOf(folder))
+        if (name === "visits.jsonl" || name.startsWith("visits.jsonl.folding-"))
+          fs30.rmSync(path34.join(folder, name), { force: true });
+      fs30.rmSync(historyFile(folder), { force: true });
+      fs30.rmSync(iconsFolder(folder), { recursive: true, force: true });
+      return;
+    }
+    writeKept(folder, folding(folder).filter((site) => site.host !== host));
+    if (isIconName(host))
+      fs30.rmSync(path34.join(iconsFolder(folder), host), { force: true });
+  });
+}
+function iconOf(host, folder = BROWSER_FOLDER) {
+  if (!isIconName(host))
+    return null;
+  let bytes;
+  try {
+    bytes = fs30.readFileSync(path34.join(iconsFolder(folder), host));
+  } catch {
+    return null;
+  }
+  const type = iconType(bytes);
+  return type ? { bytes, type } : null;
+}
+function mergeHistory(from, folder = BROWSER_FOLDER) {
+  fs30.mkdirSync(folder, { recursive: true, mode: 448 });
+  return locked(lock(folder), () => {
+    const sites = folding(folder);
+    for (const each of from) {
+      const found = sites.find((site) => site.host === each.host);
+      if (!found) {
+        sites.push({ ...each });
+        continue;
+      }
+      found.visits += each.visits;
+      found.lastVisit = Math.max(found.lastVisit, each.lastVisit);
+      if (!found.title)
+        Object.assign(found, { url: each.url, title: each.title });
+    }
+    writeKept(folder, limited(sites));
+    return from.length;
+  });
+}
+
+// box/src/link/browser/keeper-client.ts
+import fs31 from "node:fs";
+import net3 from "node:net";
+import path35 from "node:path";
+function keeperRuns(run = RUN) {
+  let pid = 0;
+  try {
+    pid = Number(fs31.readFileSync(path35.join(run, "browser.pid"), "utf8"));
+  } catch {
+    return false;
+  }
+  if (!Number.isInteger(pid) || pid <= 0)
+    return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+async function withKeeper(work, { run = RUN, wait = 1e4, key = socketKey } = {}) {
+  const deadline = Date.now() + wait;
+  let socket = null;
+  while (!socket && Date.now() < deadline) {
+    socket = await new Promise((resolve) => {
+      const each = net3.createConnection(path35.join(run, "browser.sock"));
+      each.once("connect", () => resolve(each));
+      each.once("error", () => resolve(null));
+    });
+    if (!socket)
+      await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  if (!socket)
+    return null;
+  const connection = socket;
+  const waiting = new Map;
+  let hello = () => {};
+  const greeted = new Promise((resolve) => hello = resolve);
+  let buffer = "";
+  connection.setEncoding("utf8");
+  connection.on("data", (chunk) => {
+    buffer += chunk;
+    let end;
+    while ((end = buffer.indexOf(`
+`)) >= 0) {
+      const line = buffer.slice(0, end);
+      buffer = buffer.slice(end + 1);
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (message.method === "Kuvo.hello")
+        hello();
+      if (message.id === undefined || !waiting.has(message.id))
+        continue;
+      const { resolve, reject } = waiting.get(message.id);
+      waiting.delete(message.id);
+      if (message.error)
+        reject(new Error(String(message.error.message ?? "The browser refused that.")));
+      else
+        resolve(message.result ?? {});
+    }
+  });
+  const closed = new Promise((resolve) => connection.once("close", () => {
+    for (const { reject } of waiting.values())
+      reject(new Error("The browser stopped."));
+    waiting.clear();
+    resolve();
+  }));
+  connection.on("error", () => {});
+  let next = 1;
+  const call = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
+    if (connection.destroyed)
+      return reject(new Error("The browser stopped."));
+    const id = next++;
+    waiting.set(id, { resolve, reject });
+    connection.write(JSON.stringify({ id, method, params, ...sessionId ? { sessionId } : {} }) + `
+`);
+  });
+  const timer = setTimeout(() => connection.destroy(), Math.max(1000, deadline - Date.now() + 20000));
+  try {
+    connection.write(JSON.stringify({ method: "Kuvo.key", params: { key: key(), quiet: true } }) + `
+`);
+    if (!await Promise.race([greeted.then(() => true), closed.then(() => false)]))
+      return null;
+    return await work(call);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    connection.destroy();
+  }
+}
+
+// box/src/link/browser/sites.ts
+function cookieFile(folder = BROWSER_FOLDER) {
+  const found = ["Network/Cookies", "Cookies"].map((name) => path36.join(folder, "profile", "Default", name)).filter((file) => fs32.existsSync(file));
+  return found.sort((a, b) => fs32.statSync(b).mtimeMs - fs32.statSync(a).mtimeMs)[0] ?? null;
+}
+var FROM_1601 = 11644473600000;
+var chromeTime = (microseconds) => microseconds / 1000 - FROM_1601;
+async function inDatabase(file, readonly, work) {
+  let made;
+  try {
+    made = createRequire(import.meta.url)(["bun", "sqlite"].join(":"));
+  } catch {
+    return null;
+  }
+  for (let attempt = 0;; attempt++) {
+    let db = null;
+    try {
+      db = new made.Database(file, readonly ? { readonly: true } : { readwrite: true });
+      return work(db);
+    } catch (error) {
+      if (attempt >= 4 || !/busy|locked/i.test(String(error)))
+        return null;
+      await sleep(100);
+    } finally {
+      try {
+        db?.close();
+      } catch {}
+    }
+  }
+}
+async function fileCookies(folder = BROWSER_FOLDER) {
+  const file = cookieFile(folder);
+  if (!file)
+    return null;
+  return await inDatabase(file, true, (db) => db.query("SELECT host_key, name, path, expires_utc, has_expires, is_persistent FROM cookies").all().map((row) => ({
+    domain: String(row.host_key),
+    name: String(row.name),
+    path: String(row.path ?? "/"),
+    expires: Number(row.has_expires) && Number(row.expires_utc) > 0 ? chromeTime(Number(row.expires_utc)) : null,
+    persistent: Number(row.is_persistent) === 1
+  })));
+}
+async function liveCookies(call) {
+  const answer = await call("Storage.getCookies");
+  return (Array.isArray(answer?.cookies) ? answer.cookies : []).filter((each) => typeof each?.name === "string" && typeof each?.domain === "string").map((each) => ({
+    domain: each.domain,
+    name: each.name,
+    path: typeof each.path === "string" ? each.path : "/",
+    expires: each.session || typeof each.expires !== "number" || each.expires <= 0 ? null : each.expires * 1000,
+    persistent: !each.session,
+    live: each
+  }));
+}
+async function browserCookies(folder = BROWSER_FOLDER, run = RUN) {
+  if (keeperRuns(run)) {
+    const live = await withKeeper(liveCookies, { run, wait: 5000 });
+    if (live)
+      return { live: true, cookies: live };
+  }
+  const kept = await fileCookies(folder);
+  return kept ? { live: false, cookies: kept } : null;
+}
+function siteOf(host) {
+  const name = host.replace(/^\./, "").toLowerCase();
+  if (!name.includes(".") || /^[\d.]+$/.test(name) || name.includes(":"))
+    return name;
+  const labels = name.split(".");
+  const second = labels[labels.length - 2] ?? "";
+  const country = (labels[labels.length - 1] ?? "").length === 2;
+  const keep = labels.length >= 3 && country && ["co", "com", "net", "org", "gov", "edu", "ac", "or", "ne", "go", "gob", "mil", "nic"].includes(second) ? 3 : 2;
+  return labels.slice(-keep).join(".");
+}
+var onSite = (host, site) => {
+  const name = host.replace(/^\./, "").toLowerCase();
+  return name === site || name.endsWith("." + site);
+};
+function storageHosts(folder) {
+  const found = new Map;
+  const indexed = path36.join(folder, "profile", "Default", "IndexedDB");
+  let names = [];
+  try {
+    names = fs32.readdirSync(indexed);
+  } catch {}
+  for (const name of names) {
+    const match = /^(https?)_(.+)_\d+\.indexeddb\.(leveldb|blob)$/.exec(name);
+    if (!match)
+      continue;
+    const host = match[2];
+    found.set(host, [...found.get(host) ?? [], path36.join(indexed, name)]);
+  }
+  return found;
+}
+async function browserSites(folder = BROWSER_FOLDER, run = RUN) {
+  const now = Date.now();
+  const kinds = new Map;
+  const add = (host, kind) => {
+    const site = siteOf(host);
+    if (!site)
+      return;
+    kinds.set(site, (kinds.get(site) ?? new Set).add(kind));
+  };
+  for (const cookie of (await browserCookies(folder, run))?.cookies ?? [])
+    if (cookie.expires === null || cookie.expires > now)
+      add(cookie.domain, "cookies");
+  for (const host of storageHosts(folder).keys())
+    add(host, "storage");
+  return {
+    sites: [...kinds].sort(([a], [b]) => a.localeCompare(b)).map(([site, each]) => ({ site, kinds: ["cookies", "storage"].filter((kind) => each.has(kind)) }))
+  };
+}
+var pendingFile = (folder) => path36.join(folder, "clear-sites.json");
+var editingLock = (folder) => path36.join(folder, ".profile-editing");
+var STORAGE_FOLDERS = ["Local Storage", "Session Storage", "IndexedDB", "Service Worker", "Cache", "Code Cache", "WebStorage", "File System", "databases", "Shared Storage"];
+async function removeSiteData(sites, folder = BROWSER_FOLDER, run = RUN) {
+  if (!fs32.existsSync(path36.join(folder, "profile")))
+    return true;
+  const wanted = (host) => sites === "all" || sites.some((site) => onSite(host, site));
+  if (keeperRuns(run))
+    return await removeLive(wanted, sites === "all", folder, run);
+  const done = await lockedWhile(editingLock(folder), async () => {
+    if (keeperRuns(run))
+      return null;
+    const file = cookieFile(folder);
+    const hosts = new Set;
+    if (file) {
+      const removed = await inDatabase(file, false, (db) => {
+        const all = db.query("SELECT DISTINCT host_key FROM cookies").all().map((row) => String(row.host_key));
+        const going = all.filter(wanted);
+        for (const host of going)
+          db.query("DELETE FROM cookies WHERE host_key = ?").run(host);
+        return going;
+      });
+      if (!removed)
+        return false;
+      for (const host of removed)
+        hosts.add(host.replace(/^\./, ""));
+    }
+    if (sites === "all") {
+      for (const name of STORAGE_FOLDERS)
+        fs32.rmSync(path36.join(folder, "profile", "Default", name), { recursive: true, force: true });
+      return true;
+    }
+    for (const [host, folders] of storageHosts(folder)) {
+      if (!wanted(host))
+        continue;
+      for (const each of folders)
+        fs32.rmSync(each, { recursive: true, force: true });
+      hosts.add(host);
+    }
+    let pending = [];
+    try {
+      pending = JSON.parse(fs32.readFileSync(pendingFile(folder), "utf8"));
+    } catch {}
+    const next = [...new Set([...Array.isArray(pending) ? pending.filter((each) => typeof each === "string") : [], ...hosts, ...sites])];
+    writePrivate(pendingFile(folder), JSON.stringify(next));
+    return true;
+  }, { stale: 30000, wait: 1e4 });
+  return done ?? await removeLive(wanted, sites === "all", folder, run);
+}
+async function removeLive(wanted, all, folder, run) {
+  const done = await withKeeper(async (call) => {
+    const cookies = (await liveCookies(call)).filter((cookie) => wanted(cookie.domain));
+    const hosts = new Set([...cookies.map((cookie) => cookie.domain.replace(/^\./, "")), ...[...storageHosts(folder).keys()].filter(wanted)]);
+    if (!hosts.size && !all)
+      return true;
+    const targets = await call("Target.getTargets");
+    let page = (Array.isArray(targets?.targetInfos) ? targets.targetInfos : []).find((each) => each?.type === "page")?.targetId;
+    let opened = false;
+    if (!page) {
+      page = (await call("Target.createTarget", { url: "about:blank", newWindow: true }))?.targetId;
+      opened = true;
+    }
+    const sessionId = (await call("Target.attachToTarget", { targetId: page, flatten: true }))?.sessionId;
+    try {
+      if (all) {
+        await call("Network.clearBrowserCookies", {}, sessionId);
+        await call("Network.clearBrowserCache", {}, sessionId).catch(() => {});
+      } else {
+        for (const cookie of cookies) {
+          const live = cookie.live ?? {};
+          await call("Network.deleteCookies", { name: cookie.name, domain: cookie.domain, path: cookie.path, ...live.partitionKey ? { partitionKey: live.partitionKey } : {} }, sessionId);
+        }
+      }
+      for (const host of hosts) {
+        for (const scheme of ["https", "http"]) {
+          await call("Storage.clearDataForOrigin", { origin: `${scheme}://${host}`, storageTypes: "all" }, sessionId).catch(() => {});
+        }
+      }
+    } finally {
+      await call("Target.detachFromTarget", { sessionId }).catch(() => {});
+      if (opened && page)
+        await call("Target.closeTarget", { targetId: page }).catch(() => {});
+    }
+    return true;
+  }, { run });
+  return done === true;
+}
+function signedIn(cookies, wanted, now = Date.now()) {
+  return cookies.cookies.some((cookie) => onSite(cookie.domain, wanted.domain.replace(/^\./, "").toLowerCase()) && cookie.name === wanted.name && (cookies.live || cookie.persistent) && (cookie.expires === null ? cookies.live : cookie.expires > now));
+}
+async function siteSignInsHere(entries, folder = BROWSER_FOLDER, run = RUN) {
+  const named = entries.filter((each) => {
+    const cookie = each.signInCookie;
+    return typeof cookie?.domain === "string" && cookie.domain.length > 0 && typeof cookie.name === "string" && cookie.name.length > 0;
+  });
+  if (!named.length)
+    return null;
+  const cookies = await browserCookies(folder, run);
+  if (!cookies)
+    return fs32.existsSync(path36.join(folder, "profile")) && !cookieFile(folder) && !keeperRuns(run) ? Object.fromEntries(named.map((each) => [each.id, false])) : null;
+  return Object.fromEntries(named.map((each) => [each.id, signedIn(cookies, each.signInCookie)]));
+}
+
+// box/src/link/keys.ts
+import fs33 from "node:fs";
+import path37 from "node:path";
+var LEGACY_KEYS = path37.join(K, "keys");
+var STORED_KEY = /^KUVO_KEY_[A-Z0-9_]+$/;
+var BOT_KEY = /^KUVO_KEY_[A-Z0-9_]+__BOT_[A-Z0-9]+$/;
+function keyHost() {
+  const host = appHost();
+  if (KEYS_ON_HOST && !host)
+    throw new KeysUnavailable(NOT_ANSWERING);
+  return host;
+}
+var keyQueue = Promise.resolve();
+function keyWork(work) {
+  const run = keyQueue.then(work, work);
+  keyQueue = run.catch(() => {});
+  return run;
+}
+var checkedKeyName = (name) => {
+  if (typeof name !== "string" || !STORED_KEY.test(name) || BOT_KEY.test(name))
+    throw new KeysUnavailable("That isn't a key's name.");
+  return name;
+};
+var keyFile = (name) => path37.join(BOX_KEYS, checkedKeyName(name));
+async function keyNames({ prefix = "", suffix = "" } = {}) {
+  if (typeof prefix !== "string" || typeof suffix !== "string" || prefix && !/^KUVO_KEY_[A-Z0-9_]*$/.test(prefix) || suffix && !/^[A-Z0-9_]+$/.test(suffix)) {
+    throw new KeysUnavailable("That isn't a part of a key's name.");
+  }
+  const host = keyHost();
+  let names;
+  if (host) {
+    const answer = await askHost(host, "keys/names", { ...prefix ? { prefix } : {}, ...suffix ? { suffix } : {} });
+    if (!Array.isArray(answer.names))
+      throw new KeysUnavailable("This Mac's keys couldn't be read.");
+    names = answer.names;
+  } else {
+    names = listOf(BOX_KEYS);
+  }
+  return [...new Set(names.filter((name) => typeof name === "string" && STORED_KEY.test(name) && !BOT_KEY.test(name) && name.startsWith(prefix) && name.endsWith(suffix)))].sort();
+}
+async function readKey(name) {
+  checkedKeyName(name);
+  const host = keyHost();
+  if (!host)
+    return textOf(keyFile(name));
+  const answer = await askHost(host, "keys/get", { name }, true);
+  return typeof answer?.value === "string" ? answer.value : null;
+}
+async function writeKey(name, value) {
+  checkedKeyName(name);
+  if (typeof value !== "string")
+    throw new KeysUnavailable("A key is text.");
+  const host = keyHost();
+  if (!host)
+    return writeKeyFile(name, value);
+  if (!writesKeyFiles())
+    return void await askHost(host, "keys/set", { name, value });
+  await keyFileWork(async () => {
+    await askHost(host, "keys/set", { name, value });
+    writeKeyFile(name, value);
+  });
+}
+async function deleteKey(name) {
+  checkedKeyName(name);
+  const host = keyHost();
+  if (!host)
+    return removeKeyFile(name);
+  if (!writesKeyFiles())
+    return void await askHost(host, "keys/delete", { name });
+  await keyFileWork(async () => {
+    await askHost(host, "keys/delete", { name });
+    removeKeyFile(name);
+  });
+}
+function writeKeyFile(name, value) {
+  locked(CONFIG_LOCK, () => writeSecret(keyFile(name), value));
+}
+function removeKeyFile(name) {
+  locked(CONFIG_LOCK, () => fs33.rmSync(keyFile(name), { force: true }));
+}
+async function dropBotKeys(keep = []) {
+  const kept = (name) => keep.some((end) => name.endsWith(end));
+  const host = keyHost();
+  if (host) {
+    const answer = await askHost(host, "keys/names", {});
+    if (!Array.isArray(answer.names))
+      throw new KeysUnavailable("This Mac's keys couldn't be read.");
+    for (const name of answer.names)
+      if (typeof name === "string" && BOT_KEY.test(name) && !kept(name))
+        await askHost(host, "keys/delete", { name });
+  }
+  for (const folder of [BOT_KEYS, BOX_KEYS, LEGACY_KEYS]) {
+    for (const name of listOf(folder))
+      if (BOT_KEY.test(name) && !kept(name))
+        fs33.rmSync(path37.join(folder, name), { force: true });
+  }
+  if (!listOf(BOT_KEYS).some(kept))
+    fs33.rmSync(BOT_KEYS, { recursive: true, force: true });
+}
+var KEY_FILES_LOCK = path37.join(RUN, ".key-files.lock");
+var keyFileWork = (work) => lockedWhile(KEY_FILES_LOCK, work, { stale: 150000, wait: 150000 });
+async function syncKeyFiles() {
+  if (!writesKeyFiles())
+    return false;
+  let names;
+  try {
+    names = await keyNames();
+  } catch {
+    return false;
+  }
+  const files = listOf(BOX_KEYS).filter((name) => STORED_KEY.test(name) && !BOT_KEY.test(name));
+  let all = true;
+  for (const name of [...new Set([...names, ...files])]) {
+    await keyFileWork(async () => {
+      let value;
+      try {
+        value = await readKey(name);
+      } catch {
+        all = false;
+        return;
+      }
+      if (value !== null) {
+        if (textOf(keyFile(name)) !== value)
+          writeKeyFile(name, value);
+      } else if (names.includes(name)) {
+        all = false;
+      } else {
+        removeKeyFile(name);
+      }
+    });
+  }
+  return all;
+}
+var keeping = null;
+var keyFilesWait = (failed, every = 12 * 3600000, retry = 60000) => failed ? Math.min(every, retry * 2 ** (failed - 1)) : every;
+function keepKeyFiles(every = 12 * 3600000, retry = 60000) {
+  if (!writesKeyFiles() || keeping)
+    return;
+  let failed = 0;
+  const round = async () => {
+    failed = await syncKeyFiles().catch(() => false) ? 0 : failed + 1;
+    keeping = setTimeout(() => void round(), keyFilesWait(failed, every, retry));
+    keeping.unref?.();
+  };
+  keeping = setTimeout(() => void round(), 0);
+  keeping.unref?.();
+}
+
+// box/src/link/updates/update.ts
+import { spawn as spawn3, spawnSync as spawnSync4 } from "node:child_process";
+import crypto14 from "node:crypto";
+import fs35 from "node:fs";
+import os7 from "node:os";
+import path39 from "node:path";
+
+// box/src/shared/night.ts
+function nightOf(date = new Date, zone = yourZone()) {
+  let parts;
+  try {
+    parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: zone || undefined, year: "numeric", month: "2-digit", day: "2-digit", hour: "numeric", hourCycle: "h23" }).formatToParts(date).map((part) => [part.type, part.value]));
+  } catch {
+    return null;
+  }
+  const hour = Number(parts.hour);
+  return hour >= 2 && hour < 5 ? `${parts.year}-${parts.month}-${parts.day}` : null;
+}
+
+// box/src/shared/updating.ts
+import fs34 from "node:fs";
+import path38 from "node:path";
+function updateUnderWay(run) {
+  const lock = path38.join(run, ".updating");
+  if (!fs34.existsSync(lock))
+    return false;
+  let pid = null;
+  try {
+    pid = Number(fs34.readFileSync(path38.join(lock, "pid"), "utf8"));
+  } catch {}
+  if (pid)
+    return processRuns(pid, "kuvo-link");
+  try {
+    return Date.now() - fs34.statSync(lock).mtimeMs < 60000;
+  } catch {
+    return false;
+  }
+}
+
+// box/src/link/updates/update.ts
+var UPDATE_KEYS = ["iLSFoygG8wg+r2yj+/qnoMHpZIhPKRNLlf9vpEKmx0A="];
+var UPDATE_URL = "https://github.com/serhatandic/kuvo-code/releases/latest/download/boxes.json";
+var UPDATE_STATE = path39.join(RUN, "update.json");
+var UPDATE_TRIAL = path39.join(RUN, "update-trial");
+var updateOnTrial = () => fs35.existsSync(UPDATE_TRIAL);
+var UPDATE_LOCK = path39.join(RUN, ".updating");
+var ROLLBACK = path39.join(UPDATES, "rollback");
+var LAUNCHERS = path39.join(RUN, "launchers.json");
+var ED25519_SPKI = Buffer.from("302a300506032b6570032100", "hex");
+var RELEASE_AGE = 3 * 86400000;
+var MAC_MEMORY = 30 * 86400000;
+var BOX_FILE = /^(bin\/[A-Za-z0-9._-]+|bin\/runtime\/[A-Za-z0-9._-]+|config\/opencode\/plugins\/[A-Za-z0-9._-]+)$/;
+var BUNDLE = /^bin\/[A-Za-z0-9][A-Za-z0-9._ -]*\.app$/;
+var BUNDLE_PART = /^(?:[A-Za-z0-9_][A-Za-z0-9._+ -]*\/)*[A-Za-z0-9_][A-Za-z0-9._+ -]*$/;
+var OFFER_REST = 86400000;
+var OFFER_RETRY = 3600000;
+var OFFERED = path39.join(UPDATES, "offered");
+var RELEASE_VERSION = /^\d+\.\d+\.\d+(-beta\.\d+)?$/;
+function versionOrder(version) {
+  const found = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/.exec(version ?? "");
+  return found ? [+found[1], +found[2], +found[3], found[4] == null ? Infinity : +found[4]] : null;
+}
+function newerVersion(version, than) {
+  const a = versionOrder(version), b = versionOrder(than);
+  if (!a)
+    return false;
+  if (!b)
+    return true;
+  for (let i = 0;i < 4; i++)
+    if (a[i] !== b[i])
+      return a[i] > b[i];
+  return false;
+}
+function verifyBoxes(text, keys = UPDATE_KEYS) {
+  let given;
+  try {
+    given = JSON.parse(text);
+  } catch {
+    throw new Error("That isn't a release.");
+  }
+  if (typeof given?.manifest !== "string" || typeof given.signature !== "string" || typeof given.key !== "string")
+    throw new Error("That isn't a release.");
+  const key = keys.map((each) => Buffer.from(each, "base64")).find((each) => each.length === 32 && each.equals(Buffer.from(given.key, "base64")));
+  if (!key)
+    throw new Error("It isn't signed with a key this machine trusts.");
+  const bytes = Buffer.from(given.manifest, "base64");
+  const publicKey = crypto14.createPublicKey({ key: Buffer.concat([ED25519_SPKI, key]), format: "der", type: "spki" });
+  if (!crypto14.verify(null, Buffer.concat([Buffer.from(`kuvo-box v1
+`), bytes]), publicKey, Buffer.from(given.signature, "base64")))
+    throw new Error("Its signature doesn't match.");
+  const manifest = JSON.parse(bytes.toString("utf8"));
+  if (manifest?.kuvo !== "box/1" || !RELEASE_VERSION.test(manifest.version ?? "") || typeof manifest.engine !== "string" || !/^[0-9][0-9A-Za-z.-]*$/.test(manifest.engine) || !isObject(manifest.pack) || typeof manifest.pack.url !== "string" || !/^[0-9a-f]{64}$/.test(manifest.pack.sha256 ?? ""))
+    throw new Error("That isn't a release.");
+  return manifest;
+}
+var boxVersion = () => {
+  const version = textOf(path39.join(K, "bin", "box-version"))?.trim();
+  return versionOrder(version) ? version : null;
+};
+var updateState = () => {
+  try {
+    return JSON.parse(fs35.readFileSync(UPDATE_STATE, "utf8")) ?? {};
+  } catch {
+    return {};
+  }
+};
+function noteUpdate(change) {
+  const state = { ...updateState(), ...change };
+  for (const [key, value] of Object.entries(change))
+    if (value == null)
+      delete state[key];
+  try {
+    writePrivate(UPDATE_STATE, JSON.stringify(state));
+  } catch {}
+  return state;
+}
+function noteLauncher(readEngine = readEngineFile, now = Date.now()) {
+  let mac = null;
+  try {
+    mac = readEngine()?.notes?.mac;
+  } catch {}
+  if (typeof mac !== "string" || !mac || mac.length > 100)
+    return;
+  let all = {};
+  try {
+    all = JSON.parse(fs35.readFileSync(LAUNCHERS, "utf8")) ?? {};
+  } catch {}
+  if (now - (all[mac] ?? 0) < 3600000)
+    return;
+  all[mac] = now;
+  for (const [key, at] of Object.entries(all))
+    if (now - at > MAC_MEMORY)
+      delete all[key];
+  try {
+    writePrivate(LAUNCHERS, JSON.stringify(all));
+  } catch {}
+}
+function updatesBlocked(link = readLink(), now = Date.now(), root = K) {
+  if (path39.resolve(root) !== path39.join(homeFolder(), ".kuvo-code"))
+    return "Only a machine's own Kuvo Code folder updates itself.";
+  let launchers = {};
+  try {
+    launchers = JSON.parse(fs35.readFileSync(LAUNCHERS, "utf8")) ?? {};
+  } catch {}
+  const behind = Object.entries(launchers).filter(([mac, at]) => now - at < MAC_MEMORY && link?.tolerantIDs?.[mac] !== true);
+  if (behind.length)
+    return "A Mac that connects to this machine has an older Kuvo Code, which would put back older versions: update Kuvo Code there first.";
+  return null;
+}
+async function boxBusy(readEngine = readEngineFile, readBridge = readBridgeFile) {
+  return await agentsWorking(readEngine, readBridge) === true || readAsks().length > 0;
+}
+async function agentsWorking(readEngine = readEngineFile, readBridge = readBridgeFile) {
+  let unknown = false;
+  for (const [read, program] of [[readEngine, "opencode"], [readBridge, "kuvo-agents"]]) {
+    let target = null;
+    try {
+      target = read();
+    } catch {}
+    if (!target?.port || !target?.password)
+      continue;
+    const pid = target.pid;
+    if (pid !== undefined && !processRuns(pid, program))
+      continue;
+    const answer = await asked(target, "GET", "api/session/active").catch(() => null);
+    const active = answer?.data;
+    if (Array.isArray(active) ? active.length : isObject(active) && Object.keys(active).length)
+      return true;
+    if (!Array.isArray(active) && !isObject(active))
+      unknown = true;
+  }
+  return unknown ? null : false;
+}
+var hexSHA256 = (data) => crypto14.createHash("sha256").update(data).digest("hex");
+function ran(command, args, env = {}, timeout = 120000) {
+  const result = spawnSync4(command, args, { cwd: K, env: { ...process.env, ...env }, encoding: "utf8", timeout });
+  return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
+}
+function isUpdating() {
+  return updateUnderWay(RUN);
+}
+function takeUpdateLock() {
+  try {
+    fs35.mkdirSync(UPDATE_LOCK);
+  } catch {
+    if (isUpdating())
+      return false;
+    fs35.rmSync(UPDATE_LOCK, { recursive: true, force: true });
+    try {
+      fs35.mkdirSync(UPDATE_LOCK);
+    } catch {
+      return false;
+    }
+  }
+  fs35.writeFileSync(path39.join(UPDATE_LOCK, "pid"), String(process.pid), { mode: 384 });
+  return true;
+}
+function keepForRollback(files, withData, bundles = new Set) {
+  fs35.rmSync(ROLLBACK, { recursive: true, force: true });
+  fs35.mkdirSync(path39.join(ROLLBACK, "files"), { recursive: true, mode: 448 });
+  const lines = [
+    "#!/bin/sh",
+    `K=${quote(K)}; B=${quote(ROLLBACK)}`,
+    `p=$(cat "$K/run/.updating/pid" 2>/dev/null)`,
+    `if [ -n "$p" ] && [ "$p" != "\${KUVO_UPDATER:-}" ] && kill -0 "$p" 2>/dev/null && { if [ -d /proc ]; then grep -q kuvo-link "/proc/$p/cmdline" 2>/dev/null; else ps -ww -o command= -p "$p" 2>/dev/null | grep -q kuvo-link; fi; }; then exit 0; fi`,
+    `sh "$K/bin/kuvo-start" stop >/dev/null 2>&1 || exit 1`
+  ];
+  for (const file of files) {
+    const from = path39.join(K, file);
+    if (bundles.has(file)) {
+      const [here, fresh, old] = [`"$K/"${quote(file)}`, `"$K/"${quote(`${file}.new`)}`, `"$K/"${quote(`${file}.old`)}`];
+      if (fs35.existsSync(from)) {
+        fs35.mkdirSync(path39.dirname(path39.join(ROLLBACK, "files", file)), { recursive: true, mode: 448 });
+        fs35.cpSync(from, path39.join(ROLLBACK, "files", file), { recursive: true, verbatimSymlinks: true });
+        lines.push(`rm -rf ${fresh} ${old} && cp -Rp "$B/files/"${quote(file)} ${fresh} && { [ ! -e ${here} ] || mv ${here} ${old}; } && mv ${fresh} ${here} && rm -rf ${old} || exit 1`);
+      } else {
+        lines.push(`rm -rf ${here} ${fresh} || exit 1`);
+      }
+    } else if (fs35.existsSync(from)) {
+      fs35.mkdirSync(path39.dirname(path39.join(ROLLBACK, "files", file)), { recursive: true, mode: 448 });
+      fs35.copyFileSync(from, path39.join(ROLLBACK, "files", file));
+      fs35.chmodSync(path39.join(ROLLBACK, "files", file), fs35.statSync(from).mode & 511);
+      lines.push(`cp -p "$B/files/"${quote(file)} "$K/"${quote(file)}.new && mv -f "$K/"${quote(file)}.new "$K/"${quote(file)} || exit 1`);
+    } else {
+      lines.push(`rm -f "$K/"${quote(file)} || exit 1`);
+    }
+  }
+  if (withData) {
+    lines.push(`D="$K/data/opencode"`, `if [ -f "$B/data/opencode.db" ]; then`, `  rm -f "$D/opencode.db-wal" "$D/opencode.db-shm" || exit 1`, `  for n in opencode.db opencode.db-wal opencode.db-shm; do if [ -f "$B/data/$n" ]; then mv -f "$B/data/$n" "$D/$n" || exit 1; fi; done`, `fi`);
+  }
+  lines.push(`sh "$K/bin/kuvo-start" start >/dev/null 2>&1`, `rm -f "$K/run/update-trial" "$K/run/update-restore"`, `rm -rf "$B"`);
+  writePrivate(path39.join(ROLLBACK, "restore.sh"), lines.join(`
+`) + `
+`);
+}
+function keepData() {
+  const folder = path39.join(K, "data", "opencode"), partial = path39.join(ROLLBACK, "data.partial");
+  fs35.rmSync(partial, { recursive: true, force: true });
+  fs35.mkdirSync(partial, { recursive: true, mode: 448 });
+  for (const name of ["opencode.db", "opencode.db-wal", "opencode.db-shm"]) {
+    if (fs35.existsSync(path39.join(folder, name)))
+      fs35.copyFileSync(path39.join(folder, name), path39.join(partial, name));
+  }
+  fs35.renameSync(partial, path39.join(ROLLBACK, "data"));
+}
+function roomForData() {
+  let size = 0;
+  for (const name of ["opencode.db", "opencode.db-wal"])
+    try {
+      size += fs35.statSync(path39.join(K, "data", "opencode", name)).size;
+    } catch {}
+  const free = ran("df", ["-Pk", K]).output.split(`
+`).pop()?.trim().split(/\s+/)[3];
+  return !free || Number(free) * 1024 > size * 1.1 + 200000000;
+}
+async function cameUp(version, withAgents, timeout = 120000, readEngine = readEngineFile, readBridge = readBridgeFile) {
+  const began = Date.now();
+  while (Date.now() - began < timeout) {
+    await sleep(Math.min(2000, timeout / 10));
+    let engine = null;
+    try {
+      engine = readEngine();
+    } catch {}
+    if (engine?.version !== version)
+      continue;
+    if (!await asked(engine, "GET", "api/session?limit=1").then(() => true, () => false))
+      continue;
+    if (!withAgents)
+      return true;
+    let bridge = null;
+    try {
+      bridge = readBridge();
+    } catch {}
+    if (bridge?.port && await asked(bridge, "GET", "api/session/active").then(() => true, () => false))
+      return true;
+  }
+  return false;
+}
+var OWN_TOOLS = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"];
+var installOrder = (files) => [...files].sort((a, b) => a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1);
+async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, upWithin = 120000, swapping = () => {}, taking = () => {} } = {}) {
+  if (!keys.length)
+    return { result: "off", message: "Updates aren't set up for this machine yet." };
+  if (blocked)
+    return { result: "blocked", message: blocked };
+  if (fs35.existsSync(path39.join(RUN, "stopped")))
+    return { result: "blocked", message: "Its engine is stopped: start it to update it." };
+  const before = boxVersion();
+  if (!before)
+    return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
+  if (!takeUpdateLock())
+    return { result: "busy", message: "It's updating already." };
+  let trial = false, stopped = false, swapped = false, stage = null;
+  try {
+    step("checking");
+    let released;
+    if (from)
+      released = readRelease(path39.join(from, "boxes.json"), 1e6);
+    else
+      try {
+        released = await fetched(url, 1e6, 30000);
+      } catch (error) {
+        if (/answered 404/.test(String(error?.message)))
+          return { result: "current", version: before };
+        throw error;
+      }
+    const manifest = verifyBoxes(released.toString("utf8"), keys);
+    taking(manifest.version);
+    if (!from)
+      noteUpdate({ latest: manifest.version, checked: clock() });
+    if (!newerVersion(manifest.version, before))
+      return { result: "current", version: before };
+    if (!now && !from && clock() - (Date.parse(manifest.released) || clock()) < RELEASE_AGE)
+      return { result: "waiting", version: manifest.version, message: "It takes a release a few days after it's out." };
+    if (await boxBusy())
+      return { result: "busy", message: "Something is running there now." };
+    step("downloading");
+    stage = path39.join(UPDATES, manifest.version);
+    fs35.rmSync(stage, { recursive: true, force: true });
+    fs35.mkdirSync(path39.join(stage, "files"), { recursive: true, mode: 448 });
+    const pack = from ? readRelease(path39.join(from, packName(manifest)), 1e8) : await fetched(manifest.pack.url, 1e8, 300000);
+    if (hexSHA256(pack) !== manifest.pack.sha256)
+      throw new Error("The release's files aren't what it says.");
+    fs35.writeFileSync(path39.join(stage, "pack.tgz"), pack, { mode: 384 });
+    if (ran("tar", ["xzf", path39.join(stage, "pack.tgz"), "-C", path39.join(stage, "files")]).status !== 0)
+      throw new Error("The release's files couldn't be unpacked.");
+    const box = JSON.parse(fs35.readFileSync(path39.join(stage, "files", "box.json"), "utf8"));
+    if (box?.version !== manifest.version || box.engine !== manifest.engine || !isObject(box.files))
+      throw new Error("The release's files aren't what it says.");
+    const files = installOrder(Object.keys(box.files));
+    const matches = (file, sha) => fs35.lstatSync(file, { throwIfNoEntry: false })?.isFile() === true && hexSHA256(fs35.readFileSync(file)) === sha;
+    for (const file of files) {
+      if (!BOX_FILE.test(file) || file.split("/").includes(".."))
+        throw new Error("The release names a file outside the box.");
+      if (!matches(path39.join(stage, "files", file), box.files[file]))
+        throw new Error("The release's files aren't what it says.");
+    }
+    if (box.bundles !== undefined && !isObject(box.bundles))
+      throw new Error("The release's files aren't what it says.");
+    const bundles = Object.keys(box.bundles ?? {}).sort();
+    for (const bundle of bundles) {
+      const listed = box.bundles[bundle];
+      if (!BUNDLE.test(bundle) || files.includes(bundle) || !isObject(listed))
+        throw new Error("The release names a file outside the box.");
+      for (const [inner, sha] of Object.entries(listed)) {
+        if (!BUNDLE_PART.test(inner))
+          throw new Error("The release names a file outside the box.");
+        if (!matches(path39.join(stage, "files", bundle, inner), sha))
+          throw new Error("The release's files aren't what it says.");
+      }
+      for (const entry of fs35.readdirSync(path39.join(stage, "files", bundle), { recursive: true, encoding: "utf8" })) {
+        const stat = fs35.lstatSync(path39.join(stage, "files", bundle, entry));
+        if (!stat.isDirectory() && !(stat.isFile() && Object.hasOwn(listed, entry)))
+          throw new Error("The release's files aren't what it says.");
+      }
+    }
+    if (process.platform !== "darwin")
+      bundles.length = 0;
+    if (!files.includes("bin/box-version") || fs35.readFileSync(path39.join(stage, "files", "bin", "box-version"), "utf8").trim() !== manifest.version)
+      throw new Error("The release's files aren't what it says.");
+    for (const tool of OWN_TOOLS) {
+      if (!files.includes(`bin/${tool}`))
+        continue;
+      const from = path39.join(stage, "files", "bin", tool), own = path39.join(stage, "files", "bin", ".own", tool);
+      fs35.mkdirSync(path39.dirname(own), { recursive: true, mode: 448 });
+      fs35.copyFileSync(from, own);
+      fs35.chmodSync(own, fs35.statSync(from).mode & 511);
+      files.push(`bin/.own/${tool}`);
+    }
+    files.splice(0, files.length, ...installOrder([...files, ...bundles]));
+    const engineFolder = path39.join(K, "engine", manifest.engine);
+    let staged = null;
+    if (!fs35.existsSync(path39.join(engineFolder, "opencode"))) {
+      const kind = { x64: "x86_64", arm64: "aarch64" }[os7.arch()];
+      const build = (process.platform === "darwin" ? manifest.darwin : manifest.linux)?.[kind];
+      if (!build?.url || !/^sha512-/.test(build.integrity ?? ""))
+        throw new Error("The release has no engine for this machine.");
+      step("downloading the engine");
+      const tarball = await fetched(build.url, 400000000, 900000);
+      if (crypto14.createHash("sha512").update(tarball).digest("base64") !== build.integrity.slice(7))
+        throw new Error("The engine isn't what the release says.");
+      fs35.writeFileSync(path39.join(stage, "engine.tgz"), tarball, { mode: 384 });
+      fs35.mkdirSync(path39.join(stage, "engine"), { mode: 448 });
+      if (ran("tar", ["xzf", path39.join(stage, "engine.tgz"), "-C", path39.join(stage, "engine"), "package/bin/opencode"]).status !== 0)
+        throw new Error("The engine couldn't be unpacked.");
+      staged = path39.join(stage, "engine", "package", "bin", "opencode");
+      fs35.chmodSync(staged, 493);
+    }
+    step("checking it");
+    const engine = staged ?? path39.join(engineFolder, "opencode");
+    if (ran(engine, ["--version"]).status !== 0)
+      throw new Error("The new engine doesn't run here.");
+    const tried = ran(engine, ["--config=/dev/null", "--no-env-file", path39.join(stage, "files", "bin", "kuvo-link.js"), "selftest"], { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K });
+    if (tried.status !== 0 || !tried.output.includes("ok"))
+      throw new Error("The new link doesn't work with it here.");
+    if (ran("sh", ["-n", path39.join(stage, "files", "bin", "kuvo-start")]).status !== 0)
+      throw new Error("The new keeper doesn't read.");
+    if (!now && await boxBusy())
+      return { result: "busy", message: "Something is running there now." };
+    step("installing");
+    let previous = {};
+    try {
+      previous = readEngineFile();
+    } catch {}
+    const withAgents = Boolean(previous?.agentsPort) && fs35.existsSync(path39.join(stage, "files", "bin", "kuvo-agents.js"));
+    const otherEngine = previous?.version !== manifest.engine;
+    if (otherEngine && !roomForData())
+      throw new Error("There isn't room on it to keep its data while it updates.");
+    keepForRollback(files, otherEngine, new Set(bundles));
+    noteUpdate({ trial: { from: before, to: manifest.version, at: clock() }, running: null });
+    fs35.writeFileSync(UPDATE_TRIAL, manifest.version, { mode: 384 });
+    trial = true;
+    stopped = true;
+    const stop = ran("sh", [path39.join(K, "bin", "kuvo-start"), "stop"], {}, 300000);
+    if (stop.status !== 0 || previous?.pid && alive(previous.pid))
+      throw new Error("Its engine couldn't be stopped to update it.");
+    if (otherEngine)
+      keepData();
+    swapped = true;
+    swapping();
+    if (staged) {
+      fs35.mkdirSync(engineFolder, { recursive: true, mode: 448 });
+      fs35.renameSync(staged, path39.join(engineFolder, "opencode"));
+    }
+    for (const file of files) {
+      const from = path39.join(stage, "files", file), to = path39.join(K, file);
+      fs35.mkdirSync(path39.dirname(to), { recursive: true, mode: 448 });
+      if (bundles.includes(file)) {
+        swapBundle(from, to);
+        continue;
+      }
+      fs35.copyFileSync(from, `${to}.new`);
+      fs35.chmodSync(`${to}.new`, fs35.statSync(from).mode & 511);
+      fs35.renameSync(`${to}.new`, to);
+    }
+    ran("sh", [path39.join(K, "bin", "kuvo-start"), "start"]);
+    step("starting");
+    if (!await cameUp(manifest.engine, withAgents, upWithin))
+      throw new Error("The new version didn't come up.");
+    writePrivate(path39.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, files: box.files }));
+    noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), healthy: true } });
+    return { result: "updated", version: manifest.version };
+  } catch (error) {
+    const message = String(error?.message ?? error).slice(0, 300);
+    if (stage)
+      fs35.rmSync(stage, { recursive: true, force: true });
+    if (swapped) {
+      ran("sh", [path39.join(ROLLBACK, "restore.sh")], { KUVO_UPDATER: String(process.pid) }, 600000);
+    } else {
+      if (trial) {
+        fs35.rmSync(UPDATE_TRIAL, { force: true });
+        fs35.rmSync(ROLLBACK, { recursive: true, force: true });
+      }
+      if (stopped)
+        ran("sh", [path39.join(K, "bin", "kuvo-start"), "start"]);
+    }
+    if (trial)
+      noteUpdate({ trial: null });
+    noteUpdate({ last: { at: clock(), result: "failed", message, from: before } });
+    return { result: "failed", message };
+  } finally {
+    clearUpdateStaging();
+    fs35.rmSync(UPDATE_LOCK, { recursive: true, force: true });
+  }
+}
+function swapBundle(from, to) {
+  const fresh = `${to}.new`, old = `${to}.old`;
+  fs35.rmSync(fresh, { recursive: true, force: true });
+  fs35.rmSync(old, { recursive: true, force: true });
+  fs35.renameSync(from, fresh);
+  if (fs35.existsSync(to))
+    fs35.renameSync(to, old);
+  fs35.renameSync(fresh, to);
+  fs35.rmSync(old, { recursive: true, force: true });
+}
+function readRelease(file, limit) {
+  try {
+    const stat = fs35.statSync(file);
+    if (stat.isFile() && stat.size <= limit)
+      return fs35.readFileSync(file);
+  } catch {}
+  throw new Error("That release can't be read.");
+}
+function packName(manifest) {
+  let name = "";
+  try {
+    name = decodeURIComponent(path39.posix.basename(new URL(manifest.pack.url).pathname));
+  } catch {}
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name))
+    throw new Error("That isn't a release.");
+  return name;
+}
+function clearUpdateStaging(folder = UPDATES) {
+  const kept = new Set(["rollback", "installed.json", "rehome", "offered"]);
+  for (const name of listOf(folder))
+    if (!kept.has(name))
+      fs35.rmSync(path39.join(folder, name), { recursive: true, force: true });
+}
+function confirmUpdate(clock = Date.now) {
+  const state = updateState();
+  if (!state.trial?.healthy || boxVersion() !== state.trial.to || isUpdating())
+    return false;
+  let engine = null;
+  try {
+    engine = readEngineFile()?.version;
+  } catch {}
+  fs35.rmSync(UPDATE_TRIAL, { force: true });
+  fs35.rmSync(ROLLBACK, { recursive: true, force: true });
+  if (engine) {
+    for (const name of listOf(path39.join(K, "engine")))
+      if (name !== engine && !name.startsWith("."))
+        fs35.rmSync(path39.join(K, "engine", name), { recursive: true, force: true });
+  }
+  noteUpdate({ trial: null, last: { at: clock(), result: "updated", from: state.trial.from, to: state.trial.to } });
+  return true;
+}
+function noteOlderMac(at) {
+  let launchers = {};
+  try {
+    launchers = JSON.parse(fs35.readFileSync(LAUNCHERS, "utf8")) ?? {};
+  } catch {}
+  if ((launchers["an older Mac"] ?? 0) >= at)
+    return;
+  launchers["an older Mac"] = at;
+  try {
+    writePrivate(LAUNCHERS, JSON.stringify(launchers));
+  } catch {}
+}
+function noteOlderMacs() {
+  let at = 0, marked = 0;
+  try {
+    at = fs35.statSync(path39.join(RUN, "attached")).mtimeMs;
+    marked = fs35.statSync(path39.join(K, "bin", "box-version")).mtimeMs;
+  } catch {}
+  if (at <= marked)
+    at = 0;
+  try {
+    at = Math.max(at, fs35.statSync(path39.join(RUN, "older-mac")).mtimeMs);
+  } catch {}
+  if (!at || Date.now() - at > MAC_MEMORY)
+    return false;
+  noteOlderMac(at);
+  return true;
+}
+var MAC_INSTALLING = 3600000;
+function checkDrift(now = Date.now()) {
+  const record = path39.join(UPDATES, "installed.json"), pending = path39.join(RUN, "update-drift");
+  const note = path39.join(RUN, "mac-installing");
+  let installing = 0;
+  try {
+    installing = fs35.statSync(note).mtimeMs;
+  } catch {}
+  if (installing && now - installing >= MAC_INSTALLING) {
+    fs35.rmSync(note, { force: true });
+    installing = 0;
+  }
+  if (isUpdating() || fs35.existsSync(UPDATE_TRIAL))
+    return false;
+  let installed = null;
+  try {
+    installed = JSON.parse(fs35.readFileSync(record, "utf8"));
+  } catch {
+    return false;
+  }
+  if (installed?.version !== boxVersion() || !isObject(installed.files)) {
+    fs35.rmSync(record, { force: true });
+    fs35.rmSync(pending, { force: true });
+    return false;
+  }
+  const changed = Object.entries(installed.files).some(([file, sha]) => {
+    try {
+      return hexSHA256(fs35.readFileSync(path39.join(K, file))) !== sha;
+    } catch {
+      return true;
+    }
+  });
+  if (!changed || isUpdating() || now - installing < MAC_INSTALLING) {
+    fs35.rmSync(pending, { force: true });
+    return false;
+  }
+  if (textOf(pending)?.trim() !== installed.version) {
+    try {
+      writePrivate(pending, installed.version);
+    } catch {}
+    return false;
+  }
+  noteOlderMac(now);
+  noteUpdate({ last: { at: now, result: "failed", message: "An older Kuvo Code on a Mac put its own files back here: update Kuvo Code on your Macs." } });
+  return true;
+}
+function updateNight(date = new Date, zone = yourZone()) {
+  return nightOf(date, zone);
+}
+function updateStatus() {
+  const state = updateState();
+  const offered = offeredVersion();
+  let engine = null;
+  try {
+    engine = readEngineFile()?.version ?? null;
+  } catch {}
+  return {
+    setUp: UPDATE_KEYS.length > 0,
+    version: boxVersion(),
+    engine,
+    latest: state.latest ?? null,
+    last: state.last ?? null,
+    updating: isUpdating() ? state.running ?? "checking" : null,
+    blocked: updatesBlocked(),
+    ...offered ? { offered } : {},
+    ...state.offerFailed ? { offerFailed: { version: state.offerFailed.version, at: state.offerFailed.at, takenBack: state.offerFailed.takenBack, ...state.offerFailed.message ? { message: state.offerFailed.message } : {} } } : {}
+  };
+}
+var updating = null;
+function startUpdate(options = {}) {
+  if (updating || isUpdating())
+    return null;
+  updating = update({ ...options, step: (running) => noteUpdate({ running }) }).then((outcome) => {
+    noteUpdate({ running: null, ...outcome.result === "updated" ? {} : { last: { at: Date.now(), ...outcome } } });
+    if (outcome.result === "updated")
+      setTimeout(() => process.exit(0), 1000);
+    return outcome;
+  }, () => null).finally(() => {
+    updating = null;
+  });
+  return updating;
+}
+async function* updateRoute(context) {
+  const { request, json } = context;
+  const method = request.method.toUpperCase();
+  if (method === "GET")
+    return yield* json(200, updateStatus());
+  if (method === "POST") {
+    if (parsed(request.body)?.now !== true)
+      return yield* json(400, { message: "Say to update now (now)." });
+    if (!UPDATE_KEYS.length)
+      return yield* json(409, { message: "Updates aren't set up for this machine yet." });
+    const blocked = updatesBlocked();
+    if (blocked)
+      return yield* json(409, { message: blocked });
+    return yield* startUpdate({ now: true }) ? json(202, updateStatus()) : json(409, { message: "It's updating already." });
+  }
+  return yield* json(405, {});
+}
+function offeredVersion() {
+  try {
+    const given = JSON.parse(fs35.readFileSync(path39.join(OFFERED, "boxes.json"), "utf8"));
+    const version = JSON.parse(Buffer.from(given.manifest, "base64").toString("utf8"))?.version;
+    return versionOrder(version) ? version : null;
+  } catch {
+    return null;
+  }
+}
+var dropOffer = () => fs35.rmSync(OFFERED, { recursive: true, force: true });
+function offerRests(version, now) {
+  const { offerFailed: failed, trial } = updateState();
+  if (failed?.version === version && now - failed.at < (failed.takenBack || (failed.tries ?? 1) > 1 ? OFFER_REST : OFFER_RETRY))
+    return true;
+  return trial?.to === version && boxVersion() !== version && !updateOnTrial() && now - trial.at < OFFER_REST;
+}
+function offerUpdate(from, { keys = UPDATE_KEYS, blocked = updatesBlocked(), clock = Date.now } = {}) {
+  if (typeof from !== "string" || !path39.isAbsolute(from))
+    return { status: 400, message: "Say which folder the release is in (from), as a full path." };
+  if (!keys.length)
+    return { status: 409, message: "Updates aren't set up for this machine yet." };
+  if (blocked)
+    return { status: 409, message: blocked };
+  const before = boxVersion();
+  if (!before)
+    return { status: 409, message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
+  if (updating || isUpdating())
+    return { status: 409, message: "It's updating already." };
+  let boxes, manifest, name;
+  try {
+    boxes = readRelease(path39.join(from, "boxes.json"), 1e6);
+    manifest = verifyBoxes(boxes.toString("utf8"), keys);
+    name = packName(manifest);
+  } catch (error) {
+    return { status: 422, message: String(error?.message ?? error).slice(0, 300) };
+  }
+  if (!newerVersion(manifest.version, before))
+    return { status: 409, message: `It has ${before} already, and takes only a newer version.` };
+  const offered = offeredVersion();
+  if (offered && newerVersion(offered, manifest.version))
+    return { status: 409, message: `A newer release (${offered}) waits to be taken already.` };
+  const { offerFailed: failed } = updateState();
+  if (offerRests(manifest.version, clock()) && (failed?.version !== manifest.version || failed.takenBack))
+    return { status: 409, message: `It tried ${manifest.version} lately and went back to what it had: it takes it again tomorrow.` };
+  if (offered === manifest.version)
+    return { status: 202, version: manifest.version };
+  let pack;
+  try {
+    pack = readRelease(path39.join(from, name), 1e8);
+  } catch (error) {
+    return { status: 422, message: String(error?.message ?? error) };
+  }
+  if (hexSHA256(pack) !== manifest.pack.sha256)
+    return { status: 422, message: "The release's files aren't what it says." };
+  if (!takeUpdateLock())
+    return { status: 409, message: "It's updating already." };
+  const partial = `${OFFERED}.partial`;
+  try {
+    fs35.rmSync(partial, { recursive: true, force: true });
+    fs35.mkdirSync(partial, { recursive: true, mode: 448 });
+    fs35.writeFileSync(path39.join(partial, "boxes.json"), boxes, { mode: 384 });
+    fs35.writeFileSync(path39.join(partial, name), pack, { mode: 384 });
+    dropOffer();
+    fs35.renameSync(partial, OFFERED);
+  } catch (error) {
+    fs35.rmSync(partial, { recursive: true, force: true });
+    return { status: 409, message: `It couldn't keep the release: ${String(error?.message ?? error).slice(0, 200)}` };
+  } finally {
+    fs35.rmSync(UPDATE_LOCK, { recursive: true, force: true });
+  }
+  return { status: 202, version: manifest.version };
+}
+async function offerDue({ blocked = updatesBlocked(), clock = Date.now } = {}) {
+  const offered = offeredVersion(), before = boxVersion();
+  if (!offered)
+    return false;
+  if (before && !newerVersion(offered, before)) {
+    if (!isUpdating())
+      dropOffer();
+    return false;
+  }
+  return !blocked && !!before && !updating && !isUpdating() && !updateOnTrial() && !fs35.existsSync(path39.join(RUN, "stopped")) && !offerRests(offered, clock()) && !await boxBusy();
+}
+async function takeOffer(options = {}) {
+  if (!await offerDue(options))
+    return null;
+  let version = offeredVersion(), takenBack = false;
+  const outcome = await update({ ...options, from: OFFERED, swapping: () => {
+    takenBack = true;
+  }, taking: (taken) => {
+    version = taken;
+  } });
+  if (outcome.result === "failed") {
+    const before = updateState().offerFailed;
+    const tries = before?.version === version && !before.takenBack ? (before.tries ?? 1) + 1 : 1;
+    noteUpdate({ offerFailed: { version, at: (options.clock ?? Date.now)(), takenBack, tries, ...outcome.message ? { message: outcome.message } : {} } });
+  }
+  if (outcome.result === "updated" || outcome.result === "current")
+    noteUpdate({ offerFailed: null });
+  if (outcome.result === "updated" || outcome.result === "current" || takenBack)
+    dropOffer();
+  return outcome;
+}
+async function startOfferedUpdate() {
+  if (!await offerDue())
+    return false;
+  spawn3(process.execPath, [...OWN_RUNTIME, SCRIPT, "update", "--offered"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
+  return true;
+}
+async function* boxUpdateRoute({ request, json }) {
+  if (request.method.toUpperCase() !== "POST")
+    return yield* json(405, {});
+  if (!request.fromApp && !request.fromMac)
+    return yield* json(403, { message: "Only Kuvo Code offers this box a release." });
+  const given = parsed(request.body);
+  const offered = offerUpdate(isObject(given) ? given.from : undefined);
+  if (offered.status !== 202)
+    return yield* json(offered.status, { message: offered.message });
+  startOfferedUpdate().catch(() => {});
+  return yield* json(202, updateStatus());
+}
+
+// box/src/link/areas/mcp-catalog.ts
+import fs36 from "node:fs";
+import path40 from "node:path";
+
+// box/src/shared/routes/settings.ts
+var CONFIG = map(any);
+var CONFIG_APPLIED = object({
+  made: list(object({ path: list(string), value: any })),
+  leftOut: list(list(string)),
+  kept: list(list(string)),
+  macOnly: list(string),
+  keys: list(string),
+  applied: bool,
+  settings: CONFIG
+});
+var MCP_ACCESS = ["signIn", "open", "local"];
+var MCP_CATALOG_SERVER = object({
+  id: string,
+  title: string,
+  summary: string,
+  access: words(...MCP_ACCESS),
+  added: bool,
+  integration: bool,
+  macOnly: bool
+});
+var MCP_CATALOG = object({ servers: list(MCP_CATALOG_SERVER) });
+var KEYS = object({ keys: list(string) });
+var KEY2 = object({ value: string });
+var CLAUDE_CODE_IMPORT = object({ name: string, description: string, path: list(string), settings: map(string), imported: bool });
+var CLAUDE_CODE = object({ agents: list(CLAUDE_CODE_IMPORT), commands: list(CLAUDE_CODE_IMPORT) });
+
+// box/src/link/areas/mcp-catalog.ts
+var accessOf = (server) => {
+  const access = server.access ?? "open";
+  return MCP_ACCESS.includes(access) ? access : null;
+};
+var offered = (server, mac) => typeof server?.id === "string" && (mac || !server.macOnly) && accessOf(server) !== null;
+var CATALOG_FILE = path40.join(K, "bin", "mcp-catalog.json");
+function mcpCatalog(settings, file = CATALOG_FILE, mac = IS_MAC) {
+  let servers = [];
+  try {
+    servers = JSON.parse(fs36.readFileSync(file, "utf8")).servers ?? [];
+  } catch {}
+  return {
+    servers: servers.filter((server) => offered(server, mac)).map((server) => {
+      const added = valueAt(settings, [...SERVERS, server.id]) !== undefined;
+      return {
+        id: server.id,
+        title: String(server.title ?? ""),
+        summary: String(server.summary ?? ""),
+        access: accessOf(server),
+        added,
+        integration: added && Boolean(server.integration),
+        macOnly: mac && Boolean(server.macOnly)
+      };
+    })
+  };
+}
+function addFromCatalog(id, file = CONFIG_FILE, catalog = CATALOG_FILE, lock = CONFIG_LOCK, mac = IS_MAC) {
+  let servers = [];
+  try {
+    servers = JSON.parse(fs36.readFileSync(catalog, "utf8")).servers ?? [];
+  } catch {}
+  const server = servers.find((each) => each?.id === id && offered(each, mac));
+  if (!server || !isObject(server.settings))
+    return { status: 404 };
+  const { settings, problem } = readSettings(file);
+  if (problem)
+    return { status: 409, message: `The engine's settings file can't be changed from here: ${problem}`, problem };
+  if (valueAt(settings, [...SERVERS, id]) !== undefined)
+    return { status: 200, settings };
+  return changeSettings([{ path: [...SERVERS, id], value: { codemode: false, ...server.settings } }], file, lock);
+}
+
+// box/src/link/areas/integrations.ts
+var MAC_INTEGRATIONS = path41.join(K, "bin", "integrations-mac.json");
+var INTEGRATIONS_FILE = OWN_HOME_MAC && fs37.existsSync(MAC_INTEGRATIONS) ? MAC_INTEGRATIONS : path41.join(K, "bin", "integrations.json");
+function integrationCatalog(file = INTEGRATIONS_FILE) {
+  try {
+    return (JSON.parse(fs37.readFileSync(file, "utf8")).integrations ?? []).filter((each) => typeof each?.id === "string" && (IS_MAC || !each.macOnly));
+  } catch {
+    return [];
+  }
+}
+var LAUNCHER = "kuvo-npx";
+var APART = "KUVO_NPX_APART";
+var OWN_SERVER = "kuvo-browser";
+var DEVTOOLS = "chrome-devtools";
+var DEVTOOLS_PACKAGE = "chrome-devtools-mcp";
+var DEVTOOLS_FLAGS = [["--no-usage-statistics", "--usage-statistics"], ["--isolated", "--no-isolated"]];
+function packageName(spec) {
+  const at = spec.lastIndexOf("@");
+  return at > 0 ? spec.slice(0, at) : spec;
+}
+var leftForItsMaker = (entry, server) => entry.way === "official" && isObject(entry.settings) && Array.isArray(server.command) && server.command[0] === LAUNCHER;
+var kept4 = (server, names) => Object.fromEntries(names.filter((name) => server[name] !== undefined).map((name) => [name, server[name]]));
+function broughtUpToDate(entry, server) {
+  if (leftForItsMaker(entry, server))
+    return { ...entry.settings, ...kept4(server, ["disabled", "codemode"]) };
+  const next = { ...server };
+  if (next.codemode === undefined)
+    next.codemode = false;
+  const pinned = isObject(entry.settings) ? entry.settings.command : undefined;
+  const old = server.command;
+  if (entry.way === "package" && Array.isArray(pinned) && typeof pinned[1] === "string" && Array.isArray(old) && old[0] === LAUNCHER && typeof old[1] === "string" && packageName(old[1]) === packageName(pinned[1])) {
+    next.command = pinned;
+    const environment = server.environment === undefined ? {} : server.environment;
+    if (isObject(environment) && environment[APART] === undefined)
+      next.environment = { ...environment, [APART]: "1" };
+  }
+  return olderKeysNamedHere(next);
+}
+function isOlderVersion(version, pinned) {
+  if (!version || version === "latest")
+    return true;
+  const numbers = (text) => text.split(".").map((part) => parseInt(part, 10) || 0);
+  const mine = numbers(version), theirs = numbers(pinned.slice(pinned.lastIndexOf("@") + 1));
+  for (let index = 0;index < Math.max(mine.length, theirs.length); index++) {
+    const a = mine[index] ?? 0, b = theirs[index] ?? 0;
+    if (a !== b)
+      return a < b;
+  }
+  return false;
+}
+function devToolsUpToDate(server, offered) {
+  const pinned = Array.isArray(offered.command) ? offered.command[1] : undefined;
+  if (!Array.isArray(server.command) || typeof pinned !== "string")
+    return server;
+  const words = server.command.filter((word) => typeof word === "string");
+  const at = words.findIndex((word) => word === DEVTOOLS_PACKAGE || word.startsWith(`${DEVTOOLS_PACKAGE}@`));
+  if (at < 0)
+    return server;
+  const version = words[at].includes("@") ? words[at].slice(words[at].indexOf("@") + 1) : undefined;
+  const options = words.slice(at + 1);
+  for (const [flag, opposite] of DEVTOOLS_FLAGS) {
+    if (!options.some((word) => word === flag || word === opposite || word.startsWith(`${opposite}=`)))
+      options.unshift(flag);
+  }
+  const command = [LAUNCHER, isOlderVersion(version, pinned) ? pinned : words[at], ...options];
+  const before = isObject(server.environment) ? server.environment : {};
+  const environment = { ...before };
+  for (const [name, value] of Object.entries(isObject(offered.environment) ? offered.environment : {})) {
+    if (environment[name] === undefined || name === APART)
+      environment[name] = value;
+  }
+  if (sameJSON(command, words) && sameJSON(environment, before))
+    return server;
+  return { ...server, command, environment };
+}
+function devToolsOffered(file, mac) {
+  if (!mac)
+    return null;
+  try {
+    const servers = JSON.parse(fs37.readFileSync(file, "utf8")).servers;
+    const server = Array.isArray(servers) ? servers.find((each) => isObject(each) && each.id === DEVTOOLS) : null;
+    return isObject(server) && isObject(server.settings) ? server.settings : null;
+  } catch {
+    return null;
+  }
+}
+function upgradeChanges(settings, catalog, keysGone, popular) {
+  const servers = valueAt(settings, SERVERS);
+  if (!isObject(servers))
+    return [];
+  const changes = [];
+  for (const [id, server] of Object.entries(servers)) {
+    if (!isObject(server))
+      continue;
+    const entry = catalog.find((each) => each.id === id);
+    if (!entry) {
+      const next = id === DEVTOOLS && popular ? devToolsUpToDate(server, popular) : server;
+      if (next !== server)
+        changes.push({ path: [...SERVERS, id], value: { ...next, codemode: next.codemode ?? false } });
+      else if (id !== OWN_SERVER && server.codemode === undefined)
+        changes.push({ path: [...SERVERS, id, "codemode"], value: false });
+      continue;
+    }
+    if (leftForItsMaker(entry, server) && !keysGone.has(id))
+      continue;
+    const next = broughtUpToDate(entry, server);
+    if (!sameJSON(next, server))
+      changes.push({ path: [...SERVERS, id], value: next });
+  }
+  return changes;
+}
+function writeUpgrade(catalog, popular, keysGone, file, lock) {
+  locked(lock, () => {
+    const { settings, problem } = readSettings(file);
+    const changes = settings ? upgradeChanges(settings, catalog, keysGone, popular) : [];
+    const written = changes.length ? writeSettings(settings, changes, file) : null;
+    const trouble = problem ?? (written?.status === 200 ? undefined : written?.message);
+    if (trouble && (keysGone.size || written))
+      console.error(`Integrations couldn't be brought up to date: ${trouble}`);
+  });
+}
+function upgradeBeforeEngine(catalogFile = INTEGRATIONS_FILE, file = CONFIG_FILE, lock = CONFIG_LOCK, popularFile = CATALOG_FILE, mac = IS_MAC) {
+  writeUpgrade(integrationCatalog(catalogFile), devToolsOffered(popularFile, mac), new Set, file, lock);
+}
+function upgradeIntegrations(catalogFile = INTEGRATIONS_FILE, file = CONFIG_FILE, lock = CONFIG_LOCK, popularFile = CATALOG_FILE, mac = IS_MAC) {
+  return keyWork(async () => {
+    const catalog = integrationCatalog(catalogFile);
+    const { settings: before } = readSettings(file);
+    const keysGone = new Set;
+    for (const entry of updateOnTrial() ? [] : catalog) {
+      const server = valueAt(before, [...SERVERS, entry.id]);
+      if (!isObject(server) || !leftForItsMaker(entry, server))
+        continue;
+      const variables = [...new Set(JSON.stringify(server).match(/KUVO_KEY_[A-Z0-9_]+/g) ?? [])];
+      try {
+        for (const name of variables)
+          await deleteKey(name);
+        keysGone.add(entry.id);
+      } catch {}
+    }
+    writeUpgrade(catalog, devToolsOffered(popularFile, mac), keysGone, file, lock);
+  });
+}
+function integrationHealth(entry, server, off, signedIn) {
+  if (off)
+    return "disabled";
+  let health = { connected: "connected", needs_auth: "needsSignIn", failed: "failed" }[server?.status?.status] ?? "starting";
+  if (health === "connected" && server?.integrationID && signedIn && !signedIn.has(server.integrationID) && ["official", "app"].includes(entry.way))
+    health = "needsSignIn";
+  if (health === "connected" && typeof entry.signInFile === "string" && !fs37.existsSync(path41.join(INTEGRATION_DATA, entry.id, path41.basename(entry.signInFile))))
+    health = "waitsForCode";
+  return health;
+}
+async function integrationEntries(catalog, engine, signal) {
+  const { settings } = readSettings();
+  let servers = null;
+  let signedIn = new Set;
+  let hadSignIn = new Set;
+  if (engine) {
+    servers = await call(engine, "GET", "/api/mcp", undefined, signal).catch(() => null);
+    const credentials = await call(engine, "GET", "/api/credential", undefined, signal).catch(() => null);
+    const oauth = (Array.isArray(credentials) ? credentials : []).filter((each) => each?.value?.type === "oauth");
+    signedIn = Array.isArray(credentials) ? new Set(oauth.filter((each) => each.active).map((each) => each.integrationID)) : null;
+    hadSignIn = new Set(oauth.map((each) => each.integrationID));
+  }
+  const engineDown = !Array.isArray(servers);
+  let names = null;
+  try {
+    names = await keyNames();
+  } catch (error) {
+    if (!(error instanceof KeysUnavailable))
+      throw error;
+  }
+  const onSite = catalog.filter((entry) => entry.way === "browser");
+  const sites = !onSite.length ? null : IS_MAC ? await siteSignIns() : await siteSignInsHere(onSite).catch(() => null);
+  const entries = catalog.map(({ settings: _, variables, signInFile, signInCookie: __, ...entry }) => {
+    const added = valueAt(settings ?? {}, [...SERVERS, entry.id]) !== undefined;
+    const shown = { ...entry, added };
+    if (variables && names)
+      shown.keysSaved = Object.values(variables).every((name) => names.includes(name));
+    if (entry.way === "browser" && typeof sites?.[entry.id] === "boolean")
+      shown.siteSignedIn = sites[entry.id];
+    if (added) {
+      const off = valueAt(settings ?? {}, [...SERVERS, entry.id, "disabled"]) === true;
+      const server = (servers ?? []).find((each) => each?.name === entry.id);
+      if (!engineDown || off)
+        shown.health = integrationHealth({ ...entry, signInFile }, server, off, signedIn);
+      if (server?.integrationID)
+        shown.signIn = server.integrationID;
+      if (shown.health === "needsSignIn" && server?.integrationID && hadSignIn.has(server.integrationID))
+        shown.signInEnded = true;
+    }
+    return shown;
+  });
+  return { entries, engineDown };
+}
+async function keepsAll(variables) {
+  const kept = await keyNames();
+  return variables.every((variable) => kept.includes(variable));
+}
+function reconnectLater(engine, id, later) {
+  if (!engine)
+    return;
+  if (answeringOnce() && later === soon) {
+    spawn4(process.execPath, [...OWN_RUNTIME, SCRIPT, "box", "reconnect", id], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
+    return;
+  }
+  later(() => reconnectEverywhere(engine, id), 2000);
+}
+async function reconnectEverywhere(engine, id) {
+  const connect = `/api/experimental/mcp/${encodeURIComponent(id)}/connect`;
+  await call(engine, "POST", connect).catch(() => {});
+  const open = await call(engine, "GET", "/api/debug/location").catch(() => []);
+  const folders = new Set((Array.isArray(open) ? open : []).map((each) => each?.directory).filter((folder) => typeof folder === "string" && folder));
+  for (const folder of folders)
+    await call(engine, "POST", connect, undefined, undefined, folder).catch(() => {});
+}
+async function answerIntegrations(method, requestPath, body, engine, signal, file = INTEGRATIONS_FILE, later = soon) {
+  try {
+    return await integrationsAnswer(method, requestPath, body, engine, signal, file, later);
+  } catch (error) {
+    if (error instanceof KeysUnavailable)
+      return { status: 503, value: { message: error.message } };
+    throw error;
+  }
+}
+async function integrationsAnswer(method, requestPath, body, engine, signal, file, later) {
+  const parts = requestPath.split("?")[0].split("/").map((part) => {
+    try {
+      return decodeURIComponent(part);
+    } catch {
+      return "";
+    }
+  });
+  const catalog = integrationCatalog(file);
+  if (parts.length === 2) {
+    if (method !== "GET")
+      return { status: 405, value: {} };
+    const { problem } = readSettings();
+    const { entries, engineDown } = await integrationEntries(catalog, engine, signal);
+    return { status: 200, value: { integrations: entries, ...engineDown ? { engineDown } : {}, ...problem ? { problem } : {} } };
+  }
+  const entry = parts.length === 3 ? catalog.find((each) => each.id === parts[2]) : null;
+  if (!entry)
+    return { status: 404, value: {} };
+  const { settings, problem } = readSettings();
+  if (problem)
+    return { status: 409, value: { message: `The engine's settings file can't be changed from here: ${problem}` } };
+  const added = valueAt(settings ?? {}, [...SERVERS, entry.id]) !== undefined;
+  if (method === "POST") {
+    if (entry.way === "browser" || !entry.settings)
+      return { status: 409, value: { message: `The agent uses ${entry.title} on its site: sign in to it in the browser on ${IS_MAC ? "this Mac" : "this machine"}.` } };
+    const variables = entry.variables ?? {};
+    const given = body?.keys && typeof body.keys === "object" ? body.keys : {};
+    const names = Object.keys(variables);
+    if (!Object.values(variables).every((variable) => typeof variable === "string" && STORED_KEY.test(variable))) {
+      return { status: 409, value: { message: `${entry.title} can't be added here: its keys aren't named as Kuvo Code names them.` } };
+    }
+    let newKeys = false;
+    if (names.length) {
+      const sent = names.filter((name) => typeof given[name] === "string" && given[name].trim());
+      if (sent.length < names.length && !await keepsAll(names.filter((name) => !sent.includes(name)).map((name) => variables[name]))) {
+        const labels = (entry.keys ?? []).map((key) => key.label).join(" and ");
+        return { status: 400, value: { message: `${entry.title} needs ${labels}: send them as {"keys": {"${names[0]}": …}}.` } };
+      }
+      if (sent.length) {
+        await keyWork(async () => {
+          for (const name of sent)
+            await writeKey(variables[name], given[name].trim());
+        });
+        newKeys = true;
+      }
+    }
+    const now = valueAt(readSettings().settings ?? {}, [...SERVERS, entry.id]);
+    if (added && now === undefined)
+      return { status: 409, value: { message: `${entry.title} was removed meanwhile.` } };
+    const value = now ?? entry.settings;
+    const changed = changeSettings([{ path: [...SERVERS, entry.id], value }]);
+    if (changed.status !== 200)
+      return { status: changed.status, value: { message: changed.message } };
+    if (newKeys)
+      reconnectLater(engine, entry.id, later);
+    const { entries: [listed] } = await integrationEntries([entry], engine, signal);
+    return { status: 200, value: { integration: listed } };
+  }
+  if (method === "DELETE") {
+    if (!added) {
+      const own = Object.values(entry.variables ?? {}).filter((variable) => STORED_KEY.test(variable));
+      const kept = own.length ? (await keyNames()).filter((name) => own.includes(name)) : [];
+      if (!kept.length)
+        return { status: 404, value: {} };
+      await keyWork(async () => {
+        for (const name of kept)
+          await deleteKey(name);
+      });
+      return { status: 200, value: {} };
+    }
+    if (Object.values(entry.variables ?? {}).some((variable) => STORED_KEY.test(variable))) {
+      try {
+        await keyNames();
+      } catch (error) {
+        if (!(error instanceof KeysUnavailable))
+          throw error;
+        return { status: 503, value: { message: `${entry.title} wasn't removed: its key couldn't be taken away. ${error.message}` } };
+      }
+    }
+    let signIn;
+    if (engine) {
+      const servers = await call(engine, "GET", "/api/mcp", undefined, signal).catch(() => []);
+      signIn = (Array.isArray(servers) ? servers : []).find((each) => each?.name === entry.id)?.integrationID;
+    }
+    const changed = changeSettings([{ path: [...SERVERS, entry.id], value: null }]);
+    if (changed.status !== 200)
+      return { status: changed.status, value: { message: changed.message } };
+    if (engine && signIn) {
+      const credentials = await call(engine, "GET", "/api/credential", undefined, signal).catch(() => []);
+      for (const each of Array.isArray(credentials) ? credentials : []) {
+        if (each?.integrationID === signIn)
+          await call(engine, "DELETE", `/api/credential/${encodeURIComponent(each.id)}`, undefined, signal).catch(() => {});
+      }
+    }
+    for (const name of [entry.id, `${entry.id}.json`])
+      fs37.rmSync(path41.join(INTEGRATION_DATA, name), { recursive: true, force: true });
+    try {
+      await keyWork(async () => {
+        for (const variable of Object.values(entry.variables ?? {}))
+          if (STORED_KEY.test(variable))
+            await deleteKey(variable);
+      });
+    } catch (error) {
+      if (!(error instanceof KeysUnavailable))
+        throw error;
+      return { status: 503, value: { message: `${entry.title} is removed, but its key is still kept. ${error.message}` } };
+    }
+    return { status: 200, value: {} };
+  }
+  return { status: 405, value: {} };
+}
+async function* integrationsRoute(context) {
+  const { request, signal, readEngine, json } = context;
+  if (!ownsSettings())
+    return yield* json(409, { message: "This machine's settings still come from your Mac. Connect it from Kuvo Code on your Mac once." });
+  let engine = null;
+  try {
+    engine = readEngine();
+  } catch {}
+  const { status, value } = await answerIntegrations(request.method.toUpperCase(), request.path, parsed(request.body), engine, signal);
+  return yield* json(status, value);
+}
+
+// box/src/link/rehome/state.ts
+import fs38 from "node:fs";
+import path42 from "node:path";
+var rehomeFolder = (home) => path42.join(home, "updates", "rehome");
+var STEPS = ["plan", "install", "clone", "rewrite", "check", "place", "fix", "clear", "done"];
+var stepIndex = (step) => STEPS.indexOf(step);
+var forwardOnly = (step) => stepIndex(step) >= stepIndex("clear");
+var MOST_TRIES = 3;
+var AFTER_A_FAILURE = 3600000;
+var OVERDUE_AFTER = 3 * 86400000;
+var KEPT_FOR = 30 * 86400000;
+var stateFile = (home) => path42.join(rehomeFolder(home), "state.json");
+function readRecord(home) {
+  try {
+    const kept = JSON.parse(fs38.readFileSync(stateFile(home), "utf8"));
+    return isObject(kept) ? kept : {};
+  } catch {
+    return {};
+  }
+}
+function noteRecord(home, change) {
+  fs38.mkdirSync(rehomeFolder(home), { recursive: true, mode: 448 });
+  return locked(`${stateFile(home)}.lock`, () => {
+    const next = { ...readRecord(home), ...change };
+    writeSynced(stateFile(home), JSON.stringify(next, null, 1));
+    return next;
+  });
+}
+function rehomeStatus(home, now = Date.now()) {
+  const kept = readRecord(home);
+  let journal = null;
+  let unreadable = false;
+  try {
+    journal = readJournal(home);
+  } catch {
+    unreadable = true;
+  }
+  const underWay = journal !== null && journal.step !== "done" ? journal : null;
+  const waitingSince = typeof kept.waitingSince === "number" ? kept.waitingSince : null;
+  const recorded = kept.state === "moving" ? "failed" : kept.state ?? null;
+  const state = unreadable ? "moving" : underWay ? forwardOnly(underWay.step) ? "clearing" : "moving" : recorded;
+  return {
+    state,
+    way: underWay ? underWay.way : kept.way ?? null,
+    step: underWay ? underWay.step : null,
+    tries: typeof kept.tries === "number" ? kept.tries : 0,
+    nextTry: typeof kept.nextTry === "number" ? kept.nextTry : null,
+    waitingSince,
+    overdue: (state === "waiting" || state === "failed") && waitingSince !== null && now - waitingSince >= OVERDUE_AFTER,
+    failed: unreadable ? { at: now, step: null, message: new UnreadableJournal().message } : kept.failed ?? null,
+    movedAt: typeof kept.movedAt === "number" ? kept.movedAt : null,
+    keptUntil: typeof kept.keptUntil === "number" ? kept.keptUntil : null,
+    owed: Array.isArray(kept.owed) ? kept.owed : [],
+    asked: kept.asked ?? null,
+    from: kept.from ?? underWay?.from ?? null,
+    to: kept.to ?? underWay?.to ?? null
+  };
+}
+var journalFile = (home) => path42.join(rehomeFolder(home), "journal.json");
+var actsFile = (home) => path42.join(rehomeFolder(home), "journal.acts");
+function readJournal(home) {
+  let text;
+  try {
+    text = fs38.readFileSync(journalFile(home), "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    throw new UnreadableJournal;
+  }
+  let kept;
+  try {
+    kept = JSON.parse(text);
+  } catch {
+    throw new UnreadableJournal;
+  }
+  if (!isObject(kept) || kept.v !== 1 || typeof kept.step !== "string")
+    throw new UnreadableJournal;
+  return kept;
+}
+
+class UnreadableJournal extends Error {
+  constructor() {
+    super("The move's journal can't be read: nothing is done until someone looks at it (updates/rehome/journal.json).");
+  }
+}
+var moveUnderWay = (home) => {
+  try {
+    const journal = readJournal(home);
+    return journal !== null && journal.step !== "done";
+  } catch {
+    return true;
+  }
+};
+function writeJournal(home, journal) {
+  writeSynced(journalFile(home), JSON.stringify(journal, null, 1));
+}
+function writeSynced(file, text) {
+  const temporary = `${file}.${process.pid}.tmp`;
+  const fd = fs38.openSync(temporary, "w", 384);
+  try {
+    fs38.writeSync(fd, text);
+    fs38.fsyncSync(fd);
+  } finally {
+    fs38.closeSync(fd);
+  }
+  fs38.renameSync(temporary, file);
+  syncFolder(path42.dirname(file));
+}
+function forgetJournal(home) {
+  fs38.rmSync(actsFile(home), { force: true });
+  fs38.rmSync(journalFile(home), { force: true });
+  syncFolder(rehomeFolder(home));
+}
+function journalAct(home, act) {
+  const fd = fs38.openSync(actsFile(home), "a+", 384);
+  try {
+    const size = fs38.fstatSync(fd).size;
+    const last = Buffer.alloc(1);
+    const torn = size > 0 && fs38.readSync(fd, last, 0, 1, size - 1) === 1 && last[0] !== 10;
+    fs38.writeSync(fd, (torn ? `
+` : "") + JSON.stringify(act) + `
+`);
+    fs38.fsyncSync(fd);
+  } finally {
+    fs38.closeSync(fd);
+  }
+}
+function readActs(home) {
+  let text = "";
+  try {
+    text = fs38.readFileSync(actsFile(home), "utf8");
+  } catch {
+    return [];
+  }
+  const acts = [];
+  for (const line of text.split(`
+`)) {
+    if (!line)
+      continue;
+    try {
+      const act = JSON.parse(line);
+      if (isObject(act) && ["rename", "made", "wrote", "keychain"].includes(act.act))
+        acts.push(act);
+    } catch {}
+  }
+  return acts;
+}
+function syncFolder(folder) {
+  try {
+    const fd = fs38.openSync(folder, "r");
+    try {
+      fs38.fsyncSync(fd);
+    } finally {
+      fs38.closeSync(fd);
+    }
+  } catch {}
+}
+var lockFolder = (home) => path42.join(rehomeFolder(home), "lock");
+var holderOf = (lock) => {
+  try {
+    const pid = Number(fs38.readFileSync(path42.join(lock, "pid"), "utf8"));
+    return Number.isInteger(pid) && pid > 1 ? pid : null;
+  } catch {
+    return null;
+  }
+};
+var holds = (pid) => pid === process.pid || processRuns(pid, "rehome");
+async function takeLock(home, { waiting = () => {}, most = 30 * 60000, clock = Date.now } = {}) {
+  const lock = lockFolder(home);
+  fs38.mkdirSync(rehomeFolder(home), { recursive: true, mode: 448 });
+  const began = clock();
+  let said = false;
+  for (;; ) {
+    try {
+      fs38.mkdirSync(lock, { mode: 448 });
+      fs38.writeFileSync(path42.join(lock, "pid"), String(process.pid), { mode: 384 });
+      return true;
+    } catch {}
+    const holder = holderOf(lock);
+    if (holder === process.pid)
+      return true;
+    if (holder !== null && !holds(holder)) {
+      const aside = `${lock}.gone.${process.pid}`;
+      try {
+        fs38.renameSync(lock, aside);
+        if (holderOf(aside) === holder)
+          fs38.rmSync(aside, { recursive: true, force: true });
+        else
+          try {
+            fs38.renameSync(aside, lock);
+          } catch {
+            fs38.rmSync(aside, { recursive: true, force: true });
+          }
+      } catch {}
+      continue;
+    }
+    if (holder === null) {
+      try {
+        if (clock() - fs38.statSync(lock).mtimeMs > 60000)
+          fs38.rmSync(lock, { recursive: true, force: true });
+      } catch {}
+    }
+    if (!said) {
+      said = true;
+      waiting();
+    }
+    if (clock() - began > most)
+      return false;
+    await sleep(200);
+  }
+}
+var holdsLock = (home) => holderOf(lockFolder(home)) === process.pid;
+function giveLock(home) {
+  if (holdsLock(home))
+    fs38.rmSync(lockFolder(home), { recursive: true, force: true });
+}
+
+// box/src/link/bots/own-keys.ts
+var GONE_FILE = "keys-gone.json";
+var namesBotKey = (server) => /KUVO_KEY_[A-Z0-9_]+__BOT_[A-Z0-9]+/.test(JSON.stringify(server) ?? "");
+function settingsValue(text) {
+  if (text.charCodeAt(0) === 65279)
+    text = text.slice(1);
+  try {
+    return JSON.parse(text);
+  } catch {}
+  const after = /(?:\s|\/\/[^\n\r\u2028\u2029]*|\/\*[\s\S]*?\*\/)*/y;
+  let plain = "";
+  for (let i = 0;i < text.length; i++) {
+    const char = text[i];
+    if (char === '"') {
+      let end = i + 1;
+      while (end < text.length && text[end] !== '"')
+        end += text[end] === "\\" ? 2 : 1;
+      plain += text.slice(i, end + 1);
+      i = end;
+    } else if (char === "/" && text[i + 1] === "/") {
+      while (i < text.length && !`
+\r\u2028\u2029`.includes(text[i]))
+        i++;
+      plain += `
+`;
+    } else if (char === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2);
+      if (end < 0)
+        throw new SyntaxError("A comment isn't closed.");
+      i = end + 1;
+      plain += " ";
+    } else if (char === ",") {
+      after.lastIndex = i + 1;
+      after.test(text);
+      if (!"]}".includes(text[after.lastIndex] ?? " "))
+        plain += char;
+    } else {
+      plain += char;
+    }
+  }
+  return JSON.parse(plain);
+}
+var settingsFileOf = (folder) => path43.join(folder, "workspace", ".opencode", "opencode.json");
+var ownSuffix = (folder) => `__${path43.basename(folder).toUpperCase().replace(/[^\p{L}\p{N}]/gu, "_")}`;
+function stillNamesOwnKey(folder) {
+  const file = settingsFileOf(folder);
+  const text = textOf(file);
+  if (text === null)
+    return fs39.existsSync(file);
+  let named = text;
+  try {
+    named = JSON.stringify(settingsValue(text)) ?? "";
+  } catch {}
+  return new RegExp(`KUVO_KEY_[A-Z0-9_]+${ownSuffix(folder)}(?![A-Z0-9_])`).test(named);
+}
+function keysGoneOf(folder) {
+  try {
+    const noted = JSON.parse(textOf(path43.join(folder, GONE_FILE)) ?? "");
+    const ids = isObject(noted) && Array.isArray(noted.integrations) ? noted.integrations : [];
+    return [...new Set(ids.filter((id) => typeof id === "string" && /^[A-Za-z0-9._-]{1,100}$/.test(id)))];
+  } catch {
+    return [];
+  }
+}
+function noteKeysGone(folder, ids) {
+  const file = path43.join(folder, GONE_FILE);
+  if (!ids.length)
+    return fs39.rmSync(file, { force: true });
+  writePrivate(file, JSON.stringify({ integrations: ids }));
+}
+function dropOwnServers(folder) {
+  const file = settingsFileOf(folder);
+  const settingsFolder = path43.dirname(file);
+  let settings;
+  const text = textOf(file);
+  try {
+    settings = settingsValue(text ?? "");
+  } catch {
+    if (text && namesBotKey(text) && !saidNotPlain.has(file) && saidNotPlain.add(file))
+      console.error(`kuvo-link: ${file} can't be read as settings and names a key a bot had of its own: that key stays until the file is put right.`);
+    return [];
+  }
+  const servers = isObject(settings) && isObject(settings.mcp) && isObject(settings.mcp.servers) ? settings.mcp.servers : null;
+  if (!isObject(settings) || !servers)
+    return [];
+  const gone = Object.keys(servers).filter((id) => namesBotKey(servers[id]));
+  if (!gone.length)
+    return [];
+  const kept = Object.fromEntries(Object.entries(servers).filter(([id]) => !gone.includes(id)));
+  const mcp = { ...settings.mcp };
+  if (Object.keys(kept).length)
+    mcp.servers = kept;
+  else
+    delete mcp.servers;
+  const next = { ...settings };
+  if (Object.keys(mcp).length)
+    next.mcp = mcp;
+  else
+    delete next.mcp;
+  noteKeysGone(folder, [...new Set([...keysGoneOf(folder), ...gone])]);
+  if (Object.keys(next).length) {
+    writePrivate(file, JSON.stringify(next, null, 2) + `
+`);
+  } else {
+    fs39.rmSync(file, { force: true });
+    try {
+      fs39.rmdirSync(settingsFolder);
+    } catch {}
+  }
+  return gone;
+}
+function stillToConnect(folder) {
+  const noted = keysGoneOf(folder);
+  if (!noted.length)
+    return { noted, left: [] };
+  const { settings } = readSettings();
+  if (!settings || !ownsSettings())
+    return null;
+  return { noted, left: noted.filter((id) => valueAt(settings, [...SERVERS, id]) === undefined) };
+}
+function notConnected(folder) {
+  const left = stillToConnect(folder)?.left ?? [];
+  if (!left.length)
+    return [];
+  const catalog = integrationCatalog();
+  return left.flatMap((id) => {
+    const title = catalog.find((entry) => entry.id === id)?.title;
+    return typeof title === "string" && title ? [title] : [];
+  });
+}
+function forgetConnectedKeys(folder) {
+  const now = stillToConnect(folder);
+  if (now && now.left.length !== now.noted.length)
+    try {
+      noteKeysGone(folder, now.left);
+    } catch {}
+}
+var listed2 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+function keysGoneNote(folder) {
+  return notConnectedNote(folder) + unreadNote(folder);
+}
+function unreadNote(folder) {
+  if (updateOnTrial() || !stillNamesOwnKey(folder))
+    return "";
+  return `
+
+Your folder's settings file (${settingsFileOf(folder)}) names a key of your own for one of its servers. Kuvo Code no longer keeps keys for single bots, so that server and its key are to go, but Kuvo Code couldn't change the file: it can't be read as JSON, or can't be opened or written. Tell the user so plainly the next time you talk: once the file is put right, or that server is taken out of it, the key is removed the next time Kuvo Code starts on ${HERE}, and you use the integrations connected there, as every session does.`;
+}
+function notConnectedNote(folder) {
+  const names = notConnected(folder);
+  if (!names.length)
+    return "";
+  const one = names.length === 1;
+  return `
+
+You used to have a key of your own for ${listed2(names)}. Kuvo Code no longer keeps keys for single bots: that key was removed, and you now use the integrations connected on ${HERE}, as every session there does. ${listed2(names)} ${one ? "isn't" : "aren't"} connected there, so you have no tools for ${one ? "it" : "them"} now. When your work needs ${one ? "it" : "one of them"}, don't look for another way around: say plainly that it isn't connected on ${HERE}, and ask the user to connect it in Settings › Integrations.`;
+}
+function reconnectIn(engine, folder, id) {
+  soon(() => fetch(`http://127.0.0.1:${engine.port}/api/experimental/mcp/${encodeURIComponent(id)}/connect`, {
+    method: "POST",
+    headers: { authorization: `Basic ${Buffer.from(`opencode:${engine.password}`).toString("base64")}`, "x-opencode-directory": encodeURIComponent(path43.join(folder, "workspace")) }
+  }).catch(() => {}), 2000);
+}
+function dropBotsOwnServers(engine = () => null) {
+  if (updateOnTrial())
+    return [];
+  const keep = [];
+  for (const bot of listOf(BOTS)) {
+    const folder = path43.join(BOTS, bot);
+    let gone = [];
+    try {
+      gone = dropOwnServers(folder);
+    } catch (error) {
+      if (!saidNotPlain.has(folder) && saidNotPlain.add(folder))
+        console.error(`kuvo-link: ${bot}'s folder's settings couldn't be put right, so its own keys stay: ${String(error?.message ?? error)}`);
+    }
+    if (stillNamesOwnKey(folder))
+      keep.push(ownSuffix(folder));
+    if (!gone.length)
+      continue;
+    let running = null;
+    try {
+      running = engine();
+    } catch {}
+    if (running?.port)
+      for (const id of gone)
+        reconnectIn(running, folder, id);
+  }
+  return keep;
+}
+function keychainOwed() {
+  if (!OWN_HOME_MAC)
+    return false;
+  const record = readRecord(K);
+  return !record.movedBack && Boolean(record.owed?.includes("keychain"));
+}
+function dropBotsOwnKeys(engine = () => null) {
+  return keyWork(async () => {
+    if (updateOnTrial())
+      return false;
+    const keep = dropBotsOwnServers(engine);
+    if (keychainOwed()) {
+      if (!saidOwed)
+        console.error("kuvo-link: bots' own keys wait in this Mac's Keychain until Kuvo Code has finished moving its keys to its box: tried again later.");
+      saidOwed = true;
+      return false;
+    }
+    try {
+      await dropBotKeys(keep);
+    } catch (error) {
+      if (!(error instanceof KeysUnavailable))
+        throw error;
+      return false;
+    }
+    fs39.rmSync(path43.join(RUN, "bot-keys-left.json"), { force: true });
+    return true;
+  });
+}
+var saidOwed = false;
+var saidNotPlain = new Set;
+var again = null;
+function keepBotsOwnKeysGone(engine = () => null, retry = 60000) {
+  if (again)
+    return;
+  let failed = 0;
+  const round = async () => {
+    again = null;
+    if (await dropBotsOwnKeys(engine).catch(() => false) || updateOnTrial())
+      return;
+    failed++;
+    again = setTimeout(() => void round(), keyFilesWait(failed, undefined, retry));
+    again.unref?.();
+  };
+  again = setTimeout(() => void round(), 0);
+  again.unref?.();
+}
+
 // box/src/link/areas/wakes.ts
 import { execFile as execFile10 } from "node:child_process";
 import fs115 from "node:fs";
 import path121 from "node:path";
 
 // box/src/link/follow.ts
-import fs30 from "node:fs";
+import fs41 from "node:fs";
 
 // box/src/shared/watch.ts
-import fs29 from "node:fs";
+import fs40 from "node:fs";
 var WATCH_LOOKS_AGAIN = [250, 1000];
 var watching = new Set;
 var looks = new Map;
@@ -8796,7 +11247,7 @@ function startedOrStopped() {
   }
 }
 function watchFolder(folder, changed, { recursive = false, missed = () => changed() } = {}) {
-  const watcher = fs29.watch(folder, { recursive }, (event, name) => changed(event, name === null ? null : String(name)));
+  const watcher = fs40.watch(folder, { recursive }, (event, name) => changed(event, name === null ? null : String(name)));
   const look = () => missed();
   watching.add(look);
   startedOrStopped();
@@ -8815,7 +11266,7 @@ function watchFolders(folders, changed, { recursive = true, missed = changed } =
   const watchers = [];
   for (const folder of folders) {
     try {
-      fs30.mkdirSync(folder, { recursive: true });
+      fs41.mkdirSync(folder, { recursive: true });
       const watcher = watchFolder(folder, changed, { recursive, missed });
       watcher.on("error", () => {
         whole = false;
@@ -9034,17 +11485,17 @@ function timeGiven(value) {
 }
 
 // box/src/link/work/awake.ts
-import { execFileSync as execFileSync2, spawn as spawn3 } from "node:child_process";
-import fs32 from "node:fs";
-import path34 from "node:path";
+import { execFileSync as execFileSync2, spawn as spawn5 } from "node:child_process";
+import fs43 from "node:fs";
+import path45 from "node:path";
 
 // box/src/link/work/settings.ts
-import fs31 from "node:fs";
-import path33 from "node:path";
-var WORK_SETTINGS_FILE = path33.join(BOX, "work.json");
+import fs42 from "node:fs";
+import path44 from "node:path";
+var WORK_SETTINGS_FILE = path44.join(BOX, "work.json");
 var isFolder = (folder) => {
   try {
-    return fs31.statSync(folder).isDirectory();
+    return fs42.statSync(folder).isDirectory();
   } catch {
     return false;
   }
@@ -9053,21 +11504,21 @@ function projectsFolder(file = WORK_SETTINGS_FILE) {
   try {
     const kept = JSON.parse(textOf(file) ?? "");
     const folder = isObject(kept) && typeof kept.projectsFolder === "string" ? kept.projectsFolder : null;
-    return folder && path33.isAbsolute(folder) && isFolder(folder) ? folder : null;
+    return folder && path44.isAbsolute(folder) && isFolder(folder) ? folder : null;
   } catch {
     return null;
   }
 }
 function suggestedFolder(home = homeFolder()) {
-  return ["Developer", "Projects", "projects", "dev", "code"].map((name) => path33.join(home, name)).find(isFolder) ?? null;
+  return ["Developer", "Projects", "projects", "dev", "code"].map((name) => path44.join(home, name)).find(isFolder) ?? null;
 }
 function folderGiven(given) {
   if (typeof given !== "string" || !given.trim())
     return { refused: "Say which folder (projectsFolder), as a full path." };
   const written = given.trim().replace(/^~(?=$|\/)/, homeFolder());
-  if (!path33.isAbsolute(written))
+  if (!path44.isAbsolute(written))
     return { refused: "Give a full path to the folder." };
-  const folder = path33.resolve(written);
+  const folder = path44.resolve(written);
   if (!isFolder(folder))
     return { refused: `There's no folder at ${given.trim()}.` };
   return { folder };
@@ -9125,7 +11576,7 @@ function keepAwake(on) {
     if (held2 && held2.exitCode === null && !held2.killed)
       return;
     try {
-      const child = spawn3("/usr/bin/caffeinate", ["-s", "-w", String(process.pid)], { stdio: "ignore" });
+      const child = spawn5("/usr/bin/caffeinate", ["-s", "-w", String(process.pid)], { stdio: "ignore" });
       child.on("error", () => {
         if (held2 === child)
           held2 = null;
@@ -9173,13 +11624,13 @@ function onPower() {
 }
 var keepsMacAwakeItself = () => OWN_HOME_MAC && process.platform === "darwin";
 var WORK_HOLD = { command: "/usr/bin/caffeinate", args: ["-i", "-w", String(process.pid)] };
-var WORK_AWAKE_FILE = path34.join(RUN, "work-awake.json");
+var WORK_AWAKE_FILE = path45.join(RUN, "work-awake.json");
 var working = null;
 var holding2 = () => working !== null && working.exitCode === null && working.signalCode === null;
 var noted = "";
 function noteHold() {
   const now = JSON.stringify({ by: process.pid, hold: holding2() ? working.pid ?? null : null });
-  if (now === noted && fs32.existsSync(WORK_AWAKE_FILE))
+  if (now === noted && fs43.existsSync(WORK_AWAKE_FILE))
     return;
   try {
     writePrivate(WORK_AWAKE_FILE, now);
@@ -9188,7 +11639,7 @@ function noteHold() {
 }
 function awakeForWork() {
   try {
-    const said = JSON.parse(fs32.readFileSync(WORK_AWAKE_FILE, "utf8"));
+    const said = JSON.parse(fs43.readFileSync(WORK_AWAKE_FILE, "utf8"));
     const running = (pid) => Number.isInteger(pid) && pid > 1 && alive(pid);
     return running(said?.by) && running(said?.hold);
   } catch {
@@ -9198,7 +11649,7 @@ function awakeForWork() {
 function holdForWork(on, hold = WORK_HOLD) {
   if (on && !holding2()) {
     try {
-      const child = spawn3(hold.command, hold.args, { stdio: "ignore" });
+      const child = spawn5(hold.command, hold.args, { stdio: "ignore" });
       child.on("error", () => {
         if (working === child) {
           working = null;
@@ -9252,15 +11703,15 @@ function keepAwakeWhileWorking(busy, every = 1e4) {
 }
 
 // box/src/link/work/changes.ts
-import fs33 from "node:fs";
-import path35 from "node:path";
-var WORK_FOLDER = path35.join(RUN, "work");
-var WORK_CHANGES = path35.join(WORK_FOLDER, "changes.json");
-var LOCK2 = path35.join(WORK_FOLDER, ".changes.lock");
+import fs44 from "node:fs";
+import path46 from "node:path";
+var WORK_FOLDER = path46.join(RUN, "work");
+var WORK_CHANGES = path46.join(WORK_FOLDER, "changes.json");
+var LOCK2 = path46.join(WORK_FOLDER, ".changes.lock");
 var workFollowers = new Set;
 function readWorkChanges(file = WORK_CHANGES) {
   try {
-    const kept = JSON.parse(fs33.readFileSync(file, "utf8"));
+    const kept = JSON.parse(fs44.readFileSync(file, "utf8"));
     return isObject(kept) ? Object.fromEntries(Object.entries(kept).filter(([, at]) => typeof at === "number")) : {};
   } catch {
     return {};
@@ -9268,7 +11719,7 @@ function readWorkChanges(file = WORK_CHANGES) {
 }
 function noteWorkChanged(bot, file = WORK_CHANGES) {
   try {
-    fs33.mkdirSync(WORK_FOLDER, { recursive: true });
+    fs44.mkdirSync(WORK_FOLDER, { recursive: true });
     locked(LOCK2, () => {
       const changes = readWorkChanges(file);
       changes[bot] = Math.max(Date.now(), (changes[bot] ?? 0) + 1);
@@ -9281,12 +11732,12 @@ function noteWorkChanged(bot, file = WORK_CHANGES) {
 
 // box/src/link/work/apps.ts
 import { execFile as execFile2 } from "node:child_process";
-import crypto13 from "node:crypto";
-import fs34 from "node:fs";
-import path36 from "node:path";
-var APPS = path36.join(K, "apps");
-var FOUND_FILE = path36.join(APPS, "found.json");
-var LOCK3 = path36.join(APPS, ".found.lock");
+import crypto15 from "node:crypto";
+import fs45 from "node:fs";
+import path47 from "node:path";
+var APPS = path47.join(K, "apps");
+var FOUND_FILE = path47.join(APPS, "found.json");
+var LOCK3 = path47.join(APPS, ".found.lock");
 var DAY = 86400000;
 var MISSED_FOR = DAY;
 var FOUND_FOR = 7 * DAY;
@@ -9299,8 +11750,8 @@ var isAppID = (id) => typeof id === "string" && ID.test(id) && !id.includes(".."
 function appIcon(id) {
   if (!isAppID(id))
     return null;
-  const file = path36.join(APPS, `${id}.png`);
-  return fs34.existsSync(file) ? file : null;
+  const file = path47.join(APPS, `${id}.png`);
+  return fs45.existsSync(file) ? file : null;
 }
 var keyOf = (name) => name.trim().toLowerCase();
 function readFound() {
@@ -9338,7 +11789,7 @@ async function findApps(names, now = Date.now()) {
     const found = await findApp(name, entries).catch(() => null);
     answers.set(key, found ? { id: found.id, name: found.name, at: now } : { at: now });
   }
-  fs34.mkdirSync(APPS, { recursive: true, mode: 448 });
+  fs45.mkdirSync(APPS, { recursive: true, mode: 448 });
   locked(LOCK3, () => {
     const all = readFound();
     for (const [key, answer] of answers)
@@ -9349,7 +11800,7 @@ async function findApps(names, now = Date.now()) {
     const ids = new Set([...all.values()].map((found) => found.id));
     for (const found of kept.values())
       if (found.id && !ids.has(found.id))
-        fs34.rmSync(path36.join(APPS, `${found.id}.png`), { force: true });
+        fs45.rmSync(path47.join(APPS, `${found.id}.png`), { force: true });
     writePrivate(FOUND_FILE, JSON.stringify(Object.fromEntries(all), null, 1));
   });
 }
@@ -9360,44 +11811,44 @@ function findApp(name, entries) {
   if (!found)
     return Promise.resolve(null);
   try {
-    keepIcon(found.id, (temporary) => fs34.copyFileSync(found.icon, temporary));
+    keepIcon2(found.id, (temporary) => fs45.copyFileSync(found.icon, temporary));
   } catch {
     return Promise.resolve(null);
   }
   return Promise.resolve({ id: found.id, name: found.name });
 }
-function keepIcon(id, write) {
-  fs34.mkdirSync(APPS, { recursive: true, mode: 448 });
-  const temporary = path36.join(APPS, `.${id}.${process.pid}.${crypto13.randomBytes(4).toString("hex")}.png`);
+function keepIcon2(id, write) {
+  fs45.mkdirSync(APPS, { recursive: true, mode: 448 });
+  const temporary = path47.join(APPS, `.${id}.${process.pid}.${crypto15.randomBytes(4).toString("hex")}.png`);
   try {
     write(temporary);
     if (!isPNG(temporary))
       throw new Error("Not a PNG.");
-    fs34.renameSync(temporary, path36.join(APPS, `${id}.png`));
+    fs45.renameSync(temporary, path47.join(APPS, `${id}.png`));
   } finally {
-    fs34.rmSync(temporary, { force: true });
+    fs45.rmSync(temporary, { force: true });
   }
 }
 var PNG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 function pngWidth(file) {
   try {
-    const handle = fs34.openSync(file, "r");
+    const handle = fs45.openSync(file, "r");
     try {
       const head = Buffer.alloc(24);
-      if (fs34.readSync(handle, head, 0, 24, 0) < 24 || !head.subarray(0, 8).equals(PNG))
+      if (fs45.readSync(handle, head, 0, 24, 0) < 24 || !head.subarray(0, 8).equals(PNG))
         return null;
       return head.readUInt32BE(16);
     } finally {
-      fs34.closeSync(handle);
+      fs45.closeSync(handle);
     }
   } catch {
     return null;
   }
 }
 var isPNG = (file) => pngWidth(file) !== null;
-var idOf = (own, where) => isAppID(own) ? own : `app-${crypto13.createHash("sha256").update(where).digest("hex").slice(0, 16)}`;
+var idOf = (own, where) => isAppID(own) ? own : `app-${crypto15.createHash("sha256").update(where).digest("hex").slice(0, 16)}`;
 var run = (command, args, timeout) => new Promise((resolve) => execFile2(command, args, { encoding: "utf8", timeout, maxBuffer: 1024 * 1024 }, (error, stdout) => resolve(error ? null : String(stdout ?? ""))));
-var macFolders2 = (home = homeFolder()) => ["/Applications", "/System/Applications", path36.join(home, "Applications")].flatMap((folder) => [folder, path36.join(folder, "Utilities")]);
+var macFolders2 = (home = homeFolder()) => ["/Applications", "/System/Applications", path47.join(home, "Applications")].flatMap((folder) => [folder, path47.join(folder, "Utilities")]);
 var MAC_ICON = `ObjC.import("AppKit");
 function run(argv) {
   const [app, out, px] = argv;
@@ -9421,22 +11872,22 @@ async function findOnMac(name) {
     return null;
   let real = app;
   try {
-    real = fs34.realpathSync(app);
+    real = fs45.realpathSync(app);
   } catch {}
-  fs34.mkdirSync(APPS, { recursive: true, mode: 448 });
-  const temporary = path36.join(APPS, `.found.${process.pid}.${crypto13.randomBytes(4).toString("hex")}.png`);
+  fs45.mkdirSync(APPS, { recursive: true, mode: 448 });
+  const temporary = path47.join(APPS, `.found.${process.pid}.${crypto15.randomBytes(4).toString("hex")}.png`);
   try {
     const said = await run("osascript", ["-l", "JavaScript", "-e", MAC_ICON, real, temporary, String(SIZE)], 15000);
     const answer = said ? JSON.parse(said.trim()) : null;
     if (!answer?.wrote)
       return null;
     const id = idOf(answer.id, real);
-    keepIcon(id, (made) => fs34.renameSync(temporary, made));
+    keepIcon2(id, (made) => fs45.renameSync(temporary, made));
     return { id, name: typeof answer.name === "string" && answer.name ? answer.name : name };
   } catch {
     return null;
   } finally {
-    fs34.rmSync(temporary, { force: true });
+    fs45.rmSync(temporary, { force: true });
   }
 }
 function macApp(name, folders = macFolders2()) {
@@ -9444,17 +11895,17 @@ function macApp(name, folders = macFolders2()) {
   for (const folder of folders) {
     let entries = [];
     try {
-      entries = fs34.readdirSync(folder);
+      entries = fs45.readdirSync(folder);
     } catch {
       continue;
     }
     const found = entries.find((entry) => entry.toLowerCase() === wanted);
     if (found)
-      return path36.join(folder, found);
+      return path47.join(folder, found);
   }
   return null;
 }
-var spotlightFolders = (home = homeFolder()) => ["/Applications", "/System/Applications", path36.join(home, "Applications"), "/System/Library/CoreServices"];
+var spotlightFolders = (home = homeFolder()) => ["/Applications", "/System/Applications", path47.join(home, "Applications"), "/System/Library/CoreServices"];
 function spotlightPick(said, folders = spotlightFolders()) {
   return said.split(`
 `).map((line) => line.trim()).find((line) => line.endsWith(".app") && folders.some((folder) => line.startsWith(folder + "/")) && !/\/\.Trash\/|\/DerivedData\/|\/Build\/Products\//.test(line)) ?? null;
@@ -9468,19 +11919,19 @@ async function spotlightApp(name) {
 }
 function linuxDataFolders(env = process.env, home = homeFolder()) {
   const own = ownDataHome(env, home);
-  const system = (env.XDG_DATA_DIRS || "/usr/local/share:/usr/share").split(":").filter((folder) => path36.isAbsolute(folder));
-  const exported = [path36.join(own, "flatpak", "exports", "share"), "/var/lib/flatpak/exports/share", "/var/lib/snapd/desktop"];
-  return [...new Set([own, ...system, ...exported].map((folder) => path36.resolve(folder)))];
+  const system = (env.XDG_DATA_DIRS || "/usr/local/share:/usr/share").split(":").filter((folder) => path47.isAbsolute(folder));
+  const exported = [path47.join(own, "flatpak", "exports", "share"), "/var/lib/flatpak/exports/share", "/var/lib/snapd/desktop"];
+  return [...new Set([own, ...system, ...exported].map((folder) => path47.resolve(folder)))];
 }
 function desktopEntries(folder, prefix = "", depth = 0) {
   let entries = [];
   try {
-    entries = fs34.readdirSync(folder, { withFileTypes: true });
+    entries = fs45.readdirSync(folder, { withFileTypes: true });
   } catch {
     return [];
   }
   return entries.flatMap((entry) => {
-    const file = path36.join(folder, entry.name);
+    const file = path47.join(folder, entry.name);
     if (entry.isDirectory() && depth < 3)
       return desktopEntries(file, `${prefix}${entry.name}-`, depth + 1);
     return entry.name.endsWith(".desktop") ? [[`${prefix}${entry.name.slice(0, -".desktop".length)}`, file]] : [];
@@ -9506,7 +11957,7 @@ function linuxEntries(env = process.env, home = homeFolder()) {
   const seen = new Set;
   const apps = [];
   for (const folder of linuxDataFolders(env, home)) {
-    for (const [id, file] of desktopEntries(path36.join(folder, "applications"))) {
+    for (const [id, file] of desktopEntries(path47.join(folder, "applications"))) {
       if (seen.has(id))
         continue;
       seen.add(id);
@@ -9533,7 +11984,7 @@ function findOnLinux(name, env = process.env, home = homeFolder(), entries = lin
 }
 var smallPNG = (file) => {
   try {
-    if (fs34.statSync(file).size > ICON_MOST)
+    if (fs45.statSync(file).size > ICON_MOST)
       return null;
   } catch {
     return null;
@@ -9543,29 +11994,29 @@ var smallPNG = (file) => {
 function linuxIcon(icon, folders, home) {
   if (!icon)
     return null;
-  if (path36.isAbsolute(icon))
+  if (path47.isAbsolute(icon))
     return smallPNG(icon) !== null ? icon : null;
   if (icon.includes("/"))
     return null;
   const named = icon.replace(/\.(png|svg|xpm)$/i, "");
-  const themes = [path36.join(home, ".icons", "hicolor"), ...folders.map((folder) => path36.join(folder, "icons", "hicolor"))];
+  const themes = [path47.join(home, ".icons", "hicolor"), ...folders.map((folder) => path47.join(folder, "icons", "hicolor"))];
   const sized = [];
   for (const theme of themes) {
     let sizes = [];
     try {
-      sizes = fs34.readdirSync(theme);
+      sizes = fs45.readdirSync(theme);
     } catch {
       continue;
     }
     for (const size of sizes) {
-      const file = path36.join(theme, size, "apps", `${named}.png`);
+      const file = path47.join(theme, size, "apps", `${named}.png`);
       const width = smallPNG(file);
       if (width !== null)
         sized.push({ file, width });
     }
   }
-  for (const folder of [...folders.map((each) => path36.join(each, "pixmaps")), "/usr/share/pixmaps"]) {
-    const file = path36.join(folder, `${named}.png`);
+  for (const folder of [...folders.map((each) => path47.join(each, "pixmaps")), "/usr/share/pixmaps"]) {
+    const file = path47.join(folder, `${named}.png`);
     const width = smallPNG(file);
     if (width !== null)
       sized.push({ file, width });
@@ -9578,11 +12029,11 @@ function linuxIcon(icon, folders, home) {
 
 // box/src/link/work/projects.ts
 import { execFile as execFile5 } from "node:child_process";
-import fs36 from "node:fs";
-import path38 from "node:path";
+import fs47 from "node:fs";
+import path49 from "node:path";
 
 // box/src/shared/git.ts
-import { execFile as execFile3, spawnSync as spawnSync4 } from "node:child_process";
+import { execFile as execFile3, spawnSync as spawnSync5 } from "node:child_process";
 import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, promises as fsp, readSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 var EVERY = ["-c", "core.fsmonitor=false", "-c", "core.pager=cat", "-c", "log.showSignature=false"];
@@ -9787,7 +12238,7 @@ var exists = (where) => {
 function strayCommon(lead, rest, cwd) {
   if (MAKING.has(rest[0] ?? ""))
     return false;
-  const ran = spawnSync4("git", gitDirArgs(lead), { cwd, encoding: "utf8", env: { ...process.env, ...GIT_QUIET }, timeout: 30000 });
+  const ran = spawnSync5("git", gitDirArgs(lead), { cwd, encoding: "utf8", env: { ...process.env, ...GIT_QUIET }, timeout: 30000 });
   const folder = ran.status === 0 ? String(ran.stdout ?? "").trim() : "";
   if (!folder)
     return false;
@@ -9820,7 +12271,7 @@ function ownArgs(args, cwd) {
     if (strayCommon(lead, rest, cwd))
       return;
     for (const scoped of [true, false]) {
-      const ran = spawnSync4("git", reading(lead, scoped), { cwd, encoding: "utf8", env: { ...process.env, ...GIT_QUIET }, timeout: 30000 });
+      const ran = spawnSync5("git", reading(lead, scoped), { cwd, encoding: "utf8", env: { ...process.env, ...GIT_QUIET }, timeout: 30000 });
       found = answer(ran.error?.code ?? ran.status, String(ran.stdout ?? ""), scoped);
       if (found !== "retry")
         break;
@@ -9846,7 +12297,7 @@ function askedArgs(args, cwd) {
   const { lead, rest } = split(args);
   if (strayCommon(lead, rest, cwd))
     return;
-  const watcher = MAKING.has(rest[0] ?? "") || !WATCHER.length ? [] : watcherIn(String(spawnSync4("git", watcherRead(lead), { cwd, encoding: "utf8", env: { ...process.env, ...GIT_QUIET }, timeout: 30000 }).stdout ?? ""));
+  const watcher = MAKING.has(rest[0] ?? "") || !WATCHER.length ? [] : watcherIn(String(spawnSync5("git", watcherRead(lead), { cwd, encoding: "utf8", env: { ...process.env, ...GIT_QUIET }, timeout: 30000 }).stdout ?? ""));
   return [...lead, ...EVERY, ...watcher, ...withOptions(rest, false) ?? rest];
 }
 async function askedArgsLater(args, cwd) {
@@ -9858,13 +12309,13 @@ async function askedArgsLater(args, cwd) {
 }
 
 // box/src/link/git.ts
-import { execFile as execFile4, spawn as spawn4, spawnSync as spawnSync5 } from "node:child_process";
+import { execFile as execFile4, spawn as spawn6, spawnSync as spawnSync6 } from "node:child_process";
 var GIT_ENV = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" };
 var BY_KUVO = { GIT_AUTHOR_NAME: "Kuvo Code", GIT_AUTHOR_EMAIL: "kuvo-code@localhost", GIT_COMMITTER_NAME: "Kuvo Code", GIT_COMMITTER_EMAIL: "kuvo-code@localhost" };
 function ranIn(folder, args, env) {
   if (!args)
     return null;
-  const ran = spawnSync5("git", args, { cwd: folder, encoding: "utf8", env: { ...GIT_ENV, ...env }, input: "", timeout: 60000 });
+  const ran = spawnSync6("git", args, { cwd: folder, encoding: "utf8", env: { ...GIT_ENV, ...env }, input: "", timeout: 60000 });
   return ran.status === 0 ? String(ran.stdout ?? "").trim() : null;
 }
 function gitIn(folder, args, env = {}) {
@@ -9900,7 +12351,7 @@ async function gitNamesLater(folder, args, limit, signal, timeout = 600000) {
     const names = new Set;
     let rest = "";
     let enough = false;
-    const child = spawn4("git", own, { cwd: folder, env: GIT_ENV, stdio: ["ignore", "pipe", "ignore"], timeout, ...signal ? { signal } : {} });
+    const child = spawn6("git", own, { cwd: folder, env: GIT_ENV, stdio: ["ignore", "pipe", "ignore"], timeout, ...signal ? { signal } : {} });
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (piece) => {
       if (enough)
@@ -9931,9 +12382,9 @@ function sizeLater(folder) {
 }
 
 // box/src/link/work/found-folders.ts
-import fs35 from "node:fs";
-import path37 from "node:path";
-var FOUND_FILE2 = path37.join(BOX, "found-folders.json");
+import fs46 from "node:fs";
+import path48 from "node:path";
+var FOUND_FILE2 = path48.join(BOX, "found-folders.json");
 var MOST_FOUND = 2000;
 var firstFound = null;
 function foundFolders() {
@@ -9941,10 +12392,10 @@ function foundFolders() {
     return firstFound;
   firstFound = new Map;
   try {
-    const kept = JSON.parse(fs35.readFileSync(FOUND_FILE2, "utf8"));
+    const kept = JSON.parse(fs46.readFileSync(FOUND_FILE2, "utf8"));
     if (isObject(kept)) {
       for (const [folder, real] of Object.entries(kept))
-        if (typeof real === "string" && path37.isAbsolute(real))
+        if (typeof real === "string" && path48.isAbsolute(real))
           firstFound.set(folder, real);
     }
   } catch {}
@@ -9971,21 +12422,21 @@ function foundAt(folder) {
   return real;
 }
 async function noteFolderFound(folder) {
-  if (typeof folder !== "string" || !path37.isAbsolute(folder) || foundFolders().has(folder))
+  if (typeof folder !== "string" || !path48.isAbsolute(folder) || foundFolders().has(folder))
     return;
   await askedAbout([folder]);
   keepFound(folder, realPath(folder));
 }
 function realPath(file) {
   const rest = [];
-  for (let at = path37.resolve(file);; ) {
+  for (let at = path48.resolve(file);; ) {
     try {
-      return path37.join(fs35.realpathSync(at), ...rest.reverse());
+      return path48.join(fs46.realpathSync(at), ...rest.reverse());
     } catch {
-      const up = path37.dirname(at);
+      const up = path48.dirname(at);
       if (up === at)
-        return path37.resolve(file);
-      rest.push(path37.basename(at));
+        return path48.resolve(file);
+      rest.push(path48.basename(at));
       at = up;
     }
   }
@@ -10003,16 +12454,16 @@ function cloneable(address) {
 }
 function projectPlace(name, root = projectsFolder()) {
   const folder = folderName(name);
-  return root && folder ? path38.join(root, folder) : null;
+  return root && folder ? path49.join(root, folder) : null;
 }
 function namedPlace(given, home = homeFolder()) {
   if (typeof given !== "string" || !given.trim())
     return { refused: "Give the folder as a full path." };
   const written = given.trim().replace(/^~(?=$|\/)/, home);
-  if (!path38.isAbsolute(written))
+  if (!path49.isAbsolute(written))
     return { refused: `Give the folder as a full path, like ~/${given.trim().replace(/^\.?\//, "")}.` };
-  const folder = path38.resolve(written);
-  if (folder === path38.parse(folder).root || folder === home)
+  const folder = path49.resolve(written);
+  if (folder === path49.parse(folder).root || folder === home)
     return { refused: `${shownPath(folder, home)} can't be a project's folder: name one inside it.` };
   return { folder };
 }
@@ -10021,14 +12472,14 @@ function shownPath(folder, home = homeFolder()) {
 }
 var isEmptyFolder = (folder) => {
   try {
-    return fs36.readdirSync(folder).filter((name) => name !== ".DS_Store").length === 0;
+    return fs47.readdirSync(folder).filter((name) => name !== ".DS_Store").length === 0;
   } catch {
     return false;
   }
 };
 function cloneInto(address, folder) {
   return new Promise((resolve) => {
-    const ownSSH = Boolean(process.env.GIT_SSH_COMMAND || process.env.GIT_SSH) || gitIn(path38.dirname(folder), ["config", "--get", "core.sshCommand"]) !== null;
+    const ownSSH = Boolean(process.env.GIT_SSH_COMMAND || process.env.GIT_SSH) || gitIn(path49.dirname(folder), ["config", "--get", "core.sshCommand"]) !== null;
     const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", ...ownSSH ? {} : { GIT_SSH_COMMAND: "ssh -o BatchMode=yes" } };
     const args = askedArgs(["clone", "--quiet", "--", address, folder]);
     if (!args)
@@ -10057,25 +12508,25 @@ async function makeProject(given, madeBy, root = projectsFolder()) {
     return no(400, `${clone} isn't a repository address git can clone: give an https or ssh one.`);
   const listed = readProjects().find((each) => each.directory === folder && !each.removed);
   if (listed)
-    return no(409, `There's a project at ${shownPath(folder)} already: ${listed.name ?? path38.basename(folder)}.`);
-  const there = fs36.existsSync(folder);
+    return no(409, `There's a project at ${shownPath(folder)} already: ${listed.name ?? path49.basename(folder)}.`);
+  const there = fs47.existsSync(folder);
   if (there && !isEmptyFolder(folder))
     return no(409, `There's a folder at ${shownPath(folder)} already, with files in it. ${named ? `To work on what's there, start sessions in it with start_session (folder: "${shownPath(folder)}").` : "Pick another name."}`);
   let kind = "plain";
   if (clone) {
     if (there) {
-      fs36.rmSync(path38.join(folder, ".DS_Store"), { force: true });
-      fs36.rmdirSync(folder);
+      fs47.rmSync(path49.join(folder, ".DS_Store"), { force: true });
+      fs47.rmdirSync(folder);
     }
     const failed = await cloneInto(clone, folder);
     if (failed) {
-      if (!there && fs36.existsSync(folder) && isEmptyFolder(folder))
-        fs36.rmdirSync(folder);
+      if (!there && fs47.existsSync(folder) && isEmptyFolder(folder))
+        fs47.rmdirSync(folder);
       return no(502, `Couldn't clone ${clone}: ${failed}`);
     }
     kind = "cloned";
   } else {
-    fs36.mkdirSync(folder, { recursive: true });
+    fs47.mkdirSync(folder, { recursive: true });
     if (given.git !== false)
       kind = gitIn(folder, ["init", "--quiet", "--initial-branch=main"]) !== null || gitIn(folder, ["init", "--quiet"]) !== null ? "git" : "noGit";
   }
@@ -10085,24 +12536,24 @@ async function makeProject(given, madeBy, root = projectsFolder()) {
   let project;
   changeProjects((projects) => {
     const before = projects.find((each) => each.directory === folder);
-    project = { ...before, directory: folder, folders: before?.folders ?? [], ...before ? {} : { addedByBox: true }, ...path38.basename(folder) !== name ? { name } : {}, ...madeBy ? { madeBy } : {} };
+    project = { ...before, directory: folder, folders: before?.folders ?? [], ...before ? {} : { addedByBox: true }, ...path49.basename(folder) !== name ? { name } : {}, ...madeBy ? { madeBy } : {} };
     delete project.removed;
     return [project, ...projects.filter((each) => each !== before)];
   });
   return { made: { project, kind } };
 }
 function madeWords(made, here) {
-  const name = made.project.name ?? path38.basename(made.project.directory);
+  const name = made.project.name ?? path49.basename(made.project.directory);
   const what = { git: "a new git repository", cloned: "cloned into it", plain: "a plain folder", noGit: `a plain folder (git isn't on ${here})` }[made.kind];
   return `Made ${name} at ${shownPath(made.project.directory)}, ${what}, on ${here}. It's in the sidebar; start sessions in it with start_session (project: "${name}").`;
 }
 
 // box/src/link/work/background.ts
-import fs49 from "node:fs";
-import path54 from "node:path";
+import fs54 from "node:fs";
+import path59 from "node:path";
 
 // box/src/link/areas/engine.ts
-import { spawn as spawn6 } from "node:child_process";
+import { spawn as spawn7 } from "node:child_process";
 
 // box/src/link/browser/buffers.ts
 class ChunkQueue {
@@ -10179,8 +12630,8 @@ class LineBuffer {
 }
 
 // box/src/link/browser/view.ts
-import net3 from "node:net";
-import path39 from "node:path";
+import net4 from "node:net";
+import path50 from "node:path";
 var COMMANDS = new Set(["Kuvo.view", "Kuvo.frameAck", "Kuvo.frameDropped", "Kuvo.pages", "Kuvo.input", "Kuvo.go", "Kuvo.upload", "Kuvo.hold", "Kuvo.claim", "Kuvo.dialogAnswer"]);
 var windowAt = 0;
 var messages = 0;
@@ -10196,7 +12647,7 @@ function frameBudget(count, now = Date.now(), ceiling = 100) {
 }
 function browserView(events, relay = false, run = RUN, key = socketKey, options = {}) {
   const budget = options.budget ?? ((count, ceiling = 100) => frameBudget(count, Date.now(), ceiling));
-  const socket = net3.createConnection(path39.join(run, "browser.sock"));
+  const socket = net4.createConnection(path50.join(run, "browser.sock"));
   let opened = false, ended = false;
   const incoming = new LineBuffer(80 * 1024 * 1024), input = new LineBuffer(72 * 1024 * 1024);
   const facts = new Map;
@@ -10308,195 +12759,9 @@ function browserView(events, relay = false, run = RUN, key = socketKey, options 
   };
 }
 
-// box/src/link/browser/history.ts
-import fs37 from "node:fs";
-import path40 from "node:path";
-var BROWSER_FOLDER = path40.join(K, "browser");
-var HISTORY_LIMIT = 300;
-var ICON_LIMIT = 128 * 1024;
-var historyFile = (folder) => path40.join(folder, "history.json");
-var iconsFolder = (folder) => path40.join(folder, "icons");
-var journal = (folder) => path40.join(folder, "visits.jsonl");
-var lock = (folder) => path40.join(folder, ".history.lock");
-function siteKey(address) {
-  let url;
-  try {
-    url = new URL(address);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:" || !url.hostname)
-    return null;
-  const host = url.hostname.replace(/^www\./, "");
-  return url.port ? `${host}:${url.port}` : host;
-}
-var isIconName = (key) => /^[a-z0-9][a-z0-9.-]{0,252}(:\d{1,5})?$/.test(key) && !key.includes("..");
-var score = (site, now) => site.visits / (1 + (now - site.lastVisit) / 86400000 / 14);
-function isKept(value) {
-  const site = value;
-  return typeof site?.host === "string" && typeof site.url === "string" && typeof site.title === "string" && Number.isFinite(site.visits) && Number.isFinite(site.lastVisit);
-}
-function readKept3(folder) {
-  try {
-    const sites = JSON.parse(fs37.readFileSync(historyFile(folder), "utf8"))?.sites;
-    return Array.isArray(sites) ? sites.filter(isKept) : [];
-  } catch {
-    return [];
-  }
-}
-function writeKept(folder, sites) {
-  writePrivate(historyFile(folder), JSON.stringify({ sites }));
-}
-function limited(sites) {
-  return sites.length > HISTORY_LIMIT ? [...sites].sort((a, b) => b.lastVisit - a.lastVisit).slice(0, HISTORY_LIMIT) : sites;
-}
-function visited(sites, address, title, at) {
-  const host = siteKey(address);
-  if (!host)
-    return sites;
-  const named = title.trim() === address ? "" : title.trim().slice(0, 300);
-  const url = address.slice(0, 2000);
-  const found = sites.find((site) => site.host === host);
-  if (!found)
-    return limited([...sites, { host, url, title: named, visits: 1, lastVisit: at }]);
-  found.visits += 1;
-  found.lastVisit = Math.max(found.lastVisit, at);
-  let front = false;
-  try {
-    front = new URL(address).pathname.length <= 1;
-  } catch {}
-  if (front || !found.title) {
-    found.url = url;
-    found.title = named;
-  }
-  return sites;
-}
-function iconType(bytes) {
-  const starts = (...head) => head.every((byte, i) => bytes[i] === byte);
-  if (starts(137, 80, 78, 71))
-    return "image/png";
-  if (starts(0, 0, 1, 0))
-    return "image/x-icon";
-  if (starts(255, 216, 255))
-    return "image/jpeg";
-  if (starts(71, 73, 70, 56))
-    return "image/gif";
-  if (starts(82, 73, 70, 70) && bytes[8] === 87 && bytes[9] === 69 && bytes[10] === 66 && bytes[11] === 80)
-    return "image/webp";
-  return null;
-}
-function keepIcon2(folder, key, bytes) {
-  if (!isIconName(key) || bytes.length === 0 || bytes.length > ICON_LIMIT || !iconType(bytes))
-    return false;
-  writePrivate(path40.join(iconsFolder(folder), key), bytes);
-  return true;
-}
-function folding(folder) {
-  let sites = readKept3(folder);
-  const taking = `${journal(folder)}.folding-${process.pid}-${Date.now()}`;
-  try {
-    fs37.renameSync(journal(folder), taking);
-  } catch {}
-  const taken = listOf(folder).filter((name) => name.startsWith("visits.jsonl.folding-")).sort().map((name) => path40.join(folder, name));
-  if (!taken.length)
-    return sites;
-  for (const file of taken) {
-    let text = "";
-    try {
-      text = fs37.readFileSync(file, "utf8");
-    } catch {}
-    for (const line of text.split(`
-`)) {
-      let note;
-      try {
-        note = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (typeof note?.url !== "string")
-        continue;
-      const at = typeof note.at === "number" && Number.isFinite(note.at) ? note.at : Date.now();
-      if (typeof note.icon === "string") {
-        const key = siteKey(note.url);
-        if (key)
-          try {
-            keepIcon2(folder, key, Buffer.from(note.icon, "base64"));
-          } catch {}
-      } else {
-        sites = visited(sites, note.url, typeof note.title === "string" ? note.title : "", at);
-      }
-    }
-  }
-  writeKept(folder, sites);
-  for (const file of taken)
-    fs37.rmSync(file, { force: true });
-  return sites;
-}
-function readHistory(folder = BROWSER_FOLDER, now = Date.now()) {
-  const sites = fs37.existsSync(folder) ? locked(lock(folder), () => folding(folder)) : [];
-  const icons = new Set(listOf(iconsFolder(folder)));
-  return {
-    sites: [...sites].sort((a, b) => score(b, now) - score(a, now) || b.lastVisit - a.lastVisit).map((site) => ({ ...site, icon: icons.has(site.host) }))
-  };
-}
-function foldHistory(folder = BROWSER_FOLDER) {
-  if (fs37.existsSync(folder))
-    locked(lock(folder), () => {
-      folding(folder);
-    });
-}
-function forgetHistory(host, folder = BROWSER_FOLDER) {
-  if (!fs37.existsSync(folder))
-    return;
-  locked(lock(folder), () => {
-    if (host === null) {
-      for (const name of listOf(folder))
-        if (name === "visits.jsonl" || name.startsWith("visits.jsonl.folding-"))
-          fs37.rmSync(path40.join(folder, name), { force: true });
-      fs37.rmSync(historyFile(folder), { force: true });
-      fs37.rmSync(iconsFolder(folder), { recursive: true, force: true });
-      return;
-    }
-    writeKept(folder, folding(folder).filter((site) => site.host !== host));
-    if (isIconName(host))
-      fs37.rmSync(path40.join(iconsFolder(folder), host), { force: true });
-  });
-}
-function iconOf(host, folder = BROWSER_FOLDER) {
-  if (!isIconName(host))
-    return null;
-  let bytes;
-  try {
-    bytes = fs37.readFileSync(path40.join(iconsFolder(folder), host));
-  } catch {
-    return null;
-  }
-  const type = iconType(bytes);
-  return type ? { bytes, type } : null;
-}
-function mergeHistory(from, folder = BROWSER_FOLDER) {
-  fs37.mkdirSync(folder, { recursive: true, mode: 448 });
-  return locked(lock(folder), () => {
-    const sites = folding(folder);
-    for (const each of from) {
-      const found = sites.find((site) => site.host === each.host);
-      if (!found) {
-        sites.push({ ...each });
-        continue;
-      }
-      found.visits += each.visits;
-      found.lastVisit = Math.max(found.lastVisit, each.lastVisit);
-      if (!found.title)
-        Object.assign(found, { url: each.url, title: each.title });
-    }
-    writeKept(folder, limited(sites));
-    return from.length;
-  });
-}
-
 // box/src/link/browser/settings.ts
-import fs38 from "node:fs";
-import path41 from "node:path";
+import fs48 from "node:fs";
+import path51 from "node:path";
 
 // box/src/shared/routes/browser.ts
 var SEARCH_ENGINES = [
@@ -10533,25 +12798,25 @@ var BROWSER_ROUTES = [
 ];
 
 // box/src/link/browser/settings.ts
-var settingsFile = (folder) => path41.join(folder, "settings.json");
-var keepsTabsFile = (folder) => path41.join(folder, "keeps-agent-tabs");
+var settingsFile = (folder) => path51.join(folder, "settings.json");
+var keepsTabsFile = (folder) => path51.join(folder, "keeps-agent-tabs");
 var browserSettingsFiles = (folder = BROWSER_FOLDER) => [settingsFile(folder), keepsTabsFile(folder)];
 var isEngine = (value) => SEARCH_ENGINES.some((engine) => engine.id === value);
 function readKept4(folder) {
   try {
-    const kept = JSON.parse(fs38.readFileSync(settingsFile(folder), "utf8"));
+    const kept = JSON.parse(fs48.readFileSync(settingsFile(folder), "utf8"));
     return isObject(kept) ? kept : {};
   } catch {
     return {};
   }
 }
-var hasSettings = (folder = BROWSER_FOLDER) => fs38.existsSync(settingsFile(folder));
+var hasSettings = (folder = BROWSER_FOLDER) => fs48.existsSync(settingsFile(folder));
 function readBrowserSettings(folder = BROWSER_FOLDER) {
   const kept = readKept4(folder);
   return {
     searchEngine: isEngine(kept.searchEngine) ? kept.searchEngine : "google",
     searchEngines: SEARCH_ENGINES.map(({ id, title }) => ({ id, title })),
-    tidiesAgentTabs: !fs38.existsSync(keepsTabsFile(folder)),
+    tidiesAgentTabs: !fs48.existsSync(keepsTabsFile(folder)),
     offersToSave: kept.offersToSave !== false,
     never: Array.isArray(kept.never) ? kept.never.filter((each) => typeof each === "string") : []
   };
@@ -10598,7 +12863,7 @@ function changeBrowserSettings(change, folder = BROWSER_FOLDER) {
     kept.never = never;
   writePrivate(settingsFile(folder), JSON.stringify(kept));
   if (change.tidiesAgentTabs === true)
-    fs38.rmSync(keepsTabsFile(folder), { force: true });
+    fs48.rmSync(keepsTabsFile(folder), { force: true });
   if (change.tidiesAgentTabs === false)
     writePrivate(keepsTabsFile(folder), "");
   return null;
@@ -10611,320 +12876,6 @@ function offerAgain(site, folder = BROWSER_FOLDER) {
   kept.never = never.filter((each) => each !== site);
   writePrivate(settingsFile(folder), JSON.stringify(kept));
   return true;
-}
-
-// box/src/link/browser/sites.ts
-import fs40 from "node:fs";
-import { createRequire } from "node:module";
-import path43 from "node:path";
-
-// box/src/link/browser/keeper-client.ts
-import fs39 from "node:fs";
-import net4 from "node:net";
-import path42 from "node:path";
-function keeperRuns(run = RUN) {
-  let pid = 0;
-  try {
-    pid = Number(fs39.readFileSync(path42.join(run, "browser.pid"), "utf8"));
-  } catch {
-    return false;
-  }
-  if (!Number.isInteger(pid) || pid <= 0)
-    return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code === "EPERM";
-  }
-}
-async function withKeeper(work, { run = RUN, wait = 1e4, key = socketKey } = {}) {
-  const deadline = Date.now() + wait;
-  let socket = null;
-  while (!socket && Date.now() < deadline) {
-    socket = await new Promise((resolve) => {
-      const each = net4.createConnection(path42.join(run, "browser.sock"));
-      each.once("connect", () => resolve(each));
-      each.once("error", () => resolve(null));
-    });
-    if (!socket)
-      await new Promise((resolve) => setTimeout(resolve, 150));
-  }
-  if (!socket)
-    return null;
-  const connection = socket;
-  const waiting = new Map;
-  let hello = () => {};
-  const greeted = new Promise((resolve) => hello = resolve);
-  let buffer = "";
-  connection.setEncoding("utf8");
-  connection.on("data", (chunk) => {
-    buffer += chunk;
-    let end;
-    while ((end = buffer.indexOf(`
-`)) >= 0) {
-      const line = buffer.slice(0, end);
-      buffer = buffer.slice(end + 1);
-      let message;
-      try {
-        message = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (message.method === "Kuvo.hello")
-        hello();
-      if (message.id === undefined || !waiting.has(message.id))
-        continue;
-      const { resolve, reject } = waiting.get(message.id);
-      waiting.delete(message.id);
-      if (message.error)
-        reject(new Error(String(message.error.message ?? "The browser refused that.")));
-      else
-        resolve(message.result ?? {});
-    }
-  });
-  const closed = new Promise((resolve) => connection.once("close", () => {
-    for (const { reject } of waiting.values())
-      reject(new Error("The browser stopped."));
-    waiting.clear();
-    resolve();
-  }));
-  connection.on("error", () => {});
-  let next = 1;
-  const call = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
-    if (connection.destroyed)
-      return reject(new Error("The browser stopped."));
-    const id = next++;
-    waiting.set(id, { resolve, reject });
-    connection.write(JSON.stringify({ id, method, params, ...sessionId ? { sessionId } : {} }) + `
-`);
-  });
-  const timer = setTimeout(() => connection.destroy(), Math.max(1000, deadline - Date.now() + 20000));
-  try {
-    connection.write(JSON.stringify({ method: "Kuvo.key", params: { key: key(), quiet: true } }) + `
-`);
-    if (!await Promise.race([greeted.then(() => true), closed.then(() => false)]))
-      return null;
-    return await work(call);
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-    connection.destroy();
-  }
-}
-
-// box/src/link/browser/sites.ts
-function cookieFile(folder = BROWSER_FOLDER) {
-  const found = ["Network/Cookies", "Cookies"].map((name) => path43.join(folder, "profile", "Default", name)).filter((file) => fs40.existsSync(file));
-  return found.sort((a, b) => fs40.statSync(b).mtimeMs - fs40.statSync(a).mtimeMs)[0] ?? null;
-}
-var FROM_1601 = 11644473600000;
-var chromeTime = (microseconds) => microseconds / 1000 - FROM_1601;
-async function inDatabase(file, readonly, work) {
-  let made;
-  try {
-    made = createRequire(import.meta.url)(["bun", "sqlite"].join(":"));
-  } catch {
-    return null;
-  }
-  for (let attempt = 0;; attempt++) {
-    let db = null;
-    try {
-      db = new made.Database(file, readonly ? { readonly: true } : { readwrite: true });
-      return work(db);
-    } catch (error) {
-      if (attempt >= 4 || !/busy|locked/i.test(String(error)))
-        return null;
-      await sleep(100);
-    } finally {
-      try {
-        db?.close();
-      } catch {}
-    }
-  }
-}
-async function fileCookies(folder = BROWSER_FOLDER) {
-  const file = cookieFile(folder);
-  if (!file)
-    return null;
-  return await inDatabase(file, true, (db) => db.query("SELECT host_key, name, path, expires_utc, has_expires, is_persistent FROM cookies").all().map((row) => ({
-    domain: String(row.host_key),
-    name: String(row.name),
-    path: String(row.path ?? "/"),
-    expires: Number(row.has_expires) && Number(row.expires_utc) > 0 ? chromeTime(Number(row.expires_utc)) : null,
-    persistent: Number(row.is_persistent) === 1
-  })));
-}
-async function liveCookies(call) {
-  const answer = await call("Storage.getCookies");
-  return (Array.isArray(answer?.cookies) ? answer.cookies : []).filter((each) => typeof each?.name === "string" && typeof each?.domain === "string").map((each) => ({
-    domain: each.domain,
-    name: each.name,
-    path: typeof each.path === "string" ? each.path : "/",
-    expires: each.session || typeof each.expires !== "number" || each.expires <= 0 ? null : each.expires * 1000,
-    persistent: !each.session,
-    live: each
-  }));
-}
-async function browserCookies(folder = BROWSER_FOLDER, run = RUN) {
-  if (keeperRuns(run)) {
-    const live = await withKeeper(liveCookies, { run, wait: 5000 });
-    if (live)
-      return { live: true, cookies: live };
-  }
-  const kept = await fileCookies(folder);
-  return kept ? { live: false, cookies: kept } : null;
-}
-function siteOf(host) {
-  const name = host.replace(/^\./, "").toLowerCase();
-  if (!name.includes(".") || /^[\d.]+$/.test(name) || name.includes(":"))
-    return name;
-  const labels = name.split(".");
-  const second = labels[labels.length - 2] ?? "";
-  const country = (labels[labels.length - 1] ?? "").length === 2;
-  const keep = labels.length >= 3 && country && ["co", "com", "net", "org", "gov", "edu", "ac", "or", "ne", "go", "gob", "mil", "nic"].includes(second) ? 3 : 2;
-  return labels.slice(-keep).join(".");
-}
-var onSite = (host, site) => {
-  const name = host.replace(/^\./, "").toLowerCase();
-  return name === site || name.endsWith("." + site);
-};
-function storageHosts(folder) {
-  const found = new Map;
-  const indexed = path43.join(folder, "profile", "Default", "IndexedDB");
-  let names = [];
-  try {
-    names = fs40.readdirSync(indexed);
-  } catch {}
-  for (const name of names) {
-    const match = /^(https?)_(.+)_\d+\.indexeddb\.(leveldb|blob)$/.exec(name);
-    if (!match)
-      continue;
-    const host = match[2];
-    found.set(host, [...found.get(host) ?? [], path43.join(indexed, name)]);
-  }
-  return found;
-}
-async function browserSites(folder = BROWSER_FOLDER, run = RUN) {
-  const now = Date.now();
-  const kinds = new Map;
-  const add = (host, kind) => {
-    const site = siteOf(host);
-    if (!site)
-      return;
-    kinds.set(site, (kinds.get(site) ?? new Set).add(kind));
-  };
-  for (const cookie of (await browserCookies(folder, run))?.cookies ?? [])
-    if (cookie.expires === null || cookie.expires > now)
-      add(cookie.domain, "cookies");
-  for (const host of storageHosts(folder).keys())
-    add(host, "storage");
-  return {
-    sites: [...kinds].sort(([a], [b]) => a.localeCompare(b)).map(([site, each]) => ({ site, kinds: ["cookies", "storage"].filter((kind) => each.has(kind)) }))
-  };
-}
-var pendingFile = (folder) => path43.join(folder, "clear-sites.json");
-var editingLock = (folder) => path43.join(folder, ".profile-editing");
-var STORAGE_FOLDERS = ["Local Storage", "Session Storage", "IndexedDB", "Service Worker", "Cache", "Code Cache", "WebStorage", "File System", "databases", "Shared Storage"];
-async function removeSiteData(sites, folder = BROWSER_FOLDER, run = RUN) {
-  if (!fs40.existsSync(path43.join(folder, "profile")))
-    return true;
-  const wanted = (host) => sites === "all" || sites.some((site) => onSite(host, site));
-  if (keeperRuns(run))
-    return await removeLive(wanted, sites === "all", folder, run);
-  const done = await lockedWhile(editingLock(folder), async () => {
-    if (keeperRuns(run))
-      return null;
-    const file = cookieFile(folder);
-    const hosts = new Set;
-    if (file) {
-      const removed = await inDatabase(file, false, (db) => {
-        const all = db.query("SELECT DISTINCT host_key FROM cookies").all().map((row) => String(row.host_key));
-        const going = all.filter(wanted);
-        for (const host of going)
-          db.query("DELETE FROM cookies WHERE host_key = ?").run(host);
-        return going;
-      });
-      if (!removed)
-        return false;
-      for (const host of removed)
-        hosts.add(host.replace(/^\./, ""));
-    }
-    if (sites === "all") {
-      for (const name of STORAGE_FOLDERS)
-        fs40.rmSync(path43.join(folder, "profile", "Default", name), { recursive: true, force: true });
-      return true;
-    }
-    for (const [host, folders] of storageHosts(folder)) {
-      if (!wanted(host))
-        continue;
-      for (const each of folders)
-        fs40.rmSync(each, { recursive: true, force: true });
-      hosts.add(host);
-    }
-    let pending = [];
-    try {
-      pending = JSON.parse(fs40.readFileSync(pendingFile(folder), "utf8"));
-    } catch {}
-    const next = [...new Set([...Array.isArray(pending) ? pending.filter((each) => typeof each === "string") : [], ...hosts, ...sites])];
-    writePrivate(pendingFile(folder), JSON.stringify(next));
-    return true;
-  }, { stale: 30000, wait: 1e4 });
-  return done ?? await removeLive(wanted, sites === "all", folder, run);
-}
-async function removeLive(wanted, all, folder, run) {
-  const done = await withKeeper(async (call) => {
-    const cookies = (await liveCookies(call)).filter((cookie) => wanted(cookie.domain));
-    const hosts = new Set([...cookies.map((cookie) => cookie.domain.replace(/^\./, "")), ...[...storageHosts(folder).keys()].filter(wanted)]);
-    if (!hosts.size && !all)
-      return true;
-    const targets = await call("Target.getTargets");
-    let page = (Array.isArray(targets?.targetInfos) ? targets.targetInfos : []).find((each) => each?.type === "page")?.targetId;
-    let opened = false;
-    if (!page) {
-      page = (await call("Target.createTarget", { url: "about:blank", newWindow: true }))?.targetId;
-      opened = true;
-    }
-    const sessionId = (await call("Target.attachToTarget", { targetId: page, flatten: true }))?.sessionId;
-    try {
-      if (all) {
-        await call("Network.clearBrowserCookies", {}, sessionId);
-        await call("Network.clearBrowserCache", {}, sessionId).catch(() => {});
-      } else {
-        for (const cookie of cookies) {
-          const live = cookie.live ?? {};
-          await call("Network.deleteCookies", { name: cookie.name, domain: cookie.domain, path: cookie.path, ...live.partitionKey ? { partitionKey: live.partitionKey } : {} }, sessionId);
-        }
-      }
-      for (const host of hosts) {
-        for (const scheme of ["https", "http"]) {
-          await call("Storage.clearDataForOrigin", { origin: `${scheme}://${host}`, storageTypes: "all" }, sessionId).catch(() => {});
-        }
-      }
-    } finally {
-      await call("Target.detachFromTarget", { sessionId }).catch(() => {});
-      if (opened && page)
-        await call("Target.closeTarget", { targetId: page }).catch(() => {});
-    }
-    return true;
-  }, { run });
-  return done === true;
-}
-function signedIn(cookies, wanted, now = Date.now()) {
-  return cookies.cookies.some((cookie) => onSite(cookie.domain, wanted.domain.replace(/^\./, "").toLowerCase()) && cookie.name === wanted.name && (cookies.live || cookie.persistent) && (cookie.expires === null ? cookies.live : cookie.expires > now));
-}
-async function siteSignInsHere(entries, folder = BROWSER_FOLDER, run = RUN) {
-  const named = entries.filter((each) => {
-    const cookie = each.signInCookie;
-    return typeof cookie?.domain === "string" && cookie.domain.length > 0 && typeof cookie.name === "string" && cookie.name.length > 0;
-  });
-  if (!named.length)
-    return null;
-  const cookies = await browserCookies(folder, run);
-  if (!cookies)
-    return fs40.existsSync(path43.join(folder, "profile")) && !cookieFile(folder) && !keeperRuns(run) ? Object.fromEntries(named.map((each) => [each.id, false])) : null;
-  return Object.fromEntries(named.map((each) => [each.id, signedIn(cookies, each.signInCookie)]));
 }
 
 // box/src/link/browser/routes.ts
@@ -10989,8 +12940,8 @@ async function* browserViewRoute({ json }) {
 }
 
 // box/src/link/areas/engine.ts
-import fs44 from "node:fs";
-import path47 from "node:path";
+import fs50 from "node:fs";
+import path53 from "node:path";
 
 // box/src/link/server/paths.ts
 var SOCKETS = [/^kuvo\/browser\/view$/, /^api\/pty\/[^/?]+\/connect(\?|$)/];
@@ -11047,9 +12998,9 @@ var signInReturn = (url) => {
 };
 
 // box/src/link/compat/leave-running.ts
-import fs41 from "node:fs";
-import path44 from "node:path";
-var SEEN_FILE = path44.join(RUN, "link.seen");
+import fs49 from "node:fs";
+import path52 from "node:path";
+var SEEN_FILE = path52.join(RUN, "link.seen");
 var KEEP_FOR = 7 * 24 * 60 * 60000;
 var seen = 0;
 function phoneHere() {
@@ -11058,807 +13009,42 @@ function phoneHere() {
   seen = Date.now();
   try {
     const now = new Date;
-    if (fs41.existsSync(SEEN_FILE)) {
-      fs41.utimesSync(SEEN_FILE, now, now);
+    if (fs49.existsSync(SEEN_FILE)) {
+      fs49.utimesSync(SEEN_FILE, now, now);
     } else {
-      fs41.mkdirSync(RUN, { recursive: true, mode: 448 });
-      fs41.writeFileSync(SEEN_FILE, "", { mode: 384 });
+      fs49.mkdirSync(RUN, { recursive: true, mode: 448 });
+      fs49.writeFileSync(SEEN_FILE, "", { mode: 384 });
     }
   } catch {}
 }
 function forgetPhones() {
   seen = 0;
   try {
-    fs41.rmSync(SEEN_FILE, { force: true });
+    fs49.rmSync(SEEN_FILE, { force: true });
   } catch {}
 }
 function phoneSeenLately(file = SEEN_FILE, now = Date.now()) {
   try {
-    return now - fs41.statSync(file).mtimeMs < KEEP_FOR;
+    return now - fs49.statSync(file).mtimeMs < KEEP_FOR;
   } catch {
     return false;
   }
-}
-
-// box/src/link/updates/update.ts
-import { spawn as spawn5, spawnSync as spawnSync6 } from "node:child_process";
-import crypto14 from "node:crypto";
-import fs43 from "node:fs";
-import os7 from "node:os";
-import path46 from "node:path";
-
-// box/src/shared/night.ts
-function nightOf(date = new Date, zone = yourZone()) {
-  let parts;
-  try {
-    parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: zone || undefined, year: "numeric", month: "2-digit", day: "2-digit", hour: "numeric", hourCycle: "h23" }).formatToParts(date).map((part) => [part.type, part.value]));
-  } catch {
-    return null;
-  }
-  const hour = Number(parts.hour);
-  return hour >= 2 && hour < 5 ? `${parts.year}-${parts.month}-${parts.day}` : null;
-}
-
-// box/src/shared/updating.ts
-import fs42 from "node:fs";
-import path45 from "node:path";
-function updateUnderWay(run) {
-  const lock = path45.join(run, ".updating");
-  if (!fs42.existsSync(lock))
-    return false;
-  let pid = null;
-  try {
-    pid = Number(fs42.readFileSync(path45.join(lock, "pid"), "utf8"));
-  } catch {}
-  if (pid)
-    return processRuns(pid, "kuvo-link");
-  try {
-    return Date.now() - fs42.statSync(lock).mtimeMs < 60000;
-  } catch {
-    return false;
-  }
-}
-
-// box/src/link/updates/update.ts
-var UPDATE_KEYS = ["iLSFoygG8wg+r2yj+/qnoMHpZIhPKRNLlf9vpEKmx0A="];
-var UPDATE_URL = "https://github.com/serhatandic/kuvo-code/releases/latest/download/boxes.json";
-var UPDATE_STATE = path46.join(RUN, "update.json");
-var UPDATE_TRIAL = path46.join(RUN, "update-trial");
-var updateOnTrial = () => fs43.existsSync(UPDATE_TRIAL);
-var UPDATE_LOCK = path46.join(RUN, ".updating");
-var ROLLBACK = path46.join(UPDATES, "rollback");
-var LAUNCHERS = path46.join(RUN, "launchers.json");
-var ED25519_SPKI = Buffer.from("302a300506032b6570032100", "hex");
-var RELEASE_AGE = 3 * 86400000;
-var MAC_MEMORY = 30 * 86400000;
-var BOX_FILE = /^(bin\/[A-Za-z0-9._-]+|bin\/runtime\/[A-Za-z0-9._-]+|config\/opencode\/plugins\/[A-Za-z0-9._-]+)$/;
-var BUNDLE = /^bin\/[A-Za-z0-9][A-Za-z0-9._ -]*\.app$/;
-var BUNDLE_PART = /^(?:[A-Za-z0-9_][A-Za-z0-9._+ -]*\/)*[A-Za-z0-9_][A-Za-z0-9._+ -]*$/;
-var OFFER_REST = 86400000;
-var OFFER_RETRY = 3600000;
-var OFFERED = path46.join(UPDATES, "offered");
-var RELEASE_VERSION = /^\d+\.\d+\.\d+(-beta\.\d+)?$/;
-function versionOrder(version) {
-  const found = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/.exec(version ?? "");
-  return found ? [+found[1], +found[2], +found[3], found[4] == null ? Infinity : +found[4]] : null;
-}
-function newerVersion(version, than) {
-  const a = versionOrder(version), b = versionOrder(than);
-  if (!a)
-    return false;
-  if (!b)
-    return true;
-  for (let i = 0;i < 4; i++)
-    if (a[i] !== b[i])
-      return a[i] > b[i];
-  return false;
-}
-function verifyBoxes(text, keys = UPDATE_KEYS) {
-  let given;
-  try {
-    given = JSON.parse(text);
-  } catch {
-    throw new Error("That isn't a release.");
-  }
-  if (typeof given?.manifest !== "string" || typeof given.signature !== "string" || typeof given.key !== "string")
-    throw new Error("That isn't a release.");
-  const key = keys.map((each) => Buffer.from(each, "base64")).find((each) => each.length === 32 && each.equals(Buffer.from(given.key, "base64")));
-  if (!key)
-    throw new Error("It isn't signed with a key this machine trusts.");
-  const bytes = Buffer.from(given.manifest, "base64");
-  const publicKey = crypto14.createPublicKey({ key: Buffer.concat([ED25519_SPKI, key]), format: "der", type: "spki" });
-  if (!crypto14.verify(null, Buffer.concat([Buffer.from(`kuvo-box v1
-`), bytes]), publicKey, Buffer.from(given.signature, "base64")))
-    throw new Error("Its signature doesn't match.");
-  const manifest = JSON.parse(bytes.toString("utf8"));
-  if (manifest?.kuvo !== "box/1" || !RELEASE_VERSION.test(manifest.version ?? "") || typeof manifest.engine !== "string" || !/^[0-9][0-9A-Za-z.-]*$/.test(manifest.engine) || !isObject(manifest.pack) || typeof manifest.pack.url !== "string" || !/^[0-9a-f]{64}$/.test(manifest.pack.sha256 ?? ""))
-    throw new Error("That isn't a release.");
-  return manifest;
-}
-var boxVersion = () => {
-  const version = textOf(path46.join(K, "bin", "box-version"))?.trim();
-  return versionOrder(version) ? version : null;
-};
-var updateState = () => {
-  try {
-    return JSON.parse(fs43.readFileSync(UPDATE_STATE, "utf8")) ?? {};
-  } catch {
-    return {};
-  }
-};
-function noteUpdate(change) {
-  const state = { ...updateState(), ...change };
-  for (const [key, value] of Object.entries(change))
-    if (value == null)
-      delete state[key];
-  try {
-    writePrivate(UPDATE_STATE, JSON.stringify(state));
-  } catch {}
-  return state;
-}
-function noteLauncher(readEngine = readEngineFile, now = Date.now()) {
-  let mac = null;
-  try {
-    mac = readEngine()?.notes?.mac;
-  } catch {}
-  if (typeof mac !== "string" || !mac || mac.length > 100)
-    return;
-  let all = {};
-  try {
-    all = JSON.parse(fs43.readFileSync(LAUNCHERS, "utf8")) ?? {};
-  } catch {}
-  if (now - (all[mac] ?? 0) < 3600000)
-    return;
-  all[mac] = now;
-  for (const [key, at] of Object.entries(all))
-    if (now - at > MAC_MEMORY)
-      delete all[key];
-  try {
-    writePrivate(LAUNCHERS, JSON.stringify(all));
-  } catch {}
-}
-function updatesBlocked(link = readLink(), now = Date.now(), root = K) {
-  if (path46.resolve(root) !== path46.join(homeFolder(), ".kuvo-code"))
-    return "Only a machine's own Kuvo Code folder updates itself.";
-  let launchers = {};
-  try {
-    launchers = JSON.parse(fs43.readFileSync(LAUNCHERS, "utf8")) ?? {};
-  } catch {}
-  const behind = Object.entries(launchers).filter(([mac, at]) => now - at < MAC_MEMORY && link?.tolerantIDs?.[mac] !== true);
-  if (behind.length)
-    return "A Mac that connects to this machine has an older Kuvo Code, which would put back older versions: update Kuvo Code there first.";
-  return null;
-}
-async function boxBusy(readEngine = readEngineFile, readBridge = readBridgeFile) {
-  return await agentsWorking(readEngine, readBridge) === true || readAsks().length > 0;
-}
-async function agentsWorking(readEngine = readEngineFile, readBridge = readBridgeFile) {
-  let unknown = false;
-  for (const [read, program] of [[readEngine, "opencode"], [readBridge, "kuvo-agents"]]) {
-    let target = null;
-    try {
-      target = read();
-    } catch {}
-    if (!target?.port || !target?.password)
-      continue;
-    const pid = target.pid;
-    if (pid !== undefined && !processRuns(pid, program))
-      continue;
-    const answer = await asked(target, "GET", "api/session/active").catch(() => null);
-    const active = answer?.data;
-    if (Array.isArray(active) ? active.length : isObject(active) && Object.keys(active).length)
-      return true;
-    if (!Array.isArray(active) && !isObject(active))
-      unknown = true;
-  }
-  return unknown ? null : false;
-}
-var hexSHA256 = (data) => crypto14.createHash("sha256").update(data).digest("hex");
-function ran(command, args, env = {}, timeout = 120000) {
-  const result = spawnSync6(command, args, { cwd: K, env: { ...process.env, ...env }, encoding: "utf8", timeout });
-  return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
-}
-function isUpdating() {
-  return updateUnderWay(RUN);
-}
-function takeUpdateLock() {
-  try {
-    fs43.mkdirSync(UPDATE_LOCK);
-  } catch {
-    if (isUpdating())
-      return false;
-    fs43.rmSync(UPDATE_LOCK, { recursive: true, force: true });
-    try {
-      fs43.mkdirSync(UPDATE_LOCK);
-    } catch {
-      return false;
-    }
-  }
-  fs43.writeFileSync(path46.join(UPDATE_LOCK, "pid"), String(process.pid), { mode: 384 });
-  return true;
-}
-function keepForRollback(files, withData, bundles = new Set) {
-  fs43.rmSync(ROLLBACK, { recursive: true, force: true });
-  fs43.mkdirSync(path46.join(ROLLBACK, "files"), { recursive: true, mode: 448 });
-  const lines = [
-    "#!/bin/sh",
-    `K=${quote(K)}; B=${quote(ROLLBACK)}`,
-    `p=$(cat "$K/run/.updating/pid" 2>/dev/null)`,
-    `if [ -n "$p" ] && [ "$p" != "\${KUVO_UPDATER:-}" ] && kill -0 "$p" 2>/dev/null && { if [ -d /proc ]; then grep -q kuvo-link "/proc/$p/cmdline" 2>/dev/null; else ps -ww -o command= -p "$p" 2>/dev/null | grep -q kuvo-link; fi; }; then exit 0; fi`,
-    `sh "$K/bin/kuvo-start" stop >/dev/null 2>&1 || exit 1`
-  ];
-  for (const file of files) {
-    const from = path46.join(K, file);
-    if (bundles.has(file)) {
-      const [here, fresh, old] = [`"$K/"${quote(file)}`, `"$K/"${quote(`${file}.new`)}`, `"$K/"${quote(`${file}.old`)}`];
-      if (fs43.existsSync(from)) {
-        fs43.mkdirSync(path46.dirname(path46.join(ROLLBACK, "files", file)), { recursive: true, mode: 448 });
-        fs43.cpSync(from, path46.join(ROLLBACK, "files", file), { recursive: true, verbatimSymlinks: true });
-        lines.push(`rm -rf ${fresh} ${old} && cp -Rp "$B/files/"${quote(file)} ${fresh} && { [ ! -e ${here} ] || mv ${here} ${old}; } && mv ${fresh} ${here} && rm -rf ${old} || exit 1`);
-      } else {
-        lines.push(`rm -rf ${here} ${fresh} || exit 1`);
-      }
-    } else if (fs43.existsSync(from)) {
-      fs43.mkdirSync(path46.dirname(path46.join(ROLLBACK, "files", file)), { recursive: true, mode: 448 });
-      fs43.copyFileSync(from, path46.join(ROLLBACK, "files", file));
-      fs43.chmodSync(path46.join(ROLLBACK, "files", file), fs43.statSync(from).mode & 511);
-      lines.push(`cp -p "$B/files/"${quote(file)} "$K/"${quote(file)}.new && mv -f "$K/"${quote(file)}.new "$K/"${quote(file)} || exit 1`);
-    } else {
-      lines.push(`rm -f "$K/"${quote(file)} || exit 1`);
-    }
-  }
-  if (withData) {
-    lines.push(`D="$K/data/opencode"`, `if [ -f "$B/data/opencode.db" ]; then`, `  rm -f "$D/opencode.db-wal" "$D/opencode.db-shm" || exit 1`, `  for n in opencode.db opencode.db-wal opencode.db-shm; do if [ -f "$B/data/$n" ]; then mv -f "$B/data/$n" "$D/$n" || exit 1; fi; done`, `fi`);
-  }
-  lines.push(`sh "$K/bin/kuvo-start" start >/dev/null 2>&1`, `rm -f "$K/run/update-trial" "$K/run/update-restore"`, `rm -rf "$B"`);
-  writePrivate(path46.join(ROLLBACK, "restore.sh"), lines.join(`
-`) + `
-`);
-}
-function keepData() {
-  const folder = path46.join(K, "data", "opencode"), partial = path46.join(ROLLBACK, "data.partial");
-  fs43.rmSync(partial, { recursive: true, force: true });
-  fs43.mkdirSync(partial, { recursive: true, mode: 448 });
-  for (const name of ["opencode.db", "opencode.db-wal", "opencode.db-shm"]) {
-    if (fs43.existsSync(path46.join(folder, name)))
-      fs43.copyFileSync(path46.join(folder, name), path46.join(partial, name));
-  }
-  fs43.renameSync(partial, path46.join(ROLLBACK, "data"));
-}
-function roomForData() {
-  let size = 0;
-  for (const name of ["opencode.db", "opencode.db-wal"])
-    try {
-      size += fs43.statSync(path46.join(K, "data", "opencode", name)).size;
-    } catch {}
-  const free = ran("df", ["-Pk", K]).output.split(`
-`).pop()?.trim().split(/\s+/)[3];
-  return !free || Number(free) * 1024 > size * 1.1 + 200000000;
-}
-async function cameUp(version, withAgents, timeout = 120000, readEngine = readEngineFile, readBridge = readBridgeFile) {
-  const began = Date.now();
-  while (Date.now() - began < timeout) {
-    await sleep(Math.min(2000, timeout / 10));
-    let engine = null;
-    try {
-      engine = readEngine();
-    } catch {}
-    if (engine?.version !== version)
-      continue;
-    if (!await asked(engine, "GET", "api/session?limit=1").then(() => true, () => false))
-      continue;
-    if (!withAgents)
-      return true;
-    let bridge = null;
-    try {
-      bridge = readBridge();
-    } catch {}
-    if (bridge?.port && await asked(bridge, "GET", "api/session/active").then(() => true, () => false))
-      return true;
-  }
-  return false;
-}
-var OWN_TOOLS = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"];
-var installOrder = (files) => [...files].sort((a, b) => a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1);
-async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, upWithin = 120000, swapping = () => {}, taking = () => {} } = {}) {
-  if (!keys.length)
-    return { result: "off", message: "Updates aren't set up for this machine yet." };
-  if (blocked)
-    return { result: "blocked", message: blocked };
-  if (fs43.existsSync(path46.join(RUN, "stopped")))
-    return { result: "blocked", message: "Its engine is stopped: start it to update it." };
-  const before = boxVersion();
-  if (!before)
-    return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
-  if (!takeUpdateLock())
-    return { result: "busy", message: "It's updating already." };
-  let trial = false, stopped = false, swapped = false, stage = null;
-  try {
-    step("checking");
-    let released;
-    if (from)
-      released = readRelease(path46.join(from, "boxes.json"), 1e6);
-    else
-      try {
-        released = await fetched(url, 1e6, 30000);
-      } catch (error) {
-        if (/answered 404/.test(String(error?.message)))
-          return { result: "current", version: before };
-        throw error;
-      }
-    const manifest = verifyBoxes(released.toString("utf8"), keys);
-    taking(manifest.version);
-    if (!from)
-      noteUpdate({ latest: manifest.version, checked: clock() });
-    if (!newerVersion(manifest.version, before))
-      return { result: "current", version: before };
-    if (!now && !from && clock() - (Date.parse(manifest.released) || clock()) < RELEASE_AGE)
-      return { result: "waiting", version: manifest.version, message: "It takes a release a few days after it's out." };
-    if (await boxBusy())
-      return { result: "busy", message: "Something is running there now." };
-    step("downloading");
-    stage = path46.join(UPDATES, manifest.version);
-    fs43.rmSync(stage, { recursive: true, force: true });
-    fs43.mkdirSync(path46.join(stage, "files"), { recursive: true, mode: 448 });
-    const pack = from ? readRelease(path46.join(from, packName(manifest)), 1e8) : await fetched(manifest.pack.url, 1e8, 300000);
-    if (hexSHA256(pack) !== manifest.pack.sha256)
-      throw new Error("The release's files aren't what it says.");
-    fs43.writeFileSync(path46.join(stage, "pack.tgz"), pack, { mode: 384 });
-    if (ran("tar", ["xzf", path46.join(stage, "pack.tgz"), "-C", path46.join(stage, "files")]).status !== 0)
-      throw new Error("The release's files couldn't be unpacked.");
-    const box = JSON.parse(fs43.readFileSync(path46.join(stage, "files", "box.json"), "utf8"));
-    if (box?.version !== manifest.version || box.engine !== manifest.engine || !isObject(box.files))
-      throw new Error("The release's files aren't what it says.");
-    const files = installOrder(Object.keys(box.files));
-    const matches = (file, sha) => fs43.lstatSync(file, { throwIfNoEntry: false })?.isFile() === true && hexSHA256(fs43.readFileSync(file)) === sha;
-    for (const file of files) {
-      if (!BOX_FILE.test(file) || file.split("/").includes(".."))
-        throw new Error("The release names a file outside the box.");
-      if (!matches(path46.join(stage, "files", file), box.files[file]))
-        throw new Error("The release's files aren't what it says.");
-    }
-    if (box.bundles !== undefined && !isObject(box.bundles))
-      throw new Error("The release's files aren't what it says.");
-    const bundles = Object.keys(box.bundles ?? {}).sort();
-    for (const bundle of bundles) {
-      const listed = box.bundles[bundle];
-      if (!BUNDLE.test(bundle) || files.includes(bundle) || !isObject(listed))
-        throw new Error("The release names a file outside the box.");
-      for (const [inner, sha] of Object.entries(listed)) {
-        if (!BUNDLE_PART.test(inner))
-          throw new Error("The release names a file outside the box.");
-        if (!matches(path46.join(stage, "files", bundle, inner), sha))
-          throw new Error("The release's files aren't what it says.");
-      }
-      for (const entry of fs43.readdirSync(path46.join(stage, "files", bundle), { recursive: true, encoding: "utf8" })) {
-        const stat = fs43.lstatSync(path46.join(stage, "files", bundle, entry));
-        if (!stat.isDirectory() && !(stat.isFile() && Object.hasOwn(listed, entry)))
-          throw new Error("The release's files aren't what it says.");
-      }
-    }
-    if (process.platform !== "darwin")
-      bundles.length = 0;
-    if (!files.includes("bin/box-version") || fs43.readFileSync(path46.join(stage, "files", "bin", "box-version"), "utf8").trim() !== manifest.version)
-      throw new Error("The release's files aren't what it says.");
-    for (const tool of OWN_TOOLS) {
-      if (!files.includes(`bin/${tool}`))
-        continue;
-      const from = path46.join(stage, "files", "bin", tool), own = path46.join(stage, "files", "bin", ".own", tool);
-      fs43.mkdirSync(path46.dirname(own), { recursive: true, mode: 448 });
-      fs43.copyFileSync(from, own);
-      fs43.chmodSync(own, fs43.statSync(from).mode & 511);
-      files.push(`bin/.own/${tool}`);
-    }
-    files.splice(0, files.length, ...installOrder([...files, ...bundles]));
-    const engineFolder = path46.join(K, "engine", manifest.engine);
-    let staged = null;
-    if (!fs43.existsSync(path46.join(engineFolder, "opencode"))) {
-      const kind = { x64: "x86_64", arm64: "aarch64" }[os7.arch()];
-      const build = (process.platform === "darwin" ? manifest.darwin : manifest.linux)?.[kind];
-      if (!build?.url || !/^sha512-/.test(build.integrity ?? ""))
-        throw new Error("The release has no engine for this machine.");
-      step("downloading the engine");
-      const tarball = await fetched(build.url, 400000000, 900000);
-      if (crypto14.createHash("sha512").update(tarball).digest("base64") !== build.integrity.slice(7))
-        throw new Error("The engine isn't what the release says.");
-      fs43.writeFileSync(path46.join(stage, "engine.tgz"), tarball, { mode: 384 });
-      fs43.mkdirSync(path46.join(stage, "engine"), { mode: 448 });
-      if (ran("tar", ["xzf", path46.join(stage, "engine.tgz"), "-C", path46.join(stage, "engine"), "package/bin/opencode"]).status !== 0)
-        throw new Error("The engine couldn't be unpacked.");
-      staged = path46.join(stage, "engine", "package", "bin", "opencode");
-      fs43.chmodSync(staged, 493);
-    }
-    step("checking it");
-    const engine = staged ?? path46.join(engineFolder, "opencode");
-    if (ran(engine, ["--version"]).status !== 0)
-      throw new Error("The new engine doesn't run here.");
-    const tried = ran(engine, ["--config=/dev/null", "--no-env-file", path46.join(stage, "files", "bin", "kuvo-link.js"), "selftest"], { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K });
-    if (tried.status !== 0 || !tried.output.includes("ok"))
-      throw new Error("The new link doesn't work with it here.");
-    if (ran("sh", ["-n", path46.join(stage, "files", "bin", "kuvo-start")]).status !== 0)
-      throw new Error("The new keeper doesn't read.");
-    if (!now && await boxBusy())
-      return { result: "busy", message: "Something is running there now." };
-    step("installing");
-    let previous = {};
-    try {
-      previous = readEngineFile();
-    } catch {}
-    const withAgents = Boolean(previous?.agentsPort) && fs43.existsSync(path46.join(stage, "files", "bin", "kuvo-agents.js"));
-    const otherEngine = previous?.version !== manifest.engine;
-    if (otherEngine && !roomForData())
-      throw new Error("There isn't room on it to keep its data while it updates.");
-    keepForRollback(files, otherEngine, new Set(bundles));
-    noteUpdate({ trial: { from: before, to: manifest.version, at: clock() }, running: null });
-    fs43.writeFileSync(UPDATE_TRIAL, manifest.version, { mode: 384 });
-    trial = true;
-    stopped = true;
-    const stop = ran("sh", [path46.join(K, "bin", "kuvo-start"), "stop"], {}, 300000);
-    if (stop.status !== 0 || previous?.pid && alive(previous.pid))
-      throw new Error("Its engine couldn't be stopped to update it.");
-    if (otherEngine)
-      keepData();
-    swapped = true;
-    swapping();
-    if (staged) {
-      fs43.mkdirSync(engineFolder, { recursive: true, mode: 448 });
-      fs43.renameSync(staged, path46.join(engineFolder, "opencode"));
-    }
-    for (const file of files) {
-      const from = path46.join(stage, "files", file), to = path46.join(K, file);
-      fs43.mkdirSync(path46.dirname(to), { recursive: true, mode: 448 });
-      if (bundles.includes(file)) {
-        swapBundle(from, to);
-        continue;
-      }
-      fs43.copyFileSync(from, `${to}.new`);
-      fs43.chmodSync(`${to}.new`, fs43.statSync(from).mode & 511);
-      fs43.renameSync(`${to}.new`, to);
-    }
-    ran("sh", [path46.join(K, "bin", "kuvo-start"), "start"]);
-    step("starting");
-    if (!await cameUp(manifest.engine, withAgents, upWithin))
-      throw new Error("The new version didn't come up.");
-    writePrivate(path46.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, files: box.files }));
-    noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), healthy: true } });
-    return { result: "updated", version: manifest.version };
-  } catch (error) {
-    const message = String(error?.message ?? error).slice(0, 300);
-    if (stage)
-      fs43.rmSync(stage, { recursive: true, force: true });
-    if (swapped) {
-      ran("sh", [path46.join(ROLLBACK, "restore.sh")], { KUVO_UPDATER: String(process.pid) }, 600000);
-    } else {
-      if (trial) {
-        fs43.rmSync(UPDATE_TRIAL, { force: true });
-        fs43.rmSync(ROLLBACK, { recursive: true, force: true });
-      }
-      if (stopped)
-        ran("sh", [path46.join(K, "bin", "kuvo-start"), "start"]);
-    }
-    if (trial)
-      noteUpdate({ trial: null });
-    noteUpdate({ last: { at: clock(), result: "failed", message, from: before } });
-    return { result: "failed", message };
-  } finally {
-    clearUpdateStaging();
-    fs43.rmSync(UPDATE_LOCK, { recursive: true, force: true });
-  }
-}
-function swapBundle(from, to) {
-  const fresh = `${to}.new`, old = `${to}.old`;
-  fs43.rmSync(fresh, { recursive: true, force: true });
-  fs43.rmSync(old, { recursive: true, force: true });
-  fs43.renameSync(from, fresh);
-  if (fs43.existsSync(to))
-    fs43.renameSync(to, old);
-  fs43.renameSync(fresh, to);
-  fs43.rmSync(old, { recursive: true, force: true });
-}
-function readRelease(file, limit) {
-  try {
-    const stat = fs43.statSync(file);
-    if (stat.isFile() && stat.size <= limit)
-      return fs43.readFileSync(file);
-  } catch {}
-  throw new Error("That release can't be read.");
-}
-function packName(manifest) {
-  let name = "";
-  try {
-    name = decodeURIComponent(path46.posix.basename(new URL(manifest.pack.url).pathname));
-  } catch {}
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name))
-    throw new Error("That isn't a release.");
-  return name;
-}
-function clearUpdateStaging(folder = UPDATES) {
-  const kept = new Set(["rollback", "installed.json", "rehome", "offered"]);
-  for (const name of listOf(folder))
-    if (!kept.has(name))
-      fs43.rmSync(path46.join(folder, name), { recursive: true, force: true });
-}
-function confirmUpdate(clock = Date.now) {
-  const state = updateState();
-  if (!state.trial?.healthy || boxVersion() !== state.trial.to || isUpdating())
-    return false;
-  let engine = null;
-  try {
-    engine = readEngineFile()?.version;
-  } catch {}
-  fs43.rmSync(UPDATE_TRIAL, { force: true });
-  fs43.rmSync(ROLLBACK, { recursive: true, force: true });
-  if (engine) {
-    for (const name of listOf(path46.join(K, "engine")))
-      if (name !== engine && !name.startsWith("."))
-        fs43.rmSync(path46.join(K, "engine", name), { recursive: true, force: true });
-  }
-  noteUpdate({ trial: null, last: { at: clock(), result: "updated", from: state.trial.from, to: state.trial.to } });
-  return true;
-}
-function noteOlderMac(at) {
-  let launchers = {};
-  try {
-    launchers = JSON.parse(fs43.readFileSync(LAUNCHERS, "utf8")) ?? {};
-  } catch {}
-  if ((launchers["an older Mac"] ?? 0) >= at)
-    return;
-  launchers["an older Mac"] = at;
-  try {
-    writePrivate(LAUNCHERS, JSON.stringify(launchers));
-  } catch {}
-}
-function noteOlderMacs() {
-  let at = 0, marked = 0;
-  try {
-    at = fs43.statSync(path46.join(RUN, "attached")).mtimeMs;
-    marked = fs43.statSync(path46.join(K, "bin", "box-version")).mtimeMs;
-  } catch {}
-  if (at <= marked)
-    at = 0;
-  try {
-    at = Math.max(at, fs43.statSync(path46.join(RUN, "older-mac")).mtimeMs);
-  } catch {}
-  if (!at || Date.now() - at > MAC_MEMORY)
-    return false;
-  noteOlderMac(at);
-  return true;
-}
-var MAC_INSTALLING = 3600000;
-function checkDrift(now = Date.now()) {
-  const record = path46.join(UPDATES, "installed.json"), pending = path46.join(RUN, "update-drift");
-  const note = path46.join(RUN, "mac-installing");
-  let installing = 0;
-  try {
-    installing = fs43.statSync(note).mtimeMs;
-  } catch {}
-  if (installing && now - installing >= MAC_INSTALLING) {
-    fs43.rmSync(note, { force: true });
-    installing = 0;
-  }
-  if (isUpdating() || fs43.existsSync(UPDATE_TRIAL))
-    return false;
-  let installed = null;
-  try {
-    installed = JSON.parse(fs43.readFileSync(record, "utf8"));
-  } catch {
-    return false;
-  }
-  if (installed?.version !== boxVersion() || !isObject(installed.files)) {
-    fs43.rmSync(record, { force: true });
-    fs43.rmSync(pending, { force: true });
-    return false;
-  }
-  const changed = Object.entries(installed.files).some(([file, sha]) => {
-    try {
-      return hexSHA256(fs43.readFileSync(path46.join(K, file))) !== sha;
-    } catch {
-      return true;
-    }
-  });
-  if (!changed || isUpdating() || now - installing < MAC_INSTALLING) {
-    fs43.rmSync(pending, { force: true });
-    return false;
-  }
-  if (textOf(pending)?.trim() !== installed.version) {
-    try {
-      writePrivate(pending, installed.version);
-    } catch {}
-    return false;
-  }
-  noteOlderMac(now);
-  noteUpdate({ last: { at: now, result: "failed", message: "An older Kuvo Code on a Mac put its own files back here: update Kuvo Code on your Macs." } });
-  return true;
-}
-function updateNight(date = new Date, zone = yourZone()) {
-  return nightOf(date, zone);
-}
-function updateStatus() {
-  const state = updateState();
-  const offered = offeredVersion();
-  let engine = null;
-  try {
-    engine = readEngineFile()?.version ?? null;
-  } catch {}
-  return {
-    setUp: UPDATE_KEYS.length > 0,
-    version: boxVersion(),
-    engine,
-    latest: state.latest ?? null,
-    last: state.last ?? null,
-    updating: isUpdating() ? state.running ?? "checking" : null,
-    blocked: updatesBlocked(),
-    ...offered ? { offered } : {},
-    ...state.offerFailed ? { offerFailed: { version: state.offerFailed.version, at: state.offerFailed.at, takenBack: state.offerFailed.takenBack, ...state.offerFailed.message ? { message: state.offerFailed.message } : {} } } : {}
-  };
-}
-var updating = null;
-function startUpdate(options = {}) {
-  if (updating || isUpdating())
-    return null;
-  updating = update({ ...options, step: (running) => noteUpdate({ running }) }).then((outcome) => {
-    noteUpdate({ running: null, ...outcome.result === "updated" ? {} : { last: { at: Date.now(), ...outcome } } });
-    if (outcome.result === "updated")
-      setTimeout(() => process.exit(0), 1000);
-    return outcome;
-  }, () => null).finally(() => {
-    updating = null;
-  });
-  return updating;
-}
-async function* updateRoute(context) {
-  const { request, json } = context;
-  const method = request.method.toUpperCase();
-  if (method === "GET")
-    return yield* json(200, updateStatus());
-  if (method === "POST") {
-    if (parsed(request.body)?.now !== true)
-      return yield* json(400, { message: "Say to update now (now)." });
-    if (!UPDATE_KEYS.length)
-      return yield* json(409, { message: "Updates aren't set up for this machine yet." });
-    const blocked = updatesBlocked();
-    if (blocked)
-      return yield* json(409, { message: blocked });
-    return yield* startUpdate({ now: true }) ? json(202, updateStatus()) : json(409, { message: "It's updating already." });
-  }
-  return yield* json(405, {});
-}
-function offeredVersion() {
-  try {
-    const given = JSON.parse(fs43.readFileSync(path46.join(OFFERED, "boxes.json"), "utf8"));
-    const version = JSON.parse(Buffer.from(given.manifest, "base64").toString("utf8"))?.version;
-    return versionOrder(version) ? version : null;
-  } catch {
-    return null;
-  }
-}
-var dropOffer = () => fs43.rmSync(OFFERED, { recursive: true, force: true });
-function offerRests(version, now) {
-  const { offerFailed: failed, trial } = updateState();
-  if (failed?.version === version && now - failed.at < (failed.takenBack || (failed.tries ?? 1) > 1 ? OFFER_REST : OFFER_RETRY))
-    return true;
-  return trial?.to === version && boxVersion() !== version && !updateOnTrial() && now - trial.at < OFFER_REST;
-}
-function offerUpdate(from, { keys = UPDATE_KEYS, blocked = updatesBlocked(), clock = Date.now } = {}) {
-  if (typeof from !== "string" || !path46.isAbsolute(from))
-    return { status: 400, message: "Say which folder the release is in (from), as a full path." };
-  if (!keys.length)
-    return { status: 409, message: "Updates aren't set up for this machine yet." };
-  if (blocked)
-    return { status: 409, message: blocked };
-  const before = boxVersion();
-  if (!before)
-    return { status: 409, message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
-  if (updating || isUpdating())
-    return { status: 409, message: "It's updating already." };
-  let boxes, manifest, name;
-  try {
-    boxes = readRelease(path46.join(from, "boxes.json"), 1e6);
-    manifest = verifyBoxes(boxes.toString("utf8"), keys);
-    name = packName(manifest);
-  } catch (error) {
-    return { status: 422, message: String(error?.message ?? error).slice(0, 300) };
-  }
-  if (!newerVersion(manifest.version, before))
-    return { status: 409, message: `It has ${before} already, and takes only a newer version.` };
-  const offered = offeredVersion();
-  if (offered && newerVersion(offered, manifest.version))
-    return { status: 409, message: `A newer release (${offered}) waits to be taken already.` };
-  const { offerFailed: failed } = updateState();
-  if (offerRests(manifest.version, clock()) && (failed?.version !== manifest.version || failed.takenBack))
-    return { status: 409, message: `It tried ${manifest.version} lately and went back to what it had: it takes it again tomorrow.` };
-  if (offered === manifest.version)
-    return { status: 202, version: manifest.version };
-  let pack;
-  try {
-    pack = readRelease(path46.join(from, name), 1e8);
-  } catch (error) {
-    return { status: 422, message: String(error?.message ?? error) };
-  }
-  if (hexSHA256(pack) !== manifest.pack.sha256)
-    return { status: 422, message: "The release's files aren't what it says." };
-  if (!takeUpdateLock())
-    return { status: 409, message: "It's updating already." };
-  const partial = `${OFFERED}.partial`;
-  try {
-    fs43.rmSync(partial, { recursive: true, force: true });
-    fs43.mkdirSync(partial, { recursive: true, mode: 448 });
-    fs43.writeFileSync(path46.join(partial, "boxes.json"), boxes, { mode: 384 });
-    fs43.writeFileSync(path46.join(partial, name), pack, { mode: 384 });
-    dropOffer();
-    fs43.renameSync(partial, OFFERED);
-  } catch (error) {
-    fs43.rmSync(partial, { recursive: true, force: true });
-    return { status: 409, message: `It couldn't keep the release: ${String(error?.message ?? error).slice(0, 200)}` };
-  } finally {
-    fs43.rmSync(UPDATE_LOCK, { recursive: true, force: true });
-  }
-  return { status: 202, version: manifest.version };
-}
-async function offerDue({ blocked = updatesBlocked(), clock = Date.now } = {}) {
-  const offered = offeredVersion(), before = boxVersion();
-  if (!offered)
-    return false;
-  if (before && !newerVersion(offered, before)) {
-    if (!isUpdating())
-      dropOffer();
-    return false;
-  }
-  return !blocked && !!before && !updating && !isUpdating() && !updateOnTrial() && !fs43.existsSync(path46.join(RUN, "stopped")) && !offerRests(offered, clock()) && !await boxBusy();
-}
-async function takeOffer(options = {}) {
-  if (!await offerDue(options))
-    return null;
-  let version = offeredVersion(), takenBack = false;
-  const outcome = await update({ ...options, from: OFFERED, swapping: () => {
-    takenBack = true;
-  }, taking: (taken) => {
-    version = taken;
-  } });
-  if (outcome.result === "failed") {
-    const before = updateState().offerFailed;
-    const tries = before?.version === version && !before.takenBack ? (before.tries ?? 1) + 1 : 1;
-    noteUpdate({ offerFailed: { version, at: (options.clock ?? Date.now)(), takenBack, tries, ...outcome.message ? { message: outcome.message } : {} } });
-  }
-  if (outcome.result === "updated" || outcome.result === "current")
-    noteUpdate({ offerFailed: null });
-  if (outcome.result === "updated" || outcome.result === "current" || takenBack)
-    dropOffer();
-  return outcome;
-}
-async function startOfferedUpdate() {
-  if (!await offerDue())
-    return false;
-  spawn5(process.execPath, [...OWN_RUNTIME, SCRIPT, "update", "--offered"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
-  return true;
-}
-async function* boxUpdateRoute({ request, json }) {
-  if (request.method.toUpperCase() !== "POST")
-    return yield* json(405, {});
-  if (!request.fromApp && !request.fromMac)
-    return yield* json(403, { message: "Only Kuvo Code offers this box a release." });
-  const given = parsed(request.body);
-  const offered = offerUpdate(isObject(given) ? given.from : undefined);
-  if (offered.status !== 202)
-    return yield* json(offered.status, { message: offered.message });
-  startOfferedUpdate().catch(() => {});
-  return yield* json(202, updateStatus());
 }
 
 // box/src/link/areas/engine.ts
 var engineDown = () => {
-  if (fs44.existsSync(path47.join(RUN, "stopped")))
+  if (fs50.existsSync(path53.join(RUN, "stopped")))
     return "The engine isn't running.";
   if (IS_MAC) {
     let why = "";
     try {
-      why = fs44.readFileSync(path47.join(RUN, "engine-stopped"), "utf8").trim();
+      why = fs50.readFileSync(path53.join(RUN, "engine-stopped"), "utf8").trim();
     } catch {}
     if (why)
-      return `This Mac's engine isn't running. ${why}${fs44.existsSync(path47.join(RUN, "engine.retry")) ? "" : " Try Again in Kuvo Code on the Mac starts it."}`;
+      return `This Mac's engine isn't running. ${why}${fs50.existsSync(path53.join(RUN, "engine.retry")) ? "" : " Try Again in Kuvo Code on the Mac starts it."}`;
     return "This Mac's engine is starting. Try again in a moment.";
   }
-  const retry = Number(fs44.existsSync(path47.join(RUN, "engine.retry")) ? fs44.readFileSync(path47.join(RUN, "engine.retry"), "utf8").trim() : NaN);
+  const retry = Number(fs50.existsSync(path53.join(RUN, "engine.retry")) ? fs50.readFileSync(path53.join(RUN, "engine.retry"), "utf8").trim() : NaN);
   const minutes = Math.ceil((retry - Date.now() / 1000) / 60);
   if (Number.isFinite(retry) && retry - Date.now() / 1000 > 30) {
     return `This machine's engine keeps stopping. It's started again in ${minutes === 1 ? "about a minute" : `about ${minutes} minutes`}.`;
@@ -11867,10 +13053,10 @@ var engineDown = () => {
 };
 var ENGINE_UP_WHILE = ["checking", "downloading", "downloading the engine", "checking it"];
 async function engineControl(command) {
-  const start = path47.join(K, "bin", "kuvo-start");
-  if (!fs44.existsSync(start))
+  const start = path53.join(K, "bin", "kuvo-start");
+  if (!fs50.existsSync(start))
     return { status: 409, message: "Kuvo Code hasn't set this machine up yet." };
-  if (!IS_MAC && ![path47.join(K, "bin", "kuvo-launch"), path47.join(RUN, "launch.env")].every((file) => fs44.existsSync(file))) {
+  if (!IS_MAC && ![path53.join(K, "bin", "kuvo-launch"), path53.join(RUN, "launch.env")].every((file) => fs50.existsSync(file))) {
     return { status: 409, message: "Start it once from Kuvo Code on your Mac." };
   }
   if (isUpdating() && !ENGINE_UP_WHILE.includes(updateState().running)) {
@@ -11879,10 +13065,10 @@ async function engineControl(command) {
   const environment = { ...process.env };
   delete environment.BUN_BE_BUN;
   delete environment.BUN_RUNTIME_TRANSPILER_CACHE_PATH;
-  const workspace = path47.join(K, "workspace");
-  const options = { cwd: fs44.existsSync(workspace) ? workspace : K, env: environment };
+  const workspace = path53.join(K, "workspace");
+  const options = { cwd: fs50.existsSync(workspace) ? workspace : K, env: environment };
   try {
-    const child = spawn6("sh", [start, command], { ...options, detached: true, stdio: "ignore" });
+    const child = spawn7("sh", [start, command], { ...options, detached: true, stdio: "ignore" });
     lastToolRun = { child, ended: new Promise((resolve) => {
       child.on("exit", resolve);
       child.on("error", resolve);
@@ -12025,8 +13211,8 @@ async function* signInReturnRoute(context) {
 
 // box/src/link/work/services.ts
 import { execFile as execFile6 } from "node:child_process";
-import fs45 from "node:fs";
-import path48 from "node:path";
+import fs51 from "node:fs";
+import path54 from "node:path";
 async function listeningPorts(groups, { proc = "/proc", platform = process.platform } = {}) {
   const wanted = [...new Set(groups.filter((group) => Number.isInteger(group) && group > 1))];
   if (!wanted.length)
@@ -12060,7 +13246,7 @@ async function fromProc(groups, proc) {
   for (const table of ["tcp", "tcp6"]) {
     let text = "";
     try {
-      text = await fs45.promises.readFile(path48.join(proc, "net", table), "utf8");
+      text = await fs51.promises.readFile(path54.join(proc, "net", table), "utf8");
     } catch {
       continue;
     }
@@ -12077,14 +13263,14 @@ async function fromProc(groups, proc) {
     return found;
   let entries = [];
   try {
-    entries = await fs45.promises.readdir(proc);
+    entries = await fs51.promises.readdir(proc);
   } catch {
     return found;
   }
   for (const pid of entries.filter((each) => /^\d+$/.test(each))) {
     let stat = "";
     try {
-      stat = await fs45.promises.readFile(path48.join(proc, pid, "stat"), "utf8");
+      stat = await fs51.promises.readFile(path54.join(proc, pid, "stat"), "utf8");
     } catch {
       continue;
     }
@@ -12093,14 +13279,14 @@ async function fromProc(groups, proc) {
       continue;
     let fds = [];
     try {
-      fds = await fs45.promises.readdir(path48.join(proc, pid, "fd"));
+      fds = await fs51.promises.readdir(path54.join(proc, pid, "fd"));
     } catch {
       continue;
     }
     for (const fd of fds) {
       let target = "";
       try {
-        target = await fs45.promises.readlink(path48.join(proc, pid, "fd", fd));
+        target = await fs51.promises.readlink(path54.join(proc, pid, "fd", fd));
       } catch {
         continue;
       }
@@ -12113,20 +13299,20 @@ async function fromProc(groups, proc) {
 }
 
 // box/src/link/work/tree.ts
-import path53 from "node:path";
+import path58 from "node:path";
 
 // box/src/link/notices/told.ts
-import path52 from "node:path";
+import path57 from "node:path";
 
 // box/src/link/keeper.ts
-import { spawn as spawn7 } from "node:child_process";
-import fs48 from "node:fs";
-import path51 from "node:path";
+import { spawn as spawn8 } from "node:child_process";
+import fs53 from "node:fs";
+import path56 from "node:path";
 
 // box/src/link/vault/store.ts
 import crypto16 from "node:crypto";
-import fs47 from "node:fs";
-import path50 from "node:path";
+import fs52 from "node:fs";
+import path55 from "node:path";
 
 // box/src/shared/routes/vault.ts
 var ITEM_KINDS = ["login", "key", "file", "note"];
@@ -12205,164 +13391,6 @@ var VAULT_TOOL_LIST = object({ tools: list(any) });
 var VAULT_TOOL = object({ text: string, isError: bool });
 var VAULT_FILL = object({ item: object({ id: string, name: string }), "username?": string, values: map(string) });
 
-// box/src/link/host-interface.ts
-import crypto15 from "node:crypto";
-import fs46 from "node:fs";
-import path49 from "node:path";
-class KeysUnavailable extends Error {
-}
-var HOST_FILE = path49.join(RUN, "host.json");
-var NOT_ANSWERING = "Kuvo Code isn't answering for this Mac's keys. Try again in a moment.";
-function appHost() {
-  if (!KEYS_ON_HOST)
-    return null;
-  try {
-    const text = fs46.readFileSync(HOST_FILE, "utf8");
-    const said = JSON.parse(text);
-    if (typeof said?.url === "string" && said.url && typeof said?.password === "string" && said.password) {
-      return { url: said.url.replace(/\/+$/, ""), password: said.password, said: text };
-    }
-  } catch {}
-  return LAUNCH_HOST && { ...LAUNCH_HOST, said: "launch" };
-}
-function openAppHost() {
-  if (!OWN_HOME_MAC)
-    return appHost();
-  try {
-    const host = JSON.parse(fs46.readFileSync(path49.join(RUN, "app.json"), "utf8"))?.host;
-    if (typeof host?.url === "string" && host.url && typeof host?.password === "string" && host.password) {
-      return { url: host.url.replace(/\/+$/, ""), password: host.password, said: `app ${host.url} ${host.password}` };
-    }
-  } catch {}
-  return null;
-}
-function helloProof(password, nonce, url) {
-  const reached = new URL(url);
-  return crypto15.createHmac("sha256", password).update(`kuvo-host-hello\x00${nonce}\x00${reached.hostname}:${reached.port || 80}`).digest("hex");
-}
-var provenBy = null;
-var vaultProvenBy = null;
-function forgetHostProof() {
-  provenBy = null;
-  vaultProvenBy = null;
-}
-async function proveHost(host, signal) {
-  if (provenBy === host.said)
-    return;
-  const nonce = crypto15.randomBytes(32).toString("hex");
-  let proof = null;
-  try {
-    const response = await fetch(`${host.url}/hello`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ nonce }),
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000)
-    });
-    const answer = await response.json().catch(() => null);
-    if (response.ok && typeof answer?.proof === "string")
-      proof = Buffer.from(answer.proof);
-  } catch {}
-  const expected = Buffer.from(helloProof(host.password, nonce, host.url));
-  if (!proof || proof.length !== expected.length || !crypto15.timingSafeEqual(proof, expected))
-    throw new KeysUnavailable(NOT_ANSWERING);
-  if (host.said.startsWith("app "))
-    return;
-  provenBy = host.said;
-}
-async function proveVaultHost(host) {
-  if (!HOST_VAULT_SECRET) {
-    throw new KeysUnavailable(OWN_HOME_MAC ? "This Mac's vault can only be reached by its running box, not by a one-off command." : "Kuvo Code on this Mac didn't give its vault its secret. Quit Kuvo Code and open it again.");
-  }
-  if (vaultProvenBy === host.said)
-    return;
-  const nonce = crypto15.randomBytes(32).toString("hex");
-  let proof = null;
-  try {
-    const response = await fetch(`${host.url}/hello`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ nonce, vault: true }),
-      signal: AbortSignal.timeout(15000)
-    });
-    const answer = await response.json().catch(() => null);
-    if (response.ok && typeof answer?.vaultProof === "string")
-      proof = Buffer.from(answer.vaultProof);
-  } catch {}
-  const reached = new URL(host.url);
-  const expected = Buffer.from(crypto15.createHmac("sha256", HOST_VAULT_SECRET).update(`kuvo-host-vault\x00${nonce}\x00${reached.hostname}:${reached.port || 80}`).digest("hex"));
-  if (!proof || proof.length !== expected.length || !crypto15.timingSafeEqual(proof, expected))
-    throw new KeysUnavailable(NOT_ANSWERING);
-  vaultProvenBy = host.said;
-}
-var vaultAuth = (call, body, at) => crypto15.createHmac("sha256", HOST_VAULT_SECRET ?? "").update(`kuvo-host-vault-call\x00${call}\x00${crypto15.createHash("sha256").update(body).digest("hex")}\x00${at}`).digest("hex");
-async function hostTrash(folder) {
-  const host = appHost();
-  if (!host)
-    return;
-  await proveHost(host);
-  const response = await fetch(`${host.url}/trash`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json" },
-    body: JSON.stringify({ path: folder }),
-    signal: AbortSignal.timeout(15000)
-  });
-  await response.body?.cancel().catch(() => {});
-}
-async function askHost(host, call, body, missing = false) {
-  await proveHost(host);
-  const sent = JSON.stringify(body);
-  const vault = call.startsWith("vault/");
-  if (vault)
-    await proveVaultHost(host);
-  const at = Date.now();
-  let response;
-  try {
-    response = await fetch(`${host.url}/${call}`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json", ...vault ? { "x-kuvo-vault-auth": vaultAuth(call, sent, at), "x-kuvo-vault-at": String(at) } : {} },
-      body: sent,
-      signal: AbortSignal.timeout(["keys/get", "keys/set", "link/identity", "vault/get", "vault/set"].includes(call) ? 120000 : 15000)
-    });
-  } catch {
-    forgetHostProof();
-    throw new KeysUnavailable(NOT_ANSWERING);
-  }
-  if (missing && response.status === 404) {
-    await response.body?.cancel().catch(() => {});
-    return null;
-  }
-  let answer = null;
-  try {
-    answer = await response.json();
-  } catch {}
-  if (response.status < 200 || response.status > 299) {
-    const said = typeof answer?.message === "string" && answer.message.trim() ? ` ${oneLine(answer.message, 300)}` : "";
-    throw new KeysUnavailable(`This Mac's keys couldn't be reached (${response.status}).${said}`);
-  }
-  return answer ?? {};
-}
-async function siteSignIns() {
-  const host = openAppHost();
-  if (!host)
-    return null;
-  try {
-    const answer = await askHost(host, "sites/signed-in", {});
-    return isObject(answer?.sites) ? answer.sites : null;
-  } catch {
-    return null;
-  }
-}
-async function linkHost(call, body) {
-  const host = appHost();
-  if (!host)
-    return null;
-  try {
-    return await askHost(host, call, body ?? {});
-  } catch {
-    return null;
-  }
-}
-
 // box/src/link/vault/gate.ts
 var agentsUseVault = () => {
   if (process.env.KUVO_VAULT_AGENTS === "1" && !REAL_BOX)
@@ -12379,13 +13407,13 @@ var agentsWaitForOlder = () => {
 var AGENTS_LATER = "The user's vault isn't open to agents on this computer yet: its items, keys, files and notes can't be used here. To sign in, call browser_sign_in without an item: a sign-in the user lets you use on this site fills on its own, or else they sign in. For anything else, ask the user in the chat.";
 
 // box/src/link/vault/store.ts
-var VAULT_FOLDER = path50.join(BOX, "vault");
-var ITEMS = path50.join(VAULT_FOLDER, "items.json");
-var GRANTS = path50.join(VAULT_FOLDER, "grants.json");
-var PAUSED = path50.join(VAULT_FOLDER, "paused.json");
-var KEY_FILE = path50.join(VAULT_FOLDER, "key.json");
-var VALUES = path50.join(VAULT_FOLDER, "values");
-var LOCK4 = path50.join(RUN, ".vault.lock");
+var VAULT_FOLDER = path55.join(BOX, "vault");
+var ITEMS = path55.join(VAULT_FOLDER, "items.json");
+var GRANTS = path55.join(VAULT_FOLDER, "grants.json");
+var PAUSED = path55.join(VAULT_FOLDER, "paused.json");
+var KEY_FILE = path55.join(VAULT_FOLDER, "key.json");
+var VALUES = path55.join(VAULT_FOLDER, "values");
+var LOCK4 = path55.join(RUN, ".vault.lock");
 var KEPT_DAYS = 365;
 
 class VaultRefusal extends Error {
@@ -12400,7 +13428,7 @@ var storeKey = null;
 var unlockKey = null;
 var readJSON = (file, fallback) => {
   try {
-    return JSON.parse(fs47.readFileSync(file, "utf8"));
+    return JSON.parse(fs52.readFileSync(file, "utf8"));
   } catch {
     return fallback;
   }
@@ -12411,7 +13439,7 @@ var fileKey = () => {
     return MAC_VAULT_FILE_KEY;
   return storeKey ? crypto16.createHmac("sha256", storeKey).update("kuvo-vault-files").digest() : null;
 };
-var signatureOf = (key, file, generation, data) => crypto16.createHmac("sha256", key).update(`${path50.basename(file)}\x00${generation}\x00${JSON.stringify(data)}`).digest("base64url");
+var signatureOf = (key, file, generation, data) => crypto16.createHmac("sha256", key).update(`${path55.basename(file)}\x00${generation}\x00${JSON.stringify(data)}`).digest("base64url");
 var tampered = new Set;
 var newest = new Map;
 var primed = false;
@@ -12426,14 +13454,14 @@ async function primeGenerations() {
   const answer = await asHost(() => askHost(host(), "vault/generations", {}));
   const kept = isObject(answer?.generations) ? answer.generations : {};
   for (const file of [ITEMS, GRANTS, PAUSED]) {
-    const generation = kept[path50.basename(file, ".json")];
+    const generation = kept[path55.basename(file, ".json")];
     const onDisk = Number(readJSON(file, null)?.gen) || 0;
     if (typeof generation === "number")
       newest.set(file, Math.max(newest.get(file) ?? 0, generation));
     else if (answer?.adopt === true && onDisk > 0) {
       newest.set(file, onDisk);
       rememberGeneration(file, onDisk);
-    } else if (fs47.existsSync(file))
+    } else if (fs52.existsSync(file))
       newest.set(file, Number.MAX_SAFE_INTEGER);
   }
   primed = true;
@@ -12450,14 +13478,14 @@ var rememberGeneration = (file, generation) => {
     unkept.add(file);
     return;
   }
-  told = told.then(() => askHost(found, "vault/generations", { file: path50.basename(file, ".json"), generation })).then(() => {
+  told = told.then(() => askHost(found, "vault/generations", { file: path55.basename(file, ".json"), generation })).then(() => {
     unkept.delete(file);
   }, () => {
     unkept.add(file);
   });
 };
 var generationsTold = () => told;
-var generations = () => Object.fromEntries([ITEMS, GRANTS, PAUSED].map((file) => [path50.basename(file, ".json"), Number(readJSON(file, null)?.gen) || 0]));
+var generations = () => Object.fromEntries([ITEMS, GRANTS, PAUSED].map((file) => [path55.basename(file, ".json"), Number(readJSON(file, null)?.gen) || 0]));
 function readSigned(file, fallback) {
   const kept = readJSON(file, null);
   if (!kept)
@@ -12486,16 +13514,16 @@ function keepSigned(file, data) {
   tampered.delete(file);
 }
 var keepJSON = (file, value) => {
-  fs47.mkdirSync(path50.dirname(file), { recursive: true, mode: 448 });
+  fs52.mkdirSync(path55.dirname(file), { recursive: true, mode: 448 });
   writePrivate(file, JSON.stringify(value, null, 1) + `
 `);
 };
 var vaultWork = (work) => {
-  fs47.mkdirSync(RUN, { recursive: true, mode: 448 });
+  fs52.mkdirSync(RUN, { recursive: true, mode: 448 });
   return locked(LOCK4, work);
 };
 var onHost = () => KEYS_ON_HOST;
-var isMade = () => onHost() || fs47.existsSync(KEY_FILE);
+var isMade = () => onHost() || fs52.existsSync(KEY_FILE);
 var isLocked = () => !onHost() && isMade() && !storeKey;
 var sealed = (key, plain, aad) => {
   const iv = crypto16.randomBytes(12);
@@ -12516,7 +13544,7 @@ function makeVault() {
   if (onHost())
     throw new VaultRefusal(409, "This Mac's vault is its Keychain: there's nothing to make.");
   return vaultWork(() => {
-    if (fs47.existsSync(KEY_FILE))
+    if (fs52.existsSync(KEY_FILE))
       throw new VaultRefusal(409, "This computer has a vault already.");
     const store = crypto16.randomBytes(32);
     const unlock = crypto16.randomBytes(32);
@@ -12588,7 +13616,7 @@ async function valuesOf(id) {
   }
   if (!storeKey)
     throw new VaultRefusal(423, LOCKED);
-  const text = textOf(path50.join(VALUES, id));
+  const text = textOf(path55.join(VALUES, id));
   if (!text)
     return {};
   try {
@@ -12602,13 +13630,13 @@ async function keepValues(id, values) {
     return void await asHost(() => askHost(host(), "vault/set", { id, values }));
   if (!storeKey)
     throw new VaultRefusal(423, LOCKED);
-  fs47.mkdirSync(VALUES, { recursive: true, mode: 448 });
-  writePrivate(path50.join(VALUES, id), sealed(storeKey, Buffer.from(JSON.stringify(values)), id));
+  fs52.mkdirSync(VALUES, { recursive: true, mode: 448 });
+  writePrivate(path55.join(VALUES, id), sealed(storeKey, Buffer.from(JSON.stringify(values)), id));
 }
 async function dropValues(id) {
   if (onHost())
     return void await asHost(() => askHost(host(), "vault/delete", { id }));
-  fs47.rmSync(path50.join(VALUES, id), { force: true });
+  fs52.rmSync(path55.join(VALUES, id), { force: true });
 }
 var readItems = () => readSigned(ITEMS, []);
 var keepItems = (items) => keepSigned(ITEMS, items);
@@ -12689,7 +13717,7 @@ var addItem = (given) => oneAtATime(() => addOne(given));
 var changeItem = (id, given) => oneAtATime(() => changeOne(id, given));
 var removeItem = (id) => oneAtATime(() => removeOne(id));
 async function addOne(given) {
-  if (!fs47.existsSync(PAUSED))
+  if (!fs52.existsSync(PAUSED))
     vaultWork(() => keepSigned(PAUSED, {}));
   if (!ITEM_KINDS.includes(given.kind))
     throw new VaultRefusal(400, `An item is one of: ${ITEM_KINDS.join(", ")}.`);
@@ -12709,7 +13737,7 @@ async function addOne(given) {
     sites,
     ...typeof given.username === "string" && given.username.trim() ? { username: oneLine(given.username, 200).trim() } : {},
     fields: Object.keys(values).sort(),
-    ...kind === "file" && typeof given.fileName === "string" && given.fileName.trim() ? { fileName: path50.basename(oneLine(given.fileName, 200).trim()) } : {},
+    ...kind === "file" && typeof given.fileName === "string" && given.fileName.trim() ? { fileName: path55.basename(oneLine(given.fileName, 200).trim()) } : {},
     ...kind === "note" && given.readable === true ? { readable: true } : {},
     ...kind === "login" && given.signInOnly === true ? { signInOnly: true } : {},
     created: now,
@@ -12743,7 +13771,7 @@ async function changeOne(id, given) {
   }
   if (given.fileName !== undefined && item.kind === "file") {
     if (typeof given.fileName === "string" && given.fileName.trim())
-      item.fileName = path50.basename(oneLine(given.fileName, 200).trim());
+      item.fileName = path55.basename(oneLine(given.fileName, 200).trim());
     else
       delete item.fileName;
   }
@@ -12794,7 +13822,7 @@ function givenWho(given) {
   if (typeof given.bot === "string" && /^bot_[A-Za-z0-9]+$/.test(given.bot))
     return { bot: given.bot };
   if (typeof given.project === "string" && given.project.startsWith("/"))
-    return { project: path50.resolve(given.project) };
+    return { project: path55.resolve(given.project) };
   if (given.everyone === true)
     return { everyone: true };
   return null;
@@ -12815,13 +13843,13 @@ function setGrant(itemID, who, how) {
   });
 }
 var readPaused = () => {
-  if (!fs47.existsSync(PAUSED))
-    return newest.has(PAUSED) || fs47.existsSync(ITEMS) ? (tampered.add(PAUSED), { all: true }) : {};
+  if (!fs52.existsSync(PAUSED))
+    return newest.has(PAUSED) || fs52.existsSync(ITEMS) ? (tampered.add(PAUSED), { all: true }) : {};
   return readSigned(PAUSED, { all: true });
 };
 function setPaused(paused, who, why = "Paused by you.") {
   vaultWork(() => {
-    const now = fs47.existsSync(PAUSED) ? readSigned(PAUSED, {}) : {};
+    const now = fs52.existsSync(PAUSED) ? readSigned(PAUSED, {}) : {};
     if (who) {
       const bots = { ...now.bots ?? {} };
       if (paused)
@@ -12870,23 +13898,23 @@ var isBridge2 = (pid) => pid !== process.pid && processRuns(pid, "kuvo-link.js")
 var needed = (link) => Boolean(link && ((link.phones ?? []).length || link.pairing && Date.now() < link.pairing.expires || peersOf(link).length)) || isMade();
 function noLongerNeeded() {
   try {
-    fs48.rmSync(NEEDED_FILE, { force: true });
+    fs53.rmSync(NEEDED_FILE, { force: true });
   } catch {}
   if (needed(readLink()))
     try {
-      fs48.writeFileSync(NEEDED_FILE, "", { mode: 384 });
+      fs53.writeFileSync(NEEDED_FILE, "", { mode: 384 });
     } catch {}
 }
 function keepKeeper() {
-  let start = path51.join(K, "bin", "kuvo-start");
-  if (!fs48.existsSync(start))
+  let start = path56.join(K, "bin", "kuvo-start");
+  if (!fs53.existsSync(start))
     return;
-  const copy = path51.join(K, "bin", ".kuvo-start-keeper");
-  if (!/\nkeep\)/.test(textOf(start) ?? "") && fs48.existsSync(copy))
+  const copy = path56.join(K, "bin", ".kuvo-start-keeper");
+  if (!/\nkeep\)/.test(textOf(start) ?? "") && fs53.existsSync(copy))
     start = copy;
   let keeper = null;
   try {
-    keeper = Number(fs48.readFileSync(path51.join(RUN, "box.pid"), "utf8"));
+    keeper = Number(fs53.readFileSync(path56.join(RUN, "box.pid"), "utf8"));
   } catch {}
   if (keeper && processRuns(keeper, "kuvo-start"))
     return;
@@ -12894,33 +13922,33 @@ function keepKeeper() {
   delete environment.BUN_BE_BUN;
   delete environment.BUN_RUNTIME_TRANSPILER_CACHE_PATH;
   try {
-    spawn7("sh", [start], { cwd: K, env: environment, detached: true, stdio: "ignore" }).unref();
+    spawn8("sh", [start], { cwd: K, env: environment, detached: true, stdio: "ignore" }).unref();
   } catch {}
 }
 function runningBridge() {
   try {
-    const pid = Number(fs48.readFileSync(PID_FILE, "utf8"));
+    const pid = Number(fs53.readFileSync(PID_FILE, "utf8"));
     return isBridge2(pid) ? pid : null;
   } catch {
     return null;
   }
 }
 function startBridge() {
-  const workspace = path51.join(K, "workspace");
-  const child = spawn7(process.execPath, [...OWN_RUNTIME, SCRIPT, "run"], {
+  const workspace = path56.join(K, "workspace");
+  const child = spawn8(process.execPath, [...OWN_RUNTIME, SCRIPT, "run"], {
     detached: true,
     stdio: "ignore",
-    cwd: fs48.existsSync(workspace) ? workspace : K,
+    cwd: fs53.existsSync(workspace) ? workspace : K,
     env: process.env
   });
   child.unref();
 }
 
 // box/src/link/notices/told.ts
-var TOLD_FOLDER = path52.join(RUN, "notices");
-var TOLD_FILE = path52.join(TOLD_FOLDER, "told.json");
-var TOLD_LOCK = path52.join(TOLD_FOLDER, "told.lock");
-var TELLER_FILE = path52.join(TOLD_FOLDER, "teller");
+var TOLD_FOLDER = path57.join(RUN, "notices");
+var TOLD_FILE = path57.join(TOLD_FOLDER, "told.json");
+var TOLD_LOCK = path57.join(TOLD_FOLDER, "told.lock");
+var TELLER_FILE = path57.join(TOLD_FOLDER, "teller");
 function markTeller() {
   try {
     writePrivate(TELLER_FILE, String(process.pid));
@@ -13252,17 +14280,17 @@ async function describeWork(listed, working, { replies = false, signal } = {}) {
     ...reply ? { lastReply: reply, ...beforeStop ? { replyBeforeStop: true } : {} } : {}
   };
 }
-var placeWords = (work) => work.project ? `in ${work.project}` : work.folder === CHATS ? "in the chats" : `in ${path53.basename(work.folder) || work.folder}`;
+var placeWords = (work) => work.project ? `in ${work.project}` : work.folder === CHATS ? "in the chats" : `in ${path58.basename(work.folder) || work.folder}`;
 
 // box/src/link/work/background.ts
-var WORK_BACKGROUND = path54.join(WORK_FOLDER, "background.json");
-var WORK_STOPPED = path54.join(WORK_FOLDER, "stopped.json");
-var LOCK5 = path54.join(WORK_FOLDER, ".background.lock");
+var WORK_BACKGROUND = path59.join(WORK_FOLDER, "background.json");
+var WORK_STOPPED = path59.join(WORK_FOLDER, "stopped.json");
+var LOCK5 = path59.join(WORK_FOLDER, ".background.lock");
 var AT_WORK_LIMIT = 6 * 3600000;
 var RECENT = 3600000;
 var readKept5 = (file) => {
   try {
-    const kept = JSON.parse(fs49.readFileSync(file, "utf8"));
+    const kept = JSON.parse(fs54.readFileSync(file, "utf8"));
     return isObject(kept) ? kept : {};
   } catch {
     return {};
@@ -13316,7 +14344,7 @@ var servicesWords = (work) => (work?.commands ?? []).filter((each) => each.ports
 var emptyKept = () => ({ sessions: {}, folders: [] });
 function write(file, from, change) {
   try {
-    fs49.mkdirSync(path54.dirname(file), { recursive: true });
+    fs54.mkdirSync(path59.dirname(file), { recursive: true });
     locked(LOCK5, () => {
       const all = readKept5(file);
       all[from] = change(all[from] ?? emptyKept());
@@ -13491,7 +14519,7 @@ function backgroundWatcher(source, from, { file = WORK_BACKGROUND, now = Date.no
 }
 function readStopped(file = WORK_STOPPED) {
   try {
-    const kept = JSON.parse(fs49.readFileSync(file, "utf8"));
+    const kept = JSON.parse(fs54.readFileSync(file, "utf8"));
     return isObject(kept) ? Object.fromEntries(Object.entries(kept).filter(([, at]) => typeof at === "number")) : {};
   } catch {
     return {};
@@ -13499,7 +14527,7 @@ function readStopped(file = WORK_STOPPED) {
 }
 function changeStopped(change, file) {
   try {
-    fs49.mkdirSync(path54.dirname(file), { recursive: true });
+    fs54.mkdirSync(path59.dirname(file), { recursive: true });
     locked(`${LOCK5}-stopped`, () => {
       const stopped = readStopped(file);
       change(stopped);
@@ -13527,7 +14555,7 @@ function hasWakeUps(session) {
     return false;
   return ["wakes", "watches"].some((kind) => {
     try {
-      return fs49.readdirSync(path54.join(SESSION_WAKES, session, kind)).length > 0;
+      return fs54.readdirSync(path59.join(SESSION_WAKES, session, kind)).length > 0;
     } catch {
       return false;
     }
@@ -13536,9 +14564,9 @@ function hasWakeUps(session) {
 function endWakeUps(session) {
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(session))
     return;
-  const folder = path54.join(SESSION_WAKES, session);
+  const folder = path59.join(SESSION_WAKES, session);
   for (const kind of ["wakes", "watches"])
-    fs49.rmSync(path54.join(folder, kind), { recursive: true, force: true });
+    fs54.rmSync(path59.join(folder, kind), { recursive: true, force: true });
   wakesChanged();
 }
 async function endBackground(target, session, file = WORK_BACKGROUND) {
@@ -13564,32 +14592,32 @@ async function stopWork(target, session, holds = false, items = []) {
 
 // box/src/link/work/wakes.ts
 import crypto19 from "node:crypto";
-import fs53 from "node:fs";
-import path58 from "node:path";
+import fs58 from "node:fs";
+import path63 from "node:path";
 
 // box/src/link/work/oversight.ts
 import crypto17 from "node:crypto";
-import fs50 from "node:fs";
-import path55 from "node:path";
-var OVERSIGHT2 = path55.join(WORK_FOLDER, "oversight.json");
-var KEPT_FOR = 60000;
+import fs55 from "node:fs";
+import path60 from "node:path";
+var OVERSIGHT2 = path60.join(WORK_FOLDER, "oversight.json");
+var KEPT_FOR2 = 60000;
 var KEPT_AT_MOST = 50;
 var KINDS = ["started", "told", "read", "answered", "stopped", "finished"];
 var oversightFollowers = new Set;
 function readOversight(file = OVERSIGHT2, now = Date.now()) {
   try {
-    const kept = JSON.parse(fs50.readFileSync(file, "utf8"));
+    const kept = JSON.parse(fs55.readFileSync(file, "utf8"));
     if (!Array.isArray(kept))
       return [];
-    return kept.filter((mark) => isObject(mark) && typeof mark.id === "string" && typeof mark.bot === "string" && typeof mark.session === "string" && KINDS.includes(mark.kind) && typeof mark.at === "number" && now - mark.at < KEPT_FOR);
+    return kept.filter((mark) => isObject(mark) && typeof mark.id === "string" && typeof mark.bot === "string" && typeof mark.session === "string" && KINDS.includes(mark.kind) && typeof mark.at === "number" && now - mark.at < KEPT_FOR2);
   } catch {
     return [];
   }
 }
 function noteOversight(bot, session, kind, file = OVERSIGHT2) {
   try {
-    fs50.mkdirSync(path55.dirname(file), { recursive: true });
-    locked(path55.join(path55.dirname(file), ".oversight.lock"), () => {
+    fs55.mkdirSync(path60.dirname(file), { recursive: true });
+    locked(path60.join(path60.dirname(file), ".oversight.lock"), () => {
       const now = Date.now();
       const marks = [...readOversight(file, now), { id: crypto17.randomUUID(), bot, session, kind, at: now }];
       writePrivate(file, JSON.stringify(marks.slice(-KEPT_AT_MOST)));
@@ -13606,9 +14634,9 @@ function noteOversightBy(caller, data, kind) {
 
 // box/src/link/work/awaited.ts
 import crypto18 from "node:crypto";
-import fs51 from "node:fs";
-import path56 from "node:path";
-var AWAITED = path56.join(WORK_FOLDER, "awaited");
+import fs56 from "node:fs";
+import path61 from "node:path";
+var AWAITED = path61.join(WORK_FOLDER, "awaited");
 var AWAITED_FOR = 11 * 60000;
 var ANSWERED_FOR = 60000;
 var prefixOf = (session) => `${encodeURIComponent(session)}.`;
@@ -13616,7 +14644,7 @@ async function awaitingAnswer(session, by, wait) {
   if (!by)
     return wait();
   forgetOld();
-  const file = path56.join(AWAITED, prefixOf(session) + crypto18.randomUUID());
+  const file = path61.join(AWAITED, prefixOf(session) + crypto18.randomUUID());
   try {
     writePrivate(file, JSON.stringify({ by }));
   } catch {}
@@ -13628,7 +14656,7 @@ async function awaitingAnswer(session, by, wait) {
       if (answer?.text && answer.reply)
         writePrivate(file, JSON.stringify({ by, reply: answer.reply, answered: Date.now() }));
       else
-        fs51.rmSync(file, { force: true });
+        fs56.rmSync(file, { force: true });
     } catch {}
   }
 }
@@ -13639,12 +14667,12 @@ function awaitedBy(session, by, reply, now = Date.now()) {
     if (!name.startsWith(prefix) || name.endsWith(".tmp"))
       continue;
     try {
-      const file = path56.join(AWAITED, name);
-      const kept = JSON.parse(fs51.readFileSync(file, "utf8"));
+      const file = path61.join(AWAITED, name);
+      const kept = JSON.parse(fs56.readFileSync(file, "utf8"));
       if (!isObject(kept) || kept.by !== by)
         continue;
       if (typeof kept.answered !== "number")
-        waits ||= now - fs51.statSync(file).mtimeMs < AWAITED_FOR;
+        waits ||= now - fs56.statSync(file).mtimeMs < AWAITED_FOR;
       else if (reply && kept.reply === reply && now - kept.answered < ANSWERED_FOR)
         return "answered";
     } catch {}
@@ -13653,7 +14681,7 @@ function awaitedBy(session, by, reply, now = Date.now()) {
 }
 var filesIn = (folder) => {
   try {
-    return fs51.readdirSync(folder);
+    return fs56.readdirSync(folder);
   } catch {
     return [];
   }
@@ -13661,17 +14689,17 @@ var filesIn = (folder) => {
 function forgetOld(now = Date.now()) {
   for (const name of filesIn(AWAITED)) {
     try {
-      const file = path56.join(AWAITED, name);
-      if (now - fs51.statSync(file).mtimeMs > AWAITED_FOR)
-        fs51.rmSync(file, { force: true });
+      const file = path61.join(AWAITED, name);
+      if (now - fs56.statSync(file).mtimeMs > AWAITED_FOR)
+        fs56.rmSync(file, { force: true });
     } catch {}
   }
 }
 
 // box/src/link/work/unanswering.ts
-import fs52 from "node:fs";
-import path57 from "node:path";
-var UNANSWERING2 = path57.join(WORK_FOLDER, "unanswering.json");
+import fs57 from "node:fs";
+import path62 from "node:path";
+var UNANSWERING2 = path62.join(WORK_FOLDER, "unanswering.json");
 var UNKNOWN_RESET = 30 * 60000;
 var BRIEF_RESET = 3 * 60000;
 var FUNDS = ["provider.quota", "provider.budget-limit"];
@@ -13714,7 +14742,7 @@ async function freeThere(target, model) {
 var keyOf2 = (model, scope) => scope === "provider" ? model.providerID : `${model.providerID}/${model.id}`;
 function read(file, now) {
   try {
-    const kept = JSON.parse(fs52.readFileSync(file, "utf8"));
+    const kept = JSON.parse(fs57.readFileSync(file, "utf8"));
     return (Array.isArray(kept) ? kept : []).filter((each) => isObject(each) && typeof each.key === "string" && (each.scope === "provider" || each.scope === "model") && typeof each.why === "string" && typeof each.at === "number" && typeof each.until === "number" && each.until > now);
   } catch {
     return [];
@@ -13801,9 +14829,9 @@ async function followUnanswering(source, event, file = UNANSWERING2, now = Date.
 }
 
 // box/src/link/work/wakes.ts
-var WORK_WAKES = path58.join(WORK_FOLDER, "wakes.json");
-var WORK_TOLD = path58.join(WORK_FOLDER, "told.json");
-var LOCK6 = path58.join(WORK_FOLDER, ".wakes.lock");
+var WORK_WAKES = path63.join(WORK_FOLDER, "wakes.json");
+var WORK_TOLD = path63.join(WORK_FOLDER, "told.json");
+var LOCK6 = path63.join(WORK_FOLDER, ".wakes.lock");
 var GATHER = 4000;
 var SETTLE = 1e4;
 var SUBSTANCE = 200;
@@ -13812,14 +14840,14 @@ var FIRST_LOOK = 60000;
 var sending = new Set;
 var readWaiting = (file) => {
   try {
-    const kept = JSON.parse(fs53.readFileSync(file, "utf8"));
+    const kept = JSON.parse(fs58.readFileSync(file, "utf8"));
     return isObject(kept) ? kept : {};
   } catch {
     return {};
   }
 };
 var changeWaiting = (file, change) => {
-  fs53.mkdirSync(path58.dirname(file), { recursive: true });
+  fs58.mkdirSync(path63.dirname(file), { recursive: true });
   return locked(LOCK6, () => {
     const waiting = readWaiting(file);
     const value = change(waiting);
@@ -13917,7 +14945,7 @@ var UNREAD_STARTS = 3;
 var ARCHIVED_FOR = 7 * 86400000;
 var readTold2 = (file) => {
   try {
-    const kept = JSON.parse(fs53.readFileSync(file, "utf8"));
+    const kept = JSON.parse(fs58.readFileSync(file, "utf8"));
     if (!isObject(kept) || typeof kept.since !== "number")
       return null;
     const numbers = (value) => Object.fromEntries(Object.entries(isObject(value) ? value : {}).filter(([, number]) => typeof number === "number"));
@@ -13940,7 +14968,7 @@ var OTHERS = ["bridge"];
 var sinceOf = (told, from) => from === ENGINE ? told.since : told.sinces?.[from] ?? told.since;
 var changeTold = (file, change, from, until) => {
   try {
-    fs53.mkdirSync(path58.dirname(file), { recursive: true });
+    fs58.mkdirSync(path63.dirname(file), { recursive: true });
     locked(LOCK6 + "-told", () => {
       const told = readTold2(file) ?? { since: until, sessions: {} };
       change(told);
@@ -13957,7 +14985,7 @@ var changeTold = (file, change, from, until) => {
     });
   } catch {}
 };
-var holds = (still, waited) => {
+var holds2 = (still, waited) => {
   const work = awaited(still);
   return Boolean(work) && (typeof waited.asked !== "number" || startedSince(work, waited.asked));
 };
@@ -14244,7 +15272,7 @@ ${starter}`;
         return;
       const data = sessions.get(session);
       const still = await background.of(session, data?.location?.directory ?? data?.directory).catch(() => null);
-      if (!holds(still, waited))
+      if (!holds2(still, waited))
         await settle(session).catch(() => {});
       if (readTold2(toldFile)?.waiting?.[session]?.from === from)
         lookWhileWaiting(session);
@@ -14268,7 +15296,7 @@ ${starter}`;
     const still = await background.of(session.id, folder).catch(() => null);
     const waitedSince = readTold2(toldFile)?.waiting?.[session.id]?.at;
     const askedAt = last?.began.kind === "asked" ? last.began.at : null;
-    if (holds(still, { asked: askedAt ?? undefined }))
+    if (holds2(still, { asked: askedAt ?? undefined }))
       return waitFor(session.id, waitedSince ?? at, askedAt);
     const was = readTold2(toldFile)?.sessions[session.id] ?? {};
     letGoOf(session.id);
@@ -14303,7 +15331,7 @@ ${starter}`;
   const backgroundEnded = async () => {
     const waiting = readTold2(toldFile)?.waiting ?? {};
     for (const [id, each] of Object.entries(waiting)) {
-      if (each.from !== from || holds(background.known(id), each) || settling.has(id))
+      if (each.from !== from || holds2(background.known(id), each) || settling.has(id))
         continue;
       settling.add(id);
       lookAgain(id, SETTLE);
@@ -14598,17 +15626,17 @@ import path117 from "node:path";
 
 // box/src/link/work/elsewhere.ts
 import crypto20 from "node:crypto";
-import fs56 from "node:fs";
-import path61 from "node:path";
+import fs61 from "node:fs";
+import path66 from "node:path";
 
 // box/src/link/peers/reach.ts
-import fs54 from "node:fs";
-import path59 from "node:path";
-var PEER_REACH = path59.join(RUN, "peer-reach.json");
-var LOCK7 = path59.join(RUN, ".peer-reach.lock");
+import fs59 from "node:fs";
+import path64 from "node:path";
+var PEER_REACH = path64.join(RUN, "peer-reach.json");
+var LOCK7 = path64.join(RUN, ".peer-reach.lock");
 function readReach(file = PEER_REACH) {
   try {
-    const kept = JSON.parse(fs54.readFileSync(file, "utf8"));
+    const kept = JSON.parse(fs59.readFileSync(file, "utf8"));
     return isObject(kept) ? Object.fromEntries(Object.entries(kept).filter(([, at]) => typeof at === "number")) : {};
   } catch {
     return {};
@@ -14616,7 +15644,7 @@ function readReach(file = PEER_REACH) {
 }
 var change2 = (edit, file = PEER_REACH) => {
   try {
-    fs54.mkdirSync(RUN, { recursive: true, mode: 448 });
+    fs59.mkdirSync(RUN, { recursive: true, mode: 448 });
     locked(LOCK7, () => {
       const reach = readReach(file);
       if (edit(reach))
@@ -14624,7 +15652,7 @@ var change2 = (edit, file = PEER_REACH) => {
     });
   } catch {}
 };
-var PEER_CHECKED = path59.join(RUN, "peer-reach-checked.json");
+var PEER_CHECKED = path64.join(RUN, "peer-reach-checked.json");
 var CHECKED_EVERY = 300000;
 function noteUnreachable(address, now = Date.now()) {
   const peer = peersOf(readLink()).find((each) => each.address === address.toString("base64url"));
@@ -14663,13 +15691,13 @@ var awaySince = (key, reach = readReach()) => reach[key] ?? null;
 var lastFoundAway = (key, checked = readReach(PEER_CHECKED)) => checked[key] ?? null;
 
 // box/src/link/work/homes.ts
-import fs55 from "node:fs";
-import path60 from "node:path";
-var WORK_HOMES = path60.join(WORK_FOLDER, "homes.json");
-var LOCK8 = path60.join(WORK_FOLDER, ".homes.lock");
+import fs60 from "node:fs";
+import path65 from "node:path";
+var WORK_HOMES = path65.join(WORK_FOLDER, "homes.json");
+var LOCK8 = path65.join(WORK_FOLDER, ".homes.lock");
 var readHomes = () => {
   try {
-    const kept = JSON.parse(fs55.readFileSync(WORK_HOMES, "utf8"));
+    const kept = JSON.parse(fs60.readFileSync(WORK_HOMES, "utf8"));
     if (!isObject(kept))
       return {};
     return Object.fromEntries(Object.entries(kept).filter(([, each]) => isObject(each) && typeof each.key === "string" && typeof each.at === "number"));
@@ -14679,7 +15707,7 @@ var readHomes = () => {
 };
 var changeHomes = (change) => {
   try {
-    fs55.mkdirSync(WORK_FOLDER, { recursive: true, mode: 448 });
+    fs60.mkdirSync(WORK_FOLDER, { recursive: true, mode: 448 });
     locked(LOCK8, () => {
       const homes = readHomes();
       if (change(homes))
@@ -14748,9 +15776,9 @@ async function forgetOldHomes(now = Date.now(), places = peerPlaces) {
 }
 
 // box/src/link/work/elsewhere.ts
-var ELSEWHERE = path61.join(WORK_FOLDER, "elsewhere");
-var PUSHED = path61.join(WORK_FOLDER, "pushed.json");
-var LOCK9 = path61.join(WORK_FOLDER, ".elsewhere.lock");
+var ELSEWHERE = path66.join(WORK_FOLDER, "elsewhere");
+var PUSHED = path66.join(WORK_FOLDER, "pushed.json");
+var LOCK9 = path66.join(WORK_FOLDER, ".elsewhere.lock");
 var ROWS_EACH = 40;
 var PUSH_SPACING = 15000;
 var STATES = ["working", "asking", "finished", "failed", "stopped", "idle"];
@@ -14777,12 +15805,12 @@ function rowOf(given) {
     ...number(given.cost) ? { cost: number(given.cost) } : {}
   };
 }
-var keptFile = (key) => path61.join(ELSEWHERE, `${key}.json`);
+var keptFile = (key) => path66.join(ELSEWHERE, `${key}.json`);
 function readRows(key) {
   if (!KEY.test(key))
     return null;
   try {
-    const kept = JSON.parse(fs56.readFileSync(keptFile(key), "utf8"));
+    const kept = JSON.parse(fs61.readFileSync(keptFile(key), "utf8"));
     if (!isObject(kept) || typeof kept.at !== "number" || !isObject(kept.leads))
       return null;
     return { at: kept.at, heard: typeof kept.heard === "number" ? kept.heard : kept.at, leads: kept.leads };
@@ -14818,11 +15846,11 @@ function rowsOfLeads(leads) {
   }
   return [...found.values()];
 }
-var STARTED2 = path61.join(WORK_FOLDER, "started-elsewhere.json");
+var STARTED2 = path66.join(WORK_FOLDER, "started-elsewhere.json");
 var STARTED_FOR = 30 * 86400000;
 function noteStartedOn(lead, key, now = Date.now()) {
   try {
-    fs56.mkdirSync(WORK_FOLDER, { recursive: true, mode: 448 });
+    fs61.mkdirSync(WORK_FOLDER, { recursive: true, mode: 448 });
     locked(LOCK9, () => {
       const kept = readStarted();
       for (const [each, keys] of Object.entries(kept)) {
@@ -14842,7 +15870,7 @@ function startedOn(lead, now = Date.now()) {
 }
 var readStarted = () => {
   try {
-    const kept = JSON.parse(fs56.readFileSync(STARTED2, "utf8"));
+    const kept = JSON.parse(fs61.readFileSync(STARTED2, "utf8"));
     return isObject(kept) ? kept : {};
   } catch {
     return {};
@@ -14875,14 +15903,14 @@ function takeRows(sender, given, now = Date.now()) {
   }
   let taken = false;
   try {
-    fs56.mkdirSync(ELSEWHERE, { recursive: true, mode: 448 });
+    fs61.mkdirSync(ELSEWHERE, { recursive: true, mode: 448 });
     locked(LOCK9, () => {
       const kept = readRows(sender.key);
       if (kept && kept.at > at)
         return;
       taken = true;
       if (!Object.keys(leads).length)
-        fs56.rmSync(keptFile(sender.key), { force: true });
+        fs61.rmSync(keptFile(sender.key), { force: true });
       else
         writePrivate(keptFile(sender.key), JSON.stringify({ at, heard: now, leads }));
     });
@@ -14893,7 +15921,7 @@ function takeRows(sender, given, now = Date.now()) {
 }
 var readPushed = () => {
   try {
-    const kept = JSON.parse(fs56.readFileSync(PUSHED, "utf8"));
+    const kept = JSON.parse(fs61.readFileSync(PUSHED, "utf8"));
     return isObject(kept) ? kept : {};
   } catch {
     return {};
@@ -14901,7 +15929,7 @@ var readPushed = () => {
 };
 var changePushed = (change) => {
   try {
-    fs56.mkdirSync(WORK_FOLDER, { recursive: true, mode: 448 });
+    fs61.mkdirSync(WORK_FOLDER, { recursive: true, mode: 448 });
     locked(LOCK9, () => {
       const pushed = readPushed();
       change(pushed);
@@ -14958,9 +15986,9 @@ async function rowsElsewhere(targets, link, signal) {
 }
 var lastLook = -Infinity;
 var lastMarks = "";
-var marks = () => [WORK_CHANGES, path61.join(MOVES, "moved.json"), path61.join(RUN, "work", "homes.json")].map((file) => {
+var marks = () => [WORK_CHANGES, path66.join(MOVES, "moved.json"), path66.join(RUN, "work", "homes.json")].map((file) => {
   try {
-    return String(fs56.statSync(file).mtimeMs);
+    return String(fs61.statSync(file).mtimeMs);
   } catch {
     return "-";
   }
@@ -14986,7 +16014,7 @@ async function pushRows(host, link, targets, now = Date.now(), { force = false }
     const told = readPeerAgents();
     const removed = removedBoxes(link);
     for (const key of removed)
-      fs56.rmSync(keptFile(key), { force: true });
+      fs61.rmSync(keptFile(key), { force: true });
     if (Object.keys(pushed).some((key) => removed.has(key)))
       changePushed((all) => {
         for (const key of removed)
@@ -15035,17 +16063,17 @@ var idOf2 = (leads) => "rws_" + crypto20.createHash("sha256").update(JSON.string
 
 // box/src/link/work-queue/numbers.ts
 import crypto23 from "node:crypto";
-import fs60 from "node:fs";
-import path66 from "node:path";
+import fs65 from "node:fs";
+import path71 from "node:path";
 
 // box/src/link/work-queue/told.ts
-import fs59 from "node:fs";
-import path65 from "node:path";
+import fs64 from "node:fs";
+import path70 from "node:path";
 
 // box/src/link/work-queue/store.ts
 import crypto22 from "node:crypto";
-import fs58 from "node:fs";
-import path63 from "node:path";
+import fs63 from "node:fs";
+import path68 from "node:path";
 
 // box/src/link/work-queue/sources.ts
 var GITHUB_HOST = "github.com";
@@ -15076,8 +16104,8 @@ var sameSource = (a, b) => sourceKeyOf(a) === sourceKeyOf(b) || a.id !== undefin
 
 // box/src/link/work-queue/migrate.ts
 import crypto21 from "node:crypto";
-import fs57 from "node:fs";
-import path62 from "node:path";
+import fs62 from "node:fs";
+import path67 from "node:path";
 
 // box/src/link/work-queue/statuses.ts
 var STATUSES = [
@@ -15148,14 +16176,14 @@ function fromCategory(category, name) {
 }
 
 // box/src/link/work-queue/migrate.ts
-var WORK_QUEUE = path62.join(RUN, "work-queue");
-var QUEUES = path62.join(WORK_QUEUE, "queues");
-var CATEGORIES_FILE = path62.join(WORK_QUEUE, "categories.json");
-var LABELS_FILE = path62.join(WORK_QUEUE, "labels.json");
-var LOCK10 = path62.join(WORK_QUEUE, ".lock");
-var MOVING2 = path62.join(WORK_QUEUE, ".moving-to-statuses");
-var MODEL_FILE = path62.join(WORK_QUEUE, "model.json");
-var BEFORE = path62.join(WORK_QUEUE, "before-statuses");
+var WORK_QUEUE = path67.join(RUN, "work-queue");
+var QUEUES = path67.join(WORK_QUEUE, "queues");
+var CATEGORIES_FILE = path67.join(WORK_QUEUE, "categories.json");
+var LABELS_FILE = path67.join(WORK_QUEUE, "labels.json");
+var LOCK10 = path67.join(WORK_QUEUE, ".lock");
+var MOVING2 = path67.join(WORK_QUEUE, ".moving-to-statuses");
+var MODEL_FILE = path67.join(WORK_QUEUE, "model.json");
+var BEFORE = path67.join(WORK_QUEUE, "before-statuses");
 var MODEL2 = 2;
 var done = false;
 function forgetMigrated() {
@@ -15163,14 +16191,14 @@ function forgetMigrated() {
 }
 var jsonOf = (file) => {
   try {
-    return JSON.parse(fs57.readFileSync(file, "utf8"));
+    return JSON.parse(fs62.readFileSync(file, "utf8"));
   } catch {
     return null;
   }
 };
 var queueFiles2 = (folder) => {
   try {
-    return fs57.readdirSync(folder).filter((name) => name.endsWith(".json")).sort();
+    return fs62.readdirSync(folder).filter((name) => name.endsWith(".json")).sort();
   } catch {
     return [];
   }
@@ -15204,53 +16232,53 @@ function migrateItem(item, name) {
 var placeOf = (category, custom) => category === "next" ? 0 : category === "later" ? 1 : category === "parked" ? custom.length + 2 : category === "done" ? custom.length + 3 : typeof category === "string" && custom.includes(category) ? custom.indexOf(category) + 2 : custom.length + 2;
 var onDisk = (folder) => {
   try {
-    const handle = fs57.openSync(folder, "r");
+    const handle = fs62.openSync(folder, "r");
     try {
-      fs57.fsyncSync(handle);
+      fs62.fsyncSync(handle);
     } finally {
-      fs57.closeSync(handle);
+      fs62.closeSync(handle);
     }
   } catch {}
 };
 function migrate() {
-  fs57.mkdirSync(WORK_QUEUE, { recursive: true, mode: 448 });
-  const nothing = !queueFiles2(QUEUES).length && !fs57.existsSync(CATEGORIES_FILE);
-  if (nothing && !fs57.existsSync(BEFORE))
+  fs62.mkdirSync(WORK_QUEUE, { recursive: true, mode: 448 });
+  const nothing = !queueFiles2(QUEUES).length && !fs62.existsSync(CATEGORIES_FILE);
+  if (nothing && !fs62.existsSync(BEFORE))
     return void writePrivate(MODEL_FILE, JSON.stringify({ model: MODEL2, at: Date.now() }));
-  if (!fs57.existsSync(BEFORE)) {
-    for (const name of fs57.readdirSync(WORK_QUEUE))
+  if (!fs62.existsSync(BEFORE)) {
+    for (const name of fs62.readdirSync(WORK_QUEUE))
       if (name.startsWith("before-statuses."))
-        fs57.rmSync(path62.join(WORK_QUEUE, name), { recursive: true, force: true });
-    const making = path62.join(WORK_QUEUE, `before-statuses.${crypto21.randomBytes(6).toString("hex")}`);
-    fs57.mkdirSync(path62.join(making, "queues"), { recursive: true, mode: 448 });
+        fs62.rmSync(path67.join(WORK_QUEUE, name), { recursive: true, force: true });
+    const making = path67.join(WORK_QUEUE, `before-statuses.${crypto21.randomBytes(6).toString("hex")}`);
+    fs62.mkdirSync(path67.join(making, "queues"), { recursive: true, mode: 448 });
     const copy = (from, to) => {
-      fs57.copyFileSync(from, to);
-      const handle = fs57.openSync(to, "r");
+      fs62.copyFileSync(from, to);
+      const handle = fs62.openSync(to, "r");
       try {
-        fs57.fsyncSync(handle);
+        fs62.fsyncSync(handle);
       } finally {
-        fs57.closeSync(handle);
+        fs62.closeSync(handle);
       }
     };
     for (const name of queueFiles2(QUEUES))
-      copy(path62.join(QUEUES, name), path62.join(making, "queues", name));
-    if (fs57.existsSync(CATEGORIES_FILE))
-      copy(CATEGORIES_FILE, path62.join(making, "categories.json"));
-    onDisk(path62.join(making, "queues"));
+      copy(path67.join(QUEUES, name), path67.join(making, "queues", name));
+    if (fs62.existsSync(CATEGORIES_FILE))
+      copy(CATEGORIES_FILE, path67.join(making, "categories.json"));
+    onDisk(path67.join(making, "queues"));
     onDisk(making);
-    fs57.renameSync(making, BEFORE);
+    fs62.renameSync(making, BEFORE);
     onDisk(WORK_QUEUE);
   }
-  if (!fs57.statSync(path62.join(BEFORE, "queues"), { throwIfNoEntry: false })?.isDirectory())
+  if (!fs62.statSync(path67.join(BEFORE, "queues"), { throwIfNoEntry: false })?.isDirectory())
     throw new Error(`${BEFORE} isn't the copy of what was kept`);
-  const kept = jsonOf(path62.join(BEFORE, "categories.json"));
+  const kept = jsonOf(path67.join(BEFORE, "categories.json"));
   const custom = (isObject(kept) && Array.isArray(kept.custom) ? kept.custom : []).filter((each) => isObject(each) && typeof each.id === "string" && /^cat_[a-z0-9-]{1,40}$/.test(each.id) && typeof each.name === "string");
   const names = new Map(custom.map((each) => [each.id, each.name]));
   const customIDs = custom.map((each) => each.id);
   const was = [];
   const started = [];
-  for (const name of queueFiles2(path62.join(BEFORE, "queues"))) {
-    const queue = jsonOf(path62.join(BEFORE, "queues", name));
+  for (const name of queueFiles2(path67.join(BEFORE, "queues"))) {
+    const queue = jsonOf(path67.join(BEFORE, "queues", name));
     if (!isObject(queue) || !Array.isArray(queue.items))
       continue;
     for (const each of queue.items) {
@@ -15282,7 +16310,7 @@ function migrate() {
     const there = isObject(kept) && Array.isArray(kept.labels) ? kept.labels : [];
     const has = new Set(there.flatMap((each) => isObject(each) && typeof each.id === "string" ? [each.id] : []));
     const needed = new Set(queueFiles2(QUEUES).flatMap((name) => {
-      const queue = jsonOf(path62.join(QUEUES, name));
+      const queue = jsonOf(path67.join(QUEUES, name));
       return isObject(queue) && Array.isArray(queue.items) ? queue.items.flatMap((each) => isObject(each) && typeof each.status !== "string" ? fromCategory(each.category, typeof each.category === "string" ? names.get(each.category) : undefined).label ?? [] : []) : [];
     }));
     const more = made.filter((each) => !has.has(each.id) && (kept === null || needed.has(each.id)));
@@ -15290,7 +16318,7 @@ function migrate() {
       writePrivate(LABELS_FILE, JSON.stringify({ ...isObject(kept) ? kept : {}, labels: [...there, ...more] }));
   }
   for (const name of queueFiles2(QUEUES)) {
-    const file = path62.join(QUEUES, name);
+    const file = path67.join(QUEUES, name);
     const queue = jsonOf(file);
     if (!isObject(queue) || !Array.isArray(queue.items))
       continue;
@@ -15308,7 +16336,7 @@ function migrate() {
     if (changed)
       writePrivate(file, JSON.stringify(queue));
   }
-  fs57.rmSync(CATEGORIES_FILE, { force: true });
+  fs62.rmSync(CATEGORIES_FILE, { force: true });
   writePrivate(MODEL_FILE, JSON.stringify({ model: MODEL2, at: Date.now(), ...started.length ? { started } : {} }));
 }
 function startedThen() {
@@ -15330,19 +16358,19 @@ function migrateOnce() {
     done = true;
     return;
   }
-  if (!fs57.existsSync(WORK_QUEUE))
+  if (!fs62.existsSync(WORK_QUEUE))
     return;
-  fs57.accessSync(WORK_QUEUE, fs57.constants.W_OK);
+  fs62.accessSync(WORK_QUEUE, fs62.constants.W_OK);
   try {
-    fs57.mkdirSync(MOVING2);
+    fs62.mkdirSync(MOVING2);
   } catch (error) {
     if (error.code !== "EEXIST")
       throw error;
-    const since = fs57.statSync(MOVING2, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+    const since = fs62.statSync(MOVING2, { throwIfNoEntry: false })?.mtimeMs ?? 0;
     if (Date.now() - since < 120000)
       throw new Error("another process is moving them over now");
-    fs57.rmSync(MOVING2, { recursive: true, force: true });
-    fs57.mkdirSync(MOVING2);
+    fs62.rmSync(MOVING2, { recursive: true, force: true });
+    fs62.mkdirSync(MOVING2);
   }
   try {
     locked(LOCK10, () => {
@@ -15351,16 +16379,16 @@ function migrateOnce() {
         migrate();
     }, { stale: 60000, wait: 1e4 });
   } finally {
-    fs57.rmSync(MOVING2, { recursive: true, force: true });
+    fs62.rmSync(MOVING2, { recursive: true, force: true });
   }
   done = true;
 }
 
 // box/src/link/work-queue/store.ts
-var WORK_QUEUE2 = path63.join(RUN, "work-queue");
-var QUEUES2 = path63.join(WORK_QUEUE2, "queues");
-var FILES2 = path63.join(WORK_QUEUE2, "files");
-var LOCK11 = path63.join(WORK_QUEUE2, ".lock");
+var WORK_QUEUE2 = path68.join(RUN, "work-queue");
+var QUEUES2 = path68.join(WORK_QUEUE2, "queues");
+var FILES2 = path68.join(WORK_QUEUE2, "files");
+var LOCK11 = path68.join(WORK_QUEUE2, ".lock");
 var YOURS = "usr_you";
 var OWNER2 = /^(?:ses_[A-Za-z0-9]{1,60}|grp_[a-z0-9]{1,60}|usr_you)$/;
 var KEPT_OWNER = /^[a-z]{2,10}_[A-Za-z0-9_-]{1,80}$/;
@@ -15395,7 +16423,7 @@ var dayOf = (given) => {
   return Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== given.trim() ? null : given.trim();
 };
 var queueFollowers2 = new Set;
-var fileOf2 = (owner) => path63.join(QUEUES2, `${owner}.json`);
+var fileOf2 = (owner) => path68.join(QUEUES2, `${owner}.json`);
 var newItemID = () => `wqi_${crypto22.randomBytes(15).toString("base64url")}`;
 var whoOf = (given) => {
   if (!isObject(given))
@@ -15493,7 +16521,7 @@ function readQueue(owner) {
   const file = fileOf2(owner);
   let text;
   try {
-    text = fs58.readFileSync(file, "utf8");
+    text = fs63.readFileSync(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return { owner, items: [] };
@@ -15512,10 +16540,10 @@ function readQueue(owner) {
   return { owner, items };
 }
 function setAside(owner, now = Date.now()) {
-  const aside = path63.join(QUEUES2, "aside", `${owner}-${now}.json`);
+  const aside = path68.join(QUEUES2, "aside", `${owner}-${now}.json`);
   try {
-    fs58.mkdirSync(path63.dirname(aside), { recursive: true, mode: 448 });
-    fs58.renameSync(fileOf2(owner), aside);
+    fs63.mkdirSync(path68.dirname(aside), { recursive: true, mode: 448 });
+    fs63.renameSync(fileOf2(owner), aside);
     return aside;
   } catch {
     return null;
@@ -15555,7 +16583,7 @@ function readKeptQueue(owner) {
     return null;
   let kept;
   try {
-    kept = JSON.parse(fs58.readFileSync(fileOf2(owner), "utf8"));
+    kept = JSON.parse(fs63.readFileSync(fileOf2(owner), "utf8"));
   } catch {
     return null;
   }
@@ -15602,7 +16630,7 @@ class Book {
   }
   queue(owner) {
     if (!OWNER2.test(owner) && !this.queues.has(owner)) {
-      const kept = fs58.existsSync(fileOf2(owner)) ? readKeptQueue(owner) : { owner, items: [] };
+      const kept = fs63.existsSync(fileOf2(owner)) ? readKeptQueue(owner) : { owner, items: [] };
       if (!kept)
         throw new Refusal(`${owner}'s Work Queue was kept by a newer Kuvo Code, in a way this one can't read: it's left as it is.`);
       this.queues.set(owner, kept);
@@ -15636,7 +16664,7 @@ class Book {
     for (const [owner, queue] of changed) {
       any = true;
       if (!queue.items.length)
-        fs58.rmSync(fileOf2(owner), { force: true });
+        fs63.rmSync(fileOf2(owner), { force: true });
       else
         writePrivate(fileOf2(owner), JSON.stringify({ owner, items: queue.items }));
       this.before.set(owner, JSON.stringify(queue.items));
@@ -15645,7 +16673,7 @@ class Book {
   }
 }
 function changeQueues(work, now = Date.now(), { onItsOwn = false } = {}) {
-  fs58.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
+  fs63.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
   migratedToChange();
   const { value, changed } = locked(LOCK11, () => {
     let book;
@@ -15671,7 +16699,7 @@ function changeQueues(work, now = Date.now(), { onItsOwn = false } = {}) {
     const value = work(book);
     const changed = book.save();
     for (const id of purged)
-      fs58.rmSync(path63.join(FILES2, id), { recursive: true, force: true });
+      fs63.rmSync(path68.join(FILES2, id), { recursive: true, force: true });
     return { value, changed };
   });
   if (changed)
@@ -15690,7 +16718,7 @@ function noteQueuesChanged() {
 }
 var matching2 = (items, ref) => items.filter((item) => refNames(ref, item)).sort((a, b) => Number(Boolean(a.removed)) - Number(Boolean(b.removed)));
 var refNames = (ref, item) => ("id" in ref) ? item.id === ref.id : ("number" in ref) ? item.number === ref.number : Boolean(item.source) && sourceKeyOf(item.source) === ref.source;
-var filesOf2 = (item) => path63.join(FILES2, item);
+var filesOf2 = (item) => path68.join(FILES2, item);
 function placeIn(items, status, { top = false } = {}) {
   const orders = items.filter((item) => item.status === status && !item.removed).map((item) => item.order);
   if (!orders.length)
@@ -15715,9 +16743,9 @@ function noteHanded(item, from, to, at) {
 }
 
 // box/src/link/work-queue/labels.ts
-import path64 from "node:path";
-var LABELS_FILE2 = path64.join(WORK_QUEUE2, "labels.json");
-var LOCK12 = path64.join(WORK_QUEUE2, ".labels.lock");
+import path69 from "node:path";
+var LABELS_FILE2 = path69.join(WORK_QUEUE2, "labels.json");
+var LOCK12 = path69.join(WORK_QUEUE2, ".labels.lock");
 var MOST_LABELS = 60;
 var MOST_LABELS_EACH = 10;
 var MOST_NAME = 40;
@@ -15906,10 +16934,10 @@ function takePrimaryLabels(given, used, strip, key) {
 }
 
 // box/src/link/work-queue/told.ts
-var TOLD = path65.join(WORK_QUEUE2, "peers");
+var TOLD = path70.join(WORK_QUEUE2, "peers");
 var MOST_TOLD = 1500;
 var MOST_TOLD_DONE = 100;
-var fileOf3 = (key) => path65.join(TOLD, `${key}.json`);
+var fileOf3 = (key) => path70.join(TOLD, `${key}.json`);
 var SESSION3 = /^ses_[A-Za-z0-9]{1,60}$/;
 var KIND = (value) => value === "mac" || value === "machine" ? value : null;
 var count = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0;
@@ -15990,7 +17018,7 @@ function readTold3(key) {
   if (!KEY.test(key))
     return null;
   try {
-    const kept = JSON.parse(fs59.readFileSync(fileOf3(key), "utf8"));
+    const kept = JSON.parse(fs64.readFileSync(fileOf3(key), "utf8"));
     if (!isObject(kept) || typeof kept.at !== "number" || !Array.isArray(kept.items))
       return null;
     if (!Array.isArray(kept.labels))
@@ -16000,11 +17028,11 @@ function readTold3(key) {
     return null;
   }
 }
-var LOCK13 = path65.join(WORK_QUEUE2, ".told.lock");
+var LOCK13 = path70.join(WORK_QUEUE2, ".told.lock");
 function keepTold2(key, told, now = Date.now()) {
   if (!KEY.test(key))
     return false;
-  fs59.mkdirSync(TOLD, { recursive: true, mode: 448 });
+  fs64.mkdirSync(TOLD, { recursive: true, mode: 448 });
   return locked(LOCK13, () => {
     const kept = readTold3(key);
     if (kept && kept.at > told.at && kept.at - told.at < 600000 && kept.id !== told.id)
@@ -16041,7 +17069,7 @@ function toldShared(key) {
     return null;
   let stamp;
   try {
-    const stat = fs59.statSync(fileOf3(key));
+    const stat = fs64.statSync(fileOf3(key));
     stamp = `${stat.mtimeMs}:${stat.size}`;
   } catch {
     sharedSaid.delete(key);
@@ -16059,11 +17087,11 @@ function toldShared(key) {
 var toldKeys = () => listOf(TOLD).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)).filter((key) => KEY.test(key));
 var forgetTold = (key) => {
   if (KEY.test(key))
-    fs59.rmSync(fileOf3(key), { force: true });
+    fs64.rmSync(fileOf3(key), { force: true });
 };
 
 // box/src/link/work-queue/numbers.ts
-var NUMBERS_FILE = path66.join(WORK_QUEUE2, "numbers.json");
+var NUMBERS_FILE = path71.join(WORK_QUEUE2, "numbers.json");
 var BLOCK = 50;
 var LOW = 15;
 var ASK_AGAIN = 30000;
@@ -16202,7 +17230,7 @@ function ownSince(now = Date.now(), file = NUMBERS_FILE) {
     return kept;
   let since = now;
   try {
-    const made = fs60.statSync(RUN).birthtimeMs;
+    const made = fs65.statSync(RUN).birthtimeMs;
     if (made > 0 && made < since)
       since = made;
   } catch {}
@@ -16222,8 +17250,8 @@ var keyOf3 = (primary, link) => ("self" in primary) ? "self" : ("peer" in primar
 var askID = () => `wqn_${crypto23.randomBytes(12).toString("base64url")}`;
 var leftIn = (leases) => leases.reduce((sum, [from, to]) => sum + to - from + 1, 0);
 function changeNumbers(work, file = NUMBERS_FILE) {
-  fs60.mkdirSync(path66.dirname(file), { recursive: true, mode: 448 });
-  return locked(`${path66.join(path66.dirname(file), "." + path66.basename(file))}.lock`, () => {
+  fs65.mkdirSync(path71.dirname(file), { recursive: true, mode: 448 });
+  return locked(`${path71.join(path71.dirname(file), "." + path71.basename(file))}.lock`, () => {
     const kept = readNumbers(file);
     const before = JSON.stringify(kept);
     const value = work(kept);
@@ -16598,9 +17626,9 @@ function blockArrived(give, primary, options = {}) {
 }
 
 // box/src/link/documents/changed.ts
-import fs61 from "node:fs";
-import path67 from "node:path";
-var DOCS_CHANGED = path67.join(RUN, "docs.changed");
+import fs66 from "node:fs";
+import path72 from "node:path";
+var DOCS_CHANGED = path72.join(RUN, "docs.changed");
 var changedHere = () => {};
 var onDocsChanged = (then) => {
   changedHere = then;
@@ -16609,13 +17637,13 @@ function noteDocsChanged() {
   if (IS_MAC)
     return changedHere();
   try {
-    fs61.mkdirSync(RUN, { recursive: true, mode: 448 });
-    fs61.writeFileSync(DOCS_CHANGED, "", { mode: 384 });
+    fs66.mkdirSync(RUN, { recursive: true, mode: 448 });
+    fs66.writeFileSync(DOCS_CHANGED, "", { mode: 384 });
   } catch {}
 }
 function docsNoted() {
   try {
-    fs61.rmSync(DOCS_CHANGED);
+    fs66.rmSync(DOCS_CHANGED);
     return true;
   } catch {
     return false;
@@ -16623,229 +17651,12 @@ function docsNoted() {
 }
 
 // box/src/link/setup/card.ts
-import fs65 from "node:fs";
-import path71 from "node:path";
+import fs69 from "node:fs";
+import path75 from "node:path";
 
 // box/src/link/setup/judge.ts
-import fs64 from "node:fs";
-import path70 from "node:path";
-
-// box/src/link/rehome/state.ts
-import fs62 from "node:fs";
-import path68 from "node:path";
-var rehomeFolder = (home) => path68.join(home, "updates", "rehome");
-var STEPS = ["plan", "install", "clone", "rewrite", "check", "place", "fix", "clear", "done"];
-var stepIndex = (step) => STEPS.indexOf(step);
-var forwardOnly = (step) => stepIndex(step) >= stepIndex("clear");
-var MOST_TRIES = 3;
-var AFTER_A_FAILURE = 3600000;
-var OVERDUE_AFTER = 3 * 86400000;
-var KEPT_FOR2 = 30 * 86400000;
-var stateFile = (home) => path68.join(rehomeFolder(home), "state.json");
-function readRecord(home) {
-  try {
-    const kept = JSON.parse(fs62.readFileSync(stateFile(home), "utf8"));
-    return isObject(kept) ? kept : {};
-  } catch {
-    return {};
-  }
-}
-function noteRecord(home, change) {
-  fs62.mkdirSync(rehomeFolder(home), { recursive: true, mode: 448 });
-  return locked(`${stateFile(home)}.lock`, () => {
-    const next = { ...readRecord(home), ...change };
-    writeSynced(stateFile(home), JSON.stringify(next, null, 1));
-    return next;
-  });
-}
-function rehomeStatus(home, now = Date.now()) {
-  const kept = readRecord(home);
-  let journal = null;
-  let unreadable = false;
-  try {
-    journal = readJournal(home);
-  } catch {
-    unreadable = true;
-  }
-  const underWay = journal !== null && journal.step !== "done" ? journal : null;
-  const waitingSince = typeof kept.waitingSince === "number" ? kept.waitingSince : null;
-  const recorded = kept.state === "moving" ? "failed" : kept.state ?? null;
-  const state = unreadable ? "moving" : underWay ? forwardOnly(underWay.step) ? "clearing" : "moving" : recorded;
-  return {
-    state,
-    way: underWay ? underWay.way : kept.way ?? null,
-    step: underWay ? underWay.step : null,
-    tries: typeof kept.tries === "number" ? kept.tries : 0,
-    nextTry: typeof kept.nextTry === "number" ? kept.nextTry : null,
-    waitingSince,
-    overdue: (state === "waiting" || state === "failed") && waitingSince !== null && now - waitingSince >= OVERDUE_AFTER,
-    failed: unreadable ? { at: now, step: null, message: new UnreadableJournal().message } : kept.failed ?? null,
-    movedAt: typeof kept.movedAt === "number" ? kept.movedAt : null,
-    keptUntil: typeof kept.keptUntil === "number" ? kept.keptUntil : null,
-    owed: Array.isArray(kept.owed) ? kept.owed : [],
-    asked: kept.asked ?? null,
-    from: kept.from ?? underWay?.from ?? null,
-    to: kept.to ?? underWay?.to ?? null
-  };
-}
-var journalFile = (home) => path68.join(rehomeFolder(home), "journal.json");
-var actsFile = (home) => path68.join(rehomeFolder(home), "journal.acts");
-function readJournal(home) {
-  let text;
-  try {
-    text = fs62.readFileSync(journalFile(home), "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT")
-      return null;
-    throw new UnreadableJournal;
-  }
-  let kept;
-  try {
-    kept = JSON.parse(text);
-  } catch {
-    throw new UnreadableJournal;
-  }
-  if (!isObject(kept) || kept.v !== 1 || typeof kept.step !== "string")
-    throw new UnreadableJournal;
-  return kept;
-}
-
-class UnreadableJournal extends Error {
-  constructor() {
-    super("The move's journal can't be read: nothing is done until someone looks at it (updates/rehome/journal.json).");
-  }
-}
-var moveUnderWay = (home) => {
-  try {
-    const journal = readJournal(home);
-    return journal !== null && journal.step !== "done";
-  } catch {
-    return true;
-  }
-};
-function writeJournal(home, journal) {
-  writeSynced(journalFile(home), JSON.stringify(journal, null, 1));
-}
-function writeSynced(file, text) {
-  const temporary = `${file}.${process.pid}.tmp`;
-  const fd = fs62.openSync(temporary, "w", 384);
-  try {
-    fs62.writeSync(fd, text);
-    fs62.fsyncSync(fd);
-  } finally {
-    fs62.closeSync(fd);
-  }
-  fs62.renameSync(temporary, file);
-  syncFolder(path68.dirname(file));
-}
-function forgetJournal(home) {
-  fs62.rmSync(actsFile(home), { force: true });
-  fs62.rmSync(journalFile(home), { force: true });
-  syncFolder(rehomeFolder(home));
-}
-function journalAct(home, act) {
-  const fd = fs62.openSync(actsFile(home), "a+", 384);
-  try {
-    const size = fs62.fstatSync(fd).size;
-    const last = Buffer.alloc(1);
-    const torn = size > 0 && fs62.readSync(fd, last, 0, 1, size - 1) === 1 && last[0] !== 10;
-    fs62.writeSync(fd, (torn ? `
-` : "") + JSON.stringify(act) + `
-`);
-    fs62.fsyncSync(fd);
-  } finally {
-    fs62.closeSync(fd);
-  }
-}
-function readActs(home) {
-  let text = "";
-  try {
-    text = fs62.readFileSync(actsFile(home), "utf8");
-  } catch {
-    return [];
-  }
-  const acts = [];
-  for (const line of text.split(`
-`)) {
-    if (!line)
-      continue;
-    try {
-      const act = JSON.parse(line);
-      if (isObject(act) && ["rename", "made", "wrote", "keychain"].includes(act.act))
-        acts.push(act);
-    } catch {}
-  }
-  return acts;
-}
-function syncFolder(folder) {
-  try {
-    const fd = fs62.openSync(folder, "r");
-    try {
-      fs62.fsyncSync(fd);
-    } finally {
-      fs62.closeSync(fd);
-    }
-  } catch {}
-}
-var lockFolder = (home) => path68.join(rehomeFolder(home), "lock");
-var holderOf = (lock) => {
-  try {
-    const pid = Number(fs62.readFileSync(path68.join(lock, "pid"), "utf8"));
-    return Number.isInteger(pid) && pid > 1 ? pid : null;
-  } catch {
-    return null;
-  }
-};
-var holds2 = (pid) => pid === process.pid || processRuns(pid, "rehome");
-async function takeLock(home, { waiting = () => {}, most = 30 * 60000, clock = Date.now } = {}) {
-  const lock = lockFolder(home);
-  fs62.mkdirSync(rehomeFolder(home), { recursive: true, mode: 448 });
-  const began = clock();
-  let said = false;
-  for (;; ) {
-    try {
-      fs62.mkdirSync(lock, { mode: 448 });
-      fs62.writeFileSync(path68.join(lock, "pid"), String(process.pid), { mode: 384 });
-      return true;
-    } catch {}
-    const holder = holderOf(lock);
-    if (holder === process.pid)
-      return true;
-    if (holder !== null && !holds2(holder)) {
-      const aside = `${lock}.gone.${process.pid}`;
-      try {
-        fs62.renameSync(lock, aside);
-        if (holderOf(aside) === holder)
-          fs62.rmSync(aside, { recursive: true, force: true });
-        else
-          try {
-            fs62.renameSync(aside, lock);
-          } catch {
-            fs62.rmSync(aside, { recursive: true, force: true });
-          }
-      } catch {}
-      continue;
-    }
-    if (holder === null) {
-      try {
-        if (clock() - fs62.statSync(lock).mtimeMs > 60000)
-          fs62.rmSync(lock, { recursive: true, force: true });
-      } catch {}
-    }
-    if (!said) {
-      said = true;
-      waiting();
-    }
-    if (clock() - began > most)
-      return false;
-    await sleep(200);
-  }
-}
-var holdsLock = (home) => holderOf(lockFolder(home)) === process.pid;
-function giveLock(home) {
-  if (holdsLock(home))
-    fs62.rmSync(lockFolder(home), { recursive: true, force: true });
-}
+import fs68 from "node:fs";
+import path74 from "node:path";
 
 // box/src/link/documents/work.ts
 import crypto26 from "node:crypto";
@@ -17443,16 +18254,16 @@ function heldBy(link, now = Date.now()) {
 }
 
 // box/src/link/setup/welcomed.ts
-import fs63 from "node:fs";
-import path69 from "node:path";
-var FILE3 = () => path69.join(RUN, "welcomed.json");
-var isWelcomed = () => fs63.existsSync(FILE3());
+import fs67 from "node:fs";
+import path73 from "node:path";
+var FILE3 = () => path73.join(RUN, "welcomed.json");
+var isWelcomed = () => fs67.existsSync(FILE3());
 function setWelcomed(welcomed) {
   if (!welcomed)
-    return fs63.rmSync(FILE3(), { force: true });
+    return fs67.rmSync(FILE3(), { force: true });
   if (isWelcomed())
     return;
-  fs63.mkdirSync(RUN, { recursive: true, mode: 448 });
+  fs67.mkdirSync(RUN, { recursive: true, mode: 448 });
   writePrivate(FILE3(), JSON.stringify({ at: Date.now() }));
 }
 
@@ -17636,7 +18447,7 @@ function appsOf(lines) {
 function foundAt2(folder, app, home = homeFolder()) {
   const read = (file) => {
     try {
-      return JSON.parse(fs64.readFileSync(path70.join(folder, "run", file), "utf8"));
+      return JSON.parse(fs68.readFileSync(path74.join(folder, "run", file), "utf8"));
     } catch {
       return;
     }
@@ -17649,11 +18460,11 @@ function foundAt2(folder, app, home = homeFolder()) {
 }
 var shownFolder = (folder, home) => folder.startsWith(`${home}/`) ? folder.slice(home.length + 1) : folder;
 function runsAt(machine) {
-  if (!fs64.existsSync(path70.join(machine, "bin", "kuvo-start")) || fs64.existsSync(path70.join(machine, "run", "off")))
+  if (!fs68.existsSync(path74.join(machine, "bin", "kuvo-start")) || fs68.existsSync(path74.join(machine, "run", "off")))
     return "gone";
   let keeper = null;
   try {
-    keeper = Number(fs64.readFileSync(path70.join(machine, "run", "box.pid"), "utf8"));
+    keeper = Number(fs68.readFileSync(path74.join(machine, "run", "box.pid"), "utf8"));
   } catch {}
   return keeper && processRuns(keeper, "kuvo-start") ? "running" : "stopped";
 }
@@ -17677,29 +18488,29 @@ function engineKept(engineData) {
   if (!engineData)
     return false;
   try {
-    return fs64.readdirSync(engineData).some((file) => /^opencode.*\.db$/.test(file));
+    return fs68.readdirSync(engineData).some((file) => /^opencode.*\.db$/.test(file));
   } catch {
     return false;
   }
 }
 function appBoxRan(appBox, engineData) {
-  return engineKept(engineData) || OWN_BOX_RAN.some((file) => fs64.existsSync(path70.join(appBox, "run", file)));
+  return engineKept(engineData) || OWN_BOX_RAN.some((file) => fs68.existsSync(path74.join(appBox, "run", file)));
 }
 function hereNow(root, appBox = process.env.KUVO_HOME, home = homeFolder(), engineData = process.env.KUVO_ENGINE_DATA) {
-  const machine = path70.join(home, root || "");
-  if (!root || !appBox || path70.resolve(appBox) === path70.resolve(machine))
+  const machine = path74.join(home, root || "");
+  if (!root || !appBox || path74.resolve(appBox) === path74.resolve(machine))
     throw new Error("kuvo-link.js here needs KUVO_HOME, the app's own box's folder, and the machines' folder's name: here <root>.");
   if (moveUnderWay(machine))
     return { verdict: "moving", use: "wait", opens: "main", runs: null, box: null, own: null };
   const ownRan = appBoxRan(appBox, engineData);
   const own = ownRan ? foundAt2(appBox, true, home) ?? { folder: shownFolder(appBox, home), app: true } : null;
-  const there = foundAt2(machine, false, home) ?? (recordedKind(path70.join(machine, "box", "kind")) === "mac" ? { folder: shownFolder(machine, home), app: false } : null);
+  const there = foundAt2(machine, false, home) ?? (recordedKind(path74.join(machine, "box", "kind")) === "mac" ? { folder: shownFolder(machine, home), app: false } : null);
   return judgeHere(own, there, there ? runsAt(machine) : null);
 }
 var ATTACHED_FILE = "app-attached.json";
 
 // box/src/link/setup/card.ts
-var SETUP_CARD = path71.join(RUN, "setup-card.json");
+var SETUP_CARD = path75.join(RUN, "setup-card.json");
 function cardNow() {
   const link = readLink();
   const view = setupView(link);
@@ -17716,7 +18527,7 @@ function cardNow() {
     role: view.you.role,
     primary: primary ? { key: primary.key, name: primary.name, heard } : null,
     self: { key: own, name: String(link?.name ?? ""), kind: IS_MAC ? "mac" : "machine" },
-    app: IS_MAC || fs65.existsSync(path71.join(RUN, ATTACHED_FILE)),
+    app: IS_MAC || fs69.existsSync(path75.join(RUN, ATTACHED_FILE)),
     computers: view.computers.length,
     items,
     heldBy: view.heldBy,
@@ -17726,9 +18537,9 @@ function cardNow() {
 var written3 = "";
 function writeCard() {
   const text = JSON.stringify(cardNow());
-  if (text === written3 && fs65.existsSync(SETUP_CARD))
+  if (text === written3 && fs69.existsSync(SETUP_CARD))
     return;
-  fs65.mkdirSync(RUN, { recursive: true, mode: 448 });
+  fs69.mkdirSync(RUN, { recursive: true, mode: 448 });
   writePrivate(SETUP_CARD, text);
   written3 = text;
 }
@@ -17795,16 +18606,16 @@ function noteSetupNow(now = Date.now(), { soon = 60000 } = {}) {
 
 // box/src/link/work-queue/across.ts
 import crypto35 from "node:crypto";
-import fs101 from "node:fs";
-import path104 from "node:path";
+import fs104 from "node:fs";
+import path107 from "node:path";
 
 // box/src/link/peers/computer-name.ts
 var computerName = (peer) => peer.kind === "mac" ? plainName(peer.name) || "the Mac" : peer.id || plainName(peer.name) || "another computer";
 
 // box/src/link/work-queue/ops.ts
-import fs68 from "node:fs";
+import fs72 from "node:fs";
 import os9 from "node:os";
-import path74 from "node:path";
+import path78 from "node:path";
 import crypto28 from "node:crypto";
 
 // box/src/shared/carry.ts
@@ -17851,24 +18662,15 @@ function assigneeNamed(assignee, all = assignable(), told) {
 }
 
 // box/src/link/work-queue/github.ts
-import path73 from "node:path";
-import fs67 from "node:fs";
+import path77 from "node:path";
+import fs71 from "node:fs";
 
 // box/src/link/github/graphql.ts
-import { execFile as execFile7, spawn as spawn8 } from "node:child_process";
+import { execFile as execFile7, spawn as spawn9 } from "node:child_process";
 import crypto27 from "node:crypto";
-import fs66 from "node:fs";
+import fs70 from "node:fs";
 import os8 from "node:os";
-import path72 from "node:path";
-
-// box/src/link/once.ts
-var answersOnce = false;
-function answerOnce() {
-  answersOnce = true;
-}
-var answeringOnce = () => answersOnce;
-
-// box/src/link/github/graphql.ts
+import path76 from "node:path";
 var HOLD = 3 * 60000;
 var BACK_OFF = 5 * 60000;
 var PER_QUERY = 50;
@@ -17921,7 +18723,7 @@ function askGitHub(host, query, timeout = 30000) {
 }
 function readKept7(file) {
   try {
-    const kept = JSON.parse(fs66.readFileSync(file, "utf8"));
+    const kept = JSON.parse(fs70.readFileSync(file, "utf8"));
     const reads = {};
     for (const [key, read] of Object.entries(isObject(kept.reads) ? kept.reads : {})) {
       if (!isObject(read) || typeof read.at !== "number")
@@ -17934,16 +18736,16 @@ function readKept7(file) {
   }
 }
 function takeLock2(lock, now) {
-  fs66.mkdirSync(path72.dirname(lock), { recursive: true, mode: 448 });
+  fs70.mkdirSync(path76.dirname(lock), { recursive: true, mode: 448 });
   const token = crypto27.randomBytes(9).toString("base64url");
   const make = () => {
     try {
-      fs66.mkdirSync(lock);
+      fs70.mkdirSync(lock);
     } catch {
       return null;
     }
     try {
-      fs66.writeFileSync(path72.join(lock, token), "");
+      fs70.writeFileSync(path76.join(lock, token), "");
     } catch {}
     return token;
   };
@@ -17951,26 +18753,26 @@ function takeLock2(lock, now) {
   if (made)
     return made;
   try {
-    for (const name of fs66.readdirSync(path72.dirname(lock))) {
-      if (!name.startsWith(path72.basename(lock) + "."))
+    for (const name of fs70.readdirSync(path76.dirname(lock))) {
+      if (!name.startsWith(path76.basename(lock) + "."))
         continue;
-      const aside = path72.join(path72.dirname(lock), name);
-      if (now - fs66.statSync(aside).mtimeMs > HOLD)
-        fs66.rmSync(aside, { recursive: true, force: true });
+      const aside = path76.join(path76.dirname(lock), name);
+      if (now - fs70.statSync(aside).mtimeMs > HOLD)
+        fs70.rmSync(aside, { recursive: true, force: true });
     }
   } catch {}
   try {
-    if (now - fs66.statSync(lock).mtimeMs < HOLD)
+    if (now - fs70.statSync(lock).mtimeMs < HOLD)
       return null;
     const aside = `${lock}.${token}`;
-    fs66.renameSync(lock, aside);
-    if (Date.now() - fs66.statSync(aside).mtimeMs < HOLD) {
+    fs70.renameSync(lock, aside);
+    if (Date.now() - fs70.statSync(aside).mtimeMs < HOLD) {
       try {
-        fs66.renameSync(aside, lock);
+        fs70.renameSync(aside, lock);
       } catch {}
       return null;
     }
-    fs66.rmSync(aside, { recursive: true, force: true });
+    fs70.rmSync(aside, { recursive: true, force: true });
     return make();
   } catch {
     return null;
@@ -17978,14 +18780,14 @@ function takeLock2(lock, now) {
 }
 function letGo2(lock, token) {
   try {
-    if (!fs66.existsSync(path72.join(lock, token)))
+    if (!fs70.existsSync(path76.join(lock, token)))
       return;
-    fs66.rmSync(lock, { recursive: true, force: true });
+    fs70.rmSync(lock, { recursive: true, force: true });
   } catch {}
 }
 function touch(lock) {
   try {
-    fs66.utimesSync(lock, new Date, new Date);
+    fs70.utimesSync(lock, new Date, new Date);
   } catch {}
 }
 var askedAt = (read) => read.checked ?? read.at;
@@ -18120,7 +18922,7 @@ ${reader.keyOf(ask)}`;
     const due = dueOf(reader, waiting, now());
     const recent = (file, within) => {
       try {
-        return Date.now() - fs66.statSync(file).mtimeMs < within;
+        return Date.now() - fs70.statSync(file).mtimeMs < within;
       } catch {
         return false;
       }
@@ -18129,7 +18931,7 @@ ${reader.keyOf(ask)}`;
     if (due.length && !recent(reader.file + ".lock", HOLD) && !recent(started, 1e4)) {
       try {
         writePrivate(started, "");
-        const child = spawn8(process.execPath, [...OWN_RUNTIME, SCRIPT, "box", "github-read", reader.name], { detached: true, stdio: ["pipe", "ignore", "ignore"], cwd: K, env: process.env });
+        const child = spawn9(process.execPath, [...OWN_RUNTIME, SCRIPT, "box", "github-read", reader.name], { detached: true, stdio: ["pipe", "ignore", "ignore"], cwd: K, env: process.env });
         child.stdin?.end(JSON.stringify(due));
         child.unref();
       } catch {}
@@ -18188,7 +18990,7 @@ async function readOne(reader, ask, query, valueOf, now = Date.now) {
 }
 
 // box/src/link/work-queue/github.ts
-var SEEN_FILE2 = path73.join(WORK_QUEUE2, "seen.json");
+var SEEN_FILE2 = path77.join(WORK_QUEUE2, "seen.json");
 var DONE_STATES = new Set(["completed", "not_planned", "merged", "closed"]);
 var STRUCK = new Set(["not_planned", "closed"]);
 var FRESH_OPEN = 60000;
@@ -18262,7 +19064,7 @@ var cache = null;
 function seenReads() {
   let mark = "-";
   try {
-    const stat = fs67.statSync(SEEN_FILE2);
+    const stat = fs71.statSync(SEEN_FILE2);
     mark = `${stat.mtimeMs} ${stat.size} ${stat.ino}`;
   } catch {}
   if (cache?.mark === mark)
@@ -18487,24 +19289,24 @@ var MOST_PROGRESS_NOTE = 300;
 var refuse = (words) => {
   throw new Refusal(words);
 };
-var STAGING = path74.join(path74.dirname(FILES2), "staging");
+var STAGING = path78.join(path78.dirname(FILES2), "staging");
 function clearStaging(now = Date.now()) {
   for (const name of (() => {
     try {
-      return fs68.readdirSync(STAGING);
+      return fs72.readdirSync(STAGING);
     } catch {
       return [];
     }
   })()) {
     try {
-      if (now - fs68.statSync(path74.join(STAGING, name)).mtimeMs > 3600000)
-        fs68.rmSync(path74.join(STAGING, name), { recursive: true, force: true });
+      if (now - fs72.statSync(path78.join(STAGING, name)).mtimeMs > 3600000)
+        fs72.rmSync(path78.join(STAGING, name), { recursive: true, force: true });
     } catch {}
   }
 }
 var shortName = (name) => {
-  const ext = path74.extname(name).slice(0, 20);
-  let stem = name.slice(0, name.length - path74.extname(name).length);
+  const ext = path78.extname(name).slice(0, 20);
+  let stem = name.slice(0, name.length - path78.extname(name).length);
   while (stem && Buffer.byteLength(stem + ext) > 180)
     stem = Array.from(stem).slice(0, -1).join("");
   return stem + ext;
@@ -18520,21 +19322,21 @@ function refuseHanding(item) {
 }
 var real = (place) => {
   try {
-    return fs68.realpathSync(place);
+    return fs72.realpathSync(place);
   } catch {
     return null;
   }
 };
-var within2 = (file, folder) => file === folder || file.startsWith(folder.endsWith(path74.sep) ? folder : folder + path74.sep);
+var within2 = (file, folder) => file === folder || file.startsWith(folder.endsWith(path78.sep) ? folder : folder + path78.sep);
 function inMacApp(file) {
   if (!OWN_HOME_MAC || process.platform !== "darwin")
     return false;
   if (new RegExp(APP_TEMPORARY_PATTERN, "i").test(file))
     return true;
-  return [...new Set([homeFolder(), accountHome()].map((each) => real(each) ?? each))].some((home) => within2(file, path74.join(home, "Library")) && /^run\.kuvo\.code/i.test(path74.relative(path74.join(home, "Library"), file).split(path74.sep)[1] ?? ""));
+  return [...new Set([homeFolder(), accountHome()].map((each) => real(each) ?? each))].some((home) => within2(file, path78.join(home, "Library")) && /^run\.kuvo\.code/i.test(path78.relative(path78.join(home, "Library"), file).split(path78.sep)[1] ?? ""));
 }
 function stageFile(given, places, staging) {
-  if (!path74.isAbsolute(given))
+  if (!path78.isAbsolute(given))
     refuse(`Give ${given} as a full path.`);
   const file = real(given) ?? refuse(`There's no file at ${given}.`);
   const own = places.own ? real(places.own) : null;
@@ -18544,21 +19346,21 @@ function stageFile(given, places, staging) {
   const ownOK = own !== null && root === own && boxes.some((box) => within2(own, box));
   if (!root || !ownOK && (boxes.some((box) => within2(file, box)) || inMacApp(file)))
     refuse(`${given} isn't in this conversation's folder, its project or a temporary folder: only files from there are kept with an item.`);
-  if (path74.relative(root, file).split(path74.sep).some((part) => part.startsWith(".")))
+  if (path78.relative(root, file).split(path78.sep).some((part) => part.startsWith(".")))
     refuse(`${given} is hidden (a name starting with a dot): it isn't kept with an item.`);
-  const checked = fs68.lstatSync(file);
+  const checked = fs72.lstatSync(file);
   if (!checked.isFile())
     refuse(`${given} isn't a file.`);
   if (checked.size > MOST_FILE)
     refuse(`${given} is over ${Math.round(MOST_FILE / 1e6)} MB: too big to keep with an item.`);
   let handle;
   try {
-    handle = fs68.openSync(file, fs68.constants.O_RDONLY | (fs68.constants.O_NOFOLLOW ?? 0) | (fs68.constants.O_NONBLOCK ?? 0));
+    handle = fs72.openSync(file, fs72.constants.O_RDONLY | (fs72.constants.O_NOFOLLOW ?? 0) | (fs72.constants.O_NONBLOCK ?? 0));
   } catch {
     return refuse(`${given} can't be read.`);
   }
   try {
-    const opened = fs68.fstatSync(handle);
+    const opened = fs72.fstatSync(handle);
     if (!opened.isFile() || opened.dev !== checked.dev || opened.ino !== checked.ino || real(given) !== file)
       refuse(`${given} changed as it was read: try again.`);
     if (opened.nlink !== 1)
@@ -18567,17 +19369,17 @@ function stageFile(given, places, staging) {
     const bytes = Buffer.alloc(size);
     let read = 0;
     while (read < size) {
-      const got = fs68.readSync(handle, bytes, read, size - read, read);
+      const got = fs72.readSync(handle, bytes, read, size - read, read);
       if (!got)
         break;
       read += got;
     }
-    fs68.mkdirSync(staging, { recursive: true, mode: 448 });
-    const staged = path74.join(staging, `${crypto28.randomBytes(8).toString("hex")}`);
-    fs68.writeFileSync(staged, bytes.subarray(0, read), { mode: 384 });
-    return { staged, name: path74.basename(file), size: read };
+    fs72.mkdirSync(staging, { recursive: true, mode: 448 });
+    const staged = path78.join(staging, `${crypto28.randomBytes(8).toString("hex")}`);
+    fs72.writeFileSync(staged, bytes.subarray(0, read), { mode: 384 });
+    return { staged, name: path78.basename(file), size: read };
   } finally {
-    fs68.closeSync(handle);
+    fs72.closeSync(handle);
   }
 }
 function stageFiles(given, places) {
@@ -18586,8 +19388,8 @@ function stageFiles(given, places) {
     refuse("Only an agent's own files are kept with an item.");
   if (named.length > MOST_FILES)
     refuse(`An item keeps ${MOST_FILES} files at most.`);
-  const staging = path74.join(STAGING, crypto28.randomBytes(8).toString("hex"));
-  const clear = () => fs68.rmSync(staging, { recursive: true, force: true });
+  const staging = path78.join(STAGING, crypto28.randomBytes(8).toString("hex"));
+  const clear = () => fs72.rmSync(staging, { recursive: true, force: true });
   try {
     return { staged: named.map((each) => stageFile(each, places, staging)), clear };
   } catch (error) {
@@ -18611,7 +19413,7 @@ var TYPES = {
   ".mp4": "video/mp4",
   ".mov": "video/quicktime"
 };
-var typeOf = (name) => TYPES[path74.extname(name).toLowerCase()] ?? "application/octet-stream";
+var typeOf = (name) => TYPES[path78.extname(name).toLowerCase()] ?? "application/octet-stream";
 var text = (value, most, what) => {
   if (typeof value !== "string")
     return refuse(`${what} should be text.`);
@@ -18891,18 +19693,18 @@ function changeItem2(book, item, fields, acting, { added = false } = {}) {
     refuse(`An item keeps ${MOST_FILES} files at most: take some away first (remove).`);
   for (const file of item.files)
     if (gone.has(file.name))
-      acting.fileOps.push(() => fs68.rmSync(path74.join(filesOf2(item.id), file.name), { force: true }));
+      acting.fileOps.push(() => fs72.rmSync(path78.join(filesOf2(item.id), file.name), { force: true }));
   item.files = left;
   for (const each of staged) {
     const base = shortName(each.name.replace(/[\\\0]/g, "_").replace(/^\.+/, "")) || "file";
-    const ext = path74.extname(base);
+    const ext = path78.extname(base);
     let name = base;
     for (let n = 2;item.files.some((file) => file.name === name); n++)
       name = `${base.slice(0, base.length - ext.length)} ${n}${ext}`;
     item.files.push({ name, size: each.size, type: typeOf(name), at: now });
     acting.fileOps.push(() => {
-      fs68.mkdirSync(filesOf2(item.id), { recursive: true, mode: 448 });
-      fs68.renameSync(each.staged, path74.join(filesOf2(item.id), name));
+      fs72.mkdirSync(filesOf2(item.id), { recursive: true, mode: 448 });
+      fs72.renameSync(each.staged, path78.join(filesOf2(item.id), name));
     });
   }
   item.updated = { at: now, by: who };
@@ -18951,8 +19753,8 @@ function handItem(book, item, to, who, now) {
 
 // box/src/link/work-queue/hand.ts
 import crypto32 from "node:crypto";
-import fs94 from "node:fs";
-import path98 from "node:path";
+import fs97 from "node:fs";
+import path101 from "node:path";
 
 // box/src/link/letters/conversation.ts
 var READ_LIMIT = 24000;
@@ -19120,23 +19922,23 @@ async function readConversation(target, session, data, name, signal) {
 
 // box/src/link/letters/leave.ts
 import crypto29 from "node:crypto";
-import fs69 from "node:fs";
-import path75 from "node:path";
-var RELAY_DOWN = path75.join(RUN, "relay-down");
+import fs73 from "node:fs";
+import path79 from "node:path";
+var RELAY_DOWN = path79.join(RUN, "relay-down");
 var DOWN_AFTER = 30000;
 function noteRelay(online, since, now = Date.now()) {
   try {
     if (online)
-      fs69.rmSync(RELAY_DOWN, { force: true });
-    else if (now - since > DOWN_AFTER && !fs69.existsSync(RELAY_DOWN))
+      fs73.rmSync(RELAY_DOWN, { force: true });
+    else if (now - since > DOWN_AFTER && !fs73.existsSync(RELAY_DOWN))
       writePrivate(RELAY_DOWN, "");
   } catch {}
 }
-var offRelay = () => IS_MAC ? !macLink.host?.welcomed : fs69.existsSync(RELAY_DOWN);
+var offRelay = () => IS_MAC ? !macLink.host?.welcomed : fs73.existsSync(RELAY_DOWN);
 function leaveLetter(letter, now = Date.now()) {
   const id = "ltr_" + crypto29.randomBytes(16).toString("base64url");
-  fs69.mkdirSync(SENDING, { recursive: true, mode: 448 });
-  writePrivate(path75.join(SENDING, `${id}.json`), JSON.stringify({ ...letter, text: cutText(letter.text), at: now }));
+  fs73.mkdirSync(SENDING, { recursive: true, mode: 448 });
+  writePrivate(path79.join(SENDING, `${id}.json`), JSON.stringify({ ...letter, text: cutText(letter.text), at: now }));
   if (IS_MAC)
     macSendOutbox();
   return id;
@@ -19146,48 +19948,48 @@ async function letterAnswer(id, signal, { most = LETTER_WAIT, step = 2000, cut }
     const answer = await macLetterAnswer(id, signal, most, cut);
     return "text" in answer && answer.text === null ? null : answer;
   }
-  const file = path75.join(REPLIES, `${id}.json`);
-  const alive = path75.join(REPLIES, `${id}.alive`);
+  const file = path79.join(REPLIES, `${id}.json`);
+  const alive = path79.join(REPLIES, `${id}.alive`);
   const began = Date.now();
   try {
-    fs69.mkdirSync(REPLIES, { recursive: true, mode: 448 });
+    fs73.mkdirSync(REPLIES, { recursive: true, mode: 448 });
     while (Date.now() - began < most && !signal?.aborted) {
-      fs69.writeFileSync(alive, "", { mode: 384 });
+      fs73.writeFileSync(alive, "", { mode: 384 });
       await pause(step, signal);
       if (signal?.aborted)
         break;
       let answer = null;
       try {
-        answer = JSON.parse(fs69.readFileSync(file, "utf8"));
+        answer = JSON.parse(fs73.readFileSync(file, "utf8"));
       } catch {}
       if (!answer)
         continue;
-      fs69.rmSync(file, { force: true });
+      fs73.rmSync(file, { force: true });
       return answer;
     }
-    fs69.writeFileSync(path75.join(REPLIES, `${id}.gaveup`), "", { mode: 384 });
+    fs73.writeFileSync(path79.join(REPLIES, `${id}.gaveup`), "", { mode: 384 });
   } catch {} finally {
-    fs69.rmSync(alive, { force: true });
+    fs73.rmSync(alive, { force: true });
   }
   return null;
 }
 
 // box/src/link/letters/limits.ts
-import fs70 from "node:fs";
-import path76 from "node:path";
+import fs74 from "node:fs";
+import path80 from "node:path";
 var LIMITS2 = {
   messages: { most: 20, within: 600000 },
   sessions: { most: 6, within: 600000 },
   botSessions: { most: 40, within: 600000 }
 };
-var LIMITS_FILE = path76.join(RUN, "tool-limits.json");
-var LIMITS_LOCK = path76.join(RUN, ".tool-limits.lock");
+var LIMITS_FILE = path80.join(RUN, "tool-limits.json");
+var LIMITS_LOCK = path80.join(RUN, ".tool-limits.lock");
 var STARTING_FOR = 120000;
 function changeCounts(now, change, file) {
   return locked(LIMITS_LOCK, () => {
     let counts = {};
     try {
-      counts = JSON.parse(fs70.readFileSync(file, "utf8")) ?? {};
+      counts = JSON.parse(fs74.readFileSync(file, "utf8")) ?? {};
     } catch {}
     for (const kind of Object.keys(LIMITS2)) {
       const byKey = counts[kind] ?? {};
@@ -19266,18 +20068,18 @@ function startedAs(bot, token, session, prompted = false, file = LIMITS_FILE) {
 }
 
 // box/src/link/letters/start.ts
-import fs83 from "node:fs";
-import path86 from "node:path";
+import fs87 from "node:fs";
+import path90 from "node:path";
 
 // box/src/link/engine/chats.ts
-import fs71 from "node:fs";
+import fs75 from "node:fs";
 var chatsReal = null;
 function isChatsFolder(directory) {
   if (typeof directory !== "string" || !directory)
     return false;
   if (directory === CHATS)
     return true;
-  if (!chatsReal && fs71.existsSync(CHATS))
+  if (!chatsReal && fs75.existsSync(CHATS))
     chatsReal = located(CHATS);
   return located(directory) === (chatsReal ?? located(CHATS));
 }
@@ -19332,13 +20134,13 @@ function markChatOn(target, type, data, signal) {
 }
 
 // box/src/link/areas/worktree-records.ts
-import fs73 from "node:fs";
-import path78 from "node:path";
+import fs77 from "node:fs";
+import path82 from "node:path";
 
 // box/src/link/work/project-trees.ts
-import fs72 from "node:fs";
-import path77 from "node:path";
-var fsp2 = fs72.promises;
+import fs76 from "node:fs";
+import path81 from "node:path";
+var fsp2 = fs76.promises;
 var MOST_READ2 = 4096;
 async function real2(where) {
   await askedAbout([where]);
@@ -19349,19 +20151,19 @@ async function real2(where) {
   }
 }
 async function realishLater(where) {
-  const full = path77.resolve(where);
-  for (let at = full, rest = "";; rest = path77.join(path77.basename(at), rest), at = path77.dirname(at)) {
+  const full = path81.resolve(where);
+  for (let at = full, rest = "";; rest = path81.join(path81.basename(at), rest), at = path81.dirname(at)) {
     const found = await real2(at);
     if (found)
-      return path77.join(found, rest);
-    if (path77.dirname(at) === at)
+      return path81.join(found, rest);
+    if (path81.dirname(at) === at)
       return full;
   }
 }
 async function smallFile(file) {
   let handle;
   try {
-    handle = await fsp2.open(file, fs72.constants.O_RDONLY | fs72.constants.O_NONBLOCK | fs72.constants.O_NOFOLLOW);
+    handle = await fsp2.open(file, fs76.constants.O_RDONLY | fs76.constants.O_NONBLOCK | fs76.constants.O_NOFOLLOW);
     const kind = await handle.stat();
     if (!kind.isFile() || kind.size > MOST_READ2)
       return null;
@@ -19376,20 +20178,20 @@ async function smallFile(file) {
 }
 async function isRepository(git) {
   try {
-    if ((await fsp2.lstat(git)).isSymbolicLink() || !(await fsp2.lstat(path77.join(git, "HEAD"))).isFile())
+    if ((await fsp2.lstat(git)).isSymbolicLink() || !(await fsp2.lstat(path81.join(git, "HEAD"))).isFile())
       return false;
-    return (await fsp2.stat(path77.join(git, "objects"))).isDirectory() && (await fsp2.stat(path77.join(git, "refs"))).isDirectory();
+    return (await fsp2.stat(path81.join(git, "objects"))).isDirectory() && (await fsp2.stat(path81.join(git, "refs"))).isDirectory();
   } catch {
     return false;
   }
 }
 async function namedBack(top) {
-  const named = (await smallFile(path77.join(top, ".git")))?.match(/^gitdir:\s*(.+)$/m)?.[1]?.trim();
-  return named ? real2(path77.resolve(top, named)) : null;
+  const named = (await smallFile(path81.join(top, ".git")))?.match(/^gitdir:\s*(.+)$/m)?.[1]?.trim();
+  return named ? real2(path81.resolve(top, named)) : null;
 }
 async function repositoryOf(folder) {
-  for (let at = await realishLater(folder);; at = path77.dirname(at)) {
-    const git = path77.join(at, ".git");
+  for (let at = await realishLater(folder);; at = path81.dirname(at)) {
+    const git = path81.join(at, ".git");
     let kind;
     try {
       kind = await fsp2.lstat(git);
@@ -19398,14 +20200,14 @@ async function repositoryOf(folder) {
       return await isRepository(git) ? { top: at, main: at } : null;
     if (kind?.isFile()) {
       const own = await namedBack(at);
-      if (!own || path77.basename(path77.dirname(own)) !== "worktrees")
+      if (!own || path81.basename(path81.dirname(own)) !== "worktrees")
         return null;
-      const common = path77.dirname(path77.dirname(own));
-      if (path77.basename(common) !== ".git" || !await isRepository(common))
+      const common = path81.dirname(path81.dirname(own));
+      if (path81.basename(common) !== ".git" || !await isRepository(common))
         return null;
-      return (await linkedWorktrees(path77.dirname(common))).includes(at) ? { top: at, main: path77.dirname(common) } : null;
+      return (await linkedWorktrees(path81.dirname(common))).includes(at) ? { top: at, main: path81.dirname(common) } : null;
     }
-    if (kind || path77.dirname(at) === at)
+    if (kind || path81.dirname(at) === at)
       return null;
   }
 }
@@ -19413,8 +20215,8 @@ async function linkedWorktrees(main) {
   const top = await real2(main);
   if (!top)
     return [];
-  const git = path77.join(top, ".git");
-  const trees = path77.join(git, "worktrees");
+  const git = path81.join(top, ".git");
+  const trees = path81.join(git, "worktrees");
   if (!await isRepository(git) || await real2(trees) !== trees)
     return [];
   let names = [];
@@ -19425,14 +20227,14 @@ async function linkedWorktrees(main) {
   }
   const found = [];
   for (const name of names) {
-    const own = path77.join(trees, name);
+    const own = path81.join(trees, name);
     try {
       if (!(await fsp2.lstat(own)).isDirectory() || await real2(own) !== own)
         continue;
-      const gitdir = (await smallFile(path77.join(own, "gitdir")))?.trim();
+      const gitdir = (await smallFile(path81.join(own, "gitdir")))?.trim();
       if (!gitdir)
         continue;
-      const tree = await real2(path77.dirname(path77.resolve(own, gitdir)));
+      const tree = await real2(path81.dirname(path81.resolve(own, gitdir)));
       if (tree && tree !== top && await namedBack(tree) === own)
         found.push(tree);
     } catch {}
@@ -19443,14 +20245,14 @@ async function projectWorktrees(folder) {
   const repository = await repositoryOf(folder);
   if (!repository || repository.top !== repository.main)
     return [];
-  const within = path77.relative(repository.top, await realishLater(folder));
-  return (await linkedWorktrees(repository.main)).map((tree) => path77.join(tree, within));
+  const within = path81.relative(repository.top, await realishLater(folder));
+  return (await linkedWorktrees(repository.main)).map((tree) => path81.join(tree, within));
 }
 async function inProjectWorktree(folder, project) {
   const repository = await repositoryOf(folder);
   if (!repository || repository.top === repository.main)
     return false;
-  const mapped = path77.join(repository.main, path77.relative(repository.top, await realishLater(folder)));
+  const mapped = path81.join(repository.main, path81.relative(repository.top, await realishLater(folder)));
   const home = await realishLater(project);
   return mapped === home || mapped.startsWith(home + "/");
 }
@@ -19501,11 +20303,11 @@ async function lookForTrees() {
 }
 
 // box/src/link/areas/worktree-records.ts
-var WORKTREES_FILE = path78.join(K, "box", "worktrees.json");
-var BRANCH_PREFIX_FILE = path78.join(K, "box", "git.json");
+var WORKTREES_FILE = path82.join(K, "box", "worktrees.json");
+var BRANCH_PREFIX_FILE = path82.join(K, "box", "git.json");
 function readWorktrees() {
   try {
-    const list = JSON.parse(fs73.readFileSync(WORKTREES_FILE, "utf8")).worktrees;
+    const list = JSON.parse(fs77.readFileSync(WORKTREES_FILE, "utf8")).worktrees;
     return Array.isArray(list) ? list.filter((each) => typeof each?.root === "string" && typeof each?.project === "string" && typeof each?.branch === "string") : [];
   } catch {
     return [];
@@ -19513,7 +20315,7 @@ function readWorktrees() {
 }
 function readRemovedWorktrees() {
   try {
-    const removed = JSON.parse(fs73.readFileSync(WORKTREES_FILE, "utf8")).removed;
+    const removed = JSON.parse(fs77.readFileSync(WORKTREES_FILE, "utf8")).removed;
     return isObject(removed) ? Object.fromEntries(Object.entries(removed).filter(([, project]) => typeof project === "string")) : {};
   } catch {
     return {};
@@ -19521,7 +20323,7 @@ function readRemovedWorktrees() {
 }
 function readHandedOver() {
   try {
-    const handed = JSON.parse(fs73.readFileSync(WORKTREES_FILE, "utf8")).handedOver;
+    const handed = JSON.parse(fs77.readFileSync(WORKTREES_FILE, "utf8")).handedOver;
     return isObject(handed) ? Object.fromEntries(Object.entries(handed).filter(([, project]) => typeof project === "string")) : {};
   } catch {
     return {};
@@ -19530,7 +20332,7 @@ function readHandedOver() {
 function worktreeProjects() {
   let kept = {};
   try {
-    kept = JSON.parse(fs73.readFileSync(WORKTREES_FILE, "utf8")) ?? {};
+    kept = JSON.parse(fs77.readFileSync(WORKTREES_FILE, "utf8")) ?? {};
   } catch {}
   const projects = { ...linkedTrees() };
   if (isObject(kept.handedOver)) {
@@ -19555,7 +20357,7 @@ function worktreeProjects() {
 var projectOf = (directory) => worktreeProjects()[directory] ?? directory;
 function readRestorableWorktrees() {
   try {
-    const list = JSON.parse(fs73.readFileSync(WORKTREES_FILE, "utf8")).restorable;
+    const list = JSON.parse(fs77.readFileSync(WORKTREES_FILE, "utf8")).restorable;
     return Array.isArray(list) ? list.filter((each) => typeof each?.root === "string" && typeof each?.project === "string" && typeof each?.branch === "string" && typeof each?.head === "string") : [];
   } catch {
     return [];
@@ -19576,11 +20378,11 @@ var worktreeFollowers = new Set;
 
 // box/src/link/areas/worktrees.ts
 import { spawnSync as spawnSync7 } from "node:child_process";
-import fs75 from "node:fs";
-import path79 from "node:path";
+import fs79 from "node:fs";
+import path83 from "node:path";
 
 // box/src/link/areas/git-words.ts
-import fs74 from "node:fs";
+import fs78 from "node:fs";
 var GIT_SETTINGS = {
   branchPrefix: ["branch_prefix"],
   commitInstructions: ["commit_instructions"],
@@ -19589,7 +20391,7 @@ var GIT_SETTINGS = {
 var DEFAULT_BRANCH_PREFIX = "kuvo/";
 function readGitFile(file = BRANCH_PREFIX_FILE) {
   try {
-    const kept = JSON.parse(fs74.readFileSync(file, "utf8"));
+    const kept = JSON.parse(fs78.readFileSync(file, "utf8"));
     return isObject(kept) ? kept : {};
   } catch {
     return {};
@@ -19833,10 +20635,10 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
     const worktrees = [];
     for (const tree of list) {
       const here = sessions.filter((session) => inside2(session.location?.directory ?? session.directory, tree.root));
-      const entry = { path: tree.root, folder: tree.folder ?? tree.root, project: tree.project, projectName: path79.basename(tree.project), branch: tree.branch, sessions: here.length, working: here.some((session) => active.has(session.id)) };
+      const entry = { path: tree.root, folder: tree.folder ?? tree.root, project: tree.project, projectName: path83.basename(tree.project), branch: tree.branch, sessions: here.length, working: here.some((session) => active.has(session.id)) };
       if (tree.base)
         entry.base = tree.base;
-      if (fs75.existsSync(tree.root)) {
+      if (fs79.existsSync(tree.root)) {
         const status = await gitLater(tree.root, ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]);
         if (status !== null) {
           entry.uncommitted = status.length > 0;
@@ -19856,7 +20658,7 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
     return { status: route.startsWith("kuvo/worktrees") ? 405 : 404, value: {} };
   if (route === "kuvo/worktrees") {
     const project = body?.project;
-    if (typeof project !== "string" || !path79.isAbsolute(project) || !fs75.existsSync(project))
+    if (typeof project !== "string" || !path83.isAbsolute(project) || !fs79.existsSync(project))
       return { status: 400, value: message(`Send the project's folder on this machine as {"project"}.`) };
     if (!engine?.port)
       return { status: 503, value: message("The engine isn't running.") };
@@ -19876,29 +20678,29 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
     }
     if (typeof root !== "string")
       return { status: 502, value: message("The engine didn't make it.") };
-    const branch = freeBranch(root, prefix + path79.basename(root));
+    const branch = freeBranch(root, prefix + path83.basename(root));
     if (!branch || gitAsked(root, ["switch", "--quiet", "-c", branch]) === null && gitIn(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]) !== branch) {
       await call(engine, "DELETE", "/api/worktree", { projectID: id, directory: root, force: true }, signal, project).catch(() => {});
       return { status: 502, value: message(prefix ? `A branch starting with “${prefix}” couldn’t be made in this repository. Change the branch prefix in Settings › Git, then try again.` : "Its branch couldn't be made.") };
     }
-    const tree = { project, root, folder: subpath ? path79.join(root, subpath.replace(/\/$/, "")) : root, branch, ...base ? { base } : {}, made: branch, prefix };
+    const tree = { project, root, folder: subpath ? path83.join(root, subpath.replace(/\/$/, "")) : root, branch, ...base ? { base } : {}, made: branch, prefix };
     updateWorktrees((list) => [...list.filter((each) => each.root !== root), tree]);
     return { status: 200, value: tree };
   }
   if (route === "kuvo/worktrees/record") {
     if (body?.removed === true) {
       const folder = body?.folder, project = body?.project;
-      if (typeof folder !== "string" || !path79.isAbsolute(folder) || typeof project !== "string" || !path79.isAbsolute(project) || folder === project)
+      if (typeof folder !== "string" || !path83.isAbsolute(folder) || typeof project !== "string" || !path83.isAbsolute(project) || folder === project)
         return { status: 400, value: message("Send {removed: true, project, folder}.") };
       if (!list.some((each) => (each.folder ?? each.root) === folder || each.root === folder) && !(folder in readRemovedWorktrees()) && !(folder in readHandedOver()))
         updateWorktrees((each) => each, undefined, undefined, { folder, project });
       return { status: 200, value: {} };
     }
     const given = { project: body?.project, root: body?.root, folder: typeof body?.folder === "string" ? body.folder : body?.root, branch: body?.branch, ...typeof body?.base === "string" ? { base: body.base } : {} };
-    const absolute = (folder) => typeof folder === "string" && path79.isAbsolute(folder);
+    const absolute = (folder) => typeof folder === "string" && path83.isAbsolute(folder);
     if (!absolute(given.project) || !absolute(given.root) || !absolute(given.folder) || typeof given.branch !== "string" || !given.branch)
       return { status: 400, value: message("Send {project, root, folder?, branch, base?}.") };
-    if (!fs75.existsSync(given.root))
+    if (!fs79.existsSync(given.root))
       return { status: 404, value: message("That worktree isn't on this machine any more.") };
     updateWorktrees((list) => list.some((each) => each.root === given.root) ? list : [...list, given]);
     return { status: 200, value: {} };
@@ -19914,7 +20716,7 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
 }
 var isArchived2 = (session) => Boolean(session.time?.archived || session.metadata?.["kuvo.archived"] === true || session.metadata?.kuvo?.archived === true);
 var folderOf2 = (session) => session.location?.directory ?? session.directory;
-var snapshotRef = (root, commit) => `refs/kuvo/worktrees/${path79.basename(root).replace(/[^A-Za-z0-9_-]+/g, "-")}-${commit.slice(0, 12)}`;
+var snapshotRef = (root, commit) => `refs/kuvo/worktrees/${path83.basename(root).replace(/[^A-Za-z0-9_-]+/g, "-")}-${commit.slice(0, 12)}`;
 var dropSnapshot = (project, root, commit) => gitIn(project, ["update-ref", "-d", snapshotRef(root, commit), commit]);
 function snapshot(root, branch) {
   const status = gitIn(root, ["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"]);
@@ -19925,7 +20727,7 @@ function snapshot(root, branch) {
   const gitFolder = gitIn(root, ["rev-parse", "--absolute-git-dir"]);
   if (!gitFolder)
     return;
-  const index = path79.join(gitFolder, "kuvo-snapshot-index");
+  const index = path83.join(gitFolder, "kuvo-snapshot-index");
   const env = { GIT_INDEX_FILE: index };
   try {
     if (gitAsked(root, ["read-tree", "HEAD"], env) === null || gitAsked(root, ["add", "-A"], env) === null)
@@ -19936,13 +20738,13 @@ function snapshot(root, branch) {
       return;
     return commit;
   } finally {
-    fs75.rmSync(index, { force: true });
+    fs79.rmSync(index, { force: true });
   }
 }
 function listedRestorable(tree) {
-  const branchThere = fs75.existsSync(tree.project) && gitIn(tree.project, ["rev-parse", "--verify", "--quiet", `refs/heads/${tree.branch}`]) !== null;
+  const branchThere = fs79.existsSync(tree.project) && gitIn(tree.project, ["rev-parse", "--verify", "--quiet", `refs/heads/${tree.branch}`]) !== null;
   const saved = Boolean(tree.snapshot);
-  const headThere = !branchThere && fs75.existsSync(tree.project) && gitIn(tree.project, ["cat-file", "-e", `${tree.head}^{commit}`]) !== null;
+  const headThere = !branchThere && fs79.existsSync(tree.project) && gitIn(tree.project, ["cat-file", "-e", `${tree.head}^{commit}`]) !== null;
   const entry = { project: tree.project, root: tree.root, folder: tree.folder ?? tree.root, branch: tree.branch, restorable: branchThere || saved || headThere, saved };
   if (tree.base) {
     entry.base = tree.base;
@@ -19964,7 +20766,7 @@ async function removeTree(tree, removal, engine, signal, bridge, known) {
   if (removal.forget && sessions.some((session) => inside2(folderOf2(session), tree.root))) {
     return { status: 409, value: message(`A session works in the worktree of ${tree.branch}, so it stays. Remove it with the session, or in Settings › Worktrees.`) };
   }
-  const gone = !fs75.existsSync(tree.root);
+  const gone = !fs79.existsSync(tree.root);
   if (!removal.discard && !removal.keep && !gone && gitIn(tree.root, ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]) !== "") {
     return { status: 409, value: message(`The worktree of ${tree.branch} has changes that aren’t committed, so it stays. Commit them, or remove it in Settings › Worktrees, which throws them away.`) };
   }
@@ -19984,7 +20786,7 @@ async function removeTree(tree, removal, engine, signal, bridge, known) {
     return { status: 409, value: message(`What isn’t committed in the worktree of ${tree.branch} couldn’t be kept, so it stays.`) };
   try {
     if (gone) {
-      if (fs75.existsSync(tree.project))
+      if (fs79.existsSync(tree.project))
         gitIn(tree.project, ["worktree", "prune"]);
     } else {
       const force = removal.discard || removal.keep;
@@ -20012,9 +20814,9 @@ async function restoreTree(folder, engine, signal, bridge) {
   const tree = readRestorableWorktrees().find((each) => (each.folder ?? each.root) === folder || each.root === folder);
   if (!tree)
     return { status: 404, value: message("It can’t come back any more.") };
-  if (!fs75.existsSync(tree.project))
+  if (!fs79.existsSync(tree.project))
     return { status: 409, value: message("Its project folder is gone.") };
-  if (fs75.existsSync(tree.root) && fs75.readdirSync(tree.root).length)
+  if (fs79.existsSync(tree.root) && fs79.readdirSync(tree.root).length)
     return { status: 409, value: message("Something else is in its folder now.") };
   const saved = tree.snapshot && gitIn(tree.project, ["cat-file", "-e", `${tree.snapshot}^{commit}`]) !== null ? tree.snapshot : undefined;
   const branchThere = gitIn(tree.project, ["rev-parse", "--verify", "--quiet", `refs/heads/${tree.branch}`]) !== null;
@@ -20024,7 +20826,7 @@ async function restoreTree(folder, engine, signal, bridge) {
   gitIn(tree.project, ["worktree", "prune"]);
   const made = branchThere ? spawnGit(tree.project, ["worktree", "add", tree.root, tree.branch]) : spawnGit(tree.project, ["worktree", "add", "-b", tree.branch, tree.root, tree.head]);
   if (made !== null) {
-    if (fs75.existsSync(tree.root))
+    if (fs79.existsSync(tree.root))
       gitIn(tree.project, ["worktree", "remove", "--force", tree.root]);
     if (!branchThere)
       gitIn(tree.project, ["branch", "-D", tree.branch]);
@@ -20125,13 +20927,13 @@ async function sweep(signal, given, givenBridge) {
   if (!orphans.length)
     return;
   for (const tree of orphans)
-    if (tree.snapshot && fs75.existsSync(tree.project))
+    if (tree.snapshot && fs79.existsSync(tree.project))
       dropSnapshot(tree.project, tree.root, tree.snapshot);
   updateWorktrees((list) => list, undefined, (list) => list.filter((each) => !orphans.some((gone) => gone.root === each.root)));
 }
 async function worktreesWhere(directory, engine, signal, projects = readProjects().filter((each) => !each.removed).map((each) => each.directory)) {
   const value = typeof directory === "string" && directory !== "" ? directory : null;
-  const answer = { directory: value, default: path79.join(ENGINE_DATA, "worktree"), home: homeFolder(), projects: [] };
+  const answer = { directory: value, default: path83.join(ENGINE_DATA, "worktree"), home: homeFolder(), projects: [] };
   const ids = new Map;
   if (engine?.port) {
     try {
@@ -20142,24 +20944,24 @@ async function worktreesWhere(directory, engine, signal, projects = readProjects
     } catch {}
   }
   for (const project of projects) {
-    if (!fs75.existsSync(project))
+    if (!fs79.existsSync(project))
       continue;
     const common = await gitLater(project, ["rev-parse", "--git-common-dir"]);
     if (!common)
       continue;
-    const gitFolder = path79.resolve(project, common);
-    if (path79.basename(gitFolder) !== ".git")
+    const gitFolder = path83.resolve(project, common);
+    if (path83.basename(gitFolder) !== ".git")
       continue;
-    const checkout = realOr(path79.dirname(gitFolder));
+    const checkout = realOr(path83.dirname(gitFolder));
     const id = ids.get(checkout);
     if (id === null || id === undefined && !await gitLater(project, ["rev-list", "-n", "1", "--all"]))
       continue;
-    const folder = value === null ? id ? path79.join(answer.default, id.slice(0, 6)) : null : value.startsWith("~/") ? path79.join(answer.home, value.slice(2)) : path79.resolve(checkout, value);
-    const entry = { project, name: path79.basename(project), folder };
+    const folder = value === null ? id ? path83.join(answer.default, id.slice(0, 6)) : null : value.startsWith("~/") ? path83.join(answer.home, value.slice(2)) : path83.resolve(checkout, value);
+    const entry = { project, name: path83.basename(project), folder };
     if (folder) {
       entry.exists = (() => {
         try {
-          return fs75.statSync(folder).isDirectory();
+          return fs79.statSync(folder).isDirectory();
         } catch {
           return false;
         }
@@ -20168,7 +20970,7 @@ async function worktreesWhere(directory, engine, signal, projects = readProjects
         entry.canMake = canMake(folder);
       if (inside2(folder, checkout)) {
         entry.inside = true;
-        entry.ignored = await gitLater(checkout, ["check-ignore", "-q", path79.join(folder, "worktree")]) !== null;
+        entry.ignored = await gitLater(checkout, ["check-ignore", "-q", path83.join(folder, "worktree")]) !== null;
       }
     }
     answer.projects.push(entry);
@@ -20178,9 +20980,9 @@ async function worktreesWhere(directory, engine, signal, projects = readProjects
 }
 function apart(projects, home) {
   const parents = (project) => {
-    const folder = path79.dirname(project);
-    const inHome = folder === home || folder.startsWith(home + path79.sep);
-    const names = (inHome ? folder.slice(home.length) : folder).split(path79.sep).filter(Boolean);
+    const folder = path83.dirname(project);
+    const inHome = folder === home || folder.startsWith(home + path83.sep);
+    const names = (inHome ? folder.slice(home.length) : folder).split(path83.sep).filter(Boolean);
     return (inHome ? ["~", ...names] : names).reverse();
   };
   for (const name of new Set(projects.map((each) => each.name))) {
@@ -20202,20 +21004,20 @@ function apart(projects, home) {
 }
 function realOr(folder) {
   try {
-    return fs75.realpathSync(folder);
+    return fs79.realpathSync(folder);
   } catch {
     return folder;
   }
 }
 function canMake(folder) {
-  for (let at = path79.dirname(folder);; at = path79.dirname(at)) {
+  for (let at = path83.dirname(folder);; at = path83.dirname(at)) {
     try {
-      if (!fs75.statSync(at).isDirectory())
+      if (!fs79.statSync(at).isDirectory())
         return false;
-      fs75.accessSync(at, fs75.constants.W_OK);
+      fs79.accessSync(at, fs79.constants.W_OK);
       return true;
     } catch (error) {
-      if (error?.code !== "ENOENT" || at === path79.dirname(at))
+      if (error?.code !== "ENOENT" || at === path83.dirname(at))
         return false;
     }
   }
@@ -20243,7 +21045,7 @@ async function* worktreesRoute(context) {
 }
 
 // box/src/link/letters/take.ts
-import fs76 from "node:fs";
+import fs80 from "node:fs";
 
 // box/src/link/letters/note.ts
 function noteOf(value) {
@@ -20281,7 +21083,7 @@ function answerAfter(messages, id) {
 function lettersSeen(now) {
   let seen = {};
   try {
-    seen = JSON.parse(fs76.readFileSync(LETTERS_SEEN, "utf8"));
+    seen = JSON.parse(fs80.readFileSync(LETTERS_SEEN, "utf8"));
   } catch {}
   for (const [key, at] of Object.entries(seen))
     if (now - at > (key.startsWith("note:") ? NOTE_MEMORY : LETTER_MEMORY))
@@ -20520,8 +21322,8 @@ function pastLimit(limits, { depth, working, started, tokens }) {
 }
 
 // box/src/link/work/model-rule.ts
-import fs77 from "node:fs";
-import path80 from "node:path";
+import fs81 from "node:fs";
+import path84 from "node:path";
 
 // box/src/shared/subagents.ts
 var SUBAGENT_MODEL = ["subagent_model"];
@@ -20582,29 +21384,29 @@ var asked4 = (target, route, folder) => call(target, "GET", route, undefined, Ab
   return;
 });
 var KEPT_FOR3 = 1e4;
-var kept4 = new Map;
+var kept5 = new Map;
 function keptOr(key, read, whole) {
   const now = Date.now();
-  const before = kept4.get(key);
+  const before = kept5.get(key);
   if (before && now - before.at < KEPT_FOR3)
     return before.lists;
   const lists = read();
-  kept4.set(key, { at: now, lists });
+  kept5.set(key, { at: now, lists });
   lists.then((value) => {
-    if ((value === null || !whole(value)) && kept4.get(key)?.lists === lists)
-      kept4.delete(key);
+    if ((value === null || !whole(value)) && kept5.get(key)?.lists === lists)
+      kept5.delete(key);
   });
-  if (kept4.size > 200)
-    kept4.delete(kept4.keys().next().value);
+  if (kept5.size > 200)
+    kept5.delete(kept5.keys().next().value);
   return lists;
 }
 var CHANGES = new Set(["integration.updated", "model.updated", "provider.updated", "config.updated", "global.disposed", "kuvo.auto.updated"]);
 function noteModelsEvent(event) {
   if (event.type && CHANGES.has(event.type))
-    kept4.clear();
+    kept5.clear();
 }
 function forgetModelLists() {
-  kept4.clear();
+  kept5.clear();
 }
 function forgetModelNames(restart = false) {
   if (saving) {
@@ -20619,12 +21421,12 @@ function forgetModelNames(restart = false) {
   noted2.clear();
   if (!restart)
     try {
-      fs77.rmSync(NAMES_FILE, { force: true });
+      fs81.rmSync(NAMES_FILE, { force: true });
     } catch {}
 }
 var lastNames = new Map;
 var nameKey = (ref) => `${ref.providerID}\x00${ref.id}`;
-var NAMES_FILE = path80.join(BOX, "model-names.json");
+var NAMES_FILE = path84.join(BOX, "model-names.json");
 var SAVED_MOST = 2000;
 var savedNames;
 var noted2 = new Map;
@@ -20632,7 +21434,7 @@ var saving;
 function namesSaved() {
   const names = new Map;
   try {
-    const read = JSON.parse(fs77.readFileSync(NAMES_FILE, "utf8"));
+    const read = JSON.parse(fs81.readFileSync(NAMES_FILE, "utf8"));
     if (isObject(read) && Array.isArray(read.names)) {
       for (const each of read.names.slice(-SAVED_MOST)) {
         if (Array.isArray(each) && each.length === 3 && each.every((part) => typeof part === "string"))
@@ -20681,7 +21483,7 @@ function saveNames() {
   savedNames = merged;
   const names = [...merged].map(([key, name]) => [...key.split("\x00"), name]);
   try {
-    fs77.mkdirSync(BOX, { recursive: true, mode: 448 });
+    fs81.mkdirSync(BOX, { recursive: true, mode: 448 });
     placeWhole(NAMES_FILE, JSON.stringify({ names }));
   } catch {}
 }
@@ -21030,19 +21832,19 @@ function pickModel(given, effort, from, where = HERE) {
 }
 
 // box/src/link/areas/approval.ts
-import fs82 from "node:fs";
-import path85 from "node:path";
+import fs86 from "node:fs";
+import path89 from "node:path";
 
 // box/src/link/work/reviewer.ts
 import { createHash, randomBytes as randomBytes2 } from "node:crypto";
 import { execFile as execFile8 } from "node:child_process";
 import dns from "node:dns/promises";
-import fs79 from "node:fs";
-import path82 from "node:path";
+import fs83 from "node:fs";
+import path86 from "node:path";
 
 // box/src/link/work/policy.ts
-import fs78 from "node:fs";
-import path81 from "node:path";
+import fs82 from "node:fs";
+import path85 from "node:path";
 function readLine(line, redirects = false) {
   const parts = [];
   let words = [], writes = [], reads = [], word = "", has = false, quote = null, start = 0;
@@ -21170,12 +21972,12 @@ function partsOf2(line) {
 }
 var FILES3 = new Set(["edit", "write", "patch", "multiedit", "read", "list", "glob", "grep"]);
 function realOf(given) {
-  const full = path81.resolve(given);
-  for (let at = full, rest = "";; rest = path81.join(path81.basename(at), rest), at = path81.dirname(at)) {
+  const full = path85.resolve(given);
+  for (let at = full, rest = "";; rest = path85.join(path85.basename(at), rest), at = path85.dirname(at)) {
     try {
-      return path81.join(fs78.realpathSync(at), rest);
+      return path85.join(fs82.realpathSync(at), rest);
     } catch {
-      if (path81.dirname(at) === at)
+      if (path85.dirname(at) === at)
         return full;
     }
   }
@@ -21195,7 +21997,7 @@ function allowRefusal(action, resources, folders, rules, ruleFor, seen, { sandbo
   if (!asked.every((resource) => ruleFor(rules, action, resource) === "allow"))
     return "above";
   if (FILES3.has(action)) {
-    const full = [...asked, ...named].filter((each) => each !== "*" && (path81.isAbsolute(each) || folders.length)).map((each) => path81.resolve(folders[0] ?? "/", each));
+    const full = [...asked, ...named].filter((each) => each !== "*" && (path85.isAbsolute(each) || folders.length)).map((each) => path85.resolve(folders[0] ?? "/", each));
     const outside = full.filter((each) => !folders.some((folder) => within3(realOf(each), realOf(folder))));
     if (outside.some((each) => [each, realOf(each)].some((at) => ruleFor(rules, "external_directory", at) !== "allow")))
       return "above";
@@ -21252,7 +22054,7 @@ function namedPath(word, folder) {
   text = homeWord(text);
   if (!text.includes("/") && !text.startsWith("."))
     return null;
-  return path82.resolve(folder, text);
+  return path86.resolve(folder, text);
 }
 function namedBy(action) {
   if (action.kind === "file")
@@ -21361,7 +22163,7 @@ function ownInside(own, policy) {
   });
 }
 function attachmentsPlace(at) {
-  return /^ses_[A-Za-z0-9_-]{1,120}$/.test(path82.basename(at)) && attachmentRoots().some((root) => realish(root) === path82.dirname(at));
+  return /^ses_[A-Za-z0-9_-]{1,120}$/.test(path86.basename(at)) && attachmentRoots().some((root) => realish(root) === path86.dirname(at));
 }
 function conversationPlace(at) {
   const { inside: holders, shared } = conversationPlaces();
@@ -21456,7 +22258,7 @@ function commandLine2(command, start, policy, own, depth) {
     const program = at < 0 ? "" : nameOf2(part.words[at]);
     const args = part.words.slice(at + 1);
     for (const word of takenAway(program, args, part.words, at)) {
-      const where = realish(path82.resolve(folder, homeWord(word.replace(/^['"]|['"]$/g, ""))));
+      const where = realish(path86.resolve(folder, homeWord(word.replace(/^['"]|['"]$/g, ""))));
       if (deletesHome(where, policy.home))
         return WRECKS_HOME;
     }
@@ -21466,7 +22268,7 @@ function commandLine2(command, start, policy, own, depth) {
       return found;
     if (program === "cd" || program === "pushd") {
       const to = part.words.slice(at + 1).find((word) => !word.startsWith("-"));
-      folder = realish(path82.resolve(folder, homeWord(to ?? "~")));
+      folder = realish(path86.resolve(folder, homeWord(to ?? "~")));
       continue;
     }
     for (const word of part.words.slice(Math.max(at, 0))) {
@@ -21571,7 +22373,7 @@ function commandPersists(command, start, policy, depth) {
       return true;
     if (program === "cd" || program === "pushd") {
       const to = part.words.slice(at + 1).find((word) => !word.startsWith("-"));
-      folder = realish(path82.resolve(folder, homeWord(to ?? "~")));
+      folder = realish(path86.resolve(folder, homeWord(to ?? "~")));
       continue;
     }
     if (WRITERS.has(program))
@@ -21746,7 +22548,7 @@ function commandOwn(command, start, policy, depth) {
       return found;
     if (program === "cd" || program === "pushd") {
       const to = part.words.slice(at + 1).find((word) => !word.startsWith("-"));
-      folder = realish(path82.resolve(folder, homeWord(to ?? "~")));
+      folder = realish(path86.resolve(folder, homeWord(to ?? "~")));
       continue;
     }
     if (WRITERS.has(program)) {
@@ -21755,7 +22557,7 @@ function commandOwn(command, start, policy, depth) {
       const written = copies ? named.slice(-1) : named;
       for (const word of written) {
         const where = pathOf(word, folder);
-        const landed = where && copies && (word.endsWith("/") || fs79.statSync(where, { throwIfNoEntry: false })?.isDirectory()) ? named.slice(0, -1).map((source) => path82.join(where, path82.basename(source))) : [where];
+        const landed = where && copies && (word.endsWith("/") || fs83.statSync(where, { throwIfNoEntry: false })?.isDirectory()) ? named.slice(0, -1).map((source) => path86.join(where, path86.basename(source))) : [where];
         const kind = landed.map((each) => each ? ownAt(each, policy.home) : null).find(Boolean);
         if (kind)
           return kind;
@@ -21873,7 +22675,7 @@ function scriptsOf(command, start) {
   const parts = "unreadable" in line ? command.split(/(?:&&|\|\||[;&|\n])+/).map((text) => ({ words: text.trim().split(/\s+/).filter(Boolean), text })) : line.parts;
   const exists = (file) => {
     try {
-      return fs79.statSync(file).isFile();
+      return fs83.statSync(file).isFile();
     } catch {
       return false;
     }
@@ -21886,7 +22688,7 @@ function scriptsOf(command, start) {
       continue;
     const program = nameOf2(words[at]);
     if (program === "cd" || program === "pushd") {
-      folder = path82.resolve(folder, homeWord(words.slice(at + 1).find((word) => !word.startsWith("-")) ?? "~"));
+      folder = path86.resolve(folder, homeWord(words.slice(at + 1).find((word) => !word.startsWith("-")) ?? "~"));
       continue;
     }
     const inner = innerScript(program, words, at);
@@ -21906,17 +22708,17 @@ function scriptsOf(command, start) {
     else if (RUNNERS.test(program) && !words.slice(at + 1).some((word) => givenInline(program, word)))
       runs = words.slice(at + 1).find((word) => !word.startsWith("-"));
     if (runs) {
-      const file = path82.resolve(folder, homeWord(runs.replace(/^['"]|['"]$/g, "")));
+      const file = path86.resolve(folder, homeWord(runs.replace(/^['"]|['"]$/g, "")));
       files.push(file);
       if (!exists(file))
         missing.push(file);
-      if (downloads.some((each) => path82.resolve(folder, homeWord(each)) === file || path82.basename(each) === path82.basename(file)))
-        unpinned ??= `It runs ${path82.basename(file)}, which it downloads first, so what runs can't be read here.`;
+      if (downloads.some((each) => path86.resolve(folder, homeWord(each)) === file || path86.basename(each) === path86.basename(file)))
+        unpinned ??= `It runs ${path86.basename(file)}, which it downloads first, so what runs can't be read here.`;
     }
     const module = /^python[0-9.]*$/.test(program) && words[at + 1] === "-m" ? words[at + 2] ?? "" : program;
     for (const [pattern, names] of BUILD_FILES)
       if (pattern.test(module))
-        files.push(...names.map((name) => path82.resolve(folder, name)));
+        files.push(...names.map((name) => path86.resolve(folder, name)));
     if (/^(curl|wget)$/.test(program)) {
       downloads.push(...downloadsOf(program, words.slice(at + 1)), ...parts[index].writes ?? []);
       const next = parts[index + 1]?.words;
@@ -21937,7 +22739,7 @@ function scriptsOf(command, start) {
   if (/\b(curl|wget)\b[^;&\n]*\|[^;&\n|]*\|\s*(\S*\/)?(sudo\s+(-\S+\s+)*)?((ba|z|da|fi)?sh|python[0-9.]*|node|bun|deno|ruby|perl|php)\b/.test(command))
     unpinned ??= "It hands a script from the web through another program to run it, so what runs can't be pinned to a copy read here.";
   if ((downloads.length || fetches) && missing.length)
-    unpinned ??= `It downloads something and runs ${path82.basename(missing[0])} from it, so what runs can't be read here first.`;
+    unpinned ??= `It downloads something and runs ${path86.basename(missing[0])} from it, so what runs can't be read here first.`;
   return { files: [...new Set(files.filter(exists))], urls: [...new Set(urls)], ...unpinned ? { unpinned } : {} };
 }
 function isSecret(given, policy) {
@@ -21958,8 +22760,8 @@ async function projectScript(file, text, folders) {
   const at = realish(file);
   if (!folders.some((folder) => exactly(at, realish(folder))))
     return null;
-  const where = path82.dirname(at);
-  const name = path82.basename(at);
+  const where = path86.dirname(at);
+  const name = path86.basename(at);
   if (await gitIn2(where, ["ls-files", "--error-unmatch", "--", name]) === null)
     return null;
   const committed = await gitIn2(where, ["cat-file", "--filters", `HEAD:./${name}`]) ?? await gitIn2(where, ["show", `HEAD:./${name}`]);
@@ -21967,19 +22769,19 @@ async function projectScript(file, text, folders) {
     return null;
   let changed = "";
   if (committed !== text) {
-    fs79.mkdirSync(FETCHED_FOLDER, { recursive: true, mode: 448 });
-    const copy = path82.join(FETCHED_FOLDER, `${randomBytes2(8).toString("hex")}.committed`);
+    fs83.mkdirSync(FETCHED_FOLDER, { recursive: true, mode: 448 });
+    const copy = path86.join(FETCHED_FOLDER, `${randomBytes2(8).toString("hex")}.committed`);
     writePrivate(copy, committed);
     try {
       changed = await gitIn2(where, ["diff", "--no-index", "--text", "--no-textconv", "--no-ext-diff", "--no-color", "--", copy, at], [0, 1]) ?? "";
     } finally {
-      fs79.rmSync(copy, { force: true });
+      fs83.rmSync(copy, { force: true });
     }
     if (!changed)
       return null;
   }
   if (changed.length > MOST_SCRIPT)
-    return `It runs ${path82.basename(file)}, too long to be read whole first, and changed too much since its last commit to show what changed.`;
+    return `It runs ${path86.basename(file)}, too long to be read whole first, and changed too much since its last commit to show what changed.`;
   const label = `${file} (tracked in git, too long to show whole: only its start is shown${changed ? ", then how it differs from its last commit" : ""}; what's past the start, as committed, isn't shown, and the agent may have committed it)`;
   return { name: label, text: changed ? `${cut(text, MOST_SCRIPT)}
 
@@ -22055,15 +22857,15 @@ function readVerdict(answer) {
     return null;
   }
 }
-var REVIEWS_FOLDER = path82.join(BOX, "reviews");
+var REVIEWS_FOLDER = path86.join(BOX, "reviews");
 var KEPT2 = 200;
 var BREAKER = { inRow: 3, inAll: 20 };
-var logFile = (session, folder) => path82.join(folder, `${session.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
+var logFile = (session, folder) => path86.join(folder, `${session.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
 function reviewLog(session, folder = REVIEWS_FOLDER) {
   try {
     const kept = JSON.parse(textOf(logFile(session, folder)) ?? "");
     if (isObject(kept) && Array.isArray(kept.decisions)) {
-      const places = Array.isArray(kept.places) ? kept.places.filter((each) => typeof each === "string" && path82.isAbsolute(each)) : [];
+      const places = Array.isArray(kept.places) ? kept.places.filter((each) => typeof each === "string" && path86.isAbsolute(each)) : [];
       return {
         decisions: kept.decisions,
         refusedInRow: Number(kept.refusedInRow) || 0,
@@ -22081,8 +22883,8 @@ function shownReviews(log) {
   return { decisions: log.decisions.map(({ key: _, ...shown }) => shown), ...log.paused ? { paused: log.paused } : {}, ...log.seen ? { seen: log.seen } : {} };
 }
 function changeLog(session, folder, change) {
-  fs79.mkdirSync(folder, { recursive: true, mode: 448 });
-  return locked(path82.join(folder, ".lock"), () => {
+  fs83.mkdirSync(folder, { recursive: true, mode: 448 });
+  return locked(path86.join(folder, ".lock"), () => {
     const log = reviewLog(session, folder);
     const value = change(log);
     writePrivate(logFile(session, folder), JSON.stringify(log));
@@ -22198,7 +23000,7 @@ function takeApproval(session, key, now, folder) {
 }
 function forgetReviews(session, folder = REVIEWS_FOLDER) {
   try {
-    fs79.rmSync(logFile(session, folder), { force: true });
+    fs83.rmSync(logFile(session, folder), { force: true });
   } catch {}
 }
 function actionKey(action, scripts = []) {
@@ -22272,8 +23074,8 @@ async function keptPlace(action, policy, own) {
   if (action.kind !== "file" || action.access !== "write" || !action.tool || !action.input)
     return;
   const file = landsAt(action.path);
-  const repository = await inTime(repositoryOf(path82.dirname(file)), null);
-  const place = repository?.top ?? path82.dirname(file);
+  const repository = await inTime(repositoryOf(path86.dirname(file)), null);
+  const place = repository?.top ?? path86.dirname(file);
   const home = own[0] ? realish(own[0]) : null;
   if (home && holds3(place, home))
     return;
@@ -22283,10 +23085,10 @@ async function keptPlace(action, policy, own) {
     return;
   return await keptFromSessions(place, policy) ? undefined : place;
 }
-var pathFolders = () => (process.env.PATH ?? "").split(":").filter((folder) => path82.isAbsolute(folder)).map(realish);
+var pathFolders = () => (process.env.PATH ?? "").split(":").filter((folder) => path86.isAbsolute(folder)).map(realish);
 function holdsRepository(folder) {
   try {
-    return fs79.readdirSync(folder, { withFileTypes: true }).some((each) => each.isDirectory() && fs79.existsSync(path82.join(folder, each.name, ".git")));
+    return fs83.readdirSync(folder, { withFileTypes: true }).some((each) => each.isDirectory() && fs83.existsSync(path86.join(folder, each.name, ".git")));
   } catch (error) {
     return error?.code !== "ENOENT";
   }
@@ -22299,7 +23101,7 @@ function walledForOwn(where, policy = fencePolicy(), own = []) {
 function inLibrary(at, policy) {
   if (!(policy.homeKept ?? []).some((wall) => inside3(at, wall) || holds3(at, wall)))
     return false;
-  return !(policy.homeOpen ?? []).filter((each) => /\/Library\/Mobile Documents$/i.test(each)).some((each) => exceptedIn(at, path82.join(each, "com~apple~CloudDocs")));
+  return !(policy.homeOpen ?? []).filter((each) => /\/Library\/Mobile Documents$/i.test(each)).some((each) => exceptedIn(at, path86.join(each, "com~apple~CloudDocs")));
 }
 var WORKTREE_RECORDS = pathPattern(String.raw`/\.git/worktrees(/|$)`);
 function runsLater(where, policy) {
@@ -22329,11 +23131,11 @@ async function judge(action, context, given, now, folder) {
         continue;
       let text;
       try {
-        text = fs79.readFileSync(file, "utf8");
+        text = fs83.readFileSync(file, "utf8");
       } catch {
-        const stat = fs79.statSync(file, { throwIfNoEntry: false });
+        const stat = fs83.statSync(file, { throwIfNoEntry: false });
         seen.push({ text: `${file}\x00${stat ? `${stat.size}\x00${stat.mtimeMs}` : "none"}` });
-        problem = heldBack(`It runs ${path82.basename(file)}, which couldn't be read first.`, "unread");
+        problem = heldBack(`It runs ${path86.basename(file)}, which couldn't be read first.`, "unread");
         continue;
       }
       seen.push({ text });
@@ -22347,7 +23149,7 @@ async function judge(action, context, given, now, folder) {
           scripts.push(own);
           continue;
         }
-        problem = heldBack(`It runs ${path82.basename(file)}, too long to be read whole first.`, "unread");
+        problem = heldBack(`It runs ${path86.basename(file)}, too long to be read whole first.`, "unread");
         continue;
       }
       scripts.push({ name: file, text });
@@ -22409,12 +23211,12 @@ async function judged(action, context, given, scripts, notes) {
     return { decision: "allow", reason: read.reason, by: "model" };
   return { decision: "refuse", reason: read.reason, by: "model", held: true, why: "reviewer" };
 }
-var FETCHED_FOLDER = path82.join(RUN, "fetched");
+var FETCHED_FOLDER = path86.join(RUN, "fetched");
 var localScripts = () => IN_TEST_FOLDER && process.env.KUVO_TEST_LOCAL_SCRIPTS === "1";
 var FETCH_WITHIN = 20000;
 function clearFetched(folder = FETCHED_FOLDER) {
   try {
-    fs79.rmSync(folder, { recursive: true, force: true });
+    fs83.rmSync(folder, { recursive: true, force: true });
   } catch {}
 }
 function privateHost(url) {
@@ -22498,8 +23300,8 @@ async function fetchScripts(command, folder, urls, given) {
     }
     if (text.length > MOST_FETCHED)
       return fail(`It runs a script from ${oneLine(url, 120)}, too long to be read whole first.`);
-    fs79.mkdirSync(FETCHED_FOLDER, { recursive: true, mode: 448 });
-    const copy = path82.join(FETCHED_FOLDER, `${randomBytes2(8).toString("hex")}.script`);
+    fs83.mkdirSync(FETCHED_FOLDER, { recursive: true, mode: 448 });
+    const copy = path86.join(FETCHED_FOLDER, `${randomBytes2(8).toString("hex")}.script`);
     writePrivate(copy, text);
     fetched.files.push(copy);
     if (!fetchingOf(url).test(fetched.command))
@@ -22515,13 +23317,13 @@ async function fetchScripts(command, folder, urls, given) {
 function forgetFetched(fetched) {
   for (const file of fetched?.files ?? [])
     try {
-      fs79.rmSync(file, { force: true });
+      fs83.rmSync(file, { force: true });
     } catch {}
 }
 
 // box/src/link/work/reviewing.ts
-import fs80 from "node:fs";
-import path83 from "node:path";
+import fs84 from "node:fs";
+import path87 from "node:path";
 var ownEngine = () => {
   try {
     const engine = readEngineFile();
@@ -22804,7 +23606,7 @@ async function takeUpWaitingAsks(source, sessions, signal, place) {
     await reviewPermission(source, { type: "permission.asked", data: { id: each.id, sessionID: each.asker, action: each.action } }, signal, undefined, place).catch(() => null);
   }
 }
-var attachedOf = (session) => attachmentRoots().map((root) => path83.join(root, session));
+var attachedOf = (session) => attachmentRoots().map((root) => path87.join(root, session));
 async function ownFolders(at, withTrees = true) {
   const folder = at.data.location?.directory;
   const folders = typeof folder === "string" ? [folder, commandTemporary(folder)].filter((each) => Boolean(each)) : [];
@@ -22894,7 +23696,7 @@ function changedBy(seen, folder) {
   };
   for (const [key, value] of Object.entries(seen.input))
     walk(value, key, 0);
-  return named.map(({ raw, folder: asFolder }) => ({ raw, path: path83.resolve(folder, raw.replace(/^~(?=\/|$)/, homeFolder())), folder: asFolder }));
+  return named.map(({ raw, folder: asFolder }) => ({ raw, path: path87.resolve(folder, raw.replace(/^~(?=\/|$)/, homeFolder())), folder: asFolder }));
 }
 var PATCHING = new Set(["patch", "apply_patch", "applypatch"]);
 var PATH_KEY = /path|file|dir|folder|destination|save_?as|^(dest|dst|src|source|from|to|target|output|out|location|cwd|workdir|movedto|root|uri|url|name)$/i;
@@ -22902,14 +23704,14 @@ var WRITING = new Set(["write", "edit", "multiedit", "patch", "apply_patch", "ap
 var plainName2 = (raw) => raw === raw.normalize("NFC") && raw.toUpperCase().toLowerCase() === raw.toLowerCase();
 var UNPLAIN = /[\x00-\x1f\x7f\u0085\u2028\u2029\\]|\p{Default_Ignorable_Code_Point}/u;
 function plainlyIn(file, folder, asFolder = false) {
-  if (!path83.isAbsolute(file) || file.split("/").includes(".."))
+  if (!path87.isAbsolute(file) || file.split("/").includes(".."))
     return null;
-  const parts = path83.resolve(file).split("/");
+  const parts = path87.resolve(file).split("/");
   for (let top = 1;top <= parts.length; top++) {
     const named = parts.slice(0, top).join("/") || "/";
     let real;
     try {
-      real = fs80.realpathSync(named);
+      real = fs84.realpathSync(named);
     } catch {
       return null;
     }
@@ -22920,7 +23722,7 @@ function plainlyIn(file, folder, asFolder = false) {
     for (let at = top;at < parts.length; at++) {
       let kind;
       try {
-        kind = fs80.lstatSync(parts.slice(0, at + 1).join("/"));
+        kind = fs84.lstatSync(parts.slice(0, at + 1).join("/"));
       } catch (error) {
         if (error?.code === "ENOENT")
           break;
@@ -22933,13 +23735,13 @@ function plainlyIn(file, folder, asFolder = false) {
       if (asDirectory ? !kind.isDirectory() : !kind.isFile() || kind.nlink !== 1)
         return null;
     }
-    return path83.join(folder, ...parts.slice(top));
+    return path87.join(folder, ...parts.slice(top));
   }
   return null;
 }
 function within4(file, folder) {
-  const inside = path83.relative(folder, file);
-  return inside === "" || !inside.startsWith("..") && !path83.isAbsolute(inside);
+  const inside = path87.relative(folder, file);
+  return inside === "" || !inside.startsWith("..") && !path87.isAbsolute(inside);
 }
 async function answerPermission(source, id, sessionID, signal, found) {
   let { permissions } = await asksIn(source, sessionID, signal);
@@ -22973,14 +23775,14 @@ async function answerPermission(source, id, sessionID, signal, found) {
     return null;
   }
   const given = seen && [seen.input.filePath, seen.input.file_path, seen.input.notebook_path, seen.input.path, seen.input.file].find((each) => typeof each === "string" && each !== "");
-  const file = given ? path83.resolve(folder, given === "~" ? homeFolder() : given.startsWith("~/") ? path83.join(homeFolder(), given.slice(2)) : given) : undefined;
-  const named = permission.resources.filter((each) => each !== "*").map((each) => path83.resolve(folder, each.replace(/^~(?=\/|$)/, homeFolder()).replace(/\/\*$/, "") || "/"));
+  const file = given ? path87.resolve(folder, given === "~" ? homeFolder() : given.startsWith("~/") ? path87.join(homeFolder(), given.slice(2)) : given) : undefined;
+  const named = permission.resources.filter((each) => each !== "*").map((each) => path87.resolve(folder, each.replace(/^~(?=\/|$)/, homeFolder()).replace(/\/\*$/, "") || "/"));
   const actions = seen && file ? [{ kind: "file", path: file, access: READING.has(seen.tool.toLowerCase()) ? "read" : "write", folder, tool: seen.tool, input: seen.input }] : named.length ? named.map((each) => ({ kind: "file", path: each, access: "write", folder })) : [{ kind: "tool", tool: seen?.tool || "work outside its folder", args: seen?.input ?? { asked: permission.resources }, folder }];
   const readsOwn = [commandTemporary(folder), ...[at.data.id, at.data.parentID].filter((each) => typeof each === "string").flatMap(attachedOf)].filter((each) => Boolean(each));
   const ownReads = (within) => actions.every((action) => action.kind === "file" && action.access === "read" && OWN_READING.has(String(action.tool).toLowerCase()) && readsOwn.some((place) => within(action.path, place)));
   const ownByName = ownReads((file, place) => {
-    const inside = path83.relative(place, path83.resolve(file));
-    return inside === "" || !inside.startsWith("..") && !path83.isAbsolute(inside);
+    const inside = path87.relative(place, path87.resolve(file));
+    return inside === "" || !inside.startsWith("..") && !path87.isAbsolute(inside);
   });
   if (!ownByName && !inAuto(at)) {
     try {
@@ -22991,7 +23793,7 @@ async function answerPermission(source, id, sessionID, signal, found) {
   }
   const reads = Boolean(seen && file && seen.tool.toLowerCase() === "read");
   if (reads)
-    await askedAbout([folder, path83.resolve(file)]);
+    await askedAbout([folder, path87.resolve(file)]);
   const alikes = reads ? [...new Map([...lookalikesOf(file), ...lookalikesOf(landsAt(file))].map((each) => [landsAt(each), each])).values()] : [];
   actions.push(...alikes.map((each) => ({ ...actions[0], path: each })));
   const reply = async (body, decided) => {
@@ -23023,7 +23825,7 @@ async function answerPermission(source, id, sessionID, signal, found) {
   const trees = typeof folder === "string" ? await projectTrees(folder) : [];
   const policy = fencePolicy();
   const places = [...own.map(foundAt), ...trees];
-  const resolve = (raw) => path83.resolve(folder, raw.replace(/^~(?=\/|$)/, homeFolder()));
+  const resolve = (raw) => path87.resolve(folder, raw.replace(/^~(?=\/|$)/, homeFolder()));
   const resources = permission.resources.map((raw) => ({ raw, path: resolve(raw.replace(/\/\*$/, "") || "/"), folder: raw.endsWith("/*") ? true : null }));
   const changes = [
     ...resources,
@@ -23061,36 +23863,36 @@ async function answerPermission(source, id, sessionID, signal, found) {
 }
 
 // box/src/link/work/full.ts
-import fs81 from "node:fs";
-import path84 from "node:path";
-var FULL_ACCESS_FOLDER = path84.join(RUN, "fence", "full");
+import fs85 from "node:fs";
+import path88 from "node:path";
+var FULL_ACCESS_FOLDER = path88.join(RUN, "fence", "full");
 var named3 = (session) => /^ses_[A-Za-z0-9_]+$/.test(session);
 function markFullAccess(session, on, root = session, folder = FULL_ACCESS_FOLDER) {
   if (!named3(session))
     return;
-  const file = path84.join(folder, session);
+  const file = path88.join(folder, session);
   try {
     if (!on)
-      return fs81.rmSync(file, { force: true });
-    fs81.mkdirSync(folder, { recursive: true, mode: 448 });
-    fs81.writeFileSync(file, named3(root) ? root : session, { mode: 384 });
+      return fs85.rmSync(file, { force: true });
+    fs85.mkdirSync(folder, { recursive: true, mode: 448 });
+    fs85.writeFileSync(file, named3(root) ? root : session, { mode: 384 });
   } catch {}
 }
-var markedFullAccess = (session, folder = FULL_ACCESS_FOLDER) => named3(session) && fs81.existsSync(path84.join(folder, session));
+var markedFullAccess = (session, folder = FULL_ACCESS_FOLDER) => named3(session) && fs85.existsSync(path88.join(folder, session));
 function markConversation(root, on, folder = FULL_ACCESS_FOLDER) {
   markFullAccess(root, on, root, folder);
   if (on)
     return;
   let names = [];
   try {
-    names = fs81.readdirSync(folder);
+    names = fs85.readdirSync(folder);
   } catch {}
   for (const name of names) {
     if (!named3(name) || name === root)
       continue;
     try {
-      if (fs81.readFileSync(path84.join(folder, name), "utf8") === root)
-        fs81.rmSync(path84.join(folder, name), { force: true });
+      if (fs85.readFileSync(path88.join(folder, name), "utf8") === root)
+        fs85.rmSync(path88.join(folder, name), { force: true });
     } catch {}
   }
 }
@@ -23333,7 +24135,7 @@ function keepApprovals(engine = ownEngine2, bridge = bridgeTarget, every = (roun
   setInterval(round, 2000).unref?.();
 }) {
   try {
-    fs82.rmSync(path85.join(BOX, "tell-auto.json"), { force: true });
+    fs86.rmSync(path89.join(BOX, "tell-auto.json"), { force: true });
   } catch {}
   try {
     approvalsSince();
@@ -23502,7 +24304,7 @@ var ownName = () => plainName(IS_MAC ? macLink.config?.name : readLink()?.name) 
 var takesNoWork = () => `${ownName()} doesn't take work from your other computers. Ask the user to allow it in Settings › Permissions on ${ownName()}.`;
 var SEAT = "Not from a group chat: talk it through here; the work is handed out after the wrap-up.";
 var seatRefusal = () => ({ status: 403, message: SEAT });
-var isBotFolder = (folder) => folder.startsWith(path86.resolve(BOTS) + "/");
+var isBotFolder = (folder) => folder.startsWith(path90.resolve(BOTS) + "/");
 function rulesFor(approval, parent, folders, held = []) {
   const own = Array.isArray(parent?.permissions) ? parent.permissions.filter((rule) => !isFolderRule(rule) || rule.resource.includes("/bots/bot_")) : [];
   return approvalRules(approval, [...own, ...projectFolderRules(folders, own)], held);
@@ -23512,12 +24314,12 @@ function projectOf3(folder) {
     return null;
   const directory = projectOf(folder);
   const known = readProjects().find((each) => each.directory === directory);
-  if (!known && directory === folder && fs83.existsSync(PROJECTS_FILE)) {
+  if (!known && directory === folder && fs87.existsSync(PROJECTS_FILE)) {
     try {
       changeProjects((projects) => projects.some((each) => each.directory === directory) ? projects : [{ directory, folders: [], addedByBox: true }, ...projects]);
     } catch {}
   }
-  return { name: known?.name ?? path86.basename(directory), folders: directory !== folder ? [] : known?.folders ?? [] };
+  return { name: known?.name ?? path90.basename(directory), folders: directory !== folder ? [] : known?.folders ?? [] };
 }
 async function keptAs(folder) {
   const projects = readProjects().filter((each) => !each.removed);
@@ -23527,7 +24329,7 @@ async function keptAs(folder) {
   const at = realish(folder);
   return projects.find((each) => realish(each.directory) === at)?.directory ?? projects.find((each) => each.folders.some((other) => realish(other) === at))?.directory ?? null;
 }
-var projectName = (directory) => readProjects().find((each) => each.directory === directory)?.name ?? path86.basename(directory);
+var projectName = (directory) => readProjects().find((each) => each.directory === directory)?.name ?? path90.basename(directory);
 function filedOf(session) {
   const filed = session?.metadata?.kuvo?.filed;
   return isObject(filed) && typeof filed.folder === "string" && typeof filed.project === "string" ? { folder: filed.folder, project: filed.project } : null;
@@ -23535,10 +24337,10 @@ function filedOf(session) {
 function findProject(named) {
   const written = named.trim().replace(/^~(?=$|\/)/, homeFolder());
   const projects = readProjects().filter((each) => !each.removed);
-  const found = projects.find((each) => each.directory === written) ?? projects.find((each) => (each.name ?? path86.basename(each.directory)).toLowerCase() === written.toLowerCase());
-  return found ? { directory: found.directory, name: found.name ?? path86.basename(found.directory) } : null;
+  const found = projects.find((each) => each.directory === written) ?? projects.find((each) => (each.name ?? path90.basename(each.directory)).toLowerCase() === written.toLowerCase());
+  return found ? { directory: found.directory, name: found.name ?? path90.basename(found.directory) } : null;
 }
-var projectNames = () => readProjects().filter((each) => !each.removed).map((each) => each.name ?? path86.basename(each.directory)).slice(0, 12);
+var projectNames = () => readProjects().filter((each) => !each.removed).map((each) => each.name ?? path90.basename(each.directory)).slice(0, 12);
 async function inProject(folder, directory) {
   await askedAbout([folder, directory]);
   const at = realish(folder);
@@ -23596,16 +24398,16 @@ async function startSession(given, by, place) {
         ...readWorktrees().map((each) => each.folder ?? each.root),
         ...parentFolder ? [parentFolder] : []
       ];
-      if (path86.isAbsolute(full))
+      if (path90.isAbsolute(full))
         await askedAbout([full, ...by ? oursGiven : []]);
       let isFolder = false;
       try {
-        isFolder = fs83.statSync(full).isDirectory();
+        isFolder = fs87.statSync(full).isDirectory();
       } catch {}
-      if (!path86.isAbsolute(full) || !isFolder)
+      if (!path90.isAbsolute(full) || !isFolder)
         return no(400, `${written} isn't a folder on ${HERE}. Give a full path to one.`);
       const ours = by ? oursGiven.map(realish) : [];
-      const at = by ? fs83.realpathSync(full) : full;
+      const at = by ? fs87.realpathSync(full) : full;
       const bridgeNow = place.bridge?.() ?? null;
       const fullAccess = remote ? effectiveApproval(remote.approval).approval === "fullAccess" : Boolean(by?.place && approvalOf(by.place.data, { agents: Boolean(bridgeNow && by.place.target.port === bridgeNow.port), bot: Boolean(botOfConversation(by.session) ?? worksFor(by.place.data)) }).effective === "fullAccess");
       const kept = by && !fullAccess && !ours.includes(at) ? await keptFromSessions(at) : null;
@@ -23740,7 +24542,7 @@ async function startSession(given, by, place) {
       giveBack();
       return no(400, "A chat has no worktree: give a project.");
     }
-    const before = place.tree && fs83.existsSync(place.tree.folder) ? place.tree : null;
+    const before = place.tree && fs87.existsSync(place.tree.folder) ? place.tree : null;
     if (before) {
       folder = before.folder;
       madeTree = before.root;
@@ -23751,7 +24553,7 @@ async function startSession(given, by, place) {
       const tree = made.value;
       if (made.status !== 200 || typeof tree.folder !== "string") {
         giveBack();
-        return no(made.status === 409 ? 400 : 502, `Couldn't make a worktree of ${path86.basename(project)}: ${String(tree.message ?? "it failed")}`);
+        return no(made.status === 409 ? 400 : 502, `Couldn't make a worktree of ${path90.basename(project)}: ${String(tree.message ?? "it failed")}`);
       }
       folder = tree.folder;
       madeTree = typeof tree.root === "string" ? tree.root : null;
@@ -24091,7 +24893,7 @@ function notifyUserTool(caller, args, now = Date.now(), telling = tellingNow) {
 }
 
 // box/src/link/vault/who.ts
-import path87 from "node:path";
+import path91 from "node:path";
 async function sessionAt(targets, id) {
   for (const target of targets) {
     try {
@@ -24133,7 +24935,7 @@ async function callerOf(session, readEngine, readBridge) {
     root,
     ...current?.metadata?.kuvo?.autopilot === true ? { autopilot: true } : {},
     ...current?.title ? { sessionName: current.title } : {},
-    ...folder ? { folder: path87.resolve(folder) } : {},
+    ...folder ? { folder: path91.resolve(folder) } : {},
     ...bot ? { bot: bot.id, botName: bot.name } : {},
     ...seat || unsure ? { seat: true, ...typeof seat?.group === "string" && seat.group ? { group: seat.group } : {} } : {}
   };
@@ -24201,7 +25003,7 @@ function grantFor(item, caller, grants = readGrants()) {
   for (const grant of grants) {
     if (grant.item !== item.id)
       continue;
-    const fits = grant.who.everyone || grant.who.bot && grant.who.bot === caller.bot || grant.who.project && caller.folder && (caller.folder === grant.who.project || caller.folder.startsWith(grant.who.project + path87.sep));
+    const fits = grant.who.everyone || grant.who.bot && grant.who.bot === caller.bot || grant.who.project && caller.folder && (caller.folder === grant.who.project || caller.folder.startsWith(grant.who.project + path91.sep));
     if (!fits)
       continue;
     if (grant.how === "own" && !caller.seat)
@@ -24212,8 +25014,8 @@ function grantFor(item, caller, grants = readGrants()) {
 }
 
 // box/src/link/work/tools.ts
-import fs84 from "node:fs";
-import path88 from "node:path";
+import fs88 from "node:fs";
+import path92 from "node:path";
 var onBridge = (target) => {
   try {
     return readEngineFile().port !== target.port;
@@ -24451,8 +25253,8 @@ async function makeProjectTool(caller, args, { signal, wait, every } = {}) {
   const place = named ?? projectPlace(name);
   const listed = place ? readProjects().find((each) => each.directory === place && !each.removed) : null;
   if (listed)
-    return refused2(`There's a project at ${shownPath(place)} already: ${listed.name ?? path88.basename(place)}. Start sessions in it with start_session.`);
-  if (place && fs84.existsSync(place) && !isEmptyFolder(place))
+    return refused2(`There's a project at ${shownPath(place)} already: ${listed.name ?? path92.basename(place)}. Start sessions in it with start_session.`);
+  if (place && fs88.existsSync(place) && !isEmptyFolder(place))
     return refused2(`There's a folder at ${shownPath(place)} already, with files in it. ${named ? `To work on what's there, start sessions in it with start_session (folder: "${shownPath(place)}").` : "Pick another name."}`);
   const asker = { session: caller.session, name: bot?.name ?? caller.name, ...bot ? { bot: bot.bot } : {} };
   const action = clone ? "cloneProject" : "makeProject";
@@ -24490,7 +25292,7 @@ function listProjectsTool(where = HERE) {
     return said2(`There are no projects on ${where} yet.${folder}`);
   const lines = projects.slice(0, 60).map((each) => {
     const git = gitIn(each.directory, ["rev-parse", "--is-inside-work-tree"]) === "true" ? "git" : "not git";
-    return `- ${each.name ?? path88.basename(each.directory)}: ${shownPath(each.directory)} (${git})${each.madeBy ? `, made by ${each.madeBy.name}` : ""}`;
+    return `- ${each.name ?? path92.basename(each.directory)}: ${shownPath(each.directory)} (${git})${each.madeBy ? `, made by ${each.madeBy.name}` : ""}`;
   });
   return said2(`Projects on ${where}:
 ${lines.join(`
@@ -24540,8 +25342,8 @@ async function finishGoalTool(caller, args, targets) {
 }
 
 // box/src/link/letters/start-call.ts
-import fs85 from "node:fs";
-import path89 from "node:path";
+import fs89 from "node:fs";
+import path93 from "node:path";
 var START_FIELDS = ["task", "title", "project", "folder", "chat", "worktree", "model", "effort", "mode", "approval", "wake", "wait", "review"];
 var START_FEATURE = "work.elsewhere.start";
 var OPEN_TOOLS = ["start_session", "list_models", "list_projects"];
@@ -24729,11 +25531,11 @@ async function startElsewhere(peer, args, caller, lead, place, callPeer) {
   return no(`Couldn't confirm the session started on ${name}: ${why}. It may still have started, and if it did you'll hear as a message${outcome.away === AWAY_WORDS ? ` once ${name} is back` : ""}. Check with list_sessions before you start it again.`);
 }
 var AWAY_WORDS = "it may be asleep, off or offline";
-var CALLS = path89.join(RUN, "calls");
-var journalFile2 = (id) => path89.join(CALLS, `${id}.json`);
+var CALLS = path93.join(RUN, "calls");
+var journalFile2 = (id) => path93.join(CALLS, `${id}.json`);
 function readJournal2(id) {
   try {
-    const kept = JSON.parse(fs85.readFileSync(journalFile2(id), "utf8"));
+    const kept = JSON.parse(fs89.readFileSync(journalFile2(id), "utf8"));
     if (!isObject(kept) || kept.id !== id)
       return null;
     if (isObject(kept.making) && "target" in kept.making) {
@@ -24746,7 +25548,7 @@ function readJournal2(id) {
   }
 }
 var keepJournal = (journal) => {
-  fs85.mkdirSync(CALLS, { recursive: true, mode: 448 });
+  fs89.mkdirSync(CALLS, { recursive: true, mode: 448 });
   writePrivate(journalFile2(journal.id), JSON.stringify(journal));
 };
 var startsRunning = new Set;
@@ -24941,7 +25743,7 @@ async function resumeStarts(answer, now = Date.now(), places = { readEngine: rea
         }
       }
       if (now - journal.at > NOTE_MEMORY)
-        fs85.rmSync(journalFile2(journal.id), { force: true });
+        fs89.rmSync(journalFile2(journal.id), { force: true });
       continue;
     }
     if (startsRunning.has(journal.id))
@@ -25025,17 +25827,17 @@ function noteLineHomes(homes, line, at = Date.now()) {
 
 // box/src/link/letters/own-tools.ts
 import { execFile as execFile9 } from "node:child_process";
-import fs93 from "node:fs";
+import fs96 from "node:fs";
 import os10 from "node:os";
-import path97 from "node:path";
+import path100 from "node:path";
 
 // box/src/link/bots/edit.ts
-import fs92 from "node:fs";
-import path96 from "node:path";
+import fs95 from "node:fs";
+import path99 from "node:path";
 
 // box/src/link/areas/carry.ts
-import fs87 from "node:fs";
-import path91 from "node:path";
+import fs91 from "node:fs";
+import path95 from "node:path";
 
 // box/src/link/engine/conversations.ts
 async function everySession(target) {
@@ -25067,8 +25869,8 @@ async function conversationOf3(target, id) {
 }
 
 // box/src/link/work-queue/moves.ts
-import fs86 from "node:fs";
-import path90 from "node:path";
+import fs90 from "node:fs";
+import path94 from "node:path";
 function packWorkQueues(owners) {
   const items = owners.flatMap((owner) => OWNER2.test(owner) ? readQueueSettingAside(owner).items : readKeptQueue(owner)?.items ?? []);
   if (!items.length)
@@ -25077,19 +25879,19 @@ function packWorkQueues(owners) {
   return {
     items,
     labels: labels().filter((each) => used.has(each.id)),
-    withFiles: items.filter((item) => item.files.length && fs86.existsSync(filesOf2(item.id))).map((item) => item.id)
+    withFiles: items.filter((item) => item.files.length && fs90.existsSync(filesOf2(item.id))).map((item) => item.id)
   };
 }
 function stageFiles2(carried, staging) {
   if (!carried?.withFiles.length)
     return false;
   for (const id of carried.withFiles)
-    fs86.cpSync(filesOf2(id), path90.join(staging, "work-queue", id), { recursive: true });
+    fs90.cpSync(filesOf2(id), path94.join(staging, "work-queue", id), { recursive: true });
   return true;
 }
 var filesSize = (carried) => (carried?.withFiles ?? []).reduce((sum, id) => {
   try {
-    return sum + fs86.readdirSync(filesOf2(id)).reduce((each, name) => each + fs86.statSync(path90.join(filesOf2(id), name)).size, 0);
+    return sum + fs90.readdirSync(filesOf2(id)).reduce((each, name) => each + fs90.statSync(path94.join(filesOf2(id), name)).size, 0);
   } catch {
     return sum;
   }
@@ -25117,19 +25919,19 @@ function placeWorkQueues(carried, owners, opened) {
       if (before)
         book.queue(before.owner).items = book.queue(before.owner).items.filter((each) => each.id !== item.id);
       book.queue(item.owner).items.push(item);
-      const from = opened ? path90.join(opened, "work-queue", item.id) : null;
-      fs86.rmSync(filesOf2(item.id), { recursive: true, force: true });
+      const from = opened ? path94.join(opened, "work-queue", item.id) : null;
+      fs90.rmSync(filesOf2(item.id), { recursive: true, force: true });
       for (const file of item.files) {
         if (!from || !FILE_NAME.test(file.name))
           continue;
         try {
-          fs86.mkdirSync(filesOf2(item.id), { recursive: true, mode: 448 });
-          const handle = fs86.openSync(path90.join(from, file.name), fs86.constants.O_RDONLY | (fs86.constants.O_NOFOLLOW ?? 0) | (fs86.constants.O_NONBLOCK ?? 0));
+          fs90.mkdirSync(filesOf2(item.id), { recursive: true, mode: 448 });
+          const handle = fs90.openSync(path94.join(from, file.name), fs90.constants.O_RDONLY | (fs90.constants.O_NOFOLLOW ?? 0) | (fs90.constants.O_NONBLOCK ?? 0));
           try {
-            if (fs86.fstatSync(handle).isFile())
-              fs86.writeFileSync(path90.join(filesOf2(item.id), file.name), fs86.readFileSync(handle), { mode: 384 });
+            if (fs90.fstatSync(handle).isFile())
+              fs90.writeFileSync(path94.join(filesOf2(item.id), file.name), fs90.readFileSync(handle), { mode: 384 });
           } finally {
-            fs86.closeSync(handle);
+            fs90.closeSync(handle);
           }
         } catch {}
       }
@@ -25144,7 +25946,7 @@ function forgetWorkQueues(owners) {
         continue;
       const queue = book.queue(owner);
       for (const item of queue.items)
-        fs86.rmSync(filesOf2(item.id), { recursive: true, force: true });
+        fs90.rmSync(filesOf2(item.id), { recursive: true, force: true });
       queue.items = [];
     }
   }, undefined, { onItsOwn: true });
@@ -25215,7 +26017,7 @@ async function carryToAgents(id, model, readEngine, agents) {
   if (session.metadata?.kuvoAgent || session.metadata?.["kuvo.carriedTo"])
     return no(409, "It’s with the coding agents already.");
   const bot = listOf(BOTS).map(botHere).find((here) => here?.session === id) ?? null;
-  if (isMoving(bot?.folder ?? path91.join(SESSION_WAKES, id)))
+  if (isMoving(bot?.folder ?? path95.join(SESSION_WAKES, id)))
     return no(409, MOVING);
   if (model.providerID !== "auto") {
     const integration = (await engineGet(agents, `api/integration/${encodeURIComponent(model.providerID)}`).catch(() => null))?.data;
@@ -25302,20 +26104,20 @@ async function carryToAgents(id, model, readEngine, agents) {
       const kit = readKit();
       if (kit)
         await tellBot(agents, bot, moved, toldNow(kit, bot));
-      const via = path91.join(bot.folder, "via");
+      const via = path95.join(bot.folder, "via");
       let wasVia = null;
       try {
-        wasVia = fs87.readFileSync(via, "utf8");
+        wasVia = fs91.readFileSync(via, "utf8");
       } catch {}
       try {
-        fs87.writeFileSync(via, "bridge");
-        fs87.writeFileSync(path91.join(bot.folder, "session"), moved);
+        fs91.writeFileSync(via, "bridge");
+        fs91.writeFileSync(path95.join(bot.folder, "session"), moved);
       } catch (error) {
         try {
           if (wasVia === null)
-            fs87.rmSync(via, { force: true });
+            fs91.rmSync(via, { force: true });
           else
-            fs87.writeFileSync(via, wasVia);
+            fs91.writeFileSync(via, wasVia);
         } catch {}
         throw error;
       }
@@ -25355,15 +26157,15 @@ async function carryToAgents(id, model, readEngine, agents) {
       console.error(`Work Queue: ${id}'s queue wasn't carried to ${moved}: ${error.message}`);
     }
     if (!bot) {
-      const from = path91.join(SESSION_WAKES, id), to = path91.join(SESSION_WAKES, moved);
-      if (fs87.existsSync(path91.join(from, "session")) && !fs87.existsSync(to)) {
+      const from = path95.join(SESSION_WAKES, id), to = path95.join(SESSION_WAKES, moved);
+      if (fs91.existsSync(path95.join(from, "session")) && !fs91.existsSync(to)) {
         try {
-          fs87.renameSync(from, to);
-          fs87.writeFileSync(path91.join(to, "session"), moved);
-          fs87.writeFileSync(path91.join(to, "directory"), directory ?? "");
-          fs87.writeFileSync(path91.join(to, "via"), "bridge");
-          if (fs87.readFileSync(path91.join(to, "paused"), "utf8") === "archived")
-            fs87.rmSync(path91.join(to, "paused"), { force: true });
+          fs91.renameSync(from, to);
+          fs91.writeFileSync(path95.join(to, "session"), moved);
+          fs91.writeFileSync(path95.join(to, "directory"), directory ?? "");
+          fs91.writeFileSync(path95.join(to, "via"), "bridge");
+          if (fs91.readFileSync(path95.join(to, "paused"), "utf8") === "archived")
+            fs91.rmSync(path95.join(to, "paused"), { force: true });
         } catch {}
       }
     }
@@ -25401,13 +26203,13 @@ async function* carryRoute(context, toAgents) {
 }
 
 // box/src/link/areas/agents-down.ts
-import fs88 from "node:fs";
-import path92 from "node:path";
+import fs92 from "node:fs";
+import path96 from "node:path";
 function agentsDown() {
   if (!IS_MAC)
     return null;
   try {
-    const { why, retrying } = JSON.parse(fs88.readFileSync(path92.join(RUN, "agents-stopped"), "utf8"));
+    const { why, retrying } = JSON.parse(fs92.readFileSync(path96.join(RUN, "agents-stopped"), "utf8"));
     if (typeof why === "string" && why)
       return `This Mac's coding agents aren't running. ${why}${retrying === true ? "" : " Restart them in Kuvo Code on the Mac."}`;
   } catch {}
@@ -25415,7 +26217,7 @@ function agentsDown() {
 }
 
 // box/src/link/server/naming.ts
-import fs89 from "node:fs";
+import fs93 from "node:fs";
 async function namedIn(body, session, naming) {
   if (!naming)
     return body;
@@ -25437,7 +26239,7 @@ var refreshOwnShared = (readEngine) => refreshingOwn ??= refreshOwn(readEngine).
 var ownRefreshed = () => refreshingOwn ?? Promise.resolve();
 function listedAgents() {
   try {
-    const read = JSON.parse(fs89.readFileSync(AGENTS_FILE, "utf8"));
+    const read = JSON.parse(fs93.readFileSync(AGENTS_FILE, "utf8"));
     return { machine: read?.machine ?? null, agents: Array.isArray(read?.agents) ? read.agents : [] };
   } catch {
     return { machine: null, agents: [] };
@@ -25553,144 +26355,10 @@ async function* groupsRoute(context) {
   return yield* forwardGroups(target, route, request, signal);
 }
 
-// box/src/link/keys.ts
-import fs90 from "node:fs";
-import path93 from "node:path";
-var STORED_KEY = /^KUVO_KEY_[A-Z0-9_]+$/;
-function keyHost() {
-  const host = appHost();
-  if (KEYS_ON_HOST && !host)
-    throw new KeysUnavailable(NOT_ANSWERING);
-  return host;
-}
-var keyQueue = Promise.resolve();
-function keyWork(work) {
-  const run = keyQueue.then(work, work);
-  keyQueue = run.catch(() => {});
-  return run;
-}
-var checkedKeyName = (name) => {
-  if (typeof name !== "string" || !STORED_KEY.test(name))
-    throw new KeysUnavailable("That isn't a key's name.");
-  return name;
-};
-var keyFile = (name) => path93.join(checkedKeyName(name).includes("__") ? BOT_KEYS : BOX_KEYS, name);
-async function keyNames({ prefix = "", suffix = "" } = {}) {
-  if (typeof prefix !== "string" || typeof suffix !== "string" || prefix && !/^KUVO_KEY_[A-Z0-9_]*$/.test(prefix) || suffix && !/^[A-Z0-9_]+$/.test(suffix)) {
-    throw new KeysUnavailable("That isn't a part of a key's name.");
-  }
-  const host = keyHost();
-  let names;
-  if (host) {
-    const answer = await askHost(host, "keys/names", { ...prefix ? { prefix } : {}, ...suffix ? { suffix } : {} });
-    if (!Array.isArray(answer.names))
-      throw new KeysUnavailable("This Mac's keys couldn't be read.");
-    names = answer.names;
-  } else {
-    names = [...listOf(BOX_KEYS).filter((name) => !name.includes("__")), ...listOf(BOT_KEYS).filter((name) => name.includes("__"))];
-  }
-  return [...new Set(names.filter((name) => typeof name === "string" && STORED_KEY.test(name) && name.startsWith(prefix) && name.endsWith(suffix)))].sort();
-}
-async function readKey(name) {
-  checkedKeyName(name);
-  const host = keyHost();
-  if (!host)
-    return textOf(keyFile(name));
-  const answer = await askHost(host, "keys/get", { name }, true);
-  return typeof answer?.value === "string" ? answer.value : null;
-}
-async function writeKey(name, value) {
-  checkedKeyName(name);
-  if (typeof value !== "string")
-    throw new KeysUnavailable("A key is text.");
-  const host = keyHost();
-  if (!host)
-    return writeKeyFile(name, value);
-  if (!writesKeyFiles())
-    return void await askHost(host, "keys/set", { name, value });
-  await keyFileWork(async () => {
-    await askHost(host, "keys/set", { name, value });
-    writeKeyFile(name, value);
-  });
-}
-async function deleteKey(name) {
-  checkedKeyName(name);
-  const host = keyHost();
-  if (!host)
-    return removeKeyFile(name);
-  if (!writesKeyFiles())
-    return void await askHost(host, "keys/delete", { name });
-  await keyFileWork(async () => {
-    await askHost(host, "keys/delete", { name });
-    removeKeyFile(name);
-  });
-}
-var botVariable = (variable, bot) => `${variable}__${String(bot).toUpperCase().replace(/[^\p{L}\p{N}]/gu, "_")}`;
-function writeKeyFile(name, value) {
-  if (name.includes("__"))
-    writeSecret(keyFile(name), value);
-  else
-    locked(CONFIG_LOCK, () => writeSecret(keyFile(name), value));
-}
-function removeKeyFile(name) {
-  if (name.includes("__"))
-    fs90.rmSync(keyFile(name), { force: true });
-  else
-    locked(CONFIG_LOCK, () => fs90.rmSync(keyFile(name), { force: true }));
-}
-var KEY_FILES_LOCK = path93.join(RUN, ".key-files.lock");
-var keyFileWork = (work) => lockedWhile(KEY_FILES_LOCK, work, { stale: 150000, wait: 150000 });
-async function syncKeyFiles() {
-  if (!writesKeyFiles())
-    return false;
-  let names;
-  try {
-    names = await keyNames();
-  } catch {
-    return false;
-  }
-  const files = [...listOf(BOX_KEYS).filter((each) => !each.includes("__")), ...listOf(BOT_KEYS).filter((each) => each.includes("__"))].filter((name) => STORED_KEY.test(name));
-  let all = true;
-  for (const name of [...new Set([...names, ...files])]) {
-    await keyFileWork(async () => {
-      let value;
-      try {
-        value = await readKey(name);
-      } catch {
-        all = false;
-        return;
-      }
-      if (value !== null) {
-        if (textOf(keyFile(name)) !== value)
-          writeKeyFile(name, value);
-      } else if (names.includes(name)) {
-        all = false;
-      } else {
-        removeKeyFile(name);
-      }
-    });
-  }
-  return all;
-}
-var keeping = null;
-var keyFilesWait = (failed, every = 12 * 3600000, retry = 60000) => failed ? Math.min(every, retry * 2 ** (failed - 1)) : every;
-function keepKeyFiles(every = 12 * 3600000, retry = 60000) {
-  if (!writesKeyFiles() || keeping)
-    return;
-  let failed = 0;
-  const round = async () => {
-    failed = await syncKeyFiles().catch(() => false) ? 0 : failed + 1;
-    keeping = setTimeout(() => void round(), keyFilesWait(failed, every, retry));
-    keeping.unref?.();
-  };
-  keeping = setTimeout(() => void round(), 0);
-  keeping.unref?.();
-}
-
 // box/src/link/bots/make.ts
 import crypto30 from "node:crypto";
-import fs91 from "node:fs";
-import path94 from "node:path";
+import fs94 from "node:fs";
+import path97 from "node:path";
 var fitsLook = (looks, look) => Boolean(look) && looks.colors.includes(look.color) && looks.shapes.includes(look.shape) && looks.faces.includes(look.face);
 async function signInRefusal(model, engine, signal) {
   const ready = await call(engine, "GET", "/api/provider", undefined, signal).catch(() => {
@@ -25795,17 +26463,17 @@ async function makeOnce(given, readEngine, readBridge, machine) {
       return no(422, refused);
   }
   const id = newID("bot_");
-  const folder = path94.join(BOTS, id);
-  const directory = project ?? path94.join(folder, "workspace");
-  const discard = () => fs91.rmSync(folder, { recursive: true, force: true });
+  const folder = path97.join(BOTS, id);
+  const directory = project ?? path97.join(folder, "workspace");
+  const discard = () => fs94.rmSync(folder, { recursive: true, force: true });
   let session;
   try {
-    fs91.mkdirSync(path94.join(folder, "workspace"), { recursive: true });
-    fs91.mkdirSync(path94.join(folder, "wakes"), { recursive: true });
+    fs94.mkdirSync(path97.join(folder, "workspace"), { recursive: true });
+    fs94.mkdirSync(path97.join(folder, "wakes"), { recursive: true });
     if (!project)
-      fs91.mkdirSync(path94.join(folder, "memory"), { recursive: true });
-    fs91.writeFileSync(path94.join(folder, "MEMORY.md"), kit.memory.replaceAll("⟦name⟧", name));
-    const rules = [{ action: "external_directory", resource: path94.join(folder, "*"), effect: "allow" }];
+      fs94.mkdirSync(path97.join(folder, "memory"), { recursive: true });
+    fs94.writeFileSync(path97.join(folder, "MEMORY.md"), kit.memory.replaceAll("⟦name⟧", name));
+    const rules = [{ action: "external_directory", resource: path97.join(folder, "*"), effect: "allow" }];
     const made = await call(target, "POST", "/api/session", { title: name, location: { directory }, model, permissions: rules, metadata: { kuvo: { bot: id } } }, AbortSignal.timeout(BOT_STEP));
     if (typeof made?.id !== "string" || !made.id)
       throw new Error("No conversation was made.");
@@ -25819,15 +26487,15 @@ async function makeOnce(given, readEngine, readBridge, machine) {
       throw new Error("The conversation it made went.");
     const told = botInstructions(kit, name, folder, personality?.instruction, project);
     await call(target, "PUT", `/api/experimental/session/${encodeURIComponent(session.id)}/instructions/entries/kuvo.bot`, { value: told }, AbortSignal.timeout(BOT_STEP));
-    fs91.writeFileSync(path94.join(folder, "session"), session.id);
+    fs94.writeFileSync(path97.join(folder, "session"), session.id);
     noteTold(folder, { session: session.id, instructions: toldDigest(told), rules: folder });
-    fs91.writeFileSync(path94.join(folder, "directory"), directory);
+    fs94.writeFileSync(path97.join(folder, "directory"), directory);
     writeZoneFiles(folder);
     if (agents)
-      fs91.writeFileSync(path94.join(folder, "via"), "bridge");
+      fs94.writeFileSync(path97.join(folder, "via"), "bridge");
     const now = stamp();
     const described = { created: now, id, job: "", kuvo: DESCRIPTION, look, model, name, ...personality ? { personality: personality.id } : {}, ...project ? { project } : {}, updated: now };
-    fs91.writeFileSync(path94.join(folder, "bot.json"), JSON.stringify(described, null, 2));
+    fs94.writeFileSync(path97.join(folder, "bot.json"), JSON.stringify(described, null, 2));
     await settleAgain(target, session.id, agents, AbortSignal.timeout(BOT_STEP)).catch(() => {});
   } catch (error) {
     if (session?.id)
@@ -25844,12 +26512,12 @@ async function makeOnce(given, readEngine, readBridge, machine) {
 }
 
 // box/src/link/bots/edited.ts
-import path95 from "node:path";
+import path98 from "node:path";
 var KEPT3 = 30 * 86400000;
 var EDITED_FILE = "edited.json";
 function readTimes(folder, now) {
   try {
-    const kept = JSON.parse(textOf(path95.join(folder, EDITED_FILE)) ?? "");
+    const kept = JSON.parse(textOf(path98.join(folder, EDITED_FILE)) ?? "");
     if (!isObject(kept))
       return {};
     return Object.fromEntries(Object.entries(kept).filter(([, at]) => typeof at === "number" && now - at < KEPT3).map(([field, at]) => [field, Math.min(at, now)]));
@@ -25866,11 +26534,11 @@ function noteEdited(bot, fields, at = Date.now(), now = Date.now()) {
   if (!fields.length || !here)
     return;
   try {
-    locked(path95.join(here.folder, ".edited.lock"), () => {
+    locked(path98.join(here.folder, ".edited.lock"), () => {
       const times = readTimes(here.folder, now);
       for (const field of fields)
         times[field] = Math.max(times[field] ?? 0, Math.min(now, typeof at === "number" ? at : at[field] ?? now));
-      writePrivate(path95.join(here.folder, EDITED_FILE), JSON.stringify(times));
+      writePrivate(path98.join(here.folder, EDITED_FILE), JSON.stringify(times));
     });
   } catch {}
 }
@@ -26091,41 +26759,7 @@ async function effortOf(model, given, readEngine, readBridge, signal) {
     return { status: 400, refused: `${listed.name} has no “${given}” effort: its efforts are ${listed.efforts.join(", ")}.` };
   return { variant: given };
 }
-var KEYS_LEFT_FILE = path96.join(RUN, "bot-keys-left.json");
-function keysLeft() {
-  try {
-    const listed = JSON.parse(textOf(KEYS_LEFT_FILE) ?? "");
-    return Array.isArray(listed?.bots) ? listed.bots.filter((each) => typeof each === "string" && /^bot_[A-Za-z0-9]+$/.test(each)) : [];
-  } catch {
-    return [];
-  }
-}
-function noteKeysLeft(id, left) {
-  const bots = keysLeft().filter((each) => each !== id);
-  if (left)
-    bots.push(id);
-  try {
-    fs92.mkdirSync(RUN, { recursive: true });
-    if (!bots.length)
-      return fs92.rmSync(KEYS_LEFT_FILE, { force: true });
-    fs92.writeFileSync(`${KEYS_LEFT_FILE}.new`, JSON.stringify({ bots }));
-    fs92.renameSync(`${KEYS_LEFT_FILE}.new`, KEYS_LEFT_FILE);
-  } catch {}
-}
-async function forgetLeftKeys() {
-  for (const id of keysLeft()) {
-    if (botHere(id)) {
-      noteKeysLeft(id, false);
-      continue;
-    }
-    try {
-      for (const name of await keyNames({ suffix: botVariable("", id) }))
-        await deleteKey(name);
-      noteKeysLeft(id, false);
-    } catch {}
-  }
-}
-var LEFT_FILE = path96.join(RUN, "bots-left.json");
+var LEFT_FILE = path99.join(RUN, "bots-left.json");
 function botsLeft() {
   try {
     const listed = JSON.parse(textOf(LEFT_FILE) ?? "");
@@ -26139,11 +26773,11 @@ function noteLeft(id, left) {
   if (left)
     bots.push(left);
   try {
-    fs92.mkdirSync(RUN, { recursive: true });
+    fs95.mkdirSync(RUN, { recursive: true });
     if (!bots.length)
-      return fs92.rmSync(LEFT_FILE, { force: true });
-    fs92.writeFileSync(`${LEFT_FILE}.new`, JSON.stringify({ left: bots }));
-    fs92.renameSync(`${LEFT_FILE}.new`, LEFT_FILE);
+      return fs95.rmSync(LEFT_FILE, { force: true });
+    fs95.writeFileSync(`${LEFT_FILE}.new`, JSON.stringify({ left: bots }));
+    fs95.renameSync(`${LEFT_FILE}.new`, LEFT_FILE);
   } catch {}
 }
 async function leaveBehind(left, readEngine, readBridge) {
@@ -26200,7 +26834,7 @@ async function finishDeletes(readEngine, readBridge) {
       noteLeft(left.id, still);
   }
 }
-var DELETED_FILE = path96.join(BOTS, "deleted.json");
+var DELETED_FILE = path99.join(BOTS, "deleted.json");
 function noteDeleted(id) {
   let kept = [];
   try {
@@ -26208,9 +26842,9 @@ function noteDeleted(id) {
     if (Array.isArray(listed?.deleted))
       kept = listed.deleted.filter((each) => typeof each === "string" && each !== id);
   } catch {}
-  fs92.mkdirSync(BOTS, { recursive: true });
-  fs92.writeFileSync(`${DELETED_FILE}.new`, JSON.stringify({ deleted: [id, ...kept].slice(0, 500) }));
-  fs92.renameSync(`${DELETED_FILE}.new`, DELETED_FILE);
+  fs95.mkdirSync(BOTS, { recursive: true });
+  fs95.writeFileSync(`${DELETED_FILE}.new`, JSON.stringify({ deleted: [id, ...kept].slice(0, 500) }));
+  fs95.renameSync(`${DELETED_FILE}.new`, DELETED_FILE);
 }
 async function deleteBot(id, readEngine, readBridge) {
   const no = (status, message) => ({ status, value: { message } });
@@ -26226,10 +26860,10 @@ async function deleteBot(id, readEngine, readBridge) {
     const now = new Date;
     const two = (number) => String(number).padStart(2, "0");
     const when = `${now.getFullYear()}${two(now.getMonth() + 1)}${two(now.getDate())}-${two(now.getHours())}${two(now.getMinutes())}${two(now.getSeconds())}`;
-    const trash = path96.join(K, "trash", `${when}-${process.pid}`);
-    fs92.mkdirSync(trash, { recursive: true });
-    trashed = path96.join(trash, id);
-    fs92.renameSync(here.folder, trashed);
+    const trash = path99.join(K, "trash", `${when}-${process.pid}`);
+    fs95.mkdirSync(trash, { recursive: true });
+    trashed = path99.join(trash, id);
+    fs95.renameSync(here.folder, trashed);
   } catch (error) {
     return no(503, `The bot couldn’t be deleted: ${error?.message ?? error}`);
   }
@@ -26237,13 +26871,11 @@ async function deleteBot(id, readEngine, readBridge) {
   noteLeft(id, leaving);
   if (IS_MAC) {
     await hostTrash(trashed).catch(() => {});
-    if (!fs92.existsSync(trashed))
+    if (!fs95.existsSync(trashed))
       try {
-        fs92.rmdirSync(path96.dirname(trashed));
+        fs95.rmdirSync(path99.dirname(trashed));
       } catch {}
   }
-  noteKeysLeft(id, true);
-  await forgetLeftKeys();
   noteLeft(id, await leaveBehind(leaving, readEngine, readBridge));
   noteBotsChanged();
   return { status: 200, value: {} };
@@ -26316,14 +26948,14 @@ async function wakeTool(name, args, calling, bridge) {
       break;
     }
   }
-  const folder = bot?.folder ?? path97.join(SESSION_WAKES, owner);
-  const exists = fs93.existsSync(path97.join(folder, bot ? "bot.json" : "session"));
+  const folder = bot?.folder ?? path100.join(SESSION_WAKES, owner);
+  const exists = fs96.existsSync(path100.join(folder, bot ? "bot.json" : "session"));
   if (!exists && name === "cancel_wake_up")
     return refused3(`No wake-up "${given("id")}". See list_wake_ups.`);
   if (exists && isMoving(folder))
     return refused3(MOVING);
   const directory = root?.place.data.location?.directory ?? root?.place.data.directory;
-  const cwd = directory && fs93.existsSync(directory) ? directory : os10.homedir();
+  const cwd = directory && fs96.existsSync(directory) ? directory : os10.homedir();
   const env = { ...process.env, PWD: cwd, KUVO_BOTS: BOTS, KUVO_WAKES: SESSION_WAKES, KUVO_WAKE_TOOL: "1" };
   if (viaBridge)
     env.KUVO_WAKE_VIA = "bridge";
@@ -26376,7 +27008,7 @@ function showTool(name, args, calling, inView) {
   const raw = typeof args.path === "string" ? args.path : "";
   const kind = (full) => {
     try {
-      return fs93.statSync(full).isDirectory() ? "folder" : "file";
+      return fs96.statSync(full).isDirectory() ? "folder" : "file";
     } catch {
       return null;
     }
@@ -26393,7 +27025,7 @@ function showTool(name, args, calling, inView) {
       const expanded = trimmed(home2(raw));
       const place = calling.own ?? calling.root?.place;
       const base = place?.data.location?.directory ?? place?.data.directory ?? os10.homedir();
-      const full = isFullPath(expanded) ? expanded : path97.resolve(base, expanded);
+      const full = isFullPath(expanded) ? expanded : path100.resolve(base, expanded);
       if (full !== trimmed(raw))
         return refused3(`Give the full path: ${full}`);
       const found = kind(full);
@@ -26792,8 +27424,8 @@ function takePart(sender, part) {
 // box/src/link/work-queue/hand.ts
 var HAND_LIFE = 30 * 86400000;
 var HAND_ID = /^wqh_[A-Za-z0-9_-]{8,40}$/;
-var SEEN = path98.join(WORK_QUEUE2, "handed.json");
-var SEEN_LOCK = path98.join(WORK_QUEUE2, ".handed.lock");
+var SEEN = path101.join(WORK_QUEUE2, "handed.json");
+var SEEN_LOCK = path101.join(WORK_QUEUE2, ".handed.lock");
 var refuse2 = (words) => {
   throw new Refusal(words);
 };
@@ -26803,7 +27435,7 @@ function handElsewhere(item, to, who, now) {
   let bytes = 0;
   for (const file of item.files) {
     try {
-      bytes += fs94.statSync(path98.join(filesOf2(item.id), file.name)).size;
+      bytes += fs97.statSync(path101.join(filesOf2(item.id), file.name)).size;
     } catch {}
   }
   if (bytes > MOST_HANDED_FILES)
@@ -26815,7 +27447,7 @@ function handPayload(item) {
   const { handing, ...rest } = item;
   const files = item.files.flatMap((file) => {
     try {
-      return [{ name: file.name, data: fs94.readFileSync(path98.join(filesOf2(item.id), file.name)).toString("base64") }];
+      return [{ name: file.name, data: fs97.readFileSync(path101.join(filesOf2(item.id), file.name)).toString("base64") }];
     } catch {
       return [];
     }
@@ -26826,7 +27458,7 @@ function handPayload(item) {
 var scanned = null;
 var queuesMark = () => {
   try {
-    return String(fs94.statSync(path98.join(WORK_QUEUE2, "queues"), { bigint: true }).mtimeNs);
+    return String(fs97.statSync(path101.join(WORK_QUEUE2, "queues"), { bigint: true }).mtimeNs);
   } catch {
     return "-";
   }
@@ -26965,15 +27597,15 @@ function handedBack(sender, given, now = Date.now()) {
     book.queue(found.owner).items = book.queue(found.owner).items.filter((each) => each.id !== found.id);
   }, now, { onItsOwn: true });
   if (!allItems().some((each) => each.id === item.id))
-    fs94.rmSync(filesOf2(item.id), { recursive: true, force: true });
+    fs97.rmSync(filesOf2(item.id), { recursive: true, force: true });
 }
 function seenHand(id, now, note = false) {
   try {
-    fs94.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
+    fs97.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
     return locked(SEEN_LOCK, () => {
       let seen = {};
       try {
-        seen = JSON.parse(fs94.readFileSync(SEEN, "utf8")) ?? {};
+        seen = JSON.parse(fs97.readFileSync(SEEN, "utf8")) ?? {};
       } catch {}
       if (!note)
         return id in seen;
@@ -27064,10 +27696,10 @@ async function handArrived(sender, given, reply, places, now = Date.now()) {
     if (owner.startsWith("ses_") && !isClosed(item.status))
       linkSession(book, item, owner, now);
     item.updated = { at: now, by };
-    fs94.rmSync(filesOf2(item.id), { recursive: true, force: true });
+    fs97.rmSync(filesOf2(item.id), { recursive: true, force: true });
     for (const file of files) {
-      fs94.mkdirSync(filesOf2(item.id), { recursive: true, mode: 448 });
-      fs94.writeFileSync(path98.join(filesOf2(item.id), file.name), file.bytes, { mode: 384 });
+      fs97.mkdirSync(filesOf2(item.id), { recursive: true, mode: 448 });
+      fs97.writeFileSync(path101.join(filesOf2(item.id), file.name), file.bytes, { mode: 384 });
     }
     if (item.number === undefined)
       numberWaiting(book, primary, null);
@@ -27088,8 +27720,8 @@ function elsewhereOf2(session, link = readLink()) {
 }
 
 // box/src/link/work-queue/acts.ts
-import fs95 from "node:fs";
-import path99 from "node:path";
+import fs98 from "node:fs";
+import path102 from "node:path";
 var GITHUB_WAIT = 3000;
 var YOU = { user: true };
 
@@ -27189,7 +27821,7 @@ function fileOf4(ref, name) {
   if (!item || !kept || !FILE_NAME.test(name))
     return null;
   try {
-    return { type: kept.type, bytes: fs95.readFileSync(path99.join(filesOf2(item.id), name)) };
+    return { type: kept.type, bytes: fs98.readFileSync(path102.join(filesOf2(item.id), name)) };
   } catch {
     return null;
   }
@@ -27215,12 +27847,12 @@ var MOST_FORWARDED_FILE = MOST_HANDED_FILES;
 
 // box/src/link/work-queue/forward.ts
 import crypto33 from "node:crypto";
-import fs96 from "node:fs";
-import path100 from "node:path";
+import fs99 from "node:fs";
+import path103 from "node:path";
 var FORWARD_FEATURE = "work-queue.forward";
 var takesForwarded = (key, feature = FORWARD_FEATURE) => (readPeerAgents()[key]?.features ?? []).includes(feature);
-var FORWARDS = path100.join(WORK_QUEUE2, "forward");
-var DONE_FILE = path100.join(WORK_QUEUE2, "acted.json");
+var FORWARDS = path103.join(WORK_QUEUE2, "forward");
+var DONE_FILE = path103.join(WORK_QUEUE2, "acted.json");
 var ID2 = /^wqa_[A-Za-z0-9_-]{16,40}$/;
 var LEFT = /^(wqa_[A-Za-z0-9_-]{16,40})\.json$/;
 var forwardTiming = { wait: 20000, file: 60000 };
@@ -27231,11 +27863,11 @@ var ACT_MEMORY = 600000;
 var AHEAD = 60000;
 var MOST_REMEMBERED = 2000;
 var forwardsSoon = { send: () => {} };
-var left = (id) => path100.join(FORWARDS, `${id}.json`);
-var answerOf2 = (id) => path100.join(FORWARDS, `${id}.answer.json`);
+var left = (id) => path103.join(FORWARDS, `${id}.json`);
+var answerOf2 = (id) => path103.join(FORWARDS, `${id}.answer.json`);
 var read2 = (file) => {
   try {
-    const value = JSON.parse(fs96.readFileSync(file, "utf8"));
+    const value = JSON.parse(fs99.readFileSync(file, "utf8"));
     return isObject(value) ? value : null;
   } catch {
     return null;
@@ -27267,11 +27899,11 @@ async function forwardAct(computer, named, act, signal, link = readLink(), now =
     return answer;
   } finally {
     madeHere.delete(id);
-    fs96.rmSync(left(id), { force: true });
-    fs96.rmSync(answerOf2(id), { force: true });
+    fs99.rmSync(left(id), { force: true });
+    fs99.rmSync(answerOf2(id), { force: true });
   }
 }
-var listed2 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+var listed3 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 async function seekElsewhere(named, ref, signal, link = readLink()) {
   const peers = sharedMachine(link) ? [] : peersOf(link);
   if (!peers.length || named.length > 300 || signal?.aborted)
@@ -27332,7 +27964,7 @@ async function seekElsewhere(named, ref, signal, link = readLink()) {
   }
   if (!away.length && !older.length && !refused.length)
     return { missing: true };
-  const names = (computers) => listed2(computers.map((each) => each.name));
+  const names = (computers) => listed3(computers.map((each) => each.name));
   const why = [
     ...away.length ? [`${names(away)} ${away.length === 1 ? "isn't" : "aren't"} answering now (${away.length === 1 ? "it" : "they"} may be asleep, off or offline)`] : [],
     ...older.length ? [`${names(older)} ${older.length === 1 ? "needs" : "need"} a newer Kuvo Code to be asked from ${here}`] : [],
@@ -27380,15 +28012,15 @@ function sendForwards(host, link = readLink(), now = Date.now(), { ownOnly = IS_
     if (!id)
       continue;
     here.add(id);
-    const kept = read2(path100.join(FORWARDS, name));
+    const kept = read2(path103.join(FORWARDS, name));
     const act = isObject(kept?.act) ? kept.act : null;
     if (!act || typeof act.at !== "number" || now - act.at > waitFor(act) + AGAIN_AFTER) {
-      fs96.rmSync(path100.join(FORWARDS, name), { force: true });
-      fs96.rmSync(answerOf2(id), { force: true });
+      fs99.rmSync(path103.join(FORWARDS, name), { force: true });
+      fs99.rmSync(answerOf2(id), { force: true });
       here.delete(id);
       continue;
     }
-    if (ownOnly && !madeHere.has(id) || !host?.welcomed || !link || fs96.existsSync(answerOf2(id)) || now - (sent2.get(id) ?? -Infinity) < AGAIN_AFTER)
+    if (ownOnly && !madeHere.has(id) || !host?.welcomed || !link || fs99.existsSync(answerOf2(id)) || now - (sent2.get(id) ?? -Infinity) < AGAIN_AFTER)
       continue;
     const peer = peersOf(link).find((each) => each.key === kept.to);
     const mails = peer ? mailsFor(peer, { act }, link, now) : null;
@@ -27406,7 +28038,7 @@ function sendForwards(host, link = readLink(), now = Date.now(), { ownOnly = IS_
   for (const name of names) {
     const id = /^(wqa_[A-Za-z0-9_-]{16,40})\.answer\.json$/.exec(name)?.[1];
     if (id && !here.has(id))
-      fs96.rmSync(answerOf2(id), { force: true });
+      fs99.rmSync(answerOf2(id), { force: true });
   }
 }
 function takeActed(sender, given) {
@@ -27524,7 +28156,7 @@ var actOf = (given) => {
 };
 
 // box/src/link/peers/manage.ts
-import fs100 from "node:fs";
+import fs103 from "node:fs";
 
 // box/src/link/personalities/take.ts
 import crypto34 from "node:crypto";
@@ -27698,12 +28330,12 @@ function macDocsChanged() {
 }
 
 // box/src/link/mac/link.ts
-import fs98 from "node:fs";
-import path102 from "node:path";
+import fs101 from "node:fs";
+import path105 from "node:path";
 
 // box/src/link/mac/machines.ts
-import fs97 from "node:fs";
-import path101 from "node:path";
+import fs100 from "node:fs";
+import path104 from "node:path";
 
 // box/src/link/mac/app-route.ts
 async function appAnswer(request, phone, signal) {
@@ -27751,8 +28383,8 @@ async function* passedOn(response, signal) {
 }
 
 // box/src/link/mac/machines.ts
-var LIST_FILE = path101.join(K, "machines.json");
-var PHONE_LINK_FILE = path101.join(APP_FOLDER ?? K, "phone-link.json");
+var LIST_FILE = path104.join(K, "machines.json");
+var PHONE_LINK_FILE = path104.join(APP_FOLDER ?? K, "phone-link.json");
 var HEARD_LATELY = 30 * 60000;
 var TIMING = { wait: 5000, look: 1e4 };
 var macName2 = () => macLink.config?.name || "this Mac";
@@ -27760,7 +28392,7 @@ var notOpen = () => `Kuvo Code isn’t open on ${macName2()}`;
 var UNREADABLE = "This Mac’s list of machines can’t be read right now.";
 function keptHosts() {
   try {
-    return JSON.parse(fs97.readFileSync(PHONE_LINK_FILE, "utf8")).machines ?? {};
+    return JSON.parse(fs100.readFileSync(PHONE_LINK_FILE, "utf8")).machines ?? {};
   } catch (error) {
     return error.code === "ENOENT" ? undefined : null;
   }
@@ -27768,7 +28400,7 @@ function keptHosts() {
 function savedMachines(kept = keptHosts()) {
   let text;
   try {
-    text = fs97.readFileSync(LIST_FILE, "utf8");
+    text = fs100.readFileSync(LIST_FILE, "utf8");
   } catch (error) {
     if (error.code !== "ENOENT")
       return null;
@@ -27904,7 +28536,7 @@ function macNeeded(link, now = Date.now()) {
   const pairing = ["pairing", "appPairing"].some((slot) => link?.[slot] && now < link[slot].expires);
   return Boolean(config.phones && ((link?.phones ?? []).length || pairing));
 }
-var MAC_LINK_FILE = path102.join(RUN, "mac-link.json");
+var MAC_LINK_FILE = path105.join(RUN, "mac-link.json");
 function saveMacConfig(config) {
   const { phones, relay, name, app } = config;
   try {
@@ -27916,7 +28548,7 @@ function saveMacConfig(config) {
 function savedMacConfig(file = MAC_LINK_FILE) {
   let kept;
   try {
-    kept = JSON.parse(fs98.readFileSync(file, "utf8"));
+    kept = JSON.parse(fs101.readFileSync(file, "utf8"));
   } catch {
     return null;
   }
@@ -28039,8 +28671,8 @@ function stopMacLink() {
 }
 
 // box/src/link/mac/routes.ts
-import fs99 from "node:fs";
-import path103 from "node:path";
+import fs102 from "node:fs";
+import path106 from "node:path";
 var macPhones = () => {
   const link = readLink();
   return {
@@ -28085,7 +28717,7 @@ function setMacPeers(link, given) {
 }
 function savedIds() {
   try {
-    const saved = JSON.parse(fs99.readFileSync(LIST_FILE, "utf8"));
+    const saved = JSON.parse(fs102.readFileSync(LIST_FILE, "utf8"));
     return new Set(Array.isArray(saved) ? saved.filter((each) => typeof each?.destination === "string").map((each) => each.destination) : []);
   } catch {
     return new Set;
@@ -28210,7 +28842,7 @@ async function* macLinkRoute(route, request, signal) {
         return yield* json(400, { message: "Send {letters, seen}." });
       const now = Date.now();
       try {
-        fs99.mkdirSync(SENDING, { recursive: true, mode: 448 });
+        fs102.mkdirSync(SENDING, { recursive: true, mode: 448 });
         for (const letter of Array.isArray(given.letters) ? given.letters.slice(0, 500) : []) {
           if (!isObject(letter) || !LETTER_ID.test(letter.id ?? "") || typeof letter.to !== "string" || typeof letter.text !== "string" || typeof letter.peer !== "string")
             continue;
@@ -28223,7 +28855,7 @@ async function* macLinkRoute(route, request, signal) {
             peer: letter.peer,
             ...typeof letter.answers === "string" ? { answers: letter.answers } : {}
           };
-          writePrivate(path103.join(SENDING, `${letter.id}.json`), JSON.stringify(kept));
+          writePrivate(path106.join(SENDING, `${letter.id}.json`), JSON.stringify(kept));
         }
         if (isObject(given.seen)) {
           locked(PEER_LOCK, () => {
@@ -28413,7 +29045,7 @@ function removeHere(key) {
 }
 function forgetSaved(id) {
   try {
-    const saved = JSON.parse(fs100.readFileSync(LIST_FILE, "utf8"));
+    const saved = JSON.parse(fs103.readFileSync(LIST_FILE, "utf8"));
     if (!Array.isArray(saved) || !saved.some((each) => each?.destination === id))
       return;
     writePrivate(LIST_FILE, JSON.stringify(saved.filter((each) => each?.destination !== id), null, 2));
@@ -28497,9 +29129,9 @@ var builtAt = -Infinity;
 var builtMarks = "";
 var building = false;
 var TELL_SPACING = 15000;
-var marks2 = () => [path104.join(WORK_QUEUE2, "queues"), LABELS_FILE2, path104.join(WORK_QUEUE2, "numbers.json"), TOLD, SEEN_FILE2].map((file) => {
+var marks2 = () => [path107.join(WORK_QUEUE2, "queues"), LABELS_FILE2, path107.join(WORK_QUEUE2, "numbers.json"), TOLD, SEEN_FILE2].map((file) => {
   try {
-    return String(fs101.statSync(file).mtimeMs);
+    return String(fs104.statSync(file).mtimeMs);
   } catch {
     return "-";
   }
@@ -28707,12 +29339,12 @@ function itemElsewhere(ref, link = readLink(), { asTold = false, deleted = false
   }
   return found ? asTold ? found.item : withSeen(found.item) : null;
 }
-var DELETED_THERE = path104.join(WORK_QUEUE2, "deleted-there.json");
-var DELETED_LOCK = path104.join(WORK_QUEUE2, ".deleted-there.lock");
+var DELETED_THERE = path107.join(WORK_QUEUE2, "deleted-there.json");
+var DELETED_LOCK = path107.join(WORK_QUEUE2, ".deleted-there.lock");
 var DELETED_FOR = 86400000;
 function readDeletedThere(now = Date.now()) {
   try {
-    const kept = JSON.parse(fs101.readFileSync(DELETED_THERE, "utf8"));
+    const kept = JSON.parse(fs104.readFileSync(DELETED_THERE, "utf8"));
     if (!isObject(kept))
       return {};
     const here = new Set(allItems().map((item) => item.id));
@@ -28723,13 +29355,13 @@ function readDeletedThere(now = Date.now()) {
 }
 function keepDeletedThere(entries) {
   if (!entries.length)
-    return void fs101.rmSync(DELETED_THERE, { force: true });
+    return void fs104.rmSync(DELETED_THERE, { force: true });
   writePrivate(DELETED_THERE, JSON.stringify(Object.fromEntries(entries.sort(([, a], [, b]) => b.at - a.at).slice(0, 200))));
 }
 function forgetDeletedThere(told) {
   let ids;
   try {
-    const kept = JSON.parse(fs101.readFileSync(DELETED_THERE, "utf8"));
+    const kept = JSON.parse(fs104.readFileSync(DELETED_THERE, "utf8"));
     ids = isObject(kept) ? Object.keys(kept) : [];
   } catch {
     return;
@@ -28745,7 +29377,7 @@ function changedThere(key, action, item, now = Date.now()) {
   if (!id)
     return;
   patchTold(key, id, item, action === "delete");
-  if (action !== "delete" && !fs101.existsSync(DELETED_THERE))
+  if (action !== "delete" && !fs104.existsSync(DELETED_THERE))
     return;
   try {
     locked(DELETED_LOCK, () => {
@@ -28765,8 +29397,8 @@ var newer = (a, aAt, b, bAt) => a.updated.at > b.updated.at || a.updated.at === 
 
 // box/src/link/bots/held.ts
 import crypto36 from "node:crypto";
-import fs102 from "node:fs";
-import path105 from "node:path";
+import fs105 from "node:fs";
+import path108 from "node:path";
 
 // box/src/link/bots/deletes.ts
 var counted2 = (count, one, many) => count === 1 ? one : `${count} ${many}`;
@@ -28782,7 +29414,6 @@ function whatDeleteTakes({ computer, folder, wakes, watching }) {
     const parts = [...wakes ? [counted2(wakes, "wake-up", "wake-ups")] : [], ...watching ? [counted2(watching, "watch", "watches")] : []];
     lines.push({ what: "wakes", words: `Its ${parts.join(" and ")} ${wakes + watching === 1 ? "is" : "are"} cancelled.` });
   }
-  lines.push({ what: "keys", words: "Any keys of its own are removed." });
   lines.push({ what: "groups", words: `It leaves the group chats on ${computer}.` });
   lines.push({ what: "sessions", words: "The sessions it started stay.", kept: true });
   return lines;
@@ -28854,10 +29485,10 @@ function elsewhereSaid(listed, held, refused) {
 
 // box/src/link/bots/held.ts
 var HELD_FEATURE = "bots.held";
-var HELD3 = path105.join(RUN, "bots-held");
-var LOCK14 = path105.join(RUN, ".bots-held.lock");
-var REFUSED_FILE = path105.join(HELD3, "refused.json");
-var TAKEN_FILE = path105.join(RUN, "bots-held-taken.json");
+var HELD3 = path108.join(RUN, "bots-held");
+var LOCK14 = path108.join(RUN, ".bots-held.lock");
+var REFUSED_FILE = path108.join(HELD3, "refused.json");
+var TAKEN_FILE = path108.join(RUN, "bots-held-taken.json");
 var BOT_ID2 = /^bot_[A-Za-z0-9]{1,60}$/;
 var EDIT_ID = /^bte_[A-Za-z0-9_-]{16,40}$/;
 var FIELDS = ["name", "look", "personality", "job", "model", "effort"];
@@ -28870,7 +29501,7 @@ var MOST_TAKEN = 1000;
 var MOST_CHANGE = 32000;
 var NOT_THERE_TRIES = 3;
 var heldSoon = { send: () => {} };
-var fileOf5 = (bot) => path105.join(HELD3, `${bot}.json`);
+var fileOf5 = (bot) => path108.join(HELD3, `${bot}.json`);
 var newEditID = () => `bte_${crypto36.randomBytes(16).toString("base64url")}`;
 var secretOf = (link) => IS_MAC ? macLink.overlay?.secret : link?.secret;
 function sealWith(value, link) {
@@ -29008,7 +29639,7 @@ function holdEdit(bot, given, on, { removed = false, now = Date.now() } = {}) {
     return no(400, checked.error);
   let answer = null;
   try {
-    fs102.mkdirSync(HELD3, { recursive: true, mode: 448 });
+    fs105.mkdirSync(HELD3, { recursive: true, mode: 448 });
     locked(LOCK14, () => {
       const before = readHeld(bot, link);
       const known = knownElsewhere(link).get(bot) ?? before?.known;
@@ -29116,7 +29747,7 @@ function readRefused(now = Date.now(), link = readLink()) {
 }
 function writeRefused(refused, link) {
   if (!refused.length)
-    return void fs102.rmSync(REFUSED_FILE, { force: true });
+    return void fs105.rmSync(REFUSED_FILE, { force: true });
   const kept = refused.slice(0, MOST_REFUSALS);
   const seal = sealWith(kept, link);
   if (seal)
@@ -29160,7 +29791,7 @@ function takeBotEdited(sender, given, now = Date.now()) {
         }
       }
       notThere.delete(bot);
-      fs102.rmSync(fileOf5(bot), { force: true });
+      fs105.rmSync(fileOf5(bot), { force: true });
       sent3.delete(bot);
       changed = true;
       const why = isObject(given) && typeof given.message === "string" ? plainName(given.message).slice(0, 500) : "";
@@ -29276,15 +29907,15 @@ function forgetHeldSends() {
 }
 
 // box/src/link/peers/reach-again.ts
-import fs103 from "node:fs";
-import path106 from "node:path";
-var REACH_AGAIN = path106.join(RUN, "reach-again.json");
-var LOCK15 = path106.join(RUN, ".reach-again.lock");
+import fs106 from "node:fs";
+import path109 from "node:path";
+var REACH_AGAIN = path109.join(RUN, "reach-again.json");
+var LOCK15 = path109.join(RUN, ".reach-again.lock");
 var TRY_FOR2 = 20000;
 var reachAgainSoon = { send: () => {} };
 function readTries(file = REACH_AGAIN) {
   try {
-    const kept = JSON.parse(fs103.readFileSync(file, "utf8"));
+    const kept = JSON.parse(fs106.readFileSync(file, "utf8"));
     return isObject(kept) ? Object.fromEntries(Object.entries(kept).filter(([, at]) => typeof at === "number")) : {};
   } catch {
     return {};
@@ -29296,7 +29927,7 @@ function tryingSince(key, now = Date.now(), tries = readTries()) {
 }
 function askReachAgain(key, now = Date.now()) {
   try {
-    fs103.mkdirSync(RUN, { recursive: true, mode: 448 });
+    fs106.mkdirSync(RUN, { recursive: true, mode: 448 });
     locked(LOCK15, () => {
       const tries = readTries();
       for (const [each, at] of Object.entries(tries))
@@ -29372,7 +30003,7 @@ async function settleStarted(atWork, now = Date.now()) {
 }
 
 // box/src/link/notices/hold.ts
-import path108 from "node:path";
+import path111 from "node:path";
 
 // box/src/agents/usage/notices.ts
 var NOTICE_CATCHUP_MS = 10 * 60000;
@@ -29429,7 +30060,7 @@ function takeNotices(given) {
 }
 
 // box/src/link/notices/usage-delivery.ts
-import path107 from "node:path";
+import path110 from "node:path";
 var keptFor2 = 24 * 60 * 60000;
 
 class UsageDeliveryJournal {
@@ -29473,7 +30104,7 @@ class UsageDeliveryJournal {
     this.flush();
   }
 }
-var journal2 = new UsageDeliveryJournal(path107.join(RUN, "notices", "usage-delivered.json"));
+var journal2 = new UsageDeliveryJournal(path110.join(RUN, "notices", "usage-delivered.json"));
 var id = (notice) => notice.category === "usage" ? notice.data?.notice : undefined;
 var usageDelivered = (notice) => {
   const key = id(notice);
@@ -29499,7 +30130,7 @@ var ASK_HOLD = 30000;
 var NEWS_HOLD = 60000;
 var LONGEST_LEASE = 60000;
 var SHOWN_WITHIN = 1e4;
-var HELD_FILE = path108.join(RUN, "held-notices.json");
+var HELD_FILE = path111.join(RUN, "held-notices.json");
 var RESTORED_WAIT = 20000;
 var RETRY_EVERY = 5000;
 var TRY_FOR3 = 10 * 60000;
@@ -29666,9 +30297,9 @@ class NoticeHold {
 
 // box/src/link/peers/seats.ts
 import crypto37 from "node:crypto";
-import fs104 from "node:fs";
+import fs107 from "node:fs";
 import os11 from "node:os";
-import path109 from "node:path";
+import path112 from "node:path";
 var SEAT_WHOLE = 48000;
 var seatParts = new Map;
 var bridgeClock = {
@@ -29831,24 +30462,24 @@ function carrySeat(host, given, link = readLink(), now = Date.now()) {
     return false;
   const letter = { peer: given.to, seat: given.mail, at: now };
   try {
-    fs104.mkdirSync(SENDING, { recursive: true, mode: 448 });
+    fs107.mkdirSync(SENDING, { recursive: true, mode: 448 });
     if (given.mail.kind === "memory") {
       for (const name of listOf(SENDING)) {
         if (!name.endsWith(".json"))
           continue;
         let other;
         try {
-          other = JSON.parse(fs104.readFileSync(path109.join(SENDING, name), "utf8"));
+          other = JSON.parse(fs107.readFileSync(path112.join(SENDING, name), "utf8"));
         } catch {
           continue;
         }
         if (other?.peer !== given.to || other?.seat?.kind !== "memory" || other.seat.memory?.bot !== given.mail.memory?.bot || other.seat.memory?.chat !== given.mail.memory?.chat)
           continue;
-        fs104.rmSync(path109.join(SENDING, name), { force: true });
+        fs107.rmSync(path112.join(SENDING, name), { force: true });
         letterTries.delete(name.slice(0, -5));
       }
     }
-    writePrivate(path109.join(SENDING, `${id}.json`), JSON.stringify(letter));
+    writePrivate(path112.join(SENDING, `${id}.json`), JSON.stringify(letter));
   } catch {
     return false;
   }
@@ -29858,7 +30489,7 @@ function carrySeat(host, given, link = readLink(), now = Date.now()) {
   return true;
 }
 function sendSeatLetter(host, to, id, letter, link, now, ask = bridgeAsk) {
-  const file = path109.join(SENDING, `${id}.json`);
+  const file = path112.join(SENDING, `${id}.json`);
   if (letter.sentTo !== to.key)
     try {
       writePrivate(file, JSON.stringify({ ...letter, sentTo: to.key }));
@@ -29872,7 +30503,7 @@ function sendSeatLetter(host, to, id, letter, link, now, ask = bridgeAsk) {
 }
 var tellingGaveUp = new Set;
 function giveUpSeat(id, letter, ask = bridgeAsk) {
-  const file = path109.join(SENDING, `${id}.json`);
+  const file = path112.join(SENDING, `${id}.json`);
   letterTries.delete(id);
   if (letter.gaveUp !== true)
     try {
@@ -29881,7 +30512,7 @@ function giveUpSeat(id, letter, ask = bridgeAsk) {
   if (tellingGaveUp.has(id))
     return null;
   tellingGaveUp.add(id);
-  const heard = () => fs104.rmSync(file, { force: true });
+  const heard = () => fs107.rmSync(file, { force: true });
   return ask("POST", "/gaveup", { to: letter.peer, mail: letter.seat, at: letter.at }).then(heard, (error) => {
     if (error?.status >= 400 && error.status < 500)
       heard();
@@ -29943,702 +30574,6 @@ async function watchSeats(host, signal) {
 import crypto39 from "node:crypto";
 import fs111 from "node:fs";
 import path116 from "node:path";
-
-// box/src/link/areas/bot-keys.ts
-import fs107 from "node:fs";
-import path112 from "node:path";
-
-// box/src/link/areas/integrations.ts
-import { spawn as spawn9 } from "node:child_process";
-import fs106 from "node:fs";
-import path111 from "node:path";
-
-// box/src/link/areas/mcp-catalog.ts
-import fs105 from "node:fs";
-import path110 from "node:path";
-
-// box/src/shared/routes/settings.ts
-var CONFIG = map(any);
-var CONFIG_APPLIED = object({
-  made: list(object({ path: list(string), value: any })),
-  leftOut: list(list(string)),
-  kept: list(list(string)),
-  macOnly: list(string),
-  keys: list(string),
-  applied: bool,
-  settings: CONFIG
-});
-var MCP_ACCESS = ["signIn", "open", "local"];
-var MCP_CATALOG_SERVER = object({
-  id: string,
-  title: string,
-  summary: string,
-  access: words(...MCP_ACCESS),
-  added: bool,
-  integration: bool,
-  macOnly: bool
-});
-var MCP_CATALOG = object({ servers: list(MCP_CATALOG_SERVER) });
-var KEYS = object({ keys: list(string) });
-var KEY2 = object({ value: string });
-var CLAUDE_CODE_IMPORT = object({ name: string, description: string, path: list(string), settings: map(string), imported: bool });
-var CLAUDE_CODE = object({ agents: list(CLAUDE_CODE_IMPORT), commands: list(CLAUDE_CODE_IMPORT) });
-
-// box/src/link/areas/mcp-catalog.ts
-var accessOf = (server) => {
-  const access = server.access ?? "open";
-  return MCP_ACCESS.includes(access) ? access : null;
-};
-var offered = (server, mac) => typeof server?.id === "string" && (mac || !server.macOnly) && accessOf(server) !== null;
-var CATALOG_FILE = path110.join(K, "bin", "mcp-catalog.json");
-function mcpCatalog(settings, file = CATALOG_FILE, mac = IS_MAC) {
-  let servers = [];
-  try {
-    servers = JSON.parse(fs105.readFileSync(file, "utf8")).servers ?? [];
-  } catch {}
-  return {
-    servers: servers.filter((server) => offered(server, mac)).map((server) => {
-      const added = valueAt(settings, [...SERVERS, server.id]) !== undefined;
-      return {
-        id: server.id,
-        title: String(server.title ?? ""),
-        summary: String(server.summary ?? ""),
-        access: accessOf(server),
-        added,
-        integration: added && Boolean(server.integration),
-        macOnly: mac && Boolean(server.macOnly)
-      };
-    })
-  };
-}
-function addFromCatalog(id, file = CONFIG_FILE, catalog = CATALOG_FILE, lock = CONFIG_LOCK, mac = IS_MAC) {
-  let servers = [];
-  try {
-    servers = JSON.parse(fs105.readFileSync(catalog, "utf8")).servers ?? [];
-  } catch {}
-  const server = servers.find((each) => each?.id === id && offered(each, mac));
-  if (!server || !isObject(server.settings))
-    return { status: 404 };
-  const { settings, problem } = readSettings(file);
-  if (problem)
-    return { status: 409, message: `The engine's settings file can't be changed from here: ${problem}`, problem };
-  if (valueAt(settings, [...SERVERS, id]) !== undefined)
-    return { status: 200, settings };
-  return changeSettings([{ path: [...SERVERS, id], value: { codemode: false, ...server.settings } }], file, lock);
-}
-
-// box/src/link/areas/integrations.ts
-var MAC_INTEGRATIONS = path111.join(K, "bin", "integrations-mac.json");
-var INTEGRATIONS_FILE = OWN_HOME_MAC && fs106.existsSync(MAC_INTEGRATIONS) ? MAC_INTEGRATIONS : path111.join(K, "bin", "integrations.json");
-function integrationCatalog(file = INTEGRATIONS_FILE) {
-  try {
-    return (JSON.parse(fs106.readFileSync(file, "utf8")).integrations ?? []).filter((each) => typeof each?.id === "string" && (IS_MAC || !each.macOnly));
-  } catch {
-    return [];
-  }
-}
-var LAUNCHER = "kuvo-npx";
-var APART = "KUVO_NPX_APART";
-var OWN_SERVER = "kuvo-browser";
-var DEVTOOLS = "chrome-devtools";
-var DEVTOOLS_PACKAGE = "chrome-devtools-mcp";
-var DEVTOOLS_FLAGS = [["--no-usage-statistics", "--usage-statistics"], ["--isolated", "--no-isolated"]];
-function packageName(spec) {
-  const at = spec.lastIndexOf("@");
-  return at > 0 ? spec.slice(0, at) : spec;
-}
-var leftForItsMaker = (entry, server) => entry.way === "official" && isObject(entry.settings) && Array.isArray(server.command) && server.command[0] === LAUNCHER;
-var kept5 = (server, names) => Object.fromEntries(names.filter((name) => server[name] !== undefined).map((name) => [name, server[name]]));
-function broughtUpToDate(entry, server) {
-  if (leftForItsMaker(entry, server))
-    return { ...entry.settings, ...kept5(server, ["disabled", "codemode"]) };
-  const next = { ...server };
-  if (next.codemode === undefined)
-    next.codemode = false;
-  const pinned = isObject(entry.settings) ? entry.settings.command : undefined;
-  const old = server.command;
-  if (entry.way === "package" && Array.isArray(pinned) && typeof pinned[1] === "string" && Array.isArray(old) && old[0] === LAUNCHER && typeof old[1] === "string" && packageName(old[1]) === packageName(pinned[1])) {
-    next.command = pinned;
-    const environment = server.environment === undefined ? {} : server.environment;
-    if (isObject(environment) && environment[APART] === undefined)
-      next.environment = { ...environment, [APART]: "1" };
-  }
-  return olderKeysNamedHere(next);
-}
-function isOlderVersion(version, pinned) {
-  if (!version || version === "latest")
-    return true;
-  const numbers = (text) => text.split(".").map((part) => parseInt(part, 10) || 0);
-  const mine = numbers(version), theirs = numbers(pinned.slice(pinned.lastIndexOf("@") + 1));
-  for (let index = 0;index < Math.max(mine.length, theirs.length); index++) {
-    const a = mine[index] ?? 0, b = theirs[index] ?? 0;
-    if (a !== b)
-      return a < b;
-  }
-  return false;
-}
-function devToolsUpToDate(server, offered) {
-  const pinned = Array.isArray(offered.command) ? offered.command[1] : undefined;
-  if (!Array.isArray(server.command) || typeof pinned !== "string")
-    return server;
-  const words = server.command.filter((word) => typeof word === "string");
-  const at = words.findIndex((word) => word === DEVTOOLS_PACKAGE || word.startsWith(`${DEVTOOLS_PACKAGE}@`));
-  if (at < 0)
-    return server;
-  const version = words[at].includes("@") ? words[at].slice(words[at].indexOf("@") + 1) : undefined;
-  const options = words.slice(at + 1);
-  for (const [flag, opposite] of DEVTOOLS_FLAGS) {
-    if (!options.some((word) => word === flag || word === opposite || word.startsWith(`${opposite}=`)))
-      options.unshift(flag);
-  }
-  const command = [LAUNCHER, isOlderVersion(version, pinned) ? pinned : words[at], ...options];
-  const before = isObject(server.environment) ? server.environment : {};
-  const environment = { ...before };
-  for (const [name, value] of Object.entries(isObject(offered.environment) ? offered.environment : {})) {
-    if (environment[name] === undefined || name === APART)
-      environment[name] = value;
-  }
-  if (sameJSON(command, words) && sameJSON(environment, before))
-    return server;
-  return { ...server, command, environment };
-}
-function devToolsOffered(file, mac) {
-  if (!mac)
-    return null;
-  try {
-    const servers = JSON.parse(fs106.readFileSync(file, "utf8")).servers;
-    const server = Array.isArray(servers) ? servers.find((each) => isObject(each) && each.id === DEVTOOLS) : null;
-    return isObject(server) && isObject(server.settings) ? server.settings : null;
-  } catch {
-    return null;
-  }
-}
-function upgradeChanges(settings, catalog, keysGone, popular) {
-  const servers = valueAt(settings, SERVERS);
-  if (!isObject(servers))
-    return [];
-  const changes = [];
-  for (const [id, server] of Object.entries(servers)) {
-    if (!isObject(server))
-      continue;
-    const entry = catalog.find((each) => each.id === id);
-    if (!entry) {
-      const next = id === DEVTOOLS && popular ? devToolsUpToDate(server, popular) : server;
-      if (next !== server)
-        changes.push({ path: [...SERVERS, id], value: { ...next, codemode: next.codemode ?? false } });
-      else if (id !== OWN_SERVER && server.codemode === undefined)
-        changes.push({ path: [...SERVERS, id, "codemode"], value: false });
-      continue;
-    }
-    if (leftForItsMaker(entry, server) && !keysGone.has(id))
-      continue;
-    const next = broughtUpToDate(entry, server);
-    if (!sameJSON(next, server))
-      changes.push({ path: [...SERVERS, id], value: next });
-  }
-  return changes;
-}
-function writeUpgrade(catalog, popular, keysGone, file, lock) {
-  locked(lock, () => {
-    const { settings, problem } = readSettings(file);
-    const changes = settings ? upgradeChanges(settings, catalog, keysGone, popular) : [];
-    const written = changes.length ? writeSettings(settings, changes, file) : null;
-    const trouble = problem ?? (written?.status === 200 ? undefined : written?.message);
-    if (trouble && (keysGone.size || written))
-      console.error(`Integrations couldn't be brought up to date: ${trouble}`);
-  });
-}
-function upgradeBeforeEngine(catalogFile = INTEGRATIONS_FILE, file = CONFIG_FILE, lock = CONFIG_LOCK, popularFile = CATALOG_FILE, mac = IS_MAC) {
-  writeUpgrade(integrationCatalog(catalogFile), devToolsOffered(popularFile, mac), new Set, file, lock);
-}
-function upgradeIntegrations(catalogFile = INTEGRATIONS_FILE, file = CONFIG_FILE, lock = CONFIG_LOCK, popularFile = CATALOG_FILE, mac = IS_MAC) {
-  return keyWork(async () => {
-    const catalog = integrationCatalog(catalogFile);
-    const { settings: before } = readSettings(file);
-    const keysGone = new Set;
-    for (const entry of updateOnTrial() ? [] : catalog) {
-      const server = valueAt(before, [...SERVERS, entry.id]);
-      if (!isObject(server) || !leftForItsMaker(entry, server))
-        continue;
-      const variables = [...new Set(JSON.stringify(server).match(/KUVO_KEY_[A-Z0-9_]+/g) ?? [])];
-      try {
-        await droppingBotsKeys(entry.id, variables);
-        for (const name of variables)
-          await deleteKey(name);
-        keysGone.add(entry.id);
-      } catch {}
-    }
-    writeUpgrade(catalog, devToolsOffered(popularFile, mac), keysGone, file, lock);
-  });
-}
-function integrationHealth(entry, server, off, signedIn) {
-  if (off)
-    return "disabled";
-  let health = { connected: "connected", needs_auth: "needsSignIn", failed: "failed" }[server?.status?.status] ?? "starting";
-  if (health === "connected" && server?.integrationID && signedIn && !signedIn.has(server.integrationID) && ["official", "app"].includes(entry.way))
-    health = "needsSignIn";
-  if (health === "connected" && typeof entry.signInFile === "string" && !fs106.existsSync(path111.join(INTEGRATION_DATA, entry.id, path111.basename(entry.signInFile))))
-    health = "waitsForCode";
-  return health;
-}
-async function integrationEntries(catalog, engine, signal) {
-  const { settings } = readSettings();
-  let servers = null;
-  let signedIn = new Set;
-  let hadSignIn = new Set;
-  if (engine) {
-    servers = await call(engine, "GET", "/api/mcp", undefined, signal).catch(() => null);
-    const credentials = await call(engine, "GET", "/api/credential", undefined, signal).catch(() => null);
-    const oauth = (Array.isArray(credentials) ? credentials : []).filter((each) => each?.value?.type === "oauth");
-    signedIn = Array.isArray(credentials) ? new Set(oauth.filter((each) => each.active).map((each) => each.integrationID)) : null;
-    hadSignIn = new Set(oauth.map((each) => each.integrationID));
-  }
-  const engineDown = !Array.isArray(servers);
-  let names = null;
-  try {
-    names = await keyNames();
-  } catch (error) {
-    if (!(error instanceof KeysUnavailable))
-      throw error;
-  }
-  const onSite = catalog.filter((entry) => entry.way === "browser");
-  const sites = !onSite.length ? null : IS_MAC ? await siteSignIns() : await siteSignInsHere(onSite).catch(() => null);
-  const entries = catalog.map(({ settings: _, variables, signInFile, signInCookie: __, ...entry }) => {
-    const added = valueAt(settings ?? {}, [...SERVERS, entry.id]) !== undefined;
-    const shown = { ...entry, added };
-    if (variables && names)
-      shown.keysSaved = Object.values(variables).every((name) => names.includes(name));
-    if (entry.way === "browser" && typeof sites?.[entry.id] === "boolean")
-      shown.siteSignedIn = sites[entry.id];
-    if (added) {
-      const off = valueAt(settings ?? {}, [...SERVERS, entry.id, "disabled"]) === true;
-      const server = (servers ?? []).find((each) => each?.name === entry.id);
-      if (!engineDown || off)
-        shown.health = integrationHealth({ ...entry, signInFile }, server, off, signedIn);
-      if (server?.integrationID)
-        shown.signIn = server.integrationID;
-      if (shown.health === "needsSignIn" && server?.integrationID && hadSignIn.has(server.integrationID))
-        shown.signInEnded = true;
-    }
-    return shown;
-  });
-  return { entries, engineDown };
-}
-function dropBotsIntegration(entry) {
-  return keyWork(() => droppingBotsIntegration(entry));
-}
-async function droppingBotsIntegration(entry) {
-  await droppingBotsKeys(entry.id, Object.values(entry.variables ?? {}).filter((variable) => STORED_KEY.test(variable)));
-}
-async function droppingBotsKeys(id, own) {
-  const named = [];
-  for (const variable of own)
-    named.push(...await keyNames({ prefix: `${variable}__` }));
-  for (const bot of listOf(BOTS)) {
-    const folder = path111.join(BOTS, bot, "workspace", ".opencode");
-    const file = path111.join(folder, "opencode.json");
-    let settings;
-    try {
-      settings = JSON.parse(fs106.readFileSync(file, "utf8"));
-    } catch {
-      continue;
-    }
-    const server = settings?.mcp?.servers?.[id];
-    if (!server || !own.some((variable) => JSON.stringify(server).includes(`${variable}__`)))
-      continue;
-    delete settings.mcp.servers[id];
-    if (!Object.keys(settings.mcp.servers).length)
-      delete settings.mcp.servers;
-    if (!Object.keys(settings.mcp).length)
-      delete settings.mcp;
-    if (Object.keys(settings).length)
-      writePrivate(file, JSON.stringify(settings));
-    else {
-      fs106.rmSync(file, { force: true });
-      try {
-        fs106.rmdirSync(folder);
-      } catch {}
-    }
-  }
-  for (const name of named)
-    await deleteKey(name);
-}
-async function keepsAll(variables) {
-  const kept = await keyNames();
-  return variables.every((variable) => kept.includes(variable));
-}
-function reconnectLater(engine, id, later) {
-  if (!engine)
-    return;
-  if (answeringOnce() && later === soon) {
-    spawn9(process.execPath, [...OWN_RUNTIME, SCRIPT, "box", "reconnect", id], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
-    return;
-  }
-  later(() => reconnectEverywhere(engine, id), 2000);
-}
-async function reconnectEverywhere(engine, id) {
-  const connect = `/api/experimental/mcp/${encodeURIComponent(id)}/connect`;
-  await call(engine, "POST", connect).catch(() => {});
-  const open = await call(engine, "GET", "/api/debug/location").catch(() => []);
-  const folders = new Set((Array.isArray(open) ? open : []).map((each) => each?.directory).filter((folder) => typeof folder === "string" && folder));
-  for (const folder of folders)
-    await call(engine, "POST", connect, undefined, undefined, folder).catch(() => {});
-}
-async function answerIntegrations(method, requestPath, body, engine, signal, file = INTEGRATIONS_FILE, later = soon) {
-  try {
-    return await integrationsAnswer(method, requestPath, body, engine, signal, file, later);
-  } catch (error) {
-    if (error instanceof KeysUnavailable)
-      return { status: 503, value: { message: error.message } };
-    throw error;
-  }
-}
-async function integrationsAnswer(method, requestPath, body, engine, signal, file, later) {
-  const parts = requestPath.split("?")[0].split("/").map((part) => {
-    try {
-      return decodeURIComponent(part);
-    } catch {
-      return "";
-    }
-  });
-  const catalog = integrationCatalog(file);
-  if (parts.length === 2) {
-    if (method !== "GET")
-      return { status: 405, value: {} };
-    const { problem } = readSettings();
-    const { entries, engineDown } = await integrationEntries(catalog, engine, signal);
-    return { status: 200, value: { integrations: entries, ...engineDown ? { engineDown } : {}, ...problem ? { problem } : {} } };
-  }
-  const entry = parts.length === 3 ? catalog.find((each) => each.id === parts[2]) : null;
-  if (!entry)
-    return { status: 404, value: {} };
-  const { settings, problem } = readSettings();
-  if (problem)
-    return { status: 409, value: { message: `The engine's settings file can't be changed from here: ${problem}` } };
-  const added = valueAt(settings ?? {}, [...SERVERS, entry.id]) !== undefined;
-  if (method === "POST") {
-    if (entry.way === "browser" || !entry.settings)
-      return { status: 409, value: { message: `The agent uses ${entry.title} on its site: sign in to it in the browser on ${IS_MAC ? "this Mac" : "this machine"}.` } };
-    const variables = entry.variables ?? {};
-    const given = body?.keys && typeof body.keys === "object" ? body.keys : {};
-    const names = Object.keys(variables);
-    if (!Object.values(variables).every((variable) => typeof variable === "string" && STORED_KEY.test(variable))) {
-      return { status: 409, value: { message: `${entry.title} can't be added here: its keys aren't named as Kuvo Code names them.` } };
-    }
-    let newKeys = false;
-    if (names.length) {
-      const sent = names.filter((name) => typeof given[name] === "string" && given[name].trim());
-      if (sent.length < names.length && !await keepsAll(names.filter((name) => !sent.includes(name)).map((name) => variables[name]))) {
-        const labels = (entry.keys ?? []).map((key) => key.label).join(" and ");
-        return { status: 400, value: { message: `${entry.title} needs ${labels}: send them as {"keys": {"${names[0]}": …}}.` } };
-      }
-      if (sent.length) {
-        await keyWork(async () => {
-          for (const name of sent)
-            await writeKey(variables[name], given[name].trim());
-        });
-        newKeys = true;
-      }
-    }
-    const now = valueAt(readSettings().settings ?? {}, [...SERVERS, entry.id]);
-    if (added && now === undefined)
-      return { status: 409, value: { message: `${entry.title} was removed meanwhile.` } };
-    const value = now ?? entry.settings;
-    const changed = changeSettings([{ path: [...SERVERS, entry.id], value }]);
-    if (changed.status !== 200)
-      return { status: changed.status, value: { message: changed.message } };
-    if (newKeys)
-      reconnectLater(engine, entry.id, later);
-    const { entries: [listed] } = await integrationEntries([entry], engine, signal);
-    return { status: 200, value: { integration: listed } };
-  }
-  if (method === "DELETE") {
-    if (!added) {
-      const own = Object.values(entry.variables ?? {}).filter((variable) => STORED_KEY.test(variable));
-      const kept = own.length ? (await keyNames()).filter((name) => own.includes(name)) : [];
-      if (!kept.length)
-        return { status: 404, value: {} };
-      await keyWork(async () => {
-        for (const name of kept)
-          await deleteKey(name);
-      });
-      return { status: 200, value: {} };
-    }
-    try {
-      await dropBotsIntegration(entry);
-    } catch (error) {
-      if (!(error instanceof KeysUnavailable))
-        throw error;
-      return { status: 503, value: { message: `${entry.title} wasn't removed: its bots' own keys for it couldn't be taken away. ${error.message}` } };
-    }
-    let signIn;
-    if (engine) {
-      const servers = await call(engine, "GET", "/api/mcp", undefined, signal).catch(() => []);
-      signIn = (Array.isArray(servers) ? servers : []).find((each) => each?.name === entry.id)?.integrationID;
-    }
-    const changed = changeSettings([{ path: [...SERVERS, entry.id], value: null }]);
-    if (changed.status !== 200)
-      return { status: changed.status, value: { message: changed.message } };
-    if (engine && signIn) {
-      const credentials = await call(engine, "GET", "/api/credential", undefined, signal).catch(() => []);
-      for (const each of Array.isArray(credentials) ? credentials : []) {
-        if (each?.integrationID === signIn)
-          await call(engine, "DELETE", `/api/credential/${encodeURIComponent(each.id)}`, undefined, signal).catch(() => {});
-      }
-    }
-    for (const name of [entry.id, `${entry.id}.json`])
-      fs106.rmSync(path111.join(INTEGRATION_DATA, name), { recursive: true, force: true });
-    try {
-      await keyWork(async () => {
-        for (const variable of Object.values(entry.variables ?? {}))
-          if (STORED_KEY.test(variable))
-            await deleteKey(variable);
-      });
-    } catch (error) {
-      if (!(error instanceof KeysUnavailable))
-        throw error;
-      return { status: 503, value: { message: `${entry.title} is removed, but its key is still kept. ${error.message}` } };
-    }
-    return { status: 200, value: {} };
-  }
-  return { status: 405, value: {} };
-}
-async function* integrationsRoute(context) {
-  const { request, signal, readEngine, json } = context;
-  if (!ownsSettings())
-    return yield* json(409, { message: "This machine's settings still come from your Mac. Connect it from Kuvo Code on your Mac once." });
-  let engine = null;
-  try {
-    engine = readEngine();
-  } catch {}
-  const { status, value } = await answerIntegrations(request.method.toUpperCase(), request.path, parsed(request.body), engine, signal);
-  return yield* json(status, value);
-}
-
-// box/src/link/areas/bot-keys.ts
-var BOT_KEY_FOLDER = APP_KEY_FILES;
-var botKeyFolder = () => BOT_KEY_FOLDER ?? `${shownRoot}/box/bot-keys`;
-var botKeyed = (catalog) => catalog.filter((entry) => ["token", "package"].includes(entry.way) && entry.settings && Object.keys(entry.variables ?? {}).length && Object.values(entry.variables).every((variable) => typeof variable === "string" && STORED_KEY.test(variable)));
-var hasOwnKeys = (bot, entry, names) => Object.values(entry.variables).every((variable) => names.includes(botVariable(variable, bot)));
-function botServer(entry, bot) {
-  const folder = botKeyFolder();
-  const swapped = (value) => {
-    if (typeof value === "string") {
-      return Object.values(entry.variables).reduce((text, variable) => text.replace(new RegExp(`\\{file:[^{}]*/${variable}\\}`, "g"), () => `{file:${folder}/${botVariable(variable, bot)}}`), value);
-    }
-    if (Array.isArray(value))
-      return value.map(swapped);
-    if (isObject(value))
-      return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, swapped(inner)]));
-    return value;
-  };
-  return swapped(entry.settings);
-}
-function botSettings(bot) {
-  const folder = path112.join(BOTS, bot, "workspace", ".opencode");
-  const file = path112.join(folder, "opencode.json");
-  const text = textOf(file);
-  if (text === null || !text.trim())
-    return { folder, file, settings: {} };
-  let settings;
-  try {
-    settings = JSON.parse(text);
-  } catch {}
-  const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-  if (!isObject(settings) || settings.mcp !== undefined && !isObject(settings.mcp) || settings.mcp?.servers !== undefined && !isObject(settings.mcp.servers)) {
-    return { folder, file, problem: "Its folder's settings aren't plain JSON, so its own keys can't be named there." };
-  }
-  return { folder, file, settings };
-}
-function writeBotSettings(bot, catalog, names) {
-  const { folder, file, settings: old, problem } = botSettings(bot);
-  if (problem)
-    return { status: 409, message: problem };
-  const suffix = botVariable("", bot);
-  const usesOwn = (server) => (JSON.stringify(server).match(/KUVO_KEY_[A-Z0-9_]+/g) ?? []).some((name) => name.endsWith(suffix));
-  const servers = Object.fromEntries(Object.entries(old.mcp?.servers ?? {}).filter(([, server]) => !usesOwn(server)));
-  for (const entry of botKeyed(catalog))
-    if (hasOwnKeys(bot, entry, names))
-      servers[entry.id] = botServer(entry, bot);
-  const mcp = { ...old.mcp ?? {} };
-  if (Object.keys(servers).length)
-    mcp.servers = servers;
-  else
-    delete mcp.servers;
-  const next = { ...old };
-  if (Object.keys(mcp).length)
-    next.mcp = mcp;
-  else
-    delete next.mcp;
-  if (JSON.stringify(next) === JSON.stringify(old))
-    return { status: 200 };
-  if (Object.keys(next).length) {
-    writePrivate(file, JSON.stringify(next, null, 2) + `
-`);
-  } else {
-    fs107.rmSync(file, { force: true });
-    try {
-      fs107.rmdirSync(folder);
-    } catch {}
-  }
-  return { status: 200 };
-}
-function refreshBotsKeys(file = INTEGRATIONS_FILE) {
-  return keyWork(() => refreshingBotsKeys(file));
-}
-async function refreshingBotsKeys(file) {
-  const bots = listOf(BOTS).filter((bot) => {
-    const here = botHere(bot);
-    return here && !here.described.project;
-  });
-  if (!bots.length)
-    return;
-  const catalog = integrationCatalog(file);
-  const names = await keyNames();
-  for (const bot of bots)
-    writeBotSettings(bot, catalog, names);
-}
-function reconnectForBot(engine, id, bot, later) {
-  if (!engine?.port)
-    return;
-  const folder = path112.join(BOTS, bot, "workspace");
-  later(() => fetch(`http://127.0.0.1:${engine.port}/api/experimental/mcp/${encodeURIComponent(id)}/connect`, {
-    method: "POST",
-    headers: { authorization: `Basic ${Buffer.from(`opencode:${engine.password}`).toString("base64")}`, "x-opencode-directory": encodeURIComponent(folder) }
-  }).catch(() => {}), 2000);
-}
-async function forgetBotKeys(bot) {
-  try {
-    return await keyWork(async () => {
-      for (const name of (await keyNames()).filter((each) => each.endsWith(botVariable("", bot))))
-        await deleteKey(name);
-      return true;
-    });
-  } catch {
-    return false;
-  }
-}
-async function answerBotKeys(method, requestPath, body, engine, file = INTEGRATIONS_FILE, later = soon) {
-  try {
-    return await keyWork(() => botKeysAnswer(method, requestPath, body, engine, file, later));
-  } catch (error) {
-    if (error instanceof KeysUnavailable)
-      return { status: 503, value: { message: error.message } };
-    throw error;
-  }
-}
-async function botKeysAnswer(method, requestPath, body, engine, file, later) {
-  const parts = requestPath.split("?")[0].split("/").map((part) => {
-    try {
-      return decodeURIComponent(part);
-    } catch {
-      return null;
-    }
-  });
-  const message = (text) => ({ message: text });
-  const bot = parts[2];
-  const here = botHere(bot);
-  if (!here)
-    return { status: 404, value: message("That bot isn’t on this computer.") };
-  if (here.described.project)
-    return { status: 409, value: message(`${here.described.name} works in a project, so it uses the keys that project's sessions use.`) };
-  const catalog = integrationCatalog(file);
-  const keyed = botKeyed(catalog);
-  const names = await keyNames();
-  const shared = (entry) => Object.values(entry.variables).every((variable) => names.includes(variable));
-  const without = (gone) => names.filter((name) => !gone.includes(name));
-  if (parts.length === 4) {
-    if (method === "GET")
-      return { status: 200, value: { keys: keyed.map((entry) => ({
-        integration: entry.id,
-        own: hasOwnKeys(bot, entry, names),
-        shared: shared(entry),
-        title: entry.title,
-        symbol: entry.symbol,
-        keys: (entry.keys ?? []).map(({ name, label, prompt }) => ({ name, label, prompt })),
-        ...entry.help ? { help: entry.help } : {}
-      })) } };
-    if (method !== "DELETE")
-      return { status: 405, value: {} };
-    const had = keyed.filter((entry) => hasOwnKeys(bot, entry, names));
-    const own = names.filter((name) => name.endsWith(botVariable("", bot)));
-    const written = writeBotSettings(bot, catalog, without(own));
-    for (const name of own)
-      await deleteKey(name);
-    for (const entry of had)
-      reconnectForBot(engine, entry.id, bot, later);
-    return written.status === 200 ? { status: 200, value: {} } : { status: written.status, value: message(written.message) };
-  }
-  if (parts.length !== 5)
-    return { status: 404, value: {} };
-  const entry = keyed.find((each) => each.id === parts[4]);
-  if (!entry)
-    return { status: 404, value: message("A bot can't have a key of its own for that here.") };
-  const fields = Object.keys(entry.variables);
-  const variableOf = (name) => botVariable(entry.variables[name], bot);
-  switch (method) {
-    case "GET": {
-      if (!hasOwnKeys(bot, entry, names))
-        return { status: 404, value: {} };
-      const keys = {};
-      for (const name of fields)
-        keys[name] = await readKey(variableOf(name)) ?? "";
-      return { status: 200, value: { keys } };
-    }
-    case "PUT": {
-      const given = body?.keys && typeof body.keys === "object" ? body.keys : {};
-      if (!fields.every((name) => typeof given[name] === "string" && given[name].trim())) {
-        const labels = (entry.keys ?? []).map((key) => key.label).join(" and ") || fields.join(" and ");
-        return { status: 400, value: message(`${entry.title} needs ${labels}: send them as {"keys": {"${fields[0]}": …}}.`) };
-      }
-      const { problem } = botSettings(bot);
-      if (problem)
-        return { status: 409, value: message(problem) };
-      for (const name of fields)
-        await writeKey(variableOf(name), given[name].trim());
-      writeBotSettings(bot, catalog, [...names, ...fields.map(variableOf)]);
-      reconnectForBot(engine, entry.id, bot, later);
-      return { status: 200, value: { integration: entry.id, own: true, shared: shared(entry) } };
-    }
-    case "DELETE": {
-      if (!hasOwnKeys(bot, entry, names))
-        return { status: 404, value: {} };
-      const { problem } = botSettings(bot);
-      if (problem)
-        return { status: 409, value: message(problem) };
-      const own = fields.map(variableOf);
-      const written = writeBotSettings(bot, catalog, without(own));
-      for (const name of own)
-        await deleteKey(name);
-      reconnectForBot(engine, entry.id, bot, later);
-      return written.status === 200 ? { status: 200, value: {} } : { status: written.status, value: message(written.message) };
-    }
-    default:
-      return { status: 405, value: {} };
-  }
-}
-async function* botKeysRefreshRoute(context) {
-  const { request, json } = context;
-  if (request.method.toUpperCase() !== "POST")
-    return yield* json(405, {});
-  try {
-    await refreshBotsKeys();
-  } catch (error) {
-    if (!(error instanceof KeysUnavailable))
-      throw error;
-    return yield* json(503, { message: error.message });
-  }
-  return yield* json(200, {});
-}
-async function* botKeysRoute(context) {
-  const { request, readEngine, json } = context;
-  let engine = null;
-  try {
-    engine = readEngine();
-  } catch {}
-  const { status, value } = await answerBotKeys(request.method.toUpperCase(), request.path, parsed(request.body), engine);
-  return yield* json(status, value);
-}
 
 // box/src/link/moves/bundle.ts
 import { spawn as spawn10 } from "node:child_process";
@@ -30716,23 +30651,6 @@ function conversationHash(exports) {
     hash.update(JSON.stringify(isObject(each) ? [isObject(each.info) ? each.info.id : null, each.messages ?? null] : null)).update(`
 `);
   return hash.digest("base64url");
-}
-async function keysOf(bot) {
-  const listed = await answerBotKeys("GET", `kuvo/bots/${bot}/keys`, null, null);
-  const each = listed.value?.keys;
-  if (listed.status !== 200 || !Array.isArray(each))
-    return listed.status === 409 ? {} : null;
-  const keys = {};
-  for (const entry of each) {
-    if (entry.own !== true || typeof entry.integration !== "string")
-      continue;
-    const read = await answerBotKeys("GET", `kuvo/bots/${bot}/keys/${encodeURIComponent(entry.integration)}`, null, null);
-    const values = read.value?.keys;
-    if (read.status !== 200 || !isObject(values))
-      return null;
-    keys[entry.integration] = values;
-  }
-  return keys;
 }
 
 class TooBig extends Error {
@@ -31076,7 +30994,7 @@ function writeLeft(entries) {
     fs110.rmSync(FILE5, { force: true });
 }
 function noteLeft2(entry) {
-  if (!entry.trash && !entry.left?.length && !entry.keys)
+  if (!entry.trash && !entry.left?.length)
     return;
   writeLeft([...readLeft().filter((each) => each.id !== entry.id), entry]);
 }
@@ -31084,14 +31002,6 @@ function forgetLeft(id) {
   const entries = readLeft();
   if (entries.some((each) => each.id === id))
     writeLeft(entries.filter((each) => each.id !== id));
-}
-function keysGone(id) {
-  const entries = readLeft();
-  const entry = entries.find((each) => each.id === id);
-  if (!entry?.keys)
-    return;
-  delete entry.keys;
-  writeLeft(entries.filter((each) => each.id !== id || each.trash || each.left?.length));
 }
 function noteRan(id, from, at) {
   const entries = readLeft();
@@ -31613,11 +31523,6 @@ async function carryOn(id) {
     if (record.kind === "bot") {
       if (goalRuns(record.thing))
         throw new Refused(say.onGoal(record.name));
-      const keys = await keysOf(record.thing);
-      if (!keys)
-        throw new Refused(`${record.name}’s own keys couldn’t be read on ${HERE}. Try again in a moment.`);
-      if (Object.keys(keys).length)
-        contents.keys = keys;
     }
   }
   if (takenBack())
@@ -31822,9 +31727,8 @@ async function finish(id) {
     for (const session of record.sessions)
       forgetQueue(session);
     forgetWorkQueues(record.sessions);
-    const keysLeft = record.kind === "bot" && !await answerBotKeys("DELETE", `kuvo/bots/${record.thing}/keys`, null, null).then((answer) => answer.status === 200, () => false);
     const trash = await toTrash(place);
-    noteLeft2({ id, thing: record.thing, kind: record.kind, to: record.to, at: Date.now(), sessions: [...record.sessions], ...record.lane ? { lane: true } : {}, ...trash ? { trash } : {}, ...record.leftOf?.length ? { left: record.leftOf } : {}, ...keysLeft ? { keys: true } : {} });
+    noteLeft2({ id, thing: record.thing, kind: record.kind, to: record.to, at: Date.now(), sessions: [...record.sessions], ...record.lane ? { lane: true } : {}, ...trash ? { trash } : {}, ...record.leftOf?.length ? { left: record.leftOf } : {} });
   }
   noteMovedAway(record.sessions, record.to);
   forgetMove(id);
@@ -32142,13 +32046,8 @@ async function bringIn(record, signal) {
     if (isAutopilot(info))
       await tellAutopilot(engine, info.id, true, signal).catch((error) => console.error(`kuvo-link: ${record.name} couldn't be told it's on Autopilot here: ${error}`));
   }
-  for (const [integration, keys] of Object.entries(contents.keys ?? {})) {
-    const given = await answerBotKeys("PUT", `kuvo/bots/${record.thing}/keys/${encodeURIComponent(integration)}`, { keys }, null);
-    if (given.status !== 200) {
-      console.error(`kuvo-link: a moved bot's own key for ${integration} couldn't be kept here (${given.status}).`);
-      throw new NotTaken(`Its own key for ${integration} couldn’t be kept there.`);
-    }
-  }
+  if (record.kind === "bot" && place)
+    dropOwnServers(place);
   fs111.rmSync(path116.join(bundleOf(record.id), "opened"), { recursive: true, force: true });
   return sessions;
 }
@@ -32255,11 +32154,6 @@ function keepLeft(now) {
     }
   }
   for (const entry of entries) {
-    if (entry.keys && asking && !moveOf(entry.thing))
-      inTurn2(entry.id, () => forgetBotKeys(entry.thing).then((gone) => {
-        if (gone && !moveOf(entry.thing))
-          keysGone(entry.id);
-      }));
     if (entry.ranAt === undefined || now - entry.ranAt < KEEP_LEFT || moveOf(entry.thing))
       continue;
     inTurn2(entry.id, () => clearLeft(entry)).catch((error) => console.error(`kuvo-link: what a move of ${entry.thing} left couldn't be removed yet: ${String(error?.message ?? error)}`));
@@ -32268,8 +32162,6 @@ function keepLeft(now) {
 async function clearLeft(entry) {
   if (moveOf(entry.thing) || !readLeft().some((each) => each.id === entry.id))
     return;
-  if (entry.keys && !await forgetBotKeys(entry.thing))
-    throw new Error("its own keys couldn't be taken away yet");
   if (entry.left?.length) {
     const bridge = bridgeTarget();
     if (!bridge)
@@ -32322,8 +32214,6 @@ async function clearCopy(record) {
     forgetWorkQueues(record.sessions);
     const place = folderOf3(record.kind, record.thing);
     if (place && record.placed) {
-      if (record.kind === "bot")
-        await answerBotKeys("DELETE", `kuvo/bots/${record.thing}/keys`, null, null).catch(() => {});
       await toTrash(place);
     }
   }
@@ -35943,7 +35833,7 @@ function noteTold(folder, changes) {
 function toldNow(kit, here, described = here.described) {
   const personality = botPersonalities(kit).find((each) => each.id === described.personality)?.instruction;
   const job = jobOf(here);
-  return botInstructions(kit, described.name, here.folder, personality, described.project, { line: job.line, section: job.details });
+  return botInstructions(kit, described.name, here.folder, personality, described.project, { line: job.line, section: job.details }) + keysGoneNote(here.folder);
 }
 async function tellBot(target, here, session, text, signal) {
   const told = await call(target, "PUT", `/api/experimental/session/${encodeURIComponent(session)}/instructions/entries/kuvo.bot`, { value: text }, signal).then(() => true, () => false);
@@ -35974,6 +35864,7 @@ async function freshenOne(target, sessionID) {
   if (!kit)
     return;
   const told = toldOf2(here.folder);
+  forgetConnectedKeys(here.folder);
   const text = toldNow(kit, here);
   const there = await toldThere(target, sessionID);
   const stale = there === undefined ? told.session !== sessionID || told.instructions !== toldDigest(text) : there !== text;
@@ -45453,7 +45344,7 @@ function takeInAppBrowserData(appFolder, folder = BROWSER_FOLDER) {
       if (!name.endsWith(".png") || !own.has(host) || !isIconName(host) || fs140.existsSync(path148.join(folder, "icons", host)))
         continue;
       try {
-        if (keepIcon2(folder, host, fs140.readFileSync(path148.join(from, name))))
+        if (keepIcon(folder, host, fs140.readFileSync(path148.join(from, name))))
           icons++;
       } catch {}
     }
@@ -45486,7 +45377,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "bcbbb1f62b81";
+var BRIDGE_VERSION = "1b2b5eedf620";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -47616,7 +47507,7 @@ function finish2(journal, now = Date.now()) {
     way: journal.way,
     movedBack: journal.way === "back",
     movedAt: now,
-    keptUntil: now + KEPT_FOR2,
+    keptUntil: now + KEPT_FOR,
     kept: [...(record.kept ?? []).filter((each) => each !== journal.kept), journal.kept],
     merged,
     owed: ["keychain", "agent"],
@@ -53475,12 +53366,12 @@ function agentDetail(agent) {
   const what = agent.kind === "bot" ? agent.about || "Bot" : agent.project === "Chats" ? "Chat" : agent.project ?? "Session";
   return what + (agent.machine ? ` · on ${agent.machine}` : "");
 }
-var listed3 = new Map;
+var listed4 = new Map;
 var LISTED_FOR = 5000;
 function filesFor(roots, dated, signal) {
   const key = (withDates) => JSON.stringify([roots, withDates]);
   const fresh = (withDates) => {
-    const kept = listed3.get(key(withDates));
+    const kept = listed4.get(key(withDates));
     return kept && Date.now() - kept.at < LISTED_FOR ? { key: key(withDates), kept } : null;
   };
   const found = fresh(dated) ?? (dated ? null : fresh(true));
@@ -53490,8 +53381,8 @@ function filesFor(roots, dated, signal) {
       listing.waiting -= 1;
       if (!listing.done && listing.waiting === 0) {
         listing.stop.abort();
-        if (listed3.get(at) === listing)
-          listed3.delete(at);
+        if (listed4.get(at) === listing)
+          listed4.delete(at);
       }
     }, { once: true });
     return listing.files;
@@ -53501,16 +53392,16 @@ function filesFor(roots, dated, signal) {
   const stop = new AbortController;
   const listing = { at: Date.now(), files: mentionableFiles(roots, dated, stop.signal), waiting: 0, stop, done: false };
   const at = key(dated);
-  listed3.set(at, listing);
+  listed4.set(at, listing);
   listing.files.then(() => {
     listing.done = true;
   }, () => {
     listing.done = true;
-    if (listed3.get(at) === listing)
-      listed3.delete(at);
+    if (listed4.get(at) === listing)
+      listed4.delete(at);
   });
-  if (listed3.size > 20)
-    listed3.delete(listed3.keys().next().value);
+  if (listed4.size > 20)
+    listed4.delete(listed4.keys().next().value);
   return join(at, listing);
 }
 async function* mentionsRoute(context, match) {
@@ -57766,46 +57657,6 @@ async function* proofRoute({ request, json }) {
   const signed = asked ? `kuvo-vault-request\x00${given.machine}\x00${at}\x00${nonce}\x00${asked.method}\x00${asked.path}\x00${asked.hash}` : `kuvo-vault-key\x00${given.machine}\x00${at}\x00${nonce}`;
   return yield* json(200, { mac, at, nonce, proof: signWith(identity.sign, Buffer.from(signed)) });
 }
-async function* keptKeysRoute({ request, json }) {
-  const method = request.method.toUpperCase();
-  if (method !== "GET" && method !== "DELETE")
-    return yield* json(405, {});
-  if (!request.fromApp)
-    return yield* json(403, { message: ONLY_APP });
-  if (!OWN_HOME_MAC)
-    return yield* json(409, { message: ONLY_OWN_HOME });
-  const bot = new URLSearchParams(request.path.split("?")[1] ?? "").get("bot") ?? "";
-  if (!/^bot_[A-Za-z0-9]{1,60}$/.test(bot))
-    return yield* json(400, { message: "Say which bot (?bot=…)." });
-  if (botHere(bot))
-    return yield* json(409, { message: "That bot is this box's own: its keys are at kuvo/bots/<id>/keys." });
-  const suffix = botVariable("", bot);
-  try {
-    const names = await keyNames({ suffix });
-    if (method === "GET") {
-      const keys = {};
-      for (const name of names) {
-        const value = await readKey(name);
-        if (value != null)
-          keys[name] = value;
-      }
-      return yield* json(200, { keys });
-    }
-    const given = parsed(request.body);
-    const asked = isObject(given) && Array.isArray(given.names) ? given.names : null;
-    if (!asked || !asked.every((name) => typeof name === "string" && names.includes(name)))
-      return yield* json(400, { message: "Say which of its keys (names), as GET lists them." });
-    await keyWork(async () => {
-      for (const name of asked)
-        await deleteKey(name);
-    });
-    return yield* json(200, {});
-  } catch (error) {
-    if (error instanceof KeysUnavailable)
-      return yield* json(503, { message: error.message });
-    throw error;
-  }
-}
 
 // box/src/link/serve-kept.ts
 import fs176 from "node:fs";
@@ -57867,7 +57718,6 @@ var ROUTES = [
   { when: (route) => route === "kuvo/box/app/open", answer: appOpenRoute },
   { when: (route) => route === "kuvo/box/serve", answer: serveRoute },
   { when: (route) => route === "kuvo/box/proof", answer: proofRoute },
-  { when: (route) => route === "kuvo/box/kept-keys", answer: keptKeysRoute },
   { when: (route) => !IS_MAC && route === "kuvo/browser", answer: browserRoute },
   { when: (route) => route === "kuvo/browser/view", answer: browserViewRoute },
   { when: (route) => route.match(BROWSER_DATA_ROUTE), answer: browserDataRoute },
@@ -57940,8 +57790,7 @@ var ROUTES = [
   { when: (route) => route.match(WORK_ASKS_ROUTE), answer: workAsksRoute },
   { when: (route) => route.match(GOALS_ROUTE), answer: goalsRoute },
   { when: (route) => route === APP_ICON_ROUTE, answer: appIconRoute },
-  { when: (route) => route === "kuvo/bots/keys/refresh", answer: botKeysRefreshRoute },
-  { when: (route) => /^kuvo\/bots\/[^/]+\/keys(\/[^/]+)?$/.test(route), answer: botKeysRoute },
+  { when: (route) => route === "kuvo/bots/keys/refresh" || /^kuvo\/bots\/[^/]+\/keys(\/[^/]+)?$/.test(route), answer: ({ json }) => json(404, { message: "Bots use this computer's integrations now." }) },
   { when: (route) => route.match(CARRY_ROUTE), answer: carryRoute },
   { when: (route, request) => ["PATCH", "DELETE"].includes(request.method.toUpperCase()) && route.match(/^kuvo\/bots\/([^/]+)$/), answer: botRoute },
   { when: (route) => GROUP_ROUTE.test(route), answer: groupsRoute },
@@ -58711,7 +58560,6 @@ function boxPlaces() {
     box: BOX,
     vault: VAULT_FOLDER,
     keyFiles: APP_KEY_FILES ?? BOX_KEYS,
-    botKeyFiles: APP_KEY_FILES ?? BOT_KEYS,
     updates: UPDATES,
     search: SEARCH,
     apps: APPS,
@@ -58774,10 +58622,22 @@ function machineWelcomed(host) {
   } catch {}
   updateIsWell();
 }
+var runningEngine = () => {
+  try {
+    return readEngineFile();
+  } catch {
+    return null;
+  }
+};
 function updateIsWell() {
   try {
-    if (confirmUpdate())
+    if (confirmUpdate()) {
       upgradeIntegrations().catch(() => {});
+      if (KEYS_ON_HOST)
+        keepBotsOwnKeysGone(runningEngine);
+      else
+        dropBotsOwnKeys(runningEngine).catch(() => {});
+    }
   } catch {}
 }
 async function run6() {
@@ -58801,7 +58661,7 @@ async function run6() {
   } catch {}
   forgetOldKit();
   await upgradeIntegrations().catch(() => {});
-  await refreshBotsKeys().catch(() => {});
+  await dropBotsOwnKeys(runningEngine).catch(() => {});
   updateLink((link) => {
     if (!link)
       return null;
@@ -59119,9 +58979,6 @@ async function box(command) {
         await reconnectEverywhere(engine, id);
       return;
     }
-    case "bot-keys-refresh":
-      await refreshBotsKeys();
-      return say({ status: 200 });
     case "personalities": {
       let given = null;
       try {
@@ -59134,7 +58991,7 @@ async function box(command) {
       return say({ status: 200, ...met });
     }
     default:
-      console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | bot-keys-refresh | personalities | update-status | update-now");
+      console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | update-status | update-now");
       process.exit(2);
   }
 }
@@ -59231,6 +59088,12 @@ async function serve() {
   try {
     upgradeBeforeEngine();
   } catch {}
+  if (KEYS_ON_HOST) {
+    try {
+      dropBotsOwnServers(runningEngine);
+    } catch {}
+  } else
+    await dropBotsOwnKeys(runningEngine).catch(() => {});
   if (IS_MAC)
     macLink.hold = macNoticeHold();
   const server = serveBox(password, engineHandler(readEngineFile, { name: os23.hostname() }, readBridgeFile, () => {}, macLink.hold));
@@ -59266,10 +59129,10 @@ async function serve() {
     watchSandboxAsks(macTell, (id) => macLink.hold?.resolve(id));
   }
   upgradeIntegrations().catch(() => {});
-  refreshBotsKeys().catch(() => {});
+  if (KEYS_ON_HOST)
+    keepBotsOwnKeysGone(runningEngine);
   keepKeyFiles();
   keepAwakeWhileWorking(() => agentsWorking());
-  forgetLeftKeys().catch(() => {});
   finishDeletes(readEngineFile, bridgeTarget).catch(() => {});
   keepBridgeAnswering();
   keepZone();
@@ -59504,6 +59367,8 @@ if (main) {
     }
   } else if (mode === "engine-config") {
     await upgradeIntegrations().catch(() => {});
+    if (!IS_MAC)
+      await dropBotsOwnKeys().catch(() => {});
     if (knowsEngineSettings()) {
       try {
         applyCompatibility();
@@ -59533,6 +59398,7 @@ if (main) {
       if (!needed(readLink())) {
         confirmUpdate();
         await upgradeIntegrations().catch(() => {});
+        await dropBotsOwnKeys(runningEngine).catch(() => {});
       }
     }
     console.log(JSON.stringify(outcome ?? { result: "current", message: "No offered release is due." }));
@@ -59637,7 +59503,6 @@ export {
   alwaysTitle,
   announce,
   answerAsk,
-  answerBotKeys,
   answerIntegrations,
   answerPersonalities,
   answerProjects,
@@ -59662,7 +59527,6 @@ export {
   botInstructions,
   botPersonalities,
   botTemplates,
-  botVariable,
   boxPlaces,
   boxProjects,
   boxVersion,
@@ -59702,6 +59566,7 @@ export {
   docMails,
   docsChanged,
   docsWork,
+  dropBotsOwnKeys,
   encodeMessage,
   endedProviders,
   engineConfigContent,
@@ -59718,7 +59583,6 @@ export {
   forgetAsksOn,
   forgetEverythingSent,
   forgetHeldSends,
-  forgetLeftKeys,
   forgetModelLists,
   forgetModelNames,
   forgetMovesInMemory,
@@ -59916,7 +59780,6 @@ export {
   receiveMail,
   reclaimWaiting,
   reconnectEverywhere,
-  refreshBotsKeys,
   refreshModels,
   refreshOwn,
   refreshedRules,

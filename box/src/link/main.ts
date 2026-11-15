@@ -28,7 +28,6 @@ import { joinPath, loginPath, saveLoginPath, savedLoginPath } from "../shared/pl
 import { watchAsks } from "./areas/asks";
 import { watchWorkAsks } from "./work/asks";
 import { watchGoals } from "./work/goals";
-import { refreshBotsKeys } from "./areas/bot-keys";
 import { setBoxKey } from "./areas/box-keys";
 import { addMacDefaults, changeSettings, ownsSettings, readSettings } from "./areas/config";
 import { engineConnect } from "./areas/engine";
@@ -38,7 +37,8 @@ import "./work-queue/github";
 import "./glance/github";
 import { keepSkillTrashClear } from "./areas/skills";
 import { sendWakes } from "./areas/wakes";
-import { finishDeletes, forgetLeftKeys } from "./bots/edit";
+import { finishDeletes } from "./bots/edit";
+import { dropBotsOwnKeys, dropBotsOwnServers, keepBotsOwnKeysGone } from "./bots/own-keys";
 import { keepJobs } from "./bots/jobs";
 import { forgetOldKit, readKit } from "./bots/kit";
 import { keepZone, zoneFollowers } from "./zone/setting";
@@ -61,7 +61,7 @@ import { writePrivate } from "./files";
 import { browserStatus, installBrowser, startBrowserInstall } from "./browser/install";
 import { foldHistory } from "./browser/history";
 import { takeInAppBrowserData, thisMacsAppFolder } from "./browser/from-app";
-import { APP_FOLDER, BRIDGE_FILE, IS_MAC, K, MAC_APP_VERSION, NEEDED_FILE, OWN_HOME_MAC, OWN_RUNTIME, PID_FILE, REAL_BOX, RUN, scriptIs, socketKey, takeVaultSecrets, VERSION_FILE } from "./home";
+import { APP_FOLDER, BRIDGE_FILE, IS_MAC, K, KEYS_ON_HOST, MAC_APP_VERSION, NEEDED_FILE, OWN_HOME_MAC, OWN_RUNTIME, PID_FILE, REAL_BOX, RUN, scriptIs, socketKey, takeVaultSecrets, VERSION_FILE } from "./home";
 import { rehomeCommand } from "./rehome/command";
 import { clearKept, SERVED_FILE } from "./rehome/move";
 import { isBridge, keepKeeper, needed, noLongerNeeded, runningBridge, startBridge } from "./keeper";
@@ -183,7 +183,7 @@ export { agentsAllowed, allowed, canonicalPath, signInReturn, socketAllowed } fr
 export { KEEP_FOR, SEEN_FILE, forgetPhones, phoneSeenLately } from "./compat/leave-running";
 export { engineConnect, engineControl, toolRun } from "./areas/engine";
 export { botPersonalities, changePersonalities, mergePersonalities, personalitiesDocument, readPersonalities } from "./personalities/library";
-export { botVariable, keyFilesWait, syncKeyFiles } from "./keys";
+export { keyFilesWait, syncKeyFiles } from "./keys";
 export { UPDATE_KEYS, agentsWorking, boxVersion, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, noteOlderMacs, offerDue, offerUpdate, offeredVersion, startUpdate, takeOffer, update, updateNight, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
 export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";
@@ -193,11 +193,11 @@ export { applyZone, readZoneSetting, setZone, takeZone, zoneHere, zoneMail } fro
 export { freshenBot, freshenBots, refreshedRules, settleBot } from "./bots/tell";
 export { makeBot } from "./bots/make";
 export { carryToAgents } from "./areas/carry";
-export { changeBot, deleteBot, finishDeletes, forgetLeftKeys } from "./bots/edit";
+export { changeBot, deleteBot, finishDeletes } from "./bots/edit";
+export { dropBotsOwnKeys } from "./bots/own-keys";
 export { ASK_HOLD, LONGEST_LEASE, NEWS_HOLD, NoticeHold, RESTORED_WAIT, SHOWN_WITHIN, attentionGiven, holdFor } from "./notices/hold";
 export { alwaysTitle, describeForm, describePermission, groupNotice, noticeFor, projectNameOf, settleHeld } from "./notices/news";
 export { STEER_AFTER, steering, watchBox, watchEvents } from "./engine/watch";
-export { answerBotKeys, refreshBotsKeys } from "./areas/bot-keys";
 export { forgetOldMacs, leaveMac, macsOf, mailFor, movedOf, noteOnline, openMail, peersOf, takeLegacyPeers } from "./peers/known";
 export { noteDocsChanged } from "./documents/changed";
 export { authorizePhone, confirmPhone, foldPhones, newPairing, pairPhone, removeAsMac, removePhones } from "./phones";
@@ -308,9 +308,19 @@ function machineWelcomed(host: LinkHost): void {
   updateIsWell();
 }
 
+/** This box's engine while it runs, for what's put right in a conversation open there. */
+const runningEngine = (): EngineRecord | null => { try { return readEngineFile(); } catch { return null; } };
+
 // An update on trial is here to stay, if it's well: what waited for that goes on.
 function updateIsWell(): void {
-  try { if (confirmUpdate()) upgradeIntegrations().catch(() => {}); } catch {}
+  try {
+    if (confirmUpdate()) {
+      upgradeIntegrations().catch(() => {});
+      // (Where this Mac's app keeps its keys, tried again while they can't be reached.)
+      if (KEYS_ON_HOST) keepBotsOwnKeysGone(runningEngine);
+      else dropBotsOwnKeys(runningEngine).catch(() => {});
+    }
+  } catch {}
 }
 
 async function run(): Promise<void> {
@@ -336,10 +346,10 @@ async function run(): Promise<void> {
   // Its bots' jobs kept in their folders, taken once from where they were before.
   try { keepJobs(); } catch {}
   forgetOldKit();
-  // Its integrations and servers as its catalog has them now, and its bots' folders' settings as its
-  // catalog and keys are (after an update, say).
+  // Its integrations and servers as its catalog has them now, and what's left of its bots' own keys
+  // gone (bots/own-keys.ts).
   await upgradeIntegrations().catch(() => {});
-  await refreshBotsKeys().catch(() => {});
+  await dropBotsOwnKeys(runningEngine).catch(() => {});
   // A link from an earlier bridge: its signing key made, and kept as this one keeps it.
   updateLink(link => {
     if (!link) return null;
@@ -552,7 +562,7 @@ async function run(): Promise<void> {
 // `kuvo-link.js box <command>`: a Mac's way to a machine's own settings, over SSH, the same way a
 // phone's goes (one answer, JSON, on stdout). `adopt` (a seed on stdin), `read`, `change`
 // ({changes} on stdin), `key <name>` (its value on stdin; none removes it), `route` (a request,
-// {method, path, body?}, answered as a phone's is: {status, body}), `bot-keys-refresh`.
+// {method, path, body?}, answered as a phone's is: {status, body}).
 async function box(command: string): Promise<void> {
   const input = async (): Promise<string> => {
     const chunks: Buffer[] = [];
@@ -666,10 +676,6 @@ async function box(command: string): Promise<void> {
       if (id) await reconnectEverywhere(engine, id);
       return;
     }
-    case "bot-keys-refresh":
-      // Its bots' folders' settings as their keys and this machine's integrations are now.
-      await refreshBotsKeys();
-      return say({ status: 200 });
     case "personalities": {
       // A Mac's copy met with this one's: both end up as one, and the bridge tells your other
       // computers if this one changed.
@@ -681,7 +687,7 @@ async function box(command: string): Promise<void> {
       return say({ status: 200, ...met });
     }
     default:
-      console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | bot-keys-refresh | personalities | update-status | update-now");
+      console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | update-status | update-now");
       process.exit(2);
   }
 }
@@ -779,6 +785,10 @@ async function serve(): Promise<void> {
   // that. (Any key to take away comes after, below: its app may not answer yet, and an engine
   // running takes settings as they change.)
   try { upgradeBeforeEngine(); } catch {}
+  // What's left of its bots' own keys gone (bots/own-keys.ts), before it says where it is too: all
+  // of it where its keys are its own files; where its app keeps them, its bots' folders' settings
+  // now, and the keys once its app answers (below).
+  if (KEYS_ON_HOST) { try { dropBotsOwnServers(runningEngine); } catch {} } else await dropBotsOwnKeys(runningEngine).catch(() => {});
   // This Mac's notices for your phones, held while you're at a computer, as a machine's are.
   if (IS_MAC) macLink.hold = macNoticeHold();
   const server = serveBox(password, engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile, () => {}, macLink.hold));
@@ -816,18 +826,15 @@ async function serve(): Promise<void> {
     watchVaultAsks(macTell, id => macLink.hold?.resolve(id));
     watchSandboxAsks(macTell, id => macLink.hold?.resolve(id));
   }
-  // Any integration's key to take away for its maker's server (the rest is done, above), and its bots'
-  // folders' settings as its catalog and keys are (after an update, say), as a machine's bridge does
-  // as it starts; where its keys can't be reached yet, they stay as they were.
+  // Any integration's key to take away for its maker's server (the rest is done, above), and its
+  // bots' own keys where its app keeps them: where they can't be reached yet, it's tried again.
   upgradeIntegrations().catch(() => {});
-  refreshBotsKeys().catch(() => {});
+  if (KEYS_ON_HOST) keepBotsOwnKeysGone(runningEngine);
   // A Mac's box in a home of its own: the files its engine reads its keys from, kept as its host
   // keeps them (its app did that in its folder), and its Mac kept awake while agents work, as its
   // setting says (its app's keeper did, by the app's).
   keepKeyFiles();
   keepAwakeWhileWorking(() => agentsWorking());
-  // Keys of bots deleted while they couldn't be reached.
-  forgetLeftKeys().catch(() => {});
   // And their conversations and places in group chats, where those weren't answering.
   finishDeletes(readEngineFile, bridgeTarget).catch(() => {});
   keepBridgeAnswering();
@@ -1118,6 +1125,9 @@ if (main) {
     // its settings as its catalogs have them, before the engine reads them. (This Mac's app runs it
     // too, for what it prints, not as its box: `serve` did this, and there's no settings file here.)
     await upgradeIntegrations().catch(() => {});
+    // And what's left of its bots' own keys gone, before its engine reads their folders' settings
+    // (bots/own-keys.ts): a machine without a bridge does it here.
+    if (!IS_MAC) await dropBotsOwnKeys().catch(() => {});
     // What it learned before it kept it there (an older box's), or a copy taken away meanwhile.
     if (knowsEngineSettings()) {
       try { applyCompatibility(); } catch {}
@@ -1162,6 +1172,7 @@ if (main) {
       if (!needed(readLink())) {
         confirmUpdate();
         await upgradeIntegrations().catch(() => {});
+        await dropBotsOwnKeys(runningEngine).catch(() => {});
       }
     }
     console.log(JSON.stringify(outcome ?? { result: "current", message: "No offered release is due." }));

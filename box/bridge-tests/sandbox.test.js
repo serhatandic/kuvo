@@ -20,7 +20,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { script, sshAgentsOf } from "./bot-keys-scenarios.js";
+import { script, sshAgentsOf } from "./box-stand-ins.js";
 import { NO_BUN, testBun } from "./bun-for-tests.js";
 import { removeAtEnd } from "./at-end.js";
 import { appears } from "./vault-waits.js";

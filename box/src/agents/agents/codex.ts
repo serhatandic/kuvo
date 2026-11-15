@@ -1129,7 +1129,7 @@ class CodexThread implements Thread {
     await this.agent.useSkills(this.session.id, skills, rpc)
     const turnedOffHere = (await engineSkills(directory)).filter((skill) => within(skill.folder, own) && off(skill.name)).map((skill) => ({ path: join(skill.folder, "SKILL.md"), enabled: false }))
     const skillsKey = JSON.stringify([skills, turnedOffHere])
-    // The computer's MCP servers (yours, the integrations', a bot's with its own keys), through the
+    // The computer's MCP servers (yours and the integrations'), through the
     // relay, which keeps their keys.
     const computer = await computerServers(directory)
     // (Those set right since the relay stood in for them first, so their addresses are new.)

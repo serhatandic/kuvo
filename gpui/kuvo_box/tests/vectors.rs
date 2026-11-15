@@ -206,7 +206,6 @@ fn a_held_box_is_asked_only_what_keeps_work_going() {
         "kuvo/box/update",
         "kuvo/box/app",
         "kuvo/box/proof",
-        "kuvo/box/kept-keys?bot=bot_1",
         "kuvo/agent-tools",
         "api/session/ses_1/message?limit=5",
         "kuvo/agents/api/event",

@@ -1541,7 +1541,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (A bot on another computer, held for it: a bot none of them lists is refused with words.)
     "bots.held": ["PATCH", "kuvo/bots/bot_none"],
     "bots.job": ["GET", "kuvo/bots"],
-    "bots.keys": ["GET", "kuvo/bots/bot_none/keys"],
     "bots.make": ["GET", "kuvo/bots/templates"],
     "bots.now": ["GET", "kuvo/bots"],
     // (This Mac's app, registered with a Mac's box in a home of its own: a machine says it has none.)
@@ -2108,8 +2107,8 @@ test("a machine that owns its settings has them read and changed from a phone, a
     assert.deepEqual(added.json.mcp.servers.context7, { codemode: false, url: "https://mcp.context7.com/mcp" });
     assert.equal((await answer(handle, "POST", "kuvo/mcp/catalog/chrome-devtools")).status, 404);
 
-    // Its integrations' keys: listed, read, set and removed, in its own keys' folder; a bot's own
-    // and anything that isn't a key's name, never.
+    // Its integrations' keys: listed, read, set and removed, in its own keys' folder; one named as
+    // a bot's own once was, and anything that isn't a key's name, never.
     assert.deepEqual((await answer(handle, "GET", "kuvo/keys")).json, { keys: [] });
     assert.equal((await answer(handle, "PUT", "kuvo/keys/KUVO_KEY_GITHUB_TOKEN", JSON.stringify({ value: "ghp_1" }))).status, 200);
     assert.equal(fs.readFileSync(path.join(folder, "keys", "KUVO_KEY_GITHUB_TOKEN"), "utf8"), "ghp_1");

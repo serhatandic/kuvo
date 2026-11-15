@@ -1,13 +1,12 @@
 // Settings › Integrations on a machine, from a phone or a Mac with the Mac closed: from the catalog
-// the Mac leaves there, its keys in files only you can read (`box/keys`, a bot's own in
-// `box/bot-keys`), all on the machine itself. The scenarios are in integrations-scenarios.js.
+// the Mac leaves there, its keys in files only you can read (`box/keys`), all on the machine itself. The scenarios are in integrations-scenarios.js.
 import "./test-safety.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { boxRoute } from "./bot-keys-scenarios.js";
+import { boxRoute } from "./box-stand-ins.js";
 import { integrationScenarios, standInEngine } from "./integrations-scenarios.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
@@ -22,6 +21,7 @@ const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-
 removeAtEnd(home);
 removeAtEnd(user);
 
+// (One named as a bot's own once was: where an earlier box kept those.)
 const keyFile = name => path.join(home, "box", name.includes("__") ? "bot-keys" : "keys", name);
 
 integrationScenarios({ link, home, mac: false, store: {
