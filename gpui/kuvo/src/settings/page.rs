@@ -128,7 +128,7 @@ impl SettingsView {
             .child(div().id("settings-sections").flex_1().min_h_0().overflow_y_scroll().px(space::S2).pb(space::S4).children(rows))
             .child(div().flex_none().border_t_1().border_color(c.border).px(space::S2).py(space::S2).child(div().debug_selector(|| "settings-foot".into()).child(foot)))
             // A sign-in or a confirm open: the sidebar waits under the same dimming as the page.
-            .when(self.sign_in.is_some() || self.confirm.is_some(), |d| d.child(div().id("settings-sidebar-dim").debug_selector(|| "settings-sidebar-dim".into()).absolute().inset_0().bg(dim(cx)).occlude()))
+            .when(self.sign_in.is_some() || self.confirm.is_some() || self.folder_picker.is_some(), |d| d.child(div().id("settings-sidebar-dim").debug_selector(|| "settings-sidebar-dim".into()).absolute().inset_0().bg(dim(cx)).occlude()))
             .into_any_element()
     }
 
@@ -252,6 +252,21 @@ impl SettingsView {
             }),
             Leading::Initial(name) => Some(div().debug_selector(move || letter).child(initial(&name, cx)).into_any_element()),
         };
+        if matches!(&control, Control::Field { save: Act::Filter, .. }) {
+            let selector = key.clone();
+            let control = self.control(&key, control, cx);
+            return div()
+                .id(SharedString::from(key))
+                .debug_selector(move || selector)
+                .w_full()
+                .bg(c.card)
+                .when(first, |d| d.rounded_t(radius::POPOVER))
+                .when(last, |d| d.rounded_b(radius::POPOVER))
+                .shadow(if first && last { cx.theme().card_shadow() } else { Vec::new() })
+                .px(space::S5)
+                .child(div().py(space::S3).when(!last, |d| d.border_b_1().border_color(c.border)).child(control))
+                .into_any_element();
+        }
         let control = self.control(&key, control, cx);
         let selector = key.clone();
         let why_selector = format!("{key}-why");
@@ -335,17 +350,57 @@ impl SettingsView {
                 }
             }
             Control::Buttons(buttons) => div().flex().gap(space::S2).children(self.buttons(key, buttons, cx)).into_any_element(),
-            Control::Field { more, lines, .. } => {
+            Control::Field { more, lines, unit, save, .. } => {
                 let field = self.field(key).cloned();
                 let selector = format!("{key}-field");
-                div()
+                let search = matches!(save, Act::Filter);
+                let stacked = lines.is_some();
+                let mut buttons = more;
+                let menu = if buttons.len() > 2 {
+                    let choices = buttons.split_off(1).into_iter().map(|push| (push.label, None, push.act, false)).collect();
+                    Some(self.control(&format!("{key}-picks"), Control::Menu { shown: None, choices }, cx))
+                } else {
+                    None
+                };
+                let input = div()
+                    .debug_selector(move || selector)
+                    .when(search, |d| d.w_full())
+                    .when(!search, |d| d.w(px(if stacked { 320. } else if unit.is_some() { 140. } else { 200. })))
+                    .min_h(px(lines.map_or(32., |(min, _)| min as f32 * 22. + 12.)))
+                    .px(space::S3)
                     .flex()
-                    .flex_col()
-                    .items_start()
+                    .when(stacked, |d| d.py(space::S2).items_start())
+                    .when(!stacked, |d| d.items_center())
                     .gap(space::S2)
-                    .child(div().debug_selector(move || selector).w(px(if lines.is_some() { 320. } else { 200. })).min_h(px(if let Some((min, _)) = lines { min as f32 * 22. + 12. } else { 32. })).px(space::S3).flex().items_center().rounded(radius::NAV).border_1().border_color(c.border_strong).bg(c.card).children(field.map(|field| div().flex_1().min_w_0().child(field))))
-                    .child(div().flex().flex_wrap().gap(space::S2).children(self.buttons(key, more, cx)))
-                    .into_any_element()
+                    .rounded(radius::NAV)
+                    .border_1()
+                    .border_color(c.border_strong)
+                    .bg(c.card)
+                    .children(search.then(|| Icon::new(IconName::Search).size(IconSize::Nav).color(c.text_faint)))
+                    .children(field.map(|field| div().flex_1().min_w_0().child(field)))
+                    .children(unit.map(|unit| div().flex_none().text_ui(TypeSize::Small).text_color(c.text_muted).child(unit)));
+                if stacked {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .gap(space::S2)
+                        .child(input)
+                        .when(!buttons.is_empty() || menu.is_some(), |d| {
+                            d.child(div().flex().flex_wrap().items_center().gap(space::S2).children(self.buttons(key, buttons, cx)).children(menu))
+                        })
+                        .into_any_element()
+                } else {
+                    div()
+                        .flex()
+                        .items_center()
+                        .when(search, |d| d.w_full())
+                        .gap(space::S2)
+                        .child(input)
+                        .children(self.buttons(key, buttons, cx))
+                        .children(menu)
+                        .into_any_element()
+                }
             }
             Control::Opens(act) => Button::icon_only(SharedString::from(format!("{key}-open")), IconName::ChevronRight, "Open").ghost().size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.act(act.clone(), cx))).into_any_element(),
             Control::Menu { shown, choices } => {
@@ -454,7 +509,7 @@ impl Render for SettingsView {
         if self.side() == Side::Computer && self.computer_key().is_none() && self.home.gate().is_held() {
             return div().id("settings-page").debug_selector(|| "settings-held".into()).size_full().bg(c.sidebar);
         }
-        if std::mem::take(&mut self.focus_confirm) && self.confirm.is_some() {
+        if std::mem::take(&mut self.focus_confirm) && (self.confirm.is_some() || self.folder_picker.is_some()) {
             window.focus(&self.confirm_focus, cx);
         }
         if self.dark != cx.theme().appearance.is_dark() {
@@ -512,6 +567,122 @@ impl Render for SettingsView {
             );
             sheet(card, cx)
         });
+        let folder_picker = self.folder_picker.clone().map(|picker| {
+            let up = picker.folder.as_ref().and_then(|folder| folder.parent.clone().filter(|parent| *parent != folder.path)).or_else(|| picker.back.clone());
+            let mut up_button = Button::icon_only("settings-folder-parent", IconName::ArrowUp, "Parent folder")
+                .ghost()
+                .size(ButtonSize::Small)
+                .disabled(up.is_none());
+            if let Some(parent) = up {
+                up_button = up_button.on_click(cx.listener(move |this, _, _, cx| this.browse_folder(parent.clone(), cx)));
+            }
+            let body: AnyElement = if let Some(problem) = picker.problem {
+                div().text_ui(TypeSize::Small).text_color(c.danger).child(problem).into_any_element()
+            } else if let Some(folder) = &picker.folder {
+                if folder.folders.is_empty() {
+                    div().px(space::S1).py(space::S2).text_ui(TypeSize::Small).text_color(c.text_muted).child("No folders in here.").into_any_element()
+                } else {
+                    let count = folder.folders.len();
+                    let rows: Vec<_> = folder
+                        .folders
+                        .iter()
+                        .enumerate()
+                        .map(|(ix, named)| {
+                            let path = format!("{}/{}", folder.path.trim_end_matches('/'), named.name);
+                            let last = ix + 1 == count;
+                            let selector = format!("settings-folder-{ix}");
+                            div()
+                                .id(("settings-folder", ix))
+                                .debug_selector(move || selector)
+                                .flex()
+                                .items_center()
+                                .gap(space::S3)
+                                .px(space::S4)
+                                .py(space::S2)
+                                .when(!last, |d| d.border_b_1().border_color(c.border))
+                                .hover(|s| s.bg(c.hover))
+                                .cursor_pointer()
+                                .child(Icon::new(if named.repository { IconName::Branch } else { IconName::Folder }).size(IconSize::Nav).color(c.icon))
+                                .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text).child(named.name.clone()))
+                                .child(Icon::new(IconName::ChevronRight).size(IconSize::Nav).color(c.text_faint))
+                                .on_click(cx.listener(move |this, _, _, cx| this.browse_folder(path.clone(), cx)))
+                                .into_any_element()
+                        })
+                        .collect();
+                    div()
+                        .rounded(radius::NAV)
+                        .border_1()
+                        .border_color(c.border)
+                        .bg(c.card)
+                        .overflow_hidden()
+                        .child(div().id("settings-folder-list").max_h(px(280.)).overflow_y_scroll().flex().flex_col().children(rows))
+                        .into_any_element()
+                }
+            } else {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space::S2)
+                    .py(space::S2)
+                    .text_ui(TypeSize::Small)
+                    .text_color(c.text_muted)
+                    .child(spinner("settings-folder-reading", IconSize::Nav, c.text_muted))
+                    .child("Reading this folder\u{2026}")
+                    .into_any_element()
+            };
+            let ready = picker.folder.is_some();
+            let at = picker.at;
+            let path = picker.path.clone();
+            let card = div()
+                .id("settings-folder-picker")
+                .debug_selector(|| "settings-folder-picker".into())
+                .track_focus(&self.confirm_focus)
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                    if event.keystroke.key == "escape" {
+                        this.folder_picker = None;
+                        cx.notify();
+                    }
+                }))
+                .w(px(480.))
+                .p(space::S6)
+                .flex()
+                .flex_col()
+                .gap(space::S3)
+                .rounded(radius::CARD)
+                .bg(c.elevated)
+                .border_1()
+                .border_color(c.border)
+                .shadow(cx.theme().elevated_shadow())
+                .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(picker.words.choose))
+                .when(!picker.words.message.is_empty(), |d| d.child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(picker.words.message)))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(space::S2)
+                        .child(up_button)
+                        .child(Icon::new(IconName::Folder).size(IconSize::Nav).color(c.icon))
+                        .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).medium().text_color(c.text).child(picker.path)),
+                )
+                .child(body)
+                .child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap(space::S2)
+                        .pt(space::S2)
+                        .child(Button::new("settings-folder-cancel", "Cancel").on_click(cx.listener(|this, _, _, cx| {
+                            this.folder_picker = None;
+                            cx.notify();
+                        })))
+                        .child(Button::new("settings-folder-choose", picker.words.prompt).primary().disabled(!ready).on_click(cx.listener(move |this, _, _, cx| {
+                            this.folder_picker = None;
+                            this.act(Act::Change { at: at.clone(), value: serde_json::json!(path), asked: false }, cx);
+                        }))),
+                )
+                .into_any_element();
+            sheet(card, cx)
+        });
         let sign_in = self.sign_in.clone().map(|sheet_view| sheet(sheet_view.into_any_element(), cx));
         div()
             .id("settings-page")
@@ -522,6 +693,7 @@ impl Render for SettingsView {
             .child(div().size_full().flex().flex_col().children(problem).child(div().flex_1().min_h_0().child(page)))
             .children(confirm)
             .children(sign_in)
+            .children(folder_picker)
     }
 }
 

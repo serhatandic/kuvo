@@ -516,13 +516,18 @@ fn yours_later(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspac
     settings(w, "yours/shortcuts", window, cx);
 }
 fn row_storage(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "storage", window, cx); }
-fn row_worktrees(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "worktrees", window, cx); }
+fn row_worktrees(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = settings(w, "worktrees", window, cx);
+    if let Some(row) = w.client().settings_page("worktrees").ok().and_then(|page| page.row("folder").cloned()) && let Some(words) = row.folder.clone() {
+        view.update(cx, |view,cx| view.act(kuvo::settings::Act::Folder { at: kuvo::settings::At::of("worktrees", &row), words },cx));
+    }
+}
 fn row_git(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "git", window, cx); }
 fn row_archived(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "archived", window, cx); }
 fn row_storage_confirm(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let view = settings(w, "storage", window, cx);
     if let Some(row) = w.client().settings_page("storage").ok().and_then(|page| page.row("budget").cloned()) {
-        view.update(cx, |view, cx| view.act(kuvo::settings::Act::Change { at: kuvo::settings::At::of("storage", &row), value: serde_json::json!(1_000_000_000), asked: false }, cx));
+        view.update(cx, |view, cx| view.act(kuvo::settings::Act::Change { at: kuvo::settings::At::of("storage", &row), value: serde_json::json!(536_870_912), asked: false }, cx));
     }
 }
 fn general(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -946,18 +951,18 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug.starts_with("settings-row-") {
                 use serde_json::json;
-                let confirm = json!({"value":1500000000,"confirm":{"title":"Keep less of older versions?","body":"Older versions take 1.5 GB now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.","button":"Keep up to"}});
+                let confirm = json!({"value":805306368,"confirm":{"title":"Keep less of older versions?","body":"Older versions take 768 MiB now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.","button":"Keep up to"}});
                 let pages = [
-                    ("storage","Storage",json!([
-                        {"id":"copies","title":"Copies of what agents made","kind":"status","value":2500000000_u64,"unit":"bytes"},
-                        {"id":"budget","title":"Older versions keep up to","line":"Past it, the oldest go first.","kind":"number","value":5000000000_u64,"unit":"bytes","can":true,"confirmBelow":confirm,"suggestions":[{"value":1000000000,"title":"1 GB"},{"value":2000000000,"title":"2 GB"},{"value":5000000000_u64,"title":"5 GB"}]}
+                    ("storage","Storage","System","drive",json!([
+                        {"id":"copies","title":"Copies of what agents made","kind":"status","value":1342177280,"unit":{"name":"GiB","factor":1073741824,"decimals":1,"rounding":"nearest"}},
+                        {"id":"budget","title":"Older versions keep up to","line":"Past it, the oldest go first.","kind":"number","value":1073741824,"unit":{"name":"GiB","factor":1073741824,"decimals":2,"rounding":"nearest"},"can":true,"confirmBelow":confirm,"suggestions":[{"value":268435456,"title":"0.25 GiB"},{"value":536870912,"title":"0.5 GiB"},{"value":1073741824,"title":"1 GiB"},{"value":2147483648_u64,"title":"2 GiB"},{"value":5368709120_u64,"title":"5 GiB"},{"value":10737418240_u64,"title":"10 GiB"}]}
                     ])),
-                    ("worktrees","Worktrees",json!([{"id":"folder","title":"Folder","kind":"folder","value":"","placeholder":"Kuvo Code’s Folder","can":true,"folder":{"choose":"Choose a Folder…","clear":"Kuvo Code’s Folder","prompt":"Choose","message":"Choose where new worktrees go. Each one is a folder in it."}}])),
-                    ("git","Git",json!([{"id":"instructions","title":"Commit instructions","kind":"text","value":"Write a short title.\nExplain why the change matters.","lines":{"min":3,"max":8},"can":true}])),
-                    ("archived","Archived Sessions",json!([{"id":"sessions","title":"Archived Sessions","kind":"list","search":{"placeholder":"Search archived sessions…","empty":"No sessions match {query}."},"items":[{"id":"session","title":"Fix settings","line":"Kuvo Code","kind":"actions","actions":[{"id":"restore","title":"Restore"}]}]}]))
+                    ("worktrees","Worktrees","System","folder",json!([{"id":"folder","title":"Folder","kind":"folder","value":"","placeholder":"Kuvo Code’s Folder","can":true,"folder":{"choose":"Choose a Folder…","clear":"Kuvo Code’s Folder","prompt":"Choose","message":"Choose where new worktrees go. Each one is a folder in it."}}])),
+                    ("git","Git","System","branch",json!([{"id":"instructions","title":"Commit instructions","kind":"text","value":"Write a short title.\nExplain why the change matters.","lines":{"min":3,"max":8},"can":true}])),
+                    ("archived","Archived Sessions","System","archive",json!([{"id":"sessions","title":"Kuvo Code","kind":"list","search":{"placeholder":"Search archived sessions","empty":"No archived session matches “{query}”."},"items":[{"id":"session","title":"Fix settings","line":"Kuvo Code","kind":"actions","actions":[{"id":"restore","title":"Restore"}]}]}]))
                 ];
-                for (id,title,rows) in pages {
-                    stand_in.add_settings_section(json!({"id":id,"title":title,"group":"Projects","icon":"folder"}),json!({"id":id,"title":title,"groups":[{"id":"settings","title": if id == "archived" { "Kuvo Code" } else { "" },"rows":rows}]}));
+                for (id,title,group,icon,rows) in pages {
+                    stand_in.add_settings_section(json!({"id":id,"title":title,"group":group,"icon":icon}),json!({"id":id,"title":title,"groups":[{"id":"settings","title": if id == "archived" { "Kuvo Code" } else { "" },"rows":rows}]}));
                 }
             }
             if screen.slug == "settings-a-kinds" {
