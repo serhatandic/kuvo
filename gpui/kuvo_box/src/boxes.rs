@@ -149,6 +149,17 @@ struct Linked {
     link: Option<(LinkClient, Host)>,
     /// The address and relay it was made for: made anew when the list says another.
     at: (Option<String>, Option<String>),
+    /// Which client this is, counted: what holds an older one sees it's been replaced.
+    made: u64,
+}
+
+impl Linked {
+    /// This client no longer talks to that box: its session ends, told.
+    fn close(&self) {
+        if let Some((link, host)) = &self.link {
+            link.close(host);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -170,6 +181,9 @@ struct State {
     checked: HashMap<String, Instant>,
     stopped: bool,
     started: bool,
+    made: u64,
+    /// Whether the nearest box was asked again since a computer last turned this device away.
+    asked_again: bool,
     /// Which box the list is followed on (`""`: the nearest), and the follow.
     source: Option<String>,
     follow: Option<Arc<Follow<Followed<Computers>>>>,
@@ -302,6 +316,16 @@ impl Boxes {
         state.linked.get(key).map(|linked| linked.client.clone())
     }
 
+    /// Which client the computer with this key has now (none: this app doesn't reach it): another
+    /// number, and what was made with the one before holds a client that's been let go.
+    pub fn client_made(&self, key: &str) -> Option<u64> {
+        let state = self.state();
+        if state.nearest_key.as_deref() == Some(key) {
+            return Some(0);
+        }
+        state.linked.get(key).map(|linked| linked.made)
+    }
+
     // MARK: The list
 
     /// The kept list, as the app opens: your computers before any box has answered.
@@ -360,7 +384,15 @@ impl Boxes {
                 _ => None,
             };
             let made = match (host, &at.1) {
-                (Some(host), Some(relay)) => self.identity(&mut state).map(|identity| {
+                (Some(host), Some(relay)) => {
+                    let identity = self.identity(&mut state);
+                    // Its key can't be read or kept: said, rather than nothing shown.
+                    if identity.is_none() && !matches!(state.pairing, Some(Pairing::Refused(_))) {
+                        state.pairing = Some(Pairing::Refused(NO_KEYCHAIN.into()));
+                    }
+                    identity
+                }
+                .map(|identity| {
                     let inner = &self.inner;
                     let link = state.relays.entry(relay.clone()).or_insert_with(|| LinkClient::new(relay.clone(), identity, inner.name.clone(), inner.app.clone(), inner.dial.clone(), inner.timing.link)).clone();
                     let transport: Arc<dyn Transport> = Arc::new(LinkBox::new(link.clone(), host.clone(), computer.name.clone()));
@@ -372,17 +404,29 @@ impl Boxes {
             match made {
                 Some((transport, link)) => {
                     let client = BoxClient::new(Via { inner: transport, boxes: Arc::downgrade(&self.inner) });
-                    state.linked.insert(key.clone(), Linked { client, link, at });
+                    state.made += 1;
+                    let made = state.made;
+                    if let Some(old) = state.linked.insert(key.clone(), Linked { client, link, at, made }) {
+                        old.close();
+                    }
                     state.reach.insert(key.clone(), Reach::Connecting);
                     state.failing.remove(&key);
                     state.checked.remove(&key);
                 }
                 None => {
-                    state.linked.remove(&key);
+                    if let Some(old) = state.linked.remove(&key) {
+                        old.close();
+                    }
                 }
             }
         }
-        state.linked.retain(|key, _| listed.contains(key));
+        // One the list drops, or files apart now, is never talked to again: its session ends.
+        let dropped: Vec<String> = state.linked.keys().filter(|key| !listed.contains(*key)).cloned().collect();
+        for key in dropped {
+            if let Some(old) = state.linked.remove(&key) {
+                old.close();
+            }
+        }
         state.reach.retain(|key, _| listed.contains(key));
         state.list = computers.to_vec();
         Self::rebuild(&mut state);
@@ -500,8 +544,12 @@ impl Boxes {
             state.identity = None;
             state.kept.paired = None;
             state.pairing = None;
+            state.asked_again = false;
+            // The old key's sessions and relay connections go with it.
             state.linked.clear();
-            state.relays.clear();
+            for (_, relay) in state.relays.drain() {
+                relay.let_go();
+            }
             state.reach.clear();
             self.write_kept(&state);
             (state.list.clone(), self.inner.nearest.is_some())
@@ -565,12 +613,21 @@ impl Boxes {
             } else {
                 let waited = state.asked.is_none_or(|asked| asked.elapsed() >= timing.pair_again);
                 let turned_away = state.reach.values().any(|reach| *reach == Reach::NotPaired);
+                if !turned_away {
+                    state.asked_again = false;
+                }
+                // Asked once for each time it's turned away, never over and over: a box that says
+                // "paired" while a computer refuses (its switch is off) is asked nothing more.
+                let again = turned_away && waited && !state.asked_again;
+                if again && matches!(state.pairing, Some(Pairing::Paired)) {
+                    state.asked_again = true;
+                }
                 match &state.pairing {
                     None => true,
                     Some(Pairing::Waiting(_)) => waited,
                     // A computer that doesn't take a device its setup paired: asked again, which
                     // says whether it was removed.
-                    Some(Pairing::Paired) => turned_away && waited,
+                    Some(Pairing::Paired) => again,
                     Some(Pairing::Refused(_)) => waited,
                     Some(Pairing::Removed(_)) | Some(Pairing::NotAsked) => false,
                 }
@@ -698,6 +755,9 @@ impl Boxes {
         let follow = {
             let mut state = self.state();
             state.stopped = true;
+            for relay in state.relays.values() {
+                relay.let_go();
+            }
             state.follow.take()
         };
         if let Some(follow) = follow {

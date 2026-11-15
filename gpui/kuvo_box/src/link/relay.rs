@@ -231,6 +231,10 @@ mod unix {
                 _ => return Err(bad("not a relay's address")),
             };
             let authority = rest.split(['/', '?']).next().unwrap_or(rest);
+            // Never the relay secret in the clear, but to this computer itself (a test's relay).
+            if !secure && !(authority.starts_with("127.0.0.1:") || authority.starts_with("localhost:")) {
+                return Err(bad("a relay is reached over wss://"));
+            }
             let with_port = if authority.rsplit_once(':').is_some_and(|(_, port)| port.parse::<u16>().is_ok()) { authority.to_owned() } else { format!("{authority}:{}", if secure { 443 } else { 80 }) };
             let mut last = bad("no address for the relay");
             let mut stream = None;

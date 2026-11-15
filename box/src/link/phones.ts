@@ -95,7 +95,11 @@ export function pairPhone(link: LinkState, phone: Phone): void {
 }
 
 /** What `kuvo/devices/pair` came to here: the pairing the device has now, or that it was removed. */
-export type DevicePaired = { pairing: string } | { removed: true };
+export type DevicePaired = { pairing: string } | { removed: true } | { full: true };
+
+/** The most desktop apps paired this way at once: a box that vouches can't fill the list (a
+ * phones document's readers take its first 64). */
+export const MOST_DESKTOPS = 16;
 
 // Kuvo Code's desktop app paired here with no token (`kuvo/devices/pair`: asked by the app beside
 // this box, or vouched for by a member's box, PROTOCOL.md "Paired phones"), in place, under
@@ -107,6 +111,7 @@ export function pairDevice(link: LinkState, device: { key: string; name: string 
   const known = (link.phones ?? []).find(phone => phone.key === device.key);
   if (known) return { pairing: known.pairing ?? "" };
   if ((link.removed ?? []).some(each => each.key === device.key)) return { removed: true };
+  if ((link.phones ?? []).filter(phone => phone.kind === "desktop").length >= MOST_DESKTOPS) return { full: true };
   const pairing = newPairing();
   pairPhone(link, { key: device.key, name: device.name, added: Math.floor(now / 1000), from: "pair", pairing, kind: "desktop" });
   return { pairing };

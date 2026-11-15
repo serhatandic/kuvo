@@ -9666,6 +9666,12 @@ On both, for a paired phone:
     route, here or by the main computer: `409 {"message": "This app was removed from your
     devices.", "reason": "removed"}`. The app then makes a new key only on your word. (A pairing by
     token still lets a removed key back in, as above.)
+    **Known gap, said in every client:** removing the device keeps that key out, not that
+    computer. Whoever sits at a computer of your setup can have its app make a new key, which its
+    box vouches for again (the pairing keeps no record of who vouched). To keep a computer out,
+    remove the computer (`DELETE kuvo/computers/<key>`): its box then vouches for nothing.
+  - **At most 16 desktop apps** are paired this way at once: one more is `409 {"message"}` until
+    one is removed, so a box that vouches never fills the list.
   - Every box of the setup lets the device in from the main computer's phones document, as it
     does a phone (above). A machine shared with another setup lets in what each of its Macs lists,
     a desktop device too, but tells no client where it is (`kuvo/computers`, `apart`), and no box

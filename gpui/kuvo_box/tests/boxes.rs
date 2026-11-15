@@ -10,7 +10,7 @@ use std::time::Duration;
 use kuvo_box::boxes::{Boxes, Options, Pairing, Reach, Timing};
 use kuvo_box::link::client::words;
 use kuvo_box::link::stand_in::{Host, RELAY_URL, Relay};
-use kuvo_box::link::{Keeper, MemoryKeeper, keys};
+use kuvo_box::link::{Keeper, Kept, MemoryKeeper, keys};
 use kuvo_box::transport::{Closer, Request, Response, Stream, Transport};
 use kuvo_box::{Error, gate};
 use serde_json::{Value, json};
@@ -355,7 +355,7 @@ fn the_kept_list_opens_the_app_with_your_computers_and_holds_nothing_secret() {
     let path = setup.kept.path().join("desktop/boxes.json");
     let kept = std::fs::read_to_string(&path).expect("kept");
     // Public facts only: never this device's key or secret, nor a computer that isn't yours.
-    let secret = setup.keeper.read().expect("its key is in the keeper");
+    let Kept::Found(secret) = setup.keeper.read() else { panic!("its key is in the keeper") };
     for part in secret.split('.') {
         assert!(!kept.contains(part));
     }
@@ -396,4 +396,99 @@ fn started_it_follows_the_list_and_reaches_a_computer_added_later() {
     }
     assert_eq!(whoami(&boxes, "Mac mini").unwrap()["name"], "Mac mini");
     boxes.stop();
+}
+
+/// A keeper whose key can't be read now (a locked keychain), though one is kept.
+struct Locked(MemoryKeeper, std::sync::atomic::AtomicBool);
+
+impl Keeper for Locked {
+    fn read(&self) -> Kept {
+        if self.1.load(std::sync::atomic::Ordering::SeqCst) { Kept::Unreadable } else { self.0.read() }
+    }
+
+    fn write(&self, kept: &str) -> bool {
+        self.0.write(kept)
+    }
+
+    fn forget(&self) {
+        self.0.forget()
+    }
+}
+
+#[test]
+fn a_key_that_cant_be_read_now_is_never_replaced_by_a_new_one() {
+    let setup = Setup::new();
+    let keeper = Arc::new(Locked(MemoryKeeper::default(), std::sync::atomic::AtomicBool::new(false)));
+    let boxes_with = |keeper: Arc<Locked>| Boxes::new(Options { nearest: Some(setup.macbook.clone() as Arc<dyn Transport>), keeper, dial: setup.relay.dial(), name: "MacBook".into(), app: "0.8.0".into(), kept: None, timing: Setup::timing() });
+    let first = boxes_with(keeper.clone());
+    first.read_list().unwrap();
+    first.settle();
+    let kept = keeper.0.read();
+    assert_eq!(setup.pair_asks().len(), 1);
+
+    // The next start, the keychain is locked: nothing's paired, and the key kept isn't written over.
+    keeper.1.store(true, std::sync::atomic::Ordering::SeqCst);
+    let locked = boxes_with(keeper.clone());
+    locked.read_list().unwrap();
+    locked.settle();
+    assert_eq!(setup.pair_asks().len(), 1, "no new key was paired");
+    assert_eq!(keeper.0.read(), kept, "the key kept is as it was");
+    assert!(matches!(locked.pairing(), Pairing::Refused(_)));
+    assert!(locked.client(&setup.mini.1.key_text()).is_none());
+}
+
+#[test]
+fn a_computer_filed_apart_or_dropped_later_is_let_go_and_its_session_ended() {
+    let setup = Setup::new();
+    let boxes = setup.boxes();
+    boxes.read_list().unwrap();
+    boxes.settle();
+    let devbox = named(&boxes, "devbox");
+    let held = boxes.client(&devbox).unwrap();
+    held.get::<Value>("whoami").unwrap();
+    let before = boxes.client_made(&devbox);
+    assert!(before.is_some());
+
+    // The list files it apart now (it's shared with another setup).
+    let mut list = setup.list();
+    list["computers"][2]["apart"] = json!(true);
+    *setup.macbook.computers.lock().unwrap() = list;
+    boxes.read_list().unwrap();
+    assert!(boxes.client(&devbox).is_none() && boxes.client_made(&devbox).is_none());
+    assert_eq!(reach(&boxes)[2], ("devbox".to_owned(), Reach::Apart));
+    // Its session was ended there, not left open: devbox sees a new hello only if asked again.
+    let hellos = setup.devbox.1.hellos().len();
+    let _ = held.get::<Value>("whoami");
+    assert_eq!(setup.devbox.1.hellos().len(), hellos + 1, "the session it had was closed");
+}
+
+#[test]
+fn a_computer_that_keeps_turning_the_app_away_doesnt_make_it_ask_to_pair_over_and_over() {
+    let setup = Setup::new();
+    let boxes = setup.boxes();
+    boxes.read_list().unwrap();
+    boxes.settle();
+    // devbox stops taking the device (its switch is off), while the nearest box still says "paired".
+    setup.devbox.1.remove(&keys::decode_exact(setup.pair_asks()[0]["key"].as_str().unwrap()).unwrap());
+    setup.pairs(|_| (200, json!({ "paired": true, "pairing": "pair_1" })));
+    let _ = whoami(&boxes, "devbox");
+    for _ in 0..5 {
+        boxes.settle();
+    }
+    assert_eq!(reach(&boxes)[2], ("devbox".to_owned(), Reach::NotPaired));
+    assert_eq!(setup.pair_asks().len(), 2, "asked once more, to learn whether it was removed, then no more");
+}
+
+#[test]
+fn paired_again_every_computer_gets_a_new_client() {
+    let setup = Setup::new();
+    let boxes = setup.boxes();
+    boxes.read_list().unwrap();
+    boxes.settle();
+    let mini = named(&boxes, "Mac mini");
+    let before = boxes.client_made(&mini);
+    assert_eq!(boxes.pair_again(), Pairing::Paired);
+    assert_ne!(boxes.client_made(&mini), before, "what held the old key's client sees it's been replaced");
+    boxes.settle();
+    assert_eq!(whoami(&boxes, "Mac mini").unwrap()["name"], "Mac mini");
 }

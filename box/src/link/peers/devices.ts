@@ -71,6 +71,7 @@ export function pairHere(device: AskingDevice): Acted {
   const paired = made as ReturnType<typeof pairDevice> | null;
   if (!paired) return answer(409, { message: IS_MAC ? `${ownName()} isn't ready for your devices yet. Try again in a moment.` : "This machine has no relay to pair through." });
   if ("removed" in paired) return answer(409, REMOVED);
+  if ("full" in paired) return answer(409, { message: "You have as many desktop apps among your devices as Kuvo Code keeps. Remove one you no longer use, then try again." });
   if (fresh) {
     noteDocsChanged();
     // (A Mac's link comes up for its first device, as for a phone's pairing.)

@@ -208,7 +208,7 @@ fn computer_switcher(workspace: &Workspace, cx: &Context<Workspace>) -> AnyEleme
                                 Pairing::Waiting(why) | Pairing::Refused(why) => menu = menu.separator().entry(MenuEntry::new("Your other computers aren’t reached yet").detail(why).disabled(true)),
                                 Pairing::Removed(why) => {
                                     let this = this.clone();
-                                    menu = menu.separator().entry(MenuEntry::new("Connect This App Again").detail(why).on_select(move |_, cx| {
+                                    menu = menu.separator().entry(MenuEntry::new("This app was removed from your devices").detail(why).disabled(true)).entry(MenuEntry::new("Connect This App Again").on_select(move |_, cx| {
                                         this.update(cx, |_, cx| cx.emit(Switch::PairAgain)).ok();
                                     }));
                                 }

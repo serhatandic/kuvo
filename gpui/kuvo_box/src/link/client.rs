@@ -229,6 +229,12 @@ impl LinkClient {
         }
     }
 
+    /// Ends the session with `host`, telling it: this client no longer talks to that box.
+    pub fn close(&self, host: &Host) {
+        let mut state = self.state();
+        self.end(&mut state, &host.address, Error::Unreachable(words::CLOSED.into()), true);
+    }
+
     /// Lets the relay connection go, with every session on it (the computer woke, the network
     /// changed: it may have died without closing). The next thing asked connects again.
     pub fn let_go(&self) {

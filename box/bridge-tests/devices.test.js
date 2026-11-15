@@ -105,6 +105,11 @@ test("the app beside a box that pairs phones is paired at once as a desktop devi
 
   const paired = await ask(APP, "POST", "kuvo/devices/pair", given);
   assert.equal(paired.status, 200);
+  // Only so many desktop apps at once: the list is never filled this way.
+  for (let more = 1; more < 16; more++) assert.equal((await ask(APP, "POST", "kuvo/devices/pair", { ...given, key: device() })).status, 200);
+  const full = await ask(APP, "POST", "kuvo/devices/pair", { ...given, key: device() });
+  assert.deepEqual([full.status, /as many desktop apps/.test(full.body.message)], [409, true]);
+  link.updateLink(kept => ({ ...kept, phones: kept.phones.filter(phone => phone.key === key) }));
   assert.deepEqual(paired.body, { paired: true, pairing: paired.body.pairing });
   assert.match(paired.body.pairing, /^[A-Za-z0-9_-]{16}$/);
   const kept = link.readLink();

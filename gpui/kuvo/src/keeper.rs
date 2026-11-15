@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use kuvo_box::link::Keeper;
+use kuvo_box::link::{Keeper, Kept};
 
 /// The Mac's keychain: one generic password of the app's own.
 #[cfg(target_os = "macos")]
@@ -25,8 +25,14 @@ impl Keychain {
 
 #[cfg(target_os = "macos")]
 impl Keeper for Keychain {
-    fn read(&self) -> Option<String> {
-        security_framework::passwords::get_generic_password(&self.service, ACCOUNT).ok().and_then(|bytes| String::from_utf8(bytes).ok())
+    fn read(&self) -> Kept {
+        /// `errSecItemNotFound`: nothing's kept. Anything else (locked, refused) isn't "nothing".
+        const NOT_FOUND: i32 = -25300;
+        match security_framework::passwords::get_generic_password(&self.service, ACCOUNT) {
+            Ok(bytes) => String::from_utf8(bytes).map_or(Kept::Unreadable, Kept::Found),
+            Err(error) if error.code() == NOT_FOUND => Kept::Nothing,
+            Err(_) => Kept::Unreadable,
+        }
     }
 
     fn write(&self, kept: &str) -> bool {
@@ -50,8 +56,12 @@ impl PrivateFile {
 }
 
 impl Keeper for PrivateFile {
-    fn read(&self) -> Option<String> {
-        std::fs::read_to_string(&self.path).ok()
+    fn read(&self) -> Kept {
+        match std::fs::read_to_string(&self.path) {
+            Ok(text) => Kept::Found(text),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Kept::Nothing,
+            Err(_) => Kept::Unreadable,
+        }
     }
 
     fn write(&self, kept: &str) -> bool {

@@ -30,6 +30,8 @@ pub struct Home {
     live: bool,
     /// Each computer's workspace, by its key ("" for the nearest box's).
     workspaces: HashMap<String, (Entity<Workspace>, Subscription)>,
+    /// Which client each computer's workspace was made with ([`Boxes::client_made`]).
+    made: HashMap<String, u64>,
     shown: String,
     now: Option<f64>,
     _watch: Option<Task<()>>,
@@ -44,7 +46,7 @@ impl Home {
     /// what it's handed (tests and shots).
     pub fn new(boxes: Boxes, first: BoxClient, live: bool, window: &mut Window, cx: &mut Context<Self>) -> Home {
         let shown = if boxes.nearest().is_some() { NEAREST.to_owned() } else { boxes.rows().iter().find(|row| row.usable()).map(|row| row.key().to_owned()).unwrap_or_default() };
-        let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), shown: shown.clone(), now: None, _watch: None };
+        let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, _watch: None };
         home.make(&shown, first, window, cx);
         if live {
             boxes.start();
@@ -109,6 +111,9 @@ impl Home {
         if !self.workspaces.contains_key(&slot) {
             let Some(client) = self.boxes.client(key) else { return false };
             self.make(&slot, client, window, cx);
+            if let Some(made) = self.boxes.client_made(key) {
+                self.made.insert(slot.clone(), made);
+            }
             #[cfg(feature = "stand-in")]
             if !self.live {
                 self.workspaces[&slot].0.update(cx, |workspace, cx| workspace.read_at_once(cx));
@@ -142,6 +147,19 @@ impl Home {
 
     /// Your computers, or how one stands, changed: every workspace's switcher draws them.
     pub fn rows_changed(&mut self, cx: &mut Context<Self>) {
+        // A computer this app no longer reaches (dropped from your list, filed apart), or reaches
+        // with another client now (paired anew, found elsewhere): its workspace held the old one,
+        // and goes. The window falls back to the first it still has.
+        let gone: Vec<String> = self.workspaces.keys().filter(|slot| slot.as_str() != NEAREST && self.boxes.client_made(slot) != self.made.get(*slot).copied()).cloned().collect();
+        for slot in gone {
+            if self.workspaces.len() > 1 {
+                self.workspaces.remove(&slot);
+                self.made.remove(&slot);
+            }
+        }
+        if !self.workspaces.contains_key(&self.shown) {
+            self.shown = if self.workspaces.contains_key(NEAREST) { NEAREST.to_owned() } else { self.workspaces.keys().next().cloned().unwrap_or_default() };
+        }
         let (rows, pairing) = (self.boxes.rows(), self.boxes.pairing());
         let nearest = self.boxes.nearest_key();
         for (slot, (workspace, _)) in &self.workspaces {

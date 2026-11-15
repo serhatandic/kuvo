@@ -17842,12 +17842,15 @@ var newPairing = () => crypto24.randomBytes(12).toString("base64url");
 function pairPhone(link, phone) {
   link.phones = [...(link.phones ?? []).filter((each) => each.key !== phone.key), phone];
 }
+var MOST_DESKTOPS = 16;
 function pairDevice(link, device, now = Date.now()) {
   const known = (link.phones ?? []).find((phone) => phone.key === device.key);
   if (known)
     return { pairing: known.pairing ?? "" };
   if ((link.removed ?? []).some((each) => each.key === device.key))
     return { removed: true };
+  if ((link.phones ?? []).filter((phone) => phone.kind === "desktop").length >= MOST_DESKTOPS)
+    return { full: true };
   const pairing = newPairing();
   pairPhone(link, { key: device.key, name: device.name, added: Math.floor(now / 1000), from: "pair", pairing, kind: "desktop" });
   return { pairing };
@@ -28263,6 +28266,8 @@ function pairHere(device) {
     return answer2(409, { message: IS_MAC ? `${ownName()} isn't ready for your devices yet. Try again in a moment.` : "This machine has no relay to pair through." });
   if ("removed" in paired)
     return answer2(409, REMOVED2);
+  if ("full" in paired)
+    return answer2(409, { message: "You have as many desktop apps among your devices as Kuvo Code keeps. Remove one you no longer use, then try again." });
   if (fresh) {
     noteDocsChanged();
     macLink.wake?.();
@@ -45567,7 +45572,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "80470aac5f56";
+var BRIDGE_VERSION = "9dfceeba18ef";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
