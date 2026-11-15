@@ -109,6 +109,14 @@ impl MenuEntry {
         self.handler = Some(Rc::new(handler));
         self
     }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        self.disabled
+    }
 }
 
 /// A menu. Build it with entries, then open it with a [`PopoverMenu`] or a [`ContextMenuArea`].
@@ -152,6 +160,14 @@ impl Menu {
     pub fn width(mut self, width: Pixels) -> Self {
         self.width = width;
         self
+    }
+
+    /// Replaces the menu's items in place (used when items arrive asynchronously after opening).
+    pub fn set_items(&mut self, items: Vec<MenuItem>, cx: &mut Context<Self>) {
+        self.items = items;
+        self.selected = None;
+        self.selected_by_pointer = false;
+        cx.notify();
     }
 
     /// Highlights the first entry that can be chosen (as when a menu opens from the keyboard).
@@ -497,7 +513,7 @@ impl RenderOnce for PopoverMenu {
                     .top_full()
                     .when(self.align_right, |d| d.right_0())
                     .when(!self.align_right, |d| d.left_0())
-                    .child(deferred(anchored().anchor(anchor).offset(point(px(0.), space::S1)).child(menu)).with_priority(1))
+                    .child(deferred(anchored().anchor(anchor).offset(point(px(0.), space::S1)).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(1))
             }))
     }
 }
@@ -508,6 +524,7 @@ pub struct ContextMenuArea {
     id: ElementId,
     child: AnyElement,
     menu: MenuBuilder,
+    handle: Option<PopoverMenuHandle>,
     fill: bool,
 }
 
@@ -520,7 +537,12 @@ impl ContextMenuArea {
         child: impl IntoElement,
         menu: impl Fn(&mut Window, &mut App) -> Entity<Menu> + 'static,
     ) -> Self {
-        Self { id: id.into(), child: child.into_any_element(), menu: Rc::new(menu), fill: false }
+        Self { id: id.into(), child: child.into_any_element(), menu: Rc::new(menu), handle: None, fill: false }
+    }
+
+    pub fn with_handle(mut self, handle: PopoverMenuHandle) -> Self {
+        self.handle = Some(handle);
+        self
     }
 
     /// Takes all the room it's given (around a list that fills its place).
@@ -533,10 +555,11 @@ impl ContextMenuArea {
 impl RenderOnce for ContextMenuArea {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let state = window.use_keyed_state(self.id.clone(), cx, |_, _| ContextState::default()).read(cx).clone();
+        let handle = self.handle.unwrap_or_else(|| state.1.clone());
         let builder = self.menu.clone();
-        let opener = state.clone();
+        let opener = (state.0.clone(), handle.clone());
         let at = *state.0.borrow();
-        let open = state.1.menu();
+        let open = handle.menu();
         div()
             .id(self.id)
             .when(self.fill, |d| d.size_full())

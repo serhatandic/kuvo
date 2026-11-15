@@ -243,6 +243,10 @@ impl TextField {
         self.placeholder = text.into();
     }
 
+    pub fn placeholder_text(&self) -> &str {
+        &self.placeholder
+    }
+
     pub fn placeholder(mut self, text: impl Into<SharedString>) -> Self {
         self.placeholder = text.into();
         self
