@@ -291,7 +291,9 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     // either, judged free, and being added (never set up again). Only such a one is given a copy
     // of this box's keys and sign-ins, and only such a one is taken off again if this doesn't end
     // with it one of your computers: a Mac with Kuvo Code's app, or any box, is someone's already.
-    const fresh = kind === "add" && judged.verdict === "free" && foundOf(probe.lines).length === 0 && appsOf(probe.lines) === 0;
+    // (Nor one that ever had Kuvo Code: its id or its version there says so, though its box is off
+    // or was uninstalled there, which keeps its sign-ins and keys. Those are never ours to delete.)
+    const fresh = kind === "add" && judged.verdict === "free" && foundOf(probe.lines).length === 0 && appsOf(probe.lines) === 0 && !probe.id && !probe.version;
     // (What it starts with goes with its start, on its standard input: this box's settings and
     // integrations' keys.)
     const given = fresh ? await gatherSeed() : null;
@@ -327,9 +329,10 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       unjoined = false;
       tell.came(computer);
     } catch (error) {
-      if (!unjoined || !own) throw error;
+      if (!unjoined) throw error;
       // (Run though the try was stopped: this is its own tidying up.)
-      const undone = await reach.run(scripts.uninstall(ENGINE_VERSION, own, true), { most: 600_000, anyway: true }).catch(() => null);
+      // (With no key of this box's to let go there, as when its link has none: undone all the same.)
+      const undone = await reach.run(scripts.uninstall(ENGINE_VERSION, own ?? "", true), { most: 600_000, anyway: true }).catch(() => null);
       const still = `Kuvo Code may still be running on ${name}, with the keys and sign-ins copied there. Add ${name} again, then uninstall it from its page.`;
       if (error instanceof Stopped || tell.signal.aborted) {
         if (undone?.status !== 0) throw new Failed(`This was stopped after Kuvo Code had started on ${name}, and it couldn’t be stopped there again. ${still}`, true, `${name} is still running Kuvo Code`);

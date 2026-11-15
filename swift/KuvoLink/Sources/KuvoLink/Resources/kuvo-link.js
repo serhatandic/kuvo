@@ -40440,7 +40440,7 @@ async function setUp2(tell, destination, name, kind) {
     tell.step("starting");
     const own = link ? ownKey(link) : null;
     const notes = JSON.stringify({ mac: own ? launcherID(own) : "", macName: ownName().replace(/[{}"\\]/g, ""), box: mine });
-    const fresh = kind === "add" && judged.verdict === "free" && foundOf(probe.lines).length === 0 && appsOf(probe.lines) === 0;
+    const fresh = kind === "add" && judged.verdict === "free" && foundOf(probe.lines).length === 0 && appsOf(probe.lines) === 0 && !probe.id && !probe.version;
     const given = fresh ? await gatherSeed() : null;
     let unjoined = false;
     try {
@@ -40478,9 +40478,9 @@ async function setUp2(tell, destination, name, kind) {
       unjoined = false;
       tell.came(computer);
     } catch (error) {
-      if (!unjoined || !own)
+      if (!unjoined)
         throw error;
-      const undone = await reach.run(uninstall2(ENGINE_VERSION, own, true), { most: 600000, anyway: true }).catch(() => null);
+      const undone = await reach.run(uninstall2(ENGINE_VERSION, own ?? "", true), { most: 600000, anyway: true }).catch(() => null);
       const still = `Kuvo Code may still be running on ${name}, with the keys and sign-ins copied there. Add ${name} again, then uninstall it from its page.`;
       if (error instanceof Stopped || tell.signal.aborted) {
         if (undone?.status !== 0)
@@ -48210,7 +48210,7 @@ import fs158 from "node:fs";
 import path166 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "5d3d0c2fe234";
+var BRIDGE_VERSION = "37c2380545ce";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync10 } from "node:child_process";

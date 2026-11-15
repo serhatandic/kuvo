@@ -1782,8 +1782,10 @@ machines; a client that wants every computer's facts asks the box that has it as
     written as the box's own record of it (its peers document, `machines.json`, and
     `phone-link.json` for `kuvo/hosts`).
   - **What a new computer starts with** (`seeding`), once, as it's added, and only one that had
-    nothing of Kuvo Code (no box found there and no Kuvo Code app's folder, judged `free`: a Mac
-    with Kuvo Code's app is someone's already, and keeps its own): a copy of the box's engine settings (not its shell or worktrees' folder, nor
+    nothing of Kuvo Code (no box found there, no Kuvo Code app's folder, no `machine-id` and
+    no `box-version`, judged `free`: a Mac with Kuvo Code's app is someone's already, and one
+    whose box is off or was uninstalled there still has its own sign-ins and keys, which are
+    never written over or deleted from here): a copy of the box's engine settings (not its shell or worktrees' folder, nor
     the integrations that use a Mac's own apps) and of its integrations' keys (not a bot's own),
     which go with its start on the script's standard input and are taken by `box adopt` there
     ("Settings per box"); and of its accounts' sign-ins in use that stay the same (a provider's

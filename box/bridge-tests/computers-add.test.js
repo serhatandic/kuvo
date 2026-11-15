@@ -258,7 +258,7 @@ const over = id => until(id, found => !found || found.state === "done" || found.
 const steps = found => found.steps.map(step => `${step.id}:${step.state}`);
 const sshLog = () => (fs.existsSync(path.join(fake, "log")) ? fs.readFileSync(path.join(fake, "log"), "utf8").trim().split("\n") : []);
 // (Two more computers, each a home of its own: a Mac that has Kuvo Code's app, and one with nothing.)
-const homes = { macbook: path.join(base, "macbook"), mini: path.join(base, "mini") };
+const homes = { macbook: path.join(base, "macbook"), mini: path.join(base, "mini"), nas: path.join(base, "nas"), attic: path.join(base, "attic") };
 for (const [name, folder] of Object.entries(homes)) {
   fs.mkdirSync(folder, { recursive: true });
   fs.writeFileSync(path.join(fake, `home-${name}`), folder);
@@ -591,15 +591,48 @@ test("an add that fails, or is stopped, after Kuvo Code started on a computer th
   assert.equal(fs.existsSync(path.join(homes.mini, "engine-credentials.json")), true, "(it had been given its accounts)");
   gone("failed");
 
-  // Stopped while its accounts are being copied: the copy under way ends, then it's taken off again.
+});
+
+test("an add stopped while its accounts are being copied, on a computer that had nothing, is taken off there again", async () => {
+  const kuvo = path.join(homes.nas, ".kuvo-code");
   fs.writeFileSync(path.join(fake, "hold"), 'kuvo-link.js" box seed');
-  const begun = await ask("POST", "kuvo/computers/add", { destination: "mini" });
-  const seeding = await until(begun.body.try.id, found => found?.steps.find(step => step.id === "seeding")?.state === "now");
+  const seeding = await added("nas", found => found?.steps.find(step => step.id === "seeding")?.state === "now");
   assert.ok(pidsThere(kuvo).filter(alive).length > 0, "it runs there by now");
   assert.equal((await ask("DELETE", `kuvo/computers/add/${seeding.id}`)).status, 200);
   fs.rmSync(path.join(fake, "hold"));
   assert.equal(await over(seeding.id), null, "stopped, and gone from the list");
-  gone("stopped");
+  assert.deepEqual(pidsThere(kuvo).filter(alive), [], "nothing of it runs");
+  assert.doesNotMatch(fs.readFileSync(crontabFile, "utf8"), /kuvo-code/, "nothing starts it again");
+  assert.equal(fs.existsSync(path.join(kuvo, "box", "keys")), false, "the keys copied there are deleted");
+  assert.deepEqual(link.macPeersBody(link.readLink()).boxes.filter(each => each.kind === "machine"), []);
+});
+
+test("a computer that had Kuvo Code before (uninstalled there, its sign-ins kept) is never seeded, and a failed add leaves what it keeps", async () => {
+  // As `kuvo-link.js uninstall` leaves one: off, nothing to start it, its id, sign-ins and keys still there.
+  const kuvo = path.join(homes.attic, ".kuvo-code");
+  write(path.join(kuvo, "machine-id"), "0123456789abcdef0123456789abcdef", 0o600);
+  write(path.join(kuvo, "run", "off"), "");
+  write(path.join(kuvo, "box", "opencode.json"), JSON.stringify({ model: "its/own" }), 0o600);
+  write(path.join(kuvo, "box", "keys", "KUVO_KEY_ITS_OWN"), "its-own-key", 0o600);
+  write(path.join(kuvo, "agents", "codex", "auth.json"), "its-own-sign-in", 0o600);
+  write(path.join(homes.attic, "engine-credentials.json"), JSON.stringify([{ id: "c", integrationID: "openai", label: "theirs", active: true, value: { type: "oauth", refresh: "its-own-refresh" } }]), 0o600);
+  fs.writeFileSync(path.join(fake, "fail"), 'kuvo-link.js" setup');
+  let failed;
+  try {
+    failed = await added("attic");
+  } finally {
+    fs.rmSync(path.join(fake, "fail"));
+  }
+  assert.equal(failed.state, "failed");
+  assert.equal(failed.steps.find(step => step.id === "seeding").detail, "It keeps its own");
+  assert.equal(failed.failure.message, "Kuvo Code on attic couldn’t join your computers. it broke", "nothing was deleted there, and it doesn't say so");
+  // What it kept is as it was: none of it written over by this box's, none of it deleted.
+  assert.deepEqual(fs.readdirSync(path.join(kuvo, "box", "keys")), ["KUVO_KEY_ITS_OWN"]);
+  assert.equal(fs.readFileSync(path.join(kuvo, "box", "keys", "KUVO_KEY_ITS_OWN"), "utf8"), "its-own-key");
+  assert.equal(fs.readFileSync(path.join(kuvo, "agents", "codex", "auth.json"), "utf8"), "its-own-sign-in");
+  assert.equal(read(path.join(kuvo, "box", "opencode.json")).model, "its/own");
+  assert.deepEqual(read(path.join(homes.attic, "engine-credentials.json")).map(each => [each.integrationID, each.label]), [["openai", "theirs"]]);
+  assert.equal(fs.existsSync(path.join(kuvo, "run", "seeded.json")), false);
 });
 
 test("a member of a setup, and a request that can't stay, are told where to add from", async () => {
