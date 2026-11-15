@@ -11,7 +11,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { databasesIn, everyCount, KNOWN_SCHEMAS, schemaMark, tableCounts } from "./database";
+import { databasesIn, everyCount, KNOWN_SCHEMAS, schemaMark } from "./database";
 import { startIsolated } from "./engine-check";
 
 /** The engine databases' schemas this box's engine brings up to date itself (`<count> <last
@@ -38,7 +38,7 @@ export async function migrateDatabases({ engine, data, scratch }: { engine: stri
   const other = due.find(each => path.basename(each.database) !== "opencode.db");
   if (other) throw new Error(`The engine's database ${path.basename(other.database)} is of an earlier version, and only opencode.db can be brought up to date.`);
   const [{ database, from }] = due;
-  const before = tableCounts(database), every = everyCount(database);
+  const every = everyCount(database);
   fs.rmSync(scratch, { recursive: true, force: true });
   try {
     const started = await startIsolated({ engine, data, scratch, what: "your sessions (to bring them up to date)" });
@@ -48,10 +48,10 @@ export async function migrateDatabases({ engine, data, scratch }: { engine: stri
   }
   const to = schemaMark(database);
   if (to === null || !KNOWN_SCHEMAS.includes(to)) throw new Error(`The engine didn't bring your sessions up to date (they're at ${to ?? "nothing"}, from ${from}).`);
-  // Nothing it held is gone: each table that's still there holds at least what it did.
-  const after = tableCounts(database);
-  const fewer = Object.entries(before).filter(([table, count]) => table in after && after[table] < count).map(([table, count]) => `${table} (${after[table]} of ${count})`);
-  if (fewer.length) throw new Error(`Bringing your sessions up to date lost some of what they held: ${fewer.join(", ")}.`);
+  // Nothing it held is gone: every table that's still there holds at least what it did (one the
+  // engine's own update lets go of whole is said, below).
   const left = everyCount(database);
+  const fewer = Object.entries(every).filter(([table, count]) => table in left && left[table] < count).map(([table, count]) => `${table} (${left[table]} of ${count})`);
+  if (fewer.length) throw new Error(`Bringing your sessions up to date lost some of what they held: ${fewer.join(", ")}.`);
   return [{ database, from: from!, to, gone: Object.fromEntries(Object.entries(every).filter(([table, count]) => count > 0 && !(table in left))) }];
 }

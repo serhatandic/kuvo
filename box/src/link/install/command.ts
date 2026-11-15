@@ -26,6 +26,7 @@ import { accountHome, homeFolder, K, located, OWN_RUNTIME } from "../home";
 import { computerName } from "../mac/link";
 import { homeOfRoot, rehomeNew, runningIn } from "../rehome/move";
 import { giveLock, progressOf, rehomeFolder, rehomeStatus, takeLock } from "../rehome/state";
+import { Said } from "../rehome/said";
 import { sleep } from "../../shared/wait";
 import { launchTools } from "../uninstall";
 import { judgeInstall, MAKING, type InstallVerdict, type Judgement } from "./verdict";
@@ -77,7 +78,7 @@ const sha256 = (file: string): string => crypto.createHash("sha256").update(fs.r
 /** The release the installer unpacked, checked against its own `box.json`: its version, its
  * engine's, and every file it names there as it says. Throws in words. */
 export function checkedRelease(release: string): { version: string; engine: string; files: Record<string, string> } {
-  const damaged = new Error("This copy of Kuvo Code is damaged. Download it again, then try again.");
+  const damaged = new Said("This copy of Kuvo Code is damaged. Download it again, then try again.");
   let box: unknown;
   try { box = JSON.parse(fs.readFileSync(path.join(release, "box.json"), "utf8")); } catch { throw damaged; }
   if (!isObject(box) || typeof box.version !== "string" || typeof box.engine !== "string" || !/^[0-9A-Za-z][0-9A-Za-z.-]*$/.test(box.engine) || !isObject(box.files)) throw damaged;
@@ -113,13 +114,13 @@ export async function installCommand(args: string[]): Promise<number> {
   const judged = (): Judgement => judgeInstall(home, appFolder, { helperInPlace: () => (mac && launchTools() ? helperRuns() : null) });
   try {
     if (mac && !app) {
-      say({ result: "refused", message: "Kuvo Code's installer needs the app it's run from (--app <bundle>)." });
+      say({ result: "refused", message: "Kuvo couldn't tell which app started it. Open Kuvo Code again." });
       return EXIT.refused;
     }
     // (A copy of the app, a demo's or a test's, never judges or makes the real one's box, nor the
     // real app a copy's: each has its own folder and its own home. Nothing's said of what's there.)
     if (mac && real !== (app === REAL_APP)) {
-      say({ result: "refused", message: real ? "Only Kuvo Code itself installs its box in ~/.kuvo-code: a copy installs it in a home of its own." : "Kuvo Code itself installs its box in ~/.kuvo-code only." });
+      say({ result: "refused", message: real ? "Only Kuvo Code itself sets up ~/.kuvo-code: a copy of it keeps a folder of its own." : "Kuvo Code itself sets up ~/.kuvo-code only." });
       return EXIT.refused;
     }
     if (verbs[0] === "--status") {
@@ -142,7 +143,10 @@ export async function installCommand(args: string[]): Promise<number> {
     say({ ...answer, status: judged().status });
     return EXIT[answer.result];
   } catch (error) {
-    say({ result: "failed", message: error instanceof Error ? error.message : String(error), ...judged() });
+    // (Only what's said for the person at the computer is shown: anything else in one sentence,
+    // with what went wrong on standard error, for support.)
+    if (!(error instanceof Said)) console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    say({ result: "failed", message: error instanceof Said ? error.message : "Kuvo couldn't finish setting up on this computer this time. Try again.", ...judged() });
     return EXIT.failed;
   }
 }
@@ -198,7 +202,8 @@ async function moved({ home, root, bundle, release, engine }: { home: string; ro
   const before = judged();
   if (before.verdict === "waits") return { result: "waits", verdict: "waits", message: NOT_MOVED.waits };
   if (before.verb !== "move") return { result: before.verdict === "ours" ? "nothing" : "refused", verdict: before.verdict, ...(NOT_MOVED[before.verdict] ? { message: NOT_MOVED[before.verdict] } : {}) };
-  checkedRelease(release);
+  // (A move that's done and only owes something needs no release: settling took what was staged away.)
+  if (before.verdict !== "ours") checkedRelease(release);
   const folder = rehomeFolder(home);
   fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
   // (Its answer in a file of this installer's own: two at once never read each other's.)
@@ -257,7 +262,7 @@ async function newMac({ home, appFolder, app, release, engine }: NewMac, judged:
   const asideBefore = new Set(earlier());
   const pinned = checkedRelease(release).engine;
   if (before.verdict === "fresh") {
-    if (!fs.existsSync(path.join(engine, pinned, "opencode"))) throw new Error(NO_ENGINE("this Mac"));
+    if (!fs.existsSync(path.join(engine, pinned, "opencode"))) throw new Said(NO_ENGINE("this Mac"));
     // (Only this release's engine goes into the box: never a download cut short, nor another version's.)
     for (const name of fs.readdirSync(engine)) if (name !== pinned) fs.rmSync(path.join(engine, name), { recursive: true, force: true });
     const outcome = await rehomeNew({ appFolder, home }, { release, engine, waiting: () => console.error("Another move is under way: this one waits for it.") });
@@ -309,7 +314,7 @@ async function newMachine({ home, release, engine }: { home: string; release: st
   if (path.basename(home) !== ".kuvo-code") return { result: "refused", verdict: "fresh", message: "On Linux, Kuvo Code's box is always in ~/.kuvo-code." };
   const { version, engine: engineVersion, files } = checkedRelease(release);
   const staged = path.join(engine, engineVersion, "opencode");
-  if (!fs.existsSync(staged)) throw new Error(NO_ENGINE("this computer"));
+  if (!fs.existsSync(staged)) throw new Said(NO_ENGINE("this computer"));
   if (!(await takeLock(home, { waiting: () => console.error("Another move is under way: this one waits for it.") }))) return { result: "waits", verdict: judged().verdict, message: "Another move is under way." };
   try {
     // (Again, holding it: another may have made it meanwhile.)

@@ -17,7 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import { sleep } from "../../shared/wait";
-import { OWN_RUNTIME, accountHome, located } from "../home";
+import { OWN_RUNTIME, accountHome, located, recordedKind } from "../home";
 import { checkedRelease } from "../install/command";
 import { appBoxThere, machineBoxThere } from "../install/verdict";
 import { launchTools } from "../uninstall";
@@ -55,6 +55,8 @@ export interface RunOutcome extends RehomeOutcome {
 const NO_ENGINE = "Kuvo's engine couldn't be downloaded. Check that this Mac is online, then try again.";
 const DAMAGED = "This copy of Kuvo Code is damaged. Download it again, then try again.";
 const TWO = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.";
+/** A move past the point it goes back from that can't be carried on, or whose record can't be read. */
+export const STUCK = "Kuvo was stopped part way through moving your sessions and couldn't finish by itself, so it's changing nothing more. The earlier Kuvo Code's own folder is as it was. Try again; if this stays, send ~/.kuvo-code/updates/rehome/run.log to Kuvo's support.";
 const NO_RELEASE = "Kuvo's own files weren't unpacked. Open Kuvo Code again to try again.";
 
 /** Why an engine database in the earlier Kuvo Code's folder can't be brought along, or null: its
@@ -71,7 +73,7 @@ function schemaRefusal(appFolder: string, home: string): string | null {
       const copy = path.join(scratch, path.basename(database));
       for (const suffix of ["", "-wal", "-shm"]) if (exists(database + suffix)) fs.copyFileSync(database + suffix, copy + suffix, fs.constants.COPYFILE_FICLONE);
       const mark = schemaMark(copy);
-      if (!takenSchema(mark)) return `Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along (${mark}). Nothing was changed.`;
+      if (!takenSchema(mark)) return `Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along (${mark}). Nothing was changed. Update Kuvo Code if a newer version is out, then try again.`;
     }
     return null;
   } catch (error) {
@@ -93,7 +95,7 @@ function runRefusal({ appFolder, home }: Folders, plan: RunPlan, pinned: string 
   if (real && !plan.keys) return DAMAGED;
   if (!exists(appFolder)) return "There's nothing of an earlier Kuvo Code's on this Mac to move.";
   const old = runningIn(path.join(appFolder, "box", "run"));
-  if (old.length) return `An earlier Kuvo Code is still running in the background on this Mac (${old.join(", ")}). Quit Kuvo Code wherever it's open, then try again.`;
+  if (old.length) return `An earlier Kuvo Code is still running in the background on this Mac (${old.join(", ")}) and didn't stop when asked. Restart this Mac, then try again.`;
   if (runningIn(path.join(home, "run")).length) return "Kuvo is already running from ~/.kuvo-code on this Mac. Restart this Mac, then try again.";
   // One disk, cloned: never copied.
   const target = nearest(home);
@@ -152,7 +154,15 @@ function startHelper(home: string, app: string): { started: boolean; message?: s
   let said: unknown = null;
   try { said = JSON.parse((ran.stdout ?? "").trim().split("\n").pop() ?? ""); } catch {}
   const started = ran.status === 0 && isObject(said) && said.started === true;
-  const message = isObject(said) && typeof said.message === "string" ? said.message : started ? undefined : `Kuvo Helper couldn't be started: ${(ran.stderr ?? "").trim().split("\n").pop() || "it said nothing"}.`;
+  // What it said is the helper's own (it names what it starts, and what launchd answered): kept
+  // for support in the move's log, never shown. Started, there's nothing to say, but where it only
+  // runs until you log out; not started, one sentence that says what to do.
+  const off = isObject(said) && said.disabled === true;
+  if (!started || off) console.error(`helper start: ${isObject(said) && typeof said.message === "string" ? said.message : (ran.stderr ?? "").trim().split("\n").pop() || "it said nothing"}`);
+  const message = off
+    ? started ? "Kuvo Helper is turned off in System Settings › General › Login Items, so Kuvo runs only until you log out. Turn it on there to have it start when you log in."
+      : "Kuvo Helper is turned off in System Settings › General › Login Items, so Kuvo couldn't be started. Turn it on there, then try again."
+    : started ? undefined : "Your sessions are moved, but Kuvo couldn't be started on this Mac. Try again.";
   return { started, ...(message ? { message } : {}) };
 }
 
@@ -230,6 +240,8 @@ export async function rehomeRun(folders: Folders, options: RunOptions): Promise<
     // An earlier try first: one that stopped before it could only go forward goes back, and this
     // one starts afresh; one past that is carried on.
     const earlier = await resumed(home, RUN_REWRITER);
+    // (One that can't be carried on is said in words, never as the move's own record reads.)
+    if (earlier && earlier.result === "stuck") return { ...earlier, message: STUCK };
     if (earlier && earlier.result !== "failed") return earlier.result === "done" ? settle(home, options) : earlier;
     const record = readRecord(home);
     if (record.state === "done" && record.way === "move") return settle(home, options);
@@ -237,6 +249,9 @@ export async function rehomeRun(folders: Folders, options: RunOptions): Promise<
     // the two together isn't built. Said before anything is stopped, and nothing is noted in
     // that box's home: both stay exactly as they are.
     if (machineBoxThere(home)) return { result: "refused", message: TWO, status: rehomeStatus(home) };
+    // Nor is anything moved over this Mac's own Kuvo, made here already (a new Mac's, `--new`):
+    // whoever asks, not only an installer that judged first.
+    if (recordedKind(path.join(home, "box", "kind")) === "mac") return { result: "refused", message: "Kuvo is set up on this Mac already, so nothing was moved over it. An earlier Kuvo Code's sessions are still in its own folder.", status: rehomeStatus(home) };
     const keys = path.join(options.bundle, "Contents", "MacOS", "kuvo-keys");
     const plan: RunPlan = {
       bundle: options.bundle, id: options.id, release: path.resolve(options.release), engine: path.resolve(options.engine),
@@ -263,6 +278,7 @@ export async function rehomeRun(folders: Folders, options: RunOptions): Promise<
       ...planMove(folders, plan.release, { engine: plan.engine, whole: true }), kept: path.join(rehomeFolder(home), "kept", stamp(now)),
       run: plan,
     }, RUN_REWRITER);
+    if (outcome.result === "stuck") return { ...outcome, message: STUCK };
     return outcome.result === "done" ? settle(home, options) : outcome;
   });
 }

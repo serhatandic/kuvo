@@ -79,12 +79,12 @@ same_place() {
 }
 if same_place "$HOME/$ROOT" "$ACCOUNT/.kuvo-code" || same_place "$(placed "$HOME")/$ROOT" "$(placed "$ACCOUNT")/.kuvo-code"; then REAL=1; else REAL=0; fi
 if [ "$SYSTEM" = darwin ]; then
-    [ -n "$APP" ] || refuse "Kuvo Code's installer needs the app it's run from (--app <bundle>)."
+    [ -n "$APP" ] || refuse "Kuvo couldn't tell which app started it. Open Kuvo Code again."
     ID=$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist" 2>/dev/null) || ID=""
     [ -n "$ID" ] || ID=$(tr -d '\n' <"$APP/Contents/Info.plist" 2>/dev/null | sed -n 's|.*<key>CFBundleIdentifier</key>[[:space:]]*<string>\([A-Za-z0-9.-]*\)</string>.*|\1|p')
-    [ -n "$ID" ] || refuse "Kuvo Code's installer needs the app it's run from (--app <bundle>)."
-    if [ "$REAL" = 1 ] && [ "$ID" != run.kuvo.code ]; then refuse "Only Kuvo Code itself installs its box in ~/.kuvo-code: a copy installs it in a home of its own."; fi
-    if [ "$REAL" = 0 ] && [ "$ID" = run.kuvo.code ]; then refuse "Kuvo Code itself installs its box in ~/.kuvo-code only."; fi
+    [ -n "$ID" ] || refuse "Kuvo couldn't tell which app started it. Open Kuvo Code again."
+    if [ "$REAL" = 1 ] && [ "$ID" != run.kuvo.code ]; then refuse "Only Kuvo Code itself sets up ~/.kuvo-code: a copy of it keeps a folder of its own."; fi
+    if [ "$REAL" = 0 ] && [ "$ID" = run.kuvo.code ]; then refuse "Kuvo Code itself sets up ~/.kuvo-code only."; fi
 fi
 # (A test's release may name its engine as a file here: never in the real home.)
 FILE_ENGINE=0

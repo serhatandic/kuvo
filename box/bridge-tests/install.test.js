@@ -361,6 +361,8 @@ test("an earlier Kuvo Code's chats and settings move with `kuvo-install move`: e
   const moved = install(where, "move");
   assert.equal(moved.status, 0, moved.stderr + JSON.stringify(moved.lines));
   assert.deepEqual({ result: moved.said.result, verdict: moved.said.verdict, started: moved.said.started }, { result: "done", verdict: "ours", started: true });
+  assert.equal(moved.said.message, undefined, "started: nothing more to say");
+  assert.equal(/\bbox\b|Kuvo Core/i.test(JSON.stringify(moved.lines.map(line => [line.title, line.message, line.status?.dropped]))), false, "no word of the move's own workings");
   // Its steps, as the box says them: which, in words to show, where it is and of how many.
   const steps = moved.lines.filter(line => line.title);
   assert.deepEqual(steps[0], { step: "plan", title: "Checking this Mac", index: 1, of: 11 });
@@ -396,7 +398,8 @@ test("a move launchd wouldn't start is finished by running it again: until then 
   const moved = install(where, "move");
   assert.equal(moved.status, 0, moved.stderr + JSON.stringify(moved.lines));
   assert.deepEqual({ result: moved.said.result, started: moved.said.started, owed: moved.said.status.owed }, { result: "done", started: false, owed: ["start", "keychain", "passwords"] });
-  assert.match(moved.said.message, /launchd didn't start it now/);
+  // (In words to act on: never the helper's own, nor what launchd answered.)
+  assert.equal(moved.said.message, "Your sessions are moved, but Kuvo couldn't be started on this Mac. Try again.");
   assert.deepEqual({ verdict: install(where, "status").said.verdict, verb: install(where, "status").said.verb }, { verdict: "ours", verb: "move" });
   fs.rmSync(path.join(where.home, "launchd-refuses"));
   const again = install(where, "move");
@@ -433,7 +436,7 @@ test("a copy of the app never judges or installs for the real one, and is refuse
     const where = computer({ app: "run.kuvo.code" });
     const refused = install(where, verb);
     assert.equal(refused.status, 1);
-    assert.deepEqual(refused.said, { result: "refused", message: "Kuvo Code itself installs its box in ~/.kuvo-code only." });
+    assert.deepEqual(refused.said, { result: "refused", message: "Kuvo Code itself sets up ~/.kuvo-code only." });
     assert.equal(exists(where.K), false, "nothing written, not even its folder");
     assert.deepEqual(fs.readdirSync(where.home).sort(), ["Applications", "tools"]);
   }
@@ -442,7 +445,7 @@ test("a copy of the app never judges or installs for the real one, and is refuse
   for (const args of [[], ["--app", path.join(unnamed.home, "No Such.app")]]) {
     const asked = install(unnamed, "status", { args });
     assert.equal(asked.status, 1);
-    assert.deepEqual(asked.said, { result: "refused", message: "Kuvo Code's installer needs the app it's run from (--app <bundle>)." });
+    assert.deepEqual(asked.said, { result: "refused", message: "Kuvo couldn't tell which app started it. Open Kuvo Code again." });
     assert.equal(exists(unnamed.K), false);
   }
 });

@@ -1,7 +1,7 @@
 import "./safety"
 import { afterAll, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawn, spawnSync } from "node:child_process"
@@ -40,6 +40,10 @@ test.if(mac)("a Mac of 0.7.2 moves whole: its sessions brought up to date and in
     `chat (fork #1): ${chat}`, `chat: ${chat}`, `git edit: ${m.repository}`, `in worktree: ${worktree}`, `plain: ${join(m.home, "Projects", "plain")}`,
   ])
   expect(db.session_message.length).toBe(13)
+  // A provider's sign-in, an account and a kept rule come through the engine's update, the rule's folder where it is now.
+  expect(db.credential.map(each => [each.id, each.value])).toEqual([["crd_1", "{\"type\":\"api\",\"key\":\"sk-test\"}"]])
+  expect(db.account.map(each => each.email)).toEqual(["you@example.com"])
+  expect(db.permission.map(each => [each.id, each.resource])).toEqual([["psv_kept1", `${chat}/*`]])
   const chatID = sha("sha1", `directory:${chat}`)
   expect(db.project.map(each => [each.id, each.worktree]).sort()).toEqual([[m.rootCommit, m.repository], [chatID, chat], [sha("sha1", `directory:${join(m.home, "Projects", "plain")}`), join(m.home, "Projects", "plain")]].sort())
   // A file sent names where it is now, written as it was (plainly, or with `%20`).
@@ -198,7 +202,7 @@ test.if(mac)("sessions last used by an engine nobody tried are refused before an
   })
   const before = snapshot(m.S)
   const refused = run(m)
-  expect(refused.said).toMatchObject({ result: "refused", message: "Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along (51 20270101000000_later). Nothing was changed." })
+  expect(refused.said).toMatchObject({ result: "refused", message: "Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along (51 20270101000000_later). Nothing was changed. Update Kuvo Code if a newer version is out, then try again." })
   expect(snapshot(m.S)).toEqual(before)
   expect(existsSync(join(m.K, "updates", "rehome", "plan-database"))).toBe(false)
 }, LIMIT)
@@ -425,4 +429,39 @@ test.if(mac)("a message still waiting on a session in the earlier engine's own t
   const moved = run(m)
   expect(moved.status, moved.errors + JSON.stringify(moved.said)).toBe(0)
   expect(moved.said!.status.dropped).toContain("A message still waiting to reach an agent when the earlier Kuvo Code last quit wasn't kept: send it again.")
+}, LIMIT)
+
+test.if(mac)("a link in the earlier Kuvo Code's folder that names another place there by its whole path points at where that is now; one by a path from its own place stays", () => {
+  const m = mac07(root, m => {
+    symlinkSync(join(m.S, "Chats", "c1", "notes.md"), join(m.S, "Chats", "c1", "whole-link"))
+    symlinkSync("notes.md", join(m.S, "Chats", "c1", "near-link"))
+    symlinkSync(join(m.home, "Projects", "plain", "p.txt"), join(m.S, "Chats", "c1", "outside-link"))
+  })
+  const before = snapshot(m.S)
+  expect(run(m).said).toMatchObject({ result: "done" })
+  const chat = join(m.K, "chats", "c1")
+  expect(readlinkSync(join(chat, "whole-link"))).toBe(join(chat, "notes.md"))
+  expect(readlinkSync(join(chat, "near-link"))).toBe("notes.md")
+  expect(readlinkSync(join(chat, "outside-link"))).toBe(join(m.home, "Projects", "plain", "p.txt"))
+  expect(snapshot(m.S)).toEqual(before)
+}, LIMIT)
+
+test.if(mac)("this Mac's own Kuvo, made here already, is never moved over: whoever asks", () => {
+  const m = mac07(root, m => put(join(m.K, "box", "kind"), "mac\n"))
+  const before = snapshot(m.K)
+  const refused = run(m)
+  expect(refused.status).toBe(1)
+  expect(refused.said).toMatchObject({ result: "refused", message: "Kuvo is set up on this Mac already, so nothing was moved over it. An earlier Kuvo Code's sessions are still in its own folder." })
+  expect(snapshot(m.K, relative => relative === "updates/rehome")).toEqual(Object.fromEntries(Object.entries(before).filter(([name]) => !name.startsWith("updates/rehome"))))
+}, LIMIT)
+
+test.if(mac)("a move whose own record can't be read says so in words with what to do, never by its file's name alone, and changes nothing", () => {
+  const m = mac07(root, m => put(join(m.K, "updates", "rehome", "journal.json"), "{\"v\": 1, \"step\": \"cle"))
+  const before = snapshot(m.S)
+  const stuck = run(m)
+  expect(stuck.status).toBe(3)
+  expect(stuck.said).toMatchObject({ result: "stuck", message: "Kuvo was stopped part way through moving your sessions and couldn't finish by itself, so it's changing nothing more. The earlier Kuvo Code's own folder is as it was. Try again; if this stays, send ~/.kuvo-code/updates/rehome/run.log to Kuvo's support." })
+  expect(stuck.said!.status.failed.message).not.toContain("journal")
+  expect(existsSync(join(m.K, "box"))).toBe(false)
+  expect(snapshot(m.S)).toEqual(before)
 }, LIMIT)

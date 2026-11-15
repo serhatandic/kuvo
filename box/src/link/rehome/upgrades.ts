@@ -318,7 +318,11 @@ function listedBots(S: string): OldBot[] {
  * none), its session, where it works, and that it runs with the coding agents, each where it's
  * missing. (The list itself moves beside the bots' folder, `bots.json`, where the box takes a
  * job kept only there as it starts.) */
-function bots({ S, staged }: Upgrade): void {
+function bots({ S, staged, prefs, dropped }: Upgrade): void {
+  if (exists(path.join(S, "bots.json")) && !Array.isArray(readJSON(path.join(S, "bots.json")))) dropped.push("The earlier Kuvo Code's list of bots couldn't be read. Bots made with a version before 0.7 may be missing: their folders are brought along, in ~/.kuvo-code/bots.");
+  // (Before 0.7 a bot was described only in this list: one on a machine has no description there.)
+  const theirs = prefs.calibration === undefined ? listedBots(S).filter(bot => bot.machine).length : 0;
+  if (theirs) dropped.push(`${theirs === 1 ? "A bot" : `${theirs} bots`} on your machines ${theirs === 1 ? "was" : "were"} described only on this Mac by the earlier Kuvo Code, and may not show there. ${theirs === 1 ? "Its" : "Their"} work is still on ${theirs === 1 ? "that machine" : "those machines"}: make ${theirs === 1 ? "it" : "them"} again if ${theirs === 1 ? "it's" : "they're"} missing.`);
   for (const bot of listedBots(S)) {
     if (bot.machine) continue;
     const folder = path.join(staged("bots"), bot.id);
@@ -536,7 +540,7 @@ function said({ S, prefs, dropped }: Upgrade): void {
   const edits = new Set([...Object.keys(isObject(prefs.botEditsWaiting) ? prefs.botEditsWaiting : {}), ...Object.keys(isObject(prefs.botEditOutbox) ? prefs.botEditOutbox : {})]).size;
   if (edits) dropped.push(`${edits === 1 ? "A change" : `${edits} changes`} you made to ${edits === 1 ? "a bot" : "bots"} on a machine that was away (a name, look, personality or model) ${edits === 1 ? "wasn't" : "weren't"} sent there. Make ${edits === 1 ? "it" : "them"} again once that machine is connected.`);
   const terminals = isObject(prefs.projectSettings) ? Object.values(prefs.projectSettings).filter(each => isObject(each) && typeof each.terminal === "string" && each.terminal).length : 0;
-  if (terminals) dropped.push(`The terminal app chosen for ${terminals === 1 ? "a project" : `${terminals} projects`} isn't kept: Kuvo's own terminals open in the side panel.`);
+  if (terminals) dropped.push(`The command that opened in place of the chat for ${terminals === 1 ? "a project" : `${terminals} projects`} isn't kept.`);
   const moves = (Array.isArray(prefs.movesUnderWay) ? prefs.movesUnderWay : []).filter(each => isObject(each) && each.stage === "switched").length;
   if (moves) dropped.push(`${moves === 1 ? "A move" : `${moves} moves`} to another computer that hadn't finished cleaning up left ${moves === 1 ? "its" : "their"} original folder where it was.`);
   // What the app still owed machines that were away: an account signed out here, files to clear there.
@@ -551,8 +555,12 @@ function said({ S, prefs, dropped }: Upgrade): void {
   if (theirProjects) dropped.push(`${theirProjects === 1 ? "A project" : `${theirProjects} projects`} on your machines may have lost ${theirProjects === 1 ? "its" : "their"} name, extra folders or Run command, which the earlier Kuvo Code kept on this Mac. Set them again in each project's settings.`);
   if (theirWorktrees) dropped.push(`${theirWorktrees === 1 ? "A worktree" : `${theirWorktrees} worktrees`} on your machines may show ${theirWorktrees === 1 ? "its" : "their"} sessions under another project: the earlier Kuvo Code kept which project ${theirWorktrees === 1 ? "it" : "each"} belonged to on this Mac.`);
   if (Object.keys(prefs).some(key => key.startsWith("machines.unreadable-"))) dropped.push("The earlier Kuvo Code had set aside a list of machines it couldn't read. It isn't brought along: add any machine that's missing again.");
-  if (Object.keys(prefs).some(key => key.startsWith("openusage."))) dropped.push("API keys you pasted into the usage panel aren't brought along. Paste them again where you use them.");
-  if (typeof prefs.favoriteModels === "string" && prefs.favoriteModels) dropped.push("Your starred models, and the model new sessions start with, are chosen again in the new app.");
+  // (API keys pasted into the usage panel are its own Keychain items, which nothing here can
+  // see: who has any can't be told, so it isn't said to everyone.)
+  const starred = typeof prefs.favoriteModels === "string" && prefs.favoriteModels !== "";
+  if (starred || prefs.lastModelRef !== undefined || prefs.lastModel !== undefined) dropped.push(starred ? "Your starred models, and the model new sessions start with, are chosen again in the new app." : "The model new sessions start with is chosen again in the new app.");
+  if (prefs["notifications.enabled"] === false || prefs["notifications.sound"] === false || prefs["notifications.badge"] === false) dropped.push("You had turned off some of Kuvo Code's notifications (or their sound or badge). Set that again in the new app.");
+  if (prefs["analytics.enabled"] === false) dropped.push("You had turned off sharing anonymous usage in the earlier Kuvo Code. That choice isn't brought along: check it in the new app's settings.");
   if (listOf(S).some(name => /\.unreadable-.*\.json$/.test(name))) dropped.push("The earlier Kuvo Code had set aside a list it couldn't read. It's still in its folder (a file named …unreadable…json).");
   if (["openrouter.json", "zai.json", "proxy.json"].some(name => exists(path.join(S, "Usage", name)))) dropped.push("API keys or a proxy you set up by hand for the usage panel (files in the earlier Kuvo Code's Usage folder) aren't brought along.");
   if (prefs.toolApproval !== "askFirst") dropped.push("New sessions start with Auto, Kuvo's own default, where the earlier Kuvo Code ran everything without asking.");

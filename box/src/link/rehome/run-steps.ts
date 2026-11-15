@@ -10,7 +10,8 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
-import { databaseCounts, databasesIn, tableCounts } from "./database";
+import { databaseCounts, databasesIn, soundness, tableCounts } from "./database";
+import { mapped, moves } from "./paths";
 import { migrateDatabases } from "./migrate";
 import { Said } from "./said";
 import { noteRecord, readRecord } from "./state";
@@ -183,7 +184,34 @@ export function stagedCounts(move: MoveContext): Record<string, number> {
   counts.vaultItems = listOf(path.join(at("box"), "vault", "items")).filter(name => name.endsWith(".json")).length;
   counts.accounts = foldersIn(at("agents")).reduce((sum, agent) => sum + foldersIn(path.join(at("agents"), agent, "accounts")).length, 0);
   counts.groupChats = foldersIn(at("groups")).length;
+  // (Rows of the engine's databases that point at a row that isn't there: an engine's own
+  // leftovers, which the move may not add to.)
+  counts.brokenLinks = (data ? databasesIn(data) : []).reduce((sum, database) => sum + soundness(database).brokenLinks, 0);
   return counts;
+}
+
+/** Links in what's staged that point, by a whole path, into what moves (a link in a chat's folder
+ * to a file in another, say): pointed at where that will be, as every other path is. A link
+ * that names another by a path from its own place stays as it is. How many. */
+export function relinkStaged(move: MoveContext): number {
+  let changed = 0;
+  const walk = (folder: string, depth: number) => {
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(folder, { withFileTypes: true }); } catch {}
+    for (const entry of entries) {
+      const file = path.join(folder, entry.name);
+      if (entry.isSymbolicLink()) {
+        let target = "";
+        try { target = fs.readlinkSync(file); } catch { continue; }
+        if (!path.isAbsolute(target) || !moves(target, move.map)) continue;
+        fs.rmSync(file, { force: true });
+        fs.symlinkSync(mapped(target, move.map), file);
+        changed++;
+      } else if (entry.isDirectory() && depth < 40) walk(file, depth + 1);
+    }
+  };
+  for (const placement of move.placements) if (!placement.installed) walk(placement.staged, 0);
+  return changed;
 }
 
 const countsFile = (move: MoveContext) => path.join(move.work, "run-counts.json");
@@ -201,8 +229,12 @@ export function countsHold(move: MoveContext): Record<string, number> {
   try { before = JSON.parse(fs.readFileSync(countsFile(move), "utf8")); } catch {
     throw new Error("the counts taken after the clone can't be read");
   }
+  // The engine's databases read whole, with no more broken links than they came with.
+  const data = stagedPlace(move, "data/opencode");
+  for (const database of data ? databasesIn(data) : []) if (!soundness(database).whole) throw new Error(`${path.basename(database)} doesn't pass its integrity check once moved`);
   const after = stagedCounts(move);
-  const fewer = Object.keys(before).filter(name => (after[name] ?? 0) < before[name]);
+  if ((after.brokenLinks ?? 0) > (before.brokenLinks ?? 0)) throw new Error(`the engine's database has ${after.brokenLinks} broken links once moved, ${before.brokenLinks ?? 0} before`);
+  const fewer = Object.keys(before).filter(name => name !== "brokenLinks" && (after[name] ?? 0) < before[name]);
   if (fewer.length) throw new Said(`Something went missing as your sessions and settings were copied (${fewer.map(name => `${name}: ${after[name] ?? 0} of ${before[name]}`).join(", ")}), so nothing was changed.`);
   return Object.fromEntries(Object.keys(after).flatMap(name => [[`${name}Before`, before[name] ?? 0], [name, after[name]]]));
 }

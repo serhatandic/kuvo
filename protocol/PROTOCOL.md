@@ -7728,7 +7728,9 @@ words for it, `kuvo/box/rehome`'s `progress`), then `{"result", "verdict", "star
 own, its answer kept in a file of this installer's own (`updates/rehome/run.<its pid>.out`)
 until it's read and what it says besides in `updates/rehome/run.log`, and follows it: an app that quits meanwhile doesn't stop the move, and
 at its next open `status` says `waits` (with `status.progress` to draw) while it's still at
-work, or what it came to. `status.dropped` says what wasn't carried.
+work, or what it came to. `progress` is only there while the move's journal is: null while an
+old keeper is stopped and the refusals are checked (the installer's first line, `plan`, stands
+for that), and null again while what's owed is settled after `done`. `status.dropped` says what wasn't carried.
 
 #### This Mac's app
 
@@ -8052,7 +8054,7 @@ was named Kuvo Code Box, in no release.)
   on stderr. All but `check` take the box's `run/helper.lock`, refusing while the helper keeps the
   box (its host interface may be changing those keys). `back` takes only Kuvo Code itself for `--app`, signed by the helper's team: a helper
   signed ad hoc (a local build) refuses, as anything can be signed so (the tests' own build aside).
-- **`kuvo-keys`** (#713, for a box's move that no Swift keeper runs; nothing runs it yet, and
+- **`kuvo-keys`** (#713, for a box's move that no Swift keeper runs: the box's own, `rehome --run`, runs it; and
   **none is signed with a real identity yet**: `scripts/build-helper.sh` makes one only ad hoc,
   for its tests, unless asked with `KUVO_SIGNED_KEYS=1`, and no release asks, until the limit
   said below is settled: what keeps it to the box's move holds only against what can't write in

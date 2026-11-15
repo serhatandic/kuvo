@@ -357,6 +357,18 @@ export function tableCounts(file: string): Record<string, number> {
   }
 }
 
+/** Whether a database reads whole (`PRAGMA integrity_check`), and how many of its rows point at a
+ * row that isn't there (`PRAGMA foreign_key_check`). */
+export function soundness(file: string): { whole: boolean; brokenLinks: number } {
+  const db = open(file, true);
+  try {
+    const said = db.query("PRAGMA integrity_check").all();
+    return { whole: said.length === 1 && Object.values(said[0] ?? {})[0] === "ok", brokenLinks: db.query("PRAGMA foreign_key_check").all().length };
+  } finally {
+    db.close();
+  }
+}
+
 /** How many rows each of a database's tables holds. */
 export function everyCount(file: string): Record<string, number> {
   const db = open(file, true);

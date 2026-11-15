@@ -21,7 +21,7 @@ import { agentsWorking } from "../updates/update";
 import { BRIDGE_VERSION } from "../version";
 import { setKeepsAwake } from "../work/settings";
 import { undoKeychain } from "./outside";
-import { beforeForward, countsHold, handOverKeys, migrateStaged, noteCounts, takeBackKeys, upgradeStaged } from "./run-steps";
+import { beforeForward, countsHold, handOverKeys, migrateStaged, noteCounts, relinkStaged, takeBackKeys, upgradeStaged } from "./run-steps";
 import { Said } from "./said";
 import { PATH_REWRITER, pathMap, type MoveContext, type PathMap, type Rewriter } from "./rewrite";
 import {
@@ -534,6 +534,9 @@ async function carryOn(journal: Journal, rewriter: Rewriter): Promise<void> {
   if (at("rewrite")) {
     stepTo(journal, "rewrite");
     rewriter.rewrite(move);
+    // (A move the box runs itself leaves the old place where it is: a link into it would go on
+    // working, and reading what's left behind.)
+    if (journal.run) relinkStaged(move);
     stopPoint("after-rewrite");
   }
   if (at("check")) {
@@ -730,7 +733,12 @@ async function carried(journal: Journal, rewriter: Rewriter): Promise<RehomeOutc
   } catch (error) {
     if (error instanceof LockLost) return { result: "waits", message: WAITS, status: rehomeStatus(home) };
     if (!forwardOnly(journal.step)) return { result: "failed", message: failed(journal, error), status: rehomeStatus(home) };
-    const message = error instanceof Error ? error.message : String(error);
+    const raw = error instanceof Error ? error.message : String(error);
+    // (As a failure that goes back: a move the box runs itself says what's the person's to act on
+    // as it is, anything else in one sentence, with what went wrong kept for support.)
+    const plain = !journal.run || error instanceof Said;
+    if (!plain) console.error(`The move stopped at ${journal.step}, past where it goes back: ${raw}`);
+    const message = plain ? raw : "Kuvo couldn't finish moving your sessions this time. Try again.";
     noteRecord(home, { failed: { at: Date.now(), step: journal.step, message } });
     return { result: "stuck", message, status: rehomeStatus(home) };
   }

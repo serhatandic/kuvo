@@ -36,7 +36,9 @@ function kept07(m: Mac, { described = true }: { described?: boolean } = {}) {
     botEditsWaiting: { bot_m1: ["name"] },
     machineSignOuts: { mini: ["anthropic"] }, "machines.waiting": { mini: ["rm -rf x"], studio: ["rm -rf y"] },
     showTotalSpend: false, "openusage.notifications.underTenPercent": true, "openusage.codex.fallbackModel": "gpt-5.2",
-    appearance: "dark", sessionsWidth: 280,
+    appearance: "dark", sessionsWidth: 280, lastModelRef: "{\"id\":\"m\",\"providerID\":\"lab\"}", "notifications.sound": false, "analytics.enabled": false,
+    // (0.7.2 had described each bot in its folder, and says so; 0.6 knew no such step.)
+    ...(described ? { calibration: 1 } : {}),
   })
   put(join(m.S, "bots.json"), JSON.stringify([bot(m, "bot_a1", { agents: true, personality: "custom.aaaa" }), bot(m, "bot_m1", { machine: "mini", folder: "/home/u/.kuvo-code/bots/bot_m1" })], null, 2))
   put(join(m.S, "bots", "bot_a1", "MEMORY.md"), "what Scout remembers")
@@ -136,12 +138,14 @@ test.if(mac)("what 0.7.2 kept itself comes along: projects, worktrees, machines,
     "2 messages you'd typed but not sent weren't brought along.",
     "Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along.",
     "A change you made to a bot on a machine that was away (a name, look, personality or model) wasn't sent there. Make it again once that machine is connected.",
-    "The terminal app chosen for a project isn't kept: Kuvo's own terminals open in the side panel.",
+    "The command that opened in place of the chat for a project isn't kept.",
     "You signed out of an account while a machine was away: it may still be signed in to it. Sign out there too once it's connected.",
     "2 machines that were away still have files of something you removed here (a bot, or Kuvo Code itself): remove them from there once connected.",
     "A project on your machines may have lost its name, extra folders or Run command, which the earlier Kuvo Code kept on this Mac. Set them again in each project's settings.",
     "A worktree on your machines may show its sessions under another project: the earlier Kuvo Code kept which project it belonged to on this Mac.",
-    "API keys you pasted into the usage panel aren't brought along. Paste them again where you use them.",
+    "The model new sessions start with is chosen again in the new app.",
+    "You had turned off some of Kuvo Code's notifications (or their sound or badge). Set that again in the new app.",
+    "You had turned off sharing anonymous usage in the earlier Kuvo Code. That choice isn't brought along: check it in the new app's settings.",
   ])
   expect(state.counts).toMatchObject({ sessions: 5, bots: 1, botsBefore: 1, wakeUps: 2, wakeUpsBefore: 2, groupChats: 1, groupChatsBefore: 0, worktreeRecords: 1, worktreeRecordsBefore: 0 })
   expect(moved.said!.status.dropped).toEqual(state.dropped)
@@ -155,6 +159,8 @@ test.if(mac)("a bot of 0.6, which had no description in its folder, is one the b
   })
   expect(readFileSync(join(m.K, "bots", "bot_a1", "session"), "utf8")).toBe("ses_bot_a1")
   expect(readFileSync(join(m.K, "bots", "bot_a1", "directory"), "utf8")).toBe(join(m.K, "bots", "bot_a1", "workspace"))
+  // (0.6 described a machine's bot only on this Mac: said.)
+  expect(readJSON(join(m.K, "updates", "rehome", "state.json")).dropped).toContain("A bot on your machines was described only on this Mac by the earlier Kuvo Code, and may not show there. Its work is still on that machine: make it again if it's missing.")
 }, 120_000)
 
 test.if(mac)("\"Let my devices connect\" stays as this Mac's link had it set, with a relay of your own; a Mac that ran everything without asking is told new sessions start with Auto", () => {

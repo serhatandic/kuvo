@@ -214,7 +214,7 @@ export function readJournal(home: string): Journal | null {
 /** A journal that's there but can't be read: a move may be under way, which no one can finish. */
 export class UnreadableJournal extends Error {
   constructor() {
-    super("The move's journal can't be read: nothing is done until someone looks at it (updates/rehome/journal.json).");
+    super("Kuvo was stopped part way through moving your sessions and can't tell how far it got, so it's changing nothing more. Try again; if this stays, send ~/.kuvo-code/updates/rehome/run.log to Kuvo's support.");
   }
 }
 

@@ -10,7 +10,7 @@
 // test runs the real engine on it instead, and holds the recording to what that makes.
 import { Database } from "bun:sqlite"
 import { createHash } from "node:crypto"
-import { readFileSync, rmSync } from "node:fs"
+import { readFileSync, renameSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 
@@ -27,10 +27,20 @@ const file = `${process.env.XDG_DATA_HOME}/opencode/opencode.db`
       .replaceAll("@S_URL@", pathToFileURL(S).href.slice("file://".length)).replaceAll("@S@", S).replaceAll("@HOME@", home)
       .replaceAll("@ROOT6@", rootCommit.slice(0, 6)).replaceAll("@ROOT@", rootCommit)
       .replace(/@ID:([^@]+)@/g, (_, folder: string) => createHash("sha1").update(`directory:${folder}`).digest("hex"))
-    for (const suffix of ["", "-wal", "-shm"]) rmSync(file + suffix, { force: true })
+    // (What the recording never held, a test's own rows of tables the engine's update leaves as
+    // they are, carried as the engine carries them.)
+    const was = new Database(file)
+    was.exec("PRAGMA wal_checkpoint(TRUNCATE)")
+    was.close()
+    renameSync(file, `${file}.was`)
+    for (const suffix of ["-wal", "-shm"]) rmSync(file + suffix, { force: true })
     const made = new Database(file)
     made.exec(sql)
+    made.exec(`ATTACH DATABASE '${file}.was' AS was`)
+    for (const table of ["credential", "account", "permission"]) made.exec(`INSERT OR IGNORE INTO main."${table}" SELECT * FROM was."${table}"`)
+    made.exec("DETACH DATABASE was")
     made.close()
+    for (const suffix of ["", "-wal", "-shm"]) rmSync(`${file}.was${suffix}`, { force: true })
   }
 }
 const db = new Database(file, { readonly: true })

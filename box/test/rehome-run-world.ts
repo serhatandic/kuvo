@@ -125,6 +125,11 @@ clear) rm -rf "$KC/helper"; echo '{"kept":[]}' ;;
 esac
 `
 
+const KEPT_ROWS = `
+INSERT INTO credential VALUES('crd_1', 'anthropic', 'Work', '{"type":"api","key":"sk-test"}', NULL, NULL, 1, 1, 1);
+INSERT INTO account VALUES('acc_1', 'you@example.com', 'https://example.com', 'at', 'rt', NULL, 1, 1);
+INSERT INTO permission VALUES('psv_kept1', '@ROOT@', 'edit', '@S@/Chats/c1/*', 1, 1);
+`
 let worlds = 0
 /** A Mac of Kuvo Code 0.7.2 (its app's folder with no box of its own), in `root`: sessions in a
  * repository of yours, in its engine worktree in the app's folder, in a chat there and in a
@@ -151,7 +156,8 @@ export function mac07(root: string, given: (mac: Mac) => void = () => {}, { at, 
   const mac: Mac = { home, S, K, bundle: join(home, "Applications", "Kuvo Code.app"), release: join(K, "updates", "install", "release"), engine: join(K, "updates", "install", "engine"), repository, worktree, rootCommit, chat, keychain: join(home, "keychain") }
   // The engine's own: its database (2.0.32's, with its log), a snapshot of each worktree, its
   // settings, state and cache; and the engine 0.7.2 downloaded, which nothing runs again.
-  databaseWithLog(join(data, "opencode.db"), recorded("engine-2.0.32", { S, home, rootCommit }), join(home, "tmp", "make-db"))
+  // (With what the real turns never made: a provider's sign-in, an account, a rule kept for a project.)
+  databaseWithLog(join(data, "opencode.db"), recorded("engine-2.0.32", { S, home, rootCommit }) + KEPT_ROWS.replaceAll("@ROOT@", rootCommit).replaceAll("@S@", S), join(home, "tmp", "make-db"))
   for (const folder of [repository, worktree]) {
     const snapshot = join(data, "snapshot", rootCommit, sha("sha1", folder))
     put(join(snapshot, "config"), `[core]\n\tbare = false\n\tworktree = ${folder}\n`)
