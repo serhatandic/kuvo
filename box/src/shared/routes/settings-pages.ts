@@ -51,8 +51,8 @@ const ROW_FIELDS = {
   "folder?": object({ choose: string, clear: string, prompt: string, message: string }),
   /** Client-side filtering of a list by its title and its items’ title and line; empty replaces {query} with the query. */
   "search?": object({ placeholder: string, empty: string }),
-  /** Number/status values in bytes; clients format them as file sizes. */
-  "unit?": words("bytes"),
+  /** Display unit, conversion from stored values, and nearest rounding at the given precision. */
+  "unit?": object({ name: string, factor: number, decimals: number, rounding: literal("nearest") }),
   "suggestions?": list(object({ value: number, title: string })),
   /** Ask only when the proposed number is below this threshold. */
   "confirmBelow?": object({ value: number, confirm: SETTING_CONFIRM }),
@@ -95,6 +95,9 @@ export const SETTINGS_SECTIONS = object({ sections: list(SETTINGS_SECTION) });
  * without one is the route underneath refusing (a settings file that can't be used), in words. */
 export const SETTINGS_STALE = object({ message: string, "page?": SETTINGS_PAGE });
 
+/** A row change; confirmed is true only after accepting its conditional confirmation. */
+export const SETTINGS_CHANGE = object({ row: string, value: any, was: string, "confirmed?": bool });
+
 const REFUSED = object({ message: string });
 
 export type SettingKind = (typeof SETTING_KINDS)[number];
@@ -110,6 +113,6 @@ export const SETTINGS_PAGE_ROUTES: RouteShape[] = [
   { route: "GET kuvo/settings", answers: { 200: SETTINGS_SECTIONS } },
   { route: "GET kuvo/settings/:section", answers: { 200: SETTINGS_PAGE, 404: REFUSED } },
   { route: "GET kuvo/settings/:section/events", answers: { 200: SETTINGS_PAGE, 404: REFUSED } },
-  { route: "PATCH kuvo/settings/:section", answers: { 200: SETTINGS_PAGE, 400: REFUSED, 403: REFUSED, 404: REFUSED, 409: SETTINGS_STALE } },
+  { route: "PATCH kuvo/settings/:section", body: SETTINGS_CHANGE, answers: { 200: SETTINGS_PAGE, 400: REFUSED, 403: REFUSED, 404: REFUSED, 409: SETTINGS_STALE } },
   { route: "POST kuvo/settings/:section/:row/:action", answers: { 200: SETTINGS_PAGE, 400: REFUSED, 403: REFUSED, 404: REFUSED, 409: SETTINGS_STALE } },
 ];

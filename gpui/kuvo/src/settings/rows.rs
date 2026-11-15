@@ -118,6 +118,8 @@ pub enum Act {
     /// A field's text, saved as its row's value (`number`: read as one first).
     Save { at: At, number: bool },
     /// A secret's field shown, to replace the one set (or put away again).
+    Filter,
+    Folder { at: At, words: kuvo_box::settings_pages::Folder },
     Replacing { row: String, on: bool },
     /// Opens the address the box named: a web page, or (from its own computer's box alone) what
     /// only an app on that computer can open.
@@ -144,11 +146,34 @@ pub struct At {
     pub revision: String,
     pub title: String,
     pub confirm: Option<Asks>,
+    pub confirm_below: Option<kuvo_box::settings_pages::ConfirmBelow>,
+    pub unit: Option<kuvo_box::settings_pages::Unit>,
+    pub original: Option<Value>,
+    pub multiline: bool,
 }
 
 impl At {
+    pub fn asks_for(&self, value: &Value) -> Option<Asks> {
+        self.confirm_below.as_ref().filter(|below| value.as_f64().is_some_and(|number| number < below.value)).map(|below| below.confirm.clone()).or_else(|| self.confirm.clone())
+    }
+
+    pub fn below(&self, value: &Value) -> bool {
+        self.confirm_below.as_ref().is_some_and(|below| value.as_f64().is_some_and(|value| value < below.value))
+    }
+
+    pub fn field_value(&self, text: &str, number: bool) -> Option<Value> {
+        if !number { return Some(Value::String(if self.multiline { text.to_owned() } else { text.trim().to_owned() })); }
+        if let (Some(unit), Some(original)) = (&self.unit, &self.original)
+            && original.as_f64().is_some_and(|value| unit.number(value) == text.trim())
+        {
+            return Some(original.clone());
+        }
+        let number = text.trim().parse::<f64>().ok()?;
+        serde_json::Number::from_f64(self.unit.as_ref().map_or(number, |unit| (number * unit.factor).round())).map(Value::Number)
+    }
+
     pub fn of(section: &str, row: &Described) -> At {
-        At { section: section.to_owned(), row: row.id.clone(), revision: row.revision.clone(), title: row.title.clone(), confirm: row.confirm.clone() }
+        At { section: section.to_owned(), row: row.id.clone(), revision: row.revision.clone(), title: row.title.clone(), confirm: row.confirm.clone(), confirm_below: row.confirm_below.clone(), unit: row.unit.clone(), original: row.value.clone(), multiline: row.lines.is_some() }
     }
 }
 
@@ -193,7 +218,7 @@ pub enum Control {
     /// Buttons, in order.
     Buttons(Vec<Push>),
     /// A field (kept by the view under the row's key), and the buttons beside it.
-    Field { masked: bool, value: String, placeholder: String, revision: String, save: Act, more: Vec<Push> },
+    Field { unit: Option<String>, lines: Option<(usize, usize)>, masked: bool, value: String, placeholder: String, revision: String, save: Act, more: Vec<Push> },
     /// It opens something: a section, a page.
     Opens(Act),
     /// A change on its way.

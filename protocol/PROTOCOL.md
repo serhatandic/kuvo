@@ -8141,15 +8141,18 @@ so a client still on those (the phone) sees every change kept just as they keep 
   |---|---|---|
   | `switch` | `value`: true or false | A switch |
   | `choice` | `value`: a choice's `id`; `choices: [{id, title, line?}]` | A menu |
-  | `text`, `number`, `folder` | `value`, `placeholder?`, `min?`, `max?`, `lines?: {min, max}`, `folder?: {choose, clear, prompt, message}`, `unit?: "bytes"`, `suggestions?: [{value, title}]`, `confirmBelow?: {value, confirm}` | A field (text may request a multi-line editor with its preferred visible line range; presentation only, outside revisions; byte values use file size formatting; numeric suggestions are common values, not limits; a number below confirmBelow.value requires its confirmation, whose button appends the formatted proposed value) (a folder opens the box's picker, `kuvo/folders`, with its own choose/clear button words, picker prompt and message; clearing sends empty text) |
+  | `text`, `number`, `folder` | `value`, `placeholder?`, `min?`, `max?`, `lines?: {min, max}`, `folder?: {choose, clear, prompt, message}`, `unit?: {name, factor, decimals, rounding: "nearest"}`, `suggestions?: [{value, title}]`, `confirmBelow?: {value, confirm}` | A field (text may request a multi-line editor with its preferred visible line range; presentation only, outside revisions; unit values divide by factor and round to the nearest value with decimals fractional digits (ties away from zero), omitting trailing zeroes beside name; unchanged fields send their original value exactly; numeric suggestions are common values, not limits; a number below confirmBelow.value requires its confirmation, whose button appends the formatted proposed value) (a folder opens the box's picker, `kuvo/folders`, with its own choose/clear button words, picker prompt and message; clearing sends empty text) |
   | `secret` | `set`: whether one is set; never its value | A field written only; Replace and Remove once set |
-  | `status` | `value`: words, or a number with `unit?: "bytes"` | The words or formatted file size, on the right |
+  | `status` | `value`: words, or a number with `unit?: {name, factor, decimals, rounding: "nearest"}` | The words or formatted file size, on the right |
   | `actions` | `actions` | Buttons (past one, a menu) |
   | `list` | `items`: rows; `add?`: an action; `empty?`: words for none; `search?: {placeholder, empty}` | The rows in its card, or its `empty` words |
   | `meter` | `windows: [{title, used, resets?}]` (`used` 0 to 1, `resets` ms since 1970) | Usage windows |
   | `open` | `section` (this box's) or `address` | A row with › |
   | `steps` | `start`: an action | A flow the box leads (to come, with Accounts) |
   | `custom` | `name` | What only an installed app draws; any other client shows its `can`'s why |
+
+  List search matches the list title or each item’s title or line, case-insensitively. A matching
+  list title keeps every item. With no matches, replace `{query}` in `search.empty` with the typed query.
 
   `can` is `true` where it can be changed from here, or `{why}`, in words to show beside it (it's
   still drawn, never hidden); a row with nothing to change (a `status`) has none, or `{why}` where
@@ -8164,7 +8167,11 @@ so a client still on those (the phone) sees every change kept just as they keep 
   and what governs whether it can be changed (its value, `can`, its choices' and actions' ids, a
   list's items' revisions; a `secret`'s, whether one is set; whether `can` holds, not its why; action confirmations, so a growing destructive warning makes a reading stale), never its display words: the same value set
   again, a computer renamed or a line reworded leaves it.
-- `PATCH kuvo/settings/<section> {row, value, was}`: one row changed, `was` its `revision` as read.
+- `PATCH kuvo/settings/<section> {row, value, was, confirmed?}`: one row changed, `was` its `revision` as read.
+  For a row with `confirmBelow`, a numeric value strictly below `confirmBelow.value` requires
+  `confirmed: true`, sent only after accepting `confirmBelow.confirm` in the box's words.
+  Without it the box returns `400 {message: confirmBelow.confirm.body}` before changing anything.
+  At or above the threshold no confirmation is required. Cancel sends nothing.
   The answer is the page again (`200`), or a refusal in the box's words: `400` for a value that
   doesn't fit (a switch's isn't true or false, a choice's isn't one of its choices) or a body without
   `row` or `was`; `403` where `can` says why not (that `why`); `404` for a row not on the page now;
@@ -8243,10 +8250,14 @@ The sections now:
 - **Storage** (`storage`): the box-backed What Agents Made group only: copies (status in bytes),
   older-budget (number in bytes, with the Swift page's common budgets and confirmation when
   lowering below what older copies take), and older-copies (Clear…, with confirmation).
-  `POST kuvo/artifacts/storage {budget, was?}` compares optional `was` with the budget before
-  setting it; `POST kuvo/artifacts/storage/clear {was?}` compares with older copies' bytes before
+  `POST kuvo/artifacts/storage {budget, was?, wasOlder?, confirmed?}` compares optional `was` with the budget
+  and `wasOlder` with older copies’ bytes atomically before
+  setting it. Every budget write is guarded in the store: below the current older copies’ bytes,
+  only boolean `confirmed: true` permits deletion; otherwise `400 {message}` returns the box’s
+  confirmation body without changing settings or copies. This applies to both settings and direct
+  storage routes. `POST kuvo/artifacts/storage/clear {was?}` compares with older copies' bytes before
   clearing. Mismatches answer `409 {message: "It changed since you read it."}`. Both checks and
-  writes run synchronously in the bridge's event loop. Without `was`, both behave as before.
+  writes run synchronously in the bridge's event loop. Without `was`, revision checking is omitted; the confirmation requirement still applies.
   Page writes floor byte counts as the store does. Polling each second reads the bridge again,
   covering its settings, copies and live disk usage. An unavailable bridge gives no rows and a warning.
   The native Mac-only measurement, session cleanup links and log/download deletion groups have

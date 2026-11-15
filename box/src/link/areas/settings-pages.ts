@@ -23,6 +23,9 @@ import { WORK_SETTINGS_FILE } from "../work/settings";
 import { WORKTREES_FILE, readWorktrees } from "./worktree-records";
 import { worktreesRoute } from "./worktrees";
 import { isObject, parsed, sortedJSON } from "../../shared/json";
+import { SETTINGS_PAGE_ROUTES } from "../../shared/routes/settings-pages";
+import { budgetConfirmation } from "../../shared/artifact-budget";
+import { fitsShape } from "../../shared/shape";
 import type { SettingAction, SettingCan, SettingGroup, SettingItem, SettingRow, SettingsPage, SettingsSection } from "../../shared/routes/settings-pages";
 import { SEARCH_ENGINES } from "../../shared/routes/browser";
 import { approvalRoute } from "./approval";
@@ -83,7 +86,7 @@ export function revised<Row extends Omit<SettingItem, "revision"> & { items?: re
   const can = (value: SettingCan | undefined) => (value === undefined ? undefined : value === true);
   const action = (each: SettingAction | undefined) => each && { id: each.id, can: can(each.can), opens: each.opens, confirm: each.confirm };
   const governs = {
-    confirmBelow: row.confirmBelow?.value, min: row.min, max: row.max,
+    confirmBelow: row.confirmBelow, min: row.min, max: row.max,
     kind: row.kind, value: row.kind === "secret" ? undefined : row.value, can: can(row.can), set: row.set,
     choices: row.choices?.map(choice => choice.id), actions: row.actions?.map(action),
     start: action(row.start), section: row.section, address: row.address, name: row.name,
@@ -495,20 +498,23 @@ async function worktreesAct(context: RouteContext, at: SettingItem, action: Sett
 // MARK: Storage (the box-backed What Agents Made group)
 
 const fileSize = (bytes: number): string => {
-  const units = ["bytes", "KB", "MB", "GB", "TB"];
-  const scale = bytes > 0 ? Math.min(4, Math.floor(Math.log10(bytes) / 3)) : 0;
-  return `${new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(bytes / 1000 ** scale)} ${units[scale]}`;
+  const units = ["bytes", "KiB", "MiB", "GiB", "TiB"];
+  const scale = bytes > 0 ? Math.min(4, Math.floor(Math.log2(bytes) / 10)) : 0;
+  return `${new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(bytes / 1024 ** scale)} ${units[scale]}`;
 };
 
 async function storagePage(context: RouteContext): Promise<SettingsPage> {
   const read = await asked(context, artifactsRoute, "GET", "kuvo/artifacts/storage");
   if (read.status !== 200) return unreadPage("storage", "Storage", read);
   const kept = read.value;
+  const unit = { name: "GiB", factor: 1024 ** 3, decimals: 2, rounding: "nearest" as const };
+  const scale = kept.copies > 0 ? Math.min(4, Math.max(0, Math.floor(Math.log2(kept.copies) / 10))) : 0;
+  const copiesUnit = { name: ["bytes", "KiB", "MiB", "GiB", "TiB"][scale]!, factor: 1024 ** scale, decimals: 1, rounding: "nearest" as const };
   return { id: "storage", title: "Storage", groups: [{ id: "agents-made", title: "What Agents Made", rows: [
-    row({ id: "copies", title: "Copies of what agents made", line: "Each version of the files agents write or change, so you can see what changed and put one back. Never what looks like a secret, and only the changes for code git keeps.", kind: "status", value: kept.copies, unit: "bytes" }),
-    row({ id: "older-budget", title: "Older versions keep up to", line: "Past it, the oldest go first. The newest version of each file, memory, skills and what’s kept always stay.", kind: "number", value: kept.budget, unit: "bytes", min: 0, can: true,
-      suggestions: [256, 512, 1024, 2048, 5120, 10240].map(mb => ({ value: mb * 1024 ** 2, title: fileSize(mb * 1024 ** 2) })),
-      confirmBelow: { value: kept.older, confirm: { title: "Keep less of older versions?", body: `Older versions take ${fileSize(kept.older)} now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.`, button: "Keep up to" } },
+    row({ id: "copies", title: "Copies of what agents made", line: "Each version of the files agents write or change, so you can see what changed and put one back. Never what looks like a secret, and only the changes for code git keeps.", kind: "status", value: kept.copies, unit: copiesUnit }),
+    row({ id: "older-budget", title: "Older versions keep up to", line: "Past it, the oldest go first. The newest version of each file, memory, skills and what’s kept always stay.", kind: "number", value: kept.budget, unit, min: 0, can: true,
+      suggestions: [0.25, 0.5, 1, 2, 5, 10].map(gb => ({ value: gb * unit.factor, title: `${gb} ${unit.name}` })),
+      confirmBelow: { value: kept.older, confirm: budgetConfirmation(kept.older) },
     }),
     row({ id: "older-copies", title: "Older versions", line: kept.older === 0 ? "None kept." : `${fileSize(kept.older)} now.`, kind: "actions", value: kept.older,
       actions: [{ id: "clear", title: "Clear…", style: "destructive", can: kept.older > 0 ? true : { why: "None kept." }, confirm: { title: "Clear older versions?", body: "Their copies go; each stays listed, without one. The newest version of each file, memory, skills and what’s kept stay.", button: "Clear" } }],
@@ -516,9 +522,9 @@ async function storagePage(context: RouteContext): Promise<SettingsPage> {
   ] }], ...(kept.low ? { notes: [{ words: `The disk is nearly full, so only the newest version of each file keeps a copy until ${fileSize(kept.floor)} is free again.`, tone: "warning" as const }] } : {}) };
 }
 
-async function storageChange(context: RouteContext, at: SettingItem, value: unknown): Promise<Refused | null> {
+async function storageChange(context: RouteContext, at: SettingItem, value: unknown, confirmed?: unknown): Promise<Refused | null> {
   if (at.id !== "older-budget") return { status: 400, message: "That isn't something to change." };
-  return staleOrRefusal(await asked(context, artifactsRoute, "POST", "kuvo/artifacts/storage", { budget: Math.floor(Number(value)), was: at.value }));
+  return staleOrRefusal(await asked(context, artifactsRoute, "POST", "kuvo/artifacts/storage", { budget: Math.floor(Number(value)), was: at.value, wasOlder: at.confirmBelow?.value, confirmed }));
 }
 
 async function storageAct(context: RouteContext, at: SettingItem, action: SettingAction): Promise<Refused | null> {
@@ -660,7 +666,7 @@ async function noActions(): Promise<Refused | null> {
 
 interface Section {
   read: (context: RouteContext) => Promise<SettingsPage>;
-  change: (context: RouteContext, at: SettingItem, value: unknown) => Promise<Refused | null>;
+  change: (context: RouteContext, at: SettingItem, value: unknown, confirmed?: unknown) => Promise<Refused | null>;
   act: (context: RouteContext, at: SettingItem, action: SettingAction) => Promise<Refused | null>;
   /** What's looked at each second for a change another process made (cheap). */
   look: () => string;
@@ -756,6 +762,8 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
   const rowId = rowPart !== undefined ? idOf(rowPart) : given.row;
   if (typeof rowId !== "string" || !rowId) return yield* json(400, { message: "Name the row to change (row)." });
   if (typeof given.was !== "string") return yield* json(400, { message: "Send the row's revision as it was read (was)." });
+  const changeShape = SETTINGS_PAGE_ROUTES.find(route => route.route === "PATCH kuvo/settings/:section")!.body!;
+  if (rowPart === undefined && !fitsShape(changeShape, given)) return yield* json(400, { message: "Send a row, its value and revision, and confirmed only as true or false." });
   // One change to a section at a time, each checked against the page as it is then: the row's own
   // revision, whether it can be changed from here, the value; then made.
   const { status, value } = await inTurn(id!, async (): Promise<{ status: number; value: unknown }> => {
@@ -776,7 +784,10 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
       const why = whyNot(at.can);
       if (why) return { status: 403, value: { message: why } };
       if (!("value" in given) || !fits(at, given.value)) return { status: 400, value: { message: at.kind === "choice" ? "Pick one of its choices." : (at.kind === "text" || at.kind === "folder") ? "Send text." : at.kind === "number" ? "Send a number within its limits." : "Send true or false." } };
-      done = await section.change(context, at, given.value);
+      if (at.confirmBelow && typeof given.value === "number" && given.value < at.confirmBelow.value && given.confirmed !== true) {
+        return { status: 400, value: { message: at.confirmBelow.confirm.body } };
+      }
+      done = await section.change(context, at, given.value, given.confirmed);
     }
     if (done?.stale) return { status: 409, value: { message: done.message, page: await section.read(context) } };
     if (done) return { status: done.status, value: { message: done.message } };

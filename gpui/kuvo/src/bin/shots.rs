@@ -169,6 +169,11 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "computer-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_narrow) },
     // Settings (`kuvo/src/settings`): each section, the search, a section not in this app yet, and
     // each step of signing in.
+    Screen { slug: "settings-row-storage", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_storage) },
+    Screen { slug: "settings-row-storage-confirm", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_storage_confirm) },
+    Screen { slug: "settings-row-worktrees", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_worktrees) },
+    Screen { slug: "settings-row-git", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_git) },
+    Screen { slug: "settings-row-archived", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_archived) },
     Screen { slug: "settings-a-yours", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours) },
     Screen { slug: "settings-a-yours-later", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_later) },
     Screen { slug: "settings-a-general", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(general) },
@@ -510,6 +515,21 @@ fn yours(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
 /// One of your own sections that isn't in the desktop app yet.
 fn yours_later(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "yours/shortcuts", window, cx);
+}
+fn row_storage(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "storage", window, cx); }
+fn row_worktrees(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = settings(w, "worktrees", window, cx);
+    if let Some(row) = w.client().settings_page("worktrees").ok().and_then(|page| page.row("folder").cloned()) && let Some(words) = row.folder.clone() {
+        view.update(cx, |view,cx| view.act(kuvo::settings::Act::Folder { at: kuvo::settings::At::of("worktrees", &row), words },cx));
+    }
+}
+fn row_git(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "git", window, cx); }
+fn row_archived(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "archived", window, cx); }
+fn row_storage_confirm(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = settings(w, "storage", window, cx);
+    if let Some(row) = w.client().settings_page("storage").ok().and_then(|page| page.row("budget").cloned()) {
+        view.update(cx, |view, cx| view.act(kuvo::settings::Act::Change { at: kuvo::settings::At::of("storage", &row), value: serde_json::json!(536_870_912), asked: false }, cx));
+    }
 }
 fn general(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "General", window, cx);
@@ -932,6 +952,22 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug == "computers-many" {
                 stand_in.more_computers(40);
+            }
+            if screen.slug.starts_with("settings-row-") {
+                use serde_json::json;
+                let confirm = json!({"value":805306368,"confirm":{"title":"Keep less of older versions?","body":"Older versions take 768 MiB now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.","button":"Keep up to"}});
+                let pages = [
+                    ("storage","Storage","System","drive",json!([
+                        {"id":"copies","title":"Copies of what agents made","kind":"status","value":1342177280,"unit":{"name":"GiB","factor":1073741824,"decimals":1,"rounding":"nearest"}},
+                        {"id":"budget","title":"Older versions keep up to","line":"Past it, the oldest go first.","kind":"number","value":1073741824,"unit":{"name":"GiB","factor":1073741824,"decimals":2,"rounding":"nearest"},"can":true,"confirmBelow":confirm,"suggestions":[{"value":268435456,"title":"0.25 GiB"},{"value":536870912,"title":"0.5 GiB"},{"value":1073741824,"title":"1 GiB"},{"value":2147483648_u64,"title":"2 GiB"},{"value":5368709120_u64,"title":"5 GiB"},{"value":10737418240_u64,"title":"10 GiB"}]}
+                    ])),
+                    ("worktrees","Worktrees","System","folder",json!([{"id":"folder","title":"Folder","kind":"folder","value":"","placeholder":"Kuvo Code’s Folder","can":true,"folder":{"choose":"Choose a Folder…","clear":"Kuvo Code’s Folder","prompt":"Choose","message":"Choose where new worktrees go. Each one is a folder in it."}}])),
+                    ("git","Git","System","branch",json!([{"id":"instructions","title":"Commit instructions","kind":"text","value":"Write a short title.\nExplain why the change matters.","lines":{"min":3,"max":8},"can":true}])),
+                    ("archived","Archived Sessions","System","archive",json!([{"id":"sessions","title":"Kuvo Code","kind":"list","search":{"placeholder":"Search archived sessions","empty":"No archived session matches “{query}”."},"items":[{"id":"session","title":"Fix settings","line":"Kuvo Code","kind":"actions","actions":[{"id":"restore","title":"Restore"}]}]}]))
+                ];
+                for (id,title,group,icon,rows) in pages {
+                    stand_in.add_settings_section(json!({"id":id,"title":title,"group":group,"icon":icon}),json!({"id":id,"title":title,"groups":[{"id":"settings","title": if id == "archived" { "Kuvo Code" } else { "" },"rows":rows}]}));
+                }
             }
             if screen.slug == "settings-a-kinds" {
                 let (section, page) = kuvo::stand_in::settings::every_kind();

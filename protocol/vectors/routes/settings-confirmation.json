@@ -1,0 +1,25 @@
+{
+  "about": "PATCH kuvo/settings/:section conditional confirmation: only boolean true acknowledges the box warning; refusal must precede mutation. Values relative to confirmBelow.value.",
+  "cases": [
+    {
+      "confirmed": null,
+      "status": 400
+    },
+    {
+      "confirmed": false,
+      "status": 400
+    },
+    {
+      "confirmed": "true",
+      "status": 400
+    },
+    {
+      "confirmed": 1,
+      "status": 400
+    },
+    {
+      "confirmed": true,
+      "status": 200
+    }
+  ]
+}

@@ -61,5 +61,21 @@ export interface RouteShape {
   /** `METHOD path`, a `:name` part standing for any one part (`GET kuvo/wakes/:session`). A HEAD
    * is held to its GET's shape, or has no body. */
   readonly route: string;
+  readonly body?: Shape;
   readonly answers: { readonly [status: number]: Shape | typeof BYTES };
+}
+
+/** Checks a JSON value against the route's declared shape, including request bodies. */
+export function fitsShape(shape: Shape, value: unknown): boolean {
+  if (shape === "any") return true;
+  if (shape === "null") return value === null;
+  if (typeof shape === "string") return shape === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === (shape === "bool" ? "boolean" : shape);
+  if ("literal" in shape) return value === shape.literal;
+  if ("oneOf" in shape) return shape.oneOf.some(each => fitsShape(each, value));
+  if ("list" in shape) return Array.isArray(value) && value.every(each => fitsShape(shape.list, each));
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const fields = value as Record<string, unknown>;
+  if ("map" in shape) return Object.values(fields).every(each => fitsShape(shape.map, each));
+  const declared = Object.entries(shape.object);
+  return declared.every(([key, field]) => key.endsWith("?") && !(key.slice(0, -1) in fields) || (key.replace(/\?$/, "") in fields && fitsShape(field, fields[key.replace(/\?$/, "")]))) && Object.keys(fields).every(key => Object.hasOwn(shape.object, key) || Object.hasOwn(shape.object, key + "?"));
 }
