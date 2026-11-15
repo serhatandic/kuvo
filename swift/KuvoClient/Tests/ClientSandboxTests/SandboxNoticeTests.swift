@@ -56,10 +56,10 @@ struct SandboxNoticeTests {
     @Test func aMachineWhereItCantKeepCommandsFromYourServicesSaysSo() throws {
         // (A Linux machine whose commands can't have a namespace of their own: on, with a gap.)
         // Its words and its page are the box's (`sandbox.report`).
-        let without = try state(#"{"on": true, "able": true, "agents": true, "gaps": ["services"], "needs": "user namespaces", "why": "They run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it allows user namespaces, agents don’t use your vault here and goals don’t run on their own.", "action": "help", "actionLabel": "How to Check…", "opens": "https://www.kuvo.run/code/docs/machines/#sandbox"}"#).notice
+        let without = try state(#"{"on": true, "able": true, "agents": true, "gaps": ["services"], "needs": "user namespaces", "why": "Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it allows user namespaces, agents don’t use your vault here and goals don’t run on their own.", "action": "help", "actionLabel": "How to Check…", "opens": "https://www.kuvo.run/code/docs/machines/#sandbox"}"#).notice
         #expect(without.look == .needsYou, "not the green line that says all's well")
         #expect(without.title == "Commands can still reach your login’s services")
-        #expect(without.detail == "They run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it allows user namespaces, agents don’t use your vault here and goals don’t run on their own.")
+        #expect(without.detail == "Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it allows user namespaces, agents don’t use your vault here and goals don’t run on their own.")
         #expect(without.buttons == [.init(title: "How to Check…", action: .help, opens: URL(string: "https://www.kuvo.run/code/docs/machines/#sandbox"))])
         // A gap a newer box adds reads as none.
         #expect(try state(#"{"on": true, "able": true, "agents": true, "gaps": ["later"]}"#).notice.detail.contains("can’t read your keys"))

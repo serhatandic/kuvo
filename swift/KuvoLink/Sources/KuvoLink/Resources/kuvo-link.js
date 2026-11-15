@@ -7413,7 +7413,7 @@ function fenceState() {
 }
 function servicesWhy(needs) {
   const fix = needs === "util-linux" ? "has util-linux" : "allows user namespaces";
-  return `They run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it ${fix}, agents don’t use your vault here and goals don’t run on their own.`;
+  return `Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it ${fix}, agents don’t use your vault here and goals don’t run on their own.`;
 }
 var REPORT_AFTER = 2;
 function worded(state) {
@@ -45068,7 +45068,7 @@ import fs145 from "node:fs";
 import path153 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4d371515fc8f";
+var BRIDGE_VERSION = "a941628af901";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";

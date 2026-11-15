@@ -444,11 +444,11 @@ fn the_sandbox_is_drawn_in_the_boxs_words(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_machine_whose_commands_reach_your_services_says_so_in_the_boxs_words(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.set_sandbox(json!({ "on": true, "able": true, "agents": true, "gaps": ["services"], "needs": "user namespaces", "why": "They run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd.", "action": "help", "actionLabel": "How to Check…", "opens": "https://docs.stand-in.invalid/sandbox" }));
+    stand_in.set_sandbox(json!({ "on": true, "able": true, "agents": true, "gaps": ["services"], "needs": "user namespaces", "why": "Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd.", "action": "help", "actionLabel": "How to Check…", "opens": "https://docs.stand-in.invalid/sandbox" }));
     let (workspace, cx) = open(cx, stand_in.clone());
     section(&workspace, cx, "Permissions");
     let line = settings(&workspace, cx).read_with(cx, |view, _| view.row_detail("row-sandbox"));
-    assert_eq!(line.as_deref(), Some("They run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd."));
+    assert_eq!(line.as_deref(), Some("Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd."));
     click(cx, "row-sandbox-how-to-check");
     assert_eq!(cx.opened_url().as_deref(), Some("https://docs.stand-in.invalid/sandbox"));
     // Only git's files kept apart: nothing to say.

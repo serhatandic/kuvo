@@ -176,7 +176,7 @@ export function fenceState(): FenceState {
 /** What a sandbox that's on says while commands can still reach your login's services (`gaps`): why, and the page on what the machine needs. */
 export function servicesWhy(needs: string | undefined): string {
   const fix = needs === "util-linux" ? "has util-linux" : "allows user namespaces";
-  return `They run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it ${fix}, agents don’t use your vault here and goals don’t run on their own.`;
+  return `Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it ${fix}, agents don’t use your vault here and goals don’t run on their own.`;
 }
 
 /** The checks failed in a row from which a client offers Report a Problem with the sandbox's row (`report`). */
