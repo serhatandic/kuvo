@@ -78,10 +78,12 @@ fn stand_in() -> bool {
 /// (`KUVO_DEMO_MACHINE_ROOT`, a folder's name in your home folder) and its own bundle ID.
 fn opens() -> Opens {
     let demo_root = std::env::var("KUVO_DEMO_MACHINE_ROOT").ok();
-    let installer = std::env::current_exe().map_err(|_| kuvo_box::install::OnlyAttaches("Kuvo couldn’t find where it’s installed.".into())).and_then(|executable| Installer::for_app(&executable, demo_root.as_deref()));
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let installer = std::env::current_exe().map_err(|_| kuvo_box::install::OnlyAttaches("Kuvo couldn’t find where it’s installed.".into())).and_then(|executable| Installer::for_app(&executable, demo_root.as_deref(), &home));
     // Whose folders and keys this build keeps to: a copy of the app never the real Kuvo's.
-    let names = std::env::current_exe().ok().and_then(|executable| kuvo_box::install::names_for(&executable, demo_root.as_deref()));
+    let names = std::env::current_exe().ok().and_then(|executable| kuvo_box::install::names_for(&executable, demo_root.as_deref(), &home));
     Opens {
+        waits_within: kuvo::launch::WAITS_WITHIN,
         installer,
         attach: Arc::new(move || match &names {
             Some(names) => your_boxes(&names.root, &names.app_id),

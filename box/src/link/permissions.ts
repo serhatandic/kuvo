@@ -122,6 +122,10 @@ export async function* permissionsRoute({ request, json }: RouteContext): AsyncG
   if (typeof id !== "string" || !PERMISSIONS.some(each => each.id === id)) return yield* json(400, { message: "Say which permission to ask about later." });
   const now = boxPermissions();
   if (!now.applies) return yield* json(409, { message: "Nothing on this computer needs macOS's permission." });
-  keepPutOff(new Set([...putOff(), id]));
+  try {
+    keepPutOff(new Set([...putOff(), id]));
+  } catch {
+    return yield* json(500, { message: "Kuvo couldn't keep that on this Mac. Try again." });
+  }
   return yield* json(200, boxPermissions());
 }

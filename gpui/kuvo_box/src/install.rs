@@ -45,7 +45,7 @@ pub fn carried(executable: &Path) -> Option<Carried> {
     if contents.file_name()? != "Contents" || bundle.extension()? != "app" {
         return None;
     }
-    let id = bundle_id(&std::fs::read_to_string(contents.join("Info.plist")).ok()?)?;
+    let id = bundle_id_at(&contents.join("Info.plist"))?;
     let release = contents.join("Resources/box-release");
     let installer = release.join("kuvo-install");
     if !installer.is_file() || !release.join("boxes.json").is_file() {
@@ -68,22 +68,52 @@ pub struct Names {
 /// attaches), keep to the real ones. A copy of the app (a bundle with another ID) keeps to its
 /// own ID and the root it was given (`demo_root`); given none, or one that isn't its own, it has
 /// nothing: it never reads the real Kuvo's password, Keychain item or folders.
-pub fn names_for(executable: &Path, demo_root: Option<&str>) -> Option<Names> {
+pub fn names_for(executable: &Path, demo_root: Option<&str>, home: &Path) -> Option<Names> {
     let real = || Names { root: REAL_ROOT.to_owned(), app_id: REAL_APP.to_owned() };
     let Some(contents) = executable.parent().filter(|folder| folder.file_name().is_some_and(|name| name == "MacOS")).and_then(Path::parent).filter(|contents| contents.file_name().is_some_and(|name| name == "Contents") && contents.parent().is_some_and(|bundle| bundle.extension().is_some_and(|extension| extension == "app"))) else {
         return Some(real());
     };
     // (A bundle whose ID can't be read is nobody's: nothing is taken for the real one.)
-    let id = std::fs::read_to_string(contents.join("Info.plist")).ok().and_then(|plist| bundle_id(&plist))?;
+    let id = bundle_id_at(&contents.join("Info.plist"))?;
     if id == REAL_APP {
         return Some(real());
     }
-    demo_root.filter(|root| own_root(root)).map(|root| Names { root: root.to_owned(), app_id: id })
+    demo_root.filter(|root| own_root(root, home)).map(|root| Names { root: root.to_owned(), app_id: id })
 }
 
-/// Whether `root` can be a copy's own home: a plain folder's name, and not the real one.
-fn own_root(root: &str) -> bool {
-    root != REAL_ROOT && !root.is_empty() && root != "." && root != ".." && root.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+/// Whether `root` can be a copy's own home in `home`: a plain folder's name that isn't the real
+/// one, however it's written. Not the same folder as `~/.kuvo-code` where both are there (a
+/// Mac's disk takes `.KUVO-CODE` for it); not its name in other letters' case where one isn't
+/// there yet; and never a link, which could lead there later.
+fn own_root(root: &str, home: &Path) -> bool {
+    if root.is_empty() || root == "." || root == ".." || !root.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) {
+        return false;
+    }
+    if root.eq_ignore_ascii_case(REAL_ROOT) {
+        return false;
+    }
+    let (own, real) = (home.join(root), home.join(REAL_ROOT));
+    if std::fs::symlink_metadata(&own).is_ok_and(|found| found.file_type().is_symlink()) {
+        return false;
+    }
+    match (std::fs::canonicalize(&own), std::fs::canonicalize(&real)) {
+        (Ok(own), Ok(real)) => own != real,
+        _ => true,
+    }
+}
+
+/// The ID of the bundle whose Info.plist is at `plist`: read as XML, and where it's written the
+/// binary way, asked of macOS's own `plutil` (as the box's installer reads it).
+fn bundle_id_at(plist: &Path) -> Option<String> {
+    if let Some(id) = std::fs::read_to_string(plist).ok().and_then(|text| bundle_id(&text)) {
+        return Some(id);
+    }
+    if !cfg!(target_os = "macos") || !plist.is_file() {
+        return None;
+    }
+    let asked = Command::new("/usr/bin/plutil").args(["-extract", "CFBundleIdentifier", "raw", "-o", "-"]).arg(plist).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    let id = String::from_utf8(asked.stdout).ok()?.trim().to_owned();
+    (asked.status.success() && !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')).then_some(id)
 }
 
 /// `CFBundleIdentifier` in an Info.plist written as XML (as every build of ours writes it).
@@ -220,15 +250,15 @@ impl Outcome {
 impl Installer {
     /// The installer for the app at `executable`, or why this build installs nothing. `demo_root`:
     /// the root a copy of the app was given (`KUVO_DEMO_MACHINE_ROOT`: a folder's name in your
-    /// home folder).
-    pub fn for_app(executable: &Path, demo_root: Option<&str>) -> Result<Installer, OnlyAttaches> {
+    /// home folder, `home`).
+    pub fn for_app(executable: &Path, demo_root: Option<&str>, home: &Path) -> Result<Installer, OnlyAttaches> {
         let Some(carried) = carried(executable) else {
             return Err(OnlyAttaches("This build of Kuvo doesn’t set up a computer. It connects to Kuvo where it’s already set up.".into()));
         };
         let root = match (carried.id == REAL_APP, demo_root) {
             (true, None) => REAL_ROOT.to_owned(),
             (true, Some(_)) => return Err(OnlyAttaches("Kuvo Code itself sets up in ~/.kuvo-code only.".into())),
-            (false, Some(root)) if own_root(root) => root.to_owned(),
+            (false, Some(root)) if own_root(root, home) => root.to_owned(),
             (false, _) => return Err(OnlyAttaches("This copy of Kuvo doesn’t set up a computer: only Kuvo Code itself does, or a copy given a folder of its own.".into())),
         };
         Ok(Installer { carried, root, shell: PathBuf::from("/bin/sh") })

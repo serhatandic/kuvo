@@ -965,6 +965,15 @@ answer took its place; a permission the box no longer lists counted as allowed; 
 Settings address is ever opened; a test asserted words its own stand-in made up. Left: no cap
 on how long the installer may run (the script's own timeouts hold); Not Now has no way back yet.
 
+**The lead's separate review** (2026-11-16): no MUST. Fixed, with tests: a copy's root is
+compared with the real home by place (the same folder, its name in any letters' case, never a
+link), not by spelling; a bundle's ID is read from a binary plist too; waiting on something else
+at work is capped (30 minutes, then said with Try Again) and says nothing of a move where there's
+no move's step; a Not Now that can't be kept answers `500 {message}`; the helper's bundle is
+checked to be there before the drag is offered. `box.permissions.list` names the new fields
+(the desktop app shows nothing where a box hasn't them, so no gate list needs it); PROTOCOL.md
+says any client may send `{later}`.
+
 **Not seen in a running window.** Rendered offscreen and driven in GPUI's test window. For the
 rehearsal account: the real installer from a signed bundle; the tile as a panel over the real
 System Settings, the drag into its list (the bundle's URL is handed without a trailing slash),

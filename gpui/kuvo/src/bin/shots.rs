@@ -1159,7 +1159,7 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
                 }
                 None => Err("Kuvo Code isn’t set up on this Mac.".into()),
             });
-            let opens = Opens { installer: Err(OnlyAttaches("This build of Kuvo doesn’t set up a computer. It connects to Kuvo where it’s already set up.".into())), attach };
+            let opens = Opens { waits_within: kuvo::launch::WAITS_WITHIN, installer: Err(OnlyAttaches("This build of Kuvo doesn’t set up a computer. It connects to Kuvo where it’s already set up.".into())), attach };
             let (width, height) = if slug == "launch-failed-narrow" { (720., 620.) } else { (1280., 820.) };
             let window = cx.open_window(size(px(width), px(height)), |window, cx| cx.new(|cx| Launch::new(opens, false, window, cx)))?;
             let any = window.into();
@@ -1192,7 +1192,11 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
         for appearance in [Appearance::Light, Appearance::Dark] {
             cx.update(|cx| Theme::set_appearance(appearance, cx));
             let stand_in = StandIn::at(Replies::Never, NOW);
-            stand_in.set_permissions(|permissions| *permissions = Permissions::nothing_allowed());
+            // (A helper that's there, for the drag to be offered: a folder of this picture's own.)
+            let helper = std::env::temp_dir().join(format!("kuvo-shots-heads-up-{}", std::process::id())).join("Kuvo Helper.app");
+            std::fs::create_dir_all(&helper)?;
+            let bundle = helper.to_string_lossy().into_owned();
+            stand_in.set_permissions(|permissions| *permissions = Permissions { bundle, ..Permissions::nothing_allowed() });
             let client = BoxClient::new(stand_in);
             let window = cx.open_window(size(px(1280.), px(820.)), |window, cx| cx.new(|cx| Workspace::new(client, false, window, cx)))?;
             let any = window.into();
@@ -1219,6 +1223,9 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
                 }
             })?;
             save(cx, any, slug, appearance)?;
+            if let Some(made) = helper.parent() {
+                std::fs::remove_dir_all(made)?;
+            }
         }
     }
     if wanted("permission-tile", "permission") {

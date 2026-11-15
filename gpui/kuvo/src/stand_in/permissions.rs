@@ -55,7 +55,7 @@ impl Permissions {
             return None;
         }
         Some(match method {
-            _ if self.fails => (503, json!({ "message": "The box isn’t answering." })),
+            _ if self.fails => (503, json!({ "message": "Kuvo on this Mac isn’t answering." })),
             "GET" => (200, self.said()),
             "POST" => match body["later"].as_str() {
                 Some(id @ ("screenRecording" | "accessibility")) if self.applies => {

@@ -35,10 +35,18 @@ fn open(cx: &mut TestAppContext, stand_in: StandIn) -> (Entity<Workspace>, &mut 
     (workspace, cx)
 }
 
+/// A stand-in for the helper's bundle, in a folder of the tests' own: there, as the box says.
+fn helper() -> String {
+    static MADE: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let bundle = MADE.get_or_init(|| tempfile::tempdir().unwrap()).path().join("Kuvo Helper.app");
+    std::fs::create_dir_all(bundle.join("Contents")).unwrap();
+    bundle.to_str().unwrap().to_owned()
+}
+
 /// A Mac's own box whose helper says neither permission is allowed.
 fn nothing_allowed() -> StandIn {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.set_permissions(|permissions| *permissions = Permissions::nothing_allowed());
+    stand_in.set_permissions(|permissions| *permissions = Permissions { bundle: helper(), ..Permissions::nothing_allowed() });
     stand_in
 }
 
@@ -101,7 +109,7 @@ fn open_system_settings_opens_the_box_s_pane_with_the_helper_to_drag_beside_it(c
     // The pane the box named, and the tile, holding the helper's bundle as the box said it.
     assert_eq!(cx.opened_url().as_deref(), Some(SCREEN));
     let tile = heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.tile()).expect("the tile");
-    assert_eq!(tile.read_with(cx, |tile, _| tile.bundle().clone()).unwrap().to_str(), Some("/Users/sam/.kuvo-code/bin/Kuvo Helper.app"));
+    assert_eq!(tile.read_with(cx, |tile, _| tile.bundle().clone()).unwrap().to_str(), Some(helper().as_str()));
     // Not allowed yet, a few seconds on: it stays.
     wait(cx, 3 * SECOND);
     assert!(tile_open(&workspace, cx) && cx.windows().len() == 2);
@@ -140,6 +148,18 @@ fn the_helper_s_icon_is_what_s_dragged_and_the_tile_closes_when_you_close_it(cx:
     assert!(!tile_open(&workspace, cx));
     assert!(shown(cx, "permission-heads-up"));
     assert_eq!(about(&workspace, cx).as_deref(), Some("Screen Recording"));
+}
+
+#[gpui::test]
+fn a_helper_that_isnt_where_the_box_says_is_said_and_nothing_is_offered_to_drag(cx: &mut TestAppContext) {
+    let stand_in = nothing_allowed();
+    stand_in.set_permissions(|permissions| permissions.bundle = "/nowhere/Kuvo Helper.app".into());
+    let (workspace, cx) = open(cx, stand_in);
+    click(cx, "permission-open");
+    // System Settings opens all the same (its + can still add it); no tile, and why.
+    assert_eq!(cx.opened_url().as_deref(), Some(SCREEN));
+    assert!(!tile_open(&workspace, cx) && cx.windows().len() == 1);
+    assert!(shown(cx, "permission-heads-up-problem"));
 }
 
 #[gpui::test]

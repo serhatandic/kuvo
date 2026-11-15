@@ -157,7 +157,14 @@ impl HeadsUp {
             Some(facts) => (facts.name.clone().unwrap_or_default(), facts.bundle.clone()),
             None => (String::new(), None),
         };
-        let tile = bundle.filter(|_| permission.by_hand).and_then(|bundle| Tile::open(name.into(), PathBuf::from(bundle), cx)).map(|window| {
+        // (Only a program that's really there is offered to drag; one that isn't is said, with
+        // System Settings open all the same.)
+        let bundle = bundle.filter(|_| permission.by_hand).map(PathBuf::from);
+        if let Some(missing) = bundle.as_ref().filter(|bundle| !(bundle.extension().is_some_and(|extension| extension == "app") && bundle.is_dir())) {
+            self.problem = Some(format!("{name} isn’t where it should be ({}), so there’s nothing to drag. Try again once Kuvo has finished starting.", missing.display()).into());
+        }
+        let bundle = bundle.filter(|_| self.problem.is_none());
+        let tile = bundle.and_then(|bundle| Tile::open(name.into(), bundle, cx)).map(|window| {
             let closed = window.entity(cx).ok().map(|tile| cx.subscribe(&tile, |this: &mut HeadsUp, _, _: &tile::Closed, cx| this.stop_asking(cx)));
             (window, closed)
         });

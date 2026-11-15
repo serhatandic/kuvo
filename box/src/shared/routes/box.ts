@@ -380,7 +380,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "GET kuvo/box/rehome", answers: { 200: REHOME } },
   { route: "POST kuvo/box/rehome", answers: { 200: REHOME } },
   { route: "GET kuvo/box/permissions", answers: { 200: BOX_PERMISSIONS } },
-  { route: "POST kuvo/box/permissions", answers: { 200: BOX_PERMISSIONS, 400: object({ message: string }), 409: object({ message: string }) } },
+  { route: "POST kuvo/box/permissions", answers: { 200: BOX_PERMISSIONS, 400: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }) } },
   { route: "GET kuvo/box/app", answers: { 200: BOX_APP } },
   { route: "POST kuvo/box/app", answers: { 200: BOX_APP } },
   { route: "POST kuvo/box/app/open", answers: { 200: BOX_APP } },

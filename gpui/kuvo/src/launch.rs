@@ -34,6 +34,8 @@ const ASKED_EVERY: Duration = Duration::from_millis(500);
 const HERE_WITHIN: Duration = Duration::from_secs(20);
 /// How often a move still at work from an earlier open is asked about.
 const MOVE_ASKED_EVERY: Duration = Duration::from_secs(2);
+/// How long that's kept up before the window says it's taking long, with Try Again.
+pub const WAITS_WITHIN: Duration = Duration::from_secs(30 * 60);
 
 /// This computer, as the window names it before any box has said its name.
 pub const HERE: &str = if cfg!(target_os = "macos") { "This Mac" } else { "This computer" };
@@ -52,6 +54,9 @@ pub struct Opens {
     pub installer: Result<Installer, OnlyAttaches>,
     /// Reaches your boxes: the one on this computer, and the computers kept from the last run.
     pub attach: Arc<dyn Fn() -> Attached + Send + Sync>,
+    /// How long something else at work on this computer's Kuvo is waited for ([`WAITS_WITHIN`];
+    /// a test's is shorter).
+    pub waits_within: Duration,
 }
 
 /// What the window shows.
@@ -82,6 +87,8 @@ pub struct Launch {
     // BOX-NEEDED: whether this is a first setup isn't known until `status` answers, so the
     // Welcome card can't be shown for a new Mac's download; the installer could say so first.
     setting_up: bool,
+    /// How long something else has been waited for (`waits`), since the start or Try Again.
+    waited: Duration,
     focus: FocusHandle,
     wants_focus: bool,
     _work: Option<Task<()>>,
@@ -91,7 +98,7 @@ impl Launch {
     /// `live`: whether the app it opens follows your boxes (the app), or shows what it's handed
     /// (tests and shots).
     pub fn new(opens: Opens, live: bool, window: &mut Window, cx: &mut Context<Self>) -> Launch {
-        let mut launch = Launch { opens, live, stage: Stage::Asking, card: false, setting_up: false, focus: cx.focus_handle(), wants_focus: true, _work: None };
+        let mut launch = Launch { opens, live, stage: Stage::Asking, card: false, setting_up: false, waited: Duration::ZERO, focus: cx.focus_handle(), wants_focus: true, _work: None };
         launch.begin(window, cx);
         launch
     }
@@ -116,6 +123,7 @@ impl Launch {
         self.stage = Stage::Asking;
         self.card = false;
         self.setting_up = false;
+        self.waited = Duration::ZERO;
         cx.notify();
         self.ask(window, cx);
     }
@@ -186,17 +194,36 @@ impl Launch {
             End::NotStarted => self.attach(Some("Kuvo is set up, but isn’t running".into()), said, None, window, cx),
             // A move the box still runs in a process of its own (the app quit while it worked):
             // drawn where it is, and asked about again until it's done.
-            End::Waits if outcome.progress.is_some() => {
-                let step = outcome.progress.unwrap_or_default();
-                self.card = true;
-                self.stage = Stage::SettingUp { verb: Verb::Move, title: step.title.map(SharedString::from), at: step.index.zip(step.of) };
+            // Something else holds this computer's Kuvo: a move the box still runs in a process of
+            // its own (the app quit while it worked), drawn where it is; or its setup, begun by
+            // another open of the app. Asked about again until it's done, for a while: past
+            // that, said, with Try Again.
+            End::Waits if self.waited < self.opens.waits_within => {
+                match outcome.progress {
+                    Some(step) => {
+                        self.card = true;
+                        self.stage = Stage::SettingUp { verb: Verb::Move, title: step.title.map(SharedString::from), at: step.index.zip(step.of) };
+                    }
+                    // (No move's step to draw: the quiet line, which claims no more than that.)
+                    None => {
+                        self.setting_up = true;
+                        if !matches!(self.stage, Stage::SettingUp { .. }) {
+                            self.stage = Stage::Asking;
+                        }
+                    }
+                }
+                self.waited += MOVE_ASKED_EVERY;
                 cx.notify();
                 self._work = Some(cx.spawn_in(window, async move |this, cx| {
                     cx.background_executor().timer(MOVE_ASKED_EVERY).await;
                     this.update_in(cx, |this, window, cx| this.ask(window, cx)).ok();
                 }));
             }
-            End::Waits => self.attach(Some("Waiting for another move to finish".into()), said, None, window, cx),
+            End::Waits => {
+                let moving = outcome.progress.is_some() || matches!(self.stage, Stage::SettingUp { verb: Verb::Move, .. });
+                let line = if moving { "Still moving your sessions" } else { "Kuvo is still being set up" };
+                self.stop(line.into(), said.unwrap_or_else(|| format!("It’s taking longer than expected on {HERE_IN_WORDS}. It goes on by itself: try again in a while.").into()), None, cx);
+            }
             // (A move that stopped leaves nothing running where no earlier box answers: said.)
             End::Stopped if outcome.ran == Some(Verb::Move) => self.attach(Some("Couldn’t move your sessions".into()), said, Some(format!("Nothing runs on {HERE_IN_WORDS} until this is done.").into()), window, cx),
             End::Stopped => self.attach(Some("Couldn’t set up Kuvo".into()), said, None, window, cx),

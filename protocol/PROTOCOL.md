@@ -6801,6 +6801,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `box.helper` | `kuvo-link.js helper install [--load] [--app <bundle ID>] \| status`: the launch agent that starts Kuvo Helper, a Mac's box's helper, at login ("This Mac's box: its helper"); `kuvo-start serve`; `serve` saying where it answers in `run/serve.json` |
 | `box.ownHome` | a Mac's box can run in a home of its own, laid out as a machine's (`box/kind`, "This Mac's box: a home of its own"); there, `keepsAwake` and `awakeNow` in `kuvo/work/settings` |
 | `box.permissions` | `kuvo/box/permissions`: what macOS allows Kuvo Helper, the program a Mac's box runs under, as its helper notes it ("This Mac's box: its helper", What macOS allows); `helper start` opening the helper itself where Login Items is off for it (`opened`) |
+| `box.permissions.list` | `kuvo/box/permissions`'s `bundle` and `list` (each permission in words, the address of its list in System Settings, `byHand`, `asks`), and `POST {later}` putting one off ("What macOS allows"). A client that draws them shows nothing where a box hasn't this |
 | `box.rehome` | `kuvo/box/rehome`: moving this Mac's box into a home of its own, and back ("This Mac's box: moving this Mac's box"); `kuvo-link.js rehome`, and `here`'s `moving` |
 | `box.rehome.run` | the move the box runs whole itself, from an earlier Kuvo Code with no keeper (`kuvo-link.js rehome --run`, `install --move`: "Moving this Mac's box", The whole move): `kuvo/box/rehome` says `progress` (each step in the box's own words) while one is under way, `dropped` (what it didn't carry), the steps `keys`, `upgrade` and `database`, and `start` and `passwords` among what's `owed` |
 | `box.serve` | `kuvo/box/serve`: the box's server kept running for clients ("Kept for clients"); `kuvo-link.js serve --kept` |
@@ -8009,7 +8010,8 @@ was named Kuvo Code Box, in no release.)
     box (`box/permissions-later.json`) so every client agrees and none asks at each open; once
     it's allowed it's no longer put off, so one taken away later is brought up again. It answers
     as `GET` does. `400 {message}` for no such permission; `409 {message}` where it doesn't
-    apply. `405` for any other method: nothing here grants anything, which only you do, in System
+    apply; `500 {message}` where it couldn't be kept. Any client of the box may send it, a phone
+    too: it only quiets a reminder, and grants nothing. `405` for any other method: nothing here grants anything, which only you do, in System
     Settings › Privacy & Security.
   - A machine's box (Linux, or a Mac set up as one) and a Mac's box still in its app's folder
     answer `{applies: false, name: null, known: false, …null, bundle: null, list: []}`: on Linux there's nothing to allow,

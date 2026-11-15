@@ -305,6 +305,14 @@ test("kuvo/box/permissions: what macOS allows Kuvo Helper, as the helper running
     write(facts, text);
     assert.deepEqual((await box.ask("kuvo/box/permissions")).body, unknown, text);
   }
+  // Not Now that can't be kept (its file's place taken by a folder) is said, never thrown.
+  fs.rmSync(path.join(where.K, "box", "permissions-later.json"), { force: true });
+  fs.mkdirSync(path.join(where.K, "box", "permissions-later.json", "in the way"), { recursive: true });
+  write(facts, JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: false, accessibility: true }));
+  const unkept = await box.ask("kuvo/box/permissions", "POST", { later: "screenRecording" });
+  assert.equal(unkept.status, 500);
+  assert.equal(typeof unkept.body.message, "string");
+  fs.rmSync(path.join(where.K, "box", "permissions-later.json"), { recursive: true });
   // Nothing here grants anything, whatever it's sent.
   assert.equal((await box.ask("kuvo/box/permissions", "PUT")).status, 405);
   await box.stop();

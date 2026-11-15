@@ -1564,6 +1564,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "box.ownHome": ["GET", "kuvo/work/settings"],
     // (What macOS allows the program this Mac's box runs under: here, a machine's, it doesn't apply.)
     "box.permissions": ["GET", "kuvo/box/permissions"],
+    // (Each permission in words, the program's bundle, and one put off: here, nothing to put off.)
+    "box.permissions.list": ["POST", "kuvo/box/permissions"],
     // (Moving this Mac's box into a home of its own: how it stands, here nothing.)
     "box.rehome": ["GET", "kuvo/box/rehome"],
     // (And the move the box runs whole itself: its steps in its own words, and what it didn't carry.)

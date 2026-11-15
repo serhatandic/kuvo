@@ -11,9 +11,16 @@ use kuvo_box::install::{End, Installer, Outcome, Progress, Step, Verb};
 const TRIAL: &str = "run.kuvo.code.trial713.p5";
 const ROOT: &str = ".kuvo-trial713-p5";
 
+/// A home folder of the tests' own, empty, that outlives each test (nothing is written in it by
+/// the code under test: a root is only ever looked for there).
+fn home() -> std::path::PathBuf {
+    static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| tempfile::tempdir().unwrap()).path().to_owned()
+}
+
 fn bundle(folder: &Path) -> (Bundle, Installer) {
     let bundle = Bundle::make(folder, TRIAL);
-    let installer = Installer::for_app(&bundle.executable(), Some(ROOT)).expect("a copy with a root of its own installs");
+    let installer = Installer::for_app(&bundle.executable(), Some(ROOT), &home()).expect("a copy with a root of its own installs");
     (bundle, installer)
 }
 
@@ -189,7 +196,7 @@ fn nothing_the_app_was_started_with_reaches_the_installer() {
 fn started_with_kuvo_variables() {
     let Some(executable) = std::env::var_os("KUVO_TEST_P5_BUNDLE") else { return };
     assert!(std::env::var_os("KUVO_HOME").is_some());
-    let installer = Installer::for_app(Path::new(&executable), Some(ROOT)).unwrap();
+    let installer = Installer::for_app(Path::new(&executable), Some(ROOT), &home()).unwrap();
     assert_eq!(set_up(&installer).0.end, End::Attach);
 }
 
@@ -197,25 +204,43 @@ fn started_with_kuvo_variables() {
 fn a_build_that_isnt_the_app_in_its_bundle_never_starts_the_installer() {
     let made = tempfile::tempdir().unwrap();
     // A dev build (`cargo run`): this test's own program, in no bundle.
-    let refused = Installer::for_app(&std::env::current_exe().unwrap(), None).unwrap_err();
+    let refused = Installer::for_app(&std::env::current_exe().unwrap(), None, &home()).unwrap_err();
     assert!(refused.0.contains("doesn’t set up a computer"), "{}", refused.0);
     // (Nor with a root named: it carries no release to install.)
-    assert!(Installer::for_app(&std::env::current_exe().unwrap(), Some(ROOT)).is_err());
+    assert!(Installer::for_app(&std::env::current_exe().unwrap(), Some(ROOT), &home()).is_err());
     // A copy of the app with no root of its own, or the real one's: never the real ~/.kuvo-code.
     let copy = Bundle::make(&made.path().join("copy"), TRIAL);
-    for root in [None, Some(".kuvo-code"), Some(""), Some(".."), Some("a/b"), Some("../.kuvo-code")] {
-        assert!(Installer::for_app(&copy.executable(), root).is_err(), "{root:?}");
+    // (Nor the real one in other letters' case, which a Mac's disk takes for it, nor a link to it.)
+    let lived = tempfile::tempdir().unwrap();
+    std::fs::create_dir(lived.path().join(".kuvo-code")).unwrap();
+    std::os::unix::fs::symlink(lived.path().join(".kuvo-code"), lived.path().join(".kuvo-linked")).unwrap();
+    std::os::unix::fs::symlink(lived.path().join("nowhere-yet"), lived.path().join(".kuvo-dangling")).unwrap();
+    for root in [None, Some(".kuvo-code"), Some(".KUVO-CODE"), Some(".Kuvo-Code"), Some(".kuvo-linked"), Some(".kuvo-dangling"), Some(""), Some(".."), Some("a/b"), Some("../.kuvo-code")] {
+        assert!(Installer::for_app(&copy.executable(), root, lived.path()).is_err(), "{root:?}");
     }
+    // (In a home with no Kuvo yet, too: the real name in any letters' case is never a copy's.)
+    for root in [".kuvo-code", ".KUVO-CODE", ".Kuvo-Code"] {
+        assert!(Installer::for_app(&copy.executable(), Some(root), &home()).is_err(), "{root}");
+    }
+    // (A root of its own beside the real one is its own.)
+    assert!(Installer::for_app(&copy.executable(), Some(ROOT), lived.path()).is_ok());
     // Kuvo Code itself, pointed at a root that isn't its own.
     let real = Bundle::make(&made.path().join("real"), "run.kuvo.code");
-    assert!(Installer::for_app(&real.executable(), Some(ROOT)).is_err());
+    assert!(Installer::for_app(&real.executable(), Some(ROOT), &home()).is_err());
     // A bundle with no release in it, or no ID.
     let empty = Bundle::make(&made.path().join("empty"), TRIAL);
     std::fs::remove_file(empty.path.join("Contents/Resources/box-release/kuvo-install")).unwrap();
-    assert!(Installer::for_app(&empty.executable(), Some(ROOT)).is_err());
+    assert!(Installer::for_app(&empty.executable(), Some(ROOT), &home()).is_err());
+    // (An ID written the binary way is read all the same, as the installer reads it.)
+    if cfg!(target_os = "macos") {
+        let binary = Bundle::make(&made.path().join("binary"), TRIAL);
+        let converted = std::process::Command::new("/usr/bin/plutil").args(["-convert", "binary1"]).arg(binary.path.join("Contents/Info.plist")).status().unwrap();
+        assert!(converted.success());
+        assert_eq!(Installer::for_app(&binary.executable(), Some(ROOT), &home()).unwrap().carried().id, TRIAL);
+    }
     let nameless = Bundle::make(&made.path().join("nameless"), TRIAL);
     std::fs::write(nameless.path.join("Contents/Info.plist"), "bplist00").unwrap();
-    assert!(Installer::for_app(&nameless.executable(), Some(ROOT)).is_err());
+    assert!(Installer::for_app(&nameless.executable(), Some(ROOT), &home()).is_err());
     // None of them was ever started.
     for bundle in [&copy, &real, &empty, &nameless] {
         assert_eq!(bundle.asked(), Vec::<String>::new());
@@ -229,19 +254,23 @@ fn a_copy_of_the_app_never_uses_the_real_kuvo_s_folders_or_keys() {
     let real = Names { root: ".kuvo-code".into(), app_id: "run.kuvo.code".into() };
     // Kuvo Code itself, and a build in no bundle (which only ever attaches): the real ones.
     let app = Bundle::make(&made.path().join("real"), "run.kuvo.code");
-    assert_eq!(names_for(&app.executable(), None), Some(real.clone()));
-    assert_eq!(names_for(&std::env::current_exe().unwrap(), None), Some(real));
+    assert_eq!(names_for(&app.executable(), None, &home()), Some(real.clone()));
+    assert_eq!(names_for(&std::env::current_exe().unwrap(), None, &home()), Some(real));
     // A copy with a root of its own: its own ID and that root.
     let copy = Bundle::make(&made.path().join("copy"), TRIAL);
-    assert_eq!(names_for(&copy.executable(), Some(ROOT)), Some(Names { root: ROOT.into(), app_id: TRIAL.into() }));
+    assert_eq!(names_for(&copy.executable(), Some(ROOT), &home()), Some(Names { root: ROOT.into(), app_id: TRIAL.into() }));
     // A copy opened with none (from Finder), or pointed at the real one: nothing at all, never
     // the real Kuvo's password, Keychain item or folders.
-    for root in [None, Some(".kuvo-code"), Some(""), Some("../.kuvo-code")] {
-        assert_eq!(names_for(&copy.executable(), root), None, "{root:?}");
+    let lived = tempfile::tempdir().unwrap();
+    std::fs::create_dir(lived.path().join(".kuvo-code")).unwrap();
+    std::os::unix::fs::symlink(lived.path().join(".kuvo-code"), lived.path().join(".kuvo-linked")).unwrap();
+    for root in [None, Some(".kuvo-code"), Some(".KUVO-CODE"), Some(".kuvo-linked"), Some(""), Some("../.kuvo-code")] {
+        assert_eq!(names_for(&copy.executable(), root, lived.path()), None, "{root:?}");
     }
+    assert_eq!(names_for(&copy.executable(), Some(ROOT), lived.path()), Some(Names { root: ROOT.into(), app_id: TRIAL.into() }));
     // Nor a bundle whose ID can't be read.
     std::fs::write(copy.path.join("Contents/Info.plist"), "bplist00").unwrap();
-    assert_eq!(names_for(&copy.executable(), Some(ROOT)), None);
+    assert_eq!(names_for(&copy.executable(), Some(ROOT), &home()), None);
 }
 
 #[test]
@@ -249,7 +278,7 @@ fn kuvo_code_itself_installs_into_its_own_home_and_carries_the_keychain_tool() {
     let made = tempfile::tempdir().unwrap();
     let real = Bundle::make(made.path(), "run.kuvo.code");
     // (Only how it would be asked is checked: this test never runs it against the real home.)
-    let installer = Installer::for_app(&real.executable(), None).unwrap();
+    let installer = Installer::for_app(&real.executable(), None, &home()).unwrap();
     assert_eq!(installer.root(), ".kuvo-code");
     let carried = installer.carried();
     assert_eq!(carried.id, "run.kuvo.code");

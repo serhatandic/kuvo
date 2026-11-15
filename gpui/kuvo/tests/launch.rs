@@ -57,7 +57,7 @@ fn open<'a>(cx: &'a mut TestAppContext, installer: Result<Installer, OnlyAttache
         Theme::init(Appearance::Light, cx);
         kuvo::bind_keys(cx);
     });
-    let opens = Opens { installer, attach: here.attach() };
+    let opens = Opens { installer, attach: here.attach(), waits_within: WAITS };
     let window = cx.add_window(move |window, cx| Launch::new(opens, false, window, cx));
     let launch = window.root(cx).unwrap();
     let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
@@ -68,7 +68,7 @@ fn open<'a>(cx: &'a mut TestAppContext, installer: Result<Installer, OnlyAttache
 
 fn carried(folder: &Path) -> (Bundle, Result<Installer, OnlyAttaches>) {
     let bundle = Bundle::make(folder, TRIAL);
-    let installer = Installer::for_app(&bundle.executable(), Some(ROOT));
+    let installer = Installer::for_app(&bundle.executable(), Some(ROOT), folder);
     assert!(installer.is_ok());
     (bundle, installer)
 }
@@ -117,6 +117,8 @@ fn verbs(bundle: &Bundle) -> Vec<String> {
 
 /// What reaching this computer's Kuvo says when it isn't answering (`kuvo_box::place`'s words).
 const NOT_RUNNING: &str = "Kuvo Code on this Mac isn't running.";
+/// How long these tests' window waits on something else at work before it says so.
+const WAITS: Duration = Duration::from_secs(20);
 const FRESH: &str = r#"{"verdict":"fresh","verb":"new","status":{}}"#;
 const DONE: &str = r#"{"result":"done","verdict":"ours","started":true,"status":{}}"#;
 
@@ -277,6 +279,44 @@ fn a_move_still_at_work_from_an_earlier_open_is_drawn_where_it_is_until_its_done
 }
 
 #[gpui::test]
+fn a_move_that_goes_on_and_on_is_said_with_try_again_rather_than_waited_for_forever(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, installer) = carried(made.path());
+    bundle.says("status", None, 0, &[r#"{"verdict":"waits","verb":null,"status":{"progress":{"step":"clone","title":"Copying your sessions and settings","index":3,"of":12}}}"#]);
+    let here = Here::default();
+    let (launch, cx) = open(cx, installer, &here);
+    wait(cx, Duration::from_secs(16));
+    assert!(!shown(cx, "launch-again") && shown(cx, "launch-steps"));
+    wait(cx, Duration::from_secs(6));
+    assert_eq!(line(&launch, cx), "Still moving your sessions");
+    assert!(shown(cx, "launch-again") && shown(cx, "launch-message"));
+    // Nothing but `status` was ever run; Try Again asks from the start.
+    assert!(verbs(&bundle).iter().all(|verb| verb == "status"));
+    let asked = verbs(&bundle).len();
+    click(cx, "launch-again");
+    assert_eq!(verbs(&bundle).len(), asked + 1);
+    assert!(shown(cx, "launch-steps") && !shown(cx, "launch-again"));
+}
+
+#[gpui::test]
+fn a_second_open_while_the_first_sets_this_computer_up_waits_for_it_and_says_nothing_of_a_move(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, installer) = carried(made.path());
+    // The first open holds the lock while it sets up; no move, so no step to draw.
+    bundle.says("status", None, 0, &[r#"{"verdict":"waits","verb":null,"status":{}}"#]);
+    let here = Here::default();
+    let (launch, cx) = open(cx, installer, &here);
+    assert!(!shown(cx, "first-run-card") && !shown(cx, "launch-again") && !shown(cx, "launch-message"));
+    assert_eq!(launch.read_with(cx, |launch, _| launch.waiting_words()), "Setting up Kuvo…");
+    // Done: it opens.
+    bundle.says("status", None, 0, &[r#"{"verdict":"ours","verb":null,"status":{}}"#]);
+    here.answers(&StandIn::first_run(Replies::Never, NOW, Scenario::Nothing));
+    wait(cx, Duration::from_secs(2));
+    assert!(opened(&launch, cx));
+    assert!(verbs(&bundle).iter().all(|verb| verb == "status"));
+}
+
+#[gpui::test]
 fn a_box_an_earlier_build_still_runs_is_used_while_it_cant_be_moved(cx: &mut TestAppContext) {
     let made = tempfile::tempdir().unwrap();
     let (bundle, installer) = carried(made.path());
@@ -369,7 +409,7 @@ fn an_installer_that_cant_be_read_is_said_plainly(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_build_that_isnt_the_app_in_its_bundle_only_attaches(cx: &mut TestAppContext) {
     // A dev build: this test's own program, in no bundle.
-    let dev = Installer::for_app(&std::env::current_exe().unwrap(), None);
+    let dev = Installer::for_app(&std::env::current_exe().unwrap(), None, std::env::temp_dir().as_path());
     assert!(dev.is_err());
     // Nothing here: it says so, and that this build installs nothing. Nothing was installed.
     let here = Here::default();
