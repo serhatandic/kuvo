@@ -199,11 +199,13 @@ async function permissionsPage(context: RouteContext): Promise<SettingsPage> {
 
   if (sandbox.status === 200) {
     const state = sandbox.value;
-    const action = state.on ? null : sandboxAction(state, name, here);
+    // (On, but with commands still reaching your login's services: why, and its page, as off.)
+    const needsYou = !state.on || state.gaps?.includes("services") === true;
+    const action = needsYou ? sandboxAction(state, name, here) : null;
     groups.push({
       id: "sandbox", title: "Sandbox", rows: [row({
-        id: "sandbox", title: "Sandbox", line: state.on ? "Agents' commands here run in it." : (state.why ?? ""),
-        ...(state.on ? {} : { tone: "warning" as const }),
+        id: "sandbox", title: "Sandbox", line: needsYou ? (state.why ?? "") : "Agents' commands here run in it.",
+        ...(needsYou ? { tone: "warning" as const } : {}),
         kind: action ? "actions" : "status", value: state.on ? "On" : "Off",
         ...(action ? { actions: [action] } : {}),
       })],

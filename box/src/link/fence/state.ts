@@ -53,6 +53,8 @@ export interface FenceState {
   check?: FenceCheck;
   /** Checks failed in a row (`checkFailed`, `checking`). */
   failures?: number;
+  /** Its check failed `REPORT_AFTER` times or more in a row: a client offers Report a Problem, with these words for what failed. */
+  report?: string;
   /** While it's on, what it can't keep commands from on this computer: `services`, the services
    * your login runs (systemd, your keyring, your SSH agent), and git's own files in the repositories
    * they write (fence/landlock.ts, KEEP_GIT), where commands can't have a namespace of their own
@@ -168,12 +170,35 @@ export function actionOpens(action: FenceAction): { opens: string; opensHere?: t
  * words of the button for what you can do about it (PROTOCOL.md, "Sandbox", `sandbox.words`), and
  * the address it opens where it sends no route (`sandbox.opens`). */
 export function fenceState(): FenceState {
-  const state = fenceNow();
-  if (state.on) return state;
+  return worded(fenceNow());
+}
+
+/** What a sandbox that's on says while commands can still reach your login's services (`gaps`): why, and the page on what the machine needs. */
+export function servicesWhy(needs: string | undefined): string {
+  const fix = needs === "util-linux" ? "has util-linux" : "allows user namespaces";
+  return `They run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it ${fix}, agents don’t use your vault here and goals don’t run on their own.`;
+}
+
+/** The checks failed in a row from which a client offers Report a Problem with the sandbox's row (`report`). */
+export const REPORT_AFTER = 2;
+
+/**
+ * A state in the box's words (`sandbox.words`, `sandbox.opens`, `sandbox.report`): while it isn't on,
+ * why, its button's words and the address one with no route opens, and, once its check failed
+ * `REPORT_AFTER` times in a row, what a report of it says (`report`); while it's on but commands can
+ * reach your login's services, why, and the docs' page on what a machine needs (`action` `help`).
+ */
+export function worded(state: FenceState): FenceState {
+  if (state.on) {
+    if (!state.gaps?.includes("services")) return state;
+    return { ...state, why: servicesWhy(state.needs), action: "help", actionLabel: actionLabel("help"), ...actionOpens("help") };
+  }
+  const why = state.why ?? (state.reason ? WHY[state.reason] : undefined);
   return {
     ...state,
-    ...(state.reason && !state.why ? { why: WHY[state.reason] } : {}),
+    ...(why ? { why } : {}),
     ...(state.action ? { actionLabel: actionLabel(state.action, state.reason), ...(state.route ? {} : actionOpens(state.action)) } : {}),
+    ...((state.failures ?? 0) >= REPORT_AFTER ? { report: `The sandbox’s check failed ${state.failures} times in a row: ${why ?? "it didn’t say why"}${state.check ? ` (check: ${state.check})` : ""}` } : {}),
   };
 }
 

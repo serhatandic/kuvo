@@ -917,7 +917,7 @@ describe("plan_limits, an agent's read of them", () => {
 describe("an account's rings (#711)", () => {
   const { limitRows } = require("../../src/agents/limits-rows") as typeof import("../../src/agents/limits-rows")
   const rowOf = (service: string, windows: any[]) =>
-    limitRows([{ key: "k", name: "mac", here: true, away: false, accounts: [{ provider: service, service, windows: windows.map((window) => ({ read: 1, source: "usage", ...window })) } as any] }])[0]!
+    limitRows([{ key: "k", name: "mac", here: true, away: false, accounts: [{ provider: service, service, windows: windows.map((window) => ({ read: 1, source: "usage", ...window })) } as any] }], 0)[0]!
 
   test("Claude's rows say its two rings, the session and the week, each with how close it is, on the route and its event", async () => {
     ClaudeAgent.keychain = true
@@ -961,7 +961,7 @@ describe("an account's rings (#711)", () => {
   // limit, which a client draws as unknown, never as calm.
   test("a row says the account's level: its rings' higher one, a balance's or a capped extra's, and none where nothing has a limit", () => {
     const row = (account: Record<string, unknown>) =>
-      limitRows([{ key: "k", name: "mac", here: true, away: false, accounts: [{ provider: "x", service: "x", windows: [], ...account } as any] }])[0]!
+      limitRows([{ key: "k", name: "mac", here: true, away: false, accounts: [{ provider: "x", service: "x", windows: [], ...account } as any] }], 0)[0]!
     const window = (id: string, used: number, minutes: number) => ({ id, used, minutes, read: 1, source: "usage" })
     expect(row({ windows: [window("five_hour", 0.2, 300), window("seven_day", 0.75, 10_080)] }).level).toBe("near")
     expect(row({ windows: [window("five_hour", 0.95, 300), window("seven_day", 0.1, 10_080)] }).level).toBe("over")
@@ -1005,5 +1005,113 @@ describe("an account's rings (#711)", () => {
     expect(rings(["gemini-weekly", "3p-5h", "3p-weekly"])).toEqual({ long: "gemini-weekly" })
     // Only Claude's pool read: its two.
     expect(rings(["3p-5h", "3p-weekly"])).toEqual({ short: "3p-5h", long: "3p-weekly" })
+  })
+})
+
+// #668 5a-5b: the box names every row and window, and says which ring one bar shows and which
+// window started over, so no client keeps a table of names or a clock of its own for them.
+describe("names, the bar's ring and windows that started over (#668)", () => {
+  const { limitRows } = require("../../src/agents/limits-rows") as typeof import("../../src/agents/limits-rows")
+  const at = (window: any) => ({ read: 1, source: "usage", ...window })
+  const box = (key: string, name: string, here: boolean, accounts: any[]) => ({ key, name, here, away: false, accounts: accounts.map((account) => ({ ...account, windows: (account.windows ?? []).map(at) })) })
+
+  test("every provider's rows and windows have a name", () => {
+    const accounts = [
+      { provider: "claude-code", service: "claude", agent: "claude", account: "default", windows: [{ id: "five_hour", used: 0.1, minutes: 300 }, { id: "seven_day", used: 0.2, minutes: 10_080 }, { id: "seven_day_sonnet", used: 0.3, minutes: 10_080, model: "Sonnet" }] },
+      { provider: "claude-code@1f2e3d4c", service: "claude", agent: "claude", account: "1f2e3d4c", label: " Work ", windows: [] },
+      { provider: "codex-cli", service: "codex", agent: "codex", account: "default", windows: [{ id: "primary", used: 0.1, minutes: 300 }, { id: "secondary", used: 0.1, minutes: 10_080 }] },
+      { provider: "grok-cli", service: "grok", agent: "grok", account: "default", windows: [{ id: "weekly", used: 0.1, minutes: 10_079 }] },
+      { provider: "cursor", service: "cursor", agent: "cursor", account: "default", windows: [{ id: "total", used: 0.1, name: "Total usage" }, { id: "grok_bot", used: 0.1, minutes: 4_320, name: "Grok Bot usage" }] },
+      { provider: "antigravity", service: "antigravity", agent: "antigravity", account: "default", windows: [{ id: "gemini-5h", used: 0.1, minutes: 300, name: "Gemini models" }] },
+      { provider: "openai", service: "codex", windows: [{ id: "primary", used: 0.1, minutes: 480 }] },
+      { provider: "xai", service: "grok", windows: [{ id: "weekly", used: 0.1, minutes: 10_080 }] },
+      { provider: "github-copilot", service: "copilot", windows: [{ id: "premium", used: 0.1, minutes: 43_200, name: "Premium requests" }] },
+      { provider: "openrouter", service: "openrouter", windows: [{ id: "key", used: 0.1, name: "Key limit" }] },
+      { provider: "zai-coding-plan", service: "zai", windows: [{ id: "session", used: 0.1, minutes: 300 }, { id: "web_search", used: 0.1, name: "Web searches" }] },
+      { provider: "opencode-go", service: "opencode", windows: [{ id: "monthly", used: 0.1, minutes: 44_640 }] },
+      { provider: "ollama", service: "ollama", windows: [{ id: "odd", used: 0.1 }] },
+      { provider: "newer", service: "newer", windows: [] },
+    ]
+    const rows = limitRows([box("mac", "Mac", true, accounts)], 0)
+    expect(rows.map((row) => row.title)).toEqual(["Claude", "Claude · Work", "Codex", "Grok", "Cursor", "Antigravity", "ChatGPT", "SuperGrok", "Copilot", "OpenRouter", "Z.ai", "OpenCode Go", "Ollama", "Newer"])
+    expect(rows.map((row) => row.windows.map((window) => window.title))).toEqual([
+      ["Session", "Weekly", "Sonnet"], [], ["Session", "Weekly"], ["6-day"], ["Total usage", "Grok Bot usage"], ["Gemini models"],
+      ["8-hour"], ["Weekly"], ["Premium requests"], ["Key limit"], ["Session", "Web searches"], ["Monthly"], ["Limit"], [],
+    ])
+  })
+
+  test("two rows that would have one name are told apart, as seen from the box that answers", () => {
+    const titles = (boxes: any[]) => limitRows(boxes, 0).map((row) => row.title)
+    // Codex's own sign-in and the engine's ChatGPT, each a different account here: the engine's is its plan's.
+    expect(titles([box("mac", "Mac", true, [{ provider: "codex-cli", service: "codex", agent: "codex" }, { provider: "openai", service: "codex", agent: undefined }])])).toEqual(["Codex", "ChatGPT"])
+    // Two Claude accounts that can't say who they are, one here and one on two machines: the other gets its computers' names.
+    expect(titles([
+      box("mac", "Mac", true, [{ provider: "claude-code", service: "claude", agent: "claude" }]),
+      box("h", "hetzner", false, [{ provider: "claude-code", service: "claude", agent: "claude", identity: "aaaaaaaaaaaaaaaa" }]),
+      box("l", "lokum", false, [{ provider: "claude-code", service: "claude", agent: "claude", identity: "aaaaaaaaaaaaaaaa" }]),
+    ])).toEqual(["Claude", "Claude · hetzner, lokum"])
+    // Both here, one also on a machine: that one adds the machine's name.
+    expect(titles([
+      box("mac", "Mac", true, [{ provider: "claude-code", service: "claude", agent: "claude", identity: "bbbbbbbbbbbbbbbb" }, { provider: "claude-code@x", service: "claude", agent: "claude" }]),
+      box("h", "hetzner", false, [{ provider: "claude-code", service: "claude", agent: "claude", identity: "bbbbbbbbbbbbbbbb" }]),
+    ])).toEqual(["Claude · hetzner", "Claude"])
+  })
+
+  test("one bar shows the fuller ring, the session where they're as full, and a ring that started over counts as empty", () => {
+    const bar = (windows: any[], now = 0) => limitRows([box("mac", "Mac", true, [{ provider: "x", service: "x", windows }])], now)[0]!.bar
+    expect(bar([{ id: "five_hour", used: 0.3, minutes: 300 }, { id: "seven_day", used: 0.8, minutes: 10_080 }])).toBe("long")
+    expect(bar([{ id: "five_hour", used: 0.9, minutes: 300 }, { id: "seven_day", used: 0.8, minutes: 10_080 }])).toBe("short")
+    expect(bar([{ id: "five_hour", used: 0.5, minutes: 300 }, { id: "seven_day", used: 0.5, minutes: 10_080 }])).toBe("short")
+    expect(bar([{ id: "five_hour", used: 0.9, minutes: 300, resetsAt: 100 }, { id: "seven_day", used: 0.4, minutes: 10_080, resetsAt: 900 }], 100)).toBe("long")
+    expect(bar([{ id: "key", used: 0.2, name: "Key limit" }])).toBe("long")
+    expect(bar([])).toBeUndefined()
+  })
+
+  test("a window whose reset has passed has started over: empty, calm, and without the old period's reset or amount", () => {
+    const [row] = limitRows([box("mac", "Mac", true, [{ provider: "x", service: "x", windows: [
+      { id: "five_hour", used: 0.95, minutes: 300, resetsAt: 100 },
+      { id: "seven_day", used: 0.75, minutes: 10_080, resetsAt: 900 },
+      { id: "searches", used: 0.97, name: "Web searches", resetsAt: 50, amount: { used: 97, limit: 100, unit: "requests" } },
+    ] }])], 100)
+    expect(row!.windows).toEqual([
+      { id: "five_hour", used: 0, minutes: 300, read: 1, source: "usage", title: "Session", expired: true, level: "calm", span: "short" },
+      { id: "seven_day", used: 0.75, minutes: 10_080, resetsAt: 900, read: 1, source: "usage", title: "Weekly", level: "near", span: "long" },
+      { id: "searches", used: 0, name: "Web searches", read: 1, source: "usage", title: "Web searches", expired: true, level: "calm" },
+    ])
+    expect(row!.rings).toEqual({ short: { window: "five_hour", used: 0, level: "calm" }, long: { window: "seven_day", used: 0.75, resetsAt: 900, level: "near" } })
+    expect(row!.level).toBe("near")
+  })
+
+  test("on the route and its event: named accounts and rows, and clients told when a window starts over", async () => {
+    ClaudeAgent.keychain = true
+    const { heardWindows } = await import("../../src/agents/agents/claude-limits")
+    const own = new TestClaude(home)
+    signIn(home, "default", "token-own")
+    const limits = new Limits(() => agentAccounts([own]), undefined, clock.now)
+    await limits.refresh()
+    const fiveHour = Math.floor(clock.at / 1000) + 3_600
+    for (const window of heardWindows({ status: "allowed", rateLimitType: "five_hour", utilization: 0.93, unifiedWindows: { five_hour: { utilization: 0.93, resetsAt: fiveHour }, seven_day: { utilization: 0.72, resetsAt: fiveHour + 86_400 } } })) own.limits.heard!(window)
+    await limits.refresh()
+    const told: any[] = []
+    const stop = subscribe((each) => each.type === "kuvo.limits.updated" && told.push(each.data))
+    try {
+      const before = (await route(limits)) as any
+      expect(before.rows[0]).toMatchObject({ title: "Claude", bar: "short" })
+      expect(before.rows[0].windows.map((window: any) => window.title)).toEqual(["Session", "Weekly"])
+      expect(before.accounts[0]).toMatchObject({ title: "Claude" })
+      expect(before.accounts[0].windows.map((window: any) => window.title)).toEqual(["Session", "Weekly"])
+      // The box waits for the session's reset, and tells clients then, with nothing read.
+      expect(limits.nextTurn()).toBe(fiveHour * 1000)
+      clock.at = fiveHour * 1000
+      limits.turn()
+      const row = told.at(-1).rows[0]
+      expect(row.windows[0]).toMatchObject({ id: "five_hour", used: 0, level: "calm", expired: true })
+      expect(row.rings.short).toEqual({ window: "five_hour", used: 0, level: "calm" })
+      expect(row.bar).toBe("long")
+      expect(told.at(-1).accounts[0].windows[0]).toMatchObject({ id: "five_hour", used: 0, expired: true })
+      expect(limits.nextTurn()).toBe((fiveHour + 86_400) * 1000)
+    } finally {
+      stop()
+    }
   })
 })

@@ -20,8 +20,10 @@ struct SandboxNoticeTests {
         #expect(failed.title == "The sandbox isn’t on")
         #expect(failed.detail == "Its check found that a command could still read Kuvo Code's files.")
         #expect(failed.buttons == [.init(title: "Try Again", action: .check)])
-        let again = try state(#"{"on": false, "reason": "checkFailed", "check": "writesOwn", "why": "Its check failed.", "action": "retry", "actionLabel": "Try Again", "route": "POST kuvo/sandbox/check", "failures": 3}"#).notice
-        #expect(again.buttons.map(\.action) == [.check, .report], "Report a Problem joins once it fails again")
+        let again = try state(#"{"on": false, "reason": "checkFailed", "check": "writesOwn", "why": "Its check failed.", "action": "retry", "actionLabel": "Try Again", "route": "POST kuvo/sandbox/check", "failures": 3, "report": "The sandbox’s check failed 3 times in a row: Its check failed. (check: writesOwn)"}"#).notice
+        #expect(again.buttons.map(\.action) == [.check, .report], "Report a Problem joins where the box says what a report says")
+        // (Failures alone, with no report from the box: none.)
+        #expect(try state(#"{"on": false, "reason": "checkFailed", "why": "Its check failed.", "action": "retry", "actionLabel": "Try Again", "route": "POST kuvo/sandbox/check", "failures": 3}"#).notice.buttons.map(\.action) == [.check])
 
         // The button's words are the box's, and an ellipsis says a client asks first.
         #expect(try state(#"{"on": false, "reason": "plugin", "why": "Its plugin for the engine was changed or removed.", "action": "fix", "actionLabel": "Fix It", "route": "POST kuvo/sandbox/check"}"#).notice.buttons == [.init(title: "Fix It", action: .check)])
@@ -53,12 +55,12 @@ struct SandboxNoticeTests {
 
     @Test func aMachineWhereItCantKeepCommandsFromYourServicesSaysSo() throws {
         // (A Linux machine whose commands can't have a namespace of their own: on, with a gap.)
-        let without = try state(#"{"on": true, "able": true, "agents": true, "gaps": ["services"], "needs": "user namespaces"}"#).notice
+        // Its words and its page are the box's (`sandbox.report`).
+        let without = try state(#"{"on": true, "able": true, "agents": true, "gaps": ["services"], "needs": "user namespaces", "why": "They run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it allows user namespaces, agents don’t use your vault here and goals don’t run on their own.", "action": "help", "actionLabel": "How to Check…", "opens": "https://www.kuvo.run/code/docs/machines/#sandbox"}"#).notice
         #expect(without.look == .needsYou, "not the green line that says all's well")
         #expect(without.title == "Commands can still reach your login’s services")
-        #expect(without.detail.contains("Until it allows user namespaces, agents don’t use your vault here and goals don’t run on their own"))
-        #expect(without.buttons == [.init(title: "How to Check…", action: .help, opens: SandboxNotice.machinesHelp)])
-        #expect(try state(#"{"on": true, "able": true, "agents": true, "gaps": ["services"], "needs": "util-linux"}"#).notice.detail.contains("Until it has util-linux"))
+        #expect(without.detail == "They run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it allows user namespaces, agents don’t use your vault here and goals don’t run on their own.")
+        #expect(without.buttons == [.init(title: "How to Check…", action: .help, opens: URL(string: "https://www.kuvo.run/code/docs/machines/#sandbox"))])
         // A gap a newer box adds reads as none.
         #expect(try state(#"{"on": true, "able": true, "agents": true, "gaps": ["later"]}"#).notice.detail.contains("can’t read your keys"))
     }

@@ -46,6 +46,9 @@ public enum BoxGate {
     /// Then #668's messages: `messages.commands` (a command's message read as typed, by its id),
     /// `queue.removed.keyword` (a queued message taken back keeps its keyword) and
     /// `queue.stop.arriving` (Stop holds what's still on its way, so no client waits for it).
+    /// Then #668's limits and sandbox, so no client names an account or a window, keeps a clock for
+    /// a window that started over, or keeps the sandbox's words for a machine's services:
+    /// `limits.titles`, `limits.bar` and `sandbox.report`.
     public static let required: [String] = [
         "agent-tools.own",
         "bots.deletes",
@@ -70,7 +73,9 @@ public enum BoxGate {
         "git.pull-request",
         "git.status",
         "groups.mentions",
+        "limits.bar",
         "limits.rings",
+        "limits.titles",
         "messages.commands",
         "messages.send",
         "models.offered",
@@ -82,6 +87,7 @@ public enum BoxGate {
         "queue.removed.keyword",
         "queue.stop.arriving",
         "sandbox.opens",
+        "sandbox.report",
         "sandbox.words",
         "sessions.actions",
         "sessions.asks",

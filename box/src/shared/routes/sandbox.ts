@@ -13,14 +13,16 @@ import { any, bool, type Infer, list, literal, NOTHING, number, object, type Rou
  * it's on, what it can't keep commands from here (`gaps`: `services`, the services your login runs,
  * where commands can't have a namespace of their own; `needs` says what for; `git`, git's own files in
  * the repositories commands write, where a folder can't be made read-only in their namespace, so
- * commands in a repository don't run there). */
+ * commands in a repository don't run there). With `services`, it says why (`why`) and the docs' page
+ * on what a machine needs (`action` `help`, `actionLabel`, `opens`). Once its check failed twice in a
+ * row, what a report of it says (`report`): a client offers Report a Problem then. */
 export const SANDBOX = object({
   on: bool, "why?": string, able: bool, agents: bool, "outside?": bool, "restart?": bool,
   "reason?": words("kernel", "namespaces", "macos", "engineMissing", "checking", "checkFailed", "plugin", "engineDown", "waiting"),
   "action?": words("help", "softwareUpdate", "retry", "fix", "restartEngine"),
   "route?": string, "actionLabel?": string, "opens?": string, "opensHere?": literal(true), "needs?": string,
   "check?": words("folder", "tempFiles", "readsOwn", "writesOwn", "services", "didntRun", "setup"),
-  "failures?": number,
+  "failures?": number, "report?": string,
   "gaps?": list(words("services", "git")),
 });
 

@@ -19,7 +19,7 @@ import type { Agent } from "./agent"
 import { emit } from "./events"
 import type { LimitsPeers } from "./limits-peers"
 import { resetRoutes, type LimitResets } from "./limits-resets"
-import { limitRows, type LimitRow } from "./limits-rows"
+import { limitRows, shownAccount, type LimitRow } from "./limits-rows"
 import { initialState, meter, newNotice, currentNotice, visibleMetric, notificationAvailability, reconcileNotices, noticeAccountName, transitions, takeNotices, takeStates, type UsageNotice, type NoticeState } from "./usage/notices"
 import type { UsageSettings } from "./usage/settings"
 
@@ -424,7 +424,7 @@ export class Limits {
   /** Every account across your computers, one row each (`limits-rows.ts`): this box's first. */
   rows(): LimitRow[] {
     const own = this.list(false)
-    return this.peers ? this.peers.rows(own) : limitRows([{ key: "", name: "", here: true, away: false, accounts: own }])
+    return this.peers ? this.peers.rows(own) : limitRows([{ key: "", name: "", here: true, away: false, accounts: own }], this.now())
   }
 
   /** What a peer told changed what's listed: the clients are told. */
@@ -433,7 +433,7 @@ export class Limits {
   }
 
   private saying() {
-    return JSON.stringify([this.list(), this.rows(), this.notices()])
+    return JSON.stringify([this.shown(), this.rows(), this.notices()])
   }
 
   /** Reads what's due every minute, and listens to what turns hear. */
@@ -441,11 +441,49 @@ export class Limits {
     this.timer ??= setInterval(() => void this.tick(), MINUTE)
     this.timer.unref?.()
     void this.tick()
+    this.awaitTurn()
   }
 
   stop() {
     if (this.timer) clearInterval(this.timer)
     this.timer = undefined
+    if (this.turnTimer) clearTimeout(this.turnTimer)
+    this.turnTimer = undefined
+  }
+
+  /** This box's accounts as clients are shown them (`accounts`): each named, a window whose reset has passed started over. */
+  shown(): AccountLimits[] {
+    const now = this.now()
+    return this.list().map((account) => shownAccount(account, now))
+  }
+
+  /**
+   * When a window listed starts over next (after now, by the box's clock): what's listed changes
+   * then with nothing read, so clients are told (`turn`). None while none says when it resets.
+   */
+  nextTurn(): number | undefined {
+    const now = this.now()
+    let soonest: number | undefined
+    for (const row of this.rows()) for (const window of row.windows) if (window.resetsAt && window.resetsAt > now && (soonest === undefined || window.resetsAt < soonest)) soonest = window.resetsAt
+    return soonest
+  }
+
+  /** A window started over: clients are told what's listed now, and the next one is awaited. */
+  turn() {
+    this.changed(false, false)
+  }
+
+  private turnTimer?: ReturnType<typeof setTimeout>
+
+  /** Awaits the next window to start over, while this box reads (`start`). */
+  private awaitTurn() {
+    if (this.turnTimer) clearTimeout(this.turnTimer)
+    this.turnTimer = undefined
+    if (!this.timer) return
+    const at = this.nextTurn()
+    if (at === undefined) return
+    this.turnTimer = setTimeout(() => this.turn(), Math.min(Math.max(at - this.now(), 0) + 1, 2 ** 31 - 1))
+    this.turnTimer.unref?.()
   }
 
   /**
@@ -908,8 +946,9 @@ export class Limits {
    * only what a peer told).
    */
   private changed(heard = false, own = true) {
-    const list = this.list()
+    const list = this.shown()
     const rows = this.rows()
+    this.awaitTurn()
     const notices = this.notices()
     const now = JSON.stringify([list, rows, notices])
     if (own && (!heard || this.now() - this.lastHeardSave >= 30_000)) {
@@ -985,7 +1024,7 @@ export async function limitsRoutes(limits: Limits | undefined, method: string, r
   if (!limits) return json({ message: "Plan limits aren't read on this computer." }, 503)
   // Spending a reset (limits-resets.ts).
   if (rest[0] === "reset") return resetRoutes(limits.resets, method, rest.slice(1), body)
-  const answer = () => json({ data: { accounts: limits.list(), services: limits.services(), rows: limits.rows(), notificationAvailability: notificationAvailability(), notices: limits.notices(), ownNotices: limits.pushableNotices() } })
+  const answer = () => json({ data: { accounts: limits.shown(), services: limits.services(), rows: limits.rows(), notificationAvailability: notificationAvailability(), notices: limits.notices(), ownNotices: limits.pushableNotices() } })
   if (!rest.length && method === "GET") return answer()
   if (rest.length === 1 && rest[0] === "refresh" && method === "POST") {
     // Here first, then on the computer each account only elsewhere is on: what's read here reaches
