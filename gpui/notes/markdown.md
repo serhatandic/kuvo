@@ -32,11 +32,12 @@ Files read: `crates/markdown/src/{markdown.rs,parser.rs,selection.rs}` (GPL-3.0)
   app's own scheme), which a reply could hide behind harmless words, is drawn as plain text.
 - Tables share their width by how much each column holds, so paths get the room.
 - Streaming: half-written markup shows as typed until it closes (tested).
+- Selecting and copying: `notes/selection.md`. Text is drawn by `selection::SelectableText`,
+  which also paints inline code's fill as a rounded chip (under a selection), and `units` gives
+  each block's text at the path it's drawn with, for copying.
 
 ## Not yet
 
-- Selecting and copying text from a message. GPUI's text elements don't select; this needs our
-  own selection layer over the text layouts, as Zed has. The most important gap for a chat.
 - Inline code can't be smaller than its line (GPUI runs share one size), so SF Mono sits at
   the body size.
 - Images, footnotes, and GitHub-style alerts.
