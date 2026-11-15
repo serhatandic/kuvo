@@ -11,22 +11,18 @@ import path from "node:path";
 import { isObject } from "../../shared/json";
 import { newID, oneLine } from "../../shared/text";
 import { GRANT_HOWS, ITEM_KINDS, type VaultGrant, type VaultItem, type VaultState, type VaultWho } from "../../shared/routes/vault";
-import { locked, textOf, writePrivate } from "../files";
-import { BOX, KEYS_ON_HOST, MAC_VAULT_FILE_KEY, RUN } from "../home";
+import { textOf, writePrivate } from "../files";
+import { KEYS_ON_HOST, MAC_VAULT_FILE_KEY, KEPT_DAYS, VAULT_FOLDER } from "../home";
 import { appHost, askHost, KeysUnavailable, NOT_ANSWERING } from "../host-interface";
 import { listBots } from "../bots/list";
 import { agentsUseVault, agentsWaitForOlder } from "./gate";
+import { vaultWork } from "./work";
 
-export const VAULT_FOLDER = path.join(BOX, "vault");
 const ITEMS = path.join(VAULT_FOLDER, "items.json");
 const GRANTS = path.join(VAULT_FOLDER, "grants.json");
 const PAUSED = path.join(VAULT_FOLDER, "paused.json");
 const KEY_FILE = path.join(VAULT_FOLDER, "key.json");
 const VALUES = path.join(VAULT_FOLDER, "values");
-const LOCK = path.join(RUN, ".vault.lock");
-
-/** Activity is kept this long (D14). */
-export const KEPT_DAYS = 365;
 
 /** Why the vault can't do something now, said plainly: a route answers `status {message}` with it. */
 export class VaultRefusal extends Error {
@@ -170,12 +166,6 @@ function keepSigned(file: string, data: unknown) {
 const keepJSON = (file: string, value: unknown) => {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   writePrivate(file, JSON.stringify(value, null, 1) + "\n");
-};
-
-/** One change at a time, whoever makes it. */
-export const vaultWork = <T>(work: () => T): T => {
-  fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
-  return locked(LOCK, work);
 };
 
 // ── The unlock key ────────────────────────────────────────────────────────────────────────────
