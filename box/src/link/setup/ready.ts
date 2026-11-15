@@ -6,7 +6,7 @@
 
 import { isPlan, accountKind, signInMethods, type ListedAccount } from "../areas/sign-in";
 import { accountState } from "../areas/sign-in-state";
-import { needsNoAccount, offeredHere, type Lists } from "../work/model-rule";
+import { needsNoAccount, offeredHere, stillListing, type Lists } from "../work/model-rule";
 
 /** What the box says of a first run's accounts step. */
 export interface FirstRunReady {
@@ -17,6 +17,9 @@ export interface FirstRunReady {
   runs: boolean;
   /** The plans whose sign-in ended or says something's wrong, by id, the coding agents' first. */
   needsYou: string[];
+  /** The sides that can't say yet (not running, not answering, or a coding agent's models still
+   * being listed): what's said of them may change in a moment, and a client asks again. */
+  pending: ("engine" | "agents")[];
 }
 
 /** One side's accounts as it lists them (`api/integration`); null where it couldn't say. */
@@ -45,6 +48,12 @@ export function firstRunReady(lists: Lists, engine: Listed, agents: Listed, ende
   // free, or any of the coding agents' (a Custom Auto list is only as good as what's in it).
   const runs = offeredHere(lists).some(model => !model.retiring && !model.hidden && model.providerID !== "auto" && (model.agents || !needsNoAccount(model)));
   const needsYou = [...needing(agents ?? [], true, new Map(), computer), ...needing(engine ?? [], false, ended, computer)];
+  // A side that can't say yet: its lists or its accounts unread, or (the coding agents') an
+  // account signed in whose models aren't all listed yet, so one of them may run in a moment.
+  const pending: FirstRunReady["pending"] = [
+    ...(lists.engine === null || engine === null ? ["engine" as const] : []),
+    ...(lists.bridge === null || agents === null || stillListing(lists).length > 0 ? ["agents" as const] : []),
+  ];
   const said = lists.engine !== null && lists.bridge !== null && engine !== null && agents !== null;
-  return { ready: said && runs && needsYou.length === 0, runs, needsYou };
+  return { ready: said && runs && needsYou.length === 0, runs, needsYou, pending };
 }

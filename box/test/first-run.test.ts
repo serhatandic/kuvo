@@ -94,22 +94,22 @@ const said = (given: ReturnType<typeof listing>, ended = new Map<string, string>
 
 test("a first run has nothing to ask where a model on one of your accounts runs and no plan needs you", () => {
   // Claude Code signed in: its models run.
-  expect(said(listing())).toEqual({ ready: true, runs: true, needsYou: [] })
+  expect(said(listing())).toEqual({ ready: true, runs: true, needsYou: [], pending: [] })
   // An engine plan signed in does as well, with no coding agent signed in.
-  expect(said(listing({ claude: false, copilot: true }))).toEqual({ ready: true, runs: true, needsYou: [] })
+  expect(said(listing({ claude: false, copilot: true }))).toEqual({ ready: true, runs: true, needsYou: [], pending: [] })
 })
 
 test("it has something to ask where only the free models run, a plan's sign-in ended, or a side can't say", () => {
   // Nothing signed in: OpenCode Zen's free model runs, which isn't an account's.
-  expect(said(listing({ claude: false }))).toEqual({ ready: false, runs: false, needsYou: [] })
+  expect(said(listing({ claude: false }))).toEqual({ ready: false, runs: false, needsYou: [], pending: [] })
   // A coding agent's sign-in ended: it needs you, whatever else runs.
-  expect(said(listing({ copilot: true, ended: true }))).toEqual({ ready: false, runs: true, needsYou: ["claude-code"] })
+  expect(said(listing({ copilot: true, ended: true }))).toEqual({ ready: false, runs: true, needsYou: ["claude-code"], pending: [] })
   // An engine plan's saved sign-in the box saw end.
-  expect(said(listing({ copilot: true }), new Map([["github-copilot", "cred_1"]]))).toEqual({ ready: false, runs: true, needsYou: ["github-copilot"] })
+  expect(said(listing({ copilot: true }), new Map([["github-copilot", "cred_1"]]))).toEqual({ ready: false, runs: true, needsYou: ["github-copilot"], pending: [] })
   // The coding agents' bridge can't say now (starting): never ready, though the engine's run.
   const given = listing({ copilot: true })
-  expect(firstRunReady({ ...given.lists, bridge: null }, given.engine, null, new Map(), "Studio")).toEqual({ ready: false, runs: true, needsYou: [] })
-  expect(firstRunReady({ ...given.lists, engine: null }, null, given.agents, new Map(), "Studio").ready).toBe(false)
+  expect(firstRunReady({ ...given.lists, bridge: null }, given.engine, null, new Map(), "Studio")).toEqual({ ready: false, runs: true, needsYou: [], pending: ["agents"] })
+  expect(firstRunReady({ ...given.lists, engine: null }, null, given.agents, new Map(), "Studio")).toMatchObject({ ready: false, pending: ["engine"] })
 })
 
 test("an account you added beside an agent's own, and one a key is entered for, never hold it back", () => {
@@ -117,7 +117,46 @@ test("an account you added beside an agent's own, and one a key is entered for, 
   // (A first run lists each agent once, and keys apart: what it doesn't show can't be what it waits on.)
   given.agents.push({ id: "claude-code@1f2e3d4c", name: "Claude Code · Work", methods: oauth, connections: signedIn, metadata: { agent: "claude", installed: true, signInEnded: true, accountID: "1f2e3d4c" } as any })
   given.engine.push({ id: "openai", name: "OpenAI", methods: [{ type: "key" }], connections: [{ type: "credential", id: "cred_k", method: "key", label: "API key" }] } as any)
-  expect(firstRunReady(given.lists, given.engine, given.agents, new Map([["openai", "cred_k"]]), "Studio")).toEqual({ ready: true, runs: true, needsYou: [] })
+  expect(firstRunReady(given.lists, given.engine, given.agents, new Map([["openai", "cred_k"]]), "Studio")).toEqual({ ready: true, runs: true, needsYou: [], pending: [] })
+})
+
+test("only what a first run shows and a picker offers counts", () => {
+  // An MCP server's sign-in and a web search service aren't accounts Accounts lists: one that
+  // needs signing in again never holds a first run back.
+  const mcp = listing()
+  mcp.engine.push({ id: "linear", name: "Linear", metadata: { source: "mcp" }, methods: [{ type: "oauth", id: "mcp", label: "Sign in" }], connections: [{ type: "credential", id: "cred_m", method: "oauth", label: "you", status: { status: "needs_auth" } }] } as any)
+  expect(said(mcp)).toMatchObject({ ready: true, needsYou: [] })
+  // A plan whose sign-in in use says something's wrong needs you, as one that ended does.
+  const failing = listing({ copilot: true })
+  failing.engine[0].connections = [{ type: "credential", id: "cred_1", method: "oauth", label: "you@example.com", status: { status: "failed", message: "GitHub didn't answer." } }] as any
+  expect(said(failing)).toMatchObject({ ready: false, needsYou: ["github-copilot"] })
+  // What a picker leaves out isn't a model that runs for you: one being retired, one its agent
+  // hides, or a Custom Auto list by itself.
+  const nothing = listing({ claude: false })
+  for (const change of [
+    (lists: Lists) => { lists.bridge!.accounts.set("claude-code", account("claude-code", true)); lists.bridge!.models = [{ ...model("claude-code", "opus"), retiring: true }] },
+    (lists: Lists) => { lists.bridge!.accounts.set("claude-code", account("claude-code", true)); lists.bridge!.models = [{ ...model("claude-code", "opus"), hidden: true }] },
+    (lists: Lists) => { lists.bridge!.auto = [{ id: "auto_1", name: "Everyday", entries: 2 }] },
+  ]) {
+    const given = structuredClone({ engine: nothing.engine, agents: nothing.agents })
+    const lists: Lists = { engine: { ...nothing.lists.engine!, accounts: new Map(nothing.lists.engine!.accounts) }, bridge: { models: [...nothing.lists.bridge!.models], accounts: new Map(nothing.lists.bridge!.accounts), auto: [] } }
+    change(lists)
+    expect(firstRunReady(lists, given.engine, given.agents, new Map(), "Studio").runs).toBe(false)
+  }
+  // A model of your own (a local provider, with no account to sign in to) is one you set up: it
+  // runs, and isn't one of the free ones.
+  const local = listing({ claude: false })
+  local.lists.engine!.ready.add("ollama")
+  local.lists.engine!.models.push(model("ollama", "qwen3", true))
+  expect(said(local)).toMatchObject({ ready: true, runs: true })
+})
+
+test("a coding agent signed in whose models aren't listed yet is pending, not a no", () => {
+  // Codex signed in, its bridge up, none of its models listed yet: it can't say whether one runs.
+  const given = listing({ claude: false })
+  given.lists.bridge = { models: [], accounts: new Map([["codex-cli", { ...account("codex-cli", true), complete: false }]]), auto: [] }
+  given.agents = [{ id: "codex-cli", name: "Codex", methods: oauth, connections: signedIn, metadata: { agent: "codex", installed: true } }] as any
+  expect(said(given)).toEqual({ ready: false, runs: false, needsYou: [], pending: ["agents"] })
 })
 
 test("kuvo/setup/ready follows the box as it changes: signed in, then a sign-in that ends", async () => {
@@ -148,16 +187,16 @@ test("kuvo/setup/ready follows the box as it changes: signed in, then a sign-in 
     expect((await ask("POST", "kuvo/setup/ready")).status).toBe(405)
     // Only the free model runs; and the coding agents aren't running, so they can't say.
     forgetModelLists()
-    expect(await ask("GET", "kuvo/setup/ready")).toEqual({ status: 200, body: { ready: false, runs: false, needsYou: [] } })
+    expect(await ask("GET", "kuvo/setup/ready")).toEqual({ status: 200, body: { ready: false, runs: false, needsYou: [], pending: ["agents"] } })
     // Signed in to Copilot (the box hears its engine say so, and reads its lists again): its
     // model runs. Still not ready here: no bridge to say how the coding agents stand.
     copilot = true
     forgetModelLists()
-    expect((await ask("GET", "kuvo/setup/ready")).body).toEqual({ ready: false, runs: true, needsYou: [] })
+    expect((await ask("GET", "kuvo/setup/ready")).body).toEqual({ ready: false, runs: true, needsYou: [], pending: ["agents"] })
     // Its saved sign-in ends: said at the next ask, the accounts being read anew each time.
     mkdirSync(RUN, { recursive: true })
     writeFileSync(join(RUN, "ended-sign-ins.json"), JSON.stringify({ "github-copilot": "cred_1" }))
-    expect((await ask("GET", "kuvo/setup/ready")).body).toEqual({ ready: false, runs: true, needsYou: ["github-copilot"] })
+    expect((await ask("GET", "kuvo/setup/ready")).body).toEqual({ ready: false, runs: true, needsYou: ["github-copilot"], pending: ["agents"] })
     // Signed in again: nothing needs you.
     rmSync(join(RUN, "ended-sign-ins.json"), { force: true })
     expect((await ask("GET", "kuvo/setup/ready")).body.needsYou).toEqual([])

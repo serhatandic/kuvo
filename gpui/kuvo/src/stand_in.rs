@@ -978,7 +978,8 @@ impl StandIn {
                 let runs = !state.first_run.only_free && !state.nothing_runs;
                 let needing = state.settings.needs_you();
                 let ready = state.first_run.ready_says.unwrap_or(runs && needing.as_ref().is_some_and(Vec::is_empty));
-                return answer(200, json!({ "ready": ready, "runs": runs, "needsYou": needing.unwrap_or_default() }));
+                let pending: &[&str] = if needing.is_none() { &["agents"] } else { &[] };
+                return answer(200, json!({ "ready": ready, "runs": runs, "needsYou": needing.unwrap_or_default(), "pending": pending }));
             }
             // (A folder its git lists is git's to answer, with its files; the home's are these.)
             let gits = route == "kuvo/folders" && query(path, "path").map(decoded).is_some_and(|folder| state.git.as_ref().is_some_and(|git| git.folders.contains_key(&folder)));

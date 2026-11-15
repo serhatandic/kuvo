@@ -171,9 +171,9 @@ export const SETUP = object({
 });
 
 /** Whether a first run has anything to ask about your accounts here (`kuvo/setup/ready`): a model
- * on one of your accounts runs and no plan needs you; with whether one runs, and the plans that
- * need you, by id. */
-export const SETUP_READY = object({ ready: bool, runs: bool, needsYou: list(string) });
+ * on one of your accounts runs and no plan needs you; with whether one runs, the plans that need
+ * you, by id, and the sides that can't say yet. */
+export const SETUP_READY = object({ ready: bool, runs: bool, needsYou: list(string), pending: list(words("engine", "agents")) });
 
 /** Whether you've had the first run with this box, as `POST kuvo/setup/welcomed` left it. */
 export const WELCOMED = object({ welcomed: bool });

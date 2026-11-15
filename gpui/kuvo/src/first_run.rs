@@ -34,6 +34,10 @@ use crate::settings::sign_in::{self, SignIn};
 use crate::workspace::{BoxState, held_words};
 use crate::{ToggleAppearance, computers, time, title_bar};
 
+/// How many times, and how long apart, the box is asked again whether there's anything to ask
+/// about your accounts, while it says a side can't tell yet.
+const READY_AGAIN: u32 = 5;
+const READY_PAUSE: std::time::Duration = std::time::Duration::from_secs(2);
 /// How wide its card is, where the window has the room.
 const CARD: f32 = 560.;
 
@@ -87,6 +91,12 @@ pub struct FirstRun {
     offered: Reading<Offered>,
     /// Whether the box says there's nothing to ask about your accounts (`kuvo/setup/ready`).
     ready: Reading<bool>,
+    /// Which ask of that is the latest (an older one's answer is dropped), and how many times
+    /// it's been asked again because the box couldn't say yet (`pending`).
+    ready_asked: u64,
+    ready_again: u32,
+    /// The box said a side can't tell yet, and it's being asked again.
+    waits_for_ready: bool,
     computers: Reading<Vec<Computer>>,
     folders: Reading<SuggestedFolders>,
     /// The computer picked, by its key (none: the box's own).
@@ -151,6 +161,9 @@ impl FirstRun {
             accounts: Reading::NotYet,
             offered: Reading::NotYet,
             ready: Reading::NotYet,
+            ready_asked: 0,
+            ready_again: 0,
+            waits_for_ready: false,
             computers: Reading::NotYet,
             folders: Reading::NotYet,
             computer: None,
@@ -266,16 +279,44 @@ impl FirstRun {
             cx,
         );
         self.run(|client| client.offered_models(None, None), |this, read, _| this.offered = keeping(read, &this.offered), cx);
+        self.ready_again = 0;
+        self.read_ready(cx);
+    }
+
+    /// Asks the box whether there's anything to ask about your accounts. While it says a side
+    /// can't tell yet (`pending`: starting, or still listing an agent's models), it's asked again
+    /// in a moment, a few times: the welcome waits that long before it goes on.
+    fn read_ready(&mut self, cx: &mut Context<Self>) {
+        self.ready_asked += 1;
+        let asked = self.ready_asked;
         self.run(
             |client| client.first_run_ready(),
-            move |this, read, _| {
-                // (As the accounts: the latest asked for is the one gone by. One it couldn't say
-                // is not ready, never what it said before a change.)
-                if asked == this.accounts_asked {
-                    this.ready = match read {
-                        Ok(said) => Reading::Ready(said.ready),
-                        Err(error) => Reading::Failed(said(&error)),
-                    };
+            move |this, read, cx| {
+                // (The latest asked for is the one gone by. One it couldn't say is not ready,
+                // never what it said before a change.)
+                if asked != this.ready_asked {
+                    return;
+                }
+                let pending = read.as_ref().is_ok_and(|said| !said.ready && !said.pending.is_empty());
+                this.ready = match read {
+                    Ok(said) => Reading::Ready(said.ready),
+                    Err(error) => Reading::Failed(said(&error)),
+                };
+                if pending && this.live && this.ready_again < READY_AGAIN {
+                    this.ready_again += 1;
+                    this.waits_for_ready = true;
+                    let again = cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(READY_PAUSE).await;
+                        this.update(cx, |this, cx| {
+                            if asked == this.ready_asked {
+                                this.read_ready(cx);
+                            }
+                        })
+                        .ok();
+                    });
+                    this.tasks.push(again);
+                } else {
+                    this.waits_for_ready = false;
                 }
             },
             cx,
@@ -478,6 +519,8 @@ impl FirstRun {
                         // (A read asked for before the install ended is older than this one.)
                         this.accounts_asked += 1;
                         this.checking.clear();
+                        // (What's installed may be what was wanted: asked of the box again.)
+                        this.read_ready(cx);
                         match read {
                             Some(Ok(accounts)) => this.accounts = Reading::Ready(accounts),
                             Some(Err(error)) => drop(this.problems.insert(key.clone(), format!("{name} is installed, but its account couldn’t be read again. {}", said(&error)))),
@@ -728,7 +771,7 @@ impl FirstRun {
 
     /// Whether the welcome still waits for the box's accounts and models before it can go on.
     fn settling(&self) -> bool {
-        self.step == Step::Welcome && self.box_state == BoxState::Connected && !self.client.gate().is_held() && (matches!(self.accounts, Reading::NotYet) || matches!(self.offered, Reading::NotYet) || matches!(self.ready, Reading::NotYet))
+        self.step == Step::Welcome && self.box_state == BoxState::Connected && !self.client.gate().is_held() && (matches!(self.accounts, Reading::NotYet) || matches!(self.offered, Reading::NotYet) || matches!(self.ready, Reading::NotYet) || self.waits_for_ready)
     }
 
     /// The scrolling middle of a card: what a step lists, however long.

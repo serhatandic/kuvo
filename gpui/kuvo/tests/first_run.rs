@@ -460,3 +460,13 @@ fn signing_in_asks_the_box_again_whether_theres_anything_left_to_ask(cx: &mut Te
     assert!(stand_in.seen_at("GET", "kuvo/setup/ready").len() >= 3);
     assert!(run(&workspace, cx).read_with(cx, |run, _| run.ready()));
 }
+
+#[gpui::test]
+fn the_box_saying_theres_nothing_to_ask_is_gone_by_whatever_the_app_can_see(cx: &mut TestAppContext) {
+    // Nothing shows as signed in here, yet the box says ready: it's the box's to say.
+    let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Nothing);
+    stand_in.set_first_run(|first_run| first_run.ready_says = Some(true));
+    let (workspace, cx) = open(cx, stand_in);
+    click(cx, "first-run-next");
+    assert_eq!(step(&workspace, cx), Step::Where);
+}

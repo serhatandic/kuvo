@@ -301,16 +301,20 @@ computer. Changing the main computer and joining two setups come later: #183.)
   the first run is to be had again), from any client of the box, and answers `{"welcomed"}`
   (`kuvo/setup/events` says it too); `400` without a yes or no, `405` for anything but `POST`.
   **`GET kuvo/setup/ready`** (`setup.ready`): whether a first run has anything to ask about your
-  accounts on this box → `{"ready", "runs", "needsYou": [<account id>]}`. The box decides it, so no
-  client keeps the rule: `runs`, a model that needs an account runs here now (one of the engine's
-  that isn't `free`, or any of a coding agent's; "The models offered"); `needsYou`, the plans
-  Accounts lists (`plan`, and not `added`) whose `state` is `ended` or `problem`, the coding
-  agents' first; `ready`, `runs` with none needing you, and both the engine and the coding agents'
-  bridge able to say (one not running, or not answering, is never ready). Where it's `ready`, a
-  client's first run passes over its accounts step and goes on to where to work; otherwise it
-  shows it. Read as it's asked (the accounts anew each time; the models as the box keeps them,
-  read again once its engine or bridge says something changed), so a client asks again after a
-  sign-in; `405` for anything but `GET`.
+  accounts on this box → `{"ready", "runs", "needsYou": [<account id>], "pending": ["engine" |
+  "agents"]}`. The box decides it, so no client keeps the rule: `runs`, a model that needs an
+  account runs here now, as a picker offers it (one of the engine's that isn't `free`, or any of a
+  coding agent's; never one being retired, one its agent keeps out of its picker, or a Custom Auto
+  list; "The models offered"); `needsYou`, the plans Accounts lists (`listed` and `plan`, and not
+  `added`) whose `state` is `ended` or `problem`, the coding agents' first; `pending`, the sides
+  that can't say yet (not running, not answering in time, or, the coding agents', an account
+  signed in whose models are still being listed): what's said of them may change in a moment;
+  `ready`, `runs` with none needing you and both sides having said their lists. Where it's `ready`,
+  a client's first run passes over its accounts step and goes on to where to work; otherwise it
+  shows it, and while anything is `pending` it may wait a moment and ask again. Always `200` to a
+  `GET` (or `HEAD`), whatever can't be said; `405` otherwise. Read as it's asked (the accounts anew
+  each time; the models as the box keeps them, read again once its engine or bridge says
+  something changed), so a client asks again after a sign-in.
 - **Only the main computer adds and pairs** (`setup.mainOnly`). A member (a box whose setup names
   another computer as main, kept aside too: a shared machine, or its main computer not naming it
   now) answers, with `primary` the main computer's static key and words naming it for a client to

@@ -6683,6 +6683,18 @@
       "runs": "bool",
       "needsYou": {
        "list": "string"
+      },
+      "pending": {
+       "list": {
+        "oneOf": [
+         {
+          "literal": "engine"
+         },
+         {
+          "literal": "agents"
+         }
+        ]
+       }
       }
      }
     }

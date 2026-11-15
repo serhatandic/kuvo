@@ -45379,7 +45379,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f140a3740757";
+var BRIDGE_VERSION = "eba977be45dd";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -49858,8 +49858,12 @@ function needing(accounts, agents, ended, computer) {
 function firstRunReady(lists, engine, agents, ended, computer) {
   const runs = offeredHere(lists).some((model) => !model.retiring && !model.hidden && model.providerID !== "auto" && (model.agents || !needsNoAccount(model)));
   const needsYou = [...needing(agents ?? [], true, new Map, computer), ...needing(engine ?? [], false, ended, computer)];
+  const pending = [
+    ...lists.engine === null || engine === null ? ["engine"] : [],
+    ...lists.bridge === null || agents === null || stillListing(lists).length > 0 ? ["agents"] : []
+  ];
   const said = lists.engine !== null && lists.bridge !== null && engine !== null && agents !== null;
-  return { ready: said && runs && needsYou.length === 0, runs, needsYou };
+  return { ready: said && runs && needsYou.length === 0, runs, needsYou, pending };
 }
 
 // box/src/link/areas/setup.ts

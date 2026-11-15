@@ -29,6 +29,10 @@ pub struct Ready {
     /// The plans whose sign-in ended or says something's wrong, by id.
     #[serde(default, rename = "needsYou")]
     pub needs_you: Vec<String>,
+    /// The sides that can't say yet (`engine`, `agents`): what's said may change in a moment,
+    /// and a client asks again.
+    #[serde(default)]
+    pub pending: Vec<String>,
 }
 
 impl BoxClient {
