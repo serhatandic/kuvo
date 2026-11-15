@@ -12,6 +12,7 @@ pub mod markdown;
 pub mod menu;
 pub mod output;
 pub mod row;
+pub mod selection;
 pub mod small;
 pub mod text_field;
 pub mod theme;
@@ -25,4 +26,5 @@ pub use theme::{ActiveTheme, Appearance, StyledType, Theme, TypeSize};
 pub fn bind_keys(cx: &mut gpui::App) {
     text_field::bind_keys(cx);
     menu::bind_keys(cx);
+    selection::bind_keys(cx);
 }

@@ -13,6 +13,8 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px,
 };
 
+use crate::markdown::Selectable;
+use crate::selection::{Lead, SelectableText, Unit};
 use crate::theme::{ActiveTheme, StyledType, TypeSize, radius, space};
 
 /// How many lines show before the rest is folded away.
@@ -42,11 +44,19 @@ pub struct OutputWell {
     command: Option<SharedString>,
     whole: bool,
     on_toggle: Option<Toggle>,
+    selectable: Option<Selectable>,
 }
 
 impl OutputWell {
     pub fn new(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Self {
-        Self { id: id.into(), text: text.into(), command: None, whole: false, on_toggle: None }
+        Self { id: id.into(), text: text.into(), command: None, whole: false, on_toggle: None, selectable: None }
+    }
+
+    /// Its command and what it printed selectable in a transcript, as `[base, 0]` and `[base, 1]`
+    /// ([`well_units`]).
+    pub fn selectable(mut self, selectable: Selectable) -> Self {
+        self.selectable = Some(selectable);
+        self
     }
 
     pub fn command(mut self, command: impl Into<SharedString>) -> Self {
@@ -80,16 +90,41 @@ pub fn fold(count: usize, whole: bool) -> (usize, Option<String>) {
     }
 }
 
+/// What a well shows of `text`: its lines that show (none: it printed nothing), the fold's button,
+/// and how many lines aren't drawn at all.
+fn shown_lines(text: &str, whole: bool) -> (Option<String>, Option<String>, usize) {
+    let text = text.trim_matches('\n');
+    let lines: Vec<&str> = if text.is_empty() { Vec::new() } else { text.split('\n').collect() };
+    let (shown, button) = fold(lines.len(), whole);
+    let unshown = lines.len().saturating_sub(MOST);
+    let body = (!lines.is_empty()).then(|| lines[..shown].iter().map(|line| capped(line)).collect::<Vec<_>>().join("\n"));
+    (body, button, unshown)
+}
+
+/// The selectable text of a well (as [`OutputWell`] draws it, under `base`): its command, then
+/// what it printed that shows.
+pub fn well_units(text: &str, command: Option<&str>, whole: bool, base: &[u32]) -> Vec<Unit> {
+    let at = |n: u32| [base, &[n]].concat();
+    let mut units = Vec::new();
+    if let Some(command) = command {
+        units.push(Unit::new(&at(0), format!("$ {command}"), Lead::Paragraph));
+    }
+    if let (Some(body), _, _) = shown_lines(text, whole) {
+        units.push(Unit::new(&at(1), body, if units.is_empty() { Lead::Paragraph } else { Lead::Line }));
+    }
+    units
+}
+
 impl RenderOnce for OutputWell {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let c = &cx.theme().colors;
-        let text = self.text.trim_matches('\n');
-        let lines: Vec<&str> = if text.is_empty() { Vec::new() } else { text.split('\n').collect() };
-        let (shown, button) = fold(lines.len(), self.whole);
-        let unshown = lines.len().saturating_sub(MOST);
-        let command = self.command.map(|command| div().text_color(c.text_muted).child(format!("$ {command}")));
-        let body = (!lines.is_empty()).then(|| div().text_color(c.text).child(lines[..shown].iter().map(|line| capped(line)).collect::<Vec<_>>().join("\n")));
-        let empty = lines.is_empty().then(|| div().text_color(c.text_faint).child("No output"));
+        let (body, button, unshown) = shown_lines(&self.text, self.whole);
+        let unit = |n: u32| self.selectable.as_ref().map(|sel| sel.unit(&[n]));
+        let id = self.id.clone();
+        let command = self.command.map(|command| div().text_color(c.text_muted).child(SelectableText::new((id.clone(), "command"), format!("$ {command}")).selectable(unit(0))));
+        let empty = body.is_none();
+        let body = body.map(|body| div().text_color(c.text).child(SelectableText::new((id.clone(), "body"), body).selectable(unit(1))));
+        let empty = empty.then(|| div().text_color(c.text_faint).child("No output"));
         let more = (self.whole && unshown > 0).then(|| div().text_color(c.text_faint).child(format!("… and {unshown} more lines")));
         let selector = self.id.to_string();
         well(self.id.clone(), cx)
@@ -266,11 +301,12 @@ pub struct DiffView {
     on_toggle: Option<Toggle>,
     /// Its unchanged stretches folded (but those opened), each fold opening on a click.
     folding: Option<(Rc<HashSet<usize>>, Expand)>,
+    selectable: Option<Selectable>,
 }
 
 impl DiffView {
     pub fn new(id: impl Into<ElementId>, lines: Rc<Vec<DiffLine>>) -> Self {
-        Self { id: id.into(), lines, title: None, counts: None, whole: false, on_toggle: None, folding: None }
+        Self { id: id.into(), lines, title: None, counts: None, whole: false, on_toggle: None, folding: None, selectable: None }
     }
 
     /// Shown whole but for its long unchanged stretches, each folded to a row that opens it (a
@@ -301,6 +337,28 @@ impl DiffView {
         self.on_toggle = Some(Rc::new(toggle));
         self
     }
+
+    /// Its lines' text selectable in a transcript, each as `[base, its index]` ([`diff_units`]);
+    /// their numbers and signs aren't.
+    pub fn selectable(mut self, selectable: Selectable) -> Self {
+        self.selectable = Some(selectable);
+        self
+    }
+}
+
+/// The selectable text of a diff folded to its first lines (as [`DiffView`] draws one without
+/// [`DiffView::folding`], under `base`): each line that shows, without its number or sign.
+pub fn diff_units(lines: &[DiffLine], whole: bool, base: &[u32]) -> Vec<Unit> {
+    let (shown, _) = fold(lines.len(), whole);
+    let mut units = Vec::new();
+    for (ix, line) in lines.iter().enumerate().take(shown.min(MOST)) {
+        if line.kind == LineKind::Hunk {
+            continue;
+        }
+        let lead = if units.is_empty() { Lead::Paragraph } else { Lead::Line };
+        units.push(Unit::new(&[base, &[ix as u32]].concat(), capped(&line.text).into_owned(), lead));
+    }
+    units
 }
 
 impl RenderOnce for DiffView {
@@ -315,7 +373,7 @@ impl RenderOnce for DiffView {
             }
             None => {
                 let (shown, button) = fold(self.lines.len(), self.whole);
-                ((0..shown).map(Shown::Line).collect(), button, if self.whole { self.lines.len().saturating_sub(MOST) } else { 0 })
+                ((0..shown.min(MOST)).map(Shown::Line).collect(), button, if self.whole { self.lines.len().saturating_sub(MOST) } else { 0 })
             }
         };
         // The gutter's width: the widest number shown.
@@ -324,9 +382,10 @@ impl RenderOnce for DiffView {
         let number = |n: Option<u32>| div().w(gutter).flex_none().text_right().pr(space::S1).text_color(c.syntax.line_number).child(n.map(|n| n.to_string()).unwrap_or_default());
         let expand = self.folding.as_ref().map(|(_, expand)| expand.clone());
         let id = self.id.clone();
+        let selectable = self.selectable.clone();
         let rows = shown.iter().map(|row| {
-            let line = match *row {
-                Shown::Line(ix) => &self.lines[ix],
+            let (line, ix) = match *row {
+                Shown::Line(ix) => (&self.lines[ix], ix),
                 Shown::Fold { start, count } => {
                     let expand = expand.clone();
                     let selector = format!("{id}-unchanged-{start}");
@@ -364,7 +423,11 @@ impl RenderOnce for DiffView {
                 .child(number(line.old))
                 .child(number(line.new))
                 .child(div().w(px(16.)).flex_none().text_center().text_color(sign_color).child(sign))
-                .child(div().flex_none().pr(space::S3).text_color(c.syntax.plain).child(if line.text.is_empty() { " ".to_owned() } else { capped(&line.text).into_owned() }))
+                .child(div().flex_none().pr(space::S3).text_color(c.syntax.plain).child({
+                    // (An empty line is drawn as a space, to keep its height; it copies as nothing.)
+                    let text = if line.text.is_empty() { " ".to_owned() } else { capped(&line.text).into_owned() };
+                    SelectableText::new((id.clone(), SharedString::from(format!("line-{ix}"))), text).selectable(selectable.as_ref().map(|sel| sel.unit(&[ix as u32])))
+                }))
                 .into_any_element()
         });
         let header = self.title.clone().map(|title| {
