@@ -200,6 +200,7 @@ impl Workspace {
             cx.subscribe_in(view, window, |this: &mut Workspace, _, go: &Go, window, cx| match go {
                 Go::BotChat { bot, session, draft } => this.open_bot_chat(bot, session, draft.as_deref(), window, cx),
                 Go::Session(session) => this.open_session_now(session, window, cx),
+                Go::Sessions => this.show_area(Area::Sessions, window, cx),
             })
         }));
         // The Bots list as it's read again (a bot's conversation may be another session by then).
@@ -439,11 +440,6 @@ impl Workspace {
                 // The panel's folder, as the list says it now (a session opened before the list had
                 // it, a worktree's folder said later).
                 self.place_panel(cx);
-                // The sessions at work here, for this computer's page in Computers.
-                let at_work = self.at_work();
-                if let Some(view) = self.area_view(Area::Computers).cloned() {
-                    view.update(cx, |view, cx| view.set_at_work(at_work, cx));
-                }
                 // What waits on you may have changed with it: asked again where it isn't followed.
                 if self._waiting_follow.is_none() {
                     self.read_waiting(cx);
@@ -1244,23 +1240,6 @@ impl Workspace {
             self.waiting = waiting;
             cx.notify();
         }
-    }
-
-    /// The sessions at work on this window's box, as its list says them (conversations, not their
-    /// subagents, none waiting on you, as `kuvo/computers` counts `working`), the newest first.
-    fn at_work(&self) -> Vec<crate::computers::AtWork> {
-        let mut running: Vec<_> = self.listing.sessions().iter().filter(|(_, facts)| facts.is_running() && facts.parent.is_none() && facts.asked.is_none() && !facts.is_archived()).collect();
-        running.sort_by(|a, b| b.1.updated.total_cmp(&a.1.updated).then_with(|| a.0.cmp(b.0)));
-        running
-            .into_iter()
-            .map(|(session, facts)| {
-                let project = facts.project.as_deref().map(|folder| {
-                    self.listing.projects().get(folder).and_then(|project| project.name.clone()).unwrap_or_else(|| folder.rsplit('/').find(|part| !part.is_empty()).unwrap_or(folder).to_owned())
-                });
-                let title = facts.title.clone().filter(|title| !title.trim().is_empty()).unwrap_or_else(|| "New Session".into());
-                crate::computers::AtWork { session: session.clone(), title, project: project.unwrap_or_default() }
-            })
-            .collect()
     }
 
     /// Asks the box for your computers (in the app, on another thread; in tests and shots, at once).

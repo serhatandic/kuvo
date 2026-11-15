@@ -73,8 +73,11 @@ fn only_this_mac_is_listed_with_a_way_to_add_a_machine(cx: &mut TestAppContext) 
     assert_eq!(said(&page, cx, "fact-system").map(|(_, value)| value).as_deref(), Some("macOS 15.1"));
     assert_eq!(said(&page, cx, "fact-reached").map(|(_, value)| value).as_deref(), Some("Shown in this window"));
     assert!(!shown(cx, "action-remove"), "this window's own computer isn't removed from here");
-    click(cx, "at-work-ses_signup");
-    assert_eq!(workspace.read_with(cx, |workspace, _| (workspace.area(), workspace.opened().map(str::to_owned))), (Area::Sessions, Some("ses_signup".into())));
+    // Its session at work, counted as its box counts it, is under Sessions.
+    assert_eq!(said(&page, cx, "fact-at-work").map(|(title, _)| title).as_deref(), Some("1 session at work"));
+    assert!(!shown(cx, "at-work-elsewhere"));
+    click(cx, "at-work-show");
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.area()), Area::Sessions);
 }
 
 /// Add a Machine: reached from the sidebar's row, its +, and the page's button; it draws the form
@@ -108,6 +111,7 @@ fn a_computer_away_and_one_older_say_why_on_their_pages(cx: &mut TestAppContext)
     assert_eq!(title(&workspace, cx).as_deref(), Some("devbox"));
     assert_eq!(said(&page, cx, "fact-at-work").map(|(title, _)| title).as_deref(), Some("2 sessions at work"));
     assert_eq!(said(&page, cx, "fact-reached").map(|(_, value)| value).as_deref(), Some("Through the relay, end to end encrypted"));
+    assert!(shown(cx, "at-work-elsewhere") && !shown(cx, "at-work-show"), "another computer's sessions aren't opened from here yet");
     assert!(shown(cx, "action-remove") && !shown(cx, "action-reconnect"));
     // Away: why, and nothing claimed of what runs there.
     click(cx, "computer-key_studio");
@@ -119,6 +123,7 @@ fn a_computer_away_and_one_older_say_why_on_their_pages(cx: &mut TestAppContext)
     let (held_title, held_next) = held_words(Some("old-mini"), false);
     assert_eq!(said(&page, cx, "notice-older"), Some((held_title, held_next)));
     assert_eq!(said(&page, cx, "fact-version").map(|(_, value)| value).as_deref(), Some("0.9.180, older than this app"));
+    assert!(!shown(cx, "at-work-none"), "an older computer's count isn't claimed");
     // Shared with another setup: filed apart, and it says nothing of what runs there.
     click(cx, "computer-key_build");
     assert!(shown(cx, "notice-apart") && !shown(cx, "fact-at-work"));

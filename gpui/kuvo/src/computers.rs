@@ -19,7 +19,7 @@ use kuvo_ui::{
     theme::{radius, space},
 };
 
-use crate::areas::{Reading, computer_line};
+use crate::areas::Reading;
 use crate::workspace::held_words;
 
 /// The widest the page's cards grow (Settings' width).
@@ -27,14 +27,6 @@ const PAGE_WIDTH: f32 = 720.;
 
 /// Why an action no box offers yet can't be done here, as the title bar's switcher says it.
 const NOT_YET: &str = "Not in this app yet";
-
-/// A session at work on the computer this window shows, as its list says it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct AtWork {
-    pub session: String,
-    pub title: String,
-    pub project: String,
-}
 
 /// What the page shows.
 #[derive(Clone, Debug, PartialEq)]
@@ -62,8 +54,8 @@ impl Shown {
 pub enum ComputersEvent {
     /// A row picked: `this`, `computer:<key>`, `add`, or none (all of them).
     Select(Option<String>),
-    /// A session at work, to open.
-    Session(String),
+    /// The Sessions area, where this window's own sessions at work are.
+    Sessions,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -84,7 +76,8 @@ enum Item {
     Head(Box<Computer>),
     Notice { key: String, tone: Tone, title: String, words: String },
     Fact { key: String, title: String, value: String, first: bool, last: bool },
-    Session { at_work: AtWork, first: bool, last: bool },
+    /// Sessions at work there, as its box counts them; `open`: they're this window's, under Sessions.
+    Working { count: usize, open: bool },
     Action { key: String, title: String, button: String, first: bool, last: bool },
     Note { key: String, words: String, busy: bool },
     AddForm,
@@ -96,7 +89,8 @@ pub struct ComputersView {
     computers: Reading<Vec<Computer>>,
     this_box: String,
     this_kind: String,
-    at_work: Vec<AtWork>,
+    /// The window shows this Mac's own box (as `held_words` takes it).
+    this_mac: bool,
     shown: Shown,
     host: Entity<TextField>,
     items: Vec<Item>,
@@ -106,13 +100,18 @@ pub struct ComputersView {
 impl EventEmitter<ComputersEvent> for ComputersView {}
 
 impl ComputersView {
-    pub fn new(cx: &mut Context<Self>) -> ComputersView {
-        let host = cx.new(|cx| TextField::new(cx).placeholder("my-server or user@host"));
+    pub fn new(this_mac: bool, cx: &mut Context<Self>) -> ComputersView {
+        // It takes no typing while nothing could be done with it (BOX-NEEDED below, `add_items`).
+        let host = cx.new(|cx| {
+            let mut field = TextField::new(cx).placeholder("my-server or user@host");
+            field.set_disabled(true, cx);
+            field
+        });
         let mut view = ComputersView {
             computers: Reading::NotYet,
             this_box: "This Mac".into(),
             this_kind: String::new(),
-            at_work: Vec::new(),
+            this_mac,
             shown: Shown::All,
             host,
             items: Vec::new(),
@@ -132,6 +131,7 @@ impl ComputersView {
         self.items.iter().find_map(|item| match item {
             Item::Notice { key: at, title, words, .. } if at == key => Some((title.clone(), words.clone())),
             Item::Fact { key: at, title, value, .. } if at == key => Some((title.clone(), value.clone())),
+            Item::Working { count, .. } if key == "fact-at-work" => Some((if *count == 1 { "1 session at work".to_owned() } else { format!("{count} sessions at work") }, String::new())),
             Item::Note { key: at, words, .. } if at == key => Some((words.clone(), String::new())),
             _ => None,
         })
@@ -163,14 +163,6 @@ impl ComputersView {
         if self.this_box != name || self.this_kind != kind {
             self.this_box = name.to_owned();
             self.this_kind = kind.to_owned();
-            self.rebuild(cx);
-        }
-    }
-
-    /// The sessions at work on the computer this window shows, as its list says them.
-    pub fn set_at_work(&mut self, at_work: Vec<AtWork>, cx: &mut Context<Self>) {
-        if self.at_work != at_work {
-            self.at_work = at_work;
             self.rebuild(cx);
         }
     }
@@ -218,7 +210,7 @@ impl ComputersView {
 
     /// All your computers: yours, then those filed apart, each a row with how it stands.
     fn all_items(&self) -> Vec<Item> {
-        let mut items = vec![Item::Title { title: "Your Computers".into(), line: "Each runs its own sessions, bots and agents, with Kuvo Code on it or not.".into(), add: true }];
+        let mut items = vec![Item::Title { title: "Your Computers".into(), line: "Each runs its own sessions, bots and agents.".into(), add: true }];
         let computers = match &self.computers {
             Reading::NotYet => {
                 items.push(Item::Note { key: "computers-loading".into(), words: "Loading your computers…".into(), busy: true });
@@ -262,21 +254,22 @@ impl ComputersView {
         if let Some(notice) = self.notice(&computer) {
             items.push(notice);
         }
-        // What's at work there: this window's own sessions open from here; another computer's are
-        // counted, as its box says them.
-        let unknown = computer.reach == "away" || computer.reach == "unknown" || computer.apart;
+        // What's at work there, as its box counts it (`working`). This window's own are under
+        // Sessions. BOX-NEEDED: which sessions those are (an `atWork` fact on `kuvo/sessions/list`,
+        // or their ids on the `here` computer), to list them here without a copy of the box's rule;
+        // and `working` left out for a peer that never said it (an older box says 0), drawn as not
+        // said. Meanwhile an older computer's count isn't drawn.
+        let unknown = computer.reach == "away" || computer.reach == "unknown" || computer.apart || computer.is_older();
         if !unknown && !computer.reach.is_empty() {
             items.push(Item::Group("At Work".into()));
-            if computer.here && !self.at_work.is_empty() {
-                let count = self.at_work.len();
-                items.extend(self.at_work.iter().enumerate().map(|(ix, at_work)| Item::Session { at_work: at_work.clone(), first: ix == 0, last: ix + 1 == count }));
-            } else if computer.working == 0 {
+            if computer.working == 0 {
                 items.push(Item::Note { key: "at-work-none".into(), words: format!("Nothing is at work on {name} now."), busy: false });
             } else {
-                let sessions = if computer.working == 1 { "1 session".to_owned() } else { format!("{} sessions", computer.working) };
-                items.push(Item::Fact { key: "fact-at-work".into(), title: format!("{sessions} at work"), value: String::new(), first: true, last: true });
-                // Not built: a window that shows another computer's box (`BoxClient::machine`).
-                items.push(Item::Note { key: "at-work-elsewhere".into(), words: "Opening another computer’s sessions isn’t in this app yet.".into(), busy: false });
+                items.push(Item::Working { count: computer.working, open: computer.here });
+                if !computer.here {
+                    // Not built: a window that shows another computer's box (`BoxClient::machine`).
+                    items.push(Item::Note { key: "at-work-elsewhere".into(), words: "Opening another computer’s sessions isn’t in this app yet.".into(), busy: false });
+                }
             }
         }
         items.push(Item::Group("About".into()));
@@ -300,7 +293,7 @@ impl ComputersView {
             ("fact-version", "Kuvo Code", version),
             ("fact-engine", "Engine", said(&computer.engine)),
             ("fact-reached", "Reached", reached(&computer)),
-            ("fact-limits", "Plan limits read here", limits),
+            ("fact-limits", "Plan limits it reads", limits),
         ];
         let count = facts.len();
         items.extend(facts.into_iter().enumerate().map(|(ix, (key, title, value))| Item::Fact { key: key.into(), title: title.into(), value, first: ix == 0, last: ix + 1 == count }));
@@ -308,12 +301,12 @@ impl ComputersView {
         // to one again and remove one (`kuvo/machines…` is a Mac's app's own, answered only while
         // it's open), each said as offered on `kuvo/computers` (`can`), as the Work Queue's items say it.
         items.push(Item::Group("Manage".into()));
-        let mut actions = vec![("action-rename", "Rename".to_owned(), "Rename…")];
+        let mut actions = vec![("action-rename", "Name".to_owned(), "Rename…")];
         if computer.reach == "away" {
-            actions.push(("action-reconnect", "Connect again".to_owned(), "Connect"));
+            actions.push(("action-reconnect", "Connection".to_owned(), "Connect"));
         }
         if !computer.here {
-            actions.push(("action-remove", format!("Remove {name}"), "Remove…"));
+            actions.push(("action-remove", "Your computers".to_owned(), "Remove…"));
         }
         let count = actions.len();
         items.extend(actions.into_iter().enumerate().map(|(ix, (key, title, button))| Item::Action { key: key.into(), title, button: button.into(), first: ix == 0, last: ix + 1 == count }));
@@ -326,7 +319,7 @@ impl ComputersView {
     fn notice(&self, computer: &Computer) -> Option<Item> {
         let name = &computer.name;
         if computer.is_older() {
-            let (title, words) = held_words(Some(name), computer.here);
+            let (title, words) = held_words(Some(name), computer.here && self.this_mac);
             return Some(Item::Notice { key: "notice-older".into(), tone: Tone::Attention, title, words });
         }
         if computer.apart {
@@ -334,7 +327,7 @@ impl ComputersView {
                 key: "notice-apart".into(),
                 tone: Tone::Info,
                 title: format!("{name} isn’t one of your own computers"),
-                words: "It’s shared with computers of another setup, so it says nothing of what runs there.".into(),
+                words: "Someone else’s setup shares this machine, so what runs there isn’t shown.".into(),
             });
         }
         let this = &self.this_box;
@@ -424,25 +417,12 @@ impl ComputersView {
                     .when(!value.is_empty(), |d| d.child(div().debug_selector(move || value_selector).flex_shrink_0().max_w(px(360.)).text_right().text_ui(TypeSize::Body).text_color(c.text_muted).child(value)))
                     .into_any_element()
             }
-            Item::Session { at_work, first, last } => {
-                let id = at_work.session.clone();
-                let selector = format!("at-work-{id}");
-                card_row(selector.clone(), first, last, cx)
-                    .id(SharedString::from(selector))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(c.hover))
-                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(ComputersEvent::Session(id.clone()))))
-                    .child(div().flex().flex_none().items_center().justify_center().size(px(20.)).child(spinner(SharedString::from(format!("at-work-spin-{}", at_work.session)), IconSize::Nav, c.text_muted)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().truncate().text_ui(TypeSize::Body).text_color(c.text).child(at_work.title))
-                            .when(!at_work.project.is_empty(), |d| d.child(div().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(at_work.project))),
-                    )
-                    .child(Icon::new(IconName::ChevronRight).color(c.icon))
+            Item::Working { count, open } => {
+                let sessions = if count == 1 { "1 session at work".to_owned() } else { format!("{count} sessions at work") };
+                card_row("fact-at-work".into(), true, true, cx)
+                    .child(div().flex().flex_none().items_center().justify_center().size(px(20.)).child(spinner("at-work-spin", IconSize::Nav, c.text_muted)))
+                    .child(div().flex_1().min_w_0().text_ui(TypeSize::Body).text_color(c.text).child(sessions))
+                    .when(open, |d| d.child(Button::new("at-work-show", "Show in Sessions").size(ButtonSize::Small).on_click(cx.listener(|_, _, _, cx| cx.emit(ComputersEvent::Sessions)))))
                     .into_any_element()
             }
             Item::Action { key, title, button, first, last } => card_row(key.clone(), first, last, cx)
@@ -506,7 +486,7 @@ impl ComputersView {
                     .flex()
                     .flex_col()
                     .child(div().truncate().text_ui(TypeSize::Body).medium().text_color(c.text).child(computer.name.clone()))
-                    .child(div().truncate().text_ui(TypeSize::Small).text_color(if computer.is_older() { c.warning } else { c.text_muted }).child(computer_line(computer))),
+                    .child(div().truncate().text_ui(TypeSize::Small).text_color(if computer.is_older() { c.warning } else { c.text_muted }).child(standing(computer))),
             )
             .children(working)
             .children(version.map(|version| div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(version)))
@@ -536,7 +516,6 @@ impl ComputersView {
                     .child(div().flex_none().text_ui(TypeSize::Body).text_color(c.text).child("SSH host"))
                     .child(div().flex_1().min_w_0().child(self.host.clone())),
             )
-            .child(div().px(space::S1).text_ui(TypeSize::Small).text_color(c.text_muted).child("Kuvo Code connects with your SSH keys and agent, and installs its engine in ~/.kuvo-code there. It keeps running there when you quit."))
             .into_any_element()
     }
 }
@@ -549,7 +528,7 @@ fn add_items() -> Vec<Item> {
     vec![
         Item::Title { title: "Add a Machine".into(), line: "A Mac or Linux server you reach with SSH, like a Mac mini or a VPS. Its sessions, bots and agents run there, and show here beside this Mac’s.".into(), add: false },
         Item::AddForm,
-        Item::Notice { key: "add-not-yet".into(), tone: Tone::Info, title: "Adding machines isn’t in this app yet".into(), words: "It comes with an update to Kuvo Code. Machines you’ve added already show under Your Computers.".into() },
+        Item::Notice { key: "add-not-yet".into(), tone: Tone::Info, title: "Adding machines isn’t in this app yet".into(), words: "Machines you’ve added already show under Your Computers.".into() },
         Item::AddFoot,
         Item::End,
     ]
@@ -599,15 +578,7 @@ fn card_row(key: String, first: bool, last: bool, cx: &App) -> gpui::Div {
 /// A computer's page head: its tile, its name and how it stands.
 fn head(computer: &Computer, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
-    // How it stands, then what it is: "Connected · Ubuntu 24.04.1 LTS", "Can’t be reached · Mac".
-    let what = computer.system.clone().unwrap_or_else(|| if computer.is_mac() { "Mac".into() } else { "Machine".into() });
-    let line = if computer.here {
-        format!("Shown in this window · {what}")
-    } else if computer.reach.is_empty() {
-        what
-    } else {
-        format!("{} · {what}", state_words(computer))
-    };
+    let line = standing(computer);
     div()
         .debug_selector(|| "computer-head".into())
         .pt(space::S8)
@@ -627,6 +598,18 @@ fn head(computer: &Computer, cx: &App) -> AnyElement {
                 .child(div().debug_selector(|| "computer-head-line".into()).text_ui(TypeSize::Body).text_color(c.text_muted).child(line)),
         )
         .into_any_element()
+}
+
+/// How it stands, then what it is: "Connected · Ubuntu 24.04.1 LTS", "Can’t be reached · Mac".
+fn standing(computer: &Computer) -> String {
+    let what = computer.system.clone().unwrap_or_else(|| if computer.is_mac() { "Mac".into() } else { "Machine".into() });
+    if computer.here {
+        format!("Shown in this window · {what}")
+    } else if computer.reach.is_empty() {
+        what
+    } else {
+        format!("{} · {what}", state_words(computer))
+    }
 }
 
 /// How a computer stands, in a word or two.

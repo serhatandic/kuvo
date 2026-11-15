@@ -26,7 +26,7 @@ use kuvo_ui::{
 
 use crate::area::Area;
 use crate::bots::{BotsEvent, BotsView, There};
-use crate::computers::{AtWork, ComputersEvent, ComputersView};
+use crate::computers::{ComputersEvent, ComputersView};
 use crate::queue::marks::{label_dot, status_mark};
 use crate::queue::{Act as QueueAct, QueueEvent, QueueView};
 use crate::settings::{Pick, SettingsView};
@@ -71,6 +71,8 @@ pub enum Go {
     BotChat { bot: String, session: String, draft: Option<String> },
     /// One of the box's sessions.
     Session(String),
+    /// The Sessions area.
+    Sessions,
 }
 
 /// One area's sidebar.
@@ -170,7 +172,8 @@ impl AreaView {
                 ]
             })
             .unwrap_or_default();
-        let computers_page = (area == Area::Computers).then(|| cx.new(ComputersView::new));
+        let this_mac = client.here();
+        let computers_page = (area == Area::Computers).then(|| cx.new(|cx| ComputersView::new(this_mac, cx)));
         let computers_subscriptions = computers_page
             .as_ref()
             .map(|page| {
@@ -180,7 +183,7 @@ impl AreaView {
                         this.select(None, cx);
                         cx.emit(Picked);
                     }
-                    ComputersEvent::Session(session) => cx.emit(Go::Session(session.clone())),
+                    ComputersEvent::Sessions => cx.emit(Go::Sessions),
                 })]
             })
             .unwrap_or_default();
@@ -271,13 +274,6 @@ impl AreaView {
             }
             self.computers = computers;
             cx.notify();
-        }
-    }
-
-    /// The sessions at work on the computer this window shows, for its page.
-    pub fn set_at_work(&mut self, at_work: Vec<AtWork>, cx: &mut Context<Self>) {
-        if let Some(page) = &self.computers_page {
-            page.update(cx, |page, cx| page.set_at_work(at_work, cx));
         }
     }
 
@@ -729,10 +725,9 @@ impl AreaView {
             this.select(None, cx);
             cx.emit(Picked);
         }));
-        let add = Button::icon_only("computers-header-add", kuvo_ui::IconName::Plus, "Add a Machine").ghost().size(ButtonSize::Small).on_click(self.row_click("add".into(), cx));
         let mut rows = vec![
             div().debug_selector(|| "computers-all".into()).pb(space::S0_5).child(all).into_any_element(),
-            SectionHeader::new("computers", "Your Computers").action(add).into_any_element(),
+            SectionHeader::new("computers", "Your Computers").into_any_element(),
         ];
         let add_row = |this: &Self, cx: &mut Context<Self>| {
             let row = NavRow::new("computers-add-row", "Add a Machine…").leading(Icon::new(kuvo_ui::IconName::Plus).color(c.icon)).muted(true).selected(this.is_selected("add")).on_click(this.row_click("add".into(), cx));
