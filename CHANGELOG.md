@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- On a Linux machine that doesn't let the sandbox keep commands from your login's services, the desktop app's Settings › Permissions now says so, with **How to Check…**, as your iPhone does, rather than a plain On. A limit whose time is up shows as started over the moment it resets, on every device, and accounts and their limits are named the same everywhere.
 - A message that ran a command shows it as you typed it (**/review** main) on your Mac and your iPhone alike, kept by the computer the conversation is on, not the long prompt it gave the agent. Editing a queued message brings it back with the command or keyword it went with (**/plan**, **/goal**, a command), and Stop takes a message you sent a moment before with it, held with the rest, without waiting for it.
 - In a group chat, & offers the chat's own bots first, then other bots and sessions you can name there, ranked by the computer the chat is on, the same on every device.
 - In Settings › Accounts, Amazon Bedrock (reached with your computer's AWS credentials or a key) says and offers **Connect** rather than Sign In (also above the composer, for a Bedrock model it can't use yet), and **Reconnect** once its credentials stop working.

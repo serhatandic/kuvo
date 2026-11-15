@@ -249,8 +249,8 @@ fn windows(key: &str, account: &Account, now: f64, cx: &App) -> AnyElement {
         .gap(space::S3)
         .children(account.windows.iter().enumerate().map(|(ix, window)| {
             let selector = format!("{key}-window-{ix}");
-            // A window whose time has passed has started over: not read since (PROTOCOL.md).
-            let over = window.resets_at.is_some_and(|at| at <= now);
+            // A window that started over, as the box says: not read since (PROTOCOL.md).
+            let over = window.expired;
             // Its colour is the box's level, as the rail's rings.
             let color = crate::rail::level_color(window.level, cx);
             let calm = matches!(window.level, Level::Calm | Level::Unknown);
@@ -268,7 +268,7 @@ fn windows(key: &str, account: &Account, now: f64, cx: &App) -> AnyElement {
                         .justify_between()
                         .gap(space::S2)
                         .text_ui(TypeSize::Small)
-                        .child(div().min_w_0().truncate().text_color(c.text).child(window.title()))
+                        .child(div().min_w_0().truncate().text_color(c.text).child(window.title.clone()))
                         .child(div().flex_none().text_color(if calm { c.text_muted } else { color }).child(said)),
                 )
                 .child(div().h(px(4.)).w_full().rounded(radius::PILL).bg(c.border).child(div().h_full().w(gpui::relative(if over { 0. } else { window.used.clamp(0., 1.) })).rounded(radius::PILL).bg(color)))

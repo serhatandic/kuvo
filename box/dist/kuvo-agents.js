@@ -9995,7 +9995,7 @@ async function resetRoutes(resets, method, rest, body) {
 }
 
 // box/src/agents/limits-rows.ts
-function limitRows(boxes) {
+function limitRows(boxes, now) {
   const groups = [];
   const found = new Map;
   for (const box of boxes) {
@@ -10010,9 +10010,10 @@ function limitRows(boxes) {
       }
     }
   }
-  return groups.map(({ id, members }) => {
+  const rows = groups.map(({ id, members }) => {
     const row = {
-      ...ringed(merged(members)),
+      ...ringed(merged(members), now),
+      title: "",
       id,
       boxes: members.map(({ box, account }) => ({
         key: box.key,
@@ -10031,6 +10032,63 @@ function limitRows(boxes) {
     withResetsOn(row, members);
     return row;
   });
+  named2(rows);
+  return rows;
+}
+var AGENT_NAMES = { claude: "Claude", codex: "Codex", grok: "Grok", cursor: "Cursor", antigravity: "Antigravity" };
+var SERVICE_NAMES = { codex: "ChatGPT", grok: "SuperGrok", copilot: "Copilot", openrouter: "OpenRouter", zai: "Z.ai", ollama: "Ollama", opencode: "OpenCode Go" };
+var capitalized = (word) => word.charAt(0).toUpperCase() + word.slice(1);
+function accountTitle(account) {
+  const base = account.agent ? AGENT_NAMES[account.agent] ?? capitalized(account.agent) : SERVICE_NAMES[account.service] ?? capitalized(account.service);
+  const label = account.label?.trim();
+  return label ? `${base} \xB7 ${label}` : base;
+}
+function windowTitle(window) {
+  if (window.name)
+    return window.name;
+  if (window.model)
+    return window.model;
+  const minutes = window.minutes;
+  if (minutes === 300)
+    return "Session";
+  if (minutes === 10080)
+    return "Weekly";
+  if (minutes !== undefined && minutes >= 40000 && minutes <= 45000)
+    return "Monthly";
+  if (minutes !== undefined && minutes >= DAY)
+    return `${Math.floor(minutes / DAY)}-day`;
+  if (minutes !== undefined && minutes >= 60)
+    return `${Math.floor(minutes / 60)}-hour`;
+  return "Limit";
+}
+function named2(rows) {
+  const names = rows.map((row) => accountTitle(row));
+  const here = (index) => rows[index].boxes.filter((box) => box.here);
+  const elsewhere = (index) => [...new Set(rows[index].boxes.filter((box) => !box.here).map((box) => box.name))].join(", ");
+  const alike = () => {
+    const counts = new Map;
+    for (const name of names)
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    return new Set([...counts].filter(([, count]) => count > 1).map(([name]) => name));
+  };
+  let clash = alike();
+  names.forEach((name, index) => {
+    const mine = here(index);
+    if (!clash.has(name) || !mine.length || mine.some((box) => box.agent))
+      return;
+    names[index] = accountTitle({ service: rows[index].service, label: mine[0].label });
+  });
+  for (const onHere of [false, true]) {
+    clash = alike();
+    names.forEach((name, index) => {
+      if (!clash.has(name) || here(index).length > 0 !== onHere)
+        return;
+      const boxes = elsewhere(index);
+      if (boxes)
+        names[index] = `${name} \xB7 ${boxes}`;
+    });
+  }
+  rows.forEach((row, index) => row.title = names[index]);
 }
 var levelOf = (used) => used >= 0.9 ? "over" : used >= 0.7 ? "near" : "calm";
 var DAY = 24 * 60;
@@ -10078,18 +10136,30 @@ function accountLevel(account, rings) {
       shares.push(extra.amount / extra.limit);
   return highest(shares.map(levelOf));
 }
-function ringed(account) {
+function shownWindow(window, now) {
+  const title = windowTitle(window);
+  if (window.resetsAt === undefined || window.resetsAt > now)
+    return { ...window, title };
+  const { resetsAt: _, amount: __, ...rest } = window;
+  return { ...rest, used: 0, title, expired: true };
+}
+function shownAccount(account, now) {
+  return { ...account, title: accountTitle(account), windows: account.windows.map((window) => shownWindow(window, now)) };
+}
+function ringed(account, now) {
   const spans = spansOf(account.windows);
   const rings = {};
-  const windows = account.windows.map((window) => {
+  const windows = account.windows.map((read) => {
+    const window = shownWindow(read, now);
     const level = levelOf(window.used);
-    const span = spans.get(window);
+    const span = spans.get(read);
     if (span)
       rings[span] = { window: window.id, used: window.used, ...window.resetsAt ? { resetsAt: window.resetsAt } : {}, level };
     return { ...window, level, ...span ? { span } : {} };
   });
   const level = accountLevel(account, rings);
-  return { ...account, windows, rings, ...level ? { level } : {} };
+  const bar = rings.short && (!rings.long || rings.short.used >= rings.long.used) ? "short" : rings.long ? "long" : undefined;
+  return { ...account, windows, rings, ...level ? { level } : {}, ...bar ? { bar } : {} };
 }
 function withResetsOn(row, members) {
   const index = row.extras?.findIndex((extra) => extra.kind === "resets") ?? -1;
@@ -10484,23 +10554,60 @@ class Limits {
   }
   rows() {
     const own = this.list(false);
-    return this.peers ? this.peers.rows(own) : limitRows([{ key: "", name: "", here: true, away: false, accounts: own }]);
+    return this.peers ? this.peers.rows(own) : limitRows([{ key: "", name: "", here: true, away: false, accounts: own }], this.now());
   }
   peersChanged() {
     this.changed(true, false);
   }
   saying() {
-    return JSON.stringify([this.list(), this.rows(), this.notices()]);
+    return JSON.stringify([this.shown(), this.rows(), this.notices()]);
   }
   start() {
     this.timer ??= setInterval(() => void this.tick(), MINUTE2);
     this.timer.unref?.();
     this.tick();
+    this.awaitTurn();
   }
   stop() {
     if (this.timer)
       clearInterval(this.timer);
     this.timer = undefined;
+    if (this.turnTimer)
+      clearTimeout(this.turnTimer);
+    this.turnTimer = undefined;
+    this.awaiting = undefined;
+  }
+  shown() {
+    const now = this.now();
+    return this.list().map((account) => shownAccount(account, now));
+  }
+  nextTurn(rows = this.rows()) {
+    const now = this.now();
+    let soonest;
+    for (const row of rows)
+      for (const window of row.windows)
+        if (window.resetsAt && window.resetsAt > now && (soonest === undefined || window.resetsAt < soonest))
+          soonest = window.resetsAt;
+    return soonest;
+  }
+  turn() {
+    this.changed(false, false);
+  }
+  turnTimer;
+  awaiting;
+  awaitTurn(rows) {
+    if (this.turnTimer)
+      clearTimeout(this.turnTimer);
+    this.turnTimer = undefined;
+    this.awaiting = undefined;
+    if (!this.timer)
+      return;
+    const at = this.nextTurn(rows);
+    if (at === undefined)
+      return;
+    this.awaiting = at;
+    this.turnTimer = setTimeout(() => this.turn(), Math.min(Math.max(at - this.now(), 0) + 1, 2 ** 31 - 1));
+    this.turnTimer.unref?.();
   }
   list(borrowed = true) {
     const listed = [];
@@ -10899,8 +11006,9 @@ class Limits {
   }
   lastHeardSave = 0;
   changed(heard = false, own = true) {
-    const list = this.list();
+    const list = this.shown();
     const rows = this.rows();
+    this.awaitTurn(rows);
     const notices = this.notices();
     const now = JSON.stringify([list, rows, notices]);
     if (own && (!heard || this.now() - this.lastHeardSave >= 30000)) {
@@ -10979,7 +11087,7 @@ async function limitsRoutes(limits, method, rest, body = async () => {
     return json7({ message: "Plan limits aren't read on this computer." }, 503);
   if (rest[0] === "reset")
     return resetRoutes(limits.resets, method, rest.slice(1), body);
-  const answer = () => json7({ data: { accounts: limits.list(), services: limits.services(), rows: limits.rows(), notificationAvailability: notificationAvailability(), notices: limits.notices(), ownNotices: limits.pushableNotices() } });
+  const answer = () => json7({ data: { accounts: limits.shown(), services: limits.services(), rows: limits.rows(), notificationAvailability: notificationAvailability(), notices: limits.notices(), ownNotices: limits.pushableNotices() } });
   if (!rest.length && method === "GET")
     return answer();
   if (rest.length === 1 && rest[0] === "refresh" && method === "POST") {
@@ -12914,7 +13022,7 @@ function stamp2(folder) {
     return;
   }
 }
-function named2(skills) {
+function named3(skills) {
   const names = new Set;
   const list = [];
   for (const skill of [...skills].sort((a, b) => a.name.localeCompare(b.name))) {
@@ -12941,7 +13049,7 @@ function copy(from, to) {
 function skillsFolder(skills) {
   if (!home || !skills.length)
     return;
-  const list = named2(skills);
+  const list = named3(skills);
   if (!list.length)
     return;
   const set = createHash6("sha256").update(list.map((entry) => `${entry.name}\x00${entry.skill.folder}\x00${entry.stamp}`).join(`
@@ -12989,7 +13097,7 @@ function tidy(root) {
   }
 }
 function copySkillsInto(folder, skills) {
-  const list = named2(skills);
+  const list = named3(skills);
   const record = join21(folder, ".kuvo-code");
   let before = {};
   try {
@@ -13143,7 +13251,7 @@ function cursorSubagents(subagents) {
 function slug(name, separator = "-") {
   return name.toLowerCase().replace(separator === "_" ? /[^a-z0-9_]+/g : /[^a-z0-9_-]+/g, separator).replace(/^[-_]+|[-_]+$/g, "") || "agent";
 }
-function named3(agents, separator = "-") {
+function named4(agents, separator = "-") {
   const taken = new Set;
   return agents.map((agent) => {
     const base = slug(agent.name, separator);
@@ -13160,7 +13268,7 @@ function codexSubagents(subagents) {
   const config = {};
   const files = {};
   const roles = [];
-  for (const { agent, slug: role } of named3(subagents.agents, "_")) {
+  for (const { agent, slug: role } of named4(subagents.agents, "_")) {
     const name = codexReserved.has(role) ? `${role}_agent` : role;
     const model = nativeModel("codex", agent.model);
     const lines = [`developer_instructions = ${quoted(agent.prompt || agent.description)}`, ...model ? [`model = ${quoted(model)}`] : []];
@@ -13185,7 +13293,7 @@ function codexSubagents(subagents) {
 }
 function grokSubagents(subagents) {
   const files = {};
-  for (const { agent, slug: file } of named3(subagents.agents)) {
+  for (const { agent, slug: file } of named4(subagents.agents)) {
     const model = nativeModel("grok", agent.model);
     files[join22("agents", `${file}.md`)] = frontMatter({ name: agent.name, description: agent.description, ...model ? { model } : {} }, agent.prompt);
   }
@@ -13198,7 +13306,7 @@ function grokSubagents(subagents) {
 var ownFile = /^[a-z0-9_-]+\.md$/;
 function antigravityCustomAgents(home, subagents) {
   const after = {};
-  for (const { agent, slug: file } of named3(subagents.agents)) {
+  for (const { agent, slug: file } of named4(subagents.agents)) {
     const tier = antigravityTier(agent.model);
     after[`${file}.md`] = frontMatter({ name: agent.name, description: agent.description, subagent: true, mainAgent: false, ...tier ? { model: tier } : {} }, agent.prompt);
   }
@@ -14878,18 +14986,18 @@ class ClaudeAgent {
         if (!this.token()) {
           const console2 = await this.readStatus(this.consoleEnv());
           if (console2.loggedIn && console2.authMethod !== "claude.ai")
-            return { installed: true, signedIn: true, ...named4(console2, "Anthropic Console") };
+            return { installed: true, signedIn: true, ...named5(console2, "Anthropic Console") };
           return { installed: true, signedIn: false, message: "Sign in to Claude Code with your Claude plan or an Anthropic Console account." };
         }
         const status = this.instance.home ? undefined : await this.readStatus().catch(() => {
           return;
         });
-        return { installed: true, signedIn: true, ...named4(status?.loggedIn ? status : undefined, "Claude plan") };
+        return { installed: true, signedIn: true, ...named5(status?.loggedIn ? status : undefined, "Claude plan") };
       }
       const status = await this.readStatus();
       if (!status.loggedIn)
         return { installed: true, signedIn: false, message: "Sign in to Claude Code with your Claude plan or an Anthropic Console account." };
-      return { installed: true, signedIn: true, ...named4(status, "Claude Code") };
+      return { installed: true, signedIn: true, ...named5(status, "Claude Code") };
     });
     const turnedAway = this.turnedAway;
     if (!turnedAway)
@@ -16896,7 +17004,7 @@ function describe(status) {
   const who = status.email ?? (status.apiProvider && status.apiProvider !== "firstParty" ? status.apiProvider : undefined);
   return [who, plan].filter(Boolean).join(" \xB7 ");
 }
-function named4(status, otherwise) {
+function named5(status, otherwise) {
   const described = status ? describe(status) : "";
   return described && status?.email ? { label: described } : { label: described || otherwise, what: true };
 }
@@ -33111,8 +33219,8 @@ class GroupRunner {
         this.changed(id);
         seat = undefined;
       }
-      const fresh = guest ? undefined : seatStartText(botID, kept.group, all, wrapUp, name, named5(all));
-      const text = guest ? guestText(botID, kept.group, all, namedIn?.author, name) : seat ? turnText(botID, kept.group, unheard, wrapUp, name, named5(unheard)) : fresh;
+      const fresh = guest ? undefined : seatStartText(botID, kept.group, all, wrapUp, name, named6(all));
+      const text = guest ? guestText(botID, kept.group, all, namedIn?.author, name) : seat ? turnText(botID, kept.group, unheard, wrapUp, name, named6(unheard)) : fresh;
       const last = all.at(-1);
       const home = this.home(bot.box);
       const result = await home.turn({
@@ -33124,7 +33232,7 @@ class GroupRunner {
         text,
         ...guest ? {} : { chatSize: new TextEncoder().encode(chatText(botID, kept.group, all, name)).length }
       }, (state) => this.heardOf(state, { id, botID, box: bot.box, guest, run, last: last?.id, retracted, own }), stopped.signal, {
-        shorter: seat ? () => turnText(botID, kept.group, unheard, wrapUp, name, named5(unheard), chatBudget) : undefined,
+        shorter: seat ? () => turnText(botID, kept.group, unheard, wrapUp, name, named6(unheard), chatBudget) : undefined,
         progress: (now) => {
           if (guest || bot.box || now.prompt === undefined || now.sent === undefined || stopped.signal.aborted)
             return;
@@ -33844,7 +33952,7 @@ _Earlier messages aren\u2019t here: this is the latest of the chat._
   }
 }
 var peerPrefix = (key) => key.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 8);
-function named5(unheard) {
+function named6(unheard) {
   const blocks = unheard.slice(-40).filter((message) => message.author === undefined).map((message) => message.named).filter((block) => typeof block === "string" && block.length > 0);
   if (blocks.length <= 1)
     return blocks[0];
@@ -35900,7 +36008,7 @@ class LimitsPeers {
       const visible = this.noticePeer(key, kept) ? accounts.map((a) => ({ ...a, ...a.notices ? { notices: a.notices.filter((n) => currentNotice(n, now)) } : {} })) : withoutNotices(accounts);
       boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now - kept.heard > PEER_AWAY2, ...!ours ? { vouched: true } : {}, accounts: visible });
     }
-    return limitRows(boxes);
+    return limitRows(boxes, now);
   }
   tell(urgent = false) {
     if (!this.transport.followed || !this.directory.told)
@@ -36568,4 +36676,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents bdde58ab52b3a4a6526b30522c8b0a1508c1651c825416810cd0a4d7cc19e26f
+// Built from Packages/Box/src/agents f089eb362d39a0a8745ce0951339f019d5442dfba4e7436b0fa39bbd8251101f

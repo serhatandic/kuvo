@@ -1628,8 +1628,12 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (Each account's plan limits, on the coding agents' bridge.)
     limits: ["GET", "kuvo/agents/api/kuvo/limits"],
     // (Using a plan's resets, and the agents' tool for it: the bridge's `limits/reset`.)
+    // (Which ring one bar shows, and a window that started over, in the limits' rows.)
+    "limits.bar": ["GET", "kuvo/agents/api/kuvo/limits"],
     "limits.resets": ["POST", "kuvo/agents/api/kuvo/limits/reset"],
     "limits.rings": ["GET", "kuvo/agents/api/kuvo/limits"],
+    // (Each row's, account's and window's name, in the limits' answer.)
+    "limits.titles": ["GET", "kuvo/agents/api/kuvo/limits"],
     "mcp.catalog": ["GET", "kuvo/mcp/catalog"],
     // (And kuvo/sessions/<id>/send, which the same box answers.)
     // (A command's message read as typed, by its id.)
@@ -1676,6 +1680,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "sandbox.check": ["POST", "kuvo/sandbox/check"],
     // (The address a button with no route opens: what kuvo/sandbox says.)
     "sandbox.opens": ["GET", "kuvo/sandbox"],
+    // (Its words for a machine's services and what a report of a failing check says: what kuvo/sandbox says.)
+    "sandbox.report": ["GET", "kuvo/sandbox"],
     // (Its asks' `settled` list those Auto's reviewer took up that are over: what kuvo/sandbox/asks says.)
     "sandbox.reviews.settled": ["GET", "kuvo/sandbox/asks"],
     // (Its asks' `reviews` list every ask Auto's reviewer may take up: what kuvo/sandbox/asks says.)

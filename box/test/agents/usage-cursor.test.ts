@@ -456,7 +456,7 @@ describe("Cursor's account across your computers", () => {
     const { limitRows } = await import("../../src/agents/limits-rows")
     const extra = { id: "on_demand", name: "On-demand", kind: "spent" as const, amount: 43, unit: "usd" as const }
     const account = (checked: number, extras?: (typeof extra)[], problem?: boolean) => ({ provider: "cursor", service: "cursor" as const, identity: "aaaaaaaaaaaaaaaa", windows: [], checked, ...(extras ? { extras } : {}), ...(problem ? { problem: { kind: "failed" as const, message: "x" } } : {}) })
-    const rows = (mac: any, dev: any) => limitRows([{ key: "mac", name: "Mac", here: true, away: false, accounts: [mac] }, { key: "dev", name: "devbox", here: false, away: false, accounts: [dev] }])
+    const rows = (mac: any, dev: any) => limitRows([{ key: "mac", name: "Mac", here: true, away: false, accounts: [mac] }, { key: "dev", name: "devbox", here: false, away: false, accounts: [dev] }], 0)
     expect(rows(account(100, [extra]), account(200))[0]!.extras).toBeUndefined()
     expect(rows(account(100), account(200, [extra]))[0]!.extras).toEqual([extra])
     // (A newer read that failed says nothing of them: the one before stands.)

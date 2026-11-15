@@ -27,7 +27,9 @@ git.merge
 git.pull-request
 git.status
 groups.mentions
+limits.bar
 limits.rings
+limits.titles
 messages.commands
 messages.send
 models.offered
@@ -39,6 +41,7 @@ queue.items
 queue.removed.keyword
 queue.stop.arriving
 sandbox.opens
+sandbox.report
 sandbox.words
 sessions.actions
 sessions.asks

@@ -89,7 +89,12 @@ export function describePlanLimits(data: unknown, now = Date.now()): string {
     const windows = Array.isArray(account.windows) ? account.windows.filter(isObject) : [];
     for (const window of windows) {
       const resetsAt = typeof window.resetsAt === "number" ? window.resetsAt : undefined;
-      // Started over since it was read: what's used now isn't known, only that it's less.
+      // Started over since it was read (the box says `expired`, with no reset time any more): what's
+      // used now isn't known, only that it's less.
+      if (window.expired === true) {
+        lines.push(`  - ${windowName(window)}: started over, not read since`);
+        continue;
+      }
       if (resetsAt && resetsAt <= now) {
         lines.push(`  - ${windowName(window)}: started over at ${resetTime(resetsAt)}, not read since`);
         continue;

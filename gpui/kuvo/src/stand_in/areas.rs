@@ -175,8 +175,9 @@ fn computers(alone: bool, more: usize) -> Vec<Value> {
 }
 
 fn accounts(now: f64) -> Vec<Value> {
-    let window = |id: &str, used: f64, resets: f64, minutes: Option<u32>, model: Option<&str>, name: Option<&str>| {
-        let mut window = json!({ "id": id, "used": used, "resetsAt": now + resets, "read": now - MINUTE, "source": "usage" });
+    // Each window named as the box names it (`title`).
+    let window = |id: &str, title: &str, used: f64, resets: f64, minutes: Option<u32>, model: Option<&str>, name: Option<&str>| {
+        let mut window = json!({ "id": id, "title": title, "used": used, "resetsAt": now + resets, "read": now - MINUTE, "source": "usage" });
         if let Some(minutes) = minutes {
             window["minutes"] = json!(minutes);
         }
@@ -191,8 +192,9 @@ fn accounts(now: f64) -> Vec<Value> {
     };
     // The box picks a row's rings: among the whole plan's windows, the shortest under a day is
     // `short` and the longest of a day or more `long`; a plan's only window that states no length
-    // is `long`.
-    let row = |service: &str, agent: Option<&str>, label: &str, plan: &str, mut windows: Vec<Value>| {
+    // is `long`; one bar shows the fuller (`bar`, the short one where they're as full). Each row is
+    // named as the box names it (`title`).
+    let row = |service: &str, title: &str, agent: Option<&str>, label: &str, plan: &str, mut windows: Vec<Value>| {
         let whole: Vec<usize> = (0..windows.len()).filter(|ix| windows[*ix].get("model").is_none()).collect();
         let minutes = |ix: &usize| windows[*ix]["minutes"].as_u64();
         let short = whole.iter().copied().filter(|ix| minutes(ix).is_some_and(|minutes| minutes < 1440)).min_by_key(|ix| minutes(ix));
@@ -205,19 +207,29 @@ fn accounts(now: f64) -> Vec<Value> {
                 rings[span] = json!({ "window": window["id"], "used": window["used"], "resetsAt": window["resetsAt"], "level": window["level"] });
             }
         }
-        let mut row = json!({ "service": service, "label": label, "plan": plan, "windows": windows, "rings": rings, "checked": now - MINUTE });
+        let used = |span: &str| rings[span]["used"].as_f64();
+        let bar = match (used("short"), used("long")) {
+            (Some(short), Some(long)) if long > short => Some("long"),
+            (Some(_), _) => Some("short"),
+            (None, Some(_)) => Some("long"),
+            _ => None,
+        };
+        let mut row = json!({ "service": service, "title": title, "label": label, "plan": plan, "windows": windows, "rings": rings, "checked": now - MINUTE });
+        if let Some(bar) = bar {
+            row["bar"] = json!(bar);
+        }
         if let Some(agent) = agent {
             row["agent"] = json!(agent);
         }
         row
     };
     vec![
-        row("claude", Some("claude"), "Work", "Max 20x", vec![window("five_hour", 0.46, 3.7 * HOUR, Some(300), None, None), window("seven_day", 0.38, 4.0 * DAY, Some(10080), None, None), window("seven_day_sonnet", 0.12, 4.0 * DAY, Some(10080), Some("Sonnet"), None)]),
-        row("claude", Some("claude"), "Personal", "Pro", vec![window("five_hour", 0.18, 4.1 * HOUR, Some(300), None, None), window("seven_day", 0.22, 2.0 * DAY, Some(10080), None, None)]),
-        row("codex", Some("codex"), "", "Pro", vec![window("primary", 0.74, 52.0 * MINUTE, Some(300), None, None), window("secondary", 0.41, 5.0 * DAY, Some(10080), None, None)]),
-        row("copilot", None, "", "Pro+", vec![window("premium", 0.35, 17.0 * DAY, None, None, Some("Premium requests"))]),
-        row("grok", Some("grok"), "", "SuperGrok", vec![window("week", 0.12, 3.0 * DAY, Some(10080), None, None)]),
-        row("openrouter", None, "Team key", "Credits", vec![window("credits", 0.58, 20.0 * DAY, None, None, Some("Credits"))]),
+        row("claude", "Claude · Work", Some("claude"), "Work", "Max 20x", vec![window("five_hour", "Session", 0.46, 3.7 * HOUR, Some(300), None, None), window("seven_day", "Weekly", 0.38, 4.0 * DAY, Some(10080), None, None), window("seven_day_sonnet", "Sonnet", 0.12, 4.0 * DAY, Some(10080), Some("Sonnet"), None)]),
+        row("claude", "Claude · Personal", Some("claude"), "Personal", "Pro", vec![window("five_hour", "Session", 0.18, 4.1 * HOUR, Some(300), None, None), window("seven_day", "Weekly", 0.22, 2.0 * DAY, Some(10080), None, None)]),
+        row("codex", "Codex", Some("codex"), "", "Pro", vec![window("primary", "Session", 0.74, 52.0 * MINUTE, Some(300), None, None), window("secondary", "Weekly", 0.41, 5.0 * DAY, Some(10080), None, None)]),
+        row("copilot", "Copilot", None, "", "Pro+", vec![window("premium", "Premium requests", 0.35, 17.0 * DAY, None, None, Some("Premium requests"))]),
+        row("grok", "Grok", Some("grok"), "", "SuperGrok", vec![window("week", "Weekly", 0.12, 3.0 * DAY, Some(10080), None, None)]),
+        row("openrouter", "OpenRouter · Team key", None, "Team key", "Credits", vec![window("credits", "Credits", 0.58, 20.0 * DAY, None, None, Some("Credits"))]),
     ]
 }
 
