@@ -232,9 +232,6 @@ const RESTART = "POST kuvo/engine/restart";
  * it (`boxAnswers`), else the app that runs it does. */
 const restartsItself = () => !IS_MAC || boxAnswers("kuvo/engine/restart");
 
-/** The sandbox's button while it's off, as the box names it (`kuvo/sandbox`'s `action`): one that
- * runs a route (checking again, restarting the engine), one that opens a page, or this computer's
- * own Software Update, only from a client on it. */
 /** The sandbox's row, as `kuvo/sandbox` says it: on, a quiet line; off, or on while commands can
  * still reach your login's services, why (a warning) and its button. */
 export function sandboxRow(state: any, name: string, here: boolean) {
@@ -248,6 +245,9 @@ export function sandboxRow(state: any, name: string, here: boolean) {
   };
 }
 
+/** The sandbox's button while it needs you, as the box names it (`kuvo/sandbox`'s `action`): one that
+ * runs a route (checking again, restarting the engine), one that opens a page, or this computer's
+ * own Software Update, only from a client on it. */
 export function sandboxAction(state: any, name: string, here: boolean, restarts = restartsItself()): SettingAction | null {
   if (!state.action || !state.actionLabel) return null;
   const title = String(state.actionLabel);
