@@ -16,9 +16,15 @@ anyhow = "1"
 async-channel = "2.5"
 serde_json = "1"
 
-# The app's device key, in the Mac's keychain.
+# The app's device key, in the Mac's keychain; and where System Settings' window is, with the
+# drag tile's own window moved beside it (permissions/mac.rs).
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
+core-foundation = "0.10"
+core-graphics = "0.24"
+libc = "0.2"
+objc2 = "0.6"
+raw-window-handle = "0.6"
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

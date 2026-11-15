@@ -21,6 +21,7 @@ pub mod keeper;
 mod landing;
 pub mod launch;
 pub mod panel;
+pub mod permissions;
 pub mod queue;
 pub mod rail;
 pub mod session_menu;

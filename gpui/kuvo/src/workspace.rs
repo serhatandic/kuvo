@@ -226,6 +226,8 @@ pub struct Workspace {
     welcome_why: Option<String>,
     focus_landing: bool,
     _sessions: Option<Follow<ListUpdate>>,
+    /// What macOS allows this Mac's agents, where it needs you: a heads-up over the main view.
+    permissions: Entity<crate::permissions::HeadsUp>,
     tasks: Vec<Task<()>>,
     _landing: Subscription,
     _search: Subscription,
@@ -242,6 +244,7 @@ impl Workspace {
                 this.search_changed(cx);
             }
         });
+        let permissions = cx.new(|cx| crate::permissions::HeadsUp::new(client.clone(), live, window, cx));
         let areas = areas::views(&client, live, cx);
         let mut area_subscriptions: Vec<Subscription> = areas.iter().map(|(_, view)| cx.subscribe(view, |this: &mut Workspace, view, _: &Picked, cx| this.area_picked(&view, cx))).collect();
         area_subscriptions.extend(areas.iter().map(|(_, view)| {
@@ -332,6 +335,7 @@ impl Workspace {
             welcome_why: None,
             focus_landing: false,
             _sessions: None,
+            permissions,
             tasks: Vec::new(),
             _landing: subscription,
             _search: search_subscription,
@@ -453,6 +457,10 @@ impl Workspace {
                 self.info = Some(info);
                 self.box_state = if self.client.gate().is_held() { BoxState::Held } else { BoxState::Connected };
                 let name = self.box_name();
+                self.permissions.update(cx, |permissions, cx| {
+                    permissions.set_box_name(name.clone());
+                    permissions.read(cx);
+                });
                 let kind = self.info.as_ref().map(|info| info.kind.clone()).unwrap_or_default();
                 for (_, view) in self.areas.clone() {
                     view.update(cx, |view, cx| {
@@ -679,6 +687,11 @@ impl Workspace {
 
     pub fn lists(&self) -> &Lists {
         &self.lists
+    }
+
+    /// The heads-up for what macOS allows this Mac's agents.
+    pub fn permissions(&self) -> &Entity<crate::permissions::HeadsUp> {
+        &self.permissions
     }
 
     pub fn box_state(&self) -> &BoxState {
@@ -2419,7 +2432,7 @@ impl Render for Workspace {
                         .children(sidebar.map(|sidebar| {
                             div().id("area-sidebar").debug_selector(|| "area-sidebar".into()).w(px(sidebar::WIDTH)).h_full().flex_none().bg(c.sidebar).border_r_1().border_color(c.border).child(sidebar)
                         }))
-                        .child(div().relative().flex_1().min_w_0().h_full().child(content))
+                        .child(div().relative().flex_1().min_w_0().h_full().child(content).child(self.permissions.clone()))
                         .children(panel),
                 ),
             )
