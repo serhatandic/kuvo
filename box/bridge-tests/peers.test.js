@@ -664,6 +664,89 @@ test("a box tells its peers the setup it follows, or that it's a machine two peo
   assert.deepEqual(await said({ macs: [mac.pub, air.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer] }, [air.pub]: { at: 1, peers: [air.peer] } } }), { setup: undefined, shared: true });
 });
 
+// Your time zone (PROTOCOL.md, "Your time zone"): one for your own computers in a setup, carried in
+// their agents' mail, the change counted highest winning, so a machine set up later, or one whose
+// Mac app is gone, wakes its bots on your clock. Never across a shared machine or another setup (#701).
+test("your time zone reaches your other computers: a change on one box reaches the others, a box joining takes theirs, and a shared machine neither takes nor sends it", async t => {
+  fresh({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  const zoneFile = path.join(home, "box", "time-zone.json"), bots = path.join(home, "bots");
+  fs.rmSync(zoneFile, { force: true });
+  fs.rmSync(path.join(home, "wakes"), { recursive: true, force: true });
+  fs.mkdirSync(path.join(bots, "bot_zone00001", "wakes"), { recursive: true });
+  fs.writeFileSync(path.join(bots, "bot_zone00001", "bot.json"), JSON.stringify({ kuvo: 1, id: "bot_zone00001", name: "Scout" }));
+  t.after(() => fs.rmSync(bots, { recursive: true, force: true }));
+  const { target } = await engine(t);
+  const zone = () => { try { const kept = JSON.parse(fs.readFileSync(zoneFile, "utf8")); return [kept.zone, kept.n]; } catch { return null; } };
+  const botZone = () => fs.readFileSync(path.join(bots, "bot_zone00001", "timezone"), "utf8");
+  const takeMail = (sender, payload) => link.peerMail(sender, payload, null);
+  const mail = (from, zone, agents = {}) => link.receiveMail(mailFrom(from, { at: Date.now(), agents: { at: Date.now(), list: [], ...agents }, ...(zone ? { zone } : {}) }), undefined, takeMail);
+  const toldTo = async () => {
+    const sent = [];
+    await link.announce({ send: bytes => sent.push(bytes) }, () => target, link.readLink(), Date.now(), true);
+    // (Each with its zone's rules, where this computer has them: compared apart.)
+    const zoneOf = each => opened(sent.find(bytes => k(bytes.subarray(1, 17)) === each.address), each).payload.zone;
+    return Object.fromEntries([mac, second].map(each => {
+      const told = zoneOf(each);
+      // (Where this computer has the zone's rules, they go with it.)
+      if (told && fs.existsSync(path.join("/usr/share/zoneinfo", told.zone))) assert.equal(Buffer.from(told.zoneinfo, "base64").subarray(0, 4).toString(), "TZif");
+      return [each.peer.name, told && { zone: told.zone, n: told.n }];
+    }));
+  };
+
+  // A box just joined, with nothing of its own from before: none, and it tells none.
+  assert.equal(zone(), null);
+  mail(second, null);
+  assert.deepEqual(await toldTo(), { mac: undefined, second: undefined });
+  // It takes the setup's at its first word from one of your computers, and its bots and
+  // conversations wake on it at once.
+  mail(mac, { zone: "Asia/Tokyo", n: 4 });
+  assert.deepEqual(zone(), ["Asia/Tokyo", 4]);
+  assert.equal(botZone(), "Asia/Tokyo");
+  assert.equal(fs.readFileSync(path.join(home, "wakes", "timezone"), "utf8"), "Asia/Tokyo");
+  // Counted lower, or the same with a name that sorts first: not taken. Counted higher: taken.
+  mail(second, { zone: "Europe/Berlin", n: 3 });
+  mail(second, { zone: "America/New_York", n: 4 });
+  assert.deepEqual(zone(), ["Asia/Tokyo", 4]);
+  mail(second, { zone: "Europe/Berlin", n: 5 });
+  assert.deepEqual(zone(), ["Europe/Berlin", 5]);
+  assert.equal(botZone(), "Europe/Berlin");
+  // Not one that isn't a zone, nor a count it couldn't have.
+  mail(second, { zone: "Mars/Olympus", n: 9 });
+  mail(second, { zone: "UTC", n: 2 ** 53 });
+  assert.deepEqual(zone(), ["Europe/Berlin", 5]);
+  // And it tells each of your computers that has said what it is.
+  assert.deepEqual(await toldTo(), { mac: { zone: "Europe/Berlin", n: 5 }, second: { zone: "Europe/Berlin", n: 5 } });
+
+  // Changed here, from any client: counted on, and told to the others.
+  const handle = link.engineHandler(() => target, { name: "devbox" });
+  const ask = async (method, p, body) => {
+    const pieces = [];
+    for await (const piece of handle({ method, path: p, headers: {}, ...(body ? { body: Buffer.from(JSON.stringify(body)) } : {}) }, undefined)) pieces.push(piece);
+    return { status: pieces.find(each => each.head).head.status, json: JSON.parse(Buffer.concat(pieces.filter(each => each.body).map(each => each.body)).toString() || "{}") };
+  };
+  const row = (await ask("GET", "kuvo/settings/general")).json.groups[0].rows[0];
+  assert.equal((await ask("PATCH", "kuvo/settings/general", { row: "time-zone", value: "Pacific/Auckland", was: row.revision })).status, 200);
+  // (Counted past any it had: a pick's count is at least the time it's made.)
+  const [picked, n] = zone();
+  assert.equal(picked, "Pacific/Auckland");
+  assert.ok(n > 5);
+  assert.deepEqual(await toldTo(), { mac: { zone: "Pacific/Auckland", n }, second: { zone: "Pacific/Auckland", n } });
+
+  // A peer that says it's a machine two people's Macs share, or of another setup: its zone isn't
+  // taken, and it isn't told this one.
+  mail(second, { zone: "UTC", n: n + 1 }, { shared: true });
+  assert.deepEqual(zone(), ["Pacific/Auckland", n]);
+  assert.deepEqual(await toldTo(), { mac: { zone: "Pacific/Auckland", n }, second: undefined });
+
+  // This box a machine two people's Macs share: it takes no one's zone, and tells none.
+  const other = box("mac");
+  fresh({ macs: [mac.pub, other.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  mail(mac, { zone: "UTC", n: n + 1 });
+  assert.deepEqual(zone(), ["Pacific/Auckland", n]);
+  mail(second, null);
+  assert.deepEqual(await toldTo(), { mac: undefined, second: undefined });
+});
+
 test("this box's agents worked out twice at once: the one begun last is kept, so an agent made meanwhile isn't dropped by the older", async t => {
   fresh();
   let asked = 0, firstAsked, letGo;

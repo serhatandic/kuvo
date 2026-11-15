@@ -6,13 +6,14 @@
 // dates) is a client's to say: a machine can't know it.
 
 import type { Target } from "../../shared/records";
-import { readMacKit, readWords } from "../bots/kit";
+import { carryMacKit, readWords } from "../bots/kit";
 import { holdsBack, isRule } from "../bots/tell";
 import { ownsSettings, readSettings } from "./config";
 import type { KitRule } from "../bots/kit";
 import { botPersonalities } from "../personalities/library";
 import { bridgeTarget } from "../engine/client";
 import { defaultApproval } from "../work/approval";
+import { zoneHere } from "../zone/setting";
 
 /** What the box gives the bridge (`PUT api/kuvo/groups/box-settings`). */
 export interface GroupSettings {
@@ -20,6 +21,8 @@ export interface GroupSettings {
   identityNote: string;
   askFirst: boolean;
   denies: KitRule[];
+  /** Your time zone, once this box has one ("Your time zone"), for a bridge that can't read its folder. */
+  timeZone?: string;
 }
 
 /** Settings › Permissions here, or null while they can't be read: a hand edit that isn't plain
@@ -40,23 +43,22 @@ export function groupSettingsHere(): GroupSettings | null {
   const permissions = rulesHere();
   if (!words || !permissions) return null;
   const told = (name: string, description: string) => words.personalityWords.replaceAll("⟦name⟧", () => name).replaceAll("⟦description⟧", () => description);
-  const mac = readMacKit();
+  // (Ones you made that an older Mac's kit named are the library's first.)
+  carryMacKit();
   const kit = {
     personalityWords: words.personalityWords,
-    personalities: [
-      ...words.personalities.map(each => ({ id: each.id, name: each.name, description: each.description, custom: false, instruction: told(each.name, each.description) })),
-      // (Ones you made that a Mac's kit lists and the library hasn't had yet.)
-      ...(Array.isArray(mac?.personalities) ? mac.personalities.filter(each => each?.custom) : []),
-    ],
+    personalities: words.personalities.map(each => ({ id: each.id, name: each.name, description: each.description, custom: false, instruction: told(each.name, each.description) })),
   };
   const personalities: Record<string, string> = {};
   for (const each of botPersonalities(kit)) personalities[each.id] ??= each.instruction;
   const approval = defaultApproval();
+  const zone = zoneHere();
   return {
     personalities,
     identityNote: words.identityNote,
     askFirst: approval === "askFirst" || approval === "acceptEdits",
     denies: permissions.filter(holdsBack),
+    ...(zone.yours ? { timeZone: zone.zone } : {}),
   };
 }
 

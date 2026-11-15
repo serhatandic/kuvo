@@ -25,8 +25,9 @@ export async function* botTemplatesRoute(context: RouteContext): AsyncGenerator<
   if (!["GET", "HEAD"].includes(request.method.toUpperCase())) return yield* json(405, {});
   const kit = readKit();
   if (!kit) return yield* json(409, { message: NO_KIT });
-  const startingModel = await startingModelHere(kit.startingModel ?? null, readEngine, signal);
-  return yield* json(200, botTemplates({ ...kit, startingModel }, info.name));
+  // (By the box's one rule: no client names one here.)
+  const startingModel = await startingModelHere(null, readEngine, signal);
+  return yield* json(200, botTemplates(kit, info.name, startingModel));
 }
 
 // New bots, made here as New Bot makes them on the Mac, which takes them in when it next connects.

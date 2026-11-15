@@ -5,6 +5,7 @@
 // (`seat.ts`). They go on with no client connected; the Mac's window and the phone follow them
 // through the bridge's API and its event feed.
 
+import { yourZone } from "../../shared/zone"
 import type { QueueFiles } from "../../shared/queues"
 import { emit } from "../events"
 import { newID } from "../ids"
@@ -1353,7 +1354,7 @@ export class GroupRunner {
 
   /** Holds the meetings that have come due: once each, then the next time of one that repeats, or none for a one-off. */
   meetDue(now = Date.now()) {
-    const zone = usableZone(this.context.store.settings()?.timeZone)
+    const zone = chatZone(this.context.store.settings())
     for (const [id, kept] of this.chats) {
       const meeting = kept.group.meeting
       if (kept.status !== "active" || !meeting) continue
@@ -1515,7 +1516,7 @@ export class GroupRunner {
   private when(time: string): string {
     const settings = this.context.store.settings()
     try {
-      return new Intl.DateTimeFormat(settings?.locale ?? "en-US", { dateStyle: "medium", timeStyle: "short", timeZone: settings?.timeZone }).format(new Date(time))
+      return new Intl.DateTimeFormat(settings?.locale ?? "en-US", { dateStyle: "medium", timeStyle: "short", timeZone: chatZone(settings) }).format(new Date(time))
     } catch {
       return time
     }
@@ -1653,9 +1654,13 @@ function named(unheard: GroupMessage[]): string | undefined {
   return [...head.slice(0, -1), ...items, head.at(-1)!].join("\n")
 }
 
-/** The user's time zone, if it's one this machine knows; its own otherwise. */
-function usableZone(zone: string | undefined): string {
+/** The user's time zone: the box's setting (read from its folder, `shared/zone.ts`, else as the box
+ * gave it, `box-settings`), else what a client said (`clock`), if it's one this machine knows; its
+ * own otherwise. */
+export function chatZone(settings: { timeZone?: string } | undefined): string {
   const own = Intl.DateTimeFormat().resolvedOptions().timeZone
+  // (The box's file, then as the box gave it, then KUVO_TZ: `yourZone`; a client's word last.)
+  const zone = yourZone() ?? settings?.timeZone
   if (!zone) return own
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: zone })

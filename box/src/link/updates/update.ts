@@ -29,6 +29,7 @@ import { asked, fetched, readBridgeFile, readEngineFile } from "../engine/client
 import type { UncheckedAnswer } from "../engine/client";
 import { listOf, textOf, writePrivate } from "../files";
 import { K, OWN_RUNTIME, RUN, SCRIPT, UPDATES, homeFolder } from "../home";
+import { yourZone } from "../../shared/zone";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { readLink, type LinkState } from "../state";
 
@@ -676,8 +677,8 @@ export function checkDrift(now = Date.now()): boolean {
   return true;
 }
 
-// Whether it's the night's window where you are (02:00 to 05:00, `KUVO_TZ`), and which night.
-export function updateNight(date = new Date(), zone: string | undefined = process.env.KUVO_TZ): string | null {
+// Whether it's the night's window where you are (02:00 to 05:00 in your time zone), and which night.
+export function updateNight(date = new Date(), zone: string | undefined = yourZone()): string | null {
   return nightOf(date, zone);
 }
 

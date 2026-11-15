@@ -54,8 +54,11 @@ const words = {
 };
 const wordsFile = path.join(home, "bin", "bot-words.json");
 
-// What's this Mac's own that the app gives its box (its kit): the model a bot starts on, the rules
-// a new conversation gets.
+// The engine's model and default here.
+const pickle = { id: "big-pickle", providerID: "opencode", name: "Big Pickle", enabled: true };
+
+// What an older Mac app gave its box (its kit): the model a bot started on, the rules a new
+// conversation got. Nothing reads it now but what's carried from it.
 const kit = {
   kuvo: 1,
   personalities: [],
@@ -117,6 +120,11 @@ async function engine({ rules = {} } = {}) {
       if (instruction && request.method === "PUT") { (entries[instruction[1]] ??= {})[instruction[2]] = given.value; reply({}); }
       else if (instruction && request.method === "GET" && !instruction[2]) reply({ data: Object.entries(entries[instruction[1]] ?? {}).map(([key, value]) => ({ key, value })) });
       else if (request.method === "GET" && request.url === "/api/provider") reply({ data: [{ id: "opencode" }] });
+      // Its models, its default and its accounts, as it lists them: a new bot's model goes by the
+      // box's one rule (work/model-rule.ts).
+      else if (request.method === "GET" && request.url === "/api/model") reply({ data: [pickle] });
+      else if (request.method === "GET" && request.url === "/api/model/default") reply({ data: pickle });
+      else if (request.method === "GET" && request.url === "/api/integration") reply({ data: [{ id: "opencode", name: "opencode", methods: [{ type: "key" }], connections: [{ type: "credential", method: "key" }] }] });
       else if (request.method === "POST" && request.url === "/api/session") reply({ data: { id: `ses_made${next++}` } });
       else if (one && request.method === "GET") reply({ data: { id: one[1], permissions: rules[one[1]] ?? [] } });
       else if (one && request.method === "PATCH" && given?.permissions) { rules[one[1]] = given.permissions; reply({ data: {} }); }
@@ -156,9 +164,9 @@ test("this Mac's bots are its own: listed without a machine, made here with this
   assert.equal(listed.json.bots[0].id, "bot_scout00001");
   assert.equal("machine" in listed.json.bots[0], false, "a Mac leaves machine out for its own");
 
-  // What New Bot offers here: this Mac's starting model, by the name a Mac's has.
+  // What New Bot offers here: the model a new conversation here starts on, by the name a Mac's has.
   const offered = await ask(handle, "GET", "kuvo/bots/templates");
-  assert.deepEqual(offered.json.startingModel, { mac: kit.startingModel });
+  assert.deepEqual(offered.json.startingModel, { mac: { id: "big-pickle", providerID: "opencode" } });
 
   const made = await ask(handle, "POST", "kuvo/bots", { name: "Inbox Helper" });
   assert.equal(made.status, 201);
@@ -350,6 +358,19 @@ test("a client follows this Mac's bots as they change (kuvo/bots/events)", async
   assert.ok(await until(line => line.bots?.[0]?.name === "Scout Two"));
 });
 
+test("this Mac's box makes bots with no Mac app's kit at all (the desktop app writes none): New Bot works, by your zone", async t => {
+  fs.rmSync(path.join(bots, "kit.json"));
+  const fake = await engine();
+  t.after(fake.close);
+  const handle = link.engineHandler(fake.read, { name: "Mac" }, () => null);
+  const offered = await ask(handle, "GET", "kuvo/bots/templates");
+  assert.equal(offered.status, 200, offered.text);
+  const made = await ask(handle, "POST", "kuvo/bots", { name: "Scout" });
+  assert.equal(made.status, 201, made.text);
+  assert.deepEqual(made.json.bot.model, { id: "big-pickle", providerID: "opencode" });
+  assert.match(told(fake.asked, made.json.bot.session)[0].body.value, /You run on this Mac\./);
+});
+
 test("a bot made from a shared one's job waits with it for your composer; one with none writes first", async t => {
   const fake = await engine();
   t.after(fake.close);
@@ -434,4 +455,47 @@ test("a bot brought here from another computer is made this Mac's: its folder sa
   assert.match(told(fake.asked, "ses_bot_moved00001").at(-1).body.value, /You run on this Mac\./);
   assert.equal(fs.readFileSync(path.join(folder, "paused"), "utf8"), "moving", "still held: its move lets it go");
   assert.equal((await ask(handle, "POST", "kuvo/bots/bot_nobody01/arrived")).status, 404);
+});
+
+// Your time zone on this Mac's box (PROTOCOL.md, "Your time zone"): two Macs updated in different
+// zones each keep their own clock, as before; neither tells its clock to the other (count 0 is never
+// told), so neither moves. A zone you pick on one reaches the other, and its bots are told it.
+test("two Macs updated in different zones each keep their own clock; a zone picked on one reaches the other, and its bots are told it", () => {
+  const was = process.env.TZ;
+  const shipped = fs.readFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), "utf8");
+  try {
+    process.env.TZ = "Europe/Istanbul";
+    write(wordsFile, shipped);
+    const folder = bot("bot_clock00001");
+    fs.rmSync(path.join(home, "box", "time-zone.json"), { force: true });
+    // Updated: nothing of yours, its own clock, nothing told.
+    assert.equal(link.readZoneSetting(), null);
+    assert.equal(link.zoneMail(), null);
+    assert.equal(fs.existsSync(path.join(folder, "timezone")), false, "its bots go by its clock");
+    assert.match(link.readKit().instructions, /on this Mac's clock/);
+    // The other Mac's clock, were it told at count 0: never taken.
+    assert.equal(link.takeZone({ zone: "America/New_York", n: 0 }), false);
+    assert.equal(link.readZoneSetting(), null);
+    // A zone picked on the other Mac: taken here, its bots' wake-ups go by it, and they're told so.
+    assert.equal(link.takeZone({ zone: "America/New_York", n: 1 }), true);
+    assert.equal(fs.readFileSync(path.join(folder, "timezone"), "utf8"), "America/New_York");
+    const told = link.readKit().instructions;
+    assert.match(told, /in the user's time zone, America\/New_York/);
+    assert.doesNotMatch(told, /this Mac's clock/);
+    // Picked here, it goes back with a higher count.
+    link.setZone("Asia/Tokyo");
+    const pick = link.zoneMail();
+    assert.equal(pick.zone, "Asia/Tokyo");
+    assert.ok(pick.n > 1);
+    // This Mac's clock moving (you travel) moves nothing: your pick stays.
+    process.env.TZ = "Asia/Tokyo";
+    assert.equal(fs.readFileSync(path.join(folder, "timezone"), "utf8"), "Asia/Tokyo");
+    process.env.TZ = "Europe/London";
+    link.applyZone();
+    assert.deepEqual([link.zoneMail().zone, link.zoneMail().n], ["Asia/Tokyo", pick.n]);
+    assert.equal(fs.readFileSync(path.join(folder, "timezone"), "utf8"), "Asia/Tokyo");
+  } finally {
+    if (was === undefined) delete process.env.TZ; else process.env.TZ = was;
+    write(wordsFile, JSON.stringify(words));
+  }
 });
