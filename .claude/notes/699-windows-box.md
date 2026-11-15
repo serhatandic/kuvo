@@ -6,6 +6,8 @@ reading our code and from what's publicly documented; each one that needs a tria
 **(trial)** and collected in §7. Two things were checked over the network from the Mac and are
 marked **(checked)**.
 
+Revised after one reviewer pass (§10).
+
 Read with `713-desktop-app-runs-the-box.md` (who installs and keeps a box; its §2 says "A Windows
 desktop app has no box of its own", which this note replaces), `693-own-box-browser.md`, and
 `protocol/PROTOCOL.md` ("Peers" :417, "Updates" :2504, "The browser on a machine" :2790, "Sandbox"
@@ -19,11 +21,12 @@ desktop app has no box of its own", which this note replaces), `693-own-box-brow
     over SSH would already pass the Mac's probe (`uname -sm` says `Linux x86_64`). What's missing
     is around it: starting it (WSL doesn't start by itself and stops when idle), reaching it from
     Windows and from other computers, and saying plainly what's different (projects on `/mnt/c`).
-    About 25 to 32 session-hours, most of it on the machine.
+    About 22 to 29 session-hours on top of the shared groundwork (28 to 38), much of it on the
+    machine.
   - **A native box is a port.** The box's own JavaScript mostly runs (the engine publishes Windows
     builds, and the engine is our Bun), but everything that keeps, starts, stops, installs, updates
-    and sandboxes it is POSIX shell or a Unix system call. About 95 to 125 session-hours without a
-    sandbox; a real sandbox is its own design, 30 to 50 more.
+    and sandboxes it is POSIX shell or a Unix system call. About 98 to 130 session-hours on top of
+    the same groundwork, without a sandbox; a real sandbox is its own design, 30 to 50 more.
 - **Recommended order: WSL first, native second,** sharing one groundwork piece (a three-way
   platform layer) that is built and tested on Mac and Linux before any machine exists.
 - **The native port wants one change that's good for every system:** the keeper, launch, wake-ups
@@ -31,8 +34,8 @@ desktop app has no box of its own", which this note replaces), `693-own-box-brow
   held in Swift strings. #715 is already moving them into `box/`; moving them as TypeScript, not as
   shell files, is what makes a native Windows box possible without a second copy in PowerShell.
   That's a decision for the user (§8, D2).
-- **Equal boxes.** A WSL box offers everything a Linux box does (the sandbox subject to one kernel
-  check). A native box, first, can't sandbox commands, can't keep the computer awake, and has no
+- **Equal boxes.** A WSL box offers everything a Linux box does (the sandbox subject to a kernel
+  check and to keeping Windows' own programs out of reach, §3.4). A native box, first, can't sandbox commands, can't keep the computer awake, and has no
   vault SSH agent; each is said plainly by the box, as a Linux box without Landlock says it today
   (`kuvo/sandbox`'s `able: false` with a reason).
 - **Thin clients.** Nothing below adds logic to a client. A Windows desktop app needs two small
@@ -92,7 +95,7 @@ Linux" means nothing to do.
 | `E/RemoteEngine.swift:933`, `:1501-1521` | `@reboot` line through `crontab -l`/`crontab -`, under `perl -e 'alarm 15'` | cron may not run, and WSL itself isn't started at boot: §3.3 | a per-user start at sign-in (§4.2); no crontab |
 | `E/RemoteEngine.swift:1528-1554`, `box/src/link/helper.ts:47-119`, `box/src/link/uninstall.ts:34-62,139-153` | `launchctl`, LaunchAgents, `crontab` | Linux side same | Windows' own: uninstall must take out what §4.2 adds |
 | `box/src/link/keeper.ts:49`, `box/src/link/areas/engine.ts:79`, `box/src/link/uninstall.ts:165`, `box/src/link/updates/update.ts:494,514,534` | `spawn("sh", [kuvo-start, …])` | same | calls into the box's own keeper code |
-| `box/src/link/keeper.ts:41` | `runs(keeper, "kuvo-start")` by command line | same | the keeper is `kuvo-link.js keep`; §2.3 |
+| `box/src/link/keeper.ts:44` | `runs(keeper, "kuvo-start")` by command line | same | the keeper is `kuvo-link.js keep`; §2.3 |
 
 ### 2.2 Wake-ups and the integrations' launcher
 
@@ -117,7 +120,7 @@ Linux" means nothing to do.
 | `box/src/agents/proc.ts:84-97`, `box/src/agents/sessions.ts:198-261,3104-3114`, `box/src/link/run-command.ts:92-115`, `box/src/link/areas/engine.ts:168`, `box/src/shared/platform.ts:187-202` | `detached: true` makes a process group; `process.kill(-pid, sig)` signals all of it; `kill(-group, 0)` asks if any is left | same | **No process groups in Node or Bun on Windows.** `process.kill(-pid)` fails. Needs a Job Object per started command (kill-on-close), which Node doesn't expose: through `bun:ffi` to `kernel32` **(trial)** or a small native helper; `taskkill /T /F` only follows parents and misses a child whose parent has gone |
 | `box/src/agents/main.ts:576-577`, `box/src/link/main.ts:364-365,647,752-753` | `process.on("SIGTERM"/"SIGINT")` to clean up and stop children | same | **On Windows `kill(pid, "SIGTERM")` ends the process at once and no handler runs.** A graceful stop needs its own channel: a `stop` route on the loopback server, or closing a pipe the process reads |
 | `box/src/link/main.ts:331,983,998,1168`, `box/src/link/serve-kept.ts:42`, `box/src/link/uninstall.ts:171`, `box/src/shared/hang.ts:211-219` | "ask with SIGTERM, then SIGKILL" | same | the channel above, then terminate |
-| `box/src/shared/platform.ts:125` (`WATCHED`) | a shell watch that kills a login shell's group when a pipe closes | same | not needed natively (§2.4: no login shell to read) |
+| `box/src/shared/platform.ts:126` (`WATCHED`) | a shell watch that kills a login shell's group when a pipe closes | same | not needed natively (§2.4: no login shell to read) |
 | `box/src/link/main.ts:619`, `box/src/link/areas/integrations.ts:290`, `box/src/link/updates/update.ts:863`, `box/src/link/browser/install.ts:655`, `box/src/link/github/graphql.ts:352`, `box/src/link/keeper.ts:66` | `spawn(process.execPath, …, {detached: true, stdio: "ignore"}).unref()` outlives its parent | same | works on Windows, but **each opens a console window** unless `windowsHide: true` is set, at every `spawn` in the box (about 60) **(trial)**: one `spawn` of our own in `shared/` |
 | `box/src/link/fence/finished.ts:15`, `box/src/agents/sessions.ts:136`, `box/src/agents/agents/claude.ts:1300` | a command's end reads as a signal name | same | Windows gives an exit code only |
 | `box/src/shared/files.ts:78-100` | locks are folders (`mkdir`), stale by mtime | same | works on NTFS |
@@ -127,7 +130,7 @@ Linux" means nothing to do.
 
 | Where | What it assumes | WSL | Native port needs |
 | --- | --- | --- | --- |
-| `box/src/agents/sessions.ts:247-248` | a conversation's command: `$SHELL -c <command>` (else zsh or `/bin/sh`), detached | same | **which shell?** (D3). Recommended: Git for Windows' `bash.exe`, as Claude Code itself requires on Windows; then `-c` holds |
+| `box/src/agents/sessions.ts:247-248` | a conversation's command: `$SHELL -c <command>` (else zsh or `/bin/sh`), detached | same | **which shell?** (D3). Recommended: Git for Windows' `bash.exe`, as Claude Code's native Windows build is documented to require **(trial)**; then `-c` holds |
 | `box/src/link/run-command.ts:102-103` | `$SHELL -lc` | same | as above |
 | `box/src/agents/maintenance.ts:128` | an agent's installer: `/bin/sh -c <command>` (`curl … \| bash`) | same | each agent's Windows installer is PowerShell or npm: §5 |
 | `box/src/link/fence/files.ts:68-262` (`bin/kuvo-fence`) | **the engine's shell is our `sh` script**, which finds the conversation, then runs the real shell inside the sandbox | same | with Git Bash it can stay a script for the no-sandbox path; whether the engine on Windows takes a `SHELL` of ours **(trial)** |
@@ -147,7 +150,7 @@ Linux" means nothing to do.
 | `box/src/link/vault/ssh.ts:45`, `box/src/link/vault/holder.ts:159`, `box/src/agents/signin.ts:71`, `box/src/agents/agents/claude.ts:619`, `gpui/kuvo_box/src/ssh.rs:235-249` | strict: refuse unless owner is me and no group/other bits | same | these **refuse** on Windows as written (`getuid` is undefined, `uid` is 0, mode is `0o666`); they take the definition above |
 | `E/RemoteEngine.swift:1369-`, `keys/KUVO_KEY_*`, the vault (`box/src/link/vault/store.ts`) | keys in `0600` files (a Mac: Keychain through Kuvo Helper) | same as Linux: files | files under the profile's ACL first; DPAPI (tied to the Windows account) later, as the Mac has the Keychain. Say which in `privacy.md` |
 | `box/src/shared/account.ts:19-37` (`accountEntry`) | `id -P` on a Mac, else `getent passwd`, else `/etc/passwd` | same | neither exists: falls through to `os.userInfo().homedir` with **an empty account name**. Needs a Windows branch (`os.userInfo()`, `USERPROFILE`) |
-| `box/src/shared/account.ts:12` | `HOME`, else `os.homedir()` | same | `HOME` is unset on Windows, but set (in MSYS form) for anything started from Git Bash: take `USERPROFILE` first |
+| `box/src/shared/account.ts:12` | `HOME`, else `os.homedir()` | same | `HOME` is unset on Windows, but set (in MSYS form) for anything started from Git Bash. **And the tests' guard isolates a run by setting `HOME`** (`box/bridge-tests/test-safety.js:131`): children on Windows (git, agents, the engine) read `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, so a run would reach the real profile. The box keeps honouring `HOME` when set and falls to `USERPROFILE`; the guard is ported first (G3) |
 | `box/src/link/fence/state.ts:654`, `box/src/link/home.ts:85`, `box/src/link/fence/policy.ts:400,487` | `getuid()` or `os.userInfo().uid` in path names (`/tmp/kuvo-ssh-<uid>`) | same | Mac-only today; keep it so |
 
 ### 2.6 Sockets
@@ -166,9 +169,9 @@ Linux" means nothing to do.
 | Where | What it assumes | WSL | Native port needs |
 | --- | --- | --- | --- |
 | `box/src/link/fence/state.ts:101,451-475` (`able`) | Mac: `/usr/bin/sandbox-exec`. Anything else: Landlock (`/sys/kernel/security/landlock`), `unshare` (`/usr/bin/unshare`), unprivileged user namespaces | WSL2 only (WSL1 has no Linux kernel: no Landlock, no namespaces). WSL2's kernel must list `landlock` in `/sys/kernel/security/lsm` **(trial; older WSL kernels didn't)**; user namespaces are normally allowed there. Where it isn't able, the existing `reason: "kernel"` or `"namespaces"` text says so, already correct | a third answer: `able: false, reason: "windows"`, "Windows can't sandbox commands yet." (a new word in `box/src/shared/routes/sandbox.ts:22`) |
-| `box/src/link/fence/landlock.ts:100-440` | `mount --bind`, tmpfs, `/proc/self/mountinfo`, `uid_map`, `mkfifo`, `timeout`, `find`, `awk`, `sed` | same as Linux | none of it exists. A Windows sandbox is AppContainer or a restricted token, set up with Win32 calls from a native program; allowing a project folder means **adding an ACL entry to the user's folder**, which is a footprint question. Its own design (§6, piece N9) |
+| `box/src/link/fence/landlock.ts:100-440` | `mount --bind`, tmpfs, `/proc/self/mountinfo`, `uid_map`, `mkfifo`, `timeout`, `find`, `awk`, `sed` | same as Linux | none of it exists. A Windows sandbox is AppContainer or a restricted token, set up with Win32 calls from a native program; allowing a project folder means **adding an ACL entry to the user's folder**, which is a footprint question. Its own design (§6, piece N10) |
 | `box/src/link/fence/seatbelt.ts`, `box/src/link/fence/outside.ts:93-288` | Seatbelt profiles; `/usr/bin/log show` to see what was refused | n/a | n/a |
-| `box/src/link/work/approval.ts:105-129`, `box/src/link/fence/state.ts:712` | what a box does with no sandbox: Auto asks first, bots allow no command, the vault stays shut | as a Linux box that can't | exactly this, by the existing code path, once `able` says so. **This is a real difference from a Linux box and must be drawn in the UI from `kuvo/sandbox`, which clients already do** |
+| `box/src/link/fence/state.ts:451-475,712`, `box/src/link/work/approval.ts:105-129`, `box/src/link/vault/gate.ts:17-21`, `box/src/agents/toolrelay.ts:728`, `box/src/agents/acp.ts:410` | what a box does where it can't sandbox: `kuvo/sandbox` says `able: false` with why; commands, integrations' servers and agents start plain; an approval mode that counts on the sandbox says its `sandbox` gap; the vault stays shut to agents | as a Linux box that can't | exactly this, by the existing code path, once `able` says so. (What bots may run there wasn't traced to the end: follow `engineCommandsInSandbox`'s callers, `box/src/link/work/tools.ts:10`, before promising it in words.) **This is a real difference from a Linux box and must be drawn in the UI from `kuvo/sandbox`, which clients already do** |
 | `docs/footprint.md` (#429: `.git/commondir` and empty folders added to repositories on Linux) | Linux only | applies in WSL as on Linux; on `/mnt/c` repositories those writes cross to NTFS **(trial)** | none |
 
 ### 2.8 Install, update and uninstall
@@ -192,7 +195,7 @@ Linux" means nothing to do.
 
 | Where | What it assumes | WSL | Native port needs |
 | --- | --- | --- | --- |
-| `box/src/link/home.ts:15`, `gpui/kuvo_box/src/place.rs:35` | `K = ~/.kuvo-code` | the distro's home | `%USERPROFILE%\.kuvo-code`, same name (D1). Not `%APPDATA%`: one name on every system keeps docs, uninstall and support the same |
+| `box/src/link/home.ts:14`, `gpui/kuvo_box/src/place.rs:35` | `K = ~/.kuvo-code` | the distro's home | `%USERPROFILE%\.kuvo-code`, same name (D1). Not `%APPDATA%`: one name on every system keeps docs, uninstall and support the same |
 | 22 `startsWith("/")`, 48 `split("/")`, 29 `"~/"` in `link`/`shared`/`browser`; more in `agents` (§5); `swift/KuvoCode/Stores/Machines.swift:1953-1960,2025-2029` (clients: a path is absolute if it starts with `/`) | `/` separates, absolute starts with `/`, `~/` is home | same | **A rule for the wire, in PROTOCOL.md: a Windows box says and takes paths with forward slashes and the drive letter kept (`C:/Users/me/app`).** Windows accepts them; every client's `split("/")` keeps working; only "is it absolute" widens (a drive letter). Inside the box, `path.*` for the system's own form, converted at the routes. The alternative (backslashes on the wire) makes every client learn two path grammars |
 | `box/src/link/areas/claude-code.ts:101`, `box/src/link/work/reviewer.ts:112-115,263`, `box/src/link/work/reviewing.ts:460` | names fold case on a Mac only | Linux filesystem: case-sensitive. `/mnt/c`: case-insensitive by default, per folder | Windows folds case too: one `foldsCase()` in the platform layer, three callers |
 | `box/src/link/fence/lookalike.ts`, `box/src/link/work/reviewer.ts` (what a path really names) | a path names one file once links are followed | same | Windows adds aliases: 8.3 short names (`PROGRA~1`), `file::$DATA` and other streams, trailing dots and spaces, `\\?\` and UNC forms, junctions. Any rule that allows or refuses by path must canonicalize first; needed by the reviewer even with no sandbox |
@@ -262,10 +265,30 @@ standard input and output or a pseudo-terminal, and its own channels are HTTP on
 | about 40 `mkdir 0o700` / write `0o600` sites (`fence.ts`, `skills.ts`, `subagents.ts`, `carry.ts`, `groups/store.ts`, `artifacts/store.ts:527-536` `fchmod`, usage caches) | §2.5 | same | §2.5; nothing per site if `K` is private |
 | `main.ts:451-459,555,563-570` | `run/bridge.json` with pid, port, password; the engine watched with `kill(pid, 0)` every 5 s; exits when its input closes | same | works; "is that pid the engine" is §2.3 |
 | `main.ts:498`, `shared/hang.ts:232` | the parent's command line (`commandLineOf(process.ppid)`), `includes("kuvo-agents")` | same | §2.3 |
-| `main.ts:516-517`, `cursor.ts:683-694` | `--config=/dev/null`; `PATH ?? "/usr/bin:/bin"` | same | §2.9 |
+| `main.ts:513-517`, `cursor.ts:683-694` | `--config=/dev/null`; `PATH ?? "/usr/bin:/bin"` | same | §2.9 |
 | `artifacts/folders.ts:39-60` | Linux: a watch per folder (inotify, up to 4000); elsewhere one recursive watch | Linux's; blind to Windows-side edits on `/mnt/c` | the recursive one, as a Mac |
 | `usage/antigravity-plan.ts:92-127` | Antigravity's quota port found in `/proc` (Linux) or `ps`/`lsof` (Mac); elsewhere nothing | Linux's | its limits aren't shown on Windows until there's a way |
 | `usage/usage.ts:631-640,713-724`, `usage/*-history.ts` | agents' logs under `~/.claude`, `~/.codex`, `~/.config/claude`; SQLite opened as `"file:" + path + "?immutable=1"` | same | the same folders exist under the profile on Windows **(trial)**; a `file:` URI needs `/C:/…` with the path percent-encoded |
+
+### 2.13 More that differs on Windows
+
+From the reviewer's pass; each belongs to the piece named.
+
+| Where | What it assumes | WSL | Native port needs |
+| --- | --- | --- | --- |
+| `box/src/link/home.ts:30` (`IS_MAC`, about 200 uses), the wire's `kind: "mac" \| "machine"` | a box is this Mac's or "a machine", and a machine is Linux (or a Mac set up as one) | `machine` | a Windows box is kind `machine`; the wire gains `system` ("mac", "linux", "windows") beside it, since `IS_MAC` is about the role, not the system (CLAUDE.md). Every `!IS_MAC` that means "Linux" is found in G1 |
+| `box/src/agents/toolrelay.ts:723-726` and 16 more `env.PATH` reads | variable names are case-sensitive | same | on Windows `process.env` finds `Path` under any case, **but a spread copy (`{...process.env}`) is a plain object**, where `env.PATH` is undefined: "isn't installed here". One `envOf()` that normalizes names when copying (G1) |
+| 76 `renameSync`, every `rmSync` of a worktree, Chrome's profile or a SQLite file (`box/src/agents/agents/antigravity.ts:693`, `box/src/link/moves/bundle.ts:176`) | a file can be renamed over or removed whoever has it open | same | a file a virus scanner, an indexer or another reader holds gives `EPERM`/`EBUSY` for a moment. One retrying rename and remove in `shared/files.ts`, used everywhere (N3). Not a sleep-and-hope in tests: the retry takes its clock from the caller |
+| Windows' own tools the box would call (`wsl.exe -l -q`, `reg`, `icacls`, `schtasks`) | tools print UTF-8 | interop calls from inside WSL get the same output | `wsl.exe` prints UTF-16; `reg` and `icacls` print in the console's code page and **in the system's language**. Parse nothing that's worded: ask by SID, by exit code, or through a native call (N3, N4, W2) |
+| the engine's `api/pty` (`box/src/link/server/paths.ts:4`), the panel's terminals | the engine opens a pseudo-terminal with the account's shell | same | whether the engine's terminals work on Windows and which shell they open **(trial 13)**. If not: "Terminals aren't available on this computer yet", from the box |
+| `box/src/link/git.ts:8` (`GIT_TERMINAL_PROMPT=0`), `box/src/shared/git.ts:23` (`credential.helper=` for the box's own repositories) | git asks in the terminal or not at all | same | Git for Windows comes with Git Credential Manager, which **opens a window**; from a box with no window that's a hang or a window from nowhere. `GCM_INTERACTIVE=never` for what the box runs itself **(trial 21)** |
+| `box/src/agents/agents/claude.ts:2548`, `box/src/agents/agents/codex.ts:2494`, `box/src/browser/kuvo-browser.js:2267` | a `file:` URL's path is the file's path; a local file starts with `/` | same | `new URL(…).pathname` is `/C:/…`: `fileURLToPath` and `pathToFileURL` everywhere (G2) |
+| `box/src/link/work-queue/ops.ts:114-115`, `box/src/link/areas/claude-code.ts:143-148`, `box/src/link/letters/calls.ts:208`, `box/src/agents/usage/antigravity-history.ts:150` | `ino`, `dev` and `nlink` say whether two names are one file, for security checks | same on the Linux filesystem; on `/mnt/c` they're made up | under Bun on Windows they may be 0 or unstable **(trial 15)**; where they are, compare canonical paths instead |
+| `box/src/link/moves/bundle.ts:228-243` (Move to Computer) | a bundle may hold relative links; execute bits travel | same | unpacking a link needs the privilege (§2.9); execute bits are lost on a round trip through Windows; two names differing only by case collide; a session's recorded paths are the other system's. **A move between a Windows box and a Mac or Linux box needs its own rules** (N9), and until then is refused by the box with the reason, both ways |
+| anything listening beyond loopback (a dev server a command starts, Chrome) | no one asks | same | Windows Firewall asks the user the first time a program listens on a non-loopback address; the box's own listeners are loopback only, Chrome's and commands' may not be **(trial 24)** |
+| a process started in an SSH session | it outlives the session if detached | same | **Windows' SSH server may end everything a session started when it closes (trial 20)**: install, `start` and update over SSH would lose the box. The start must go through what sign-in uses (the task or `Run`'s command), not be a child of the session |
+| DPAPI (Chrome's cookies; a later key store, §2.5) | — | n/a | not available in an SSH session signed in by key **(trial 17)**: a box started over SSH and one started at sign-in may not read the same browser sign-ins. Another reason the box is only ever started the sign-in way |
+| `scripts/*.sh`, `box/bridge-tests/test-safety.js:131,172,487` | the build and test scripts are `sh`/`bash`; the guard swaps `HOME` and `TMPDIR` and folds case only on a Mac | run in the distro as on Linux | builds stay on a Mac or Linux. The guard gains `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP` and Windows' case folding **before any native test run** (G3) |
 
 ## 3. The WSL path
 
@@ -311,8 +334,12 @@ no sandbox, slow files); the box can tell from `/proc/version` and `WSL_DISTRO_N
      which helps.
   3. An SSH server inside the distro on its own port, with the port opened on Windows (mirrored
      networking, or a `netsh` proxy). Most setup; cleanest once done.
-  Recommended: (2) as what we support, since it needs nothing changed on the PC but the SSH server
-  being on; (1) noted in the docs as also working.
+  **(2) puts knowledge of the PC's shell, the distro and `cmd`'s quoting into each client** (the
+  Mac app, the desktop app, the phone's host), on top of `gpui/kuvo_box/src/ssh.rs:85-92`, which
+  already chooses the engine in shell. That's logic in a client: only with the user's agreement
+  (D9). Recommended: support (1) and (3), where the client's command is unchanged because it lands
+  in the distro's `sh`, documented as the user's setup; and say in the app that a box in WSL is
+  best reached as a peer through the relay, which needs nothing.
 - **Sign-in callbacks and the engine's tunnel** (`-L <port>:127.0.0.1:<port>`): the same forwards,
   ending in Windows; they reach the distro through the same `localhost` forwarding **(trial)**.
 
@@ -330,7 +357,8 @@ Three separate problems:
    alone don't always hold it **(trial: with and without systemd, current WSL)**.
 
 **Design:** one per-user start on the Windows side, which also holds the distro open:
-`wsl.exe -d <distro> --exec sh ~/.kuvo-code/bin/kuvo-start keep-here` (the keeper in the
+`wsl.exe -d <distro> --cd ~ --exec sh .kuvo-code/bin/kuvo-start keep-here` (`--exec` runs no shell,
+so no `~` in the command itself **(trial)**; the keeper in the
 foreground of that session: a small new subcommand, or the existing `keep` not backgrounded).
 Registered as the native box's start is (§4.2: a value under `HKCU\…\Run`, or a task at sign-in),
 with a hidden window.
@@ -380,9 +408,10 @@ with a hidden window.
 - **Names:** the distro's host name is the PC's. The box's suggested name becomes
   "<PC> (Ubuntu)" where a WSL fact is set, in `box/src/link/peers/computer-name.ts` (the box
   decides; a rename by the user wins as now).
-- **Ports:** `localhost` is shared with Windows, so a port the box means for itself is reachable
-  by Windows programs of the same user, and the other way round. All are random and
-  password-protected already; `kuvoPorts()` in the Mac's sandbox policy has no WSL counterpart to
+- **Ports:** `localhost` is shared with Windows and with every other WSL2 distro (they share one
+  network), so a port the box means for itself is reachable by anything on the PC, any account's.
+  That's true on Linux and a Mac too; the passwords are the protection, and all ports are random
+  and password-protected already; `kuvoPorts()` in the Mac's sandbox policy has no WSL counterpart to
   worry about.
 
 ### 3.6 The agents, the browser and the sandbox inside WSL
@@ -452,11 +481,21 @@ Windows cousin of Kuvo Helper: it carries no logic, only "start the box hidden, 
 
 ### 4.3 Paths
 
-`%USERPROFILE%\.kuvo-code`, the same name and layout inside (D1). Reasons: one name in docs,
-support, uninstall and the client's `place.rs` (`home.join(".kuvo-code")` is already right on
-Windows); `%USERPROFILE%` is private to the user by default; `%APPDATA%` roams on domain PCs,
-which would copy keys and gigabytes of browser to a server. The box checks once that `K` isn't
-readable by other accounts and refuses to keep keys in one that is.
+Two candidates (D1), same layout inside either:
+
+- **`%USERPROFILE%\.kuvo-code`**: one name in docs, support, uninstall and the client's `place.rs`
+  (`home.join(".kuvo-code")` is already right on Windows); beside the agents' own `.claude` and
+  `.codex`; private to the user by default. **But on a domain PC with a roaming profile the whole
+  profile roams except `AppData\Local`**, so the box's keys, its identity and gigabytes of engine
+  and browser would be copied to a server and onto the user's next PC, where a second computer
+  would come up as the same box.
+- **`%LOCALAPPDATA%\kuvo-code`**: never roams, and is where Windows expects data bound to one
+  computer. A different name from every other system.
+
+Recommended: the first, for the one name, **with the box refusing to set up in a roaming profile
+and saying why** (how to tell is a trial); the second if the user would rather have no such
+refusal. Either way the box checks once that `K` isn't readable by other accounts (by SID, not by
+`icacls`'s words, which are in the system's language) and refuses to keep keys in one that is.
 
 ### 4.4 The sandbox
 
@@ -478,12 +517,12 @@ command, by path, set up by the program itself):
 
 **So the first native box says:** `kuvo/sandbox` → `able: false, reason: "windows"`, "Windows
 can't sandbox commands yet. On this PC, a box in WSL can." Everything that follows is the existing
-no-sandbox behaviour (`box/src/link/work/approval.ts:105-129`): Auto asks first, bots allow no
-command, the vault stays shut, Full Access is the user's own confirmation. **That makes a native
+behaviour of a box that can't sandbox (§2.7): commands run plain, a mode that counts on the
+sandbox says so, the vault stays shut to agents, Full Access is the user's own confirmation. **That makes a native
 box much less useful for bots and Auto than a Linux or WSL box, and the app must say so where the
 user chooses between the two** (a design to draft: D5).
 
-A real sandbox (AppContainer through a native helper) is piece N9: its own design note, a trial on
+A real sandbox (AppContainer through a native helper) is piece N10: its own design note, a trial on
 the machine first, a separate security review.
 
 ### 4.5 Update
@@ -521,7 +560,7 @@ is its Linux self.
 | **Grok** | `grok` in `~/.grok/bin`, `~/.local/bin` (`agents/grok.ts:22,105`); install `curl … x.ai/cli/install.sh \| bash` (`:52`); `grok agent stdio`, ACP (`:300-309`); `grok login` in a pseudo-terminal | `<GROK_HOME or ~/.grok>/auth.json` (`:148-153,199`) | works as on Linux | **unknown whether xAI ships a Windows build.** If not: "Grok isn't made for Windows. A box in WSL can run it.", from the box, as Antigravity says today for an unknown system |
 | **Antigravity** | a zip per system from a pinned map with keys `darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64` only (`agents/antigravity.ts:32-53,425`); unpacked by `unzip` or `python3` (`:799-807`); `chmod 0o755`; `agy_acp_server.par` run directly (`:534`) | `profile/antigravity-acp/acp_token.json` (`:397`) | works as on Linux; needs `unzip` or `python3` in the distro (use the box's own `zip.ts` instead: also right for Linux) | **no Windows key**: today's text, "Google doesn't make Antigravity's agent for this computer.", is what a native box says until Google's Windows agent is found, pinned and tried. A `.par` can't be run directly on Windows |
 
-**Order for N7:** Claude Code, Codex, Cursor, then Grok and Antigravity only if their makers ship
+**Order for N8:** Claude Code, Codex, Cursor, then Grok and Antigravity only if their makers ship
 for Windows. **Equal boxes:** an agent its maker doesn't ship for Windows is listed as not
 available there, with the reason and "a box in WSL can run it", never hidden.
 
@@ -537,39 +576,46 @@ PC. **G** pieces serve both paths, **W** is WSL, **N** is native.
 
 | # | Piece | Size | Needs the machine for | Buildable and testable before it exists |
 | --- | --- | --- | --- | --- |
+| G1 | **Three-system platform layer**: `system()`, the `wsl` fact, the wire's `system`, every two-way platform choice and every `!IS_MAC` that means Linux made three-way and failing closed, `sandbox` reason `windows`, system name, computer id, account and home on Windows, `envOf()` | 7–9 | nothing | all, with injected `platform`, `env` and `read`, as the existing tests do |
+| G2 | **Paths**: the wire rule in PROTOCOL.md with vectors, conversion at every route, `foldsCase`, `os.devNull`, `path.delimiter`, `file:` URLs, legal names, `O_NOFOLLOW ?? 0`; about 100 sites in `link`/`shared`/`browser` and 45 in `agents` | 12–16 | a last check | all, under `path.win32` |
+| G3 | **The tests' guard and a lane for Windows**: `test-safety.js` isolating `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`; `scripts/test-windows.sh <ssh-host> [--wsl]` | 4–6 | 2, to see it hold | the guard, with stand-in variables. **No native test runs before this** |
 | G0 | **Trials on the machine** (§7): a scripted checklist, results written up as `699-piece0-results.md` | 5–7 | all of it | the checklist script itself |
-| G1 | **Three-system platform layer**: `system()`, the `wsl` fact, every two-way platform choice made three-way and failing closed, `sandbox` reason `windows`, system name, computer id, account and home on Windows | 7–9 | nothing | all, with injected `platform`, `env` and `read`, as the existing tests do |
-| G2 | **Paths**: the wire rule in PROTOCOL.md with vectors, conversion at the routes, `foldsCase`, `os.devNull`, `path.delimiter`, legal names, `O_NOFOLLOW ?? 0` | 8–10 | a last check | all, under `path.win32`; the clients' "is absolute" in `KuvoClient` and `gpui/kuvo_box/paths.rs` with shared vectors |
+| | **Shared groundwork** | **28–38** | | |
 | W1 | **A WSL box knows it's one**: refuses WSL1, facts and naming (§3.5), skips Windows' PATH when finding programs, the `/mnt/c` fact on projects | 4–5 | checking the detection | all, with stand-in `/proc/version` and PATH |
 | W2 | **Starting and holding it** (§3.3): `keep-here`, the Windows-side entry through interop, its removal, the words when interop is off | 5–6 | 3 of them | the box side, with stand-in `reg.exe` |
-| W3 | **Reaching it**: the `wsl.exe` transport in `gpui/kuvo_box`; the SSH wrap for a Mac adding it; install by bootstrap | 6–8 | 4 of them | the transport against a stand-in `wsl`; the wrap's quoting as vectors |
-| W4 | **Sandbox and interop on WSL** (§3.4): keep Windows' programs and drives from sandboxed commands; D6 | 4–6 | most | the policy change, on Linux |
+| W3 | **Reaching it**: the `wsl.exe` transport in `gpui/kuvo_box`; install by bootstrap; the documented SSH setups (§3.2, ways 1 and 3) tried | 6–8 | 4 of them | the transport against a stand-in `wsl` |
+| W4 | **Sandbox and interop on WSL** (§3.4): keep Windows' programs and drives from sandboxed commands; D6. Security: a separate review | 4–6 | most | the policy change, on Linux |
 | W5 | **Docs and footprint**: machines, install, uninstall, privacy, troubleshooting in kuvo-web; `docs/footprint.md`; CHANGELOG | 3–4 | screenshots | all |
-| | **WSL box ready** | **≈ 42–55 with G0–G2; 22–29 of it W** | | |
-| N1 | **The keeper as the box's code** (D2, with #715): `keep`, launch, start, stop, the lock, back-off; wake-ups; `kuvo-npx`; the update's restore as a plan. On Unix a three-line `kuvo-start` remains that execs it | 18–24 | 2–3, for stops and restarts | nearly all, on Mac and Linux, against the keeper's existing scenario tests (`KuvoStartServeTests`, `RebootTests`, `WakesTests` are the spec) |
+| | **WSL box** | **22–29** | | |
+| C1 | **The clients**: D5's choice between the two boxes in the desktop app (drafts first); the phone and `KuvoClient` taking drive-letter paths and the new facts (`system`, `wsl`), with shared vectors; the phone session told | 6–8 | a look at the real thing | drafts, vectors, `KuvoClient` and `gpui/kuvo_box/paths.rs` |
+| N1 | **The keeper as the box's code** (D2, with #715): `keep`, launch, start, stop, the lock, back-off; wake-ups; `kuvo-npx`; the update's restore as a plan; the shell `kuvo-start` and `restore.sh` kept for the one update that crosses over (`COMPAT`) | 20–27 | 2–3, for stops and restarts | nearly all, on Mac and Linux, against the keeper's existing scenario tests (`KuvoStartServeTests`, `RebootTests`, `WakesTests` are the spec); the crossing update tried on devbox |
 | N2 | **Processes on Windows**: one `spawn` of our own (hidden, tree-kill by Job Object), the stop channel, start-time instead of command lines | 10–12 | 4–5: Job Objects and windows can't be faked | the callers' move to the one `spawn`; the stop channel; start-time records |
-| N3 | **Private files and sockets**: the ACL check, pipes named from `K` with the socket key | 7–9 | 3 | the naming and the single definition; pipe behaviour only there |
-| N4 | **Install, update, uninstall, start at sign-in**: bootstrap for PowerShell, `windows` in the manifest and `box.json`, `opencode.exe`, the `Run` value, removal | 10–13 | 5 | manifest, selection and the plan; stand-in `reg.exe` |
-| N5 | **The shell and PATH** (D3): finding Git for Windows, the "install Git" refusal, commands through it, the reviewer's Windows list | 7–9 | 3 | finding and refusing; the reviewer's rules as vectors |
-| N6 | **The browser**: `windows.json`, install without links, `chrome.exe`, the profile lock, pipes | 8–10 | 5 | the runtime choice and install against the stand-in source |
-| N7 | **Agents**, one at a time (§5) | 3–5 each, 15–22 | all, with an account for each | each finder with injected platform |
-| N8 | **Reaching it over SSH; the desktop app attaching in place; docs and footprint** | 7–9 | 4 | the fixed entry; docs |
-| N9 | **A native sandbox** (AppContainer through a helper): design, trial, build, separate review | 30–50 | most | the design |
-| | **Native box ready without N9** | **≈ 95–125 with G0–G2** | | |
+| N3 | **Private files and sockets**: the ACL check by SID, pipes named from `K` with the socket key, the retrying rename and remove | 7–9 | 3 | the naming and the single definitions; pipe and sharing behaviour only there |
+| N4 | **Install, update, uninstall, start at sign-in**: bootstrap for PowerShell, `windows` in the manifest and `box.json`, `opencode.exe`, the `Run` value, removal, never started as an SSH session's child | 10–13 | 5 | manifest, selection and the plan; stand-in `reg.exe` |
+| N5 | **The shell and PATH** (D3): finding Git for Windows, the "install Git" refusal, commands through it, Git Credential Manager kept quiet | 7–9 | 3 | finding and refusing |
+| N6 | **What a path really names on Windows** (§2.9): short names, streams, trailing dots, `\\?\` and UNC, junctions, for the reviewer and every allow-or-refuse by path; the reviewer's Windows list (`schtasks`, `reg`, `sc`, `powershell -enc`). Security: a separate review | 6–8 | 2, for what Windows really resolves | the rules as vectors |
+| N7 | **The browser**: `windows.json`, install without links, `chrome.exe`, the profile lock, pipes | 8–10 | 5 | the runtime choice and install against the stand-in source |
+| N8 | **Agents**, one at a time (§5) | 3–5 each, 15–22 | all, with an account for each | each finder with injected platform |
+| N9 | **Reaching it over SSH; the desktop app attaching in place; Move to Computer across systems (refused with the reason first); docs and footprint** | 9–12 | 4 | the fixed entry; the refusal; docs |
+| | **Native box, without a sandbox** | **98–130 with C1** | | |
+| N10 | **A native sandbox** (AppContainer through a helper): design, trial, build, separate review | 30–50 | most | the design |
 
-**Order:** G1 and G2 now (no machine). G0 the day the machine arrives. Then W1–W5 (a full box on
-Windows soonest), with N1 alongside since it needs the machine least and #715 is moving the same
-code. Then N2–N8. N9 on its own decision.
+**Totals:** a WSL box 50–67 (28–38 shared, 22–29 its own); a native box 98–130 more; a native
+sandbox 30–50 more.
+
+**Order:** G1, G2 and G3 now (no machine). G0 the day the machine arrives. Then W1–W5 (a full box
+on Windows soonest), with N1 alongside since it needs the machine least and #715 is moving the
+same code, and C1's drafts as soon as D5 is asked. Then N2–N9. N10 on its own decision.
 
 **What can't be tested without the machine**, however carefully simulated: process trees and
 windows, pipes and ACLs, replacing files in use, Chrome, each agent's real program, WSL's start
 and stop, SSH into Windows. A `path.win32` test proves a path rule; it proves nothing about what
 Windows does.
 
-**A test lane for it:** `scripts/test-windows.sh <ssh-host> [--wsl]`, the cousin of
+**The test lane (G3):** `scripts/test-windows.sh <ssh-host> [--wsl]`, the cousin of
 `scripts/test-linux.sh`: this checkout's code to a folder of its own (`.kuvo-code-test`), run on
-the machine's engine as Bun, removed afterwards, and a list of what appeared in the profile and
-`%TEMP%`. Part of G0. (GitHub's Windows runners could run the box's unit tests too, once CI is on
+the machine's engine as Bun, removed afterwards, and a list of what appeared in the profile,
+`%APPDATA%`, `%LOCALAPPDATA%` and `%TEMP%`. Only once the guard isolates all of them. (GitHub's Windows runners could run the box's unit tests too, once CI is on
 again: the lead's call.)
 
 ## 7. Trials for the day the machine arrives (G0)
@@ -591,31 +637,33 @@ WSL:
 
 Native:
 
-13. `opencode.exe --version`; `BUN_BE_BUN=1 opencode.exe kuvo-link.js selftest`; the name inside the npm package; `--config=` with `NUL`; whether it honours `XDG_*`; which shell it runs commands with and whether ours can be set.
+13. `opencode.exe --version`; its terminals (`api/pty`) and the shell they open; `BUN_BE_BUN=1 opencode.exe kuvo-link.js selftest`; the name inside the npm package; `--config=` with `NUL`; whether it honours `XDG_*`; which shell it runs commands with and whether ours can be set.
 14. A console window: from `Run`, with `conhost --headless`, with and without `windowsHide` on children.
 15. `bun:ffi` to `kernel32` from the engine as Bun: a Job Object that kills a tree; a process's start time. Bun's pseudo-terminal (`Bun.spawn`'s `terminal`); `kill(pid, 0)` on a pid that's gone; spawning an npm `.cmd`.
 16. `net.listen` on a pipe: who can open it; the socket key in front.
-17. Extra stdio pipes to `chrome.exe`; the profile lock's form; what Chrome leaves outside the profile folder.
+17. Extra stdio pipes to `chrome.exe`; the profile lock's form; what Chrome leaves outside the profile folder; whether a box started in an SSH session reads the cookies one started at sign-in wrote (DPAPI).
 18. Replacing `kuvo-link.js` while read; removing an old engine folder; renaming `K` with nothing running.
 19. `HKCU\…\Run` and a sign-in task without elevation; the box up after sign-in, and after a restart with nobody signed in (task with stored credentials).
-20. Windows' SSH server: a `.cmd` entry, binary-clean stdin/stdout, a forward to 127.0.0.1.
-21. Git for Windows: `bash.exe -c`, `/dev/null` in `diff --no-index` and `hooksPath`, `core.symlinks` without the privilege, CRLF in Changes, which `ssh` git uses and its agent.
+20. Windows' SSH server: a `.cmd` entry, binary-clean stdin/stdout, a forward to 127.0.0.1; **whether a detached process outlives the session that started it.**
+21. Git for Windows: `bash.exe -c`, `/dev/null` in `diff --no-index` and `hooksPath`, `core.symlinks` without the privilege, CRLF in Changes, which `ssh` git uses and its agent; Git Credential Manager from a process with no window.
 22. Each agent's native program: found, signed in, a turn run, stopped mid-turn (does its tree die?).
 23. Long paths: a worktree under `K\data\opencode\worktree\…` past 260 characters with git, node and a compiler.
-24. Defender: does it slow or quarantine the engine, the unsigned starter, Chrome for Testing?
+24. Defender: does it slow or quarantine the engine, the unsigned starter, Chrome for Testing? Does the firewall ask when Chrome or a dev server listens?
 25. ARM64 Windows, if the PC is one: the arm64 engine; Chrome x64 under emulation.
+26. How to tell a roaming profile (D1); `stat`'s `ino`/`dev`/`nlink` under Bun; `rename` over and `rm` of a file another process has open.
 
 ## 8. Decisions for the user
 
 | # | Decision | Recommended | Why |
 | --- | --- | --- | --- |
-| D1 | Where a native box lives | `%USERPROFILE%\.kuvo-code` | one name everywhere; private by default; doesn't roam |
-| D2 | The keeper, launch, wake-ups and restore: stay shell (moved into `box/` as files by #715) or become the box's code | **the box's code, on every system**, #715 doing the move once | a native box can't run shell; two keepers (shell and PowerShell) would be the same logic twice; the shell held in strings is already the hardest part of the box to test. Cost: the most proven code in the box is rewritten; its scenario tests are the safety net. **Needs settling before #715 goes further** |
-| D3 | The shell for commands on a native box | require **Git for Windows** (the user installs it; the box finds it and says "Install Git for Windows" when it's missing) | git is needed anyway; Claude Code requires the same; POSIX commands keep the reviewer and every prompt working. Alternative: bring a portable Git inside `.kuvo-code` (about 300 MB, no system install, ours to update) |
+| D1 | Where a native box lives (§4.3) | `%USERPROFILE%\.kuvo-code`, refusing a roaming profile; or `%LOCALAPPDATA%\kuvo-code` | one name everywhere and private by default, but it roams on domain PCs with roaming profiles; `%LOCALAPPDATA%` never does |
+| D2 | The keeper, launch, wake-ups and restore: stay shell (moved into `box/` as files by #715) or become the box's code | **the box's code, on every system**, #715 doing the move once | a native box can't run shell; two keepers (shell and PowerShell) would be the same logic twice; the shell held in strings is already the hardest part of the box to test. Cost: the most proven code in the box is rewritten; its scenario tests are the safety net. **Needs settling before #715 goes further.** The way there for boxes already out: the old link checks the new pack with `sh -n kuvo-start`, stops and starts with `sh kuvo-start stop\|start` (`box/src/link/updates/update.ts:476,494,514`), and the old keeper, still running, only knows `restore.sh` (`:527`, `E/RemoteEngine.swift:1206-1214`). So the first release with a code keeper still ships a shell `kuvo-start` answering `stop`, `start`, `keep`, `box` and `off` by exec'ing the box's code, and still writes `restore.sh` beside the plan: marked `COMPAT` with its removal date, as the code's other 0.7 leftovers are. That's what an update needs to cross, not a fallback for older boxes: nothing new works with an old box. Windows has no boxes out, so none of it ships there |
+| D3 | The shell for commands on a native box | require **Git for Windows** (the user installs it; the box finds it and says "Install Git for Windows" when it's missing) | git is needed anyway; Claude Code is documented to require the same (trial); POSIX commands keep the reviewer and every prompt working. Alternative: bring a portable Git inside `.kuvo-code` (about 300 MB, no system install, ours to update) |
 | D4 | The first process on a native box | try `conhost --headless` in G0; a tiny signed starter if it isn't clean | a starter means a Windows build, a code-signing certificate and SmartScreen reputation: a cost, and a brand surface (its name and icon in Task Manager and Startup apps: **a brand decision**) |
 | D5 | How the app presents the two boxes on a Windows PC | drafts first (two or three, light and dark): "WSL (recommended: sandboxed)" beside "Windows (no sandbox yet)" | it's a new visible choice; the box states the facts, the app draws them |
 | D6 | Projects on a Windows drive in a WSL box | allow, with the fact shown; the sandbox refuses to promise what it can't there | people's existing checkouts are on `C:` |
-| D7 | Is a native box without a sandbox acceptable for the release, with N9 after? | yes, said plainly, if the WSL box ships beside it | "both as options" is met; a native sandbox is the largest and riskiest piece |
+| D7 | Is a native box without a sandbox acceptable for the release, with N10 after? | yes, said plainly, if the WSL box ships beside it | "both as options" is met; a native sandbox is the largest and riskiest piece |
+| D9 | Reaching a WSL box over SSH through Windows' own SSH server (§3.2, way 2) | not built; ways 1 and 3 and the relay | it would put shell and distro knowledge in every client |
 | D8 | Start before sign-in (a task with stored credentials, an administrator once) | documented as the user's own step, never done by us | the footprint rule: no elevation |
 
 ## 9. What I need from the user (the machine)
@@ -635,7 +683,36 @@ A short list to send:
   install those inside test folders or say when one needs the real profile).
 - **It can sleep, restart and be signed out by me** (remote restart allowed), and stays on
   otherwise.
-- **Sign-ins for the agents on it when we reach N7 / W-trial 10:** Claude Code and Codex first;
+- **Sign-ins for the agents on it when we reach N8 / trial 10:** Claude Code and Codex first;
   Cursor, Grok and Antigravity after. You sign in there once; I never see the passwords.
 - **Whether Defender stays on** (it should: it's what users have).
 - Later, only if D4 picks a starter: **a Windows code-signing certificate**.
+
+## 10. The reviewer's pass
+
+One `reviewer` pass on the note (2026-11-15), asked for missed Unix assumptions. Fixed from it:
+
+- **The tests' guard would let a native run reach the real profile** (it isolates `HOME`; Windows'
+  programs read `USERPROFILE` and `APPDATA`): piece G3, before any native test run.
+- **`%USERPROFILE%\.kuvo-code` does roam** with a roaming profile; I had it backwards. §4.3 and D1
+  now say so and give `%LOCALAPPDATA%` as the alternative.
+- **The update that crosses from the shell keeper to the code keeper** wasn't designed: D2 and N1
+  now keep a shell `kuvo-start` and `restore.sh` for that one crossing.
+- **Totals** didn't add up; recounted in §0 and §6. G2 raised (about 145 path sites and two
+  clients).
+- **Facts I'd stated flat, now trials:** processes an SSH session started ending with it; DPAPI in
+  an SSH session; `wsl.exe --exec` not expanding `~`; Claude Code needing Git for Windows.
+  Loopback is the whole PC's, not the user's.
+- **Missed categories, now §2.13:** the role flag (`IS_MAC`) against the system; variable names'
+  case in copied environments; files held open by others; Windows tools' encodings and languages;
+  the engine's terminals; Git Credential Manager; `file:` URLs; `ino`/`dev`/`nlink`; Move to
+  Computer across systems; firewall prompts.
+- **Client logic:** wrapping commands for WSL through Windows' SSH server would teach every client
+  the PC's shell: now not recommended, and the user's call (D9).
+- **Pieces missing:** the clients' side (C1), and what a path really names on Windows for the
+  reviewer (N6, with a separate review).
+- **Citations:** four line numbers off by a few, corrected; what a box does with no sandbox is
+  now cited to the code that does it, and what bots may run there is marked as not traced.
+
+Not checked by either of us: anything on Windows or WSL; §5's claims about what each maker ships.
+
