@@ -1,7 +1,7 @@
 // The route scenarios both boxes answer alike (`protocol/vectors/routes/*.json`), run against the bridge's
 // real handler (`engineHandler` in kuvo-link.js) as one box: a machine's (contract.test.js), on a
-// box folder of its own with the files a Mac leaves on a machine (`protocol/vectors/routes/box`, written
-// from the Mac's code by `scripts/route-vectors.sh`); or this Mac's (contract-mac.test.js), with
+// box folder of its own with the catalogs a release brings a box (`protocol/vectors/routes/box`, written
+// from the box's own table by `scripts/route-vectors.sh`); or this Mac's (contract-mac.test.js), with
 // the app's own folders beside its box's (KUVO_BOTS, KUVO_WAKES), for the areas that have moved
 // onto it. The real kuvo-wake either way. Only the engine is a stand-in, here and in the Mac's
 // runner alike (swift/KuvoCodeTests/RouteContractTests.swift, which runs the same scenarios against the
@@ -40,15 +40,12 @@ const read = (url, name) => fs.readFileSync(new URL(name, url), "utf8");
 // What a client puts beside every box's bridge: the integrations, the popular MCP servers, and
 // what the box makes bots with and tells them (Kuvo Code's own words, as they ship).
 const boxFiles = { "integrations.json": read(vectors, "box/integrations.json"), "mcp-catalog.json": read(vectors, "box/mcp-catalog.json"),
-  "bot-words.json": fs.readFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), "utf8") };
+  "bot-words.json": fs.readFileSync(new URL("../src/shared/bot-words.json", import.meta.url), "utf8") };
 // What's this Mac's own that its app gives its box to make bots with (its kit, in the bots' folder).
 const macKit = () => read(vectors, "box/mac-bot-kit.json");
 
-// kuvo-wake, as Wakes.swift has it and BoxFiles puts it in every box's bin.
-const swift = fs.readFileSync(new URL("../../swift/OpenCodeKit/Sources/OpenCodeKit/Engine/Wakes.swift", import.meta.url), "utf8");
-const opening = 'public static let script = #"""\n';
-const from = swift.indexOf(opening) + opening.length;
-const kuvoWake = swift.slice(from, swift.indexOf('\n    """#', from)).split("\n").map(line => line.replace(/^ {4}/, "")).join("\n") + "\n";
+// kuvo-wake, as every box's release has it in its bin (box/src/keeper/kuvo-wake).
+const kuvoWake = fs.readFileSync(new URL("../src/keeper/kuvo-wake", import.meta.url), "utf8");
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 const write = (file, text) => {

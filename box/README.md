@@ -13,8 +13,23 @@ It's programs of ours, built from this one package:
   agents' browser tools.
 
 The built bundles in `dist/` were in the Swift Mac app's Resources until it was retired
-(`swift/MAC-APP-REFERENCE.md`); its project still takes them from here, as release.yml builds it
-for the box release machines update from.
+(`swift/MAC-APP-REFERENCE.md`); its project still takes them from here.
+
+**Its release** (protocol/PROTOCOL.md, "Updates") is built from this package alone, with no app
+(`scripts/box-release.sh`; `--files <version> <folder>` writes only the files, to look at them):
+
+- `src/release/files.ts` writes every file a version puts in a box's `~/.kuvo-code`, and
+  `box.json`, which names them;
+- `src/keeper` holds the keeper's shell files as plain files, the one copy: `kuvo-start`,
+  `kuvo-launch`, `kuvo-setsid`, `kuvo-wake`, `kuvo-npx` and `runtime/node`. Where one names the
+  engine's version it says `@ENGINE@`, written over as the release is built. The first three end
+  without a last newline, as every release has had them;
+- `src/plugins/kuvo-code.js` is the engine's plugin;
+- `src/shared/engine-pin.json` is the engine a version runs: its version, and each system's build
+  with npm's integrity for it;
+- `src/shared/integrations` is the one table of integrations (`table.ts`) and popular MCP servers
+  (`servers.ts`), and `catalogs.ts` writes the three catalogs a box reads from it;
+- `src/shared/bot-words.json` is what a box makes its bots with and tells them.
 
 The link and the agents bridge stay two processes. The link has to stay up while the engine or the agents bridge is down. It
 runs the box's self-update, which replaces the agents bridge's files. And an older Mac starts the

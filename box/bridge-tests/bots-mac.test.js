@@ -189,7 +189,7 @@ test("this Mac's bots are its own: listed without a machine, made here with this
 });
 
 test("a bot on this Mac is told, in Kuvo Code's own words, that it runs on this Mac, by its clock, with tabs of its own in your browser", () => {
-  fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), wordsFile);
+  fs.copyFileSync(new URL("../src/shared/bot-words.json", import.meta.url), wordsFile);
   const told = link.botInstructions(link.readKit(), "Scout", path.join(bots, "bot_scout00001"), undefined, undefined);
   assert.match(told, /^You are Scout, one of the user's bots in Kuvo Code\. .* You run on this Mac\.\n\nYour job is what the user gives you/);
   assert.match(told, /a time like 2026-10-16T09:00 on this Mac's clock,/);
@@ -416,7 +416,7 @@ test("a template's or a shared bot's job as the first message says its job once,
   assert.equal(link.firstMessageOf("Keeps CI green. Fast", "Keeps CI green. Fast.\n\nWatch main.").split("Keeps CI green").length, 2);
   assert.equal(link.firstMessageOf("", ""), "");
   // Each of New Bot's templates, as Kuvo Code words them.
-  const shipped = JSON.parse(fs.readFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), "utf8"));
+  const shipped = JSON.parse(fs.readFileSync(new URL("../src/shared/bot-words.json", import.meta.url), "utf8"));
   assert.ok(shipped.templates.length > 1);
   for (const template of shipped.templates) {
     const message = link.firstMessageOf(template.job, template.instructions);
@@ -462,7 +462,7 @@ test("a bot brought here from another computer is made this Mac's: its folder sa
 // told), so neither moves. A zone you pick on one reaches the other, and its bots are told it.
 test("two Macs updated in different zones each keep their own clock; a zone picked on one reaches the other, and its bots are told it", () => {
   const was = process.env.TZ;
-  const shipped = fs.readFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), "utf8");
+  const shipped = fs.readFileSync(new URL("../src/shared/bot-words.json", import.meta.url), "utf8");
   try {
     process.env.TZ = "Europe/Istanbul";
     write(wordsFile, shipped);

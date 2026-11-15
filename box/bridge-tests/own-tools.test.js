@@ -30,10 +30,7 @@ fs.mkdirSync(project, { recursive: true });
 write(path.join(project, "notes.md"), "# Notes\n");
 
 // The box's own kuvo-wake, as a machine has it in its `bin`.
-const swift = read(new URL("../../swift/OpenCodeKit/Sources/OpenCodeKit/Engine/Wakes.swift", import.meta.url));
-const opening = 'public static let script = #"""\n';
-const from = swift.indexOf(opening) + opening.length;
-write(path.join(home, "bin", "kuvo-wake"), swift.slice(from, swift.indexOf('\n    """#', from)).split("\n").map(line => line.replace(/^ {4}/, "")).join("\n") + "\n");
+write(path.join(home, "bin", "kuvo-wake"), read(new URL("../src/keeper/kuvo-wake", import.meta.url)));
 fs.chmodSync(path.join(home, "bin", "kuvo-wake"), 0o755);
 
 // The engine's conversations: one at work and its subagent, a bot's, one that asks before commands
