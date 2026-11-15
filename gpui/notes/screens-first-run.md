@@ -15,8 +15,8 @@ shown once, remembered in its own store.
 
 - **In the window's place, shown once**, as Zed's. Remembered on the box, not in the app
   (`welcomed` in `kuvo/setup`, set with `POST kuvo/setup/welcomed`), so every client agrees and an
-  app installed again doesn't ask again. Until the box has said, the window waits empty rather
-  than show the app and take it away.
+  app installed again doesn't ask again. Until the box has said, the window waits ("Starting…",
+  or why the box can't be reached) rather than show the app and take it away.
 - **One step at a time in a card** (Capy's, the user's pick) rather than Zed's one page: Welcome,
   Agents and plans, Where to work, three dots under the card, Back and the way on (Return) in its
   foot; Escape goes back. No rail, sidebar or app keys until it's done.

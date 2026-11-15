@@ -129,6 +129,9 @@ fn on_a_new_computer_you_install_an_agent_sign_in_choose_a_folder_and_land_on_it
     assert_eq!(step(&workspace, cx), Step::Browse, "one that can't be read can't be chosen");
     click(cx, "first-run-up");
     click(cx, "first-run-browse-Projects");
+    // (A chooser's folders: no files asked for, and none of the hidden ones.)
+    let asked = stand_in.seen_at("GET", "kuvo/folders");
+    assert!(asked.len() >= 3 && asked.iter().all(|seen| !seen.path.contains("hidden") && !seen.path.contains("files")), "{asked:?}");
     click(cx, "first-run-browse-website");
     click(cx, "first-run-next");
     assert_eq!(step(&workspace, cx), Step::Where);
@@ -335,4 +338,88 @@ fn what_the_box_cant_say_is_said_with_a_way_to_ask_again(cx: &mut TestAppContext
     stand_in.set_first_run(|first_run| first_run.folders_fail = false);
     click(cx, "first-run-folders-failed-again");
     assert!(shown(cx, "first-run-folder-0") && !shown(cx, "first-run-folders-failed"));
+}
+
+/// The window as the app starts it: the box not reached yet, nothing asked.
+fn starting(cx: &mut TestAppContext, stand_in: StandIn) -> (Entity<Workspace>, &mut VisualTestContext) {
+    cx.update(|cx| {
+        Theme::init(Appearance::Light, cx);
+        kuvo::bind_keys(cx);
+    });
+    let client = BoxClient::new(stand_in);
+    let window = cx.add_window(move |window, cx| Workspace::new(client, false, window, cx));
+    let workspace = window.root(cx).unwrap();
+    let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+    cx.simulate_resize(size(px(1280.), px(1400.)));
+    workspace.update_in(cx, |workspace, _, cx| workspace.await_box(cx));
+    cx.run_until_parked();
+    (workspace, cx)
+}
+
+#[gpui::test]
+fn until_the_box_has_said_the_window_waits_rather_than_show_the_app_and_take_it_away(cx: &mut TestAppContext) {
+    let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Nothing);
+    let (workspace, cx) = starting(cx, stand_in.clone());
+    // Being reached: neither the app nor the welcome yet.
+    assert!(shown(cx, "window-waiting") && !shown(cx, "rail-settings") && !shown(cx, "first-run"));
+    // It can't be reached: said, still without the app a first run would then take away.
+    workspace.update_in(cx, |workspace, _, cx| workspace.connected(Err(kuvo_box::Error::NotRunning("Kuvo Code isn’t answering on this Mac.".into())), cx));
+    cx.run_until_parked();
+    assert!(shown(cx, "window-waiting-why") && !shown(cx, "rail-settings") && !shown(cx, "first-run"));
+    // Reached: it says the first run hasn't been had, and the welcome is what shows.
+    workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
+    cx.run_until_parked();
+    assert!(shown(cx, "first-run-card") && !shown(cx, "window-waiting") && !shown(cx, "rail-settings"));
+}
+
+#[gpui::test]
+fn a_box_youve_had_it_with_opens_the_app_once_reached(cx: &mut TestAppContext) {
+    let (workspace, cx) = starting(cx, StandIn::at(Replies::Never, NOW));
+    assert!(shown(cx, "window-waiting"));
+    workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
+    cx.run_until_parked();
+    assert!(shown(cx, "rail-settings") && !shown(cx, "window-waiting") && !shown(cx, "first-run"));
+}
+
+#[gpui::test]
+fn a_box_held_for_its_update_at_the_start_says_so_in_the_app(cx: &mut TestAppContext) {
+    // It can't say whether the first run's been had: the window's own notice, not a welcome.
+    let (workspace, cx) = starting(cx, StandIn::held_older(Replies::Never));
+    workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
+    cx.run_until_parked();
+    assert!(shown(cx, "held-box-notice") && !shown(cx, "window-waiting") && !shown(cx, "first-run"));
+}
+
+#[gpui::test]
+fn a_box_that_couldnt_say_once_is_asked_again_without_the_window_going_empty(cx: &mut TestAppContext) {
+    let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Running);
+    stand_in.set_first_run(|first_run| first_run.setup_fails = true);
+    let (workspace, cx) = starting(cx, stand_in.clone());
+    workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
+    cx.run_until_parked();
+    // It answered, though not what was asked: the app, as it would be.
+    assert!(shown(cx, "rail-settings") && !shown(cx, "window-waiting"));
+    // Asked again as it's next read, the window never emptied meanwhile; it says the first run
+    // hasn't been had, and that's shown.
+    stand_in.set_first_run(|first_run| first_run.setup_fails = false);
+    assert!(!workspace.read_with(cx, |workspace, _| workspace.awaits_box()));
+    workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
+    cx.run_until_parked();
+    assert!(shown(cx, "first-run-card"));
+}
+
+#[gpui::test]
+fn signed_in_with_a_key_alone_the_welcome_lists_it_and_goes_straight_on(cx: &mut TestAppContext) {
+    // No plan signed in, but a key whose model runs: nothing to draw an empty row for.
+    let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Running);
+    for agent in ["claude-code", "codex-cli", "antigravity"] {
+        stand_in.set_account_said(agent, json!({ "state": "signedOut", "line": "Not signed in", "actions": [{ "id": "signIn", "label": "Sign In" }] }));
+    }
+    for account in ["github-copilot", "gitlab"] {
+        stand_in.set_account_said(account, json!({ "state": "signedOut", "line": "Sign in", "actions": [{ "id": "signIn", "label": "Sign In" }] }));
+    }
+    let (workspace, cx) = open(cx, stand_in);
+    assert!(shown(cx, "first-run-signed-in"), "OpenRouter's key is what's ready");
+    click(cx, "first-run-next");
+    assert_eq!(step(&workspace, cx), Step::Where);
 }

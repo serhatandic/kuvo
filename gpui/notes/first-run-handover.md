@@ -17,10 +17,13 @@ the window (`workspace.rs`, `Welcome`) until the box says it's been had. What it
   folders, the free models). The sample box says `welcomed: true`, so every other screen is as it
   was. To walk it: `cargo run -p kuvo --features stand-in -- --stand-in --first-run nothing`
   (`crowded`, `running`).
-- Tests: `kuvo/tests/first_run.rs` (9 scenarios through the window). Shots:
+- Tests: `kuvo/tests/first_run.rs` (14 scenarios through the window). Shots:
   `shots/screens-first-run-*` (`cargo run -p kuvo --features shots --bin shots -- first-run`).
 - `kuvo_box`: `added` read on each account; a suggested folder's `seen` read whether whole or with
-  a fraction.
+  a fraction; `folders_in` (a folder's folders alone, no hidden ones) and a folder's `parent`.
+- Before the box has said whether the first run's been had, the window waits ("Starting…", or why
+  the box can't be reached) rather than show the app and take it away; a box held for its update
+  shows the app's own notice.
 
 ## BOX-NEEDED
 
@@ -37,11 +40,21 @@ the window (`workspace.rs`, `Welcome`) until the box says it's been had. What it
    `BoxClient::machine`), which isn't built.
 3. **Adding a machine from a box** (#636, already listed in `computers-handover.md`): the first run
    leaves "Add a Machine…" out until a box can do it.
-4. **Whether a first run has anything to ask** (optional): the app works out "a model runs and
-   nothing needs you" from `starting`, `free` and the accounts' `state` (`FirstRun::ready`). A fact
-   on the box (say `ready` in `kuvo/setup`) would save the next client the same few lines.
+4. **Whether a first run has anything to ask: logic left to move to the box.** The skip is the
+   brief's, but the rule that decides it is in the app (`FirstRun::ready`, marked `BOX-NEEDED`):
+   "a new session's `starting` model isn't a `free` one, neither side is down, and no plan's
+   `state` is `ended` or `problem`". The box should state it (say `ready` in `kuvo/setup`, with the
+   accounts behind it), so the phone and any other client keep no copy. Not trivial on the box (it
+   reads the engine's and the bridge's accounts and models to say it; a feature name, vectors,
+   PROTOCOL.md, a Linux check): not done here. Until then this is client logic the user hasn't
+   agreed to as an exception: theirs to accept, or the skip comes out (`go_on`'s one line).
 5. **A name and mark for the free models' provider** (optional): the row says "Free models" with a
    plain icon and the models' names, since the app doesn't know whose they are.
+
+6. **A chooser's rows by the box** (small): the app joins `<folder>/<name>` to open a folder in
+   Choose a Folder… (the box gives `parent`, used for Up, but only names for what's inside), and
+   picks an account's button by its action's id (`signIn…`, `install`). Each folder's `path` and a
+   "first" mark on an action would take both out of the client.
 
 ## Not built (the app's side)
 

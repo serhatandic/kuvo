@@ -15,6 +15,9 @@ use crate::transport::Request;
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct Folder {
     pub path: String,
+    /// The folder it's in, as the box says; none for the top one.
+    #[serde(default)]
+    pub parent: Option<String>,
     #[serde(default)]
     pub folders: Vec<Named>,
     #[serde(default)]
@@ -82,10 +85,19 @@ impl BoxClient {
         self.get("kuvo/folders/suggested")
     }
 
+    /// The folders in the folder at `path` (`~`: the home folder), as a folder chooser lists them:
+    /// no files, and none of the hidden ones. Refused as [`BoxClient::folder`] is.
+    pub fn folders_in(&self, path: &str) -> std::result::Result<Folder, std::result::Result<Unreadable, Error>> {
+        self.read_folder(format!("kuvo/folders?path={}", paths::query_value(path)))
+    }
+
     /// The folder at `path` (a full one, on the box), as a Files panel lists it. A folder the box
     /// can't read is `Err(Ok(why))`; one it couldn't be asked about, `Err(Err(error))`.
     pub fn folder(&self, path: &str) -> std::result::Result<Folder, std::result::Result<Unreadable, Error>> {
-        let route = format!("kuvo/folders?path={}&files=1&hidden=1", paths::query_value(path));
+        self.read_folder(format!("kuvo/folders?path={}&files=1&hidden=1", paths::query_value(path)))
+    }
+
+    fn read_folder(&self, route: String) -> std::result::Result<Folder, std::result::Result<Unreadable, Error>> {
         let response = self.send(&Request::get(route)).map_err(Err)?;
         if response.is_success() {
             return serde_json::from_slice(&response.body).map_err(|error| Err(Error::BadAnswer(format!("The answer couldn't be read: {error}"))));

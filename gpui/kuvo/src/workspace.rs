@@ -194,6 +194,10 @@ pub struct Workspace {
     /// The first run, while the box says it hasn't been had; and the keyboard to go to the
     /// landing view once it's done.
     welcome: Welcome,
+    /// Whether the box has answered that once (it had, it hadn't, or it couldn't say): until
+    /// then the window waits, saying how the box stands, rather than show the app and perhaps
+    /// take it away again.
+    welcome_answered: bool,
     focus_landing: bool,
     _sessions: Option<Follow<ListUpdate>>,
     tasks: Vec<Task<()>>,
@@ -289,6 +293,7 @@ impl Workspace {
             at: 0,
             // (Tests and shots hand it what to show: asked in `read_at_once`.)
             welcome: if live { Welcome::Unknown } else { Welcome::Had },
+            welcome_answered: !live,
             focus_landing: false,
             _sessions: None,
             tasks: Vec::new(),
@@ -456,9 +461,25 @@ impl Workspace {
             let (state, name) = (self.box_state.clone(), self.box_name());
             run.update(cx, |run, cx| run.set_box(state, name, cx));
         }
-        if self.live && self.box_state == BoxState::Connected {
+        if self.box_state == BoxState::Connected {
             self.ask_welcomed(cx);
         }
+    }
+
+    /// As the app's window starts: the box not reached yet, and not asked whether the first run's
+    /// been had (tests, which otherwise start on a box that has).
+    #[cfg(feature = "stand-in")]
+    pub fn await_box(&mut self, cx: &mut Context<Self>) {
+        self.welcome = Welcome::Unknown;
+        self.welcome_answered = false;
+        self.box_state = BoxState::Connecting;
+        cx.notify();
+    }
+
+    /// Whether the window still waits to hear if the first run's been had: the box hasn't
+    /// answered that yet. One held for its update can't say: the window shows that instead.
+    pub fn awaits_box(&self) -> bool {
+        !self.welcome_answered && matches!(self.welcome, Welcome::Unknown | Welcome::Asking) && self.box_state != BoxState::Held
     }
 
     /// Asks the box whether you've had the first run with it, once.
@@ -483,6 +504,8 @@ impl Workspace {
     /// (held for its update, or not answering) is asked again once it's reached; until then the
     /// window is as it would be, saying how the box stands.
     fn take_welcomed(&mut self, said: kuvo_box::Result<bool>, cx: &mut Context<Self>) {
+        // (A box held for its update never got the question: it's still to be answered.)
+        self.welcome_answered |= !matches!(said, Err(kuvo_box::Error::NeedsUpdating { .. }));
         match said {
             Ok(false) => {
                 let (client, live, state, name) = (self.client.clone(), self.live, self.box_state.clone(), self.box_name());
@@ -523,6 +546,10 @@ impl Workspace {
         self.pick_place(place, cx);
         let landing = self.landing.clone();
         self.show_composer(Some(&landing), cx);
+        // (What was signed in to on the way: the rail's accounts are read again.)
+        if self.live {
+            self.rings.update(cx, |rings, cx| rings.read_again(cx));
+        }
         self.focus_landing = true;
         cx.notify();
     }
@@ -1605,8 +1632,25 @@ impl Render for Workspace {
         if let Some(run) = self.first_run() {
             return div().size_full().child(run.clone());
         }
-        if matches!(self.welcome, Welcome::Asking) || (matches!(self.welcome, Welcome::Unknown) && self.box_state == BoxState::Connecting && self.live) {
-            return div().debug_selector(|| "window-waiting".into()).size_full().bg(c.background);
+        if self.awaits_box() {
+            // How the box stands, in the window's middle: being reached, or why it can't be.
+            let words: AnyElement = match &self.box_state {
+                BoxState::Unreachable(why) => div().debug_selector(|| "window-waiting-why".into()).max_w(px(420.)).text_color(c.text_muted).child(why.clone()).into_any_element(),
+                _ => div().flex().items_center().gap(space::S2).text_color(c.text_muted).child(kuvo_ui::small::spinner("window-waiting-spinner", kuvo_ui::IconSize::Nav, c.text_muted)).child("Starting…").into_any_element(),
+            };
+            return div()
+                .debug_selector(|| "window-waiting".into())
+                .size_full()
+                .flex()
+                .flex_col()
+                .bg(c.background)
+                .text_ui(TypeSize::Small)
+                .child(div().id("window-waiting-title-bar").h(px(title_bar::HEIGHT)).flex_none().on_mouse_down(MouseButton::Left, |event, window, _| {
+                    if event.click_count == 1 {
+                        window.start_window_move();
+                    }
+                }))
+                .child(div().flex_1().flex().items_center().justify_center().pb(px(96.)).child(words));
         }
         if std::mem::take(&mut self.focus_landing) {
             window.focus(&self.landing.focus_handle(cx), cx);

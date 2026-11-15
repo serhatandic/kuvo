@@ -93,8 +93,14 @@ pub struct FirstRun {
     place: Option<StartIn>,
     /// A folder chosen by looking through the computer's, listed with the suggested ones.
     chosen: Option<String>,
-    /// The folder being looked through, and what the box says is in it.
+    /// The folder being looked through, and what the box says is in it; and the folder it was
+    /// opened from, to go back up to where the box couldn't list this one.
     browsing: Option<(String, Listed)>,
+    browsed_from: Option<String>,
+    /// Which read of the accounts is the latest asked for: an older one's answer is dropped.
+    accounts_asked: u64,
+    /// The accounts just signed in to, until the box has said how they stand now.
+    checking: HashSet<String>,
     /// A sign-in under way in place: its account's key, and the sign-in.
     sign_in: Option<(String, Entity<SignIn>)>,
     sign_in_watch: Vec<Subscription>,
@@ -126,13 +132,6 @@ fn from_home(path: &str, home: &str) -> String {
     }
 }
 
-/// The folder a folder is in; none for the top one.
-fn parent_of(path: &str) -> Option<String> {
-    let trimmed = path.trim_end_matches('/');
-    let (parent, _) = trimmed.rsplit_once('/')?;
-    Some(if parent.is_empty() { "/".to_owned() } else { parent.to_owned() })
-}
-
 /// A folder's name: the last part of its path.
 fn name_of(path: &str) -> String {
     let trimmed = path.trim_end_matches('/');
@@ -155,6 +154,9 @@ impl FirstRun {
             place: None,
             chosen: None,
             browsing: None,
+            browsed_from: None,
+            accounts_asked: 0,
+            checking: HashSet::new(),
             sign_in: None,
             sign_in_watch: Vec::new(),
             installing: HashSet::new(),
@@ -239,7 +241,27 @@ impl FirstRun {
 
     /// The accounts, and with them the models offered (a sign-in changes both).
     fn read_accounts(&mut self, cx: &mut Context<Self>) {
-        self.run(|client| client.sign_in_accounts(), |this, read, _| this.accounts = keeping(read, &this.accounts), cx);
+        self.accounts_asked += 1;
+        let asked = self.accounts_asked;
+        self.run(
+            |client| client.sign_in_accounts(),
+            move |this, read, _| {
+                // (Unless they've been asked for again since: the later answer is the one shown.)
+                if asked != this.accounts_asked {
+                    return;
+                }
+                // An account just signed in to that couldn't be read again says so, rather than
+                // offering to sign in as if nothing had happened.
+                if let Err(error) = &read {
+                    for key in this.checking.clone() {
+                        this.problems.insert(key, format!("Its account couldn’t be read again. {}", said(error)));
+                    }
+                }
+                this.checking.clear();
+                this.accounts = keeping(read, &this.accounts);
+            },
+            cx,
+        );
         self.run(|client| client.offered_models(None, None), |this, read, _| this.offered = keeping(read, &this.offered), cx);
     }
 
@@ -289,6 +311,9 @@ impl FirstRun {
     /// a new session has a model to start on that isn't one of the free ones, and no plan's
     /// sign-in has ended or says something's wrong. Then the welcome goes straight on to where to
     /// work.
+    // BOX-NEEDED: this is a rule the box should state (say `ready` in `kuvo/setup`), so the phone
+    // and any other client don't keep a copy of it. Built here, from the box's facts alone, as the
+    // first run's brief asks for the skip; listed in `notes/first-run-handover.md` as left to move.
     pub fn ready(&self) -> bool {
         let (Reading::Ready(offered), Reading::Ready(accounts)) = (&self.offered, &self.accounts) else { return false };
         let Some(Some(starting)) = &offered.starting else { return false };
@@ -324,7 +349,9 @@ impl FirstRun {
             return false;
         }
         match self.step {
-            Step::Welcome => self.box_state == BoxState::Connected,
+            // (Once the box has said its accounts and models, or that it can't: whether the next
+            // step is passed over goes by them.)
+            Step::Welcome => self.box_state == BoxState::Connected && !matches!(self.accounts, Reading::NotYet) && !matches!(self.offered, Reading::NotYet),
             Step::Agents | Step::Keys => true,
             Step::Where => self.place.is_some() && self.elsewhere().is_none(),
             Step::Browse => matches!(self.browsing, Some((_, Listed::Ready(_)))),
@@ -358,6 +385,7 @@ impl FirstRun {
             }
             Step::Where => {
                 if let Some(place) = self.place.clone() {
+                    self.close_sign_in(cx);
                     cx.emit(Finished { place });
                 }
             }
@@ -367,6 +395,9 @@ impl FirstRun {
 
     /// Back a step (its button, or Escape).
     pub fn go_back(&mut self, cx: &mut Context<Self>) {
+        if self.client.gate().is_held() {
+            return;
+        }
         match self.step {
             Step::Welcome => {}
             Step::Agents => {
@@ -434,14 +465,18 @@ impl FirstRun {
                 this.installing.remove(&key);
                 match done {
                     Ok((installed, read)) if installed.installed => {
+                        // (A read asked for before the install ended is older than this one.)
+                        this.accounts_asked += 1;
                         match read {
                             Some(Ok(accounts)) => this.accounts = Reading::Ready(accounts),
                             Some(Err(error)) => drop(this.problems.insert(key.clone(), format!("{name} is installed, but its account couldn’t be read again. {}", said(&error)))),
                             None => {}
                         }
-                        // Installed: on to signing in, where its box now offers it and no other
-                        // sign-in is under way.
+                        // Installed: on to signing in, where its box now offers it, no other
+                        // sign-in is under way, and its row is still on screen (a page opened in
+                        // the browser from a step that doesn't show why would only confuse).
                         if this.sign_in.is_none()
+                            && matches!(this.step, Step::Agents | Step::Keys)
                             && let Some(entry) = this.entry(&key).cloned()
                             && this.offer(&entry).is_some_and(|action| action.signs_in())
                         {
@@ -468,8 +503,12 @@ impl FirstRun {
                     sheet.update(cx, |sheet, cx| sheet.close(cx));
                 }
             }),
-            cx.subscribe(&sheet, |this: &mut FirstRun, sheet, _: &sign_in::Closed, cx| {
-                if this.sign_in.as_ref().is_some_and(|(_, open)| *open == sheet) {
+            cx.subscribe(&sheet, |this: &mut FirstRun, sheet, closed: &sign_in::Closed, cx| {
+                if let Some((key, _)) = this.sign_in.as_ref().filter(|(_, open)| *open == sheet) {
+                    // Signed in: its row waits for the box's word on it, offering nothing.
+                    if closed.signed_in {
+                        this.checking.insert(key.clone());
+                    }
                     this.sign_in = None;
                     this.sign_in_watch.clear();
                     this.wants_focus = true;
@@ -517,6 +556,11 @@ impl FirstRun {
             Reading::Ready(suggested) if !suggested.home.is_empty() => suggested.home.clone(),
             _ => "~/".into(),
         });
+        // (The folder this one is opened from, by the box's own name for it.)
+        self.browsed_from = match &self.browsing {
+            Some((_, Listed::Ready(folder))) if folder.path != path => Some(folder.path.clone()),
+            _ => None,
+        };
         self.browsing = Some((path.clone(), Listed::Reading));
         if self.step != Step::Browse {
             self.show(Step::Browse, cx);
@@ -524,7 +568,7 @@ impl FirstRun {
         self.scroll.set_offset(gpui::point(px(0.), px(0.)));
         let asked = path.clone();
         self.run(
-            move |client| client.folder(&asked),
+            move |client| client.folders_in(&asked),
             move |this, read, _| {
                 // (Unless another folder's been opened meanwhile.)
                 let Some((at, listed)) = &mut this.browsing else { return };
@@ -550,7 +594,8 @@ impl FirstRun {
 
     /// The folder looked at is the one to start in.
     fn use_browsed(&mut self, cx: &mut Context<Self>) {
-        let Some((path, Listed::Ready(_))) = self.browsing.take() else { return };
+        let Some((path, Listed::Ready(_))) = self.browsing.clone() else { return };
+        self.browsing = None;
         let suggested = matches!(&self.folders, Reading::Ready(suggested) if suggested.folders.iter().any(|folder| folder.path == path));
         self.chosen = (!suggested).then(|| path.clone());
         self.place = Some(StartIn::Project(path));
@@ -666,8 +711,13 @@ impl FirstRun {
             .pt(space::S1)
             .when(back, |d| d.child(Button::new("first-run-back", "Back").icon(IconName::ArrowLeft).ghost().on_click(cx.listener(|this, _, _, cx| this.go_back(cx)))))
             .child(div().flex_1())
-            .child(Button::new("first-run-next", next).primary().shortcut("↵").size(ButtonSize::Medium).disabled(!self.can_go_on()).on_click(cx.listener(|this, _, _, cx| this.go_on(cx))))
+            .child(Button::new("first-run-next", next).primary().shortcut("↵").size(ButtonSize::Medium).loading(self.settling()).disabled(!self.can_go_on()).on_click(cx.listener(|this, _, _, cx| this.go_on(cx))))
             .into_any_element()
+    }
+
+    /// Whether the welcome still waits for the box's accounts and models before it can go on.
+    fn settling(&self) -> bool {
+        self.step == Step::Welcome && self.box_state == BoxState::Connected && !self.client.gate().is_held() && (matches!(self.accounts, Reading::NotYet) || matches!(self.offered, Reading::NotYet))
     }
 
     /// The scrolling middle of a card: what a step lists, however long.
@@ -705,8 +755,8 @@ impl FirstRun {
                 .into_any_element(),
         ];
         // What's signed in already, where that's all a session needs: the next step is skipped.
-        if self.ready() {
-            let signed_in: Vec<&AccountEntry> = self.plans().into_iter().filter(|entry| entry.state == State::SignedIn).collect();
+        let signed_in: Vec<&AccountEntry> = self.plans().into_iter().chain(self.keys()).filter(|entry| entry.state == State::SignedIn).collect();
+        if self.ready() && !signed_in.is_empty() {
             let names = signed_in.iter().map(|entry| entry.integration.name.clone()).collect::<Vec<_>>().join(", ");
             let first = signed_in.first().map(|entry| mark(entry.service.as_deref(), &entry.integration.name, cx));
             rows.push(
@@ -718,7 +768,7 @@ impl FirstRun {
                     .px(space::S4)
                     .py(space::S3)
                     .children(first)
-                    .child(two_lines(names, "Signed in", c.text_muted, cx))
+                    .child(two_lines(names, "Ready to use", c.text_muted, cx))
                     .child(Icon::new(IconName::Check).color(c.success))
                     .into_any_element(),
             );
@@ -752,6 +802,22 @@ impl FirstRun {
         }
         if self.sign_in.as_ref().is_some_and(|(open, _)| *open == key) {
             return Button::new(SharedString::from(format!("first-run-{key}-cancel")), "Cancel").size(ButtonSize::Small).ghost().on_click(cx.listener(|this, _, _, cx| this.close_sign_in(cx))).into_any_element();
+        }
+        if self.checking.contains(&key) && entry.state != State::SignedIn {
+            return div()
+                .debug_selector({
+                    let key = key.clone();
+                    move || format!("first-run-{key}-checking")
+                })
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(space::S1_5)
+                .text_ui(TypeSize::Small)
+                .text_color(c.text_muted)
+                .child(spinner(SharedString::from(format!("checking-{key}")), IconSize::Nav, c.text_muted))
+                .child("Checking…")
+                .into_any_element();
         }
         if entry.state == State::SignedIn {
             return div()
@@ -867,7 +933,7 @@ impl FirstRun {
         let rows: Vec<AnyElement> = keys.iter().map(|entry| self.account_row(entry, cx)).collect();
         let mut body = self.down(cx);
         body.push(list(rows, cx));
-        vec![heading("API keys", Some("A key stays on this computer."), cx), self.body(body), self.foot(true, "Done", cx)]
+        vec![heading("API keys", Some(&format!("A key stays on {}.", self.box_name)), cx), self.body(body), self.foot(true, "Done", cx)]
     }
 
     // MARK: Where to work
@@ -1010,7 +1076,12 @@ impl FirstRun {
             Reading::Ready(suggested) => suggested.home.clone(),
             _ => String::new(),
         };
-        let up = parent_of(&path);
+        // Up: the folder the box says this one is in; for one it couldn't list, back to where
+        // it was opened from.
+        let up = match &listed {
+            Listed::Ready(folder) => folder.parent.clone().filter(|parent| *parent != folder.path),
+            _ => self.browsed_from.clone(),
+        };
         let mut body = vec![
             div()
                 .flex()
@@ -1022,7 +1093,7 @@ impl FirstRun {
                         .ghost()
                         .size(ButtonSize::Small)
                         .tooltip("The folder this is in")
-                        .disabled(up.is_none() || path == "/")
+                        .disabled(up.is_none())
                         .on_click(cx.listener(move |this, _, _, cx| this.browse(up.clone(), cx))),
                 )
                 .child(Icon::new(IconName::Folder).color(c.icon))
@@ -1141,7 +1212,9 @@ impl Render for FirstRun {
                     return;
                 }
                 match event.keystroke.key.as_str() {
-                    "enter" if !event.keystroke.modifiers.modified() => this.go_on(cx),
+                    // (With a sign-in open under a row, Return isn't the way on: what's typed
+                    // there would be lost.)
+                    "enter" if !event.keystroke.modifiers.modified() && this.sign_in.is_none() => this.go_on(cx),
                     "escape" => this.go_back(cx),
                     _ => {}
                 }
@@ -1212,10 +1285,7 @@ mod tests {
     }
 
     #[test]
-    fn a_folders_parent_and_name_are_read_from_its_path() {
-        assert_eq!(parent_of("/Users/sam/Projects"), Some("/Users/sam".into()));
-        assert_eq!(parent_of("/Users"), Some("/".into()));
-        assert_eq!(parent_of("/"), None);
+    fn a_folders_name_is_the_last_part_of_its_path() {
         assert_eq!(name_of("/Users/sam/Projects/"), "Projects");
     }
 }

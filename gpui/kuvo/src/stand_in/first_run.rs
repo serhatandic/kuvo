@@ -39,6 +39,8 @@ pub struct FirstRun {
     pub welcomed: bool,
     /// Setting `welcomed` is turned away (`503`).
     pub welcomed_fails: bool,
+    /// Its setup can't be read now (`503`).
+    pub setup_fails: bool,
     /// The models that need no account are offered too.
     pub free: bool,
     /// No account's model runs: only the free ones are offered.
@@ -51,7 +53,7 @@ pub struct FirstRun {
 
 impl Default for FirstRun {
     fn default() -> FirstRun {
-        FirstRun { welcomed: true, welcomed_fails: false, free: false, only_free: false, no_folders: false, folders_fail: false }
+        FirstRun { welcomed: true, welcomed_fails: false, setup_fails: false, free: false, only_free: false, no_folders: false, folders_fail: false }
     }
 }
 
@@ -92,6 +94,7 @@ impl FirstRun {
     /// made at).
     pub fn answer(&mut self, method: &str, route: &str, query: &dyn Fn(&str) -> Option<String>, body: &Value, now: f64) -> Option<(u16, Value)> {
         Some(match (method, route) {
+            ("GET", "kuvo/setup") if self.setup_fails => (503, json!({ "message": "The box isn’t answering." })),
             ("GET", "kuvo/setup") => (200, json!({ "setup": null, "epoch": null, "primary": null, "you": { "key": null, "role": null }, "computers": [], "startsFromOthers": { "value": null, "default": "off" }, "heldBy": [], "welcomed": self.welcomed })),
             ("POST", "kuvo/setup/welcomed") if self.welcomed_fails => (503, json!({ "message": "The box isn’t answering." })),
             ("POST", "kuvo/setup/welcomed") => match body["welcomed"].as_bool() {
@@ -122,7 +125,7 @@ impl FirstRun {
                 let path = query("path").unwrap_or_default();
                 let full = if path == "~" || path == "~/" { HOME.to_owned() } else { path.trim_end_matches('/').to_owned() };
                 match folder(&path)? {
-                    Ok(folders) => (200, json!({ "path": full, "home": HOME, "folders": folders.iter().map(|(name, repository)| json!({ "name": name, "repository": repository })).collect::<Vec<_>>(), "files": [] })),
+                    Ok(folders) => (200, json!({ "path": full, "home": HOME, "parent": full.rsplit_once('/').map(|(parent, _)| if parent.is_empty() { "/" } else { parent }), "folders": folders.iter().map(|(name, repository)| json!({ "name": name, "repository": repository })).collect::<Vec<_>>(), "files": [] })),
                     Err(reason) => (403, json!({ "message": format!("{full} can’t be read here."), "reason": reason })),
                 }
             }

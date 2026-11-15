@@ -714,7 +714,10 @@ const FIRST_RUN: &[FirstRunScreen] = &[
     FirstRunScreen { slug: "first-run-welcome", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
     // A model runs already and nothing needs you: Get Started goes straight to where to work.
     FirstRunScreen { slug: "first-run-welcome-ready", scenario: Scenario::Running, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
-    FirstRunScreen { slug: "first-run-welcome-starting", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: |run, cx| run.set_box(BoxState::Connecting, "This Mac".into(), cx), after: nothing_before },
+    // Before the box has said whether the first run's been had: being reached, and not answering.
+    FirstRunScreen { slug: "first-run-starting", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
+    FirstRunScreen { slug: "first-run-unreachable", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
+    // The box stops answering mid-way.
     FirstRunScreen { slug: "first-run-welcome-unreachable", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: |run, cx| run.set_box(BoxState::Unreachable("Kuvo Code isn’t answering on this Mac.".into()), "This Mac".into(), cx), after: nothing_before },
     FirstRunScreen { slug: "first-run-agents", scenario: Scenario::Crowded, size: (1280., 900.), before: nothing_before, then: to_agents, after: nothing_before },
     FirstRunScreen { slug: "first-run-agents-nothing", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: to_agents, after: nothing_before },
@@ -759,6 +762,13 @@ fn first_run_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path
                 let workspace = root.downcast::<Workspace>().expect("the workspace");
                 workspace.update(cx, |workspace, cx| {
                     workspace.set_now(NOW, cx);
+                    if matches!(screen.slug, "first-run-starting" | "first-run-unreachable") {
+                        workspace.await_box(cx);
+                        if screen.slug == "first-run-unreachable" {
+                            workspace.connected(Err(kuvo_box::Error::NotRunning("Kuvo Code isn’t answering on this Mac.".into())), cx);
+                        }
+                        return;
+                    }
                     workspace.read_at_once(cx);
                     let run = workspace.first_run().cloned().expect("the first run");
                     run.update(cx, |run, cx| (screen.then)(run, cx));
