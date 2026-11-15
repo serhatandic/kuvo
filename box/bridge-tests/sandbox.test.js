@@ -47,11 +47,8 @@ const ownRuntime = (() => {
 // is, in `~/.kuvo-code`), which the sandbox hides from commands. (One file, all it needs inside it.)
 const ownScript = path.join(root, "kuvo-link.js");
 fs.copyFileSync(script, ownScript);
-// kuvo-wake, as Wakes.swift has it and BoxFiles puts it in every box's bin.
-const swift = fs.readFileSync(new URL("../../swift/OpenCodeKit/Sources/OpenCodeKit/Engine/Wakes.swift", import.meta.url), "utf8");
-const opening = 'public static let script = #"""\n';
-const from = swift.indexOf(opening) + opening.length;
-const wakeScript = swift.slice(from, swift.indexOf('\n    """#', from)).split("\n").map(line => line.replace(/^ {4}/, "")).join("\n") + "\n";
+// kuvo-wake, as every box's release has it in its bin (box/src/keeper/kuvo-wake).
+const wakeScript = fs.readFileSync(new URL("../src/keeper/kuvo-wake", import.meta.url), "utf8");
 const base = { ...process.env, HOME: root };
 for (const name of ["KUVO_HOST_URL", "KUVO_HOST_PASSWORD", "KUVO_KEYS", "KUVO_KEYS_ON_HOST", "KUVO_BOX", "KUVO_ENGINE_CONFIG", "KUVO_VAULT_AGENTS", "KUVO_SANDBOX"]) delete base[name];
 

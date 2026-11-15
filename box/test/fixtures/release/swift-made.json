@@ -1,0 +1,54 @@
+{
+  "about": "What the retired Swift Mac app last wrote into a box's release (`\"Kuvo Code\" --write-box-files`, a build of commit 2fe5710a0, 2026-11-15, whose generators were main's when the box took the release over, #715): each file that isn't built from the box's sources or named for the version, by its SHA-256 and mode, for the engine named here. box/test/release-catalogs.test.ts holds what the box writes for that engine to it, so machines saw no change. When one of these files is changed on purpose in box/src, take its line out of here (and `bin/.kuvo-boot`'s with a keeper file's): what's left still guards the rest.",
+  "engine": "2.2.6",
+  "files": {
+    "bin/.kuvo-boot": {
+      "sha256": "f188aa868b32ffc2a4475f08fb9384f46154624dbb8bae432b0aa61df71b9755",
+      "mode": "644"
+    },
+    "bin/bot-words.json": {
+      "sha256": "e9b95218da3870c67a4f8c8d5ab289318ddb63bfad43ecd623044271b1a0f2a9",
+      "mode": "644"
+    },
+    "bin/integrations-mac.json": {
+      "sha256": "9dc537de14d5b54efa10f03cd36421424dec92e1bbb0138218f2a5bd37d78d4f",
+      "mode": "644"
+    },
+    "bin/integrations.json": {
+      "sha256": "f3d3e37e3ee672c1a0613602fd9a4079159c069b63443ad3c1bb4ccd8d89c175",
+      "mode": "644"
+    },
+    "bin/kuvo-launch": {
+      "sha256": "1fb16d88c9897a14615e067e7e24e150c72420da7af283e06466e53422d8712e",
+      "mode": "700"
+    },
+    "bin/kuvo-npx": {
+      "sha256": "147ac16a72137e79b0c068f840170824f9480c851d9266bc5a74e72a8b2c6748",
+      "mode": "755"
+    },
+    "bin/kuvo-setsid": {
+      "sha256": "fb82b00f7aba25e650944ea3192381414e9e8196f80817ef8351f21e1a264f3a",
+      "mode": "700"
+    },
+    "bin/kuvo-start": {
+      "sha256": "e9834b6ae35d178aad3a9de191ebf4a68e6be078c9d2f62eefc985aa73967db3",
+      "mode": "700"
+    },
+    "bin/kuvo-wake": {
+      "sha256": "ca5abf6535bbe8ea26d83cd2b1175ee712667ec6b61a02a38966e85feffcbf27",
+      "mode": "755"
+    },
+    "bin/mcp-catalog.json": {
+      "sha256": "30b00314ddf56cdcc108eb0dbeab4c0e966b9d97af5a0b31ead83ff1e53fd4f7",
+      "mode": "644"
+    },
+    "bin/runtime/node": {
+      "sha256": "9f014d500a401ffafde53cd728a7134ffb89eeb55d2121a9729e10031ea87ab8",
+      "mode": "755"
+    },
+    "config/opencode/plugins/kuvo-code.js": {
+      "sha256": "9f2a684a8afb3010f792098115617287c59f7a01eed042f823544d7156f2e739",
+      "mode": "644"
+    }
+  }
+}
