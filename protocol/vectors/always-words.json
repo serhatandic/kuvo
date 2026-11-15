@@ -1,5 +1,5 @@
 {
-  "about": "What a permission's Always button says, the same on the Mac and the phone (ClientText's AlwaysWords.plain) and in the box's notices for phones (alwaysTitle in box/src/link/notices/news.ts). Each: the ask (action, save, resources), the home folder of its computer, and the button's words.",
+  "about": "What a permission's Always button says, the same on the Mac and the phone (ClientText's AlwaysWords.plain) and in the box's notices for phones (alwaysTitle in box/src/link/notices/news.ts). Each: the ask (action, save, resources), the home folder of its computer, the button's words, and what it does whole (help, its hover text) and as a screen reader says it (spoken), as AlwaysWords and the box's asks (alwaysWords) say them.",
   "cases": [
     {
       "action": "edit",
@@ -10,7 +10,9 @@
         "sandbox-edit-test/pending-1.txt"
       ],
       "home": "/Users/me",
-      "plain": "Always Allow Edits"
+      "plain": "Always Allow Edits",
+      "help": "Don’t ask again before changing files in this project",
+      "spoken": "Always allow edits in this project"
     },
     {
       "action": "write",
@@ -18,7 +20,9 @@
         "a.txt"
       ],
       "home": "/Users/me",
-      "plain": "Always Allow Edits"
+      "plain": "Always Allow Edits",
+      "help": "Don’t ask again before changing files in this project",
+      "spoken": "Always allow edits in this project"
     },
     {
       "action": "shell",
@@ -29,7 +33,9 @@
         "git push origin main"
       ],
       "home": "/Users/me",
-      "plain": "Always Allow git push"
+      "plain": "Always Allow git push",
+      "help": "Don’t ask again before running git push commands in this project",
+      "spoken": "Always allow git push commands"
     },
     {
       "action": "shell",
@@ -41,7 +47,9 @@
         "git --no-pager diff"
       ],
       "home": "/Users/me",
-      "plain": "Always Allow git diff"
+      "plain": "Always Allow git diff",
+      "help": "Don’t ask again before running git diff commands in this project",
+      "spoken": "Always allow git diff commands"
     },
     {
       "action": "shell",
@@ -53,7 +61,9 @@
         "sudo npm i"
       ],
       "home": "/Users/me",
-      "plain": "Always Allow npm i"
+      "plain": "Always Allow npm i",
+      "help": "Don’t ask again before running npm i commands in this project",
+      "spoken": "Always allow npm i commands"
     },
     {
       "action": "shell",
@@ -64,7 +74,9 @@
         "make"
       ],
       "home": "/Users/me",
-      "plain": "Always Allow make"
+      "plain": "Always Allow make",
+      "help": "Don’t ask again before running make in this project",
+      "spoken": "Always allow make"
     },
     {
       "action": "shell",
@@ -75,7 +87,9 @@
         "cd web"
       ],
       "home": "/Users/me",
-      "plain": "Always Allow cd web"
+      "plain": "Always Allow cd web",
+      "help": "Don’t ask again before running cd web in this project",
+      "spoken": "Always allow cd web"
     },
     {
       "action": "shell",
@@ -87,7 +101,9 @@
         "npm install && npm test"
       ],
       "home": "/Users/me",
-      "plain": "Always Allow These Commands"
+      "plain": "Always Allow These Commands",
+      "help": "Don’t ask again in this project before running: npm install, npm test",
+      "spoken": "Always allow these commands: npm install, npm test"
     },
     {
       "action": "shell",
@@ -98,7 +114,9 @@
         "ls"
       ],
       "home": "/Users/me",
-      "plain": "Always Allow Commands"
+      "plain": "Always Allow Commands",
+      "help": "Don’t ask again before running commands in this project",
+      "spoken": "Always allow commands in this project"
     },
     {
       "action": "shell",
@@ -107,7 +125,9 @@
       ],
       "resources": [],
       "home": "/Users/me",
-      "plain": "Always Allow docker compose --projec…"
+      "plain": "Always Allow docker compose --projec…",
+      "help": "Don’t ask again before running docker compose --project-directory infra up commands in this project",
+      "spoken": "Always allow docker compose --project-directory infra up commands"
     },
     {
       "action": "shell",
@@ -116,7 +136,9 @@
       ],
       "resources": [],
       "home": "/Users/me",
-      "plain": "Always Allow echo café-crème-brûlée-…"
+      "plain": "Always Allow echo café-crème-brûlée-…",
+      "help": "Don’t ask again before running echo café-crème-brûlée-au-chocolat commands in this project",
+      "spoken": "Always allow echo café-crème-brûlée-au-chocolat commands"
     },
     {
       "action": "external_directory",
@@ -127,7 +149,9 @@
         "/Users/me/notes/a.md"
       ],
       "home": "/Users/me",
-      "plain": "Always Allow ~/notes"
+      "plain": "Always Allow ~/notes",
+      "help": "Don’t ask again before working in ~/notes",
+      "spoken": "Always allow working in Home, notes"
     },
     {
       "action": "external_directory",
@@ -136,7 +160,9 @@
       ],
       "resources": [],
       "home": "/Users/me",
-      "plain": "Always Allow …/website-2026"
+      "plain": "Always Allow …/website-2026",
+      "help": "Don’t ask again before working in ~/Developer/clients/acme/website-2026",
+      "spoken": "Always allow working in Home, Developer, clients, acme, website-2026"
     },
     {
       "action": "external_directory",
@@ -144,7 +170,9 @@
         "/home/me/notes/*"
       ],
       "resources": [],
-      "plain": "Always Allow /home/me/notes"
+      "plain": "Always Allow /home/me/notes",
+      "help": "Don’t ask again before working in /home/me/notes",
+      "spoken": "Always allow working in home, me, notes"
     },
     {
       "action": "external_directory",
@@ -154,7 +182,9 @@
       ],
       "resources": [],
       "home": "/Users/me",
-      "plain": "Always Allow These Folders"
+      "plain": "Always Allow These Folders",
+      "help": "Don’t ask again before working in ~/notes, /opt/data",
+      "spoken": "Always allow working in Home, notes; opt, data"
     },
     {
       "action": "webfetch",
@@ -165,7 +195,9 @@
         "https://example.com/docs"
       ],
       "home": "/Users/me",
-      "plain": "Always Allow https://example.com"
+      "plain": "Always Allow https://example.com",
+      "help": "Don’t ask again for https://example.com in this project",
+      "spoken": "Always allow https://example.com"
     },
     {
       "action": "webfetch",
@@ -176,7 +208,9 @@
         "https://example.com/docs"
       ],
       "home": "/Users/me",
-      "plain": "Always Allow"
+      "plain": "Always Allow",
+      "help": "Don’t ask again for this kind of request in this project",
+      "spoken": "Always allow this kind of request in this project"
     }
   ]
 }

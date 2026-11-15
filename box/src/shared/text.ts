@@ -39,6 +39,18 @@ export function outsideShown(pattern: string, home: string | null): string {
   return rest === null ? path : rest ? `~/${rest}` : "~";
 }
 
+/** The same, as a screen reader says it (as the apps' `OutsideFolders.spoken`): its folders in
+ * order, "Home" for the home folder ("Home, notes"); "The whole disk" for "/", "Any folder" for "*". */
+export function outsideSpoken(pattern: string, home: string | null): string {
+  const shown = outsideShown(pattern, home);
+  if (shown === "Any folder") return shown;
+  if (shown === "/") return "The whole disk";
+  const parts = (path: string) => path.split("/").filter(Boolean);
+  if (shown === "~") return "Home";
+  if (shown.startsWith("~/")) return ["Home", ...parts(shown.slice(2))].join(", ");
+  return parts(shown).join(", ");
+}
+
 /** `text` at most `count` UTF-16 units, ending in "…" when it's cut. */
 export const cut = (text: string, count: number) => text.length <= count ? text : text.slice(0, count - 1) + "…";
 /** `text` as one word for sh, in single quotes. */

@@ -210,8 +210,12 @@ public struct VaultAsk: Codable, Equatable, Identifiable, Sendable {
     public var machine: String?
     /// From a bot's seat in this group chat, where it shows: you answer it this once, never for good.
     public var group: String?
+    /// Whether Always would give it for good, as the box decided when it asked: false where it
+    /// can only be once (a seat, a conversation in a home folder). nil from a box before #668 8a,
+    /// taken as may: remove that once the update gate holds those boxes back (`always == true`).
+    public var always: Bool?
 
-    public init(id: String, kind: Kind, at: Double = 0, session: String? = nil, sessionName: String? = nil, bot: String? = nil, botName: String? = nil, item: String? = nil, itemName: String? = nil, need: String? = nil, why: String? = nil, site: String? = nil, machine: String? = nil, group: String? = nil) {
+    public init(id: String, kind: Kind, at: Double = 0, session: String? = nil, sessionName: String? = nil, bot: String? = nil, botName: String? = nil, item: String? = nil, itemName: String? = nil, need: String? = nil, why: String? = nil, site: String? = nil, machine: String? = nil, group: String? = nil, always: Bool? = nil) {
         self.id = id
         self.kind = kind
         self.at = at
@@ -226,10 +230,12 @@ public struct VaultAsk: Codable, Equatable, Identifiable, Sendable {
         self.site = site
         self.machine = machine
         self.group = group
+        self.always = always
     }
 
-    /// Whether you may answer it for good (Always Allow, From Now On).
-    public var mayAllowAlways: Bool { group == nil }
+    /// Whether you may answer it for good (Always Allow, From Now On): never from a seat, nor where
+    /// the box says Always would only be once.
+    public var mayAllowAlways: Bool { group == nil && always != false }
 
     /// Who's asking, by name.
     public var asker: String { botName ?? sessionName ?? "An agent" }

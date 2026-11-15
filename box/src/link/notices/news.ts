@@ -3,7 +3,7 @@
 
 import os from "node:os";
 import path from "node:path";
-import { outsideShown } from "../../shared/text";
+import { outsideShown, outsideSpoken } from "../../shared/text";
 import { boxNoteOf, wakeMarkOf } from "../../shared/queues";
 import { filedUnder, readProjects } from "../areas/projects";
 import { engineGet } from "../engine/client";
@@ -119,8 +119,10 @@ export function alwaysTitle(request: { action?: string; resources?: unknown; sav
 }
 
 // The same, as a card's button draws it (KuvoClient's `AlwaysWords`): its words, then what it names
-// (`named`, shown as code: a command's kind, a folder), null where it names nothing.
-export function alwaysWords(request: { action?: string; resources?: unknown; save?: unknown }, home: string | null): { title: string; named: string | null } {
+// (`named`, shown as code: a command's kind, a folder), null where it names nothing; what it does,
+// whole (`help`, its hover text), and the button as a screen reader says it (`spoken`). Always lasts
+// for the project (the engine's), or the conversation (`forConversation`: a coding agent's).
+export function alwaysWords(request: { action?: string; resources?: unknown; save?: unknown }, home: string | null, forConversation = false): { title: string; named: string | null; help: string; spoken: string } {
   const strings = (value: unknown) => (Array.isArray(value) ? value : []).filter((each): each is string => typeof each === "string");
   const asked = strings(request.resources);
   const saved = Array.isArray(request.save) ? strings(request.save) : asked;
@@ -132,19 +134,36 @@ export function alwaysWords(request: { action?: string; resources?: unknown; sav
   // Cut by what people see as characters, as Swift counts them.
   const characters = (text: string) => [...new Intl.Segmenter().segment(text)].map(each => each.segment);
   const short = (text: string) => characters(text).length > ALWAYS_LONGEST ? characters(text).slice(0, ALWAYS_LONGEST - 1).join("") + "…" : text;
-  const only = (title: string) => ({ title, named: null });
+  const here = forConversation ? "in this conversation" : "in this project";
   switch (request.action) {
-    case "edit": case "patch": case "write": return only("Always Allow Edits");
-    case "shell": case "bash":
-      if (!patterns.length || patterns.length === 1 && patterns[0] === "*") return only("Always Allow Commands");
-      return patterns.length === 1 ? { title: "Always Allow", named: short(kind(patterns[0])) } : only("Always Allow These Commands");
-    case "external_directory": {
-      if (patterns.length !== 1) return only("Always Allow These Folders");
-      const shown = outsideShown(patterns[0], home);
-      return { title: "Always Allow", named: short(characters(shown).length > ALWAYS_LONGEST ? `…/${path.basename(shown)}` : shown) };
+    case "edit": case "patch": case "write":
+      return { title: "Always Allow Edits", named: null, help: `Don’t ask again before changing files ${here}`, spoken: `Always allow edits ${here}` };
+    case "shell": case "bash": {
+      if (!patterns.length || patterns.length === 1 && patterns[0] === "*") {
+        return { title: "Always Allow Commands", named: null, help: `Don’t ask again before running commands ${here}`, spoken: `Always allow commands ${here}` };
+      }
+      const named = patterns.map(kind);
+      if (named.length !== 1) {
+        return { title: "Always Allow These Commands", named: null, help: `Don’t ask again ${here} before running: ${named.join(", ")}`, spoken: `Always allow these commands: ${named.join(", ")}` };
+      }
+      const whole = patterns[0]!.endsWith(" *") ? `${named[0]} commands` : named[0]!;
+      return { title: "Always Allow", named: short(named[0]!), help: `Don’t ask again before running ${whole} ${here}`, spoken: `Always allow ${whole}` };
     }
-    default:
-      return patterns.length === 1 && patterns[0] !== "*" ? { title: "Always Allow", named: short(kind(patterns[0])) } : only("Always Allow");
+    case "external_directory": {
+      const shown = patterns.map(each => outsideShown(each, home));
+      if (shown.length !== 1) {
+        return { title: "Always Allow These Folders", named: null, help: `Don’t ask again before working in ${shown.join(", ")}`, spoken: `Always allow working in ${patterns.map(each => outsideSpoken(each, home)).join("; ")}` };
+      }
+      const only = shown[0]!;
+      return { title: "Always Allow", named: short(characters(only).length > ALWAYS_LONGEST ? `…/${path.basename(only)}` : only), help: `Don’t ask again before working in ${only}`, spoken: `Always allow working in ${outsideSpoken(patterns[0]!, home)}` };
+    }
+    default: {
+      if (patterns.length !== 1 || patterns[0] === "*") {
+        return { title: "Always Allow", named: null, help: `Don’t ask again for this kind of request ${here}`, spoken: `Always allow this kind of request ${here}` };
+      }
+      const only = kind(patterns[0]!);
+      return { title: "Always Allow", named: short(only), help: `Don’t ask again for ${only} ${here}`, spoken: `Always allow ${only}` };
+    }
   }
 }
 const ALWAYS_LONGEST = 24;

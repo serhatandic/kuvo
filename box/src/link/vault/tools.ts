@@ -113,6 +113,7 @@ async function askForItem(caller: Caller, args: Record<string, unknown>, signal?
     need,
     why,
     ...(caller.group ? { group: caller.group } : {}),
+    always: alwaysFor(caller) !== null,
     ...(site ? { site } : {}),
     ...asker,
     ...(IS_MAC ? {} : { machine: os.hostname() }),

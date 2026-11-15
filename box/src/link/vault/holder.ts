@@ -26,9 +26,10 @@ export const holdsVault = () => holding;
 /** Whether a route is one only the holding process answers: the vault's, and the sandbox's asks
  * and its agents' tool (fence/outside.ts), whose asks wait in it, what it stopped (which the
  * engine's plugin tells it), and Also Allowed, which an ask's Always adds to there (one process
- * changes it); and a change to a settings page (`kuvo/settings/<section>…`), so each is checked
- * against the page in turn in one process, whichever process it's sent to. */
-export const heldHere = (route: string) => /^kuvo\/(vault|sandbox\/(asks|tools|allowed|stopped)|settings\/[^/?]+(\/[^/?]+\/[^/?]+)?(\?|$))(\/|\?|$)/.test(route);
+ * changes it); a conversation's asks (`kuvo/sessions/<id>/asks…`), which list and answer those
+ * asks with the engine's; and a change to a settings page (`kuvo/settings/<section>…`), so each is
+ * checked against the page in turn in one process, whichever process it's sent to. */
+export const heldHere = (route: string) => /^kuvo\/(vault|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/?]+\/asks|settings\/[^/?]+(\/[^/?]+\/[^/?]+)?(\?|$))(\/|\?|$)/.test(route);
 
 /** A request as it goes over the socket, and its answer back. */
 interface Sent {

@@ -760,14 +760,89 @@ fn a_click_on_a_choice_answers_the_question(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_command_outside_the_sandbox_shows_as_its_card_and_is_answered_through_the_box(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let mut second = kuvo::stand_in::sandbox_ask();
+    second["id"] = json!("sq_again");
+    stand_in.set_asks("ses_limits", vec![kuvo::stand_in::sandbox_ask(), second]);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let (_, card) = open_asking(&workspace, "ses_limits", cx);
+
+    // In the composer's place, as the box words it: what was stopped, and its three answers.
+    assert!(bounds(cx, "ask-card").is_some());
+    assert!(bounds(cx, "composer-card").is_none(), "it holds the conversation up, as a permission does");
+    assert!(bounds(cx, "ask-stopped").is_some());
+    for each in ["ask-choice-once", "ask-choice-always", "ask-choice-reject"] {
+        assert!(bounds(cx, each).is_some(), "{each}");
+    }
+    assert!(card_has_keys(&card, cx));
+
+    // Return answers nothing here (it would run the command outside the sandbox); its number key
+    // picks Always, sent as the box offers it.
+    quiet(cx);
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(stand_in.seen_at("POST", "kuvo/sessions/ses_limits/asks/sq_redis").is_empty(), "Return answers nothing");
+    cx.simulate_keystrokes("2");
+    cx.run_until_parked();
+    let answered = stand_in.seen_at("POST", "kuvo/sessions/ses_limits/asks/sq_redis");
+    assert_eq!(answered.last().and_then(|seen| seen.body.clone()), Some(json!({ "answer": "always" })));
+
+    // The next: Escape says no, as the Mac's card did.
+    assert_eq!(card.read_with(cx, |card, _| card.place().shown().map(str::to_owned)), Some("sq_again".to_owned()));
+    quiet(cx);
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    let answered = stand_in.seen_at("POST", "kuvo/sessions/ses_limits/asks/sq_again");
+    assert_eq!(answered.last().and_then(|seen| seen.body.clone()), Some(json!({ "answer": "reject" })));
+    assert!(bounds(cx, "composer-card").is_some());
+}
+
+#[gpui::test]
+fn an_item_the_vault_is_asked_for_is_given_by_name_and_a_grant_is_left_to_a_device_that_checks_its_you(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_asks("ses_limits", vec![kuvo::stand_in::vault_ask()]);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let _ = open_asking(&workspace, "ses_limits", cx);
+
+    // Give for each item; Always Give, a grant, isn't offered here, and the card says where it is.
+    assert!(bounds(cx, "ask-choice-once-itm_redis").is_some());
+    assert!(bounds(cx, "ask-choice-once-itm_cloud").is_some());
+    assert!(bounds(cx, "ask-choice-always-itm_redis").is_none());
+    assert!(bounds(cx, "ask-grants-elsewhere").is_some());
+
+    // The second item, by its number among those shown: given with its item.
+    quiet(cx);
+    cx.simulate_keystrokes("2");
+    cx.run_until_parked();
+    let answered = stand_in.seen_at("POST", "kuvo/sessions/ses_limits/asks/q_redis");
+    assert_eq!(answered.last().and_then(|seen| seen.body.clone()), Some(json!({ "answer": "once", "item": "itm_cloud" })));
+}
+
+#[gpui::test]
+fn a_vault_this_app_cant_answer_says_where_to_and_leaves_the_composer(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let mut vault = kuvo::stand_in::vault_ask();
+    vault["choices"] = json!([]);
+    vault["note"] = json!("Answer it on your iPhone: only a device this computer’s vault knows can answer it.");
+    stand_in.set_asks("ses_limits", vec![vault]);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let (_, card) = open_asking(&workspace, "ses_limits", cx);
+    assert!(bounds(cx, "ask-note").is_some());
+    assert!(bounds(cx, "ask-choice-reject").is_none());
+    assert!(bounds(cx, "composer-card").is_some(), "the composer stays, under it");
+    assert!(!card_has_keys(&card, cx));
+}
+
+#[gpui::test]
 fn an_ask_this_app_cant_answer_leaves_the_composer_usable_under_it(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.set_asks("ses_limits", vec![json!({ "id": "sq_1", "kind": "other", "session": "ses_limits", "title": "Allow running this outside the sandbox?", "message": "brew install redis", "dismiss": false })]);
+    stand_in.set_asks("ses_limits", vec![json!({ "id": "frm_gh", "kind": "other", "session": "ses_limits", "title": "GitHub", "message": "Which repository?", "dismiss": false })]);
     let (workspace, cx) = open(cx, stand_in.clone());
     let (_, card) = open_asking(&workspace, "ses_limits", cx);
     assert!(bounds(cx, "ask-card").is_some());
     assert!(bounds(cx, "composer-card").is_some(), "the composer stays, under it");
-    assert!(bounds(cx, "ask-dismiss").is_none(), "the box's own ask isn't put away from here");
+    assert!(bounds(cx, "ask-dismiss").is_none(), "one that can't be put away from here");
     assert!(!card_has_keys(&card, cx));
 }
 

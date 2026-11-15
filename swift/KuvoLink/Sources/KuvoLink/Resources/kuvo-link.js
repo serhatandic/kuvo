@@ -40,6 +40,19 @@ function outsideShown(pattern, home) {
   const rest = path === "~" ? "" : path.startsWith("~/") ? path.slice(2) : own && path === own ? "" : own && path.startsWith(own + "/") ? path.slice(own.length + 1) : null;
   return rest === null ? path : rest ? `~/${rest}` : "~";
 }
+function outsideSpoken(pattern, home) {
+  const shown = outsideShown(pattern, home);
+  if (shown === "Any folder")
+    return shown;
+  if (shown === "/")
+    return "The whole disk";
+  const parts = (path) => path.split("/").filter(Boolean);
+  if (shown === "~")
+    return "Home";
+  if (shown.startsWith("~/"))
+    return ["Home", ...parts(shown.slice(2))].join(", ");
+  return parts(shown).join(", ");
+}
 var cut = (text, count) => text.length <= count ? text : text.slice(0, count - 1) + "…";
 var quote = (text) => `'${String(text).replace(/'/g, `'\\''`)}'`;
 
@@ -2672,7 +2685,17 @@ var QUEUE_ITEM = object({
 });
 var QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), items: nullable(list(QUEUE_ITEM)) });
 var QUEUE_READ = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "items?": nullable(list(QUEUE_ITEM)) });
-var ASK_CHOICE = object({ answer: words("once", "always", "reject", "instead"), title: string, named: nullable(string), placeholder: nullable(string) });
+var ASK_CHOICE = object({
+  answer: words("once", "always", "reject", "instead"),
+  title: string,
+  named: nullable(string),
+  placeholder: nullable(string),
+  help: nullable(string),
+  spoken: nullable(string),
+  "after?": string,
+  "item?": string,
+  "confirm?": bool
+});
 var PERMISSION_ASK = object({
   id: string,
   kind: literal("permission"),
@@ -2694,8 +2717,32 @@ var ASKED_QUESTION = object({
   required: bool
 });
 var QUESTION_ASK = object({ id: string, kind: literal("question"), session: string, title: string, questions: list(ASKED_QUESTION) });
+var SANDBOX_ASK_SHOWN = object({
+  id: string,
+  kind: literal("sandbox"),
+  session: string,
+  title: string,
+  message: string,
+  command: string,
+  stopped: list(object({ label: string, detail: string })),
+  error: nullable(string),
+  asker: string,
+  why: string,
+  choices: list(ASK_CHOICE)
+});
+var VAULT_ASK_SHOWN = object({
+  id: string,
+  kind: literal("vault"),
+  session: string,
+  need: words("use", "item"),
+  title: string,
+  message: nullable(string),
+  site: nullable(string),
+  note: nullable(string),
+  choices: list(ASK_CHOICE)
+});
 var OTHER_ASK = object({ id: string, kind: literal("other"), session: string, title: string, message: string, dismiss: bool });
-var SESSION_ASK = oneOf(PERMISSION_ASK, QUESTION_ASK, OTHER_ASK);
+var SESSION_ASK = oneOf(PERMISSION_ASK, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK);
 var SESSION_ASKS = object({ asks: list(SESSION_ASK) });
 var MENTION = object({ text: string, title: string, detail: nullable(string), kind: words("file", "folder", "bot", "session"), session: nullable(string) });
 var MENTIONS = object({ mentions: list(MENTION) });
@@ -2794,7 +2841,7 @@ var SESSION_ROUTES = [
   { route: "GET kuvo/sessions/:id/queue/events", answers: { 200: QUEUE_SHOWN } },
   { route: "GET kuvo/sessions/:id/asks", answers: { 200: SESSION_ASKS, 404: REFUSED2, 503: REFUSED2 } },
   { route: "GET kuvo/sessions/:id/asks/events", answers: { 200: SESSION_ASKS, 404: REFUSED2, 503: REFUSED2 } },
-  { route: "POST kuvo/sessions/:id/asks/:ask", answers: { 200: NOTHING, 400: REFUSED2, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+  { route: "POST kuvo/sessions/:id/asks/:ask", answers: { 200: NOTHING, 400: REFUSED2, 403: REFUSED2, 404: REFUSED2, 423: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
   { route: "GET kuvo/sessions/:id/mentions", answers: { 200: MENTIONS, 400: REFUSED2, 404: REFUSED2, 503: REFUSED2 } },
   { route: "POST kuvo/sessions/:id/stop", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
   { route: "POST kuvo/sessions/:id/queue/hold", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
@@ -4542,6 +4589,7 @@ var FEATURES = [
   "sessions.actions",
   "sessions.agents",
   "sessions.asks",
+  "sessions.asks.box",
   "sessions.chat",
   "sessions.glance",
   "sessions.list",
@@ -11864,7 +11912,8 @@ var VAULT_ASK = object({
   "why?": string,
   "site?": string,
   "machine?": string,
-  "group?": string
+  "group?": string,
+  "always?": bool
 });
 var VAULT_ASKS = object({ asks: list(VAULT_ASK) });
 var VAULT_KEY = object({ key: string });
@@ -34638,7 +34687,7 @@ function alwaysTitle(request, home) {
   const { title, named } = alwaysWords(request, home);
   return named === null ? title : `${title} ${named}`;
 }
-function alwaysWords(request, home) {
+function alwaysWords(request, home, forConversation = false) {
   const strings = (value) => (Array.isArray(value) ? value : []).filter((each) => typeof each === "string");
   const asked = strings(request.resources);
   const saved = Array.isArray(request.save) ? strings(request.save) : asked;
@@ -34647,25 +34696,39 @@ function alwaysWords(request, home) {
   const kind = (pattern) => pattern.endsWith(" *") || pattern.endsWith("/*") ? pattern.slice(0, -2) : pattern;
   const characters = (text) => [...new Intl.Segmenter().segment(text)].map((each) => each.segment);
   const short = (text) => characters(text).length > ALWAYS_LONGEST ? characters(text).slice(0, ALWAYS_LONGEST - 1).join("") + "…" : text;
-  const only = (title) => ({ title, named: null });
+  const here = forConversation ? "in this conversation" : "in this project";
   switch (request.action) {
     case "edit":
     case "patch":
     case "write":
-      return only("Always Allow Edits");
+      return { title: "Always Allow Edits", named: null, help: `Don’t ask again before changing files ${here}`, spoken: `Always allow edits ${here}` };
     case "shell":
-    case "bash":
-      if (!patterns.length || patterns.length === 1 && patterns[0] === "*")
-        return only("Always Allow Commands");
-      return patterns.length === 1 ? { title: "Always Allow", named: short(kind(patterns[0])) } : only("Always Allow These Commands");
-    case "external_directory": {
-      if (patterns.length !== 1)
-        return only("Always Allow These Folders");
-      const shown = outsideShown(patterns[0], home);
-      return { title: "Always Allow", named: short(characters(shown).length > ALWAYS_LONGEST ? `…/${path117.basename(shown)}` : shown) };
+    case "bash": {
+      if (!patterns.length || patterns.length === 1 && patterns[0] === "*") {
+        return { title: "Always Allow Commands", named: null, help: `Don’t ask again before running commands ${here}`, spoken: `Always allow commands ${here}` };
+      }
+      const named = patterns.map(kind);
+      if (named.length !== 1) {
+        return { title: "Always Allow These Commands", named: null, help: `Don’t ask again ${here} before running: ${named.join(", ")}`, spoken: `Always allow these commands: ${named.join(", ")}` };
+      }
+      const whole = patterns[0].endsWith(" *") ? `${named[0]} commands` : named[0];
+      return { title: "Always Allow", named: short(named[0]), help: `Don’t ask again before running ${whole} ${here}`, spoken: `Always allow ${whole}` };
     }
-    default:
-      return patterns.length === 1 && patterns[0] !== "*" ? { title: "Always Allow", named: short(kind(patterns[0])) } : only("Always Allow");
+    case "external_directory": {
+      const shown = patterns.map((each) => outsideShown(each, home));
+      if (shown.length !== 1) {
+        return { title: "Always Allow These Folders", named: null, help: `Don’t ask again before working in ${shown.join(", ")}`, spoken: `Always allow working in ${patterns.map((each) => outsideSpoken(each, home)).join("; ")}` };
+      }
+      const only = shown[0];
+      return { title: "Always Allow", named: short(characters(only).length > ALWAYS_LONGEST ? `…/${path117.basename(only)}` : only), help: `Don’t ask again before working in ${only}`, spoken: `Always allow working in ${outsideSpoken(patterns[0], home)}` };
+    }
+    default: {
+      if (patterns.length !== 1 || patterns[0] === "*") {
+        return { title: "Always Allow", named: null, help: `Don’t ask again for this kind of request ${here}`, spoken: `Always allow this kind of request ${here}` };
+      }
+      const only = kind(patterns[0]);
+      return { title: "Always Allow", named: short(only), help: `Don’t ask again for ${only} ${here}`, spoken: `Always allow ${only}` };
+    }
   }
 }
 var ALWAYS_LONGEST = 24;
@@ -36266,6 +36329,7 @@ var book = askBook("sq_", { answer: "no", unanswered: true });
 var listSandboxAsks = book.list;
 var onSandboxAsksChanged = book.onChanged;
 var answerSandboxAsk = book.answer;
+var askSandbox = book.ask;
 var SANDBOX_TOOLS = [
   {
     name: "sandbox_ask",
@@ -36586,7 +36650,7 @@ function vaultAskNotice(asked) {
   return {
     title,
     subtitle: asked.machine,
-    body: asked.why || (asked.kind === "use" ? asked.group ? "Allow it once, or say no." : "Allow it once, always, or say no." : "Give it an item from your vault, or say no."),
+    body: asked.why || (asked.kind === "use" ? asked.always === true && !asked.group ? "Allow it once, always, or say no." : "Allow it once, or say no." : "Give it an item from your vault, or say no."),
     category: "ask",
     thread: asked.group ?? asked.session ?? asked.id,
     data: { ...asked.group ? { group: asked.group } : asked.session ? { session: asked.session } : {}, vaultAsk: asked.id }
@@ -45074,7 +45138,7 @@ import fs145 from "node:fs";
 import path153 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d1c82a786323";
+var BRIDGE_VERSION = "50d1e182d46a";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -50627,1176 +50691,24 @@ async function* added({ json }, target, session, given, written, words) {
 }
 
 // box/src/link/areas/session-asks.ts
-import fs157 from "node:fs";
-
-// box/src/link/areas/glance.ts
-import fs156 from "node:fs";
-
-// box/src/link/work/accounts.ts
-var ASK_WAIT2 = 5000;
-async function accountsOn(target, signal) {
-  const wait = AbortSignal.timeout(ASK_WAIT2);
-  const listed = await call(target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, wait]) : wait).catch(() => null);
-  const accounts = new Map;
-  for (const each of Array.isArray(listed) ? listed : []) {
-    if (!isObject(each) || typeof each.id !== "string" || typeof each.name !== "string" || !each.name.trim())
-      continue;
-    const name = each.name.trim();
-    const label = isObject(each.metadata) && each.metadata.source === "agent" && typeof each.metadata.accountLabel === "string" ? each.metadata.accountLabel.trim() : "";
-    accounts.set(each.id, label ? { name, label } : { name });
-  }
-  return accounts;
-}
-async function workAccounts(sessions, signal) {
-  const asked = new Map;
-  const accounts = new Map;
-  await Promise.all(sessions.map(async ({ id, target, provider }) => {
-    if (!provider || provider === "auto")
-      return;
-    if (!asked.has(target.port))
-      asked.set(target.port, accountsOn(target, signal));
-    const account = (await asked.get(target.port)).get(provider);
-    if (account)
-      accounts.set(id, account);
-  }));
-  return accounts;
-}
-
-// box/src/link/areas/glance.ts
-var GLANCE_ROUTE = /^kuvo\/sessions\/glance(\/events)?$/;
-var GLANCE_MOST = 200;
-var repositories = new Map;
-async function repositoryOf4(root, now) {
-  const kept = repositories.get(root);
-  if (kept && now - kept.at < 5 * 60000)
-    return kept.repository;
-  const remote = await originOf(root);
-  const page = remote ? webPage(remote) : null;
-  const parts = page?.pathname.replace(/^\/|\/$/g, "").split("/") ?? [];
-  const repository = page && page.hostname.includes("github") && parts.length === 2 ? { host: page.hostname, owner: parts[0], repo: parts[1] } : null;
-  repositories.set(root, { at: now, repository });
-  return repository;
-}
-
-class Unreached extends Error {
-}
-async function sessionHere(targets, id, signal) {
-  let unreached = false;
-  for (const target of targets) {
-    const wait = AbortSignal.timeout(5000);
-    try {
-      const found = await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, signal ? AbortSignal.any([signal, wait]) : wait);
-      if (isObject(found) && found.id === id)
-        return { target, data: found };
-    } catch (error) {
-      if (error.status !== 404)
-        unreached = true;
-    }
-  }
-  if (unreached)
-    throw new Unreached("The engine isn't answering.");
-  return null;
-}
-var counts = new Map;
-async function linesIn(directory, base) {
-  const kept = counts.get(directory);
-  if (kept && Date.now() - kept.at < 30000)
-    return kept.counted;
-  const counted = await countIn(directory, "branch", base).catch(() => null);
-  counts.set(directory, { at: Date.now(), counted });
-  if (counts.size > 500)
-    counts.delete(counts.keys().next().value);
-  return counted;
-}
-function madeAt(root) {
-  try {
-    const stat = fs156.statSync(root);
-    return stat.birthtimeMs > 0 ? stat.birthtimeMs : undefined;
-  } catch {
-    return;
-  }
-}
-async function glances(ids, targets, signal, now = Date.now) {
-  const found = (await Promise.all(ids.map((id) => sessionHere(targets, id, signal)))).filter((each) => each !== null);
-  const links = readPullLinks();
-  const wanted = new Map;
-  const trees = new Map;
-  for (const { data } of found) {
-    const directory = data.location?.directory ?? data.directory;
-    const tree = directory ? worktreeOf(directory) : undefined;
-    if (tree)
-      trees.set(data.id, tree);
-    const made = links[data.id] ? pullAt(links[data.id].url) : null;
-    if (made)
-      wanted.set(data.id, { ask: { host: made.host, owner: made.owner, repo: made.repo, number: made.number }, url: made.url, number: made.number });
-    else if (tree) {
-      const repository = await repositoryOf4(tree.root, now());
-      const since = madeAt(tree.root);
-      if (repository)
-        wanted.set(data.id, { ask: { ...repository, branch: tree.branch, ...since ? { since: since - 60000 } : {} } });
-    }
-  }
-  const [pulls, accounts, asked] = await Promise.all([
-    readPulls([...wanted.values()].map((each) => each.ask), now),
-    workAccounts(found.map(({ target, data }) => ({ id: data.id, target, provider: data.model?.providerID })), signal),
-    askedSince(found.map(({ data }) => data.id), targets, signal)
-  ]);
-  const answer = {};
-  for (const { data } of found) {
-    const glance = {};
-    const tree = trees.get(data.id);
-    const want = wanted.get(data.id);
-    const read = want ? pulls.get(keyOf4(want.ask)) : undefined;
-    let pull;
-    if (read)
-      pull = { number: read.number, url: read.url, state: read.state, additions: read.additions, deletions: read.deletions, ...read.checks ? { checks: read.checks } : {} };
-    else if (want?.number && want.url)
-      pull = { number: want.number, url: want.url };
-    const branch = tree?.branch ?? (read?.branch || undefined);
-    if (branch)
-      glance.branch = branch;
-    if (pull)
-      glance.pull = pull;
-    else if (tree) {
-      const directory = data.location?.directory ?? data.directory ?? tree.root;
-      const counted = await linesIn(directory, tree.base);
-      if (counted?.repository)
-        Object.assign(glance, { additions: counted.additions, deletions: counted.deletions });
-    }
-    const account = accounts.get(data.id);
-    if (account)
-      glance.account = account;
-    const since = asked.get(data.id);
-    if (since !== undefined)
-      glance.asked = since;
-    answer[data.id] = glance;
-  }
-  return answer;
-}
-function sessionsAsked(requestPath) {
-  const given = new URLSearchParams(requestPath.split("?")[1] ?? "").get("sessions") ?? "";
-  const ids = [...new Set(given.split(",").map((each) => each.trim()).filter((each) => /^ses[A-Za-z0-9_-]+$/.test(each)))];
-  return ids.length && ids.length <= GLANCE_MOST ? ids : null;
-}
-var changes = () => askChanges + pullChanges;
-function changeOrPause(ms, seen, signal) {
-  return new Promise((resolve) => {
-    let settle;
-    const done = () => {
-      clearTimeout(timer);
-      clearTimeout(settle);
-      askFollowers2.delete(changed);
-      pullFollowers.delete(changed);
-      signal?.removeEventListener("abort", done);
-      resolve();
-    };
-    const changed = () => {
-      if (!settle)
-        settle = setTimeout(done, 1500);
-    };
-    const timer = setTimeout(done, ms);
-    askFollowers2.add(changed);
-    pullFollowers.add(changed);
-    signal?.addEventListener("abort", done, { once: true });
-    if (signal?.aborted)
-      done();
-    else if (changes() !== seen)
-      changed();
-  });
-}
-async function* glanceRoute(context, match) {
-  const { request, readEngine, bridge, signal, json } = context;
-  if (request.method.toUpperCase() !== "GET")
-    return yield* json(405, {});
-  const ids = sessionsAsked(request.path);
-  if (!ids)
-    return yield* json(400, { message: `Name the sessions: sessions=<id>,<id>… (${GLANCE_MOST} at most).` });
-  const targets = targetsOf({ readEngine, bridge });
-  if (!targets.length)
-    return yield* json(503, { message: "The engine isn't running." });
-  if (!match[1]) {
-    try {
-      return yield* json(200, { sessions: await glances(ids, targets, signal ?? undefined) });
-    } catch (error) {
-      if (error instanceof Unreached)
-        return yield* json(503, { message: error.message });
-      throw error;
-    }
-  }
-  yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-  let last = "";
-  while (!signal?.aborted) {
-    const seen = changes();
-    let line = null;
-    try {
-      line = JSON.stringify({ sessions: await glances(ids, targetsOf({ readEngine, bridge }), signal ?? undefined) });
-    } catch (error) {
-      if (!(error instanceof Unreached))
-        throw error;
-    }
-    if (signal?.aborted)
-      return;
-    if (line !== null && line !== last) {
-      yield { body: Buffer.from(line + `
-`) };
-      last = line;
-    }
-    await changeOrPause(FRESH, seen, signal ?? undefined);
-  }
-}
-
-// box/src/link/areas/session-asks.ts
-var SESSION_ASKS_ROUTE = /^kuvo\/sessions\/([^/]+)\/asks(?:\/([^/]+))?$/;
-var text5 = (value) => typeof value === "string" ? value : null;
-var strings = (value) => Array.isArray(value) ? value.filter((each) => typeof each === "string") : [];
-function relativeTo(folder, file) {
-  if (!folder)
-    return file;
-  const base = folder.endsWith("/") ? folder : folder + "/";
-  return file.startsWith(base) ? file.slice(base.length) : file;
-}
-function permissionTitle(action, resources, folder, command) {
-  const subject = resources.length ? relativeTo(folder, resources[0]) + (resources.length > 1 ? ` and ${resources.length - 1} more` : "") : "this";
-  switch (action) {
-    case "edit":
-    case "patch":
-      return `Allow editing ${subject}?`;
-    case "write":
-      return `Allow writing ${subject}?`;
-    case "read":
-      return `Allow reading ${subject}?`;
-    case "shell":
-    case "bash":
-      return resources.length > 1 && command === null ? "Allow running these commands?" : "Allow running this command?";
-    case "external_directory":
-      return "Allow working outside the project?";
-    case "subagent":
-      return `Allow starting the ${subject} agent?`;
-    case "webfetch":
-      return `Allow fetching ${subject}?`;
-    default:
-      return `Allow ${action.replaceAll("_", " ")}?`;
-  }
-}
-function choicesOf(request, home) {
-  const always = alwaysWords(request, home);
-  return [
-    { answer: "once", title: "Allow Once", named: null, placeholder: null },
-    { answer: "always", title: always.title, named: always.named, placeholder: null },
-    { answer: "reject", title: "Don’t Allow", named: null, placeholder: null },
-    { answer: "instead", title: "Tell It What to Do Instead…", named: null, placeholder: "Tell it what to do instead…" }
-  ];
-}
-var STATUSES3 = new Set(["added", "deleted", "modified"]);
-function permissionAsk(request, asker, folder, command, home) {
-  const action = String(request.action ?? "");
-  const resources = strings(request.resources);
-  const files = (Array.isArray(request.metadata?.files) ? request.metadata.files : []).flatMap((file) => isObject(file) && typeof file.file === "string" ? [{ file: file.file, patch: String(file.patch ?? ""), additions: Number(file.additions) || 0, deletions: Number(file.deletions) || 0, status: STATUSES3.has(file.status) ? file.status : null }] : []);
-  return {
-    id: request.id,
-    kind: "permission",
-    session: asker,
-    title: permissionTitle(action, resources, folder, command),
-    message: text5(request.message),
-    command,
-    files,
-    resources: resources.map((each) => action === "external_directory" ? outsideShown(each, home) : relativeTo(folder, each)),
-    choices: choicesOf({ action, resources, ...request.save !== undefined ? { save: request.save } : {} }, home)
-  };
-}
-var takesChoiceOrWords = (field) => field.type === "string" && field.format !== "password" || field.type === "multiselect";
-var shownFields = (fields) => fields.filter((field) => field.hidden !== true);
-function questionsOf(form) {
-  const fields = (Array.isArray(form.fields) ? form.fields : []).filter(isObject);
-  if (form.metadata?.kind !== "question" || !fields.length || !fields.every(takesChoiceOrWords))
-    return null;
-  const shown = shownFields(fields);
-  if (!shown.length || shown.some((field) => Array.isArray(field.when) && field.when.length) || shown.some((field) => typeof field.key !== "string"))
-    return null;
-  return shown.map((field) => {
-    const options = (Array.isArray(field.options) ? field.options : []).filter(isObject).map((option) => ({
-      value: String(option.value ?? option.label ?? ""),
-      label: String(option.label ?? option.value ?? ""),
-      description: text5(option.description)
-    }));
-    const multiple = field.type === "multiselect";
-    return {
-      key: field.key,
-      title: text5(field.title),
-      question: text5(field.description) ?? text5(field.title) ?? text5(form.title) ?? "",
-      options,
-      multiple,
-      custom: field.custom === true || !multiple && !options.length,
-      required: field.required === true
-    };
-  });
-}
-async function asksOf(target, session, folder, signal) {
-  const wait = () => signal ? AbortSignal.any([signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000);
-  const reviewed = new Set(listAskReviews().filter((review) => review.state !== "yours").map((review) => review.id));
-  const noted = askTimes();
-  const home = homeFolder();
-  const found = [];
-  const timeOf = (id, given) => noted.get(id) ?? (typeof given === "number" ? given : 0);
-  const askers = await askersOf(target, session, undefined, { wait }).catch(() => {
-    throw new Unreached("The engine isn't answering.");
-  });
-  for (const asker of askers) {
-    const at = `/api/session/${encodeURIComponent(asker)}`;
-    let permissions, forms;
-    try {
-      [permissions, forms] = await Promise.all([call(target, "GET", `${at}/permission`, undefined, wait()), call(target, "GET", `${at}/form`, undefined, wait())]);
-    } catch (error) {
-      if (error.status === 404 && asker !== session)
-        continue;
-      throw new Unreached("The engine isn't answering.");
-    }
-    for (const request of Array.isArray(permissions) ? permissions : []) {
-      if (!isObject(request) || typeof request.id !== "string" || reviewed.has(request.id))
-        continue;
-      const action = String(request.action ?? "");
-      const source = isObject(request.source) ? request.source : null;
-      const seen = (action === "shell" || action === "bash") && typeof source?.id === "string" ? await callOf(target, { asker, call: source.id, ...typeof source.messageID === "string" ? { message: source.messageID } : {} }, signal).catch(() => null) : null;
-      const command = typeof seen?.input.command === "string" ? seen.input.command : null;
-      found.push({ at: timeOf(request.id, request.time?.created), ask: { shown: permissionAsk(request, asker, folder, command, home), target, asker } });
-    }
-    for (const form of Array.isArray(forms) ? forms : []) {
-      if (!isObject(form) || typeof form.id !== "string")
-        continue;
-      const fields = (Array.isArray(form.fields) ? form.fields : []).filter(isObject);
-      const questions = questionsOf(form);
-      const title = text5(form.title) || "Question";
-      const shown = questions ? { id: form.id, kind: "question", session: asker, title, questions } : { id: form.id, kind: "other", session: asker, title, message: describeForm(form), dismiss: true };
-      found.push({ at: timeOf(form.id, form.time?.created), ask: { shown, target, asker, form: { fields } } });
-    }
-  }
-  const shared = folder ? await call(target, "GET", "/api/session/global/form", undefined, wait(), folder).catch(() => {
-    throw new Unreached("The engine isn't answering.");
-  }) : null;
-  const get = (route) => call(target, "GET", `/${route}`, undefined, wait()).then((data) => ({ data }));
-  for (const form of Array.isArray(shared) ? shared : []) {
-    const server = isObject(form) && isObject(form.metadata) ? text5(form.metadata.server) : null;
-    if (!isObject(form) || typeof form.id !== "string" || !server)
-      continue;
-    const owner = (await sessionsWaitingOnServer(server, folder, get))[0];
-    if (!owner || !askers.includes(owner))
-      continue;
-    const shown = { id: form.id, kind: "other", session, title: text5(form.title) || server, message: describeForm(form), dismiss: true };
-    found.push({ at: timeOf(form.id, form.time?.created), ask: { shown, target, asker: "global", folder } });
-  }
-  const asking = new Set(askers);
-  for (const asked of listSandboxAsks()) {
-    if (!asked.session || !asking.has(asked.session))
-      continue;
-    const why = asked.why.trim();
-    const shown = { id: asked.id, kind: "other", session: asked.session, title: "Allow running this outside the sandbox?", message: why ? `${asked.command}
-${why}` : asked.command, dismiss: false };
-    found.push({ at: asked.at, ask: { shown, target, asker: asked.session } });
-  }
-  for (const asked of listAsks()) {
-    if (!asked.session || !asking.has(asked.session))
-      continue;
-    const what = asked.itemName ?? asked.need ?? asked.site;
-    const title = asked.kind === "item" ? "Allow it something from the vault?" : "Allow it to use the vault?";
-    const message = [what, asked.why].filter((each) => typeof each === "string" && each.trim() !== "").join(`
-`) || "It asks for something from the vault.";
-    found.push({ at: asked.at, ask: { shown: { id: asked.id, kind: "other", session: asked.session, title, message, dismiss: false }, target, asker: asked.session } });
-  }
-  const elsewhere = (ask) => ask.shown.kind === "other" ? 1 : 0;
-  return found.sort((a, b) => elsewhere(a.ask) - elsewhere(b.ask) || a.at - b.at).map((each) => each.ask);
-}
-async function placeOf2(context, session) {
-  const targets = targetsOf({ readEngine: context.readEngine, bridge: context.bridge });
-  if (!targets.length)
-    throw new Unreached("The engine isn't running.");
-  const here = await sessionHere(targets, session, context.signal ?? undefined);
-  if (!here)
-    return null;
-  const data = here.data;
-  return { target: here.target, folder: data.location?.directory ?? data.directory ?? "" };
-}
-var NONE = { message: "There's no such conversation here." };
-var GONE2 = { message: "It isn't waiting any more." };
-function questionAnswer(fields, questions, given) {
-  if (!isObject(given))
-    return { refused: "Send the answers, by each question's key." };
-  const answer = {};
-  for (const field of fields)
-    if (typeof field.key === "string" && field.default !== undefined)
-      answer[field.key] = field.default;
-  for (const [key, value] of Object.entries(given)) {
-    const question = questions.find((each) => each.key === key);
-    if (!question)
-      return { refused: `It doesn't ask "${key}".` };
-    const picked = question.multiple ? typeof value === "string" ? [value] : value : value;
-    const each = question.multiple ? picked : [picked];
-    if (!Array.isArray(each) || !each.every((one) => typeof one === "string"))
-      return { refused: `Answer "${question.title ?? key}" with ${question.multiple ? "a list of words" : "words"}.` };
-    if (!question.custom && question.options.length && !each.every((one) => question.options.some((option) => option.value === one)))
-      return { refused: `Pick one of the choices for "${question.title ?? key}".` };
-    answer[key] = picked;
-  }
-  for (const question of questions) {
-    if (!question.required)
-      continue;
-    const value = answer[question.key];
-    const answered = Array.isArray(value) ? value.length > 0 : typeof value === "string" ? value.trim() !== "" : value !== undefined;
-    if (!answered)
-      return { refused: `Answer "${question.title ?? question.question}": it needs an answer.` };
-  }
-  return { answer };
-}
-async function* sessionAsksRoute(context, match) {
-  const { request, signal, json } = context;
-  const method = request.method.toUpperCase();
-  const session = decodeURIComponent(match[1]);
-  const ask = match[2] ? decodeURIComponent(match[2]) : null;
-  const events = ask === "events" && method === "GET";
-  if (ask && !events ? method !== "POST" : method !== "GET")
-    return yield* json(405, {});
-  let place;
-  try {
-    place = await placeOf2(context, session);
-  } catch (error) {
-    if (error instanceof Unreached)
-      return yield* json(503, { message: error.message });
-    throw error;
-  }
-  if (!place)
-    return yield* json(404, NONE);
-  const { target, folder } = place;
-  const read = async () => ({ asks: (await asksOf(target, session, folder, signal ?? undefined)).map((each) => each.shown) });
-  const readAgain = async () => {
-    const now = await placeOf2(context, session);
-    return now ? { asks: (await asksOf(now.target, session, now.folder, signal ?? undefined)).map((each) => each.shown) } : { asks: [] };
-  };
-  if (!ask) {
-    try {
-      return yield* json(200, await read());
-    } catch (error) {
-      if (error instanceof Unreached)
-        return yield* json(503, { message: error.message });
-      throw error;
-    }
-  }
-  if (events) {
-    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    const look = () => {
-      try {
-        return String(fs157.statSync(ASKS_FILE2).mtimeMs);
-      } catch {
-        return "";
-      }
-    };
-    return yield* followedLive(() => readAgain().catch((error) => {
-      if (error instanceof Unreached)
-        return;
-      throw error;
-    }), (told) => {
-      askFollowers2.add(told);
-      return () => {
-        askFollowers2.delete(told);
-      };
-    }, signal ?? undefined, { look });
-  }
-  let found;
-  try {
-    found = (await asksOf(target, session, folder, signal ?? undefined)).find((each) => each.shown.id === ask);
-  } catch (error) {
-    if (error instanceof Unreached)
-      return yield* json(503, { message: error.message });
-    throw error;
-  }
-  if (!found)
-    return yield* json(404, GONE2);
-  const given = parsed(request.body);
-  const at = `/api/session/${encodeURIComponent(found.asker)}`;
-  let sent;
-  if (found.shown.kind === "permission") {
-    const answer = isObject(given) ? given.answer : undefined;
-    if (answer === "once" || answer === "always" || answer === "reject")
-      sent = { method: "POST", route: `${at}/permission/${encodeURIComponent(found.shown.id)}/reply`, body: { decision: answer } };
-    else if (answer === "instead") {
-      const words = isObject(given) && typeof given.message === "string" ? given.message.trim() : "";
-      if (!words)
-        return yield* json(400, { message: "Say what it should do instead." });
-      sent = { method: "POST", route: `${at}/permission/${encodeURIComponent(found.shown.id)}/reply`, body: { decision: "reject", message: words } };
-    } else
-      return yield* json(400, { message: "Answer once, always, reject or instead." });
-  } else if (isObject(given) && given.dismiss === true && (found.shown.kind !== "other" || found.shown.dismiss)) {
-    sent = { method: "DELETE", route: `${at}/form/${encodeURIComponent(found.shown.id)}` };
-  } else if (found.shown.kind === "question") {
-    const checked = questionAnswer(found.form?.fields ?? [], found.shown.questions, isObject(given) ? given.answers : undefined);
-    if ("refused" in checked)
-      return yield* json(400, { message: checked.refused });
-    sent = { method: "POST", route: `${at}/form/${encodeURIComponent(found.shown.id)}/reply`, body: { answer: checked.answer } };
-  } else {
-    const elsewhere = found.shown.kind === "other" && !found.shown.dismiss;
-    return yield* json(400, { message: elsewhere ? "Answer this one in Kuvo Code on a Mac or a phone." : "This one is answered where it was asked: only dismissing it goes from here." });
-  }
-  try {
-    await call(found.target, sent.method, sent.route, sent.body, AbortSignal.timeout(15000), found.folder);
-  } catch (error) {
-    const status = error.status;
-    if (status === 404)
-      return yield* json(404, GONE2);
-    if (status === undefined)
-      return yield* json(503, { message: "The engine isn't answering." });
-    return yield* json(502, { message: String(error.message) });
-  }
-  return yield* json(200, {});
-}
-
-// box/src/link/areas/mentions.ts
-import path167 from "node:path";
-var MENTIONS_ROUTE = /^kuvo\/sessions\/([^/]+)\/mentions$/;
-var GROUP_MENTIONS_ROUTE = /^kuvo\/groups\/(grp_[a-z0-9]+)\/mentions$/;
-var MENTIONS_SHOWN = 8;
-var MENTIONS_MOST = 20;
-var length = (text) => [...new Intl.Segmenter().segment(text)].length;
-async function mentionableFiles(roots, dated, signal) {
-  const several = roots.length > 1;
-  const folders = several ? roots.map((root, folder) => ({ path: `${path167.basename(root)}/`, folder, mention: `${path167.basename(root)}/`, name: path167.basename(root), modified: null, isFolder: true })) : [];
-  const files = [];
-  for (const [folder, root] of roots.entries()) {
-    const listed = await listTree(`kuvo/folders/tree?path=${encodeURIComponent(root)}${dated ? "&dated=1" : ""}`, undefined, signal);
-    if (listed.status !== 200 || !("files" in listed.value))
-      continue;
-    const { files: names, modified } = listed.value;
-    const prefix = several ? `${path167.basename(root)}/` : "";
-    names.forEach((name, at) => files.push({ path: prefix + name, folder, mention: folder === 0 ? name : prefix + name, name: path167.basename(name), modified: modified?.[at] ?? null, isFolder: false }));
-  }
-  if (dated)
-    files.sort((a, b) => (b.modified ?? -Infinity) - (a.modified ?? -Infinity));
-  return [...folders, ...files];
-}
-function rankFiles(query, files, limit) {
-  const typed = query.toLowerCase();
-  if (!typed)
-    return [...files.filter((file) => file.isFolder), ...files.filter((file) => !file.isFolder).slice(0, limit)].slice(0, limit);
-  const rank = (file) => {
-    const name = file.name.toLowerCase();
-    if (name === typed)
-      return 0;
-    if (name.startsWith(typed))
-      return 1;
-    if (name.includes(typed))
-      return 2;
-    if (file.path.toLowerCase().includes(typed))
-      return 3;
-    return null;
-  };
-  return files.flatMap((file) => {
-    const at = rank(file);
-    return at === null ? [] : [{ file, at, size: length(file.path) }];
-  }).sort((a, b) => a.at - b.at || a.file.folder - b.file.folder || a.size - b.size || (a.file.path < b.file.path ? -1 : a.file.path > b.file.path ? 1 : 0)).slice(0, limit).map((each) => each.file);
-}
-var queryOf = (route) => new URLSearchParams(route.includes("?") ? route.slice(route.indexOf("?") + 1) : "");
-var folded3 = (text) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
-function rankAgents(query, agents, limit) {
-  const typed = folded3(query);
-  if (!typed)
-    return agents.slice(0, limit);
-  const words = /\s/u.test(typed);
-  const rank = (agent) => {
-    const name = folded3(agent.name);
-    if (name === typed)
-      return 0;
-    if (name.startsWith(typed))
-      return 1;
-    if (words)
-      return name.includes(typed) ? 3 : null;
-    if (name.split(/[^\p{L}\p{N}]+/u).some((word) => word && word.startsWith(typed)))
-      return 2;
-    if (name.includes(typed))
-      return 3;
-    if (agent.project !== null && folded3(agent.project).includes(typed))
-      return 4;
-    return null;
-  };
-  return agents.flatMap((agent, index) => {
-    const at = rank(agent);
-    return at === null ? [] : [{ agent, at, index }];
-  }).sort((a, b) => a.at - b.at || a.index - b.index).slice(0, limit).map((each) => each.agent);
-}
-function agentDetail(agent) {
-  const what = agent.kind === "bot" ? agent.about || "Bot" : agent.project === "Chats" ? "Chat" : agent.project ?? "Session";
-  return what + (agent.machine ? ` · on ${agent.machine}` : "");
-}
-var listed2 = new Map;
-var LISTED_FOR = 5000;
-function filesFor(roots, dated, signal) {
-  const key = (withDates) => JSON.stringify([roots, withDates]);
-  const fresh = (withDates) => {
-    const kept = listed2.get(key(withDates));
-    return kept && Date.now() - kept.at < LISTED_FOR ? { key: key(withDates), kept } : null;
-  };
-  const found = fresh(dated) ?? (dated ? null : fresh(true));
-  const join = (at, listing) => {
-    listing.waiting += 1;
-    signal?.addEventListener("abort", () => {
-      listing.waiting -= 1;
-      if (!listing.done && listing.waiting === 0) {
-        listing.stop.abort();
-        if (listed2.get(at) === listing)
-          listed2.delete(at);
-      }
-    }, { once: true });
-    return listing.files;
-  };
-  if (found)
-    return join(found.key, found.kept);
-  const stop = new AbortController;
-  const listing = { at: Date.now(), files: mentionableFiles(roots, dated, stop.signal), waiting: 0, stop, done: false };
-  const at = key(dated);
-  listed2.set(at, listing);
-  listing.files.then(() => {
-    listing.done = true;
-  }, () => {
-    listing.done = true;
-    if (listed2.get(at) === listing)
-      listed2.delete(at);
-  });
-  if (listed2.size > 20)
-    listed2.delete(listed2.keys().next().value);
-  return join(at, listing);
-}
-async function* mentionsRoute(context, match) {
-  const { request, readEngine, bridge, signal, json } = context;
-  if (request.method.toUpperCase() !== "GET")
-    return yield* json(405, {});
-  const query = queryOf(request.path);
-  const kind = query.get("for");
-  if (kind !== "files" && kind !== "agents")
-    return yield* json(400, { message: `Say what's suggested: for=files ("@") or for=agents ("&").` });
-  const typed = query.get("q") ?? "";
-  const asked = Number.parseInt(query.get("limit") ?? "", 10);
-  const limit = Number.isFinite(asked) && asked > 0 ? Math.min(asked, MENTIONS_MOST) : MENTIONS_SHOWN;
-  const session = decodeURIComponent(match[1]);
-  const targets = targetsOf({ readEngine, bridge });
-  if (!targets.length)
-    return yield* json(503, { message: "The engine isn't running." });
-  let here;
-  try {
-    here = await sessionHere(targets, session, signal ?? undefined);
-  } catch (error) {
-    if (error instanceof Unreached)
-      return yield* json(503, { message: error.message });
-    throw error;
-  }
-  if (!here)
-    return yield* json(404, { message: "There's no such conversation here." });
-  if (kind === "agents") {
-    const agents = (await namedNow(readEngine)).filter((agent) => agent.session !== session);
-    const mentions = rankAgents(typed, agents, limit).map((agent) => ({ text: `&${agent.name}`, title: agent.name, detail: agentDetail(agent), kind: agent.kind, session: agent.session }));
-    return yield* json(200, { mentions });
-  }
-  const data = here.data;
-  const folder = data.location?.directory ?? data.directory;
-  if (!folder)
-    return yield* json(200, { mentions: [] });
-  const roots = [folder, ...(foldersOf(data, folder) ?? []).filter((each) => each !== folder)];
-  const files = await filesFor(roots, !typed, signal ?? undefined);
-  const mentions = rankFiles(typed, files, limit).map((file) => {
-    const inside = path167.posix.dirname(file.path.replace(/\/$/, ""));
-    return { text: `@${file.mention}`, title: file.name, detail: file.isFolder || inside === "." ? null : inside, kind: file.isFolder ? "folder" : "file", session: null };
-  });
-  return yield* json(200, { mentions });
-}
-function rankGroupMentions(query, members, agents, limit) {
-  const asAgents = new Map(members.map((member) => [{ session: member.session, name: member.name, kind: "bot", machine: null, project: null, about: null }, member]));
-  const theirs = rankAgents(query, [...asAgents.keys()], limit).map((agent) => {
-    const member = asAgents.get(agent);
-    return { text: `&${member.name}`, title: member.name, detail: "In this chat" + (member.computer ? ` · on ${member.computer}` : ""), kind: "bot", session: member.session || null };
-  });
-  const sessions = new Set(members.map((member) => member.session).filter(Boolean));
-  const names = new Set(members.map((member) => folded3(member.name)));
-  const guests = agents.filter((agent) => !sessions.has(agent.session) && !names.has(folded3(agent.name)));
-  const others = rankAgents(query, guests, limit - theirs.length).map((agent) => ({ text: `&${agent.name}`, title: agent.name, detail: agentDetail(agent), kind: agent.kind, session: agent.session }));
-  return [...theirs, ...others];
-}
-async function* groupMentionsRoute(context, match) {
-  const { request, readEngine, bridge, signal, json } = context;
-  if (request.method.toUpperCase() !== "GET")
-    return yield* json(405, {});
-  const query = queryOf(request.path);
-  const typed = query.get("q") ?? "";
-  const asked = Number.parseInt(query.get("limit") ?? "", 10);
-  const limit = Number.isFinite(asked) && asked > 0 ? Math.min(asked, MENTIONS_MOST) : MENTIONS_SHOWN;
-  const target = bridge();
-  if (!target)
-    return yield* json(503, { message: groupsAbsent() });
-  const groups = await listedGroups(target, signal ?? undefined);
-  if (!groups)
-    return yield* json(503, { message: groupsNotAnswering() });
-  const chat = groups.find((group) => group.id === match[1]);
-  if (!chat)
-    return yield* json(404, { message: "There's no such group chat here." });
-  return yield* json(200, { mentions: rankGroupMentions(typed, chat.members, await namedNow(readEngine), limit) });
-}
-
-// box/src/link/work/model-words.ts
-function article(word) {
-  const first = word.toLowerCase()[0];
-  if (/^[A-Z][A-Z]/.test(word))
-    return "AEFHILMNORSX".includes(word[0]) ? "an" : "a";
-  return first && "aeiou".includes(first) || word.startsWith("xA") ? "an" : "a";
-}
-function readiness(model, state, known) {
-  if (state.runs && !state.missing)
-    return {};
-  const name = state.name ?? known ?? model?.id ?? "This model";
-  const account = state.account?.name ?? model?.providerID ?? "its account";
-  const choose = (help) => ({ do: "choose", label: "Choose a Model", help });
-  switch (state.missing) {
-    case "signIn":
-      if (state.connects)
-        return { refusal: `${name} needs ${account} connected: connect it, or choose another model.`, action: { do: "signIn", label: "Connect", help: `Connect ${account}` } };
-      return { refusal: `${name} needs a sign-in to ${account}: sign in, or choose another model.`, action: { do: "signIn", label: "Sign In", help: `Sign in to ${account}` } };
-    case "key": {
-      const plan = state.plan;
-      const key = `${article(account)} ${account} key`;
-      return plan ? {
-        refusal: `${name} needs ${key}: add one, or choose another model (with ${article(plan.name)} ${plan.name} plan, one under ${plan.agent}).`,
-        action: { do: "addKey", label: "Add Key", help: `Add ${key} (with ${article(plan.name)} ${plan.name} plan, choose a model under ${plan.agent} instead)` }
-      } : { refusal: `${name} needs ${key}: add one, or choose another model.`, action: { do: "addKey", label: "Add Key", help: `Add ${key}` } };
-    }
-    case "install":
-      return { refusal: `${name} needs ${account} installed: install it, or choose another model.`, action: { do: "install", label: "Install", help: `Install ${account}` } };
-    case "gone":
-      return {
-        refusal: state.account ? `${name} is no longer among ${state.account.name}’s models: choose another model.` : `${name} is no longer available: choose another model.`,
-        choose: true,
-        action: choose("Choose another model")
-      };
-    default:
-      return { refusal: "Choose a model to send it.", choose: true, action: choose("Choose a model") };
-  }
-}
-
-// box/src/link/areas/session-models.ts
-var SESSION_MODELS_ROUTE = "kuvo/sessions/models";
-async function sessionModels(ids, engine, bridge, signal) {
-  const targets = [engine, bridge].filter((each) => each !== null);
-  const found = (await Promise.all(ids.map((id) => sessionHere(targets, id, signal)))).filter((each) => each !== null);
-  const reads = listReads(engine, bridge);
-  const answer = {};
-  await Promise.all(found.map(async (place) => {
-    const said = await modelOf2(place, engine, bridge, reads);
-    if (said)
-      answer[place.data.id] = said;
-  }));
-  return answer;
-}
-function listReads(engine, bridge) {
-  const engineRead = new Map;
-  let bridgeRead;
-  return {
-    engine: (folder) => {
-      const key = folder ?? "";
-      if (!engineRead.has(key))
-        engineRead.set(key, engineListsIn(engine, folder));
-      return engineRead.get(key);
-    },
-    bridge: () => bridgeRead ??= bridgeListsOf(bridge)
-  };
-}
-async function modelOf2(place, engine, bridge, reads = listReads(engine, bridge)) {
-  const { target, data } = place;
-  const folder = data.location?.directory ?? data.directory;
-  const own = isObject(data.model) && typeof data.model.providerID === "string" && typeof data.model.id === "string" ? data.model : null;
-  const onBridge = bridge !== null && target.port === bridge.port;
-  if (onBridge && data.parentID)
-    return;
-  const fallback = own || onBridge ? null : (await reads.engine(folder))?.fallback;
-  if (!own && !onBridge && fallback === undefined)
-    return;
-  const ref = own ? { providerID: own.providerID, id: own.id, ...typeof own.variant === "string" ? { variant: own.variant } : {} } : fallback ?? null;
-  if (!ref) {
-    const state = { runs: false, missing: "model" };
-    return { model: null, ...state, ...readiness(null, state) };
-  }
-  const state = stateOf(ref, onAgents(ref) ? { engine: null, bridge: await reads.bridge() } : { engine: await reads.engine(folder), bridge: null });
-  if (!state)
-    return;
-  if (state.runs && state.name)
-    rememberName(ref, state.name);
-  return { model: ref, ...state, ...readiness(ref, state, lastName(ref)) };
-}
-async function* sessionModelsRoute(context) {
-  const { request, readEngine, bridge, signal, json } = context;
-  if (request.method.toUpperCase() !== "GET")
-    return yield* json(405, {});
-  const ids = sessionsAsked(request.path);
-  if (!ids)
-    return yield* json(400, { message: `Name the sessions: sessions=<id>,<id>… (${GLANCE_MOST} at most).` });
-  const targets = targetsOf({ readEngine, bridge });
-  if (!targets.length)
-    return yield* json(503, { message: "The engine isn't running." });
-  let engine = null;
-  try {
-    engine = readEngine();
-  } catch {}
-  try {
-    return yield* json(200, { sessions: await sessionModels(ids, engine, bridge(), signal ?? undefined) });
-  } catch (error) {
-    if (error instanceof Unreached)
-      return yield* json(503, { message: error.message });
-    throw error;
-  }
-}
-
-// box/src/link/areas/models-offered.ts
-import fs158 from "node:fs";
-import path168 from "node:path";
-var MODELS_OFFERED_ROUTE = "kuvo/models/offered";
-function wantedIn(requestPath) {
-  const query = new URLSearchParams(requestPath.split("?")[1] ?? "");
-  const providerID = query.get("provider")?.trim(), id = query.get("model")?.trim(), variant = query.get("variant")?.trim();
-  return providerID && id ? { providerID, id, ...variant ? { variant } : {} } : null;
-}
-async function folderIn(requestPath) {
-  const folder = new URLSearchParams(requestPath.split("?")[1] ?? "").get("folder")?.trim();
-  if (!folder || !path168.isAbsolute(folder))
-    return;
-  const resolved = path168.resolve(folder);
-  if (!isKnown(resolved))
-    return;
-  return await fs158.promises.stat(resolved).then((found) => found.isDirectory(), () => false) ? resolved : undefined;
-}
-function isKnown(folder) {
-  const same = (other) => typeof other === "string" && path168.isAbsolute(other) && path168.resolve(other) === folder;
-  if (readProjects().some((project) => !project.removed && (same(project.directory) || project.folders.some(same))))
-    return true;
-  if (readWorktrees().some((worktree) => same(worktree.root) || same(worktree.folder)))
-    return true;
-  const list = keptList();
-  return list ? Object.values(list.sessions).some((each) => same(each.facts.directory)) : false;
-}
-async function* modelsOfferedRoute(context) {
-  const { request, readEngine, bridge, json } = context;
-  if (request.method.toUpperCase() !== "GET")
-    return yield* json(405, {});
-  const folder = await folderIn(request.path);
-  if (!targetsOf({ readEngine, bridge }).length)
-    return yield* json(503, { message: "The engine isn't running." });
-  let engine = null;
-  try {
-    engine = readEngine();
-  } catch {}
-  const agents = bridge();
-  const lists = await listsHere(engine, agents, folder);
-  return yield* json(200, offeredAnswer(lists, wantedIn(request.path)));
-}
-function offeredAnswer(lists, wanted) {
-  const starting = startingModel([wanted], lists);
-  const listing = stillListing(lists);
-  return {
-    models: offeredHere(lists).map((model) => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" : "engine", efforts: model.efforts, aliases: model.aliases, ...model.retiring ? { retiring: true } : {}, ...model.hidden ? { hidden: true } : {}, ...!model.agents && needsNoAccount(model) ? { free: true } : {} })),
-    known: { engine: lists.engine !== null, agents: lists.bridge !== null },
-    ...listing.length ? { listing } : {},
-    ...starting !== undefined ? { starting: starting?.model ?? null } : {}
-  };
-}
-
-// box/src/link/areas/read-all.ts
-var READ_ALL_ROUTE = "kuvo/sessions/read";
-var PAGES = 15;
-var AT_ONCE = 8;
-var EACH = 1e4;
-async function inTurns(items, work, signal) {
-  let done = 0, next = 0;
-  const worker = async () => {
-    while (next < items.length && !signal?.aborted)
-      if (await work(items[next++]))
-        done++;
-  };
-  await Promise.all(Array.from({ length: Math.min(AT_ONCE, items.length) }, worker));
-  return done;
-}
-var eachSignal = (signal) => signal ? AbortSignal.any([signal, AbortSignal.timeout(EACH)]) : AbortSignal.timeout(EACH);
-async function readAllOn(target, signal) {
-  let read = 0;
-  let query = "limit=200&order=desc";
-  for (let pages = 0;pages < PAGES && query && !signal?.aborted; pages++) {
-    const page = await engineGet(target, `api/session?${query}`).catch(() => null);
-    if (!page || !Array.isArray(page.data))
-      return pages === 0 ? null : read;
-    const listed = page.data;
-    const unread = listed.filter((session) => {
-      if (!isObject(session) || typeof session.id !== "string" || !isObject(session.time))
-        return false;
-      const { idle, viewed } = session.time;
-      return typeof idle === "number" && idle > (typeof viewed === "number" ? viewed : 0) && !isArchived(session);
-    });
-    read += await inTurns(unread, (session) => call(target, "POST", `/api/session/${encodeURIComponent(session.id)}/view`, { idle: session.time.idle }, eachSignal(signal)).then(() => true, () => false), signal);
-    const next = page.cursor?.next;
-    query = listed.length === 200 && typeof next === "string" ? `limit=200&cursor=${encodeURIComponent(next)}` : null;
-  }
-  return read;
-}
-async function readGroups(bridge, signal) {
-  const authorization = `Basic ${Buffer.from(`opencode:${bridge.password}`).toString("base64")}`;
-  const listed = await fetch(`http://127.0.0.1:${bridge.port}/api/kuvo/link/groups`, { headers: { authorization }, signal: eachSignal(signal) }).then((response) => response.ok ? response.json() : null).catch(() => null);
-  if (!isObject(listed) || !Array.isArray(listed.groups))
-    return null;
-  const unread = listed.groups.filter((group) => isObject(group) && typeof group.id === "string" && group.unread === true);
-  return inTurns(unread, (group) => fetch(`http://127.0.0.1:${bridge.port}/api/kuvo/link/groups/${encodeURIComponent(group.id)}/viewed`, {
-    method: "POST",
-    headers: { authorization, "content-type": "application/json" },
-    body: "{}",
-    signal: eachSignal(signal)
-  }).then((response) => response.ok, () => false), signal);
-}
-async function* readAllRoute({ request, readEngine, bridge, signal, json }) {
-  if (request.method.toUpperCase() !== "POST")
-    return yield* json(405, {});
-  let engine = null;
-  try {
-    engine = readEngine();
-  } catch {}
-  const agents = bridge();
-  const counts = await Promise.all([
-    engine ? readAllOn(engine, signal) : null,
-    agents ? readAllOn(agents, signal) : null,
-    agents ? readGroups(agents, signal) : null
-  ]);
-  if (counts.every((count) => count === null))
-    return yield* json(503, { message: "Nothing here could be read just now. Try again in a moment." });
-  return yield* json(200, { read: counts.reduce((sum, count) => sum + (count ?? 0), 0) });
-}
-
-// box/src/link/areas/work-queue.ts
-import fs165 from "node:fs";
-import path174 from "node:path";
-
-// box/src/link/areas/vault.ts
-import crypto57 from "node:crypto";
-
-// box/src/link/vault/activity.ts
-import fs159 from "node:fs";
-import path169 from "node:path";
-var ACTIVITY = path169.join(VAULT_FOLDER, "activity.jsonl");
-var DAY5 = 86400000;
-var prunedAt = 0;
-function note3(what, now = Date.now()) {
-  const entry = { id: newID("a_"), at: now, ...what };
-  if (entry.why)
-    entry.why = oneLine(entry.why, 300);
-  vaultWork(() => {
-    fs159.mkdirSync(VAULT_FOLDER, { recursive: true, mode: 448 });
-    fs159.appendFileSync(ACTIVITY, JSON.stringify(entry) + `
-`, { mode: 384 });
-    if (now - prunedAt > DAY5) {
-      prunedAt = now;
-      prune2(now);
-    }
-  });
-  return entry;
-}
-function prune2(now) {
-  const lines = readLines();
-  const kept = lines.filter((entry) => now - entry.at < KEPT_DAYS * DAY5);
-  if (kept.length === lines.length)
-    return;
-  const temporary = ACTIVITY + ".new";
-  fs159.writeFileSync(temporary, kept.map((entry) => JSON.stringify(entry) + `
-`).join(""), { mode: 384 });
-  fs159.renameSync(temporary, ACTIVITY);
-}
-function readLines() {
-  let text = "";
-  try {
-    text = fs159.readFileSync(ACTIVITY, "utf8");
-  } catch {
-    return [];
-  }
-  const entries = [];
-  for (const line of text.split(`
-`)) {
-    if (!line)
-      continue;
-    try {
-      entries.push(JSON.parse(line));
-    } catch {}
-  }
-  return entries;
-}
-function readActivity({ item, bot, session, before, limit = 100 } = {}, now = Date.now()) {
-  return readLines().filter((entry) => now - entry.at < KEPT_DAYS * DAY5).filter((entry) => (!item || entry.item === item) && (!bot || entry.bot === bot) && (!session || entry.session === session) && (!before || entry.at < before)).sort((a, b) => b.at - a.at).slice(0, Math.max(1, Math.min(500, limit)));
-}
-
-// box/src/link/vault/use.ts
-import os19 from "node:os";
-var AUTOPILOT_HOW = "autopilot";
-var tell2 = () => false;
-var setVaultTell = (to) => {
-  tell2 = to;
-};
-var machineName = () => IS_MAC ? undefined : os19.hostname();
-var whoOf3 = (caller) => ({
-  ...caller.bot ? { bot: caller.bot } : {},
-  ...caller.botName ? { botName: caller.botName } : {},
-  ...caller.root ? { session: caller.root } : {},
-  ...caller.sessionName ? { sessionName: caller.sessionName } : {}
-});
-var itemOf2 = (item) => ({ item: item.id, itemName: item.name, kind: item.kind });
-var ONCE_FOR = 30 * 60000;
-var once = new Map;
-var onceKey = (caller, item) => `${caller.root ?? caller.session ?? ""}\x00${item}`;
-function allowOnce(caller, item) {
-  once.set(onceKey(caller, item), Date.now() + ONCE_FOR);
-}
-function hasOnce(caller, item, take = false) {
-  const key = onceKey(caller, item);
-  const until = once.get(key);
-  if (!until || until < Date.now()) {
-    once.delete(key);
-    return false;
-  }
-  if (take)
-    once.delete(key);
-  return true;
-}
-function alwaysFor2(caller) {
-  if (caller.seat)
-    return null;
-  if (caller.bot)
-    return { bot: caller.bot };
-  if (caller.folder && caller.folder !== "/" && caller.folder !== homeFolder())
-    return { project: caller.folder };
-  return null;
-}
-async function mayUse(item, caller, use) {
-  const where = { ...use.site ? { site: use.site } : {}, ...use.program ? { program: use.program } : {}, ...use.why ? { why: use.why } : {} };
-  const paused = pausedFor(caller.bot, caller.root ?? caller.session);
-  if (paused) {
-    note3({ what: "refused", ...itemOf2(item), ...whoOf3(caller), ...where, how: "paused" });
-    return { ok: false, message: paused };
-  }
-  const how = grantFor(item, caller);
-  if (how === "own")
-    return { ok: true, how: "own" };
-  if (hasOnce(caller, item.id, true))
-    return { ok: true, how: "once" };
-  if (how === null && !use.askWithout) {
-    note3({ what: "refused", ...itemOf2(item), ...whoOf3(caller), ...where, how: "no grant" });
-    return { ok: false, message: `You may not use “${item.name}”. Ask the user for it with vault_ask.` };
-  }
-  const leftUndone = () => {
-    if (!use.leftUndoneNoted)
-      note3({ what: "refused", ...itemOf2(item), ...whoOf3(caller), ...where, how: AUTOPILOT_HOW });
-    return { ok: false, message: LEFT_UNDONE_WORDS, leftUndone: true };
-  };
-  if (caller.autopilot)
-    return leftUndone();
-  note3({ what: "asked", ...itemOf2(item), ...whoOf3(caller), ...where });
-  const { value: answered, onAutopilot } = await untilOnAutopilot(caller.yours ? undefined : use.watch ?? caller.session, use.signal, (signal) => ask2({ kind: "use", ...whoOf3(caller), ...caller.group ? { group: caller.group } : {}, item: item.id, itemName: item.name, ...use.site ? { site: use.site } : {}, ...use.why ? { why: use.why } : {}, ...machineName() ? { machine: machineName() } : {} }, signal));
-  if (onAutopilot)
-    return leftUndone();
-  if (answered.answer === "no") {
-    note3({ what: "declined", ...itemOf2(item), ...whoOf3(caller), ...where, ...answered.client ? { client: answered.client, by: answered.by } : {} });
-    return { ok: false, message: `The user didn't let you use “${item.name}”.` };
-  }
-  const always = answered.answer === "always" ? alwaysFor2(caller) : null;
-  if (always) {
-    setGrant(item.id, always, "own");
-    note3({ what: "granted", ...itemOf2(item), ...whoOf3(caller), how: "own", ...answered.client ? { client: answered.client, by: answered.by } : {} });
-  }
-  const allowed = always ? "always" : "once";
-  note3({ what: "allowed", ...itemOf2(item), ...whoOf3(caller), ...where, how: allowed, ...answered.client ? { client: answered.client, by: answered.by } : {} });
-  return { ok: true, how: allowed };
-}
-function tripwire(item, caller, site) {
-  const why = `It tried to use “${item.name}” on ${site}, which isn't one of its sites.`;
-  const who = caller.bot ?? caller.root ?? caller.session;
-  if (who)
-    setPaused(true, who, why);
-  note3({ what: "refused", ...itemOf2(item), ...whoOf3(caller), site, how: "wrong site" });
-  try {
-    tell2({ title: caller.botName ? `${caller.botName} paused` : "A fill was refused", subtitle: machineName(), body: why, category: "message", thread: caller.group ?? caller.root ?? "vault", data: caller.group ? { group: caller.group } : caller.root ? { session: caller.root } : {} });
-  } catch {}
-  return `${why} Kuvo Code only fills it on ${item.sites.join(", ")}.${who ? ` The user has been told, and this ${caller.bot ? "bot" : "conversation"}'s use of the vault is paused until they look.` : ""}`;
-}
-var noteUse = (item, caller, use, how) => note3({ what: "used", ...itemOf2(item), ...whoOf3(caller), ...use.site ? { site: use.site } : {}, ...use.program ? { program: use.program } : {}, ...use.why ? { why: use.why } : {}, how });
-
-// box/src/link/vault/fill.ts
-var refused6 = (status, message) => ({ status, value: { message } });
-function pageSite(origin) {
-  if (typeof origin !== "string")
-    return null;
-  try {
-    const url = new URL(origin);
-    if (url.protocol !== "https:" && !(url.protocol === "http:" && url.hostname === "localhost"))
-      return null;
-    return siteOf2(url.hostname);
-  } catch {
-    return null;
-  }
-}
-async function fill(given, caller, signal) {
-  const body = isObject(given) ? given : {};
-  const site = pageSite(body.origin);
-  if (!site)
-    return refused6(400, "Kuvo Code fills only on a secure page (https).");
-  const purpose = body.purpose === "field" ? "field" : "sign-in";
-  const why = typeof body.why === "string" ? oneLine(body.why, 300) : undefined;
-  let item;
-  if (body.item !== undefined && body.item !== null && body.item !== "") {
-    item = itemNamed(body.item);
-    if (!item)
-      return refused6(404, `There's no item “${oneLine(body.item, 80)}” in the vault.`);
-    if (!usableOn(item, site))
-      return refused6(403, tripwire(item, caller, site));
-  } else {
-    if (purpose === "field")
-      return refused6(400, "Name the item to fill from.");
-    const own = readItems().filter((each) => each.kind === "login" && usableOn(each, site) && (grantFor(each, { ...caller, seat: false }) === "own" || hasOnce(caller, each.id)));
-    if (own.length !== 1)
-      return refused6(404, own.length ? "More than one sign-in fits this site." : "No sign-in in the vault is yours to use on this site.");
-    item = own[0];
-  }
-  if (purpose === "field" && item.signInOnly)
-    return refused6(403, `“${item.name}” is only for signing in: use browser_sign_in.`);
-  const may = await mayUse(item, caller, { site, ...why ? { why } : {}, askWithout: true, signal });
-  if (!may.ok)
-    return refused6(403, may.message);
-  const values = await valuesOf(item.id);
-  let filled;
-  if (purpose === "sign-in") {
-    if (item.kind !== "login")
-      return refused6(400, `“${item.name}” isn't a sign-in: fill one of its fields with browser_fill.`);
-    filled = values.password !== undefined ? { password: values.password } : {};
-  } else {
-    const field = typeof body.field === "string" && body.field ? body.field.trim().toLowerCase() : item.kind === "login" ? "password" : item.fields.length === 1 ? item.fields[0] : "";
-    if (field === "username" && item.username)
-      filled = { username: item.username };
-    else if (!field || values[field] === undefined)
-      return refused6(400, `Say which of “${item.name}”'s fields to fill: ${["username", ...item.fields].filter((each) => each !== "username" || item.username).join(", ")}.`);
-    else
-      filled = { [field]: values[field] };
-  }
-  noteUsed(item.id);
-  noteUse(item, caller, { site, ...why ? { why } : {} }, may.how);
-  return { status: 200, value: { item: { id: item.id, name: item.name }, ...item.username ? { username: item.username } : {}, values: filled } };
-}
+import fs162 from "node:fs";
 
 // box/src/link/vault/holder.ts
 import crypto55 from "node:crypto";
-import fs162 from "node:fs";
+import fs159 from "node:fs";
 import net6 from "node:net";
-import path172 from "node:path";
+import path170 from "node:path";
 
 // box/src/link/vault/ssh.ts
 import crypto54 from "node:crypto";
-import fs161 from "node:fs";
-import path171 from "node:path";
+import fs158 from "node:fs";
+import path169 from "node:path";
 
 // box/src/link/vault/ssh-agent.ts
 import crypto53 from "node:crypto";
-import fs160 from "node:fs";
+import fs156 from "node:fs";
 import net5 from "node:net";
-import path170 from "node:path";
+import path167 from "node:path";
 var FAILURE = 5;
 var REQUEST_IDENTITIES = 11;
 var IDENTITIES_ANSWER = 12;
@@ -52041,17 +50953,17 @@ function serveAgent(socket, source) {
     for (const connection of open)
       connection.destroy();
     try {
-      fs160.rmSync(socket, { force: true });
+      fs156.rmSync(socket, { force: true });
     } catch {}
     return close(done);
   };
-  const bound = path170.join(path170.dirname(socket), `.${crypto53.randomBytes(6).toString("base64url")}`);
+  const bound = path167.join(path167.dirname(socket), `.${crypto53.randomBytes(6).toString("base64url")}`);
   if (Math.max(Buffer.byteLength(socket), Buffer.byteLength(bound)) > LONGEST_PATH) {
     queueMicrotask(() => server.emit("error", new Error(`An SSH agent's socket can't be this long: ${socket}`)));
     return server;
   }
   try {
-    fs160.rmSync(socket, { force: true });
+    fs156.rmSync(socket, { force: true });
   } catch {}
   const old = process.umask(127);
   try {
@@ -52060,12 +50972,12 @@ function serveAgent(socket, source) {
     process.umask(old);
   }
   try {
-    fs160.renameSync(bound, socket);
+    fs156.renameSync(bound, socket);
   } catch (error) {
-    if (fs160.existsSync(bound)) {
+    if (fs156.existsSync(bound)) {
       server.close();
       try {
-        fs160.rmSync(bound, { force: true });
+        fs156.rmSync(bound, { force: true });
       } catch {}
       queueMicrotask(() => server.emit("error", error instanceof Error ? error : new Error(String(error))));
     }
@@ -52073,6 +50985,155 @@ function serveAgent(socket, source) {
   server.unref();
   return server;
 }
+
+// box/src/link/vault/use.ts
+import os19 from "node:os";
+
+// box/src/link/vault/activity.ts
+import fs157 from "node:fs";
+import path168 from "node:path";
+var ACTIVITY = path168.join(VAULT_FOLDER, "activity.jsonl");
+var DAY5 = 86400000;
+var prunedAt = 0;
+function note3(what, now = Date.now()) {
+  const entry = { id: newID("a_"), at: now, ...what };
+  if (entry.why)
+    entry.why = oneLine(entry.why, 300);
+  vaultWork(() => {
+    fs157.mkdirSync(VAULT_FOLDER, { recursive: true, mode: 448 });
+    fs157.appendFileSync(ACTIVITY, JSON.stringify(entry) + `
+`, { mode: 384 });
+    if (now - prunedAt > DAY5) {
+      prunedAt = now;
+      prune2(now);
+    }
+  });
+  return entry;
+}
+function prune2(now) {
+  const lines = readLines();
+  const kept = lines.filter((entry) => now - entry.at < KEPT_DAYS * DAY5);
+  if (kept.length === lines.length)
+    return;
+  const temporary = ACTIVITY + ".new";
+  fs157.writeFileSync(temporary, kept.map((entry) => JSON.stringify(entry) + `
+`).join(""), { mode: 384 });
+  fs157.renameSync(temporary, ACTIVITY);
+}
+function readLines() {
+  let text = "";
+  try {
+    text = fs157.readFileSync(ACTIVITY, "utf8");
+  } catch {
+    return [];
+  }
+  const entries = [];
+  for (const line of text.split(`
+`)) {
+    if (!line)
+      continue;
+    try {
+      entries.push(JSON.parse(line));
+    } catch {}
+  }
+  return entries;
+}
+function readActivity({ item, bot, session, before, limit = 100 } = {}, now = Date.now()) {
+  return readLines().filter((entry) => now - entry.at < KEPT_DAYS * DAY5).filter((entry) => (!item || entry.item === item) && (!bot || entry.bot === bot) && (!session || entry.session === session) && (!before || entry.at < before)).sort((a, b) => b.at - a.at).slice(0, Math.max(1, Math.min(500, limit)));
+}
+
+// box/src/link/vault/use.ts
+var AUTOPILOT_HOW = "autopilot";
+var tell2 = () => false;
+var setVaultTell = (to) => {
+  tell2 = to;
+};
+var machineName = () => IS_MAC ? undefined : os19.hostname();
+var whoOf3 = (caller) => ({
+  ...caller.bot ? { bot: caller.bot } : {},
+  ...caller.botName ? { botName: caller.botName } : {},
+  ...caller.root ? { session: caller.root } : {},
+  ...caller.sessionName ? { sessionName: caller.sessionName } : {}
+});
+var itemOf2 = (item) => ({ item: item.id, itemName: item.name, kind: item.kind });
+var ONCE_FOR = 30 * 60000;
+var once = new Map;
+var onceKey = (caller, item) => `${caller.root ?? caller.session ?? ""}\x00${item}`;
+function allowOnce(caller, item) {
+  once.set(onceKey(caller, item), Date.now() + ONCE_FOR);
+}
+function hasOnce(caller, item, take = false) {
+  const key = onceKey(caller, item);
+  const until = once.get(key);
+  if (!until || until < Date.now()) {
+    once.delete(key);
+    return false;
+  }
+  if (take)
+    once.delete(key);
+  return true;
+}
+function alwaysFor2(caller) {
+  if (caller.seat)
+    return null;
+  if (caller.bot)
+    return { bot: caller.bot };
+  if (caller.folder && caller.folder !== "/" && caller.folder !== homeFolder())
+    return { project: caller.folder };
+  return null;
+}
+async function mayUse(item, caller, use) {
+  const where = { ...use.site ? { site: use.site } : {}, ...use.program ? { program: use.program } : {}, ...use.why ? { why: use.why } : {} };
+  const paused = pausedFor(caller.bot, caller.root ?? caller.session);
+  if (paused) {
+    note3({ what: "refused", ...itemOf2(item), ...whoOf3(caller), ...where, how: "paused" });
+    return { ok: false, message: paused };
+  }
+  const how = grantFor(item, caller);
+  if (how === "own")
+    return { ok: true, how: "own" };
+  if (hasOnce(caller, item.id, true))
+    return { ok: true, how: "once" };
+  if (how === null && !use.askWithout) {
+    note3({ what: "refused", ...itemOf2(item), ...whoOf3(caller), ...where, how: "no grant" });
+    return { ok: false, message: `You may not use “${item.name}”. Ask the user for it with vault_ask.` };
+  }
+  const leftUndone = () => {
+    if (!use.leftUndoneNoted)
+      note3({ what: "refused", ...itemOf2(item), ...whoOf3(caller), ...where, how: AUTOPILOT_HOW });
+    return { ok: false, message: LEFT_UNDONE_WORDS, leftUndone: true };
+  };
+  if (caller.autopilot)
+    return leftUndone();
+  note3({ what: "asked", ...itemOf2(item), ...whoOf3(caller), ...where });
+  const { value: answered, onAutopilot } = await untilOnAutopilot(caller.yours ? undefined : use.watch ?? caller.session, use.signal, (signal) => ask2({ kind: "use", ...whoOf3(caller), ...caller.group ? { group: caller.group } : {}, always: alwaysFor2(caller) !== null, item: item.id, itemName: item.name, ...use.site ? { site: use.site } : {}, ...use.why ? { why: use.why } : {}, ...machineName() ? { machine: machineName() } : {} }, signal));
+  if (onAutopilot)
+    return leftUndone();
+  if (answered.answer === "no") {
+    note3({ what: "declined", ...itemOf2(item), ...whoOf3(caller), ...where, ...answered.client ? { client: answered.client, by: answered.by } : {} });
+    return { ok: false, message: `The user didn't let you use “${item.name}”.` };
+  }
+  const always = answered.answer === "always" ? alwaysFor2(caller) : null;
+  if (always) {
+    setGrant(item.id, always, "own");
+    note3({ what: "granted", ...itemOf2(item), ...whoOf3(caller), how: "own", ...answered.client ? { client: answered.client, by: answered.by } : {} });
+  }
+  const allowed = always ? "always" : "once";
+  note3({ what: "allowed", ...itemOf2(item), ...whoOf3(caller), ...where, how: allowed, ...answered.client ? { client: answered.client, by: answered.by } : {} });
+  return { ok: true, how: allowed };
+}
+function tripwire(item, caller, site) {
+  const why = `It tried to use “${item.name}” on ${site}, which isn't one of its sites.`;
+  const who = caller.bot ?? caller.root ?? caller.session;
+  if (who)
+    setPaused(true, who, why);
+  note3({ what: "refused", ...itemOf2(item), ...whoOf3(caller), site, how: "wrong site" });
+  try {
+    tell2({ title: caller.botName ? `${caller.botName} paused` : "A fill was refused", subtitle: machineName(), body: why, category: "message", thread: caller.group ?? caller.root ?? "vault", data: caller.group ? { group: caller.group } : caller.root ? { session: caller.root } : {} });
+  } catch {}
+  return `${why} Kuvo Code only fills it on ${item.sites.join(", ")}.${who ? ` The user has been told, and this ${caller.bot ? "bot" : "conversation"}'s use of the vault is paused until they look.` : ""}`;
+}
+var noteUse = (item, caller, use, how) => note3({ what: "used", ...itemOf2(item), ...whoOf3(caller), ...use.site ? { site: use.site } : {}, ...use.program ? { program: use.program } : {}, ...use.why ? { why: use.why } : {}, how });
 
 // box/src/link/vault/ssh.ts
 var isSshKey = (item) => item.kind === "key" && item.fields.includes("private_key");
@@ -52083,9 +51144,9 @@ var IDLE = 60 * 60000;
 function safeFolder() {
   if (process.platform !== "darwin")
     return true;
-  const parent = path171.dirname(SSH_AGENTS);
+  const parent = path169.dirname(SSH_AGENTS);
   try {
-    const seen = fs161.lstatSync(parent);
+    const seen = fs158.lstatSync(parent);
     return seen.isDirectory() && seen.uid === process.getuid?.() && (seen.mode & 63) === 0;
   } catch {
     return true;
@@ -52095,9 +51156,9 @@ var EVERYONE_ONLY = process.platform !== "darwin";
 var NOTE2 = /^(ses_[A-Za-z0-9_]{1,80}|dir-[0-9a-f]{32})$/;
 var real3 = (where) => {
   try {
-    return fs161.realpathSync(where);
+    return fs158.realpathSync(where);
   } catch {
-    return path171.resolve(where);
+    return path169.resolve(where);
   }
 };
 function callerFor(note, folder) {
@@ -52107,7 +51168,7 @@ function callerFor(note, folder) {
       return who.folder && real3(who.folder) === real3(folder) ? who : null;
     };
   return async () => {
-    const bot = listBots().find((each) => each.folder && (folder === each.folder || folder.startsWith(each.folder + path171.sep)));
+    const bot = listBots().find((each) => each.folder && (folder === each.folder || folder.startsWith(each.folder + path169.sep)));
     return { folder, yours: true, ...bot ? { bot: bot.id, botName: bot.name, ...bot.session ? { session: bot.session, root: bot.session } : {} } : {} };
   };
 }
@@ -52201,37 +51262,37 @@ function keepSshAgents(watch = watchFolder) {
       for (const note of [...agents.keys()])
         close(note);
       if (safeFolder())
-        fs161.rmSync(SSH_AGENTS, { recursive: true, force: true });
+        fs158.rmSync(SSH_AGENTS, { recursive: true, force: true });
       return;
     }
-    fs161.mkdirSync(SSH_AGENTS, { recursive: true, mode: 448 });
+    fs158.mkdirSync(SSH_AGENTS, { recursive: true, mode: 448 });
     for (const [note, agent] of agents) {
       if (Date.now() - agent.used < IDLE)
         continue;
       close(note);
-      fs161.rmSync(path171.join(SSH_FOR, note), { force: true });
+      fs158.rmSync(path169.join(SSH_FOR, note), { force: true });
     }
     let notes = [];
     try {
-      notes = fs161.readdirSync(SSH_FOR).filter((name) => NOTE2.test(name));
+      notes = fs158.readdirSync(SSH_FOR).filter((name) => NOTE2.test(name));
     } catch {}
     for (const note of notes) {
       let folder = "";
       try {
-        folder = fs161.readFileSync(path171.join(SSH_FOR, note), "utf8");
+        folder = fs158.readFileSync(path169.join(SSH_FOR, note), "utf8");
       } catch {
         continue;
       }
-      if (!path171.isAbsolute(folder) || note.startsWith("dir-") && note !== `dir-${sumOf2(folder)}`)
+      if (!path169.isAbsolute(folder) || note.startsWith("dir-") && note !== `dir-${sumOf2(folder)}`)
         continue;
       if (agents.get(note)?.folder === folder)
         continue;
       close(note);
       const prefix = sumOf2(note).slice(0, 16);
-      for (const old of fs161.readdirSync(SSH_AGENTS))
+      for (const old of fs158.readdirSync(SSH_AGENTS))
         if (old.startsWith(prefix))
-          fs161.rmSync(path171.join(SSH_AGENTS, old), { force: true });
-      const socket = path171.join(SSH_AGENTS, `${prefix}${crypto54.randomBytes(9).toString("base64url")}.sock`);
+          fs158.rmSync(path169.join(SSH_AGENTS, old), { force: true });
+      const socket = path169.join(SSH_AGENTS, `${prefix}${crypto54.randomBytes(9).toString("base64url")}.sock`);
       const agent = { folder, server: serveAgent(socket, sourceFor(callerFor(note, folder))), used: Date.now() };
       agent.server.on("connection", () => {
         agent.used = Date.now();
@@ -52247,13 +51308,13 @@ function keepSshAgents(watch = watchFolder) {
         close(note);
   };
   try {
-    fs161.mkdirSync(SSH_FOR, { recursive: true, mode: 448 });
+    fs158.mkdirSync(SSH_FOR, { recursive: true, mode: 448 });
     if (safeFolder())
-      fs161.rmSync(SSH_AGENTS, { recursive: true, force: true });
-    for (const note of fs161.readdirSync(SSH_FOR)) {
+      fs158.rmSync(SSH_AGENTS, { recursive: true, force: true });
+    for (const note of fs158.readdirSync(SSH_FOR)) {
       try {
-        if (Date.now() - fs161.statSync(path171.join(SSH_FOR, note)).mtimeMs > NOTE_KEPT)
-          fs161.rmSync(path171.join(SSH_FOR, note), { force: true });
+        if (Date.now() - fs158.statSync(path169.join(SSH_FOR, note)).mtimeMs > NOTE_KEPT)
+          fs158.rmSync(path169.join(SSH_FOR, note), { force: true });
       } catch {}
     }
   } catch {}
@@ -52267,7 +51328,7 @@ function keepSshAgents(watch = watchFolder) {
   const quick = setInterval(() => {
     let seen;
     try {
-      seen = fs161.statSync(SSH_FOR);
+      seen = fs158.statSync(SSH_FOR);
     } catch {
       return;
     }
@@ -52288,7 +51349,7 @@ function keepSshAgents(watch = watchFolder) {
       close(note);
     try {
       if (safeFolder())
-        fs161.rmSync(SSH_AGENTS, { recursive: true, force: true });
+        fs158.rmSync(SSH_AGENTS, { recursive: true, force: true });
     } catch {}
   };
   process.once("exit", stop);
@@ -52296,10 +51357,10 @@ function keepSshAgents(watch = watchFolder) {
 }
 
 // box/src/link/vault/holder.ts
-var VAULT_SOCKET = path172.join(RUN, "vault.sock");
+var VAULT_SOCKET = path170.join(RUN, "vault.sock");
 var holding4 = false;
 var holdsVault = () => holding4;
-var heldHere = (route) => /^kuvo\/(vault|sandbox\/(asks|tools|allowed|stopped)|settings\/[^/?]+(\/[^/?]+\/[^/?]+)?(\?|$))(\/|\?|$)/.test(route);
+var heldHere = (route) => /^kuvo\/(vault|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/?]+\/asks|settings\/[^/?]+(\/[^/?]+\/[^/?]+)?(\?|$))(\/|\?|$)/.test(route);
 var MOST4 = 8 * 1024 * 1024;
 var KEY3 = "x-kuvo-vault-key";
 var AUTH = "x-kuvo-vault-auth";
@@ -52307,12 +51368,12 @@ var nonce = () => crypto55.randomBytes(18).toString("base64url");
 var covered = (theirs, method, route, body) => `${theirs}\x00${method.toUpperCase()}\x00${route}\x00${crypto55.createHash("sha256").update(body).digest("base64url")}`;
 function holdVault(handle, keepAgents = keepSshAgents) {
   holding4 = true;
-  fs162.mkdirSync(RUN, { recursive: true, mode: 448 });
+  fs159.mkdirSync(RUN, { recursive: true, mode: 448 });
   try {
-    fs162.rmSync(path172.join(RUN, "vault-run"), { recursive: true, force: true });
+    fs159.rmSync(path170.join(RUN, "vault-run"), { recursive: true, force: true });
   } catch {}
   try {
-    fs162.rmSync(VAULT_SOCKET, { force: true });
+    fs159.rmSync(VAULT_SOCKET, { force: true });
   } catch {}
   try {
     socketKey();
@@ -52422,7 +51483,7 @@ function holdVault(handle, keepAgents = keepSshAgents) {
 }
 function socketLooksHeld() {
   try {
-    const stat = fs162.lstatSync(VAULT_SOCKET);
+    const stat = fs159.lstatSync(VAULT_SOCKET);
     return stat.isSocket() && (process.getuid ? stat.uid === process.getuid() : true) && (stat.mode & 63) === 0;
   } catch {
     return false;
@@ -52512,11 +51573,242 @@ function askHolder(request, signal) {
   });
 }
 
+// box/src/link/areas/sandbox.ts
+var NOT_OPEN = "This computer's box isn't running its own process: try again in a moment.";
+var NOT_CALLING = "Only a conversation's own tool call can ask, and this one isn't running in it.";
+var NOT_ON = "Commands aren't in the sandbox on this computer now, so there's nothing to ask: run the command with your shell tool.";
+var shown3 = () => {
+  const { on, able, agents, ...not } = fenceState();
+  try {
+    tellAgents();
+  } catch {}
+  return { on, able, agents, ...Object.fromEntries(Object.entries(not).filter(([, value]) => value !== undefined)) };
+};
+var idOf4 = (part) => {
+  try {
+    return decodeURIComponent(part ?? "");
+  } catch {
+    return "";
+  }
+};
+function clientName({ phone }) {
+  if (!phone?.key)
+    return "Mac";
+  const key = phone.key.toString("base64url");
+  return readLink()?.phones?.find((each) => each.key === key)?.name || "iPhone";
+}
+async function* sandboxRoute(context) {
+  const { request, json, route, signal, readEngine, readBridge } = context;
+  const method = request.method.toUpperCase();
+  if (route === "kuvo/sandbox/check") {
+    if (method !== "POST")
+      return yield* json(405, {});
+    try {
+      setUpFence();
+    } catch {}
+    return yield* json(200, shown3());
+  }
+  if (route === "kuvo/sandbox") {
+    if (method !== "GET")
+      return yield* json(405, {});
+    return yield* json(200, shown3());
+  }
+  const body = parsed(request.body);
+  const given = isObject(body) ? body : {};
+  if (route === "kuvo/sandbox/restart") {
+    if (method !== "POST")
+      return yield* json(405, {});
+    if (typeof given.restart !== "boolean")
+      return yield* json(400, { message: "Say whether to restart them: restart, true or false." });
+    const bridge = given.restart ? bridgeTarget() : null;
+    if (bridge) {
+      const told = await call(bridge, "POST", "/api/kuvo/sandbox/restart", {}, AbortSignal.timeout(1e4)).then(() => true, () => false);
+      if (!told)
+        return yield* json(503, { message: "The coding agents' bridge didn't answer: try again in a moment." });
+    }
+    answeredRestart();
+    return yield* json(200, shown3());
+  }
+  const parts = route.split("/");
+  if (!heldHere(route))
+    return yield* json(404, {});
+  if (!holdsVault()) {
+    const answer = await askHolder(request, signal);
+    if (!answer)
+      return yield* json(503, { message: NOT_OPEN });
+    return yield* [{ head: { status: answer.status, headers: { "content-type": answer.type || "application/json" } } }, { body: Buffer.from(answer.body, "base64") }];
+  }
+  if (route === "kuvo/sandbox/allowed" || parts[2] === "allowed") {
+    try {
+      const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+      forgetGoneBots();
+      const answer = async (of) => ({ allowed: await listed(await allowedFor(of)), ...of ? {} : { owners: addableOwners() } });
+      if (route === "kuvo/sandbox/allowed" && method === "GET")
+        return yield* json(200, await answer(query.get("project") ?? undefined));
+      if (route === "kuvo/sandbox/allowed" && method === "POST") {
+        const project = given.project === undefined && given.owner !== undefined ? folderOfOwner(given.owner) : given.project;
+        const rule = await addRule({ ...given, project, by: clientName(context) });
+        return yield* json(200, await answer(query.has("all") ? undefined : rule.project));
+      }
+      if (parts.length === 4 && method === "DELETE") {
+        const id = idOf4(parts[3]);
+        const rule = (await allowedFor()).find((each) => each.id === id);
+        if (!rule || !removeRule(id))
+          return yield* json(404, { message: "That isn't in Also Allowed." });
+        return yield* json(200, await answer(query.has("all") ? undefined : rule.project));
+      }
+      return yield* json(405, {});
+    } catch (error) {
+      if (error instanceof RuleRefusal)
+        return yield* json(400, { message: error.message });
+      throw error;
+    }
+  }
+  if (route === "kuvo/sandbox/tools") {
+    const on = fenceState().on;
+    if (method === "GET")
+      return yield* json(200, { tools: on ? SANDBOX_TOOLS : [] });
+    if (method !== "POST")
+      return yield* json(405, {});
+    if (!on)
+      return yield* json(200, { text: fencePending() ? notOnWords() : NOT_ON, isError: true });
+    const args = isObject(given.arguments) ? given.arguments : {};
+    const session = typeof given.session === "string" ? given.session : undefined;
+    if (typeof given.name !== "string" || !await isCalling(session, [given.name], args, readEngine, readBridge)) {
+      return yield* json(200, { text: NOT_CALLING, isError: true });
+    }
+    const caller = await callerOf(session, readEngine, readBridge);
+    return yield* json(200, await callSandboxTool(given.name, args, caller, signal));
+  }
+  if (route === "kuvo/sandbox/stopped") {
+    if (method !== "POST")
+      return yield* json(405, {});
+    const input = isObject(given.input) ? given.input : {};
+    const session = typeof given.session === "string" ? given.session : undefined;
+    if (!fenceState().on || typeof given.output !== "string")
+      return yield* json(200, {});
+    if (!await isCalling(session, ["shell", "bash"], input, readEngine, readBridge))
+      return yield* json(200, {});
+    const caller = await callerOf(session, readEngine, readBridge);
+    const calling = () => isCalling(session, ["shell", "bash"], input, readEngine, readBridge);
+    return yield* json(200, await stoppedInAuto(caller, input, given.output, calling, signal) ?? {});
+  }
+  if (route === "kuvo/sandbox/asks" || route === "kuvo/sandbox/asks/events") {
+    if (method !== "GET")
+      return yield* json(405, {});
+    const listed = () => ({ asks: listSandboxAsks(), ...asksToRestart() ? { restart: true } : {}, reviews: listAskReviews(), settled: listSettledReviews() });
+    if (route === "kuvo/sandbox/asks")
+      return yield* json(200, listed());
+    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+    let wake = () => {};
+    const stops = [onSandboxAsksChanged(() => wake()), onAskReviewsChanged(() => wake())];
+    const stop = () => {
+      for (const each of stops)
+        each();
+    };
+    let sent = "";
+    const looks = setInterval(() => {
+      if (!restartSettled() || sent.includes('"restart"'))
+        wake();
+    }, 5000);
+    try {
+      while (!signal?.aborted) {
+        const now = JSON.stringify(listed());
+        if (now !== sent)
+          yield { body: Buffer.from(now + `
+`) };
+        sent = now;
+        await new Promise((done) => {
+          wake = done;
+          signal?.addEventListener("abort", () => done(), { once: true });
+        });
+      }
+    } finally {
+      clearInterval(looks);
+      stop();
+    }
+    return;
+  }
+  if (parts.length === 4 && parts[2] === "asks") {
+    if (method !== "POST")
+      return yield* json(405, {});
+    const answer = given.answer;
+    if (answer !== "once" && answer !== "always" && answer !== "no")
+      return yield* json(400, { message: "Answer “once”, “always” or “no”." });
+    return yield* json(answerSandboxAsk(idOf4(parts[3]), { answer, client: clientName(context) }) ? 200 : 404, {});
+  }
+  return yield* json(404, {});
+}
+
+// box/src/link/areas/vault.ts
+import crypto57 from "node:crypto";
+
+// box/src/link/vault/fill.ts
+var refused6 = (status, message) => ({ status, value: { message } });
+function pageSite(origin) {
+  if (typeof origin !== "string")
+    return null;
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && url.hostname === "localhost"))
+      return null;
+    return siteOf2(url.hostname);
+  } catch {
+    return null;
+  }
+}
+async function fill(given, caller, signal) {
+  const body = isObject(given) ? given : {};
+  const site = pageSite(body.origin);
+  if (!site)
+    return refused6(400, "Kuvo Code fills only on a secure page (https).");
+  const purpose = body.purpose === "field" ? "field" : "sign-in";
+  const why = typeof body.why === "string" ? oneLine(body.why, 300) : undefined;
+  let item;
+  if (body.item !== undefined && body.item !== null && body.item !== "") {
+    item = itemNamed(body.item);
+    if (!item)
+      return refused6(404, `There's no item “${oneLine(body.item, 80)}” in the vault.`);
+    if (!usableOn(item, site))
+      return refused6(403, tripwire(item, caller, site));
+  } else {
+    if (purpose === "field")
+      return refused6(400, "Name the item to fill from.");
+    const own = readItems().filter((each) => each.kind === "login" && usableOn(each, site) && (grantFor(each, { ...caller, seat: false }) === "own" || hasOnce(caller, each.id)));
+    if (own.length !== 1)
+      return refused6(404, own.length ? "More than one sign-in fits this site." : "No sign-in in the vault is yours to use on this site.");
+    item = own[0];
+  }
+  if (purpose === "field" && item.signInOnly)
+    return refused6(403, `“${item.name}” is only for signing in: use browser_sign_in.`);
+  const may = await mayUse(item, caller, { site, ...why ? { why } : {}, askWithout: true, signal });
+  if (!may.ok)
+    return refused6(403, may.message);
+  const values = await valuesOf(item.id);
+  let filled;
+  if (purpose === "sign-in") {
+    if (item.kind !== "login")
+      return refused6(400, `“${item.name}” isn't a sign-in: fill one of its fields with browser_fill.`);
+    filled = values.password !== undefined ? { password: values.password } : {};
+  } else {
+    const field = typeof body.field === "string" && body.field ? body.field.trim().toLowerCase() : item.kind === "login" ? "password" : item.fields.length === 1 ? item.fields[0] : "";
+    if (field === "username" && item.username)
+      filled = { username: item.username };
+    else if (!field || values[field] === undefined)
+      return refused6(400, `Say which of “${item.name}”'s fields to fill: ${["username", ...item.fields].filter((each) => each !== "username" || item.username).join(", ")}.`);
+    else
+      filled = { [field]: values[field] };
+  }
+  noteUsed(item.id);
+  noteUse(item, caller, { site, ...why ? { why } : {} }, may.how);
+  return { status: 200, value: { item: { id: item.id, name: item.name }, ...item.username ? { username: item.username } : {}, values: filled } };
+}
+
 // box/src/link/vault/tools.ts
 import crypto56 from "node:crypto";
-import fs163 from "node:fs";
+import fs160 from "node:fs";
 import os20 from "node:os";
-import path173 from "node:path";
+import path171 from "node:path";
 
 // box/src/link/vault/mask.ts
 var SHORTEST = 4;
@@ -52663,6 +51955,7 @@ async function askForItem(caller, args, signal) {
     need,
     why,
     ...caller.group ? { group: caller.group } : {},
+    always: alwaysFor2(caller) !== null,
     ...site ? { site } : {},
     ...asker,
     ...IS_MAC ? {} : { machine: os20.hostname() }
@@ -52684,7 +51977,7 @@ async function askForItem(caller, args, signal) {
 var MOST_OUTPUT3 = 64 * 1024;
 var CALL_BUDGET2 = 15.5 * 60000;
 var VARIABLE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
-var RUN_FOLDER = path173.join(RUN, "vault-run");
+var RUN_FOLDER = path171.join(RUN, "vault-run");
 function namedValue(named) {
   const whole = itemNamed(named);
   if (whole)
@@ -52713,8 +52006,8 @@ async function runWith(caller, args, signal) {
   if (!isObject(args.variables) || !Object.keys(args.variables).length)
     return failed3("Name at least one variable and the item it gets.");
   const started = Date.now();
-  const program = path173.basename(command.split(/\s+/)[0] ?? "");
-  const folder = caller.folder && fs163.existsSync(caller.folder) ? caller.folder : homeFolder();
+  const program = path171.basename(command.split(/\s+/)[0] ?? "");
+  const folder = caller.folder && fs160.existsSync(caller.folder) ? caller.folder : homeFolder();
   const wanted = [];
   for (const [variable, named] of Object.entries(args.variables)) {
     if (!VARIABLE.test(variable))
@@ -52740,21 +52033,21 @@ async function runWith(caller, args, signal) {
       return may.leftUndone ? { text: may.message, isError: false } : failed3(may.message);
     allowed.set(item.id, may.how);
   }
-  const scratch = path173.join(RUN_FOLDER, crypto56.randomBytes(8).toString("hex"));
+  const scratch = path171.join(RUN_FOLDER, crypto56.randomBytes(8).toString("hex"));
   const env = commandEnv();
   const hidden = [];
   try {
-    fs163.mkdirSync(scratch, { recursive: true, mode: 448 });
+    fs160.mkdirSync(scratch, { recursive: true, mode: 448 });
     for (const { variable, item, field } of wanted) {
       const value = (await valuesOf(item.id))[field];
       if (value === undefined)
         return failed3(`“${item.name}” has no ${field} kept.`);
       if (item.kind === "file" && field === "file") {
-        const name = path173.basename(item.fileName ?? "");
-        const file = path173.join(scratch, variable, name && name !== "." && name !== ".." ? name : variable.toLowerCase());
-        fs163.mkdirSync(path173.dirname(file), { recursive: true, mode: 448 });
+        const name = path171.basename(item.fileName ?? "");
+        const file = path171.join(scratch, variable, name && name !== "." && name !== ".." ? name : variable.toLowerCase());
+        fs160.mkdirSync(path171.dirname(file), { recursive: true, mode: 448 });
         const bytes = Buffer.from(value, "base64");
-        fs163.writeFileSync(file, bytes, { mode: 384 });
+        fs160.writeFileSync(file, bytes, { mode: 384 });
         env[variable] = file;
         const base64 = bytes.toString("base64");
         const wrapped = (width) => base64.match(new RegExp(`.{1,${width}}`, "g")).join(`
@@ -52771,7 +52064,7 @@ async function runWith(caller, args, signal) {
     }
     const left = Math.floor((CALL_BUDGET2 - (Date.now() - started)) / 1000);
     const seconds = Math.max(1, Math.min(600, left, Number(args.timeout) || 300));
-    const { output, code, timedOut } = await runCommand(command, folder, env, seconds * 1000, signal, scratch, () => fs163.rmSync(scratch, { recursive: true, force: true }));
+    const { output, code, timedOut } = await runCommand(command, folder, env, seconds * 1000, signal, scratch, () => fs160.rmSync(scratch, { recursive: true, force: true }));
     let shown = maskValues(output, hidden);
     if (shown.length > MOST_OUTPUT3)
       shown = "…" + shown.slice(-MOST_OUTPUT3).replace(/^[^\n]*\n/, "");
@@ -52782,7 +52075,7 @@ async function runWith(caller, args, signal) {
 
 `}${ended} (Values from the vault are shown as [vault: <item>].)`, isError: timedOut || code !== 0 };
   } finally {
-    fs163.rmSync(scratch, { recursive: true, force: true });
+    fs160.rmSync(scratch, { recursive: true, force: true });
   }
 }
 async function callTool(name, args, caller, signal) {
@@ -52806,9 +52099,9 @@ async function callTool(name, args, caller, signal) {
 }
 
 // box/src/link/areas/vault.ts
-var NOT_OPEN = "This computer's vault isn't open: Kuvo Code's link here isn't running. Try again in a moment.";
+var NOT_OPEN2 = "This computer's vault isn't open: Kuvo Code's link here isn't running. Try again in a moment.";
 var CLIENTS_ONLY = "Only Kuvo Code on your Mac or iPhone can do this.";
-var NOT_CALLING = "Only a conversation's own tool call can use the vault, and this one isn't running in it.";
+var NOT_CALLING2 = "Only a conversation's own tool call can use the vault, and this one isn't running in it.";
 var stringOf = (value) => typeof value === "string" ? value : undefined;
 var filledFor = new Set;
 var ED_SPKI2 = Buffer.from("302a300506032b6570032100", "hex");
@@ -52874,7 +52167,7 @@ function provedRequest(request) {
   const hash = crypto57.createHash("sha256").update(request.body ?? Buffer.alloc(0)).digest("hex");
   return provedMac(given, `kuvo-vault-request`, `\x00${request.method.toUpperCase()}\x00${request.path}\x00${hash}`);
 }
-var idOf4 = (part) => {
+var idOf5 = (part) => {
   try {
     return decodeURIComponent(part ?? "");
   } catch {
@@ -52885,7 +52178,7 @@ async function* vaultRoute(context) {
   if (!holdsVault()) {
     const answer = await askHolder(context.request, context.signal);
     if (!answer)
-      return yield* context.json(503, { message: NOT_OPEN });
+      return yield* context.json(503, { message: NOT_OPEN2 });
     return yield* [{ head: { status: answer.status, headers: { "content-type": answer.type || "application/json" } } }, { body: Buffer.from(answer.body, "base64") }];
   }
   try {
@@ -52919,7 +52212,7 @@ async function* answerVault(context) {
       return yield* json(200, { text: AGENTS_LATER, isError: true });
     const args = isObject(given.arguments) ? given.arguments : {};
     if (typeof given.name !== "string" || !await isCalling(stringOf(given.session), [given.name], args, readEngine, readBridge)) {
-      return yield* json(200, { text: NOT_CALLING, isError: true });
+      return yield* json(200, { text: NOT_CALLING2, isError: true });
     }
     const caller = await callerOf(given.session, readEngine, readBridge);
     return yield* json(200, await callTool(given.name, args, caller, signal));
@@ -52937,7 +52230,7 @@ async function* answerVault(context) {
       return yield* json(423, { message: LOCKED });
     const call = await callingNow(stringOf(given.session), open ? ["browser_sign_in", "browser_fill"] : ["browser_sign_in"], null, readEngine, readBridge);
     if (!call || filledFor.has(call))
-      return yield* json(403, { message: NOT_CALLING });
+      return yield* json(403, { message: NOT_CALLING2 });
     filledFor.add(call);
     if (filledFor.size > 1000)
       filledFor.delete(filledFor.values().next().value);
@@ -53054,7 +52347,7 @@ async function* answerVault(context) {
     const item = typeof given.item === "string" ? given.item : undefined;
     if (item && !itemByID(item))
       return yield* json(404, { message: "That item isn't in this vault." });
-    return yield* json(answer4(idOf4(parts[3]), { answer, ...item ? { item } : {}, client: client.name, by: client.by }) ? 200 : 404, {});
+    return yield* json(answer4(idOf5(parts[3]), { answer, ...item ? { item } : {}, client: client.name, by: client.by }) ? 200 : 404, {});
   }
   if (route === "kuvo/vault/items") {
     if (method !== "POST")
@@ -53071,7 +52364,7 @@ async function* answerVault(context) {
   if (parts[2] === "items" && parts.length >= 4) {
     if (isLocked())
       return yield* json(423, { message: LOCKED });
-    const id = idOf4(parts[3]);
+    const id = idOf5(parts[3]);
     if (parts.length === 5 && parts[4] === "values") {
       if (method !== "GET")
         return yield* json(405, {});
@@ -53110,6 +52403,1074 @@ async function* answerVault(context) {
   }
   return yield* json(404, { message: `There's no ${oneLine(route, 80)}.` });
 }
+
+// box/src/link/areas/glance.ts
+import fs161 from "node:fs";
+
+// box/src/link/work/accounts.ts
+var ASK_WAIT2 = 5000;
+async function accountsOn(target, signal) {
+  const wait = AbortSignal.timeout(ASK_WAIT2);
+  const listed = await call(target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, wait]) : wait).catch(() => null);
+  const accounts = new Map;
+  for (const each of Array.isArray(listed) ? listed : []) {
+    if (!isObject(each) || typeof each.id !== "string" || typeof each.name !== "string" || !each.name.trim())
+      continue;
+    const name = each.name.trim();
+    const label = isObject(each.metadata) && each.metadata.source === "agent" && typeof each.metadata.accountLabel === "string" ? each.metadata.accountLabel.trim() : "";
+    accounts.set(each.id, label ? { name, label } : { name });
+  }
+  return accounts;
+}
+async function workAccounts(sessions, signal) {
+  const asked = new Map;
+  const accounts = new Map;
+  await Promise.all(sessions.map(async ({ id, target, provider }) => {
+    if (!provider || provider === "auto")
+      return;
+    if (!asked.has(target.port))
+      asked.set(target.port, accountsOn(target, signal));
+    const account = (await asked.get(target.port)).get(provider);
+    if (account)
+      accounts.set(id, account);
+  }));
+  return accounts;
+}
+
+// box/src/link/areas/glance.ts
+var GLANCE_ROUTE = /^kuvo\/sessions\/glance(\/events)?$/;
+var GLANCE_MOST = 200;
+var repositories = new Map;
+async function repositoryOf4(root, now) {
+  const kept = repositories.get(root);
+  if (kept && now - kept.at < 5 * 60000)
+    return kept.repository;
+  const remote = await originOf(root);
+  const page = remote ? webPage(remote) : null;
+  const parts = page?.pathname.replace(/^\/|\/$/g, "").split("/") ?? [];
+  const repository = page && page.hostname.includes("github") && parts.length === 2 ? { host: page.hostname, owner: parts[0], repo: parts[1] } : null;
+  repositories.set(root, { at: now, repository });
+  return repository;
+}
+
+class Unreached extends Error {
+}
+async function sessionHere(targets, id, signal) {
+  let unreached = false;
+  for (const target of targets) {
+    const wait = AbortSignal.timeout(5000);
+    try {
+      const found = await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, signal ? AbortSignal.any([signal, wait]) : wait);
+      if (isObject(found) && found.id === id)
+        return { target, data: found };
+    } catch (error) {
+      if (error.status !== 404)
+        unreached = true;
+    }
+  }
+  if (unreached)
+    throw new Unreached("The engine isn't answering.");
+  return null;
+}
+var counts = new Map;
+async function linesIn(directory, base) {
+  const kept = counts.get(directory);
+  if (kept && Date.now() - kept.at < 30000)
+    return kept.counted;
+  const counted = await countIn(directory, "branch", base).catch(() => null);
+  counts.set(directory, { at: Date.now(), counted });
+  if (counts.size > 500)
+    counts.delete(counts.keys().next().value);
+  return counted;
+}
+function madeAt(root) {
+  try {
+    const stat = fs161.statSync(root);
+    return stat.birthtimeMs > 0 ? stat.birthtimeMs : undefined;
+  } catch {
+    return;
+  }
+}
+async function glances(ids, targets, signal, now = Date.now) {
+  const found = (await Promise.all(ids.map((id) => sessionHere(targets, id, signal)))).filter((each) => each !== null);
+  const links = readPullLinks();
+  const wanted = new Map;
+  const trees = new Map;
+  for (const { data } of found) {
+    const directory = data.location?.directory ?? data.directory;
+    const tree = directory ? worktreeOf(directory) : undefined;
+    if (tree)
+      trees.set(data.id, tree);
+    const made = links[data.id] ? pullAt(links[data.id].url) : null;
+    if (made)
+      wanted.set(data.id, { ask: { host: made.host, owner: made.owner, repo: made.repo, number: made.number }, url: made.url, number: made.number });
+    else if (tree) {
+      const repository = await repositoryOf4(tree.root, now());
+      const since = madeAt(tree.root);
+      if (repository)
+        wanted.set(data.id, { ask: { ...repository, branch: tree.branch, ...since ? { since: since - 60000 } : {} } });
+    }
+  }
+  const [pulls, accounts, asked] = await Promise.all([
+    readPulls([...wanted.values()].map((each) => each.ask), now),
+    workAccounts(found.map(({ target, data }) => ({ id: data.id, target, provider: data.model?.providerID })), signal),
+    askedSince(found.map(({ data }) => data.id), targets, signal)
+  ]);
+  const answer = {};
+  for (const { data } of found) {
+    const glance = {};
+    const tree = trees.get(data.id);
+    const want = wanted.get(data.id);
+    const read = want ? pulls.get(keyOf4(want.ask)) : undefined;
+    let pull;
+    if (read)
+      pull = { number: read.number, url: read.url, state: read.state, additions: read.additions, deletions: read.deletions, ...read.checks ? { checks: read.checks } : {} };
+    else if (want?.number && want.url)
+      pull = { number: want.number, url: want.url };
+    const branch = tree?.branch ?? (read?.branch || undefined);
+    if (branch)
+      glance.branch = branch;
+    if (pull)
+      glance.pull = pull;
+    else if (tree) {
+      const directory = data.location?.directory ?? data.directory ?? tree.root;
+      const counted = await linesIn(directory, tree.base);
+      if (counted?.repository)
+        Object.assign(glance, { additions: counted.additions, deletions: counted.deletions });
+    }
+    const account = accounts.get(data.id);
+    if (account)
+      glance.account = account;
+    const since = asked.get(data.id);
+    if (since !== undefined)
+      glance.asked = since;
+    answer[data.id] = glance;
+  }
+  return answer;
+}
+function sessionsAsked(requestPath) {
+  const given = new URLSearchParams(requestPath.split("?")[1] ?? "").get("sessions") ?? "";
+  const ids = [...new Set(given.split(",").map((each) => each.trim()).filter((each) => /^ses[A-Za-z0-9_-]+$/.test(each)))];
+  return ids.length && ids.length <= GLANCE_MOST ? ids : null;
+}
+var changes = () => askChanges + pullChanges;
+function changeOrPause(ms, seen, signal) {
+  return new Promise((resolve) => {
+    let settle;
+    const done = () => {
+      clearTimeout(timer);
+      clearTimeout(settle);
+      askFollowers2.delete(changed);
+      pullFollowers.delete(changed);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const changed = () => {
+      if (!settle)
+        settle = setTimeout(done, 1500);
+    };
+    const timer = setTimeout(done, ms);
+    askFollowers2.add(changed);
+    pullFollowers.add(changed);
+    signal?.addEventListener("abort", done, { once: true });
+    if (signal?.aborted)
+      done();
+    else if (changes() !== seen)
+      changed();
+  });
+}
+async function* glanceRoute(context, match) {
+  const { request, readEngine, bridge, signal, json } = context;
+  if (request.method.toUpperCase() !== "GET")
+    return yield* json(405, {});
+  const ids = sessionsAsked(request.path);
+  if (!ids)
+    return yield* json(400, { message: `Name the sessions: sessions=<id>,<id>… (${GLANCE_MOST} at most).` });
+  const targets = targetsOf({ readEngine, bridge });
+  if (!targets.length)
+    return yield* json(503, { message: "The engine isn't running." });
+  if (!match[1]) {
+    try {
+      return yield* json(200, { sessions: await glances(ids, targets, signal ?? undefined) });
+    } catch (error) {
+      if (error instanceof Unreached)
+        return yield* json(503, { message: error.message });
+      throw error;
+    }
+  }
+  yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+  let last = "";
+  while (!signal?.aborted) {
+    const seen = changes();
+    let line = null;
+    try {
+      line = JSON.stringify({ sessions: await glances(ids, targetsOf({ readEngine, bridge }), signal ?? undefined) });
+    } catch (error) {
+      if (!(error instanceof Unreached))
+        throw error;
+    }
+    if (signal?.aborted)
+      return;
+    if (line !== null && line !== last) {
+      yield { body: Buffer.from(line + `
+`) };
+      last = line;
+    }
+    await changeOrPause(FRESH, seen, signal ?? undefined);
+  }
+}
+
+// box/src/link/areas/session-asks.ts
+var SESSION_ASKS_ROUTE = /^kuvo\/sessions\/([^/]+)\/asks(?:\/([^/]+))?$/;
+var text5 = (value) => typeof value === "string" ? value : null;
+var strings = (value) => Array.isArray(value) ? value.filter((each) => typeof each === "string") : [];
+function relativeTo(folder, file) {
+  if (!folder)
+    return file;
+  const base = folder.endsWith("/") ? folder : folder + "/";
+  return file.startsWith(base) ? file.slice(base.length) : file;
+}
+function permissionTitle(action, resources, folder, command) {
+  const subject = resources.length ? relativeTo(folder, resources[0]) + (resources.length > 1 ? ` and ${resources.length - 1} more` : "") : "this";
+  switch (action) {
+    case "edit":
+    case "patch":
+      return `Allow editing ${subject}?`;
+    case "write":
+      return `Allow writing ${subject}?`;
+    case "read":
+      return `Allow reading ${subject}?`;
+    case "shell":
+    case "bash":
+      return resources.length > 1 && command === null ? "Allow running these commands?" : "Allow running this command?";
+    case "external_directory":
+      return "Allow working outside the project?";
+    case "subagent":
+      return `Allow starting the ${subject} agent?`;
+    case "webfetch":
+      return `Allow fetching ${subject}?`;
+    default:
+      return `Allow ${action.replaceAll("_", " ")}?`;
+  }
+}
+function choicesOf(request, home, forConversation = false) {
+  const always = alwaysWords(request, home, forConversation);
+  return [
+    { answer: "once", title: "Allow Once", named: null, placeholder: null, help: null, spoken: null },
+    { answer: "always", title: always.title, named: always.named, placeholder: null, help: always.help, spoken: always.spoken },
+    { answer: "reject", title: "Don’t Allow", named: null, placeholder: null, help: null, spoken: null },
+    { answer: "instead", title: "Tell It What to Do Instead…", named: null, placeholder: "Tell it what to do instead…", help: null, spoken: null }
+  ];
+}
+var STATUSES3 = new Set(["added", "deleted", "modified"]);
+function permissionAsk(request, asker, folder, command, home, forConversation = false) {
+  const action = String(request.action ?? "");
+  const resources = strings(request.resources);
+  const files = (Array.isArray(request.metadata?.files) ? request.metadata.files : []).flatMap((file) => isObject(file) && typeof file.file === "string" ? [{ file: file.file, patch: String(file.patch ?? ""), additions: Number(file.additions) || 0, deletions: Number(file.deletions) || 0, status: STATUSES3.has(file.status) ? file.status : null }] : []);
+  return {
+    id: request.id,
+    kind: "permission",
+    session: asker,
+    title: permissionTitle(action, resources, folder, command),
+    message: text5(request.message),
+    command,
+    files,
+    resources: resources.map((each) => action === "external_directory" ? outsideShown(each, home) : relativeTo(folder, each)),
+    choices: choicesOf({ action, resources, ...request.save !== undefined ? { save: request.save } : {} }, home, forConversation)
+  };
+}
+var takesChoiceOrWords = (field) => field.type === "string" && field.format !== "password" || field.type === "multiselect";
+var shownFields = (fields) => fields.filter((field) => field.hidden !== true);
+function questionsOf(form) {
+  const fields = (Array.isArray(form.fields) ? form.fields : []).filter(isObject);
+  if (form.metadata?.kind !== "question" || !fields.length || !fields.every(takesChoiceOrWords))
+    return null;
+  const shown = shownFields(fields);
+  if (!shown.length || shown.some((field) => Array.isArray(field.when) && field.when.length) || shown.some((field) => typeof field.key !== "string"))
+    return null;
+  return shown.map((field) => {
+    const options = (Array.isArray(field.options) ? field.options : []).filter(isObject).map((option) => ({
+      value: String(option.value ?? option.label ?? ""),
+      label: String(option.label ?? option.value ?? ""),
+      description: text5(option.description)
+    }));
+    const multiple = field.type === "multiselect";
+    return {
+      key: field.key,
+      title: text5(field.title),
+      question: text5(field.description) ?? text5(field.title) ?? text5(form.title) ?? "",
+      options,
+      multiple,
+      custom: field.custom === true || !multiple && !options.length,
+      required: field.required === true
+    };
+  });
+}
+var choice = (answer, title, more = {}) => ({ answer, title, named: null, placeholder: null, help: null, spoken: null, ...more });
+function shortPath(path) {
+  for (const prefix of ["/Users/", "/home/"]) {
+    if (!path.startsWith(prefix))
+      continue;
+    const rest = path.slice(prefix.length);
+    const slash = rest.indexOf("/");
+    return slash < 0 ? "~" : "~" + rest.slice(slash);
+  }
+  if (path === "/root")
+    return "~";
+  if (path.startsWith("/root/"))
+    return "~" + path.slice("/root".length);
+  return path;
+}
+var STOP_LABELS = { write: "Write", read: "Read", connect: "Connect", job: "Job", app: "App", other: "Other" };
+var folderName2 = (folder) => folder.replace(/\/+$/, "").split("/").pop() || folder;
+function sandboxAskShown(asked) {
+  const asker = asked.botName ?? asked.sessionName ?? "An agent";
+  const place = asked.owner?.kind === "bot" ? `${asked.owner.name || asker}’s folder` : asked.owner?.kind === "chats" ? "Chats" : folderName2(asked.project);
+  const first = asked.stopped?.[0];
+  const message = first ? { write: `The sandbox stopped it from changing a file outside ${place}.`, read: "The sandbox stopped it from reading a file it keeps private.", connect: "The sandbox stopped it from making a connection.", job: "The sandbox stopped it from starting a background job.", app: "The sandbox stopped it from opening or talking to an app.", other: "The sandbox stopped it." }[first.kind] ?? "The sandbox stopped it." : asked.error ? asked.machine ? `On ${asked.machine}, the sandbox stopped it with this error.` : "The sandbox stopped it with this error." : "The sandbox stopped it.";
+  const stopped = (asked.stopped ?? []).map((stop) => ({
+    label: STOP_LABELS[stop.kind] ?? "Other",
+    detail: stop.path ? shortPath(stop.path) : stop.kind === "job" ? "Start a background job" : stop.kind === "app" ? "Open or talk to an app" : stop.kind === "connect" ? "Make a connection" : "Something the sandbox keeps out"
+  }));
+  const choices = [choice("once", "Allow Once", { help: "Runs it outside the sandbox this once", spoken: "Allow once: run it outside the sandbox" })];
+  if (asked.always) {
+    const path = shortPath(asked.always.path);
+    const chats = asked.owner?.kind === "chats";
+    const whose = asked.owner?.kind === "bot" ? `${asked.owner.name || asker}’s commands` : chats ? "every chat’s commands" : `${folderName2(asked.project)}’s commands`;
+    choices.push(choice("always", "Always Allow", {
+      named: path,
+      ...chats ? { after: "in every chat" } : {},
+      help: `Runs it, and from now on lets ${whose} write in ${path} too, in the sandbox.`,
+      spoken: `Always Allow ${path}${chats ? " in every chat" : ""}`
+    }));
+  }
+  choices.push(choice("reject", "Don’t Allow", { help: "It goes on without running it" }));
+  return {
+    id: asked.id,
+    kind: "sandbox",
+    session: asked.session,
+    title: `${asker} wants to run a command outside the sandbox`,
+    message,
+    command: asked.command,
+    stopped,
+    error: stopped.length ? null : asked.error ?? null,
+    asker,
+    why: asked.why,
+    choices
+  };
+}
+var NOT_A_CLIENT = "Answer it on your iPhone: only a device this computer’s vault knows can answer it.";
+function vaultAskShown(asked, givable) {
+  const asker = asked.botName ?? asked.sessionName ?? "An agent";
+  const forGood = asked.always === true && !asked.group;
+  const who = asked.botName ?? "this project";
+  const reject = choice("reject", "Don’t Allow", { help: "It goes on without it" });
+  const title = asked.kind === "use" ? `${asker} wants to use ${asked.itemName ?? "an item"}` : `${asker} needs ${asked.need ?? "something from your vault"}`;
+  if ("refused" in givable)
+    return { id: asked.id, kind: "vault", session: asked.session, need: asked.kind, title, message: asked.why ?? null, site: asked.site ?? null, note: givable.refused, choices: [] };
+  if (asked.kind === "use") {
+    const item = asked.itemName ? `“${asked.itemName}”` : "it";
+    const choices = [choice("once", "Allow Once", { help: `Lets it use ${item} this once`, spoken: `Allow once: let it use ${item}` })];
+    if (forGood)
+      choices.push(choice("always", "Always Allow", { help: `Lets ${who} use ${item} from now on, without asking`, spoken: `Always allow ${who} to use ${item}`, confirm: true }));
+    choices.push(reject);
+    return { id: asked.id, kind: "vault", session: asked.session, need: "use", title, message: asked.why ?? null, site: asked.site ?? null, note: null, choices };
+  }
+  const choices = [];
+  for (const item of "items" in givable ? givable.items : []) {
+    choices.push(choice("once", "Give", { named: item.name, item: item.id, help: `Gives it “${item.name}” this once`, spoken: `Give ${item.name}, this once` }));
+    if (forGood)
+      choices.push(choice("always", "Always Give", { named: item.name, item: item.id, help: `Gives it “${item.name}”, and lets ${who} use it from now on, without asking`, spoken: `Always give ${item.name}`, confirm: true }));
+  }
+  choices.push(reject);
+  const note = "note" in givable ? givable.note : givable.items.length ? null : "There’s nothing in this computer’s vault to give it yet.";
+  return { id: asked.id, kind: "vault", session: asked.session, need: "item", title, message: asked.why ?? null, site: asked.site ?? null, note, choices };
+}
+async function givableTo(client, site) {
+  if (!client)
+    return { refused: NOT_A_CLIENT };
+  if (isLocked())
+    return { note: "This computer’s vault is locked: unlock it to give it an item." };
+  const forSite = (sites) => !!site && sites.some((each) => each === site || site.endsWith("." + each) || each.endsWith("." + site));
+  return {
+    items: readItems().sort((a, b) => Number(forSite(b.sites)) - Number(forSite(a.sites)) || a.name.localeCompare(b.name)).map((item) => ({ id: item.id, name: item.name }))
+  };
+}
+async function asksOf(target, session, folder, signal, place = {}) {
+  const wait = () => signal ? AbortSignal.any([signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000);
+  const reviewed = new Set(listAskReviews().filter((review) => review.state !== "yours").map((review) => review.id));
+  const noted = askTimes();
+  const home = homeFolder();
+  const found = [];
+  const timeOf = (id, given) => noted.get(id) ?? (typeof given === "number" ? given : 0);
+  const askers = await askersOf(target, session, undefined, { wait }).catch(() => {
+    throw new Unreached("The engine isn't answering.");
+  });
+  for (const asker of askers) {
+    const at = `/api/session/${encodeURIComponent(asker)}`;
+    let permissions, forms;
+    try {
+      [permissions, forms] = await Promise.all([call(target, "GET", `${at}/permission`, undefined, wait()), call(target, "GET", `${at}/form`, undefined, wait())]);
+    } catch (error) {
+      if (error.status === 404 && asker !== session)
+        continue;
+      throw new Unreached("The engine isn't answering.");
+    }
+    for (const request of Array.isArray(permissions) ? permissions : []) {
+      if (!isObject(request) || typeof request.id !== "string" || reviewed.has(request.id))
+        continue;
+      const action = String(request.action ?? "");
+      const source = isObject(request.source) ? request.source : null;
+      const seen = (action === "shell" || action === "bash") && typeof source?.id === "string" ? await callOf(target, { asker, call: source.id, ...typeof source.messageID === "string" ? { message: source.messageID } : {} }, signal).catch(() => null) : null;
+      const command = typeof seen?.input.command === "string" ? seen.input.command : null;
+      found.push({ at: timeOf(request.id, request.time?.created), ask: { shown: permissionAsk(request, asker, folder, command, home, place.forConversation), target, asker } });
+    }
+    for (const form of Array.isArray(forms) ? forms : []) {
+      if (!isObject(form) || typeof form.id !== "string")
+        continue;
+      const fields = (Array.isArray(form.fields) ? form.fields : []).filter(isObject);
+      const questions = questionsOf(form);
+      const title = text5(form.title) || "Question";
+      const shown = questions ? { id: form.id, kind: "question", session: asker, title, questions } : { id: form.id, kind: "other", session: asker, title, message: describeForm(form), dismiss: true };
+      found.push({ at: timeOf(form.id, form.time?.created), ask: { shown, target, asker, form: { fields } } });
+    }
+  }
+  const shared = folder ? await call(target, "GET", "/api/session/global/form", undefined, wait(), folder).catch(() => {
+    throw new Unreached("The engine isn't answering.");
+  }) : null;
+  const get = (route) => call(target, "GET", `/${route}`, undefined, wait()).then((data) => ({ data }));
+  for (const form of Array.isArray(shared) ? shared : []) {
+    const server = isObject(form) && isObject(form.metadata) ? text5(form.metadata.server) : null;
+    if (!isObject(form) || typeof form.id !== "string" || !server)
+      continue;
+    const owner = (await sessionsWaitingOnServer(server, folder, get))[0];
+    if (!owner || !askers.includes(owner))
+      continue;
+    const shown = { id: form.id, kind: "other", session, title: text5(form.title) || server, message: describeForm(form), dismiss: true };
+    found.push({ at: timeOf(form.id, form.time?.created), ask: { shown, target, asker: "global", folder } });
+  }
+  const asking = new Set(askers);
+  for (const asked of listSandboxAsks()) {
+    if (!asked.session || !asking.has(asked.session))
+      continue;
+    found.push({ at: asked.at, ask: { shown: sandboxAskShown({ ...asked, session: asked.session }), target, asker: asked.session } });
+  }
+  const vault = listAsks().filter((asked) => asked.session && asking.has(asked.session));
+  if (vault.length && place.client && onHost())
+    await primeGenerations().catch(() => {});
+  for (const asked of vault) {
+    const givable = await givableTo(place.client ?? null, asked.kind === "item" ? asked.site : undefined);
+    found.push({ at: asked.at, ask: { shown: vaultAskShown({ ...asked, session: asked.session }, givable), target, asker: asked.session } });
+  }
+  const elsewhere = (ask) => ask.shown.kind === "other" || ask.shown.kind === "vault" && !ask.shown.choices.length ? 1 : 0;
+  return found.sort((a, b) => elsewhere(a.ask) - elsewhere(b.ask) || a.at - b.at).map((each) => each.ask);
+}
+async function placeOf2(context, session) {
+  const targets = targetsOf({ readEngine: context.readEngine, bridge: context.bridge });
+  if (!targets.length)
+    throw new Unreached("The engine isn't running.");
+  const here = await sessionHere(targets, session, context.signal ?? undefined);
+  if (!here)
+    return null;
+  const data = here.data;
+  const bridge = context.bridge();
+  return { target: here.target, folder: data.location?.directory ?? data.directory ?? "", forConversation: !!bridge && bridge.port === here.target.port };
+}
+var NONE = { message: "There's no such conversation here." };
+var GONE2 = { message: "It isn't waiting any more." };
+function heard2(held) {
+  if (!held)
+    return null;
+  if (held.status === 404 && typeof parsed(Buffer.from(held.body, "base64").toString("utf8"))?.message !== "string")
+    return null;
+  return held;
+}
+function questionAnswer(fields, questions, given) {
+  if (!isObject(given))
+    return { refused: "Send the answers, by each question's key." };
+  const answer = {};
+  for (const field of fields)
+    if (typeof field.key === "string" && field.default !== undefined)
+      answer[field.key] = field.default;
+  for (const [key, value] of Object.entries(given)) {
+    const question = questions.find((each) => each.key === key);
+    if (!question)
+      return { refused: `It doesn't ask "${key}".` };
+    const picked = question.multiple ? typeof value === "string" ? [value] : value : value;
+    const each = question.multiple ? picked : [picked];
+    if (!Array.isArray(each) || !each.every((one) => typeof one === "string"))
+      return { refused: `Answer "${question.title ?? key}" with ${question.multiple ? "a list of words" : "words"}.` };
+    if (!question.custom && question.options.length && !each.every((one) => question.options.some((option) => option.value === one)))
+      return { refused: `Pick one of the choices for "${question.title ?? key}".` };
+    answer[key] = picked;
+  }
+  for (const question of questions) {
+    if (!question.required)
+      continue;
+    const value = answer[question.key];
+    const answered = Array.isArray(value) ? value.length > 0 : typeof value === "string" ? value.trim() !== "" : value !== undefined;
+    if (!answered)
+      return { refused: `Answer "${question.title ?? question.question}": it needs an answer.` };
+  }
+  return { answer };
+}
+async function* sessionAsksRoute(context, match) {
+  const { request, signal, json } = context;
+  const method = request.method.toUpperCase();
+  const session = decodeURIComponent(match[1]);
+  const ask = match[2] ? decodeURIComponent(match[2]) : null;
+  const events = ask === "events" && method === "GET";
+  if (ask && !events ? method !== "POST" : method !== "GET")
+    return yield* json(405, {});
+  if (!events && !holdsVault()) {
+    const held = heard2(await askHolder(request, signal ?? undefined));
+    if (held)
+      return yield* [{ head: { status: held.status, headers: { "content-type": held.type || "application/json" } } }, { body: Buffer.from(held.body, "base64") }];
+  }
+  let place;
+  try {
+    place = await placeOf2(context, session);
+  } catch (error) {
+    if (error instanceof Unreached)
+      return yield* json(503, { message: error.message });
+    throw error;
+  }
+  if (!place)
+    return yield* json(404, NONE);
+  const { target, folder } = place;
+  const client = clientOf({ request, phone: context.phone });
+  const read = async () => ({ asks: (await asksOf(target, session, folder, signal ?? undefined, { forConversation: place.forConversation, client })).map((each) => each.shown) });
+  const readAgain = async () => {
+    if (!holdsVault()) {
+      const held = heard2(await askHolder({ ...request, method: "GET", path: `kuvo/sessions/${encodeURIComponent(session)}/asks`, body: Buffer.alloc(0) }, signal ?? undefined));
+      if (held?.status === 200)
+        return parsed(Buffer.from(held.body, "base64").toString("utf8"));
+      if (held?.status === 404)
+        return { asks: [] };
+      if (held)
+        return;
+    }
+    const now = await placeOf2(context, session);
+    return now ? { asks: (await asksOf(now.target, session, now.folder, signal ?? undefined, { forConversation: now.forConversation, client })).map((each) => each.shown) } : { asks: [] };
+  };
+  if (!ask) {
+    try {
+      return yield* json(200, await read());
+    } catch (error) {
+      if (error instanceof Unreached)
+        return yield* json(503, { message: error.message });
+      throw error;
+    }
+  }
+  if (events) {
+    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+    const look = () => {
+      try {
+        return String(fs162.statSync(ASKS_FILE2).mtimeMs);
+      } catch {
+        return "";
+      }
+    };
+    return yield* followedLive(() => readAgain().catch((error) => {
+      if (error instanceof Unreached)
+        return;
+      throw error;
+    }), (told) => {
+      askFollowers2.add(told);
+      return () => {
+        askFollowers2.delete(told);
+      };
+    }, signal ?? undefined, { look });
+  }
+  let found;
+  try {
+    found = (await asksOf(target, session, folder, signal ?? undefined, { forConversation: place.forConversation, client })).find((each) => each.shown.id === ask);
+  } catch (error) {
+    if (error instanceof Unreached)
+      return yield* json(503, { message: error.message });
+    throw error;
+  }
+  if (!found)
+    return yield* json(404, GONE2);
+  const given = parsed(request.body);
+  if (found.shown.kind === "sandbox" || found.shown.kind === "vault") {
+    if (found.shown.kind === "vault" && !client)
+      return yield* json(403, { message: NOT_A_CLIENT });
+    const answer = isObject(given) ? given.answer : undefined;
+    const item = isObject(given) && typeof given.item === "string" ? given.item : undefined;
+    const picked = found.shown.choices.find((each) => each.answer === answer && each.item === item);
+    if (!picked || picked.answer === "instead") {
+      if (found.shown.kind === "vault" && item && isLocked())
+        return yield* json(423, { message: "This computer’s vault is locked: unlock it to give it an item." });
+      if (found.shown.kind === "vault" && item && !itemByID(item))
+        return yield* json(404, { message: "That item isn't in this vault." });
+      const offered = [...new Set(found.shown.choices.map((each) => each.answer))].join(", ");
+      return yield* json(400, { message: found.shown.kind === "vault" && found.shown.need === "item" && !item && answer !== "reject" ? "Say which item to give it." : `Answer ${offered}.` });
+    }
+    const as = picked.answer === "reject" ? "no" : picked.answer;
+    if (found.shown.kind === "sandbox") {
+      return answerSandboxAsk(found.shown.id, { answer: as, client: clientName(context) }) ? yield* json(200, {}) : yield* json(404, GONE2);
+    }
+    return answer4(found.shown.id, { answer: as, ...picked.item ? { item: picked.item } : {}, client: client.name, by: client.by }) ? yield* json(200, {}) : yield* json(404, GONE2);
+  }
+  const at = `/api/session/${encodeURIComponent(found.asker)}`;
+  let sent;
+  if (found.shown.kind === "permission") {
+    const answer = isObject(given) ? given.answer : undefined;
+    if (answer === "once" || answer === "always" || answer === "reject")
+      sent = { method: "POST", route: `${at}/permission/${encodeURIComponent(found.shown.id)}/reply`, body: { decision: answer } };
+    else if (answer === "instead") {
+      const words = isObject(given) && typeof given.message === "string" ? given.message.trim() : "";
+      if (!words)
+        return yield* json(400, { message: "Say what it should do instead." });
+      sent = { method: "POST", route: `${at}/permission/${encodeURIComponent(found.shown.id)}/reply`, body: { decision: "reject", message: words } };
+    } else
+      return yield* json(400, { message: "Answer once, always, reject or instead." });
+  } else if (isObject(given) && given.dismiss === true && (found.shown.kind !== "other" || found.shown.dismiss)) {
+    sent = { method: "DELETE", route: `${at}/form/${encodeURIComponent(found.shown.id)}` };
+  } else if (found.shown.kind === "question") {
+    const checked = questionAnswer(found.form?.fields ?? [], found.shown.questions, isObject(given) ? given.answers : undefined);
+    if ("refused" in checked)
+      return yield* json(400, { message: checked.refused });
+    sent = { method: "POST", route: `${at}/form/${encodeURIComponent(found.shown.id)}/reply`, body: { answer: checked.answer } };
+  } else {
+    return yield* json(400, { message: "This one is answered where it was asked: only dismissing it goes from here." });
+  }
+  try {
+    await call(found.target, sent.method, sent.route, sent.body, AbortSignal.timeout(15000), found.folder);
+  } catch (error) {
+    const status = error.status;
+    if (status === 404)
+      return yield* json(404, GONE2);
+    if (status === undefined)
+      return yield* json(503, { message: "The engine isn't answering." });
+    return yield* json(502, { message: String(error.message) });
+  }
+  return yield* json(200, {});
+}
+
+// box/src/link/areas/mentions.ts
+import path172 from "node:path";
+var MENTIONS_ROUTE = /^kuvo\/sessions\/([^/]+)\/mentions$/;
+var GROUP_MENTIONS_ROUTE = /^kuvo\/groups\/(grp_[a-z0-9]+)\/mentions$/;
+var MENTIONS_SHOWN = 8;
+var MENTIONS_MOST = 20;
+var length = (text) => [...new Intl.Segmenter().segment(text)].length;
+async function mentionableFiles(roots, dated, signal) {
+  const several = roots.length > 1;
+  const folders = several ? roots.map((root, folder) => ({ path: `${path172.basename(root)}/`, folder, mention: `${path172.basename(root)}/`, name: path172.basename(root), modified: null, isFolder: true })) : [];
+  const files = [];
+  for (const [folder, root] of roots.entries()) {
+    const listed = await listTree(`kuvo/folders/tree?path=${encodeURIComponent(root)}${dated ? "&dated=1" : ""}`, undefined, signal);
+    if (listed.status !== 200 || !("files" in listed.value))
+      continue;
+    const { files: names, modified } = listed.value;
+    const prefix = several ? `${path172.basename(root)}/` : "";
+    names.forEach((name, at) => files.push({ path: prefix + name, folder, mention: folder === 0 ? name : prefix + name, name: path172.basename(name), modified: modified?.[at] ?? null, isFolder: false }));
+  }
+  if (dated)
+    files.sort((a, b) => (b.modified ?? -Infinity) - (a.modified ?? -Infinity));
+  return [...folders, ...files];
+}
+function rankFiles(query, files, limit) {
+  const typed = query.toLowerCase();
+  if (!typed)
+    return [...files.filter((file) => file.isFolder), ...files.filter((file) => !file.isFolder).slice(0, limit)].slice(0, limit);
+  const rank = (file) => {
+    const name = file.name.toLowerCase();
+    if (name === typed)
+      return 0;
+    if (name.startsWith(typed))
+      return 1;
+    if (name.includes(typed))
+      return 2;
+    if (file.path.toLowerCase().includes(typed))
+      return 3;
+    return null;
+  };
+  return files.flatMap((file) => {
+    const at = rank(file);
+    return at === null ? [] : [{ file, at, size: length(file.path) }];
+  }).sort((a, b) => a.at - b.at || a.file.folder - b.file.folder || a.size - b.size || (a.file.path < b.file.path ? -1 : a.file.path > b.file.path ? 1 : 0)).slice(0, limit).map((each) => each.file);
+}
+var queryOf = (route) => new URLSearchParams(route.includes("?") ? route.slice(route.indexOf("?") + 1) : "");
+var folded3 = (text) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+function rankAgents(query, agents, limit) {
+  const typed = folded3(query);
+  if (!typed)
+    return agents.slice(0, limit);
+  const words = /\s/u.test(typed);
+  const rank = (agent) => {
+    const name = folded3(agent.name);
+    if (name === typed)
+      return 0;
+    if (name.startsWith(typed))
+      return 1;
+    if (words)
+      return name.includes(typed) ? 3 : null;
+    if (name.split(/[^\p{L}\p{N}]+/u).some((word) => word && word.startsWith(typed)))
+      return 2;
+    if (name.includes(typed))
+      return 3;
+    if (agent.project !== null && folded3(agent.project).includes(typed))
+      return 4;
+    return null;
+  };
+  return agents.flatMap((agent, index) => {
+    const at = rank(agent);
+    return at === null ? [] : [{ agent, at, index }];
+  }).sort((a, b) => a.at - b.at || a.index - b.index).slice(0, limit).map((each) => each.agent);
+}
+function agentDetail(agent) {
+  const what = agent.kind === "bot" ? agent.about || "Bot" : agent.project === "Chats" ? "Chat" : agent.project ?? "Session";
+  return what + (agent.machine ? ` · on ${agent.machine}` : "");
+}
+var listed2 = new Map;
+var LISTED_FOR = 5000;
+function filesFor(roots, dated, signal) {
+  const key = (withDates) => JSON.stringify([roots, withDates]);
+  const fresh = (withDates) => {
+    const kept = listed2.get(key(withDates));
+    return kept && Date.now() - kept.at < LISTED_FOR ? { key: key(withDates), kept } : null;
+  };
+  const found = fresh(dated) ?? (dated ? null : fresh(true));
+  const join = (at, listing) => {
+    listing.waiting += 1;
+    signal?.addEventListener("abort", () => {
+      listing.waiting -= 1;
+      if (!listing.done && listing.waiting === 0) {
+        listing.stop.abort();
+        if (listed2.get(at) === listing)
+          listed2.delete(at);
+      }
+    }, { once: true });
+    return listing.files;
+  };
+  if (found)
+    return join(found.key, found.kept);
+  const stop = new AbortController;
+  const listing = { at: Date.now(), files: mentionableFiles(roots, dated, stop.signal), waiting: 0, stop, done: false };
+  const at = key(dated);
+  listed2.set(at, listing);
+  listing.files.then(() => {
+    listing.done = true;
+  }, () => {
+    listing.done = true;
+    if (listed2.get(at) === listing)
+      listed2.delete(at);
+  });
+  if (listed2.size > 20)
+    listed2.delete(listed2.keys().next().value);
+  return join(at, listing);
+}
+async function* mentionsRoute(context, match) {
+  const { request, readEngine, bridge, signal, json } = context;
+  if (request.method.toUpperCase() !== "GET")
+    return yield* json(405, {});
+  const query = queryOf(request.path);
+  const kind = query.get("for");
+  if (kind !== "files" && kind !== "agents")
+    return yield* json(400, { message: `Say what's suggested: for=files ("@") or for=agents ("&").` });
+  const typed = query.get("q") ?? "";
+  const asked = Number.parseInt(query.get("limit") ?? "", 10);
+  const limit = Number.isFinite(asked) && asked > 0 ? Math.min(asked, MENTIONS_MOST) : MENTIONS_SHOWN;
+  const session = decodeURIComponent(match[1]);
+  const targets = targetsOf({ readEngine, bridge });
+  if (!targets.length)
+    return yield* json(503, { message: "The engine isn't running." });
+  let here;
+  try {
+    here = await sessionHere(targets, session, signal ?? undefined);
+  } catch (error) {
+    if (error instanceof Unreached)
+      return yield* json(503, { message: error.message });
+    throw error;
+  }
+  if (!here)
+    return yield* json(404, { message: "There's no such conversation here." });
+  if (kind === "agents") {
+    const agents = (await namedNow(readEngine)).filter((agent) => agent.session !== session);
+    const mentions = rankAgents(typed, agents, limit).map((agent) => ({ text: `&${agent.name}`, title: agent.name, detail: agentDetail(agent), kind: agent.kind, session: agent.session }));
+    return yield* json(200, { mentions });
+  }
+  const data = here.data;
+  const folder = data.location?.directory ?? data.directory;
+  if (!folder)
+    return yield* json(200, { mentions: [] });
+  const roots = [folder, ...(foldersOf(data, folder) ?? []).filter((each) => each !== folder)];
+  const files = await filesFor(roots, !typed, signal ?? undefined);
+  const mentions = rankFiles(typed, files, limit).map((file) => {
+    const inside = path172.posix.dirname(file.path.replace(/\/$/, ""));
+    return { text: `@${file.mention}`, title: file.name, detail: file.isFolder || inside === "." ? null : inside, kind: file.isFolder ? "folder" : "file", session: null };
+  });
+  return yield* json(200, { mentions });
+}
+function rankGroupMentions(query, members, agents, limit) {
+  const asAgents = new Map(members.map((member) => [{ session: member.session, name: member.name, kind: "bot", machine: null, project: null, about: null }, member]));
+  const theirs = rankAgents(query, [...asAgents.keys()], limit).map((agent) => {
+    const member = asAgents.get(agent);
+    return { text: `&${member.name}`, title: member.name, detail: "In this chat" + (member.computer ? ` · on ${member.computer}` : ""), kind: "bot", session: member.session || null };
+  });
+  const sessions = new Set(members.map((member) => member.session).filter(Boolean));
+  const names = new Set(members.map((member) => folded3(member.name)));
+  const guests = agents.filter((agent) => !sessions.has(agent.session) && !names.has(folded3(agent.name)));
+  const others = rankAgents(query, guests, limit - theirs.length).map((agent) => ({ text: `&${agent.name}`, title: agent.name, detail: agentDetail(agent), kind: agent.kind, session: agent.session }));
+  return [...theirs, ...others];
+}
+async function* groupMentionsRoute(context, match) {
+  const { request, readEngine, bridge, signal, json } = context;
+  if (request.method.toUpperCase() !== "GET")
+    return yield* json(405, {});
+  const query = queryOf(request.path);
+  const typed = query.get("q") ?? "";
+  const asked = Number.parseInt(query.get("limit") ?? "", 10);
+  const limit = Number.isFinite(asked) && asked > 0 ? Math.min(asked, MENTIONS_MOST) : MENTIONS_SHOWN;
+  const target = bridge();
+  if (!target)
+    return yield* json(503, { message: groupsAbsent() });
+  const groups = await listedGroups(target, signal ?? undefined);
+  if (!groups)
+    return yield* json(503, { message: groupsNotAnswering() });
+  const chat = groups.find((group) => group.id === match[1]);
+  if (!chat)
+    return yield* json(404, { message: "There's no such group chat here." });
+  return yield* json(200, { mentions: rankGroupMentions(typed, chat.members, await namedNow(readEngine), limit) });
+}
+
+// box/src/link/work/model-words.ts
+function article(word) {
+  const first = word.toLowerCase()[0];
+  if (/^[A-Z][A-Z]/.test(word))
+    return "AEFHILMNORSX".includes(word[0]) ? "an" : "a";
+  return first && "aeiou".includes(first) || word.startsWith("xA") ? "an" : "a";
+}
+function readiness(model, state, known) {
+  if (state.runs && !state.missing)
+    return {};
+  const name = state.name ?? known ?? model?.id ?? "This model";
+  const account = state.account?.name ?? model?.providerID ?? "its account";
+  const choose = (help) => ({ do: "choose", label: "Choose a Model", help });
+  switch (state.missing) {
+    case "signIn":
+      if (state.connects)
+        return { refusal: `${name} needs ${account} connected: connect it, or choose another model.`, action: { do: "signIn", label: "Connect", help: `Connect ${account}` } };
+      return { refusal: `${name} needs a sign-in to ${account}: sign in, or choose another model.`, action: { do: "signIn", label: "Sign In", help: `Sign in to ${account}` } };
+    case "key": {
+      const plan = state.plan;
+      const key = `${article(account)} ${account} key`;
+      return plan ? {
+        refusal: `${name} needs ${key}: add one, or choose another model (with ${article(plan.name)} ${plan.name} plan, one under ${plan.agent}).`,
+        action: { do: "addKey", label: "Add Key", help: `Add ${key} (with ${article(plan.name)} ${plan.name} plan, choose a model under ${plan.agent} instead)` }
+      } : { refusal: `${name} needs ${key}: add one, or choose another model.`, action: { do: "addKey", label: "Add Key", help: `Add ${key}` } };
+    }
+    case "install":
+      return { refusal: `${name} needs ${account} installed: install it, or choose another model.`, action: { do: "install", label: "Install", help: `Install ${account}` } };
+    case "gone":
+      return {
+        refusal: state.account ? `${name} is no longer among ${state.account.name}’s models: choose another model.` : `${name} is no longer available: choose another model.`,
+        choose: true,
+        action: choose("Choose another model")
+      };
+    default:
+      return { refusal: "Choose a model to send it.", choose: true, action: choose("Choose a model") };
+  }
+}
+
+// box/src/link/areas/session-models.ts
+var SESSION_MODELS_ROUTE = "kuvo/sessions/models";
+async function sessionModels(ids, engine, bridge, signal) {
+  const targets = [engine, bridge].filter((each) => each !== null);
+  const found = (await Promise.all(ids.map((id) => sessionHere(targets, id, signal)))).filter((each) => each !== null);
+  const reads = listReads(engine, bridge);
+  const answer = {};
+  await Promise.all(found.map(async (place) => {
+    const said = await modelOf2(place, engine, bridge, reads);
+    if (said)
+      answer[place.data.id] = said;
+  }));
+  return answer;
+}
+function listReads(engine, bridge) {
+  const engineRead = new Map;
+  let bridgeRead;
+  return {
+    engine: (folder) => {
+      const key = folder ?? "";
+      if (!engineRead.has(key))
+        engineRead.set(key, engineListsIn(engine, folder));
+      return engineRead.get(key);
+    },
+    bridge: () => bridgeRead ??= bridgeListsOf(bridge)
+  };
+}
+async function modelOf2(place, engine, bridge, reads = listReads(engine, bridge)) {
+  const { target, data } = place;
+  const folder = data.location?.directory ?? data.directory;
+  const own = isObject(data.model) && typeof data.model.providerID === "string" && typeof data.model.id === "string" ? data.model : null;
+  const onBridge = bridge !== null && target.port === bridge.port;
+  if (onBridge && data.parentID)
+    return;
+  const fallback = own || onBridge ? null : (await reads.engine(folder))?.fallback;
+  if (!own && !onBridge && fallback === undefined)
+    return;
+  const ref = own ? { providerID: own.providerID, id: own.id, ...typeof own.variant === "string" ? { variant: own.variant } : {} } : fallback ?? null;
+  if (!ref) {
+    const state = { runs: false, missing: "model" };
+    return { model: null, ...state, ...readiness(null, state) };
+  }
+  const state = stateOf(ref, onAgents(ref) ? { engine: null, bridge: await reads.bridge() } : { engine: await reads.engine(folder), bridge: null });
+  if (!state)
+    return;
+  if (state.runs && state.name)
+    rememberName(ref, state.name);
+  return { model: ref, ...state, ...readiness(ref, state, lastName(ref)) };
+}
+async function* sessionModelsRoute(context) {
+  const { request, readEngine, bridge, signal, json } = context;
+  if (request.method.toUpperCase() !== "GET")
+    return yield* json(405, {});
+  const ids = sessionsAsked(request.path);
+  if (!ids)
+    return yield* json(400, { message: `Name the sessions: sessions=<id>,<id>… (${GLANCE_MOST} at most).` });
+  const targets = targetsOf({ readEngine, bridge });
+  if (!targets.length)
+    return yield* json(503, { message: "The engine isn't running." });
+  let engine = null;
+  try {
+    engine = readEngine();
+  } catch {}
+  try {
+    return yield* json(200, { sessions: await sessionModels(ids, engine, bridge(), signal ?? undefined) });
+  } catch (error) {
+    if (error instanceof Unreached)
+      return yield* json(503, { message: error.message });
+    throw error;
+  }
+}
+
+// box/src/link/areas/models-offered.ts
+import fs163 from "node:fs";
+import path173 from "node:path";
+var MODELS_OFFERED_ROUTE = "kuvo/models/offered";
+function wantedIn(requestPath) {
+  const query = new URLSearchParams(requestPath.split("?")[1] ?? "");
+  const providerID = query.get("provider")?.trim(), id = query.get("model")?.trim(), variant = query.get("variant")?.trim();
+  return providerID && id ? { providerID, id, ...variant ? { variant } : {} } : null;
+}
+async function folderIn(requestPath) {
+  const folder = new URLSearchParams(requestPath.split("?")[1] ?? "").get("folder")?.trim();
+  if (!folder || !path173.isAbsolute(folder))
+    return;
+  const resolved = path173.resolve(folder);
+  if (!isKnown(resolved))
+    return;
+  return await fs163.promises.stat(resolved).then((found) => found.isDirectory(), () => false) ? resolved : undefined;
+}
+function isKnown(folder) {
+  const same = (other) => typeof other === "string" && path173.isAbsolute(other) && path173.resolve(other) === folder;
+  if (readProjects().some((project) => !project.removed && (same(project.directory) || project.folders.some(same))))
+    return true;
+  if (readWorktrees().some((worktree) => same(worktree.root) || same(worktree.folder)))
+    return true;
+  const list = keptList();
+  return list ? Object.values(list.sessions).some((each) => same(each.facts.directory)) : false;
+}
+async function* modelsOfferedRoute(context) {
+  const { request, readEngine, bridge, json } = context;
+  if (request.method.toUpperCase() !== "GET")
+    return yield* json(405, {});
+  const folder = await folderIn(request.path);
+  if (!targetsOf({ readEngine, bridge }).length)
+    return yield* json(503, { message: "The engine isn't running." });
+  let engine = null;
+  try {
+    engine = readEngine();
+  } catch {}
+  const agents = bridge();
+  const lists = await listsHere(engine, agents, folder);
+  return yield* json(200, offeredAnswer(lists, wantedIn(request.path)));
+}
+function offeredAnswer(lists, wanted) {
+  const starting = startingModel([wanted], lists);
+  const listing = stillListing(lists);
+  return {
+    models: offeredHere(lists).map((model) => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" : "engine", efforts: model.efforts, aliases: model.aliases, ...model.retiring ? { retiring: true } : {}, ...model.hidden ? { hidden: true } : {}, ...!model.agents && needsNoAccount(model) ? { free: true } : {} })),
+    known: { engine: lists.engine !== null, agents: lists.bridge !== null },
+    ...listing.length ? { listing } : {},
+    ...starting !== undefined ? { starting: starting?.model ?? null } : {}
+  };
+}
+
+// box/src/link/areas/read-all.ts
+var READ_ALL_ROUTE = "kuvo/sessions/read";
+var PAGES = 15;
+var AT_ONCE = 8;
+var EACH = 1e4;
+async function inTurns(items, work, signal) {
+  let done = 0, next = 0;
+  const worker = async () => {
+    while (next < items.length && !signal?.aborted)
+      if (await work(items[next++]))
+        done++;
+  };
+  await Promise.all(Array.from({ length: Math.min(AT_ONCE, items.length) }, worker));
+  return done;
+}
+var eachSignal = (signal) => signal ? AbortSignal.any([signal, AbortSignal.timeout(EACH)]) : AbortSignal.timeout(EACH);
+async function readAllOn(target, signal) {
+  let read = 0;
+  let query = "limit=200&order=desc";
+  for (let pages = 0;pages < PAGES && query && !signal?.aborted; pages++) {
+    const page = await engineGet(target, `api/session?${query}`).catch(() => null);
+    if (!page || !Array.isArray(page.data))
+      return pages === 0 ? null : read;
+    const listed = page.data;
+    const unread = listed.filter((session) => {
+      if (!isObject(session) || typeof session.id !== "string" || !isObject(session.time))
+        return false;
+      const { idle, viewed } = session.time;
+      return typeof idle === "number" && idle > (typeof viewed === "number" ? viewed : 0) && !isArchived(session);
+    });
+    read += await inTurns(unread, (session) => call(target, "POST", `/api/session/${encodeURIComponent(session.id)}/view`, { idle: session.time.idle }, eachSignal(signal)).then(() => true, () => false), signal);
+    const next = page.cursor?.next;
+    query = listed.length === 200 && typeof next === "string" ? `limit=200&cursor=${encodeURIComponent(next)}` : null;
+  }
+  return read;
+}
+async function readGroups(bridge, signal) {
+  const authorization = `Basic ${Buffer.from(`opencode:${bridge.password}`).toString("base64")}`;
+  const listed = await fetch(`http://127.0.0.1:${bridge.port}/api/kuvo/link/groups`, { headers: { authorization }, signal: eachSignal(signal) }).then((response) => response.ok ? response.json() : null).catch(() => null);
+  if (!isObject(listed) || !Array.isArray(listed.groups))
+    return null;
+  const unread = listed.groups.filter((group) => isObject(group) && typeof group.id === "string" && group.unread === true);
+  return inTurns(unread, (group) => fetch(`http://127.0.0.1:${bridge.port}/api/kuvo/link/groups/${encodeURIComponent(group.id)}/viewed`, {
+    method: "POST",
+    headers: { authorization, "content-type": "application/json" },
+    body: "{}",
+    signal: eachSignal(signal)
+  }).then((response) => response.ok, () => false), signal);
+}
+async function* readAllRoute({ request, readEngine, bridge, signal, json }) {
+  if (request.method.toUpperCase() !== "POST")
+    return yield* json(405, {});
+  let engine = null;
+  try {
+    engine = readEngine();
+  } catch {}
+  const agents = bridge();
+  const counts = await Promise.all([
+    engine ? readAllOn(engine, signal) : null,
+    agents ? readAllOn(agents, signal) : null,
+    agents ? readGroups(agents, signal) : null
+  ]);
+  if (counts.every((count) => count === null))
+    return yield* json(503, { message: "Nothing here could be read just now. Try again in a moment." });
+  return yield* json(200, { read: counts.reduce((sum, count) => sum + (count ?? 0), 0) });
+}
+
+// box/src/link/areas/work-queue.ts
+import fs165 from "node:fs";
+import path174 from "node:path";
 
 // box/src/link/work-queue/import.ts
 import fs164 from "node:fs";
@@ -54409,7 +54770,7 @@ async function find2(id, targets) {
   }
   return null;
 }
-var shown3 = (data) => ({ autopilot: isAutopilot(data), decided: decidedIn(data.id) });
+var shown4 = (data) => ({ autopilot: isAutopilot(data), decided: decidedIn(data.id) });
 async function* autopilotRoute(context) {
   const { request, json, route, signal, readEngine, bridge } = context;
   const method = request.method.toUpperCase();
@@ -54462,15 +54823,15 @@ async function* autopilotRoute(context) {
     const goal = runningGoalOf(id, null);
     if (goal && goal.session === id)
       await answerGoal(goal.id, { action: "change", mode: on ? "autopilot" : "interactive" }, peerTargets).catch(() => null);
-    return yield* json(200, shown3(now));
+    return yield* json(200, shown4(now));
   }
   if (method === "POST") {
     const changed = await decidedByYou(at.target, id, given.decided, given.choice.trim().slice(0, CHOICE_MOST));
     if ("status" in changed)
       return yield* json(changed.status, { message: changed.message });
-    return yield* json(200, shown3(at.data));
+    return yield* json(200, shown4(at.data));
   }
-  return yield* json(200, shown3(at.data));
+  return yield* json(200, shown4(at.data));
 }
 
 // box/src/link/areas/typed.ts
@@ -55315,173 +55676,6 @@ async function* typedAnswer(context, match) {
   const { plan: _plan, ...answer } = answerOf3(decision, done, failure);
   const action = refusal && model?.action ? { action: model.action } : {};
   return yield* json(200, { ...answer, ...action, ...agent ? { agent } : {} });
-}
-
-// box/src/link/areas/sandbox.ts
-var NOT_OPEN2 = "This computer's box isn't running its own process: try again in a moment.";
-var NOT_CALLING2 = "Only a conversation's own tool call can ask, and this one isn't running in it.";
-var NOT_ON = "Commands aren't in the sandbox on this computer now, so there's nothing to ask: run the command with your shell tool.";
-var shown4 = () => {
-  const { on, able, agents, ...not } = fenceState();
-  try {
-    tellAgents();
-  } catch {}
-  return { on, able, agents, ...Object.fromEntries(Object.entries(not).filter(([, value]) => value !== undefined)) };
-};
-var idOf5 = (part) => {
-  try {
-    return decodeURIComponent(part ?? "");
-  } catch {
-    return "";
-  }
-};
-function clientName({ phone }) {
-  if (!phone?.key)
-    return "Mac";
-  const key = phone.key.toString("base64url");
-  return readLink()?.phones?.find((each) => each.key === key)?.name || "iPhone";
-}
-async function* sandboxRoute(context) {
-  const { request, json, route, signal, readEngine, readBridge } = context;
-  const method = request.method.toUpperCase();
-  if (route === "kuvo/sandbox/check") {
-    if (method !== "POST")
-      return yield* json(405, {});
-    try {
-      setUpFence();
-    } catch {}
-    return yield* json(200, shown4());
-  }
-  if (route === "kuvo/sandbox") {
-    if (method !== "GET")
-      return yield* json(405, {});
-    return yield* json(200, shown4());
-  }
-  const body = parsed(request.body);
-  const given = isObject(body) ? body : {};
-  if (route === "kuvo/sandbox/restart") {
-    if (method !== "POST")
-      return yield* json(405, {});
-    if (typeof given.restart !== "boolean")
-      return yield* json(400, { message: "Say whether to restart them: restart, true or false." });
-    const bridge = given.restart ? bridgeTarget() : null;
-    if (bridge) {
-      const told = await call(bridge, "POST", "/api/kuvo/sandbox/restart", {}, AbortSignal.timeout(1e4)).then(() => true, () => false);
-      if (!told)
-        return yield* json(503, { message: "The coding agents' bridge didn't answer: try again in a moment." });
-    }
-    answeredRestart();
-    return yield* json(200, shown4());
-  }
-  const parts = route.split("/");
-  if (!heldHere(route))
-    return yield* json(404, {});
-  if (!holdsVault()) {
-    const answer = await askHolder(request, signal);
-    if (!answer)
-      return yield* json(503, { message: NOT_OPEN2 });
-    return yield* [{ head: { status: answer.status, headers: { "content-type": answer.type || "application/json" } } }, { body: Buffer.from(answer.body, "base64") }];
-  }
-  if (route === "kuvo/sandbox/allowed" || parts[2] === "allowed") {
-    try {
-      const query = new URLSearchParams(request.path.split("?")[1] ?? "");
-      forgetGoneBots();
-      const answer = async (of) => ({ allowed: await listed(await allowedFor(of)), ...of ? {} : { owners: addableOwners() } });
-      if (route === "kuvo/sandbox/allowed" && method === "GET")
-        return yield* json(200, await answer(query.get("project") ?? undefined));
-      if (route === "kuvo/sandbox/allowed" && method === "POST") {
-        const project = given.project === undefined && given.owner !== undefined ? folderOfOwner(given.owner) : given.project;
-        const rule = await addRule({ ...given, project, by: clientName(context) });
-        return yield* json(200, await answer(query.has("all") ? undefined : rule.project));
-      }
-      if (parts.length === 4 && method === "DELETE") {
-        const id = idOf5(parts[3]);
-        const rule = (await allowedFor()).find((each) => each.id === id);
-        if (!rule || !removeRule(id))
-          return yield* json(404, { message: "That isn't in Also Allowed." });
-        return yield* json(200, await answer(query.has("all") ? undefined : rule.project));
-      }
-      return yield* json(405, {});
-    } catch (error) {
-      if (error instanceof RuleRefusal)
-        return yield* json(400, { message: error.message });
-      throw error;
-    }
-  }
-  if (route === "kuvo/sandbox/tools") {
-    const on = fenceState().on;
-    if (method === "GET")
-      return yield* json(200, { tools: on ? SANDBOX_TOOLS : [] });
-    if (method !== "POST")
-      return yield* json(405, {});
-    if (!on)
-      return yield* json(200, { text: fencePending() ? notOnWords() : NOT_ON, isError: true });
-    const args = isObject(given.arguments) ? given.arguments : {};
-    const session = typeof given.session === "string" ? given.session : undefined;
-    if (typeof given.name !== "string" || !await isCalling(session, [given.name], args, readEngine, readBridge)) {
-      return yield* json(200, { text: NOT_CALLING2, isError: true });
-    }
-    const caller = await callerOf(session, readEngine, readBridge);
-    return yield* json(200, await callSandboxTool(given.name, args, caller, signal));
-  }
-  if (route === "kuvo/sandbox/stopped") {
-    if (method !== "POST")
-      return yield* json(405, {});
-    const input = isObject(given.input) ? given.input : {};
-    const session = typeof given.session === "string" ? given.session : undefined;
-    if (!fenceState().on || typeof given.output !== "string")
-      return yield* json(200, {});
-    if (!await isCalling(session, ["shell", "bash"], input, readEngine, readBridge))
-      return yield* json(200, {});
-    const caller = await callerOf(session, readEngine, readBridge);
-    const calling = () => isCalling(session, ["shell", "bash"], input, readEngine, readBridge);
-    return yield* json(200, await stoppedInAuto(caller, input, given.output, calling, signal) ?? {});
-  }
-  if (route === "kuvo/sandbox/asks" || route === "kuvo/sandbox/asks/events") {
-    if (method !== "GET")
-      return yield* json(405, {});
-    const listed = () => ({ asks: listSandboxAsks(), ...asksToRestart() ? { restart: true } : {}, reviews: listAskReviews(), settled: listSettledReviews() });
-    if (route === "kuvo/sandbox/asks")
-      return yield* json(200, listed());
-    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    let wake = () => {};
-    const stops = [onSandboxAsksChanged(() => wake()), onAskReviewsChanged(() => wake())];
-    const stop = () => {
-      for (const each of stops)
-        each();
-    };
-    let sent = "";
-    const looks = setInterval(() => {
-      if (!restartSettled() || sent.includes('"restart"'))
-        wake();
-    }, 5000);
-    try {
-      while (!signal?.aborted) {
-        const now = JSON.stringify(listed());
-        if (now !== sent)
-          yield { body: Buffer.from(now + `
-`) };
-        sent = now;
-        await new Promise((done) => {
-          wake = done;
-          signal?.addEventListener("abort", () => done(), { once: true });
-        });
-      }
-    } finally {
-      clearInterval(looks);
-      stop();
-    }
-    return;
-  }
-  if (parts.length === 4 && parts[2] === "asks") {
-    if (method !== "POST")
-      return yield* json(405, {});
-    const answer = given.answer;
-    if (answer !== "once" && answer !== "always" && answer !== "no")
-      return yield* json(400, { message: "Answer “once”, “always” or “no”." });
-    return yield* json(answerSandboxAsk(idOf5(parts[3]), { answer, client: clientName(context) }) ? 200 : 404, {});
-  }
-  return yield* json(404, {});
 }
 
 // box/src/link/areas/providers.ts
@@ -58217,7 +58411,7 @@ async function run6() {
   keepApprovals();
   keepGroupSettings();
   keepOldBranchPrefix();
-  holdVault(engineHandler(readEngineFile, { name: os23.hostname() }));
+  holdVault(engineHandler(readEngineFile, { name: os23.hostname() }, readBridgeFile));
   setVaultTell(tell);
   watchVaultAsks(tell, answered);
   watchSandboxAsks(tell, answered);

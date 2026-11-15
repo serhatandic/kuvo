@@ -94,9 +94,15 @@ export const QUEUE_READ = object({ paused: bool, held: list(string), "waiting?":
 export type QueueItem = Infer<typeof QUEUE_ITEM>;
 export type QueueShown = Infer<typeof QUEUE_SHOWN>;
 
-/** An answer a permission's card offers, in its order: its words (`named`, what Always names, shown
- * as code after them), and the line Instead opens. */
-export const ASK_CHOICE = object({ answer: words("once", "always", "reject", "instead"), title: string, named: nullable(string), placeholder: nullable(string) });
+/** An answer an ask's card offers, in its order: its words (`named`, what Always names, shown as
+ * code after them, and `after`, words after that), the line Instead opens, what it does whole
+ * (`help`, its hover text) and how a screen reader says it (`spoken`; null: as `title` says it).
+ * `item`: the vault's item it gives (sent back with the answer). `confirm`: a client makes sure
+ * it's you first (Touch ID, the device's password), as a grant made in Settings asks. */
+export const ASK_CHOICE = object({
+  answer: words("once", "always", "reject", "instead"), title: string, named: nullable(string), placeholder: nullable(string),
+  help: nullable(string), spoken: nullable(string), "after?": string, "item?": string, "confirm?": bool,
+});
 
 /** A permission waiting (`sessions.asks`): the session asking (a subagent's own), the card's title,
  * the engine's words, the whole command line it would run, the changes it would make, what it
@@ -118,19 +124,39 @@ export const ASKED_QUESTION = object({
 /** The agent's questions, answered with choices or in words. */
 export const QUESTION_ASK = object({ id: string, kind: literal("question"), session: string, title: string, questions: list(ASKED_QUESTION) });
 
+/** A command the sandbox stopped, which the agent asks to run outside it (`kuvo/sandbox/asks`): the
+ * card's title and what stopped it (`message`), the command, what the sandbox refused it (each
+ * `{label, detail}`: "Write" and the path), the error it got where that can't be said (Linux), who
+ * asks and why, and its answers: Allow Once, Always Allow <place> where the box names one, and
+ * Don't Allow. */
+export const SANDBOX_ASK_SHOWN = object({
+  id: string, kind: literal("sandbox"), session: string, title: string, message: string, command: string,
+  stopped: list(object({ label: string, detail: string })), error: nullable(string), asker: string, why: string, choices: list(ASK_CHOICE),
+});
+
+/** What the agent asks of the vault (`kuvo/vault/asks`): to use an item it may use only by asking,
+ * or an item it needs (`need`); the card's title, its words (`message`), the site it's for, and its
+ * answers: for an item it needs, Give and Always Give for each item a client may see (`note` says
+ * why there are none). */
+export const VAULT_ASK_SHOWN = object({
+  id: string, kind: literal("vault"), session: string, need: words("use", "item"), title: string, message: nullable(string), site: nullable(string),
+  note: nullable(string), choices: list(ASK_CHOICE),
+});
+
 /** Anything else it waits on you for: a form a card can't take (an MCP server's, fields a client
- * can't take), or what the box asks you for it (a command outside the sandbox, something from the
- * vault). What it asks, answered on the Mac or a phone; `dismiss`: whether it can be put away
- * unanswered from here (a form can; the box's own asks can't). */
+ * can't take). What it asks; `dismiss`: whether it can be put away unanswered from here. */
 export const OTHER_ASK = object({ id: string, kind: literal("other"), session: string, title: string, message: string, dismiss: bool });
 
-export const SESSION_ASK = oneOf(PERMISSION_ASK, QUESTION_ASK, OTHER_ASK);
+export const SESSION_ASK = oneOf(PERMISSION_ASK, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK);
 /** What a conversation waits on you for, oldest first. */
 export const SESSION_ASKS = object({ asks: list(SESSION_ASK) });
 
 export type SessionAsk = Infer<typeof SESSION_ASK>;
 export type PermissionAsk = Infer<typeof PERMISSION_ASK>;
 export type QuestionAsk = Infer<typeof QUESTION_ASK>;
+export type SandboxAskShown = Infer<typeof SANDBOX_ASK_SHOWN>;
+export type VaultAskShown = Infer<typeof VAULT_ASK_SHOWN>;
+export type AskChoice = Infer<typeof ASK_CHOICE>;
 export type AskedQuestion = Infer<typeof ASKED_QUESTION>;
 
 /** What "@" (files) and "&" (agents) suggest as you type (`sessions.mentions`): what goes in the
@@ -310,7 +336,7 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "GET kuvo/sessions/:id/queue/events", answers: { 200: QUEUE_SHOWN } },
   { route: "GET kuvo/sessions/:id/asks", answers: { 200: SESSION_ASKS, 404: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/sessions/:id/asks/events", answers: { 200: SESSION_ASKS, 404: REFUSED, 503: REFUSED } },
-  { route: "POST kuvo/sessions/:id/asks/:ask", answers: { 200: NOTHING, 400: REFUSED, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/sessions/:id/asks/:ask", answers: { 200: NOTHING, 400: REFUSED, 403: REFUSED, 404: REFUSED, 423: REFUSED, 502: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/sessions/:id/mentions", answers: { 200: MENTIONS, 400: REFUSED, 404: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/stop", answers: { 200: QUEUE, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/queue/hold", answers: { 200: QUEUE, 404: REFUSED, 502: REFUSED, 503: REFUSED } },

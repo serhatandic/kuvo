@@ -41,6 +41,8 @@ const book = askBook<SandboxAsk, SandboxAnswer>("sq_", { answer: "no", unanswere
 export const listSandboxAsks = book.list;
 export const onSandboxAsksChanged = book.onChanged;
 export const answerSandboxAsk = book.answer;
+/** Asks every client, as `sandbox_ask` does once it has what to ask (a test asks it directly). */
+export const askSandbox = book.ask;
 
 export const SANDBOX_TOOLS = [
   {

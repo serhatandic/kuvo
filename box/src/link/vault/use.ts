@@ -100,7 +100,7 @@ export async function mayUse(item: VaultItem, caller: Caller, use: Use): Promise
   if (caller.autopilot) return leftUndone();
   note({ what: "asked", ...itemOf(item), ...whoOf(caller), ...where });
   const { value: answered, onAutopilot } = await untilOnAutopilot(caller.yours ? undefined : use.watch ?? caller.session, use.signal, signal =>
-    ask({ kind: "use", ...whoOf(caller), ...(caller.group ? { group: caller.group } : {}), item: item.id, itemName: item.name, ...(use.site ? { site: use.site } : {}), ...(use.why ? { why: use.why } : {}), ...(machineName() ? { machine: machineName() } : {}) }, signal));
+    ask({ kind: "use", ...whoOf(caller), ...(caller.group ? { group: caller.group } : {}), always: alwaysFor(caller) !== null, item: item.id, itemName: item.name, ...(use.site ? { site: use.site } : {}), ...(use.why ? { why: use.why } : {}), ...(machineName() ? { machine: machineName() } : {}) }, signal));
   if (onAutopilot) return leftUndone();
   if (answered.answer === "no") {
     note({ what: "declined", ...itemOf(item), ...whoOf(caller), ...where, ...(answered.client ? { client: answered.client, by: answered.by } : {}) });

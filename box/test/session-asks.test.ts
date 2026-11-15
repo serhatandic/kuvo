@@ -1,6 +1,6 @@
 import "./safety"
 import { afterAll, beforeEach, expect, test } from "bun:test"
-import { mkdirSync } from "node:fs"
+import { mkdirSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { ask, follow } from "./route-answer"
 
@@ -105,6 +105,38 @@ afterAll(() => {
 
 const asked = (path: string) => got.filter(each => each.method !== "GET" && each.path === path)
 
+/** The sandbox's asks, as its tool asks them (fence/outside.ts): none left from another test. */
+async function sandboxBook() {
+  const { listSandboxAsks, answerSandboxAsk, askSandbox } = await import("../src/link/fence/outside")
+  for (const each of listSandboxAsks()) answerSandboxAsk(each.id, { answer: "no" })
+  return { book: { ask: askSandbox } }
+}
+
+/** `method path` asked by something on this computer, as the app (`fromApp`) or not. */
+async function askAs(fromApp: boolean, method: string, path: string, body?: unknown): Promise<{ status: number; json: any }> {
+  let status = 0, text = ""
+  for await (const piece of handler({ method, path, headers: {}, fromApp, ...(body !== undefined ? { body: Buffer.from(JSON.stringify(body)) } : {}) } as any, undefined)) {
+    if ("head" in piece) status = piece.head.status
+    if ("body" in piece) text += Buffer.from(piece.body).toString()
+  }
+  return { status, json: text ? JSON.parse(text) : undefined }
+}
+
+/** What a Mac asks this box over SSH (`kuvo-link.js box route`): a process of its own, which passes
+ * the conversation's asks to the one keeping the box's own (this test's). */
+async function boxRoute(method: string, path: string, body?: unknown): Promise<{ status: number; json: any }> {
+  const script = join(import.meta.dir, "..", "src", "link", "main.ts")
+  const kuvo = process.env.KUVO_HOME!
+  mkdirSync(join(kuvo, "route-home"), { recursive: true })
+  const child = Bun.spawn([process.execPath, script, "box", "route"], { env: { PATH: process.env.PATH, BUN_BE_BUN: "1", KUVO_HOME: kuvo, HOME: join(kuvo, "route-home"), TMPDIR: join(kuvo, "route-home") }, stdin: "pipe", stdout: "pipe", stderr: "inherit" })
+  child.stdin.write(JSON.stringify({ method, path, ...(body === undefined ? {} : { body }) }))
+  await child.stdin.end()
+  const out = await new Response(child.stdout).text()
+  await child.exited
+  const answer = JSON.parse(out.trim().split("\n").at(-1)!)
+  return { status: answer.status, json: JSON.parse(answer.body) }
+}
+
 test("a conversation's asks, its subagents' too, come worded as the cards show them, oldest first", async () => {
   // When each came, as the box heard them (one it didn't hear came before: first).
   noteAskEvent({ type: "form.created", data: { form: { id: "que_1", sessionID: "ses_root" } } }, "engine", 1_000)
@@ -121,23 +153,35 @@ test("a conversation's asks, its subagents' too, come worded as the cards show t
     files: [{ file: `${work}/src/App.swift`, patch: "@@ -1 +1 @@\n-a\n+b\n", additions: 1, deletions: 1, status: "modified" }],
     resources: ["src/App.swift", "b.swift", "c.swift"],
     choices: [
-      { answer: "once", title: "Allow Once", named: null, placeholder: null },
-      { answer: "always", title: "Always Allow Edits", named: null, placeholder: null },
-      { answer: "reject", title: "Don’t Allow", named: null, placeholder: null },
-      { answer: "instead", title: "Tell It What to Do Instead…", named: null, placeholder: "Tell it what to do instead…" },
+      { answer: "once", title: "Allow Once", named: null, placeholder: null, help: null, spoken: null },
+      { answer: "always", title: "Always Allow Edits", named: null, placeholder: null, help: "Don’t ask again before changing files in this project", spoken: "Always allow edits in this project" },
+      { answer: "reject", title: "Don’t Allow", named: null, placeholder: null, help: null, spoken: null },
+      { answer: "instead", title: "Tell It What to Do Instead…", named: null, placeholder: "Tell it what to do instead…", help: null, spoken: null },
     ],
   })
   // A subagent's, in its own name, with the whole command line its tool call runs.
   expect(push).toMatchObject({ session: "ses_child", title: "Allow running this command?", message: "It wants to push.", command: "cd app && git push origin main", resources: ["git push origin main"] })
-  expect(push.choices[1]).toEqual({ answer: "always", title: "Always Allow", named: "git push", placeholder: null })
+  // Always's words whole, for its hover text and a screen reader.
+  expect(push.choices[1]).toEqual({ answer: "always", title: "Always Allow", named: "git push", placeholder: null, help: "Don’t ask again before running git push commands in this project", spoken: "Always allow git push commands" })
   // A folder outside, as people know it.
   expect(out).toMatchObject({ title: "Allow working outside the project?", resources: ["~/notes"] })
-  expect(out.choices[1]).toMatchObject({ title: "Always Allow", named: "~/notes" })
+  expect(out.choices[1]).toMatchObject({ title: "Always Allow", named: "~/notes", help: "Don’t ask again before working in ~/notes", spoken: "Always allow working in Home, notes" })
   expect(question).toEqual({ id: "que_1", kind: "question", session: "ses_root", title: "Pick", questions: [
     { key: "color", title: "Color", question: "Which color?", options: [{ value: "blue", label: "Blue", description: "Calm" }, { value: "red", label: "Red", description: null }], multiple: false, custom: false, required: true },
     { key: "extras", title: "Extras", question: "Extras", options: [{ value: "docs", label: "Docs", description: null }], multiple: true, custom: true, required: false },
   ] })
   expect(other).toEqual({ id: "frm_mcp", kind: "other", session: "ses_root", title: "GitHub", message: "Pick a repository.", dismiss: true })
+})
+
+test("Always's words, whole and as they're said, are the apps' own, case for case", async () => {
+  const { alwaysWords } = await import("../src/link/notices/news")
+  const vectors = JSON.parse(readFileSync(join(import.meta.dir, "../../protocol/vectors/always-words.json"), "utf8"))
+  for (const each of vectors.cases) {
+    const words = alwaysWords(each, each.home ?? null)
+    expect({ plain: words.named === null ? words.title : `${words.title} ${words.named}`, help: words.help, spoken: words.spoken }).toEqual({ plain: each.plain, help: each.help, spoken: each.spoken })
+  }
+  // A coding agent's Always lasts for its conversation.
+  expect(alwaysWords({ action: "edit", save: ["*"] }, null, true).help).toBe("Don’t ask again before changing files in this conversation")
 })
 
 test("an answer goes to the session that asked, as the engine takes it", async () => {
@@ -173,24 +217,194 @@ test("a form a client can't answer is dismissed from it, never answered", async 
   expect(asked("/api/session/ses_root/form/frm_mcp")).toEqual([{ method: "DELETE", path: "/api/session/ses_root/form/frm_mcp", body: undefined }])
 })
 
-test("what the box asks you for a subagent shows with its asks, answered on the Mac or a phone", async () => {
+test("a command a subagent asks to run outside the sandbox shows with its asks, worded as its card, and is answered from here", async () => {
+  const { book } = await sandboxBook()
+  const asked = book.ask({ session: "ses_child", botName: "Scout", project: work, command: "npm install", why: "To add the parser.", stopped: [{ kind: "write", path: "/Users/me/.npm/_cacache/x" }], always: { kind: "write", path: "/Users/me/.npm" }, owner: { kind: "bot", id: "bot_scout", name: "Scout" } } as any)
+  const listed = (await ask(handler, "GET", "kuvo/sessions/ses_root/asks")).json.asks.find((each: any) => each.kind === "sandbox")
+  expect(listed).toEqual({
+    id: listed.id, kind: "sandbox", session: "ses_child", title: "Scout wants to run a command outside the sandbox",
+    message: "The sandbox stopped it from changing a file outside Scout’s folder.", command: "npm install",
+    stopped: [{ label: "Write", detail: "~/.npm/_cacache/x" }], error: null, asker: "Scout", why: "To add the parser.",
+    choices: [
+      { answer: "once", title: "Allow Once", named: null, placeholder: null, help: "Runs it outside the sandbox this once", spoken: "Allow once: run it outside the sandbox" },
+      { answer: "always", title: "Always Allow", named: "~/.npm", placeholder: null, help: "Runs it, and from now on lets Scout’s commands write in ~/.npm too, in the sandbox.", spoken: "Always Allow ~/.npm" },
+      { answer: "reject", title: "Don’t Allow", named: null, placeholder: null, help: "It goes on without running it", spoken: null },
+    ],
+  })
+  // (Answered by a client, never put away unanswered, nor with words it doesn't take.)
+  expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${listed.id}`, { dismiss: true })).status).toBe(400)
+  expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${listed.id}`, { answer: "instead", message: "no" })).status).toBe(400)
+  expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${listed.id}`, { answer: "always" })).status).toBe(200)
+  expect(await asked).toEqual({ answer: "always", client: "Mac" })
+  // Answered meanwhile elsewhere: it isn't waiting any more.
+  const stale = await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${listed.id}`, { answer: "once" })
+  expect(stale).toEqual({ status: 404, json: { message: "It isn't waiting any more." } })
+  expect((await ask(handler, "GET", "kuvo/sessions/ses_root/asks")).json.asks.some((each: any) => each.kind === "sandbox")).toBe(false)
+})
+
+test("a command the sandbox can't say what it stopped (Linux) shows its error, and is allowed once or not at all", async () => {
+  const { book } = await sandboxBook()
+  const once = book.ask({ session: "ses_root", project: work, command: "make", why: "To build it.", error: "make: cc: Permission denied", machine: "devbox" } as any)
+  let listed = (await ask(handler, "GET", "kuvo/sessions/ses_root/asks")).json.asks.find((each: any) => each.kind === "sandbox")
+  expect(listed).toMatchObject({ title: "An agent wants to run a command outside the sandbox", message: "On devbox, the sandbox stopped it with this error.", stopped: [], error: "make: cc: Permission denied" })
+  expect(listed.choices.map((each: any) => each.answer)).toEqual(["once", "reject"])
+  // Always isn't offered, so it isn't taken.
+  expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${listed.id}`, { answer: "always" })).json.message).toBe("Answer once, reject.")
+  expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${listed.id}`, { answer: "once" })).status).toBe(200)
+  expect(await once).toEqual({ answer: "once", client: "Mac" })
+  const no = book.ask({ session: "ses_root", project: work, command: "make", why: "Again." } as any)
+  listed = (await ask(handler, "GET", "kuvo/sessions/ses_root/asks")).json.asks.find((each: any) => each.kind === "sandbox")
+  expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${listed.id}`, { answer: "reject" })).status).toBe(200)
+  expect(await no).toEqual({ answer: "no", client: "Mac" })
+})
+
+test("what a subagent asks of the vault shows with its asks, and only the vault's clients answer it", async () => {
   const { ask: askVault } = await import("../src/link/vault/asks")
-  const stop = new AbortController()
-  const answered = askVault({ kind: "use", session: "ses_child", itemName: "GitHub token", why: "To open the pull request." }, stop.signal)
-  try {
-    const { status, json } = await ask(handler, "GET", "kuvo/sessions/ses_root/asks")
-    expect(status).toBe(200)
-    const vault = json.asks.find((each: any) => each.session === "ses_child" && each.kind === "other")
-    expect(vault).toMatchObject({ kind: "other", title: "Allow it to use the vault?", message: "GitHub token\nTo open the pull request.", dismiss: false })
-    // Neither answered nor put away from here.
-    const refused = await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { dismiss: true })
-    expect(refused.status).toBe(400)
-    expect(refused.json.message).toContain("Mac or a phone")
-  } finally {
-    stop.abort()
-    await answered
+  const answered = askVault({ kind: "use", session: "ses_child", bot: "bot_scout", botName: "Scout", itemName: "GitHub token", why: "To open the pull request.", site: "github.com", always: true })
+  const { status, json } = await ask(handler, "GET", "kuvo/sessions/ses_root/asks")
+  expect(status).toBe(200)
+  const vault = json.asks.find((each: any) => each.kind === "vault")
+  expect(vault).toEqual({
+    id: vault.id, kind: "vault", session: "ses_child", need: "use", title: "Scout wants to use GitHub token", message: "To open the pull request.", site: "github.com", note: null,
+    choices: [
+      { answer: "once", title: "Allow Once", named: null, placeholder: null, help: "Lets it use “GitHub token” this once", spoken: "Allow once: let it use “GitHub token”" },
+      { answer: "always", title: "Always Allow", named: null, placeholder: null, help: "Lets Scout use “GitHub token” from now on, without asking", spoken: "Always allow Scout to use “GitHub token”", confirm: true },
+      { answer: "reject", title: "Don’t Allow", named: null, placeholder: null, help: "It goes on without it", spoken: null },
+    ],
+  })
+  // Something on this computer that isn't one of your clients (not the app, a phone, nor the Mac
+  // proving itself): refused, and it still waits.
+  // It's offered no answers, and none it sends is taken, Don't Allow neither; listed after those it
+  // can answer, as one answered elsewhere.
+  const unanswerable = (await askAs(false, "GET", "kuvo/sessions/ses_root/asks")).json.asks
+  expect(unanswerable.find((each: any) => each.kind === "vault").choices).toEqual([])
+  expect(unanswerable.findIndex((each: any) => each.kind === "vault")).toBeGreaterThan(unanswerable.findIndex((each: any) => each.id === "per_push"))
+  for (const answer of ["always", "reject"]) expect((await askAs(false, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer })).status).toBe(403)
+  expect((await ask(handler, "GET", "kuvo/sessions/ses_root/asks")).json.asks.some((each: any) => each.id === vault.id)).toBe(true)
+  // Asked in the conversation, answered there: not through another conversation's asks.
+  sessions.ses_other = { id: "ses_other", location: { directory: work }, time: { created: 3, updated: 3 } }
+  expect((await ask(handler, "POST", `kuvo/sessions/ses_other/asks/${vault.id}`, { answer: "always" })).json).toEqual({ message: "It isn't waiting any more." })
+  expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "always" })).status).toBe(200)
+  expect(await answered).toEqual({ answer: "always", client: "Mac", by: "mac" })
+  expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "once" })).status).toBe(404)
+})
+
+test("where Always would give nothing for good (a bot's seat, a conversation in a home folder), the vault's ask offers it once alone", async () => {
+  const { ask: askVault } = await import("../src/link/vault/asks")
+  const { alwaysFor } = await import("../src/link/vault/use")
+  const { homeFolder } = await import("../src/link/home")
+  // What the box decides as it asks: a seat's, and a home folder's, are once.
+  expect(alwaysFor({ session: "ses_seat", bot: "bot_ship", seat: true, group: "grp_1" } as any)).toBeNull()
+  expect(alwaysFor({ session: "ses_root", folder: homeFolder() } as any)).toBeNull()
+  expect(alwaysFor({ session: "ses_root", folder: "/" } as any)).toBeNull()
+  expect(alwaysFor({ session: "ses_root", folder: work } as any)).toEqual({ project: work })
+  for (const asked of [{ group: "grp_1", always: false }, { always: false }]) {
+    const answered = askVault({ kind: "use", session: "ses_root", itemName: "GitHub token", ...asked })
+    const vault = (await ask(handler, "GET", "kuvo/sessions/ses_root/asks")).json.asks.find((each: any) => each.kind === "vault")
+    expect(vault.choices.map((each: any) => each.answer)).toEqual(["once", "reject"])
+    // An Always sent anyway isn't taken, and it still waits.
+    expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "always" })).json).toEqual({ message: "Answer once, reject." })
+    expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "once" })).status).toBe(200)
+    expect(await answered).toEqual({ answer: "once", client: "Mac", by: "mac" })
   }
 })
+
+test("a use of the vault asks with whether Always would last, and the card offers it only then", async () => {
+  const { mayUse } = await import("../src/link/vault/use")
+  const { listAsks, onAsksChanged } = await import("../src/link/vault/asks")
+  const { homeFolder } = await import("../src/link/home")
+  const { forgetKeys, makeVault, VAULT_FOLDER } = await import("../src/link/vault/store")
+  const item = { id: "itm_deploy", name: "Deploy key", kind: "key", sites: [], fields: ["value"] } as any
+  // A vault of its own, made here.
+  rmSync(VAULT_FOLDER, { recursive: true, force: true })
+  forgetKeys()
+  makeVault()
+  try {
+    for (const [folder, lasts] of [[homeFolder(), false], [work, true]] as const) {
+      const asked = new Promise<void>(done => { const stop = onAsksChanged(() => { if (listAsks().length) { stop(); done() } }) })
+      const using = mayUse(item, { session: "ses_root", root: "ses_root", folder }, { askWithout: true, why: "To deploy." })
+      // (One that answers at once, without asking, says why here.)
+      await Promise.race([asked, using.then(answer => { throw new Error(`answered without asking: ${JSON.stringify(answer)}`) })])
+      expect(listAsks()[0]!.always).toBe(lasts)
+      const vault = (await ask(handler, "GET", "kuvo/sessions/ses_root/asks")).json.asks.find((each: any) => each.kind === "vault")
+      expect(vault.choices.some((each: any) => each.answer === "always")).toBe(lasts)
+      expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "reject" })).status).toBe(200)
+      expect((await using).ok).toBe(false)
+    }
+  } finally {
+    forgetKeys()
+    rmSync(VAULT_FOLDER, { recursive: true, force: true })
+  }
+})
+
+test("an item a conversation needs from the vault is given from its card, one of the vault's items, to its clients alone", async () => {
+  const { ask: askVault } = await import("../src/link/vault/asks")
+  const { addItem, forgetKeys, makeVault, unlockWith, VAULT_FOLDER } = await import("../src/link/vault/store")
+  rmSync(VAULT_FOLDER, { recursive: true, force: true })
+  forgetKeys()
+  try {
+    const key = makeVault()
+    const item = await addItem({ kind: "key", name: "OpenAI key", values: { key: "sk-test" } })
+    const answered = askVault({ kind: "item", session: "ses_root", need: "an OpenAI API key", why: "To run the evals.", always: true })
+    const vault = (await ask(handler, "GET", "kuvo/sessions/ses_root/asks")).json.asks.find((each: any) => each.kind === "vault")
+    expect(vault).toMatchObject({ need: "item", title: "An agent needs an OpenAI API key", message: "To run the evals.", note: null })
+    expect(vault.choices).toEqual([
+      { answer: "once", title: "Give", named: "OpenAI key", placeholder: null, help: "Gives it “OpenAI key” this once", spoken: "Give OpenAI key, this once", item: item.id },
+      { answer: "always", title: "Always Give", named: "OpenAI key", placeholder: null, help: "Gives it “OpenAI key”, and lets this project use it from now on, without asking", spoken: "Always give OpenAI key", item: item.id, confirm: true },
+      { answer: "reject", title: "Don’t Allow", named: null, placeholder: null, help: "It goes on without it", spoken: null },
+    ])
+    // Read by what isn't a client: no item's name, and why.
+    const hidden = (await askAs(false, "GET", "kuvo/sessions/ses_root/asks")).json.asks.find((each: any) => each.kind === "vault")
+    expect(hidden.choices).toEqual([])
+    expect(hidden.note).toBe("Answer it on your iPhone: only a device this computer’s vault knows can answer it.")
+    // Give needs the item; one it doesn't offer isn't taken.
+    expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "once" })).json.message).toBe("Say which item to give it.")
+    expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "once", item: "itm_none" })).json).toEqual({ message: "That item isn't in this vault." })
+    // Locked meanwhile (the box started again): said so, and it still waits.
+    forgetKeys()
+    expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "once", item: item.id })).status).toBe(423)
+    unlockWith(key)
+    expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "once", item: item.id })).status).toBe(200)
+    expect(await answered).toEqual({ answer: "once", item: item.id, client: "Mac", by: "mac" })
+  } finally {
+    forgetKeys()
+    rmSync(VAULT_FOLDER, { recursive: true, force: true })
+  }
+})
+
+test("through `box route` (a machine over SSH), the box's own asks are listed and answered by the process that keeps them", async () => {
+  const { book } = await sandboxBook()
+  const { holdVault } = await import("../src/link/vault/holder")
+  const held = holdVault(handler, () => () => {})
+  try {
+    const asked = book.ask({ session: "ses_child", project: work, command: "brew install jq", why: "To read the JSON." } as any)
+    const listed = await boxRoute("GET", "kuvo/sessions/ses_root/asks")
+    expect(listed.status).toBe(200)
+    const sandbox = listed.json.asks.find((each: any) => each.kind === "sandbox")
+    expect(sandbox).toMatchObject({ session: "ses_child", command: "brew install jq" })
+    // With the engine's own, as here.
+    expect(listed.json.asks.map((each: any) => each.id)).toContain("per_push")
+    expect((await boxRoute("POST", `kuvo/sessions/ses_root/asks/${sandbox.id}`, { answer: "once" })).status).toBe(200)
+    expect(await asked).toEqual({ answer: "once", client: "Mac" })
+    expect((await boxRoute("POST", `kuvo/sessions/ses_root/asks/${sandbox.id}`, { answer: "once" })).status).toBe(404)
+  } finally {
+    held.close()
+  }
+}, 30_000)
+
+test("a long-running process from before these routes (it answers `404 {}`) is read around, not taken for no conversation", async () => {
+  const { holdVault } = await import("../src/link/vault/holder")
+  // (What an older process answers every route it doesn't hold.)
+  const older = holdVault((async function* () { yield { head: { status: 404, headers: { "content-type": "application/json" } } }; yield { body: Buffer.from("{}") } }) as any, () => () => {})
+  try {
+    // Read where it's asked: here, a `box route` with no engine of its own, which says so.
+    const listed = await boxRoute("GET", "kuvo/sessions/ses_root/asks")
+    expect(listed.status).toBe(503)
+    expect(listed.json.message).toContain("engine")
+  } finally {
+    older.close()
+  }
+}, 30_000)
 
 test("an MCP server's form its subagent's step waits on shows in the conversation, and goes away in its folder", async () => {
   shared[work] = [{ id: "frm_issue", sessionID: "global", title: "New issue", metadata: { kind: "mcp-elicitation", server: "github", message: "Which repository?" }, fields: [{ key: "repo", type: "number" }] }]
