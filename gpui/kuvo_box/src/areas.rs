@@ -197,7 +197,6 @@ impl Computer {
 }
 
 /// Your computers, the answering box first.
-/// One of your computers, as a box knows it (`kuvo/computers`).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct Computers {
     #[serde(default, deserialize_with = "readable")]

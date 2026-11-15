@@ -1,3 +1,4 @@
+import { serviceTitle } from "../../shared/account-names";
 // Your computers, as this box knows them (PROTOCOL.md, "Computers", `kuvo/computers`): itself, its
 // peers (the boxes its Macs name), and the boxes those vouch for (plan limits only). What each is,
 // whether it's heard from, what it runs and answers, which of its sessions are at work, which
@@ -95,12 +96,6 @@ export function ownComputer(): ToldComputer {
 
 /** What this box answers, as its `kuvo/info` says. */
 const ownFeatures = (): string[] => (IS_MAC ? macFeatures() : [...FEATURES]);
-
-/** Plan names formerly drawn by clients; unknown services keep their id with an initial capital. */
-export function serviceTitle(id: string): string {
-  const names: Record<string, string> = { codex: "ChatGPT", grok: "SuperGrok", copilot: "Copilot", openrouter: "OpenRouter", zai: "Z.ai", ollama: "Ollama", opencode: "OpenCode Go" };
-  return Object.hasOwn(names, id) ? names[id]! : (id.charAt(0).toUpperCase() + id.slice(1));
-}
 
 /** The services whose plan limits each computer reads, by its key (this box's under `here`), as the
  * coding agents' bridge lists them (`rows`' `boxes`); none while it doesn't run. */

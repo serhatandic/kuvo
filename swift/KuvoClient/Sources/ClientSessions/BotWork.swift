@@ -468,14 +468,9 @@ public enum WorkWords {
         atWork > 0 ? "\(atWork) working" : "\(today) today"
     }
 
-    /// The account a session runs on, in a word or two, as the box names it (
-    /// "Claude" for Claude Code's, "Copilot"), else as its box names its provider, then the name
-    /// you gave it, where you did: "Claude · Athas".
-    public static func account(_ account: BotWorkReport.Item.Account, provider: String?) -> String {
-        if let title = account.title { return title }
-        let name = account.name
-        guard let label = account.label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty, label != name else { return name }
-        return "\(name) · \(label)"
+    /// The account's display words, as the box names it.
+    public static func account(_ account: BotWorkReport.Item.Account) -> String {
+        account.title ?? account.name
     }
 
     /// What a session's row says of it while it works, in a few words, the longest first: its model
@@ -485,7 +480,7 @@ public enum WorkWords {
     /// fits beside the title, which always keeps its room, and cuts the last at its end.
     public static func about(_ item: BotWorkReport.Item, model: String?) -> [String] {
         let head = [model, item.model?.variant, item.mode == "plan" ? "Plan" : nil]
-        let account = item.account.map { Self.account($0, provider: item.model?.providerID) }
+        let account = item.account.map { Self.account($0) }
         let full = (head + [account, item.project]).compactMap { $0 }.joined(separator: " · ")
         guard account != nil else { return [full] }
         return [full, (head + [item.project]).compactMap { $0 }.joined(separator: " · ")]

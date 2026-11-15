@@ -1601,7 +1601,10 @@ machines; a client that wants every computer's facts asks the box that has it as
     peer's word, one that isn't one of your own computers): a client says nothing of what's at
     work there, never "nothing";
   - `limits`: the services whose plan limits it reads (`claude`, `codex`…), as the answering
-    box's limits rows say (`rows[].boxes`); `[]` while its coding agents' bridge doesn't run;
+    box's limits rows say (`rows[].boxes`); `[]` while its coding agents' bridge doesn't run.
+    `limitServices` (`names.titles`) carries the same services as `[{id, title}]`; clients draw
+    `title` unchanged ("ChatGPT", "SuperGrok", "Claude"). Unknown ids have their initial letter
+    capitalized. `limits` remains for older clients;
   - `actions` (`computers.manage`): what can be done with it from this box now, in the order to
     offer them, `{id, label, confirm?, why?}`, as accounts' are ("Signing in"): `label` the
     button's words, `confirm` `{title, message, label}` where a client asks first (its question,
@@ -2094,15 +2097,14 @@ client shows it from the same routes.
   `state` is as of the read; `lastReply` is what it said last, and for one `stopped` or `failed`
   only what it said in that turn, never an earlier turn's reply (one stopped at rest has none). `today.working` stays, since clients until 0.7.2 need it to read the
   report, but no client shows it (see At work).
-  `account` (bridge 0.9.209) is `{name, label?}`, the account it runs on as Settings › Accounts
+  `account` (bridge 0.9.209) is `{name, label?, title}`, the account it runs on as Settings › Accounts
   lists it where it runs (`api/integration` there, as last checked, never `fresh`): `name` its
   provider's ("Claude Code", "GitHub Copilot", "Anthropic"); `label` the name you gave a coding
   agent's account you added ("Work"; its own sign-in has none, and the engine's sign-ins have no
   names of yours). Left out on Custom Auto (it picks one each turn) and where the engine or bridge
-  can't say within a few seconds. Clients show it on a row as `ClientSessions`' `WorkWords.account`
-  does: the provider's short name, as the usage panel names it (`ClientAccounts`' `AccountNames`:
-  "Claude" for Claude Code, "Codex", "Copilot"), else `name`, then `label` ("Claude · Athas"); in
-  a row too short for it the account goes whole before the project does, and the session's title
+  can't say within a few seconds. Clients draw `account.title` unchanged ("Claude · Athas", "Copilot"); the box
+  supplies the complete short display name including its label. In a row too short for it the
+  account goes whole before the project does, and the session's title
   always keeps its room.
 - **`GET kuvo/work/events`** (ndjson): `{"changed": {<bot>: <ms>}}` now and at each change to a
   bot's work (a session started, stopped, finished or asking, an ask answered, its limits); a
@@ -5291,11 +5293,13 @@ Cursor while its plan's sign-in was turned away as it is now, or while Cursor ho
 `kuvo/agents/api/kuvo/usage…` (the Mac app at `api/kuvo/usage…` on the bridge itself), where
 `features` has `usage.history`.
 
-- `GET kuvo/agents/api/kuvo/usage?zone=<IANA time zone>` → `{data: {zone, services, scanned?, rows:
+- `GET kuvo/agents/api/kuvo/usage?zone=<IANA time zone>` → `{data: {zone, services, serviceTitles, scanned?, rows:
   [row], totals: {<service>: [day]}, partial?: {<service>: {away?, cut?}}}}`. The box works out the days in `zone` (the client's, so a
   Mac in Istanbul reading a machine in UTC gets its own days); one it doesn't know is its own,
   `zone` says which. `services`: what this box states the usage of (`claude`, `codex`,
-  `grok`, `opencode`, `cursor`, `antigravity`): a client shows those from here, and reads the rest as it did. `scanned`: when this box last read its logs.
+  `grok`, `opencode`, `cursor`, `antigravity`): a client shows those from here, and reads the rest as it did. `serviceTitles` (`names.titles`) maps each service id in `services` or `totals` to the box's
+  spend card title ("OpenCode", "Codex"); clients draw it unchanged. Unknown ids are capitalized
+  word by word. `scanned`: when this box last read its logs.
   `pricing: {codex: {fallback, chosen, choices}}`: Codex's fallback model, a usage setting
   (below), `null` for none; `chosen`, whether it was ever chosen (none counts);
   `choices`, the models it may be, in order.
@@ -6687,6 +6691,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `moves.agents` | a bot or chat whose conversations are on the coding agents' bridge moves too, with each agent's own conversation and memory (`api/kuvo/carry/…` on the bridge; "kuvo/moves") |
 | `moves.check` | between boxes, `check` before a move holds anything: whether the box it goes to can run it; a move's `note` says what it does differently there ("kuvo/moves") |
 | `named` | `kuvo/named` |
+| `names.titles` | Computer `limitServices`, work `account.title`, usage `serviceTitles`: display words supplied by the box |
 | `personalities` | `kuvo/personalities…` |
 | `personalities.events` | `kuvo/personalities/events` |
 | `phones` | `kuvo/phones` and `POST kuvo/phones/remove` |

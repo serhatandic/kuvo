@@ -36379,6 +36379,29 @@ linkedFollowers.add(() => {
     tell();
 });
 
+// box/src/shared/account-names.ts
+var short4 = {
+  "claude-code": "Claude",
+  "codex-cli": "Codex",
+  "grok-cli": "Grok",
+  cursor: "Cursor",
+  antigravity: "Antigravity",
+  "github-copilot": "Copilot",
+  openrouter: "OpenRouter",
+  zai: "Z.ai",
+  "zai-coding-plan": "Z.ai",
+  "opencode-go": "OpenCode Go"
+};
+function workAccountTitle(provider, name, label) {
+  const base = provider.split("@")[0];
+  const title = Object.hasOwn(short4, base) ? short4[base] : name;
+  return label && label !== title ? `${title} · ${label}` : title;
+}
+function serviceTitle(id) {
+  const names = { codex: "ChatGPT", grok: "SuperGrok", copilot: "Copilot", openrouter: "OpenRouter", zai: "Z.ai", ollama: "Ollama", opencode: "OpenCode Go" };
+  return Object.hasOwn(names, id) ? names[id] : id.charAt(0).toUpperCase() + id.slice(1);
+}
+
 // box/src/link/areas/computers.ts
 import fs122 from "node:fs";
 import os14 from "node:os";
@@ -37932,10 +37955,6 @@ function ownComputer() {
   };
 }
 var ownFeatures = () => IS_MAC ? macFeatures() : [...FEATURES];
-function serviceTitle(id) {
-  const names = { codex: "ChatGPT", grok: "SuperGrok", copilot: "Copilot", openrouter: "OpenRouter", zai: "Z.ai", ollama: "Ollama", opencode: "OpenCode Go" };
-  return Object.hasOwn(names, id) ? names[id] : id.charAt(0).toUpperCase() + id.slice(1);
-}
 async function limitsRead(bridge, signal) {
   const read = new Map;
   if (!bridge)
@@ -45429,7 +45448,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ecabe1c164d5";
+var BRIDGE_VERSION = "a3b6ba878096";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -53092,25 +53111,6 @@ async function* answerVault(context) {
 
 // box/src/link/areas/glance.ts
 import fs163 from "node:fs";
-
-// box/src/shared/account-names.ts
-var short4 = {
-  "claude-code": "Claude",
-  "codex-cli": "Codex",
-  "grok-cli": "Grok",
-  cursor: "Cursor",
-  antigravity: "Antigravity",
-  "github-copilot": "Copilot",
-  openrouter: "OpenRouter",
-  zai: "Z.ai",
-  "zai-coding-plan": "Z.ai",
-  "opencode-go": "OpenCode Go"
-};
-function workAccountTitle(provider, name, label) {
-  const base = provider.split("@")[0];
-  const title = Object.hasOwn(short4, base) ? short4[base] : name;
-  return label && label !== title ? `${title} · ${label}` : title;
-}
 
 // box/src/link/work/accounts.ts
 var ASK_WAIT2 = 5000;

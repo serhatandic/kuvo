@@ -14,3 +14,9 @@ export function workAccountTitle(provider: string, name: string, label?: string)
 export function spendTitle(service: string): string {
   return Object.hasOwn(cards, service) ? cards[service]! : service.replace(/\b\w/g, letter => letter.toUpperCase());
 }
+
+/** Plan names formerly drawn by clients; unknown services keep their id with an initial capital. */
+export function serviceTitle(id: string): string {
+  const names: Record<string, string> = { codex: "ChatGPT", grok: "SuperGrok", copilot: "Copilot", openrouter: "OpenRouter", zai: "Z.ai", ollama: "Ollama", opencode: "OpenCode Go" };
+  return Object.hasOwn(names, id) ? names[id]! : (id.charAt(0).toUpperCase() + id.slice(1));
+}
