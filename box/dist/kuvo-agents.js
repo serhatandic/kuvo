@@ -1,4 +1,50 @@
 // @bun
+// box/src/shared/zone.ts
+import fs from "fs";
+import path from "path";
+var zoneFileIn = (home) => path.join(home, "box", "time-zone.json");
+function knownZone(name) {
+  if (typeof name !== "string" || !name || name.length > 64)
+    return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: name });
+    return true;
+  } catch {
+    return false;
+  }
+}
+var cached = null;
+function settingZone(file) {
+  let mtime = 0;
+  try {
+    mtime = fs.statSync(file).mtimeMs;
+  } catch {
+    return;
+  }
+  if (cached && cached.file === file && cached.mtime === mtime)
+    return cached.zone;
+  let zone;
+  try {
+    const kept = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (knownZone(kept?.zone))
+      zone = kept.zone;
+  } catch {}
+  cached = { file, mtime, zone };
+  return zone;
+}
+var boxHome = process.env.KUVO_HOME;
+var boxGiven;
+function boxZoneIs(zone) {
+  boxGiven = knownZone(zone) ? zone : undefined;
+}
+function yourZone(home = boxHome) {
+  const set = (home ? settingZone(zoneFileIn(home)) : undefined) ?? boxGiven;
+  if (set)
+    return set;
+  const given = process.env.KUVO_TZ;
+  return knownZone(given) ? given : undefined;
+}
+
 // box/src/agents/main.ts
 import { mkdirSync as mkdirSync28, readdirSync as readdirSync22, readFileSync as readFileSync40, rmSync as rmSync18 } from "fs";
 import { basename as basename13, dirname as dirname24, join as join42 } from "path";
@@ -198,7 +244,7 @@ import { readdirSync as readdirSync4, readFileSync as readFileSync4, statSync as
 import { join as join7, relative as relative2, sep as sep5 } from "path";
 
 // box/src/shared/watch.ts
-import fs from "fs";
+import fs2 from "fs";
 var WATCH_LOOKS_AGAIN = [250, 1000];
 var watching = new Set;
 var looks = new Map;
@@ -222,7 +268,7 @@ function startedOrStopped() {
   }
 }
 function watchFolder(folder, changed, { recursive = false, missed = () => changed() } = {}) {
-  const watcher = fs.watch(folder, { recursive }, (event, name) => changed(event, name === null ? null : String(name)));
+  const watcher = fs2.watch(folder, { recursive }, (event, name) => changed(event, name === null ? null : String(name)));
   const look = () => missed();
   watching.add(look);
   startedOrStopped();
@@ -766,8 +812,8 @@ async function ownArgsLater(args, cwd) {
 
 // box/src/shared/platform.ts
 import { execFile as execFile2, execFileSync, spawn } from "child_process";
-import fs2 from "fs";
-import path from "path";
+import fs3 from "fs";
+import path2 from "path";
 function alive(pid) {
   try {
     process.kill(pid, 0);
@@ -780,9 +826,9 @@ function processRuns(pid, name, proc = "/proc") {
   if (!Number.isInteger(pid) || pid <= 1 || !alive(pid))
     return false;
   try {
-    return fs2.readFileSync(`${proc}/${pid}/cmdline`, "utf8").includes(name);
+    return fs3.readFileSync(`${proc}/${pid}/cmdline`, "utf8").includes(name);
   } catch {
-    if (fs2.existsSync(proc))
+    if (fs3.existsSync(proc))
       return false;
     if (process.env.KUVO_BOX === "mac" || process.env.KUVO_AGENTS_HOME && !process.env.KUVO_AGENTS_REMOTE)
       return true;
@@ -807,15 +853,15 @@ function commandLine(pid) {
 }
 function commandLineOf(pid, proc = "/proc") {
   try {
-    return fs2.readFileSync(`${proc}/${pid}/cmdline`, "utf8").split("\x00").join(" ").trim();
+    return fs3.readFileSync(`${proc}/${pid}/cmdline`, "utf8").split("\x00").join(" ").trim();
   } catch {
-    if (fs2.existsSync(proc))
+    if (fs3.existsSync(proc))
       return;
     return commandLine(pid)?.trim() || undefined;
   }
 }
 function loginShell(env = process.env, platform = process.platform) {
-  const given = env.SHELL && path.isAbsolute(env.SHELL) ? env.SHELL : undefined;
+  const given = env.SHELL && path2.isAbsolute(env.SHELL) ? env.SHELL : undefined;
   if (platform === "darwin")
     return given ?? "/bin/zsh";
   if (given && given !== "/bin/sh")
@@ -829,14 +875,14 @@ function accountShell() {
 `).map((line) => line.split(":")).find((fields) => fields[2] === uid)?.[6]?.trim();
   let shell;
   try {
-    shell = shellOf(fs2.readFileSync("/etc/passwd", "utf8"));
+    shell = shellOf(fs3.readFileSync("/etc/passwd", "utf8"));
   } catch {}
   if (!shell) {
     try {
       shell = shellOf(execFileSync("getent", ["passwd", uid], { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] }));
     } catch {}
   }
-  return shell && path.isAbsolute(shell) ? shell : undefined;
+  return shell && path2.isAbsolute(shell) ? shell : undefined;
 }
 var LOGIN_PATH_MARKERS = ["__KUVO_PATH__", "__KUVO_END__"];
 var WATCHED = 'exec 3<&0 </dev/null; "$0" "$@" 3<&- & s=$!; { read -r _ <&3; kill -9 -$s; kill -9 0; } >/dev/null 2>&1 & exec 3<&-; wait $s; kill -9 -$s 2>/dev/null; kill -9 0';
@@ -902,10 +948,10 @@ async function fromLogin(env, wait, printed, parse) {
   }
   return;
 }
-var savedPathFile = (home) => path.join(home, "run", "login-path");
+var savedPathFile = (home) => path2.join(home, "run", "login-path");
 function savedLoginPath(home) {
   try {
-    const saved = fs2.readFileSync(savedPathFile(home), "utf8").trim();
+    const saved = fs3.readFileSync(savedPathFile(home), "utf8").trim();
     return saved.startsWith("/") ? saved : undefined;
   } catch {
     return;
@@ -913,15 +959,15 @@ function savedLoginPath(home) {
 }
 function saveLoginPath(home, value) {
   try {
-    fs2.mkdirSync(path.dirname(savedPathFile(home)), { recursive: true, mode: 448 });
-    fs2.writeFileSync(savedPathFile(home) + ".new", value + `
+    fs3.mkdirSync(path2.dirname(savedPathFile(home)), { recursive: true, mode: 448 });
+    fs3.writeFileSync(savedPathFile(home) + ".new", value + `
 `, { mode: 384 });
-    fs2.renameSync(savedPathFile(home) + ".new", savedPathFile(home));
+    fs3.renameSync(savedPathFile(home) + ".new", savedPathFile(home));
   } catch {}
 }
 function sandboxGeneration(on) {
   try {
-    return fs2.readFileSync(on, "utf8").trim();
+    return fs3.readFileSync(on, "utf8").trim();
   } catch {
     return "";
   }
@@ -950,11 +996,11 @@ function useOf(rows, pid, command, asleep) {
 }
 function linuxUse(pid, proc) {
   const rows = [];
-  for (const name of fs2.readdirSync(proc)) {
+  for (const name of fs3.readdirSync(proc)) {
     if (!/^\d+$/.test(name))
       continue;
     try {
-      const stat = fs2.readFileSync(`${proc}/${name}/stat`, "utf8");
+      const stat = fs3.readFileSync(`${proc}/${name}/stat`, "utf8");
       const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
       const [utime, stime, cutime, cstime] = fields.slice(11, 15).map(Number);
       rows.push({ pid: Number(name), ppid: Number(fields[1]), state: fields[0], seconds: (utime + stime + (Number(name) === pid ? 0 : cutime + cstime)) / 100 });
@@ -962,7 +1008,7 @@ function linuxUse(pid, proc) {
   }
   let command = "";
   try {
-    command = fs2.readFileSync(`${proc}/${pid}/cmdline`, "utf8").replaceAll("\x00", " ").trim();
+    command = fs3.readFileSync(`${proc}/${pid}/cmdline`, "utf8").replaceAll("\x00", " ").trim();
   } catch {
     return null;
   }
@@ -971,8 +1017,8 @@ function linuxUse(pid, proc) {
 }
 function threadsAsleep(pid, proc) {
   try {
-    return fs2.readdirSync(`${proc}/${pid}/task`).every((thread) => {
-      const stat = fs2.readFileSync(`${proc}/${pid}/task/${thread}/stat`, "utf8");
+    return fs3.readdirSync(`${proc}/${pid}/task`).every((thread) => {
+      const stat = fs3.readFileSync(`${proc}/${pid}/task/${thread}/stat`, "utf8");
       return stat.slice(stat.lastIndexOf(")") + 2).startsWith("S");
     });
   } catch {
@@ -1002,7 +1048,7 @@ function macUse(table, pid) {
   return useOf(rows, pid, command, "SI");
 }
 async function processUse(pid, proc = "/proc") {
-  if (fs2.existsSync(proc)) {
+  if (fs3.existsSync(proc)) {
     try {
       return linuxUse(pid, proc);
     } catch {
@@ -1360,62 +1406,62 @@ function walk(folder, own = []) {
 
 // box/src/shared/files.ts
 import crypto2 from "crypto";
-import fs3 from "fs";
-import path2 from "path";
+import fs4 from "fs";
+import path3 from "path";
 
 // box/src/shared/wait.ts
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // box/src/shared/files.ts
 function writePrivate(file, text) {
-  fs3.mkdirSync(path2.dirname(file), { recursive: true, mode: 448 });
+  fs4.mkdirSync(path3.dirname(file), { recursive: true, mode: 448 });
   placeWhole(file, text);
 }
 function writeSecret(file, text, mode = 384) {
-  privateFolder(path2.dirname(file));
+  privateFolder(path3.dirname(file));
   placeWhole(file, text, mode);
 }
 function privateFolder(folder) {
-  fs3.mkdirSync(folder, { recursive: true, mode: 448 });
-  const real = fs3.realpathSync(folder);
-  const made = fs3.statSync(real);
+  fs4.mkdirSync(folder, { recursive: true, mode: 448 });
+  const real = fs4.realpathSync(folder);
+  const made = fs4.statSync(real);
   if (!made.isDirectory())
     throw new Error(`${folder} isn't a folder: nothing secret is written there.`);
   const me = process.getuid?.();
   if (me !== undefined && me !== 0 && made.uid !== me)
     throw new Error(`${folder} isn't yours: nothing secret is written in it.`);
   if (made.mode & 63)
-    fs3.chmodSync(real, 448);
+    fs4.chmodSync(real, 448);
   return folder;
 }
 function placeWhole(file, text, mode = 384) {
   const temporary = `${file}.${process.pid}.${crypto2.randomBytes(4).toString("hex")}.tmp`;
   try {
-    fs3.writeFileSync(temporary, text, { mode, flag: "wx" });
-    if ((fs3.statSync(temporary).mode & 511) !== mode)
-      fs3.chmodSync(temporary, mode);
-    fs3.renameSync(temporary, file);
+    fs4.writeFileSync(temporary, text, { mode, flag: "wx" });
+    if ((fs4.statSync(temporary).mode & 511) !== mode)
+      fs4.chmodSync(temporary, mode);
+    fs4.renameSync(temporary, file);
   } catch (error) {
     try {
-      fs3.rmSync(temporary, { force: true });
+      fs4.rmSync(temporary, { force: true });
     } catch {}
     throw error;
   }
 }
 function take(lock, stale) {
   try {
-    fs3.mkdirSync(lock);
+    fs4.mkdirSync(lock);
     return true;
   } catch {
     try {
-      if (Date.now() - fs3.statSync(lock).mtimeMs > stale)
-        fs3.rmdirSync(lock);
+      if (Date.now() - fs4.statSync(lock).mtimeMs > stale)
+        fs4.rmdirSync(lock);
     } catch {}
     return false;
   }
 }
 function hold(lock, stale, wait) {
-  fs3.mkdirSync(path2.dirname(lock), { recursive: true, mode: 448 });
+  fs4.mkdirSync(path3.dirname(lock), { recursive: true, mode: 448 });
   const nap = new Int32Array(new SharedArrayBuffer(4));
   for (let i = 0;i < wait / 10; i++) {
     if (take(lock, stale))
@@ -1425,7 +1471,7 @@ function hold(lock, stale, wait) {
   return false;
 }
 async function holdAwaiting(lock, stale, wait) {
-  fs3.mkdirSync(path2.dirname(lock), { recursive: true, mode: 448 });
+  fs4.mkdirSync(path3.dirname(lock), { recursive: true, mode: 448 });
   for (let i = 0;i < wait / 10; i++) {
     if (take(lock, stale))
       return true;
@@ -1440,7 +1486,7 @@ function locked(lock, work, { stale = 1e4, wait = 3000 } = {}) {
   } finally {
     if (held)
       try {
-        fs3.rmdirSync(lock);
+        fs4.rmdirSync(lock);
       } catch {}
   }
 }
@@ -1460,7 +1506,7 @@ async function lockedWhile(lock, work, { stale = 1e4, wait = 3000 } = {}) {
     } finally {
       if (held)
         try {
-          fs3.rmdirSync(lock);
+          fs4.rmdirSync(lock);
         } catch {}
     }
   } finally {
@@ -3018,48 +3064,6 @@ function feed() {
   return new Response(stream, {
     headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" }
   });
-}
-
-// box/src/shared/zone.ts
-import fs4 from "fs";
-import path3 from "path";
-var zoneFileIn = (home) => path3.join(home, "box", "time-zone.json");
-function knownZone(name) {
-  if (typeof name !== "string" || !name || name.length > 64)
-    return false;
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: name });
-    return true;
-  } catch {
-    return false;
-  }
-}
-var cached = null;
-function settingZone(file) {
-  let mtime = 0;
-  try {
-    mtime = fs4.statSync(file).mtimeMs;
-  } catch {
-    return;
-  }
-  if (cached && cached.file === file && cached.mtime === mtime)
-    return cached.zone;
-  let zone;
-  try {
-    const kept = JSON.parse(fs4.readFileSync(file, "utf8"));
-    if (knownZone(kept?.zone))
-      zone = kept.zone;
-  } catch {}
-  cached = { file, mtime, zone };
-  return zone;
-}
-var boxHome = process.env.KUVO_HOME;
-function yourZone(home = boxHome) {
-  const set = home ? settingZone(zoneFileIn(home)) : undefined;
-  if (set)
-    return set;
-  const given = process.env.KUVO_TZ;
-  return knownZone(given) ? given : undefined;
 }
 
 // box/src/shared/limits.ts
@@ -32833,7 +32837,9 @@ function named6(unheard) {
 }
 function chatZone(settings) {
   const own = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const zone = yourZone() ?? settings?.boxTimeZone ?? settings?.timeZone;
+  if (!yourZone() && settings?.boxTimeZone)
+    boxZoneIs(settings.boxTimeZone);
+  const zone = yourZone() ?? settings?.timeZone;
   if (!zone)
     return own;
   try {
@@ -33194,6 +33200,7 @@ async function groupRoutes(runner, store, method, parts, body) {
         denies: Array.isArray(value?.denies) ? value.denies : [],
         boxTimeZone: typeof value?.timeZone === "string" ? value.timeZone : undefined
       });
+      boxZoneIs(value?.timeZone);
     } else {
       store.writeSettings({
         timeZone: typeof value?.timeZone === "string" ? value.timeZone : undefined,
@@ -36435,6 +36442,7 @@ for (const name of ["KUVO_GROUPS", "KUVO_TRASH", "KUVO_GROUPS_MEMORY_KEY", "KUVO
 if (groupFolders) {
   try {
     const store = new GroupStore(groupFolders.root, groupFolders.bots, agentsFile);
+    boxZoneIs(store.settings()?.boxTimeZone);
     const runner = new GroupRunner({
       store,
       engine: link4,
@@ -36710,4 +36718,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents ffbb87b9bde998921c0a2a21a4661c9bd84256690deefbe246cd02b24d79d04b
+// Built from Packages/Box/src/agents 11b7345f8b7bbf8c7e780b9bbabe607c87b77c67d4fd8d517de34c469da4fc14

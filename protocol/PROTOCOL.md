@@ -444,7 +444,7 @@ connection.
   your own computers, #701, once that peer has said what it is (never in the first mail to one),
   and never by a shared machine; one from a peer that isn't yours is dropped as its mail is taken; told again at its next round, within a
   minute, as it starts or stops working at all, else with the rest). Beside `agents`, the same mail
-  carries `zone: {zone, n}`, your time zone, by the same rule as `computer` ("Your time zone"). A box sends its bots and its 40 latest
+  carries `zone: {zone, n, zoneinfo?}`, your time zone's pick, by the same rule as `computer` ("Your time zone"). A box sends its bots and its 40 latest
   sessions (its engine's and its coding agents') when they change and every ten minutes. Each box
   keeps the newest list from each peer. The relay keeps nothing, so a box that has just connected adds `"ask": "agents"` to
   what it sends first (its agents; a Mac's digest), and whoever gets it tells that box its agents
@@ -6825,8 +6825,8 @@ of in `box/trash` (`KUVO_TRASH`; the bridge says `kuvo.group.trashed {id, path}`
 it to the Finder's Trash), and who can be named with `&` in `box/run/agents.json`
 (`KUVO_AGENTS_FILE`, as a machine's `run/agents.json`, which the box writes: "Peers"). `KUVO_BOX=mac` says
 it's a Mac's: its bots are the Mac's own (`machine` left out), made with the words the app puts in its
-`bin`, with no time zone of their own while yours is the Mac's clock (they go by it as it changes;
-"Your time zone"). Its bots remember its
+`bin`, with no time zone of their own while no zone is picked (they go by the Mac's clock as it
+changes; "Your time zone"). Its bots remember its
 chats under `kuvo.groups` (`KUVO_GROUPS_MEMORY_KEY`). The box passes a client's `kuvo/groups…`
 on to that bridge, as a machine's does (bridge 0.9.65; the app did before), saying "Group chats on
 this Mac are starting" or "aren't answering" when it can't; from 0.9.202, while the bridge is down,
@@ -7971,8 +7971,9 @@ The sections now:
 - **General** (`general`): Clock (`time-zone`, a `choice` of every zone the box's runtime knows by
   its IANA name, titled `Europe › Istanbul`; while it has no zone of yours yet, `own-clock` first,
   its own clock, its value, which writes nothing when picked and isn't offered once one is set).
-  A change sets your time zone ("Your time zone"), which your other computers take; `400` for a
-  zone the box doesn't know.
+  A change is a pick of your time zone ("Your time zone"), which your other computers take (not on a
+  machine two setups share, whose row says it's for that machine); `400` for a zone the box doesn't
+  know. A `carried` zone picked as it is becomes a pick.
 - **Permissions** (`permissions`): Approval (`default-mode`, the mode a new conversation starts in,
   a `status`; `full-access`, a `switch` turned off here, asked first, and turned on only in a
   conversation, its `can` saying so; `auto-held-engine`, `auto-held-agents`, why Auto asks first for
@@ -7997,51 +7998,51 @@ The sections now:
 
 ### Your time zone
 
-One time zone for all your own computers in a setup, which what happens at a time of day goes by:
-bots' and conversations' wake-ups, a `/loop`'s time of day, goals' days and ends written without a
-zone, the night's window updates wait for, a chat's meetings, and the times limits reset. Each box
-keeps it (`box/time-zone.json` in its folder: `{kuvo: 1, zone, n, seen?, zoneinfo?, carried?,
-kitSeen?}`), any client
-changes it there (`kuvo/settings/general`, "A box's settings"), and boxes carry it to each other.
-Every box does it alike, a Mac's and a machine's, on macOS and Linux.
+A time zone you pick, for all your own computers in a setup, which what happens at a time of day
+goes by: bots' and conversations' wake-ups, a `/loop`'s time of day, goals' days and ends written
+without a zone, the night's window updates wait for, a chat's meetings, and the times limits reset.
+Until you pick one, each box goes by its own clock, as before. Each box keeps it
+(`box/time-zone.json` in its folder: `{kuvo: 1, zone, n, zoneinfo?, carried?, kitSeen?}`), any
+client picks it there (`kuvo/settings/general`, "A box's settings"), and boxes carry a pick to each
+other. Every box does it alike, a Mac's and a machine's, on macOS and Linux.
 
-- **Carried**: in the agents' mail ("Peers"), beside `agents`, as `zone: {zone, n}`, to each peer
-  that's one of your own computers and has said what it is (as `computer` goes), and on to the rest
-  as each takes it. `n` counts changes: one more than the box had with each change made there. A
-  box takes a peer's when it's counted higher than its own, or at the same count when its name
-  sorts after its own (so every box keeps the same one); not a zone its runtime doesn't know, nor a
-  count past 2^52. Never to or from a peer that isn't one of your own computers (a machine Macs of
-  two setups share, or one of another setup, #701), and a box that's such a machine takes none and
-  tells none. A box with none, or only one `carried` from before (below), tells none, and takes the
-  first it's told: a computer set up later takes your zone at its first round with your others.
-- **A Mac's clock**: a Mac's box takes its own clock moving (you travelled, or changed it in System
-  Settings) as your zone changing, counted on (looked at each minute, `/etc/localtime`, `TZ` where
-  it's set). A machine's clock says nothing of where you are and is never taken.
-- **Carried from before**, the first time a box reads it with none kept: a Mac's box, its own clock
-  (count 0, so any change made since, anywhere, wins); a machine's, what its Mac last gave it,
-  marked `carried`: kept and gone by here, never told, and giving way to the first zone any of your
-  computers tells it, whatever its count: its kit's `timeZone` and `zoneinfo` (`bots/kit.json`),
-  else the zone above its conversations' wake-ups (`wakes/timezone`, `wakes/zoneinfo`), else its
-  launch's `KUVO_TZ` (`run/launch.env`). With none of them, none: its own clock until it's told
-  yours (and the box never writes its own clock above its conversations' wake-ups, where it would be
-  read as yours). A Mac of 0.7 or before still connecting writes its kit again with its own clock: a
-  `timeZone` there other than the one last seen (`kitSeen`) is your zone changing, counted on (only
-  replaced, while what the machine has is `carried`); a kit seen for the first time by a box whose
-  zone came from elsewhere is only noted. A change made here keeps nothing `carried`; picking the
-  zone a `carried` one shows makes it yours. Until you pick one, two cases settle by themselves: two
-  machines `carried` with different zones keep each their own (each came from a Mac), and two Macs
-  whose clocks differ at count 0 agree on the name that sorts last.
+- **A pick**: counted one more than the box had (1 and up), with the zone's rules where the box has
+  them (`zoneinfo`, a TZif file, base64, under 16 KB).
+- **Carried**: in the agents' mail ("Peers"), beside `agents`, as `zone: {zone, n, zoneinfo?}`, a
+  pick only (never a box's own clock, nor what an older Mac gave a machine), to each peer that's one
+  of your own computers and has said what it is (as `computer` goes), and on to the rest as each
+  takes it. A box takes one counted higher than its own, or at the same count with a name that sorts
+  after its own (so every box keeps the same one); not one counted 0, a zone its runtime doesn't
+  know, nor a count past 2^52. It keeps the rules sent with it where it has none of its own (a Linux
+  machine without tzdata). Never to or from a peer that isn't one of your own computers (a machine
+  Macs of two setups share, or one of another setup, #701); a box that's such a machine takes none
+  and tells none, and its pick is its own. A box with no pick takes the first it's told: a computer
+  set up later takes yours at its first round with your others.
+- **A computer's clock is never your zone**: a Mac's clock moving (you travel) changes nothing on
+  your other computers, and nothing of a pick: a Mac's bots go by its clock only while there's no pick
+  (it isn't announced). (Whether travel should move your other computers is for later.)
+- **Carried from before**, the first time a machine's box reads it with none kept: what its Mac last
+  gave it, marked `carried` (count 0: kept and gone by here, never told, and giving way to any pick):
+  its kit's `timeZone` and `zoneinfo` (`bots/kit.json`), else the zone above its conversations'
+  wake-ups (`wakes/timezone`, `wakes/zoneinfo`), else its launch's `KUVO_TZ` (`run/launch.env`). With
+  none of them, none: its own clock (the box never writes its own clock above its conversations'
+  wake-ups, where it would be read as yours). A Mac's box carries nothing: it goes by its clock, as
+  before. A Mac of 0.7 or before still connecting writes its kit again with its own clock: a
+  `timeZone` there other than the one last seen (`kitSeen`) replaces a `carried` zone, for that
+  machine alone, as it did; a pick stays, the kit's zone only noted. Picking the zone a `carried` one
+  shows makes it a pick. Two machines `carried` with different zones keep each their own until you
+  pick one.
 - **Where it goes**: each bot's folder and the folder above conversations' own (`wakes`) have the
-  `timezone` file `kuvo-wake` reads (and `zoneinfo`, a zone's rules as a TZif file, base64 in the
-  setting, kept from an older Mac's kit for a machine without zone files of its own, only for that
-  zone): written as the zone changes, as a bot is made, settled or arrives, and each minute while the
-  box runs; not for a bot that's moving, which the box it arrives at settles. On a machine, your zone
-  (its own clock while it has none, as before); on a Mac, nothing while your zone is its clock (they
-  go by it as it changes), else yours. The box's own times read the setting, else `KUVO_TZ`, else the
-  computer's clock; so does its coding agents' bridge (from `KUVO_HOME`, else the `timeZone` the box
-  gives it with its group chats' settings, `box-settings`). A computer without the zone's rules (a
-  Linux machine without tzdata, and none kept from an older Mac's kit) wakes on UTC: the setting's
-  row says so, as a warning.
+  `timezone` file `kuvo-wake` reads, and `zoneinfo` (its rules) where the setting has them, written
+  rules first and whole, by a rename: as the zone changes, as a bot is made, settled or arrives, and
+  each minute while the box runs; not for a bot that's moving, which the box it arrives at settles.
+  With no pick: on a machine, its own clock (as before), or its `carried` zone; on a Mac, no file
+  (they go by its clock as it changes). What a bot is told says the zone where there's a file, and
+  "this Mac's clock" on a Mac without one. The box's own times read the setting, else `KUVO_TZ`, else
+  the computer's clock; its coding agents' bridge the setting (from `KUVO_HOME`), else the `timeZone`
+  the box gives it with its group chats' settings (`box-settings`), else `KUVO_TZ`, for its chats'
+  meetings, limits' resets and its night. A computer without the zone's rules (none of its own, none
+  sent) wakes on UTC: the setting's row says so, as a warning.
 
 ### Personalities
 

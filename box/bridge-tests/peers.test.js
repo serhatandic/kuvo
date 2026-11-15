@@ -683,7 +683,13 @@ test("your time zone reaches your other computers: a change on one box reaches t
   const toldTo = async () => {
     const sent = [];
     await link.announce({ send: bytes => sent.push(bytes) }, () => target, link.readLink(), Date.now(), true);
-    return Object.fromEntries([mac, second].map(each => [each.peer.name, opened(sent.find(bytes => k(bytes.subarray(1, 17)) === each.address), each).payload.zone]));
+    // (Each with its zone's rules, where this computer has them: compared apart.)
+    const zoneOf = each => opened(sent.find(bytes => k(bytes.subarray(1, 17)) === each.address), each).payload.zone;
+    return Object.fromEntries([mac, second].map(each => {
+      const told = zoneOf(each);
+      if (told) assert.equal(Buffer.from(told.zoneinfo ?? "VFppZg", "base64").subarray(0, 4).toString(), "TZif");
+      return [each.peer.name, told && { zone: told.zone, n: told.n }];
+    }));
   };
 
   // A box just joined, with nothing of its own from before: none, and it tells none.

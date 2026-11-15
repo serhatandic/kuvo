@@ -11,7 +11,7 @@ import { textOf } from "../files";
 import { IS_MAC, K, UPDATES } from "../home";
 import { botPersonalities, meetPersonalities, readPersonalities } from "../personalities/library";
 import { readLink } from "../state";
-import { zoneHere } from "../zone/setting";
+import { zoneFilesFor, zoneHere } from "../zone/setting";
 import { KIT_FILE, readMacKit } from "./mac-kit";
 import type { BotPersonality } from "../personalities/library";
 import type { BotModel, BotTemplates } from "../../shared/routes/bots";
@@ -132,7 +132,9 @@ export function readKit(system: string = process.platform): BotKit | null {
   carryMacKit();
   const timeZone = zoneHere().zone;
   const machine = readLink()?.id || os.hostname();
-  const here = IS_MAC ? words.here.mac : words.here.machine;
+  // (This Mac's bots are told they go by its clock only while they do: with a zone of yours in their
+  // folders, they're told it, as a machine's are.)
+  const here = !IS_MAC ? words.here.machine : zoneFilesFor().timezone ? { ...words.here.mac, clock: words.here.machine.clock } : words.here.mac;
   const told = (each: PresetPersonality) => words.personalityWords.replaceAll("⟦name⟧", () => each.name).replaceAll("⟦description⟧", () => each.description);
   return {
     kuvo: 1,

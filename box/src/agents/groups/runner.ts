@@ -5,7 +5,7 @@
 // (`seat.ts`). They go on with no client connected; the Mac's window and the phone follow them
 // through the bridge's API and its event feed.
 
-import { yourZone } from "../../shared/zone"
+import { boxZoneIs, yourZone } from "../../shared/zone"
 import type { QueueFiles } from "../../shared/queues"
 import { emit } from "../events"
 import { newID } from "../ids"
@@ -1659,7 +1659,9 @@ function named(unheard: GroupMessage[]): string | undefined {
  * own otherwise. */
 export function chatZone(settings: { timeZone?: string; boxTimeZone?: string } | undefined): string {
   const own = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const zone = yourZone() ?? settings?.boxTimeZone ?? settings?.timeZone
+  // (The box's file, then as the box gave it, then KUVO_TZ: `yourZone`; a client's word last.)
+  if (!yourZone() && settings?.boxTimeZone) boxZoneIs(settings.boxTimeZone)
+  const zone = yourZone() ?? settings?.timeZone
   if (!zone) return own
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: zone })

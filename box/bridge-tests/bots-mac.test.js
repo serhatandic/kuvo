@@ -457,31 +457,43 @@ test("a bot brought here from another computer is made this Mac's: its folder sa
   assert.equal((await ask(handle, "POST", "kuvo/bots/bot_nobody01/arrived")).status, 404);
 });
 
-// Your time zone on this Mac's box (PROTOCOL.md, "Your time zone"): it starts at this Mac's clock,
-// and this Mac's clock moving (you travelled) is your zone changing, counted on, so your other
-// computers take it. Its own bots go by its clock as it changes: a zone file only for one that's
-// yours and not its clock's (picked from a client, or taken from another computer).
-test("this Mac's clock moving is your time zone changing; its bots get a zone of their own only when yours isn't its clock", () => {
+// Your time zone on this Mac's box (PROTOCOL.md, "Your time zone"): two Macs updated in different
+// zones each keep their own clock, as before; neither tells its clock to the other (count 0 is never
+// told), so neither moves. A zone you pick on one reaches the other, and its bots are told it.
+test("two Macs updated in different zones each keep their own clock; a zone picked on one reaches the other, and its bots are told it", () => {
   const was = process.env.TZ;
+  const shipped = fs.readFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), "utf8");
   try {
     process.env.TZ = "Europe/Istanbul";
+    write(wordsFile, shipped);
     const folder = bot("bot_clock00001");
     fs.rmSync(path.join(home, "box", "time-zone.json"), { force: true });
-    assert.deepEqual([link.readZoneSetting().zone, link.readZoneSetting().n], ["Europe/Istanbul", 0], "this Mac's clock, counted 0: any change since wins over it");
-    assert.equal(link.followOwnClock(), false, "nothing moved");
-    process.env.TZ = "Asia/Tokyo";
-    assert.equal(link.followOwnClock(), true);
-    assert.deepEqual([link.readZoneSetting().zone, link.readZoneSetting().n], ["Asia/Tokyo", 1]);
-    assert.equal(fs.existsSync(path.join(folder, "timezone")), false, "its clock's: no file, it goes by the clock");
-    // Picked from a client: yours, not this Mac's clock.
-    link.setZone("America/New_York");
+    // Updated: nothing of yours, its own clock, nothing told.
+    assert.equal(link.readZoneSetting(), null);
+    assert.equal(link.zoneMail(), null);
+    assert.equal(fs.existsSync(path.join(folder, "timezone")), false, "its bots go by its clock");
+    assert.match(link.readKit().instructions, /on this Mac's clock/);
+    // The other Mac's clock, were it told at count 0: never taken.
+    assert.equal(link.takeZone({ zone: "America/New_York", n: 0 }), false);
+    assert.equal(link.readZoneSetting(), null);
+    // A zone picked on the other Mac: taken here, its bots' wake-ups go by it, and they're told so.
+    assert.equal(link.takeZone({ zone: "America/New_York", n: 1 }), true);
     assert.equal(fs.readFileSync(path.join(folder, "timezone"), "utf8"), "America/New_York");
-    assert.equal(link.followOwnClock(), false, "the clock didn't move: yours stays");
-    // You travel there: the clock agrees, the file goes.
-    process.env.TZ = "America/New_York";
-    assert.equal(link.followOwnClock(), true);
-    assert.equal(fs.existsSync(path.join(folder, "timezone")), false);
+    const told = link.readKit().instructions;
+    assert.match(told, /in the user's time zone, America\/New_York/);
+    assert.doesNotMatch(told, /this Mac's clock/);
+    // Picked here, it goes back with a higher count.
+    link.setZone("Asia/Tokyo");
+    assert.deepEqual([link.zoneMail().zone, link.zoneMail().n], ["Asia/Tokyo", 2]);
+    // This Mac's clock moving (you travel) moves nothing: your pick stays.
+    process.env.TZ = "Asia/Tokyo";
+    assert.equal(fs.readFileSync(path.join(folder, "timezone"), "utf8"), "Asia/Tokyo");
+    process.env.TZ = "Europe/London";
+    link.applyZone();
+    assert.deepEqual([link.zoneMail().zone, link.zoneMail().n], ["Asia/Tokyo", 2]);
+    assert.equal(fs.readFileSync(path.join(folder, "timezone"), "utf8"), "Asia/Tokyo");
   } finally {
     if (was === undefined) delete process.env.TZ; else process.env.TZ = was;
+    write(wordsFile, JSON.stringify(words));
   }
 });

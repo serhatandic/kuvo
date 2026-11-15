@@ -634,8 +634,9 @@ var boxHome = process.env.KUVO_HOME;
 function boxHomeIs(home) {
   boxHome = home;
 }
+var boxGiven;
 function yourZone(home = boxHome) {
-  const set = home ? settingZone(zoneFileIn(home)) : undefined;
+  const set = (home ? settingZone(zoneFileIn(home)) : undefined) ?? boxGiven;
   if (set)
     return set;
   const given = process.env.KUVO_TZ;
@@ -8393,24 +8394,29 @@ var MOST_COUNT2 = 2 ** 52;
 var zoneFollowers = new Set;
 var isSetting = (value) => {
   const kept = value;
-  return kept?.kuvo === 1 && knownZone(kept.zone) && Number.isInteger(kept.n) && kept.n >= 0 && kept.n <= MOST_COUNT2;
+  return kept?.kuvo === 1 && typeof kept.zone === "string" && /^[A-Za-z0-9_+\-/]{1,64}$/.test(kept.zone) && !kept.zone.includes("..") && Number.isInteger(kept.n) && kept.n >= 0 && kept.n <= MOST_COUNT2;
 };
-var hasZoneRules = (zone) => zone === "UTC" || !zone.includes("..") && fs27.existsSync(path31.join("/usr/share/zoneinfo", zone));
+function givenRules(value) {
+  if (typeof value !== "string" || !value || value.length > 22000)
+    return null;
+  const data = Buffer.from(value, "base64");
+  return data.length > 4 && data.length < 16384 && data.subarray(0, 4).toString() === "TZif" ? data.toString("base64") : null;
+}
+var ZONEINFO = !REAL_BOX && process.env.KUVO_TEST_ZONEINFO ? process.env.KUVO_TEST_ZONEINFO : "/usr/share/zoneinfo";
+var hasZoneRules = (zone) => zone === "UTC" || !zone.includes("..") && fs27.existsSync(path31.join(ZONEINFO, zone));
 function rulesOf(zone) {
   if (zone.includes(".."))
     return null;
   try {
-    const data = fs27.readFileSync(path31.join("/usr/share/zoneinfo", zone));
+    const data = fs27.readFileSync(path31.join(ZONEINFO, zone));
     return data.length < 16384 && data.subarray(0, 4).toString() === "TZif" ? data.toString("base64") : null;
   } catch {
     return null;
   }
 }
 function zoneFromBefore() {
-  if (IS_MAC) {
-    const own = ownClock();
-    return { kuvo: 1, zone: own, n: 0, seen: own };
-  }
+  if (IS_MAC)
+    return null;
   const kit = readMacKit();
   if (knownZone(kit?.timeZone))
     return { kuvo: 1, zone: kit.timeZone, n: 0, carried: true, kitSeen: kit.timeZone, ...kitRules(kit) };
@@ -8435,9 +8441,9 @@ function followOldKit(now) {
   if (!knownZone(kit?.timeZone) || kit.timeZone === now.kitSeen)
     return now;
   const zone = kit.timeZone;
-  if (now.kitSeen === undefined && !now.carried)
+  if (!now.carried)
     return written2({ ...now, kitSeen: zone });
-  kitMoved = written2({ ...now, zone, kitSeen: zone, n: now.carried ? now.n : Math.min(now.n + 1, MOST_COUNT2), zoneinfo: undefined, ...kitRules(kit) });
+  kitMoved = written2({ ...now, zone, kitSeen: zone, zoneinfo: undefined, ...kitRules(kit) });
   return kitMoved;
 }
 var kitMoved = null;
@@ -8496,7 +8502,7 @@ function zoneHere(setting = readZoneSetting()) {
 }
 function zoneMail() {
   const setting = readZoneSetting();
-  return setting && !setting.carried ? { zone: setting.zone, n: setting.n } : null;
+  return setting && !setting.carried && setting.n >= 1 ? { zone: setting.zone, n: setting.n, ...setting.zoneinfo ? { zoneinfo: setting.zoneinfo } : {} } : null;
 }
 function changed(setting) {
   applyZone(setting);
@@ -8522,43 +8528,21 @@ function setZone(zone) {
     changed(made ?? moved);
   return setting;
 }
-var kept3 = (now) => ({ ...now?.seen ? { seen: now.seen } : {}, ...now?.kitSeen ? { kitSeen: now.kitSeen } : {} });
+var kept3 = (now) => now?.kitSeen ? { kitSeen: now.kitSeen } : {};
 function takeZone(given) {
   const mail = given;
-  if (!knownZone(mail?.zone) || !Number.isInteger(mail.n) || mail.n < 0 || mail.n > MOST_COUNT2)
+  if (!knownZone(mail?.zone) || !Number.isInteger(mail.n) || mail.n < 1 || mail.n > MOST_COUNT2)
     return false;
   const { zone, n } = mail;
+  const sent = givenRules(mail.zoneinfo);
   let made = null;
   try {
     locked(ZONE_LOCK, () => {
       const now = keptNow();
       if (now && !now.carried && (n < now.n || n === now.n && zone <= now.zone))
         return;
-      const rules = now?.zone === zone ? now.zoneinfo ?? rulesOf(zone) : rulesOf(zone);
+      const rules = rulesOf(zone) ?? sent ?? (now?.zone === zone ? now.zoneinfo ?? null : null);
       made = written2({ kuvo: 1, zone, n, ...kept3(now), ...rules ? { zoneinfo: rules } : {} });
-    });
-  } catch {
-    return false;
-  }
-  const moved = movedByKit();
-  if (made || moved)
-    changed(made ?? moved);
-  return Boolean(made);
-}
-function followOwnClock() {
-  if (!IS_MAC)
-    return false;
-  const own = ownClock();
-  let made = null;
-  try {
-    locked(ZONE_LOCK, () => {
-      const now = keptNow();
-      if (now?.seen === own)
-        return;
-      if (!now)
-        return void (made = written2({ kuvo: 1, zone: own, n: 0, seen: own }));
-      const rules = rulesOf(own);
-      made = written2({ kuvo: 1, zone: own, n: Math.min(now.n + 1, MOST_COUNT2), seen: own, ...rules ? { zoneinfo: rules } : {} });
     });
   } catch {
     return false;
@@ -8570,7 +8554,7 @@ function followOwnClock() {
 }
 function zoneFilesFor(setting = readZoneSetting()) {
   const here = zoneHere(setting);
-  const timezone = IS_MAC ? here.yours && here.zone !== ownClock() ? here.zone : null : here.zone;
+  const timezone = here.yours || !IS_MAC ? here.zone : null;
   const zoneinfo = timezone && setting?.zoneinfo && setting.zone === timezone ? Buffer.from(setting.zoneinfo, "base64") : null;
   return { timezone, zoneinfo };
 }
@@ -8589,8 +8573,11 @@ function writeZoneFiles(folder, files = zoneFilesFor(), make = false) {
       fs27.mkdirSync(folder, { recursive: true });
     placeWhole(file, data, 420);
   };
+  if (files.zoneinfo)
+    put("zoneinfo", files.zoneinfo);
   put("timezone", files.timezone);
-  put("zoneinfo", files.zoneinfo);
+  if (!files.zoneinfo)
+    put("zoneinfo", null);
 }
 function applyZone(setting = readZoneSetting()) {
   const files = zoneFilesFor(setting);
@@ -8610,8 +8597,7 @@ function applyZone(setting = readZoneSetting()) {
 function keepZone(every = 60000) {
   const round = () => {
     try {
-      if (!followOwnClock())
-        applyZone();
+      applyZone();
     } catch {}
   };
   round();
@@ -8640,7 +8626,7 @@ function readKit(system = process.platform) {
   carryMacKit();
   const timeZone = zoneHere().zone;
   const machine = readLink()?.id || os6.hostname();
-  const here = IS_MAC ? words.here.mac : words.here.machine;
+  const here = !IS_MAC ? words.here.machine : zoneFilesFor().timezone ? { ...words.here.mac, clock: words.here.machine.clock } : words.here.mac;
   const told = (each) => words.personalityWords.replaceAll("⟦name⟧", () => each.name).replaceAll("⟦description⟧", () => each.description);
   return {
     kuvo: 1,
@@ -45350,7 +45336,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e031b74fa245";
+var BRIDGE_VERSION = "1fe9c5fd3378";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -56691,7 +56677,9 @@ async function generalPage(context) {
   if (!here.yours)
     choices.unshift({ id: OWN_CLOCK, title: `${name}'s clock (${zoneTitle(here.zone)})` });
   const unruled = here.yours && !zoneFilesFor(setting).zoneinfo && !hasZoneRules(here.zone);
-  const line = unruled ? `${name} has no rules for this time zone, so its wake-ups go by UTC. Install its time zone data (tzdata) to fix it.` : setting?.carried ? `Kept from what your Mac last gave ${name}: its bots' wake-ups go by it. Pick it, or another, to set it for all your computers.` : here.yours ? `Bots' wake-ups and times of day go by it on all your computers. It's ${offset} now.` : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
+  const alone = sharedMachine(readLink());
+  const everywhere = alone ? `on ${name}` : "on all your computers";
+  const line = unruled ? `${name} has no rules for this time zone, so its wake-ups go by UTC. Install its time zone data (tzdata) to fix it.` : setting?.carried ? `Kept from what your Mac last gave ${name}: its bots' wake-ups go by it. Pick it, or another, to set it ${everywhere}.` : here.yours ? `Bots' wake-ups and times of day go by it ${everywhere}. It's ${offset} now.` : alone ? `None set yet: ${name} goes by its own clock. Pick one for ${name}.` : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
   return {
     id: "general",
     title: "General",
@@ -56707,8 +56695,7 @@ async function generalPage(context) {
         value: here.yours ? here.zone : OWN_CLOCK,
         choices,
         can: true
-      })],
-      ...IS_MAC ? { note: "When this Mac's own clock changes (you travel), your time zone follows it." } : {}
+      })]
     }]
   };
 }
@@ -59412,7 +59399,6 @@ export {
   finishDeletes,
   firstMessageOf,
   foldPhones,
-  followOwnClock,
   followed,
   followedSetup,
   forgetAsks,
@@ -59735,5 +59721,6 @@ export {
   writeLink,
   writerAct,
   writerOf,
-  zoneHere
+  zoneHere,
+  zoneMail
 };

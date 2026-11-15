@@ -189,7 +189,7 @@ export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";
 export { listBots } from "./bots/list";
 export { botInstructions, botTemplates, readKit, readWords } from "./bots/kit";
-export { applyZone, followOwnClock, readZoneSetting, setZone, takeZone, zoneHere } from "./zone/setting";
+export { applyZone, readZoneSetting, setZone, takeZone, zoneHere, zoneMail } from "./zone/setting";
 export { freshenBot, freshenBots, refreshedRules, settleBot } from "./bots/tell";
 export { makeBot } from "./bots/make";
 export { carryToAgents } from "./areas/carry";
@@ -264,7 +264,7 @@ scriptIs(fileURLToPath(import.meta.url));
 
 onDocsChanged(macDocsChanged);
 
-// Your time zone changed here (a client, a peer, this Mac's clock): your other computers hear at once.
+// Your time zone changed here (a pick, a peer's, an older Mac's kit): your other computers hear at once.
 zoneFollowers.add(() => {
   const host = IS_MAC ? macLink.host : liveHost;
   if (host?.welcomed) announce(host, readEngineFile).catch(() => {});
@@ -830,8 +830,7 @@ async function serve(): Promise<void> {
   // And their conversations and places in group chats, where those weren't answering.
   finishDeletes(readEngineFile, bridgeTarget).catch(() => {});
   keepBridgeAnswering();
-  // Your time zone in its bots' and conversations' folders, and this Mac's clock looked at (you
-  // travelled): kept so as it runs.
+  // Your time zone in its bots' and conversations' folders, kept so as it runs.
   keepZone();
   // Its wake-ups and watches, sent while it runs, with the app's window closed too.
   sendWakes();

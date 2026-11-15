@@ -2,6 +2,7 @@
 // bridge's password): read them, bring one here or let it go (a move), and take part.
 
 import { chatZone, type GroupRunner } from "./runner"
+import { boxZoneIs } from "../../shared/zone"
 import { isGroup, isMeeting, isMessages, version, type GroupStore } from "./store"
 import { namedBlock, readDirectory } from "./named"
 import { planMeeting } from "./time"
@@ -33,6 +34,8 @@ export async function groupRoutes(runner: GroupRunner | undefined, store: GroupS
         denies: Array.isArray(value?.denies) ? value.denies : [],
         boxTimeZone: typeof value?.timeZone === "string" ? value.timeZone : undefined,
       })
+      // (What the bridge's other clocks go by too: limits' resets, its night.)
+      boxZoneIs(value?.timeZone)
     } else {
       store.writeSettings({
         timeZone: typeof value?.timeZone === "string" ? value.timeZone : undefined,

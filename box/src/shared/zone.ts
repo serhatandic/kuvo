@@ -67,9 +67,19 @@ export function boxHomeIs(home: string): void {
   boxHome = home
 }
 
-/** Your time zone: the box's setting, else `KUVO_TZ`, else undefined (this computer's clock). */
+// Your zone as the box gave it (the coding agents' bridge, `box-settings`), for a bridge that can't
+// read the box's folder.
+let boxGiven: string | undefined
+
+/** Your zone as the box gave it to this process (the bridge's group chats' settings). */
+export function boxZoneIs(zone: unknown): void {
+  boxGiven = knownZone(zone) ? zone : undefined
+}
+
+/** Your time zone: the box's setting (its file, else as the box gave it), else `KUVO_TZ`, else
+ * undefined (this computer's clock). */
 export function yourZone(home: string | undefined = boxHome): string | undefined {
-  const set = home ? settingZone(zoneFileIn(home)) : undefined
+  const set = (home ? settingZone(zoneFileIn(home)) : undefined) ?? boxGiven
   if (set) return set
   // COMPAT(0.7 bot-kit): the zone a Mac of 0.7 or before started a machine's engine with. Goes 3 months after 0.8.0.
   const given = process.env.KUVO_TZ

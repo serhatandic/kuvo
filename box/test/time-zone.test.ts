@@ -73,13 +73,15 @@ test("a machine with nothing from before keeps none as its round goes on, and te
   expect(zoneMail()).toBe(null)
 })
 
-test("a machine updated from 0.7 keeps its Mac's zone as carried: told to no one, and giving way to the first your other computers say", () => {
+test("a machine updated from 0.7 keeps its Mac's zone as carried: told to no one, and giving way to the first pick your other computers tell it", () => {
   write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "Europe/Istanbul" }))
   expect(readZoneSetting()).toMatchObject({ zone: "Europe/Istanbul", n: 0, carried: true })
   expect(zoneMail()).toBe(null)
-  expect(takeZone({ zone: "Asia/Kolkata", n: 0 })).toBe(true)
+  // (Another computer's own clock is never told, so never taken: count 0.)
+  expect(takeZone({ zone: "Asia/Kolkata", n: 0 })).toBe(false)
+  expect(takeZone({ zone: "Asia/Kolkata", n: 1 })).toBe(true)
   expect(readZoneSetting()?.carried).toBeUndefined()
-  expect(zoneMail()).toEqual({ zone: "Asia/Kolkata", n: 0 })
+  expect(zoneMail()).toMatchObject({ zone: "Asia/Kolkata", n: 1 })
   expect(read(join(folder, "timezone"))).toBe("Asia/Kolkata")
   // A launch's KUVO_TZ only where there's nothing else.
   for (const file of [ZONE_FILE, join(BOTS, "kit.json"), join(SESSION_WAKES, "timezone"), join(SESSION_WAKES, "zoneinfo")]) rmSync(file, { force: true })
@@ -87,28 +89,28 @@ test("a machine updated from 0.7 keeps its Mac's zone as carried: told to no one
   expect(readZoneSetting()).toMatchObject({ zone: "Australia/Sydney", n: 0, carried: true })
 })
 
-test("a zone you pick on a machine that updated overnight beats your Mac's clock carried later at its own update", async () => {
+test("a zone you pick on a machine that updated overnight is told to your other computers; its carried zone never was", async () => {
   write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "Europe/Istanbul" }))
   const row = rowOf((await ask(handler, "GET", "kuvo/settings/general")).json)
   expect(row.value).toBe("Europe/Istanbul")
+  expect(zoneMail()).toBe(null)
   expect((await ask(handler, "PATCH", "kuvo/settings/general", { row: "time-zone", value: "Asia/Tokyo", was: row.revision })).status).toBe(200)
   expect(readZoneSetting()).toMatchObject({ zone: "Asia/Tokyo", n: 1 })
-  // Your Mac updates later, its box carrying its own clock at count 0, as every Mac's does.
-  expect(takeZone({ zone: "Europe/Istanbul", n: 0 })).toBe(false)
-  expect(readZoneSetting()?.zone).toBe("Asia/Tokyo")
+  expect(zoneMail()).toMatchObject({ zone: "Asia/Tokyo", n: 1 })
 })
 
-test("a Mac of 0.7 still connecting, its clock moved (you travelled): the kit it writes again moves your zone, as it did before", () => {
+test("a Mac of 0.7 still connecting, its clock moved (you travelled): the kit it writes again moves a machine's carried zone, for it alone, never a pick", () => {
   write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "Europe/Istanbul" }))
-  expect(takeZone({ zone: "Europe/Istanbul", n: 3 })).toBe(true)
-  expect(readZoneSetting()).toMatchObject({ zone: "Europe/Istanbul", n: 3 })
+  expect(readZoneSetting()).toMatchObject({ zone: "Europe/Istanbul", carried: true })
   write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "America/New_York" }))
-  expect(readZoneSetting()).toMatchObject({ zone: "America/New_York", n: 4 })
+  expect(readZoneSetting()).toMatchObject({ zone: "America/New_York", n: 0, carried: true })
   expect(read(join(folder, "timezone"))).toBe("America/New_York")
-  expect(zoneMail()).toEqual({ zone: "America/New_York", n: 4 })
-  // Written again the same: nothing more.
-  write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "America/New_York" }))
-  expect(readZoneSetting()?.n).toBe(4)
+  expect(zoneMail()).toBe(null)
+  // A pick: the kit's next zone is only noted.
+  expect(takeZone({ zone: "Asia/Tokyo", n: 2 })).toBe(true)
+  write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "Europe/London" }))
+  expect(readZoneSetting()).toMatchObject({ zone: "Asia/Tokyo", n: 2, kitSeen: "Europe/London" })
+  expect(read(join(folder, "timezone"))).toBe("Asia/Tokyo")
 })
 
 test("group chats' meetings go by your zone: the box gives it to their bridge with the chats' settings, which a bridge that can't read the box's folder goes by", async () => {
@@ -129,25 +131,29 @@ test("group chats' meetings go by your zone: the box gives it to their bridge wi
     if (!hadConfig) rmSync(CONFIG_FILE, { force: true })
   }
   rmSync(ZONE_FILE)
+  const { boxZoneIs } = await import("../src/shared/zone")
   expect(chatZone({ boxTimeZone: "Asia/Tokyo", timeZone: "Europe/Berlin" })).toBe("Asia/Tokyo")
+  // (What the box gave this process is what its other clocks go by too.)
+  expect(yourZone()).toBe("Asia/Tokyo")
+  boxZoneIs(undefined)
   expect(chatZone({ timeZone: "Europe/Berlin" })).toBe("Europe/Berlin")
 })
 
-test("a kit moving your zone is applied at once, whoever reads it first: a peer's mail that's then refused still leaves the bots on the new zone", () => {
+test("a kit moving a carried zone is applied at once, whoever reads it first (here, what's told to peers)", () => {
   write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "Europe/Istanbul" }))
-  expect(takeZone({ zone: "Europe/Istanbul", n: 3 })).toBe(true)
+  expect(readZoneSetting()?.carried).toBe(true)
   write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "America/New_York" }))
-  expect(takeZone({ zone: "Asia/Tokyo", n: 1 })).toBe(false)
+  expect(zoneMail()).toBe(null)
   expect(read(join(folder, "timezone"))).toBe("America/New_York")
-  expect(zoneMail()).toEqual({ zone: "America/New_York", n: 4 })
 })
 
-test("a 0.7 Mac connecting for the first time to a machine that has your zone from elsewhere doesn't replace your pick; only its clock moving after does", () => {
-  expect(takeZone({ zone: "Asia/Tokyo", n: 1 })).toBe(true)
-  write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "Europe/Istanbul" }))
-  expect(readZoneSetting()).toMatchObject({ zone: "Asia/Tokyo", n: 1, kitSeen: "Europe/Istanbul" })
-  write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "Europe/London" }))
-  expect(readZoneSetting()).toMatchObject({ zone: "Europe/London", n: 2 })
+test("a pick told with its rules: kept where this computer has none of its own; the rules of the zone before go only once the new name is written", () => {
+  const rules = readFileSync("/usr/share/zoneinfo/Asia/Tokyo").toString("base64")
+  expect(takeZone({ zone: "Asia/Tokyo", n: 1, zoneinfo: rules })).toBe(true)
+  expect(read(join(folder, "timezone"))).toBe("Asia/Tokyo")
+  // (Not rules that aren't a zone's.)
+  expect(takeZone({ zone: "Europe/Paris", n: 2, zoneinfo: Buffer.from("not rules").toString("base64") })).toBe(true)
+  expect(readZoneSetting()?.zoneinfo?.length ? Buffer.from(readZoneSetting()!.zoneinfo!, "base64").subarray(0, 4).toString() : "TZif").toBe("TZif")
 })
 
 test("the zone a machine carried from before, picked as it is, becomes yours and goes to your other computers", async () => {
@@ -158,5 +164,5 @@ test("the zone a machine carried from before, picked as it is, becomes yours and
   const picked = await ask(handler, "PATCH", "kuvo/settings/general", { row: "time-zone", value: "Europe/Istanbul", was: row.revision })
   expect(picked.status).toBe(200)
   expect(rowOf(picked.json).line).toContain("on all your computers")
-  expect(zoneMail()).toEqual({ zone: "Europe/Istanbul", n: 1 })
+  expect(zoneMail()).toMatchObject({ zone: "Europe/Istanbul", n: 1 })
 })

@@ -146,3 +146,37 @@ test("the box's other clocks go by your zone too: the night's window it updates 
   assert.equal(ran.status, 0, ran.stderr);
   assert.equal(JSON.parse(ran.stdout.trim()), "2030-01-02");
 });
+
+test("a Linux machine without time zone data takes your pick with its rules, and its bots wake on them, not on UTC", () => {
+  const folder = bot("bot_scout00001");
+  const empty = path.join(home, "no-zoneinfo");
+  fs.mkdirSync(empty, { recursive: true });
+  const rules = fs.readFileSync("/usr/share/zoneinfo/Asia/Tokyo").toString("base64");
+  // As a peer's mail brings it (`zone` beside `agents`), taken as the box takes it.
+  const ran = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    const link = await import(${JSON.stringify(script)});
+    console.log(JSON.stringify([link.takeZone({ zone: "Asia/Tokyo", n: 1, zoneinfo: ${JSON.stringify(rules)} }), link.zoneMail()]));
+  `], { env: { ...env, KUVO_TEST_ZONEINFO: empty }, encoding: "utf8" });
+  assert.equal(ran.status, 0, ran.stderr);
+  const [taken, told] = JSON.parse(ran.stdout.trim());
+  assert.equal(taken, true);
+  assert.equal(told.zoneinfo, rules, "and passes them on");
+  assert.equal(read(path.join(folder, "timezone")), "Asia/Tokyo");
+  assert.equal(fs.readFileSync(path.join(folder, "zoneinfo")).toString("base64"), rules, "beside it, where kuvo-wake reads them");
+  // The row doesn't warn: it has the rules.
+  const page = spawnSync(process.execPath, [script, "box", "route"], { env: { ...env, KUVO_TEST_ZONEINFO: empty }, input: JSON.stringify({ method: "GET", path: "kuvo/settings/general" }), encoding: "utf8" });
+  const row = rowOf(JSON.parse(JSON.parse(page.stdout.trim().split("\n").pop()).body));
+  assert.equal(row.tone, undefined);
+  // Without them (a pick told by a box that had none, on a machine that never had them), the row says
+  // why its wake-ups go by UTC.
+  for (const each of [setting, path.join(wakes, "timezone"), path.join(wakes, "zoneinfo")]) fs.rmSync(each, { force: true });
+  const bare = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    const link = await import(${JSON.stringify(script)});
+    console.log(JSON.stringify(link.takeZone({ zone: "Asia/Tokyo", n: 1 })));
+  `], { env: { ...env, KUVO_TEST_ZONEINFO: empty }, encoding: "utf8" });
+  assert.equal(bare.stdout.trim(), "true");
+  const warned = spawnSync(process.execPath, [script, "box", "route"], { env: { ...env, KUVO_TEST_ZONEINFO: empty }, input: JSON.stringify({ method: "GET", path: "kuvo/settings/general" }), encoding: "utf8" });
+  const warning = rowOf(JSON.parse(JSON.parse(warned.stdout.trim().split("\n").pop()).body));
+  assert.equal(warning.tone, "warning");
+  assert.match(warning.line, /tzdata/);
+});

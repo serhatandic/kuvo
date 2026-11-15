@@ -1,38 +1,38 @@
-// Your time zone (PROTOCOL.md, "Your time zone"): one for all your own computers in a setup, kept by
-// each box (`box/time-zone.json`), changed from any client (`kuvo/settings/general`), and carried box
-// to box in peers' mail (`zone: {zone, n}`), the change counted highest winning. What goes by it:
-// bots' and conversations' wake-ups (the `timezone` file `kuvo-wake` reads beside them), a `/loop`'s
-// time of day, goals' days, the night's window, and the times limits reset.
-// Platform: the same on a Mac's box and a machine's, but for one thing: a Mac's clock is where you
-// are, so a Mac's box takes its own clock changing (you travelled) as a change of your zone; a
-// machine's clock says nothing of where you are.
+// Your time zone (PROTOCOL.md, "Your time zone"): a zone you pick (`kuvo/settings/general`, from any
+// client) is kept by the box (`box/time-zone.json`) and carried to your other computers in peers' mail
+// (`zone: {zone, n, zoneinfo?}`), the pick counted highest winning. Until you pick one, each box goes by
+// its own clock, as before; a machine keeps what an older Mac gave it, for itself alone. What goes by
+// it: bots' and conversations' wake-ups (the `timezone` file `kuvo-wake` reads beside them), a
+// `/loop`'s time of day, goals' days, the night's window, and the times limits reset.
+// Platform: the same on a Mac's box and a machine's; on a Mac, bots go by its clock while no zone is
+// picked (no zone file), as they always have.
 
 import fs from "node:fs";
 import path from "node:path";
 import { forgetZoneRead, knownZone, ownClock, zoneFileIn } from "../../shared/zone";
 import { listOf, locked, placeWhole, textOf, writePrivate } from "../files";
-import { BOTS, IS_MAC, K, RUN, SESSION_WAKES } from "../home";
+import { BOTS, IS_MAC, K, REAL_BOX, RUN, SESSION_WAKES } from "../home";
 import { readMacKit } from "../bots/mac-kit";
 
-/** What a box keeps of your time zone: the zone, its count (one more with each change, whichever
- * computer made it), what a Mac's own clock said when last looked at, the zone's rules (a TZif
- * file, base64) where an older Mac gave them, for a machine without zone files of its own; and, on
- * a machine, `carried` while it's only what its Mac gave it before (kept here, never told, and giving
- * way to any of your other computers'), and the zone an older Mac's kit last said (`kitSeen`). */
+/** What a box keeps of your time zone: the zone, its count (one more with each pick, whichever
+ * computer it was made on: 1 and up), the zone's rules (a TZif file, base64), for a computer without
+ * zone files of its own; and, on a machine, `carried` while it's only what an older Mac gave it
+ * (count 0, kept here, never told, giving way to any pick), and the zone that Mac's kit last said
+ * (`kitSeen`). */
 export interface ZoneSetting {
   kuvo: 1;
   zone: string;
   n: number;
-  seen?: string;
   zoneinfo?: string;
   carried?: true;
   kitSeen?: string;
 }
 
-/** What a box tells its peers of it. */
+/** What a box tells its peers of a pick: the zone, its count, and its rules where it has them. */
 export interface ZoneMail {
   zone: string;
   n: number;
+  zoneinfo?: string;
 }
 
 export const ZONE_FILE = zoneFileIn(K);
@@ -40,38 +40,48 @@ const ZONE_LOCK = path.join(RUN, ".time-zone.lock");
 /** A count past this isn't taken. */
 const MOST_COUNT = 2 ** 52;
 
-/** Told as it changes here (by a client, a peer, a Mac's clock), so peers hear at once. */
+/** Told as it changes here (a pick, a peer's, an older Mac's kit), so peers hear at once. */
 export const zoneFollowers = new Set<() => void>();
 
 const isSetting = (value: unknown): value is ZoneSetting => {
   const kept = value as ZoneSetting | null;
-  return kept?.kuvo === 1 && knownZone(kept.zone) && Number.isInteger(kept.n) && kept.n >= 0 && kept.n <= MOST_COUNT;
+  // (A zone this runtime no longer knows by that name, renamed in the zone database, is still kept,
+  // with its count.)
+  return kept?.kuvo === 1 && typeof kept.zone === "string" && /^[A-Za-z0-9_+\-/]{1,64}$/.test(kept.zone) && !kept.zone.includes("..")
+    && Number.isInteger(kept.n) && kept.n >= 0 && kept.n <= MOST_COUNT;
 };
 
+/** Rules given with a peer's pick (a TZif file, base64), if they're that and small; null otherwise. */
+function givenRules(value: unknown): string | null {
+  if (typeof value !== "string" || !value || value.length > 22_000) return null;
+  const data = Buffer.from(value, "base64");
+  return data.length > 4 && data.length < 16_384 && data.subarray(0, 4).toString() === "TZif" ? data.toString("base64") : null;
+}
+
+// Where this computer keeps zones' rules, as `kuvo-wake` looks for them (a test's box, one of its own:
+// a Linux machine without tzdata).
+const ZONEINFO = !REAL_BOX && process.env.KUVO_TEST_ZONEINFO ? process.env.KUVO_TEST_ZONEINFO : "/usr/share/zoneinfo";
+
 /** Whether this computer has a zone's rules where `kuvo-wake`'s `date` finds them (UTC needs none). */
-export const hasZoneRules = (zone: string): boolean => zone === "UTC" || (!zone.includes("..") && fs.existsSync(path.join("/usr/share/zoneinfo", zone)));
+export const hasZoneRules = (zone: string): boolean => zone === "UTC" || (!zone.includes("..") && fs.existsSync(path.join(ZONEINFO, zone)));
 
 /** A zone's rules as this computer has them (a TZif file), if small; null otherwise. */
 function rulesOf(zone: string): string | null {
   if (zone.includes("..")) return null;
   try {
-    const data = fs.readFileSync(path.join("/usr/share/zoneinfo", zone));
+    const data = fs.readFileSync(path.join(ZONEINFO, zone));
     return data.length < 16_384 && data.subarray(0, 4).toString() === "TZif" ? data.toString("base64") : null;
   } catch {
     return null;
   }
 }
 
-/** What a box from before kept of your zone, carried into its setting the first time it's read:
- * a Mac's own clock (count 0: any change since, anywhere, wins over it); a machine's from what its
- * Mac last gave it, `carried` (kept here, and giving way to what any of your other computers says):
- * its kit, the zone above its conversations' wake-ups, its launch's `KUVO_TZ`. Null for a box with
- * none of them: it takes its setup's. */
+/** What a machine from before kept of your zone, carried into its setting the first time it's read,
+ * `carried` (kept here, never told, and giving way to any pick): what its Mac last gave it, its kit,
+ * the zone above its conversations' wake-ups, its launch's `KUVO_TZ`. Null for a Mac's box (it goes
+ * by its own clock, as it did) and a machine with none of them (its own clock, until a pick). */
 export function zoneFromBefore(): ZoneSetting | null {
-  if (IS_MAC) {
-    const own = ownClock();
-    return { kuvo: 1, zone: own, n: 0, seen: own };
-  }
+  if (IS_MAC) return null;
   // COMPAT(0.7 bot-kit): the zone a Mac of 0.7 or before gave a machine. Goes 3 months after 0.8.0.
   const kit = readMacKit();
   if (knownZone(kit?.timeZone)) return { kuvo: 1, zone: kit.timeZone, n: 0, carried: true, kitSeen: kit.timeZone, ...kitRules(kit) };
@@ -88,19 +98,17 @@ export function zoneFromBefore(): ZoneSetting | null {
 
 const kitRules = (kit: { zoneinfo?: unknown }): { zoneinfo?: string } => (typeof kit.zoneinfo === "string" && kit.zoneinfo ? { zoneinfo: kit.zoneinfo } : {});
 
-// A Mac of 0.7 or before still connecting writes its kit again as it does, with its own clock: a zone
-// there other than it last said is your zone changing, as before (counted on, unless what this
-// machine has is only carried).
+// A Mac of 0.7 or before still connecting writes its kit again as it does, with its own clock: while
+// what this machine has is only carried from it, its zone follows (for this machine alone, as that
+// Mac gave it before); a pick of yours stays, the kit's zone only noted.
 // COMPAT(0.7 bot-kit): a Mac of 0.7 or before's kit, followed while one still connects. Goes 3 months after 0.8.0.
 function followOldKit(now: ZoneSetting): ZoneSetting {
   if (IS_MAC) return now;
   const kit = readMacKit();
   if (!knownZone(kit?.timeZone) || kit.timeZone === now.kitSeen) return now;
   const zone = kit.timeZone;
-  // (A kit seen for the first time, by a box whose zone came from elsewhere: only noted. Its zone is
-  // where that Mac was, not a change you made.)
-  if (now.kitSeen === undefined && !now.carried) return written({ ...now, kitSeen: zone });
-  kitMoved = written({ ...now, zone, kitSeen: zone, n: now.carried ? now.n : Math.min(now.n + 1, MOST_COUNT), zoneinfo: undefined, ...kitRules(kit) });
+  if (!now.carried) return written({ ...now, kitSeen: zone });
+  kitMoved = written({ ...now, zone, kitSeen: zone, zoneinfo: undefined, ...kitRules(kit) });
   return kitMoved;
 }
 
@@ -168,11 +176,11 @@ export function zoneHere(setting: ZoneSetting | null = readZoneSetting()): { zon
   return setting ? { zone: setting.zone, yours: true } : { zone: ownClock(), yours: false };
 }
 
-/** What this box tells its peers: its setting, or nothing while it has none or it's only what its
- * Mac gave it before (your Mac tells its own). */
+/** What this box tells its peers: a pick (count 1 and up) with its rules, or nothing: never its own
+ * clock, nor what an older Mac gave it before. */
 export function zoneMail(): ZoneMail | null {
   const setting = readZoneSetting();
-  return setting && !setting.carried ? { zone: setting.zone, n: setting.n } : null;
+  return setting && !setting.carried && setting.n >= 1 ? { zone: setting.zone, n: setting.n, ...(setting.zoneinfo ? { zoneinfo: setting.zoneinfo } : {}) } : null;
 }
 
 function changed(setting: ZoneSetting): void {
@@ -198,24 +206,26 @@ export function setZone(zone: string): ZoneSetting | null {
   return setting;
 }
 
-// What a change keeps of the setting before it: what a Mac's clock and an older Mac's kit last said.
-const kept = (now: ZoneSetting | null): Partial<ZoneSetting> => ({ ...(now?.seen ? { seen: now.seen } : {}), ...(now?.kitSeen ? { kitSeen: now.kitSeen } : {}) });
+// What a change keeps of the setting before it: what an older Mac's kit last said.
+const kept = (now: ZoneSetting | null): Partial<ZoneSetting> => (now?.kitSeen ? { kitSeen: now.kitSeen } : {});
 
-/** A peer's zone (`zone: {zone, n}` in its mail), taken where it's counted higher than this box's
- * (at the same count, the zone whose name sorts last, so every box keeps the same one), or where
- * this box's is only carried from before. True if this box's changed. Who it's taken from is the
- * mail's to say (`peers/mail.ts`). */
+/** A peer's pick (`zone: {zone, n, zoneinfo?}` in its mail, count 1 and up), taken where it's
+ * counted higher than this box's (at the same count, the zone whose name sorts last, so every box
+ * keeps the same one), or where this box has none or only one carried from before. Its rules are
+ * kept where this computer has none of its own. True if this box's changed. Who it's taken from is
+ * the mail's to say (`peers/mail.ts`). */
 export function takeZone(given: unknown): boolean {
   const mail = given as Partial<ZoneMail> | null;
-  if (!knownZone(mail?.zone) || !Number.isInteger(mail.n) || mail.n! < 0 || mail.n! > MOST_COUNT) return false;
+  if (!knownZone(mail?.zone) || !Number.isInteger(mail.n) || mail.n! < 1 || mail.n! > MOST_COUNT) return false;
   const { zone, n } = mail as ZoneMail;
+  const sent = givenRules(mail.zoneinfo);
   let made: ZoneSetting | null = null;
   try {
     locked(ZONE_LOCK, () => {
       const now = keptNow();
       if (now && !now.carried && (n < now.n || (n === now.n && zone <= now.zone))) return;
-      // (The same zone counted higher keeps its rules.)
-      const rules = now?.zone === zone ? now.zoneinfo ?? rulesOf(zone) : rulesOf(zone);
+      // (This computer's own rules, else those sent with it, else the same zone's kept before.)
+      const rules = rulesOf(zone) ?? sent ?? (now?.zone === zone ? now.zoneinfo ?? null : null);
       made = written({ kuvo: 1, zone, n, ...kept(now), ...(rules ? { zoneinfo: rules } : {}) });
     });
   } catch {
@@ -226,35 +236,12 @@ export function takeZone(given: unknown): boolean {
   return Boolean(made);
 }
 
-/** A Mac's box: its own clock moved since it last looked (you travelled, or changed it in System
- * Settings), taken as your zone changing, counted one more. True if it did. A machine's never. */
-export function followOwnClock(): boolean {
-  if (!IS_MAC) return false;
-  const own = ownClock();
-  let made: ZoneSetting | null = null;
-  try {
-    locked(ZONE_LOCK, () => {
-      const now = keptNow();
-      if (now?.seen === own) return;
-      // (A Mac's box from before kept none: it starts at its own clock, as it's carried.)
-      if (!now) return void (made = written({ kuvo: 1, zone: own, n: 0, seen: own }));
-      const rules = rulesOf(own);
-      made = written({ kuvo: 1, zone: own, n: Math.min(now.n + 1, MOST_COUNT), seen: own, ...(rules ? { zoneinfo: rules } : {}) });
-    });
-  } catch {
-    return false;
-  }
-  const moved = movedByKit();
-  if (made || moved) changed(made ?? moved!);
-  return Boolean(made);
-}
-
 /** What a folder of wake-ups says of its zone, for `kuvo-wake` (its `timezone` and `zoneinfo`
- * files): on a machine your zone (its own clock while it has none, as before); on a Mac, nothing
- * while your zone is its own clock (it goes by it as it changes), else yours. */
+ * files): your zone where there's one; with none, on a machine its own clock (as before), on a Mac
+ * nothing (it goes by its clock as it changes). */
 export function zoneFilesFor(setting: ZoneSetting | null = readZoneSetting()): { timezone: string | null; zoneinfo: Buffer | null } {
   const here = zoneHere(setting);
-  const timezone = IS_MAC ? (here.yours && here.zone !== ownClock() ? here.zone : null) : here.zone;
+  const timezone = here.yours || !IS_MAC ? here.zone : null;
   const zoneinfo = timezone && setting?.zoneinfo && setting.zone === timezone ? Buffer.from(setting.zoneinfo, "base64") : null;
   return { timezone, zoneinfo };
 }
@@ -269,11 +256,13 @@ export function writeZoneFiles(folder: string, files = zoneFilesFor(), make = fa
     try { now = fs.readFileSync(file); } catch {}
     if (now && now.equals(Buffer.from(data))) return;
     if (make) fs.mkdirSync(folder, { recursive: true });
-    // (Whole, by a rename: never through a link put there.)
+    // (Whole, by a rename: never through a link put there, and never gone before the new one's there.)
     placeWhole(file, data, 0o644);
   };
+  // (The rules first, then the name that reads them; rules no longer wanted go last.)
+  if (files.zoneinfo) put("zoneinfo", files.zoneinfo);
   put("timezone", files.timezone);
-  put("zoneinfo", files.zoneinfo);
+  if (!files.zoneinfo) put("zoneinfo", null);
 }
 
 /** Your zone, in every folder here whose wake-ups go by it: each bot's (not one that's moving, which
@@ -290,11 +279,11 @@ export function applyZone(setting: ZoneSetting | null = readZoneSetting()): void
   if (setting) try { writeZoneFiles(SESSION_WAKES, files, files.timezone !== null); } catch {}
 }
 
-/** Kept so as the box runs: now, and each minute (a Mac's own clock looked at, the folders made
- * since given it). The returned function stops it. */
+/** Kept so as the box runs: now, and each minute (the folders made since given it). The returned
+ * function stops it. */
 export function keepZone(every = 60_000): () => void {
   const round = () => {
-    try { if (!followOwnClock()) applyZone(); } catch {}
+    try { applyZone(); } catch {}
   };
   round();
   const timer = setInterval(round, every);
