@@ -292,7 +292,7 @@ export const WORK_ROUTES: RouteShape[] = [
   { route: "GET kuvo/work/asks/events", answers: { 200: WORK_ASKS } },
   { route: "POST kuvo/work/asks/:id", answers: { 200: WORK_ASK_ANSWERED, 400: REFUSED, 404: REFUSED } },
   { route: "GET kuvo/work/settings", answers: { 200: WORK_SETTINGS } },
-  { route: "PATCH kuvo/work/settings", answers: { 200: WORK_SETTINGS, 400: REFUSED } },
+  { route: "PATCH kuvo/work/settings", answers: { 200: WORK_SETTINGS, 400: REFUSED, 409: REFUSED } },
   { route: "GET kuvo/work/unanswering", answers: { 200: UNANSWERING_LIST } },
   { route: "GET kuvo/work/goals", answers: { 200: GOAL_PLANS } },
   { route: "GET kuvo/work/goals/events", answers: { 200: GOAL_PLANS } },

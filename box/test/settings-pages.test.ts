@@ -15,7 +15,8 @@ import { ask, follow } from "./route-answer"
 
 const { engineHandler } = await import("../src/link/server/router")
 const { APPROVAL_FILE } = await import("../src/link/work/approval")
-const { BRANCH_PREFIX_FILE } = await import("../src/link/areas/worktree-records")
+const { WORK_SETTINGS_FILE } = await import("../src/link/work/settings")
+const { BRANCH_PREFIX_FILE, WORKTREES_FILE } = await import("../src/link/areas/worktree-records")
 const { CONFIG_FILE } = await import("../src/link/areas/config")
 const { ALLOWED_FILE } = await import("../src/link/fence/allowed")
 const { BROWSER_FOLDER } = await import("../src/link/browser/history")
@@ -39,7 +40,7 @@ const write = (file: string, value: unknown) => {
   writeFileSync(file, JSON.stringify(value))
 }
 beforeEach(() => {
-  for (const file of [...files, BRANCH_PREFIX_FILE]) rmSync(file, { force: true })
+  for (const file of [...files, BRANCH_PREFIX_FILE, WORK_SETTINGS_FILE, WORKTREES_FILE]) rmSync(file, { force: true })
   // A machine's own settings, as Kuvo Code makes them once (`ownsSettings`).
   write(CONFIG_FILE, { permissions: [{ action: "shell", resource: "git push *", effect: "ask" }] })
 })
@@ -62,6 +63,7 @@ test("the box lists its sections, each with what a sidebar and search show", asy
     ["permissions", "Permissions", "Agents & Tools", "shield"],
     ["browser", "Browser", "System", "globe"],
     ["git", "Git", "System", "branch"],
+    ["worktrees", "Worktrees", "System", "folder"],
   ])
   expect(json.sections[0].keywords).toContain("time zone")
   expect(json.sections[1].keywords).toContain("sandbox")
@@ -518,4 +520,97 @@ test("Git events follow the old one-time settings migration route", async () => 
     expect(rowOf(next, "branch-prefix").value).toBe("moved/")
     expect(rowOf(next, "commit-instructions").value).toBe("Keep it short")
   } finally { events.stop() }
+})
+
+
+test("Worktrees words, folders and removal confirmation match Swift", async () => {
+  const shown = await page("worktrees")
+  expect(shown.groups.map((g: any) => [g.id, g.title, g.note])).toEqual([
+    ["new-projects", "New Projects", "Where projects your bots make go. A bot asks you before it makes one, and Kuvo Code never deletes them."],
+    ["new-worktrees", "New Worktrees", undefined],
+    ["session-worktrees", "Worktrees", "Removing one deletes its folder and anything in it that isn’t committed. Its branch stays if it isn’t merged yet."],
+  ])
+  expect(rowOf(shown, "projects-folder")).toMatchObject({ title: "Folder", kind: "folder", placeholder: "None", value: "" })
+  expect(rowOf(shown, "worktrees-folder")).toMatchObject({ title: "Folder", kind: "folder", placeholder: "Kuvo Code’s Folder", value: "" })
+  expect(rowOf(shown, "worktrees-place").title).toBe("New worktrees go in")
+  expect(rowOf(shown, "worktrees").empty).toBe("None yet. Choose Worktree in a new session’s composer to give it one.")
+  const { worktreeRemovalWords, revised } = await import("../src/link/areas/settings-pages")
+  expect(worktreeRemovalWords({ branch: "topic", uncommitted: true, ahead: 2 })).toBe("Its folder is deleted, with changes in it that aren’t committed. topic keeps its 2 commits not merged yet. Its sessions stay, without a folder to run in.")
+  expect(worktreeRemovalWords({ branch: "topic", uncommitted: false })).toBe("Its folder is deleted. Git sees nothing in it that isn’t committed. Its sessions stay, without a folder to run in.")
+  const original = rowOf(shown, "projects-folder")
+  expect(revised({ ...original, line: "Reworded" }).revision).toBe(original.revision)
+})
+
+test("Worktrees writes through both routes, refuses stale revisions, and unrelated folders still write", async () => {
+  const shown = await page("worktrees")
+  const projects = rowOf(shown, "projects-folder")
+  expect((await change("worktrees", projects, outside)).status).toBe(200)
+  expect((await ask(handler, "GET", "kuvo/work/settings")).json.projectsFolder).toBe(outside)
+  expect((await change("worktrees", projects, "")).status).toBe(409)
+  expect((await change("worktrees", rowOf(shown, "worktrees-folder"), ` ${outside}/../${outside.split("/").at(-1)} `)).status).toBe(200)
+  expect((await ask(handler, "GET", "kuvo/config")).json.worktree.directory).toBe(outside)
+  const wrong = await change("worktrees", rowOf(await page("worktrees"), "projects-folder"), false)
+  expect([wrong.status, wrong.json.message]).toEqual([400, "Send text."])
+})
+
+test("work settings optional was is atomic and old calls remain valid", async () => {
+  expect((await ask(handler, "PATCH", "kuvo/work/settings", { projectsFolder: outside })).status).toBe(200)
+  const before = kept(WORK_SETTINGS_FILE)
+  const stale = await ask(handler, "PATCH", "kuvo/work/settings", { projectsFolder: null, was: { projectsFolder: null } })
+  expect([stale.status, stale.json.message]).toEqual([409, "It changed since you read it."])
+  expect(kept(WORK_SETTINGS_FILE)).toBe(before)
+  expect((await ask(handler, "PATCH", "kuvo/work/settings", { projectsFolder: null, was: { projectsFolder: outside } })).status).toBe(200)
+})
+
+test("Worktrees explains a field it cannot replace and warns on unreadable files", async () => {
+  write(CONFIG_FILE, { worktree: { directory: false } })
+  const before = kept(CONFIG_FILE)
+  const folder = rowOf(await page("worktrees"), "worktrees-folder")
+  expect(folder.can.why).toContain("other than text")
+  expect((await change("worktrees", folder, outside)).status).toBe(403)
+  expect(kept(CONFIG_FILE)).toBe(before)
+  writeFileSync(WORK_SETTINGS_FILE, "{broken")
+  const shown = await page("worktrees")
+  expect(shown.groups).toEqual([])
+  expect(shown.notes[0].tone).toBe("warning")
+})
+
+test("Worktrees events follow config and work settings routes", async () => {
+  const events = follow(handler, "kuvo/settings/worktrees/events")
+  try {
+    await events.next()
+    await ask(handler, "PATCH", "kuvo/work/settings", { projectsFolder: outside })
+    expect(rowOf(await events.next(), "projects-folder").value).toBe(outside)
+    await ask(handler, "PATCH", "kuvo/config", { changes: [{ path: ["worktree", "directory"], value: outside }] })
+    expect(rowOf(await events.next(), "worktrees-folder").value).toBe(outside)
+    write(WORKTREES_FILE, { worktrees: [{ root: join(outside, "missing"), project: outside, branch: "topic" }] })
+    const tree = rowOf(await events.next(), `tree-${join(outside, "missing")}`)
+    expect(tree.actions[0]).toMatchObject({ title: "Remove…", confirm: { title: "Remove the worktree for topic?", button: "Remove" } })
+  } finally { events.stop() }
+})
+
+
+test("Worktrees events follow old record and removal routes, with optional stale protection", async () => {
+  const fake = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch() { return Response.json({ data: [] }) } })
+  const target = { port: fake.port!, password: "test", pid: process.pid }
+  const live = engineHandler(() => target as any, { name: "devbox" }, noEngine as any)
+  const root = join(outside, "recorded")
+  mkdirSync(root, { recursive: true })
+  const record = { root, folder: root, project: outside, branch: "topic" }
+  const events = follow(live, "kuvo/settings/worktrees/events")
+  try {
+    await events.next()
+    expect((await ask(live, "POST", "kuvo/worktrees/record", record)).status).toBe(200)
+    const shown = await events.next()
+    const tree = rowOf(shown, `tree-${root}`)
+    expect(tree.actions[0].confirm).toMatchObject({ title: "Remove the worktree for topic?", button: "Remove" })
+    const before = kept(WORKTREES_FILE)
+    const stale = await ask(live, "POST", "kuvo/worktrees/remove", { path: root, was: {} })
+    expect([stale.status, stale.json.message]).toEqual([409, "It changed since you read it."])
+    expect(kept(WORKTREES_FILE)).toBe(before)
+    // Gone on disk: old remove call still forgets the record without needing was.
+    rmSync(root, { recursive: true, force: true })
+    expect((await ask(live, "POST", "kuvo/worktrees/remove", { path: root })).status).toBe(200)
+    expect(rowOf(await events.next(), "worktrees").items).toEqual([])
+  } finally { events.stop(); fake.stop(true) }
 })

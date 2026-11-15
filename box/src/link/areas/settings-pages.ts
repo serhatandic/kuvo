@@ -12,11 +12,17 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
+import { homeFolder } from "../home";
+import { workAsksRoute, WORK_ASKS_ROUTE } from "./work";
+import { WORK_SETTINGS_FILE } from "../work/settings";
+import { WORKTREES_FILE, readWorktrees } from "./worktree-records";
+import { worktreesRoute } from "./worktrees";
 import { isObject, parsed, sortedJSON } from "../../shared/json";
 import type { SettingAction, SettingCan, SettingGroup, SettingItem, SettingRow, SettingsPage, SettingsSection } from "../../shared/routes/settings-pages";
 import { SEARCH_ENGINES } from "../../shared/routes/browser";
 import { approvalRoute } from "./approval";
-import { CHANGED_SINCE, CONFIG_FILE } from "./config";
+import { CHANGED_SINCE, CONFIG_FILE, readSettings } from "./config";
 import { engineControl } from "./engine";
 import { sandboxRoute } from "./sandbox";
 import { GIT_SETTINGS, DEFAULT_BRANCH_PREFIX, cleanBranchPrefix } from "./git-words";
@@ -58,6 +64,7 @@ const SECTIONS: SettingsSection[] = [
     line: "How sessions' branches are named, and commit messages and pull requests are written.",
     keywords: ["branch prefix", "worktree", "commit", "pull request", "instructions"],
   },
+  { id: "worktrees", title: "Worktrees", group: "System", icon: "folder", line: "Where new projects and worktrees go, and sessions’ own copies of a project.", keywords: ["projects", "folders", "branches", "remove"] },
 ];
 
 // MARK: Rows
@@ -414,6 +421,63 @@ async function gitChange(context: RouteContext, at: SettingItem, value: unknown)
   return refusal(written);
 }
 
+// MARK: Worktrees
+
+const workAnswer = (context: RouteContext) => workAsksRoute(context, context.route.match(WORK_ASKS_ROUTE)!);
+const unreadPage = (id: string, title: string, answer: { status: number; value: any }): SettingsPage => ({ id, title, groups: [], notes: [{ words: said(answer, "This computer's settings couldn't be read."), tone: "warning" }] });
+const staleOrRefusal = (answer: { status: number; value: any }): Refused | null => answer.status === 409 && answer.value.message === CHANGED_SINCE ? STALE : refusal(answer);
+
+async function worktreesPage(context: RouteContext): Promise<SettingsPage> {
+  const config = await asked(context, settingsRoute, "GET", "kuvo/config");
+  if (config.status !== 200) return unreadPage("worktrees", "Worktrees", config);
+  const work = await asked(context, workAnswer, "GET", "kuvo/work/settings");
+  if (work.status !== 200) return unreadPage("worktrees", "Worktrees", work);
+  for (const file of [WORK_SETTINGS_FILE, WORKTREES_FILE]) {
+    const checked = readSettings(file);
+    if (checked.problem) return unreadPage("worktrees", "Worktrees", { status: 409, value: { message: checked.problem } });
+  }
+  const chosen = config.value.worktree?.directory;
+  const where = await asked(context, worktreesRoute, "GET", `kuvo/worktrees/where${typeof chosen === "string" ? `?directory=${encodeURIComponent(chosen)}` : ""}`);
+  if (where.status !== 200) return unreadPage("worktrees", "Worktrees", where);
+  const listed = await asked(context, worktreesRoute, "GET", "kuvo/worktrees");
+  if (listed.status !== 200) return unreadPage("worktrees", "Worktrees", listed);
+  const projects = where.value.projects ?? [];
+  const places: SettingRow[] = projects.length ? projects.map((each: any) => row({
+    id: `place-${each.project}`, title: projects.every((p: any) => p.folder === projects[0].folder) ? "New worktrees go in" : each.name,
+    kind: "status", value: each.folder ?? "Known once the engine runs",
+    ...(each.canMake === false ? { line: "Kuvo Code can’t create this folder. Choose another one.", tone: "warning" as const } : each.inside && !each.ignored ? { line: `It’s inside ${projects.every((p: any) => p.folder === projects[0].folder) ? each.name + "’s" : "this project’s"} repository, so git would list each worktree as new files there. Choose a folder outside it.`, tone: "warning" as const } : {}),
+  })) : [row({ id: "worktrees-place", title: "New worktrees go in", kind: "status", value: chosen || where.value.default })];
+  return { id: "worktrees", title: "Worktrees", groups: [
+    { id: "new-projects", title: "New Projects", note: "Where projects your bots make go. A bot asks you before it makes one, and Kuvo Code never deletes them.", rows: [row({ id: "projects-folder", title: "Folder", kind: "folder", value: work.value.projectsFolder ?? "", placeholder: "None", can: true })] },
+    { id: "new-worktrees", title: "New Worktrees", rows: [row({ id: "worktrees-folder", title: "Folder", kind: "folder", value: typeof chosen === "string" ? chosen : "", placeholder: "Kuvo Code’s Folder", can: (config.value.worktree === undefined || isObject(config.value.worktree)) && (chosen === undefined || typeof chosen === "string") ? true : { why: "This folder is set in the settings file as something other than text. Change it there." } }), ...places] },
+    { id: "session-worktrees", title: "Worktrees", note: "Removing one deletes its folder and anything in it that isn’t committed. Its branch stays if it isn’t merged yet.", rows: [row({ id: "worktrees", title: "Worktrees", kind: "list", empty: "None yet. Choose Worktree in a new session’s composer to give it one.", items: listed.value.worktrees.map((tree: any) => item({
+      id: `tree-${tree.path}`, title: tree.branch, line: `${tree.projectName} · ${tree.sessions} ${tree.sessions === 1 ? "session" : "sessions"}`,
+      kind: "actions", value: { record: readWorktrees().find(record => record.root === tree.path), uncommitted: tree.uncommitted, ahead: tree.ahead },
+      actions: [{ id: "remove", title: "Remove…", style: "destructive", confirm: { title: `Remove the worktree for ${tree.branch}?`, body: worktreeRemovalWords(tree), button: "Remove" } }],
+    })) })] },
+  ] };
+}
+
+export function worktreeRemovalWords(tree: { uncommitted?: boolean; ahead?: number; branch: string }): string {
+  const note = tree.uncommitted === true ? "Its folder is deleted, with changes in it that aren’t committed." : tree.uncommitted === false ? "Its folder is deleted. Git sees nothing in it that isn’t committed." : "Its folder and anything in it that isn’t committed are deleted.";
+  return note + (tree.ahead && tree.ahead > 0 ? ` ${tree.branch} keeps its ${tree.ahead} ${tree.ahead === 1 ? "commit" : "commits"} not merged yet.` : "") + " Its sessions stay, without a folder to run in.";
+}
+
+async function worktreesChange(context: RouteContext, at: SettingItem, value: unknown): Promise<Refused | null> {
+  const typed = String(value).trim();
+  if (at.id === "projects-folder") return staleOrRefusal(await asked(context, workAnswer, "PATCH", "kuvo/work/settings", { projectsFolder: typed || null, was: { projectsFolder: at.value || null } }));
+  const config = await asked(context, settingsRoute, "GET", "kuvo/config");
+  if (config.status !== 200) return refusal(config);
+  const folder = typed ? typed.replace(/^~(?=$|\/)/, homeFolder()) : null;
+  if (folder && !path.isAbsolute(folder)) return { status: 400, message: "Give a full path to the folder." };
+  return staleOrRefusal(await asked(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["worktree", "directory"], value: folder ? path.resolve(folder) : null, was: config.value.worktree?.directory ?? null }] }));
+}
+
+async function worktreesAct(context: RouteContext, at: SettingItem, action: SettingAction): Promise<Refused | null> {
+  if (action.id !== "remove" || !at.id.startsWith("tree-")) return noActions();
+  return staleOrRefusal(await asked(context, worktreesRoute, "POST", "kuvo/worktrees/remove", { path: at.id.slice(5), was: at.value }));
+}
+
 // MARK: General
 
 /** A zone's name as a menu shows it: "Europe/Istanbul" as "Europe › Istanbul", "America/New_York" as
@@ -512,6 +576,7 @@ const PAGES: Record<string, Section> = {
   },
   browser: { read: browserPage, change: browserChange, act: browserAct, look: () => browserSettingsFiles().map(mtime).join(" ") },
   git: { read: gitPage, change: gitChange, act: noActions, look: () => `${mtime(CONFIG_FILE)}` },
+  worktrees: { read: worktreesPage, change: worktreesChange, act: worktreesAct, look: () => String(Math.floor(Date.now() / 1000)) },
 };
 
 // Told as a change is made here, so a page followed shows it at once.
@@ -520,6 +585,7 @@ const changed = () => { for (const told of [...followers]) told(); };
 
 /** Whether a value fits a row of its kind: a switch's true or false, one of a choice's choices. */
 function fits(at: SettingItem, value: unknown): boolean {
+  if (at.kind === "folder") return typeof value === "string";
   if (at.kind === "text") return typeof value === "string";
   if (at.kind === "switch") return typeof value === "boolean";
   if (at.kind === "choice") return typeof value === "string" && (at.choices ?? []).some(choice => choice.id === value);
@@ -602,7 +668,7 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
       if (at.can === undefined) return { status: 400, value: { message: "That isn't something to change." } };
       const why = whyNot(at.can);
       if (why) return { status: 403, value: { message: why } };
-      if (!("value" in given) || !fits(at, given.value)) return { status: 400, value: { message: at.kind === "choice" ? "Pick one of its choices." : at.kind === "text" ? "Send text." : "Send true or false." } };
+      if (!("value" in given) || !fits(at, given.value)) return { status: 400, value: { message: at.kind === "choice" ? "Pick one of its choices." : (at.kind === "text" || at.kind === "folder") ? "Send text." : "Send true or false." } };
       done = await section.change(context, at, given.value);
     }
     if (done?.stale) return { status: 409, value: { message: done.message, page: await section.read(context) } };

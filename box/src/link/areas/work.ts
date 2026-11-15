@@ -22,7 +22,7 @@ import { botLimits } from "../work/limits";
 import { answerWork, askFollowers, workAsks } from "../work/asks";
 import { madeWords, makeProject } from "../work/projects";
 import { startOfDay } from "../work/clock";
-import { folderGiven, KEEPS_AWAKE_REFUSED, setKeepsAwake, setProjectsFolder, workSettings } from "../work/settings";
+import { patchWorkSettings, folderGiven, KEEPS_AWAKE_REFUSED, setKeepsAwake, setProjectsFolder, workSettings } from "../work/settings";
 import { awakeForWork, keepsMacAwakeItself } from "../work/awake";
 import { unansweringList, unansweringNow } from "../work/unanswering";
 import { answerGoal, askGoal, goalFollowers, goalPlans } from "../work/goals";
@@ -155,6 +155,10 @@ export async function* workAsksRoute(context: RouteContext, match: RegExpMatchAr
     if ("projectsFolder" in given && given.projectsFolder !== null) {
       const checked = folderGiven(given.projectsFolder);
       if ("refused" in checked) return yield* json(400, { message: checked.refused });
+    }
+    if ("was" in given) {
+      const changed = patchWorkSettings({ ...(keepsAwake ? { keepsAwake: given.keepsAwake } : {}), ...("projectsFolder" in given ? { projectsFolder: given.projectsFolder } : {}), was: given.was });
+      return yield* changed.status === 200 ? json(200, workSettings(undefined, awake())) : json(changed.status, { message: changed.message });
     }
     if (keepsAwake) setKeepsAwake(given.keepsAwake);
     if ("projectsFolder" in given) {

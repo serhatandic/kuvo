@@ -8055,7 +8055,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
 - `GET kuvo/settings`: `{sections}`, in order, each `{id, title, group, icon, line, keywords}`:
   the heading it's under in a sidebar (`group`), its icon by name (`shield`, `globe`, …: a set every
   client has; one a client hasn't, it draws with its own), and the words search finds it by besides
-  its title and line. Today `general`, `permissions`, `browser` and `git`; the rest come page by page.
+  its title and line. Today `general`, `permissions`, `browser`, `git` and `worktrees`; the rest come page by page.
 - `GET kuvo/settings/<section>`: `{id, title, line?, groups, notes?}`; `404 {message}` for a section
   this box hasn't. A group is `{id, title?, note?, rows}`, a card with its heading and the words
   under it; `notes` are `{words, tone}` (`quiet` or `warning`) after the groups: what couldn't be
@@ -8150,6 +8150,20 @@ The sections now:
   writing a pull request. Changes use the existing config route with that field's `was`,
   leaving unrelated fields alone. Unavailable settings say why in `can`. Page events follow
   config changes, including the old Git settings migration route.
+
+- **Worktrees** (`worktrees`): New Projects (`projects-folder`, Folder), New Worktrees
+  (`worktrees-folder`, Folder, and the resolved places), and Worktrees (a list with Remove…,
+  confirmed with the box's words). Folder rows accept text; empty clears the choice.
+  Project folders wrap `kuvo/work/settings`, worktree folders `kuvo/config`, and removal
+  `kuvo/worktrees/remove`. Sources that cannot be read give no rows and a warning.
+  Polling each second covers the settings, project and worktree records, engine lists and
+  the folders' live git and disk state.
+  `PATCH kuvo/work/settings` accepts optional `was: {projectsFolder?, keepsAwake?}` for
+  the fields being written, compared under the file's lock; absent `was` keeps its old behavior.
+  A mismatch answers `409 {message: "It changed since you read it."}`.
+  `POST kuvo/worktrees/remove` accepts optional `was: {record, uncommitted?, ahead?}`, the worktree record and git facts read;
+  removals of one root share a turn and compare the record and git facts before removal. Absent `was`
+  keeps its old behavior. A mismatch answers the same 409, mapped to a stale page.
 
 ### Your time zone
 
