@@ -865,3 +865,53 @@ fn a_boxs_settings_are_read_changed_and_followed_as_the_box_says_them() {
         other => panic!("the page again, not {other:?}"),
     }
 }
+
+#[test]
+fn compact_drafts_use_the_sessions_own_engine_and_preserve_refusal_words() {
+    for agents in [false, true] {
+        let stand_in = StandInBox::start(move |seen| match seen.route() {
+            "kuvo/info" => Answer::json(200, mac_info(current_features())),
+            "kuvo/sessions/ses_compact/typed" => Answer::json(200, json!({ "compact": true })),
+            "api/session/ses_compact" if !agents => Answer::json(200, json!({ "id": "ses_compact" })),
+            "kuvo/agents/api/session/ses_compact" if agents => Answer::json(200, json!({ "id": "ses_compact" })),
+            "api/session/ses_compact/compact" if !agents => Answer::json(200, json!({ "data": { "state": "waiting" } })),
+            "kuvo/agents/api/session/ses_compact/compact" if agents => Answer::json(400, json!({ "message": "There’s nothing to summarize yet." })),
+            _ => Answer::json(404, json!({})),
+        });
+        let (_home, _serve, client) = this_mac(&stand_in);
+        client.connect().unwrap();
+        let result = client.send_draft("ses_compact", &Draft::new("draft_compact", "/compact"), None);
+        if agents {
+            assert!(result.unwrap_err().to_string().contains("There’s nothing to summarize yet."));
+        } else {
+            assert!(matches!(result.unwrap(), Sent::Typed { answer, .. } if answer.compact == Some(true)));
+        }
+        let seen = stand_in.seen();
+        let expected = if agents { "kuvo/agents/api/session/ses_compact/compact" } else { "api/session/ses_compact/compact" };
+        assert_eq!(seen.last().unwrap().route(), expected);
+    }
+}
+
+#[test]
+fn shell_drafts_send_the_box_command_to_the_sessions_engine() {
+    for agents in [false, true] {
+        let stand_in = StandInBox::start(move |seen| match seen.route() {
+            "kuvo/info" => Answer::json(200, mac_info(current_features())),
+            "kuvo/sessions/ses_shell/typed" => Answer::json(200, json!({ "shell": "printf hello" })),
+            "api/session/ses_shell" if !agents => Answer::json(200, json!({})),
+            "kuvo/agents/api/session/ses_shell" if agents => Answer::json(200, json!({})),
+            "api/session/ses_shell/shell" | "kuvo/agents/api/session/ses_shell/shell" => {
+                assert_eq!(seen.method, "POST");
+                Answer::json(200, json!({}))
+            }
+            _ => Answer::json(404, json!({})),
+        });
+        let (_home, _serve, client) = this_mac(&stand_in);
+        client.connect().unwrap();
+        client.send_draft("ses_shell", &Draft::new("draft_shell", "!printf hello"), None).unwrap();
+        let seen = stand_in.seen();
+        let last = seen.last().unwrap();
+        assert_eq!(last.route(), if agents { "kuvo/agents/api/session/ses_shell/shell" } else { "api/session/ses_shell/shell" });
+        assert_eq!(last.body, Some(json!({ "command": "printf hello" })));
+    }
+}

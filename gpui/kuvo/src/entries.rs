@@ -72,6 +72,7 @@ pub fn entries(mut conversation: Conversation) -> (Vec<Entry>, Vec<u64>) {
             Message::Assistant(step) if shows(step) => Some(Entry::Message(Box::new(message))),
             Message::System(note) if !note.text.trim().is_empty() => Some(Entry::Message(Box::new(message))),
             Message::Shell(_) => Some(Entry::Message(Box::new(message))),
+            Message::Other { kind, .. } if kind == "compaction" => Some(Entry::Message(Box::new(message))),
             Message::Idle { id, time, outcome } => {
                 let worked = asked_at.take().map(|asked| time.created - asked).filter(|worked| *worked > 0.0);
                 Some(Entry::TurnEnd { id: id.clone(), outcome: outcome.clone(), worked })
@@ -158,7 +159,13 @@ pub fn message_body(
         Message::User(user) => user_message(ix, &user.parts(), sel(&[]), cx),
         Message::Assistant(step) => agent_step(step, open, toggle, &sel, cx),
         Message::System(note) => quiet_line(note.text.lines().next().unwrap_or("").to_owned(), cx),
-        Message::Shell(run) => shell_run(run, cx),
+        Message::Shell(run) => shell_run(run, open, toggle, &sel, cx),
+        Message::Other { kind, raw, .. } if kind == "compaction" => quiet_line(match raw["status"].as_str() {
+            Some("running") => "Compacting conversation…",
+            Some("completed") => "Conversation compacted",
+            Some("failed") => "Couldn’t compact conversation",
+            _ => "Conversation compaction",
+        }.to_owned(), cx),
         _ => div().into_any_element(),
     }
 }
@@ -195,6 +202,7 @@ pub fn message_units(message: &Message, open: &HashSet<Fold>) -> Vec<Unit> {
             let words = user.parts().words.trim().to_owned();
             if words.is_empty() { Vec::new() } else { vec![Unit::new(&[0], words, Lead::Paragraph)] }
         }
+        Message::Shell(run) => run.output.as_ref().map(|output| well_units(&output.output, Some(&run.command), open.contains(&Fold::Whole(run.id.clone(), 0, 0)), &[0])).unwrap_or_default(),
         Message::Assistant(step) => {
             let mut units = Vec::new();
             for (n, content) in step.content.iter().enumerate() {
@@ -576,13 +584,17 @@ fn callout(words: String, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-fn shell_run(run: &kuvo_box::messages::ShellRun, cx: &App) -> AnyElement {
+fn shell_run(run: &kuvo_box::messages::ShellRun, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, sel: &dyn Fn(&[u32]) -> Selectable, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     let busy = run.status == "running";
-    let failed = run.exit.is_some_and(|exit| exit != 0);
+    let failed = run.status == "failed" || run.exit.is_some_and(|exit| exit != 0);
     let exit = run.exit.filter(|exit| *exit != 0).map(|exit| format!("exit {exit}"));
-    step_row(SharedString::from(format!("shell-{}", run.id)), IconName::Terminal, if busy { "Running".into() } else { "You ran".into() }, Some(first_line(&run.command).into()), busy, failed, cx)
-        .children(exit.map(|exit| div().text_ui(TypeSize::Caption).text_color(c.danger).child(exit)))
+    let fold = Fold::Whole(run.id.clone(), 0, 0);
+    let output = run.output.as_ref().map(|output| OutputWell::new(SharedString::from(format!("shell-output-{}", run.id)), output.output.clone()).command(run.command.clone()).whole(open.contains(&fold)).on_toggle(move |_, cx| toggle(fold.clone(), cx)).selectable(sel(&[0])));
+    div().flex().flex_col().gap(space::S2).child(step_row(SharedString::from(format!("shell-{}", run.id)), IconName::Terminal, if busy { "Running".into() } else { "You ran".into() }, Some(first_line(&run.command).into()), busy, failed, cx)
+        .children(exit.map(|exit| div().text_ui(TypeSize::Caption).text_color(c.danger).child(exit))))
+        .children(output)
+        .when(run.output.as_ref().is_some_and(|output| output.truncated), |d| d.child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("Output truncated by the box")))
         .into_any_element()
 }
 
@@ -626,6 +638,17 @@ mod tests {
         newest_first.reverse();
         conversation.catch_up(newest_first, earlier.map(str::to_owned), &[], Some(running));
         conversation
+    }
+
+    #[test]
+    fn compactions_stay_in_the_conversation_for_every_status() {
+        for status in ["running", "completed", "failed"] {
+            let (rows, _) = entries(conversation(json!([
+                { "type": "compaction", "id": "summary", "time": { "created": 1000 }, "status": status, "reason": "manual" }
+            ]), false, None));
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].key(), "summary");
+        }
     }
 
     #[test]

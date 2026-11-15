@@ -1243,7 +1243,7 @@ fn ahead_of(front: &str, now: &str) -> String {
 /// Whether the box's answer leaves the client a step this one can't take yet: what was written is
 /// kept in the field rather than lost.
 fn is_clients_to_do(answer: &Answer) -> bool {
-    answer.shell.is_some() || answer.compact == Some(true) || answer.toggle_autopilot == Some(true) || answer.side_thread == Some(true) || answer.show_goal == Some(true)
+    answer.toggle_autopilot == Some(true) || answer.side_thread == Some(true) || answer.show_goal == Some(true)
 }
 
 /// What the box did with a typed text, as a line under the composer; and, for what's this
@@ -1260,10 +1260,10 @@ fn said(answer: &Answer) -> Option<Note> {
         return note(&format!("Switched to {mode}."), false);
     }
     if answer.shell.is_some() {
-        return note("Running a “!” command isn’t in this app yet: use Kuvo Code on your Mac or iPhone.", true);
+        return None;
     }
     if answer.compact == Some(true) {
-        return note("Compacting isn’t in this app yet: use Kuvo Code on your Mac or iPhone.", true);
+        return note("Compaction requested.", false);
     }
     if answer.toggle_autopilot == Some(true) {
         return note("Turning Autopilot on or off isn’t in this app yet.", true);
@@ -1395,6 +1395,15 @@ impl Render for Composer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn executed_composer_actions_are_not_restored_as_unsupported() {
+        for value in [serde_json::json!({"shell": "pwd"}), serde_json::json!({"compact": true})] {
+            let answer: Answer = serde_json::from_value(value).unwrap();
+            assert!(!is_clients_to_do(&answer));
+            assert!(said(&answer).is_none());
+        }
+    }
 
     #[test]
     fn the_mention_being_typed_is_read_from_the_end() {

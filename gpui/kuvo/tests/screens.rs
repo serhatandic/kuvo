@@ -323,16 +323,15 @@ fn a_conversation_that_isnt_there_says_so(cx: &mut TestAppContext) {
 
 
 #[gpui::test]
-fn a_step_this_app_cant_take_yet_keeps_what_was_written(cx: &mut TestAppContext) {
+fn a_shell_command_runs_on_the_box_and_clears_the_composer(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     let composer = open_session(&workspace, "ses_limits", cx);
-    // The box says "!ls" is the client's to run: this one can't yet, so it stays, saying so.
+    // The box decides what to run; the client sends it and follows the conversation.
     cx.simulate_input("!ls -la");
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
-    assert_eq!(typed(&composer, cx).0, "!ls -la");
-    let note = composer.read_with(cx, |composer, _| composer.note().cloned()).expect("a note");
-    assert!(note.warning && note.text.contains("isn’t in this app yet"));
+    assert_eq!(typed(&composer, cx).0, "");
+    assert!(composer.read_with(cx, |composer, _| composer.note().is_none()));
 }
 
 #[gpui::test]

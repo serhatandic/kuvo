@@ -48,6 +48,8 @@ struct Screen {
 type Panel = fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
 
 const SCREENS: &[Screen] = &[
+    Screen { slug: "composer-shell", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "composer-compact", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "held-box-sessions", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "held-box", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     Screen { slug: "conversation", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -946,6 +948,10 @@ fn main() -> anyhow::Result<()> {
                 stand_in.hold_session("ses_dark", Some("Moving to Studio…"));
             }
             let client = BoxClient::new(stand_in);
+            if screen.slug == "composer-shell" || screen.slug == "composer-compact" {
+                let text = if screen.slug == "composer-shell" { "! cargo test" } else { "/compact" };
+                client.send_draft("ses_signup", &kuvo_box::Draft::new("shot-command", text), None)?;
+            }
             let window = cx.open_window(size(px(screen.width), px(screen.height)), |window, cx| cx.new(|cx| Workspace::new(client, false, window, cx)))?;
             let any = window.into();
             cx.update_window(any, |root, window, cx| {

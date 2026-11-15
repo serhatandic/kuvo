@@ -307,6 +307,13 @@ impl BoxClient {
             reviewer: draft.reviewer.clone(),
         };
         let answer = self.typed(session, &ask)?;
+        if answer.compact == Some(true) {
+            self.compact_session(session, self.where_is(session)?)?;
+        }
+        if let Some(command) = &answer.shell {
+            self.run_shell(session, self.where_is(session)?, command)?;
+            return Ok(Sent::Typed { answer: Box::new(answer), message: None });
+        }
         let mut sending = Sending { id: Some(draft.id.clone()), files: draft.files.clone(), notes: draft.notes.clone(), delivery: Some(draft.delivery), ..Sending::default() };
         if let Some(send) = &answer.send {
             sending.words = if send.quoted == Some(true) { quoted(&send.text) } else { send.text.clone() };
@@ -330,6 +337,19 @@ impl BoxClient {
         }
         self.send_message(session, &sending)?;
         Ok(Sent::Typed { answer: Box::new(answer), message: Some(draft.id.clone()) })
+    }
+
+    /// Asks the conversation's engine or coding agent to summarize it. The box decides
+    /// whether to run now, wait for the current turn, or refuse with words to show.
+    pub fn compact_session(&self, session: &str, place: Where) -> Result<()> {
+        let response = self.send(&Request::post(place.session_route(session, "/compact"), json!({})))?;
+        if response.is_success() { Ok(()) } else { Err(Error::Refused(Refusal::from_answer(response.status, &response.body))) }
+    }
+
+    /// Runs the box-decided command in the conversation's folder, without waking its agent.
+    pub fn run_shell(&self, session: &str, place: Where, command: &str) -> Result<()> {
+        let response = self.send(&Request::post(place.session_route(session, "/shell"), json!({ "command": command })))?;
+        if response.is_success() { Ok(()) } else { Err(Error::Refused(Refusal::from_answer(response.status, &response.body))) }
     }
 
     /// The parts of messages from before (none kept with them) and of those that ran one of the

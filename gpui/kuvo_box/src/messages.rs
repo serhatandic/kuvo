@@ -135,6 +135,13 @@ pub struct Note {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ShellOutput {
+    pub output: String,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ShellRun {
     pub id: String,
     pub time: Time,
@@ -144,6 +151,8 @@ pub struct ShellRun {
     pub status: String,
     #[serde(default)]
     pub exit: Option<i64>,
+    #[serde(default)]
+    pub output: Option<ShellOutput>,
 }
 
 /// One block of a step's output.
@@ -522,6 +531,8 @@ impl Conversation {
             | "session.synthetic"
             | "session.shell.started"
             | "session.shell.ended"
+            | "session.compaction.started"
+            | "session.compaction.failed"
             | "session.compaction.ended"
             | "session.revert.committed"
             | "session.instructions.updated"
