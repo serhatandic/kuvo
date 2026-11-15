@@ -13593,11 +13593,14 @@
              }
             },
             "unit?": {
-             "oneOf": [
-              {
-               "literal": "bytes"
+             "object": {
+              "name": "string",
+              "factor": "number",
+              "decimals": "number",
+              "rounding": {
+               "literal": "nearest"
               }
-             ]
+             }
             },
             "suggestions?": {
              "list": {
@@ -13820,11 +13823,14 @@
                 }
                },
                "unit?": {
-                "oneOf": [
-                 {
-                  "literal": "bytes"
+                "object": {
+                 "name": "string",
+                 "factor": "number",
+                 "decimals": "number",
+                 "rounding": {
+                  "literal": "nearest"
                  }
-                ]
+                }
                },
                "suggestions?": {
                 "list": {
@@ -14133,11 +14139,14 @@
              }
             },
             "unit?": {
-             "oneOf": [
-              {
-               "literal": "bytes"
+             "object": {
+              "name": "string",
+              "factor": "number",
+              "decimals": "number",
+              "rounding": {
+               "literal": "nearest"
               }
-             ]
+             }
             },
             "suggestions?": {
              "list": {
@@ -14360,11 +14369,14 @@
                 }
                },
                "unit?": {
-                "oneOf": [
-                 {
-                  "literal": "bytes"
+                "object": {
+                 "name": "string",
+                 "factor": "number",
+                 "decimals": "number",
+                 "rounding": {
+                  "literal": "nearest"
                  }
-                ]
+                }
                },
                "suggestions?": {
                 "list": {
@@ -14550,6 +14562,14 @@
   },
   {
    "route": "PATCH kuvo/settings/:section",
+   "body": {
+    "object": {
+     "row": "string",
+     "value": "any",
+     "was": "string",
+     "confirmed?": "bool"
+    }
+   },
    "answers": {
     "200": {
      "object": {
@@ -14673,11 +14693,14 @@
              }
             },
             "unit?": {
-             "oneOf": [
-              {
-               "literal": "bytes"
+             "object": {
+              "name": "string",
+              "factor": "number",
+              "decimals": "number",
+              "rounding": {
+               "literal": "nearest"
               }
-             ]
+             }
             },
             "suggestions?": {
              "list": {
@@ -14900,11 +14923,14 @@
                 }
                },
                "unit?": {
-                "oneOf": [
-                 {
-                  "literal": "bytes"
+                "object": {
+                 "name": "string",
+                 "factor": "number",
+                 "decimals": "number",
+                 "rounding": {
+                  "literal": "nearest"
                  }
-                ]
+                }
                },
                "suggestions?": {
                 "list": {
@@ -15221,11 +15247,14 @@
                }
               },
               "unit?": {
-               "oneOf": [
-                {
-                 "literal": "bytes"
+               "object": {
+                "name": "string",
+                "factor": "number",
+                "decimals": "number",
+                "rounding": {
+                 "literal": "nearest"
                 }
-               ]
+               }
               },
               "suggestions?": {
                "list": {
@@ -15448,11 +15477,14 @@
                   }
                  },
                  "unit?": {
-                  "oneOf": [
-                   {
-                    "literal": "bytes"
+                  "object": {
+                   "name": "string",
+                   "factor": "number",
+                   "decimals": "number",
+                   "rounding": {
+                    "literal": "nearest"
                    }
-                  ]
+                  }
                  },
                  "suggestions?": {
                   "list": {
@@ -15758,11 +15790,14 @@
              }
             },
             "unit?": {
-             "oneOf": [
-              {
-               "literal": "bytes"
+             "object": {
+              "name": "string",
+              "factor": "number",
+              "decimals": "number",
+              "rounding": {
+               "literal": "nearest"
               }
-             ]
+             }
             },
             "suggestions?": {
              "list": {
@@ -15985,11 +16020,14 @@
                 }
                },
                "unit?": {
-                "oneOf": [
-                 {
-                  "literal": "bytes"
+                "object": {
+                 "name": "string",
+                 "factor": "number",
+                 "decimals": "number",
+                 "rounding": {
+                  "literal": "nearest"
                  }
-                ]
+                }
                },
                "suggestions?": {
                 "list": {
@@ -16306,11 +16344,14 @@
                }
               },
               "unit?": {
-               "oneOf": [
-                {
-                 "literal": "bytes"
+               "object": {
+                "name": "string",
+                "factor": "number",
+                "decimals": "number",
+                "rounding": {
+                 "literal": "nearest"
                 }
-               ]
+               }
               },
               "suggestions?": {
                "list": {
@@ -16533,11 +16574,14 @@
                   }
                  },
                  "unit?": {
-                  "oneOf": [
-                   {
-                    "literal": "bytes"
+                  "object": {
+                   "name": "string",
+                   "factor": "number",
+                   "decimals": "number",
+                   "rounding": {
+                    "literal": "nearest"
                    }
-                  ]
+                  }
                  },
                  "suggestions?": {
                   "list": {
