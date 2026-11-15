@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawn } from "node:child_process"
 import { judgeInstall } from "../src/link/install/verdict"
-import { databaseWithLog, git, mac07, put, readJSON, REAL_ENGINE, recorded, rehome, rows, run, sha, snapshot } from "./rehome-run-world"
+import { databaseWithLog, git, mac07, preferences, put, readJSON, REAL_ENGINE, recorded, rehome, rows, run, sha, snapshot } from "./rehome-run-world"
 
 // An earlier Kuvo Code's sessions and settings moved into this Mac's box by the box itself
 // (`kuvo-link.js rehome --run`, #713 piece 4), run as the installer runs it: a process of its
@@ -247,4 +247,53 @@ test.if(mac)("saved sign-ins wait for Kuvo to answer on this Mac: until then the
   const everything = Object.keys(snapshot(m.K)).filter(name => !name.startsWith("engine/")).map(name => { try { return readFileSync(join(m.K, name), "utf8") } catch { return "" } }).join("\n")
   expect(everything).not.toContain("hunter22")
   expect(judgeInstall(m.K, m.S)).toMatchObject({ verdict: "ours", verb: "move" })
+})
+
+/** A Mac that ran a keeper build: a box of the app's own in its folder (`S/box`), its engine's
+ * database already the pinned engine's, its lists the box's own. */
+function keeperBuild(m: ReturnType<typeof mac07>) {
+  const file = join(m.S, "opencode", "data", "opencode", "opencode.db")
+  for (const suffix of ["", "-wal", "-shm"]) rmSync(file + suffix, { force: true })
+  databaseWithLog(file, recorded("engine-2.2.6", m), join(m.home, "tmp", "make-db"))
+  put(join(m.S, "box", "run", "setup-card.json"), JSON.stringify({ self: { key: "k", name: "Mac", kind: "mac" }, app: true }))
+  put(join(m.S, "box", "run", "link.json"), JSON.stringify({ name: "Mac", phones: [] }))
+  put(join(m.S, "box", "run", "mac-link.json"), JSON.stringify({ phones: false, relay: "wss://relay.example.test", name: "Mac", app: "0.8.0" }))
+  put(join(m.S, "box", "run", "serve.json"), JSON.stringify({ pid: 999_998, port: 1, password: "x" }))
+  put(join(m.S, "box", "box", "projects.json"), JSON.stringify({ version: 1, projects: [{ directory: m.repository, name: "The box's name", folders: [] }] }))
+  put(join(m.S, "box", "attachments", "ses_a", "b.png"), "the box's own b")
+  put(join(m.S, "box", "bin", "mcp-catalog.json"), "{\"the app's\":true}")
+  preferences(m, { projectFolders: [m.repository, join(m.home, "Projects", "plain")], projectSettings: { data: { [m.repository]: { name: "The app's old name", folders: [] } } }, phoneLink: true })
+}
+
+test.if(mac)("a keeper build's own box moves the same way: its lists kept and what the app still held added, its link as it was set, its old keeper stopped first", async () => {
+  const m = mac07(root, keeperBuild)
+  // Its keeper still running, answering on its control as the app's did (`POST stop`).
+  const keeper = join(m.home, "keeper.ts")
+  put(keeper, `const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) { if (request.method === "POST" && new URL(request.url).pathname === "/stop" && request.headers.get("authorization") === "Bearer pw") { setTimeout(() => process.exit(0), 50); return Response.json({}) } return new Response("", { status: 404 }) } })\nconsole.log(server.port)\n`)
+  const running = spawn(process.execPath, [keeper, "--box"], { stdio: ["ignore", "pipe", "ignore"] })
+  try {
+    const port = await new Promise<string>(resolve => running.stdout.once("data", chunk => resolve(String(chunk).trim())))
+    put(join(m.S, "box", "run", "keeper.json"), JSON.stringify({ pid: running.pid, url: `http://127.0.0.1:${port}`, password: "pw", started: 1 }))
+    const before = snapshot(m.S)
+    const moved = run(m)
+    expect(moved.status, moved.errors + JSON.stringify(moved.said)).toBe(0)
+    expect(moved.said).toMatchObject({ result: "done", status: { state: "done", owed: [] } })
+    // (Asked to stop on its control, it went by itself.)
+    expect(await new Promise(resolve => (running.exitCode !== null ? resolve(running.exitCode) : running.once("exit", resolve)))).toBe(0)
+    expect(snapshot(m.S)).toEqual(before)
+  } finally {
+    if (running.exitCode === null) running.kill()
+  }
+  // The box's own list first, as it was, then what only the app's preferences had.
+  expect(readJSON(join(m.K, "box", "projects.json")).projects).toEqual([{ directory: m.repository, name: "The box's name", folders: [] }, { directory: join(m.home, "Projects", "plain"), folders: [] }])
+  // Its identity and its link's settings as they were; none of its processes' records.
+  expect(readJSON(join(m.K, "run", "link.json"))).toEqual({ name: "Mac", phones: [] })
+  expect(readJSON(join(m.K, "run", "mac-link.json"))).toMatchObject({ phones: false, relay: "wss://relay.example.test" })
+  expect(existsSync(join(m.K, "run", "serve.json"))).toBe(false)
+  expect(existsSync(join(m.K, "run", "keeper.json"))).toBe(false)
+  // A file sent that both kept under one name: both kept, and the message names the one it sent.
+  expect(readFileSync(join(m.K, "attachments", "ses_a", "b.png"), "utf8")).toBe("the box's own b")
+  expect(readFileSync(join(m.K, "attachments", "ses_a", "b 2.png"), "utf8")).toBe("PNGDATA")
+  expect(readFileSync(join(m.K, "bin", "mcp-catalog.json"), "utf8")).toBe("the release's bin/mcp-catalog.json\n")
+  expect(rows(join(m.K, "data", "opencode", "opencode.db")).session_v2.length).toBe(5)
 })
