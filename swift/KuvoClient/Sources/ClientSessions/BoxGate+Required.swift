@@ -10,6 +10,7 @@ extension BoxGate {
     /// (CONTRIBUTING.md, "What branches don't edit by hand").
     public static let required: [String] = [
         "agent-tools.own",
+        "auto.lists",
         "bots.deletes", // the desktop client's Bots area draws what the box says of a delete
         "bots.effort", // the Bots area: a model's effort, as the box says it
         "bots.elsewhere", // the Bots area: the bots on your other computers

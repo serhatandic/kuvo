@@ -8,6 +8,7 @@
 
 pub const REQUIRED: &[&str] = &[
     "agent-tools.own",
+    "auto.lists",
     "bots.deletes",
     "bots.effort",
     "bots.elsewhere",

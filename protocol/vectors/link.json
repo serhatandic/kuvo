@@ -974,10 +974,44 @@
       "forwarded": "api/kuvo/goals/ses_1/pause"
     },
     {
+      "path": "api/kuvo/artifacts/noted",
+      "allowed": false,
+      "method": "POST"
+    },
+    {
+      "path": "api/kuvo/%61rtifacts/noted",
+      "allowed": false,
+      "method": "POST"
+    },
+    {
+      "path": "api/kuvo/link/artifacts?bot=bot_x",
+      "allowed": true,
+      "method": "GET",
+      "forwarded": "api/kuvo/link/artifacts?bot=bot_x"
+    },
+    {
       "path": "api/kuvo/auto",
       "allowed": true,
-      "method": "PUT",
+      "method": "POST",
       "forwarded": "api/kuvo/auto"
+    },
+    {
+      "path": "api/kuvo/auto/bugs",
+      "allowed": true,
+      "method": "PUT",
+      "forwarded": "api/kuvo/auto/bugs"
+    },
+    {
+      "path": "api/kuvo/auto/order",
+      "allowed": true,
+      "method": "PUT",
+      "forwarded": "api/kuvo/auto/order"
+    },
+    {
+      "path": "api/kuvo/auto/bugs",
+      "allowed": true,
+      "method": "DELETE",
+      "forwarded": "api/kuvo/auto/bugs"
     },
     {
       "path": "api/kuvo/auto/limits",
@@ -1149,22 +1183,6 @@
       "path": "api/kuvo/groups/grp_x/release",
       "allowed": false,
       "method": "POST"
-    },
-    {
-      "path": "api/kuvo/artifacts/noted",
-      "allowed": false,
-      "method": "POST"
-    },
-    {
-      "path": "api/kuvo/%61rtifacts/noted",
-      "allowed": false,
-      "method": "POST"
-    },
-    {
-      "path": "api/kuvo/link/artifacts?bot=bot_x",
-      "allowed": true,
-      "method": "GET",
-      "forwarded": "api/kuvo/link/artifacts?bot=bot_x"
     },
     {
       "path": "api/kuvo/%67roups",
