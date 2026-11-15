@@ -7071,7 +7071,110 @@
         "bool",
         "null"
        ]
+      },
+      "bundle": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
+      },
+      "list": {
+       "list": {
+        "object": {
+         "id": {
+          "oneOf": [
+           {
+            "literal": "screenRecording"
+           },
+           {
+            "literal": "accessibility"
+           }
+          ]
+         },
+         "name": "string",
+         "allowed": {
+          "oneOf": [
+           "bool",
+           "null"
+          ]
+         },
+         "settings": "string",
+         "byHand": "bool",
+         "asks": "bool"
+        }
+       }
       }
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/box/permissions",
+   "answers": {
+    "200": {
+     "object": {
+      "applies": "bool",
+      "name": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
+      },
+      "known": "bool",
+      "screenRecording": {
+       "oneOf": [
+        "bool",
+        "null"
+       ]
+      },
+      "accessibility": {
+       "oneOf": [
+        "bool",
+        "null"
+       ]
+      },
+      "bundle": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
+      },
+      "list": {
+       "list": {
+        "object": {
+         "id": {
+          "oneOf": [
+           {
+            "literal": "screenRecording"
+           },
+           {
+            "literal": "accessibility"
+           }
+          ]
+         },
+         "name": "string",
+         "allowed": {
+          "oneOf": [
+           "bool",
+           "null"
+          ]
+         },
+         "settings": "string",
+         "byHand": "bool",
+         "asks": "bool"
+        }
+       }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
      }
     }
    }
