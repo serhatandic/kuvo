@@ -6621,6 +6621,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sandbox` | `kuvo/sandbox` ("Sandbox", bridge 0.9.118) |
 | `sandbox.asks` | `kuvo/sandbox/asks…`, `kuvo/sandbox/allowed…` and `kuvo/sandbox/tools` ("Sandbox", "Asks", bridge 0.9.118) |
 | `sandbox.check` | `reason`, `action` and the rest in `kuvo/sandbox`, and `POST kuvo/sandbox/check` |
+| `sandbox.needsYou` | `needsYou` in `kuvo/sandbox`: its row warns, off or on with `gaps` `services`, the one fact clients draw it by ("Sandbox", #739) |
 | `sandbox.opens` | `opens`, the address a button with no route opens, and `opensHere`, in `kuvo/sandbox` ("Sandbox", #708) |
 | `sandbox.report` | `kuvo/sandbox` says `why` and its docs' page (`action`, `actionLabel`, `opens`) while it's on with `gaps` `services`, and `report` once its check failed twice in a row ("Sandbox", #668) |
 | `sandbox.reviews.settled` | `settled` on `kuvo/sandbox/asks`: each ask Auto's reviewer was checking or left for you that was answered or went since, so no client takes it for one that waits, heard or not ("Sandbox") |
@@ -9007,7 +9008,10 @@ it's empty.
   repositories they write (a Linux machine where a folder can't be made read-only in a command's
   namespace, tried in the box's own folder as it's checked: commands in a repository there don't
   run, 126, rather than run with those open to them). A client says so beside it (`services`;
-  the apps don't show `git` yet). With `sandbox.report` (#668), `services` comes with the box's
+  the apps don't show `git` yet). With `sandbox.needsYou` (#739), `needsYou: true` says its row
+  warns, why and its button with it: while it isn't on, for any reason (Kuvo Code's own switch
+  too), or is on with `gaps` `services`. A client warns by that alone, keeping no rule of its own;
+  without it (on and whole, or with only `git`), a quiet line. With `sandbox.report` (#668), `services` comes with the box's
   words for it too: `why`, a sentence to show as it is (what commands can still reach, and what
   waits until the machine allows user namespaces or has util-linux), and the docs' page on what a
   machine needs as its button (`action` `help`, `actionLabel`, `opens`), so no client keeps either.

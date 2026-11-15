@@ -63,6 +63,9 @@ export interface FenceState {
    * command's namespace (fence/landlock.ts, `readOnlyHere`), each command in a repository refuses
    * rather than run with git's own files open to it. */
   gaps?: FenceGap[];
+  /** Its row warns (`sandbox.needsYou`): it's off, or on while commands can still reach your
+   * login's services. Clients draw this, keeping no rule of their own. */
+  needsYou?: true;
 }
 
 export type FenceReason = "kernel" | "namespaces" | "macos" | "engineMissing" | "checking" | "checkFailed" | "plugin" | "engineDown" | "waiting";
@@ -187,15 +190,17 @@ export const REPORT_AFTER = 2;
  * why, its button's words and the address one with no route opens, and, once its check failed
  * `REPORT_AFTER` times in a row, what a report of it says (`report`); while it's on but commands can
  * reach your login's services, why, and the docs' page on what a machine needs (`action` `help`).
+ * Either way it needs you (`needsYou`, `sandbox.needsYou`): the one fact every client warns by.
  */
 export function worded(state: FenceState): FenceState {
   if (state.on) {
     if (!state.gaps?.includes("services")) return state;
-    return { ...state, why: servicesWhy(state.needs), action: "help", actionLabel: actionLabel("help"), ...actionOpens("help") };
+    return { ...state, needsYou: true, why: servicesWhy(state.needs), action: "help", actionLabel: actionLabel("help"), ...actionOpens("help") };
   }
   const why = state.why ?? (state.reason ? WHY[state.reason] : undefined);
   return {
     ...state,
+    needsYou: true,
     ...(why ? { why } : {}),
     ...(state.action ? { actionLabel: actionLabel(state.action, state.reason), ...(state.route ? {} : actionOpens(state.action)) } : {}),
     ...((state.failures ?? 0) >= REPORT_AFTER ? { report: `The sandbox’s check failed ${state.failures} times in a row: ${why ?? "it didn’t say why"}${state.check ? ` (check: ${state.check})` : ""}` } : {}),
