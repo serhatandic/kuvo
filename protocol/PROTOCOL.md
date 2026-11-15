@@ -7528,16 +7528,21 @@ was named Kuvo Code Box, in no release.)
   name only that; the tests' own build takes the box and the app it's given, and only a test's
   keychain). It reads what macOS keeps from every other program, so it works **only for the box's
   move, run by it**: the move's lock (`updates/rehome/lock/pid`) must name the very process that
-  started `kuvo-keys`, so the move runs it itself, as its own child, while it holds its lock.
-  Anything else that runs it, at any other time, gets exit 2 and nothing done.
+  started `kuvo-keys`, a process that started before that lock was written (one that got the
+  number of a move that was killed isn't it), so the move runs it itself, as its own child, while
+  it holds its lock. Anything else that runs it, at any other time, gets exit 2 and nothing done.
+  (That stops what can't write in the box's home: a session's sandboxed command, another user.
+  A program of yours that runs outside the sandbox can make that lock itself.)
   - `kuvo-keys copy --home <box> --helper <Kuvo Helper.app>`: the copy above, trusting that
     helper, which must be Kuvo Helper itself (its ID the app's with `.box`, its signature whole,
-    signed by the team that signed `kuvo-keys`; never one signed ad hoc), inside the box's home
-    where it really is (links followed), every folder from the home down to it yours and closed
-    to others' writes: the release the move unpacked there, or its `bin`. So nothing outside the
-    box can put another program in its place between the check and the copies. It checks the
+    signed by the team that signed `kuvo-keys`; never one signed ad hoc), in the box's `bin` or
+    the release its move unpacked (`updates/install`), where it really is (links followed), every
+    folder from the home down to it and inside it yours and closed to others' writes. Those are
+    places no session's command writes to (a session's own folders are elsewhere in the home), so
+    none can put another program in its place between the check and the copies. It checks the
     helper again once the copies are made: changed meanwhile, exit 1, `reason` `helper-changed`,
-    and the move takes the copies away. `{"copied": <how many>}`.
+    and the copies aren't to be used (the helper's `uncopy` takes away those it can; any it can't
+    stay as leftovers, which stop the next copy). `{"copied": <how many>}`.
   - `kuvo-keys delete-originals --home <box>`: the app's own taken away once the move can't go
     back, as the keeper does (`settling`, then `settled`). `{}`.
   - `kuvo-keys passwords --home <box>`: the sign-ins Kuvo Code 0.7 kept before the vault (internet

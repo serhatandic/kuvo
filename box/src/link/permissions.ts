@@ -36,7 +36,7 @@ export function boxPermissions(): BoxPermissions {
   } catch {
     return unknown;
   }
-  if (!isObject(noted) || noted.v !== 1 || typeof noted.pid !== "number" || !Number.isInteger(noted.pid) || noted.pid <= 1 || !runs(noted.pid)) return unknown;
+  if (!isObject(noted) || noted.v !== 1 || typeof noted.pid !== "number" || !Number.isInteger(noted.pid) || noted.pid <= 0 || !runs(noted.pid)) return unknown;
   if (typeof noted.screenRecording !== "boolean" || typeof noted.accessibility !== "boolean") return unknown;
   return { ...unknown, known: true, screenRecording: noted.screenRecording, accessibility: noted.accessibility };
 }

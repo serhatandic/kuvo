@@ -687,6 +687,10 @@ private final class InTheTests {}
         #expect(noted["screenRecording"] as? Bool == true)
         #expect(noted["accessibility"] as? Bool == false)
         #expect((try FileManager.default.attributesOfItem(atPath: facts.path)[.posixPermissions] as? Int) == 0o600)
+        // Taken away by something else while it runs: noted again as it next looks.
+        try FileManager.default.removeItem(at: facts)
+        until { FileManager.default.fileExists(atPath: facts.path) }
+        #expect(json(facts)["screenRecording"] as? Bool == true)
         // Stopped: nothing left saying what a helper that isn't running is allowed.
         kill(helper.process.processIdentifier, SIGTERM)
         until { !helper.isRunning }
@@ -752,9 +756,10 @@ private final class InTheTests {}
         defer { cleanUp() }
         addOriginals(madeBy: keysTool)
         let released = try moving()
-        // In the box: another program (a copy of the app), a helper changed since it was signed, and
-        // one in a folder others may write to. Outside it: Kuvo Helper itself, where anything could
-        // put another in its place (and a link to it from inside). And none named.
+        // Where the move's release is: another program (a copy of the app), a helper changed since it
+        // was signed, one in a folder others may write to, and one others may write into. Elsewhere,
+        // where something could put another in its place: Kuvo Helper itself outside the box (and a
+        // link to it from inside), and in the box where a session's own folders are. And none named.
         let other = box.appending(path: "updates/install/other/Kuvo Code.app")
         let changed = box.appending(path: "updates/install/changed/\(BoxHelperBundle.bundleName)")
         let open = box.appending(path: "updates/install/open/\(BoxHelperBundle.bundleName)")
@@ -764,10 +769,17 @@ private final class InTheTests {}
         }
         try write(changed.appending(path: "Contents/Resources/extra"), "changed")
         try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: open.deletingLastPathComponent().path)
+        let loose = box.appending(path: "updates/install/loose/\(BoxHelperBundle.bundleName)")
+        let session = box.appending(path: "data/worktree/\(BoxHelperBundle.bundleName)")
+        for to in [loose, session] {
+            try FileManager.default.createDirectory(at: to.deletingLastPathComponent(), withIntermediateDirectories: true)
+            #expect(try Self.ran("/usr/bin/ditto", [released.path, to.path]).status == 0)
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: loose.appending(path: "Contents/MacOS").path)
         let link = box.appending(path: "updates/install/link.app")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: helperInApp)
-        for arguments in [["copy", "--helper", other.path], ["copy", "--helper", changed.path], ["copy", "--helper", open.path], ["copy", "--helper", helperInApp.path],
-                          ["copy", "--helper", link.path], ["copy"], ["copy", "--helper", "Kuvo Helper.app"]] {
+        for arguments in [["copy", "--helper", other.path], ["copy", "--helper", changed.path], ["copy", "--helper", open.path], ["copy", "--helper", loose.path],
+                          ["copy", "--helper", helperInApp.path], ["copy", "--helper", link.path], ["copy", "--helper", session.path], ["copy"], ["copy", "--helper", "Kuvo Helper.app"]] {
             let refused = try keys(arguments)
             #expect(refused.status == 2, "\(arguments): \(refused.output)")
         }
@@ -791,8 +803,11 @@ private final class InTheTests {}
         gone.executableURL = URL(filePath: "/usr/bin/true")
         try gone.run()
         gone.waitUntilExit()
-        for holder in [nil, gone.processIdentifier, 1] as [pid_t?] {
+        // (Last: this test's own number on a lock written before this test's process began, as a
+        // move that was killed leaves one, and another process gets its number.)
+        for (holder, written) in [(nil, nil), (gone.processIdentifier, nil), (1, nil), (getpid(), Date(timeIntervalSince1970: 1_000_000_000))] as [(pid_t?, Date?)] {
             if let holder { _ = try moving(heldBy: holder) }
+            if let written { try FileManager.default.setAttributes([.modificationDate: written], ofItemAtPath: box.appending(path: "updates/rehome/lock/pid").path) }
             for arguments in [["copy", "--helper", released.path], ["delete-originals"], ["passwords"]] {
                 let refused = try keys(arguments)
                 #expect(refused.status == 2, "\(String(describing: holder)) \(arguments): \(refused.output)")

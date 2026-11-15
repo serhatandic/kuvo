@@ -46,6 +46,12 @@ built() {
     swift build -c release --package-path "$PACKAGE" --product "$1" --arch arm64 -q >&2
     echo "$(swift build -c release --package-path "$PACKAGE" --arch arm64 --show-bin-path)/$1"
 }
+# (One built elsewhere is a test's: never signed as the real thing, which would give a test build,
+# with its test-only options, Kuvo Code's identity.)
+if [ "$SIGN_IDENTITY" != "-" ] && [ -n "${HELPER_EXECUTABLE:-}${KEYS_EXECUTABLE:-}" ]; then
+    echo "HELPER_EXECUTABLE and KEYS_EXECUTABLE are for ad hoc builds only: a signed one is built here." >&2
+    exit 2
+fi
 if [ -n "${HELPER_EXECUTABLE:-}" ]; then EXECUTABLE=$HELPER_EXECUTABLE; else EXECUTABLE=$(built KuvoHelper); fi
 if [ -n "${KEYS_EXECUTABLE:-}" ]; then KEYS=$KEYS_EXECUTABLE; else KEYS=$(built kuvo-keys); fi
 test -x "$EXECUTABLE" || { echo "No KuvoHelper at $EXECUTABLE" >&2; exit 1; }

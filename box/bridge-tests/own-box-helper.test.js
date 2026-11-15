@@ -273,6 +273,9 @@ test("kuvo/box/permissions: what macOS allows Kuvo Helper, as the helper running
   const gone = spawnSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" });
   write(facts, JSON.stringify({ v: 1, pid: Number(gone.stdout.trim()), screenRecording: true, accessibility: true }));
   assert.deepEqual((await box.ask("kuvo/box/permissions")).body, unknown);
+  // Nor one whose number is someone else's process now (launchd's here), not yours to signal.
+  write(facts, JSON.stringify({ v: 1, pid: 1, screenRecording: true, accessibility: true }));
+  assert.deepEqual((await box.ask("kuvo/box/permissions")).body, unknown);
   // Nor one that isn't the helper's (half written, another version's, not facts).
   for (const text of ["{", "[]", JSON.stringify({ v: 2, pid: process.pid, screenRecording: true, accessibility: true }), JSON.stringify({ v: 1, pid: process.pid, screenRecording: "yes", accessibility: true }), JSON.stringify({ v: 1, pid: 0, screenRecording: true, accessibility: true })]) {
     write(facts, text);

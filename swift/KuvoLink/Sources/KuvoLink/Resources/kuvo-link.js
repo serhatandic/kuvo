@@ -45416,7 +45416,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4a265bcfbd2a";
+var BRIDGE_VERSION = "9bd9a296609e";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -57721,7 +57721,7 @@ function boxPermissions() {
   } catch {
     return unknown;
   }
-  if (!isObject(noted) || noted.v !== 1 || typeof noted.pid !== "number" || !Number.isInteger(noted.pid) || noted.pid <= 1 || !runs(noted.pid))
+  if (!isObject(noted) || noted.v !== 1 || typeof noted.pid !== "number" || !Number.isInteger(noted.pid) || noted.pid <= 0 || !runs(noted.pid))
     return unknown;
   if (typeof noted.screenRecording !== "boolean" || typeof noted.accessibility !== "boolean")
     return unknown;
