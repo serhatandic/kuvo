@@ -2,8 +2,20 @@ CHANGELOG.md merge=union
 # Lists that many branches add to, one name a line, in order: union keeps the lines both sides
 # added instead of a conflict (CONTRIBUTING.md, "What branches don't edit by hand"). Only where
 # each line of the list is whole by itself (a trailing comma on each) and nothing else in the file
-# changes often. Never the JSON written from them (routes/features.json, shapes/answers.json):
-# a union there can leave a file that reads but is wrong, so a conflict there is settled by
-# running scripts/route-shapes.sh again. A union that leaves a list out of order, or a name
-# twice, fails the box's tests (test/features.test.ts) and `route-shapes.sh --check`.
+# changes often. A union that leaves a list out of order, or a name twice, fails its tests:
+# features.ts the box's (test/features.test.ts) and `route-shapes.sh --check`; the update gate's
+# lists gpui's (kuvo_box/tests/vectors.rs).
 box/src/shared/features.ts merge=union
+swift/KuvoClient/Sources/ClientSessions/BoxGate+Required.swift merge=union
+gpui/kuvo_box/src/gate/required.rs merge=union
+# What's built from sources and kept in git: two branches that both built one conflict on it, and
+# neither side is right after the merge. The kuvo-built driver keeps this side's, so the merge goes
+# on; build again after it and commit what that writes, as each script's `--check` (and the box's
+# suite, for the route vectors) fails on a file its sources don't build. The driver is set up once
+# per clone by scripts/merge-setup.sh; a clone without it merges these as text, conflicting as
+# before. Never union here: it can leave a file that reads but is wrong.
+swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js merge=kuvo-built
+box/dist/kuvo-agents.js merge=kuvo-built
+box/dist/kuvo-browser.js merge=kuvo-built
+protocol/vectors/routes/features.json merge=kuvo-built
+protocol/vectors/routes/shapes/answers.json merge=kuvo-built

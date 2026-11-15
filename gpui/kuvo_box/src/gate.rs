@@ -5,60 +5,8 @@
 //!
 //! The same list and rules as KuvoClient's `BoxGate`, so every client holds the same boxes.
 
-/// What this client uses with no way around it on a box that hasn't it.
-pub const REQUIRED: &[&str] = &[
-    "agent-tools.own",
-    "bots.deletes",
-    "bots.effort",
-    "bots.elsewhere",
-    "bots.held",
-    "bots.now",
-    "computers",
-    "computers.facts",
-    "computers.manage",
-    "file.text",
-    "folders.suggested",
-    "folders.tree",
-    "git.branches",
-    "git.branches.pullRequest",
-    "git.branches.worktree",
-    "git.changes.binary",
-    "git.changes.path",
-    "git.files",
-    "git.files.does",
-    "git.merge",
-    "git.pull-request",
-    "git.status",
-    "limits.rings",
-    "messages.send",
-    "models.offered",
-    "models.offered.folder",
-    "models.offered.free",
-    "models.offered.sides",
-    "models.readiness",
-    "queue.items",
-    "sandbox.opens",
-    "sandbox.words",
-    "sessions.actions",
-    "sessions.asks",
-    "sessions.list",
-    "sessions.mentions",
-    "sessions.models",
-    "sessions.needsYou",
-    "sessions.start.empty",
-    "settings",
-    "setup.welcomed",
-    "sign-in.accounts.kinds",
-    "sign-in.accounts.plan",
-    "sign-in.accounts.state",
-    "sign-in.codes",
-    "typed",
-    "usage.notices",
-    "waiting",
-    "waiting.cards",
-    "work-queue.counts",
-    "work-queue.edit",
-];
+mod required;
+pub use required::REQUIRED;
 
 /// What `features` lack of [`REQUIRED`], in its order: none when the box is up to date.
 pub fn missing<S: AsRef<str>>(features: &[S]) -> Vec<String> {

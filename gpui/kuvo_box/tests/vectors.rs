@@ -226,14 +226,28 @@ fn a_held_box_is_asked_only_what_keeps_work_going() {
     }
 }
 
-/// The gate holds the same boxes as the Swift apps': the names in KuvoClient's `BoxGate.required`.
+/// The gate holds the same boxes as the Swift apps': the names in KuvoClient's `BoxGate.required`,
+/// whose file is one name a line, each maybe with a comment saying what needs it.
 #[test]
 fn the_gate_needs_what_the_swift_clients_need() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../swift/KuvoClient/Sources/ClientSessions/BoxGate.swift");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../swift/KuvoClient/Sources/ClientSessions/BoxGate+Required.swift");
     let swift = std::fs::read_to_string(path).unwrap();
-    let list = swift.split("public static let required: [String] = [").nth(1).and_then(|rest| rest.split(']').next()).expect("BoxGate.required");
-    let names: Vec<&str> = list.split(',').map(|name| name.trim().trim_matches('"')).filter(|name| !name.is_empty()).collect();
+    let list = swift.split("public static let required: [String] = [\n").nth(1).and_then(|rest| rest.split("\n    ]").next()).expect("BoxGate.required");
+    let names: Vec<&str> = list
+        .lines()
+        .map(|line| line.split("//").next().unwrap().trim().trim_end_matches(',').trim_matches('"'))
+        .filter(|name| !name.is_empty())
+        .collect();
     assert_eq!(names, gate::REQUIRED);
+}
+
+/// The lists merge by union (.gitattributes), which can leave two branches' names out of order or
+/// one twice: each name once, in order (`LC_ALL=C sort`), as a branch adds it.
+#[test]
+fn the_gates_names_are_each_once_in_order() {
+    for pair in gate::REQUIRED.windows(2) {
+        assert!(pair[0].as_bytes() < pair[1].as_bytes(), "{:?} then {:?}: one name a line, in order, each once", pair[0], pair[1]);
+    }
 }
 
 /// The protocol names exactly the same required features as both native clients.
@@ -242,9 +256,9 @@ fn the_gate_matches_the_protocols_update_gate_list() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol/PROTOCOL.md");
     let protocol = std::fs::read_to_string(path).unwrap();
     let list = protocol.split("### The update gate").nth(1)
-        .and_then(|rest| rest.split("today\n").nth(1))
-        .and_then(|rest| rest.split("(KuvoClient's").next()).expect("documented gate list");
-    let names: Vec<&str> = list.split('`').skip(1).step_by(2).collect();
+        .and_then(|rest| rest.split("one a line and in order, so branches that each add one merge cleanly:\n").nth(1))
+        .and_then(|rest| rest.trim_start().split("\n\n").next()).expect("documented gate list");
+    let names: Vec<&str> = list.lines().map(|line| line.trim_start_matches("- `").trim_end_matches('`')).collect();
     assert_eq!(names, gate::REQUIRED);
 }
 

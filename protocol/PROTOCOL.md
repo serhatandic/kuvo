@@ -2677,19 +2677,65 @@ new version without cutting a turn:
 
 A client never keeps an older box's way of doing something (#679): it brings a box up to date
 before it uses it, and meanwhile says so. A box is older than a client needs when its `kuvo/info`
-`features` lack any name the client uses with no way around it (or it has no `kuvo/info`): today
-`agent-tools.own`, `bots.deletes`, `bots.effort`, `bots.elsewhere`, `bots.held`, `bots.now`, `computers`, `computers.facts`, `computers.manage`, `file.text`, `folders.suggested`, `folders.tree`, `git.branches`,
-`git.branches.pullRequest`, `git.branches.worktree`, `git.changes.binary`, `git.changes.path`,
-`git.files`, `git.files.does`, `git.merge`, `git.pull-request`,
-`git.status`, `limits.rings`, `messages.send`, `models.offered`, `models.offered.folder`,
-`models.offered.free`, `models.offered.sides`, `models.readiness`, `queue.items`, `sandbox.opens`, `sandbox.words`, `sessions.actions`, `sessions.asks`,
-`sessions.list`, `sessions.mentions`, `sessions.models`, `sessions.needsYou`,
-`sessions.start.empty`, `settings`, `setup.welcomed`, `sign-in.accounts.kinds`, `sign-in.accounts.plan`, `sign-in.accounts.state`, `sign-in.codes`, `typed`, `usage.notices`,
-`waiting`, `waiting.cards`, `work-queue.counts` and `work-queue.edit`
-(KuvoClient's `BoxGate.required`, and the same list in every client, gpui's `kuvo_box` too, so
+`features` lack any name the client uses with no way around it (or it has no `kuvo/info`). Today
+these, one a line and in order, so branches that each add one merge cleanly:
+
+- `agent-tools.own`
+- `bots.deletes`
+- `bots.effort`
+- `bots.elsewhere`
+- `bots.held`
+- `bots.now`
+- `computers`
+- `computers.facts`
+- `computers.manage`
+- `file.text`
+- `folders.suggested`
+- `folders.tree`
+- `git.branches`
+- `git.branches.pullRequest`
+- `git.branches.worktree`
+- `git.changes.binary`
+- `git.changes.path`
+- `git.files`
+- `git.files.does`
+- `git.merge`
+- `git.pull-request`
+- `git.status`
+- `limits.rings`
+- `messages.send`
+- `models.offered`
+- `models.offered.folder`
+- `models.offered.free`
+- `models.offered.sides`
+- `models.readiness`
+- `queue.items`
+- `sandbox.opens`
+- `sandbox.words`
+- `sessions.actions`
+- `sessions.asks`
+- `sessions.list`
+- `sessions.mentions`
+- `sessions.models`
+- `sessions.needsYou`
+- `sessions.start.empty`
+- `settings`
+- `setup.welcomed`
+- `sign-in.accounts.kinds`
+- `sign-in.accounts.plan`
+- `sign-in.accounts.state`
+- `sign-in.codes`
+- `typed`
+- `usage.notices`
+- `waiting`
+- `waiting.cards`
+- `work-queue.counts`
+- `work-queue.edit`
+
+These are KuvoClient's `BoxGate.required`, the same list in every client (gpui's `kuvo_box` too), so
 every client holds the same boxes; a box with `messages.send` has what came before it too,
 `sessions.move`, `projects.folders` and `sign-in.methods` among them, and names its chats folder in
-`kuvo/info`). A client adds a name there as it drops its fallback for a box without it, or its
+`kuvo/info`. A client adds a name there as it drops its fallback for a box without it, or its
 words that such a box needs a newer Kuvo Code.
 
 - **Held**: a client sends a held box nothing but `kuvo/info`, `kuvo/update` and `kuvo/box/update`,
