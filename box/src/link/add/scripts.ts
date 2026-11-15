@@ -6,7 +6,7 @@
 // The computer's folder is always `~/.kuvo-code` there: its keeper names no other.
 
 import { quote } from "../../shared/text";
-import { LAUNCH_AGENT, REBOOT_TAG } from "../uninstall";
+import { LAUNCH_AGENT, REBOOT_TAG } from "../marks";
 
 const K = 'K="$HOME/.kuvo-code"';
 /** A dollar sign, where a script's own `${…}` stands in a template here. */

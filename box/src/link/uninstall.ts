@@ -19,14 +19,9 @@ import { allWakes } from "./areas/wakes";
 import { listBots } from "./bots/list";
 import { APP_FOLDER, IN_TEST_FOLDER, K, REAL_BOX, RUN, accountHome, homeFolder, located, recordedKind } from "./home";
 import { peersOf } from "./peers/known";
+import { LAUNCH_AGENT, REBOOT_TAG } from "./marks";
 import { SERVE_ROLE } from "./serve-kept";
 import { readLink } from "./state";
-
-/** The launch agent that starts the box at login on a Mac (RemoteEngine.swift's `launchAgent`; the
- * helper's after #333 piece 4): one per computer, whatever set it up. */
-export const LAUNCH_AGENT = "run.kuvo.code.machine";
-/** The mark on the crontab line that starts the box after a restart (RemoteEngine.swift's `rebootTag`). */
-export const REBOOT_TAG = "# kuvo-code: starts its engine again after a restart";
 
 /** Where `launchctl`, `crontab` and `open` are, and the folder the launch agent's file is in: the
  * real ones for the real `~/.kuvo-code` alone, a test's stand-ins for a test's home, else none. (The

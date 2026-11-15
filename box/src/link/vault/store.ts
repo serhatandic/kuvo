@@ -45,6 +45,12 @@ let unlockKey: Buffer | null = null;
 export function forgetKeys() {
   storeKey = null;
   unlockKey = null;
+  // (What this process saw of the files goes with it, as it would with the process.)
+  tampered.clear();
+  newest.clear();
+  unkept.clear();
+  primed = false;
+  primeTrouble = null;
 }
 
 const readJSON = <T>(file: string, fallback: T): T => {

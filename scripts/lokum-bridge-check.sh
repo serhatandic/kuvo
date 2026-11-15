@@ -151,6 +151,7 @@ while IFS= read -r -d '' source; do
 done < <(git --no-optional-locks ls-files -z mac/helper/Sources swift/OpenCodeKit/Sources swift/KuvoClient/Sources swift/KuvoLink/Sources scripts)
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude node_modules --exclude .build -czf - \
     box/bridge-tests protocol/vectors swift/KuvoLink/Sources/KuvoLink/Resources \
+    swift/KuvoCode/Stores/PhoneLink.swift \
     protocol/PROTOCOL.md protocol/compat-kinds.txt box/src box/dist box/package.json box/bun.lock \
     "${sources[@]}" |
     ssh -o BatchMode=yes "$HOST" "$command"

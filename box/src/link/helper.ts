@@ -14,7 +14,8 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { APP_FOLDER, K, recordedKind } from "./home";
-import { LAUNCH_AGENT, launchTools } from "./uninstall";
+import { LAUNCH_AGENT } from "./marks";
+import { launchTools } from "./uninstall";
 
 export const HELPER_NAME = "Kuvo Helper";
 /** The helper in the box's `bin`, as its release brings it. */

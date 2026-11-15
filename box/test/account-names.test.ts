@@ -1,3 +1,4 @@
+import "./safety"
 import { expect, test } from "bun:test";
 import { spendTitle, workAccountTitle } from "../src/shared/account-names";
 
