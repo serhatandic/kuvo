@@ -9,6 +9,7 @@ public struct BoxUsage: Decodable, Hashable, Sendable {
     public var zone: String
     /// The services (`claude`…) this box states the usage of: a client shows those from here.
     public var services: [String]
+    public var serviceTitles: [String: String] = [:]
     /// When this box last read its own accounts' logs, in ms.
     public var scanned: Double?
     public var rows: [Row]
@@ -149,12 +150,13 @@ public struct BoxUsage: Decodable, Hashable, Sendable {
         }
     }
 
-    private enum CodingKeys: String, CodingKey { case zone, services, scanned, rows, totals, partial, pricing }
+    private enum CodingKeys: String, CodingKey { case zone, services, serviceTitles, scanned, rows, totals, partial, pricing }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         zone = (try? container.decode(String.self, forKey: .zone)) ?? TimeZone.current.identifier
         services = (try? container.decodeIfPresent([String].self, forKey: .services)) ?? []
+        serviceTitles = (try? container.decodeIfPresent([String: String].self, forKey: .serviceTitles)) ?? [:]
         scanned = try? container.decodeIfPresent(Double.self, forKey: .scanned)
         rows = (try? container.decode(Readable<Row>.self, forKey: .rows).items) ?? []
         var totals: [String: [Day]] = [:]

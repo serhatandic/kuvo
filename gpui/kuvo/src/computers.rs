@@ -345,11 +345,7 @@ impl ComputersView {
         let limits = if computer.limits.is_empty() {
             "None".to_owned()
         } else {
-            computer.limits.iter().map(|service| kuvo_box::areas::service_name(service).map(str::to_owned).unwrap_or_else(|| {
-                // As the limits' rows name an account's service ("Claude").
-                let mut chars = service.chars();
-                chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
-            })).collect::<Vec<_>>().join(", ")
+            computer.limit_services.iter().map(|service| service.title.clone()).collect::<Vec<_>>().join(", ")
         };
         let facts = [
             ("fact-kind", "Kind", if computer.is_mac() { "Mac".to_owned() } else if computer.kind.is_empty() { "Not said yet".to_owned() } else { "Machine".to_owned() }),

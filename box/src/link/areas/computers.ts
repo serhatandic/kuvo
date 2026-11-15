@@ -96,6 +96,12 @@ export function ownComputer(): ToldComputer {
 /** What this box answers, as its `kuvo/info` says. */
 const ownFeatures = (): string[] => (IS_MAC ? macFeatures() : [...FEATURES]);
 
+/** Plan names formerly drawn by clients; unknown services keep their id with an initial capital. */
+export function serviceTitle(id: string): string {
+  const names: Record<string, string> = { codex: "ChatGPT", grok: "SuperGrok", copilot: "Copilot", openrouter: "OpenRouter", zai: "Z.ai", ollama: "Ollama", opencode: "OpenCode Go" };
+  return Object.hasOwn(names, id) ? names[id]! : (id.charAt(0).toUpperCase() + id.slice(1));
+}
+
 /** The services whose plan limits each computer reads, by its key (this box's under `here`), as the
  * coding agents' bridge lists them (`rows`' `boxes`); none while it doesn't run. */
 async function limitsRead(bridge: Target | null, signal?: AbortSignal): Promise<Map<string, string[]>> {
@@ -129,7 +135,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const atWork = atWorkHere();
   // (A machine by the name its Macs' records give it, renamed there, else its own.)
   const named = !IS_MAC && own ? namedBoxes(link).find(box => box.key === own)?.name : undefined;
-  const computers: Omit<ListedComputer, "actions">[] = [{
+  const computers: Omit<ListedComputer, "actions" | "limitServices">[] = [{
     key: own ?? "",
     name: (IS_MAC ? macLink.config?.name : named || name) || name || os.hostname(),
     kind: IS_MAC ? "mac" : "machine",
@@ -148,7 +154,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const withActions = (): ListedComputer[] => {
     const here = computers[0]!.name;
     const facts = writerFacts(link);
-    return computers.map(computer => ({ ...computer, actions: actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts) }));
+    return computers.map(computer => ({ ...computer, limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), actions: actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts) }));
   };
   // A machine Macs of different setups share lists itself alone: the others there aren't all one
   // person's computers (as `kuvo/setup` refuses there).

@@ -1642,6 +1642,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "limits.resets": ["POST", "kuvo/agents/api/kuvo/limits/reset"],
     "limits.rings": ["GET", "kuvo/agents/api/kuvo/limits"],
     // (Each row's, account's and window's name, in the limits' answer.)
+    "names.titles": ["GET", "kuvo/computers"],
     "limits.titles": ["GET", "kuvo/agents/api/kuvo/limits"],
     "mcp.catalog": ["GET", "kuvo/mcp/catalog"],
     // (And kuvo/sessions/<id>/send, which the same box answers.)

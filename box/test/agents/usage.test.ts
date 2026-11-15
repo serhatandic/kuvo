@@ -114,6 +114,7 @@ describe("one box", () => {
 
     const istanbul = await route(usage, "Europe/Istanbul")
     expect(istanbul.zone).toBe("Europe/Istanbul")
+    expect(istanbul.serviceTitles).toEqual({ claude: "Claude", codex: "Codex", grok: "Grok", opencode: "OpenCode", cursor: "Cursor", antigravity: "Antigravity" })
     expect(istanbul.services).toEqual(["claude", "codex", "grok", "opencode", "cursor", "antigravity"])
     expect(istanbul.rows).toHaveLength(1)
     const row = istanbul.rows[0]

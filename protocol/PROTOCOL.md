@@ -10056,3 +10056,9 @@ once in the desired order. The names `order` and `limits` are reserved.
 Changes return `data.lists` and `data.limits`. Stale revisions, duplicate adds,
 and stale order return 409; read again and let the user retry. Different lists
 can be changed independently. Whole-collection PUT is no longer supported.
+
+### Box display names (`names.titles`)
+
+Computers include `limitServices: [{id, title}]` alongside the legacy `limits` ids. Clients draw each title unchanged. The box names known services by their plan (ChatGPT, SuperGrok, Copilot, OpenRouter, Z.ai, Ollama, OpenCode Go); unknown service ids have their initial letter capitalized.
+
+Work sessions include `account.title`, the complete short display name including the account label where present ("Claude · Work", "Copilot"). Unknown providers retain their supplied account name. Usage answers include `serviceTitles`, a map from each service id in `services` or `totals` to its spend card title ("OpenCode", "Codex"); unknown ids are capitalized word by word. Clients draw these words unchanged.

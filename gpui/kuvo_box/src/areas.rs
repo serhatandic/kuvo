@@ -92,6 +92,13 @@ pub use crate::groups::Group;
 
 // MARK: Computers
 
+/// A service named by the box.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct NamedService {
+    pub id: String,
+    pub title: String,
+}
+
 /// One of your computers, as a box knows it (`kuvo/computers`).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct Computer {
@@ -139,6 +146,8 @@ pub struct Computer {
     /// The services whose plan limits it reads.
     #[serde(default)]
     pub limits: Vec<String>,
+    #[serde(default, rename = "limitServices")]
+    pub limit_services: Vec<NamedService>,
     /// What its box has (its `kuvo/info` `features`), whole, for the update gate; none where it
     /// didn't say.
     #[serde(default)]
@@ -188,6 +197,7 @@ impl Computer {
 }
 
 /// Your computers, the answering box first.
+/// One of your computers, as a box knows it (`kuvo/computers`).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct Computers {
     #[serde(default, deserialize_with = "readable")]
@@ -300,21 +310,6 @@ impl Account {
     pub fn rings(&self) -> Vec<(f32, Level)> {
         [&self.rings.short, &self.rings.long].into_iter().flatten().map(|ring| (ring.used, ring.level)).collect()
     }
-}
-
-/// The engine's services by their plans' names (KuvoClient's `AccountNames.services`), for the
-/// services a computer reads the limits of (`kuvo/computers`' `limits`, which says only their ids).
-pub fn service_name(service: &str) -> Option<&'static str> {
-    Some(match service {
-        "codex" => "ChatGPT",
-        "grok" => "SuperGrok",
-        "copilot" => "Copilot",
-        "openrouter" => "OpenRouter",
-        "zai" => "Z.ai",
-        "ollama" => "Ollama",
-        "opencode" => "OpenCode Go",
-        _ => return None,
-    })
 }
 
 // MARK: What waits on you
@@ -448,6 +443,12 @@ mod tests {
         assert_eq!(newer.rings(), vec![(0.3, Level::Unknown), (0.2, Level::Calm)]);
         let unread = row(r#"{"service":"claude","rings":{"short":{"window":"x","used":"most"},"long":{"window":"week","used":0.2,"level":"calm"}}}"#);
         assert_eq!(unread.rings(), vec![(0.2, Level::Calm)]);
+    }
+
+    #[test]
+    fn computer_service_titles_are_the_box_words() {
+        let computer: Computer = serde_json::from_str(r#"{"key":"","name":"Studio","limitServices":[{"id":"codex","title":"A plan named by the box"}]}"#).unwrap();
+        assert_eq!(computer.limit_services[0].title, "A plan named by the box");
     }
 
     #[test]

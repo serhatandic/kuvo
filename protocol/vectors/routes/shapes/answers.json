@@ -3559,6 +3559,14 @@
          "limits": {
           "list": "string"
          },
+         "limitServices": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title": "string"
+           }
+          }
+         },
          "actions": {
           "list": {
            "object": {
@@ -3674,6 +3682,14 @@
          },
          "limits": {
           "list": "string"
+         },
+         "limitServices": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title": "string"
+           }
+          }
          },
          "actions": {
           "list": {
@@ -4144,6 +4160,9 @@
            },
            {
             "literal": "named"
+           },
+           {
+            "literal": "names.titles"
            },
            {
             "literal": "personalities"
@@ -4789,6 +4808,9 @@
            },
            {
             "literal": "named"
+           },
+           {
+            "literal": "names.titles"
            },
            {
             "literal": "personalities"
@@ -17718,6 +17740,7 @@
          "account?": {
           "object": {
            "name": "string",
+           "title": "string",
            "label?": "string"
           }
          },

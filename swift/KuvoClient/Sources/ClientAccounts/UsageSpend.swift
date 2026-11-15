@@ -9,6 +9,7 @@ import OpenCodeKit
 /// A period with no use has no tile, never `$0.00 · 0 tokens` (nothing used and nothing known look
 /// alike), and a box that couldn't be read has no `BoxUsage` at all: so a failed read never shows $0.
 public struct UsageSpend: Hashable, Sendable {
+    public var title: String? = nil
     public var periods: [Period]
     /// One point a day, the oldest first, for today and the 30 days before it; empty when nothing
     /// was used in all that time (no trend to draw).
@@ -83,6 +84,7 @@ public struct UsageSpend: Hashable, Sendable {
         let rows = usage.rows.filter { $0.service == service }
         // (Billed, not estimated, only where every account of it says so: OpenCode's hosted models.)
         self.init(days: days, zone: usage.zone, estimated: rows.isEmpty || rows.contains(where: \.estimated), now: now)
+        title = usage.serviceTitles[service]
         if isEmpty { return nil }
     }
 

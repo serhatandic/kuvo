@@ -190,10 +190,12 @@ public struct BotWorkReport: Decodable, Sendable, Equatable {
         /// that tells it apart from the provider's others ("Work").
         public struct Account: Decodable, Sendable, Equatable {
             public let name: String
+            public let title: String?
             public let label: String?
 
-            public init(name: String, label: String? = nil) {
+            public init(name: String, label: String? = nil, title: String? = nil) {
                 self.name = name
+                self.title = title
                 self.label = label
             }
         }
@@ -466,11 +468,12 @@ public enum WorkWords {
         atWork > 0 ? "\(atWork) working" : "\(today) today"
     }
 
-    /// The account a session runs on, in a word or two, as the usage panel names it (`AccountNames`:
+    /// The account a session runs on, in a word or two, as the box names it (
     /// "Claude" for Claude Code's, "Copilot"), else as its box names its provider, then the name
     /// you gave it, where you did: "Claude · Athas".
     public static func account(_ account: BotWorkReport.Item.Account, provider: String?) -> String {
-        let name = provider.flatMap(AccountNames.short(provider:)) ?? account.name
+        if let title = account.title { return title }
+        let name = account.name
         guard let label = account.label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty, label != name else { return name }
         return "\(name) · \(label)"
     }
