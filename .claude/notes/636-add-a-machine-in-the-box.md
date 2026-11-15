@@ -144,3 +144,18 @@ speaks ssh's own error lines), a Mac as the computer added on Linux and the reve
 
 **Open for the user:** see the final report (the relay and keys of a Mac that never ran the old
 app; a machine of another setup; the page's layout alternatives).
+
+**After the reviewer's pass (fixed):** a try being stopped no longer answers for its computer
+(what's asked next waits behind it; adding or setting up while it's uninstalled is a 409 in
+words; a second Uninstall is the first); answers name their ask (`at`); Trust New Key drops the
+old key's line and every other key under that host's name, and the scan writes plain names; Cancel
+throws rather than leaning on a stopper; the probe changes nothing (`machine-id` is made as the
+computer starts); a copied disk's `machine-id` doesn't fold two computers into one where the card
+says its key; a failed clean-up after a cancelled start is said, not swallowed; the copy's
+progress and the "already one of yours" words are the box's; a finished uninstall is drawn with
+your computers; Try Again never falls through to adding.
+
+**Left from the review:** files copied by an add cancelled before its start stay in `~/.kuvo-code`
+there (nothing runs); the vault offers its first four SSH keys only; no box test for the vault
+path, cancel mid-copy, `inAnotherSetup` or a restart with `run/adding.json`; no desktop test for
+Set Up Again's row or a try card on a machine's page; the phone has no Add a Machine screen.
