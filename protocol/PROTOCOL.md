@@ -1360,6 +1360,16 @@ the Mac's composer ranked them, so every client shows the same list.
   for one on another), `session` its session, which a client puts in the send's `named`.
 - `400 {"message"}` without `for`, `404 {"message"}` for no such session here, `503
   {"message"}` while its place isn't answering. A folder that can't be read suggests nothing.
+- In a group chat, "&" asks `GET kuvo/groups/<id>/mentions?q=<typed after the mark>[&limit=<n>]`
+  (`groups.mentions`, on the box the chat lives on; 8 unless asked, 20 at most, in all) → the same
+  `{"mentions": [...]}`: the chat's own bots first (as its list has them), `detail` "In this chat"
+  (then " · on <computer>" for one on another), `session` its conversation or null where that
+  computer didn't say; then the guests a message there can name, who `kuvo/named` lists but a
+  chat's bot (by conversation or name, since the chat reads "&Name" as its own), as `agents`
+  words them. Each part ranked as `agents` ranks, so a guest never comes before a chat bot; a
+  bot that left the chat is a guest. `404 {"message"}` for no such chat here, `503 {"message"}`
+  while the coding agents' bridge that runs the chats isn't running or answering. A client
+  filters nothing itself, and puts in `text` (the chat reads "&<name>", never a send's `named`).
 
 ### A session at a glance
 
@@ -2608,7 +2618,7 @@ before it uses it, and meanwhile says so. A box is older than a client needs whe
 `agent-tools.own`, `bots.deletes`, `bots.effort`, `bots.elsewhere`, `bots.held`, `bots.now`, `computers`, `file.text`, `folders.suggested`, `folders.tree`, `git.branches`,
 `git.branches.pullRequest`, `git.branches.worktree`, `git.changes.binary`, `git.changes.path`,
 `git.files`, `git.files.does`, `git.merge`, `git.pull-request`,
-`git.status`, `limits.rings`, `messages.send`, `models.offered`, `models.offered.folder`,
+`git.status`, `groups.mentions`, `limits.rings`, `messages.send`, `models.offered`, `models.offered.folder`,
 `models.offered.free`, `models.offered.sides`, `models.readiness`, `queue.items`, `sandbox.opens`, `sandbox.words`, `sessions.actions`, `sessions.asks`,
 `sessions.list`, `sessions.mentions`, `sessions.models`, `sessions.needsYou`,
 `sessions.start.empty`, `setup.welcomed`, `sign-in.accounts.kinds`, `sign-in.accounts.plan`, `sign-in.accounts.state`, `sign-in.codes`, `typed`, `usage.notices`,
@@ -3447,7 +3457,10 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
       client draws the ids it has a control for and leaves out one it doesn't know.
       Keys are entered, never signed into: an account whose only ways in are keys (`methods` all
       `key`) words `signIn`, `signInAgain` and `addAnother` "Add Key", "Replace Key" and "Add
-      Another Key" (#733); every other one "Sign In", "Sign In Again" and "Add Another Account".
+      Another Key" (#733); one reached with the computer's credentials and no sign-in page (an
+      `external` way in, a key perhaps beside it, no `oauth`: Amazon Bedrock) "Connect",
+      "Reconnect" and "Add Another Account" (#734); every other one "Sign In", "Sign In Again"
+      and "Add Another Account".
     - `added: true` for an account you added beside a coding agent's own sign-in: a client lists
       it with its agent whether or not it's signed in.
     Not said here yet, so still each client's: an account Custom Auto holds at its usage limit,
@@ -6446,6 +6459,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `groups.edit` | `PATCH kuvo/groups/<id>` |
 | `groups.joinable` | `kuvo/groups/joinable` |
 | `groups.make` | `POST kuvo/groups` |
+| `groups.mentions` | `GET kuvo/groups/<id>/mentions`: what "&" offers in a group chat, its bots then guests ("Mentions", #736) |
 | `groups.seats` | its bots take turns in chats on other computers ("Peers", group chats) |
 | `handoff` | `kuvo/agents/api/kuvo/handoff…`: handoffs |
 | `hosts` | a Mac: `kuvo/hosts…` (with its app closed its box still lists them, and `DELETE` says the app must be open); a member of a setup answers it too, with `setup.mainOnly` |

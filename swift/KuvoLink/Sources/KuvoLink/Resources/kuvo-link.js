@@ -4266,6 +4266,7 @@ var FEATURES = [
   "groups.edit",
   "groups.joinable",
   "groups.make",
+  "groups.mentions",
   "groups.seats",
   "handoff",
   "integrations",
@@ -24899,6 +24900,20 @@ async function askGroups(target, method, route, body, signal) {
   const value = await response.json().catch(() => ({}));
   return { status: response.status, value };
 }
+async function listedGroups(target, signal) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${target.port}/api/kuvo/link/groups`, {
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` },
+      signal
+    });
+    if (!response.ok)
+      return null;
+    const groups = (await response.json())?.groups;
+    return Array.isArray(groups) ? groups : null;
+  } catch {
+    return null;
+  }
+}
 async function* forwardGroups(target, route, request, signal) {
   const method = request.method.toUpperCase();
   const sends = !["GET", "HEAD", "DELETE"].includes(method);
@@ -24925,6 +24940,7 @@ async function* forwardGroups(target, route, request, signal) {
       yield { body: Buffer.from(chunk) };
   } catch {}
 }
+var groupsAbsent = () => agentsDown() ?? (IS_MAC ? "Group chats on this Mac are starting. Try again in a moment." : "Group chats run with the coding agents' bridge, which isn't running on this machine.");
 var groupsNotAnswering = () => IS_MAC ? "Group chats on this Mac aren’t answering. Try again in a moment." : "The coding agents’ bridge here isn’t answering. Try again in a moment.";
 function* groupJSON(status, value) {
   yield { head: { status, headers: { "content-type": "application/json" } } };
@@ -24934,7 +24950,7 @@ async function* groupsRoute(context) {
   const { request, signal, route, readEngine, bridge } = context;
   const target = bridge();
   if (!target)
-    return yield* groupJSON(503, { message: agentsDown() ?? (IS_MAC ? "Group chats on this Mac are starting. Try again in a moment." : "Group chats run with the coding agents' bridge, which isn't running on this machine.") });
+    return yield* groupJSON(503, { message: groupsAbsent() });
   if (request.method.toUpperCase() === "POST" && route.split("/").length === 3 && Buffer.from(request.body ?? []).includes("&")) {
     let text = "";
     try {
@@ -43929,7 +43945,7 @@ import fs140 from "node:fs";
 import path148 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "81ff3df93f3d";
+var BRIDGE_VERSION = "ae4a9ff49a82";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -50256,6 +50272,7 @@ async function* sessionAsksRoute(context, match) {
 // box/src/link/areas/mentions.ts
 import path164 from "node:path";
 var MENTIONS_ROUTE = /^kuvo\/sessions\/([^/]+)\/mentions$/;
+var GROUP_MENTIONS_ROUTE = /^kuvo\/groups\/(grp_[a-z0-9]+)\/mentions$/;
 var MENTIONS_SHOWN = 8;
 var MENTIONS_MOST = 20;
 var length = (text) => [...new Intl.Segmenter().segment(text)].length;
@@ -50406,6 +50423,37 @@ async function* mentionsRoute(context, match) {
     return { text: `@${file.mention}`, title: file.name, detail: file.isFolder || inside === "." ? null : inside, kind: file.isFolder ? "folder" : "file", session: null };
   });
   return yield* json(200, { mentions });
+}
+function rankGroupMentions(query, members, agents, limit) {
+  const asAgents = new Map(members.map((member) => [{ session: member.session, name: member.name, kind: "bot", machine: null, project: null, about: null }, member]));
+  const theirs = rankAgents(query, [...asAgents.keys()], limit).map((agent) => {
+    const member = asAgents.get(agent);
+    return { text: `&${member.name}`, title: member.name, detail: "In this chat" + (member.computer ? ` · on ${member.computer}` : ""), kind: "bot", session: member.session || null };
+  });
+  const sessions = new Set(members.map((member) => member.session).filter(Boolean));
+  const names = new Set(members.map((member) => folded3(member.name)));
+  const guests = agents.filter((agent) => !sessions.has(agent.session) && !names.has(folded3(agent.name)));
+  const others = rankAgents(query, guests, limit - theirs.length).map((agent) => ({ text: `&${agent.name}`, title: agent.name, detail: agentDetail(agent), kind: agent.kind, session: agent.session }));
+  return [...theirs, ...others];
+}
+async function* groupMentionsRoute(context, match) {
+  const { request, readEngine, bridge, signal, json } = context;
+  if (request.method.toUpperCase() !== "GET")
+    return yield* json(405, {});
+  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  const typed = query.get("q") ?? "";
+  const asked = Number.parseInt(query.get("limit") ?? "", 10);
+  const limit = Number.isFinite(asked) && asked > 0 ? Math.min(asked, MENTIONS_MOST) : MENTIONS_SHOWN;
+  const target = bridge();
+  if (!target)
+    return yield* json(503, { message: groupsAbsent() });
+  const groups = await listedGroups(target, signal ?? undefined);
+  if (!groups)
+    return yield* json(503, { message: groupsNotAnswering() });
+  const chat = groups.find((group) => group.id === match[1]);
+  if (!chat)
+    return yield* json(404, { message: "There's no such group chat here." });
+  return yield* json(200, { mentions: rankGroupMentions(typed, chat.members, await namedNow(readEngine), limit) });
 }
 
 // box/src/link/work/model-words.ts
@@ -54609,8 +54657,10 @@ async function* providerModelsRoute(context) {
 
 // box/src/link/areas/sign-in-state.ts
 var keyOnly = (offered) => offered.methods.length > 0 && offered.methods.every((method) => method.type === "key");
+var connects = (offered) => offered.methods.some((method) => method.type === "external") && !offered.methods.some((method) => method.type === "oauth");
 var SIGN_IN_WORDS = { first: "Sign In", again: "Sign In Again", another: "Add Another Account" };
 var KEY_WORDS = { first: "Add Key", again: "Replace Key", another: "Add Another Key" };
+var CONNECT_WORDS = { first: "Connect", again: "Reconnect", another: "Add Another Account" };
 var text6 = (value) => typeof value === "string" ? plainName(value) : "";
 function connectionSaid(connection, name, computer, ended) {
   const status = isObject(connection.status) ? connection.status : {};
@@ -54639,7 +54689,7 @@ function accountState(account, offered, { agents = false, ended, computer }) {
   const inUse = said[0];
   const savedInUse = said[listed.findIndex((each) => each.type === "credential")];
   const signsIn = offered.methods.length > 0;
-  const words = keyOnly(offered) ? KEY_WORDS : SIGN_IN_WORDS;
+  const words = keyOnly(offered) ? KEY_WORDS : connects(offered) ? CONNECT_WORDS : SIGN_IN_WORDS;
   const added = agents && (id.includes("@") || typeof meta.accountID === "string" && meta.accountID !== "" && meta.accountID !== "default");
   const installs = agents && meta.installed === false && typeof meta.install === "string" && meta.install !== "";
   const state = installs ? "notInstalled" : (agents ? meta.signInEnded === true : inUse?.state === "ended" || savedInUse?.state === "ended") ? "ended" : inUse ? inUse.state === "problem" ? "problem" : "signedIn" : agents && meta.unchecked === true ? "unchecked" : "signedOut";
@@ -56055,6 +56105,7 @@ var ROUTES = [
   { when: (route) => route.match(QUEUE_ROUTE), answer: queueRoute },
   { when: (route) => route.match(SESSION_ASKS_ROUTE), answer: sessionAsksRoute },
   { when: (route) => route.match(MENTIONS_ROUTE), answer: mentionsRoute },
+  { when: (route) => route.match(GROUP_MENTIONS_ROUTE), answer: groupMentionsRoute },
   { when: (route) => route.match(GLANCE_ROUTE), answer: glanceRoute },
   { when: (route) => route.match(LIST_ROUTE), answer: listRoute },
   { when: (route) => route.match(WAITING_ROUTE), answer: waitingRoute },
