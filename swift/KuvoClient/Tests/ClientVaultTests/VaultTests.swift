@@ -105,5 +105,8 @@ import Testing
         #expect(!seat.mayAllowAlways)
         #expect(seat.title == "Ship wants to use Deploy key")
         #expect(try decode(#"{"id":"q_4","kind":"use","at":1,"botName":"Ship","itemName":"Deploy key"}"#).mayAllowAlways)
+        // A conversation in a home folder: the box says Always would only be once, so it isn't offered.
+        #expect(!(try decode(#"{"id":"q_5","kind":"use","at":1,"itemName":"Deploy key","always":false}"#).mayAllowAlways))
+        #expect(try decode(#"{"id":"q_6","kind":"use","at":1,"itemName":"Deploy key","always":true}"#).mayAllowAlways)
     }
 }

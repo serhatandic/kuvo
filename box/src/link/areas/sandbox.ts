@@ -33,7 +33,7 @@ const idOf = (part: string | undefined) => {
 };
 
 /** Who answered, as an ask's rule keeps it: a phone by its name, else this Mac. */
-function clientName({ phone }: RouteContext): string {
+export function clientName({ phone }: Pick<RouteContext, "phone">): string {
   if (!phone?.key) return "Mac";
   const key = phone.key.toString("base64url");
   return readLink()?.phones?.find(each => each.key === key)?.name || "iPhone";

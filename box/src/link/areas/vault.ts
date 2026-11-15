@@ -53,7 +53,7 @@ interface Client {
 /** Who's asking, as a client: a phone (by its link key), this Mac's app, the Mac over SSH with the
  * unlock key (one Mac's can't be told from another's) or its own proof (by its key); null for
  * anyone else (an agent's command on this computer). */
-function clientOf({ request, phone }: RouteContext): Client | null {
+export function clientOf({ request, phone }: Pick<RouteContext, "request" | "phone">): Client | null {
   if (phone?.key) {
     const key = phone.key.toString("base64url");
     return { name: readLink()?.phones?.find(each => each.key === key)?.name || "iPhone", by: `phone:${key}` };

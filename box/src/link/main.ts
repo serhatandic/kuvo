@@ -419,7 +419,8 @@ async function run(): Promise<void> {
   // The branch prefix it kept before Settings › Git was each computer's, made its setting.
   keepOldBranchPrefix();
   // The vault, held here: its key in this process's memory, its asks told to your phones.
-  holdVault(engineHandler(readEngineFile, { name: os.hostname() }));
+  // (With the coding agents' bridge: a conversation's asks are read here, theirs too.)
+  holdVault(engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile));
   setVaultTell(tell);
   watchVaultAsks(tell, answered);
   watchSandboxAsks(tell, answered);

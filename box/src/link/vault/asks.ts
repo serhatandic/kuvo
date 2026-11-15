@@ -45,7 +45,7 @@ export function vaultAskNotice(asked: VaultAsk): Notice {
   return {
     title,
     subtitle: asked.machine,
-    body: asked.why || (asked.kind === "use" ? (asked.group ? "Allow it once, or say no." : "Allow it once, always, or say no.") : "Give it an item from your vault, or say no."),
+    body: asked.why || (asked.kind === "use" ? (asked.always === true && !asked.group ? "Allow it once, always, or say no." : "Allow it once, or say no.") : "Give it an item from your vault, or say no."),
     category: "ask",
     thread: asked.group ?? asked.session ?? asked.id,
     // (A seat's opens its group chat: no one opens the seat.)

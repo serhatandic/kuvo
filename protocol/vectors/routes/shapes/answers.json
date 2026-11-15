@@ -4317,6 +4317,9 @@
             "literal": "sessions.asks"
            },
            {
+            "literal": "sessions.asks.box"
+           },
+           {
             "literal": "sessions.chat"
            },
            {
@@ -4948,6 +4951,9 @@
            },
            {
             "literal": "sessions.asks"
+           },
+           {
+            "literal": "sessions.asks.box"
            },
            {
             "literal": "sessions.chat"
@@ -12127,7 +12133,22 @@
                 "string",
                 "null"
                ]
-              }
+              },
+              "help": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "spoken": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "after?": "string",
+              "item?": "string",
+              "confirm?": "bool"
              }
             }
            }
@@ -12169,6 +12190,172 @@
               "multiple": "bool",
               "custom": "bool",
               "required": "bool"
+             }
+            }
+           }
+          }
+         },
+         {
+          "object": {
+           "id": "string",
+           "kind": {
+            "literal": "sandbox"
+           },
+           "session": "string",
+           "title": "string",
+           "message": "string",
+           "command": "string",
+           "stopped": {
+            "list": {
+             "object": {
+              "label": "string",
+              "detail": "string"
+             }
+            }
+           },
+           "error": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "asker": "string",
+           "why": "string",
+           "choices": {
+            "list": {
+             "object": {
+              "answer": {
+               "oneOf": [
+                {
+                 "literal": "once"
+                },
+                {
+                 "literal": "always"
+                },
+                {
+                 "literal": "reject"
+                },
+                {
+                 "literal": "instead"
+                }
+               ]
+              },
+              "title": "string",
+              "named": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "placeholder": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "help": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "spoken": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "after?": "string",
+              "item?": "string",
+              "confirm?": "bool"
+             }
+            }
+           }
+          }
+         },
+         {
+          "object": {
+           "id": "string",
+           "kind": {
+            "literal": "vault"
+           },
+           "session": "string",
+           "need": {
+            "oneOf": [
+             {
+              "literal": "use"
+             },
+             {
+              "literal": "item"
+             }
+            ]
+           },
+           "title": "string",
+           "message": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "site": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "note": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "choices": {
+            "list": {
+             "object": {
+              "answer": {
+               "oneOf": [
+                {
+                 "literal": "once"
+                },
+                {
+                 "literal": "always"
+                },
+                {
+                 "literal": "reject"
+                },
+                {
+                 "literal": "instead"
+                }
+               ]
+              },
+              "title": "string",
+              "named": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "placeholder": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "help": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "spoken": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "after?": "string",
+              "item?": "string",
+              "confirm?": "bool"
              }
             }
            }
@@ -12293,7 +12480,22 @@
                 "string",
                 "null"
                ]
-              }
+              },
+              "help": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "spoken": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "after?": "string",
+              "item?": "string",
+              "confirm?": "bool"
              }
             }
            }
@@ -12344,6 +12546,172 @@
           "object": {
            "id": "string",
            "kind": {
+            "literal": "sandbox"
+           },
+           "session": "string",
+           "title": "string",
+           "message": "string",
+           "command": "string",
+           "stopped": {
+            "list": {
+             "object": {
+              "label": "string",
+              "detail": "string"
+             }
+            }
+           },
+           "error": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "asker": "string",
+           "why": "string",
+           "choices": {
+            "list": {
+             "object": {
+              "answer": {
+               "oneOf": [
+                {
+                 "literal": "once"
+                },
+                {
+                 "literal": "always"
+                },
+                {
+                 "literal": "reject"
+                },
+                {
+                 "literal": "instead"
+                }
+               ]
+              },
+              "title": "string",
+              "named": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "placeholder": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "help": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "spoken": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "after?": "string",
+              "item?": "string",
+              "confirm?": "bool"
+             }
+            }
+           }
+          }
+         },
+         {
+          "object": {
+           "id": "string",
+           "kind": {
+            "literal": "vault"
+           },
+           "session": "string",
+           "need": {
+            "oneOf": [
+             {
+              "literal": "use"
+             },
+             {
+              "literal": "item"
+             }
+            ]
+           },
+           "title": "string",
+           "message": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "site": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "note": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "choices": {
+            "list": {
+             "object": {
+              "answer": {
+               "oneOf": [
+                {
+                 "literal": "once"
+                },
+                {
+                 "literal": "always"
+                },
+                {
+                 "literal": "reject"
+                },
+                {
+                 "literal": "instead"
+                }
+               ]
+              },
+              "title": "string",
+              "named": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "placeholder": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "help": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "spoken": {
+               "oneOf": [
+                "string",
+                "null"
+               ]
+              },
+              "after?": "string",
+              "item?": "string",
+              "confirm?": "bool"
+             }
+            }
+           }
+          }
+         },
+         {
+          "object": {
+           "id": "string",
+           "kind": {
             "literal": "other"
            },
            "session": "string",
@@ -12380,7 +12748,17 @@
       "message": "string"
      }
     },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
     "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "423": {
      "object": {
       "message": "string"
      }
@@ -16696,7 +17074,8 @@
          "why?": "string",
          "site?": "string",
          "machine?": "string",
-         "group?": "string"
+         "group?": "string",
+         "always?": "bool"
         }
        }
       }

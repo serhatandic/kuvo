@@ -148,6 +148,7 @@ export const FEATURES = [
   "sessions.actions",
   "sessions.agents",
   "sessions.asks",
+  "sessions.asks.box",
   "sessions.chat",
   "sessions.glance",
   "sessions.list",

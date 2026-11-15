@@ -378,17 +378,17 @@ fn every_ask_the_box_words_is_read_and_one_amiss_spoils_none_of_the_rest() {
     let route = answers["routes"].as_array().unwrap().iter().find(|route| route["route"] == "GET kuvo/sessions/:id/asks").expect("the asks route's shape");
     let kinds = route["answers"]["200"]["object"]["asks"]["list"]["oneOf"].as_array().expect("each kind of ask");
     let samples: Vec<Value> = kinds.iter().map(sample).collect();
-    assert_eq!(samples.len(), 3, "permission, question, other");
+    assert_eq!(samples.len(), 5, "permission, question, sandbox, vault, other");
     let asks: Asks = serde_json::from_value(serde_json::json!({ "asks": samples })).unwrap();
-    assert!(matches!(asks.asks.as_slice(), [Ask::Permission(_), Ask::Question(_), Ask::Other { .. }]), "{asks:?}");
+    assert!(matches!(asks.asks.as_slice(), [Ask::Permission(_), Ask::Question(_), Ask::Sandbox(_), Ask::Vault(_), Ask::Other { .. }]), "{asks:?}");
     for (n, kind) in samples.iter().enumerate() {
         for field in kind.as_object().unwrap().keys().filter(|field| *field != "kind") {
             let mut amiss = samples.clone();
             amiss[n].as_object_mut().unwrap().remove(field);
             let asks: Asks = serde_json::from_value(serde_json::json!({ "asks": amiss })).unwrap();
-            assert_eq!(asks.asks.len(), 3);
+            assert_eq!(asks.asks.len(), 5);
             let read = asks.asks.iter().filter(|ask| **ask != Ask::Unknown).count();
-            assert!(read >= 2, "without {field}, one ask spoiled the others: {asks:?}");
+            assert!(read >= 4, "without {field}, one ask spoiled the others: {asks:?}");
         }
     }
 }
