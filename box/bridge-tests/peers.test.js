@@ -726,8 +726,8 @@ test("your time zone reaches your other computers: a change on one box reaches t
     for await (const piece of handle({ method, path: p, headers: {}, ...(body ? { body: Buffer.from(JSON.stringify(body)) } : {}) }, undefined)) pieces.push(piece);
     return { status: pieces.find(each => each.head).head.status, json: JSON.parse(Buffer.concat(pieces.filter(each => each.body).map(each => each.body)).toString() || "{}") };
   };
-  const row = (await ask("GET", "kuvo/settings/general")).json.groups[0].rows[0];
-  assert.equal((await ask("PATCH", "kuvo/settings/general", { row: "time-zone", value: "Pacific/Auckland", was: row.revision })).status, 200);
+  const row = (await ask("GET", "kuvo/settings/clock")).json.groups[0].rows[0];
+  assert.equal((await ask("PATCH", "kuvo/settings/clock", { row: "time-zone", value: "Pacific/Auckland", was: row.revision })).status, 200);
   // (Counted past any it had: a pick's count is at least the time it's made.)
   const [picked, n] = zone();
   assert.equal(picked, "Pacific/Auckland");

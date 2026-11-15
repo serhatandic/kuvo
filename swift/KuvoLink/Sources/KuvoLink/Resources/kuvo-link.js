@@ -48210,7 +48210,7 @@ import fs158 from "node:fs";
 import path166 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4a45c259b7ed";
+var BRIDGE_VERSION = "ba54a8f2ed0a";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync10 } from "node:child_process";
@@ -59149,8 +59149,8 @@ function keeperRuns2() {
 var SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+))?)?$/;
 var SECTIONS = [
   {
-    id: "general",
-    title: "General",
+    id: "clock",
+    title: "Clock",
     group: "General",
     icon: "settings",
     line: "Your time zone, which bots' wake-ups and times of day go by on all your computers.",
@@ -59175,12 +59175,12 @@ var SECTIONS = [
   {
     id: "git",
     title: "Git",
-    group: "System",
+    group: "Projects",
     icon: "branch",
     line: "How sessions' branches are named, and commit messages and pull requests are written.",
     keywords: ["branch prefix", "worktree", "commit", "pull request", "instructions"]
   },
-  { id: "worktrees", title: "Worktrees", group: "System", icon: "folder", line: "Where new projects and worktrees go, and sessions’ own copies of a project.", keywords: ["projects", "folders", "branches", "remove"] },
+  { id: "worktrees", title: "Worktrees", group: "Projects", icon: "folder", line: "Where new projects and worktrees go, and sessions’ own copies of a project.", keywords: ["projects", "folders", "branches", "remove"] },
   { id: "storage", title: "Storage", group: "System", icon: "drive", line: "Copies of what agents made, and how much older versions keep.", keywords: ["copies", "older versions", "budget", "disk", "clear"] },
   { id: "archived", title: "Archived Sessions", group: "System", icon: "archive", line: "Sessions out of the sidebar, still searchable; bring them back or delete them.", keywords: ["archive", "unarchive", "delete", "sessions"] }
 ];
@@ -59676,9 +59676,9 @@ async function archivedPage(context) {
   const projects = readProjects();
   const projectTitle = (project) => chats.has(project) ? "Chats" : read.value.projects[project]?.name ?? projects.find((each) => each.directory === project)?.name ?? path189.basename(project);
   return { id: "archived", title: "Archived Sessions", groups: [
-    { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "None yet. Right-click a session in the sidebar and choose Archive to put it away." }, ...all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {} }] })] },
+    { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "Archived sessions show here." }, ...all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {} }] })] },
     ...[...groups].map(([project, items]) => ({ id: `project-${project}`, title: projectTitle(project), rows: [row({ id: `archived-${project}`, title: projectTitle(project), kind: "list", items, search: { placeholder: "Search archived sessions", empty: "No archived session matches “{query}”." } })] }))
-  ], ...states.length ? {} : { notes: [{ words: "None yet. Right-click a session in the sidebar and choose Archive to put it away.", tone: "quiet" }] } };
+  ], ...states.length ? {} : { notes: [{ words: "Archived sessions show here.", tone: "quiet" }] } };
 }
 async function archivedAct(context, at, action) {
   if (at.id === "delete-all" && action.id === "delete-all") {
@@ -59714,7 +59714,7 @@ function offsetOf(zone, at = new Date) {
   }
 }
 var OWN_CLOCK = "own-clock";
-async function generalPage(context) {
+async function clockPage(context) {
   const name = context.info.name || "this computer";
   const setting = readZoneSetting();
   const here = zoneHere(setting);
@@ -59729,8 +59729,8 @@ async function generalPage(context) {
   const everywhere = alone ? `on ${name}` : "on all your computers";
   const line = unruled ? `${name} has no rules for this time zone, so its wake-ups go by UTC. Install its time zone data (tzdata) to fix it.` : setting?.carried ? `Kept from what your Mac last gave ${name}: its bots' wake-ups go by it. Pick it, or another, to set it ${everywhere}.` : here.yours ? `Bots' wake-ups and times of day go by it ${everywhere}. It's ${offset} now.` : alone ? `None set yet: ${name} goes by its own clock. Pick one for ${name}.` : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
   return {
-    id: "general",
-    title: "General",
+    id: "clock",
+    title: "Clock",
     groups: [{
       id: "clock",
       title: "Clock",
@@ -59747,7 +59747,7 @@ async function generalPage(context) {
     }]
   };
 }
-async function generalChange(_context, at, value) {
+async function clockChange(_context, at, value) {
   if (at.id !== "time-zone")
     return { status: 400, message: "That isn't something to change." };
   if (value === OWN_CLOCK || value === at.value && !readZoneSetting()?.carried)
@@ -59769,7 +59769,7 @@ var mtime2 = (file) => {
   }
 };
 var PAGES2 = {
-  general: { read: generalPage, change: generalChange, act: noActions, look: () => `${mtime2(ZONE_FILE)} ${ownClock()}` },
+  clock: { read: clockPage, change: clockChange, act: noActions, look: () => `${mtime2(ZONE_FILE)} ${ownClock()}` },
   permissions: {
     read: permissionsPage,
     change: permissionsChange,

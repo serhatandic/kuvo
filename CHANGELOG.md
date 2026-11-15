@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A computer’s time zone is under Settings › Clock. Git and Worktrees stay under Projects, and Archived Sessions and Storage stay under System with their own icons.
+
 - Settings › Storage shows decimal GB and MB, like macOS, while keeping your existing storage budget unchanged.
 
 - The desktop composer runs `!` shell commands on the conversation’s computer and shows their output. `/compact` summarizes the conversation there and shows its status in the conversation.
