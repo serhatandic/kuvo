@@ -340,7 +340,7 @@ export async function finishDeletes(readEngine: () => Target, readBridge: () => 
   }
 }
 
-// COMPAT(beta.1 deleted-bots): `bots/deleted.json`, for a Mac of 0.8.0-beta.1 or earlier. Goes when 0.8.0 ships.
+// COMPAT(beta.1 deleted-bots): `bots/deleted.json`, for a Mac of 0.8.0-beta.1 or earlier. Goes on the user's word, once no Mac from before 1.0 connects.
 // The bots deleted here, the latest first (the last 500), for the Mac to let go of as it next
 // connects: `{"deleted": [<bot id>…]}` (Bots.deletedFile).
 const DELETED_FILE = path.join(BOTS, "deleted.json");

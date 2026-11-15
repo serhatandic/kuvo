@@ -65,7 +65,7 @@ export interface LinkState {
   left?: string[];
   /** Whether each Mac that started its engine leaves a newer box as it is, by the Mac's id. */
   tolerantIDs?: Record<string, boolean>;
-  // COMPAT(beta.1 peers-list): a Mac that signs no documents yet, its peers as it listed them. Goes when 0.8.0 ships.
+  // COMPAT(beta.1 peers-list): a Mac that signs no documents yet, its peers as it listed them. Goes on the user's word, once no Mac from before 1.0 connects.
   legacy?: Record<string, { at: number; peers: unknown[]; moved: unknown[] }>;
   macPeers?: unknown;
   macMoved?: unknown;
@@ -124,12 +124,12 @@ export const onLinkWritten = (then: (link: LinkState) => void) => {
   written.push(then);
 };
 
-// COMPAT(beta.1 peers-list): a Mac that gave no signing key signs no documents. Goes when 0.8.0 ships.
+// COMPAT(beta.1 peers-list): a Mac that gave no signing key signs no documents. Goes on the user's word, once no Mac from before 1.0 connects.
 // The signing key a Mac of this box's gave in setup, over SSH; null for one that gave none yet (a
 // Mac with Kuvo Code 0.8.0-beta.1, PROTOCOL.md "For released Macs").
 export const macSign = (link: LinkState | null | undefined, mac: string): string | null => (typeof link?.macSigns?.[mac] === "string" && SIGN.test(link.macSigns[mac]) ? link.macSigns[mac] : null);
 
-// COMPAT(beta.1 peers-list): link.json as the bridge beta.1 put on machines (0.9.23) left it. Goes when 0.8.0 ships.
+// COMPAT(beta.1 peers-list): link.json as the bridge beta.1 put on machines (0.9.23) left it. Goes on the user's word, once no Mac from before 1.0 connects.
 // link.json as an earlier bridge left it: each Mac's list it had (`peersFrom`) kept as that Mac's
 // word until it signs a document; what lists passed on and their dates needed, gone.
 function migratedLink(link: any) {

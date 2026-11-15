@@ -8,12 +8,13 @@ use gpui::{
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, IconName, StyledType, TypeSize,
     menu::{Menu, MenuEntry, PopoverMenu},
-    small::status_dot,
+    small::{Chip, status_dot},
     theme::space,
 };
 
 use crate::area::{Area, Back, Forward, ShowComputers};
 use crate::areas::{Reading, computer_line};
+use crate::session_menu::{ActivePopover, title_anchored_popover};
 use crate::workspace::{BoxState, Workspace};
 use crate::{NewSession, rail, sidebar};
 
@@ -25,6 +26,9 @@ const LIGHTS: f32 = 84.;
 pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement {
     let c = cx.theme().colors.clone();
     let (title, beside) = workspace.title(cx);
+    let in_sessions = workspace.area() == Area::Sessions && !workspace.client().gate().is_held();
+    let archived = in_sessions && workspace.opened_is_archived();
+    let more_menu = (in_sessions).then(|| workspace.opened().map(|session| session_more_menu(workspace, session, cx))).flatten();
     // Over the rail and the area's sidebar: the switcher, then back, forward and + at the
     // sidebar's edge (OpenBot's); with the sidebar folded, they sit together.
     let zone = rail::WIDTH + if workspace.sidebar_shown() { px(sidebar::WIDTH) } else { px(0.) };
@@ -100,9 +104,46 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
                 .pr(space::S3)
                 .children(title.map(|title| div().debug_selector(|| "window-title".into()).min_w_0().truncate().text_ui(TypeSize::Small).medium().text_color(c.text).child(title)))
                 .children(beside.map(|beside| div().flex_none().text_ui(TypeSize::Small).text_color(c.text_faint).child(beside)))
+                .when(archived, |d| d.child(div().flex_none().child(Chip::new("is-archived", "Archived"))))
                 .child(div().flex_1())
+                .children(more_menu)
                 .children(panel_button.map(buttons)),
         )
+        .into_any_element()
+}
+
+fn session_more_menu(workspace: &Workspace, session: &str, cx: &Context<Workspace>) -> AnyElement {
+    let menu_handle = workspace.session_menu().title_menu.clone();
+    let popover = workspace
+        .session_menu()
+        .active_popover
+        .as_ref()
+        .filter(|popover| popover.is_at_title_bar())
+        .map(|popover| {
+            let content = match popover {
+                ActivePopover::Rename { view, .. } => view.clone().into_any_element(),
+                ActivePopover::Delete { view, .. } => view.clone().into_any_element(),
+            };
+            title_anchored_popover(content)
+        });
+    let selected = menu_handle.is_open() || popover.is_some();
+    let trigger = Button::icon_only("session-more", IconName::More, "Session actions")
+        .ghost()
+        .size(ButtonSize::Small)
+        .selected(selected)
+        .tooltip("Session actions");
+    let session_id = session.to_owned();
+    let workspace_handle = cx.entity();
+    let menu = PopoverMenu::new("session-menu", trigger, move |window, cx| {
+        workspace_handle.update(cx, |workspace, cx| workspace.open_title_menu(&session_id, window, cx))
+    })
+    .with_handle(menu_handle)
+    .align_right();
+    div()
+        .relative()
+        .flex_none()
+        .child(buttons(menu))
+        .children(popover)
         .into_any_element()
 }
 

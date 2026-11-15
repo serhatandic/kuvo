@@ -15,7 +15,7 @@ struct WorkItemProperties: View {
                 HStack(spacing: 4) {
                     switch property.kind {
                     case .category(let id):
-                        WorkItemDot(id == WorkCategory.done ? .done : .category(id), size: 9)
+                        WorkItemDot(id == WorkStatus.done ? .done : .category(id), size: 9)
                     case .owner(let owner):
                         WorkOwnerFace(owner: owner, size: 13)
                     case .computer:

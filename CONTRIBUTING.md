@@ -532,7 +532,12 @@ Code that's there only for released Macs (PROTOCOL.md's "For released Macs": Kuv
 what it does. Goes …` (`#` in a shell script), whose item that section names. `scripts/compat.sh
 [0.7 | beta.1]` lists them, so a version's paths go together, and `box/bridge-tests/compat.test.js`
 fails on an item without a marker or a marker without an item. Mark what you add for them the same
-way.
+way. 1.0 keeps two kinds (that section, "What 1.0 keeps of this"): what keeps a box right
+while an older Mac still connects, and what an earlier version left, taken in once; three more
+wait for #717's next part. `protocol/compat-kinds.txt` names each item's kind, which the test holds
+its markers' last sentence to (but in the files whose bytes are the box's release). Nothing is
+added for a client meeting an older box (the update gate), and the retired Mac app
+(`swift/KuvoCode`) isn't among the code the markers are read from.
 
 It's off until the iPhone app is out: `defaults write run.kuvo.code phoneLink -bool true` (or
 `KUVO_DEMO_PHONE=1`) turns it on, with Settings › Phone, and `phoneLink.relay` points it at a

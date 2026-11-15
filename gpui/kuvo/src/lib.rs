@@ -20,6 +20,7 @@ mod landing;
 pub mod panel;
 pub mod queue;
 pub mod rail;
+pub mod session_menu;
 pub mod settings;
 pub mod sidebar;
 #[cfg(feature = "stand-in")]
@@ -39,6 +40,7 @@ pub fn bind_keys(cx: &mut App) {
     kuvo_ui::bind_keys(cx);
     composer::bind_keys(cx);
     sidebar::bind_keys(cx);
+    session_menu::bind_keys(cx);
     area::bind_keys(cx);
     panel::changes::bind_keys(cx);
     panel::files::bind_keys(cx);

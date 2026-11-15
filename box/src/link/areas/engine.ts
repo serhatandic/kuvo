@@ -23,7 +23,7 @@ import type { SessionPhone, SocketEvents, SocketHandle } from "../relay/host";
 import type { AnswerPiece, LinkRequest, RouteContext } from "../server/context";
 
 export const engineDown = (): string => {
-  // COMPAT(0.7 engine-stop): an engine an older Mac's Stop left down. Goes 3 months after 0.8.0.
+  // COMPAT(0.7 engine-stop): an engine an older Mac's Stop left down. Goes on the user's word, once no Mac from before 1.0 connects.
   if (fs.existsSync(path.join(RUN, "stopped"))) return "The engine isn't running.";
   if (IS_MAC) {
     let why = "";
@@ -50,7 +50,7 @@ export interface EngineControlOutcome {
 // An update's steps before it stops the engine.
 const ENGINE_UP_WHILE: UpdateStep[] = ["checking", "downloading", "downloading the engine", "checking it"];
 
-// COMPAT(0.7 engine-stop): `start`, for an engine an older Mac's Stop left down (`restart` stays). Goes 3 months after 0.8.0.
+// COMPAT(0.7 engine-stop): `start`, for an engine an older Mac's Stop left down (`restart` stays). Goes on the user's word, once no Mac from before 1.0 connects.
 // The engine here started, or started over, by the box's own tool (`bin/kuvo-start`, as the Mac
 // has it do): `start` for one an older Mac's Stop left down (until it's started, from anywhere),
 // and `restart`. This bridge stays up through each. Answered at once (202), and the phone sees it
@@ -218,7 +218,7 @@ export function engineConnect(readEngine: () => EngineRecord = readEngineFile, u
   };
 }
 
-// COMPAT(0.7 engine-stop): `kuvo/engine/start`, for an engine an older Mac's Stop left down. Goes 3 months after 0.8.0.
+// COMPAT(0.7 engine-stop): `kuvo/engine/start`, for an engine an older Mac's Stop left down. Goes on the user's word, once no Mac from before 1.0 connects.
 // (No Stop: a machine's engine keeps running, and up to date. Start is for one an older Mac stopped.)
 export async function* engineControlRoute(context: RouteContext, control: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, json } = context;

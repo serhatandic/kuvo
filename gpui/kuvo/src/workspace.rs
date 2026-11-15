@@ -9,19 +9,21 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, MouseButton,
+    AnyElement, AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, MouseButton,
     MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollHandle, SharedString, Styled,
     Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
 };
+use kuvo_box::accounts::Confirm;
 use kuvo_box::follow::{Follow, ListUpdate, Timing};
 use kuvo_box::models::StartIn;
 use kuvo_box::search::{Found, SEARCHED_FROM};
-use kuvo_box::sessions::project_name;
+use kuvo_box::sessions::{Facts, project_name};
 use kuvo_box::areas::{Computer, Waiting};
 use kuvo_box::follow::Followed;
 use kuvo_box::{BoxClient, BoxInfo, Listing, Where};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, IconName, StyledType, TextField, TextFieldEvent, Theme, TypeSize,
+    menu::Menu,
     theme::{radius, space},
 };
 
@@ -31,6 +33,10 @@ use crate::composer::{Composer, ComposerEvent, Target};
 use crate::first_run::{Finished, FirstRun};
 use crate::conversation::ConversationView;
 use crate::rail::{self, Rings};
+use crate::session_menu::{
+    self, ActivePopover, ArchiveSession, ConfirmDeletePopover, DeleteSession, PopoverAnchor,
+    RenamePopover, RenameSession, SessionMenu,
+};
 use crate::sidebar::{FocusSearch, Line};
 use crate::panel::{self, Place, SidePanel, Tab};
 use crate::{NewSession, ShowChanges, ShowFiles, ToggleAppearance, TogglePanel, areas, landing, sidebar, time, title_bar};
@@ -145,6 +151,7 @@ pub struct Workspace {
     focus: FocusHandle,
     /// The sidebar's search, and what the box found in conversations for it (`finds_for`).
     search: Entity<TextField>,
+    archived_filter: bool,
     finds: Vec<Found>,
     finds_for: String,
     finding: bool,
@@ -155,6 +162,7 @@ pub struct Workspace {
     walked: Option<String>,
     list_focus: FocusHandle,
     list_scroll: ScrollHandle,
+    session_menu: SessionMenu,
     /// The side panel beside the conversation, whether it's open, its width (kept while it's
     /// closed), and where a drag of its edge started (the pointer's x and the width then).
     panel: Entity<SidePanel>,
@@ -265,6 +273,7 @@ impl Workspace {
             now: None,
             focus: cx.focus_handle(),
             search,
+            archived_filter: false,
             finds: Vec::new(),
             finds_for: String::new(),
             finding: false,
@@ -273,6 +282,7 @@ impl Workspace {
             walked: None,
             list_focus: cx.focus_handle(),
             list_scroll: ScrollHandle::new(),
+            session_menu: SessionMenu::default(),
             panel: cx.new(|cx| SidePanel::new(client.clone(), live, cx)),
             panel_open: false,
             panel_width: panel::WIDTH,
@@ -577,7 +587,7 @@ impl Workspace {
         match update {
             ListUpdate::Listing(listing) => {
                 let was_held = matches!(self.box_state, BoxState::Held);
-                self.listing = listing;
+                let previous_listing = std::mem::replace(&mut self.listing, listing);
                 self.lists = Lists::Ready;
                 if matches!(self.box_state, BoxState::Connecting | BoxState::Unreachable(_) | BoxState::Held) {
                     self.box_state = BoxState::Connected;
@@ -616,11 +626,16 @@ impl Workspace {
                 if self._waiting_follow.is_none() {
                     self.read_waiting(cx);
                 }
+                self.session_menu.mark_changed_actions(&previous_listing, &self.listing);
+                self.prune_session_popover(cx);
+                self.refresh_active_row_actions(cx);
             }
             ListUpdate::Waiting(why) => self.lists = Lists::Waiting(why),
             ListUpdate::Held { .. } => {
                 self.lists = Lists::Held;
                 self.box_state = BoxState::Held;
+                self.session_menu.clear_actions();
+                self.session_menu.active_popover = None;
             }
             ListUpdate::Failed(error) => {
                 if !self.listing.is_read() {
@@ -713,6 +728,7 @@ impl Workspace {
         if !self.collapsed.remove(project) {
             self.collapsed.insert(project.to_owned());
         }
+        self.prune_session_popover(cx);
         cx.notify();
     }
 
@@ -724,6 +740,7 @@ impl Workspace {
         if !self.showing_all.remove(project) {
             self.showing_all.insert(project.to_owned());
         }
+        self.prune_session_popover(cx);
         cx.notify();
     }
 
@@ -735,6 +752,8 @@ impl Workspace {
     /// Opens a session's conversation.
     pub fn open_session(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.area = Area::Sessions;
+        self.session_menu.active_popover = None;
+        self.session_menu.action_error = None;
         self.record(Nav::Session(session.to_owned()));
         if self.opened() == Some(session) {
             // Already open (back to it from another area): the keyboard goes back to it.
@@ -883,6 +902,8 @@ impl Workspace {
             return;
         }
         self.area = Area::Sessions;
+        self.session_menu.active_popover = None;
+        self.session_menu.action_error = None;
         self.record(Nav::Landing);
         if let Some(project) = project {
             self.landing_place = Some(StartIn::Project(project));
@@ -1120,6 +1141,7 @@ impl Workspace {
         self.walked = None;
         let query = self.search_text(cx).trim().to_owned();
         if query == self.finds_for {
+            self.prune_session_popover(cx);
             cx.notify();
             return;
         }
@@ -1143,6 +1165,7 @@ impl Workspace {
                 self.found(&query, found, cx);
             }
         }
+        self.prune_session_popover(cx);
         cx.notify();
     }
 
@@ -1156,12 +1179,14 @@ impl Workspace {
             Ok(finds) => self.finds = finds,
             Err(error) => self.find_failed = Some(error.to_string()),
         }
+        self.prune_session_popover(cx);
         cx.notify();
     }
 
     pub fn clear_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search.update(cx, |field, cx| field.set_text("", cx));
         self.walked = None;
+        self.prune_session_popover(cx);
         window.focus(&self.search.focus_handle(cx), cx);
         cx.notify();
     }
@@ -1324,6 +1349,7 @@ impl Workspace {
                 }
             }
         }
+        self.prune_session_popover(cx);
         self.show_composer_on_screen(cx);
         cx.notify();
     }
@@ -1353,6 +1379,7 @@ impl Workspace {
         } else {
             self.folded = !self.folded;
         }
+        self.prune_session_popover(cx);
         // Folded with the keyboard in it (its search, its list): the keyboard goes to the main view.
         if !self.sidebar_shown() && (self.search.focus_handle(cx).is_focused(window) || self.list_focus.is_focused(window)) {
             self.walked = None;
@@ -1621,6 +1648,553 @@ impl Workspace {
         }
     }
 
+    /// Whether `session` is marked archived in the box's list.
+    pub fn session_is_archived(&self, session: &str) -> bool {
+        self.listing.facts(session).is_some_and(Facts::is_archived)
+    }
+
+    /// Whether the currently open session is archived.
+    pub fn opened_is_archived(&self) -> bool {
+        self.opened().is_some_and(|session| self.session_is_archived(session))
+    }
+
+    pub fn archived_filter(&self) -> bool {
+        self.archived_filter
+    }
+
+    pub fn toggle_archived_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_archived_filter(!self.archived_filter, window, cx);
+    }
+
+    pub fn set_archived_filter(&mut self, on: bool, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.archived_filter == on {
+            return;
+        }
+        self.archived_filter = on;
+        self.walked = None;
+        self.session_menu.hovered_row = None;
+        self.session_menu.action_error = None;
+        self.session_menu.active_popover = None;
+        let placeholder = if on { "Search archived" } else { "Search" };
+        self.search.update(cx, |field, cx| {
+            field.set_placeholder(placeholder);
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    pub fn session_menu(&self) -> &SessionMenu {
+        &self.session_menu
+    }
+
+    pub fn session_menu_mut(&mut self) -> &mut SessionMenu {
+        &mut self.session_menu
+    }
+
+    pub fn set_hovered_row(&mut self, key: Option<String>, cx: &mut Context<Self>) {
+        if self.session_menu.hovered_row != key {
+            self.session_menu.hovered_row = key.clone();
+            if let Some(id) = key.as_deref().and_then(session_menu::session_from_row_key) {
+                self.ensure_row_actions(id, true, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    fn ensure_row_actions(&mut self, session: &str, retry_failed: bool, cx: &mut Context<Self>) {
+        if self.client.gate().is_held() {
+            return;
+        }
+        if let Some(entry) = self.session_menu.row_actions.get(session) {
+            if entry.fetching.is_some() {
+                return;
+            }
+            if entry.failed && !retry_failed && !entry.stale {
+                return;
+            }
+            if entry.actions.is_some() && !entry.stale && !entry.failed {
+                return;
+            }
+        }
+        if !self.live {
+            let result = self.client.session_actions(session);
+            let seq = self.session_menu.begin_fetch(session);
+            self.session_menu.finish_fetch(session, seq, result);
+            return;
+        }
+        let id = session.to_owned();
+        let client = self.client.clone();
+        let seq = self.session_menu.begin_fetch(&id);
+        self.session_menu.action_tasks.push(cx.spawn(async move |this, cx| {
+            let fetch_id = id.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { client.session_actions(&fetch_id) })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.session_menu.finish_fetch(&id, seq, result) {
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
+    fn refresh_active_row_actions(&mut self, cx: &mut Context<Self>) {
+        let mut refresh_ids: Vec<String> = Vec::new();
+        if let Some(id) = self
+            .session_menu
+            .hovered_row
+            .as_deref()
+            .and_then(session_menu::session_from_row_key)
+        {
+            refresh_ids.push(id.to_owned());
+        }
+        for (key, handle) in &self.session_menu.row_menus {
+            if handle.is_open()
+                && let Some(id) = session_menu::session_from_row_key(key)
+                && !refresh_ids.iter().any(|existing| existing == id)
+            {
+                refresh_ids.push(id.to_owned());
+            }
+        }
+        if let Some(popover) = &self.session_menu.active_popover
+            && matches!(popover.anchor(), PopoverAnchor::Row(_))
+        {
+            let id = popover.session();
+            if !refresh_ids.iter().any(|existing| existing == id) {
+                refresh_ids.push(id.to_owned());
+            }
+        }
+        for id in refresh_ids {
+            self.ensure_row_actions(&id, false, cx);
+        }
+    }
+
+    fn prune_session_popover(&mut self, cx: &App) {
+        let Some(popover) = &self.session_menu.active_popover else {
+            return;
+        };
+        let keep = if self.area != Area::Sessions || self.client.gate().is_held() {
+            false
+        } else {
+            match popover.anchor() {
+                PopoverAnchor::TitleBar => self.opened().is_some_and(|open| {
+                    open == popover.session() && self.listing.facts(open).is_some()
+                }),
+                PopoverAnchor::Row(row_key) => {
+                    self.sidebar_shown()
+                        && sidebar::lines(self, cx)
+                            .iter()
+                            .any(|line| &line.key() == row_key)
+                }
+            }
+        };
+        if !keep {
+            self.session_menu.active_popover = None;
+        }
+    }
+
+    fn clear_row_target(&mut self, session: &str) {
+        if self
+            .walked
+            .as_deref()
+            .and_then(session_menu::session_from_row_key)
+            == Some(session)
+        {
+            self.walked = None;
+        }
+        if self
+            .session_menu
+            .hovered_row
+            .as_deref()
+            .and_then(session_menu::session_from_row_key)
+            == Some(session)
+        {
+            self.session_menu.hovered_row = None;
+        }
+    }
+
+    pub fn clear_action_error(&mut self, cx: &mut Context<Self>) {
+        if self.session_menu.action_error.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    pub fn open_row_menu(&mut self, session: &str, key: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<Menu> {
+        let anchor = PopoverAnchor::Row(key.to_owned());
+        if !self.live {
+            let result = self.client.session_actions(session);
+            if let Ok(actions) = &result {
+                self.session_menu.cache_actions(session, actions.clone());
+            }
+            return session_menu::menu_from_actions(result, session.to_owned(), anchor, cx.entity().downgrade(), cx);
+        }
+        session_menu::open_actions_menu(
+            self.client.clone(),
+            self.live,
+            session.to_owned(),
+            anchor,
+            cx.entity().downgrade(),
+            window,
+            cx,
+        )
+    }
+
+    pub fn open_title_menu(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<Menu> {
+        if !self.live {
+            let result = self.client.session_actions(session);
+            if let Ok(actions) = &result {
+                self.session_menu.cache_actions(session, actions.clone());
+            }
+            return session_menu::menu_from_actions(
+                result,
+                session.to_owned(),
+                PopoverAnchor::TitleBar,
+                cx.entity().downgrade(),
+                cx,
+            );
+        }
+        session_menu::open_actions_menu(
+            self.client.clone(),
+            self.live,
+            session.to_owned(),
+            PopoverAnchor::TitleBar,
+            cx.entity().downgrade(),
+            window,
+            cx,
+        )
+    }
+
+    fn refresh_list_now(&mut self, cx: &mut Context<Self>) {
+        if let Ok(line) = self.client.session_list(None) {
+            let mut listing = Listing::new();
+            listing.take(line);
+            self.take_list(ListUpdate::Listing(listing), cx);
+        }
+    }
+
+    fn refresh_list_after_action(&mut self, cx: &mut Context<Self>) {
+        if !self.live {
+            self.refresh_list_now(cx);
+            return;
+        }
+        if !self.client.streams() {
+            let client = self.client.clone();
+            self.tasks.push(cx.spawn(async move |this, cx| {
+                let line = cx.background_executor().spawn(async move { client.session_list(None) }).await;
+                if let Ok(line) = line {
+                    this.update(cx, |this, cx| {
+                        let mut listing = Listing::new();
+                        listing.take(line);
+                        this.take_list(ListUpdate::Listing(listing), cx);
+                    })
+                    .ok();
+                }
+            }));
+        }
+    }
+
+    pub fn pin_session(&mut self, session: &str, pinned: bool, cx: &mut Context<Self>) {
+        self.session_menu.action_error = None;
+        let client = self.client.clone();
+        let id = session.to_owned();
+        if !self.live {
+            match client.pin_session(&id, pinned) {
+                Ok(_) => {
+                    self.session_menu.invalidate_session(&id);
+                    self.refresh_list_now(cx);
+                    self.refresh_active_row_actions(cx);
+                }
+                Err(error) => {
+                    self.session_menu.action_error = Some(error.to_string());
+                    cx.notify();
+                }
+            }
+            return;
+        }
+        self.session_menu.action_tasks.push(cx.spawn(async move |this, cx| {
+            let pin_id = id.clone();
+            let result = cx.background_executor().spawn(async move { client.pin_session(&pin_id, pinned) }).await;
+            this.update(cx, |this, cx| match result {
+                Ok(_) => {
+                    this.session_menu.invalidate_session(&id);
+                    this.refresh_list_after_action(cx);
+                    this.refresh_active_row_actions(cx);
+                }
+                Err(error) => {
+                    this.session_menu.action_error = Some(error.to_string());
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
+    pub fn archive_session(&mut self, session: &str, archived: bool, _window: &mut Window, cx: &mut Context<Self>) {
+        self.session_menu.action_error = None;
+        self.session_menu.active_popover = None;
+        let client = self.client.clone();
+        let id = session.to_owned();
+        if !self.live {
+            match client.archive_session(&id, archived) {
+                Ok(_) => {
+                    self.clear_row_target(&id);
+                    self.session_menu.invalidate_session(&id);
+                    self.refresh_list_now(cx);
+                }
+                Err(error) => {
+                    self.session_menu.action_error = Some(error.to_string());
+                    cx.notify();
+                }
+            }
+            return;
+        }
+        self.session_menu.action_tasks.push(cx.spawn(async move |this, cx| {
+            let archive_id = id.clone();
+            let result = cx.background_executor().spawn(async move { client.archive_session(&archive_id, archived) }).await;
+            this.update(cx, |this, cx| match result {
+                Ok(_) => {
+                    this.clear_row_target(&id);
+                    this.session_menu.invalidate_session(&id);
+                    this.refresh_list_after_action(cx);
+                }
+                Err(error) => {
+                    this.session_menu.action_error = Some(error.to_string());
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
+    pub fn start_rename(&mut self, session: &str, anchor: PopoverAnchor, window: &mut Window, cx: &mut Context<Self>) {
+        self.session_menu.action_error = None;
+        if matches!(anchor, PopoverAnchor::Row(_)) {
+            self.ensure_row_actions(session, false, cx);
+        }
+        let original = self
+            .listing
+            .facts(session)
+            .and_then(|facts| facts.title.clone())
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_default();
+        let target = session_menu::PopoverTarget {
+            session: session.to_owned(),
+            client: self.client.clone(),
+            live: self.live,
+            return_to: window.focused(cx),
+            workspace: cx.entity().downgrade(),
+        };
+        let view = cx.new(|cx| RenamePopover::new(target, original, window, cx));
+        self.session_menu.active_popover = Some(ActivePopover::Rename {
+            session: session.to_owned(),
+            anchor,
+            view,
+        });
+        cx.notify();
+    }
+
+    pub fn run_delete_action(
+        &mut self,
+        session: &str,
+        confirm: Option<Confirm>,
+        anchor: PopoverAnchor,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.session_menu.action_error = None;
+        if matches!(anchor, PopoverAnchor::Row(_)) {
+            self.ensure_row_actions(session, false, cx);
+        }
+        let Some(confirm) = confirm else {
+            self.session_menu.active_popover = None;
+            self.session_menu.action_error = Some(
+                kuvo_box::Error::BadAnswer("The box didn’t say what deleting comes to.".into()).to_string(),
+            );
+            cx.notify();
+            return;
+        };
+        let target = session_menu::PopoverTarget {
+            session: session.to_owned(),
+            client: self.client.clone(),
+            live: self.live,
+            return_to: window.focused(cx),
+            workspace: cx.entity().downgrade(),
+        };
+        let view = cx.new(|cx| ConfirmDeletePopover::new(target, confirm, window, cx));
+        self.session_menu.active_popover = Some(ActivePopover::Delete {
+            session: session.to_owned(),
+            anchor,
+            view,
+        });
+        cx.notify();
+    }
+
+    pub fn close_session_popover(&mut self, return_to: Option<FocusHandle>, window: &mut Window, cx: &mut Context<Self>) {
+        self.session_menu.active_popover = None;
+        if let Some(target) = return_to {
+            window.focus(&target, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn close_session_popover_no_focus(&mut self, cx: &mut Context<Self>) {
+        self.session_menu.active_popover = None;
+        cx.notify();
+    }
+
+    pub fn finish_rename(&mut self, return_to: Option<FocusHandle>, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(session) = self.session_menu.active_popover.as_ref().map(|p| p.session().to_owned()) {
+            self.session_menu.invalidate_session(&session);
+        }
+        self.session_menu.active_popover = None;
+        self.refresh_list_after_action(cx);
+        self.refresh_active_row_actions(cx);
+        if let Some(target) = return_to {
+            window.focus(&target, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn finish_rename_no_focus(&mut self, cx: &mut Context<Self>) {
+        if let Some(session) = self.session_menu.active_popover.as_ref().map(|p| p.session().to_owned()) {
+            self.session_menu.invalidate_session(&session);
+        }
+        self.session_menu.active_popover = None;
+        self.refresh_list_after_action(cx);
+        self.refresh_active_row_actions(cx);
+        cx.notify();
+    }
+
+    pub fn finish_delete(&mut self, session: &str, return_to: Option<FocusHandle>, window: &mut Window, cx: &mut Context<Self>) {
+        self.session_menu.active_popover = None;
+        self.clear_row_target(session);
+        self.session_menu.remove_actions(session);
+        self.composers.remove(session);
+        self.started.remove(session);
+        self.unsent.remove(session);
+        let was_open = self.opened() == Some(session);
+        if was_open {
+            self.open = Open::Landing;
+            let landing = self.landing.clone();
+            self.show_composer(Some(&landing), cx);
+            self.place_panel(cx);
+            window.focus(&self.landing.focus_handle(cx), cx);
+        } else if let Some(target) = return_to {
+            window.focus(&target, cx);
+        }
+        self.refresh_list_after_action(cx);
+        cx.notify();
+    }
+
+    fn shortcut_target(&self, window: &Window, cx: &App) -> Option<(String, PopoverAnchor)> {
+        if self.area != Area::Sessions || self.client.gate().is_held() {
+            return None;
+        }
+        if let Some(key) = &self.walked {
+            for line in sidebar::lines(self, cx) {
+                if &line.key() == key {
+                    let session = match line {
+                        Line::Session { id, .. } | Line::Found { id, .. } | Line::Needs { id, .. } => id,
+                        _ => return None,
+                    };
+                    return Some((session, PopoverAnchor::Row(key.clone())));
+                }
+            }
+            return None;
+        }
+        if self.list_focus.is_focused(window) {
+            return None;
+        }
+        self.opened().map(|id| (id.to_owned(), PopoverAnchor::TitleBar))
+    }
+
+    fn run_shortcut(&mut self, kind: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.session_menu.active_popover.is_some() {
+            return;
+        }
+        let Some((session, anchor)) = self.shortcut_target(window, cx) else {
+            return;
+        };
+        self.trigger_session_action(&session, kind, anchor, window, cx);
+    }
+
+    pub fn trigger_session_action(
+        &mut self,
+        session: &str,
+        kind: &'static str,
+        anchor: PopoverAnchor,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.session_menu.action_error = None;
+        let client = self.client.clone();
+        let session = session.to_owned();
+        if !self.live {
+            match client.session_actions(&session) {
+                Ok(actions) => {
+                    self.session_menu.cache_actions(&session, actions.clone());
+                    self.apply_shortcut(kind, &session, anchor, actions, window, cx);
+                }
+                Err(error) => {
+                    self.session_menu.action_error = Some(error.to_string());
+                    cx.notify();
+                }
+            }
+            return;
+        }
+        let window_handle: AnyWindowHandle = window.window_handle();
+        let target_session = session.clone();
+        self.session_menu.action_tasks.push(cx.spawn(async move |this, cx| {
+            let fetch_session = target_session.clone();
+            let result = cx.background_executor().spawn(async move { client.session_actions(&fetch_session) }).await;
+            let _ = window_handle.update(cx, |_, window, cx| {
+                this.update(cx, |this, cx| match result {
+                    Ok(actions) => {
+                        this.session_menu.cache_actions(&session, actions.clone());
+                        this.apply_shortcut(kind, &session, anchor, actions, window, cx);
+                    }
+                    Err(error) => {
+                        this.session_menu.action_error = Some(error.to_string());
+                        cx.notify();
+                    }
+                })
+                .ok();
+            });
+        }));
+    }
+
+    fn apply_shortcut(
+        &mut self,
+        kind: &str,
+        session: &str,
+        anchor: PopoverAnchor,
+        actions: kuvo_box::session_actions::Actions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(held) = actions.held {
+            self.session_menu.action_error = Some(held);
+            cx.notify();
+            return;
+        }
+        match kind {
+            "rename" if actions.actions.iter().any(|action| action.id == "rename") => {
+                self.start_rename(session, anchor, window, cx);
+            }
+            "archive" if actions.actions.iter().any(|action| action.id == "archive") => {
+                self.archive_session(session, true, window, cx);
+            }
+            "delete" => {
+                if let Some(delete) = actions.actions.into_iter().find(|action| action.id == "delete") {
+                    self.run_delete_action(session, delete.confirm, anchor, window, cx);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// How wide the area's sidebar and the rail are now, together.
     fn sidebars_width(&self) -> Pixels {
         rail::WIDTH + if self.sidebar_shown() { px(sidebar::WIDTH) } else { px(0.) }
@@ -1708,9 +2282,10 @@ impl Render for Workspace {
             (Open::Conversation { view, .. }, _) => view.clone().into_any_element(),
             _ => landing::render(self, window, cx),
         } };
-        let sidebar: Option<AnyElement> = self.sidebar_shown().then(|| match self.area_view(self.area) {
-            Some(view) if !sessions => view.clone().into_any_element(),
-            _ => sidebar::render(self, window, cx),
+        let area_view = (!sessions).then(|| self.area_view(self.area).cloned()).flatten();
+        let sidebar: Option<AnyElement> = self.sidebar_shown().then(|| match area_view {
+            Some(view) => view.into_any_element(),
+            None => sidebar::render(self, window, cx),
         });
         let panel = (sessions && self.panel_open && !self.client.gate().is_held()).then(|| self.panel_card(window, cx));
         div()
@@ -1718,6 +2293,9 @@ impl Render for Workspace {
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &NewSession, window, cx| this.new_session(None, window, cx)))
             .on_action(cx.listener(|this, _: &FocusSearch, window, cx| this.focus_search(window, cx)))
+            .on_action(cx.listener(|this, _: &RenameSession, window, cx| this.run_shortcut("rename", window, cx)))
+            .on_action(cx.listener(|this, _: &ArchiveSession, window, cx| this.run_shortcut("archive", window, cx)))
+            .on_action(cx.listener(|this, _: &DeleteSession, window, cx| this.run_shortcut("delete", window, cx)))
             .on_action(cx.listener(|this, _: &TogglePanel, window, cx| {
                 if this.area != Area::Sessions {
                     this.show_area(Area::Sessions, window, cx);

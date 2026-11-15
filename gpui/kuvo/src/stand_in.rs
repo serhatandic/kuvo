@@ -124,6 +124,12 @@ struct State {
     groups_followers: HashMap<u64, Sender<String>>,
     /// What it says for a first run.
     first_run: first_run::FirstRun,
+    /// Sessions currently held because they are moving to another computer, with the box's words.
+    held_sessions: HashMap<String, String>,
+    /// Sessions archived by the engine itself (`time.archived`), which only it can unarchive.
+    engine_archived: HashSet<String>,
+    /// Removed worktrees whose uncommitted changes were kept for Restore Worktree.
+    kept_worktree_changes: HashSet<String>,
 }
 
 pub const NAME: &str = "Stand-in Mac";
@@ -433,6 +439,50 @@ impl StandIn {
     /// An engine event, to those following the engine's events.
     pub fn emit(&self, kind: &str, data: Value) {
         self.state().emit(kind, data);
+    }
+
+    /// From now on, `session` is held as moving to another computer (with `words`), or released (`None`).
+    pub fn hold_session(&self, session: &str, words: Option<&str>) {
+        let mut state = self.state();
+        match words {
+            Some(words) => {
+                state.held_sessions.insert(session.to_owned(), words.to_owned());
+                if let Some(facts) = state.sessions.get_mut(session) {
+                    facts["away"] = json!(true);
+                }
+            }
+            None => {
+                state.held_sessions.remove(session);
+                if let Some(facts) = state.sessions.get_mut(session) {
+                    facts.as_object_mut().map(|m| m.remove("away"));
+                }
+            }
+        }
+        state.list_changed();
+    }
+
+    /// Marks `session` as archived by the engine itself (`time.archived`), so only the engine can bring it back.
+    pub fn set_engine_archived(&self, session: &str, engine_archived: bool) {
+        let mut state = self.state();
+        if engine_archived {
+            state.engine_archived.insert(session.to_owned());
+            if let Some(facts) = state.sessions.get_mut(session) {
+                facts["archived"] = json!(true);
+            }
+        } else {
+            state.engine_archived.remove(session);
+        }
+        state.list_changed();
+    }
+
+    /// Marks a removed worktree directory as still holding kept changes for Restore Worktree.
+    pub fn set_kept_worktree_changes(&self, directory: &str, kept: bool) {
+        let mut state = self.state();
+        if kept {
+            state.kept_worktree_changes.insert(directory.to_owned());
+        } else {
+            state.kept_worktree_changes.remove(directory);
+        }
     }
 
     /// The changed files of the repository at `root` from now on (each as `kuvo/git/files` lists
@@ -832,6 +882,114 @@ impl State {
         self.next += 1;
         format!("{prefix}_{:06}", self.next)
     }
+
+    fn is_conversation(facts: &Value) -> bool {
+        matches!(facts["kind"].as_str(), Some("project" | "chat"))
+    }
+
+    fn is_subagent(facts: &Value) -> bool {
+        facts["kind"] == json!("subagent") || facts["parent"].is_string()
+    }
+
+    fn worktree_delete_sentence(&self, excluding: &[&str]) -> &'static str {
+        let mut has_uncommitted_worktree = false;
+        let mut has_clean_worktree = false;
+        let mut has_kept = false;
+        for id in excluding {
+            let Some(facts) = self.sessions.get(*id) else { continue };
+            let Some(dir) = facts["directory"].as_str() else { continue };
+            if self.kept_worktree_changes.contains(dir) {
+                let other_kept = self.sessions.iter().any(|(other_id, other)| {
+                    !excluding.contains(&other_id.as_str())
+                        && Self::is_conversation(other)
+                        && other["directory"] == json!(dir)
+                });
+                if !other_kept {
+                    has_kept = true;
+                }
+            }
+            if let Some(repo) = self.git.as_ref().and_then(|git| git.repos.get(dir))
+                && repo.into.is_some()
+            {
+                let other_active = self.sessions.iter().any(|(other_id, other)| {
+                    !excluding.contains(&other_id.as_str())
+                        && Self::is_conversation(other)
+                        && other["archived"] != json!(true)
+                        && other["directory"] == json!(dir)
+                });
+                if !other_active {
+                    let working_here = self.sessions.iter().any(|(other_id, other)| {
+                        Self::is_conversation(other)
+                            && other["directory"] == json!(dir)
+                            && self.running.contains(other_id)
+                    });
+                    if !repo.files.is_empty() || repo.staged_elsewhere > 0 || repo.underway.is_some() || working_here {
+                        has_uncommitted_worktree = true;
+                    } else {
+                        has_clean_worktree = true;
+                    }
+                }
+            }
+        }
+        if has_uncommitted_worktree {
+            "Its worktree and changes that weren’t committed are deleted too."
+        } else if has_clean_worktree {
+            "Its worktree is deleted too."
+        } else if has_kept {
+            "The changes kept to restore its worktree are deleted too."
+        } else {
+            "This can’t be undone."
+        }
+    }
+
+    fn delete_confirm_for(&self, session: &str, facts: &Value) -> Value {
+        let title = facts["title"]
+            .as_str()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .unwrap_or("New Session");
+        let message = self.worktree_delete_sentence(&[session]);
+        json!({
+            "title": format!("Delete “{title}”?"),
+            "message": message,
+            "label": "Delete"
+        })
+    }
+
+    fn session_actions_response(&self, session: &str) -> (u16, Value) {
+        let Some(facts) = self.sessions.get(session) else {
+            return (404, json!({ "message": "There’s no such session." }));
+        };
+        if Self::is_subagent(facts) {
+            return (409, json!({ "message": "Subagent sessions change with their parent session." }));
+        }
+        let archived = facts["archived"] == json!(true);
+        let pinned = facts["pinned"] == json!(true);
+        let engine_archived = self.engine_archived.contains(session);
+        let delete = json!({
+            "id": "delete",
+            "label": "Delete",
+            "destructive": true,
+            "confirm": self.delete_confirm_for(session, facts)
+        });
+        let mut actions = Vec::new();
+        if archived {
+            if !engine_archived {
+                actions.push(json!({ "id": "unarchive", "label": "Unarchive" }));
+            }
+            actions.push(delete);
+        } else {
+            actions.push(if pinned { json!({ "id": "unpin", "label": "Unpin" }) } else { json!({ "id": "pin", "label": "Pin" }) });
+            actions.push(json!({ "id": "rename", "label": "Rename" }));
+            actions.push(json!({ "id": "archive", "label": "Archive" }));
+            actions.push(delete);
+        }
+        let mut body = json!({ "session": session, "actions": actions });
+        if let Some(held) = self.held_sessions.get(session) {
+            body["held"] = json!(held);
+        }
+        (200, body)
+    }
 }
 
 /// A followed answer read as it comes: each string sent is a piece of it; it ends once its sender's
@@ -1152,6 +1310,152 @@ impl StandIn {
                 state.list_changed();
                 state.emit("session.execution.interrupted", json!({ "sessionID": session }));
                 answer(200, json!({}))
+            }
+            ("GET", ["kuvo", "sessions", session, "actions"]) => {
+                let (status, value) = state.session_actions_response(session);
+                answer(status, value)
+            }
+            ("POST", ["kuvo", "sessions", session, "pin"]) => {
+                let session = (*session).to_owned();
+                if let Some(held) = state.held_sessions.get(&session).cloned() {
+                    return answer(409, json!({ "message": held }));
+                }
+                let Some(facts) = state.sessions.get_mut(&session) else {
+                    return answer(404, json!({ "message": "There’s no such session." }));
+                };
+                if State::is_subagent(facts) {
+                    return answer(409, json!({ "message": "Subagent sessions change with their parent session." }));
+                }
+                let pinned = body.get("pinned").and_then(Value::as_bool).unwrap_or(false);
+                if pinned {
+                    facts["pinned"] = json!(true);
+                } else if let Some(obj) = facts.as_object_mut() {
+                    obj.remove("pinned");
+                }
+                let info = facts.clone();
+                state.list_changed();
+                answer(200, json!({ "session": session, "info": info }))
+            }
+            ("POST", ["kuvo", "sessions", session, "archive"]) => {
+                let session = (*session).to_owned();
+                if let Some(held) = state.held_sessions.get(&session).cloned() {
+                    return answer(409, json!({ "message": held }));
+                }
+                let archived = body.get("archived").and_then(Value::as_bool).unwrap_or(false);
+                if !archived && state.engine_archived.contains(&session) {
+                    return answer(409, json!({ "message": "This session was archived by the engine and can’t be unarchived here." }));
+                }
+                let info = {
+                    let Some(facts) = state.sessions.get_mut(&session) else {
+                        return answer(404, json!({ "message": "There’s no such session." }));
+                    };
+                    if State::is_subagent(facts) {
+                        return answer(409, json!({ "message": "Subagent sessions change with their parent session." }));
+                    }
+                    if archived {
+                        facts["archived"] = json!(true);
+                        if let Some(obj) = facts.as_object_mut() {
+                            obj.remove("asked");
+                        }
+                    } else if let Some(obj) = facts.as_object_mut() {
+                        obj.remove("archived");
+                    }
+                    facts.clone()
+                };
+                if archived {
+                    state.asks.remove(&session);
+                    state.told(&session, Followed::Asks);
+                }
+                state.list_changed();
+                answer(200, json!({ "session": session, "info": info }))
+            }
+            ("POST", ["kuvo", "sessions", session, "rename"]) => {
+                let session = (*session).to_owned();
+                if let Some(held) = state.held_sessions.get(&session).cloned() {
+                    return answer(409, json!({ "message": held }));
+                }
+                let title = body.get("title").and_then(Value::as_str).unwrap_or("").trim().to_owned();
+                if title.is_empty() {
+                    return answer(400, json!({ "message": "Give the session a name." }));
+                }
+                let Some(facts) = state.sessions.get_mut(&session) else {
+                    return answer(404, json!({ "message": "There’s no such session." }));
+                };
+                if State::is_subagent(facts) {
+                    return answer(409, json!({ "message": "Subagent sessions change with their parent session." }));
+                }
+                facts["title"] = json!(title);
+                let info = facts.clone();
+                state.list_changed();
+                answer(200, json!({ "session": session, "info": info }))
+            }
+            ("DELETE", ["kuvo", "sessions", session]) => {
+                let session = (*session).to_owned();
+                if let Some(held) = state.held_sessions.get(&session).cloned() {
+                    return answer(409, json!({ "message": held }));
+                }
+                if let Some(facts) = state.sessions.get(&session) {
+                    if State::is_subagent(facts) {
+                        return answer(409, json!({ "message": "Subagent sessions change with their parent session." }));
+                    }
+                    let directory = facts["directory"].as_str().map(str::to_owned);
+                    state.sessions.remove(&session);
+                    state.models.remove(&session);
+                    state.messages.remove(&session);
+                    state.running.remove(&session);
+                    state.asks.remove(&session);
+                    state.queues.remove(&session);
+                    state.engine_archived.remove(&session);
+                    if let Some(dir) = directory {
+                        let any_left = state.sessions.values().any(|other| State::is_conversation(other) && other["directory"] == json!(dir));
+                        if !any_left && let Some(git) = state.git.as_mut()
+                            && git.repos.get(&dir).is_some_and(|repo| repo.into.is_some())
+                        {
+                            git.repos.remove(&dir);
+                        }
+                    }
+                    state.list_changed();
+                }
+                answer(200, json!({ "session": session }))
+            }
+            ("POST", ["kuvo", "sessions", "deletes"]) => {
+                let ids: Vec<String> = body
+                    .get("sessions")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect();
+                if ids.is_empty() {
+                    return answer(400, json!({ "message": "Choose at least one session to delete." }));
+                }
+                let present: Vec<&str> = ids
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|id| state.sessions.get(*id).is_some_and(State::is_conversation))
+                    .collect();
+                if present.is_empty() {
+                    return answer(404, json!({ "message": "None of those sessions are here anymore." }));
+                }
+                if present.len() == 1 {
+                    let id = present[0];
+                    return answer(200, state.delete_confirm_for(id, &state.sessions[id]));
+                }
+                let worktree = state.worktree_delete_sentence(&present);
+                let mut parts = vec!["Their messages and undo snapshots go too.".to_owned()];
+                if worktree != "This can’t be undone." {
+                    parts.push(worktree.to_owned());
+                }
+                parts.push("This can’t be undone.".to_owned());
+                answer(
+                    200,
+                    json!({
+                        "title": format!("Delete {} sessions?", ids.len()),
+                        "message": parts.join(" "),
+                        "label": "Delete"
+                    }),
+                )
             }
             ("GET", ["kuvo", "sessions", session, "typed"]) if state.sessions.contains_key(*session) => answer(200, offers()),
             ("GET", ["kuvo", "sessions", session, "mentions"]) if state.sessions.contains_key(*session) => {
