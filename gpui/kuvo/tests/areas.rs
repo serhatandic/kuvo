@@ -388,3 +388,22 @@ fn back_passes_over_a_session_gone_since(cx: &mut TestAppContext) {
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)), Some("ses_signup".into()));
     assert_eq!(area(&workspace, cx), Area::Sessions);
 }
+
+#[gpui::test]
+fn a_held_older_box_has_one_notice_and_empty_areas(cx: &mut TestAppContext) {
+    let (workspace, cx) = open(cx, StandIn::held_older(Replies::Never));
+    assert!(bounds(cx, "held-box-notice").is_some());
+    workspace.read_with(cx, |workspace, _| {
+        assert_eq!(workspace.client().gate().notice(), Some(("This Mac’s Kuvo is older than this app", "It updates with Kuvo 1.0.")));
+        assert_eq!(workspace.lists(), &kuvo::workspace::Lists::Held);
+    });
+    click(cx, "rail-bots");
+    assert!(bounds(cx, "held-box-notice").is_some());
+    assert!(bounds(cx, "bots-empty").is_some());
+    workspace.read_with(cx, |workspace, cx| {
+        assert!(matches!(workspace.area_view(Area::Bots).unwrap().read(cx).bots(), kuvo::areas::Reading::Ready(bots) if bots.bots.is_empty()));
+    });
+    click(cx, "rail-settings");
+    assert!(bounds(cx, "settings-empty").is_some());
+    assert!(bounds(cx, "held-box-notice").is_some());
+}

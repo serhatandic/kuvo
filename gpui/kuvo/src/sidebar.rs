@@ -180,7 +180,7 @@ pub fn render(workspace: &Workspace, window: &mut Window, cx: &mut Context<Works
     let lists: Vec<AnyElement> = match workspace.lists() {
         Lists::Loading => vec![quiet(Some("Loading sessions…"), true, cx)],
         Lists::Waiting(why) => vec![quiet(Some(&format!("Loading sessions… {why}")), true, cx)],
-        Lists::Held => vec![quiet(Some("Kuvo Code here is updating. Its sessions show once it has."), false, cx)],
+        Lists::Held => sessions(workspace, window, cx),
         Lists::Failed(why) if !workspace.listing().is_read() => vec![quiet(Some(why), false, cx)],
         _ => sessions(workspace, window, cx),
     };

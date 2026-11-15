@@ -594,6 +594,7 @@ fn reading<T: Clone>(read: kuvo_box::Result<T>, before: &Reading<T>) -> Reading<
     match (read, before) {
         (Ok(value), _) => Reading::Ready(value),
         (Err(_), Reading::Ready(value)) => Reading::Ready(value.clone()),
+        (Err(kuvo_box::Error::NeedsUpdating { .. }), _) => Reading::NotYet,
         (Err(error), _) => Reading::Failed(said(&error)),
     }
 }

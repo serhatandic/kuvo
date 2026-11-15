@@ -26,7 +26,7 @@ use kuvo_ui::{TextField, TextFieldEvent};
 
 pub use picker::{Field, Picker, Target};
 
-use crate::areas::{Reading, reading};
+use crate::areas::Reading;
 use crate::time;
 
 /// The fold's key for what's deleted.
@@ -552,6 +552,7 @@ impl QueueView {
                     this.found_for = route;
                     this.found = match read {
                         Ok(found) => Reading::Ready(found),
+                        Err(kuvo_box::Error::NeedsUpdating { .. }) => Reading::Ready(Default::default()),
                         Err(error) => Reading::Failed(error.to_string()),
                     };
                 }
@@ -598,7 +599,12 @@ impl QueueView {
         let asked = item.clone();
         self.run("read-item", move |client| client.work_item(&asked), move |this, read, _| {
             if this.shown == Shown::Item(item) {
-                this.whole = reading(read, &this.whole);
+                this.whole = match (read, &this.whole) {
+                    (Ok(value), _) => Reading::Ready(value),
+                    (Err(_), Reading::Ready(value)) => Reading::Ready(value.clone()),
+                    (Err(kuvo_box::Error::NeedsUpdating { .. }), _) => Reading::NotYet,
+                    (Err(error), _) => Reading::Failed(error.to_string()),
+                };
             }
         }, cx);
     }

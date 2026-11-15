@@ -390,10 +390,11 @@ fn read(area: Area, client: &BoxClient) -> Read {
 }
 
 /// What a read makes of the list: what it read, or (failing) what was there, else why.
-pub fn reading<T: Clone>(read: kuvo_box::Result<T>, before: &Reading<T>) -> Reading<T> {
+pub fn reading<T: Clone + Default>(read: kuvo_box::Result<T>, before: &Reading<T>) -> Reading<T> {
     match (read, before) {
         (Ok(value), _) => Reading::Ready(value),
         (Err(_), Reading::Ready(value)) => Reading::Ready(value.clone()),
+        (Err(kuvo_box::Error::NeedsUpdating { .. }), _) => Reading::Ready(T::default()),
         (Err(error), _) => Reading::Failed(error.to_string()),
     }
 }
@@ -918,6 +919,16 @@ pub fn views(client: &BoxClient, live: bool, cx: &mut App) -> Vec<(Area, gpui::E
 #[cfg(test)]
 mod tests {
     use super::{computer_line, doing};
+
+    #[test]
+    fn a_held_read_is_empty_without_an_area_error() {
+        let gate = kuvo_box::gate::Gate::for_features::<String>(None);
+        assert!(gate.notice().is_some());
+        let read = super::reading::<super::Bots>(Err(kuvo_box::Error::NeedsUpdating { missing: vec!["typed".into()] }), &super::Reading::NotYet);
+        assert!(matches!(read, super::Reading::Ready(bots) if bots.bots.is_empty()));
+        assert!(kuvo_box::gate::Gate::Open.notice().is_none());
+    }
+
     use kuvo_box::areas::BotNow;
 
     /// A computer's line says what the box says of it: one it only knows of through another is

@@ -280,6 +280,11 @@ fn windows(key: &str, account: &Account, now: f64, cx: &App) -> AnyElement {
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors.clone();
+        if self.client.gate().is_held() {
+            return div().id("settings-page").debug_selector(|| "settings-empty".into()).size_full()
+                .flex().items_center().justify_center().bg(c.sidebar)
+                .child(div().text_color(c.text_muted).child("No settings to show."));
+        }
         if std::mem::take(&mut self.focus_confirm) && self.confirm.is_some() {
             window.focus(&self.confirm_focus, cx);
         }

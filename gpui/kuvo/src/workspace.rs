@@ -78,7 +78,7 @@ pub enum Lists {
 pub enum BoxState {
     Connecting,
     Connected,
-    Updating,
+    Held,
     Unreachable(String),
 }
 
@@ -311,6 +311,7 @@ impl Workspace {
                 listing.take(line);
                 ListUpdate::Listing(listing)
             }
+            Err(kuvo_box::Error::NeedsUpdating { missing }) => ListUpdate::Held { missing },
             Err(error) => ListUpdate::Failed(error),
         };
         self.take_list(update, cx);
@@ -354,7 +355,7 @@ impl Workspace {
         match result {
             Ok(info) => {
                 self.info = Some(info);
-                self.box_state = BoxState::Connected;
+                self.box_state = if self.client.gate().is_held() { BoxState::Held } else { BoxState::Connected };
                 let name = self.box_name();
                 let kind = self.info.as_ref().map(|info| info.kind.clone()).unwrap_or_default();
                 for (_, view) in self.areas.clone() {
@@ -371,7 +372,7 @@ impl Workspace {
                     }
                 }
             }
-            Err(kuvo_box::Error::NeedsUpdating { .. }) => self.box_state = BoxState::Updating,
+            Err(kuvo_box::Error::NeedsUpdating { .. }) => self.box_state = BoxState::Held,
             Err(error) => self.box_state = BoxState::Unreachable(error.to_string()),
         }
         cx.notify();
@@ -383,7 +384,7 @@ impl Workspace {
             ListUpdate::Listing(listing) => {
                 self.listing = listing;
                 self.lists = Lists::Ready;
-                if matches!(self.box_state, BoxState::Connecting | BoxState::Unreachable(_) | BoxState::Updating) {
+                if matches!(self.box_state, BoxState::Connecting | BoxState::Unreachable(_) | BoxState::Held) {
                     self.box_state = BoxState::Connected;
                 }
                 // Where a new one starts: set once, as the list is first read.
@@ -419,7 +420,7 @@ impl Workspace {
             ListUpdate::Waiting(why) => self.lists = Lists::Waiting(why),
             ListUpdate::Held { .. } => {
                 self.lists = Lists::Held;
-                self.box_state = BoxState::Updating;
+                self.box_state = BoxState::Held;
             }
             ListUpdate::Failed(error) => {
                 if !self.listing.is_read() {
@@ -1502,6 +1503,12 @@ impl Render for Workspace {
             .text_ui(TypeSize::Small)
             .text_color(c.text)
             .child(title_bar::render(self, cx))
+            .children(self.client.gate().notice().map(|(title, next)| {
+                div().debug_selector(|| "held-box-notice".into()).flex_none().px(space::S4).py(space::S3)
+                    .bg(c.surface).border_b_1().border_color(c.border).flex().flex_col().gap(space::S1)
+                    .child(div().medium().text_color(c.text).child(title))
+                    .child(div().text_color(c.text_muted).child(next))
+            }))
             .child(
                 div().flex_1().min_h_0().flex().child(rail::render(self, cx)).child(
                     // The area's sidebar and its main view share one raised panel, its corner

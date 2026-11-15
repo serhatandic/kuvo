@@ -52,9 +52,6 @@ pub const REQUIRED: &[&str] = &[
     "work-queue.edit",
 ];
 
-/// The state's title, wherever it shows.
-pub const UPDATING: &str = "Updating…";
-
 /// What `features` lack of [`REQUIRED`], in its order: none when the box is up to date.
 pub fn missing<S: AsRef<str>>(features: &[S]) -> Vec<String> {
     REQUIRED
@@ -108,6 +105,11 @@ impl Gate {
             None => REQUIRED.iter().map(|name| (*name).to_owned()).collect(),
         };
         if missing.is_empty() { Gate::Open } else { Gate::Held { missing } }
+    }
+
+    /// A held gate means required features are absent; no update has been started.
+    pub fn notice(&self) -> Option<(&'static str, &'static str)> {
+        self.is_held().then_some(("This Mac’s Kuvo is older than this app", "It updates with Kuvo 1.0."))
     }
 
     pub fn is_held(&self) -> bool {

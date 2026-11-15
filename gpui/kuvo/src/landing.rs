@@ -53,7 +53,7 @@ pub fn render(workspace: &Workspace, _window: &mut Window, cx: &mut Context<Work
     let dot = match workspace.box_state() {
         BoxState::Connected => c.success,
         BoxState::Connecting => c.text_faint,
-        BoxState::Updating => c.warning,
+        BoxState::Held => c.warning,
         BoxState::Unreachable(_) => c.danger,
     };
     let computer = div()
