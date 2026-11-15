@@ -13819,7 +13819,8 @@ var PRIORITIES = [
 ];
 var STATUS_ID = /^(?:needs-you|in-review|in-progress|waiting|todo|backlog|done|canceled)$/;
 var PRIORITY_ID = /^(?:urgent|high|normal|low)$/;
-var isClosed = (status) => status === "done" || status === "canceled";
+var NEEDS_YOU2 = "needs-you";
+var isClosed = (status) => STATUSES.some((each) => each.id === status && each.closed);
 var statusName = (id) => STATUSES.find((each) => each.id === id)?.name ?? id;
 var priorityName = (id) => PRIORITIES.find((each) => each.id === (id ?? "normal"))?.name ?? "Normal";
 var ALSO = {
@@ -43827,7 +43828,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "aff6935cd5b7";
+var BRIDGE_VERSION = "0de040f8972a";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -48183,9 +48184,10 @@ function waitingOf(list) {
   return {
     sessions: waitingSessions(facts),
     bots: Object.entries(botsNow(facts)).filter(([id, now]) => now.asking > 0 && botHere(id) !== null).length,
-    queue: asking.size ? allItems().filter((item) => !item.removed && !isClosed(item.status) && item.sessions.some((linked) => asking.has(linked.session))).length : 0
+    queue: needsYouIn(allItems(), asking)
   };
 }
+var needsYouIn = (items, asking) => items.filter((item) => !item.removed && !isClosed(item.status) && (item.status === NEEDS_YOU2 || item.sessions.some((linked) => asking.has(linked.session)))).length;
 var countedFrom = (list) => {
   const facts = factsOf3(list);
   return JSON.stringify([waitingSessions(facts), botsNow(facts), Object.keys(facts).filter((id) => facts[id].asked !== undefined).sort()]);
@@ -52611,6 +52613,7 @@ async function viewOf2(owner, targets, facts, signal, cache, wait = GITHUB_WAIT,
     statuses: [...STATUSES],
     priorities: [...PRIORITIES],
     labels: shown,
+    colors: [...LABEL_COLORS],
     assignees: who,
     new: { status: "todo", priority: "normal" },
     today: todayHere(),

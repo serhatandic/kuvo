@@ -710,6 +710,55 @@ test("a session that asks is in Needs you, its project's sums, its bot's now and
   }
 })
 
+// The Work Queue's count of what waits on you (#729): one rule, the box's, so the badge and the
+// Needs you tab agree. An open item counts when it's in Needs you, or when a session linked to it
+// asks now (whatever its status still says); each once. Closed and deleted ones never count.
+test("the queue's count is its open items in Needs you and those a linked session asks for, each once", async () => {
+  const { noteAskEvent, forgetAsks } = await import("../src/link/glance/asked")
+  const { WORK_QUEUE } = await import("../src/link/work-queue/store")
+  const mine = join(home, "lists-needs")
+  add("ses_needs", mine, 640, { title: "Needs" })
+  mkdirSync(join(WORK_QUEUE, "queues"), { recursive: true })
+  const queueFile = join(WORK_QUEUE, "queues", "ses_needs.json")
+  const item = (n: number, status: string, extra: Record<string, unknown> = {}) =>
+    ({ id: `wqi_needs${n}`.padEnd(24, "a"), number: 900 + n, title: `Item ${n}`, status, order: n, labels: [], sessions: [], created: { at: 1, by: { user: true } }, ...extra })
+  const linked = { sessions: [{ session: "ses_needs", since: 1 }] }
+  writeFileSync(queueFile, JSON.stringify({ owner: "ses_needs", items: [
+    item(1, "needs-you"),
+    item(2, "needs-you", linked),
+    item(3, "in-progress", linked),
+    item(4, "needs-you", { removed: { at: 2, by: { user: true } } }),
+    item(5, "done", linked),
+    item(6, "canceled", linked),
+    item(7, "todo"),
+  ] }))
+  const stop = keepList()
+  const listed = (when: () => boolean) => new Promise<void>(done => {
+    const look = () => { if (when()) { listFollowers.delete(look); done() } }
+    listFollowers.add(look)
+    look()
+  })
+  try {
+    await listPlaceHeard("engine", target)
+    await noteListEvent("engine", target, { type: "session.created", data: { sessionID: "ses_needs" } })
+    // Nothing asks: the two open items in Needs you.
+    expect((await ask("kuvo/waiting")).lines[0]).toMatchObject({ queue: 2 })
+    // Its session asks: the open one it's linked to in another status too; the one in Needs you it's
+    // linked to still once.
+    noteAskEvent({ type: "permission.asked", data: { id: "per_needs", sessionID: "ses_needs", action: "bash", resources: ["make"] } }, "engine", 4000)
+    await listed(() => keptList()?.needsYou?.some(each => each.session === "ses_needs") === true)
+    expect((await ask("kuvo/waiting")).lines[0]).toMatchObject({ queue: 3 })
+    noteAskEvent({ type: "permission.replied", data: { requestID: "per_needs", sessionID: "ses_needs" } }, "engine")
+    await listed(() => !keptList()?.needsYou?.some(each => each.session === "ses_needs"))
+    expect((await ask("kuvo/waiting")).lines[0]).toMatchObject({ queue: 2 })
+  } finally {
+    stop()
+    forgetAsks()
+    sessions.delete("ses_needs")
+    rmSync(queueFile, { force: true })
+  }
+})
+
 // What a client's one badge of sessions counts (#718): every session that waits on you, as its rows
 // show them. A bot's own conversation that asks (its bots' area lists it, not "Needs you"), and what
 // the box keeps outside the engine's asks: what an agent asks while it browses, what a bot asks
