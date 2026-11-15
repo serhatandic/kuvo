@@ -9,6 +9,8 @@ use serde::Deserialize;
 
 use crate::client::BoxClient;
 use crate::error::Result;
+use crate::paths::segment;
+use crate::transport::Request;
 use crate::follow::{Follow, Followed, Timing, follow_lines};
 
 // MARK: Bots
@@ -127,18 +129,45 @@ pub struct Computer {
     pub via: String,
     #[serde(default)]
     pub through: Option<String>,
-    /// How many of its sessions are at work.
+    /// How many of its sessions are at work; none where it never said (an older box, one known
+    /// only by another's word, one that isn't yours): nothing is claimed of it then.
     #[serde(default)]
-    pub working: usize,
+    pub working: Option<usize>,
+    /// Which of its sessions are at work, newest first (the first few), as it said them.
+    #[serde(default, rename = "atWork", deserialize_with = "readable")]
+    pub at_work: Vec<AtWork>,
     /// The services whose plan limits it reads.
     #[serde(default)]
     pub limits: Vec<String>,
-    /// What its box has (its `kuvo/info` `features`), for the update gate.
-    // BOX-NEEDED: `features` on each of `kuvo/computers`' peers (as it said them with its agents,
-    // "Peers"), so a client can say which of your computers it would hold. No box says it yet: the
-    // stand-in does, and a list without it holds none.
+    /// What its box has (its `kuvo/info` `features`), whole, for the update gate; none where it
+    /// didn't say.
     #[serde(default)]
     pub features: Option<Vec<String>>,
+    /// What can be done with it from this box now, in the box's order and words.
+    #[serde(default, deserialize_with = "readable")]
+    pub actions: Vec<ComputerAction>,
+}
+
+/** What can be done with a computer from the box that lists it, in the box's words. */
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ComputerAction {
+    /// `rename`, `connect` or `remove`.
+    pub id: String,
+    pub label: String,
+    /// Where it asks first, the box's question.
+    #[serde(default)]
+    pub confirm: Option<crate::accounts::Confirm>,
+    /// It can't be done now: why, to show beside it.
+    #[serde(default)]
+    pub why: Option<String>,
+}
+
+/// A session at work on a computer: its id there, and its title.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct AtWork {
+    pub id: String,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 impl Computer {
@@ -150,6 +179,11 @@ impl Computer {
     /// hold it. Only where the list says what it has; one that doesn't say isn't called older.
     pub fn is_older(&self) -> bool {
         self.features.as_deref().is_some_and(|features| !crate::gate::missing(features).is_empty())
+    }
+
+    /// What the box offers to do with it, by id (`rename`, `connect`, `remove`).
+    pub fn action(&self, id: &str) -> Option<&ComputerAction> {
+        self.actions.iter().find(|action| action.id == id)
     }
 }
 
@@ -363,6 +397,22 @@ impl BoxClient {
         Ok(self.get::<Computers>("kuvo/computers")?.computers)
     }
 
+    /// Renames one of your machines (`computers.manage`): done by the box that writes its record,
+    /// which the box asked hands it to; refused in its words.
+    pub fn rename_computer(&self, key: &str, name: &str) -> Result<()> {
+        self.done(&Request { method: "PATCH".into(), path: format!("kuvo/computers/{}", segment(key)), headers: Vec::new(), body: Some(serde_json::json!({ "name": name })) })
+    }
+
+    /// Removes one of your machines, as `rename_computer` renames it.
+    pub fn remove_computer(&self, key: &str) -> Result<()> {
+        self.done(&Request::delete(format!("kuvo/computers/{}", segment(key))))
+    }
+
+    /// Reaches one of your computers that's away again, from the box asked.
+    pub fn connect_computer(&self, key: &str) -> Result<()> {
+        self.done(&Request::post(format!("kuvo/computers/{}/connect", segment(key)), serde_json::json!({})))
+    }
+
     /// Follows your computers: the list now, and again as it changes.
     pub fn follow_computers(&self, timing: Timing) -> Follow<Followed<Computers>> {
         follow_lines(self, "kuvo-box computers", "kuvo/computers/events".into(), "kuvo/computers".into(), timing)
@@ -469,6 +519,13 @@ mod tests {
         assert_eq!(said.computers.len(), 2, "one in a shape this can't read is left out");
         assert!(said.computers[0].here && said.computers[0].is_mac());
         assert_eq!((said.computers[1].shared, said.computers[1].reach.as_str(), said.computers[1].through.as_deref()), (true, "unknown", Some("Studio")));
+        // What's at work is said where the box said it; one that never said has no count at all.
+        assert_eq!(said.computers[0].working, Some(2));
+        let facts: Computer = serde_json::from_str(r#"{"key":"k3","name":"mini","kind":"machine","reach":"connected","via":"relay","atWork":[{"id":"ses_1","title":"Ship it"},{"id":"ses_2"},{"title":"no id"}],"actions":[{"id":"connect","label":"Connect"},{"label":"no id"}],"limits":[]}"#).unwrap();
+        assert_eq!((facts.working, facts.at_work.len(), facts.at_work[1].title.as_deref()), (None, 2, None));
+        assert_eq!((facts.actions.len(), facts.action("connect").map(|action| action.label.as_str())), (1, Some("Connect")));
+        let waits: Computer = serde_json::from_str(r#"{"key":"k4","name":"attic","actions":[{"id":"remove","label":"Remove","why":"Quit the old app first."}]}"#).unwrap();
+        assert_eq!(waits.action("remove").and_then(|action| action.why.as_deref()), Some("Quit the old app first."));
     }
 
     /// A computer is older only where the list says what it has, and lacks something the gate needs.

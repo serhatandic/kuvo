@@ -36,6 +36,9 @@ public enum BoxGate {
     /// Then #733's, the facts a first run draws, which no client works out: `folders.suggested`,
     /// `models.offered.free`, `setup.welcomed` and `sign-in.accounts.plan` (with a key-only
     /// account's Add Key).
+    /// Then #735's, for the Computers areas: `computers.facts` (what each computer answers, which of
+    /// its sessions are at work) and `computers.manage` (renaming, removing and reaching one again
+    /// from any box, as each computer's `actions` say).
     /// Then #727's `settings`: a box describes its own settings (`kuvo/settings`), so no client
     /// writes a computer's settings pages itself.
     public static let required: [String] = [
@@ -46,6 +49,8 @@ public enum BoxGate {
         "bots.held",
         "bots.now",
         "computers",
+        "computers.facts",
+        "computers.manage",
         "file.text",
         "folders.suggested",
         "folders.tree",
@@ -96,6 +101,12 @@ public enum BoxGate {
         let has = Set(features)
         return required.filter { !has.contains($0) }
     }
+
+    /// Whether one of your computers, as `kuvo/computers` lists it (`computers.facts`), is older than
+    /// this client needs: only where it says what its box answers (`features`), so one that doesn't
+    /// say (not heard from yet, an older box, one whose list a peer couldn't keep whole) isn't
+    /// called older.
+    public static func isOlder(listed features: [String]?) -> Bool { features.map { !isCurrent($0) } ?? false }
 
     /// Whether a box with `features` is as new as this client needs.
     public static func isCurrent(_ features: some Sequence<String>) -> Bool { missing(features).isEmpty }

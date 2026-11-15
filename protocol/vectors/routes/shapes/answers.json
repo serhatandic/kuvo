@@ -3608,6 +3608,9 @@
          "version?": "string",
          "engine?": "string",
          "system?": "string",
+         "features?": {
+          "list": "string"
+         },
          "via": {
           "oneOf": [
            {
@@ -3622,9 +3625,45 @@
           ]
          },
          "through?": "string",
-         "working": "number",
+         "working?": "number",
+         "atWork?": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title?": "string"
+           }
+          }
+         },
          "limits": {
           "list": "string"
+         },
+         "actions": {
+          "list": {
+           "object": {
+            "id": {
+             "oneOf": [
+              {
+               "literal": "rename"
+              },
+              {
+               "literal": "connect"
+              },
+              {
+               "literal": "remove"
+              }
+             ]
+            },
+            "label": "string",
+            "confirm?": {
+             "object": {
+              "title": "string",
+              "message": "string",
+              "label": "string"
+             }
+            },
+            "why?": "string"
+           }
+          }
          }
         }
        }
@@ -3685,6 +3724,9 @@
          "version?": "string",
          "engine?": "string",
          "system?": "string",
+         "features?": {
+          "list": "string"
+         },
          "via": {
           "oneOf": [
            {
@@ -3699,9 +3741,45 @@
           ]
          },
          "through?": "string",
-         "working": "number",
+         "working?": "number",
+         "atWork?": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title?": "string"
+           }
+          }
+         },
          "limits": {
           "list": "string"
+         },
+         "actions": {
+          "list": {
+           "object": {
+            "id": {
+             "oneOf": [
+              {
+               "literal": "rename"
+              },
+              {
+               "literal": "connect"
+              },
+              {
+               "literal": "remove"
+              }
+             ]
+            },
+            "label": "string",
+            "confirm?": {
+             "object": {
+              "title": "string",
+              "message": "string",
+              "label": "string"
+             }
+            },
+            "why?": "string"
+           }
+          }
          }
         }
        }
@@ -3709,6 +3787,102 @@
      }
     },
     "405": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "PATCH kuvo/computers/:key",
+   "answers": {
+    "200": {
+     "object": {
+      "name": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "500": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "DELETE kuvo/computers/:key",
+   "answers": {
+    "200": {
+     "object": {}
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "500": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/computers/:key/connect",
+   "answers": {
+    "202": {
+     "object": {}
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
      "object": {
       "message": "string"
      }
@@ -3874,6 +4048,12 @@
            },
            {
             "literal": "computers"
+           },
+           {
+            "literal": "computers.facts"
+           },
+           {
+            "literal": "computers.manage"
            },
            {
             "literal": "config"
@@ -4477,6 +4657,12 @@
            },
            {
             "literal": "computers"
+           },
+           {
+            "literal": "computers.facts"
+           },
+           {
+            "literal": "computers.manage"
            },
            {
             "literal": "config"
