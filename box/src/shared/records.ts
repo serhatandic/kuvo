@@ -73,6 +73,8 @@ export interface ToldAgents {
   id?: string;
   list: ListedAgent[];
   features?: string[];
+  /** Its `features` were longer than a peer keeps (`keptFeatures`): the list is cut, so it can't say what's missing. */
+  featuresCut?: true;
   /** Conversations it moved away lately, by the key of the box each lives on now, and when. */
   moved?: { session: string; key: string; at: number }[];
   /** The boxes it knows (its own peers), which this box may take plan limits from and tell its own to (PROTOCOL.md, "Plan limits"). */
@@ -89,13 +91,21 @@ export interface ToldAgents {
 }
 
 /** What a box says of itself, to its clients (`kuvo/computers`) and to its peers with its agents:
- * Kuvo Code's version there and its engine's, its system as people know it, and how many of its
- * sessions are at work. */
+ * Kuvo Code's version there and its engine's, its system as people know it, how many of its
+ * sessions are at work, and which (the first few, newest first, by id and title). A box from
+ * before said no `working` (or `atWork`): left out, not taken as none. */
 export interface ToldComputer {
   version?: string;
   engine?: string;
   system?: string;
-  working: number;
+  working?: number;
+  atWork?: AtWorkSession[];
+}
+
+/** A session at work on a computer: its id there, and its title (none for one that has none yet). */
+export interface AtWorkSession {
+  id: string;
+  title?: string;
 }
 
 /** `run/agents.json`: everyone, for list_agents here (kuvo-browser.js reads it), and this box's

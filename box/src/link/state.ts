@@ -69,6 +69,8 @@ export interface LinkState {
   legacy?: Record<string, { at: number; peers: unknown[]; moved: unknown[] }>;
   macPeers?: unknown;
   macMoved?: unknown;
+  /** The names you gave this Mac's machines, by key, over what its app says (`kuvo/computers/<key>`). */
+  peerNames?: Record<string, string>;
   /** Machines this Mac removed that haven't heard it yet (they hear it once it's back on the relay). */
   untold?: Peer[];
   /** The setup it's in, and its role there (PROTOCOL.md, "Your setup"). */

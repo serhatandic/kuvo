@@ -59,6 +59,8 @@ export const FEATURES = [
   "btw.threads",
   "claude-code",
   "computers",
+  "computers.facts",
+  "computers.manage",
   "config",
   "config.apply",
   "engine.restart",

@@ -36,8 +36,9 @@ import type { Computer } from "./view";
  * boxes (`kuvo/info`'s `features` too). */
 export const FORWARD_FEATURE = "work-queue.forward";
 
-/** Whether the computer `key` takes what you do to its items from another box. */
-export const takesForwarded = (key: string): boolean => (readPeerAgents()[key]?.features ?? []).includes(FORWARD_FEATURE);
+/** Whether the computer `key` takes what you do to its items from another box (`feature`: what it
+ * says it takes, for another area's: renaming and removing your machines, `computers.manage`). */
+export const takesForwarded = (key: string, feature = FORWARD_FEATURE): boolean => (readPeerAgents()[key]?.features ?? []).includes(feature);
 
 export const FORWARDS = path.join(WORK_QUEUE, "forward");
 // What a keeper did for the asks it took, by asker and id (changes only: a read is done again).
@@ -62,9 +63,12 @@ const MOST_REMEMBERED = 2_000;
 
 /** What a client did, as it goes to the box that keeps the item: a whole read (`GET`) or one of its
  * files (`action` `file`, `name`), a delete, a change (`PATCH`, with what it said, `body`), or a
- * bringing back (`action` `restore`). */
+ * bringing back (`action` `restore`). `area` `computers`: one of your machines (`item`, its key)
+ * renamed (`PATCH {name}`) or removed (`DELETE`) on the box that writes its record
+ * (`peers/manage.ts`); a Work Queue item's otherwise. */
 export interface Act {
   id: string;
+  area?: "computers";
   method: "GET" | "DELETE" | "POST" | "PATCH";
   item: string;
   action?: "restore" | "file";
@@ -101,7 +105,7 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
   const peer = peersOf(link).find(each => each.key === computer.key);
   // (One it doesn't know any more, or that doesn't take it yet: changed there, as before. Nor from
   // a machine Macs share outside one setup: another person's computers may tell it theirs.)
-  if (!peer || !takesForwarded(peer.key) || sharedMachine(link)) return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
+  if (!peer || !takesForwarded(peer.key, act.area === "computers" ? "computers.manage" : FORWARD_FEATURE) || sharedMachine(link)) return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
   const here = ownName();
   if (awaySince(peer.key) !== null) return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
   if (offRelay()) return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };
@@ -314,5 +318,6 @@ const actOf = (given: unknown): Act | null => {
   const fits = (method === "GET" && action === undefined) || (method === "DELETE" && action === undefined) || (method === "POST" && action === "restore") || (method === "PATCH" && action === undefined)
     || (method === "GET" && action === "file" && typeof name === "string" && name.length > 0 && name.length <= 300);
   if (!fits) return null;
-  return { id: given.id, method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
+  if (given.area !== undefined && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
+  return { id: given.id, ...(given.area === "computers" ? { area: "computers" } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
 };

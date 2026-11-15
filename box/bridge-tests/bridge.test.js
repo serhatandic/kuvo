@@ -1574,6 +1574,10 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "btw.threads": ["GET", "kuvo/agents/api/kuvo/btw"],
     "claude-code": ["GET", "kuvo/claude-code"],
     computers: ["GET", "kuvo/computers"],
+    // (What each computer answers and which of its sessions are at work, in kuvo/computers' answer.)
+    "computers.facts": ["GET", "kuvo/computers"],
+    // (Renaming, removing and reaching one again: kuvo/computers/<key>, which says one isn't there.)
+    "computers.manage": ["DELETE", "kuvo/computers/none"],
     config: ["GET", "kuvo/config"],
     "config.apply": ["GET", "kuvo/config/apply"],
     "engine.restart": ["GET", "kuvo/engine/restart"],

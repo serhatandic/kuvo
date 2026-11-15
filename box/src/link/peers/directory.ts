@@ -12,7 +12,7 @@ import { RUN } from "../home";
 import { KEY, MOST_PEERS, cleanPeer, fitsPeer, ownKey, peersOf } from "./known";
 import { SETUP_ID } from "../setup/record";
 import type { LinkState } from "../state";
-import type { AgentsFile, ListedAgent, ToldAgents, ToldComputer } from "../../shared/records";
+import type { AgentsFile, AtWorkSession, ListedAgent, ToldAgents, ToldComputer } from "../../shared/records";
 import type { EngineSession } from "../engine/sessions";
 import { type BotLook, LOOKS as LOOK_WORDS } from "../../shared/routes/bots";
 import type { Peer } from "./known";
@@ -57,8 +57,12 @@ export const keptAgent = ({ session, name, kind, project, about, machine, id, lo
   ...(kind === "bot" && keptLook(look) ? { look: keptLook(look) } : {}),
   ...(typeof project === "string" && project ? { project: project.slice(0, 200) } : {}), ...(typeof about === "string" && about ? { about: about.slice(0, 500) } : {}),
   ...(typeof machine === "string" && machine ? { machine: machine.slice(0, 200) } : {}) });
+/** The most feature names kept of what a peer says it answers. */
+export const MOST_FEATURES = 300;
 // What a peer says it answers (`features`, as kuvo/info's), kept with its agents.
-export const keptFeatures = (features: unknown): string[] => (Array.isArray(features) ? features.filter((each): each is string => typeof each === "string" && each.length <= 60).slice(0, 300) : []);
+export const keptFeatures = (features: unknown): string[] => (Array.isArray(features) ? features.filter((each): each is string => typeof each === "string" && each.length <= 60).slice(0, MOST_FEATURES) : []);
+/** Whether what a peer says it answers is more than this box keeps of it (`keptFeatures`). */
+const featuresCut = (features: unknown[]): boolean => features.filter(each => typeof each === "string" && each.length <= 60).length > MOST_FEATURES;
 
 // The conversations a peer says it moved away, and where each lives now (PROTOCOL.md, "Peers").
 const keptMoved = (moved: unknown[]): NonNullable<ToldAgents["moved"]> => moved.filter((each): each is { session: string; key: string; at: number } => isObject(each)
@@ -81,7 +85,7 @@ export function takeAgents(sender: { key: string; kind: "mac" | "machine"; id?: 
     }
     const computer = keptComputer(given.computer);
     all[sender.key] = { at: given.at as number, heard: Date.now(), kind: sender.kind, ...(sender.id ? { id: sender.id } : {}), list: (given.list as unknown[]).filter(fitsAgent).slice(0, MOST_AGENTS).map(keptAgent),
-      ...(Array.isArray(given.features) ? { features: keptFeatures(given.features) } : {}), ...(Array.isArray(given.moved) ? { moved: keptMoved(given.moved) } : {}),
+      ...(Array.isArray(given.features) ? { features: keptFeatures(given.features), ...(featuresCut(given.features) ? { featuresCut: true as const } : {}) } : {}), ...(Array.isArray(given.moved) ? { moved: keptMoved(given.moved) } : {}),
       ...(Array.isArray(given.boxes) ? { boxes: keptBoxes(given.boxes) } : {}),
       ...(typeof given.setup === "string" && SETUP_ID.test(given.setup) ? { setup: given.setup } : {}), ...(given.shared === true ? { shared: true as const } : {}),
       ...(given.trash === "trash" || given.trash === "kuvo" ? { trash: given.trash } : {}),
@@ -93,12 +97,21 @@ export function takeAgents(sender: { key: string; kind: "mac" | "machine"; id?: 
 
 const short = (value: unknown, most: number): string | undefined => (typeof value === "string" && value && value.length <= most ? value : undefined);
 
-/** What a peer said of itself, checked: only what's of a size it would have. */
+/** The most sessions at work a box names, to its peers and in `kuvo/computers` (it counts them all). */
+export const MOST_AT_WORK = 20;
+
+/** Sessions at work as a box said them, checked: each an id with a title of a size it would have. */
+export const keptAtWork = (given: unknown[]): AtWorkSession[] => given.filter((each): each is { id: string; title?: unknown } => isObject(each) && typeof each.id === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.id))
+  .slice(0, MOST_AT_WORK).map(({ id, title }) => ({ id, ...(typeof title === "string" && plainName(title) ? { title: plainName(title).slice(0, 200) } : {}) }));
+
+/** What a peer said of itself, checked: only what's of a size it would have. What it didn't say
+ * (an older box says no `working`) is left out, never taken as none. */
 export function keptComputer(given: unknown): ToldComputer | undefined {
   if (!isObject(given)) return undefined;
   const version = short(given.version, 40), engine = short(given.engine, 40), system = short(given.system, 80);
-  const working = typeof given.working === "number" && Number.isInteger(given.working) && given.working >= 0 && given.working <= 10_000 ? given.working : 0;
-  return { ...(version ? { version } : {}), ...(engine ? { engine } : {}), ...(system ? { system } : {}), working };
+  const working = typeof given.working === "number" && Number.isInteger(given.working) && given.working >= 0 && given.working <= 10_000 ? given.working : undefined;
+  return { ...(version ? { version } : {}), ...(engine ? { engine } : {}), ...(system ? { system } : {}), ...(working !== undefined ? { working } : {}),
+    ...(working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {}) };
 }
 
 const keptBoxes = (boxes: unknown[]): NonNullable<ToldAgents["boxes"]> => boxes.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(({ key, address, kind, name }) => ({ key, address, kind, name }));

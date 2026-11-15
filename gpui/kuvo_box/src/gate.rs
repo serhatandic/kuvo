@@ -14,6 +14,8 @@ pub const REQUIRED: &[&str] = &[
     "bots.held",
     "bots.now",
     "computers",
+    "computers.facts",
+    "computers.manage",
     "file.text",
     "folders.suggested",
     "folders.tree",

@@ -1508,7 +1508,8 @@ machines; a client that wants every computer's facts asks the box that has it as
     setup, #701): it tells nothing of what it runs, and a client files it apart from yours. A box
     only such a peer vouches for (the other person's Mac beside a shared machine) isn't listed;
   - `reach`: `connected` (the box itself; a peer heard from in the last half hour), `connecting`
-    (a peer not heard from yet since this box knew of it), `away` (the relay said it isn't
+    (a peer not heard from yet since this box knew of it, or being reached again: Connect, below,
+    asked in the last 20 seconds and no word since), `away` (the relay said it isn't
     there, `run/peer-reach.json`, or nothing came from it for half an hour) or `unknown` (a box
     known only by a peer's word: this box can't say). As this box last heard: one that's itself
     off the relay still says `connected` of a peer heard in the last half hour;
@@ -1516,15 +1517,61 @@ machines; a client that wants every computer's facts asks the box that has it as
     people know it ("macOS 15.1", "Ubuntu 24.04.1 LTS"), as that box said them with its agents
     (`agents.computer`, "Peers"); left out for one that hasn't said (a box from before this, one
     known only by a peer's word);
+  - `features?` (`computers.facts`): what its box answers, as its `kuvo/info` says (this box's
+    own) or as it said with its agents: whole, so a client applies its update gate to it ("The
+    update gate") and calls it older where a name it needs is missing. Left out for one that hasn't
+    said, one that isn't one of your own computers, and one whose list is longer than peers keep
+    (300 names, "Peers"): it can't be said what's missing then, and a client doesn't call it older;
   - `via`: how the box that answers knows it: `here` (itself), `relay` (a peer it talks to) or
     `peer` (by another computer's word alone, `through` that one's name);
-  - `working`: how many of its sessions are at work (conversations, not their subagents, never
-    one that waits on you), its own from its session list, a peer's as it last said (`0` for one
-    that's away or unknown, and for one that isn't one of your own computers, which says none:
-    nothing there can be seen at work now);
+  - `working?` and `atWork?` (`computers.facts`): how many of its sessions are at work
+    (conversations, not their subagents, never one that waits on you), and which, newest first,
+    each `{id, title?}` (its session's id on that computer, and its title): its own from its session
+    list (the first 100), a peer's as it last said (the first 20; a peer tells which as they change,
+    at most once a minute). `0` and `[]` for one that's away (nothing there can be seen at work
+    now); both left out for one that never said (a box from before this, one known only by a
+    peer's word, one that isn't one of your own computers): a client says nothing of what's at
+    work there, never "nothing";
   - `limits`: the services whose plan limits it reads (`claude`, `codex`…), as the answering
-    box's limits rows say (`rows[].boxes`); `[]` while its coding agents' bridge doesn't run.
+    box's limits rows say (`rows[].boxes`); `[]` while its coding agents' bridge doesn't run;
+  - `actions` (`computers.manage`): what can be done with it from this box now, in the order to
+    offer them, `{id, label, confirm?}`, as accounts' are ("Signing in"): `label` the button's
+    words, `confirm` `{title, message, label}` where a client asks first (its question, what it
+    comes to, its button), all the box's. `rename` (a machine whose record the writer keeps, below:
+    never a Mac, which goes by its own name, nor one shared with another setup), `connect` (a peer
+    this box reaches through the relay that's `away`, while no try is under way) and `remove` (as
+    `rename`, never the box itself). A client draws the ids it has a control for.
   `405` for anything but `GET`.
+- **Managing them** (`computers.manage`, #735), from any box, with no client or Mac's app open. A
+  machine's record (its name, that it's one of your computers) is in the peers document of the Mac
+  that set it up, which your other computers take it from ("Your setup"): so one box writes it, as
+  one numbers the Work Queue. The **writer** is this Mac's box for its own machines (a Mac that isn't
+  a member of another's setup); for every other box, its setup's main computer, or the one Mac
+  that set up a machine in no setup; none on a machine Macs of different setups share, or one more
+  than one Mac set up outside a setup. A box that isn't the writer hands what you do to it by mail,
+  as a Work Queue item's change goes to the computer that keeps it ("The Work Queue", Done where
+  it's kept: `{workQueue: {act: {id, area: "computers", method, item: <key>, body?, at}}}`, answered
+  `{acted}`), once the writer's agents name `computers.manage`, and answers with what it said; the
+  change reaches every computer with the writer's peers document. Two boxes renaming at once are
+  done in turn there: neither change is lost, and of two names for one machine the later is kept.
+  - `PATCH kuvo/computers/<key> {"name"}`: renamed (1 to 100 characters, spaces and control
+    characters folded): `200 {name}`. The writer keeps it apart from what its app says of its
+    machines (`peerNames` in link.json), so the app saying them again keeps it; a machine lists
+    itself by the name its writer's record gives it.
+  - `DELETE kuvo/computers/<key>`: removed, as a Mac's app removes one: off the writer's peers
+    document, named among those you removed (`left`, which the machine hears and lets that Mac go),
+    and off that Mac's list of machines (`machines.json`). It keeps running there, as a box of its
+    own, with its sessions. `200 {}`.
+  - `POST kuvo/computers/<key>/connect`: this box's own, for a peer that's `away`: its link tells
+    that computer its agents now, asking for theirs (`run/reach-again.json`, sent by the process
+    that holds the relay connection, as `box route` leaves it), so its answer marks it back
+    (`noteHeard`), and it's listed `connecting` for 20 seconds meanwhile. `202 {}`.
+  - Refused in words a client shows as they are: `400 {"message"}` for a name that isn't one, `404`
+    for a key that isn't one of the computers this box lists, `409` for what isn't offered there
+    (with why: a Mac, the box itself, shared with another setup, not the writer's machine, a writer
+    that needs a newer Kuvo Code, already connected or being reached), `503` where the writer can't
+    be asked now (it isn't answering, this box is off the relay, or no answer came in time, so
+    whether it was done can't be told), and `405` for another method.
 - `GET kuvo/computers/events` (ndjson): the same now, and a line as it changes (a peer's word, one
   going away or coming back, this box's sessions starting or stopping work, and every 15 seconds
   for the rest); through `box route` a client asks again instead.
@@ -2554,7 +2601,7 @@ new version without cutting a turn:
 A client never keeps an older box's way of doing something (#679): it brings a box up to date
 before it uses it, and meanwhile says so. A box is older than a client needs when its `kuvo/info`
 `features` lack any name the client uses with no way around it (or it has no `kuvo/info`): today
-`agent-tools.own`, `bots.deletes`, `bots.effort`, `bots.elsewhere`, `bots.held`, `bots.now`, `computers`, `file.text`, `folders.suggested`, `folders.tree`, `git.branches`,
+`agent-tools.own`, `bots.deletes`, `bots.effort`, `bots.elsewhere`, `bots.held`, `bots.now`, `computers`, `computers.facts`, `computers.manage`, `file.text`, `folders.suggested`, `folders.tree`, `git.branches`,
 `git.branches.pullRequest`, `git.branches.worktree`, `git.changes.binary`, `git.changes.path`,
 `git.files`, `git.files.does`, `git.merge`, `git.pull-request`,
 `git.status`, `limits.rings`, `messages.send`, `models.offered`, `models.offered.folder`,
@@ -6363,6 +6410,8 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `btw.threads` | a side question's `thread`, follow-ups and a thread's removal (bridge 0.9.98) |
 | `claude-code` | `kuvo/claude-code` (a Mac only, before #341) |
 | `computers` | `kuvo/computers` and `…/events`: your computers as one list, from any box ("Computers", #711) |
+| `computers.facts` | `features`, `working` (left out where never said) and `atWork` on each of `kuvo/computers`' computers ("Computers", #735) |
+| `computers.manage` | `actions` on each of `kuvo/computers`' computers, `PATCH` and `DELETE kuvo/computers/<key>` (done by the box that writes the machine's record, or handed to it) and `POST kuvo/computers/<key>/connect` ("Computers", Managing them, #735) |
 | `config` | `kuvo/config` |
 | `config.apply` | `POST kuvo/config/apply` |
 | `engine.restart` | `POST kuvo/engine/restart` |

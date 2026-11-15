@@ -21,6 +21,7 @@ import { stripLabel } from "./ops";
 import { handArrived, handedBack, sendHandings } from "./hand";
 import { actForPeer } from "./acts";
 import { takeAct, takeActed } from "./forward";
+import { writerAct } from "../peers/manage";
 import { mailsFor, takePart } from "./parts";
 import { movePast, ownSince, primaryOf, takeNumbersMail, topOf } from "./numbers";
 import { sharedMachine } from "../setup/settle";
@@ -264,7 +265,7 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
   if (isObject(whole.handed)) handedBack(sender, whole.handed);
   if (isObject(whole.hand)) await handArrived(sender, whole.hand, reply, places).catch(() => {});
   if (isObject(whole.acted)) takeActed(sender, whole.acted);
-  if (isObject(whole.act)) await takeAct(sender, whole.act, reply, act => actForPeer(act, places().targets)).catch(() => {});
+  if (isObject(whole.act)) await takeAct(sender, whole.act, reply, act => (act.area === "computers" ? writerAct(sender, act) : actForPeer(act, places().targets))).catch(() => {});
 }
 
 
