@@ -48210,7 +48210,7 @@ import fs158 from "node:fs";
 import path166 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "37c2380545ce";
+var BRIDGE_VERSION = "4a45c259b7ed";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync10 } from "node:child_process";
@@ -59112,11 +59112,16 @@ var SETTINGS_PAGE_ROUTES = [
 ];
 
 // box/src/shared/artifact-budget.ts
+function fileSizeUnit(bytes) {
+  const scale = bytes > 0 ? Math.min(4, Math.max(0, Math.floor(Math.log10(bytes) / 3))) : 0;
+  return { name: ["bytes", "KB", "MB", "GB", "TB"][scale], factor: 1000 ** scale, decimals: 1, rounding: "nearest" };
+}
+function fileSize(bytes) {
+  const unit = fileSizeUnit(bytes);
+  return `${new Intl.NumberFormat("en", { maximumFractionDigits: unit.decimals }).format(bytes / unit.factor)} ${unit.name}`;
+}
 function budgetConfirmation(older) {
-  const units = ["bytes", "KiB", "MiB", "GiB", "TiB"];
-  const scale = older > 0 ? Math.min(4, Math.floor(Math.log2(older) / 10)) : 0;
-  const size = `${new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(older / 1024 ** scale)} ${units[scale]}`;
-  return { title: "Keep less of older versions?", body: `Older versions take ${size} now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.`, button: "Keep up to" };
+  return { title: "Keep less of older versions?", body: `Older versions take ${fileSize(older)} now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.`, button: "Keep up to" };
 }
 
 // box/src/link/mac/keeper-runs.ts
@@ -59590,19 +59595,13 @@ async function worktreesAct(context, at, action) {
     return noActions();
   return staleOrRefusal(await asked8(context, worktreesRoute, "POST", "kuvo/worktrees/remove", { path: at.id.slice(5), was: at.value }));
 }
-var fileSize = (bytes) => {
-  const units = ["bytes", "KiB", "MiB", "GiB", "TiB"];
-  const scale = bytes > 0 ? Math.min(4, Math.floor(Math.log2(bytes) / 10)) : 0;
-  return `${new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(bytes / 1024 ** scale)} ${units[scale]}`;
-};
 async function storagePage(context) {
   const read = await asked8(context, artifactsRoute, "GET", "kuvo/artifacts/storage");
   if (read.status !== 200)
     return unreadPage("storage", "Storage", read);
   const kept = read.value;
-  const unit = { name: "GiB", factor: 1024 ** 3, decimals: 2, rounding: "nearest" };
-  const scale = kept.copies > 0 ? Math.min(4, Math.max(0, Math.floor(Math.log2(kept.copies) / 10))) : 0;
-  const copiesUnit = { name: ["bytes", "KiB", "MiB", "GiB", "TiB"][scale], factor: 1024 ** scale, decimals: 1, rounding: "nearest" };
+  const unit = kept.budget < 1e9 ? { name: "MB", factor: 1e6, decimals: 2, rounding: "nearest" } : { name: "GB", factor: 1e9, decimals: 2, rounding: "nearest" };
+  const copiesUnit = fileSizeUnit(kept.copies);
   return { id: "storage", title: "Storage", groups: [{ id: "agents-made", title: "What Agents Made", rows: [
     row({ id: "copies", title: "Copies of what agents made", line: "Each version of the files agents write or change, so you can see what changed and put one back. Never what looks like a secret, and only the changes for code git keeps.", kind: "status", value: kept.copies, unit: copiesUnit }),
     row({
@@ -59614,7 +59613,7 @@ async function storagePage(context) {
       unit,
       min: 0,
       can: true,
-      suggestions: [0.25, 0.5, 1, 2, 5, 10].map((gb) => ({ value: gb * unit.factor, title: `${gb} ${unit.name}` })),
+      suggestions: [0.25, 0.5, 1, 2, 5, 10].map((gb) => ({ value: gb * 1e9, title: `${gb} GB` })),
       confirmBelow: { value: kept.older, confirm: budgetConfirmation(kept.older) }
     }),
     row({

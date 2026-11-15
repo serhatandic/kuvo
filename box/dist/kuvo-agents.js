@@ -1405,11 +1405,16 @@ function walk(folder, own = []) {
 }
 
 // box/src/shared/artifact-budget.ts
+function fileSizeUnit(bytes) {
+  const scale = bytes > 0 ? Math.min(4, Math.max(0, Math.floor(Math.log10(bytes) / 3))) : 0;
+  return { name: ["bytes", "KB", "MB", "GB", "TB"][scale], factor: 1000 ** scale, decimals: 1, rounding: "nearest" };
+}
+function fileSize(bytes) {
+  const unit = fileSizeUnit(bytes);
+  return `${new Intl.NumberFormat("en", { maximumFractionDigits: unit.decimals }).format(bytes / unit.factor)} ${unit.name}`;
+}
 function budgetConfirmation(older) {
-  const units = ["bytes", "KiB", "MiB", "GiB", "TiB"];
-  const scale = older > 0 ? Math.min(4, Math.floor(Math.log2(older) / 10)) : 0;
-  const size = `${new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(older / 1024 ** scale)} ${units[scale]}`;
-  return { title: "Keep less of older versions?", body: `Older versions take ${size} now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what\u2019s kept stay.`, button: "Keep up to" };
+  return { title: "Keep less of older versions?", body: `Older versions take ${fileSize(older)} now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what\u2019s kept stay.`, button: "Keep up to" };
 }
 
 // box/src/shared/files.ts
@@ -36786,4 +36791,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents c260912948360921f92a08f8999e439d1812733975abadbe4ed362ffe9aea970
+// Built from Packages/Box/src/agents 984fd1f3847da23aba52b3f26f23d16e9c33fafdcada8283fcab5ea69bca63e7
