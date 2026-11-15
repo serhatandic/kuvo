@@ -8,9 +8,12 @@ import path from "node:path";
 
 // (Your account, whatever HOME says: shared with the coding agents' bridge.)
 import { accountHome, accountName, homeFolder } from "../shared/account";
+import { boxHomeIs } from "../shared/zone";
 export { accountHome, accountName, homeFolder };
 
 export const K = process.env.KUVO_HOME || path.join(homeFolder(), ".kuvo-code");
+// (Your time zone is read from its folder: `shared/zone.ts`.)
+boxHomeIs(K);
 
 /** Where a box records what kind it is (`box/kind`: `mac` or `machine`, a word on a line), which
  * `kuvo-start` reads too: none on a machine set up from a Mac, nor in this Mac's app's own folder. */

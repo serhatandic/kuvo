@@ -10,6 +10,7 @@
 // KUVO_AGENTS_PASSWORD, reaches the engine on KUVO_ENGINE_PORT with OPENCODE_PASSWORD, and lives
 // as long as the engine (KUVO_ENGINE_PID) does, the Mac connected or not.
 
+import { boxZoneIs } from "../shared/zone"
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { Accounts, parseProvider } from "./accounts"
@@ -228,6 +229,8 @@ for (const name of ["KUVO_GROUPS", "KUVO_TRASH", "KUVO_GROUPS_MEMORY_KEY", "KUVO
 if (groupFolders) {
   try {
     const store = new GroupStore(groupFolders.root, groupFolders.bots, agentsFile)
+    // Your zone as the box last gave it, for this bridge's clocks until it gives it again.
+    boxZoneIs(store.settings()?.boxTimeZone)
     // Its bots in chats on your other computers, and theirs in chats here, through the box's link.
     const runner = new GroupRunner({
       store,

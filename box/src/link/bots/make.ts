@@ -16,6 +16,7 @@ import { botPersonalities } from "../personalities/library";
 import { BOT_STEP, botLook, botModel, DESCRIPTION, isModel, noteBotsChanged } from "./here";
 import { firstMessageOf } from "./jobs";
 import { botInstructions, NO_KIT, readKit, runsWithAgents } from "./kit";
+import { writeZoneFiles } from "../zone/setting";
 import { listBots } from "./list";
 import { noteTold, toldDigest } from "./tell";
 import { approvalOf, approvalRules } from "../work/approval";
@@ -65,11 +66,11 @@ export async function signInRefusal(model: BotModel, engine: Target, signal?: Ab
   return ids.length && !ids.includes(model.providerID) ? `${model.id} needs a sign-in on ${HERE}: sign in to it in Settings › Accounts, or choose another model.` : null;
 }
 
-// The model a new bot starts on here, as New Bot offers it: the one its Mac named (the model picked
-// last there) while this box can use it (its account signed in here, and not one being retired); else
-// the engine's default, or the first model this box can use. As the Mac named it when the engine
-// can't say (or doesn't answer in time), and a coding agent's (the bridge says for itself whether it
-// can run it).
+// The model a new bot starts on here, as New Bot offers it: one `named` (none now: the box goes by
+// its own rule) while this box can use it (its account signed in here, and not one being retired);
+// else the engine's default, or the first model this box can use. As named when the engine can't
+// say (or doesn't answer in time), and a coding agent's (the bridge says for itself whether it can
+// run it).
 export async function startingModelHere(named: BotModel | null, readEngine: () => Target, signal?: AbortSignal): Promise<BotModel | null> {
   if (named && runsWithAgents(named)) return named;
   let engine: Target | null = null;
@@ -142,11 +143,11 @@ async function makeOnce(given: GivenBot | null | undefined, readEngine: () => Ta
   const personality = personalityID ? botPersonalities(kit).find(each => each.id === personalityID) : undefined;
   if (personalityID && !personality) return no(400, `There’s no personality “${personalityID}”.`);
   const project = given.project ?? undefined;
-  if (project !== undefined && !boxProjects(kit).some(each => each.directory === project)) return no(400, "That project isn’t in Kuvo Code.");
+  if (project !== undefined && !boxProjects().some(each => each.directory === project)) return no(400, "That project isn’t in Kuvo Code.");
   const looks = kit.looks;
   const pick = (list: string[]): string => list[crypto.randomInt(list.length)];
   const look = fitsLook(looks, given.look) ? botLook(given.look) : template?.look ?? { color: pick(looks.colors), shape: pick(looks.shapes), face: pick(looks.faces) };
-  const model = isModel(given.model) ? botModel(given.model) : await startingModelHere(kit.startingModel ?? null, readEngine);
+  const model = isModel(given.model) ? botModel(given.model) : await startingModelHere(null, readEngine);
   if (!model) return no(422, `There’s no model to start it on here: sign in to an account on ${HERE} first.`);
   const agents = runsWithAgents(model);
   let target: Target | null | undefined;
@@ -196,9 +197,8 @@ async function makeOnce(given: GivenBot | null | undefined, readEngine: () => Ta
     fs.writeFileSync(path.join(folder, "session"), session.id);
     noteTold(folder, { session: session.id, instructions: toldDigest(told), rules: folder });
     fs.writeFileSync(path.join(folder, "directory"), directory);
-    // A machine's wake-ups go by your time zone; this Mac's, by its own clock as you change it.
-    if (kit.timeZone && !IS_MAC) fs.writeFileSync(path.join(folder, "timezone"), kit.timeZone);
-    if (kit.zoneinfo && !IS_MAC) fs.writeFileSync(path.join(folder, "zoneinfo"), Buffer.from(kit.zoneinfo, "base64"));
+    // Its wake-ups go by your time zone (`zone/setting.ts`).
+    writeZoneFiles(folder);
     if (agents) fs.writeFileSync(path.join(folder, "via"), "bridge");
     const now = stamp();
     const described = { created: now, id, job: "", kuvo: DESCRIPTION, look, model, name, ...(personality ? { personality: personality.id } : {}), ...(project ? { project: project as string } : {}), updated: now } satisfies BotDescription;
