@@ -21,7 +21,7 @@ import { importItems, importWords, parseBacklog, readBacklogFiles } from "../wor
 import { primaryOf } from "../work-queue/numbers";
 import { changedThere, itemElsewhere, itemsElsewhere, tellQueuesAgain } from "../work-queue/across";
 import { Refusal, refuseMoving } from "../work-queue/ops";
-import { TOLD } from "../work-queue/told";
+import { TOLD, type ToldItem } from "../work-queue/told";
 import { readLink } from "../state";
 import { ownKey } from "../peers/known";
 import { awaySince } from "../peers/reach";
@@ -29,13 +29,16 @@ import type { QueueCounts } from "../../shared/routes/work-queue";
 import { allItems, changeQueues, matching, OWNER, queueFollowers, readAll, WORK_QUEUE, type Item } from "../work-queue/store";
 import { readSeen, SEEN_FILE } from "../work-queue/github";
 import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/tools";
-import { canOf, overdueOf, todayHere, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, summaryOf, type Facts, type ItemSummary } from "../work-queue/view";
-import { forwardAct, takesForwarded, type Acted } from "../work-queue/forward";
+import { canOf, overdueOf, todayHere, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, summaryOf, type Computer, type Facts, type ItemSummary } from "../work-queue/view";
+import { forwardAct, seekElsewhere, takesForwarded, type Acted } from "../work-queue/forward";
 import { actHere, addHere, fileOf, GITHUB_WAIT, withCan } from "../work-queue/acts";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
 
 export const WORK_QUEUE_ROUTE = /^kuvo\/work-queue(?:\/(tools|events|refs|labels|import|items(?:\/([^/]+)(?:\/(restore|files\/([^/]+)))?)?))?$/;
+
+// An item another of your computers keeps, with which one.
+type Elsewhere = ToldItem & { computer: Computer };
 
 const YOU = { user: true } as const;
 // Every queue on the box at once, as the panel's All shows it.
@@ -304,18 +307,35 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   const ref = refOf(named);
   if (!ref) return yield* json(404, { message: "There's no such item." });
   const find = (items: Item[]) => matching(items, ref)[0] ?? null;
+  // (Who it's for is set on the computer that keeps it: that box's `can` is for its own client,
+  // whose bots are its own.)
+  const fromThere = (item: Record<string, unknown>, computer: Computer) => ({ ...item, ...(isObject(item.can) ? { can: { ...item.can, assign: false } } : {}), computer });
+  // One that's neither here nor told by any of your computers (an old Done one, a deleted one), for
+  // a client: asked of each of them, so a client asks one box whichever keeps it. Null when none
+  // has it; `refuse` when some couldn't say, so it may be there.
+  const seek = async (): Promise<{ far: Elsewhere; whole: Record<string, unknown> } | { refuse: { message: string; computers: Computer[] } } | null> => {
+    if (!fromClient(context)) return null;
+    const sought = await seekElsewhere(named, ref, signal);
+    if ("missing" in sought) return null;
+    if ("unsure" in sought) return { refuse: { message: sought.message, computers: sought.unsure } };
+    return { far: { ...sought.told, computer: sought.computer }, whole: sought.item };
+  };
   if (action === undefined && method === "GET") {
     if (find(allItems())) return yield* answered(await actHere({ method: "GET", ref, targets, signal }), json);
     // One on another of your computers: whole, as that computer's box answers for a client (`told:
     // false`); else as it last told it (`told: true`), without what only it keeps (its description,
     // notes, what happened to it, files, links).
     let far = itemElsewhere(ref, readLink(), { deleted: fromClient(context) });
-    if (!far) return yield* json(404, { message: "There's no such item." });
+    if (!far) {
+      const sought = await seek();
+      if (!sought) return yield* json(404, { message: "There's no such item." });
+      if ("refuse" in sought) return yield* json(503, sought.refuse);
+      return yield* json(200, { item: { ...fromThere(sought.whole, sought.far.computer), told: false } });
+    }
     if (fromClient(context)) {
       const there = await forwardAct(far.computer, nameOf(far), { method: "GET", item: far.id }, signal);
       const whole = there.status === 200 && "value" in there && isObject(there.value) && isObject(there.value.item) ? there.value.item : null;
-      // (Who it's for is set there: that box's `can` is for its own client, whose bots are its own.)
-      if (whole) return yield* json(200, { item: { ...whole, ...(isObject(whole.can) ? { can: { ...whole.can, assign: false } } : {}), computer: far.computer, told: false } });
+      if (whole) return yield* json(200, { item: { ...fromThere(whole, far.computer), told: false } });
     }
     // (As it was told: nothing to do to it from here until its computer answers.)
     const cant = { away: awaySince(far.computer.key) !== null, apart: !fromClient(context) || sharedMachine(readLink()) || !takesForwarded(far.computer.key) };
@@ -328,7 +348,13 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     let name = "";
     try { name = decodeURIComponent(rawFile ?? ""); } catch {}
     // One kept with an item on another of your computers: from there, for a client (up to a few MB).
-    const far = !find(allItems()) && fromClient(context) && name && name.length <= 300 ? itemElsewhere(ref) : null;
+    const forClient = !find(allItems()) && fromClient(context) && Boolean(name) && name.length <= 300;
+    let far: Elsewhere | null = forClient ? itemElsewhere(ref) : null;
+    if (forClient && !far) {
+      const sought = await seek();
+      if (sought && "refuse" in sought) return yield* json(503, sought.refuse);
+      far = sought?.far ?? null;
+    }
     let file = far ? null : fileOf(ref, name);
     if (far) {
       const there = await forwardAct(far.computer, nameOf(far), { method: "GET", item: far.id, action: "file", name }, signal);
@@ -350,7 +376,15 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   if (!fromClient(context)) return yield* json(403, { message: notClient(context) });
   // One on another of your computers is done there, by that computer's box: this one hands it on
   // and answers with what it said (a client never works out where an item is).
-  const far = !find(allItems()) ? itemElsewhere(ref, readLink(), { deleted: asked.action === "restore" }) : null;
+  let far: Elsewhere | null = null;
+  if (!find(allItems())) {
+    far = itemElsewhere(ref, readLink(), { deleted: asked.action === "restore" });
+    if (!far) {
+      const sought = await seek();
+      if (sought && "refuse" in sought) return yield* json(503, sought.refuse);
+      far = sought?.far ?? null;
+    }
+  }
   if (!far) return yield* answered(await actHere({ ...asked, ref, given, targets, signal }), json);
   const { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top } = given;
   const there = await forwardAct(far.computer, nameOf(far), { ...asked, item: far.id, ...(asked.method === "PATCH" ? { body: { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top } } : {}) }, signal);
@@ -359,7 +393,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   if (there.status === 200 && isObject(there.value) && isObject(there.value.item) && there.value.item.id === far.id) changedThere(far.computer.key, asked.method === "DELETE" ? "delete" : asked.action ?? "change", there.value.item);
   // (As this box names that computer, so a client knows where it is.)
   const value = !isObject(there.value) ? there.value
-    : isObject(there.value.item) ? { ...there.value, item: { ...there.value.item, ...(isObject(there.value.item.can) ? { can: { ...there.value.item.can, assign: false } } : {}), computer: far.computer } }
+    : isObject(there.value.item) ? { ...there.value, item: fromThere(there.value.item, far.computer) }
     : there.status === 200 ? there.value : { ...there.value, computer: far.computer };
   return yield* json(there.status, value);
 }

@@ -25,8 +25,8 @@ import { sharedMachine } from "../setup/settle";
 import { readLink } from "../state";
 import { computerName } from "../peers/computer-name";
 import { mailsFor } from "./parts";
-import { WORK_QUEUE } from "./store";
-import { readTold } from "./told";
+import { refNames, WORK_QUEUE, type ItemRef } from "./store";
+import { readTold, toldItemOf, type ToldItem } from "./told";
 import type { MailSender } from "../peers/known";
 import type { LinkHost } from "../relay/host";
 import type { LinkState } from "../state";
@@ -128,6 +128,89 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
     fs.rmSync(left(id), { force: true });
     fs.rmSync(answerOf(id), { force: true });
   }
+}
+
+/** What asking your other computers for an item this box knows nothing of came to: the one that
+ * keeps it, with the item whole as its box answered (`told`: as this box reads any item another
+ * computer tells); that none has it (`missing`: every one answered); or that some couldn't say, so
+ * it may be there (`unsure`, with why in words a client shows). */
+export type Sought = { computer: Computer; item: Record<string, unknown>; told: ToldItem } | { missing: true } | { unsure: Computer[]; message: string };
+
+const listed = (names: string[]) => (names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`);
+
+/** An item no computer told this box of (an old Done one, a deleted one), named as a client named
+ * it (`named`, which is `ref`: its number, id or issue), asked of each of your other computers'
+ * boxes at once, for a client (PROTOCOL.md, "The Work Queue", "Across your computers", Found where
+ * it's kept): so a client asks one box, whichever keeps the item. A live one answers at once; a
+ * deleted one only once every computer answered, as another may keep it live (an issue is one item,
+ * and of two the one changed last). Never from a machine Macs share outside one setup, which asks
+ * no other computer. */
+export async function seekElsewhere(named: string, ref: ItemRef, signal?: AbortSignal | null, link: LinkState | null = readLink()): Promise<Sought> {
+  const peers = sharedMachine(link) ? [] : peersOf(link);
+  // (A name the box that keeps it wouldn't take, or an asker that's gone: no one is asked.)
+  if (!peers.length || named.length > 300 || signal?.aborted) return { missing: true };
+  const here = ownName();
+  const computerOf = (peer: (typeof peers)[number]): Computer => ({ key: peer.key, name: computerName(peer), kind: peer.kind, ...(peer.id ? { id: peer.id } : {}) });
+  if (offRelay()) return { unsure: peers.map(computerOf), message: `It isn't on ${here}, and ${here} isn't connected to your other computers now, so it can't tell whether it's on one of them. Try again in a moment.` };
+  type Found = { computer: Computer; item: Record<string, unknown>; told: ToldItem };
+  // (A live one answers for all: the others aren't waited for.)
+  const rest = new AbortController();
+  const gone = () => rest.abort();
+  signal?.addEventListener("abort", gone, { once: true });
+  // Why each that couldn't say couldn't: it isn't answering, it's a box from before this, or it
+  // refused (in its own words).
+  const away: Computer[] = [];
+  const older: Computer[] = [];
+  const refused: { computer: Computer; said: string }[] = [];
+  let deleted: Found | null = null;
+  try {
+    const found = await new Promise<Found | null>(resolve => {
+      let left = peers.length;
+      const done = () => { if (--left === 0) resolve(deleted); };
+      for (const peer of peers) {
+        const computer = computerOf(peer);
+        // (One that doesn't take it from another box, an older one: it can't be asked.)
+        if (!takesForwarded(peer.key)) {
+          older.push(computer);
+          done();
+          continue;
+        }
+        forwardAct(computer, "", { method: "GET", item: named }, rest.signal, link).then(there => {
+          if ("refused" in there) away.push(computer);
+          else if (there.status === 200) {
+            const item = isObject(there.value) && isObject(there.value.item) ? there.value.item : null;
+            const told = item ? toldItemOf(item) : null;
+            // (One this box can't read, or that isn't the one asked for, is no answer.)
+            if (!item || !told || !refNames(ref, told)) refused.push({ computer, said: "" });
+            else if (!isObject(item.removed)) return resolve({ computer, item, told });
+            else if (!deleted || told.updated.at > deleted.told.updated.at) deleted = { computer, item, told };
+          } else if (there.status !== 404) {
+            const said = isObject(there.value) && typeof there.value.message === "string" ? there.value.message.slice(0, 300) : "";
+            refused.push({ computer, said });
+          }
+          done();
+        }, () => {
+          refused.push({ computer, said: "" });
+          done();
+        });
+      }
+    });
+    // (A deleted one stands only when no computer that may keep it live couldn't say.)
+    if (found && (!isObject(found.item.removed) || (!away.length && !older.length && !refused.length))) return found;
+  } finally {
+    rest.abort();
+    signal?.removeEventListener("abort", gone);
+  }
+  if (!away.length && !older.length && !refused.length) return { missing: true };
+  const names = (computers: Computer[]) => listed(computers.map(each => each.name));
+  const why = [
+    ...(away.length ? [`${names(away)} ${away.length === 1 ? "isn't" : "aren't"} answering now (${away.length === 1 ? "it" : "they"} may be asleep, off or offline)`] : []),
+    ...(older.length ? [`${names(older)} ${older.length === 1 ? "needs" : "need"} a newer Kuvo Code to be asked from ${here}`] : []),
+    ...refused.map(each => `${each.computer.name} couldn't say${each.said ? ` ("${each.said}")` : ""}`),
+  ].join(", and ");
+  // (Trying again helps only for one that isn't answering.)
+  const again = away.length ? ` Try again once ${away.length === 1 ? `${away[0]!.name} answers` : "they answer"}.` : "";
+  return { unsure: [...away, ...older, ...refused.map(each => each.computer)], message: `It isn't on ${here}, and ${why}, so it may be there.${again}` };
 }
 
 // The asks this process left. This Mac's box answers its routes in the process that sends, so it

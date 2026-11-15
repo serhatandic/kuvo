@@ -65,6 +65,7 @@ pub const REQUIRED: &[&str] = &[
     "usage.notices",
     "waiting",
     "waiting.cards",
+    "work-queue.anywhere",
     "work-queue.counts",
     "work-queue.edit",
 ];

@@ -1099,6 +1099,140 @@ test("a computer that keeps the item but isn't answering: said at once, plainly,
   assert.deepEqual(mailTo(lab), []);
 });
 
+test("an item no computer told this box of, asked of this box by a client, comes from the computer that keeps it: read whole, its files and what you do to it; on none, not found; while one can't say, it may be there, said plainly with which", async () => {
+  forwardsTold();
+  // (Lab told of #500 only: #7, an old Done one on the Mac, is in nothing this box was told.)
+  receive(lab, { workQueue: telling([told(500, "ses_far")]) });
+  sent.length = 0;
+  const { connection, sentTo: mailSentTo } = relay();
+  link.queueForwardsSoon.send = () => link.sendQueueForwards(connection);
+  // What this box sends `to` for the request under way: never waited for past that request's answer.
+  let pending = null;
+  const ask = (...request) => (pending = route(...request));
+  const sentTo = to => Promise.race([mailSentTo(to), pending.then(answer => assert.fail(`it answered ${answer.status} ${JSON.stringify(answer.body)} and asked ${to.peer.name} nothing`))]);
+  const studio = { key: mac.pub, name: "Studio", kind: "mac" };
+  const whole7 = { ...told(7, "ses_lead", { status: "done" }), can: { edit: true, set: true, assign: true, close: true, delete: true, restore: false }, body: "What only the Mac keeps", notes: [], events: [], files: [{ name: "notes.txt", type: "text/plain", size: 9 }], links: [], handed: [] };
+  const gone = { status: 404, value: { message: "It's no longer on lab: it may have moved. Look again in a moment." } };
+  // Both asked for it, as the client named it; each answers `said` (by its name).
+  const asked = async said => {
+    const acts = {};
+    for (const each of [lab, mac]) {
+      const [mail] = await sentTo(each);
+      acts[each.peer.name] = mail.workQueue.act;
+      const answer = said[each.peer.name];
+      if (answer) receive(each, { workQueue: { acted: { id: mail.workQueue.act.id, ...answer } } });
+    }
+    return acts;
+  };
+
+  // Read: every other computer is asked, and the Mac, which keeps it, answers it whole.
+  const reading = ask("GET", "kuvo/work-queue/items/7");
+  const acts = await asked({ lab: gone, Studio: { status: 200, value: { item: whole7 } } });
+  assert.deepEqual([acts.lab, acts.Studio].map(act => ({ method: act.method, item: act.item })), [{ method: "GET", item: "7" }, { method: "GET", item: "7" }]);
+  const read = await reading;
+  assert.equal(read.status, 200);
+  assert.deepEqual([read.body.item.title, read.body.item.body, read.body.item.told], ["Item 7", "What only the Mac keeps", false]);
+  assert.deepEqual(read.body.item.computer, studio, "said to be on the Mac, as this box names it");
+  // (What may be done to it is the Mac's word, but for who it's for: set there, among its bots.)
+  assert.deepEqual(read.body.item.can, { edit: true, set: true, assign: false, close: true, delete: true, restore: false });
+  assert.deepEqual(fs.readdirSync(forwards), [], "nothing left behind");
+
+  // One of its files: found the same way, then its bytes from the Mac.
+  const fetching = ask("GET", "kuvo/work-queue/items/7/files/notes.txt");
+  await asked({ lab: gone, Studio: { status: 200, value: { item: whole7 } } });
+  const [file] = await sentTo(mac);
+  assert.deepEqual({ method: file.workQueue.act.method, action: file.workQueue.act.action, item: file.workQueue.act.item, name: file.workQueue.act.name }, { method: "GET", action: "file", item: told(7).id, name: "notes.txt" });
+  receive(mac, { workQueue: { acted: { id: file.workQueue.act.id, status: 200, value: { type: "text/plain", data: Buffer.from("From Mac.").toString("base64") } } } });
+  assert.deepEqual(await fetching, { status: 200, body: "From Mac." });
+
+  // Changed: found, then done on the Mac, by its id; the answer is the Mac's.
+  const moving = ask("PATCH", "kuvo/work-queue/items/7", { status: "todo" });
+  await asked({ lab: gone, Studio: { status: 200, value: { item: whole7 } } });
+  const [change] = await sentTo(mac);
+  assert.deepEqual({ method: change.workQueue.act.method, item: change.workQueue.act.item, body: change.workQueue.act.body }, { method: "PATCH", item: told(7).id, body: { status: "todo" } });
+  receive(mac, { workQueue: { acted: { id: change.workQueue.act.id, status: 200, value: { item: told(7, "ses_lead", { status: "todo" }) } } } });
+  const moved = await moving;
+  assert.deepEqual([moved.status, moved.body.item.status, moved.body.item.computer], [200, "todo", studio]);
+  mailTo(lab);
+  mailTo(mac);
+
+  // On no computer, and every one said so: not found.
+  const missing = ask("GET", "kuvo/work-queue/items/8");
+  await asked({ lab: gone, Studio: gone });
+  assert.deepEqual(await missing, { status: 404, body: { message: "There's no such item." } });
+  // An answer that isn't the item asked for is no answer: the Mac couldn't say, so it may be there.
+  const other = ask("GET", "kuvo/work-queue/items/8");
+  await asked({ lab: gone, Studio: { status: 200, value: { item: whole7 } } });
+  assert.deepEqual(await other, { status: 503, body: { message: "It isn't on devbox, and Studio couldn't say, so it may be there.", computers: [studio] } });
+  // One that refuses (its clock is far off): its own words, and no "try again", which wouldn't help.
+  const apart = ask("GET", "kuvo/work-queue/items/8");
+  await asked({ lab: gone, Studio: { status: 409, value: { message: "Studio's clock and devbox's are too far apart to take it: check both computers' time." } } });
+  assert.equal((await apart).body.message, `It isn't on devbox, and Studio couldn't say ("Studio's clock and devbox's are too far apart to take it: check both computers' time."), so it may be there.`);
+  // Deleted on lab, live on the Mac (an issue is one item): the live one, whichever answers first.
+  const deleted7 = { ...whole7, removed: { at: 3000, by: { user: true } } };
+  const twice = ask("GET", "kuvo/work-queue/items/7");
+  await asked({ lab: { status: 200, value: { item: deleted7 } }, Studio: { status: 200, value: { item: whole7 } } });
+  assert.deepEqual([(await twice).body.item.removed, (await twice).body.item.computer.name], [undefined, "Studio"]);
+  // Deleted on lab and on no other: that one, once the Mac said it hasn't it.
+  const once = ask("GET", "kuvo/work-queue/items/7");
+  await asked({ lab: { status: 200, value: { item: deleted7 } }, Studio: gone });
+  assert.deepEqual([(await once).body.item.removed.at, (await once).body.item.computer.name], [3000, "lab"]);
+
+  // Lab isn't answering: it may be there, so it's never "not found". Said at once, with which.
+  write(path.join(run, "peer-reach.json"), { [lab.pub]: Date.now() - 60_000 });
+  const unsure = ask("GET", "kuvo/work-queue/items/8");
+  const [toMac] = await sentTo(mac);
+  receive(mac, { workQueue: { acted: { id: toMac.workQueue.act.id, ...gone } } });
+  assert.deepEqual(await unsure, { status: 503, body: {
+    message: "It isn't on devbox, and lab isn't answering now (it may be asleep, off or offline), so it may be there. Try again once lab answers.",
+    computers: [{ key: lab.pub, name: "lab", kind: "machine", id: "lab" }],
+  } });
+  assert.deepEqual(mailTo(lab), [], "and nothing goes to lab");
+  // A change to it: refused the same, nothing done anywhere.
+  const changing = ask("DELETE", "kuvo/work-queue/items/8");
+  const [again] = await sentTo(mac);
+  assert.equal(again.workQueue.act.method, "GET", "looked for, never deleted by its number on a computer that may not keep it");
+  receive(mac, { workQueue: { acted: { id: again.workQueue.act.id, ...gone } } });
+  assert.equal((await changing).status, 503);
+  // But found on the Mac, it's read though lab is away.
+  const found = ask("GET", "kuvo/work-queue/items/7");
+  const [seven] = await sentTo(mac);
+  receive(mac, { workQueue: { acted: { id: seven.workQueue.act.id, status: 200, value: { item: whole7 } } } });
+  assert.equal((await found).body.item.number, 7);
+  fs.rmSync(path.join(run, "peer-reach.json"));
+
+  // Neither answers in time: both named.
+  link.queueForwardTiming.wait = 0;
+  const late = await ask("GET", "kuvo/work-queue/items/8");
+  assert.equal(late.status, 503);
+  assert.match(late.body.message, /^It isn't on devbox, and (lab and Studio|Studio and lab) aren't answering now \(they may be asleep, off or offline\), so it may be there\. Try again once they answer\.$/);
+  assert.deepEqual(late.body.computers.map(each => each.name).sort(), ["Studio", "lab"]);
+  link.queueForwardTiming.wait = 20_000;
+  mailTo(lab);
+  mailTo(mac);
+  assert.deepEqual(fs.readdirSync(forwards), [], "nothing left behind");
+
+  // A lab from before, which takes nothing from another box: it can't be asked, and that's said.
+  agentsTold({ [mac.pub]: { at: 1, heard: Date.now(), kind: "mac", list: [], features: ["work-queue", "work-queue.elsewhere", "work-queue.forward", "work-queue.edit"] } });
+  const older = ask("GET", "kuvo/work-queue/items/8");
+  const [only] = await sentTo(mac);
+  receive(mac, { workQueue: { acted: { id: only.workQueue.act.id, ...gone } } });
+  assert.deepEqual((await older).body.message, "It isn't on devbox, and lab needs a newer Kuvo Code to be asked from devbox, so it may be there.");
+  assert.deepEqual(mailTo(lab), []);
+  forwardsTold();
+
+  // Anyone else on this computer (an agent's `box route`, unproven): only what this box has; no
+  // other computer is asked for it.
+  const pieces = [];
+  for await (const piece of handle({ method: "GET", path: "kuvo/work-queue/items/7", headers: {}, fromMac: true }, undefined)) pieces.push(piece);
+  assert.equal(pieces.find(each => each.head).head.status, 404);
+  assert.deepEqual([mailTo(lab), mailTo(mac)], [[], []]);
+  // Nor from a machine Macs share outside one setup: it asks no other computer.
+  fresh({ macs: [mac, later] });
+  assert.equal((await ask("GET", "kuvo/work-queue/items/7")).status, 404);
+  assert.deepEqual([mailTo(lab), mailTo(mac)], [[], []]);
+});
+
 test("asked by another of your computers' boxes, this box does it to the item it keeps as its own client would, answers once for each ask, and takes it only from your computers", async () => {
   write(path.join(queues, "numbers.json"), { primary: mac.pub, leases: [[100, 149]] });
   await tool("queue_add", { title: "Ship the release" }, "ses_lead");
