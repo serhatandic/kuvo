@@ -25,13 +25,13 @@ export const SESSION_MOVED = object({ session: string, directory: string, "info?
 
 export type SessionMoved = Infer<typeof SESSION_MOVED>;
 
-/** One thing a session's menu offers (`kuvo/sessions/<id>/actions`): its id, the button's words,
- * whether it destroys something, and where a client asks first, the question, what it comes to and
- * the words of the button that goes ahead, all the box's. */
 /** What a client asks first, all in the box's words: the question, what it comes to, and the
  * words of the button that goes ahead (Delete All's too: `POST kuvo/sessions/deletes`). */
 export const CONFIRM = object({ title: string, message: string, label: string });
 
+/** One thing a session's menu offers (`kuvo/sessions/<id>/actions`): its id, the button's words,
+ * whether it destroys something, and where a client asks first, the question, what it comes to and
+ * the words of the button that goes ahead, all the box's. */
 export const SESSION_ACTION = object({
   id: words("pin", "unpin", "rename", "archive", "unarchive", "delete"),
   label: string,

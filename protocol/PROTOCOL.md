@@ -1605,8 +1605,9 @@ update gate.
   question for several at once (Settings › Archived Sessions), by the same rule over the whole set
   (a worktree only they're in goes, and a removed one's kept changes go with the last of them):
   "Delete 2 sessions?", "Their messages and undo snapshots go too." then what goes with their
-  worktrees, then "This can’t be undone.". For one, it's as that session's own Delete asks. Ids the
-  box doesn't list are left out; `400` for none given, `404` for none here, `503` while the engine
+  worktrees, then "This can’t be undone.". For one, it's as that session's own Delete asks. The title
+  counts every id asked about (a client's list may be older than the box's), but a subagent's, a
+  seat or a hidden run; what goes with worktrees is said of those the box lists; `400` for none given, `404` for none here, `503` while the engine
   can't be read. A client then deletes each with `DELETE kuvo/sessions/<id>`.
 - Every one: `400` for an id that isn't a session's; `409 {message}` for a subagent's session, a group
   chat's seat or a hidden run (each goes, and changes, with what it's part of); `409 {message}` for one moving to another computer ("It’s moving to another computer.

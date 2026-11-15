@@ -45,12 +45,15 @@ export async function* deletesRoute(context: RouteContext): AsyncGenerator<Answe
   if (!ids?.length) return yield* json(400, { message: "Say which sessions (sessions, their ids)." });
   const list = await listNow(context, signal).catch(() => null);
   if (!list) return yield* json(503, { message: "The engine isn't running." });
+  // (A subagent's, a seat or a hidden run isn't deleted on its own: not counted.)
+  const parts = ids.filter(id => NOT_CONVERSATIONS.has(list.sessions[id]?.facts.kind ?? ""));
   const deleting = ids.flatMap(id => {
     const facts = list.sessions[id]?.facts;
-    return facts ? [{ id, directory: facts.directory, title: facts.title }] : [];
+    return facts && !NOT_CONVERSATIONS.has(facts.kind) ? [{ id, directory: facts.directory, title: facts.title }] : [];
   });
   if (!deleting.length) return yield* json(404, { message: "None of them is here." });
-  return yield* json(200, await deleteConfirm(deleting, context, signal));
+  // (As many as asked about, those this box doesn't list too: a client's list may be older.)
+  return yield* json(200, await deleteConfirm(deleting, context, signal, { count: ids.length - parts.length, list }));
 }
 
 /** `kuvo/sessions/<id>` (Delete), and its `actions`, `archive`, `pin` and `rename`. */
@@ -102,13 +105,13 @@ export interface Deleting { id: string; directory: string; title?: string }
  * known to be clean: git can't say, or something works there now and may still write); a removed
  * worktree's kept changes go with the last conversation that could bring them back. Where the
  * others can't be read, it says the most that may go. */
-export async function deleteConfirm(deleting: Deleting[], context: Pick<RouteContext, "readEngine" | "bridge">, signal?: AbortSignal): Promise<{ title: string; message: string; label: string }> {
+export async function deleteConfirm(deleting: Deleting[], context: Pick<RouteContext, "readEngine" | "bridge">, signal?: AbortSignal, { count = deleting.length, list: read }: { count?: number; list?: Awaited<ReturnType<typeof listNow>> } = {}): Promise<{ title: string; message: string; label: string }> {
   const inside = (folder: string, root: string) => folder === root || folder.startsWith(root + path.sep);
   const asked = new Set(deleting.map(each => each.id));
   const trees = readWorktrees(), removed = readRestorableWorktrees();
-  let list: Awaited<ReturnType<typeof listNow>> = null;
+  let list: Awaited<ReturnType<typeof listNow>> = read ?? null;
   const listed = async () => (list ??= await listNow(context, signal).catch(() => null));
-  let worktrees = 0, uncommitted = false, kept = false;
+  let worktrees = 0, uncommitted = false, kept = 0;
   const roots = new Set<string>();
   for (const one of deleting) {
     const live = one.directory ? trees.find(each => inside(one.directory, each.root)) : undefined;
@@ -119,7 +122,7 @@ export async function deleteConfirm(deleting: Deleting[], context: Pick<RouteCon
     const there = Object.entries((await listed())?.sessions ?? {}).filter(([, entry]) => !NOT_CONVERSATIONS.has(entry.facts.kind) && inside(entry.facts.directory, tree.root));
     const others = there.filter(([id]) => !asked.has(id));
     if (gone) {
-      if (!others.length && gone.snapshot) kept = true;
+      if (!others.length && gone.snapshot) kept += 1;
       continue;
     }
     if (others.some(([, entry]) => !entry.facts.archived)) continue;
@@ -129,7 +132,7 @@ export async function deleteConfirm(deleting: Deleting[], context: Pick<RouteCon
     const status = fs.existsSync(tree.root) ? await gitLater(tree.root, ["status", "--porcelain", "--untracked-files=normal"]) : null;
     if (status !== "" || there.some(([, entry]) => entry.facts.running)) uncommitted = true;
   }
-  if (deleting.length === 1) {
+  if (count === 1 && deleting.length === 1) {
     const message = uncommitted ? "Its worktree and changes that weren’t committed are deleted too."
       : worktrees ? "Its worktree is deleted too."
       : kept ? "The changes kept to restore its worktree are deleted too."
@@ -137,10 +140,10 @@ export async function deleteConfirm(deleting: Deleting[], context: Pick<RouteCon
     return { title: `Delete “${deleting[0]!.title || UNTITLED}”?`, message, label: "Delete" };
   }
   const also = [
-    worktrees ? (worktrees === 1 ? "The worktree only they used is deleted too" : "The worktrees only they used are deleted too") + (uncommitted ? ", with changes that weren’t committed." : ".") : "",
-    kept ? "So are the changes kept to restore their worktrees." : "",
+    worktrees ? (worktrees === 1 ? "The worktree they were in is deleted too" : "The worktrees they were in are deleted too") + (uncommitted ? ", with changes that weren’t committed." : ".") : "",
+    kept ? `The changes kept to restore ${kept === 1 ? "their worktree" : "their worktrees"} go too.` : "",
   ].filter(Boolean);
-  return { title: `Delete ${deleting.length} sessions?`, message: ["Their messages and undo snapshots go too.", ...also, "This can’t be undone."].join(" "), label: "Delete" };
+  return { title: count === 1 ? `Delete “${deleting[0]?.title || UNTITLED}”?` : `Delete ${count} sessions?`, message: ["Their messages and undo snapshots go too.", ...also, "This can’t be undone."].join(" "), label: "Delete" };
 }
 
 /** What a worktree's tidying doesn't count as a conversation in it. */

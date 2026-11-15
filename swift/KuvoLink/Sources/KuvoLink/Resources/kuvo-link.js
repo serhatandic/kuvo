@@ -43844,7 +43844,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d3f386048b14";
+var BRIDGE_VERSION = "6999edf4bc88";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -47434,13 +47434,14 @@ async function* deletesRoute(context) {
   const list = await listNow(context, signal).catch(() => null);
   if (!list)
     return yield* json(503, { message: "The engine isn't running." });
+  const parts = ids.filter((id) => NOT_CONVERSATIONS.has(list.sessions[id]?.facts.kind ?? ""));
   const deleting = ids.flatMap((id) => {
     const facts = list.sessions[id]?.facts;
-    return facts ? [{ id, directory: facts.directory, title: facts.title }] : [];
+    return facts && !NOT_CONVERSATIONS.has(facts.kind) ? [{ id, directory: facts.directory, title: facts.title }] : [];
   });
   if (!deleting.length)
     return yield* json(404, { message: "None of them is here." });
-  return yield* json(200, await deleteConfirm(deleting, context, signal));
+  return yield* json(200, await deleteConfirm(deleting, context, signal, { count: ids.length - parts.length, list }));
 }
 var SESSION_ACTION_ROUTE = /^kuvo\/sessions\/(ses[^/]+)(?:\/(actions|archive|pin|rename))?$/;
 var UNTITLED = "New Session";
@@ -47470,13 +47471,13 @@ function actionsOf(session, confirm) {
     { id: "delete", label: "Delete", destructive: true, confirm }
   ];
 }
-async function deleteConfirm(deleting, context, signal) {
+async function deleteConfirm(deleting, context, signal, { count = deleting.length, list: read } = {}) {
   const inside = (folder, root) => folder === root || folder.startsWith(root + path153.sep);
   const asked = new Set(deleting.map((each) => each.id));
   const trees = readWorktrees(), removed = readRestorableWorktrees();
-  let list = null;
+  let list = read ?? null;
   const listed = async () => list ??= await listNow(context, signal).catch(() => null);
-  let worktrees = 0, uncommitted = false, kept = false;
+  let worktrees = 0, uncommitted = false, kept = 0;
   const roots = new Set;
   for (const one of deleting) {
     const live = one.directory ? trees.find((each) => inside(one.directory, each.root)) : undefined;
@@ -47489,7 +47490,7 @@ async function deleteConfirm(deleting, context, signal) {
     const others = there.filter(([id]) => !asked.has(id));
     if (gone) {
       if (!others.length && gone.snapshot)
-        kept = true;
+        kept += 1;
       continue;
     }
     if (others.some(([, entry]) => !entry.facts.archived))
@@ -47501,15 +47502,15 @@ async function deleteConfirm(deleting, context, signal) {
     if (status !== "" || there.some(([, entry]) => entry.facts.running))
       uncommitted = true;
   }
-  if (deleting.length === 1) {
+  if (count === 1 && deleting.length === 1) {
     const message = uncommitted ? "Its worktree and changes that weren’t committed are deleted too." : worktrees ? "Its worktree is deleted too." : kept ? "The changes kept to restore its worktree are deleted too." : "This can’t be undone.";
     return { title: `Delete “${deleting[0].title || UNTITLED}”?`, message, label: "Delete" };
   }
   const also = [
-    worktrees ? (worktrees === 1 ? "The worktree only they used is deleted too" : "The worktrees only they used are deleted too") + (uncommitted ? ", with changes that weren’t committed." : ".") : "",
-    kept ? "So are the changes kept to restore their worktrees." : ""
+    worktrees ? (worktrees === 1 ? "The worktree they were in is deleted too" : "The worktrees they were in are deleted too") + (uncommitted ? ", with changes that weren’t committed." : ".") : "",
+    kept ? `The changes kept to restore ${kept === 1 ? "their worktree" : "their worktrees"} go too.` : ""
   ].filter(Boolean);
-  return { title: `Delete ${deleting.length} sessions?`, message: ["Their messages and undo snapshots go too.", ...also, "This can’t be undone."].join(" "), label: "Delete" };
+  return { title: count === 1 ? `Delete “${deleting[0]?.title || UNTITLED}”?` : `Delete ${count} sessions?`, message: ["Their messages and undo snapshots go too.", ...also, "This can’t be undone."].join(" "), label: "Delete" };
 }
 var NOT_CONVERSATIONS = new Set(["subagent", "seat", "hidden"]);
 function forgetWakes2(session) {

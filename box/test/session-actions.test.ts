@@ -261,7 +261,7 @@ test("Delete All asks once for the whole set, saying what goes with their worktr
   engine.sessions.set("ses_a1", session("ses_a1", "One", root, { "kuvo.archived": true }))
   engine.sessions.set("ses_a2", session("ses_a2", "Two", root, { "kuvo.archived": true }))
   const plain = await ask(handler, "POST", "kuvo/sessions/deletes", { sessions: ["ses_a1", "ses_a2", "ses_unknown"] })
-  expect(plain.json).toEqual({ title: "Delete 2 sessions?", message: "Their messages and undo snapshots go too. This can’t be undone.", label: "Delete" })
+  expect(plain.json).toEqual({ title: "Delete 3 sessions?", message: "Their messages and undo snapshots go too. This can’t be undone.", label: "Delete" })
   // Both of a removed worktree's last conversations: its kept changes go with them, though either
   // alone leaves the other to bring them back.
   const gone = join(root, "removed-all")
@@ -271,6 +271,30 @@ test("Delete All asks once for the whole set, saying what goes with their worktr
   engine.sessions.set("ses_g2", session("ses_g2", "G2", gone, { "kuvo.archived": true }))
   expect((await ask(handler, "GET", "kuvo/sessions/ses_g1/actions")).json.actions.find((each: any) => each.id === "delete").confirm.message).toBe("This can’t be undone.")
   const both = await ask(handler, "POST", "kuvo/sessions/deletes", { sessions: ["ses_g1", "ses_g2"] })
-  expect(both.json.message).toBe("Their messages and undo snapshots go too. So are the changes kept to restore their worktrees. This can’t be undone.")
+  expect(both.json.message).toBe("Their messages and undo snapshots go too. The changes kept to restore their worktree go too. This can’t be undone.")
   expect((await ask(handler, "POST", "kuvo/sessions/deletes", { sessions: [] })).status).toBe(400)
+  // One asked about that this box doesn't list (a client's older list) still counts in the title.
+  expect((await ask(handler, "POST", "kuvo/sessions/deletes", { sessions: ["ses_g1", "ses_gone"] })).json.title).toBe("Delete 2 sessions?")
+})
+
+test("Delete All over live worktrees: one only they were in goes, with what isn't committed; one another open conversation is in stays", async () => {
+  const mine = join(root, "all-mine"), shared = join(root, "all-shared"), clean = join(root, "all-clean")
+  for (const tree of [mine, shared, clean]) { mkdirSync(tree); spawnSync("git", ["init", "-q", tree]) }
+  writeFileSync(join(mine, "draft.md"), "not committed")
+  mkdirSync(join(kuvo, "box"), { recursive: true })
+  writeFileSync(join(kuvo, "box", "worktrees.json"), JSON.stringify({ worktrees: [mine, shared, clean].map(tree => ({ project: root, root: tree, folder: tree, branch: tree })) }))
+  engine.sessions.set("ses_m1", session("ses_m1", "M1", mine, { "kuvo.archived": true }))
+  engine.sessions.set("ses_m2", session("ses_m2", "M2", mine, { "kuvo.archived": true }))
+  engine.sessions.set("ses_s1", session("ses_s1", "S1", shared, { "kuvo.archived": true }))
+  engine.sessions.set("ses_open", session("ses_open", "Open", shared))
+  const words = async (ids: string[]) => (await ask(handler, "POST", "kuvo/sessions/deletes", { sessions: ids })).json.message
+  expect(await words(["ses_m1", "ses_m2", "ses_s1"])).toBe("Their messages and undo snapshots go too. The worktree they were in is deleted too, with changes that weren’t committed. This can’t be undone.")
+  // An archived one left in it, not asked about, keeps what isn't committed for Restore Worktree.
+  expect(await words(["ses_m1", "ses_s1"])).toBe("Their messages and undo snapshots go too. The worktree they were in is deleted too. This can’t be undone.")
+  // Two worktrees, the second clean.
+  engine.sessions.set("ses_c1", session("ses_c1", "C1", clean, { "kuvo.archived": true }))
+  expect(await words(["ses_m1", "ses_m2", "ses_c1"])).toBe("Their messages and undo snapshots go too. The worktrees they were in are deleted too, with changes that weren’t committed. This can’t be undone.")
+  // A removed worktree with nothing kept says nothing more.
+  writeFileSync(join(kuvo, "box", "worktrees.json"), JSON.stringify({ worktrees: [], restorable: [{ project: root, root: mine, folder: mine, branch: "m", head: "abc" }] }))
+  expect(await words(["ses_m1", "ses_m2"])).toBe("Their messages and undo snapshots go too. This can’t be undone.")
 })
