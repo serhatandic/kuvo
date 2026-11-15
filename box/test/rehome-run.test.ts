@@ -122,8 +122,8 @@ test.if(mac)("stopped once it can only go forward, running it again finishes it:
 test.if(mac)("an earlier Kuvo Code that still has its database open refuses the move, saying to quit it; once it's quit, the move goes ahead", async () => {
   const m = mac07(root)
   const before = snapshot(m.S)
-  // (Something that holds the database open, as its engine does: never by opening it as a database.)
-  const holder = spawn("/bin/sh", ["-c", 'exec 3<"$1"; echo ready; read line', "sh", join(m.S, "opencode", "data", "opencode", "opencode.db")], { stdio: ["pipe", "pipe", "ignore"] })
+  // (Something that holds the database open to write in it, as its engine does: never by opening it as a database.)
+  const holder = spawn("/bin/sh", ["-c", 'exec 3<>"$1"; echo ready; read line', "sh", join(m.S, "opencode", "data", "opencode", "opencode.db")], { stdio: ["pipe", "pipe", "ignore"] })
   try {
     await new Promise<void>(resolve => holder.stdout.once("data", () => resolve()))
     const refused = run(m)
@@ -136,10 +136,17 @@ test.if(mac)("an earlier Kuvo Code that still has its database open refuses the 
     holder.stdin.end()
     await new Promise(resolve => holder.once("exit", resolve))
   }
-  // Tried again at once: no wait between tries.
-  const moved = run(m)
-  expect(moved.status, moved.errors + JSON.stringify(moved.said)).toBe(0)
-  expect(snapshot(m.S)).toEqual(before)
+  // Tried again at once: no wait between tries. Something only reading it (a backup, Spotlight) holds nothing back.
+  const reader = spawn("/bin/sh", ["-c", 'exec 3<"$1"; echo ready; read line', "sh", join(m.S, "opencode", "data", "opencode", "opencode.db")], { stdio: ["pipe", "pipe", "ignore"] })
+  try {
+    await new Promise<void>(resolve => reader.stdout.once("data", () => resolve()))
+    const moved = run(m)
+    expect(moved.status, moved.errors + JSON.stringify(moved.said)).toBe(0)
+    expect(snapshot(m.S)).toEqual(before)
+  } finally {
+    reader.stdin.end()
+    await new Promise(resolve => reader.once("exit", resolve))
+  }
 }, LIMIT)
 
 test.if(mac)("a locked Keychain stops the move before anything's copied, saying to unlock it; unlocked, trying again moves everything", () => {

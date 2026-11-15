@@ -88,20 +88,23 @@ export function deleteOriginalKeys(keys: string, home: string): { done: boolean;
 
 // Who has the earlier Kuvo Code's database open
 
-/** The programs that have an engine database in `folder` open now (its log and index too), by
- * name: an earlier Kuvo Code still open, or its engine left running. Asked of the system
- * (`lsof`), never by opening the database: that could rewrite the log's index beside it, and
- * the app's folder is never changed. Where it can't be asked, none (what changes meanwhile is
- * still caught before the move goes forward). */
+/** The programs that have an engine database in `folder` open for writing now (its log and index
+ * too), by name: an earlier Kuvo Code still open, or its engine left running. One that only reads
+ * it (a backup, Spotlight) holds nothing back. Asked of the system (`lsof`), never by opening the
+ * database: that could rewrite the log's index beside it, and the app's folder is never changed.
+ * Where it can't be asked, none (what changes meanwhile is still caught before the move goes
+ * forward). */
 export function heldOpen(folder: string): string[] {
   const files = databasesIn(folder).flatMap(file => [file, `${file}-wal`, `${file}-shm`]).filter(exists);
   if (!files.length || process.platform !== "darwin") return [];
-  const asked = spawnSync("/usr/sbin/lsof", ["-F", "pc", "--", ...files], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "ignore"] });
+  // (Each process, its name, then each of its files there with how it's open: `r`, `w` or `u`, both.)
+  const asked = spawnSync("/usr/sbin/lsof", ["-F", "pcfa", "--", ...files], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "ignore"] });
   const names = new Set<string>();
-  let pid = 0;
+  let pid = 0, name = "";
   for (const line of (asked.stdout ?? "").split("\n")) {
-    if (line.startsWith("p")) pid = Number(line.slice(1));
-    else if (line.startsWith("c") && pid !== process.pid) names.add(line.slice(1));
+    if (line.startsWith("p")) { pid = Number(line.slice(1)); name = ""; }
+    else if (line.startsWith("c")) name = line.slice(1);
+    else if (line.startsWith("a") && /[wu]/.test(line.slice(1)) && pid !== process.pid && name) names.add(name);
   }
   return [...names];
 }

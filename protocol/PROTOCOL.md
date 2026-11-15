@@ -7475,8 +7475,9 @@ above. Only on a Mac.
   `box.json` says, with its helper) or its engine not fetched ("Check that this Mac is online");
   Kuvo Code itself without `kuvo-keys`; something of the old keeper's still running, or something
   running in `~/.kuvo-code`; two disks, or one that isn't APFS; no room (the database and its log
-  × 1.1, plus 200 MB); a program that has the earlier Kuvo Code's database open (`lsof` on
-  `opencode*.db` and its `-wal` and `-shm`: "Quit Kuvo Code wherever it's open"); and a database
+  × 1.1, plus 200 MB); a program that has the earlier Kuvo Code's database open to write in (`lsof` on
+  `opencode*.db` and its `-wal` and `-shm`, by how each has it open: "Quit Kuvo Code wherever
+  it's open"; one that only reads it, a backup or Spotlight, holds nothing back); and a database
   of a schema nobody tried (the pinned engine's, or one it brings up to date: `50
   20261010180456_project_time_archived`, engine 2.0.32's).
 - **Its steps**, journaled as the move's above, with three more:
