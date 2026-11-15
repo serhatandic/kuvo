@@ -4626,6 +4626,7 @@ var FEATURES = [
   "wakes.events",
   "work",
   "work-queue",
+  "work-queue.anywhere",
   "work-queue.counts",
   "work-queue.edit",
   "work-queue.elsewhere",
@@ -26990,6 +26991,65 @@ async function forwardAct(computer, named, act, signal, link = readLink(), now =
     fs94.rmSync(answerOf2(id), { force: true });
   }
 }
+var listed2 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+async function seekElsewhere(ref, signal, link = readLink()) {
+  const peers = sharedMachine(link) ? [] : peersOf(link);
+  if (!peers.length)
+    return { missing: true };
+  const here = ownName();
+  const computerOf = (peer) => ({ key: peer.key, name: computerName(peer), kind: peer.kind, ...peer.id ? { id: peer.id } : {} });
+  if (offRelay())
+    return { unsure: peers.map(computerOf), message: `It isn't on ${here}, and ${here} isn't connected to your other computers now, so it can't tell whether it's on one of them. Try again in a moment.` };
+  const rest = new AbortController;
+  const gone = () => rest.abort();
+  signal?.addEventListener("abort", gone, { once: true });
+  const away = [];
+  const unasked = [];
+  try {
+    const found = await new Promise((resolve) => {
+      let left = peers.length;
+      const done = () => {
+        if (--left === 0)
+          resolve(null);
+      };
+      for (const peer of peers) {
+        const computer = computerOf(peer);
+        if (!takesForwarded(peer.key)) {
+          unasked.push(computer);
+          done();
+          continue;
+        }
+        forwardAct(computer, "", { method: "GET", item: ref }, rest.signal, link).then((there) => {
+          const item = "value" in there && there.status === 200 && isObject(there.value) && isObject(there.value.item) ? there.value.item : null;
+          if (item)
+            return resolve({ computer, item });
+          if ("refused" in there && there.status === 503)
+            away.push(computer);
+          else if (there.status !== 404)
+            unasked.push(computer);
+          done();
+        }, () => {
+          unasked.push(computer);
+          done();
+        });
+      }
+    });
+    if (found)
+      return found;
+  } finally {
+    rest.abort();
+    signal?.removeEventListener("abort", gone);
+  }
+  if (!away.length && !unasked.length)
+    return { missing: true };
+  const names = (computers) => listed2(computers.map((each) => each.name));
+  const one = away.length + unasked.length === 1;
+  const why = [
+    ...away.length ? [`${names(away)} ${away.length === 1 ? "isn't" : "aren't"} answering now (${away.length === 1 ? "it" : "they"} may be asleep, off or offline)`] : [],
+    ...unasked.length ? [`${names(unasked)} couldn't be asked from ${here}`] : []
+  ].join(", and ");
+  return { unsure: [...away, ...unasked], message: `It isn't on ${here}, and ${why}, so it may be there. Try again once ${one ? "it answers" : "they answer"}.` };
+}
 var madeHere = new Set;
 function answered3(id, key, wait, signal) {
   return new Promise((resolve) => {
@@ -45138,7 +45198,7 @@ import fs145 from "node:fs";
 import path153 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "50d1e182d46a";
+var BRIDGE_VERSION = "4bdf5d5eeb1d";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -53125,12 +53185,12 @@ function agentDetail(agent) {
   const what = agent.kind === "bot" ? agent.about || "Bot" : agent.project === "Chats" ? "Chat" : agent.project ?? "Session";
   return what + (agent.machine ? ` · on ${agent.machine}` : "");
 }
-var listed2 = new Map;
+var listed3 = new Map;
 var LISTED_FOR = 5000;
 function filesFor(roots, dated, signal) {
   const key = (withDates) => JSON.stringify([roots, withDates]);
   const fresh = (withDates) => {
-    const kept = listed2.get(key(withDates));
+    const kept = listed3.get(key(withDates));
     return kept && Date.now() - kept.at < LISTED_FOR ? { key: key(withDates), kept } : null;
   };
   const found = fresh(dated) ?? (dated ? null : fresh(true));
@@ -53140,8 +53200,8 @@ function filesFor(roots, dated, signal) {
       listing.waiting -= 1;
       if (!listing.done && listing.waiting === 0) {
         listing.stop.abort();
-        if (listed2.get(at) === listing)
-          listed2.delete(at);
+        if (listed3.get(at) === listing)
+          listed3.delete(at);
       }
     }, { once: true });
     return listing.files;
@@ -53151,16 +53211,16 @@ function filesFor(roots, dated, signal) {
   const stop = new AbortController;
   const listing = { at: Date.now(), files: mentionableFiles(roots, dated, stop.signal), waiting: 0, stop, done: false };
   const at = key(dated);
-  listed2.set(at, listing);
+  listed3.set(at, listing);
   listing.files.then(() => {
     listing.done = true;
   }, () => {
     listing.done = true;
-    if (listed2.get(at) === listing)
-      listed2.delete(at);
+    if (listed3.get(at) === listing)
+      listed3.delete(at);
   });
-  if (listed2.size > 20)
-    listed2.delete(listed2.keys().next().value);
+  if (listed3.size > 20)
+    listed3.delete(listed3.keys().next().value);
   return join(at, listing);
 }
 async function* mentionsRoute(context, match) {
@@ -54517,17 +54577,35 @@ async function* workQueueRoute(context, match) {
   if (!ref)
     return yield* json(404, { message: "There's no such item." });
   const find = (items) => matching2(items, ref)[0] ?? null;
+  const fromThere = (item, computer) => ({ ...item, ...isObject(item.can) ? { can: { ...item.can, assign: false } } : {}, computer });
+  const seek = async () => {
+    if (!fromClient(context))
+      return null;
+    const sought = await seekElsewhere(named, signal);
+    if ("missing" in sought)
+      return null;
+    if ("unsure" in sought)
+      return { refuse: { message: sought.message, computers: sought.unsure } };
+    const item = toldItemOf(sought.item);
+    return item && refNames(ref, item) ? { far: { ...item, computer: sought.computer }, whole: sought.item } : null;
+  };
   if (action === undefined && method === "GET") {
     if (find(allItems()))
       return yield* answered4(await actHere({ method: "GET", ref, targets, signal }), json);
     let far = itemElsewhere(ref, readLink(), { deleted: fromClient(context) });
-    if (!far)
-      return yield* json(404, { message: "There's no such item." });
+    if (!far) {
+      const sought = await seek();
+      if (!sought)
+        return yield* json(404, { message: "There's no such item." });
+      if ("refuse" in sought)
+        return yield* json(503, sought.refuse);
+      return yield* json(200, { item: { ...fromThere(sought.whole, sought.far.computer), told: false } });
+    }
     if (fromClient(context)) {
       const there = await forwardAct(far.computer, nameOf(far), { method: "GET", item: far.id }, signal);
       const whole = there.status === 200 && "value" in there && isObject(there.value) && isObject(there.value.item) ? there.value.item : null;
       if (whole)
-        return yield* json(200, { item: { ...whole, ...isObject(whole.can) ? { can: { ...whole.can, assign: false } } : {}, computer: far.computer, told: false } });
+        return yield* json(200, { item: { ...fromThere(whole, far.computer), told: false } });
     }
     const cant = { away: awaySince(far.computer.key) !== null, apart: !fromClient(context) || sharedMachine(readLink()) || !takesForwarded(far.computer.key) };
     await readSeen([itemElsewhere(ref, readLink(), { asTold: true }) ?? far], GITHUB_WAIT);
@@ -54540,7 +54618,14 @@ async function* workQueueRoute(context, match) {
     try {
       name = decodeURIComponent(rawFile ?? "");
     } catch {}
-    const far = !find(allItems()) && fromClient(context) && name && name.length <= 300 ? itemElsewhere(ref) : null;
+    const forClient = !find(allItems()) && fromClient(context) && Boolean(name) && name.length <= 300;
+    let far = forClient ? itemElsewhere(ref) : null;
+    if (forClient && !far) {
+      const sought = await seek();
+      if (sought && "refuse" in sought)
+        return yield* json(503, sought.refuse);
+      far = sought?.far ?? null;
+    }
     let file = far ? null : fileOf4(ref, name);
     if (far) {
       const there = await forwardAct(far.computer, nameOf(far), { method: "GET", item: far.id, action: "file", name }, signal);
@@ -54563,7 +54648,16 @@ async function* workQueueRoute(context, match) {
     return yield* json(405, {});
   if (!fromClient(context))
     return yield* json(403, { message: notClient(context) });
-  const far = !find(allItems()) ? itemElsewhere(ref, readLink(), { deleted: asked.action === "restore" }) : null;
+  let far = null;
+  if (!find(allItems())) {
+    far = itemElsewhere(ref, readLink(), { deleted: asked.action === "restore" });
+    if (!far) {
+      const sought = await seek();
+      if (sought && "refuse" in sought)
+        return yield* json(503, sought.refuse);
+      far = sought?.far ?? null;
+    }
+  }
   if (!far)
     return yield* answered4(await actHere({ ...asked, ref, given, targets, signal }), json);
   const { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top } = given;
@@ -54572,7 +54666,7 @@ async function* workQueueRoute(context, match) {
     return yield* json(there.status, { message: there.refused, computer: far.computer });
   if (there.status === 200 && isObject(there.value) && isObject(there.value.item) && there.value.item.id === far.id)
     changedThere(far.computer.key, asked.method === "DELETE" ? "delete" : asked.action ?? "change", there.value.item);
-  const value = !isObject(there.value) ? there.value : isObject(there.value.item) ? { ...there.value, item: { ...there.value.item, ...isObject(there.value.item.can) ? { can: { ...there.value.item.can, assign: false } } : {}, computer: far.computer } } : there.status === 200 ? there.value : { ...there.value, computer: far.computer };
+  const value = !isObject(there.value) ? there.value : isObject(there.value.item) ? { ...there.value, item: fromThere(there.value.item, far.computer) } : there.status === 200 ? there.value : { ...there.value, computer: far.computer };
   return yield* json(there.status, value);
 }
 var answered4 = (answer, json) => json(answer.status, answer.value);
