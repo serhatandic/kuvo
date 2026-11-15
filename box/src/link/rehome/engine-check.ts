@@ -41,48 +41,9 @@ export async function checkWithEngine({ engine, data, scratch, lost }: EngineChe
     return made;
   };
   quietCopy(database, path.join(folder("data/opencode"), "opencode.db"));
-  const password = crypto.randomBytes(24).toString("hex");
-  const child = spawn(engine, ["serve", "--stdio", "--port", "0"], {
-    cwd: folder("workspace"),
-    stdio: ["pipe", "pipe", "pipe"],
-    env: {
-      PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-      HOME: folder("home"),
-      TMPDIR: folder("tmp") + "/",
-      XDG_DATA_HOME: path.join(scratch, "data"),
-      XDG_CONFIG_HOME: folder("config"),
-      XDG_STATE_HOME: folder("state"),
-      XDG_CACHE_HOME: folder("cache"),
-      OPENCODE_PASSWORD: password,
-      OPENCODE_CLIENT: "desktop",
-      OPENCODE_DISABLE_AUTOUPDATE: "1",
-      OPENCODE_DISABLE_MODELS_FETCH: "1",
-      OPENCODE_DISABLE_FREE_MODELS: "1",
-      OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-      OPENCODE_DISABLE_CLAUDE_CODE: "1",
-      OPENCODE_DISABLE_FILEWATCHER: "1",
-      // (Nowhere to reach: nothing it could start would get a model to answer.)
-      HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", ALL_PROXY: "http://127.0.0.1:9",
-      http_proxy: "http://127.0.0.1:9", https_proxy: "http://127.0.0.1:9", NO_PROXY: "localhost,127.0.0.1,::1", no_proxy: "localhost,127.0.0.1,::1",
-    },
-  });
-  // (Its stdin closing on one that's gone, or never started, is no failure of the move's.)
-  child.stdin.on("error", () => {});
-  let said = "", errors = "";
-  child.stderr.on("data", chunk => { errors = (errors + chunk).slice(-2000); });
-  // (Gone once it's stopped, or once it couldn't be started at all.)
-  const gone = new Promise<void>(resolve => { child.once("exit", () => resolve()); child.once("error", () => resolve()); });
+  const started = await startIsolated({ engine, data: path.join(scratch, "data"), scratch, what: "the moved data" });
   try {
-    const url = await new Promise<string>((resolve, reject) => {
-      const limit = setTimeout(() => reject(new Error("The engine didn't start on the moved data in time.")), START_LIMIT);
-      child.stdout.on("data", chunk => {
-        said += chunk;
-        const found = /"url"\s*:\s*"([^"]+)"/.exec(said);
-        if (found) { clearTimeout(limit); resolve(found[1]); }
-      });
-      child.once("exit", status => { clearTimeout(limit); reject(new Error(`The engine stopped as it started on the moved data (${status}): ${errors.trim().slice(-300)}`)); });
-      child.once("error", error => { clearTimeout(limit); reject(error); });
-    });
+    const { url, password } = started;
     const authorization = "Basic " + Buffer.from(`opencode:${password}`).toString("base64");
     const ask = async (route: string): Promise<any> => {
       const answer = await fetch(url + route, { headers: { authorization }, signal: AbortSignal.timeout(ANSWER_LIMIT) });
@@ -110,11 +71,75 @@ export async function checkWithEngine({ engine, data, scratch, lost }: EngineChe
     }
     return { sessions: listed.size };
   } finally {
+    await started.stop();
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+/** An engine started with nothing of yours but its data folder (`data`, its `XDG_DATA_HOME`):
+ * settings, home, state, cache and temporary folder of its own in `scratch` (no servers, plugins or
+ * accounts of yours), nowhere to reach (a proxy that's nowhere: nothing it could start would get a
+ * model to answer), at a port of its own. It stops when its stdin closes, as the box's engine does;
+ * one that doesn't is stopped. Throws, in words about `what` it was started on, when it doesn't
+ * start in time. */
+export async function startIsolated({ engine, data, scratch, what }: { engine: string; data: string; scratch: string; what: string }): Promise<{ url: string; password: string; stop: () => Promise<void> }> {
+  const folder = (name: string) => {
+    const made = path.join(scratch, name);
+    fs.mkdirSync(made, { recursive: true, mode: 0o700 });
+    return made;
+  };
+  const password = crypto.randomBytes(24).toString("hex");
+  const child = spawn(engine, ["serve", "--stdio", "--port", "0"], {
+    cwd: folder("workspace"),
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+      HOME: folder("home"),
+      TMPDIR: folder("tmp") + "/",
+      XDG_DATA_HOME: data,
+      XDG_CONFIG_HOME: folder("config"),
+      XDG_STATE_HOME: folder("state"),
+      XDG_CACHE_HOME: folder("cache"),
+      OPENCODE_PASSWORD: password,
+      OPENCODE_CLIENT: "desktop",
+      OPENCODE_DISABLE_AUTOUPDATE: "1",
+      OPENCODE_DISABLE_MODELS_FETCH: "1",
+      OPENCODE_DISABLE_FREE_MODELS: "1",
+      OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+      OPENCODE_DISABLE_CLAUDE_CODE: "1",
+      OPENCODE_DISABLE_FILEWATCHER: "1",
+      // (Nowhere to reach: nothing it could start would get a model to answer.)
+      HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", ALL_PROXY: "http://127.0.0.1:9",
+      http_proxy: "http://127.0.0.1:9", https_proxy: "http://127.0.0.1:9", NO_PROXY: "localhost,127.0.0.1,::1", no_proxy: "localhost,127.0.0.1,::1",
+    },
+  });
+  // (Its stdin closing on one that's gone, or never started, is no failure of the move's.)
+  child.stdin.on("error", () => {});
+  let said = "", errors = "";
+  child.stderr.on("data", chunk => { errors = (errors + chunk).slice(-2000); });
+  // (Gone once it's stopped, or once it couldn't be started at all.)
+  const gone = new Promise<void>(resolve => { child.once("exit", () => resolve()); child.once("error", () => resolve()); });
+  const stop = async () => {
     child.stdin.end();
     // (It stops as its stdin closes; one that doesn't, stopped.)
     const stopped = await Promise.race([gone.then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 10_000).unref())]);
     if (!stopped && child.pid) try { process.kill(child.pid, "SIGKILL"); } catch {}
     await gone;
-    fs.rmSync(scratch, { recursive: true, force: true });
+  };
+  try {
+    const url = await new Promise<string>((resolve, reject) => {
+      const limit = setTimeout(() => reject(new Error(`The engine didn't start on ${what} in time.`)), START_LIMIT);
+      child.stdout.on("data", chunk => {
+        said += chunk;
+        const found = /"url"\s*:\s*"([^"]+)"/.exec(said);
+        if (found) { clearTimeout(limit); resolve(found[1]); }
+      });
+      child.once("exit", status => { clearTimeout(limit); reject(new Error(`The engine stopped as it started on ${what} (${status}): ${errors.trim().slice(-300)}`)); });
+      child.once("error", error => { clearTimeout(limit); reject(error); });
+    });
+    return { url, password, stop };
+  } catch (error) {
+    await stop();
+    throw error;
   }
 }

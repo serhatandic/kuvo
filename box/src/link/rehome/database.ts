@@ -340,6 +340,23 @@ export function databaseCounts(file: string): { sessions: number; projects: numb
   }
 }
 
+/** What a database holds of yours, by table (those there): its sessions, projects, messages, kept
+ * rules, worktrees, the folders its projects were used in, and messages still waiting. What a
+ * migration by the engine must not hold fewer of. */
+export function tableCounts(file: string): Record<string, number> {
+  const db = open(file, true);
+  try {
+    const there = tables(db);
+    const counts: Record<string, number> = {};
+    for (const table of ["session_v2", "project", "session_message", "permission", "worktree", "project_directory", "session_inbox"]) {
+      if (there.has(table)) counts[table] = Number(db.query(`SELECT count(*) AS n FROM "${table}"`).get().n);
+    }
+    return counts;
+  } finally {
+    db.close();
+  }
+}
+
 /** Every folder a database names: its projects', worktrees' and sessions'. */
 export function databaseFolders(file: string): string[] {
   const db = open(file, true);
