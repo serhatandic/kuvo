@@ -7,7 +7,9 @@
 # A marker is a comment beside the code, `COMPAT(<version> <item>): what it does. Goes …`, whose
 # item PROTOCOL.md names in that section (`<!-- compat: <version> <item> -->`). Code needed by both
 # versions is marked for 0.7, which goes last. box/bridge-tests/compat.test.js holds
-# the markers and the list to each other.
+# the markers and the list to each other, and each marker to its item's kind
+# (protocol/compat-kinds.txt), which is said beside each item here. The retired Mac app (swift/KuvoCode) isn't read: it's
+# reference only, and what it alone did for an earlier version is the box's move to carry (#713).
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -19,9 +21,9 @@ esac
 
 # The same files the test reads: the code as written (a bundle leaves comments out), new files too.
 git grep --untracked -n -I -E 'COMPAT\((0\.7|beta\.1) [a-z0-9-]+\)' -- \
-  'swift/KuvoCode' 'box/src' 'mac/helper/Sources' 'swift/OpenCodeKit/Sources' 'swift/KuvoClient/Sources' 'swift/KuvoLink/Sources' 'scripts' \
+  'box/src' 'mac/helper/Sources' 'swift/OpenCodeKit/Sources' 'swift/KuvoClient/Sources' 'swift/KuvoLink/Sources' 'scripts' \
   ':(exclude)box/dist/kuvo-agents.js' ':(exclude)box/dist/kuvo-browser.js' ':(exclude)scripts/compat.sh' |
-  grep -E '^[^:]+\.(swift|ts|js|mjs|sh|py):' |
+  grep -E '^([^:]+\.(swift|ts|js|mjs|sh|py)|box/src/keeper/[^/.:]+):' |
   awk -v want="$want" '
     {
       split($0, at, ":"); where = at[1] ":" at[2]
@@ -35,5 +37,14 @@ git grep --untracked -n -I -E 'COMPAT\((0\.7|beta\.1) [a-z0-9-]+\)' -- \
   awk -F '\t' -v OFS='\t' '{ split($4, at, ":"); print $0, at[1], at[2] }' |
   sort -t "$(printf '\t')" -k1,1 -k3,3 -k6,6 -k7,7n |
   awk -F '\t' '
-    $2 " " $3 != last { if (last != "") print ""; print $2 " " $3; last = $2 " " $3 }
-    { printf "  %s  %s\n", $4, $5 }'
+    # What each item is kept for at 1.0 (protocol/compat-kinds.txt), said beside it: a marker in a
+    # file whose bytes are the box release (the keeper shell, kuvo-browser.js) may still carry
+    # the date it had.
+    FILENAME != "-" { if ($0 !~ /^#/ && split($0, kind, " ") == 3) kinds[kind[1] " " kind[2]] = kind[3]; next }
+    $2 " " $3 != last {
+      if (last != "") print ""
+      last = $2 " " $3
+      says = kinds[last] == "stays" ? "stays while a Mac from before 1.0 connects: goes on the user'"'"'s word" : kinds[last] == "next" ? "decided in #717'"'"'s next part" : kinds[last] == "feed" ? "the release feed, until a release with boxes.json is the newest" : ""
+      print last (says == "" ? "" : "  (" says ")")
+    }
+    { printf "  %s  %s\n", $4, $5 }' protocol/compat-kinds.txt -

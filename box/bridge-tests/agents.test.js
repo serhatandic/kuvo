@@ -65,7 +65,7 @@ test("the coding agents' bridge gets what a phone asks, with its password; where
   assert.equal((await ask(handle, "PUT", "kuvo/agents/api/kuvo/auto", { body: "{}" })).status, 200);
 
   // An agent's update too: the phone is yours.
-  assert.equal((await ask(handle, "POST", "kuvo/agents/api/integration/claude-code/update", { body: "{}" })).status, 200);
+  assert.equal((await ask(handle, "POST", "kuvo/agents/api/kuvo/updates/claude-code", { body: "{}" })).status, 200);
 
   const before = bridge.asked.length;
   for (const [method, p] of [["PUT", "kuvo/agents/api/kuvo/engine"], ["PUT", "kuvo/agents/api/kuvo/%65ngine"], ["POST", "kuvo/agents/api/kuvo/groups/grp_x/release"],

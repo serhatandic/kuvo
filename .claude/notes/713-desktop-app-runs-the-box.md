@@ -497,6 +497,35 @@ its helper", says each as it is. Three things piece 4 settles before anything ru
    and `SecTrustedApplicationCreateFromPath` reads the path again. Closed only under the sandbox.
    Piece 4: with the guard of 1 it may be enough; else trust by requirement, not by path.
 
+**What only the retired Mac app sends (from #717 part 1, 2026-11-15).** Piece 4's inventory
+starts from these; each is carried by the move, or said as dropped. Swift source → what it feeds:
+
+| What an earlier version kept | Swift source (read only) | Box route or file |
+| --- | --- | --- |
+| This Mac's group chats (`groups.json`, `groups/<id>.json`) | `Stores/GroupMigration.swift:6`, run at `App/AppModel.swift:84` | the agents bridge's `groups/<id>/group.json`, `groups/pending-memory.json` (`box/src/agents/groups/store.ts:391`, `runner.ts:215`, `agents/main.ts:439`) |
+| Personalities (`personalities.json`, `personalities-removed.json`) | `Stores/Personalities.swift:182`, `moveToBox` `:211`, `Keeper/MacBoxRunner.swift:436` | the box's library |
+| Edits to machines' bots (`botEditsWaiting`, `botEditOutbox`) | `Stores/Bots.swift:390`, `handOverOldEdits` `:764` | `PATCH`/`DELETE kuvo/bots/<id>?on=<machine>` (held: `box/src/link/bots/held.ts`) |
+| Machines' bots' keys in the Keychain | `Stores/BotKeys.swift:142` | gone from the Keychain (`kuvo/box/kept-keys` once the box moved) |
+| Settings › Git (`git.branchPrefix`, `git.commitInstructions`, `git.pullRequestInstructions`) | `Stores/GitBranches.swift:179`, `App/AppModel.swift:722`, `AppModel+Machines.swift:615` | `POST kuvo/git/settings/move` (`box/src/link/areas/git-words.ts:114`, `changes.ts:1203`) |
+| Letters (`agent-letters.json`, `agent-letters-seen.json`, `agent-messages.json`) | `Stores/AgentMail.swift:190`, `Stores/PhoneLink.swift:309`, `App/AppModel.swift:442` | `POST kuvo/link/letters/take` (`box/src/link/mac/routes.ts:221`) |
+| Worktree records, kept and removed | `Stores/Workspace.swift:473`, `:1498` | `POST kuvo/worktrees/record` (`box/src/link/areas/worktrees.ts:289`) |
+| `passwords.agentSignIn`, `passwords.agentSignInAccounts` | `Stores/Passwords.swift:165`, `:254-257` | the vault (`owed: passwords`) |
+| Keep This Mac Awake, off | `Views/Settings/GeneralSettings.swift:12`, `Keeper/OwnBoxMove.swift:70` | the box's own setting (`box/src/link/work/awake.ts`) |
+| Not taken in by anything now, the inventory's to say: `machine-groups.json` and `machine-groups/<id>.json` (the last copy of a gone machine's chats), `copilotClaudeModels`, `movesUnderWay` | `Stores/BoxGroups.swift:97-135`, `App/AppModel.swift:687`, `Stores/Moves.swift:171` | none |
+
+(Line numbers as of main `ac5c18908`.)
+
+**What #713 must send in the retired app's place, or machines go wrong** (kept tolerances whose
+only sender today is that app):
+
+- **`macID` and `tolerates: 1` in setup** (`swift/KuvoCode/Stores/PhoneLink.swift:679`). Without
+  them every Mac with 1.0 that starts a machine's engine holds that machine's updates back: the
+  box updates itself only while each Mac in `run/launchers.json` is `true` in `tolerantIDs`
+  (`box/src/link/updates/update.ts:186`, `main.ts` setup).
+- **`run/mac-installing` while it puts its files on a machine** (`swift/KuvoCode/Stores/Machines.swift:585`,
+  `RemoteEngine.swift:604`). Without it the box takes those files for an older Mac's and counts
+  drift (`update.ts`, `checkDrift`), holding updates back for 30 days.
+
 Also for piece 4: `kuvo-keys` must be run directly by the process holding the move's lock
 (`spawnSync` from it, no shell between, not from `serve` later), or it exits 2.
 

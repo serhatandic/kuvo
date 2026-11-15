@@ -423,7 +423,7 @@ final class WorkQueues {
         await act(CategoriesAnswer.self, "POST", "kuvo/work-queue/categories", body: Remove(remove: id), on: box)
     }
 
-    private struct CategoriesAnswer: Decodable { var categories: [WorkCategory] }
+    private struct CategoriesAnswer: Decodable { var categories: [WorkStatus] }
 
     func undo() async {
         guard let undoable else { return }

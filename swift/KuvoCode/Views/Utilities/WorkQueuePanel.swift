@@ -19,7 +19,7 @@ struct WorkQueuePanel: View {
     /// The categories opened in the narrow list (Later, Parked… show as counts until then).
     @State private var unfolded: Set<String> = []
     /// A category being named: a new one (nil), or one being renamed.
-    @State private var naming: WorkCategory??
+    @State private var naming: WorkStatus??
     @State private var name = ""
     @State private var isSearching = false
     @State private var query = ""
@@ -81,7 +81,7 @@ struct WorkQueuePanel: View {
 
     /// Rename and Remove for a category of your own (the built-in ones stay as they are).
     @HeldRows private func categoryMenu(_ id: String?, count: Int, adds: Bool = true) -> [HeldRow] {
-        if let id, let category = view?.categories.first(where: { $0.id == id }), !category.builtIn {
+        if let id, let category = view?.categories.first(where: { $0.id == id }), false {
             HeldRow.button("Rename “\(category.name)”…") {
                 name = category.name
                 naming = .some(category)

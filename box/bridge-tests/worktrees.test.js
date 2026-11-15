@@ -104,7 +104,7 @@ atEnd(() => {
 const ask = (method, route, body) => link.answerWorktrees(method, route, body, atEngine, undefined);
 
 test("made for a session on a branch of its own, named after it, listed with what to know, and removed as Settings removes it", async () => {
-  const made = await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" });
+  const made = await ask("POST", "kuvo/worktrees", { project });
   assert.equal(made.status, 200);
   const { root, branch, base, folder } = made.value;
   assert.equal(base, "main");
@@ -212,7 +212,7 @@ test("one whose folder was deleted by hand can still be removed", async () => {
 });
 
 test("commits on no branch in a worktree are kept on a branch of their own when it's removed", async () => {
-  const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const made = (await ask("POST", "kuvo/worktrees", { project })).value;
   // The agent stopped mid-rebase, say: a commit on no branch.
   git(made.root, "switch", "-q", "--detach");
   fs.writeFileSync(path.join(made.root, "lost.txt"), "work\n");
@@ -232,7 +232,7 @@ test("a repository with no commit yet gets an empty first one, and its worktree 
   git(emptyRepo, "init", "-q", "-b", "main");
   fs.writeFileSync(path.join(emptyRepo, "notes.txt"), "draft\n");
   git(emptyRepo, "add", "notes.txt");
-  const made = await ask("POST", "kuvo/worktrees", { project: emptyRepo, branchPrefix: "kuvo/" });
+  const made = await ask("POST", "kuvo/worktrees", { project: emptyRepo });
   assert.equal(made.status, 200, JSON.stringify(made.value));
   assert.equal(made.value.base, "main");
   assert.equal(git(emptyRepo, "log", "--format=%s"), "Initial commit");
@@ -254,9 +254,17 @@ test("a branch begun with nothing on it, in a repository with history, is left f
   assert.equal(git(site, "for-each-ref", "--format=%(refname)"), "refs/heads/main", "nothing committed on pages for you");
 });
 
+// Settings › Git's branch prefix on this computer, while `work` runs.
+async function withPrefix(prefix, work) {
+  const settings = path.join(process.env.KUVO_HOME, "box", "opencode.json");
+  fs.mkdirSync(path.dirname(settings), { recursive: true });
+  fs.writeFileSync(settings, JSON.stringify({ branch_prefix: prefix }));
+  try { return await work(); } finally { fs.rmSync(settings); }
+}
+
 test("a branch prefix git can't use there is named", async () => {
   git(project, "branch", "taken");
-  const refused = await ask("POST", "kuvo/worktrees", { project, branchPrefix: "taken/" });
+  const refused = await withPrefix("taken/", () => ask("POST", "kuvo/worktrees", { project }));
   assert.equal(refused.status, 502);
   assert.match(refused.value.message, /“taken\/”.*Settings › Git/);
   git(project, "branch", "-D", "taken");
@@ -281,21 +289,16 @@ test("a session a phone makes in a worktree it asked for is told it works there"
 });
 
 test("a worktree asked for by any client starts its branch as Settings › Git says on that computer, as git takes it", async () => {
-  const settings = path.join(process.env.KUVO_HOME, "box", "opencode.json");
-  fs.mkdirSync(path.dirname(settings), { recursive: true });
-  fs.writeFileSync(settings, JSON.stringify({ branch_prefix: " -ada:/ " }));
-  try {
+  await withPrefix(" -ada:/ ", async () => {
     const made = (await ask("POST", "kuvo/worktrees", { project })).value;
     assert.match(made.branch, /^ada\/brave-otter-\d+$/);
     assert.equal(made.prefix, "ada/");
     assert.equal((await ask("POST", "kuvo/worktrees/remove", { path: made.root, forget: true })).status, 200);
-  } finally {
-    fs.rmSync(settings);
-  }
+  });
 });
 
 test("the machine names a branch after its session's title, once, and only one it made", async () => {
-  const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "me/" })).value;
+  const made = await withPrefix("me/", async () => (await ask("POST", "kuvo/worktrees", { project })).value);
   sessions.push({ id: "ses_named", title: "Giriş düzeltmesi", location: { directory: made.folder } });
   await link.nameWorktreeBranch(atEngine, "ses_named");
   assert.equal(git(made.root, "symbolic-ref", "--short", "HEAD"), "me/giris-duzeltmesi");
@@ -308,7 +311,7 @@ test("the machine names a branch after its session's title, once, and only one i
 });
 
 test("every session working in a worktree is told its branch's new name, not only the one whose title named it", async () => {
-  const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const made = (await ask("POST", "kuvo/worktrees", { project })).value;
   sessions.push({ id: "ses_first", location: { directory: made.folder } }, { id: "ses_second", title: "Speed up search", location: { directory: made.folder } });
   told.length = 0;
   await link.nameWorktreeBranch(atEngine, "ses_second");
@@ -346,7 +349,7 @@ test("a Claude Code session's title names the branch, and an engine session in t
   fs.mkdirSync(path.dirname(engineFile), { recursive: true });
   fs.writeFileSync(engineFile, JSON.stringify(atEngine));
   try {
-    const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+    const made = (await ask("POST", "kuvo/worktrees", { project })).value;
     sessions.push({ id: "ses_opencode", location: { directory: made.folder } });
     bridgeSessions.push({ id: "ses_claude_titled", title: "Speed up images", location: { directory: made.folder } });
     told.length = 0;
@@ -364,7 +367,7 @@ test("a Claude Code session's title names the branch, and an engine session in t
 });
 
 test("a subagent's title, working in a session's worktree, doesn't name its branch", async () => {
-  const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const made = (await ask("POST", "kuvo/worktrees", { project })).value;
   sessions.push({ id: "ses_helper", parentID: "ses_lead", title: "Explore the codebase", location: { directory: made.folder } });
   await link.nameWorktreeBranch(atEngine, "ses_helper");
   assert.equal(git(made.root, "symbolic-ref", "--short", "HEAD"), made.branch);
@@ -398,7 +401,7 @@ test("one a Mac made before the machine kept them is kept from then on; a folder
 });
 
 test("a Mac reading the machine's worktrees as their session gets its title finds the branch named, once, by the machine", async () => {
-  const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const made = (await ask("POST", "kuvo/worktrees", { project })).value;
   sessions.push({ id: "ses_titled", title: "Speed up checkout", location: { directory: made.folder } });
   const toldBefore = told.length;
   // The Mac's read comes before the machine heard of the title: named as it's read.
@@ -422,7 +425,7 @@ test("a Mac reading the machine's worktrees as their session gets its title find
 });
 
 test("a session started in a worktree with its title given (by an agent, a bot) names its branch as the box hears of it, Mac closed, and is told that name", { timeout: SLOW_STEPS }, async t => {
-  const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const made = (await ask("POST", "kuvo/worktrees", { project })).value;
   told.length = 0;
   const heard = new Promise(resolve => { onTold = resolve; });
   const caughtUp = new Promise(resolve => { onActive = resolve; });
@@ -449,7 +452,7 @@ test("a session started in a worktree with its title given (by an agent, a bot) 
 });
 
 test("a session titled while the box wasn't listening (it was restarting) has its branch named once the box follows its engine again", { timeout: SLOW_STEPS }, async t => {
-  const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const made = (await ask("POST", "kuvo/worktrees", { project })).value;
   sessions.push({ id: "ses_missed", title: "Tidy the footer", location: { directory: made.folder } });
   told.length = 0;
   const heard = new Promise(resolve => { onTold = resolve; });
@@ -483,7 +486,7 @@ test("a branch is named after its session's title, in any language, and gets a n
   ]) assert.equal(link.branchSlug(title), slug, title);
 
   git(project, "branch", "kuvo/fix-the-cart");
-  const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const made = (await ask("POST", "kuvo/worktrees", { project })).value;
   sessions.push({ id: "ses_cart", title: "Fix the cart", location: { directory: made.folder } });
   await link.nameWorktreeBranch(atEngine, "ses_cart");
   assert.equal(git(made.root, "symbolic-ref", "--short", "HEAD"), "kuvo/fix-the-cart-2");
@@ -496,7 +499,7 @@ test("a branch already pushed keeps its name: its pull request would lose track 
   const remote = path.join(home, "remote.git");
   git(home, "init", "-q", "--bare", remote);
   git(project, "remote", "add", "origin", remote);
-  const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const made = (await ask("POST", "kuvo/worktrees", { project })).value;
   git(made.root, "push", "-q", "-u", "origin", made.branch);
   sessions.push({ id: "ses_pushed", title: "Fix login", location: { directory: made.folder } });
   await link.nameWorktreeBranch(atEngine, "ses_pushed");
@@ -504,7 +507,7 @@ test("a branch already pushed keeps its name: its pull request would lose track 
   sessions.splice(sessions.findIndex(each => each.id === "ses_pushed"), 1);
   assert.equal((await ask("POST", "kuvo/worktrees/remove", { path: made.root, forget: true })).status, 200);
   // Pushed without tracking it (`git push origin HEAD`, as agents do): pushed all the same.
-  const plain = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const plain = (await ask("POST", "kuvo/worktrees", { project })).value;
   git(plain.root, "push", "-q", "origin", "HEAD");
   sessions.push({ id: "ses_pushed_plain", title: "Fix signup", location: { directory: plain.folder } });
   await link.nameWorktreeBranch(atEngine, "ses_pushed_plain");
@@ -513,7 +516,7 @@ test("a branch already pushed keeps its name: its pull request would lose track 
   assert.equal((await ask("POST", "kuvo/worktrees/remove", { path: plain.root, forget: true })).status, 200);
   // A name a remote has already (an old pull request's branch, deleted here): taken with a number.
   git(project, "update-ref", "refs/remotes/origin/kuvo/fix-checkout", "HEAD");
-  const again = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const again = (await ask("POST", "kuvo/worktrees", { project })).value;
   sessions.push({ id: "ses_again", title: "Fix checkout", location: { directory: again.folder } });
   await link.nameWorktreeBranch(atEngine, "ses_again");
   assert.equal(git(again.root, "symbolic-ref", "--short", "HEAD"), "kuvo/fix-checkout-2");
@@ -531,7 +534,7 @@ test("its records followed: a line now, and another when one is made or removed"
     if (part.head) assert.equal(part.head.headers["content-type"], "application/x-ndjson");
     if (!part.body) continue;
     lines.push(JSON.parse(part.body.toString()));
-    if (lines.length === 1) made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+    if (lines.length === 1) made = (await ask("POST", "kuvo/worktrees", { project })).value;
     if (lines.length === 2) {
       assert.equal((await ask("POST", "kuvo/worktrees/remove", { path: made.root, forget: true })).status, 200);
     }
@@ -541,10 +544,11 @@ test("its records followed: a line now, and another when one is made or removed"
   assert.deepEqual(lines.map(line => line.worktrees.some(tree => tree.root === made.root)), [false, true, false]);
 });
 
-test("one a phone asks for starts with the computer's own prefix, not one an older Mac sent, and a Mac's old record doesn't undo how the box keeps one", async () => {
-  // An older Mac's own, used for its own (the Settings › Git page shows the computer's).
+test("every worktree starts with the computer's own prefix, whatever an older Mac sends with it, and a Mac's old record doesn't undo how the box keeps one", async () => {
+  // An older Mac sends its own with each: it counts for nothing (Settings › Git on the computer names it).
   const mine = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "sa/" })).value;
-  assert.ok(mine.branch.startsWith("sa/"), mine.branch);
+  assert.ok(mine.branch.startsWith("kuvo/"), mine.branch);
+  assert.equal(mine.prefix, "kuvo/");
   const phones = (await ask("POST", "kuvo/worktrees", { project })).value;
   assert.ok(phones.branch.startsWith("kuvo/"), phones.branch);
   // A Mac handing over what it kept of one the box has: the box's stays, still to be named.
@@ -552,7 +556,7 @@ test("one a phone asks for starts with the computer's own prefix, not one an old
   const kept = link.readWorktrees().find(each => each.root === phones.root);
   assert.equal(kept.made, phones.branch);
   for (const made of [mine, phones]) assert.equal((await ask("POST", "kuvo/worktrees/remove", { path: made.root, forget: true })).status, 200);
-  await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" }).then(made => ask("POST", "kuvo/worktrees/remove", { path: made.value.root, forget: true }));
+  await ask("POST", "kuvo/worktrees", { project }).then(made => ask("POST", "kuvo/worktrees/remove", { path: made.value.root, forget: true }));
 });
 
 test("one made and removed at once: a follower is told of both, in order", { timeout: SLOW_STEPS }, async () => {
@@ -564,7 +568,7 @@ test("one made and removed at once: a follower is told of both, in order", { tim
     if (!part.body) continue;
     seen.push(JSON.parse(part.body.toString()).worktrees.some(tree => tree.root === made?.root));
     if (seen.length === 1) {
-      made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+      made = (await ask("POST", "kuvo/worktrees", { project })).value;
       assert.equal((await ask("POST", "kuvo/worktrees/remove", { path: made.root, forget: true })).status, 200);
     }
     if (seen.length === 3) abort.abort();
@@ -579,7 +583,7 @@ const statusIn = folder => git(folder, "status", "--porcelain", "--untracked-fil
 const without = id => sessions.splice(sessions.findIndex(each => each.id === id), 1);
 
 test("archiving a worktree's last session removes it, keeping what wasn't committed, and Restore Worktree brings it all back as it was", async () => {
-  const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const made = (await ask("POST", "kuvo/worktrees", { project })).value;
   const session = { id: "ses_archived", title: "Tidy the cart", location: { directory: made.folder } };
   sessions.push(session);
   fs.writeFileSync(path.join(made.root, "cart.js"), "total()\n");
@@ -637,7 +641,7 @@ test("archiving a worktree's last session removes it, keeping what wasn't commit
 });
 
 test("deleting a worktree's last session removes it with what wasn't committed, and nothing is kept for it", async () => {
-  const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const made = (await ask("POST", "kuvo/worktrees", { project })).value;
   sessions.push({ id: "ses_deleted", title: "Try a thing", location: { directory: made.folder } });
   fs.writeFileSync(path.join(made.root, "thing.txt"), "thing\n");
   await tidy();
@@ -679,7 +683,7 @@ test("a worktree stays while another session in it is open, while an agent works
 });
 
 test("one removed in Settings comes back on its branch while its session is here, and can't once its work is gone", async () => {
-  const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const made = (await ask("POST", "kuvo/worktrees", { project })).value;
   sessions.push({ id: "ses_settings", title: "Settings", location: { directory: made.folder } });
   fs.writeFileSync(path.join(made.root, "kept.txt"), "kept\n");
   git(made.root, "add", "-A");
@@ -707,7 +711,7 @@ test("one removed in Settings comes back on its branch while its session is here
 });
 
 test("a session archived from anywhere, Mac closed: the box hears it and its worktree goes, and a follower is told", { timeout: SLOW_STEPS }, async t => {
-  const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const made = (await ask("POST", "kuvo/worktrees", { project })).value;
   const session = { id: "ses_heard", title: "Heard", location: { directory: made.folder } };
   sessions.push(session);
   await tidy();
@@ -744,8 +748,8 @@ test("a session archived from anywhere, Mac closed: the box hears it and its wor
 });
 
 test("a session further back than the newest page still keeps its worktree, and what was saved for an archived one", async () => {
-  const open = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
-  const archived = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const open = (await ask("POST", "kuvo/worktrees", { project })).value;
+  const archived = (await ask("POST", "kuvo/worktrees", { project })).value;
   sessions.push({ id: "ses_old_open", title: "Old, open", location: { directory: open.folder } });
   const old = { id: "ses_old_archived", title: "Old, archived", location: { directory: archived.folder } };
   sessions.push(old);
@@ -773,7 +777,7 @@ test("a session further back than the newest page still keeps its worktree, and 
 });
 
 test("while the coding agents' bridge is down, no worktree goes: its sessions can't be counted", async () => {
-  const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const made = (await ask("POST", "kuvo/worktrees", { project })).value;
   const session = { id: "ses_bridge_down", title: "Engine side", location: { directory: made.folder } };
   sessions.push(session);
   await tidy();
@@ -795,7 +799,7 @@ test("while the coding agents' bridge is down, no worktree goes: its sessions ca
 });
 
 test("one whose branch was merged and deleted comes back at the commit it was at", async () => {
-  const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+  const made = (await ask("POST", "kuvo/worktrees", { project })).value;
   const session = { id: "ses_merged", title: "Merged", location: { directory: made.folder } };
   sessions.push(session);
   fs.writeFileSync(path.join(made.root, "merged.txt"), "merged\n");
@@ -822,7 +826,7 @@ test("what's kept of a removed worktree goes through the repository's own filter
   git(project, "config", "filter.secret.clean", "tr a-z A-Z");
   git(project, "config", "filter.secret.smudge", "cat");
   try {
-    const made = (await ask("POST", "kuvo/worktrees", { project, branchPrefix: "kuvo/" })).value;
+    const made = (await ask("POST", "kuvo/worktrees", { project })).value;
     const session = { id: "ses_secret", title: "Keep a secret", location: { directory: made.folder } };
     sessions.push(session);
     fs.writeFileSync(path.join(made.root, ".gitattributes"), "secret.txt filter=secret\n");

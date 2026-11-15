@@ -21,7 +21,7 @@ import ClientSessions
             item(nil, "Waiting", "cat_design"),
         ].joined(separator: ",")
         let json = """
-        {"owner":"ses_lead","statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false},{"id":"later","name":"Later","closed":false},{"id":"cat_design","name":"Design","closed":false},{"id":"parked","name":"Parked","closed":false},{"id":"done","name":"Done","closed":true}],
+        {"owner":"ses_lead","computers":[],"statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false},{"id":"later","name":"Later","closed":false},{"id":"cat_design","name":"Design","closed":false},{"id":"parked","name":"Parked","closed":false},{"id":"done","name":"Done","closed":true}],
          "items":[\(items)],
          "owners":[{"owner":"ses_lead","kind":"session","title":"Lead"},{"owner":"ses_child","kind":"session","title":"Sign-in","startedBy":"ses_lead"}],
          "removed":[]}
@@ -157,7 +157,7 @@ import ClientSessions
         let idle = item(552, "Rows and page", "later", owner: "ses_lead")
             .replacingOccurrences(of: #""session":"ses_child","title":"Sign-in""#, with: ##""session":"ses_worker","title":"#552""##)
         let json = """
-        {"owner":"ses_worker","statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false},{"id":"later","name":"Later","closed":false},{"id":"parked","name":"Parked","closed":false},{"id":"done","name":"Done","closed":true}],
+        {"owner":"ses_worker","computers":[],"statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false},{"id":"later","name":"Later","closed":false},{"id":"parked","name":"Parked","closed":false},{"id":"done","name":"Done","closed":true}],
          "items":[\(lead),\(idle),\(item(7, "Its own", "next", owner: "ses_worker")),\(item(8, "Its own at work", "later", owner: "ses_worker", inProgress: true))],
          "owners":[{"owner":"ses_lead","kind":"bot","title":"Kuvo Foreman","bot":{"id":"bot_1","name":"Kuvo Foreman"}},{"owner":"ses_worker","kind":"session","title":"#551"}],
          "removed":[]}
@@ -185,10 +185,10 @@ import ClientSessions
 
     @Test func aLeadsItemDoneGoesWithTheDoneOnesNotWorkingOn() {
         var view = Self.sessionView
-        view.items[1].category = WorkCategory.done
+        view.items[1].category = WorkStatus.done
         let sections = WorkQueue.sections(view)
         #expect(sections.first { $0.id == WorkQueue.workingOnID }?.items.map(\.name) == ["#551"])
-        #expect(sections.first { $0.category == WorkCategory.done }?.items.map(\.name) == ["#552"])
+        #expect(sections.first { $0.category == WorkStatus.done }?.items.map(\.name) == ["#552"])
         #expect(WorkQueue.items(view, .all, showsDone: false).map(\.name) == ["#551", "#8", "#7"], "folded with the Done ones")
     }
 
@@ -213,8 +213,8 @@ import ClientSessions
 
     @Test func doneDeletedAndClosedOnGitHubAreSaidOnce() throws {
         let json = """
-        {"owner":"ses_lead","statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false},{"id":"later","name":"Later","closed":false},{"id":"done","name":"Done","closed":true}],"owners":[],
-         "items":[{"id":"wqi_1","source":{"kind":"github-pr","ref":"gh:kuvo/app#57","name":"app#57"},"seen":{"state":"merged","at":5},"keptIn":"later","closesOn":"github","owner":"ses_lead","title":"Keep the name","status":"done","order":1,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"computer":{"key":"k","name":"lab","kind":"machine"},"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}},
+        {"owner":"ses_lead","computers":[],"statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false},{"id":"later","name":"Later","closed":false},{"id":"done","name":"Done","closed":true}],"owners":[],
+         "items":[{"id":"wqi_1","source":{"kind":"github-pr","ref":"gh:kuvo/app#57","name":"app#57"},"seen":{"state":"merged","at":5},"keptIn":"later","doneAs":"Merged on GitHub","closesOn":"github","owner":"ses_lead","title":"Keep the name","status":"done","order":1,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"computer":{"key":"k","name":"lab","kind":"machine"},"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}},
                   {"id":"wqi_2","number":5,"owner":"ses_lead","title":"Shipped","status":"done","doneAt":1,"order":2,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}}],
          "removed":[{"id":"wqi_3","number":6,"owner":"ses_lead","title":"Gone","status":"next","order":3,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}},"removed":{"at":1,"by":{"user":true}}}]}
         """
@@ -242,7 +242,7 @@ import ClientSessions
     }
 
     /// The closed statuses, as the box lists them (`closed`): what a page's activity is read with.
-    static let closedOnes = [WorkCategory(id: "done", name: "Done", builtIn: true, closed: true), WorkCategory(id: "canceled", name: "Canceled", builtIn: true, closed: true)]
+    static let closedOnes = [WorkStatus(id: "done", name: "Done", closed: true), WorkStatus(id: "canceled", name: "Canceled", closed: true)]
 
     @Test func activityIsNotesAndWhatTheBoxKeptOldestFirst() throws {
         let json = """
@@ -280,7 +280,7 @@ import ClientSessions
         let detail = try JSONDecoder().decode(WorkItemDetail.self, from: Data(json.utf8))
         #expect(detail.events.count == 11, "one the client can't read leaves out only itself")
         var view = WorkQueueView(owner: "ses_lead", owners: [])
-        view.categories = [WorkCategory(id: "next", name: "Next", builtIn: true), WorkCategory(id: "later", name: "Later", builtIn: true), WorkCategory(id: "cat_design", name: "Design", builtIn: false), WorkCategory(id: "done", name: "Done", builtIn: true)]
+        view.categories = [WorkStatus(id: "next", name: "Next"), WorkStatus(id: "later", name: "Later"), WorkStatus(id: "cat_design", name: "Design"), WorkStatus(id: "done", name: "Done")]
         let lines = WorkQueue.activity(of: detail, in: view)
         #expect(lines.map { "\($0.whoWords) \($0.what)" } == [
             "Kuvo Foreman added the item",
@@ -417,7 +417,7 @@ import ClientSessions
         let item = { (name: String) in Self.view.items.first { $0.name == name }! }
         let sections = WorkQueue.sections(Self.view)
         let later = try #require(sections.first { $0.category == "later" })
-        let done = try #require(sections.first { $0.category == WorkCategory.done })
+        let done = try #require(sections.first { $0.category == WorkStatus.done })
         // A box that says nothing of what may be done: no move is offered, by menu or by drag.
         var silent = item("#2")
         silent.can = nil
@@ -498,14 +498,11 @@ import ClientSessions
         #expect(view.items.map { WorkQueue.computerName(of: $0) } == [nil, "lab"])
         #expect(view.items[1].handing?.name == "Wren")
         #expect(view.computers.first?.date == Date(timeIntervalSince1970: 5))
-        // A box from before piece 3 says nothing of other computers.
-        let older = try JSONDecoder().decode(WorkQueueView.self, from: Data(#"{"owner":"all","statuses":[],"items":[],"owners":[],"removed":[]}"#.utf8))
-        #expect(older.computers.isEmpty)
     }
 
     @Test func anIssueClosedOnGitHubIsDoneWhereItWasKeptAndOnlyGitHubMovesItInOrOut() throws {
         let json = """
-        {"owner":"ses_lead","statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false},{"id":"later","name":"Later","closed":false},{"id":"parked","name":"Parked","closed":false},{"id":"done","name":"Done","closed":true}],"owners":[],"removed":[],
+        {"owner":"ses_lead","computers":[],"statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false},{"id":"later","name":"Later","closed":false},{"id":"parked","name":"Parked","closed":false},{"id":"done","name":"Done","closed":true}],"owners":[],"removed":[],
          "items":[{"id":"wqi_1","can":{"edit":false,"set":false,"assign":false,"close":false,"delete":true,"restore":false},"source":{"kind":"github","ref":"gh:kuvo/app#12","url":"https://github.com/kuvo/app/issues/12","name":"app#12"},"seen":{"state":"not_planned","at":5},"keptIn":"later","struck":true,"closesOn":"github","owner":"ses_lead","title":"Upload retries","status":"done","order":1,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}},
                   {"id":"wqi_2","can":{"edit":false,"set":true,"assign":true,"close":false,"delete":true,"restore":false},"source":{"kind":"github-pr","ref":"gh:kuvo/app#57","name":"app#57"},"seen":{"state":"open","at":5},"closesOn":"github","owner":"ses_lead","title":"Keep the name","status":"next","order":2,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}}]}
         """
@@ -522,27 +519,25 @@ import ClientSessions
     }
 
     /// The box says the words for one its source made Done, so both apps say the same; one gone
-    /// from GitHub says so, its mark dimmed. An older box's words are worked out as before.
+    /// from GitHub says so, its mark dimmed.
     @Test func whatGitHubMadeDoneIsSaidInTheBoxsWordsAndOneGoneIsDimmed() throws {
         let item = { (extra: String) in
             #"{"id":"wqi_1","source":{"kind":"github","ref":"gh:kuvo/app#12","name":"app#12"},"keptIn":"later","closesOn":"github","owner":"ses_lead","title":"Upload retries","status":"done","order":1,"sessions":[],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}},"#
                 + extra + "}"
         }
         let json = """
-        {"owner":"ses_lead","statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false},{"id":"later","name":"Later","closed":false},{"id":"done","name":"Done","closed":true}],"owners":[],"removed":[],
+        {"owner":"ses_lead","computers":[],"statuses":[{"id":"in-progress","name":"In progress","closed":false},{"id":"next","name":"Next","closed":false},{"id":"later","name":"Later","closed":false},{"id":"done","name":"Done","closed":true}],"owners":[],"removed":[],
          "items":[\(item(#""seen":{"state":"open","at":5,"gone":true},"struck":true,"doneAs":"Gone from GitHub""#)),
-                  \(item(#""seen":{"state":"completed","at":5},"doneAs":"Closed as planned""#)),
-                  \(item(#""seen":{"state":"merged","at":5}"#))]}
+                  \(item(#""seen":{"state":"completed","at":5},"doneAs":"Closed as planned""#))]}
         """
         let view = try JSONDecoder().decode(WorkQueueView.self, from: Data(json.utf8))
         let now = Date(timeIntervalSince1970: 0)
-        let (gone, closed, older) = (view.items[0], view.items[1], view.items[2])
+        let (gone, closed) = (view.items[0], view.items[1])
         #expect(gone.isGone && gone.isStruck && WorkRef(gone).isGone)
         #expect(!closed.isGone)
         #expect(WorkQueue.properties(of: gone, in: view, now: now).first?.words == "Gone from GitHub")
         #expect(WorkQueue.properties(of: gone, in: view, now: now).first?.help == "If GitHub shows it again, it’s back in Later.")
         #expect(WorkQueue.properties(of: closed, in: view, now: now).first?.words == "Closed as planned", "the box's words, whatever the state")
-        #expect(WorkQueue.properties(of: older, in: view, now: now).first?.words == "Merged on GitHub", "an older box's, from its state")
         #expect(WorkQueue.spokenRow(gone, in: view, now: Date(timeIntervalSince1970: 0)).hasPrefix("Upload retries, GitHub issue app#12, done, gone, "), "VoiceOver hears it's gone, as the dimmed mark shows")
         #expect(!WorkQueue.spokenRow(closed, in: view, now: Date(timeIntervalSince1970: 0)).contains("gone"))
     }

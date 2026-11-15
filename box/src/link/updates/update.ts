@@ -175,7 +175,7 @@ export function noteLauncher(readEngine: () => EngineRecord = readEngineFile, no
   try { writePrivate(LAUNCHERS, JSON.stringify(all)); } catch {}
 }
 
-// COMPAT(0.7 visits): `launchers.json`, Macs that started the engine without saying they tolerate newer boxes, hold updates back. Goes 3 months after 0.8.0.
+// COMPAT(0.7 visits): `launchers.json`, Macs that started the engine without saying they tolerate newer boxes, hold updates back. Goes on the user's word, once no Mac from before 1.0 connects.
 // Why this box doesn't update itself now, or null: it isn't a machine's own folder, or a Mac that
 // started its engine lately would put back older versions (one that didn't say it leaves a newer
 // box as it is).
@@ -331,7 +331,7 @@ async function cameUp(version: string, withAgents: boolean, timeout = 120_000, r
   return false;
 }
 
-// COMPAT(0.7 files): `bin/.own`, the box's own copies of the tools an older Mac puts its own over. Goes 3 months after 0.8.0.
+// COMPAT(0.7 files): `bin/.own`, the box's own copies of the tools an older Mac puts its own over. Goes on the user's word, once no Mac from before 1.0 connects.
 // The box's tools that an older Kuvo Code on a Mac (0.7 and before) puts its own over as it
 // connects: the box keeps copies of its own (`bin/.own`), which its keeper puts back.
 const OWN_TOOLS = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"];
@@ -375,7 +375,7 @@ interface BoxFiles {
 export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, upWithin = 120_000, swapping = () => {}, taking = () => {} }: UpdateOptions = {}): Promise<UpdateOutcome> {
   if (!keys.length) return { result: "off", message: "Updates aren't set up for this machine yet." };
   if (blocked) return { result: "blocked", message: blocked };
-  // COMPAT(0.7 engine-stop): no update while an older Mac's Stop holds the engine down. Goes 3 months after 0.8.0.
+  // COMPAT(0.7 engine-stop): no update while an older Mac's Stop holds the engine down. Goes on the user's word, once no Mac from before 1.0 connects.
   if (fs.existsSync(path.join(RUN, "stopped"))) return { result: "blocked", message: "Its engine is stopped: start it to update it." };
   const before = boxVersion();
   if (!before) return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
@@ -436,7 +436,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     }
     if (process.platform !== "darwin") bundles.length = 0;
     if (!files.includes("bin/box-version") || fs.readFileSync(path.join(stage, "files", "bin", "box-version"), "utf8").trim() !== manifest.version) throw new Error("The release's files aren't what it says.");
-    // COMPAT(0.7 files): the release's tools kept in `bin/.own`. Goes 3 months after 0.8.0.
+    // COMPAT(0.7 files): the release's tools kept in `bin/.own`. Goes on the user's word, once no Mac from before 1.0 connects.
     // Its tools kept as the box's own too (and put back with the rest, if it goes back).
     for (const tool of OWN_TOOLS) {
       if (!files.includes(`bin/${tool}`)) continue;
@@ -595,7 +595,7 @@ export function confirmUpdate(clock = Date.now): boolean {
   return true;
 }
 
-// COMPAT(0.7 visits): "an older Mac" in `launchers.json`. Goes 3 months after 0.8.0.
+// COMPAT(0.7 visits): "an older Mac" in `launchers.json`. Goes on the user's word, once no Mac from before 1.0 connects.
 // An older Mac (Kuvo Code 0.7 and before) to hold updates back for, from now: it would put back
 // its own files.
 function noteOlderMac(at: number): void {
@@ -606,7 +606,7 @@ function noteOlderMac(at: number): void {
   try { writePrivate(LAUNCHERS, JSON.stringify(launchers)); } catch {}
 }
 
-// COMPAT(0.7 visits): `run/attached` and `run/older-mac`, an older Mac's visits. Goes 3 months after 0.8.0.
+// COMPAT(0.7 visits): `run/attached` and `run/older-mac`, an older Mac's visits. Goes on the user's word, once no Mac from before 1.0 connects.
 // An older Kuvo Code on a Mac touches `run/attached` each time it connects, and this one never
 // does: one that did lately holds this box's updates back (it would put back its own files). Not
 // a touch from before a Kuvo Code that marks the box last put its files there: that was most
@@ -631,10 +631,10 @@ interface Installed {
   files: Record<string, string>;
 }
 
-// COMPAT(0.7 files): how long a Mac's `run/mac-installing` counts. Goes 3 months after 0.8.0.
+// COMPAT(0.7 files): how long a Mac's `run/mac-installing` counts. Goes on the user's word, once no Mac from before 1.0 connects.
 const MAC_INSTALLING = 3600_000;
 
-// COMPAT(0.7 visits): drift, an older Mac's files put back over an update's. Goes 3 months after 0.8.0.
+// COMPAT(0.7 visits): drift, an older Mac's files put back over an update's. Goes on the user's word, once no Mac from before 1.0 connects.
 // Whether a Mac that doesn't leave a newer box as it is (an older Kuvo Code) put its own files back
 // since the box updated itself (seen twice, ten minutes apart, and not while a Mac says it puts its
 // files in place): then the box doesn't update itself for a while, as that Mac would undo it, and
