@@ -196,7 +196,9 @@ function changed(setting: ZoneSetting): void {
 /** A new pick's count: one more than this box has, and at least the time it's made (ms since 1970),
  * so a pick made on a box that hasn't heard your others' yet (reinstalled, just set up) still wins
  * over an older one they had. */
-const pickCount = (now: ZoneSetting | null, at = Date.now()): number => Math.min(Math.max((now?.n ?? 0) + 1, at), MOST_COUNT);
+// (Two picks made before either box hears the other are ordered by their clocks; picking again after
+// hearing always wins. A count at the cap, which only a broken box could send, stays there.)
+export const pickCount = (now: Pick<ZoneSetting, "n"> | null, at = Date.now()): number => Math.min(Math.max((now?.n ?? 0) + 1, at), MOST_COUNT);
 
 /** Your zone changed to `zone` here, from a client: counted past any this box has seen, and past now.
  * Null for a zone this computer doesn't know. */

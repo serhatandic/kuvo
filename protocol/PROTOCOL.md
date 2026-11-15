@@ -8039,7 +8039,9 @@ other. Every box does it alike, a Mac's and a machine's, on macOS and Linux.
   1970), so a pick made on a box that hasn't heard your others yet (reinstalled, just set up) still
   wins over an older one they have; with the zone's rules where the box has them (`zoneinfo`, a TZif
   file, base64, under 16 KB). The same pick told again with rules, where the receiver has none, keeps
-  them (a first mail too big to carry them goes without).
+  them (a first mail too big to carry them goes without). Two picks made before either box hears the other are ordered by
+  their clocks, so a clock off by some minutes can reorder picks made within those minutes; picking
+  again after hearing the other always wins.
 - **Carried**: in the agents' mail ("Peers"), beside `agents`, as `zone: {zone, n, zoneinfo?}`, a
   pick only (never a box's own clock, nor what an older Mac gave a machine), to each peer that's one
   of your own computers and has said what it is (as `computer` goes), and on to the rest as each

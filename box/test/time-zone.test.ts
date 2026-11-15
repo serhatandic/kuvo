@@ -110,10 +110,15 @@ test("a pick made on a box reinstalled (or just set up), before it hears your ot
   expect(read(join(folder, "timezone"))).toBe("Europe/Berlin")
 })
 
-test("the same pick told again with its rules, after a mail that couldn't carry them, keeps them where there are none", () => {
-  // (A zone whose rules this computer has its own of keeps those: only a computer without them takes these.)
-  expect(takeZone({ zone: "Asia/Tokyo", n: 7 })).toBe(true)
-  expect(takeZone({ zone: "Asia/Tokyo", n: 7, zoneinfo: Buffer.from("TZif later").toString("base64") })).toBe(!existsSync("/usr/share/zoneinfo/Asia/Tokyo"))
+test("a pick counts past what the box had and at least the time it's made, so of two picks made apart the later wins", async () => {
+  const { pickCount } = await import("../src/link/zone/setting")
+  // Made at 1000 ms on a box that had heard of a pick counted 5: 1000.
+  expect(pickCount({ n: 5 }, 1000)).toBe(1000)
+  // On a box that had a later one: one past it, whatever its clock says (behind, here).
+  expect(pickCount({ n: 5000 }, 1000)).toBe(5001)
+  // With none, the time it's made; and a later pick elsewhere, counted at its own time, wins.
+  expect(pickCount(null, 1000)).toBe(1000)
+  expect(pickCount(null, 2000)).toBeGreaterThan(pickCount({ n: 5 }, 1000))
 })
 
 test("a Mac of 0.7 still connecting, its clock moved (you travelled): the kit it writes again moves a machine's carried zone, for it alone, never a pick", () => {
