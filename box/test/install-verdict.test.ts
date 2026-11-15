@@ -53,6 +53,23 @@ test("ours: a Mac's own box in its home; `new` finishes it only while what start
   expect(here.verdict(true).verdict).toBe("ours")
 })
 
+test("ours, moved by the box itself and still owing something: `move` finishes it, whatever its helper says; nothing owed, nothing to run", () => {
+  const moved = computer()
+  moved.put(join(moved.K, "box", "kind"), "mac\n")
+  moved.put(join(moved.S, "Chats", "c1", "notes.md"), "as it was: the move never changes the earlier app's folder")
+  const state = (owed: string[]) => moved.put(join(moved.K, "updates", "rehome", "state.json"), JSON.stringify({ state: "done", way: "move", owed, app: { bundle: "/Applications/Kuvo Code.app", id: "run.kuvo.code" }, from: moved.S, to: moved.K }))
+  for (const owed of [["start", "keychain", "passwords"], ["keychain"], ["passwords"], ["agent"]]) {
+    state(owed)
+    expect({ owed, ...moved.verdict(true) }).toEqual({ owed, verdict: "ours", verb: "move" })
+    expect(moved.verdict(false).verb).toBe("move")
+  }
+  state([])
+  expect(moved.verdict(true)).toEqual({ verdict: "ours", verb: null })
+  // (The keeper's move owed its app's executable, which no installer settles: never `move` for it.)
+  moved.put(join(moved.K, "updates", "rehome", "state.json"), JSON.stringify({ state: "done", way: "move", owed: ["keychain", "agent"], from: moved.S, to: moved.K }))
+  expect(moved.verdict(true)).toEqual({ verdict: "ours", verb: null })
+})
+
 test("a new box's making cut short isn't a box yet: fresh, to be made again", () => {
   const cut = computer()
   cut.put(join(cut.K, "updates", "rehome", "new"), "1\n")
