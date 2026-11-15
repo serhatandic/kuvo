@@ -122,7 +122,9 @@ export async function installCommand(args: string[]): Promise<number> {
       return EXIT.refused;
     }
     if (verbs[0] === "--status") {
-      say(judged());
+      const judgement = judged();
+      tidyStaging(home, judgement, option("--release"));
+      say(judgement);
       return 0;
     }
     if (verbs[0] === "--move") {
@@ -147,6 +149,18 @@ export async function installCommand(args: string[]): Promise<number> {
 /** What the installer staged, gone once a box is made from it (the engine this runs on with it:
  * a running program keeps its file). */
 const clearStaging = (home: string): void => fs.rmSync(path.join(home, "updates", "install"), { recursive: true, force: true });
+
+/** The engine the installer fetched, gone once the box that's here has that engine itself (the
+ * installer runs on the box's own from then on): never two copies kept. Only where nothing is to
+ * be made or moved from what's staged. */
+function tidyStaging(home: string, { verdict, verb }: Judgement, release: string | undefined): void {
+  if (verb !== null || !["ours", "machine", "two"].includes(verdict) || !release) return;
+  try {
+    const box: unknown = JSON.parse(fs.readFileSync(path.join(release, "box.json"), "utf8"));
+    const version = isObject(box) && typeof box.engine === "string" && /^[0-9A-Za-z][0-9A-Za-z.-]*$/.test(box.engine) ? box.engine : null;
+    if (version && fs.existsSync(path.join(home, "engine", version, "opencode"))) fs.rmSync(path.join(home, "updates", "install", "engine"), { recursive: true, force: true });
+  } catch {}
+}
 
 interface NewMac { home: string; appFolder: string; app: string; release: string; engine: string }
 

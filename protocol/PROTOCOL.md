@@ -7449,7 +7449,9 @@ decides nothing itself.
 4. `kuvo-link.js install --<verb> --root <name> --release <folder> --engine <folder> [--app
    <bundle>]` from that release, on that engine, with `KUVO_HOME` the box's home.
 
-It writes only in `K/updates/install`, which goes once a box is made from it.
+It writes only in `K/updates/install`, which goes once a box is made from it. Beside a box
+that's there already (`ours`, `machine`, `two`, nothing to run), the engine it fetched goes once
+that box has the same engine itself, and the installer runs on the box's own from then on.
 
 **`status`** → `{"verdict", "verb", "status"}`: what this computer holds, from its folders alone;
 `verb` is what to run next (`"new"`, `"move"` or null), and `status` is how a move stands

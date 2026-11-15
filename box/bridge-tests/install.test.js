@@ -161,6 +161,30 @@ test("a damaged copy is refused in words before anything of it runs: a pack that
   assert.equal(install(two, "status").said.verdict, "fresh");
 });
 
+test("beside a box that's here already, nothing is made, and the engine the installer fetched goes once that box has it itself", () => {
+  const where = computer();
+  assert.equal(install(where, "status").said.verdict, "fresh");
+  // A machine's box set up here meanwhile, as another computer leaves it, with the same engine.
+  write(path.join(where.K, "bin", "kuvo-start"), "#!/bin/sh\n", 0o700);
+  write(path.join(where.K, "run", "link.json"), JSON.stringify({ mac: "A".repeat(43), macs: ["A".repeat(43)], phones: [] }));
+  write(path.join(where.K, "engine", ENGINE, "opencode"), engineBinary, 0o755);
+  const status = install(where, "status");
+  assert.equal(status.status, 0, status.stderr);
+  assert.equal(status.said.verdict, "machine");
+  assert.equal(status.said.verb, null);
+  assert.equal(exists(path.join(staging(where), "engine")), false, "one copy of the engine, the box's own");
+  // Asked again, on the box's own engine: nothing fetched.
+  const again = install(where, "status");
+  assert.deepEqual(again.steps, []);
+  assert.equal(again.said.verdict, "machine");
+  assert.equal(exists(path.join(staging(where), "engine")), false);
+  const refused = install(where, "new");
+  assert.equal(refused.status, 1);
+  assert.equal(refused.said.result, "refused");
+  assert.equal(refused.said.message, "This computer is set up as one of your machines already: Kuvo Code uses the box that's here.");
+  assert.equal(read(path.join(where.K, "bin", "kuvo-start")), "#!/bin/sh\n", "its files as they were");
+});
+
 test("new on a Mac: this Mac's own box made in its home from the release and its engine, started by Kuvo Helper, the installer's staging gone", { skip: !mac && "a Mac's box" }, () => {
   const where = computer();
   const made = install(where, "new");

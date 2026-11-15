@@ -48386,7 +48386,7 @@ import fs159 from "node:fs";
 import path167 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4f88a07f1357";
+var BRIDGE_VERSION = "ddbcfd1cd65c";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync12 } from "node:child_process";
@@ -51031,7 +51031,9 @@ async function installCommand(args) {
       return EXIT.refused;
     }
     if (verbs[0] === "--status") {
-      say(judged());
+      const judgement = judged();
+      tidyStaging(home, judgement, option("--release"));
+      say(judgement);
       return 0;
     }
     if (verbs[0] === "--move") {
@@ -51052,6 +51054,16 @@ async function installCommand(args) {
   }
 }
 var clearStaging2 = (home) => fs161.rmSync(path169.join(home, "updates", "install"), { recursive: true, force: true });
+function tidyStaging(home, { verdict, verb }, release) {
+  if (verb !== null || !["ours", "machine", "two"].includes(verdict) || !release)
+    return;
+  try {
+    const box = JSON.parse(fs161.readFileSync(path169.join(release, "box.json"), "utf8"));
+    const version = isObject(box) && typeof box.engine === "string" && /^[0-9A-Za-z][0-9A-Za-z.-]*$/.test(box.engine) ? box.engine : null;
+    if (version && fs161.existsSync(path169.join(home, "engine", version, "opencode")))
+      fs161.rmSync(path169.join(home, "updates", "install", "engine"), { recursive: true, force: true });
+  } catch {}
+}
 async function newMac({ home, appFolder, app, release, engine }, judged) {
   const before = judged();
   if (before.verdict !== "fresh" && before.verdict !== "ours")
