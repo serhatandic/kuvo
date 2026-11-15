@@ -32,7 +32,8 @@ enum ShortCommand {
         let said = OSAllocatedUnfairLock(initialState: Said())
         reading.readabilityHandler = { handle in
             let data = handle.availableData
-            if !data.isEmpty { said.withLock { $0.errors.append(data) } }
+            // (Its end: nothing more to wait for here.)
+            if data.isEmpty { handle.readabilityHandler = nil } else { said.withLock { $0.errors.append(data) } }
         }
         return try await withCheckedThrowingContinuation { continuation in
             let ended = DispatchGroup()

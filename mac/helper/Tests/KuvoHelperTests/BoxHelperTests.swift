@@ -13,13 +13,12 @@ import Testing
 ///   stdin, its host interface, keys it never makes again, the box turned off, a second one, and a
 ///   bundle changed since it was signed;
 /// - what macOS allows it, noted for the box (the test says what: a test's build never asks macOS);
-/// - `kuvo-keys`, the hand-over of the app's items as the box's move runs it;
-/// - opening it from the app.
+/// - `kuvo-keys`, the hand-over of the app's items as the box's move runs it, and for nothing else.
 ///
 /// Every Keychain call goes to a keychain file the test makes (`security create-keychain`, which
 /// leaves your search list as it was: `AccountUntouched` checks) and deletes; nothing reads your login keychain, and nothing here can
-/// ask you anything (`HostKeychain.neverAsk`). The box's keeper (`kuvo-start`) and `open` are
-/// stand-ins; launchd is never asked.
+/// ask you anything (`HostKeychain.neverAsk`). The box's keeper (`kuvo-start`) is a stand-in;
+/// launchd is never asked.
 /// (Something of the tests' own bundle, to find what's built beside it.)
 private final class InTheTests {}
 
@@ -699,9 +698,21 @@ private final class InTheTests {}
     /// `kuvo-keys`, as the release's script built and signed it (as the test's Kuvo Code).
     private var keysTool: URL { folder.appending(path: "built/kuvo-keys") }
 
-    /// One run of it, as the box's move runs it: for the test's app, in the test's keychain.
+    /// One run of it, for the test's app, in the test's keychain.
     private func keys(_ arguments: [String]) throws -> Ran {
         try Self.ran(keysTool.path, arguments + ["--test-app", Self.app] + own, environment: ["HOME": home.path, "PATH": "/usr/bin:/bin"])
+    }
+
+    /// The box's move under way, its lock held by `holder` (this test, which runs `kuvo-keys` as the
+    /// move does), and the helper its release brought, in the box.
+    private func moving(heldBy holder: pid_t = getpid()) throws -> URL {
+        try write(box.appending(path: "updates/rehome/lock/pid"), "\(holder)")
+        let released = box.appending(path: "updates/install/release/bin").appending(path: BoxHelperBundle.bundleName)
+        if !FileManager.default.fileExists(atPath: released.path) {
+            try FileManager.default.createDirectory(at: released.deletingLastPathComponent(), withIntermediateDirectories: true)
+            #expect(try Self.ran("/usr/bin/ditto", [helperInApp.path, released.path]).status == 0)
+        }
+        return released
     }
 
     private func said(_ ran: Ran) -> [String: Any] {
@@ -711,10 +722,11 @@ private final class InTheTests {}
     @Test func kuvoKeysHandsTheAppsItemsToTheHelperAndTakesTheAppsAwayOnceOwed() throws {
         defer { cleanUp() }
         addOriginals(madeBy: keysTool)
+        let released = try moving()
         let signature = try Self.ran("/usr/bin/codesign", ["-d", "--verbose=2", keysTool.path])
         #expect(signature.errors.contains("Identifier=\(Self.app)\n"), "signed as Kuvo Code itself, which is what its items go by")
         #expect(signature.errors.contains("runtime"))
-        let copied = try keys(["copy", "--helper", helperInApp.path])
+        let copied = try keys(["copy", "--helper", released.path])
         #expect(copied.status == 0, "\(copied.status) \(copied.output) \(copied.errors)")
         #expect(said(copied)["copied"] as? Int == 6)
         #expect(try move.journal()?.state == .copied)
@@ -722,7 +734,7 @@ private final class InTheTests {}
         #expect(try helper(["keys", "check"]).status == 0)
         #expect(keychain.items("\(Self.app).integrations")?.map(\.account) == ["KUVO_KEY_GITHUB_TOKEN"])
         // Asked again with its copies there: refused, said in a word the move reads.
-        let again = try keys(["copy", "--helper", helperInApp.path])
+        let again = try keys(["copy", "--helper", released.path])
         #expect(again.status == 1)
         #expect(said(again)["reason"] as? String == "journal")
         // Owed once the move cleared the old place: the app's own go, the helper's stay.
@@ -738,13 +750,24 @@ private final class InTheTests {}
 
     @Test func kuvoKeysGivesTheKeysOnlyToKuvoHelperItself() throws {
         defer { cleanUp() }
-        addOriginals()
-        // Another program (here, the app), a helper changed since it was signed, and none named.
-        let changed = folder.appending(path: "changed/\(BoxHelperBundle.bundleName)")
-        try FileManager.default.createDirectory(at: changed.deletingLastPathComponent(), withIntermediateDirectories: true)
-        #expect(try Self.ran("/usr/bin/ditto", [helperInApp.path, changed.path]).status == 0)
+        addOriginals(madeBy: keysTool)
+        let released = try moving()
+        // In the box: another program (a copy of the app), a helper changed since it was signed, and
+        // one in a folder others may write to. Outside it: Kuvo Helper itself, where anything could
+        // put another in its place (and a link to it from inside). And none named.
+        let other = box.appending(path: "updates/install/other/Kuvo Code.app")
+        let changed = box.appending(path: "updates/install/changed/\(BoxHelperBundle.bundleName)")
+        let open = box.appending(path: "updates/install/open/\(BoxHelperBundle.bundleName)")
+        for (from, to) in [(appBundle, other), (released, changed), (released, open)] {
+            try FileManager.default.createDirectory(at: to.deletingLastPathComponent(), withIntermediateDirectories: true)
+            #expect(try Self.ran("/usr/bin/ditto", [from.path, to.path]).status == 0)
+        }
         try write(changed.appending(path: "Contents/Resources/extra"), "changed")
-        for arguments in [["copy", "--helper", appBundle.path], ["copy", "--helper", changed.path], ["copy"], ["copy", "--helper", "Kuvo Helper.app"]] {
+        try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: open.deletingLastPathComponent().path)
+        let link = box.appending(path: "updates/install/link.app")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: helperInApp)
+        for arguments in [["copy", "--helper", other.path], ["copy", "--helper", changed.path], ["copy", "--helper", open.path], ["copy", "--helper", helperInApp.path],
+                          ["copy", "--helper", link.path], ["copy"], ["copy", "--helper", "Kuvo Helper.app"]] {
             let refused = try keys(arguments)
             #expect(refused.status == 2, "\(arguments): \(refused.output)")
         }
@@ -756,11 +779,38 @@ private final class InTheTests {}
         #expect(keychain.items("\(Self.app).phone-link")?.count == 3)
     }
 
+    @Test func kuvoKeysDoesNothingButForTheBoxsMoveThatRunsIt() throws {
+        defer { cleanUp() }
+        addOriginals(madeBy: keysTool)
+        #expect(try Self.ran("/usr/bin/security", ["add-internet-password", "-a", "ada", "-s", "github.com", "-c", "KUVO", "-w", "hunter2", "-A", keychainFile.path]).status == 0)
+        let released = try moving()
+        try FileManager.default.removeItem(at: box.appending(path: "updates/rehome/lock"))
+        // No move under way, a lock left by one that's gone (its number no one's now), and a move
+        // under way that isn't what runs it (here, launchd's number): nothing, whatever's asked.
+        let gone = Process()
+        gone.executableURL = URL(filePath: "/usr/bin/true")
+        try gone.run()
+        gone.waitUntilExit()
+        for holder in [nil, gone.processIdentifier, 1] as [pid_t?] {
+            if let holder { _ = try moving(heldBy: holder) }
+            for arguments in [["copy", "--helper", released.path], ["delete-originals"], ["passwords"]] {
+                let refused = try keys(arguments)
+                #expect(refused.status == 2, "\(String(describing: holder)) \(arguments): \(refused.output)")
+                #expect(refused.errors.contains("only for this Mac’s box’s move"))
+            }
+        }
+        #expect(try move.journal() == nil)
+        for service in KeychainMove.services { #expect(keychain.items("\(Self.helperID).\(service)") == []) }
+        #expect(keychain.items("\(Self.app).phone-link")?.count == 3)
+        #expect(!FileManager.default.fileExists(atPath: box.appending(path: "updates/rehome/passwords.json").path))
+    }
+
     @Test func kuvoKeysSaysItemsAnEarlierBoxLeftInAWordTheMoveReads() throws {
         defer { cleanUp() }
         addOriginals(madeBy: keysTool)
         #expect(keychain.add("\(Self.helperID).integrations", "KUVO_KEY_GITHUB_TOKEN", Data("ghp_old".utf8), label: nil, trusting: [helperInApp]) == errSecSuccess)
-        let refused = try keys(["copy", "--helper", helperInApp.path])
+        let released = try moving()
+        let refused = try keys(["copy", "--helper", released.path])
         #expect(refused.status == 1)
         #expect(said(refused)["reason"] as? String == "leftovers")
         #expect((said(refused)["error"] as? String)?.contains("integrations/KUVO_KEY_GITHUB_TOKEN") == true)
@@ -777,6 +827,7 @@ private final class InTheTests {}
         try add("github.com", "ada", "hunter2", creator: "KUVO")
         try add("example.org", "", "pass word", creator: "KUVO")
         try add("other.example", "eve", "theirs", creator: "OTHR")
+        _ = try moving()
         let handed = try keys(["passwords"])
         #expect(handed.status == 0, "\(handed.errors)")
         #expect(said(handed)["passwords"] as? Int == 2)
@@ -820,26 +871,5 @@ private final class InTheTests {}
         #expect(!BoxHelperBundle.isGenuine(helperInApp, identifier: Self.helperID, signer: nil), "nothing when who signed this can't be told")
         #expect(!BoxHelperBundle.isGenuine(helperInApp, identifier: "run.kuvo.code.trial4.other", signer: .adHoc, adHocMatch: true))
         #expect(!BoxHelperBundle.isGenuine(helperInApp, identifier: Self.helperID, signer: .team("ABCDE12345")), "another team's isn't")
-    }
-
-    @Test func theAppOpensTheHelperInstalledInTheBoxAsItsOwnProgram() async throws {
-        defer { cleanUp() }
-        let opener = folder.appending(path: "open")
-        try write(opener, "#!/bin/sh\nprintf '%s\\n' \"$@\" >\"\(folder.path)/opened\"\n", executable: true)
-        // Not installed yet: said, nothing opened.
-        await #expect(throws: BoxHelperBundle.Refused.self) { try await BoxHelperBundle.open(home: box, app: Self.app, opener: opener.path, signer: .adHoc, carrier: appBundle) }
-        #expect(BoxHelperBundle.trouble(installedIn: box, app: Self.app, signer: .adHoc, carrier: appBundle)?.contains("isn’t in this Mac’s box") == true)
-        let installed = BoxHelperBundle.installed(in: box)
-        try FileManager.default.createDirectory(at: installed.deletingLastPathComponent(), withIntermediateDirectories: true)
-        #expect(try Self.ran("/usr/bin/ditto", [helperInApp.path, installed.path]).status == 0)
-        #expect(BoxHelperBundle.trouble(installedIn: box, app: Self.app, signer: .adHoc, carrier: appBundle) == nil)
-        try await BoxHelperBundle.open(home: box, app: Self.app, opener: opener.path, signer: .adHoc, carrier: appBundle)
-        #expect(text(folder.appending(path: "opened")).split(separator: "\n") == ["-g", "-j", "-n", Substring(installed.path), "--args", "keep", "--home", Substring(box.path)])
-        // Changed since it was signed: not opened.
-        try FileManager.default.removeItem(at: folder.appending(path: "opened"))
-        try write(installed.appending(path: "Contents/Resources/extra"), "changed")
-        #expect(BoxHelperBundle.trouble(installedIn: box, app: Self.app, signer: .adHoc, carrier: appBundle)?.contains("was changed") == true)
-        await #expect(throws: BoxHelperBundle.Refused.self) { try await BoxHelperBundle.open(home: box, app: Self.app, opener: opener.path, signer: .adHoc, carrier: appBundle) }
-        #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "opened").path))
     }
 }

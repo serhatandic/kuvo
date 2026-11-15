@@ -45416,7 +45416,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "eecd3e19c1ca";
+var BRIDGE_VERSION = "4a265bcfbd2a";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -57706,8 +57706,8 @@ function runs(pid) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch (error) {
-    return error.code === "EPERM";
+  } catch {
+    return false;
   }
 }
 function boxPermissions() {

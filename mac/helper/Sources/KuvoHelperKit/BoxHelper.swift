@@ -9,7 +9,7 @@ nonisolated private let log = Logger(subsystem: "run.kuvo.code", category: "box-
 
 /// Kuvo Helper: the program a Mac's box in a home of its own runs under (#333 piece 4; KuvoLink's
 /// PROTOCOL.md, "This Mac's box: its helper"). launchd starts it at login (the launch agent
-/// `run.kuvo.code.machine`), or the app opens it once while Login Items doesn't. It holds no box
+/// `run.kuvo.code.machine`), or the box opens it while Login Items doesn't (`helper start`). It holds no box
 /// logic: everything the box does is `kuvo-start`'s and the box's own, as on every computer. It's
 /// there for what only a signed program of Kuvo Code's own can be:
 ///
@@ -419,7 +419,8 @@ public final class BoxHelper {
     /// with this process's number, so the box can tell a record left by one that's gone.
     func notePermissions() {
         let now = allowed()
-        guard now != notedPermissions else { return }
+        // (Written again where the note's gone: whatever took it away, the box hears again.)
+        guard now != notedPermissions || !FileManager.default.fileExists(atPath: permissionsFile.path(percentEncoded: false)) else { return }
         let record: [String: Any] = ["v": 1, "pid": Int(getpid()), "screenRecording": now.screenRecording, "accessibility": now.accessibility]
         guard let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]), (try? PrivateFile.write(data, to: permissionsFile)) != nil else { return }
         notedPermissions = now

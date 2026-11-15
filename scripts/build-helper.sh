@@ -43,7 +43,7 @@ PACKAGE=mac/helper
 OUT="$FOLDER/$NAME.app"
 
 built() {
-    swift build -c release --package-path "$PACKAGE" --product "$1" --arch arm64 -q
+    swift build -c release --package-path "$PACKAGE" --product "$1" --arch arm64 -q >&2
     echo "$(swift build -c release --package-path "$PACKAGE" --arch arm64 --show-bin-path)/$1"
 }
 if [ -n "${HELPER_EXECUTABLE:-}" ]; then EXECUTABLE=$HELPER_EXECUTABLE; else EXECUTABLE=$(built KuvoHelper); fi

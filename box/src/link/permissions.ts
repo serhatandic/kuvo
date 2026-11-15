@@ -11,13 +11,14 @@ import { HELPER_NAME } from "./helper";
 import { APP_FOLDER, K, recordedKind } from "./home";
 import type { AnswerPiece, RouteContext } from "./server/context";
 
-/** Whether a process with that number runs now (one of another user's counts: it's there). */
+/** Whether a process of yours with that number runs now. (The helper is yours: one this can't
+ * signal is someone else's, which took the number of a helper that's gone.) */
 function runs(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+  } catch {
+    return false;
   }
 }
 

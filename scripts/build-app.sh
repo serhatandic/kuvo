@@ -82,6 +82,7 @@ codesign "$@" "$FRAMEWORK"
 # app's to carry: this app moves its own keys.)
 info() { /usr/libexec/PlistBuddy -c "Print :$1" "$APP/Contents/Info.plist"; }
 HELPER_BUILD=$(mktemp -d "${TMPDIR:-/tmp}/kuvo-helper.XXXXXXXX")
+trap 'rm -rf "$HELPER_BUILD"' EXIT
 helper_icon=""
 [ ! -f "$APP/Contents/Resources/AppIcon.icns" ] || helper_icon="$APP/Contents/Resources/AppIcon.icns"
 SIGN_IDENTITY="$SIGN_IDENTITY" APP_ID="$(info CFBundleIdentifier)" VERSION="$(info CFBundleShortVersionString)" BUILD="$(info CFBundleVersion)" \
@@ -90,6 +91,7 @@ mkdir -p "$APP/Contents/Helpers"
 rm -rf "$APP/Contents/Helpers/Kuvo Helper.app"
 mv "$HELPER_BUILD/Kuvo Helper.app" "$APP/Contents/Helpers/"
 rm -rf "$HELPER_BUILD"
+trap - EXIT
 # The helpers the app carries (the box's, `Contents/Helpers/<name>.app`), before the app, and before
 # the box's release packs them: each keeps its own identifier and entitlements.
 for helper in "$APP/Contents/Helpers/"*.app; do

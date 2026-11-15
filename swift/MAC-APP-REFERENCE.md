@@ -55,7 +55,9 @@ Box) isn't this app's any more:
   below. `scripts/build-app.sh` puts the helper `build-helper.sh` built into `Contents/Helpers`,
   as before.
 - This app's own words still say "Kuvo Code Box" in a few places (its move is behind
-  `movesOwnBox`, off in every build): left as they are.
+  `movesOwnBox`, off in every build): left as they are. So is `KuvoCodeTests/OwnBoxMoveTests.swift`,
+  which expects that name in the launch agent the box writes and in a message, and would fail on
+  them now; this app's tests aren't run.
 
 ## What it's still built for, until the box does it (#713)
 
