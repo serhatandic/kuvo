@@ -871,4 +871,4 @@ export function keepFence(every: (round: () => Promise<void>) => void = round =>
   });
 }
 
-export const fenceFiles = { folder: FOLDER, plugin: PLUGIN, launcher: places.launcher, version: VERSION };
+export const fenceFiles = { folder: FOLDER, plugin: PLUGIN, launcher: places.launcher, runner: places.runner, version: VERSION };

@@ -372,9 +372,10 @@ test("the sandbox's row is what kuvo/sandbox says, and its button does what that
     // agents in it, where the engine's own runtime is hidden.)
     rmSync(fenceFiles.folder, { recursive: true, force: true })
     rmSync(fenceFiles.launcher, { force: true })
-    rmSync(join(dirname(fenceFiles.launcher), "kuvo-fence.js"), { force: true })
+    rmSync(fenceFiles.runner, { force: true })
     rmSync(fenceFiles.plugin, { force: true })
   }
+  expect([existsSync(fenceFiles.folder), existsSync(fenceFiles.launcher), existsSync(fenceFiles.runner), existsSync(fenceFiles.plugin)]).toEqual([false, false, false, false])
 })
 
 test("Restart Engine starts the box's own tool, and answers done; where the app restarts a Mac's engine, it says so", async () => {

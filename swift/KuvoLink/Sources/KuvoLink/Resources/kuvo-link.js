@@ -8094,7 +8094,7 @@ function keepFence(every = (round) => {
     await checking;
   });
 }
-var fenceFiles = { folder: FOLDER2, plugin: PLUGIN, launcher: places.launcher, version: VERSION };
+var fenceFiles = { folder: FOLDER2, plugin: PLUGIN, launcher: places.launcher, runner: places.runner, version: VERSION };
 
 // box/src/link/work/sandbox.ts
 function sandboxOn(agents = false) {
@@ -45673,7 +45673,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "800bd94aa6a5";
+var BRIDGE_VERSION = "78589277c621";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
