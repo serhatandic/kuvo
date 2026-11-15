@@ -40,6 +40,9 @@ const MENU_PADDING: Pixels = px(4.);
 
 type Handler = Rc<dyn Fn(&mut Window, &mut App)>;
 
+/// The tallest a menu grows before it scrolls.
+const MOST_HEIGHT: f32 = 420.;
+
 /// One line of a menu.
 pub enum MenuItem {
     Entry(MenuEntry),
@@ -54,6 +57,7 @@ pub struct MenuEntry {
     shortcut: Option<SharedString>,
     checked: bool,
     disabled: bool,
+    muted: bool,
     destructive: bool,
     handler: Option<Handler>,
 }
@@ -67,6 +71,7 @@ impl MenuEntry {
             shortcut: None,
             checked: false,
             disabled: false,
+            muted: false,
             destructive: false,
             handler: None,
         }
@@ -96,6 +101,12 @@ impl MenuEntry {
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// Drawn quiet, and still chosen: a computer that's away.
+    pub fn muted(mut self, muted: bool) -> Self {
+        self.muted = muted;
         self
     }
 
@@ -263,6 +274,8 @@ impl Render for Menu {
                     let selected = self.selected == Some(ix);
                     let color = if entry.disabled {
                         c.text_faint
+                    } else if entry.muted {
+                        c.text_muted
                     } else if entry.destructive {
                         c.danger
                     } else {
@@ -336,6 +349,9 @@ impl Render for Menu {
             .border_1()
             .border_color(c.border)
             .shadow(theme.elevated_shadow())
+            // A long one (every time zone) scrolls inside itself, never off the window.
+            .max_h(px(MOST_HEIGHT))
+            .overflow_y_scroll()
             .children(rows)
     }
 }

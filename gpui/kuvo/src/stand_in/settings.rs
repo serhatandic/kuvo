@@ -10,6 +10,8 @@
 
 use std::collections::BTreeMap;
 
+mod pages;
+
 use serde_json::{Map, Value, json};
 
 /// How a sign-in under way stands.
@@ -43,6 +45,42 @@ pub struct Settings {
     browser: Value,
     usage: Value,
     usage_version: u32,
+    /// Your time zone, once picked (`kuvo/settings/general`).
+    zone: Option<String>,
+    /// Your own rule for what the agent does without asking, by kind (`when-<kind>`).
+    when: BTreeMap<String, String>,
+    /// Sections a test added to `kuvo/settings`: each one's line there, and its page.
+    more_sections: Vec<(Value, Value)>,
+    /// Its sections can't be read now (`503`).
+    pub pages_down: bool,
+}
+
+/// A section with a row of every kind a box may describe (PROTOCOL.md, "A box's settings"), for
+/// the kinds its own pages don't have yet: its line in `kuvo/settings`, and its page.
+pub fn every_kind() -> (Value, Value) {
+    let section = json!({ "id": "samples", "title": "Every Kind", "group": "System", "icon": "sliders", "line": "A row of each kind a box may describe.", "keywords": ["proxy"] });
+    let page = json!({ "id": "samples", "title": "Every Kind", "line": "A row of each kind a box may describe, drawn from its description alone.", "groups": [
+        { "id": "fields", "title": "Fields", "note": "Typed, then saved with Return or Save.", "rows": [
+            { "id": "proxy", "title": "Proxy", "line": "For what agents fetch.", "kind": "text", "value": "", "placeholder": "http://proxy.example:8080", "can": true },
+            { "id": "keep", "title": "Keep sessions for", "line": "Days, before they’re archived.", "kind": "number", "value": 30, "min": 1, "max": 365, "can": true },
+            { "id": "projects", "title": "Projects folder", "line": "Where new projects are made.", "kind": "folder", "value": "/home/sam/projects", "can": true },
+            { "id": "token", "title": "Registry token", "line": "For private packages.", "kind": "secret", "set": true, "can": true },
+            { "id": "key", "title": "Signing key", "kind": "secret", "set": false, "placeholder": "Paste a key", "can": true },
+        ] },
+        { "id": "more", "title": "More", "rows": [
+            { "id": "reads", "title": "This month", "line": "What its plan allows.", "kind": "meter", "windows": [{ "title": "Requests", "used": 0.42, "resets": 1_794_900_000_000.0_f64 }] },
+            { "id": "rules", "title": "Rules", "line": "For particular commands.", "kind": "open", "section": "permissions" },
+            { "id": "docs", "title": "How it works", "kind": "open", "address": "https://www.kuvo.run/code/docs/settings/" },
+            { "id": "pair", "title": "Pair a phone", "line": "Scan a code with Kuvo Code for iPhone.", "kind": "steps", "start": { "id": "start", "title": "Pair…" } },
+            { "id": "background", "title": "Keep working with the app closed", "kind": "custom", "name": "background-work", "can": { "why": "Turn it on in Kuvo Code on that computer." } },
+            { "id": "later", "title": "Something newer", "line": "From a newer box.", "kind": "hologram" },
+            { "id": "cache", "title": "Cache", "line": "1.2 GB of builds.", "kind": "actions", "actions": [{ "id": "clear", "title": "Clear…", "style": "destructive", "confirm": { "title": "Clear the cache?", "body": "The next build takes longer.", "button": "Clear" } }, { "id": "show", "title": "Show", "can": { "why": "Only on that computer itself." } }] },
+        ] },
+        { "id": "hosts", "title": "Hosts", "rows": [
+            { "id": "hosts", "title": "Trusted hosts", "line": "Agents fetch from these without asking.", "kind": "list", "add": { "id": "add", "title": "Add…", "can": { "why": "Adding one isn’t offered from here yet." } }, "empty": "None yet.", "items": [] },
+        ] },
+    ] });
+    (section, page)
 }
 
 /// What a sign-in under way comes to, when a test says.
@@ -136,6 +174,10 @@ impl Default for Settings {
             browser: json!({ "searchEngine": "duckDuckGo", "searchEngines": [{ "id": "google", "title": "Google" }, { "id": "duckDuckGo", "title": "DuckDuckGo" }, { "id": "bing", "title": "Bing" }, { "id": "brave", "title": "Brave Search" }, { "id": "kagi", "title": "Kagi" }, { "id": "ecosia", "title": "Ecosia" }], "tidiesAgentTabs": true, "offersToSave": true, "never": ["bank.example", "intranet.example"] }),
             usage: json!({ "underTenPercent": true, "healthyToClose": false, "closeToRunningOut": true }),
             usage_version: 3,
+            zone: None,
+            when: BTreeMap::new(),
+            more_sections: Vec::new(),
+            pages_down: false,
         }
     }
 }
@@ -171,7 +213,8 @@ impl Settings {
         let mut needing = Vec::new();
         for agents in [true, false] {
             let query = move |name: &str| (agents && name == "agents").then(|| "1".to_owned());
-            let (status, said) = self.answer("GET", "kuvo/sign-in/accounts", &query, &Value::Null)?;
+            // (Accounts say nothing by the computer's name or where the app runs.)
+            let (status, said) = self.answer("GET", "kuvo/sign-in/accounts", &query, &Value::Null, super::NAME, true)?;
             if status != 200 {
                 return None;
             }
@@ -248,8 +291,11 @@ impl Settings {
     }
 
     /// Its answer to `method route` (`query`: a query value by name), if it's one of these routes.
-    pub fn answer(&mut self, method: &str, route: &str, query: &dyn Fn(&str) -> Option<String>, body: &Value) -> Option<(u16, Value)> {
+    pub fn answer(&mut self, method: &str, route: &str, query: &dyn Fn(&str) -> Option<String>, body: &Value, name: &str, here: bool) -> Option<(u16, Value)> {
         let segments: Vec<&str> = route.split('/').collect();
+        if let Some(answer) = self.pages_answer(method, &segments, body, name, here) {
+            return Some(answer);
+        }
         let agents_side = route.starts_with("kuvo/agents/api/");
         let api: Vec<&str> = if agents_side { segments[3..].to_vec() } else if route.starts_with("api/") { segments[1..].to_vec() } else { Vec::new() };
         if agents_side && self.agents_down && api.first() == Some(&"integration") {
@@ -400,6 +446,22 @@ impl Settings {
             _ => return None,
         };
         Some(answer)
+    }
+
+    /// A section added to its settings (`section`: its line in `kuvo/settings`; `page`: its page,
+    /// each row's revision worked out as it's read), for kinds its own pages don't have yet.
+    pub fn add_section(&mut self, section: Value, page: Value) {
+        self.more_sections.push((section, page));
+    }
+
+    /// The folders also allowed, in place of the sample's.
+    pub fn set_allowed(&mut self, allowed: Vec<Value>) {
+        self.allowed = allowed;
+    }
+
+    /// A browser setting changes, as from another client meanwhile.
+    pub fn set_browser(&mut self, key: &str, value: Value) {
+        self.browser[key] = value;
     }
 
     pub fn set_sandbox(&mut self, sandbox: Value) {

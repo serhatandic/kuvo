@@ -240,6 +240,12 @@ impl Workspace {
                         this.read_computers(cx);
                     }
                 }
+                Go::AddMachine => {
+                    if let Some(view) = this.area_view(Area::Computers).cloned() {
+                        view.update(cx, |view, cx| view.select(Some("add".into()), cx));
+                    }
+                    this.show_area(Area::Computers, window, cx);
+                }
             })
         }));
         // The Bots list as it's read again (a bot's conversation may be another session by then).
@@ -1392,7 +1398,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Settings, on `section`.
+    /// Settings, on a place there (its key; a section's name alone is the computer shown's).
     pub fn show_setting(&mut self, section: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(view) = self.area_view(Area::Settings).cloned() {
             view.update(cx, |view, cx| view.select(Some(section.to_owned()), cx));
@@ -1470,8 +1476,11 @@ impl Workspace {
                 let computers = computers.clone();
                 run.update(cx, |run, cx| run.set_computers(computers, cx));
             }
-            if let Some(view) = self.area_view(Area::Computers).cloned() {
-                view.update(cx, |view, cx| view.set_computers(computers, cx));
+            for area in [Area::Computers, Area::Settings] {
+                if let Some(view) = self.area_view(area).cloned() {
+                    let computers = computers.clone();
+                    view.update(cx, |view, cx| view.set_computers(computers, cx));
+                }
             }
             cx.notify();
         }
@@ -1631,7 +1640,7 @@ impl Workspace {
     pub fn title(&self, cx: &App) -> (Option<SharedString>, Option<SharedString>) {
         if self.area != Area::Sessions {
             let Some(view) = self.area_view(self.area) else { return (None, None) };
-            let title = view.read(cx).title();
+            let title = view.read(cx).title(cx);
             let area = self.area.name();
             let beside = (title.as_ref() != area).then(|| SharedString::from(area));
             return (Some(title), beside);
@@ -2277,7 +2286,7 @@ impl Render for Workspace {
                 (Some((bot, chat)), _, _) => self.bot_chat_view(bot, chat, cx),
                 (None, Some(settings), _) => settings.clone().into_any_element(),
                 (None, None, Some(main)) => main.into_any_element(),
-                (None, None, None) => areas::placeholder(self.area, view.read(cx).title(), cx),
+                (None, None, None) => areas::placeholder(self.area, view.read(cx).title(cx), cx),
             },
             (Open::Conversation { view, .. }, _) => view.clone().into_any_element(),
             _ => landing::render(self, window, cx),
@@ -2319,8 +2328,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowQueue, window, cx| this.show_area(Area::Queue, window, cx)))
             .on_action(cx.listener(|this, _: &ShowComputers, window, cx| this.show_area(Area::Computers, window, cx)))
             .on_action(cx.listener(|this, _: &ShowSettings, window, cx| this.show_area(Area::Settings, window, cx)))
-            .on_action(cx.listener(|this, _: &ShowUsage, window, cx| this.show_setting("Usage", window, cx)))
-            .on_action(cx.listener(|this, _: &ShowAccounts, window, cx| this.show_setting("Accounts", window, cx)))
+            .on_action(cx.listener(|this, _: &ShowUsage, window, cx| this.show_setting(&crate::settings::box_key("", "usage"), window, cx)))
+            .on_action(cx.listener(|this, _: &ShowAccounts, window, cx| this.show_setting(&crate::settings::box_key("", "accounts"), window, cx)))
             .on_action(cx.listener(|this, _: &Back, window, cx| this.go_back(window, cx)))
             .on_action(cx.listener(|this, _: &Forward, window, cx| this.go_forward(window, cx)))
             .on_action(|_: &OpenHelp, _, cx| cx.open_url(crate::area::HELP))

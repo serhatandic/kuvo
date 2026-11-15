@@ -110,6 +110,16 @@ impl BoxClient {
         BoxClient::new(ssh)
     }
 
+    /// The box of `computer`, one of this box's `kuvo/computers`: this one for itself, another's
+    /// where this client can reach it from here; none where it can't yet.
+    pub fn computer(&self, computer: &crate::areas::Computer) -> Option<BoxClient> {
+        if computer.here {
+            return Some(self.clone());
+        }
+        let transport = self.transport.peer(&computer.key)?;
+        Some(BoxClient { transport, gate: Arc::new(Mutex::new((Gate::Unknown, 0))) })
+    }
+
     /// Whether what this box follows keeps coming as things change (its own server), or is read
     /// again on a timer (a machine over SSH).
     pub fn streams(&self) -> bool {

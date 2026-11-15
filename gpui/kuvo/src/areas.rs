@@ -30,7 +30,7 @@ use crate::computers::{ComputersEvent, ComputersView};
 use crate::groups::{GroupsEvent, GroupsView};
 use crate::queue::marks::{label_dot, status_mark};
 use crate::queue::{Act as QueueAct, QueueEvent, QueueView};
-use crate::settings::{Pick, SettingsView};
+use crate::settings::{AddMachine, Pick, SettingsView};
 use crate::time;
 
 
@@ -78,6 +78,8 @@ pub enum Go {
     Sessions,
     /// Your computers read again (something was done to them), where they aren't followed.
     ReadComputers,
+    /// The Computers area's Add a Machine page.
+    AddMachine,
 }
 
 /// One area's sidebar.
@@ -102,6 +104,7 @@ pub struct AreaView {
     /// Settings' own view: its sidebar drawn here, its pages as the main view.
     settings: Option<gpui::Entity<SettingsView>>,
     _settings_picks: Option<gpui::Subscription>,
+    _settings_adds: Option<gpui::Subscription>,
     /// Settings' sidebar is drawn here: redrawn as Settings changes (a search, a reading, a sheet).
     _settings_changes: Option<gpui::Subscription>,
     /// Bots' main view: a bot's page and New Bot.
@@ -122,18 +125,20 @@ impl EventEmitter<Go> for AreaView {}
 
 impl AreaView {
     pub fn new(area: Area, client: BoxClient, live: bool, cx: &mut Context<Self>) -> AreaView {
-        let selected = (area == Area::Settings).then(|| "General".to_owned());
         let settings = (area == Area::Settings).then(|| cx.new(|cx| SettingsView::new(client.clone(), live, cx)));
+        // Settings opens on your own, where its view starts.
+        let selected = settings.as_ref().map(|settings| settings.read(cx).place());
         // A section picked in Settings' own sidebar is picked here, as any area's row is.
         let picks = settings.as_ref().map(|settings| {
             cx.subscribe(settings, |this: &mut AreaView, _, pick: &Pick, cx| {
                 if pick.record {
-                    this.pick(pick.section.clone(), cx);
+                    this.pick(pick.place.clone(), cx);
                 } else {
-                    this.select(Some(pick.section.clone()), cx);
+                    this.select(Some(pick.place.clone()), cx);
                 }
             })
         });
+        let adds = settings.as_ref().map(|settings| cx.subscribe(settings, |_: &mut AreaView, _, _: &AddMachine, cx| cx.emit(Go::AddMachine)));
         let changes = settings.as_ref().map(|settings| cx.observe(settings, |_, _, cx| cx.notify()));
         let page = (area == Area::Bots).then(|| cx.new(|cx| BotsView::new(client.clone(), live, cx)));
         let page_subscriptions = page
@@ -231,7 +236,7 @@ impl AreaView {
             });
             (follow, task)
         });
-        AreaView { _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_changes: changes }
+        AreaView { _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
@@ -350,6 +355,10 @@ impl AreaView {
                 let computers = computers.clone();
                 page.update(cx, |page, cx| page.set_computers(computers, cx));
             }
+            if let Some(settings) = &self.settings {
+                let computers = computers.clone();
+                settings.update(cx, |settings, cx| settings.set_computers(computers, cx));
+            }
             self.computers = computers;
             cx.notify();
         }
@@ -464,9 +473,10 @@ impl AreaView {
 
     /// Settings shows the section picked (its first, General, for none); Bots, what's picked.
     fn show_section(&mut self, cx: &mut Context<Self>) {
-        let section = self.selected.clone().unwrap_or_else(|| "General".into());
-        if let Some(settings) = &self.settings {
-            settings.update(cx, |settings, cx| settings.set_section(&section, cx));
+        if let (Some(settings), Some(place)) = (&self.settings, self.selected.clone()) {
+            settings.update(cx, |settings, cx| settings.set_place(&place, cx));
+            // (A section named alone, "Accounts", is kept as the place it came to.)
+            self.selected = Some(settings.read(cx).place());
         }
         if let Some(page) = &self.page {
             let key = self.selected.clone().filter(|key| !is_group_key(key));
@@ -487,7 +497,10 @@ impl AreaView {
     }
 
     /// The page's title: what's picked, named as its row is.
-    pub fn title(&self) -> SharedString {
+    pub fn title(&self, cx: &App) -> SharedString {
+        if let Some(settings) = &self.settings {
+            return settings.read(cx).title();
+        }
         let Some(key) = self.selected.as_deref() else { return self.area.name().into() };
         let (kind, id) = key.split_once(':').unwrap_or((key, ""));
         let named = match kind {
@@ -1068,7 +1081,7 @@ pub fn placeholder(area: Area, title: SharedString, cx: &App) -> AnyElement {
                 .text_center()
                 .text_ui(TypeSize::Body)
                 .text_color(c.text_muted)
-                .child("This page isn’t in this app yet. For now, open it in Kuvo Code on your Mac or iPhone."),
+                .child("Coming to the desktop app."),
         )
         .into_any_element()
 }

@@ -305,15 +305,25 @@ impl BoxClient {
 
     /// Changes `row` to `value`, from the revision it was read at.
     pub fn change_setting(&self, section: &str, row: &Row, value: Value) -> Result<Changed> {
-        let request = Request { method: "PATCH".into(), path: page_route(section), headers: Vec::new(), body: Some(json!({ "row": row.id, "value": value, "was": row.revision })) };
+        self.change_setting_at(section, &row.id, &row.revision, value)
+    }
+
+    /// Changes the row `row` to `value`, from the revision (`was`) it was read at.
+    pub fn change_setting_at(&self, section: &str, row: &str, was: &str, value: Value) -> Result<Changed> {
+        let request = Request { method: "PATCH".into(), path: page_route(section), headers: Vec::new(), body: Some(json!({ "row": row, "value": value, "was": was })) };
         changed(self, &request)
     }
 
     /// Does what `row` offers (`action`, one that doesn't open an address), from the revision it
     /// was read at.
     pub fn setting_action(&self, section: &str, row: &Row, action: &Action) -> Result<Changed> {
-        let path = format!("{}/{}/{}", page_route(section), segment(&row.id), segment(&action.id));
-        changed(self, &Request::post(path, json!({ "was": row.revision })))
+        self.setting_action_at(section, &row.id, &row.revision, &action.id)
+    }
+
+    /// Does what the row `row` offers (`action`), from the revision (`was`) it was read at.
+    pub fn setting_action_at(&self, section: &str, row: &str, was: &str, action: &str) -> Result<Changed> {
+        let path = format!("{}/{}/{}", page_route(section), segment(row), segment(action));
+        changed(self, &Request::post(path, json!({ "was": was })))
     }
 }
 

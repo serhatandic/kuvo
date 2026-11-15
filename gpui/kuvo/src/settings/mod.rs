@@ -1,39 +1,130 @@
-//! Settings: its sidebar (a title, a search, the sections) and each section's page, for this box.
-//! Every page reads its facts from the box as it opens, and every change goes through the box's
-//! routes and comes back as the box answers it; the app decides nothing but what it draws.
+//! Settings, in two parts with a sidebar each (the user's pick, 2026-11-15): **your settings**,
+//! this app's own on this device, and **a computer's settings**, kept on that computer by its box.
+//! A row at the sidebar's foot goes from one to the other; a computer's sidebar is titled with its
+//! picker (your computers, as the window's box lists them), which changes only Settings, never the
+//! window. A search finds on the side it's on, and lists what it finds on the other.
+//!
+//! A computer's sections are its box's (`kuvo/settings`): each page is drawn from the box's
+//! description alone (`described.rs`), every change goes to the box from the row's revision, and
+//! what the box answers is what's drawn after. The app decides nothing there but what it draws.
+//! Three sections its box doesn't describe yet are still drawn from their own routes (`rows.rs`).
 //!
 //! A page is drawn as Zed's settings are: its rows worked out once each time what they're drawn from
 //! changes (the box's facts, the search, a change on its way), then a virtual list that lays out
 //! only the rows on screen. Each group of rows is one card.
 
+mod described;
 pub(crate) mod page;
 mod rows;
 pub mod sign_in;
 
 use std::collections::HashMap;
 
-use gpui::{App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, ListAlignment, ListState, Subscription, Task, px};
+use gpui::{App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, ListAlignment, ListState, SharedString, Subscription, Task, px};
 use kuvo_box::BoxClient;
-use kuvo_box::accounts::{Accounts, Side, said};
-use kuvo_box::areas::Account;
+use kuvo_box::accounts::{Accounts, Side as AccountSide, said};
+use kuvo_box::areas::{Account, Computer};
+use kuvo_box::follow::{Follow, Followed, Timing};
 use kuvo_box::models::Offered;
-use kuvo_box::settings::{Allowed, Approval, BrowserSettings, Config, Sandbox, UsageSettings};
-use kuvo_ui::{ActiveTheme, Appearance, TextField, TextFieldEvent, Theme};
-use serde_json::json;
+use kuvo_box::settings::{Config, UsageSettings};
+use kuvo_box::settings_pages::{Changed, Page, Section};
+use kuvo_ui::{ActiveTheme, Appearance, IconName, TextField, TextFieldEvent, Theme};
+use serde_json::{Value, json};
 
 use crate::areas::Reading;
 
-pub use rows::{Act, Block, Control, Leading, Notice, Row, Tone};
+pub use rows::{Act, At, Block, Control, Leading, Meter, Notice, Push, Row, Tone};
 use sign_in::SignIn;
 
 /// The widest a page's cards grow.
 const PAGE_WIDTH: f32 = 720.;
 
-/// A section picked in the sidebar (`record`: by a click, so back and forward go to it), or by the
-/// search finding nothing on the one open.
+/// The sections a computer's sidebar lists under headings, in this order; any other heading a
+/// box names comes after, in its order.
+const GROUPS: &[&str] = &["General", "Models", "Agents & Tools", "Projects", "System"];
+/// The heading over what isn't in the desktop app yet.
+pub(crate) const LATER: &str = "Not in the desktop app yet";
+
+/// A place picked in Settings (`record`: by a click, so back and forward go to it), or by the
+/// search finding nothing on the page open. `place`: its key ([`yours_key`], [`box_key`]).
 pub struct Pick {
-    pub section: String,
+    pub place: String,
     pub record: bool,
+}
+
+/// Add a Machine… was picked in the computer picker: the window goes to the Computers area's.
+pub struct AddMachine;
+
+/// The key of one of your own settings' sections.
+pub fn yours_key(id: &str) -> String {
+    format!("yours/{id}")
+}
+
+/// The key of a section of a computer's settings (`computer`: its key in `kuvo/computers`; empty
+/// for the one the window shows).
+pub fn box_key(computer: &str, id: &str) -> String {
+    format!("box/{computer}/{id}")
+}
+
+/// Whose settings a sidebar lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    /// This app's own, on this device.
+    Yours,
+    /// A computer's, kept by its box.
+    Computer,
+}
+
+/// How a section is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Drawn {
+    /// One of your own: this app's.
+    Yours,
+    /// From its box's description.
+    Described,
+    /// A computer's, by this app still, from routes it knows.
+    Own,
+    /// A page saying it isn't here yet.
+    Later,
+}
+
+/// A section as a sidebar lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Entry {
+    pub id: String,
+    pub title: String,
+    pub icon: IconName,
+    pub group: String,
+    /// What search finds it by: its line and keywords, lowercase.
+    words: String,
+    pub drawn: Drawn,
+}
+
+impl Entry {
+    fn of(listed: &rows::Listed, drawn: Drawn) -> Entry {
+        Entry { id: listed.id.into(), title: listed.title.into(), icon: listed.icon, group: if drawn == Drawn::Later { LATER.into() } else { listed.group.into() }, words: listed.keywords.into(), drawn }
+    }
+
+    /// Whether `query` (lowercase) is in its name, line or keywords.
+    fn named(&self, query: &str) -> bool {
+        self.title.to_lowercase().contains(query) || self.words.contains(query)
+    }
+}
+
+/// Something the search found on the other side: where it is, and how it's listed there.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Hit {
+    pub place: String,
+    pub title: String,
+    pub icon: IconName,
+}
+
+/// How the computer whose settings are shown stands with this app.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Standing {
+    Reached,
+    /// It can't be reached now, or from this app yet: a title and a line saying so.
+    Not { title: String, words: String },
 }
 
 /// What a confirm asks before it does it.
@@ -45,24 +136,46 @@ struct Confirm {
     act: Act,
 }
 
-/// The Settings area: its sidebar and its pages.
+/// The Settings area: its sidebars and its pages.
 pub struct SettingsView {
-    client: BoxClient,
+    /// The window's box: your computers are its list, and other boxes are reached from it.
+    home: BoxClient,
     live: bool,
+    side: Side,
+    /// The section open on each side.
+    yours: String,
     section: String,
+    /// The computer whose settings are shown, by its key; none: the window's.
+    computer: Option<String>,
+    computers: Reading<Vec<Computer>>,
+    /// Its box, where this app reaches it.
+    client: Option<BoxClient>,
+    standing: Standing,
+    /// The box's own sections, and each page read so far.
+    sections: Reading<Vec<Section>>,
+    /// They're being asked for now.
+    reading_sections: bool,
+    pages: HashMap<String, Reading<Page>>,
+    /// The page open, followed as it changes (where the app runs against a box that streams).
+    follow: Option<(String, Follow<Followed<Page>>)>,
     search: Entity<TextField>,
     query: String,
+    /// The sections that aren't in the desktop app yet are listed (their one row is open).
+    later_open: bool,
+    /// The computer picker's menu, opened from its title.
+    picker: kuvo_ui::menu::PopoverMenuHandle,
     accounts: Reading<Accounts>,
     limits: Reading<Vec<Account>>,
     config: Reading<Config>,
     offered: Reading<Offered>,
-    approval: Reading<Approval>,
-    sandbox: Reading<Sandbox>,
-    allowed: Reading<Vec<Allowed>>,
-    browser: Reading<BrowserSettings>,
     usage: Reading<UsageSettings>,
     /// Rows with a change on its way, and what they say meanwhile.
     busy: Vec<(String, String)>,
+    /// Secrets whose field is shown to replace the one set.
+    replacing: Vec<String>,
+    /// The fields of rows that take typing, by row key, made once and kept; and the revision
+    /// each last showed its row's value at.
+    fields: HashMap<String, (Entity<TextField>, String, Subscription)>,
     /// What the box last refused, shown over the page until it's closed or the page changes.
     problem: Option<String>,
     confirm: Option<Confirm>,
@@ -73,6 +186,7 @@ pub struct SettingsView {
     focus_confirm: bool,
     /// Drawn in dark (the Theme row says which is on).
     dark: bool,
+    /// The window's computer's name.
     this_box: String,
     now: Option<f64>,
     /// The page as drawn: its blocks, flattened into the list's items.
@@ -87,15 +201,19 @@ pub struct SettingsView {
 #[derive(Clone, Debug, PartialEq)]
 enum Item {
     Title(String),
-    Group(String),
+    /// Whose these settings are, said once under the title.
+    Whose(String),
+    Group { label: String, words: String },
     Row { row: Box<Row>, first: bool, last: bool },
-    Note { key: String, words: String, busy: bool },
-    Placeholder,
+    Note { key: String, words: String, busy: bool, warning: bool },
+    /// A section that isn't here yet, or a computer that isn't reached: its name, and why.
+    Aside { key: &'static str, icon: IconName, title: String, words: String },
     Nothing(String),
     End,
 }
 
 impl EventEmitter<Pick> for SettingsView {}
+impl EventEmitter<AddMachine> for SettingsView {}
 
 impl Focusable for SettingsView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -103,9 +221,12 @@ impl Focusable for SettingsView {
     }
 }
 
+const YOURS_WORDS: &str = "The desktop app’s own, on this device. Your other devices keep theirs.";
+const LATER_WORDS: &str = "Coming to the desktop app.";
+
 impl SettingsView {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> SettingsView {
-        let search = cx.new(|cx| TextField::new(cx).bare().placeholder("Search settings…"));
+        let search = cx.new(|cx| TextField::new(cx).bare().placeholder("Search your settings…"));
         let subscription = cx.subscribe(&search, |this: &mut SettingsView, field, event: &TextFieldEvent, cx| match event {
             TextFieldEvent::Changed => {
                 let query = field.read(cx).text().trim().to_lowercase();
@@ -115,21 +236,31 @@ impl SettingsView {
             TextFieldEvent::Submit(_) => {}
         });
         let mut view = SettingsView {
-            client,
+            client: Some(client.clone()),
+            home: client,
             live,
-            section: "General".into(),
+            side: Side::Yours,
+            yours: "appearance".into(),
+            section: "general".into(),
+            computer: None,
+            computers: Reading::NotYet,
+            standing: Standing::Reached,
+            sections: Reading::NotYet,
+            reading_sections: false,
+            pages: HashMap::new(),
+            follow: None,
             search,
             query: String::new(),
+            picker: Default::default(),
+            later_open: false,
             accounts: Reading::NotYet,
             limits: Reading::NotYet,
             config: Reading::NotYet,
             offered: Reading::NotYet,
-            approval: Reading::NotYet,
-            sandbox: Reading::NotYet,
-            allowed: Reading::NotYet,
-            browser: Reading::NotYet,
             usage: Reading::NotYet,
             busy: Vec::new(),
+            replacing: Vec::new(),
+            fields: HashMap::new(),
             problem: None,
             confirm: None,
             sign_in: None,
@@ -137,7 +268,7 @@ impl SettingsView {
             confirm_focus: cx.focus_handle(),
             focus_confirm: false,
             dark: cx.theme().appearance.is_dark(),
-            this_box: "this Mac".into(),
+            this_box: "This Mac".into(),
             now: None,
             items: Vec::new(),
             list: ListState::new(0, ListAlignment::Top, px(400.)),
@@ -149,8 +280,37 @@ impl SettingsView {
         view
     }
 
+    // MARK: Where it is
+
+    /// The key of the place shown: the side, the computer and the section.
+    pub fn place(&self) -> String {
+        match self.side {
+            Side::Yours => yours_key(&self.yours),
+            Side::Computer => box_key(self.computer.as_deref().unwrap_or_default(), &self.section),
+        }
+    }
+
+    pub fn side(&self) -> Side {
+        self.side
+    }
+
+    /// The id of the section open on the side shown.
     pub fn section(&self) -> &str {
-        &self.section
+        match self.side {
+            Side::Yours => &self.yours,
+            Side::Computer => &self.section,
+        }
+    }
+
+    /// The open page's name, for the window's title.
+    pub fn title(&self) -> SharedString {
+        if self.side == Side::Computer
+            && let Standing::Not { .. } = self.standing
+        {
+            return self.computer_name().into();
+        }
+        let id = self.section();
+        self.entries(self.side).into_iter().find(|entry| entry.id == id).map_or_else(|| "Settings".into(), |entry| entry.title.into())
     }
 
     pub fn search_field(&self) -> &Entity<TextField> {
@@ -173,60 +333,354 @@ impl SettingsView {
         }
     }
 
-    /// Shows `section`'s page, reading what it's drawn from.
-    pub fn set_section(&mut self, section: &str, cx: &mut Context<Self>) {
-        if self.section != section {
-            self.section = section.to_owned();
-            self.problem = None;
-            self.list.scroll_to(gpui::ListOffset::default());
+    /// Your computers, as the window's box lists them: the picker's, and how the one shown stands.
+    pub fn set_computers(&mut self, computers: Reading<Vec<Computer>>, cx: &mut Context<Self>) {
+        if self.computers == computers {
+            return;
         }
-        self.read_section(section, cx);
+        self.computers = computers;
+        // One that's no longer among them (removed), or the window's own picked by its key: the
+        // window's, read afresh (nothing of the one that left stays under the window's name).
+        let gone = self.forget_missing_computer();
+        let (client, standing) = self.reach();
+        if gone || standing != self.standing || client.is_some() != self.client.is_some() {
+            self.connect(cx);
+            if self.side == Side::Computer {
+                self.read_open(cx);
+            }
+        }
+        self.rebuild(cx);
+    }
+
+    /// The computer shown is no longer among yours: the window's is, and it says whether it was.
+    fn forget_missing_computer(&mut self) -> bool {
+        if let (Some(key), Reading::Ready(computers)) = (&self.computer, &self.computers)
+            && !computers.iter().any(|computer| computer.key == *key && !computer.here)
+        {
+            self.computer = None;
+            return true;
+        }
+        false
+    }
+
+    /// Your computers the picker lists: your own (those of another setup aren't yours to set).
+    pub(crate) fn listed_computers(&self) -> Vec<Computer> {
+        match &self.computers {
+            Reading::Ready(computers) => computers.iter().filter(|computer| !computer.apart).cloned().collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn shown_computer(&self) -> Option<&Computer> {
+        let Reading::Ready(computers) = &self.computers else { return None };
+        match &self.computer {
+            Some(key) => computers.iter().find(|computer| computer.key == *key),
+            None => computers.iter().find(|computer| computer.here),
+        }
+    }
+
+    /// The key of the computer shown, as the picker checks it (none: the window's).
+    pub(crate) fn computer_key(&self) -> Option<&str> {
+        self.computer.as_deref()
+    }
+
+    /// The name of the computer whose settings are shown.
+    pub fn computer_name(&self) -> String {
+        // (The window's own is named as the title bar names it, "This Mac": one name for it.)
+        self.shown_computer().filter(|computer| !computer.here).map_or_else(|| self.this_box.clone(), |computer| computer.name.clone())
+    }
+
+    /// The window's computer's name, as the title bar says it.
+    pub(crate) fn this_box(&self) -> &str {
+        &self.this_box
+    }
+
+    /// What the computer shown runs, in a word, beside its name.
+    pub(crate) fn computer_kind(&self) -> &'static str {
+        match self.shown_computer() {
+            Some(computer) if computer.is_mac() => "macOS",
+            Some(computer) if computer.kind == "machine" => "Linux",
+            _ => "",
+        }
+    }
+
+    /// The box of the computer shown, where this app reaches it, and how it stands otherwise.
+    fn reach(&self) -> (Option<BoxClient>, Standing) {
+        if self.computer.is_none() {
+            return (Some(self.home.clone()), Standing::Reached);
+        }
+        let Some(computer) = self.shown_computer() else { return (None, Standing::Not { title: "Reading your computers…".into(), words: String::new() }) };
+        let name = &computer.name;
+        let not = |title: String, words: String| (None, Standing::Not { title, words });
+        if computer.is_older() {
+            let (title, words) = crate::workspace::held_words(Some(name), false);
+            return not(title, words);
+        }
+        match computer.reach.as_str() {
+            "away" => not(format!("{name} is away"), "Its settings are kept on it, so they show here once it’s back.".into()),
+            "connecting" => not(format!("Connecting to {name}…"), "Its settings show here once it’s connected.".into()),
+            "unknown" => not(format!("{name} isn’t connected"), format!("{} knows it only through {}. Its settings show here once it connects.", self.this_box, computer.through.as_deref().unwrap_or("another computer"))),
+            _ => match self.home.computer(computer) {
+                Some(client) => (Some(client), Standing::Reached),
+                // The desktop app reaches the window's box alone for now (as the title bar's
+                // switcher says): said plainly, never read through this Mac instead.
+                None => not(format!("{name}’s settings aren’t in the desktop app yet"), format!("The desktop app shows only {}’s settings for now.", self.this_box)),
+            },
+        }
+    }
+
+    /// Turns to the box of the computer shown: everything read from another is let go.
+    fn connect(&mut self, _cx: &mut Context<Self>) {
+        let (client, standing) = self.reach();
+        self.client = client;
+        self.standing = standing;
+        self.sections = Reading::NotYet;
+        self.reading_sections = false;
+        self.pages.clear();
+        self.accounts = Reading::NotYet;
+        self.limits = Reading::NotYet;
+        self.config = Reading::NotYet;
+        self.offered = Reading::NotYet;
+        self.usage = Reading::NotYet;
+        self.busy.clear();
+        self.replacing.clear();
+        self.fields.clear();
+        self.tasks.clear();
+        self.follow = None;
+        self.problem = None;
+        self.confirm = None;
+    }
+
+    /// Shows the place `key` names: one of your own sections, or a computer's. A section's name
+    /// alone is the computer shown's.
+    pub fn set_place(&mut self, key: &str, cx: &mut Context<Self>) {
+        let before = self.place();
+        if let Some(id) = key.strip_prefix("yours/") {
+            self.side = Side::Yours;
+            self.yours = id.to_owned();
+        } else {
+            let (computer, id) = match key.strip_prefix("box/").and_then(|rest| rest.rsplit_once('/')) {
+                Some((computer, id)) => (Some(computer.to_owned()).filter(|key| !key.is_empty()), id.to_owned()),
+                None => (self.computer.clone(), key.to_lowercase().replace(' ', "-")),
+            };
+            // (The window's own, named by its key, is the window's.)
+            let computer = computer.filter(|key| !matches!(&self.computers, Reading::Ready(computers) if computers.iter().any(|computer| computer.here && computer.key == *key)));
+            self.side = Side::Computer;
+            self.section = id;
+            if computer != self.computer {
+                self.computer = computer;
+                // (A place kept from before its computer was removed is the window's now.)
+                self.forget_missing_computer();
+                self.connect(cx);
+            }
+        }
+        if self.place() != before {
+            self.problem = None;
+            self.confirm = None;
+            self.replacing.clear();
+            self.list.scroll_to(gpui::ListOffset::default());
+            if self.follow.as_ref().is_some_and(|(of, _)| self.side != Side::Computer || *of != self.section) {
+                self.follow = None;
+                self.tasks.remove("follow");
+            }
+        }
+        self.read_open(cx);
         self.rebuild(cx);
     }
 
     /// The area came on screen: the page open is read again.
     pub fn shown(&mut self, cx: &mut Context<Self>) {
-        let section = self.section.clone();
-        self.read_section(&section, cx);
+        self.read_open(cx);
+    }
+
+    /// The foot row: to the other side, at the section last open there.
+    pub(crate) fn switch_side(&mut self, cx: &mut Context<Self>) {
+        self.search.update(cx, |field, cx| field.set_text("", cx));
+        let place = match self.side {
+            Side::Yours => box_key(self.computer.as_deref().unwrap_or_default(), &self.section),
+            Side::Computer => yours_key(&self.yours),
+        };
+        cx.emit(Pick { place, record: true });
+    }
+
+    /// The picker: another computer's settings, at the section open (its General where it has
+    /// no such section, once its box says what it has). Only Settings changes, never the window.
+    pub(crate) fn pick_computer(&mut self, key: Option<String>, cx: &mut Context<Self>) {
+        cx.emit(Pick { place: box_key(key.as_deref().unwrap_or_default(), &self.section), record: true });
+    }
+
+    // MARK: What it lists
+
+    /// A side's sections, in its sidebar's order.
+    pub(crate) fn entries(&self, side: Side) -> Vec<Entry> {
+        if side == Side::Yours {
+            return rows::YOURS.iter().map(|listed| Entry::of(listed, Drawn::Yours)).chain(rows::YOURS_LATER.iter().map(|listed| Entry::of(listed, Drawn::Later))).collect();
+        }
+        if self.standing != Standing::Reached {
+            return Vec::new();
+        }
+        let mut entries: Vec<Entry> = Vec::new();
+        if let Reading::Ready(sections) = &self.sections {
+            // (One this app still draws itself stays its own until its page moves to the box.)
+            entries.extend(sections.iter().filter(|section| !rows::OWN.iter().any(|own| own.id == section.id)).map(|section| Entry {
+                id: section.id.clone(),
+                title: section.title.clone(),
+                icon: rows::icon_named(&section.icon),
+                group: section.group.clone(),
+                words: format!("{} {}", section.line, section.keywords.join(" ")).to_lowercase(),
+                drawn: Drawn::Described,
+            }));
+        }
+        entries.extend(rows::OWN.iter().map(|listed| Entry::of(listed, Drawn::Own)));
+        let later: Vec<Entry> = rows::LATER.iter().filter(|listed| !entries.iter().any(|entry| entry.id == listed.id || entry.title.eq_ignore_ascii_case(listed.title))).map(|listed| Entry::of(listed, Drawn::Later)).collect();
+        entries.extend(later);
+        let order = |entry: &Entry| if entry.drawn == Drawn::Later { usize::MAX } else { GROUPS.iter().position(|group| *group == entry.group).unwrap_or(GROUPS.len()) };
+        entries.sort_by_key(order);
+        entries
+    }
+
+    fn facts(&self) -> rows::Facts<'_> {
+        rows::Facts {
+            accounts: &self.accounts,
+            limits: &self.limits,
+            config: &self.config,
+            offered: &self.offered,
+            usage: &self.usage,
+            busy: &self.busy,
+            this_box: self.shown_computer().filter(|computer| !computer.here).map_or(self.this_box.as_str(), |computer| computer.name.as_str()),
+            here: self.client.as_ref().is_some_and(BoxClient::here),
+        }
+    }
+
+    /// A section's page, as blocks.
+    fn blocks(&self, entry: &Entry) -> Vec<Block> {
+        match entry.drawn {
+            Drawn::Yours => rows::yours(&entry.id, self.dark),
+            Drawn::Own => rows::page(&entry.id, &self.facts()),
+            Drawn::Described => match self.pages.get(&entry.id) {
+                Some(Reading::Ready(page)) => described::blocks(page, &described::Drawing { section: &entry.id, busy: &self.busy, replacing: &self.replacing, here: self.client.as_ref().is_some_and(BoxClient::here) }),
+                Some(Reading::Failed(why)) => vec![Block::Note { key: "note-page".into(), words: format!("{} couldn’t be read: {why}", entry.title), busy: false, warning: true }],
+                _ => vec![rows::note("note-page", format!("Reading {}…", entry.title), true)],
+            },
+            Drawn::Later => Vec::new(),
+        }
+    }
+
+    /// The sections of `side` the search finds something on (all of them without one).
+    pub(crate) fn sections_found(&self, side: Side) -> Vec<Entry> {
+        self.entries(side).into_iter().filter(|entry| self.query.is_empty() || entry.named(&self.query) || !rows::found(false, self.blocks(entry), &self.query).is_empty()).collect()
+    }
+
+    /// What the search finds on the other side: each section it names, else the rows it finds there.
+    pub(crate) fn hits(&self) -> Vec<Hit> {
+        if self.query.is_empty() {
+            return Vec::new();
+        }
+        let other = if self.side == Side::Yours { Side::Computer } else { Side::Yours };
+        let mut hits = Vec::new();
+        for entry in self.entries(other) {
+            let place = if other == Side::Yours { yours_key(&entry.id) } else { box_key(self.computer.as_deref().unwrap_or_default(), &entry.id) };
+            if entry.named(&self.query) {
+                hits.push(Hit { place, title: entry.title.clone(), icon: entry.icon });
+                continue;
+            }
+            let rows = rows::found(false, self.blocks(&entry), &self.query).into_iter().flat_map(|block| match block {
+                Block::Group(_, _, rows) => rows,
+                Block::Note { .. } => Vec::new(),
+            });
+            hits.extend(rows.filter(|row| !row.title.is_empty()).take(2).map(|row| Hit { place: place.clone(), title: format!("{} › {}", entry.title, row.title), icon: entry.icon }));
+        }
+        hits.truncate(8);
+        hits
+    }
+
+    pub(crate) fn later_open(&self) -> bool {
+        self.later_open
+    }
+
+    /// The one row over what isn't in the desktop app yet: opens its short list, or folds it.
+    pub(crate) fn toggle_later(&mut self, cx: &mut Context<Self>) {
+        self.later_open = !self.later_open;
+        cx.notify();
+    }
+
+    pub(crate) fn is_searching(&self) -> bool {
+        !self.query.is_empty()
+    }
+
+    /// Why the computer's own sections aren't listed, where its box couldn't say them.
+    pub(crate) fn sections_problem(&self) -> Option<&str> {
+        match &self.sections {
+            Reading::Failed(why) if self.standing == Standing::Reached => Some(why),
+            _ => None,
+        }
     }
 
     fn searched(&mut self, query: String, cx: &mut Context<Self>) {
         if query == self.query {
             return;
         }
-        // The first search reads every page, so what it finds on any can be listed.
+        // The first search reads every page of the computer shown, so what it finds on any can
+        // be listed, from either side.
         if self.query.is_empty() && !query.is_empty() {
-            for (section, _) in rows::BUILT {
-                if *section != self.section {
-                    self.read_section(section, cx);
-                }
-            }
+            self.query = query;
+            self.read_all(cx);
+        } else {
+            self.query = query;
         }
-        self.query = query;
         self.rebuild(cx);
     }
 
-    /// While searching, the page open has nothing found: the first section that has (again as
-    /// each page's reading comes in, so a search typed before they came finds them).
+    /// While searching, the page open has nothing found: the first section of its side that has
+    /// (again as each page's reading comes in, so a search typed before they came finds them).
     fn follow_search(&mut self, cx: &mut Context<Self>) {
         if self.query.is_empty() {
             return;
         }
-        let sections = self.sections_found();
-        if !sections.iter().any(|section| *section == self.section)
-            && let Some(first) = sections.first()
+        let found = self.sections_found(self.side);
+        let open = self.section().to_owned();
+        if !found.iter().any(|entry| entry.id == open)
+            && let Some(first) = found.first()
         {
-            cx.emit(Pick { section: (*first).to_owned(), record: false });
+            let place = if self.side == Side::Yours { yours_key(&first.id) } else { box_key(self.computer.as_deref().unwrap_or_default(), &first.id) };
+            cx.emit(Pick { place, record: false });
         }
     }
 
-    /// The sections the search finds something on (all of them without one).
+    /// The computer's box said its sections: one open that it hasn't goes to its General (or its
+    /// first), as after switching from a computer that had it.
+    fn settle(&mut self, cx: &mut Context<Self>) {
+        if self.side != Side::Computer || !matches!(self.sections, Reading::Ready(_)) {
+            return;
+        }
+        let entries = self.entries(Side::Computer);
+        if entries.iter().any(|entry| entry.id == self.section) {
+            return;
+        }
+        if let Some(to) = entries.iter().find(|entry| entry.id == "general").or(entries.first()) {
+            cx.emit(Pick { place: box_key(self.computer.as_deref().unwrap_or_default(), &to.id), record: false });
+        }
+    }
+
     /// The line under a row on the page open, as drawn.
     pub fn row_detail(&self, key: &str) -> Option<String> {
         self.items.iter().find_map(|item| match item {
             Item::Row { row, .. } if row.key == key => Some(row.detail.clone()),
             _ => None,
         })
+    }
+
+    /// Why a row on the page open can't be changed from here, as drawn under it.
+    pub fn row_why(&self, key: &str) -> Option<String> {
+        self.items.iter().find_map(|item| match item {
+            Item::Row { row, .. } if row.key == key => row.why.clone(),
+            _ => None,
+        })
+    }
+
+    /// What the box last refused, as shown over the page.
+    pub fn problem(&self) -> Option<&str> {
+        self.problem.as_deref()
     }
 
     /// What the box's action `id` on `account` does here, as its row's control asks it: none
@@ -242,57 +696,55 @@ impl SettingsView {
         self.confirm.as_ref().map(|confirm| (confirm.title.clone(), confirm.body.clone(), confirm.button.clone()))
     }
 
-    pub fn sections_found(&self) -> Vec<&'static str> {
-        rows::BUILT
-            .iter()
-            .chain(rows::ELSEWHERE)
-            .map(|(section, _)| *section)
-            .filter(|section| self.query.is_empty() || section.to_lowercase().contains(&self.query) || !rows::found(section, rows::page(section, &self.facts()), &self.query).is_empty())
-            .collect()
-    }
-
-    fn facts(&self) -> rows::Facts<'_> {
-        rows::Facts {
-            accounts: &self.accounts,
-            limits: &self.limits,
-            config: &self.config,
-            offered: &self.offered,
-            approval: &self.approval,
-            sandbox: &self.sandbox,
-            allowed: &self.allowed,
-            browser: &self.browser,
-            usage: &self.usage,
-            busy: &self.busy,
-            dark: self.dark,
-            this_box: &self.this_box,
-            here: self.client.here(),
-        }
-    }
-
     /// Works the page's items out again, from what it's drawn from now.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         self.dark = cx.theme().appearance.is_dark();
-        // A page not in this app is the placeholder alone: it names the section itself.
-        let mut items = if rows::is_built(&self.section) { vec![Item::Title(self.section.clone())] } else { Vec::new() };
-        if rows::is_built(&self.section) {
-            let blocks = rows::found(&self.section, rows::page(&self.section, &self.facts()), &self.query);
-            if blocks.is_empty() && !self.query.is_empty() {
-                items.push(Item::Nothing(self.query.clone()));
-            }
-            for block in blocks {
-                match block {
-                    Block::Group(label, rows) => {
-                        items.push(Item::Group(label));
-                        let count = rows.len();
-                        items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));
+        let name = self.computer_name();
+        let placeholder = if self.side == Side::Yours { "Search your settings…".to_owned() } else { format!("Search {name}’s settings…") };
+        self.search.update(cx, |field, _| field.set_placeholder(placeholder));
+        let mut items = Vec::new();
+        let open = self.section().to_owned();
+        let entry = self.entries(self.side).into_iter().find(|entry| entry.id == open);
+        match (&self.standing, entry) {
+            (Standing::Not { title, words }, _) if self.side == Side::Computer => items.push(Item::Aside { key: "settings-away", icon: IconName::Computer, title: title.clone(), words: words.clone() }),
+            (_, Some(entry)) if entry.drawn == Drawn::Later => items.push(Item::Aside { key: "placeholder", icon: entry.icon, title: entry.title.clone(), words: LATER_WORDS.into() }),
+            (_, Some(entry)) => {
+                items.push(Item::Title(entry.title.clone()));
+                items.push(Item::Whose(if self.side == Side::Yours { YOURS_WORDS.to_owned() } else { format!("Kept on {name}, the same in every app that connects to it.") }));
+                if let Some(Reading::Ready(page)) = self.pages.get(&entry.id).filter(|_| entry.drawn == Drawn::Described)
+                    && let Some(line) = page.line.clone().filter(|line| !line.is_empty())
+                {
+                    items.push(Item::Note { key: "page-line".into(), words: line, busy: false, warning: false });
+                }
+                // The rows found; the whole page where its name was what's found, or its words
+                // (the box's keywords) with no row to show for them.
+                let titled = entry.title.to_lowercase().contains(&self.query);
+                let mut blocks = rows::found(titled, self.blocks(&entry), &self.query);
+                if blocks.is_empty() && entry.named(&self.query) {
+                    blocks = self.blocks(&entry);
+                }
+                if blocks.is_empty() && !self.query.is_empty() {
+                    items.push(Item::Nothing(self.query.clone()));
+                }
+                for block in blocks {
+                    match block {
+                        Block::Group(label, words, rows) => {
+                            items.push(Item::Group { label, words });
+                            let count = rows.len();
+                            items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));
+                        }
+                        Block::Note { key, words, busy, warning } => items.push(Item::Note { key, words, busy, warning }),
                     }
-                    Block::Note { key, words, busy } => items.push(Item::Note { key, words, busy }),
                 }
             }
-        } else {
-            items.push(Item::Placeholder);
+            // A computer's section before its box has said what it has.
+            (_, None) => match &self.sections {
+                Reading::Failed(why) => items.push(Item::Note { key: "note-sections".into(), words: format!("{name}’s settings couldn’t be read: {why}"), busy: false, warning: true }),
+                _ => items.push(Item::Note { key: "note-sections".into(), words: format!("Reading {name}’s settings…"), busy: true, warning: false }),
+            },
         }
         items.push(Item::End);
+        self.sync_fields(&items, cx);
         // Only the items that changed are laid out again; the rest keep their places and the
         // page keeps its scroll (a reset would take it back to the top).
         if items != self.items {
@@ -305,10 +757,62 @@ impl SettingsView {
         cx.notify();
     }
 
+    /// The fields of the rows that take typing: each made once and kept (typing never rebuilds
+    /// it), showing its row's value again only when the box says another.
+    fn sync_fields(&mut self, items: &[Item], cx: &mut Context<Self>) {
+        let mut kept = Vec::new();
+        for item in items {
+            let Item::Row { row, .. } = item else { continue };
+            let Control::Field { masked, value, placeholder, revision, .. } = &row.control else { continue };
+            kept.push(row.key.clone());
+            match self.fields.get_mut(&row.key) {
+                Some((_, shown, _)) if shown == revision => {}
+                Some((field, shown, _)) => {
+                    field.update(cx, |field, cx| field.set_text(value.clone(), cx));
+                    *shown = revision.clone();
+                }
+                None => {
+                    let (masked, placeholder, value) = (*masked, placeholder.clone(), value.clone());
+                    let field = cx.new(|cx| {
+                        let mut field = TextField::new(cx).bare().placeholder(placeholder);
+                        if masked {
+                            field = field.masked();
+                        }
+                        field.set_text(value, cx);
+                        field
+                    });
+                    let key = row.key.clone();
+                    let subscription = cx.subscribe(&field, move |this: &mut SettingsView, _, event: &TextFieldEvent, cx| {
+                        if let TextFieldEvent::Submit(_) = event {
+                            let save = this.items.iter().find_map(|item| match item {
+                                Item::Row { row, .. } if row.key == key => match &row.control {
+                                    Control::Field { save, .. } => Some(save.clone()),
+                                    _ => None,
+                                },
+                                _ => None,
+                            });
+                            if let Some(save) = save {
+                                this.act(save, cx);
+                            }
+                        }
+                    });
+                    self.fields.insert(row.key.clone(), (field, revision.clone(), subscription));
+                }
+            }
+        }
+        self.fields.retain(|key, _| kept.contains(key));
+    }
+
+    /// A row's field, as its control draws it.
+    pub fn field(&self, key: &str) -> Option<&Entity<TextField>> {
+        self.fields.get(key).map(|(field, _, _)| field)
+    }
+
     // MARK: Reading
 
-    /// Runs `work` against the box, in the app off this thread, in tests and shots at once, and
-    /// hands what it came to to `then`. A newer one under the same name replaces an older.
+    /// Runs `work` against the box of the computer shown, in the app off this thread, in tests
+    /// and shots at once, and hands what it came to to `then`. A newer one under the same name
+    /// replaces an older; one for a computer no longer shown is dropped unanswered.
     fn run<T: Send + 'static>(
         &mut self,
         name: impl Into<String>,
@@ -316,7 +820,7 @@ impl SettingsView {
         then: impl FnOnce(&mut SettingsView, T, &mut Context<SettingsView>) + 'static,
         cx: &mut Context<Self>,
     ) {
-        let client = self.client.clone();
+        let Some(client) = self.client.clone() else { return };
         if !self.live {
             let done = work(&client);
             then(self, done, cx);
@@ -334,27 +838,143 @@ impl SettingsView {
         self.tasks.insert(name.into(), task);
     }
 
-    fn read_section(&mut self, section: &str, cx: &mut Context<Self>) {
-        if self.client.gate().is_held() {
+    /// Asks the computer's box what its sections are, then reads the page open (and, while
+    /// searching, every page).
+    fn read_sections(&mut self, cx: &mut Context<Self>) {
+        // Another computer's box is asked what it is first, as the window's was when it opened:
+        // one older than this app needs is held, and says so.
+        let other = self.computer.is_some();
+        self.reading_sections = true;
+        self.run(
+            "sections",
+            move |client| {
+                if other {
+                    client.connect()?;
+                }
+                client.settings_sections()
+            },
+            move |this, read, cx| {
+                this.reading_sections = false;
+                this.sections = match (read, &this.sections) {
+                    (Ok(sections), _) => Reading::Ready(sections),
+                    (Err(_), Reading::Ready(sections)) => Reading::Ready(sections.clone()),
+                    (Err(error), _) => Reading::Failed(said(&error)),
+                };
+                this.settle(cx);
+                // (What this app draws itself is read even where the box's sections couldn't be.)
+                if this.side == Side::Computer {
+                    let section = this.section.clone();
+                    this.read_section(&section, cx);
+                }
+                if !this.query.is_empty() {
+                    this.read_pages(cx);
+                }
+            },
+            cx,
+        );
+    }
+
+    fn held(&self) -> bool {
+        self.client.as_ref().is_none_or(|client| client.gate().is_held())
+    }
+
+    /// Reads what the page open is drawn from (your own pages read nothing). Sections that
+    /// aren't read yet, or couldn't be the last time, are asked for first.
+    fn read_open(&mut self, cx: &mut Context<Self>) {
+        if self.side != Side::Computer || self.held() {
             self.rebuild(cx);
             return;
         }
-        match section {
-            "Accounts" => self.run("read-accounts", |client| client.sign_in_accounts(), |this, read, _| this.accounts = reading(read, &this.accounts), cx),
-            "Usage" => self.run("read-limits", |client| client.accounts(), |this, read, _| this.limits = reading(read, &this.limits), cx),
-            "Models" => {
+        if !matches!(self.sections, Reading::Ready(_)) {
+            if !self.reading_sections {
+                self.read_sections(cx);
+            }
+            return;
+        }
+        let section = self.section.clone();
+        self.read_section(&section, cx);
+    }
+
+    /// Reads every page of the computer shown (for a search).
+    fn read_all(&mut self, cx: &mut Context<Self>) {
+        if self.held() {
+            return;
+        }
+        if !matches!(self.sections, Reading::Ready(_)) {
+            if !self.reading_sections {
+                self.read_sections(cx);
+            }
+            return;
+        }
+        self.read_pages(cx);
+    }
+
+    fn read_pages(&mut self, cx: &mut Context<Self>) {
+        for entry in self.entries(Side::Computer) {
+            let unread = match entry.drawn {
+                Drawn::Described => !matches!(self.pages.get(&entry.id), Some(Reading::Ready(_))),
+                Drawn::Own => true,
+                _ => false,
+            };
+            if unread && !(self.side == Side::Computer && entry.id == self.section) {
+                self.read_section(&entry.id, cx);
+            }
+        }
+    }
+
+    fn read_section(&mut self, section: &str, cx: &mut Context<Self>) {
+        let drawn = self.entries(Side::Computer).into_iter().find(|entry| entry.id == section).map(|entry| entry.drawn);
+        match (drawn, section) {
+            (Some(Drawn::Described), _) => self.read_page(section, cx),
+            (Some(Drawn::Own), "accounts") => self.run("read-accounts", |client| client.sign_in_accounts(), |this, read, _| this.accounts = reading(read, &this.accounts), cx),
+            (Some(Drawn::Own), "usage") => {
+                self.run("read-limits", |client| client.accounts(), |this, read, _| this.limits = reading(read, &this.limits), cx);
+                self.run("read-usage", |client| client.usage_settings(), |this, read, _| this.usage = reading(read, &this.usage), cx);
+            }
+            (Some(Drawn::Own), "models") => {
                 self.run("read-config", |client| client.config(), |this, read, _| this.config = reading(read, &this.config), cx);
                 self.run("read-offered", |client| client.offered_models(None, None), |this, read, _| this.offered = reading(read, &this.offered), cx);
             }
-            "Permissions" => {
-                self.run("read-approval", |client| client.approval(), |this, read, _| this.approval = reading(read, &this.approval), cx);
-                self.run("read-sandbox", |client| client.sandbox(), |this, read, _| this.sandbox = reading(read, &this.sandbox), cx);
-                self.run("read-allowed", |client| client.also_allowed(), |this, read, _| this.allowed = reading(read, &this.allowed), cx);
-            }
-            "Notifications" => self.run("read-usage", |client| client.usage_settings(), |this, read, _| this.usage = reading(read, &this.usage), cx),
-            "Browser" => self.run("read-browser", |client| client.browser_settings(), |this, read, _| this.browser = reading(read, &this.browser), cx),
             _ => {}
         }
+    }
+
+    /// Reads a page its box describes. The one open is followed as it changes instead (another
+    /// client's change, an agent's), where the app runs against a box that streams.
+    fn read_page(&mut self, section: &str, cx: &mut Context<Self>) {
+        let Some(client) = self.client.clone() else { return };
+        let id = section.to_owned();
+        if self.live && client.streams() && self.side == Side::Computer && self.section == section {
+            if self.follow.as_ref().is_some_and(|(of, _)| of == section) {
+                return;
+            }
+            let follow = client.follow_settings_page(section, Timing::default());
+            let updates = follow.updates().clone();
+            self.follow = Some((id.clone(), follow));
+            let task = cx.spawn(async move |this, cx| {
+                while let Ok(update) = updates.recv().await {
+                    let read = match update {
+                        Followed::Now(page) => Ok(page),
+                        Followed::Failed(error) => Err(error),
+                    };
+                    let took = this.update(cx, |this, cx| {
+                        this.take_page(&id, read);
+                        this.rebuild(cx);
+                    });
+                    if took.is_err() {
+                        break;
+                    }
+                }
+            });
+            self.tasks.insert("follow".into(), task);
+            return;
+        }
+        self.run(format!("page-{section}"), { let id = id.clone(); move |client| client.settings_page(&id) }, move |this, read, _| this.take_page(&id, read), cx);
+    }
+
+    fn take_page(&mut self, section: &str, read: kuvo_box::Result<Page>) {
+        let before = self.pages.remove(section).unwrap_or(Reading::NotYet);
+        self.pages.insert(section.to_owned(), reading(read, &before));
     }
 
     // MARK: Changes
@@ -368,10 +988,100 @@ impl SettingsView {
         self.busy.retain(|(busy, _)| busy != key);
     }
 
+    /// What the box made of a change to a row it describes: the page as it is now; where the row
+    /// had changed since it was read, that page with the box's words over it; else its refusal.
+    fn take_changed(&mut self, section: &str, row: &str, done: kuvo_box::Result<Changed>, cx: &mut Context<Self>) {
+        match done {
+            Ok(Changed::Done(page)) => {
+                self.replacing.retain(|id| id != row);
+                // (A secret's field is let go: what was typed is the box's now, never kept here.)
+                let key = described::key(row);
+                let secret = self.items.iter().any(|item| matches!(item, Item::Row { row, .. } if row.key == key && matches!(row.control, Control::Field { masked: true, .. })));
+                if secret {
+                    self.fields.remove(&key);
+                }
+                self.pages.insert(section.to_owned(), Reading::Ready(page));
+            }
+            Ok(Changed::Stale { message, page }) => {
+                self.problem = Some(message);
+                self.pages.insert(section.to_owned(), Reading::Ready(page));
+            }
+            Err(error) => {
+                self.problem = Some(said(&error));
+                self.read_page(section, cx);
+            }
+        }
+    }
+
     /// What a row's control asked for.
     pub fn act(&mut self, act: Act, cx: &mut Context<Self>) {
         self.problem = None;
         match act {
+            Act::Change { at, value, asked } => {
+                if let (false, Some(asks)) = (asked, at.confirm.clone()) {
+                    self.ask(asks.title, asks.body, asks.button, Act::Change { at, value, asked: true });
+                } else {
+                    let key = described::key(&at.row);
+                    self.set_busy(&key, "Saving…");
+                    let to = at.clone();
+                    self.run(
+                        key.clone(),
+                        move |client| client.change_setting_at(&to.section, &to.row, &to.revision, value),
+                        move |this, done, cx| {
+                            this.done(&key);
+                            this.take_changed(&at.section, &at.row, done, cx);
+                        },
+                        cx,
+                    );
+                }
+            }
+            Act::Do { at, action, confirm, asked } => {
+                if let (false, Some(asks)) = (asked, confirm.clone()) {
+                    self.ask(asks.title, asks.body, asks.button, Act::Do { at, action, confirm, asked: true });
+                } else {
+                    let key = described::key(&at.row);
+                    self.set_busy(&key, "Working…");
+                    let to = at.clone();
+                    self.run(
+                        key.clone(),
+                        move |client| client.setting_action_at(&to.section, &to.row, &to.revision, &action),
+                        move |this, done, cx| {
+                            this.done(&key);
+                            this.take_changed(&at.section, &at.row, done, cx);
+                        },
+                        cx,
+                    );
+                }
+            }
+            Act::Save { at, number } => {
+                let Some(text) = self.fields.get(&described::key(&at.row)).map(|(field, _, _)| field.read(cx).text().trim().to_owned()) else { return };
+                // (What kind of thing was typed is all that's checked here; whether it fits is the box's.)
+                let value = if number {
+                    match text.parse::<f64>().ok().and_then(serde_json::Number::from_f64) {
+                        Some(number) => Value::Number(number),
+                        None => {
+                            self.problem = Some(format!("{} takes a number.", at.title));
+                            self.rebuild(cx);
+                            return;
+                        }
+                    }
+                } else {
+                    json!(text)
+                };
+                self.act(Act::Change { at, value, asked: false }, cx);
+                return;
+            }
+            Act::Replacing { row, on } => {
+                self.replacing.retain(|id| *id != row);
+                if on {
+                    self.replacing.push(row);
+                }
+            }
+            Act::Section(id) => cx.emit(Pick { place: box_key(self.computer.as_deref().unwrap_or_default(), &id), record: true }),
+            Act::Go(place) => {
+                self.search.update(cx, |field, cx| field.set_text("", cx));
+                cx.emit(Pick { place, record: true });
+            }
             Act::SignIn { side, account, name } => self.open_sign_in(side, &account, &name, cx),
             Act::Install { account, name } => {
                 let key = format!("account-{account}");
@@ -399,8 +1109,8 @@ impl SettingsView {
                                     this.accounts = reading(read, &this.accounts);
                                 }
                                 // Installed: on to signing in, where its box now offers it.
-                                if this.offers_sign_in(Side::Agents, &account) {
-                                    this.open_sign_in(Side::Agents, &account, &name, cx);
+                                if this.offers_sign_in(AccountSide::Agents, &account) {
+                                    this.open_sign_in(AccountSide::Agents, &account, &name, cx);
                                 }
                             }
                             Ok((installed, _)) => this.problem = Some(format!("{name} couldn’t be installed. {}", installed.message.unwrap_or_else(|| "It isn’t installed.".into()))),
@@ -411,8 +1121,8 @@ impl SettingsView {
                 );
             }
             // Asked first where the box says to, in its words; else done at once.
-            Act::Disconnect { account, confirm: Some(asks) } => self.ask(asks, Act::Disconnect { account, confirm: None }),
-            Act::RemoveAgent { account, confirm: Some(asks) } => self.ask(asks, Act::RemoveAgent { account, confirm: None }),
+            Act::Disconnect { account, confirm: Some(asks) } => self.ask(asks.title, asks.message, asks.label, Act::Disconnect { account, confirm: None }),
+            Act::RemoveAgent { account, confirm: Some(asks) } => self.ask(asks.title, asks.message, asks.label, Act::RemoveAgent { account, confirm: None }),
             Act::Disconnect { account, confirm: None } => {
                 let forgetting = account.clone();
                 self.account_change(account, move |client| client.forget_account(&forgetting), "Disconnecting…", cx)
@@ -435,49 +1145,14 @@ impl SettingsView {
                             Err(error) => {
                                 // Refused (changed meanwhile, or unreadable): what's there now.
                                 this.problem = Some(said(&error));
-                                this.read_section("Models", cx);
+                                this.read_section("models", cx);
                             }
                         }
                     },
                     cx,
                 );
             }
-            Act::SetOtherComputers(allowed) => self.change(
-                "row-other-computers",
-                move |client| client.set_other_computers(allowed),
-                |this, approval| this.approval = Reading::Ready(approval),
-                cx,
-            ),
             Act::Open(url) => cx.open_url(&url),
-            Act::SandboxAction { method, path } => {
-                self.set_busy("row-sandbox", "Working…");
-                self.run(
-                    "row-sandbox",
-                    move |client| client.sandbox_action(&method, &path),
-                    |this, done, _| {
-                        this.done("row-sandbox");
-                        match done {
-                            Ok(sandbox) => this.sandbox = Reading::Ready(sandbox),
-                            Err(error) => this.problem = Some(said(&error)),
-                        }
-                    },
-                    cx,
-                );
-            }
-            Act::RemoveAllowed(id) => {
-                let key = format!("allowed-{id}");
-                self.change(&key, move |client| client.remove_allowed(&id).and_then(|_| client.also_allowed()), |this, allowed| this.allowed = Reading::Ready(allowed), cx)
-            }
-            Act::SetSearchEngine(engine) => self.change("row-search-engine", move |client| client.set_browser_settings(json!({ "searchEngine": engine })), |this, settings| this.browser = Reading::Ready(settings), cx),
-            Act::SetTidies(on) => self.change("row-tidies", move |client| client.set_browser_settings(json!({ "tidiesAgentTabs": on })), |this, settings| this.browser = Reading::Ready(settings), cx),
-            Act::SetOffersToSave(on) => self.change("row-offers", move |client| client.set_browser_settings(json!({ "offersToSave": on })), |this, settings| this.browser = Reading::Ready(settings), cx),
-            Act::OfferAgain(host) => {
-                let never: Vec<String> = match &self.browser {
-                    Reading::Ready(settings) => settings.never.iter().filter(|each| **each != host).cloned().collect(),
-                    _ => return,
-                };
-                self.change(&format!("never-{host}"), move |client| client.set_browser_settings(json!({ "never": never })), |this, settings| this.browser = Reading::Ready(settings), cx)
-            }
             Act::SetNotice(notice, on) => {
                 let Reading::Ready(usage) = &self.usage else { return };
                 let mut notices = usage.notices;
@@ -552,9 +1227,9 @@ impl SettingsView {
     }
 
     /// Opens the confirm the box asked for, with its words; `act` is what going ahead does.
-    fn ask(&mut self, asks: kuvo_box::accounts::Confirm, act: Act) {
+    fn ask(&mut self, title: String, body: String, button: String, act: Act) {
         self.focus_confirm = true;
-        self.confirm = Some(Confirm { title: asks.title, body: asks.message, button: asks.label, act });
+        self.confirm = Some(Confirm { title, body, button, act });
     }
 
     fn confirmed(&mut self, cx: &mut Context<Self>) {
@@ -565,15 +1240,16 @@ impl SettingsView {
 
     // MARK: Signing in
 
-    fn offers_sign_in(&self, side: Side, account: &str) -> bool {
-        let Reading::Ready(accounts) = &self.accounts else { return false };
-        let list = if side == Side::Agents { &accounts.agents } else { &accounts.engine };
+    fn offers_sign_in(&self, side: AccountSide, account: &str) -> bool {
+        let (Reading::Ready(accounts), Some(client)) = (&self.accounts, &self.client) else { return false };
+        let list = if side == AccountSide::Agents { &accounts.agents } else { &accounts.engine };
         // As the box says: a sign-in among its actions, one this app can start from where it runs.
-        list.iter().any(|entry| entry.integration.id == account && entry.actions.iter().any(|action| action.signs_in() && action.offered(self.client.here())))
+        list.iter().any(|entry| entry.integration.id == account && entry.actions.iter().any(|action| action.signs_in() && action.offered(client.here())))
     }
 
-    pub fn open_sign_in(&mut self, side: Side, account: &str, name: &str, cx: &mut Context<Self>) {
-        let sheet = cx.new(|cx| SignIn::new(self.client.clone(), self.live, side, account, name, cx));
+    pub fn open_sign_in(&mut self, side: AccountSide, account: &str, name: &str, cx: &mut Context<Self>) {
+        let Some(client) = self.client.clone() else { return };
+        let sheet = cx.new(|cx| SignIn::new(client, self.live, side, account, name, cx));
         // Closed, however it ended (a key may have gone in as it closed): Accounts read again.
         self.sign_in_closed = Some(cx.subscribe(&sheet, |this: &mut SettingsView, _, _: &sign_in::Closed, cx| {
             this.sign_in = None;

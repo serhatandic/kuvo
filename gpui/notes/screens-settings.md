@@ -1,14 +1,51 @@
 # Settings
 
-The Settings area (⌃5): its sidebar (a title, "Search settings…", the sections with icons) and a
-page for each section this app has, the rest a plain page saying where they are. The layout is the
-user's OpenBot reference: a big page title, quiet group labels, one rounded card of rows a group
-with hairlines between rows, each row's name (medium) and grey line on the left and its control on
-the right (a menu with ⌃⌄, a switch, buttons), generous spacing, on the sidebar's soft grey.
-Code: `kuvo/src/settings/` (`mod.rs` the view and its changes, `rows.rs` what each page lists,
-`page.rs` the drawing, `sign_in.rs` the sign-in sheet); `kuvo_box/src/accounts.rs` and
-`settings.rs`. Scenarios: `kuvo/tests/settings.rs`. Shots: `shots/screens-settings-*` and
+The Settings area (⌃5), in two parts with a sidebar each (the user's pick of the #727 drafts, A,
+2026-11-15; the note and drafts are on `kuvo/727-settings-split-design-and-drafts`,
+`gpui/notes/settings-split.md`):
+
+- **Your settings**: this app's own, on this device. Appearance (the theme) is the one built; the
+  rest are under one row, "Not in the desktop app yet", which opens their short list; each is a page
+  saying "Coming to the desktop app."
+- **A computer's settings**: kept on that computer by its box. The sidebar's title is the
+  **picker** (your computers as the window's box lists them, one that isn't reached quieter, Add a
+  Machine…), which changes only Settings, never the window. Its sections are the box's
+  (`kuvo/settings`), under the box's headings; Accounts, Models and Usage are still this app's own
+  pages (`rows.rs`, BOX-NEEDED, #741); the rest are under the same one row.
+- The **foot row** goes to the other side ("Computer settings · This Mac ›" / "Your settings ›"),
+  at the section last open there. The **search** finds on its own side, and lists what it finds on
+  the other under "Computer · This Mac" / "Your settings", with an arrow; picking one goes there
+  and leaves the search behind.
+- Each page says once, under its title, whose it is. The open section is under the theme's selected
+  wash, not the raised card the other sidebars use (#723).
+- A computer that's away, connecting, known only through another, on an older Kuvo, or not
+  reachable from the desktop app yet: its name and why, in place of its page, and no sections.
+
+Places have keys (`yours/<id>`, `box/<computer key>/<id>`; a section's name alone is the computer
+shown's), which is what back and forward keep.
+
+The page layout is the user's OpenBot reference: a big page title, quiet group labels, one rounded
+card of rows a group with hairlines between rows, each row's name (medium) and grey line on the
+left and its control on the right, generous spacing, on the sidebar's soft grey.
+Code: `kuvo/src/settings/` (`mod.rs` the view, where it is and its changes; `described.rs` a page
+the box describes as rows; `rows.rs` the section lists and this app's own pages; `page.rs` the
+drawing; `sign_in.rs` the sign-in sheet); `kuvo_box/src/settings_pages.rs`, `accounts.rs`,
+`settings.rs`. Scenarios: `kuvo/tests/settings.rs`. Shots: `shots/screens-settings-a-*` and
 `shots/screens-sign-in-*`.
+
+## A page the box describes
+
+One renderer for every kind of row (`described.rs`), in the box's words; nothing in the app knows
+what a setting is. `switch` a switch; `choice` a menu (its choices' lines beside them; a long one
+scrolls); `text`, `number`, `folder` a field saved with Return or Save (a folder is typed for now);
+`secret` a masked field, or Replace and Remove once one is set; `status` words; `actions` buttons
+(a menu past two), one with `opens` opened here; `list` its items as rows (naming the card where it's
+alone in a group with no heading), or its `empty` words; `meter` usage windows; `open` a row with ›;
+`steps` and `custom` say they aren't in the desktop app yet (or the box's why); a kind this app
+doesn't know says a newer Kuvo changes it. A row or an action with `can: {why}` is drawn, can't be
+pressed, and says why under the row. A `confirm` is asked first in the box's words. Every change
+carries the row's `revision`; a stale one shows the box's words over the page and the page as the
+box has it now. The page open is followed (`…/events`) where the box streams.
 
 ## What Zed does (studied for behaviour and speed, nothing copied)
 
@@ -40,9 +77,10 @@ Read (GPL-3.0, behaviour only): `crates/settings_ui/src/settings_ui.rs` (`Settin
   it to the top on every busy row). Accounts' 20-odd rows, or a long list of providers, cost only
   those on screen.
 - Search filters sections and rows by name and line, case-insensitively (the list is short, so
-  no background task); a section's name keeps its whole page; a page with nothing found shows the
-  first that has something, again as each page's reading comes in. The first search reads every
-  page, so it can find on all of them.
+  no background task), and a section by the box's keywords too; a section's name keeps its whole
+  page; a page with nothing found shows the first on its side that has something, again as each
+  page's reading comes in. The first search reads every page of the computer shown, so it can find
+  on all of them, from either side.
 - A sheet (a sign-in, a confirm) dims the page and the Settings sidebar, takes the keyboard, and
   Escape closes it.
 - Each page reads the box only as it opens (and again each time), each change goes to the box's

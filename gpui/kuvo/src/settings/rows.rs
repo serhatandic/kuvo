@@ -1,52 +1,98 @@
-//! What each Settings page lists, as rows worked out from the box's facts: their names and lines,
-//! and the control each has. Drawing is in `mod.rs`; nothing here reaches the box.
-//!
-//! The words are this app's (the Mac's, where it has them); every fact is the box's, and so are
-//! the words it gives (why the sandbox is off, its button's, a failure's).
+//! What Settings lists itself, and the rows of the pages this app still words: your own settings
+//! (this app's, on this device), and the computer's sections its box doesn't describe yet
+//! (Accounts, Models, Usage). A section the box describes is drawn from its description alone
+//! (`described.rs`). Drawing is in `page.rs`; nothing here reaches the box.
 
 use kuvo_box::accounts::{AccountEntry, Accounts, Action, Confirm, Side, State};
-use kuvo_box::areas::Account;
-use kuvo_box::models::Offered;
-use kuvo_box::settings::{Allowed, Approval, BrowserSettings, Config, Sandbox, SandboxDoes, UsageSettings};
+use kuvo_box::areas::{Account, Level};
+use kuvo_box::models::Offered as OfferedModels;
+use kuvo_box::settings::{Config, UsageSettings};
+use kuvo_box::settings_pages::{Confirm as Asks, Row as Described};
 use kuvo_ui::IconName;
+use serde_json::Value;
 
 use crate::areas::Reading;
 
-/// The sections this app has pages for, in the sidebar's order, with their icons.
-pub const BUILT: &[(&str, IconName)] = &[
-    ("General", IconName::Settings),
-    ("Accounts", IconName::User),
-    ("Usage", IconName::Clock),
-    ("Models", IconName::Sparkle),
-    ("Permissions", IconName::Shield),
-    ("Notifications", IconName::Bell),
-    ("Browser", IconName::Globe),
+/// One of Settings' sections this app lists itself.
+pub struct Listed {
+    pub id: &'static str,
+    pub title: &'static str,
+    pub icon: IconName,
+    /// The heading it's under in a computer's sidebar.
+    pub group: &'static str,
+    /// What search finds it by besides its name.
+    pub keywords: &'static str,
+}
+
+const fn listed(id: &'static str, title: &'static str, icon: IconName, group: &'static str, keywords: &'static str) -> Listed {
+    Listed { id, title, icon, group, keywords }
+}
+
+/// Your settings: this app's own, on this device, kept and drawn by the app.
+pub const YOURS: &[Listed] = &[listed("appearance", "Appearance", IconName::Sun, "", "theme light dark colours colors")];
+
+/// Yours that the desktop app hasn't yet: each opens a page saying so.
+pub const YOURS_LATER: &[Listed] = &[
+    listed("general", "General", IconName::Settings, "", "window swipe open files"),
+    listed("notifications", "Notifications", IconName::Bell, "", "sound badge finished waits"),
+    listed("voice", "Voice", IconName::Mic, "", "microphone dictation speech"),
+    listed("shortcuts", "Keyboard Shortcuts", IconName::Return, "", "keys"),
+    listed("panel", "Side Panel", IconName::PanelRight, "", "browser history terminal files"),
+    listed("updates", "Updates", IconName::ArrowDown, "", "version beta"),
+    listed("privacy", "Privacy", IconName::Info, "", "crash reports"),
 ];
 
-/// The Mac's other sections, listed under their own heading: each opens a page saying it isn't in
-/// this app yet.
-pub const ELSEWHERE: &[(&str, IconName)] = &[
-    ("Custom Auto", IconName::Sliders),
-    ("Agents", IconName::Bot),
-    ("Commands", IconName::Terminal),
-    ("Skills", IconName::Sparkle),
-    ("Integrations", IconName::Link),
-    ("Vault", IconName::Shield),
-    ("MCP Servers", IconName::Computer),
-    ("Engine", IconName::Computer),
-    ("Git", IconName::Branch),
-    ("Worktrees", IconName::Branch),
-    ("Machines", IconName::Computer),
-    ("Keyboard Shortcuts", IconName::Return),
-    ("Phone", IconName::Message),
-    ("Panel", IconName::PanelRight),
-    ("Privacy", IconName::Shield),
-    ("Storage", IconName::Folder),
-    ("Archived Sessions", IconName::Clock),
+/// A computer's sections the desktop app still draws itself, from routes it knows one by one.
+// BOX-NEEDED: move onto kuvo/settings (#741): Accounts, Models and Usage, each described by the
+// box as Permissions and Browser are, so this list and their pages below go.
+pub const OWN: &[Listed] = &[
+    listed("accounts", "Accounts", IconName::User, "Models", "sign in plan provider api key coding agents"),
+    listed("models", "Models", IconName::Sparkle, "Models", "default model subagents titles"),
+    listed("usage", "Usage", IconName::Clock, "Models", "limits notices almost out notifications"),
 ];
 
-pub fn is_built(section: &str) -> bool {
-    BUILT.iter().any(|(name, _)| *name == section)
+/// A computer's sections that are in neither its box's description nor this app yet: each opens
+/// a page saying so. One the box describes (by the same name) is drawn from the box instead.
+// BOX-NEEDED: move onto kuvo/settings (#741): each of these.
+pub const LATER: &[Listed] = &[
+    listed("custom-auto", "Custom Auto", IconName::Sliders, "Models", ""),
+    listed("agents", "Agents", IconName::Bot, "Agents & Tools", ""),
+    listed("commands", "Commands", IconName::Terminal, "Agents & Tools", ""),
+    listed("skills", "Skills", IconName::Pencil, "Agents & Tools", ""),
+    listed("integrations", "Integrations", IconName::Link, "Agents & Tools", ""),
+    listed("vault", "Vault", IconName::Shield, "Agents & Tools", "secrets"),
+    listed("mcp", "MCP Servers", IconName::Sliders, "Agents & Tools", ""),
+    listed("git", "Git", IconName::Branch, "Projects", ""),
+    listed("worktrees", "Worktrees", IconName::Folder, "Projects", ""),
+    listed("archived", "Archived Sessions", IconName::Clock, "Projects", ""),
+    listed("engine", "Engine", IconName::Computer, "System", ""),
+    listed("storage", "Storage", IconName::File, "System", ""),
+    listed("phone", "Phone", IconName::Message, "System", "pair iphone"),
+];
+
+/// The icon a box names for a section (PROTOCOL.md: a set every client has); one this app
+/// hasn't, its own.
+pub fn icon_named(name: &str) -> IconName {
+    match name {
+        "settings" => IconName::Settings,
+        "shield" => IconName::Shield,
+        "globe" => IconName::Globe,
+        "user" => IconName::User,
+        "clock" => IconName::Clock,
+        "sparkle" => IconName::Sparkle,
+        "bot" => IconName::Bot,
+        "terminal" => IconName::Terminal,
+        "link" => IconName::Link,
+        "computer" => IconName::Computer,
+        "branch" => IconName::Branch,
+        "folder" => IconName::Folder,
+        "bell" => IconName::Bell,
+        "file" => IconName::File,
+        "message" => IconName::Message,
+        "pencil" => IconName::Pencil,
+        "mic" => IconName::Mic,
+        _ => IconName::Sliders,
+    }
 }
 
 /// What a change asks of the box (or, for the theme, of this window).
@@ -61,19 +107,25 @@ pub enum Act {
     RemoveAgent { account: String, confirm: Option<Confirm> },
     /// A model setting at a path in the engine's settings, from what was read there.
     SetModel { path: &'static [&'static str], model: Option<String>, was: Option<String> },
-    SetOtherComputers(bool),
-    /// The sandbox's button, at the route the box named.
-    SandboxAction { method: String, path: String },
-    /// Opens the address the box named (a page, or a pane of the system's settings), as only an
-    /// app on the computer can.
-    Open(String),
-    RemoveAllowed(String),
-    SetSearchEngine(String),
-    SetTidies(bool),
-    SetOffersToSave(bool),
-    OfferAgain(String),
     SetNotice(Notice, bool),
     SetDark(bool),
+    /// A row the box describes, changed to `value` from the revision it was read at (`asked`:
+    /// its confirm, where it has one, was answered).
+    Change { at: At, value: Value, asked: bool },
+    /// What a described row offers (`action`: its id), done by the box, asked first where the
+    /// box says to.
+    Do { at: At, action: String, confirm: Option<Asks>, asked: bool },
+    /// A field's text, saved as its row's value (`number`: read as one first).
+    Save { at: At, number: bool },
+    /// A secret's field shown, to replace the one set (or put away again).
+    Replacing { row: String, on: bool },
+    /// Opens the address the box named: a web page, or (from its own computer's box alone) what
+    /// only an app on that computer can open.
+    Open(String),
+    /// Opens another section of the computer shown.
+    Section(String),
+    /// Goes to a place in Settings (`mod.rs`, its keys): another section, or the other side.
+    Go(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,25 +135,71 @@ pub enum Notice {
     WillRunOut,
 }
 
+/// Where a change to a row the box describes goes: its section, its id, the revision it was read
+/// at, and what's asked first. (Only these: a row's choices are never copied into each choice.)
+#[derive(Clone, Debug, PartialEq)]
+pub struct At {
+    pub section: String,
+    pub row: String,
+    pub revision: String,
+    pub title: String,
+    pub confirm: Option<Asks>,
+}
+
+impl At {
+    pub fn of(section: &str, row: &Described) -> At {
+        At { section: section.to_owned(), row: row.id.clone(), revision: row.revision.clone(), title: row.title.clone(), confirm: row.confirm.clone() }
+    }
+}
+
+/// A button in a row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Push {
+    pub label: String,
+    /// None: drawn, and not pressed (its row says why).
+    pub act: Option<Act>,
+}
+
+impl Push {
+    pub fn new(label: impl Into<String>, act: Act) -> Push {
+        Push { label: label.into(), act: Some(act) }
+    }
+}
+
+/// One of a meter's windows, as drawn: its name, what's said of it, its share (0 to 1), how
+/// close it is, and when it starts over.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Meter {
+    pub title: String,
+    pub said: String,
+    pub share: f32,
+    pub level: Level,
+    pub resets_at: Option<f64>,
+}
+
 /// A row's control, on its right.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Control {
     None,
     /// Plain words (a state that's read, not set here).
     Text(String),
-    /// A switch, and what flipping it does; `held` while another change in its group is under
-    /// way (each is sent whole, from what the box last said, so two at once would undo one).
-    Switch { on: bool, act: Act, held: bool },
-    /// A button that can't be used until another change in its group is answered.
-    HeldButton(String),
-    /// A menu: what it shows now, and its choices (words, what picking one does, whether it's it).
-    Menu { shown: String, choices: Vec<(String, Act, bool)> },
-    /// Buttons, the first the main one.
-    Buttons(Vec<(String, Act)>),
+    /// A switch, and what flipping it does (none: it can't be flipped here, or not until another
+    /// change in its group is answered).
+    Switch { on: bool, act: Option<Act> },
+    /// A menu: what it shows now (none: a menu of things to do, under "…"), and its choices
+    /// (words, a quieter line, what picking one does, or none where it can't be picked from here,
+    /// and whether it's it).
+    Menu { shown: Option<String>, choices: Vec<(String, Option<String>, Option<Act>, bool)> },
+    /// Buttons, in order.
+    Buttons(Vec<Push>),
+    /// A field (kept by the view under the row's key), and the buttons beside it.
+    Field { masked: bool, value: String, placeholder: String, revision: String, save: Act, more: Vec<Push> },
+    /// It opens something: a section, a page.
+    Opens(Act),
     /// A change on its way.
     Busy(String),
-    /// A plan's windows, each with its share and when it starts over.
-    Windows(Account),
+    /// Windows of use, each with its share and when it starts over.
+    Windows(Vec<Meter>),
 }
 
 /// How a row's line reads.
@@ -129,12 +227,14 @@ pub struct Row {
     pub title: String,
     pub detail: String,
     pub tone: Tone,
+    /// Why it can't be changed from here, in the box's words.
+    pub why: Option<String>,
     pub control: Control,
 }
 
 impl Row {
-    fn new(key: impl Into<String>, title: impl Into<String>, detail: impl Into<String>, control: Control) -> Row {
-        Row { key: key.into(), leading: Leading::None, title: title.into(), detail: detail.into(), tone: Tone::Quiet, control }
+    pub fn new(key: impl Into<String>, title: impl Into<String>, detail: impl Into<String>, control: Control) -> Row {
+        Row { key: key.into(), leading: Leading::None, title: title.into(), detail: detail.into(), tone: Tone::Quiet, why: None, control }
     }
 
     fn leading(mut self, leading: Leading) -> Row {
@@ -142,7 +242,7 @@ impl Row {
         self
     }
 
-    fn warning(mut self, warning: bool) -> Row {
+    pub fn warning(mut self, warning: bool) -> Row {
         if warning {
             self.tone = Tone::Warning;
         }
@@ -153,35 +253,36 @@ impl Row {
     pub fn matches(&self, query: &str) -> bool {
         self.title.to_lowercase().contains(query) || self.detail.to_lowercase().contains(query)
     }
+
+    pub fn why(mut self, why: Option<String>) -> Row {
+        self.why = why;
+        self
+    }
 }
 
 /// A page's piece: a group of rows in one card, or a line of its own.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Block {
-    /// A quiet label over a card, and the card's rows.
-    Group(String, Vec<Row>),
+    /// A quiet label over a card (with words under it, where there are any), and the card's rows.
+    Group(String, String, Vec<Row>),
     /// A quiet line on the page: loading, a reason, what isn't here yet.
-    Note { key: String, words: String, busy: bool },
+    Note { key: String, words: String, busy: bool, warning: bool },
 }
 
-fn note(key: &str, words: impl Into<String>, busy: bool) -> Block {
-    Block::Note { key: key.into(), words: words.into(), busy }
+pub fn note(key: &str, words: impl Into<String>, busy: bool) -> Block {
+    Block::Note { key: key.into(), words: words.into(), busy, warning: false }
 }
 
-/// Everything a page is drawn from, as read from the box.
+/// Everything one of this app's own pages is drawn from, as read from the box.
 pub struct Facts<'a> {
     pub accounts: &'a Reading<Accounts>,
     pub limits: &'a Reading<Vec<Account>>,
     pub config: &'a Reading<Config>,
-    pub offered: &'a Reading<Offered>,
-    pub approval: &'a Reading<Approval>,
-    pub sandbox: &'a Reading<Sandbox>,
-    pub allowed: &'a Reading<Vec<Allowed>>,
-    pub browser: &'a Reading<BrowserSettings>,
+    pub offered: &'a Reading<OfferedModels>,
     pub usage: &'a Reading<UsageSettings>,
     /// Rows with a change on its way, by key, and what they say meanwhile.
     pub busy: &'a [(String, String)],
-    pub dark: bool,
+    /// The computer's name.
     pub this_box: &'a str,
     /// Whether the box is on the computer this app runs on.
     pub here: bool,
@@ -212,33 +313,30 @@ fn capitalized(words: &str) -> String {
     chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
-/// A section's page, as blocks.
-pub fn page(section: &str, facts: &Facts) -> Vec<Block> {
+/// One of your own settings' pages, as blocks.
+pub fn yours(section: &str, dark: bool) -> Vec<Block> {
     match section {
-        "General" => general(facts),
-        "Accounts" => accounts(facts),
-        "Usage" => usage(facts),
-        "Models" => models(facts),
-        "Permissions" => permissions(facts),
-        "Notifications" => notifications(facts),
-        "Browser" => browser(facts),
+        "appearance" => {
+            let theme = Row::new(
+                "row-theme",
+                "Theme",
+                "Light or dark colours. ⌘⇧L switches them too.",
+                Control::Menu { shown: Some(if dark { "Dark".into() } else { "Light".into() }), choices: vec![("Light".into(), None, Some(Act::SetDark(false)), !dark), ("Dark".into(), None, Some(Act::SetDark(true)), dark)] },
+            );
+            vec![Block::Group("Theme".into(), String::new(), vec![theme])]
+        }
         _ => Vec::new(),
     }
 }
 
-fn general(facts: &Facts) -> Vec<Block> {
-    let theme = Row::new(
-        "row-theme",
-        "Theme",
-        "Light or dark colours for this app. ⌘⇧L switches them too.",
-        Control::Menu { shown: if facts.dark { "Dark".into() } else { "Light".into() }, choices: vec![("Light".into(), Act::SetDark(false), !facts.dark), ("Dark".into(), Act::SetDark(true), facts.dark)] },
-    );
-    vec![
-        Block::Group("Appearance".into(), vec![theme]),
-        // The Mac's own General settings (its window, voice, staying awake, updates) are the Mac
-        // app's, not a computer's: none is served by the box.
-        note("note-general", "The Mac app’s window, voice and update settings are its own, and stay there.", false),
-    ]
+/// One of a computer's pages this app still draws itself, as blocks.
+pub fn page(section: &str, facts: &Facts) -> Vec<Block> {
+    match section {
+        "accounts" => accounts(facts),
+        "usage" => usage(facts),
+        "models" => models(facts),
+        _ => Vec::new(),
+    }
 }
 
 // MARK: Accounts
@@ -270,7 +368,7 @@ fn account_row(entry: &AccountEntry, facts: &Facts) -> Row {
             [] => Control::None,
             [(action, _)] if entry.state == State::SignedIn && action.confirm.is_none() => menu(&offered),
             [_, _, ..] if entry.state == State::SignedIn => menu(&offered),
-            _ => Control::Buttons(offered.into_iter().map(|(action, act)| (action.label.clone(), act)).collect()),
+            _ => Control::Buttons(offered.into_iter().map(|(action, act)| Push::new(action.label.clone(), act)).collect()),
         }
     });
     Row::new(key, name.clone(), entry.line.clone(), control).leading(mark(entry, name)).warning(entry.state.needs_you())
@@ -279,8 +377,8 @@ fn account_row(entry: &AccountEntry, facts: &Facts) -> Row {
 /// Actions in a menu: one that opens something first (the box's confirm, or this app's sign-in
 /// sheet) ends in an ellipsis, as menus mark them. The mark is drawn here, never read in a label.
 fn menu(offered: &[(&Action, Act)]) -> Control {
-    let choices = offered.iter().map(|(action, act)| (if action.confirm.is_some() || action.signs_in() { format!("{}…", action.label) } else { action.label.clone() }, act.clone(), false)).collect();
-    Control::Menu { shown: String::new(), choices }
+    let choices = offered.iter().map(|(action, act)| (if action.confirm.is_some() || action.signs_in() { format!("{}…", action.label) } else { action.label.clone() }, None, Some(act.clone()), false)).collect();
+    Control::Menu { shown: None, choices }
 }
 
 /// An account's mark: the box's `service`; its name's first letter where the box names none.
@@ -297,7 +395,7 @@ fn accounts(facts: &Facts) -> Vec<Block> {
     if let Some(why) = &accounts.agents_down {
         blocks.push(note("note-agents-down", format!("The coding agents aren’t running on {}: {why}", facts.this_box), false));
     } else if !accounts.agents.is_empty() {
-        blocks.push(Block::Group("Coding Agents".into(), accounts.agents.iter().map(|entry| account_row(entry, facts)).collect()));
+        blocks.push(Block::Group("Coding Agents".into(), String::new(), accounts.agents.iter().map(|entry| account_row(entry, facts)).collect()));
     }
     if let Some(why) = &accounts.engine_down {
         blocks.push(note("note-engine-down", format!("The engine isn’t running on {}: {why}", facts.this_box), false));
@@ -306,33 +404,70 @@ fn accounts(facts: &Facts) -> Vec<Block> {
     // each in the engine's order.
     let (connected, others): (Vec<&AccountEntry>, Vec<&AccountEntry>) = accounts.engine.iter().partition(|entry| entry.state != State::SignedOut);
     if !connected.is_empty() {
-        blocks.push(Block::Group("Providers".into(), connected.into_iter().map(|entry| account_row(entry, facts)).collect()));
+        blocks.push(Block::Group("Providers".into(), String::new(), connected.into_iter().map(|entry| account_row(entry, facts)).collect()));
     }
     if !others.is_empty() {
-        blocks.push(Block::Group("Add a Provider".into(), others.into_iter().map(|entry| account_row(entry, facts)).collect()));
+        blocks.push(Block::Group("Add a Provider".into(), String::new(), others.into_iter().map(|entry| account_row(entry, facts)).collect()));
     }
     blocks
 }
 
 // MARK: Usage
 
-fn usage(facts: &Facts) -> Vec<Block> {
-    if let Some(note) = unread(facts.limits, "note-usage", "your accounts’ limits") {
-        return vec![note];
-    }
-    let Reading::Ready(limits) = facts.limits else { return Vec::new() };
-    if limits.is_empty() {
-        return vec![note("note-usage-none", "No account’s limits to show yet. Sign in under Accounts, and each plan’s limits show here.", false)];
-    }
-    let rows = limits
+/// An account's windows as meters: its share, its colour by the box's level, and when it starts
+/// over; one that started over and wasn't read since says so (PROTOCOL.md).
+fn meters(account: &Account) -> Vec<Meter> {
+    account
+        .windows
         .iter()
-        .enumerate()
-        .map(|(ix, account)| {
-            let detail = account.plan.clone().map(|plan| format!("{plan} plan")).unwrap_or_default();
-            Row::new(format!("usage-{ix}"), account.title.clone(), detail, Control::Windows(account.clone())).leading(Leading::Mark(account.service.clone()))
+        .map(|window| Meter {
+            title: window.title.clone(),
+            said: if window.expired { "Not read since it started over".to_owned() } else { format!("{}% used", (window.used * 100.).round() as u32) },
+            share: if window.expired { 0. } else { window.used.clamp(0., 1.) },
+            level: window.level,
+            resets_at: window.resets_at.filter(|_| !window.expired),
         })
-        .collect();
-    vec![Block::Group("Limits".into(), rows)]
+        .collect()
+}
+
+fn usage(facts: &Facts) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    match facts.limits {
+        Reading::Ready(limits) if limits.is_empty() => blocks.push(note("note-usage-none", "No account’s limits to show yet. Sign in under Accounts, and each plan’s limits show here.", false)),
+        Reading::Ready(limits) => {
+            let rows = limits
+                .iter()
+                .enumerate()
+                .map(|(ix, account)| {
+                    let detail = account.plan.clone().map(|plan| format!("{plan} plan")).unwrap_or_default();
+                    Row::new(format!("usage-{ix}"), account.title.clone(), detail, Control::Windows(meters(account))).leading(Leading::Mark(account.service.clone()))
+                })
+                .collect();
+            blocks.push(Block::Group("Limits".into(), String::new(), rows));
+        }
+        reading => blocks.extend(unread(reading, "note-usage", "your accounts’ limits")),
+    }
+    // The notices this computer's box sends about them.
+    match facts.usage {
+        Reading::Ready(usage) => {
+            let notices = usage.notices;
+            let row = |key: &str, title: &str, detail: &str, on: bool, act: fn(bool) -> Act| {
+                // (Each is sent whole, from what the box last said: two at once would undo one.)
+                Row::new(key, title, detail, facts.busy(key).unwrap_or(Control::Switch { on, act: (!facts.group_busy("notice-")).then(|| act(!on)) }))
+            };
+            let rows = vec![
+                row("notice-almost-out", "Almost Out", "When a limit drops below 10% left.", notices.under_ten_percent, |on| Act::SetNotice(Notice::AlmostOut, on)),
+                row("notice-close", "Cutting It Close", "When a limit is on pace to end with little left.", notices.healthy_to_close, |on| Act::SetNotice(Notice::CuttingItClose, on)),
+                row("notice-run-out", "Will Run Out", "When a limit is on pace to run out before it starts over.", notices.close_to_running_out, |on| Act::SetNotice(Notice::WillRunOut, on)),
+            ];
+            blocks.push(Block::Group("Notices".into(), format!("Sent by {}, to every app that connects to it.", facts.this_box), rows));
+            for (ix, unavailable) in usage.unavailable.iter().enumerate() {
+                blocks.push(note(&format!("note-unavailable-{ix}"), unavailable.message.clone(), false));
+            }
+        }
+        reading => blocks.extend(unread(reading, "note-usage-settings", "the usage notices")),
+    }
+    blocks
 }
 
 // MARK: Models
@@ -363,192 +498,33 @@ fn models(facts: &Facts) -> Vec<Block> {
             let now = config.model_at(path);
             let control = facts.busy(&key).unwrap_or_else(|| {
                 let shown = now.as_ref().map(|now| offered.iter().find(|(id, _)| id == now).map_or_else(|| now.clone(), |(_, name)| name.clone())).unwrap_or_else(|| (*none).to_owned());
-                let mut choices = vec![((*none).to_owned(), Act::SetModel { path, model: None, was: now.clone() }, now.is_none())];
-                choices.extend(offered.iter().map(|(id, name)| (name.clone(), Act::SetModel { path, model: Some(id.clone()), was: now.clone() }, now.as_deref() == Some(id))));
-                Control::Menu { shown, choices }
+                let mut choices = vec![((*none).to_owned(), None, Some(Act::SetModel { path, model: None, was: now.clone() }), now.is_none())];
+                choices.extend(offered.iter().map(|(id, name)| (name.clone(), None, Some(Act::SetModel { path, model: Some(id.clone()), was: now.clone() }), now.as_deref() == Some(id))));
+                Control::Menu { shown: Some(shown), choices }
             });
             Row::new(key, *title, *detail, control)
         })
         .collect();
-    let mut blocks = vec![Block::Group("Defaults".into(), rows)];
+    let mut blocks = vec![Block::Group("Defaults".into(), String::new(), rows)];
     if let Reading::Failed(why) = facts.offered {
         blocks.push(note("note-offered", format!("The models offered couldn’t be read: {why}"), false));
     }
     blocks
 }
 
-// MARK: Permissions
-
-/// Only a web page is opened at a box's word, unless it's this computer's own box naming its own.
-fn is_page(address: &str) -> bool {
-    address.starts_with("https://") || address.starts_with("http://")
-}
-
-/// A mode's name, as every client says it (KuvoClient's `ApprovalWords`).
-fn mode_name(mode: &str) -> String {
-    match mode {
-        "askFirst" => "Ask First".into(),
-        "acceptEdits" => "Accept Edits".into(),
-        "auto" => "Auto".into(),
-        "fullAccess" => "Full Access".into(),
-        other => other.to_owned(),
-    }
-}
-
-fn permissions(facts: &Facts) -> Vec<Block> {
-    let mut blocks = Vec::new();
-    match facts.approval {
-        Reading::Ready(approval) => {
-            let mut rows = vec![
-                Row::new("row-default-mode", "New sessions start in", "The mode you picked last on this computer. Change it in a conversation’s mode menu.", Control::Text(mode_name(&approval.default))),
-                Row::new(
-                    "row-full-access",
-                    "Full Access",
-                    "Asked the first time you pick it in a conversation on this computer.",
-                    Control::Text(if approval.full_access { "Allowed".into() } else { "Not allowed yet".into() }),
-                ),
-            ];
-            for (side, held) in [("the engine", &approval.auto.engine.held), ("the coding agents", &approval.auto.agents.held)] {
-                if let Some(held) = held {
-                    let why = held.why.clone().unwrap_or_else(|| held.reason.clone());
-                    rows.push(Row::new(format!("row-auto-held-{}", side.len()), format!("Auto, for {side}"), why, Control::Text("Held".into())).warning(true));
-                }
-            }
-            if let Some(allowed) = approval.other_computers {
-                rows.push(facts.busy("row-other-computers").map_or_else(
-                    || Row::new("row-other-computers", "Let your other computers start work here", format!("Their bots and agents can start sessions on {}.", facts.this_box), Control::Switch { on: allowed, act: Act::SetOtherComputers(!allowed), held: false }),
-                    |busy| Row::new("row-other-computers", "Let your other computers start work here", format!("Their bots and agents can start sessions on {}.", facts.this_box), busy),
-                ));
-            }
-            blocks.push(Block::Group("Approval".into(), rows));
-        }
-        reading => blocks.extend(unread(reading, "note-approval", "approval")),
-    }
-    match facts.sandbox {
-        Reading::Ready(sandbox) => {
-            // Why it's off, its button's words and what it does are the box's, drawn as they are: a
-            // button with a route sends it, one with an address opens it. An address that's the
-            // box's computer's own (its Software Update) has a button only where this app runs
-            // on that computer.
-            // Whether it warns is the box's word too (`needsYou`): off, or on with a services gap.
-            let detail = if sandbox.needs_you { sandbox.why.clone().unwrap_or_default() } else { String::new() };
-            let control = facts.busy("row-sandbox").unwrap_or_else(|| match sandbox.button() {
-                Some((label, SandboxDoes::Route { method, path })) => Control::Buttons(vec![(label, Act::SandboxAction { method, path })]),
-                // (Another computer's box has this one open a web page only, never anything else.)
-                Some((label, SandboxDoes::Open { address, here })) if if here { facts.here } else { is_page(&address) } => Control::Buttons(vec![(label, Act::Open(address))]),
-                _ => Control::Text(if sandbox.on { "On".into() } else { "Off".into() }),
-            });
-            let state = Row::new("row-sandbox", "Sandbox", detail, control).warning(sandbox.needs_you);
-            blocks.push(Block::Group("Sandbox".into(), vec![state]));
-        }
-        reading => blocks.extend(unread(reading, "note-sandbox", "the sandbox")),
-    }
-    match facts.allowed {
-        Reading::Ready(allowed) if allowed.is_empty() => {
-            blocks.push(note("note-allowed", "Nothing else is allowed yet. When you choose Always on a stopped command’s card, its folder shows here.", false));
-        }
-        Reading::Ready(allowed) => {
-            let rows = allowed
-                .iter()
-                .map(|rule| {
-                    let key = format!("allowed-{}", rule.id);
-                    let whose = rule.owner.as_ref().map(|owner| format!(" · for {}", owner.name)).unwrap_or_default();
-                    let detail = if rule.gone { format!("Gone from this computer{whose}") } else { format!("Can write{whose}") };
-                    let control = facts.busy(&key).unwrap_or(Control::Buttons(vec![("Remove".into(), Act::RemoveAllowed(rule.id.clone()))]));
-                    Row::new(key, rule.path.clone(), detail, control)
-                })
-                .collect();
-            blocks.push(Block::Group("Also Allowed".into(), rows));
-        }
-        reading => blocks.extend(unread(reading, "note-allowed", "the folders also allowed")),
-    }
-    blocks.push(note("note-rules", "Rules for what agents may do, and what’s always allowed, aren’t in this app yet: open Settings › Permissions in Kuvo Code on your Mac or iPhone.", false));
-    blocks
-}
-
-// MARK: Notifications
-
-fn notifications(facts: &Facts) -> Vec<Block> {
-    let mut blocks = Vec::new();
-    match facts.usage {
-        Reading::Ready(usage) => {
-            let notices = usage.notices;
-            let row = |key: &str, title: &str, detail: &str, on: bool, act: fn(bool) -> Act| {
-                Row::new(key, title, detail, facts.busy(key).unwrap_or(Control::Switch { on, act: act(!on), held: facts.group_busy("notice-") }))
-            };
-            let rows = vec![
-                row("notice-almost-out", "Almost Out", "When a limit drops below 10% left.", notices.under_ten_percent, |on| Act::SetNotice(Notice::AlmostOut, on)),
-                row("notice-close", "Cutting It Close", "When a limit is on pace to end with little left.", notices.healthy_to_close, |on| Act::SetNotice(Notice::CuttingItClose, on)),
-                row("notice-run-out", "Will Run Out", "When a limit is on pace to run out before it starts over.", notices.close_to_running_out, |on| Act::SetNotice(Notice::WillRunOut, on)),
-            ];
-            blocks.push(Block::Group("Usage".into(), rows));
-            for (ix, unavailable) in usage.unavailable.iter().enumerate() {
-                blocks.push(note(&format!("note-unavailable-{ix}"), unavailable.message.clone(), false));
-            }
-        }
-        reading => blocks.extend(unread(reading, "note-usage-settings", "the usage notices")),
-    }
-    // The Mac's own notifications (a session finished, one waits on you) are the Mac app's: this
-    // app sends none yet.
-    blocks.push(note("note-sessions-notices", "Notifications when a session finishes or waits on you aren’t in this app yet.", false));
-    blocks
-}
-
-// MARK: Browser
-
-fn browser(facts: &Facts) -> Vec<Block> {
-    if let Some(note) = unread(facts.browser, "note-browser", "the browser’s settings") {
-        return vec![note];
-    }
-    let Reading::Ready(settings) = facts.browser else { return Vec::new() };
-    let shown = settings.search_engines.iter().find(|engine| engine.id == settings.search_engine).map_or_else(|| settings.search_engine.clone(), |engine| engine.title.clone());
-    let choices = settings.search_engines.iter().map(|engine| (engine.title.clone(), Act::SetSearchEngine(engine.id.clone()), engine.id == settings.search_engine)).collect();
-    let rows = vec![
-        Row::new("row-search-engine", "Search engine", "For anything typed in the address field that isn’t an address.", facts.busy("row-search-engine").unwrap_or(Control::Menu { shown, choices })),
-        Row::new(
-            "row-tidies",
-            "Close agents’ tabs you haven’t looked at",
-            "An hour after an agent last used one, so tabs don’t pile up.",
-            facts.busy("row-tidies").unwrap_or(Control::Switch { on: settings.tidies_agent_tabs, act: Act::SetTidies(!settings.tidies_agent_tabs), held: false }),
-        ),
-        Row::new(
-            "row-offers",
-            "Offer to save sign-ins",
-            "When you sign in to a site in the browser.",
-            facts.busy("row-offers").unwrap_or(Control::Switch { on: settings.offers_to_save, act: Act::SetOffersToSave(!settings.offers_to_save), held: false }),
-        ),
-    ];
-    let mut blocks = vec![Block::Group("Browser".into(), rows)];
-    if !settings.never.is_empty() {
-        let rows = settings
-            .never
-            .iter()
-            .map(|host| {
-                let key = format!("never-{host}");
-                let control = facts.busy(&key).unwrap_or_else(|| {
-                    if facts.group_busy("never-") { Control::HeldButton("Offer Again".into()) } else { Control::Buttons(vec![("Offer Again".into(), Act::OfferAgain(host.clone()))]) }
-                });
-                Row::new(key.clone(), host.clone(), "Never offered to save a sign-in", control)
-            })
-            .collect();
-        blocks.push(Block::Group("Never Offered".into(), rows));
-    }
-    blocks
-}
-
-/// A page's blocks with only the rows `query` (lowercase) finds; every row where the section's
-/// own name matches, and none where nothing does.
-pub fn found(section: &str, blocks: Vec<Block>, query: &str) -> Vec<Block> {
-    if query.is_empty() || section.to_lowercase().contains(query) {
+/// A page's blocks with only the rows `query` (lowercase) finds; all of them where `whole` (its
+/// section's own name or words matched), and none where nothing does.
+pub fn found(whole: bool, blocks: Vec<Block>, query: &str) -> Vec<Block> {
+    if query.is_empty() || whole {
         return blocks;
     }
     blocks
         .into_iter()
         .filter_map(|block| match block {
-            Block::Group(label, rows) if label.to_lowercase().contains(query) => Some(Block::Group(label, rows)),
-            Block::Group(label, rows) => {
+            Block::Group(label, note, rows) if label.to_lowercase().contains(query) => Some(Block::Group(label, note, rows)),
+            Block::Group(label, note, rows) => {
                 let rows: Vec<Row> = rows.into_iter().filter(|row| row.matches(query)).collect();
-                (!rows.is_empty()).then_some(Block::Group(label, rows))
+                (!rows.is_empty()).then_some(Block::Group(label, note, rows))
             }
             Block::Note { .. } => None,
         })
@@ -561,12 +537,12 @@ mod tests {
 
     #[test]
     fn search_keeps_the_rows_it_finds_and_whole_sections_it_names() {
-        let blocks = vec![Block::Group("Browser".into(), vec![Row::new("a", "Search engine", "For the address field", Control::None), Row::new("b", "Offer to save sign-ins", "", Control::None)]), note("n", "words", false)];
-        let found_rows = found("Browser", blocks.clone(), "engine");
+        let blocks = vec![Block::Group("Browser".into(), String::new(), vec![Row::new("a", "Search engine", "For the address field", Control::None), Row::new("b", "Offer to save sign-ins", "", Control::None)]), note("n", "words", false)];
+        let found_rows = found(false, blocks.clone(), "engine");
         assert_eq!(found_rows.len(), 1);
-        let Block::Group(_, rows) = &found_rows[0] else { panic!() };
+        let Block::Group(_, _, rows) = &found_rows[0] else { panic!() };
         assert_eq!(rows.len(), 1);
-        assert_eq!(found("Browser", blocks.clone(), "browser").len(), 2, "the section's name keeps it whole");
-        assert!(found("Browser", blocks, "nothing like it").is_empty());
+        assert_eq!(found(true, blocks.clone(), "browser").len(), 2, "the section's name keeps it whole");
+        assert!(found(false, blocks, "nothing like it").is_empty());
     }
 }
