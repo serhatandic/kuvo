@@ -3784,8 +3784,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   as every session there does. (Until then a bot could have a key of its own for an integration you
   bring a key for, `kuvo/bots/<id>/keys…` and `kuvo/bots/keys/refresh`, feature `bots.keys`: those
   routes are gone, `404`, and so is `kuvo-link.js box bot-keys-refresh`.) What an earlier box kept of
-  them, each box takes away itself, with no client there, as it starts and once an update on trial
-  is confirmed (never while it's on trial: a key can't come back with the version before):
+  them, each box takes away itself, with no client there, as it starts (a machine also as its
+  engine is about to start, `engine-config`, bridge or not) and once an update on trial is confirmed
+  (never while it's on trial: a key can't come back with the version before):
   - Each bot's folder's settings (`bots/<id>/workspace/.opencode/opencode.json`) lose the servers
     that name such a key (`KUVO_KEY_…__BOT_<ID>`), first, so none names a key that's gone; the rest
     of the file stays as you wrote it, and a file left empty goes. Its conversation then gets the
@@ -3795,15 +3796,18 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     (through its host's `keys/delete`: "Host interface"; those an earlier Kuvo Code kept there for
     machines' bots too), and the files a Mac's box in a home of its own wrote them to
     (`box/bot-keys`). Where a Mac's keys can't be reached, it's tried again while the box runs (a
-    minute later, then twice as long each time, twice a day at most). No key of the computer's own
+    minute later, then twice as long each time, twice a day at most); so is it while a Mac's box
+    that just moved into a home of its own still owes the Keychain (`kuvo/box/rehome`'s `owed`):
+    its app deletes its originals only once it finds each one's copy, so no copy goes before. No key of the computer's own
     is touched, and `run/bot-keys-left.json` (deleted bots' keys still to go) goes with them.
   - An integration a bot had a key of its own for is noted in its folder
     (`bots/<id>/keys-gone.json`, `{"integrations": [id]}`, which moves with it). While the computer
     it lives on hasn't that integration connected, what the bot is told ("What a box makes and
     tells its bots with") ends with a paragraph saying so: it had its own key for it, it isn't
     connected on this computer, and when its work needs it, it says so plainly and asks you to
-    connect it in Settings › Integrations. Once it's connected the paragraph and the note go, as
-    the bot's next run starts.
+    connect it in Settings › Integrations. Only integrations the box's catalog has are named, and
+    nothing is said while the box can't tell (its settings unreadable, or not its own yet). Once
+    it's connected the paragraph and the note go, as the bot's next run starts.
   - A bot that moves here from a box that still kept such keys (Move to Computer): the keys in its
     bundle are never kept, and its folder's settings are put right as above as it's placed.
 - Skills, as Settings › Skills has them, each computer its own, kept by its box: the folder its
