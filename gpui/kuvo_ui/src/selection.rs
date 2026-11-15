@@ -36,8 +36,19 @@ pub const CONTEXT: &str = "KuvoSelection";
 /// The keys a transcript answers to. Called from [`crate::bind_keys`].
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
+    #[cfg(target_os = "macos")]
     cx.bind_keys([gpui::KeyBinding::new("cmd-c", Copy, c), gpui::KeyBinding::new("cmd-a", SelectAll, c)]);
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys([gpui::KeyBinding::new("ctrl-c", Copy, c), gpui::KeyBinding::new("ctrl-a", SelectAll, c)]);
 }
+
+/// How Copy and Select All's keys are written in a menu, on this system.
+pub const COPY_KEYS: &str = if cfg!(target_os = "macos") { "⌘C" } else { "Ctrl+C" };
+pub const SELECT_ALL_KEYS: &str = if cfg!(target_os = "macos") { "⌘A" } else { "Ctrl+A" };
+
+/// How far the pointer goes, pressed, before it's a drag rather than a click (a hand on a trackpad
+/// wobbles a little).
+const DRAG_THRESHOLD: f32 = 3.;
 
 /// Where a unit sits in its row, in reading order (the content part, then the block, the item…).
 pub type Path = SmallVec<[u32; 6]>;
@@ -273,6 +284,12 @@ struct Inner {
     press_selected: bool,
     /// The row last pressed in, for ⌘A.
     last_row: Option<SharedString>,
+    /// Where the button went down, and, for a press off the text (a step's row, a button, the
+    /// margin), the spot it starts a selection at once it's dragged.
+    origin: Option<Point<Pixels>>,
+    deferred: Option<Spot>,
+    /// Whether the pointer has moved far enough since the press to be a drag, not a click.
+    moved: bool,
     order: Order,
     laid: Vec<Laid>,
     /// Whether the selection is the one in use (its transcript has the keyboard).
@@ -462,6 +479,41 @@ impl SelectionState {
         let mut inner = self.0.borrow_mut();
         inner.pending = false;
         inner.pointer = None;
+        inner.origin = None;
+        inner.deferred = None;
+    }
+
+    /// A press off the text, at `spot`'s nearest text: nothing changes unless it's dragged (a click
+    /// on a fold or a button leaves the selection as it was).
+    fn press_off_text(&self, spot: Spot) {
+        let mut inner = self.0.borrow_mut();
+        inner.pending = true;
+        inner.press_selected = false;
+        inner.deferred = Some(spot);
+    }
+
+    /// The pointer, pressed, is at `position`: whether that's a drag yet (past a few pixels from
+    /// the press, as a Mac waits for), starting a press off the text if it is.
+    fn drag_begins(&self, position: Point<Pixels>) -> bool {
+        let deferred = {
+            let mut inner = self.0.borrow_mut();
+            inner.pointer = Some(position);
+            if !inner.moved {
+                let far = inner.origin.is_none_or(|origin| {
+                    let (dx, dy) = (f32::from(position.x - origin.x), f32::from(position.y - origin.y));
+                    dx * dx + dy * dy >= DRAG_THRESHOLD * DRAG_THRESHOLD
+                });
+                if !far {
+                    return false;
+                }
+                inner.moved = true;
+            }
+            inner.deferred.take()
+        };
+        if let Some(spot) = deferred {
+            self.press(spot, 1, false);
+        }
+        true
     }
 
     /// Selects the text from the first match of `from` to the end of the first match of `to`
@@ -784,7 +836,7 @@ impl Element for SelectionArea {
         // A drag held past an edge scrolls, faster the further out it is.
         let (pending, pointer) = {
             let inner = self.state.0.borrow();
-            (inner.pending, inner.pointer)
+            (inner.pending && inner.moved && inner.deferred.is_none(), inner.pointer)
         };
         let past = pointer.filter(|_| pending).and_then(|pointer| past_edge(&bounds, pointer).map(|past| (pointer, past)));
         if let (Some((_, past)), Some(scroll)) = (past, &self.scroll) {
@@ -816,18 +868,26 @@ impl Element for SelectionArea {
             if phase != DispatchPhase::Bubble || event.button != MouseButton::Left || !area.is_hovered(window) {
                 return;
             }
-            let Some(spot) = state.spot_at(event.position) else {
-                state.clear();
-                window.refresh();
-                return;
-            };
+            let Some(spot) = state.spot_at(event.position) else { return };
             let on_text = state.0.borrow().laid.iter().any(|laid| laid.visible.contains(&event.position));
-            state.press(spot, event.click_count.max(1), event.modifiers.shift);
-            state.0.borrow_mut().pointer = Some(event.position);
-            // On text, the keyboard comes to the transcript at once (⌘A, ⌘C); on empty space, only
-            // once the drag selects something, so a click on a fold leaves the composer typing.
-            if on_text || !state.is_empty() {
+            {
+                let mut inner = state.0.borrow_mut();
+                inner.origin = Some(event.position);
+                inner.pointer = Some(event.position);
+                inner.moved = false;
+                inner.deferred = None;
+            }
+            if on_text || event.modifiers.shift {
+                // On text, a click places it, two take a word, three a line; the keyboard comes to
+                // the transcript at once (⌘A, ⌘C).
+                state.press(spot, if on_text { event.click_count.max(1) } else { 1 }, event.modifiers.shift);
                 window.focus(&focus, cx);
+            } else {
+                // Off the text (a step's row, a button, the margin): only a drag selects, so a click
+                // or double-click there leaves the selection and the composer's keyboard alone.
+                state.press_off_text(spot);
+                // Nor does the transcript (or the conversation around it) take the keyboard for it.
+                window.prevent_default();
             }
             window.refresh();
         });
@@ -843,7 +903,9 @@ impl Element for SelectionArea {
                 window.refresh();
                 return;
             }
-            state.0.borrow_mut().pointer = Some(event.position);
+            if !state.drag_begins(event.position) {
+                return;
+            }
             if let Some(spot) = state.spot_at(inside(&bounds, event.position)) {
                 state.drag_to(spot);
             }

@@ -44,10 +44,14 @@ fn open_at<'a>(cx: &'a mut TestAppContext, session: &str, height: f32) -> (Entit
 
 /// A conversation of its own, handed to the view as its follow would hand it.
 fn show(view: &Entity<ConversationView>, messages: Value, cx: &mut VisualTestContext) {
+    show_running(view, messages, false, cx);
+}
+
+fn show_running(view: &Entity<ConversationView>, messages: Value, running: bool, cx: &mut VisualTestContext) {
     let mut newest_first: Vec<Message> = serde_json::from_value(messages).unwrap();
     newest_first.reverse();
     let mut conversation = Conversation::new("ses_signup", Where::Engine);
-    conversation.catch_up(newest_first, None, &[], Some(false));
+    conversation.catch_up(newest_first, None, &[], Some(running));
     view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(conversation), cx));
     cx.run_until_parked();
 }
@@ -214,4 +218,47 @@ fn dragging_past_the_top_scrolls_back_and_keeps_selecting(cx: &mut TestAppContex
     let text = view.read_with(cx, |view, _| view.selected_text());
     assert!(text.ends_with("Keep what they typed, and say which field is wrong"), "{text}");
     assert!(text.contains("Moving reset() into the success path"), "{text}");
+}
+
+#[gpui::test]
+fn a_link_opens_though_the_pointer_wobbles_a_little_while_its_clicked(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx, "ses_signup");
+    show(&view, json!([{ "type": "assistant", "id": "m1", "time": { "created": 1000 }, "content": [{ "type": "text", "text": "See [the docs](https://kuvo.run/code/docs/) for more." }] }]), cx);
+    let link = at(&view, "m1", &[0, 0], "docs", false, cx);
+    let wobbled = gpui::point(link.x + px(2.), link.y + px(1.));
+    cx.simulate_mouse_down(link, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(wobbled, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(wobbled, MouseButton::Left, Modifiers::default());
+    assert_eq!(cx.opened_url().as_deref(), Some("https://kuvo.run/code/docs/"));
+}
+
+#[gpui::test]
+fn double_clicking_a_steps_row_leaves_the_selection_and_the_composers_keyboard_alone(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx, "ses_signup");
+    let composer = view.read_with(cx, |view, cx| view.composer().read(cx).field().clone());
+    cx.update(|window, cx| window.focus(&gpui::Focusable::focus_handle(composer.read(cx), cx), cx));
+    let row = cx.debug_bounds("tool-msg_s5:1").expect("the test run's row");
+    clicks(row.center(), 2, cx);
+    assert!(view.read_with(cx, |view, _| view.selection().is_empty()), "nothing selected");
+    let typing = cx.update(|window, cx| gpui::Focusable::focus_handle(composer.read(cx), cx).is_focused(window));
+    assert!(typing, "the composer still has the keyboard");
+    // A drag that starts there still selects.
+    let to = at(&view, "msg_s5", &[2, 0], "Moved the reset", true, cx);
+    drag(row.center(), to, cx);
+    assert_eq!(copied(cx), "Moved the reset");
+}
+
+#[gpui::test]
+fn cmd_a_twice_while_the_agent_works_still_copies_once_the_turn_ends(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx, "ses_signup");
+    let messages = json!([
+        { "type": "user", "id": "m1", "time": { "created": 1000 }, "text": "Fix the form" },
+        { "type": "assistant", "id": "m2", "time": { "created": 2000 }, "content": [{ "type": "text", "text": "On it." }] }
+    ]);
+    show_running(&view, messages.clone(), true, cx);
+    clicks(at(&view, "m2", &[0, 0], "On", false, cx), 1, cx);
+    cx.simulate_keystrokes("cmd-a cmd-a");
+    // The turn ends: "Working…" goes.
+    show_running(&view, messages, false, cx);
+    assert_eq!(copied(cx), "Fix the form\n\nOn it.");
 }

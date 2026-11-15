@@ -224,7 +224,8 @@ impl ConversationView {
     }
 
     fn select_all(&mut self, _: &selection::SelectAll, _: &mut Window, cx: &mut Context<Self>) {
-        let rows: Vec<&str> = self.entries.iter().map(Entry::key).collect();
+        // From the first row with text to the last (not "Working…", which goes when the turn ends).
+        let rows: Vec<&str> = self.entries.iter().filter(|entry| !entries::units(entry, &self.open).is_empty()).map(Entry::key).collect();
         if let (Some(first), Some(last)) = (rows.first(), rows.last()) {
             self.selection.select_all(first, last);
             cx.notify();
@@ -242,11 +243,11 @@ impl ConversationView {
             if let Some(link) = link {
                 menu = menu.entry(MenuEntry::new("Copy Link").on_select(move |_, cx| selection::copy_to_clipboard(link.clone(), cx))).separator();
             }
-            menu.entry(MenuEntry::new("Copy").shortcut("⌘C").disabled(!has_selection).on_select(move |_, cx| {
+            menu.entry(MenuEntry::new("Copy").shortcut(selection::COPY_KEYS).disabled(!has_selection).on_select(move |_, cx| {
                 let text = copy_view.read(cx).selected_text();
                 selection::copy_to_clipboard(text, cx);
             }))
-            .entry(MenuEntry::new("Select All").shortcut("⌘A").on_select(move |window, cx| {
+            .entry(MenuEntry::new("Select All").shortcut(selection::SELECT_ALL_KEYS).on_select(move |window, cx| {
                 all_view.update(cx, |this, cx| this.select_all(&selection::SelectAll, window, cx));
             }))
         })

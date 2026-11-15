@@ -67,8 +67,10 @@ out and *paints* its part of the selection.
 - **Mouse**: press, drag, double-click word (Unicode word bounds, as the composer), triple-click
   line (a paragraph is one line until it has a hard break; in code and output it's the code
   line), shift-click extends, dragging after a double or triple click extends by words or
-  lines. A press in the transcript's empty space starts a selection too (as a page does). Links
-  open on a click, never at the end of a drag or a double-click.
+  lines. A press only counts as a drag once the pointer moves 3 px (a Mac's threshold), so a
+  wobbly click on a link still opens it; links never open at the end of a drag or a
+  double-click. A press off the text (a step's row, a fold, a Copy button, the margin) changes
+  nothing unless it's dragged: then it selects from the nearest text, as a page does.
 - **Across messages: yes.** Zed stops at a message, but a conversation reads as one document
   and every chat a Mac user knows that's built on a page (ChatGPT, Claude, Codex, Cursor's chat)
   selects across messages; the Mac app did too. With one holder it costs nothing extra. Copy
@@ -76,7 +78,8 @@ out and *paints* its part of the selection.
 - **Auto-scroll**: while the button is held past the list's top or bottom edge, the list
   scrolls each frame, faster the further out the pointer is, and the selection follows.
 - **⌘A** selects the message you're in (where the selection or the last click is); pressing it
-  again selects the whole conversation as loaded. (Zed: the message; a page: everything. This
+  again selects the whole conversation as loaded (from the first row with text to the last, so
+  "Working…" going away at the turn's end doesn't take it). Ctrl+A and Ctrl+C off the Mac. (Zed: the message; a page: everything. This
   gives both. A decision for the user.)
 - **⌘C, right-click Copy**: plain text. Blocks are joined with a blank line, list items get
   `- `/`1. `/`- [x] ` and two spaces per level, table cells tabs, code as it is (no fences).
@@ -85,11 +88,17 @@ out and *paints* its part of the selection.
   `pressed` (grey) when it doesn't, as macOS and our text field do. Inline code's fill is now
   painted by the same element as a rounded chip under the highlight.
 - **Keyboard**: a press on text gives the transcript the keyboard (so ⌘A/⌘C are the
-  transcript's); a press on empty space only does once the drag selects something, so clicking a
-  fold button leaves the composer typing.
+  transcript's); a press off the text only does once the drag selects something, so clicking a
+  fold leaves the composer typing.
 
 ## Not yet
 
 - Copy as Markdown (needs a map from drawn text back to the source, as Zed has).
 - Keyboard selection (shift-arrows) in the transcript; Find.
-- Text in widgets and other non-text rows.
+- Text in widgets and other non-text rows; a step's error line and the error callout.
+- Add to Chat over a selection (the Mac app's quote-and-answer), which needs quotes in the
+  composer first.
+- Dragging past a code block's side doesn't scroll it sideways.
+- A drag whose release goes to another app keeps scrolling until the pointer next moves over
+  the window (GPUI says nothing on deactivation to the element).
+- Any open menu (not only the transcript's) keeps the selection drawn as in use.
