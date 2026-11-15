@@ -61,9 +61,13 @@ public struct SandboxState: Codable, Equatable, Sendable {
     public var restart: Bool?
     /// While it's on, what it can't keep commands from here (a newer box's words left out).
     public var gaps: [Gap]?
+    /// Its row warns, why and its button with it (`sandbox.needsYou`): off, or on while commands can
+    /// still reach your login's services, as the box says. No client keeps that rule.
+    public var needsYou: Bool
 
     public init(on: Bool, why: String? = nil, able: Bool = true, agents: Bool = false, outside: Bool? = nil, reason: Reason? = nil, action: Action? = nil, route: String? = nil, needs: String? = nil, check: Check? = nil, failures: Int? = nil, restart: Bool? = nil, gaps: [Gap]? = nil,
-                actionLabel: String? = nil, opens: String? = nil, opensHere: Bool? = nil, report: String? = nil) {
+                actionLabel: String? = nil, opens: String? = nil, opensHere: Bool? = nil, report: String? = nil, needsYou: Bool = false) {
+        self.needsYou = needsYou
         self.report = report
         self.actionLabel = actionLabel
         self.opens = opens
@@ -102,6 +106,7 @@ public struct SandboxState: Codable, Equatable, Sendable {
         report = try? keys.decodeIfPresent(String.self, forKey: .report)
         restart = try? keys.decodeIfPresent(Bool.self, forKey: .restart)
         gaps = (try? keys.decodeIfPresent([String].self, forKey: .gaps))?.compactMap(Gap.init(rawValue:))
+        needsYou = (try? keys.decodeIfPresent(Bool.self, forKey: .needsYou)) ?? false
     }
 }
 
