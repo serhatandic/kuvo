@@ -18,6 +18,7 @@ import { sessionActionRoute, SESSION_ACTION_ROUTE, deletesRoute } from "./sessio
 import { artifactsRoute } from "./artifacts";
 import { homeFolder } from "../home";
 import { workAsksRoute, WORK_ASKS_ROUTE } from "./work";
+import { PROJECTS_FILE } from "./projects";
 import { WORK_SETTINGS_FILE } from "../work/settings";
 import { WORKTREES_FILE, readWorktrees } from "./worktree-records";
 import { worktreesRoute } from "./worktrees";
@@ -438,7 +439,7 @@ async function worktreesPage(context: RouteContext): Promise<SettingsPage> {
   if (config.status !== 200) return unreadPage("worktrees", "Worktrees", config);
   const work = await asked(context, workAnswer, "GET", "kuvo/work/settings");
   if (work.status !== 200) return unreadPage("worktrees", "Worktrees", work);
-  for (const file of [WORK_SETTINGS_FILE, WORKTREES_FILE]) {
+  for (const file of [WORK_SETTINGS_FILE, WORKTREES_FILE, PROJECTS_FILE]) {
     const checked = readSettings(file);
     if (checked.problem) return unreadPage("worktrees", "Worktrees", { status: 409, value: { message: checked.problem } });
   }

@@ -15,6 +15,7 @@ import { ask, follow } from "./route-answer"
 
 const { engineHandler } = await import("../src/link/server/router")
 const { APPROVAL_FILE } = await import("../src/link/work/approval")
+const { PROJECTS_FILE } = await import("../src/link/areas/projects")
 const { WORK_SETTINGS_FILE } = await import("../src/link/work/settings")
 const { BRANCH_PREFIX_FILE, WORKTREES_FILE } = await import("../src/link/areas/worktree-records")
 const { CONFIG_FILE } = await import("../src/link/areas/config")
@@ -40,7 +41,7 @@ const write = (file: string, value: unknown) => {
   writeFileSync(file, JSON.stringify(value))
 }
 beforeEach(() => {
-  for (const file of [...files, BRANCH_PREFIX_FILE, WORK_SETTINGS_FILE, WORKTREES_FILE]) rmSync(file, { force: true })
+  for (const file of [...files, BRANCH_PREFIX_FILE, WORK_SETTINGS_FILE, WORKTREES_FILE, PROJECTS_FILE]) rmSync(file, { force: true })
   // A machine's own settings, as Kuvo Code makes them once (`ownsSettings`).
   write(CONFIG_FILE, { permissions: [{ action: "shell", resource: "git push *", effect: "ask" }] })
 })
@@ -573,10 +574,13 @@ test("Worktrees explains a field it cannot replace and warns on unreadable files
   expect(folder.can.why).toContain("other than text")
   expect((await change("worktrees", folder, outside)).status).toBe(403)
   expect(kept(CONFIG_FILE)).toBe(before)
-  writeFileSync(WORK_SETTINGS_FILE, "{broken")
-  const shown = await page("worktrees")
-  expect(shown.groups).toEqual([])
-  expect(shown.notes[0].tone).toBe("warning")
+  for (const file of [WORK_SETTINGS_FILE, WORKTREES_FILE, PROJECTS_FILE]) {
+    writeFileSync(file, "{broken")
+    const shown = await page("worktrees")
+    expect(shown.groups).toEqual([])
+    expect(shown.notes[0].tone).toBe("warning")
+    rmSync(file)
+  }
 })
 
 test("Worktrees events follow config and work settings routes", async () => {
