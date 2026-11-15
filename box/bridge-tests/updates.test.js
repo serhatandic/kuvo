@@ -830,6 +830,13 @@ test("scripts/box-release.sh packs the box's release from its sources with its h
     assert.match(broken.stderr, /Kuvo Helper\.app isn't signed as it was/);
   }
   assert.deepEqual(fs.readdirSync(path.join(scratch, "never")), [], "nothing left there");
+
+  // A signing that fails leaves the release that was there whole: never a new pack beside the
+  // old boxes.json, nor one with none.
+  const kept = Object.fromEntries(fs.readdirSync(out).map(name => [name, sha256(fs.readFileSync(path.join(out, name)))]));
+  const unsigned = boxRelease({ KUVO_BOX_SIGNING_KEY: "not a key", BOX_SOURCES: root }, "0.10.0", "https://example.invalid/box-0.10.0.tar.gz", out);
+  assert.notEqual(unsigned.status, 0);
+  assert.deepEqual(Object.fromEntries(fs.readdirSync(out).map(name => [name, sha256(fs.readFileSync(path.join(out, name)))])), kept);
 });
 
 test("the release built from this checkout's own sources is whole: every file a box runs, as box.json names it, for the pinned engine", () => {

@@ -16,7 +16,8 @@
 #                  by that name beside boxes.json when it's given the folder
 #   BUN            the Bun to write the files with (as scripts/route-shapes.sh finds it)
 #   BOX_SOURCES    another checkout's box sources to write them from (its tests': a keeper and
-#                  an engine of their own), by this checkout's builder
+#                  an engine of their own), by this checkout's builder and table. Never for a
+#                  release: the workflow sets none.
 #   NODE           the Node to sign with (default: node)
 # What's built and kept in git (kuvo-link.js, kuvo-agents.js, kuvo-browser.js) goes in as it is:
 # scripts/check-built.sh says whether it's what the sources build.
@@ -41,10 +42,9 @@ else
         *) echo "The pack's URL must end in box-$VERSION.tar.gz." >&2; exit 2 ;;
     esac
 fi
-mkdir -p "$1"
-OUT=$(cd "$1" && pwd -P)
+OUT_GIVEN=$1
 shift
-# The bundles, by their own paths, before going to the checkout.
+# The bundles, by their own paths, before going to the checkout (and before anything is made).
 n=$#
 while [ "$n" -gt 0 ]; do
     bundle=$1
@@ -57,6 +57,8 @@ while [ "$n" -gt 0 ]; do
     [ -d "$bundle" ] || { echo "No bundle at $bundle" >&2; exit 2; }
     set -- "$@" "$(cd "$bundle" && pwd -P)"
 done
+mkdir -p "$OUT_GIVEN"
+OUT=$(cd "$OUT_GIVEN" && pwd -P)
 NODE=${NODE:-node}
 cd "$(dirname "$0")/.."
 
@@ -142,7 +144,9 @@ if command -v codesign >/dev/null 2>&1 && [ $# -gt 0 ]; then
         codesign --verify --strict --deep "$helper" || { rm -f "$pack.new"; echo "$(basename "$helper") isn't signed as it was once packed." >&2; exit 1; }
     done
 fi
+# Signed before either is put in place: a signing that fails leaves no pack without its
+# boxes.json, nor a new pack beside an older one's.
+"$NODE" scripts/sign-box.mjs "$VERSION" "$pack.new" "$URL" "$box/box.json" > "$OUT/boxes.json.new"
 mv -f "$pack.new" "$pack"
-"$NODE" scripts/sign-box.mjs "$VERSION" "$pack" "$URL" "$box/box.json" > "$OUT/boxes.json.new"
 mv -f "$OUT/boxes.json.new" "$OUT/boxes.json"
 echo "Packed the box's $VERSION release into $OUT"

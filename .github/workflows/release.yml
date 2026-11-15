@@ -50,7 +50,8 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+"
   workflow_dispatch:
 
-# One at a time, releases and betas alike: each writes the update feed from the one before. A
+# One at a time, releases and betas alike: each writes the update feed from the one before (once
+# the desktop app's feed is built here again). A
 # dry run waits in a line of its own, so starting one never cancels a release waiting its turn.
 concurrency:
   group: ${{ github.event_name == 'push' && 'release' || format('release-dry-run-{0}', github.run_id) }}
@@ -322,6 +323,10 @@ jobs:
           path: dist/
           retention-days: 3
 
+      # Not reached today: a tag stops at "verify release tag" (see the top). Before that guard
+      # goes, the desktop app's disk image and its update feed have to be built into dist/ again
+      # (KuvoCode.dmg and appcast.xml: scripts/build-dmg.sh, scripts/appcast.sh and
+      # scripts/merge-appcast.py, with SPARKLE_PRIVATE_KEY), so this refuses a release without them.
       - name: Publish the release
         if: github.event_name == 'push'
         shell: bash
@@ -329,6 +334,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          for file in KuvoCode.dmg appcast.xml boxes.json "box-$VERSION.tar.gz"; do
+            test -s "dist/$file" || { echo "dist/$file is missing: a release is the app's disk image, its update feed and the box's release together." >&2; exit 1; }
+          done
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             if [[ "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != true ]]; then
               echo "A published release already exists for $GITHUB_REF_NAME." >&2

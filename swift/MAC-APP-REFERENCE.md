@@ -76,7 +76,7 @@ Three things only this app's code made. The box makes the first two itself now (
   (`box/src/shared/integrations`; here `KuvoCode/Stores/Integrations.swift`, `MCPCatalog.swift`
   and `MachineBox.swift`), the engine's pin (`box/src/shared/engine-pin.json`; here
   `EngineInstaller.swift`) and the bots' words (`box/src/shared/bot-words.json`, which KuvoLink's
-  `Resources/bot-words.json` is now a link to, so this app still compiles). **The copies here go
+  `Resources/bot-words.json` is now a link to, so KuvoLink still builds, for this app and the phone). **The copies here go
   into no release**: a change to what a box runs is made in `box/`, never here, and these aren't
   kept in step. `.github/workflows/release.yml` doesn't build this app.
 - **`protocol/vectors/routes/box`**: the integrations and the MCP catalog are written from the
