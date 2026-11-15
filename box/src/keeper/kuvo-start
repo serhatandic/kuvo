@@ -1,0 +1,354 @@
+#!/bin/sh
+# Kuvo Code's box on this machine: keeps its engine, coding agents and phone link running on
+# their own, with or without a Mac. From the @reboot line in your crontab, and from Kuvo Code:
+#   kuvo-start           keeps the box running (starts its keeper, once)
+#   kuvo-start start     starts the engine, after a stop
+#   kuvo-start stop      stops the engine until it's started again
+#   kuvo-start restart   starts the engine over
+K="$HOME/.kuvo-code"; R="$K/run"
+mkdir -p "$R" 2>/dev/null && chmod 700 "$R" 2>/dev/null
+# Whether process $1 runs and is $2 (in its command line).
+kuvo_runs() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null || return 1; if [ -d /proc/self ]; then grep -q -- "$2" "/proc/$1/cmdline" 2>/dev/null; else ps -ww -o command= -p "$1" 2>/dev/null | grep -q -- "$2"; fi; }
+is() { kuvo_runs "$1" "$2"; }
+S=setsid; command -v setsid >/dev/null 2>&1 || S="$K/bin/kuvo-setsid"
+engine() { sed -n 's/^{"pid":\([0-9]*\),.*/\1/p' "$R/engine.json" 2>/dev/null; }
+up() { is "$(engine)" "$K/engine/"; }
+# The engine's version to start: this one's, or while that isn't there (Kuvo Code updated
+# while an engine of another version was at work), the newest one there is.
+V=@ENGINE@
+[ -x "$K/engine/$V/opencode" ] || V=$(for d in "$K"/engine/*/; do [ -x "${d}opencode" ] && basename "$d"; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+# What it runs gets the box's own folders, as the engine does, and how Kuvo Code last
+# started it (in a subshell).
+environment() {
+  if [ -f "$R/launch.env" ]; then while IFS= read -r line; do [ -n "$line" ] && export "$line"; done <"$R/launch.env"; fi
+  unset KUVO_SETTINGS
+  K="$HOME/.kuvo-code"
+mkdir -p "$K" && chmod 700 "$K"
+[ -n "${KUVO_OWN_XDG_CONFIG_HOME+set}" ] || export KUVO_OWN_XDG_DATA_HOME="${XDG_DATA_HOME-}" KUVO_OWN_XDG_CONFIG_HOME="${XDG_CONFIG_HOME-}" KUVO_OWN_XDG_STATE_HOME="${XDG_STATE_HOME-}" KUVO_OWN_XDG_CACHE_HOME="${XDG_CACHE_HOME-}" KUVO_OWN_npm_config_cache="${npm_config_cache-}" KUVO_OWN_BUN_INSTALL="${BUN_INSTALL-}"
+export XDG_DATA_HOME="$K/data" XDG_CONFIG_HOME="$K/config" XDG_STATE_HOME="$K/state" XDG_CACHE_HOME="$K/cache" npm_config_cache="$K/cache/npm" BUN_INSTALL="$K/cache/bun" KUVO_INTEGRATIONS="$K/integrations" TMPDIR="$K/tmp"
+mkdir -p "$K/data" "$K/config" "$K/state" "$K/cache" "$K/workspace" "$K/integrations" "$K/tmp"
+find "$K/tmp" -mindepth 1 -maxdepth 1 -mtime +3 -exec rm -rf {} + 2>/dev/null
+  export PATH="$K/bin:$PATH" KUVO_BOTS="$K/bots" KUVO_WAKES="$K/wakes"
+}
+# One start or stop at a time, as the launch takes it; one whose holder is gone goes
+# (`launchLock`). False when it isn't had within $1 tenths of a second.
+holding() { runs_as "$1" 'kuvo-start|kuvo-launch|kuvo_script|kuvo-link'; }
+starting() { runs_as "$1" 'kuvo-start|kuvo-launch|kuvo_script'; }
+runs_as() {
+  [ -n "$1" ] && [ "$1" != "$$" ] || return 1
+  if [ -d /proc/self ]; then grep -qE -- "$2" "/proc/$1/cmdline" 2>/dev/null; else ps -ww -o command= -p "$1" 2>/dev/null | grep -qE -- "$2"; fi
+}
+mine() {
+  if [ -d /proc/self ]; then [ -n "$(find "/proc/$1" -maxdepth 0 -user "$(id -u)" 2>/dev/null)" ]; else [ "$(ps -o uid= -p "$1" 2>/dev/null | tr -d ' ')" = "$(id -u)" ]; fi
+}
+locked() { unsaid=; { echo $$ >"$R/.launching.pid"; } 2>/dev/null || unsaid=1; }
+unlock() {
+  ( trap '' HUP INT TERM
+    [ -n "${unsaid-}" ] || [ "$(cat "$R/.launching.pid" 2>/dev/null)" = "$$" ] || exit 0
+    rm -f "$R/.launching.pid"; rmdir "$R/.launching" ) 2>/dev/null
+  unsaid=
+}
+believed() { newer=$(find "$R/.launching" -maxdepth 0 -newer "$R/.launching.pid" 2>/dev/null) && [ -z "$newer" ]; }
+held_by_gone() {
+  holder=$(cat "$R/.launching.pid" 2>/dev/null)
+  [ -n "$holder" ] && believed && ! holding "$holder"
+}
+held_long() { [ -n "$(find "$R/.launching" -maxdepth 0 -mmin +5 2>/dev/null)" ]; }
+unheld() {
+  held_by_gone || held_long || return 1
+  ( trap '' HUP INT TERM
+    taker=$(cat "$R/.launching.breaking/pid" 2>/dev/null)
+    if { [ -n "$taker" ] && ! holding "$taker"; } || { [ -z "$taker" ] && [ -n "$(find "$R/.launching.breaking" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
+      gone=$taker; [ -n "$gone" ] || gone=n$(ls -di "$R/.launching.breaking" | awk '{ print $1 }')
+      find "$R" -maxdepth 1 -name '.launching.breaking.gone-*' -mmin +1 -exec rmdir {} \;
+      mkdir "$R/.launching.breaking.gone-$gone" || exit 1
+      if mv "$R/.launching.breaking" "$R/.launching.breaking.$$"; then
+        if [ "$(cat "$R/.launching.breaking.$$/pid")" != "$taker" ]; then
+          [ -e "$R/.launching.breaking" ] || mv "$R/.launching.breaking.$$" "$R/.launching.breaking"
+          exit 1
+        fi
+        rm -rf "$R/.launching.breaking.$$"
+      fi
+    fi
+    mkdir "$R/.launching.breaking" || exit 1
+    echo $$ >"$R/.launching.breaking/pid" || exit 1
+    if held_by_gone; then
+      if mv "$R/.launching.pid" "$R/.launching.pid.$$"; then
+        if [ "$(cat "$R/.launching.pid.$$")" = "$holder" ]; then
+          [ -n "$(find "$R/.launching" -maxdepth 0 -newer "$R/.launching.pid.$$")" ] || rmdir "$R/.launching"
+        else
+          ln "$R/.launching.pid.$$" "$R/.launching.pid"
+        fi
+        rm -f "$R/.launching.pid.$$"
+      fi
+    elif held_long; then
+      rm -f "$R/.launching.pid"; rmdir "$R/.launching"
+    fi
+    [ "$(cat "$R/.launching.breaking/pid")" != "$$" ] || rm -rf "$R/.launching.breaking" ) 2>/dev/null
+}
+take_lock() {
+  waited=0
+  while :; do
+    # The box's folder gone meanwhile (removed): nothing to wait for.
+    [ -d "$R" ] || return 1
+    ( trap '' HUP INT TERM; mkdir "$R/.launching" 2>/dev/null || exit 1; locked; [ -z "$unsaid" ] || exit 2 )
+    case $? in 0) unsaid=; return 0 ;; 2) unsaid=1; return 0 ;; esac
+    unheld
+    waited=$((waited + 1)); [ $waited -lt "$1" ] || return 1
+    sleep 0.1
+  done
+}
+lock() { take_lock "${1:-2400}"; }
+# The engine and its coding agents' bridge, stopped (under the lock).
+halt() {
+  a=$(cat "$R/agents.pid" 2>/dev/null)
+  if is "$a" kuvo-agents; then kill -- "-$a" 2>/dev/null || kill "$a" 2>/dev/null; fi
+  rm -f "$R/agents.pid"
+  p=$(engine)
+  if is "$p" "$K/engine/"; then
+    kill "$p"; n=0
+    while kill -0 "$p" 2>/dev/null && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+    # Never two on the same data: one that won't end is ended.
+    kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null
+  fi
+  rm -f "$R/engine.json"
+}
+case "${1:-box}" in
+box)
+  [ -f "$K/bin/kuvo-start" ] || exit 0
+  [ -f "$R/off" ] && exit 0
+  is "$(cat "$R/box.pid" 2>/dev/null)" kuvo-start && exit 0
+  cd "$K" || exit 0
+  # This script (kuvo-start, or the copy below), as the keeper.
+  env -i HOME="$HOME" PATH="$PATH" "$S" sh "$0" keep </dev/null >/dev/null 2>&1 &
+  ;;
+keep)
+  echo $$ >"$R/box.pid"
+  # A Mac sleeps by itself, and a box works with nobody there: awake while it's on power,
+  # for as long as this keeper runs (its display still sleeps). No setting of yours changes.
+  # Looked at each round: one held for a keeper that has since gone is gone with it. A Mac's
+  # own box (`box/kind` says `mac`) keeps its Mac awake itself, while agents work there and
+  # as its own setting says, once its link runs to do so (`run/work-awake.json` names it):
+  # then this holds nothing for it, and lets go of one it held.
+  hold() {
+    if [ "$(tr -d ' \t\r\n' 2>/dev/null <"$K/box/kind")" = mac ] && is "$(sed -n 's/.*"by":\([0-9]*\).*/\1/p' "$R/work-awake.json" 2>/dev/null)" kuvo-link; then
+      a=$(cat "$R/awake.pid" 2>/dev/null); is "$a" caffeinate && kill "$a" 2>/dev/null
+      rm -f "$R/awake.pid"
+      return 0
+    fi
+    if command -v caffeinate >/dev/null 2>&1 && ! is "$(cat "$R/awake.pid" 2>/dev/null)" caffeinate; then
+      caffeinate -s -w $$ </dev/null >/dev/null 2>&1 &
+      echo $! >"$R/awake.pid"
+    fi
+  }
+  hold
+  boot=$(cat "$K/bin/.kuvo-boot" 2>/dev/null)
+  # COMPAT(0.7 keeper): its own copies, bin/.kuvo-start-keeper and bin/.kuvo-launch-keeper. Goes 3 months after 0.8.0.
+  # A copy of itself and of its launcher, which it runs its starts from and puts back when an
+  # older Kuvo Code on a Mac (0.7 and before) put its own there as it started the engine:
+  # a kuvo-start that only starts the engine after a restart, and a launcher that knows
+  # neither Stop nor the box's settings. (The phone link starts the keeper from it then.)
+  me="$K/bin/.kuvo-start-keeper"
+  if [ "$0" != "$me" ]; then
+    cp -f "$0" "$me.new" 2>/dev/null && mv -f "$me.new" "$me" || me=$0
+    [ "$me" = "$0" ] || { cp -f "$K/bin/kuvo-launch" "$K/bin/.kuvo-launch-keeper.new" && mv -f "$K/bin/.kuvo-launch-keeper.new" "$K/bin/.kuvo-launch-keeper"; } 2>/dev/null
+  fi
+  # COMPAT(0.7 keeper): the kuvo-start of an older Mac, replaced by the copy. Goes 3 months after 0.8.0.
+  # Whether kuvo-start is a keeper; an older Mac's is replaced, with the launcher it put there
+  # (one removed stays removed).
+  mine() {
+    grep -q '^keep)' "$K/bin/kuvo-start" 2>/dev/null && return 0
+    if [ -f "$K/bin/kuvo-start" ] && [ "$me" != "$K/bin/kuvo-start" ]; then
+      { [ ! -f "$K/bin/.kuvo-launch-keeper" ] || { cp -f "$K/bin/.kuvo-launch-keeper" "$K/bin/.kuvo-launch.new" && chmod 700 "$K/bin/.kuvo-launch.new" && mv -f "$K/bin/.kuvo-launch.new" "$K/bin/kuvo-launch"; }
+        cp -f "$me" "$K/bin/.kuvo-start.new" && chmod 700 "$K/bin/.kuvo-start.new" && mv -f "$K/bin/.kuvo-start.new" "$K/bin/kuvo-start"; } 2>/dev/null
+    fi
+    return 1
+  }
+  mine
+  # COMPAT(0.7 keeper): the watchdogs an older Mac start brings. Goes 3 months after 0.8.0.
+  # The watchdogs engines had before, one each: this keeper does their work now.
+  pkill -f "watchdog [0-9]+ $R" 2>/dev/null
+  fails=0; next=0; started=; round=0
+  while :; do
+    [ -f "$K/bin/kuvo-start" ] && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
+    hold
+    # COMPAT(0.7 keeper): checked each round. Goes 3 months after 0.8.0.
+    # Its script replaced: a newer keeper carries on; an older Mac's gets this one back (its
+    # mark left as it is, so that Mac doesn't put its own there again).
+    if mine; then
+      [ "$(cat "$K/bin/.kuvo-boot" 2>/dev/null)" = "$boot" ] || exec sh "$K/bin/kuvo-start" keep
+    else
+      boot=$(cat "$K/bin/.kuvo-boot" 2>/dev/null)
+    fi
+    # COMPAT(0.7 files): the box tools put back from bin/.own. Goes 3 months after 0.8.0.
+    # An older Kuvo Code on a Mac (which touches run/attached as it connects) put its own
+    # tools over the box's since the box was last marked: the box's back, as the Kuvo Code
+    # that marked it put them there (bin/.own). Not while a Mac puts its files in place, or
+    # the box updates itself.
+    if [ -d "$K/bin/.own" ] && [ "$R/attached" -nt "$K/bin/box-version" ] && [ ! -d "$R/.updating" ] && [ -z "$(find "$R/mac-installing" -mmin -60 2>/dev/null)" ]; then
+      for f in "$K"/bin/.own/*; do
+        n=${f##*/}; t="$K/bin/$n"
+        [ -f "$f" ] && { [ ! -f "$t" ] || [ "$f" -nt "$t" ] || [ "$t" -nt "$f" ]; } || continue
+        if cmp -s "$f" "$t"; then touch -r "$f" "$t"; else cp -p "$f" "$K/bin/.$n.new" && mv -f "$K/bin/.$n.new" "$t"; fi
+      done 2>/dev/null
+    fi
+    # COMPAT(0.7 engine-stop): run/stopped taken away once an older Mac started the engine. Goes 3 months after 0.8.0.
+    # Running though stopped: an older Kuvo Code on a Mac, which doesn't know Stop, started
+    # it as it connected. It runs, so it isn't stopped (under the lock, so a stop under way
+    # finishes first).
+    if [ -f "$R/stopped" ] && up && lock 1; then
+      up && rm -f "$R/stopped"
+      unlock
+    fi
+    now=$(date +%s)
+    if ! up && [ ! -f "$R/stopped" ] && [ -f "$R/launch.env" ] && [ "$now" -ge "$next" ]; then
+      # Down: one this started that ran under ten minutes counts as failing, and makes it
+      # wait longer before the next start; one that ran longer starts the count again.
+      if [ -n "$started" ]; then
+        if [ $((now - started)) -lt 600 ]; then fails=$((fails + 1)); else fails=0; fi
+      fi
+      sh "$me" engine >/dev/null 2>&1
+      if up; then started=$now; else started=; fails=$((fails + 1)); fi
+      case $fails in 0) wait=0 ;; 1) wait=15 ;; 2) wait=30 ;; 3) wait=60 ;; 4) wait=120 ;; 5) wait=300 ;; *) wait=600 ;; esac
+      next=$((now + wait))
+    fi
+    # Down and waiting for its next start: when, for the box to tell whoever asks.
+    if ! up && [ ! -f "$R/stopped" ] && [ "$next" -gt "$now" ]; then
+      [ "$(cat "$R/engine.retry" 2>/dev/null)" = "$next" ] || { echo "$next" >"$R/engine.retry.new" && mv -f "$R/engine.retry.new" "$R/engine.retry"; }
+    else
+      rm -f "$R/engine.retry"
+    fi
+    # An update whose new link never said it's well (it doesn't start, the machine went
+    # down halfway): after twenty minutes, back to what was there (PROTOCOL.md, "Updates").
+    # Five minutes between tries; after six, it gives up and starts what's there.
+    if [ -f "$R/update-trial" ] && [ -f "$K/updates/rollback/restore.sh" ]; then
+      tried=$(stat -c %Y "$R/update-trial" 2>/dev/null || stat -f %m "$R/update-trial" 2>/dev/null || echo "$now")
+      last=$(stat -c %Y "$R/update-restore" 2>/dev/null || stat -f %m "$R/update-restore" 2>/dev/null || echo 0)
+      tries=$(cat "$R/update-restore" 2>/dev/null || echo 0)
+      if [ $((now - tried)) -gt 1200 ] && [ $((now - last)) -gt 300 ]; then
+        if [ "$tries" -lt 6 ]; then
+          echo $((tries + 1)) >"$R/update-restore"
+          # (In a session of its own: `off` ending this keeper with its group never cuts it midway.)
+          "$S" sh "$K/updates/rollback/restore.sh" >/dev/null 2>&1 && rm -f "$R/update-restore"
+        else
+          rm -f "$R/update-trial" "$R/update-restore" "$R/stopped"
+        fi
+      fi
+    fi
+    # The browser agents use here: the box sets it up itself (PROTOCOL.md, "The browser on a
+    # machine"), as the keeper starts (a newer Kuvo Code may pin a newer one) and, each
+    # minute, while it's missing or its last setup didn't go well, once the box says it may
+    # try again (run/browser.next, which it waits longer for after each failure).
+    if [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && { [ "$round" -eq 0 ] || { [ $((round % 4)) -eq 0 ] && [ "$now" -ge "$(cat "$R/browser.next" 2>/dev/null || echo 0)" ] && { { [ ! -x "$K/browser/current/chrome" ] && [ ! -x "$K/browser/current/chrome-headless-shell" ]; } || ! grep -q '"state":"ready"' "$R/browser-install.json" 2>/dev/null; }; }; } && ! is "$(cat "$R/.browser-installing/pid" 2>/dev/null)" kuvo-link; then
+      (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" browser install >/dev/null 2>&1 </dev/null &)
+    fi
+    # The phone link, while a phone is paired with it or a pairing's open.
+    if [ -f "$R/link.needed" ] && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && ! is "$(cat "$R/link.pid" 2>/dev/null)" kuvo-link; then
+      (environment; cd "$K/workspace" 2>/dev/null || cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" run >"$R/link.log" 2>&1 </dev/null &)
+    fi
+    # The box's server for clients (`serve --kept`, which says where it answers in
+    # run/serve.json), while one wants it here (run/serve.needed): not on a Mac's own box,
+    # whose server Kuvo Code runs itself.
+    if [ -f "$R/serve.needed" ] && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && [ "$(tr -d ' \t\r\n' 2>/dev/null <"$K/box/kind")" != mac ] && ! { s=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/serve.json" 2>/dev/null); is "$s" kuvo-link.js && is "$s" --kept; }; then
+      (environment; cd "$K/workspace" 2>/dev/null || cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" serve --kept >"$R/serve.log" 2>&1 </dev/null &)
+    fi
+    # Wake-ups that are due, each minute, while the engine's up, as the engine was started:
+    # beside this loop, which a slow watch never holds up, one round at a time.
+    round=$((round + 1))
+    if [ $((round % 4)) -eq 0 ] && up && ! is "${waking-}" kuvo-wake; then
+      # COMPAT(0.7 keeper): the watchdogs an older Mac start brings, stopped. Goes 3 months after 0.8.0.
+      # (Not beside the watchdog an older Mac's start brings, which would also stop the
+      # engine after a day without that Mac.)
+      pkill -f "watchdog [0-9]+ $R" 2>/dev/null
+      # (With the box's own command, which a wake-up due in a conversation you stopped is
+      # handed to, to wait there.)
+      (environment; cd "$K/workspace" 2>/dev/null || cd "$K"
+        if [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ]; then
+          export KUVO_LINK_RUNTIME="$K/engine/$V/opencode" KUVO_LINK_FLAGS="--config=/dev/null --no-env-file" KUVO_LINK_SCRIPT="$K/bin/kuvo-link.js"
+        fi
+        exec "$S" "$K/bin/kuvo-wake" fire "$K/bots" "$R/engine.json") >/dev/null 2>&1 </dev/null &
+      waking=$!
+    fi
+    sleep 15
+  done
+  ;;
+engine)
+  # As Kuvo Code last started it, with a new port and passwords: not when it's stopped on
+  # purpose, or off (the machine removed), or running.
+  { [ -f "$R/stopped" ] || [ -f "$R/off" ]; } && exit 0
+  [ -f "$R/launch.env" ] && [ -f "$K/bin/kuvo-launch" ] && [ -n "$V" ] || exit 0
+  up && exit 0
+  notes=$(cat "$R/launch.notes" 2>/dev/null); [ -n "$notes" ] || notes='{}'
+  word() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
+  number() { echo $(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 40000 + 20000 )); }
+  for try in 1 2 3; do
+    port=$(number); password=$(word); record="\"port\":$port,\"password\":\"$password\",\"version\":\"$V\",\"notes\":$notes"
+    agents=
+    if [ -f "$K/bin/kuvo-agents.js" ]; then aport=$(number); apassword=$(word); record="$record,\"agentsPort\":$aport,\"agentsPassword\":\"$apassword\""; agents="KUVO_AGENTS_PORT=$aport
+KUVO_AGENTS_PASSWORD=$apassword"; fi
+    { cat "$R/launch.env"; printf 'KUVO_BOOT=1\nKUVO_VERSION=%s\nOPENCODE_PASSWORD=%s\nKUVO_PORT=%s\nKUVO_RECORD=%s}\n' "$V" "$password" "$port" "$record"; [ -z "$agents" ] || printf '%s\n' "$agents"; printf '\n'; } | sh "$K/bin/kuvo-launch" >/dev/null 2>&1 && up && exit 0
+    { [ -f "$R/stopped" ] || [ -f "$R/off" ]; } && exit 0
+    sleep 2
+  done
+  exit 1
+  ;;
+serve)
+  # A Mac's own box's server (`box/kind` says `mac`), for its helper, Kuvo Code Box, which
+  # starts it and keeps it running, its password and the vault's secrets on its stdin: here,
+  # in the foreground, as the helper's own child (it goes when its stdin closes).
+  [ "$(tr -d ' \t\r\n' 2>/dev/null <"$K/box/kind")" = mac ] || { echo "Only a Mac's own box's helper runs its server so." >&2; exit 3; }
+  [ -f "$R/off" ] && exit 0
+  [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] || exit 1
+  environment; cd "$K/workspace" 2>/dev/null || cd "$K"
+  export KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
+  exec "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" serve >"$R/serve.log" 2>&1
+  ;;
+start)
+  rm -f "$R/stopped"
+  sh "$K/bin/kuvo-start" engine
+  sh "$K/bin/kuvo-start" box
+  up
+  ;;
+stop)
+  # Under the lock, so a start under way finishes first, and then stays stopped.
+  lock || { echo "A start of the engine is under way there." >&2; exit 4; }
+  # (Its EXIT trap whole: a second TERM doesn't cut it short.)
+  trap 'trap "" HUP INT TERM; unlock' EXIT
+  trap 'exit 1' HUP INT TERM
+  touch "$R/stopped"
+  halt
+  ;;
+restart)
+  rm -f "$R/stopped"
+  lock || { echo "A start of the engine is under way there." >&2; exit 4; }
+  halt
+  unlock
+  sh "$K/bin/kuvo-start" engine
+  sh "$K/bin/kuvo-start" box
+  up
+  ;;
+off)
+  # Everything it runs, for good (the machine removed, a demo copy done): the phone link
+  # first, which would start the keeper again, then the keeper, which would start the
+  # rest again, then the engine and its agents' bridge. Then it's as before its first
+  # start, for when it's added again; marked off (`run/off`) until a Mac starts it there
+  # again, so nothing takes it for a box that runs, or starts it, meanwhile: no start
+  # under way goes on to start the engine once it sees it.
+  touch "$R/off" "$R/stopped"
+  rm -f "$R/link.needed" "$R/serve.needed"
+  l=$(cat "$R/link.pid" 2>/dev/null); is "$l" kuvo-link && kill "$l" 2>/dev/null
+  # The server it keeps for clients (only one it keeps: `"kept":true`; a Mac's own box's is its app's).
+  if grep -q '"kept":true' "$R/serve.json" 2>/dev/null; then l=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/serve.json"); is "$l" kuvo-link.js && is "$l" --kept && kill "$l" 2>/dev/null; fi
+  # The keeper with the start it's at (its engine's tries and their launch, in its session),
+  # which would go on after it.
+  b=$(cat "$R/box.pid" 2>/dev/null); if is "$b" kuvo-start; then kill -- "-$b" 2>/dev/null || kill "$b" 2>/dev/null; fi; rm -f "$R/box.pid"
+  # A start or stop that holds the lock (a Mac's, or the keeper's where it has no session of
+  # its own), ended rather than waited for: it stops the engine it hasn't noted, and lets
+  # go. Only one the lock says holds it now, and that runs as one of these, as this user
+  # (not the box making its settings its own, which starts no engine: it's waited for).
+  h=$(cat "$R/.launching.pid" 2>/dev/null)
+  believed && starting "$h" && mine "$h" && kill "$h" 2>/dev/null
+  if lock 600; then halt; unlock; else halt; fi
+  rm -f "$R/stopped"
+  ;;
+esac

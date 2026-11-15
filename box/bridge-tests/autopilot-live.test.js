@@ -89,7 +89,7 @@ test("Autopilot on a real engine: a marked question goes ahead and can be change
   const model = process.env.KUVO_TEST_MODEL ? { model: { providerID: process.env.KUVO_TEST_PROVIDER ?? "opencode", id: process.env.KUVO_TEST_MODEL } } : {};
   const session = (await api("POST", "api/session", { title: "Menu page", location: { directory: workspace }, ...model })).json.data.id;
   fs.writeFileSync(path.join(home, "run", "engine.json"), JSON.stringify({ port, password: "pw", version: "0.0.0" }));
-  fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), path.join(home, "bin", "bot-words.json"));
+  fs.copyFileSync(new URL("../src/shared/bot-words.json", import.meta.url), path.join(home, "bin", "bot-words.json"));
 
   // A client's request, as the box answers one: a process of its own.
   const route = (method, pathname, body) => new Promise((resolve, reject) => {

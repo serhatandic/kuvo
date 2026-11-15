@@ -123,7 +123,7 @@ test("Autopilot in the Codex lane on a real Codex", { skip, timeout: 900_000 }, 
   const listed = ((await api("GET", "api/model")).json?.data ?? []).some(each => each.providerID === "codex-cli" && each.id === modelID);
   if (!listed) return t.skip(`Codex doesn't list ${modelID} for this sign-in`);
   fs.writeFileSync(path.join(home, "run", "bridge.json"), JSON.stringify({ port, password: "pw", pid: child.pid }));
-  fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), path.join(home, "bin", "bot-words.json"));
+  fs.copyFileSync(new URL("../src/shared/bot-words.json", import.meta.url), path.join(home, "bin", "bot-words.json"));
 
   // A client's request, as the box answers one: a process of its own.
   const route = (method, pathname, body) => new Promise((resolve, reject) => {

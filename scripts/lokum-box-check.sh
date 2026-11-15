@@ -2,7 +2,7 @@
 # Usage: scripts/lokum-box-check.sh <checkout> <name> [bun test args…]
 # Runs the box tests under the newest engine Bun, in an isolated scratch folder, and exits as they did.
 # It sends the repo's own layout, so the tests that read files beside box find them:
-# the protocol's vectors, KuvoLink's bot-words.json, KuvoClient's BoxVectorsTests.swift (groups.test.ts checks
+# the protocol's vectors, KuvoClient's BoxVectorsTests.swift (groups.test.ts checks
 # box-vectors.json against it), scripts/route-shapes.sh and build-browser.sh with what they run and
 # build-browser.sh's file (route-shapes.test.ts, browser-built.test.ts), and
 # the bridge's tests' folder: test-safety.js, which every box test imports first, and the stand-ins
@@ -82,7 +82,7 @@ for file in "$@"; do printf -v quoted ' %q' "$file"; command+=$quoted; done
 COPYFILE_DISABLE=1 tar --no-xattrs -czf - \
     box/package.json box/bun.lock box/bunfig.toml box/tsconfig.json \
     box/src box/test box/eval \
-    protocol/vectors swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json \
+    protocol/vectors \
     box/bridge-tests swift/KuvoClient/Tests/ClientSessionsTests/BoxVectorsTests.swift \
     scripts/route-shapes.sh scripts/route-shapes.ts scripts/real-app-guard.sh \
     scripts/build-browser.sh scripts/build-browser.ts box/dist/kuvo-browser.js |
