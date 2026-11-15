@@ -8374,6 +8374,7 @@ var isSetting = (value) => {
   const kept = value;
   return kept?.kuvo === 1 && knownZone(kept.zone) && Number.isInteger(kept.n) && kept.n >= 0 && kept.n <= MOST_COUNT2;
 };
+var hasZoneRules = (zone) => zone === "UTC" || !zone.includes("..") && fs27.existsSync(path31.join("/usr/share/zoneinfo", zone));
 function rulesOf(zone) {
   if (zone.includes(".."))
     return null;
@@ -8387,23 +8388,33 @@ function rulesOf(zone) {
 function zoneFromBefore() {
   if (IS_MAC) {
     const own = ownClock();
-    return { kuvo: 1, zone: own, n: 1, seen: own };
+    return { kuvo: 1, zone: own, n: 0, seen: own };
   }
   const kit = readMacKit();
   if (knownZone(kit?.timeZone))
-    return { kuvo: 1, zone: kit.timeZone, n: 0, ...typeof kit.zoneinfo === "string" && kit.zoneinfo ? { zoneinfo: kit.zoneinfo } : {} };
+    return { kuvo: 1, zone: kit.timeZone, n: 0, carried: true, kitSeen: kit.timeZone, ...kitRules(kit) };
   const wakes = (textOf(path31.join(SESSION_WAKES, "timezone")) ?? "").trim();
   if (knownZone(wakes)) {
     let rules = null;
     try {
       rules = fs27.readFileSync(path31.join(SESSION_WAKES, "zoneinfo")).toString("base64") || null;
     } catch {}
-    return { kuvo: 1, zone: wakes, n: 0, ...rules ? { zoneinfo: rules } : {} };
+    return { kuvo: 1, zone: wakes, n: 0, carried: true, ...rules ? { zoneinfo: rules } : {} };
   }
   const launched = (textOf(path31.join(RUN, "launch.env")) ?? "").match(/^KUVO_TZ=(.*)$/m)?.[1]?.trim() ?? process.env.KUVO_TZ;
   if (knownZone(launched))
-    return { kuvo: 1, zone: launched, n: 0 };
+    return { kuvo: 1, zone: launched, n: 0, carried: true };
   return null;
+}
+var kitRules = (kit) => typeof kit.zoneinfo === "string" && kit.zoneinfo ? { zoneinfo: kit.zoneinfo } : {};
+function followOldKit(now) {
+  if (IS_MAC)
+    return now;
+  const kit = readMacKit();
+  if (!knownZone(kit?.timeZone) || kit.timeZone === now.kitSeen)
+    return now;
+  const zone = kit.timeZone;
+  return written2({ ...now, zone, kitSeen: zone, n: now.carried ? now.n : Math.min(now.n + 1, MOST_COUNT2), zoneinfo: undefined, ...kitRules(kit) });
 }
 function written2(setting) {
   writePrivate(ZONE_FILE, JSON.stringify(setting));
@@ -8420,27 +8431,41 @@ function readKept2() {
 }
 function keptNow() {
   const now = readKept2();
+  if (now === null)
+    return null;
   if (now !== undefined)
-    return now;
+    return followOldKit(now);
   const before = zoneFromBefore();
   return before ? written2(before) : null;
 }
+var needsWriting = (kept) => {
+  if (kept === undefined)
+    return true;
+  if (!kept || IS_MAC)
+    return false;
+  const kit = readMacKit();
+  return knownZone(kit?.timeZone) && kit.timeZone !== kept.kitSeen;
+};
 function readZoneSetting() {
   const kept = readKept2();
-  if (kept !== undefined)
-    return kept;
+  if (!needsWriting(kept))
+    return kept ?? null;
+  let made = null;
   try {
-    return locked(ZONE_LOCK, keptNow);
+    made = locked(ZONE_LOCK, keptNow);
   } catch {
-    return null;
+    return kept ?? null;
   }
+  if (made && kept && made.zone !== kept.zone)
+    changed(made);
+  return made;
 }
 function zoneHere(setting = readZoneSetting()) {
   return setting ? { zone: setting.zone, yours: true } : { zone: ownClock(), yours: false };
 }
 function zoneMail() {
   const setting = readZoneSetting();
-  return setting ? { zone: setting.zone, n: setting.n } : null;
+  return setting && !setting.carried ? { zone: setting.zone, n: setting.n } : null;
 }
 function changed(setting) {
   applyZone(setting);
@@ -8455,16 +8480,17 @@ function setZone(zone) {
   let made = null;
   const setting = locked(ZONE_LOCK, () => {
     const now = keptNow();
-    if (now?.zone === zone)
+    if (now?.zone === zone && !now.carried)
       return now;
-    const rules = rulesOf(zone);
-    made = written2({ kuvo: 1, zone, n: Math.min((now?.n ?? 0) + 1, MOST_COUNT2), ...now?.seen ? { seen: now.seen } : {}, ...rules ? { zoneinfo: rules } : {} });
+    const rules = now?.zone === zone ? now.zoneinfo ?? rulesOf(zone) : rulesOf(zone);
+    made = written2({ kuvo: 1, zone, n: Math.min((now?.n ?? 0) + 1, MOST_COUNT2), ...kept3(now), ...rules ? { zoneinfo: rules } : {} });
     return made;
   });
   if (made)
     changed(made);
   return setting;
 }
+var kept3 = (now) => ({ ...now?.seen ? { seen: now.seen } : {}, ...now?.kitSeen ? { kitSeen: now.kitSeen } : {} });
 function takeZone(given) {
   const mail = given;
   if (!knownZone(mail?.zone) || !Number.isInteger(mail.n) || mail.n < 0 || mail.n > MOST_COUNT2)
@@ -8474,10 +8500,10 @@ function takeZone(given) {
   try {
     locked(ZONE_LOCK, () => {
       const now = keptNow();
-      if (now && (n < now.n || n === now.n && zone <= now.zone))
+      if (now && !now.carried && (n < now.n || n === now.n && zone <= now.zone))
         return;
       const rules = now?.zone === zone ? now.zoneinfo ?? rulesOf(zone) : rulesOf(zone);
-      made = written2({ kuvo: 1, zone, n, ...now?.seen ? { seen: now.seen } : {}, ...rules ? { zoneinfo: rules } : {} });
+      made = written2({ kuvo: 1, zone, n, ...kept3(now), ...rules ? { zoneinfo: rules } : {} });
     });
   } catch {
     return false;
@@ -8498,7 +8524,7 @@ function followOwnClock() {
       if (now?.seen === own)
         return;
       if (!now)
-        return void (made = written2({ kuvo: 1, zone: own, n: 1, seen: own }));
+        return void (made = written2({ kuvo: 1, zone: own, n: 0, seen: own }));
       const rules = rulesOf(own);
       made = written2({ kuvo: 1, zone: own, n: Math.min(now.n + 1, MOST_COUNT2), seen: own, ...rules ? { zoneinfo: rules } : {} });
     });
@@ -8528,7 +8554,7 @@ function writeZoneFiles(folder, files = zoneFilesFor(), make = false) {
       return;
     if (make)
       fs27.mkdirSync(folder, { recursive: true });
-    fs27.writeFileSync(file, data);
+    placeWhole(file, data, 420);
   };
   put("timezone", files.timezone);
   put("zoneinfo", files.zoneinfo);
@@ -8543,9 +8569,10 @@ function applyZone(setting = readZoneSetting()) {
       writeZoneFiles(folder, files);
     } catch {}
   }
-  try {
-    writeZoneFiles(SESSION_WAKES, files, files.timezone !== null);
-  } catch {}
+  if (setting)
+    try {
+      writeZoneFiles(SESSION_WAKES, files, files.timezone !== null);
+    } catch {}
 }
 function keepZone(every = 60000) {
   const round = () => {
@@ -20476,29 +20503,29 @@ var asked4 = (target, route, folder) => call(target, "GET", route, undefined, Ab
   return;
 });
 var KEPT_FOR3 = 1e4;
-var kept3 = new Map;
+var kept4 = new Map;
 function keptOr(key, read, whole) {
   const now = Date.now();
-  const before = kept3.get(key);
+  const before = kept4.get(key);
   if (before && now - before.at < KEPT_FOR3)
     return before.lists;
   const lists = read();
-  kept3.set(key, { at: now, lists });
+  kept4.set(key, { at: now, lists });
   lists.then((value) => {
-    if ((value === null || !whole(value)) && kept3.get(key)?.lists === lists)
-      kept3.delete(key);
+    if ((value === null || !whole(value)) && kept4.get(key)?.lists === lists)
+      kept4.delete(key);
   });
-  if (kept3.size > 200)
-    kept3.delete(kept3.keys().next().value);
+  if (kept4.size > 200)
+    kept4.delete(kept4.keys().next().value);
   return lists;
 }
 var CHANGES = new Set(["integration.updated", "model.updated", "provider.updated", "config.updated", "global.disposed", "kuvo.auto.updated"]);
 function noteModelsEvent(event) {
   if (event.type && CHANGES.has(event.type))
-    kept3.clear();
+    kept4.clear();
 }
 function forgetModelLists() {
-  kept3.clear();
+  kept4.clear();
 }
 function forgetModelNames(restart = false) {
   if (saving) {
@@ -29872,10 +29899,10 @@ function packageName(spec) {
   return at > 0 ? spec.slice(0, at) : spec;
 }
 var leftForItsMaker = (entry, server) => entry.way === "official" && isObject(entry.settings) && Array.isArray(server.command) && server.command[0] === LAUNCHER;
-var kept4 = (server, names) => Object.fromEntries(names.filter((name) => server[name] !== undefined).map((name) => [name, server[name]]));
+var kept5 = (server, names) => Object.fromEntries(names.filter((name) => server[name] !== undefined).map((name) => [name, server[name]]));
 function broughtUpToDate(entry, server) {
   if (leftForItsMaker(entry, server))
-    return { ...entry.settings, ...kept4(server, ["disabled", "codemode"]) };
+    return { ...entry.settings, ...kept5(server, ["disabled", "codemode"]) };
   const next = { ...server };
   if (next.codemode === undefined)
     next.codemode = false;
@@ -45290,7 +45317,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "03a2ad27b01a";
+var BRIDGE_VERSION = "89734ea80bc6";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -56629,8 +56656,9 @@ async function generalPage(context) {
   if (here.yours && !choices.some((choice) => choice.id === here.zone))
     choices.unshift({ id: here.zone, title: zoneTitle(here.zone) });
   if (!here.yours)
-    choices.unshift({ id: OWN_CLOCK, title: `${name}'s Clock (${zoneTitle(here.zone)})` });
-  const line = here.yours ? `Bots' wake-ups and times of day go by it on all your computers, ${name} too. It's ${offset} there now.` : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
+    choices.unshift({ id: OWN_CLOCK, title: `${name}'s clock (${zoneTitle(here.zone)})` });
+  const unruled = here.yours && !zoneFilesFor().zoneinfo && !hasZoneRules(here.zone);
+  const line = unruled ? `${name} has no rules for this time zone, so its wake-ups go by UTC. Install its time zone data (tzdata) to fix it.` : here.yours ? `Bots' wake-ups and times of day go by it on all your computers. It's ${offset} now.` : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
   return {
     id: "general",
     title: "General",
@@ -56641,6 +56669,7 @@ async function generalPage(context) {
         id: "time-zone",
         title: "Time zone",
         line,
+        ...unruled ? { tone: "warning" } : {},
         kind: "choice",
         value: here.yours ? here.zone : OWN_CLOCK,
         choices,
@@ -58290,11 +58319,13 @@ function groupSettingsHere() {
   for (const each of botPersonalities(kit))
     personalities[each.id] ??= each.instruction;
   const approval = defaultApproval();
+  const zone = zoneHere();
   return {
     personalities,
     identityNote: words.identityNote,
     askFirst: approval === "askFirst" || approval === "acceptEdits",
-    denies: permissions.filter(holdsBack)
+    denies: permissions.filter(holdsBack),
+    ...zone.yours ? { timeZone: zone.zone } : {}
   };
 }
 async function giveGroupSettings(bridge, settings, signal) {

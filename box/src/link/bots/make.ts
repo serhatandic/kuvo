@@ -66,11 +66,11 @@ export async function signInRefusal(model: BotModel, engine: Target, signal?: Ab
   return ids.length && !ids.includes(model.providerID) ? `${model.id} needs a sign-in on ${HERE}: sign in to it in Settings › Accounts, or choose another model.` : null;
 }
 
-// The model a new bot starts on here, as New Bot offers it: the one its Mac named (the model picked
-// last there) while this box can use it (its account signed in here, and not one being retired); else
-// the engine's default, or the first model this box can use. As the Mac named it when the engine
-// can't say (or doesn't answer in time), and a coding agent's (the bridge says for itself whether it
-// can run it).
+// The model a new bot starts on here, as New Bot offers it: one `named` (none now: the box goes by
+// its own rule) while this box can use it (its account signed in here, and not one being retired);
+// else the engine's default, or the first model this box can use. As named when the engine can't
+// say (or doesn't answer in time), and a coding agent's (the bridge says for itself whether it can
+// run it).
 export async function startingModelHere(named: BotModel | null, readEngine: () => Target, signal?: AbortSignal): Promise<BotModel | null> {
   if (named && runsWithAgents(named)) return named;
   let engine: Target | null = null;

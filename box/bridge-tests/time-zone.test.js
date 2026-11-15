@@ -71,7 +71,7 @@ test("your time zone is a setting of the box: read and changed through its setti
   assert.equal(before.kind, "choice");
   assert.equal(before.value, "own-clock");
   assert.equal(before.choices[0].id, "own-clock");
-  assert.match(before.choices[0].title, /Clock \(UTC\)$/);
+  assert.match(before.choices[0].title, /'s clock \(UTC\)$/);
   assert.ok(before.choices.some(choice => choice.id === "Asia/Tokyo" && choice.title === "Asia › Tokyo"));
   assert.equal(read(setting), null, "nothing written by reading it");
 
@@ -112,8 +112,8 @@ test("a machine updated from 0.5 to 0.7 keeps the zone its Mac last gave it, not
   const folder = bot("bot_scout00001");
   assert.equal(general().value, "Europe/Istanbul");
   const kept = JSON.parse(read(setting));
-  // Counted 0: your Mac's own clock (counted 1 as its box carries it) wins over what it once gave.
-  assert.deepEqual([kept.zone, kept.n, Buffer.from(kept.zoneinfo, "base64").toString()], ["Europe/Istanbul", 0, "TZif Istanbul"]);
+  // Carried: kept and gone by here, and giving way to what your other computers say (your Mac's own clock).
+  assert.deepEqual([kept.zone, kept.n, kept.carried, Buffer.from(kept.zoneinfo, "base64").toString()], ["Europe/Istanbul", 0, true, "TZif Istanbul"]);
   // Kept after the kit's gone (nothing reads it now).
   fs.rmSync(path.join(bots, "kit.json"));
   assert.equal(general().value, "Europe/Istanbul");

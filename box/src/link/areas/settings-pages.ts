@@ -29,7 +29,7 @@ import { APPROVAL_FILE } from "../work/approval";
 import { IS_MAC } from "../home";
 import { boxAnswers } from "../mac/keeper-runs";
 import { askHolder, holdsVault } from "../vault/holder";
-import { setZone, ZONE_FILE, zoneHere } from "../zone/setting";
+import { hasZoneRules, setZone, ZONE_FILE, zoneFilesFor, zoneHere } from "../zone/setting";
 import { ownClock } from "../../shared/zone";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
@@ -401,15 +401,19 @@ async function generalPage(context: RouteContext): Promise<SettingsPage> {
   const choices = zoneNames().map(zone => ({ id: zone, title: zoneTitle(zone) }));
   // (One a peer's runtime knows and this one doesn't is still shown as it is.)
   if (here.yours && !choices.some(choice => choice.id === here.zone)) choices.unshift({ id: here.zone, title: zoneTitle(here.zone) });
-  if (!here.yours) choices.unshift({ id: OWN_CLOCK, title: `${name}'s Clock (${zoneTitle(here.zone)})` });
-  const line = here.yours
-    ? `Bots' wake-ups and times of day go by it on all your computers, ${name} too. It's ${offset} there now.`
-    : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
+  if (!here.yours) choices.unshift({ id: OWN_CLOCK, title: `${name}'s clock (${zoneTitle(here.zone)})` });
+  // (A computer without the zone's rules, a Linux machine without tzdata, wakes on UTC: said so.)
+  const unruled = here.yours && !zoneFilesFor().zoneinfo && !hasZoneRules(here.zone);
+  const line = unruled
+    ? `${name} has no rules for this time zone, so its wake-ups go by UTC. Install its time zone data (tzdata) to fix it.`
+    : here.yours
+      ? `Bots' wake-ups and times of day go by it on all your computers. It's ${offset} now.`
+      : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
   return {
     id: "general", title: "General",
     groups: [{
       id: "clock", title: "Clock", rows: [row({
-        id: "time-zone", title: "Time zone", line, kind: "choice", value: here.yours ? here.zone : OWN_CLOCK, choices, can: true,
+        id: "time-zone", title: "Time zone", line, ...(unruled ? { tone: "warning" as const } : {}), kind: "choice", value: here.yours ? here.zone : OWN_CLOCK, choices, can: true,
       })],
       ...(IS_MAC ? { note: "When this Mac's own clock changes (you travel), your time zone follows it." } : {}),
     }],

@@ -1354,7 +1354,7 @@ export class GroupRunner {
 
   /** Holds the meetings that have come due: once each, then the next time of one that repeats, or none for a one-off. */
   meetDue(now = Date.now()) {
-    const zone = chatZone(this.context.store.settings()?.timeZone)
+    const zone = chatZone(this.context.store.settings())
     for (const [id, kept] of this.chats) {
       const meeting = kept.group.meeting
       if (kept.status !== "active" || !meeting) continue
@@ -1516,7 +1516,7 @@ export class GroupRunner {
   private when(time: string): string {
     const settings = this.context.store.settings()
     try {
-      return new Intl.DateTimeFormat(settings?.locale ?? "en-US", { dateStyle: "medium", timeStyle: "short", timeZone: chatZone(settings?.timeZone) }).format(new Date(time))
+      return new Intl.DateTimeFormat(settings?.locale ?? "en-US", { dateStyle: "medium", timeStyle: "short", timeZone: chatZone(settings) }).format(new Date(time))
     } catch {
       return time
     }
@@ -1654,11 +1654,12 @@ function named(unheard: GroupMessage[]): string | undefined {
   return [...head.slice(0, -1), ...items, head.at(-1)!].join("\n")
 }
 
-/** The user's time zone: the box's setting (`shared/zone.ts`), else what a client said (`clock`), if
- * it's one this machine knows; its own otherwise. */
-export function chatZone(given: string | undefined): string {
+/** The user's time zone: the box's setting (read from its folder, `shared/zone.ts`, else as the box
+ * gave it, `box-settings`), else what a client said (`clock`), if it's one this machine knows; its
+ * own otherwise. */
+export function chatZone(settings: { timeZone?: string; boxTimeZone?: string } | undefined): string {
   const own = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const zone = yourZone() ?? given
+  const zone = yourZone() ?? settings?.boxTimeZone ?? settings?.timeZone
   if (!zone) return own
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: zone })

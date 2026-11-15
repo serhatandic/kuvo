@@ -13,6 +13,7 @@ import type { KitRule } from "../bots/kit";
 import { botPersonalities } from "../personalities/library";
 import { bridgeTarget } from "../engine/client";
 import { defaultApproval } from "../work/approval";
+import { zoneHere } from "../zone/setting";
 
 /** What the box gives the bridge (`PUT api/kuvo/groups/box-settings`). */
 export interface GroupSettings {
@@ -20,6 +21,8 @@ export interface GroupSettings {
   identityNote: string;
   askFirst: boolean;
   denies: KitRule[];
+  /** Your time zone, once this box has one ("Your time zone"), for a bridge that can't read its folder. */
+  timeZone?: string;
 }
 
 /** Settings › Permissions here, or null while they can't be read: a hand edit that isn't plain
@@ -49,11 +52,13 @@ export function groupSettingsHere(): GroupSettings | null {
   const personalities: Record<string, string> = {};
   for (const each of botPersonalities(kit)) personalities[each.id] ??= each.instruction;
   const approval = defaultApproval();
+  const zone = zoneHere();
   return {
     personalities,
     identityNote: words.identityNote,
     askFirst: approval === "askFirst" || approval === "acceptEdits",
     denies: permissions.filter(holdsBack),
+    ...(zone.yours ? { timeZone: zone.zone } : {}),
   };
 }
 

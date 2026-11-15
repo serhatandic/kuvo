@@ -32435,7 +32435,7 @@ class GroupRunner {
     this.meetings.unref?.();
   }
   meetDue(now = Date.now()) {
-    const zone = chatZone(this.context.store.settings()?.timeZone);
+    const zone = chatZone(this.context.store.settings());
     for (const [id, kept] of this.chats) {
       const meeting = kept.group.meeting;
       if (kept.status !== "active" || !meeting)
@@ -32583,7 +32583,7 @@ class GroupRunner {
   when(time) {
     const settings = this.context.store.settings();
     try {
-      return new Intl.DateTimeFormat(settings?.locale ?? "en-US", { dateStyle: "medium", timeStyle: "short", timeZone: chatZone(settings?.timeZone) }).format(new Date(time));
+      return new Intl.DateTimeFormat(settings?.locale ?? "en-US", { dateStyle: "medium", timeStyle: "short", timeZone: chatZone(settings) }).format(new Date(time));
     } catch {
       return time;
     }
@@ -32723,9 +32723,9 @@ function named5(unheard) {
   return [...head.slice(0, -1), ...items, head.at(-1)].join(`
 `);
 }
-function chatZone(given) {
+function chatZone(settings) {
   const own = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const zone = yourZone() ?? given;
+  const zone = yourZone() ?? settings?.boxTimeZone ?? settings?.timeZone;
   if (!zone)
     return own;
   try {
@@ -32871,6 +32871,7 @@ class GroupStore {
       askFirst: value.askFirst === true,
       denies: Array.isArray(value.denies) ? value.denies.filter((rule) => typeof rule?.effect === "string" && holdsBack(rule.effect) && typeof rule.action === "string") : [],
       timeZone: typeof value.timeZone === "string" ? value.timeZone : undefined,
+      boxTimeZone: typeof value.boxTimeZone === "string" ? value.boxTimeZone : undefined,
       locale: typeof value.locale === "string" ? value.locale : undefined
     };
   }
@@ -33082,7 +33083,8 @@ async function groupRoutes(runner, store, method, parts, body) {
         personalities: value?.personalities && typeof value.personalities === "object" ? value.personalities : {},
         identityNote: typeof value?.identityNote === "string" ? value.identityNote : "",
         askFirst: value?.askFirst === true,
-        denies: Array.isArray(value?.denies) ? value.denies : []
+        denies: Array.isArray(value?.denies) ? value.denies : [],
+        boxTimeZone: typeof value?.timeZone === "string" ? value.timeZone : undefined
       });
     } else {
       store.writeSettings({
@@ -33116,7 +33118,7 @@ async function groupRoutes(runner, store, method, parts, body) {
         if (edits.meetingPlan === null) {
           edits.meeting = null;
         } else {
-          const planned = planMeeting(edits.meetingPlan, runner.get(id)?.group.meeting, chatZone(store.settings()?.timeZone));
+          const planned = planMeeting(edits.meetingPlan, runner.get(id)?.group.meeting, chatZone(store.settings()));
           if (typeof planned === "string")
             return error(400, planned);
           edits.meeting = planned;
@@ -33452,7 +33454,7 @@ async function make(runner, store, given, here) {
   const purpose = typeof given.purpose === "string" && given.purpose.trim() ? given.purpose.trim() : undefined;
   let meeting;
   if (given.meeting !== undefined && given.meeting !== null) {
-    const planned = planMeeting(given.meeting, undefined, chatZone(store.settings()?.timeZone));
+    const planned = planMeeting(given.meeting, undefined, chatZone(store.settings()));
     if (typeof planned === "string")
       return message2(400, planned);
     meeting = planned;
@@ -36600,4 +36602,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents ae2eb6e956ed93b7991c39ff31335a934dcd279c0e00b347eecb7a0ecfdd6050
+// Built from Packages/Box/src/agents bda95187bcc1c125ed06a32e95dc0aed6944a149d43ca211f896bfa703747aee

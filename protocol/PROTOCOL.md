@@ -4476,7 +4476,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
 - What every group chat on a computer goes by is its box's own, worked out with no client there:
   what each personality tells a bot (Kuvo Code's own in its words, yours in its library), who sets
   what about a bot (the words' `identityNote`), Ask First (its default approval is Ask First or
-  Accept Edits: a seat fetches no pages) and what its Settings › Permissions hold back. Its link
+  Accept Edits: a seat fetches no pages), what its Settings › Permissions hold back, and your time
+  zone once it has one (`timeZone`, "Your time zone"). Its link
   gives them to the coding agents' bridge that runs the chats (`PUT api/kuvo/groups/box-settings`
   there), as it starts and within five seconds of any of them changing, never while its Settings ›
   Permissions can't be read or have a rule that isn't one (its chats keep what they have); the bridge keeps them through its
@@ -7985,7 +7986,8 @@ The sections now:
 One time zone for all your own computers in a setup, which what happens at a time of day goes by:
 bots' and conversations' wake-ups, a `/loop`'s time of day, goals' days and ends written without a
 zone, the night's window updates wait for, a chat's meetings, and the times limits reset. Each box
-keeps it (`box/time-zone.json` in its folder: `{kuvo: 1, zone, n, seen?, zoneinfo?}`), any client
+keeps it (`box/time-zone.json` in its folder: `{kuvo: 1, zone, n, seen?, zoneinfo?, carried?,
+kitSeen?}`), any client
 changes it there (`kuvo/settings/general`, "A box's settings"), and boxes carry it to each other.
 Every box does it alike, a Mac's and a machine's, on macOS and Linux.
 
@@ -7996,16 +7998,21 @@ Every box does it alike, a Mac's and a machine's, on macOS and Linux.
   sorts after its own (so every box keeps the same one); not a zone its runtime doesn't know, nor a
   count past 2^52. Never to or from a peer that isn't one of your own computers (a machine Macs of
   two setups share, or one of another setup, #701), and a box that's such a machine takes none and
-  tells none. A box with none tells none, and takes the first it's told: a computer set up later
-  takes your zone at its first round with your others.
+  tells none. A box with none, or only one `carried` from before (below), tells none, and takes the
+  first it's told: a computer set up later takes your zone at its first round with your others.
 - **A Mac's clock**: a Mac's box takes its own clock moving (you travelled, or changed it in System
   Settings) as your zone changing, counted on (looked at each minute, `/etc/localtime`, `TZ` where
   it's set). A machine's clock says nothing of where you are and is never taken.
 - **Carried from before**, the first time a box reads it with none kept: a Mac's box, its own clock
-  (count 1); a machine's, what its Mac last gave it (count 0, so a Mac's own clock wins): its kit's
-  `timeZone` and `zoneinfo` (`bots/kit.json`), else the zone above its conversations' wake-ups
-  (`wakes/timezone`, `wakes/zoneinfo`), else its launch's `KUVO_TZ` (`run/launch.env`). With none of
-  them, none: its own clock until it's told yours.
+  (count 0, so any change made since, anywhere, wins); a machine's, what its Mac last gave it,
+  marked `carried`: kept and gone by here, never told, and giving way to the first zone any of your
+  computers tells it, whatever its count: its kit's `timeZone` and `zoneinfo` (`bots/kit.json`),
+  else the zone above its conversations' wake-ups (`wakes/timezone`, `wakes/zoneinfo`), else its
+  launch's `KUVO_TZ` (`run/launch.env`). With none of them, none: its own clock until it's told
+  yours (and the box never writes its own clock above its conversations' wake-ups, where it would be
+  read as yours). A Mac of 0.7 or before still connecting writes its kit again with its own clock: a
+  `timeZone` there other than the one last seen (`kitSeen`) is your zone changing, counted on (only
+  replaced, while what the machine has is `carried`). A change made here keeps nothing `carried`.
 - **Where it goes**: each bot's folder and the folder above conversations' own (`wakes`) have the
   `timezone` file `kuvo-wake` reads (and `zoneinfo`, a zone's rules as a TZif file, base64 in the
   setting, kept from an older Mac's kit for a machine without zone files of its own, only for that
@@ -8013,7 +8020,10 @@ Every box does it alike, a Mac's and a machine's, on macOS and Linux.
   box runs; not for a bot that's moving, which the box it arrives at settles. On a machine, your zone
   (its own clock while it has none, as before); on a Mac, nothing while your zone is its clock (they
   go by it as it changes), else yours. The box's own times read the setting, else `KUVO_TZ`, else the
-  computer's clock; so does its coding agents' bridge on a machine (from `KUVO_HOME`).
+  computer's clock; so does its coding agents' bridge (from `KUVO_HOME`, else the `timeZone` the box
+  gives it with its group chats' settings, `box-settings`). A computer without the zone's rules (a
+  Linux machine without tzdata, and none kept from an older Mac's kit) wakes on UTC: the setting's
+  row says so, as a warning.
 
 ### Personalities
 

@@ -31,6 +31,7 @@ export async function groupRoutes(runner: GroupRunner | undefined, store: GroupS
         identityNote: typeof value?.identityNote === "string" ? value.identityNote : "",
         askFirst: value?.askFirst === true,
         denies: Array.isArray(value?.denies) ? value.denies : [],
+        boxTimeZone: typeof value?.timeZone === "string" ? value.timeZone : undefined,
       })
     } else {
       store.writeSettings({
@@ -61,7 +62,7 @@ export async function groupRoutes(runner: GroupRunner | undefined, store: GroupS
         if (edits.meetingPlan === null) {
           edits.meeting = null
         } else {
-          const planned = planMeeting(edits.meetingPlan, runner.get(id)?.group.meeting, chatZone(store.settings()?.timeZone))
+          const planned = planMeeting(edits.meetingPlan, runner.get(id)?.group.meeting, chatZone(store.settings()))
           if (typeof planned === "string") return error(400, planned)
           edits.meeting = planned
         }

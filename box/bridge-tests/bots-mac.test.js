@@ -467,11 +467,11 @@ test("this Mac's clock moving is your time zone changing; its bots get a zone of
     process.env.TZ = "Europe/Istanbul";
     const folder = bot("bot_clock00001");
     fs.rmSync(path.join(home, "box", "time-zone.json"), { force: true });
-    assert.deepEqual([link.readZoneSetting().zone, link.readZoneSetting().n], ["Europe/Istanbul", 1], "this Mac's clock, counted over what a machine had from it before");
+    assert.deepEqual([link.readZoneSetting().zone, link.readZoneSetting().n], ["Europe/Istanbul", 0], "this Mac's clock, counted 0: any change since wins over it");
     assert.equal(link.followOwnClock(), false, "nothing moved");
     process.env.TZ = "Asia/Tokyo";
     assert.equal(link.followOwnClock(), true);
-    assert.deepEqual([link.readZoneSetting().zone, link.readZoneSetting().n], ["Asia/Tokyo", 2]);
+    assert.deepEqual([link.readZoneSetting().zone, link.readZoneSetting().n], ["Asia/Tokyo", 1]);
     assert.equal(fs.existsSync(path.join(folder, "timezone")), false, "its clock's: no file, it goes by the clock");
     // Picked from a client: yours, not this Mac's clock.
     link.setZone("America/New_York");
