@@ -16,9 +16,12 @@ extension BoxGate {
         "bots.elsewhere", // the Bots area: the bots on your other computers
         "bots.held", // #668 item 8: an edit to a bot whose computer is away is held by the box asked; no client keeps an outbox
         "bots.now", // #711, the desktop client's sidebar and Settings draw what the box says
+        "clients.kind", // #742: a client says what it is, so a desktop app isn't taken for a phone
         "computers", // #711
         "computers.facts", // #735: what each computer answers, which of its sessions are at work
         "computers.manage", // #735: renaming, removing and reaching one again from any box, as its `actions` say
+        "computers.reach", // #742: where each of your computers is reached, for a client that connects to each directly
+        "devices.pair", // #742: the desktop app pairs through the box on its own computer
         "file.text", // #708, the side panel and the sandbox's row work nothing out from what the box lists
         "folders.suggested", // #733, the facts a first run draws, which no client works out
         "folders.tree",

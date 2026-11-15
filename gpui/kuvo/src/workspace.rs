@@ -121,8 +121,22 @@ enum Open {
     Conversation { view: Entity<ConversationView>, session: String },
 }
 
+/// Asked of what holds the window's workspaces ([`crate::home::Home`]) from the switcher.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Switch {
+    /// Show the computer with this key.
+    To(String),
+    /// This app was removed from your devices: pair it again.
+    PairAgain,
+}
+
+impl gpui::EventEmitter<Switch> for Workspace {}
+
 pub struct Workspace {
     client: BoxClient,
+    /// Your computers as this app reaches them, where the window can show another's (none: a
+    /// workspace by itself, which shows its one box).
+    switching: Option<crate::home::Switching>,
     /// Whether it follows the box (the app), or shows what it's handed (tests and shots).
     live: bool,
     info: Option<BoxInfo>,
@@ -262,6 +276,7 @@ impl Workspace {
         let rings = cx.new(|cx| Rings::new(client.clone(), live, cx));
         let mut workspace = Workspace {
             client: client.clone(),
+            switching: None,
             live,
             info: None,
             box_state: BoxState::Connecting,
@@ -1297,6 +1312,18 @@ impl Workspace {
     /// How many things wait on you in each area, as the box counts them.
     pub fn waiting(&self) -> Waiting {
         self.waiting
+    }
+
+    /// Your computers as this app reaches them, for the switcher.
+    pub fn switching(&self) -> Option<&crate::home::Switching> {
+        self.switching.as_ref()
+    }
+
+    pub fn set_switching(&mut self, switching: Option<crate::home::Switching>, cx: &mut Context<Self>) {
+        if self.switching != switching {
+            self.switching = switching;
+            cx.notify();
+        }
     }
 
     /// Your computers, as the box lists them.

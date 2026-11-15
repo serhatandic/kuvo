@@ -719,3 +719,20 @@ fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     }
     options.open(path)?.write_all(bytes)
 }
+
+/// What this computer is called, for this device's name among your devices.
+pub fn device_name() -> String {
+    #[cfg(unix)]
+    {
+        let mut buffer = [0u8; 256];
+        // SAFETY: gethostname writes at most the buffer's length, and ends it where it fits.
+        if unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len() - 1) } == 0 {
+            let end = buffer.iter().position(|byte| *byte == 0).unwrap_or(buffer.len());
+            let name = String::from_utf8_lossy(&buffer[..end]).trim_end_matches(".local").trim().to_owned();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    "This computer".into()
+}

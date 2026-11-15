@@ -153,8 +153,47 @@ impl StandIn {
     pub fn at(replies: Replies, now: f64) -> StandIn {
         let stand_in = StandIn { inner: Arc::new(Inner { state: Mutex::new(State { at: 1, next: 1, ..State::default() }), replies }) };
         stand_in.fill(now);
-        stand_in.state().peers.insert("key_devbox".into(), StandIn::machine(replies, "devbox"));
+        let devbox = StandIn::machine(replies, "devbox");
+        devbox.fill_machine(now);
+        stand_in.state().peers.insert("key_devbox".into(), devbox);
         stand_in
+    }
+
+    /// What runs on the stand-in's machine: a project with a lead's session at work and one
+    /// finished, each with a short conversation.
+    fn fill_machine(&self, now: f64) {
+        let mut state = self.state();
+        state.made = Some(now);
+        let billing = "/home/sam/billing".to_owned();
+        state.projects.insert(billing.clone(), json!({ "name": "Billing", "updated": now - 4.0 * MINUTE }));
+        for (id, title, ago, running) in [("ses_releases", "Plan this week’s releases", 4.0 * MINUTE, true), ("ses_invoices", "Reconcile the invoices export", 6.0 * HOUR, false)] {
+            let mut facts = json!({ "kind": "project", "directory": billing, "project": billing, "title": title, "created": now - ago - HOUR, "updated": now - ago });
+            if running {
+                facts["running"] = json!(true);
+                state.running.insert(id.to_owned());
+            }
+            state.sessions.insert(id.to_owned(), facts);
+            state.models.insert(id.to_owned(), json!({ "providerID": "anthropic", "id": "claude-opus-5-5", "variant": "high" }));
+        }
+        let t = now - 10.0 * MINUTE;
+        state.messages.insert(
+            "ses_releases".into(),
+            vec![
+                user("msg_d1", t, "What’s left before Thursday’s release?", None),
+                json!({ "type": "assistant", "id": "msg_d2", "time": { "created": t + 1000.0, "completed": t + 9000.0 }, "agent": "build", "finish": "stop", "content": [
+                    { "type": "text", "text": "Three things are still open:\n\n- the invoice export’s rounding fix, in review\n- the migration for the new tax table\n- release notes" }
+                ] }),
+            ],
+        );
+        let t = now - 7.0 * HOUR;
+        state.messages.insert(
+            "ses_invoices".into(),
+            vec![
+                user("msg_i1", t, "Does the export match the ledger for October?", None),
+                json!({ "type": "assistant", "id": "msg_i2", "time": { "created": t + 1000.0, "completed": t + 9000.0 }, "agent": "build", "finish": "stop", "content": [{ "type": "text", "text": "It does now: 1,204 rows on both sides, and the totals agree to the cent." }] }),
+                json!({ "type": "idle", "id": "msg_i3", "time": { "created": t + 9000.0 }, "outcome": "succeeded" }),
+            ],
+        );
     }
 
     /// One of your machines' boxes, as this app reaches it from another computer: a Linux

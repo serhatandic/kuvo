@@ -1,0 +1,82 @@
+//! Where this app keeps its device key (what your computers know it by, and its relay secret): the
+//! system's keychain on a Mac, the app's alone; elsewhere a file only you can read in Kuvo Code's
+//! own folder, until there's a keyring to use. Never logged, never in the kept list of computers.
+
+use std::path::PathBuf;
+
+use kuvo_box::link::Keeper;
+
+/// The Mac's keychain: one generic password of the app's own.
+#[cfg(target_os = "macos")]
+pub struct Keychain {
+    service: String,
+}
+
+#[cfg(target_os = "macos")]
+const ACCOUNT: &str = "link-identity";
+
+#[cfg(target_os = "macos")]
+impl Keychain {
+    /// `service`: the item's service name (the app's own; a test's is another).
+    pub fn new(service: impl Into<String>) -> Keychain {
+        Keychain { service: service.into() }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Keeper for Keychain {
+    fn read(&self) -> Option<String> {
+        security_framework::passwords::get_generic_password(&self.service, ACCOUNT).ok().and_then(|bytes| String::from_utf8(bytes).ok())
+    }
+
+    fn write(&self, kept: &str) -> bool {
+        security_framework::passwords::set_generic_password(&self.service, ACCOUNT, kept.as_bytes()).is_ok()
+    }
+
+    fn forget(&self) {
+        let _ = security_framework::passwords::delete_generic_password(&self.service, ACCOUNT);
+    }
+}
+
+/// A file only you can read (`0600`), in a folder only you can open.
+pub struct PrivateFile {
+    path: PathBuf,
+}
+
+impl PrivateFile {
+    pub fn new(path: impl Into<PathBuf>) -> PrivateFile {
+        PrivateFile { path: path.into() }
+    }
+}
+
+impl Keeper for PrivateFile {
+    fn read(&self) -> Option<String> {
+        std::fs::read_to_string(&self.path).ok()
+    }
+
+    fn write(&self, kept: &str) -> bool {
+        use std::io::Write;
+        let Some(folder) = self.path.parent() else { return false };
+        let mut make = std::fs::DirBuilder::new();
+        make.recursive(true);
+        let mut open = std::fs::OpenOptions::new();
+        open.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+            make.mode(0o700);
+            open.mode(0o600);
+        }
+        make.create(folder).is_ok() && open.open(&self.path).and_then(|mut file| file.write_all(kept.as_bytes())).is_ok()
+    }
+
+    fn forget(&self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// The app's own folder for what it keeps as a client, under `home`: beside its box's on a Mac,
+/// in `~/.kuvo-code` elsewhere. Nothing of a box's is in it.
+pub fn folder(home: &std::path::Path) -> PathBuf {
+    if cfg!(target_os = "macos") { home.join("Library/Application Support/run.kuvo.code/desktop") } else { home.join(".kuvo-code/desktop") }
+}

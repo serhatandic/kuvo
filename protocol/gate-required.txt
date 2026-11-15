@@ -11,9 +11,12 @@ bots.effort
 bots.elsewhere
 bots.held
 bots.now
+clients.kind
 computers
 computers.facts
 computers.manage
+computers.reach
+devices.pair
 file.text
 folders.suggested
 folders.tree
