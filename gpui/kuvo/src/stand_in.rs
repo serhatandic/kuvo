@@ -175,6 +175,14 @@ impl StandIn {
         state.queue.add_newer_status(now);
     }
 
+    /// Its Work Queue lists a closed status and a label colour this app has never heard of (a
+    /// newer box's), with an item in that status.
+    pub fn newer_closed_status(&self) {
+        let mut state = self.state();
+        let now = state.made.unwrap_or_else(now_ms);
+        state.queue.add_newer_closed(now);
+    }
+
     /// Its Work Queue has many more labels than a menu shows at once.
     pub fn many_labels(&self) {
         self.state().queue.add_many_labels();

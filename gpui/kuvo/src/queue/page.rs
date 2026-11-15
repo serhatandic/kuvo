@@ -17,7 +17,7 @@ use kuvo_ui::{
 };
 
 use super::marks::{label_chip, label_dot, priority_mark, status_mark, who_mark};
-use super::{Act, CANCELED, COLORS, DELETED, DONE, Field, NORMAL, QueueView, Row, Scope, Sheet, Shown, Target, Tone, size_words, source_name};
+use super::{Act, DELETED, Field, NORMAL, QueueView, Row, Scope, Sheet, Shown, Target, Tone, size_words, source_name};
 use crate::areas::look_tint;
 use crate::bots::dim;
 use crate::time;
@@ -435,16 +435,17 @@ impl QueueView {
     }
 
     /// What you do to an item from its row, as a menu's entries: only what the box says may be done
-    /// (`can`). Close it (Done, Canceled), set where it stands among the open statuses, delete it.
+    /// (`can`). Close it (each status the box says is closed: Done, Canceled), set where it stands
+    /// among the open statuses, delete it.
     fn item_entries(&self, item: &Item) -> Vec<MenuItemSpec> {
         let mut entries = Vec::new();
         let status = |id: &str| Act::Set { item: item.id.clone(), change: Box::new(ItemChange { status: Some(id.to_owned()), ..ItemChange::default() }) };
         if item.can.close {
-            if item.status != DONE && self.lists_status(DONE) {
-                entries.push(MenuItemSpec::Entry { label: "Mark Done".into(), icon: Some(IconName::Check), checked: false, danger: false, act: status(DONE) });
-            }
-            if item.status != CANCELED && self.lists_status(CANCELED) {
-                entries.push(MenuItemSpec::Entry { label: "Mark Canceled".into(), icon: Some(IconName::Close), checked: false, danger: false, act: status(CANCELED) });
+            // (The box's first closed status, Done, is the one that finishes it: a check.)
+            let first = self.closing("").into_iter().next().map(|(id, _)| id);
+            for (id, name) in self.closing(&item.status) {
+                let icon = if Some(&id) == first.as_ref() { IconName::Check } else { IconName::Close };
+                entries.push(MenuItemSpec::Entry { label: format!("Mark {name}").into(), icon: Some(icon), checked: false, danger: false, act: status(&id) });
             }
         }
         if item.can.set {
@@ -579,11 +580,13 @@ impl QueueView {
             None
         };
         let status = |id: &str| Act::Set { item: item.id.clone(), change: Box::new(ItemChange { status: Some(id.to_owned()), ..ItemChange::default() }) };
-        let can_finish = item.can.close && item.status != DONE && self.lists_status(DONE);
-        let finish = status(DONE);
+        // (The box's first closed status, Done, is the page's button; the others are in its menu.)
+        let mut closing = if item.can.close { self.closing("") } else { Vec::new() };
+        let first = (!closing.is_empty()).then(|| closing.remove(0));
+        let finish = first.filter(|(id, _)| *id != item.status);
         let mut more = Vec::new();
-        if item.can.close && item.status != CANCELED && self.lists_status(CANCELED) {
-            more.push(MenuItemSpec::Entry { label: "Mark Canceled".into(), icon: Some(IconName::Close), checked: false, danger: false, act: status(CANCELED) });
+        for (id, name) in closing.into_iter().filter(|(id, _)| *id != item.status) {
+            more.push(MenuItemSpec::Entry { label: format!("Mark {name}").into(), icon: Some(IconName::Close), checked: false, danger: false, act: status(&id) });
         }
         if item.can.delete {
             if !more.is_empty() {
@@ -617,8 +620,9 @@ impl QueueView {
                     .children(label(&item, cx))
                     .children(state.map(|(mark, words)| div().debug_selector(|| "item-state".into()).flex().items_center().gap(space::S1_5).child(mark).child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words.to_owned()))))
                     .child(div().flex_1())
-                    .when(can_finish, |d| {
-                        d.child(div().debug_selector(|| "item-finish".into()).child(Button::new("item-finish", "Mark Done").icon(IconName::Check).size(ButtonSize::Small).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.act(finish.clone(), cx)))))
+                    .when_some(finish, |d, (id, name)| {
+                        let finish = status(&id);
+                        d.child(div().debug_selector(|| "item-finish".into()).child(Button::new("item-finish", format!("Mark {name}")).icon(IconName::Check).size(ButtonSize::Small).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.act(finish.clone(), cx)))))
                     })
                     .when(can_edit, |d| d.child(div().debug_selector(|| "item-edit".into()).child(Button::new("item-edit", "Edit…").icon(IconName::Pencil).size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.act(Act::Edit, cx))))))
                     .children(more),
@@ -974,10 +978,11 @@ impl QueueView {
             div().debug_selector(|| "sheet-removes".into()).text_ui(TypeSize::Small).text_color(c.text_muted).child("It comes off every item that has it. The items themselves stay as they are.").into_any_element()
         } else {
             let picked = self.label_color.clone();
-            let swatches = COLORS.iter().map(|color| {
-                let on = picked.as_deref() == Some(*color);
+            let colors = self.queue().map(|said| said.colors.clone()).unwrap_or_default();
+            let swatches = colors.into_iter().map(|color| {
+                let on = picked.as_deref() == Some(color.as_str());
                 let selector = format!("color-{color}");
-                let act = Act::LabelColor(Some((*color).to_owned()));
+                let act = Act::LabelColor(Some(color.clone()));
                 div()
                     .id(SharedString::from(selector.clone()))
                     .debug_selector(move || selector)
@@ -991,7 +996,7 @@ impl QueueView {
                     .border_color(if on { c.text } else { gpui::transparent_black() })
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| this.act(act.clone(), cx)))
-                    .child(div().size(px(16.)).rounded(radius::PILL).bg(look_tint(color)))
+                    .child(div().size(px(16.)).rounded(radius::PILL).bg(look_tint(&color)))
                     .when(on, |d| {
                         let selector = format!("color-{color}-on");
                         d.child(div().debug_selector(move || selector))
