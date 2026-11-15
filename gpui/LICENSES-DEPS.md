@@ -1,7 +1,9 @@
 # Dependencies and their licences
 
 Kuvo is PolyForm Noncommercial. Every crate we add ourselves is MIT or Apache-2.0, checked
-before adding. Nothing from Zed's GPL-3.0 crates is used or copied: only `gpui` and
+before adding, but the link's (#742): `x25519-dalek` is BSD-3-Clause, `ring` and `rustls-webpki`
+are ISC, and `webpki-roots` is CDLA-Permissive-2.0 (a list of certificate authorities, as data).
+All are permissive, with no copyleft; their notices go in the app's third-party licences. Nothing from Zed's GPL-3.0 crates is used or copied: only `gpui` and
 `gpui_platform` (and the Apache-2.0 platform crates they pull in) come from Zed's repository.
 
 ## Added by us
@@ -23,11 +25,16 @@ before adding. Nothing from Zed's GPL-3.0 crates is used or copied: only `gpui` 
 | libc | MIT OR Apache-2.0 | Reading a process's command line on macOS (is it the box's server?) | kuvo_box |
 | percent-encoding | MIT OR Apache-2.0 | Writing a route's path and query | kuvo_box |
 | serde, serde_json | MIT OR Apache-2.0 | Reading and writing a box's JSON | kuvo_box, kuvo (its stand-in box) |
+| x25519-dalek | BSD-3-Clause | The link's keys and its Noise handshake (X25519), to your other computers | kuvo_box |
+| aes-gcm, sha2, hmac | MIT OR Apache-2.0 | The link's encryption (AES-256-GCM, SHA-256, HMAC), held to `protocol/vectors/noise.json` | kuvo_box |
+| tungstenite | MIT OR Apache-2.0 | The WebSocket to the relay | kuvo_box |
+| rustls (with ring) | Apache-2.0 OR ISC OR MIT (ring: Apache-2.0 AND ISC) | TLS to the relay | kuvo_box |
+| webpki-roots | CDLA-Permissive-2.0 | The certificate authorities the relay's certificate is checked against (Mozilla's list, as data) | kuvo_box |
 
 GPUI's `test-support` feature (Apache-2.0, same crate) is used only by the tests and the
 `shots` binary. `tempfile` (MIT OR Apache-2.0) gives `kuvo_box`'s tests and example folders of
-their own. Every crate `kuvo_box` uses was already in the build (below); it adds none, and nor
-does the app, `kuvo` (phase 2): it uses only crates already listed here.
+their own. Before the link, every crate `kuvo_box` used was already in the build (below); the link's are
+the first it adds. The app, `kuvo`, uses only crates already listed here.
 
 GPUI also brings in other crates from Zed's repository, all Apache-2.0: `gpui_apple`,
 `gpui_macos`, `gpui_macros`, `gpui_shared_string`, `gpui_util`, `collections`, `refineable`,
@@ -83,6 +90,9 @@ platform crates, to be checked when the client is built there).
 | accesskit_macos | 0.26.3 | MIT OR Apache-2.0 |
 | addr2line | 0.27.1 | Apache-2.0 OR MIT |
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 |
+| aead | 0.5.2 | MIT OR Apache-2.0 |
+| aes | 0.8.4 | MIT OR Apache-2.0 |
+| aes-gcm | 0.10.3 | Apache-2.0 OR MIT |
 | aho-corasick | 1.1.5 | Unlicense OR MIT |
 | aligned | 0.4.3 | MIT OR Apache-2.0 |
 | aligned-vec | 0.6.4 | MIT |
@@ -111,6 +121,9 @@ platform crates, to be checked when the client is built there).
 | bitflags | 1.3.2 | MIT/Apache-2.0 |
 | bitflags | 2.13.2 | MIT OR Apache-2.0 |
 | bitstream-io | 4.10.0 | MIT/Apache-2.0 |
+| block-buffer | 0.10.4 | MIT OR Apache-2.0 |
+| block-buffer | 0.12.1 | MIT OR Apache-2.0 |
+| block-padding | 0.3.3 | MIT OR Apache-2.0 |
 | block2 | 0.5.1 | MIT |
 | block2 | 0.6.2 | MIT |
 | borsh | 1.8.1 | MIT OR Apache-2.0 |
@@ -132,12 +145,14 @@ platform crates, to be checked when the client is built there).
 | ciborium | 0.2.2 | Apache-2.0 |
 | ciborium-io | 0.2.2 | Apache-2.0 |
 | ciborium-ll | 0.2.2 | Apache-2.0 |
+| cipher | 0.4.4 | MIT OR Apache-2.0 |
 | clap | 4.6.7 | MIT OR Apache-2.0 |
 | clap_builder | 4.6.7 | MIT OR Apache-2.0 |
 | clap_lex | 1.1.1 | MIT OR Apache-2.0 |
 | collections | 0.1.0 | Apache-2.0 |
 | color_quant | 1.1.0 | MIT |
 | concurrent-queue | 2.5.0 | Apache-2.0 OR MIT |
+| const-oid | 0.10.3 | Apache-2.0 OR MIT |
 | convert_case | 0.10.0 | MIT |
 | convert_case | 0.11.0 | MIT |
 | core-foundation | 0.10.1 | MIT OR Apache-2.0 |
@@ -147,6 +162,8 @@ platform crates, to be checked when the client is built there).
 | core-text | 21.0.0 | MIT OR Apache-2.0 |
 | core_detect | 1.0.0 | MIT/Apache-2.0 |
 | core_maths | 0.1.1 | MIT |
+| cpufeatures | 0.2.17 | MIT OR Apache-2.0 |
+| cpufeatures | 0.3.1 | MIT OR Apache-2.0 |
 | crc32fast | 1.5.5 | MIT OR Apache-2.0 |
 | criterion | 0.8.2 | Apache-2.0 OR MIT |
 | criterion-plot | 0.8.2 | Apache-2.0 OR MIT |
@@ -154,11 +171,18 @@ platform crates, to be checked when the client is built there).
 | crossbeam-epoch | 0.9.21 | MIT OR Apache-2.0 |
 | crossbeam-queue | 0.3.14 | MIT OR Apache-2.0 |
 | crossbeam-utils | 0.8.23 | MIT OR Apache-2.0 |
+| crypto-common | 0.1.7 | MIT OR Apache-2.0 |
+| crypto-common | 0.2.2 | MIT OR Apache-2.0 |
 | ctor | 1.0.13 | Apache-2.0 OR MIT |
+| ctr | 0.9.2 | MIT OR Apache-2.0 |
+| curve25519-dalek | 4.1.3 | BSD-3-Clause |
+| data-encoding | 2.11.1 | MIT |
 | data-url | 0.3.2 | MIT OR Apache-2.0 |
 | derive_more | 2.1.1 | MIT |
 | derive_more-impl | 2.1.1 | MIT |
 | derive_refineable | 0.1.0 | Apache-2.0 |
+| digest | 0.10.7 | MIT OR Apache-2.0 |
+| digest | 0.11.3 | MIT OR Apache-2.0 |
 | dirs | 6.0.0 | MIT OR Apache-2.0 |
 | dirs-sys | 0.5.0 | MIT OR Apache-2.0 |
 | dispatch2 | 0.3.1 | Zlib OR Apache-2.0 OR MIT |
@@ -203,8 +227,11 @@ platform crates, to be checked when the client is built there).
 | futures-sink | 0.3.34 | MIT OR Apache-2.0 |
 | futures-task | 0.3.34 | MIT OR Apache-2.0 |
 | futures-util | 0.3.34 | MIT OR Apache-2.0 |
+| generic-array | 0.14.7 | MIT |
+| getrandom | 0.2.17 | MIT OR Apache-2.0 |
 | getrandom | 0.3.4 | MIT OR Apache-2.0 |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 |
+| ghash | 0.5.1 | Apache-2.0 OR MIT |
 | gif | 0.14.2 | MIT OR Apache-2.0 |
 | gimli | 0.34.0 | MIT OR Apache-2.0 |
 | gpui | 0.2.2 | Apache-2.0 |
@@ -221,9 +248,12 @@ platform crates, to be checked when the client is built there).
 | heapless | 0.9.3 | MIT OR Apache-2.0 |
 | heck | 0.4.1 | MIT OR Apache-2.0 |
 | heck | 0.5.0 | MIT OR Apache-2.0 |
+| hmac | 0.12.1 | MIT OR Apache-2.0 |
 | http | 1.5.0 | MIT OR Apache-2.0 |
 | http-body | 1.1.0 | MIT |
 | http_client | 0.1.0 | Apache-2.0 |
+| httparse | 1.10.1 | MIT OR Apache-2.0 |
+| hybrid-array | 0.4.15 | MIT OR Apache-2.0 |
 | iana-time-zone | 0.1.65 | MIT OR Apache-2.0 |
 | icu_collections | 2.4.0 | Unicode-3.0 |
 | icu_locale_core | 2.4.0 | Unicode-3.0 |
@@ -243,6 +273,7 @@ platform crates, to be checked when the client is built there).
 | imagesize | 0.14.0 | MIT |
 | imgref | 1.12.3 | CC0-1.0 OR Apache-2.0 |
 | indexmap | 2.14.2 | Apache-2.0 OR MIT |
+| inout | 0.1.4 | MIT OR Apache-2.0 |
 | inventory | 0.3.25 | MIT OR Apache-2.0 |
 | itertools | 0.13.0 | MIT OR Apache-2.0 |
 | itertools | 0.14.0 | MIT OR Apache-2.0 |
@@ -303,6 +334,7 @@ platform crates, to be checked when the client is built there).
 | object | 0.40.0 | Apache-2.0 OR MIT |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 |
 | oorandom | 11.1.5 | MIT |
+| opaque-debug | 0.3.1 | MIT OR Apache-2.0 |
 | option-ext | 0.2.0 | MPL-2.0 |
 | page_size | 0.6.0 | MIT/Apache-2.0 |
 | parking | 2.2.1 | Apache-2.0 OR MIT |
@@ -325,6 +357,7 @@ platform crates, to be checked when the client is built there).
 | pollster | 0.2.5 | Apache-2.0/MIT |
 | pollster | 0.4.0 | Apache-2.0/MIT |
 | polycool | 0.4.0 | MIT OR Apache-2.0 |
+| polyval | 0.6.2 | Apache-2.0 OR MIT |
 | postage | 0.5.0 | MIT |
 | potential_utf | 0.1.6 | Unicode-3.0 |
 | ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 |
@@ -344,6 +377,7 @@ platform crates, to be checked when the client is built there).
 | rand | 0.9.5 | MIT OR Apache-2.0 |
 | rand_chacha | 0.9.0 | MIT OR Apache-2.0 |
 | rand_core | 0.10.1 | MIT OR Apache-2.0 |
+| rand_core | 0.6.4 | MIT OR Apache-2.0 |
 | rand_core | 0.9.5 | MIT OR Apache-2.0 |
 | rand_xorshift | 0.5.0 | MIT OR Apache-2.0 |
 | rav1e | 0.8.1 | BSD-2-Clause |
@@ -359,11 +393,15 @@ platform crates, to be checked when the client is built there).
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
 | resvg | 0.46.0 | Apache-2.0 OR MIT |
 | rgb | 0.8.53 | MIT |
+| ring | 0.17.14 | Apache-2.0 AND ISC |
 | roxmltree | 0.21.2 | MIT OR Apache-2.0 |
 | rustc-demangle | 0.1.28 | MIT/Apache-2.0 |
 | rustc-hash | 2.1.3 | Apache-2.0 OR MIT |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT |
+| rustls-pki-types | 1.16.0 | MIT OR Apache-2.0 |
+| rustls-webpki | 0.103.17 | ISC |
 | rustversion | 1.0.23 | MIT OR Apache-2.0 |
 | rusty-fork | 0.3.1 | MIT/Apache-2.0 |
 | rustybuzz | 0.20.1 | MIT |
@@ -383,7 +421,9 @@ platform crates, to be checked when the client is built there).
 | serde_spanned | 0.6.9 | MIT OR Apache-2.0 |
 | serde_spanned | 1.1.3 | MIT OR Apache-2.0 |
 | serde_urlencoded | 0.7.1 | MIT/Apache-2.0 |
+| sha1 | 0.11.0 | MIT OR Apache-2.0 |
 | sha1_smol | 1.0.1 | BSD-3-Clause |
+| sha2 | 0.10.9 | MIT OR Apache-2.0 |
 | shlex | 2.0.1 | MIT OR Apache-2.0 |
 | simd-adler32 | 0.3.10 | MIT |
 | simd_helpers | 0.1.0 | MIT |
@@ -401,6 +441,7 @@ platform crates, to be checked when the client is built there).
 | strict-num | 0.1.1 | MIT |
 | strum | 0.28.0 | MIT |
 | strum_macros | 0.28.0 | MIT |
+| subtle | 2.6.1 | BSD-3-Clause |
 | sum_tree | 0.1.0 | Apache-2.0 |
 | svg_fmt | 0.4.5 | MIT/Apache-2.0 |
 | svgtypes | 0.16.2 | Apache-2.0 OR MIT |
@@ -442,6 +483,8 @@ platform crates, to be checked when the client is built there).
 | tree-sitter-rust | 0.24.2 | MIT |
 | tree-sitter-typescript | 0.23.2 | MIT |
 | ttf-parser | 0.25.1 | MIT OR Apache-2.0 |
+| tungstenite | 0.30.0 | MIT OR Apache-2.0 |
+| typenum | 1.20.1 | MIT OR Apache-2.0 |
 | unarray | 0.1.4 | MIT OR Apache-2.0 |
 | unicase | 2.10.0 | MIT OR Apache-2.0 |
 | unicode-bidi | 0.3.18 | MIT OR Apache-2.0 |
@@ -452,6 +495,8 @@ platform crates, to be checked when the client is built there).
 | unicode-script | 0.5.9 | MIT OR Apache-2.0 |
 | unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 |
 | unicode-vo | 0.1.0 | MIT/Apache-2.0 |
+| universal-hash | 0.5.1 | MIT OR Apache-2.0 |
+| untrusted | 0.9.0 | ISC |
 | url | 2.5.8 | MIT OR Apache-2.0 |
 | usvg | 0.46.0 | Apache-2.0 OR MIT |
 | utf8_iter | 1.1.0 | Apache-2.0 OR MIT |
@@ -467,10 +512,13 @@ platform crates, to be checked when the client is built there).
 | wasm-bindgen-macro-support | 0.2.130 | MIT OR Apache-2.0 |
 | wasm-bindgen-shared | 0.2.130 | MIT OR Apache-2.0 |
 | web-time | 1.1.0 | MIT OR Apache-2.0 |
+| webpki-roots | 0.26.11 | CDLA-Permissive-2.0 |
+| webpki-roots | 1.0.12 | CDLA-Permissive-2.0 |
 | weezl | 0.1.12 | MIT OR Apache-2.0 |
 | winnow | 0.7.15 | MIT |
 | winnow | 1.0.5 | MIT |
 | writeable | 0.6.4 | Unicode-3.0 |
+| x25519-dalek | 2.0.1 | BSD-3-Clause |
 | xmlwriter | 0.1.0 | MIT |
 | y4m | 0.8.0 | MIT |
 | yoke | 0.8.4 | Unicode-3.0 |
@@ -480,6 +528,8 @@ platform crates, to be checked when the client is built there).
 | zerocopy-derive | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zerofrom | 0.1.8 | Unicode-3.0 |
 | zerofrom-derive | 0.1.8 | Unicode-3.0 |
+| zeroize | 1.9.1 | Apache-2.0 OR MIT |
+| zeroize_derive | 1.5.0 | Apache-2.0 OR MIT |
 | zerotrie | 0.2.5 | Unicode-3.0 |
 | zerovec | 0.11.9 | Unicode-3.0 |
 | zerovec-derive | 0.11.7 | Unicode-3.0 |

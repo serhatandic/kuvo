@@ -24,6 +24,7 @@ pub mod groups;
 pub mod ids;
 pub mod info;
 pub mod lines;
+pub mod link;
 pub mod mentions;
 pub mod local;
 pub mod messages;
