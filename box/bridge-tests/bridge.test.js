@@ -1161,6 +1161,13 @@ test("setup keeps the machine's keys and its own phones, takes the Mac's documen
     setup({ docs: [link.signDoc(seed, "phones", 1, { phones: [{ key: A, name: "A", pairing: "" }], removed: [] })] });
     assert.deepEqual(JSON.parse(fs.readFileSync(linkFile, "utf8")).phones.map(p => p.key), [A, B]);
 
+    // Whether the Mac leaves a newer box as it is, kept by its ID each time it sets the box up: one
+    // that doesn't say so (Kuvo Code 0.7 and before) holds the box's own updates back.
+    setup({ docs: [phones([A, B])], macID: "MAC-1" });
+    assert.deepEqual(JSON.parse(fs.readFileSync(linkFile, "utf8")).tolerantIDs, { "MAC-1": false });
+    setup({ docs: [phones([A, B])], macID: "MAC-1", tolerates: 1 });
+    assert.deepEqual(JSON.parse(fs.readFileSync(linkFile, "utf8")).tolerantIDs, { "MAC-1": true });
+
     // A phone paired with the machine itself stays when the Mac's phones change.
     const saved = JSON.parse(fs.readFileSync(linkFile, "utf8"));
     fs.writeFileSync(linkFile, JSON.stringify({ ...saved, phones: [...saved.phones, { key: C, name: "C", added: 1, from: "pair", pairing: "" }] }));

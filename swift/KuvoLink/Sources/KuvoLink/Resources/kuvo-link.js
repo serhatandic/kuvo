@@ -20664,7 +20664,7 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
       return { status: 400, value: message(`Send the project's folder on this machine as {"project"}.`) };
     if (!engine?.port)
       return { status: 503, value: message("The engine isn't running.") };
-    const prefix = typeof body?.branchPrefix === "string" ? body.branchPrefix : branchPrefixHere();
+    const prefix = branchPrefixHere();
     const subpath = gitIn(project, ["rev-parse", "--show-prefix"]);
     if (subpath === null)
       return { status: 409, value: message("That folder isn't in a git repository.") };
@@ -45379,7 +45379,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "61861026984e";
+var BRIDGE_VERSION = "b5b36e3a0479";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";

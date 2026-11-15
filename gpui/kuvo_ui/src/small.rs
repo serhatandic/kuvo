@@ -251,7 +251,10 @@ impl RenderOnce for Chip {
             (tone.opacity(0.10), tone.opacity(0.25), tone)
         };
         let hover = c.pressed;
+        let selector = self.id.to_string();
+        let remove_selector = format!("{selector}-remove");
         div()
+            .debug_selector(move || selector)
             .id(self.id)
             .flex()
             .flex_none()
@@ -270,6 +273,7 @@ impl RenderOnce for Chip {
             .child(self.label)
             .children(self.on_remove.map(|remove| {
                 div()
+                    .debug_selector(move || remove_selector)
                     .id("remove")
                     .ml(px(-2.))
                     .mr(px(-4.))

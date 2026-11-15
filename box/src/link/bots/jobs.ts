@@ -32,7 +32,7 @@ export function writeJob(here: BotHere, job: Job): void {
   const file = path.join(here.folder, JOB_FILE);
   fs.writeFileSync(`${file}.new`, JSON.stringify({ line: job.line, details: job.details, updated: stamp() }, null, 2));
   fs.renameSync(`${file}.new`, file);
-  // COMPAT(0.7 bot-json-job): the job's line in `bot.json` too, where an older Mac reads it. Goes 3 months after 0.8.0.
+  // COMPAT(0.7 bot-json-job): the job's line in `bot.json` too, where an older Mac reads it. Goes in #717's next part.
   // Its description says it in a few words too, for what reads only that (a Mac of an earlier version).
   // (Onto it as it is now, under its lock: what another change saved is kept.)
   if ((here.described.job ?? "") !== job.line) here.described = changeDescription(here.folder, now => ({ ...(now ?? here.described), job: job.line }));

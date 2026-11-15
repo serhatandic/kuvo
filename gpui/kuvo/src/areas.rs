@@ -642,7 +642,7 @@ impl AreaView {
             } else {
                 None
             };
-            let (hover, selected_bg) = (c.hover, c.selected_card);
+            let (hover, selected_bg) = (c.hover, c.selected);
             let selector = format!("bot-{}", bot.id);
             rows.push(
                 div()
@@ -656,7 +656,7 @@ impl AreaView {
                     .mb(space::S0_5)
                     .rounded(radius::NAV)
                     .cursor_pointer()
-                    .map(|r| kuvo_ui::row::selected_card(r, selected, cx))
+                    .when(selected, |r| r.bg(selected_bg))
                     .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
                     .on_click(self.row_click(key, cx))
                     // Still, as the user asked: the Mac's animated faces aren't brought over yet.
@@ -681,7 +681,7 @@ impl AreaView {
             for there in elsewhere {
                 let key = format!("elsewhere:{}", there.id);
                 let selected = self.is_selected(&key);
-                let (hover, selected_bg) = (c.hover, c.selected_card);
+                let (hover, selected_bg) = (c.hover, c.selected);
                 let selector = format!("elsewhere-{}", there.id);
                 let computer = there.computer.as_str();
                 // What waits for it or was refused, else where it lives.
@@ -708,7 +708,7 @@ impl AreaView {
                         .mb(space::S0_5)
                         .rounded(radius::NAV)
                         .cursor_pointer()
-                        .map(|r| kuvo_ui::row::selected_card(r, selected, cx))
+                        .when(selected, |r| r.bg(selected_bg))
                         .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
                         .on_click(self.row_click(key, cx))
                         .child(face)
@@ -908,7 +908,7 @@ impl AreaView {
         // The one this window shows is picked as "this", by the window's own name for it.
         let (key, id, name) = if computer.here { ("this".to_owned(), "this".to_owned(), self.this_box.to_string()) } else { (computer_key(computer), computer.key.clone(), computer.name.clone()) };
         let selected = self.is_selected(&key);
-        let (hover, selected_bg) = (c.hover, c.selected_card);
+        let (hover, selected_bg) = (c.hover, c.selected);
         let selector = format!("computer-{id}");
         let working = computer.working.filter(|working| *working > 0).map(|working| {
             div()
@@ -930,7 +930,7 @@ impl AreaView {
             .mb(space::S0_5)
             .rounded(radius::NAV)
             .cursor_pointer()
-            .map(|r| kuvo_ui::row::selected_card(r, selected, cx))
+            .when(selected, |r| r.bg(selected_bg))
             .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
             .on_click(self.row_click(key, cx))
             .child(crate::computers::tile(computer, px(28.), cx))

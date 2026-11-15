@@ -1,4 +1,4 @@
-// COMPAT(0.7 leave-running): `run/link.seen`, which a 0.7 Mac reads before it stops a machine's engine as it quits. Goes 3 months after 0.8.0.
+// COMPAT(0.7 leave-running): `run/link.seen`, which a 0.7 Mac reads before it stops a machine's engine as it quits. Goes on the user's word, once no Mac from before 1.0 connects.
 // When a phone last used this machine, in `run/link.seen`: a Mac with Kuvo Code 0.7.x leaves the
 // engine running as it quits while one has in the last week (later ones always do), so
 // the machine's sessions and bots are there whenever it asks; a phone lost or unpaired elsewhere
