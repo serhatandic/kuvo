@@ -60,8 +60,10 @@ public struct MessageParts: Codable, Hashable, Sendable {
     public var phone: Bool
     /// Another agent wrote it: who (and how to answer).
     public var mail: Agent?
+    /// It ran a command (`keyword`, "/review"), with `words` as its arguments.
+    public var command: Bool
 
-    public init(words: String, keyword: String? = nil, widget: String? = nil, comments: [Comment] = [], paths: [String] = [], agents: [Agent] = [], phone: Bool = false, mail: Agent? = nil) {
+    public init(words: String, keyword: String? = nil, widget: String? = nil, comments: [Comment] = [], paths: [String] = [], agents: [Agent] = [], phone: Bool = false, mail: Agent? = nil, command: Bool = false) {
         self.words = words
         self.keyword = keyword
         self.widget = widget
@@ -70,9 +72,10 @@ public struct MessageParts: Codable, Hashable, Sendable {
         self.agents = agents
         self.phone = phone
         self.mail = mail
+        self.command = command
     }
 
-    private enum CodingKeys: String, CodingKey { case words, keyword, widget, comments, paths, agents, phone, mail }
+    private enum CodingKeys: String, CodingKey { case words, keyword, widget, comments, paths, agents, phone, mail, command }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -84,6 +87,7 @@ public struct MessageParts: Codable, Hashable, Sendable {
         agents = try container.decodeIfPresent([Agent].self, forKey: .agents) ?? []
         phone = try container.decodeIfPresent(Bool.self, forKey: .phone) ?? false
         mail = try container.decodeIfPresent(Agent.self, forKey: .mail)
+        command = try container.decodeIfPresent(Bool.self, forKey: .command) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -96,6 +100,7 @@ public struct MessageParts: Codable, Hashable, Sendable {
         if !agents.isEmpty { try container.encode(agents, forKey: .agents) }
         if phone { try container.encode(true, forKey: .phone) }
         try container.encodeIfPresent(mail, forKey: .mail)
+        if command { try container.encode(true, forKey: .command) }
     }
 
     // MARK: A message's
@@ -116,8 +121,9 @@ public struct MessageParts: Codable, Hashable, Sendable {
             return Comment(file: file, line: line, side: string(each["side"]) == "old" ? .old : .new, snippet: snippet, text: text)
         }
         let phone: Bool = if case .bool(true)? = parts["phone"] { true } else { false }
+        let command: Bool = if case .bool(true)? = parts["command"] { true } else { false }
         return MessageParts(words: words, keyword: string(parts["keyword"]), widget: string(parts["widget"]), comments: comments,
-                            paths: list(parts["paths"]).compactMap(string), agents: list(parts["agents"]).compactMap(agent), phone: phone, mail: agent(parts["mail"]))
+                            paths: list(parts["paths"]).compactMap(string), agents: list(parts["agents"]).compactMap(agent), phone: phone, mail: agent(parts["mail"]), command: command)
     }
 
     /// A message's parts: kept with it, else as its box read them (`read`), else (not read yet) its
@@ -176,17 +182,19 @@ public struct MessageParts: Codable, Hashable, Sendable {
         })
     }
 
-    /// The parts of `messages` (from before, as `unread` lists them), read by their box: `ask` sends
+    /// The parts of `messages` (from before, as `unread` lists them, and those that ran one of the
+    /// engine's commands, which their box keeps as typed by their ids), read by their box: `ask` sends
     /// `kuvo/messages/parts` a body and gives its answer. Kept by id, for as long as the app runs.
     /// Returns whether any were read; a box that can't say leaves them as they are.
     @discardableResult
-    public static func read(_ messages: [(id: String, text: String)], ask: @Sendable (Data) async throws -> (status: Int, body: Data)) async -> Bool {
+    /// `session`: their conversation, where a command still on its way is waited for a moment.
+    public static func read(_ messages: [(id: String, text: String)], session: String? = nil, ask: @Sendable (Data) async throws -> (status: Int, body: Data)) async -> Bool {
         var any = false
         var rest = messages[...]
         while !rest.isEmpty {
             let batch = Array(rest.prefix(partsMost))
             rest = rest.dropFirst(batch.count)
-            guard let body = try? JSONEncoder().encode(Asked(texts: batch.map(\.text))),
+            guard let body = try? JSONEncoder().encode(Asked(texts: batch.map(\.text), ids: batch.map(\.id), session: session)),
                   let answer = try? await ask(body), answer.status == 200,
                   let told = try? JSONDecoder().decode(Told.self, from: answer.body), told.parts.count == batch.count else { continue }
             lock.withLock {
@@ -206,7 +214,7 @@ public struct MessageParts: Codable, Hashable, Sendable {
     /// How many texts one `kuvo/messages/parts` reads.
     static let partsMost = 500
     public static let partsRoute = "kuvo/messages/parts"
-    struct Asked: Encodable { var texts: [String] }
+    struct Asked: Encodable { var texts: [String]; var ids: [String]; var session: String? }
     struct Told: Decodable { var parts: [MessageParts] }
 
     // MARK: Sending

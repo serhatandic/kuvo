@@ -24,6 +24,7 @@ import { forgetDecided } from "../work/autopilot";
 import { backUpSession } from "../work/backups";
 import { markConversation, noteFullAccess, noteFullAccessAtWork } from "../work/full";
 import { queueWatcher, scanQueues, writtenByYou, type ScanFound } from "./queue";
+import { heardCommand, type CommandEvent } from "../messages/commands";
 import { adoptConversation } from "../areas/approval";
 import { giveFolders } from "../areas/projects";
 import { followAsks, forgetAsksOn, noteAskEvent } from "../glance/asked";
@@ -436,6 +437,8 @@ export async function watchEvents(read: () => Target, tell: (notice: Notice) => 
         // Folders a refresh of the models left at work, closed once their work is done.
         if (learns && WORK_ENDS.has(event.type) && modelsDue()) settleDueModels(source).catch(() => {});
         steer?.(event);
+        // The message a command sent here made, kept with its parts, to show as typed.
+        heardCommand(event as CommandEvent);
         queue?.(event as QueueEvent);
         const followed = followWork?.(event);
         // A conversation in Auto: what its agent's file tools ask outside its folder, reviewed (and

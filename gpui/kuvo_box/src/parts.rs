@@ -75,6 +75,9 @@ pub struct Parts {
     /// Another agent wrote it: who (and how to answer).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail: Option<Agent>,
+    /// It ran a command (`keyword`, "/review"), with `words` as its arguments.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub command: bool,
 }
 
 impl Parts {
@@ -112,6 +115,7 @@ impl Parts {
             agents: list("agents").iter().filter_map(agent).collect(),
             phone: parts.get("phone") == Some(&Value::Bool(true)),
             mail: parts.get("mail").and_then(agent),
+            command: parts.get("command") == Some(&Value::Bool(true)),
         })
     }
 }

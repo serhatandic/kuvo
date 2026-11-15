@@ -280,9 +280,10 @@ impl BoxClient {
     }
 
     /// Stops `session`'s run (`kuvo/sessions/<id>/stop`, `queue`): the box holds and pauses what
-    /// waits to go, then stops the run.
-    pub fn stop_session(&self, session: &str) -> Result<()> {
-        let response = self.send(&Request::post(format!("kuvo/sessions/{}/stop", paths::segment(session)), json!({})))?;
+    /// waits to go, then stops the run, taking with it `on_their_way`, messages this client sent
+    /// that may not have reached it yet (`queue.stop.arriving`): none waits here for them.
+    pub fn stop_session(&self, session: &str, on_their_way: &[String]) -> Result<()> {
+        let response = self.send(&Request::post(format!("kuvo/sessions/{}/stop", paths::segment(session)), json!({ "items": on_their_way })))?;
         if response.is_success() { Ok(()) } else { Err(Error::Refused(Refusal::from_answer(response.status, &response.body))) }
     }
 

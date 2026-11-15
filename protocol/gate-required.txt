@@ -28,6 +28,7 @@ git.pull-request
 git.status
 groups.mentions
 limits.rings
+messages.commands
 messages.send
 models.offered
 models.offered.folder
@@ -35,6 +36,8 @@ models.offered.free
 models.offered.sides
 models.readiness
 queue.items
+queue.removed.keyword
+queue.stop.arriving
 sandbox.opens
 sandbox.words
 sessions.actions

@@ -55,6 +55,8 @@ export interface MessageParts {
   phone?: true;
   /** A message from another agent: its name and address ("unknown" when it can't be answered). */
   mail?: { name: string; session: string };
+  /** It ran a command (`keyword`, "/review"), its arguments `words`. */
+  command?: true;
 }
 
 /** Where a message goes and who's around it: the conversation it's written in (left out of who's

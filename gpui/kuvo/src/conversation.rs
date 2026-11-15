@@ -289,7 +289,7 @@ impl ConversationView {
                             items.retain(|each| each.id != item);
                         }
                         if let (true, Some(removed)) = (edit, removed) {
-                            this.composer.update(cx, |composer, cx| composer.restore(&removed.words, &removed.files, cx));
+                            this.composer.update(cx, |composer, cx| composer.restore(&removed.draft, &removed.files, cx));
                         }
                     }
                     Err(error) => this.queue_failed = Some(format!("It couldn’t be taken out of the queue: {error}")),

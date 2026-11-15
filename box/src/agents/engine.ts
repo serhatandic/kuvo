@@ -242,7 +242,7 @@ export class EngineLink {
         for (const folder of ["command", "commands"]) {
           try {
             const text = readFileSync(join(source.path, folder, `${name}.md`), "utf8")
-            const body = text.replace(/^---\n[\s\S]*?\n---\n?/, "").trim()
+            const body = text.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/, "").trim()
             if (body) template = body
           } catch {}
         }

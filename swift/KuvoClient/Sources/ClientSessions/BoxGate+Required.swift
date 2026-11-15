@@ -33,6 +33,7 @@ extension BoxGate {
         "git.status",
         "groups.mentions", // #736: a group chat's "&" lists what the box offers there (its bots, then guests); no client filters
         "limits.rings", // #711
+        "messages.commands", // #668: a command's message read as typed, by its id
         "messages.send", // #668 item 3, a message sent as fields; a box with it has what came before it too (`sessions.list`, `typed`, plan limits' `rows`, `kuvo/updates`, Cursor's limits, `kuvo/sessions/read`)
         "models.offered",
         "models.offered.folder",
@@ -40,6 +41,8 @@ extension BoxGate {
         "models.offered.sides",
         "models.readiness",
         "queue.items", // the desktop client draws the queue as the box says it
+        "queue.removed.keyword", // #668: a queued message taken back keeps its keyword
+        "queue.stop.arriving", // #668: Stop holds what's still on its way, so no client waits for it
         "sandbox.opens", // #708
         "sandbox.words", // #711
         "sessions.actions",

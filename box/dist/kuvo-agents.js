@@ -3580,7 +3580,7 @@ ${directory}`;
         for (const folder of ["command", "commands"]) {
           try {
             const text = readFileSync8(join11(source.path, folder, `${name}.md`), "utf8");
-            const body = text.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
+            const body = text.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/, "").trim();
             if (body)
               template = body;
           } catch {}
@@ -31750,7 +31750,9 @@ var keptState = (value) => {
     held: isObject(value) && Array.isArray(value.held) ? value.held.filter((id) => typeof id === "string") : [],
     ...isObject(value) && typeof value.resumed === "number" ? { resumed: value.resumed } : {},
     ...waiting.length ? { waiting } : {},
-    ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {}
+    ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {},
+    ...isObject(value) && isObject(value.arriving) && Object.keys(value.arriving).length ? { arriving: Object.fromEntries(Object.entries(value.arriving).filter((each) => typeof each[1] === "number")) } : {},
+    ...isObject(value) && Array.isArray(value.cameHeld) && value.cameHeld.length ? { cameHeld: value.cameHeld.filter((id) => typeof id === "string") } : {}
   };
 };
 var showsQueue = (state) => state.paused || state.held.length > 0 || Boolean(state.waiting?.length);
@@ -31769,6 +31771,10 @@ function changeQueue(files, session, change, changed) {
     const before = all[session] ?? { paused: false, held: [] };
     const state = keptState(change(before));
     state.held = [...new Set(state.held)];
+    if (state.cameHeld)
+      state.cameHeld = state.cameHeld.filter((id) => state.held.includes(id));
+    if (!state.cameHeld?.length)
+      delete state.cameHeld;
     made = JSON.stringify(state) !== JSON.stringify(before);
     if (!made)
       return state;
@@ -31776,7 +31782,14 @@ function changeQueue(files, session, change, changed) {
     for (const [id, each] of Object.entries(all)) {
       if (each.resumed && Date.now() - each.resumed >= RESUMED_FOR)
         delete each.resumed;
-      if (!showsQueue(each) && !each.resumed)
+      if (each.arriving) {
+        for (const [message, until] of Object.entries(each.arriving))
+          if (until <= Date.now())
+            delete each.arriving[message];
+        if (!Object.keys(each.arriving).length)
+          delete each.arriving;
+      }
+      if (!showsQueue(each) && !each.resumed && !each.arriving)
         delete all[id];
     }
     try {
@@ -34980,7 +34993,7 @@ function handler(context) {
             const written = String(input.text ?? "");
             const template = name ? await link.commandTemplate(name, sessions.get(id).location.directory) : undefined;
             const text = template ? expandCommand(template, written) : `/${name} ${written}`.trim();
-            sessions.prompt(id, { id: newID("msg"), text, files: input.files ?? [], delivery: input.delivery ?? "steer" });
+            sessions.prompt(id, { id: newID("msg"), text, files: input.files ?? [], delivery: input.delivery ?? "steer", metadata: input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? input.metadata : undefined });
             return json15({});
           }
           case "interrupt":
@@ -36555,4 +36568,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents b628040d1268565242fdb6a6a9de1ea24e117bbbd1c3da4dceafe1434b46321c
+// Built from Packages/Box/src/agents bdde58ab52b3a4a6526b30522c8b0a1508c1651c825416810cd0a4d7cc19e26f
