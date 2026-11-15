@@ -1565,6 +1565,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "box.permissions": ["GET", "kuvo/box/permissions"],
     // (Moving this Mac's box into a home of its own: how it stands, here nothing.)
     "box.rehome": ["GET", "kuvo/box/rehome"],
+    // (And the move the box runs whole itself: its steps in its own words, and what it didn't carry.)
+    "box.rehome.run": ["GET", "kuvo/box/rehome"],
     // (Its server kept for clients while one wants it.)
     "box.serve": ["GET", "kuvo/box/serve"],
     // (Kuvo Code on its computer reaching that server as `box route` does: the same route.)

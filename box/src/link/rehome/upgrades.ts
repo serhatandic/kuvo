@@ -10,6 +10,7 @@
 // it already, a keeper build's, keeps its own). What isn't carried is said, in words a client
 // shows once (`state.json`'s `dropped`).
 // Platform: a Mac's alone (the preferences are a property list `plutil` or `defaults` reads).
+// COMPAT(0.7 move): brings what Kuvo Code 0.5 to 0.7.2 and 0.8.0-beta.1 kept in the app's own files and preferences into the box's files, as the box moves. Goes on the user's word, once no 0.7 Mac is expected to update.
 
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";

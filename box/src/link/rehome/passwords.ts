@@ -10,6 +10,7 @@
 // hand-over cut short adds nothing twice); a site you let agents sign in to by themselves, with
 // that account, stays so. The Keychain's own stay where they are.
 // Platform: a Mac's alone.
+// COMPAT(0.7 move): takes the sign-ins Kuvo Code 0.5 to 0.7.2 and 0.8.0-beta.1 saved in the Keychain into the vault, from kuvo-keys. Goes on the user's word, once no 0.7 Mac is expected to update.
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";

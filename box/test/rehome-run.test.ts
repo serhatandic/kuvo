@@ -279,7 +279,7 @@ test.if(mac)("a keeper build's own box moves the same way: its lists kept and wh
     expect(moved.status, moved.errors + JSON.stringify(moved.said)).toBe(0)
     expect(moved.said).toMatchObject({ result: "done", status: { state: "done", owed: [] } })
     // (Asked to stop on its control, it went by itself.)
-    expect(await new Promise(resolve => (running.exitCode !== null ? resolve(running.exitCode) : running.once("exit", resolve)))).toBe(0)
+    expect(await new Promise<number | null>(resolve => (running.exitCode !== null ? resolve(running.exitCode) : running.once("exit", status => resolve(status))))).toBe(0)
     expect(snapshot(m.S)).toEqual(before)
   } finally {
     if (running.exitCode === null) running.kill()

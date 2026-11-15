@@ -7,6 +7,7 @@
 //
 // It doesn't act on what it finds: a run that was cut short is marked suspended (as the engine does
 // at every start), and messages still waiting stay waiting (tried with 2.2.6 on 2.0.32's).
+// COMPAT(0.7 move): has the pinned engine bring the database of the engine Kuvo Code 0.7.2 and 0.8.0-beta.1 ran (2.0.32) up to date in the move's staged copy. Goes on the user's word, once no 0.7 Mac is expected to update.
 
 import fs from "node:fs";
 import path from "node:path";

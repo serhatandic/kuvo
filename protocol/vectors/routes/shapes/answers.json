@@ -5022,6 +5022,9 @@
             "literal": "box.rehome"
            },
            {
+            "literal": "box.rehome.run"
+           },
+           {
             "literal": "box.serve"
            },
            {
@@ -5683,6 +5686,9 @@
            },
            {
             "literal": "box.rehome"
+           },
+           {
+            "literal": "box.rehome.run"
            },
            {
             "literal": "box.serve"
@@ -6671,7 +6677,16 @@
            "literal": "install"
           },
           {
+           "literal": "keys"
+          },
+          {
            "literal": "clone"
+          },
+          {
+           "literal": "upgrade"
+          },
+          {
+           "literal": "database"
           },
           {
            "literal": "rewrite"
@@ -6726,7 +6741,16 @@
                "literal": "install"
               },
               {
+               "literal": "keys"
+              },
+              {
                "literal": "clone"
+              },
+              {
+               "literal": "upgrade"
+              },
+              {
+               "literal": "database"
               },
               {
                "literal": "rewrite"
@@ -6777,6 +6801,12 @@
          },
          {
           "literal": "agent"
+         },
+         {
+          "literal": "start"
+         },
+         {
+          "literal": "passwords"
          }
         ]
        }
@@ -6807,6 +6837,61 @@
         "string",
         "null"
        ]
+      },
+      "progress?": {
+       "oneOf": [
+        {
+         "object": {
+          "step": {
+           "oneOf": [
+            {
+             "literal": "plan"
+            },
+            {
+             "literal": "install"
+            },
+            {
+             "literal": "keys"
+            },
+            {
+             "literal": "clone"
+            },
+            {
+             "literal": "upgrade"
+            },
+            {
+             "literal": "database"
+            },
+            {
+             "literal": "rewrite"
+            },
+            {
+             "literal": "check"
+            },
+            {
+             "literal": "place"
+            },
+            {
+             "literal": "fix"
+            },
+            {
+             "literal": "clear"
+            },
+            {
+             "literal": "done"
+            }
+           ]
+          },
+          "title": "string",
+          "index": "number",
+          "of": "number"
+         }
+        },
+        "null"
+       ]
+      },
+      "dropped?": {
+       "list": "string"
       }
      }
     }
@@ -6870,7 +6955,16 @@
            "literal": "install"
           },
           {
+           "literal": "keys"
+          },
+          {
            "literal": "clone"
+          },
+          {
+           "literal": "upgrade"
+          },
+          {
+           "literal": "database"
           },
           {
            "literal": "rewrite"
@@ -6925,7 +7019,16 @@
                "literal": "install"
               },
               {
+               "literal": "keys"
+              },
+              {
                "literal": "clone"
+              },
+              {
+               "literal": "upgrade"
+              },
+              {
+               "literal": "database"
               },
               {
                "literal": "rewrite"
@@ -6976,6 +7079,12 @@
          },
          {
           "literal": "agent"
+         },
+         {
+          "literal": "start"
+         },
+         {
+          "literal": "passwords"
          }
         ]
        }
@@ -7006,6 +7115,61 @@
         "string",
         "null"
        ]
+      },
+      "progress?": {
+       "oneOf": [
+        {
+         "object": {
+          "step": {
+           "oneOf": [
+            {
+             "literal": "plan"
+            },
+            {
+             "literal": "install"
+            },
+            {
+             "literal": "keys"
+            },
+            {
+             "literal": "clone"
+            },
+            {
+             "literal": "upgrade"
+            },
+            {
+             "literal": "database"
+            },
+            {
+             "literal": "rewrite"
+            },
+            {
+             "literal": "check"
+            },
+            {
+             "literal": "place"
+            },
+            {
+             "literal": "fix"
+            },
+            {
+             "literal": "clear"
+            },
+            {
+             "literal": "done"
+            }
+           ]
+          },
+          "title": "string",
+          "index": "number",
+          "of": "number"
+         }
+        },
+        "null"
+       ]
+      },
+      "dropped?": {
+       "list": "string"
       }
      }
     }

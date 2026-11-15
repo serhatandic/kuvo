@@ -10,6 +10,7 @@
 // here until it succeeds, so every refusal says what to do, and trying again is yours: no wait
 // between tries, no cap.
 // Platform: a Mac's alone. Linux has no app's folder to move from.
+// COMPAT(0.7 move): moves the data Kuvo Code 0.5 to 0.7.2, 0.8.0-beta.1 and keeper builds left in the app's folder into this Mac's box, with no keeper before it. Goes on the user's word, once no 0.7 Mac is expected to update.
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
