@@ -200,7 +200,8 @@ export { alwaysTitle, describeForm, describePermission, groupNotice, noticeFor, 
 export { STEER_AFTER, steering, watchBox, watchEvents } from "./engine/watch";
 export { forgetOldMacs, leaveMac, macsOf, mailFor, movedOf, noteOnline, openMail, peersOf, takeLegacyPeers } from "./peers/known";
 export { noteDocsChanged } from "./documents/changed";
-export { authorizePhone, confirmPhone, foldPhones, newPairing, pairPhone, removeAsMac, removePhones } from "./phones";
+export { authorizePhone, confirmPhone, foldPhones, newPairing, ownPhones, pairDevice, pairPhone, removeAsMac, removePhones } from "./phones";
+export { deviceAct, givenDevice, pairDeviceFromHere, pairHere } from "./peers/devices";
 export { noLongerNeeded } from "./keeper";
 export { changedWork, digestOf, docMails, docsWork, greetWork, macPeersBody, ownDoc, takeDoc } from "./documents/work";
 export { leadsNow, noteSetupNow, settleOwnSetup } from "./setup/lead";
@@ -290,6 +291,9 @@ onLinkWritten(link => {
     }, 200);
     return;
   }
+  // Devices no longer let in (removed on another computer, as its phones document says) lose what
+  // they have open, a moment after, as on a Mac.
+  if (liveHost) setTimeout(() => liveHost?.keepOnly(new Set((readLink()?.phones ?? []).map(phone => phone.key))), 200).unref?.();
   // For the box's keeper, which keeps this bridge running while it's needed.
   if (needed(link)) fs.writeFileSync(NEEDED_FILE, "", { mode: 0o600 });
   else fs.rmSync(NEEDED_FILE, { force: true });
@@ -511,7 +515,11 @@ async function run(): Promise<void> {
     forwardNow();
     heldNow();
     reachNow();
-    if (current?.welcomed && docsNoted()) try { docsChanged(current, { tell: true }); } catch {}
+    if (current?.welcomed && docsNoted()) {
+      try { docsChanged(current, { tell: true }); } catch {}
+      // (A device removed by another process, Kuvo Code beside this box: what it has open ends now.)
+      try { current.keepOnly(new Set((readLink()?.phones ?? []).map(phone => phone.key))); } catch {}
+    }
     if (current?.welcomed) lastWelcomed = Date.now();
     noteRelay(Boolean(current?.welcomed), lastWelcomed);
     sendNow();

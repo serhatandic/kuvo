@@ -179,6 +179,34 @@ pub struct Window {
     pub resets: Option<f64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Lines { pub min: usize, pub max: usize }
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Folder { pub choose: String, pub clear: String, pub prompt: String, pub message: String }
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Search { pub placeholder: String, pub empty: String }
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Suggestion { pub value: f64, pub title: String }
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ConfirmBelow { pub value: f64, pub confirm: Confirm }
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Unit { pub name: String, pub factor: f64, pub decimals: usize, pub rounding: Rounding }
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Rounding { Nearest }
+
+impl Unit {
+    pub fn number(&self, value: f64) -> String {
+        let scale = 10_f64.powi(self.decimals as i32);
+        let number = match self.rounding { Rounding::Nearest => (value / self.factor * scale).round() / scale };
+        let number = if number == 0.0 { 0.0 } else { number };
+        let text = format!("{:.*}", self.decimals, number);
+        if text.contains('.') { text.trim_end_matches('0').trim_end_matches('.').to_owned() } else { text }
+    }
+    pub fn display(&self, value: f64) -> String { format!("{} {}", self.number(value), self.name) }
+}
+
 /// A row, with its kind's fields (those of other kinds are left empty).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Row {
@@ -203,6 +231,18 @@ pub struct Row {
     pub busy: Option<String>,
     #[serde(default, deserialize_with = "crate::accounts::readable")]
     pub choices: Vec<Choice>,
+    #[serde(default)]
+    pub lines: Option<Lines>,
+    #[serde(default)]
+    pub folder: Option<Folder>,
+    #[serde(default)]
+    pub search: Option<Search>,
+    #[serde(default)]
+    pub unit: Option<Unit>,
+    #[serde(default)]
+    pub suggestions: Vec<Suggestion>,
+    #[serde(default, rename = "confirmBelow")]
+    pub confirm_below: Option<ConfirmBelow>,
     #[serde(default)]
     pub placeholder: Option<String>,
     #[serde(default)]
@@ -310,7 +350,13 @@ impl BoxClient {
 
     /// Changes the row `row` to `value`, from the revision (`was`) it was read at.
     pub fn change_setting_at(&self, section: &str, row: &str, was: &str, value: Value) -> Result<Changed> {
-        let request = Request { method: "PATCH".into(), path: page_route(section), headers: Vec::new(), body: Some(json!({ "row": row, "value": value, "was": was })) };
+        self.change_setting_confirmed_at(section, row, was, value, false)
+    }
+
+    pub fn change_setting_confirmed_at(&self, section: &str, row: &str, was: &str, value: Value, confirmed: bool) -> Result<Changed> {
+        let mut body = json!({ "row": row, "value": value, "was": was });
+        if confirmed { body["confirmed"] = json!(true); }
+        let request = Request { method: "PATCH".into(), path: page_route(section), headers: Vec::new(), body: Some(body) };
         changed(self, &request)
     }
 
@@ -378,5 +424,37 @@ mod tests {
         assert_eq!(page.row("later").unwrap().kind, Kind::Unknown);
         assert_eq!(page.row("allowed-1").unwrap().actions[0].title, "Remove");
         assert_eq!(page.notes[1].tone, Tone::Quiet);
+    }
+}
+
+#[cfg(test)]
+mod row_metadata_tests {
+    use super::*;
+    #[test]
+    fn reads_every_presentation_and_confirmation_field() {
+        let row: Row = serde_json::from_value(json!({
+            "id":"budget", "title":"Budget", "kind":"number", "value":2000000000,
+            "unit":{"name":"GiB","factor":1073741824,"decimals":2,"rounding":"nearest"}, "suggestions":[{"value":1073741824,"title":"1 GiB"}],
+            "confirmBelow":{"value":1500000000,"confirm":{"title":"Keep less?","body":"Old copies go.","button":"Keep"}},
+            "folder":{"choose":"Choose…","clear":"Default","prompt":"Choose","message":"Choose a folder."},
+            "lines":{"min":3,"max":8},"search":{"placeholder":"Find","empty":"Nothing for {query}"}
+        })).unwrap();
+        assert_eq!(row.unit.as_ref().unwrap().name,"GiB");
+        assert_eq!(row.suggestions[0].title,"1 GiB");
+        assert_eq!(row.confirm_below.unwrap().confirm.body,"Old copies go.");
+        assert_eq!(row.folder.unwrap().prompt,"Choose");
+        assert_eq!(row.lines.unwrap().min,3);
+        assert_eq!(row.search.unwrap().empty,"Nothing for {query}");
+    }
+
+    #[test]
+    fn formats_units_with_nearest_rounding_and_trimmed_trailing_zeroes() {
+        let gib = Unit { name: "GiB".into(), factor: 1024.0 * 1024.0 * 1024.0, decimals: 2, rounding: Rounding::Nearest };
+        assert_eq!(gib.number(1073741831.0), "1");
+        assert_eq!(gib.display(536870912.0), "0.5 GiB");
+        assert_eq!(gib.display(268435456.0), "0.25 GiB");
+        assert_eq!(gib.number(-0.0), "0");
+        let tenths = Unit { name: "GiB".into(), factor: 1024.0 * 1024.0 * 1024.0, decimals: 1, rounding: Rounding::Nearest };
+        assert_eq!(tenths.display(1342177280.0), "1.3 GiB");
     }
 }

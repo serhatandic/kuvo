@@ -161,6 +161,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "computers-many", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers_all) },
     Screen { slug: "computer-this", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_this) },
     Screen { slug: "computer-page", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers) },
+    Screen { slug: "computer-blocked", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers) },
     Screen { slug: "computer-away", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_away) },
     Screen { slug: "computer-older", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_older) },
     Screen { slug: "computer-shared", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_shared) },
@@ -168,6 +169,11 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "computer-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_narrow) },
     // Settings (`kuvo/src/settings`): each section, the search, a section not in this app yet, and
     // each step of signing in.
+    Screen { slug: "settings-row-storage", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_storage) },
+    Screen { slug: "settings-row-storage-confirm", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_storage_confirm) },
+    Screen { slug: "settings-row-worktrees", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_worktrees) },
+    Screen { slug: "settings-row-git", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_git) },
+    Screen { slug: "settings-row-archived", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_archived) },
     Screen { slug: "settings-a-yours", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours) },
     Screen { slug: "settings-a-yours-later", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_later) },
     Screen { slug: "settings-a-general", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(general) },
@@ -509,6 +515,21 @@ fn yours(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
 /// One of your own sections that isn't in the desktop app yet.
 fn yours_later(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "yours/shortcuts", window, cx);
+}
+fn row_storage(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "storage", window, cx); }
+fn row_worktrees(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = settings(w, "worktrees", window, cx);
+    if let Some(row) = w.client().settings_page("worktrees").ok().and_then(|page| page.row("folder").cloned()) && let Some(words) = row.folder.clone() {
+        view.update(cx, |view,cx| view.act(kuvo::settings::Act::Folder { at: kuvo::settings::At::of("worktrees", &row), words },cx));
+    }
+}
+fn row_git(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "git", window, cx); }
+fn row_archived(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "archived", window, cx); }
+fn row_storage_confirm(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = settings(w, "storage", window, cx);
+    if let Some(row) = w.client().settings_page("storage").ok().and_then(|page| page.row("budget").cloned()) {
+        view.update(cx, |view, cx| view.act(kuvo::settings::Act::Change { at: kuvo::settings::At::of("storage", &row), value: serde_json::json!(536_870_912), asked: false }, cx));
+    }
 }
 fn general(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "General", window, cx);
@@ -926,8 +947,27 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "computers-alone" {
                 stand_in.computers_alone();
             }
+            if screen.slug == "computer-blocked" {
+                stand_in.block_vouching("key_devbox");
+            }
             if screen.slug == "computers-many" {
                 stand_in.more_computers(40);
+            }
+            if screen.slug.starts_with("settings-row-") {
+                use serde_json::json;
+                let confirm = json!({"value":805306368,"confirm":{"title":"Keep less of older versions?","body":"Older versions take 768 MiB now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.","button":"Keep up to"}});
+                let pages = [
+                    ("storage","Storage","System","drive",json!([
+                        {"id":"copies","title":"Copies of what agents made","kind":"status","value":1342177280,"unit":{"name":"GiB","factor":1073741824,"decimals":1,"rounding":"nearest"}},
+                        {"id":"budget","title":"Older versions keep up to","line":"Past it, the oldest go first.","kind":"number","value":1073741824,"unit":{"name":"GiB","factor":1073741824,"decimals":2,"rounding":"nearest"},"can":true,"confirmBelow":confirm,"suggestions":[{"value":268435456,"title":"0.25 GiB"},{"value":536870912,"title":"0.5 GiB"},{"value":1073741824,"title":"1 GiB"},{"value":2147483648_u64,"title":"2 GiB"},{"value":5368709120_u64,"title":"5 GiB"},{"value":10737418240_u64,"title":"10 GiB"}]}
+                    ])),
+                    ("worktrees","Worktrees","System","folder",json!([{"id":"folder","title":"Folder","kind":"folder","value":"","placeholder":"Kuvo Code’s Folder","can":true,"folder":{"choose":"Choose a Folder…","clear":"Kuvo Code’s Folder","prompt":"Choose","message":"Choose where new worktrees go. Each one is a folder in it."}}])),
+                    ("git","Git","System","branch",json!([{"id":"instructions","title":"Commit instructions","kind":"text","value":"Write a short title.\nExplain why the change matters.","lines":{"min":3,"max":8},"can":true}])),
+                    ("archived","Archived Sessions","System","archive",json!([{"id":"sessions","title":"Kuvo Code","kind":"list","search":{"placeholder":"Search archived sessions","empty":"No archived session matches “{query}”."},"items":[{"id":"session","title":"Fix settings","line":"Kuvo Code","kind":"actions","actions":[{"id":"restore","title":"Restore"}]}]}]))
+                ];
+                for (id,title,group,icon,rows) in pages {
+                    stand_in.add_settings_section(json!({"id":id,"title":title,"group":group,"icon":icon}),json!({"id":id,"title":title,"groups":[{"id":"settings","title": if id == "archived" { "Kuvo Code" } else { "" },"rows":rows}]}));
+                }
             }
             if screen.slug == "settings-a-kinds" {
                 let (section, page) = kuvo::stand_in::settings::every_kind();
@@ -1032,5 +1072,57 @@ fn main() -> anyhow::Result<()> {
             cx.run_until_parked();
         }
     }
-    first_run_shots(&mut cx, &only, &out)
+    first_run_shots(&mut cx, &only, &out)?;
+    home_shots(&mut cx, &only, &out)
+}
+
+/// The window over your boxes: the switcher open on your computers, and a session open on another
+/// of them (`switcher`, `elsewhere`).
+fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
+    for slug in ["switcher", "elsewhere"] {
+        if !only.is_empty() && !only.iter().any(|only| only == slug) {
+            continue;
+        }
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            cx.update(|cx| Theme::set_appearance(appearance, cx));
+            let boxes = kuvo::home::stand_in_boxes(StandIn::at(Replies::Never, NOW));
+            let first = boxes.nearest().expect("the stand-in is the nearest box");
+            let window = cx.open_window(size(px(1280.), px(820.)), |window, cx| cx.new(|cx| kuvo::Home::new(boxes, first, false, window, cx)))?;
+            let any = window.into();
+            cx.update_window(any, |root, window, cx| {
+                let home = root.downcast::<kuvo::Home>().expect("the home");
+                home.update(cx, |home, cx| {
+                    home.set_now(NOW, cx);
+                    home.read_at_once(cx);
+                    if slug == "elsewhere" {
+                        assert!(home.switch_to("key_devbox", window, cx));
+                        home.workspace().clone().update(cx, |workspace, cx| workspace.open_read_at_once("ses_releases", window, cx));
+                    }
+                });
+            })?;
+            cx.run_until_parked();
+            cx.update_window(any, |_, window, _| window.refresh())?;
+            cx.run_until_parked();
+            if slug == "switcher" {
+                // A click on the switcher, through the window.
+                cx.update_window(any, |_, window, cx| {
+                    let at = gpui::point(px(130.), px(22.));
+                    mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers: Modifiers::default() }));
+                    mouse(window, cx, PlatformInput::MouseDown(MouseDownEvent { position: at, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+                    mouse(window, cx, PlatformInput::MouseUp(MouseUpEvent { position: at, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1 }));
+                })?;
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+            }
+            let image = cx.capture_screenshot(any)?;
+            let name = format!("screens-{slug}-{}.png", if appearance.is_dark() { "dark" } else { "light" });
+            image.save(out.join(&name))?;
+            println!("{name}: {}x{}", image.width(), image.height());
+            cx.update_window(any, |_, window, _| window.remove_window())?;
+            cx.run_until_parked();
+        }
+    }
+    Ok(())
 }

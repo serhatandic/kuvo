@@ -22,6 +22,8 @@ pub struct Areas {
     pub removed: Vec<String>,
     /// The computers being reached again (`POST kuvo/computers/<key>/connect`), by key.
     pub reaching: Vec<String>,
+    /// The computers whose app was removed from your devices: their boxes add none until allowed.
+    pub vouch_blocked: Vec<String>,
     /// What renaming or removing says instead of doing it, as a box that can't ask the computer
     /// writing its record says (`503`).
     pub manage_refused: Option<String>,
@@ -62,6 +64,13 @@ pub fn asks_of(session: &str) -> Value {
 /// done, and the list changed (`true`); `None` for a route that isn't one of these.
 pub fn manage(areas: &mut Areas, method: &str, route: &str) -> Option<((u16, Value), bool)> {
     let rest = route.strip_prefix("kuvo/computers/")?;
+    if let Some(key) = rest.strip_suffix("/allow-devices") {
+        if method != "POST" {
+            return Some(((405, json!({ "message": "Only POST." })), false));
+        }
+        areas.vouch_blocked.retain(|blocked| blocked != key);
+        return Some(((200, json!({})), true));
+    }
     let (key, connect) = match rest.strip_suffix("/connect") {
         Some(key) => (key, true),
         None => (rest, false),
@@ -114,6 +123,13 @@ fn listed(areas: &Areas) -> Vec<Value> {
                     if action["id"] == json!("remove") {
                         *action = json!({ "id": "remove", "label": "Remove", "why": format!("Quit the old Kuvo Code app on {} first: it keeps its own list of machines, and would add {name} back.", super::NAME) });
                     }
+                }
+            }
+            if areas.vouch_blocked.iter().any(|key| computer["key"] == json!(key)) {
+                let name = computer["name"].as_str().unwrap_or_default().to_owned();
+                computer["vouching"] = json!({ "blocked": true, "words": format!("Kuvo on {name} was removed from your devices. {name} can’t add Kuvo Code’s app again until you allow it.") });
+                if let Some(actions) = computer["actions"].as_array_mut() {
+                    actions.push(json!({ "id": "allow-devices", "label": "Allow Its App Again", "confirm": { "title": format!("Allow Kuvo Code’s app on {name} again?"), "message": format!("Kuvo Code on {name} can add itself to your devices again, and reach every one of your computers."), "label": "Allow" } }));
                 }
             }
             if areas.reaching.iter().any(|key| computer["key"] == json!(key)) {

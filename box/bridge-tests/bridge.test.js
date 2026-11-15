@@ -1582,13 +1582,21 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (What a side question's routes take besides, on the coding agents' bridge.)
     "btw.threads": ["GET", "kuvo/agents/api/kuvo/btw"],
     "claude-code": ["GET", "kuvo/claude-code"],
+    // (What a client says it is as its session opens, listed with each paired device.)
+    "clients.kind": ["GET", "kuvo/phones"],
     computers: ["GET", "kuvo/computers"],
     // (What each computer answers and which of its sessions are at work, in kuvo/computers' answer.)
     "computers.facts": ["GET", "kuvo/computers"],
     // (Renaming, removing and reaching one again: kuvo/computers/<key>, which says one isn't there.)
     "computers.manage": ["DELETE", "kuvo/computers/none"],
+    // (Where a client reaches each of your own computers itself, in kuvo/computers' answer.)
+    "computers.reach": ["GET", "kuvo/computers"],
     config: ["GET", "kuvo/config"],
     "config.apply": ["GET", "kuvo/config/apply"],
+    // (A computer let add Kuvo Code's app to your devices again, on the main computer: a GET is the wrong method.)
+    "devices.allow": ["GET", "kuvo/computers/none/allow-devices"],
+    // (Kuvo Code's desktop app paired as one of your devices, only from the app on this computer: a GET is the wrong method.)
+    "devices.pair": ["GET", "kuvo/devices/pair"],
     "engine.restart": ["GET", "kuvo/engine/restart"],
     "engine.start": ["GET", "kuvo/engine/start"],
     file: ["GET", "kuvo/file"],

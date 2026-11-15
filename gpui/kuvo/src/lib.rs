@@ -16,6 +16,8 @@ pub mod conversation;
 pub mod entries;
 pub mod first_run;
 pub mod groups;
+pub mod home;
+pub mod keeper;
 mod landing;
 pub mod panel;
 pub mod queue;
@@ -31,6 +33,7 @@ pub mod workspace;
 
 use gpui::{App, KeyBinding, actions};
 
+pub use home::Home;
 pub use workspace::Workspace;
 
 actions!(kuvo, [NewSession, ToggleAppearance, Quit, TogglePanel, ShowChanges, ShowFiles]);

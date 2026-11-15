@@ -23,6 +23,7 @@ import { holdQueue, keepWaitingHeld, type Outgoing } from "../engine/queue";
 import { answering, BUSY, sentKey, sentOnce } from "../server/sent-once";
 import type { SentAnswer } from "../server/sent-once";
 import type { Target } from "../../shared/records";
+import { fromAPhone } from "../server/context";
 import type { AnswerPiece, LinkRequest, RouteContext } from "../server/context";
 
 export const SEND_ROUTE = /^kuvo\/sessions\/([^/]+)\/send$/;
@@ -50,7 +51,7 @@ export async function composed(fields: MessageFields, files: unknown[], session:
   if (command) return { text: composeArguments(fields.words, fields.notes, kept ?? {}), files: (kept?.files ?? files) as PromptFile[], metadata: {} };
   // (Everyone worked out again only for a message that names someone.)
   const everyone = fields.words.includes("&") ? await everyoneFor(fields.words, readEngine, fields.named ?? []) : listedAgents();
-  const phone = request.fromMac !== true && request.fromApp !== true;
+  const phone = fromAPhone(request);
   // One picked from the "&" list that this box doesn't list (yet): said, never dropped.
   const listed = new Set(everyone.agents.map(agent => agent.session));
   if (fields.words.includes("&") && fields.named?.some(picked => !listed.has(picked))) throw new NotListed();
