@@ -52,6 +52,9 @@ export async function* phonesRemoveRoute(context: RouteContext): AsyncGenerator<
   return yield* json(200, {});
 }
 
+/** What a Mac says while it lets no device in: the one switch for phones and desktop apps alike. */
+const SWITCH_OFF = "“Let my devices connect” is off on this Mac.";
+
 // A link for another phone to pair with this machine, as `kuvo-link.js pair` shows one: good
 // once, for a while; a new one takes the place of the last. DELETE ends it.
 export async function* pairingRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
@@ -74,9 +77,9 @@ export async function* pairingRoute(context: RouteContext): AsyncGenerator<Answe
   // Only your setup's main computer pairs phones: a member names it (PROTOCOL.md, "Your setup").
   const main = mainElsewhere(readLink());
   if (main) return yield* json(409, pairElsewhere(main));
-  if (IS_MAC && !macLink.config?.phones) return yield* json(409, { message: "The phone link is off on this Mac." });
+  if (IS_MAC && !macLink.config?.phones) return yield* json(409, { message: SWITCH_OFF });
   const link = updateLink(current => current?.relay && current?.secret ? { ...current, [slot]: newPairingToken() } : null);
-  if (!link) return yield* json(409, { message: IS_MAC ? "The phone link isn't ready yet. Try again in a moment." : "This machine has no relay to pair through." });
+  if (!link) return yield* json(409, { message: IS_MAC ? "This Mac isn't ready for your devices yet. Try again in a moment." : "This machine has no relay to pair through." });
   macLink.wake?.();
   // (A box with a relay to pair through has its keys and name too.)
   return yield* json(200, { link: pairingLink({ ...link, pairing: link[slot] } as LinkState & { relay: string; secret: string; key: string; name: string; pairing: Pairing }), ends: Math.floor(link[slot]!.expires / 1000) } satisfies Infer<typeof PAIRING>);
