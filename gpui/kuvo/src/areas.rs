@@ -659,7 +659,7 @@ impl AreaView {
         let new_group = Button::icon_only("new-group", kuvo_ui::IconName::Plus, "New Group").ghost().size(ButtonSize::Small).tooltip("New Group").selected(self.is_selected("new-group")).disabled(self.client.gate().is_held()).on_click(self.row_click("new-group".into(), cx));
         rows.push(SectionHeader::new("groups", "Group Chats").action(div().debug_selector(|| "new-group".into()).child(new_group)).into_any_element());
         if bots.groups.is_empty() {
-            rows.push(div().debug_selector(|| "groups-none".into()).child(quiet("No group chats yet. Make one with +, to bring a few bots together.", false, cx)).into_any_element());
+            rows.push(div().debug_selector(|| "groups-none".into()).child(quiet("No group chats yet. Make one with the + beside Group Chats, to bring a few bots together.", false, cx)).into_any_element());
         }
         let now = self.now();
         for group in &bots.groups {

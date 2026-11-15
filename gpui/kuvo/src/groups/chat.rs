@@ -275,8 +275,8 @@ impl GroupChatView {
             state.splice(count - 1..count, 0);
             count -= 1;
         }
-        for ix in 0..count {
-            if old[ix] != self.rows[ix] {
+        for (ix, (was, now)) in old.iter().zip(&self.rows).take(count).enumerate() {
+            if was != now {
                 self.list.changed(ix);
             }
         }
