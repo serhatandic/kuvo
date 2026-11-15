@@ -11,7 +11,9 @@ the window (`workspace.rs`, `Welcome`) until the box says it's been had. What it
 - Where the box says there's nothing to ask about your accounts (`GET kuvo/setup/ready`,
   `setup.ready`: a model on one of them runs and no plan needs you), Get Started goes straight to
   Where to work. The box decides it (`box/src/link/setup/ready.ts`); the app keeps no rule, asks
-  again after each sign-in, and shows the step where the box can't say.
+  again after each sign-in, and shows the step where the box can't say. While the box says a side
+  can't tell yet (`pending`: the coding agents starting, or an agent's models still being
+  listed), Get Started waits and the app asks again, a few times, two seconds apart.
 - Signing in, in place: Settings' own `SignIn`, drawn under the row (`in_place()`); nothing opens
   Settings or leaves the flow. Screen access isn't asked.
 - Stand-in: `StandIn::first_run(replies, now, Scenario::{Nothing, Crowded, Running})`,
@@ -19,7 +21,7 @@ the window (`workspace.rs`, `Welcome`) until the box says it's been had. What it
   folders, the free models). The sample box says `welcomed: true`, so every other screen is as it
   was. To walk it: `cargo run -p kuvo --features stand-in -- --stand-in --first-run nothing`
   (`crowded`, `running`).
-- Tests: `kuvo/tests/first_run.rs` (17 scenarios through the window); the box's rule: `box/test/first-run.test.ts`. Shots:
+- Tests: `kuvo/tests/first_run.rs` (18 scenarios through the window); the box's rule: `box/test/first-run.test.ts`. Shots:
   `shots/screens-first-run-*` (`cargo run -p kuvo --features shots --bin shots -- first-run`).
 - `kuvo_box`: `added` read on each account; a suggested folder's `seen` read whether whole or with
   a fraction; `folders_in` (a folder's folders alone, no hidden ones) and a folder's `parent`.
