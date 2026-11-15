@@ -130,6 +130,70 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
   }
 }
 
+/** What asking your other computers for an item this box knows nothing of came to: the one that
+ * keeps it, with the item whole as its box answered; that none has it (`missing`: every one
+ * answered); or that some couldn't say, so it may be there (`unsure`, with why in words a client
+ * shows). */
+export type Sought = { computer: Computer; item: Record<string, unknown> } | { missing: true } | { unsure: Computer[]; message: string };
+
+const listed = (names: string[]) => (names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`);
+
+/** An item no computer told this box of (an old Done one, a deleted one, one added a moment ago),
+ * named as a client named it (`ref`: its number, id or issue), asked of each of your other
+ * computers' boxes at once, for a client (PROTOCOL.md, "The Work Queue", "Across your computers",
+ * Found where it's kept): so a client asks one box, whichever keeps the item. Never from a machine
+ * Macs share outside one setup, which asks no other computer. */
+export async function seekElsewhere(ref: string, signal?: AbortSignal | null, link: LinkState | null = readLink()): Promise<Sought> {
+  const peers = sharedMachine(link) ? [] : peersOf(link);
+  if (!peers.length) return { missing: true };
+  const here = ownName();
+  const computerOf = (peer: (typeof peers)[number]): Computer => ({ key: peer.key, name: computerName(peer), kind: peer.kind, ...(peer.id ? { id: peer.id } : {}) });
+  if (offRelay()) return { unsure: peers.map(computerOf), message: `It isn't on ${here}, and ${here} isn't connected to your other computers now, so it can't tell whether it's on one of them. Try again in a moment.` };
+  // (The first that has it answers for all: the others aren't waited for.)
+  const rest = new AbortController();
+  const gone = () => rest.abort();
+  signal?.addEventListener("abort", gone, { once: true });
+  const away: Computer[] = [];
+  const unasked: Computer[] = [];
+  try {
+    const found = await new Promise<{ computer: Computer; item: Record<string, unknown> } | null>(resolve => {
+      let left = peers.length;
+      const done = () => { if (--left === 0) resolve(null); };
+      for (const peer of peers) {
+        const computer = computerOf(peer);
+        // (One that doesn't take it from another box, an older one: it can't be asked.)
+        if (!takesForwarded(peer.key)) {
+          unasked.push(computer);
+          done();
+          continue;
+        }
+        forwardAct(computer, "", { method: "GET", item: ref }, rest.signal, link).then(there => {
+          const item = "value" in there && there.status === 200 && isObject(there.value) && isObject(there.value.item) ? there.value.item : null;
+          if (item) return resolve({ computer, item });
+          if ("refused" in there && there.status === 503) away.push(computer);
+          else if (there.status !== 404) unasked.push(computer);
+          done();
+        }, () => {
+          unasked.push(computer);
+          done();
+        });
+      }
+    });
+    if (found) return found;
+  } finally {
+    rest.abort();
+    signal?.removeEventListener("abort", gone);
+  }
+  if (!away.length && !unasked.length) return { missing: true };
+  const names = (computers: Computer[]) => listed(computers.map(each => each.name));
+  const one = away.length + unasked.length === 1;
+  const why = [
+    ...(away.length ? [`${names(away)} ${away.length === 1 ? "isn't" : "aren't"} answering now (${away.length === 1 ? "it" : "they"} may be asleep, off or offline)`] : []),
+    ...(unasked.length ? [`${names(unasked)} couldn't be asked from ${here}`] : []),
+  ].join(", and ");
+  return { unsure: [...away, ...unasked], message: `It isn't on ${here}, and ${why}, so it may be there. Try again once ${one ? "it answers" : "they answer"}.` };
+}
+
 // The asks this process left. This Mac's box answers its routes in the process that sends, so it
 // sends only these: what anything else on this Mac leaves there never goes out as you (on a machine,
 // a Mac's `box route` leaves them, and anything there could read the box's keys anyway).
