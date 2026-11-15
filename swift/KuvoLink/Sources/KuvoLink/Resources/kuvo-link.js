@@ -45379,7 +45379,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "61861026984e";
+var BRIDGE_VERSION = "79b3eb7c1289";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -56559,6 +56559,14 @@ var SECTIONS = [
     icon: "globe",
     line: "The browser's search engine, and offering to save sign-ins.",
     keywords: ["search engine", "google", "duckduckgo", "sign-ins", "passwords", "tabs", "never offered"]
+  },
+  {
+    id: "git",
+    title: "Git",
+    group: "System",
+    icon: "branch",
+    line: "How sessions' branches are named, and commit messages and pull requests are written.",
+    keywords: ["branch prefix", "worktree", "commit", "pull request", "instructions"]
   }
 ];
 function revised(row) {
@@ -56856,6 +56864,43 @@ async function browserAct(context, at, action) {
   offerAgain(at.id.slice(6));
   return null;
 }
+var GIT_ROWS = [
+  { id: "branch-prefix", key: "branchPrefix", group: "Branches", title: "Branch prefix", line: "How a session’s own branch in a worktree starts.", placeholder: "None" },
+  { id: "commit-instructions", key: "commitInstructions", group: "Commit Messages", title: "Instructions", line: "Added when Suggest a Message in Changes asks the model for one.", placeholder: "For example: Start with the area changed, like “ui: …”, and never mention tickets." },
+  { id: "pull-request-instructions", key: "pullRequestInstructions", group: "Pull Requests", title: "Instructions", line: "Added when Create Pull Request writes the title and description.", placeholder: "For example: Add a Testing section, and link the issue if the branch names one." }
+];
+async function gitPage(context) {
+  const read = await asked8(context, settingsRoute, "GET", "kuvo/config");
+  return { id: "git", title: "Git", groups: GIT_ROWS.map((each) => {
+    const value = read.value[GIT_SETTINGS[each.key][0]];
+    return { id: each.id, title: each.group, rows: [row({
+      id: each.id,
+      title: each.title,
+      line: each.line,
+      placeholder: each.placeholder,
+      kind: "text",
+      value: typeof value === "string" ? value : each.key === "branchPrefix" ? DEFAULT_BRANCH_PREFIX : "",
+      can: read.status === 200 ? true : { why: said8(read, "This computer's settings couldn't be read.") }
+    })] };
+  }) };
+}
+async function gitChange(context, at, value) {
+  const each = GIT_ROWS.find((each) => each.id === at.id);
+  if (!each)
+    return { status: 400, message: "That isn't something to change." };
+  const path = [...GIT_SETTINGS[each.key]];
+  const read = await asked8(context, settingsRoute, "GET", "kuvo/config");
+  if (read.status !== 200)
+    return refusal4(read);
+  const was = read.value[path[0]] ?? null;
+  const shown = typeof was === "string" ? was : each.key === "branchPrefix" ? DEFAULT_BRANCH_PREFIX : "";
+  if (shown !== at.value)
+    return STALE;
+  const written = await asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path, value, was }] });
+  if (written.status === 409 && written.value.message === CHANGED_SINCE)
+    return STALE;
+  return refusal4(written);
+}
 var zoneTitle = (zone) => zone.replaceAll("_", " ").split("/").join(" › ");
 function zoneNames() {
   let names = [];
@@ -56941,6 +56986,7 @@ var PAGES2 = {
       return `${mtime2(APPROVAL_FILE)} ${mtime2(CONFIG_FILE)} ${mtime2(ALLOWED_FILE)} ${fence}`;
     }
   },
+  git: { read: gitPage, change: gitChange, act: generalAct, look: () => `${mtime2(CONFIG_FILE)}` },
   browser: { read: browserPage, change: browserChange, act: browserAct, look: () => browserSettingsFiles().map(mtime2).join(" ") }
 };
 var followers2 = new Set;
@@ -56949,6 +56995,8 @@ var changed5 = () => {
     told();
 };
 function fits4(at, value) {
+  if (at.kind === "text")
+    return typeof value === "string";
   if (at.kind === "switch")
     return typeof value === "boolean";
   if (at.kind === "choice")
@@ -57043,7 +57091,7 @@ async function* settingsPageRoute(context, match) {
       if (why)
         return { status: 403, value: { message: why } };
       if (!("value" in given) || !fits4(at, given.value))
-        return { status: 400, value: { message: at.kind === "choice" ? "Pick one of its choices." : "Send true or false." } };
+        return { status: 400, value: { message: at.kind === "choice" ? "Pick one of its choices." : at.kind === "text" ? "Send text." : "Send true or false." } };
       done = await section.change(context, at, given.value);
     }
     if (done?.stale)

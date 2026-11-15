@@ -15,6 +15,7 @@ import { ask, follow } from "./route-answer"
 
 const { engineHandler } = await import("../src/link/server/router")
 const { APPROVAL_FILE } = await import("../src/link/work/approval")
+const { BRANCH_PREFIX_FILE } = await import("../src/link/areas/worktree-records")
 const { CONFIG_FILE } = await import("../src/link/areas/config")
 const { ALLOWED_FILE } = await import("../src/link/fence/allowed")
 const { BROWSER_FOLDER } = await import("../src/link/browser/history")
@@ -38,7 +39,7 @@ const write = (file: string, value: unknown) => {
   writeFileSync(file, JSON.stringify(value))
 }
 beforeEach(() => {
-  for (const file of files) rmSync(file, { force: true })
+  for (const file of [...files, BRANCH_PREFIX_FILE]) rmSync(file, { force: true })
   // A machine's own settings, as Kuvo Code makes them once (`ownsSettings`).
   write(CONFIG_FILE, { permissions: [{ action: "shell", resource: "git push *", effect: "ask" }] })
 })
@@ -60,6 +61,7 @@ test("the box lists its sections, each with what a sidebar and search show", asy
     ["general", "General", "General", "settings"],
     ["permissions", "Permissions", "Agents & Tools", "shield"],
     ["browser", "Browser", "System", "globe"],
+    ["git", "Git", "System", "branch"],
   ])
   expect(json.sections[0].keywords).toContain("time zone")
   expect(json.sections[1].keywords).toContain("sandbox")
@@ -423,4 +425,54 @@ test("the sandbox's row warns while commands can still reach your login's servic
   const git = sandboxRow(worded({ on: true, able: true, agents: true, gaps: ["git"] }), "devbox", false)
   expect(git).toMatchObject({ value: "On", kind: "status", line: "Agents' commands here run in it." })
   expect("tone" in git).toBe(false)
+})
+
+
+test("Git rows wrap config, with independent revisions and stale writes refused", async () => {
+  const shown = await page("git")
+  expect(shown.groups.flatMap((g: any) => g.rows.map((r: any) => [r.id, r.kind, r.title, r.value]))).toEqual([
+    ["branch-prefix", "text", "Branch prefix", "kuvo/"],
+    ["commit-instructions", "text", "Instructions", ""],
+    ["pull-request-instructions", "text", "Instructions", ""],
+  ])
+  const prefix = rowOf(shown, "branch-prefix")
+  expect((await change("git", prefix, "feature/")).status).toBe(200)
+  expect((await ask(handler, "GET", "kuvo/config")).json.branch_prefix).toBe("feature/")
+  expect((await change("git", prefix, "other/")).status).toBe(409)
+  expect((await change("git", rowOf(shown, "commit-instructions"), "Use imperative mood")).status).toBe(200)
+  expect((await change("git", rowOf(await page("git"), "branch-prefix"), "")).status).toBe(200)
+  expect((await ask(handler, "GET", "kuvo/config")).json.branch_prefix).toBe("")
+})
+
+test("Git events follow both the page and existing config route", async () => {
+  const events = follow(handler, "kuvo/settings/git/events")
+  try {
+    const first = await events.next()
+    await change("git", rowOf(first, "branch-prefix"), "session/")
+    expect(rowOf(await events.next(), "branch-prefix").value).toBe("session/")
+    await ask(handler, "PATCH", "kuvo/config", { changes: [{ path: ["pull_request_instructions"], value: "Include testing" }] })
+    expect(rowOf(await events.next(), "pull-request-instructions").value).toBe("Include testing")
+  } finally { events.stop() }
+})
+
+test("Git says why a broken settings file cannot be changed", async () => {
+  writeFileSync(CONFIG_FILE, "{broken")
+  const prefix = rowOf(await page("git"), "branch-prefix")
+  expect(prefix.can.why).toContain("settings")
+  expect((await change("git", prefix, "feature/")).status).toBe(403)
+  expect(readFileSync(CONFIG_FILE, "utf8")).toBe("{broken")
+})
+
+
+test("Git events follow the old one-time settings migration route", async () => {
+  const events = follow(handler, "kuvo/settings/git/events")
+  try {
+    await events.next()
+    const moved = await ask(handler, "POST", "kuvo/git/settings/move", { branchPrefix: "moved/", commitInstructions: "Keep it short" })
+    expect(moved.status).toBe(200)
+    expect(moved.json.moved).toBe(true)
+    const next = await events.next()
+    expect(rowOf(next, "branch-prefix").value).toBe("moved/")
+    expect(rowOf(next, "commit-instructions").value).toBe("Keep it short")
+  } finally { events.stop() }
 })

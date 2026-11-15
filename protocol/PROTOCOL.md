@@ -6715,7 +6715,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sessions.needsYou` | `needsYou`, each project's `asking` and `working`, and each session's `bot`, in `kuvo/sessions/list` ("Session lists", #711) |
 | `sessions.start` | `POST kuvo/sessions`: a session started with a task (bridge 0.9.100) |
 | `sessions.start.empty` | `POST kuvo/sessions` from a client without a task, `agent`, `model` as `{providerID, id, variant?}`, and `info` and `worktree` in its answer (#341) |
-| `settings` | `kuvo/settings`, `kuvo/settings/<section>`, `…/events`, a row changed with `PATCH` and an action done with `POST …/<row>/<action>`: the box's settings as it describes them, Permissions and Browser first ("A box's settings", #727) |
+| `settings` | `kuvo/settings`, `kuvo/settings/<section>`, `…/events`, a row changed with `PATCH` and an action done with `POST …/<row>/<action>`: the box's settings as it describes them, General, Permissions, Browser and Git ("A box's settings", #727) |
 | `setup` | `kuvo/setup`, `…/events`: your setup and its main computer ("Your setup") |
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
 | `setup.welcomed` | `welcomed` in `kuvo/setup`, and `POST kuvo/setup/welcomed`: whether you've had the first run with this box ("Your setup", #733) |
@@ -8140,6 +8140,15 @@ The sections now:
   Never Offered (`never`, a `list` of `never-<site>`, each with `offer-again`, which takes that one
   site out and leaves the rest as they are then): `kuvo/browser/settings`,
   the box's browser. How the side panel's own browser keeps its data is each client's.
+
+- **Git** (`git`): Branches (`branch-prefix`, “Branch prefix”), Commit Messages
+  (`commit-instructions`, “Instructions”) and Pull Requests (`pull-request-instructions`,
+  “Instructions”), all `text` rows wrapping `kuvo/config`'s `branch_prefix`,
+  `commit_instructions` and `pull_request_instructions`. An unset prefix shows `kuvo/`;
+  empty text means no prefix. Instructions are added when suggesting a commit message or
+  writing a pull request. Changes use the existing config route with that field's `was`,
+  leaving unrelated fields alone. Unavailable settings say why in `can`. Page events follow
+  config changes, including the old Git settings migration route.
 
 ### Your time zone
 

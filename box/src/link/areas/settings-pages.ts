@@ -19,6 +19,7 @@ import { approvalRoute } from "./approval";
 import { CHANGED_SINCE, CONFIG_FILE } from "./config";
 import { engineControl } from "./engine";
 import { sandboxRoute } from "./sandbox";
+import { GIT_SETTINGS, DEFAULT_BRANCH_PREFIX } from "./git-words";
 import { settingsRoute } from "./settings";
 import { BROWSER_DATA_ROUTE, browserDataRoute } from "../browser/routes";
 import { browserSettingsFiles, offerAgain } from "../browser/settings";
@@ -52,6 +53,10 @@ const SECTIONS: SettingsSection[] = [
     id: "browser", title: "Browser", group: "System", icon: "globe",
     line: "The browser's search engine, and offering to save sign-ins.",
     keywords: ["search engine", "google", "duckduckgo", "sign-ins", "passwords", "tabs", "never offered"],
+  },
+  { id: "git", title: "Git", group: "System", icon: "branch",
+    line: "How sessions' branches are named, and commit messages and pull requests are written.",
+    keywords: ["branch prefix", "worktree", "commit", "pull request", "instructions"],
   },
 ];
 
@@ -375,6 +380,40 @@ async function browserAct(context: RouteContext, at: SettingItem, action: Settin
   return null;
 }
 
+// MARK: Git
+
+const GIT_ROWS = [
+  { id: "branch-prefix", key: "branchPrefix", group: "Branches", title: "Branch prefix", line: "How a session’s own branch in a worktree starts.", placeholder: "None" },
+  { id: "commit-instructions", key: "commitInstructions", group: "Commit Messages", title: "Instructions", line: "Added when Suggest a Message in Changes asks the model for one.", placeholder: "For example: Start with the area changed, like “ui: …”, and never mention tickets." },
+  { id: "pull-request-instructions", key: "pullRequestInstructions", group: "Pull Requests", title: "Instructions", line: "Added when Create Pull Request writes the title and description.", placeholder: "For example: Add a Testing section, and link the issue if the branch names one." },
+] as const;
+
+async function gitPage(context: RouteContext): Promise<SettingsPage> {
+  const read = await asked(context, settingsRoute, "GET", "kuvo/config");
+  return { id: "git", title: "Git", groups: GIT_ROWS.map(each => {
+    const value = read.value[GIT_SETTINGS[each.key][0]];
+    return { id: each.id, title: each.group, rows: [row({
+      id: each.id, title: each.title, line: each.line, placeholder: each.placeholder,
+      kind: "text", value: typeof value === "string" ? value : each.key === "branchPrefix" ? DEFAULT_BRANCH_PREFIX : "",
+      can: read.status === 200 ? true : { why: said(read, "This computer's settings couldn't be read.") },
+    })] };
+  }) };
+}
+
+async function gitChange(context: RouteContext, at: SettingItem, value: unknown): Promise<Refused | null> {
+  const each = GIT_ROWS.find(each => each.id === at.id);
+  if (!each) return { status: 400, message: "That isn't something to change." };
+  const path = [...GIT_SETTINGS[each.key]];
+  const read = await asked(context, settingsRoute, "GET", "kuvo/config");
+  if (read.status !== 200) return refusal(read);
+  const was = read.value[path[0]!] ?? null;
+  const shown = typeof was === "string" ? was : each.key === "branchPrefix" ? DEFAULT_BRANCH_PREFIX : "";
+  if (shown !== at.value) return STALE;
+  const written = await asked(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path, value, was }] });
+  if (written.status === 409 && written.value.message === CHANGED_SINCE) return STALE;
+  return refusal(written);
+}
+
 // MARK: General
 
 /** A zone's name as a menu shows it: "Europe/Istanbul" as "Europe › Istanbul", "America/New_York" as
@@ -471,6 +510,7 @@ const PAGES: Record<string, Section> = {
       return `${mtime(APPROVAL_FILE)} ${mtime(CONFIG_FILE)} ${mtime(ALLOWED_FILE)} ${fence}`;
     },
   },
+  git: { read: gitPage, change: gitChange, act: generalAct, look: () => `${mtime(CONFIG_FILE)}` },
   browser: { read: browserPage, change: browserChange, act: browserAct, look: () => browserSettingsFiles().map(mtime).join(" ") },
 };
 
@@ -480,6 +520,7 @@ const changed = () => { for (const told of [...followers]) told(); };
 
 /** Whether a value fits a row of its kind: a switch's true or false, one of a choice's choices. */
 function fits(at: SettingItem, value: unknown): boolean {
+  if (at.kind === "text") return typeof value === "string";
   if (at.kind === "switch") return typeof value === "boolean";
   if (at.kind === "choice") return typeof value === "string" && (at.choices ?? []).some(choice => choice.id === value);
   return false;
@@ -561,7 +602,7 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
       if (at.can === undefined) return { status: 400, value: { message: "That isn't something to change." } };
       const why = whyNot(at.can);
       if (why) return { status: 403, value: { message: why } };
-      if (!("value" in given) || !fits(at, given.value)) return { status: 400, value: { message: at.kind === "choice" ? "Pick one of its choices." : "Send true or false." } };
+      if (!("value" in given) || !fits(at, given.value)) return { status: 400, value: { message: at.kind === "choice" ? "Pick one of its choices." : at.kind === "text" ? "Send text." : "Send true or false." } };
       done = await section.change(context, at, given.value);
     }
     if (done?.stale) return { status: 409, value: { message: done.message, page: await section.read(context) } };
