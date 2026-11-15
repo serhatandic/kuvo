@@ -27,7 +27,7 @@ stays in the repo as read-only reference (the lead, 11-14).
   - carrying a tiny signed Swift tool for the one-time Keychain hand-over.
   Everything else goes in the box: when and how to move, stopping the old box, 0.7's upgrades, and
   permissions as facts.
-- **0.7 → 1.0:** Sparkle in the user's Swift app installs the desktop app (same `run.kuvo.code`,
+- **0.7 → 0.8:** Sparkle in the user's Swift app installs the desktop app (same `run.kuvo.code`,
   same team, same feed key). The desktop app runs first and asks the box's installer what this Mac
   holds. The box then moves itself (most of it is #333's `rehome`, built), starts fresh, or the app
   just attaches.
@@ -304,7 +304,7 @@ rehearsal account (it needs the real ID):
 | `app-07`: 0.5–0.7.x, 0.8.0-beta.1 (every user) | data in `S`, no `S/box`, no keeper | `install --move` at once: upgrades and engine database in staging, move, Keychain hand-over, helper loaded, attach. A few minutes. |
 | `app-box`: a keeper build (main, try-update; 0.8.0 if it ships) | `S/box`, an `SMAppService` agent pointing into the replaced bundle | See below. |
 | `ours` | `K` with `box/kind` `mac`, helper | Attach, offer the release. |
-| `back` | moved back, then 1.0 installed again | Nothing starts by itself. The app says the box was moved back and offers **Move Again** (`kuvo/box/rehome {now}`, then `--run`). |
+| `back` | moved back, then 0.8 installed again | Nothing starts by itself. The app says the box was moved back and offers **Move Again** (`kuvo/box/rehome {now}`, then `--run`). |
 | `machine` | a machine's box in `K` (a Mac set up as one), nothing in `S` | No Mac-kind box is made over it. The app attaches as to a machine's box here (PROTOCOL.md:6549) and says this Mac is set up as a machine. Making it this Mac's own is 183's work. |
 | `two` | a machine's box in `K` and data in `S` | As #333 §3.7: no move, said plainly. |
 
@@ -352,15 +352,15 @@ is the kept copy put back, not `--back`'s keeper layout, which no released app r
    move stays there only, and the app says so before you confirm.
 
 Then you install 0.7.2 from its download page; it reads `S` as it always did. Its Sparkle will
-offer 1.0 again, and 1.0 then shows the `back` state. `--back` (the keeper layout) stays for
+offer 0.8 again, and 0.8 then shows the `back` state. `--back` (the keeper layout) stays for
 `app-box` Macs only.
 
-**A stepping stone instead?** The other way is a last Swift release (0.9) with `movesOwnBox` on,
-its feed pointing to the desktop app's: 0.7 → 0.9 moves, and 0.9 → 1.0 just attaches.
+**A stepping stone instead?** The other way is a last Swift release with `movesOwnBox` on,
+its feed pointing to the desktop app's: 0.7 → that release moves, and that release → 0.8 just attaches.
 
 - Less new code: no `rehome --run`, no box-side upgrades, no `kuvo-keys`.
 - But it needs piece 8's UI built in Swift (thrown away a release later), the Swift app built and
-  released after #712, and every user to pass through 0.9. Anyone who skips it (1.0 downloaded
+  released after #712, and every user to pass through that release. Anyone who skips it (0.8 downloaded
   over a 0.7 install) still needs §4.2.
 - **I recommend against it** (question 3). It remains the fallback if piece 0 finds Sparkle won't
   install the desktop app over 0.7.2.
@@ -398,7 +398,7 @@ its feed pointing to the desktop app's: 0.7 → 0.9 moves, and 0.9 → 1.0 just 
     desktop app, then back, in the rehearsal account.
   - **`movesOwnBox`** ends as a Swift flag. The desktop app ships when §8's pieces pass.
 - **#635** (vault and saved passwords on an attached box: this Mac's key joins the box's Macs
-  through the signed setup) is box logic plus the desktop app's drawing. It's needed before 1.0:
+  through the signed setup) is box logic plus the desktop app's drawing. It's needed before 0.8:
   the desktop app has no Swift vault path to fall back on.
 - **#644** (Settings › Phone while attached) is a desktop-app Settings page, drafts first, against
   the box's link routes (built).
@@ -407,7 +407,7 @@ its feed pointing to the desktop app's: 0.7 → 0.9 moves, and 0.9 → 1.0 just 
     app has no WebKit panel. `browser.own` is on from the start for a box the desktop app
     installed or moved.
   - **6 (Swift draws the box's browser)** goes. **11 (GPUI live view)** replaces it and is
-    required for 1.0.
+    required for 0.8.
   - **7 (WebKit scenarios on the box)** stays.
   - **8 (rehearsals)** folds into #333 piece 9.
   - **9 (old path goes)** shrinks to the box's app hand-off (`appBrowser`, `kuvo/box/app/open`).
@@ -446,7 +446,7 @@ Sized in wall-clock session hours, start to merge-ready, review included.
 | 5 | **The desktop app's part** (§3): running the installer and drawing its lines, `kuvo-keys` in the bundle, the System Settings panes, dev builds only attaching. | gpui | the install run against a stand-in installer script; a dev build refuses to install | medium | 6–10 |
 | 6 | **Packaging the desktop app**: the `run.kuvo.code` bundle, signing, notarization, `box-release` inside, Sparkle embedded, DMG, appcast continuity. (Possibly another issue's; it's needed here.) | scripts, CI | `codesign --verify --strict` on a signed build; it carries the release; the feed's checks | medium | 12–18 |
 | 7 | **UI** (drafts first, light and dark): first-run states (setting up, moving with its step, couldn't move with what to do, Try Again, moved back), Settings › This Mac's Box (#333 piece 8's content), permissions for the helper, `two`; the phone draws `moving`. | gpui, phone | the stand-in box's states; before-and-after looks | medium | 10–14 |
-| 8 | **What only the Swift app did for this Mac** (§1's last item): the phone's Mac routes (`MAC_APP_ROUTES`), adding and repairing machines over SSH, `machines.json`. **Gates 1.0.** | box, gpui | sized after #712's survey | high | unsized |
+| 8 | **What only the Swift app did for this Mac** (§1's last item): the phone's Mac routes (`MAC_APP_ROUTES`), adding and repairing machines over SSH, `machines.json`. **Gates 0.8.** | box, gpui | sized after #712's survey | high | unsized |
 | 9 | **Rehearsals and docs**: §5's cases there and back in the rehearsal account; `uninstall.md`, `privacy.md`, `settings.md`, `troubleshooting.md`, `footprint.md`; the changelog. | all | the checklists | medium | 8–12 |
 
 - **Order:**
@@ -519,7 +519,7 @@ starts from these; each is carried by the move, or said as dropped. Swift source
 only sender today is that app):
 
 - **`macID` and `tolerates: 1` in setup** (`swift/KuvoCode/Stores/PhoneLink.swift:679`). Without
-  them every Mac with 1.0 that starts a machine's engine holds that machine's updates back: the
+  them every Mac with 0.8 that starts a machine's engine holds that machine's updates back: the
   box updates itself only while each Mac in `run/launchers.json` is `true` in `tolerantIDs`
   (`box/src/link/updates/update.ts:186`, `main.ts` setup).
 - **`run/mac-installing` while it puts its files on a machine** (`swift/KuvoCode/Stores/Machines.swift:585`,
@@ -587,8 +587,8 @@ pack with the real `kuvo-start` and `kuvo-launch` and a stand-in engine, on a Ma
    that moves first?**
    - *Recommend: straight.* No more Swift UI to build and throw away. A stepping stone still needs
      the straight path for anyone who skips it.
-4. **Is 1.0 blocked on everything the Swift app did for this Mac** (§8 piece 8: adding and
-   repairing machines, the phone's Mac routes), or may 1.0 ship saying plainly what's not there
+4. **Is 0.8 blocked on everything the Swift app did for this Mac** (§8 piece 8: adding and
+   repairing machines, the phone's Mac routes), or may 0.8 ship saying plainly what's not there
    yet?
    - *Recommend: blocked on adding machines and the phone's routes.* Without them, a 0.7 user
      loses features they use.
@@ -641,7 +641,7 @@ One `reviewer` pass on the first version. What it found, and what changed:
 - **A running 0.7 engine wasn't detected.** Now there's a lock check on `S`'s database at Plan and
   before Clear.
 - **Real data:** dev builds only attach; spikes needing the real ID run in the rehearsal account.
-- **Piece 8 hid a ship gate** (machines over SSH, `machines.json`). It's named as gating 1.0, with
+- **Piece 8 hid a ship gate** (machines over SSH, `machines.json`). It's named as gating 0.8, with
   question 4.
 - **Smaller:**
   - upgrades run in staging, after Clone;

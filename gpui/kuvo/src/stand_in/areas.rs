@@ -134,15 +134,15 @@ fn computers(alone: bool, more: usize) -> Vec<Value> {
     let remove = |name: &str| json!({ "id": "remove", "label": "Remove", "confirm": { "title": format!("Remove {name}?"), "message": format!("Your other computers stop reaching {name}. It keeps running, with its sessions, and you can add it again later."), "label": "Remove" } });
     let mut computers = vec![json!({
         "key": "key_stand_in", "name": super::NAME, "kind": "mac", "here": true, "shared": false, "reach": "connected",
-        "version": "1.0.0", "engine": "2.3.0", "system": "macOS 15.1", "via": "here", "working": 1, "atWork": [{ "id": "ses_limits", "title": "Plan limits" }], "limits": ["claude", "codex", "copilot", "grok", "openrouter"],
+        "version": "0.8.0", "engine": "2.3.0", "system": "macOS 15.1", "via": "here", "working": 1, "atWork": [{ "id": "ses_limits", "title": "Plan limits" }], "limits": ["claude", "codex", "copilot", "grok", "openrouter"],
         "features": kuvo_box::gate::REQUIRED, "actions": [],
     })];
     if !alone {
         computers.extend([
-            json!({ "key": "key_devbox", "name": "devbox", "kind": "machine", "id": "devbox", "shared": false, "reach": "connected", "version": "1.0.0", "engine": "2.3.0", "system": "Ubuntu 24.04.1 LTS", "via": "relay", "working": 2,
+            json!({ "key": "key_devbox", "name": "devbox", "kind": "machine", "id": "devbox", "shared": false, "reach": "connected", "version": "0.8.0", "engine": "2.3.0", "system": "Ubuntu 24.04.1 LTS", "via": "relay", "working": 2,
                 "atWork": [{ "id": "ses_dev_1", "title": "Migrate the billing tables" }, { "id": "ses_dev_2", "title": "Nightly test run" }], "limits": ["claude"], "features": kuvo_box::gate::REQUIRED,
                 "actions": [{ "id": "rename", "label": "Rename" }, remove("devbox")] }),
-            json!({ "key": "key_studio", "name": "studio-mini", "kind": "mac", "shared": false, "reach": "away", "version": "1.0.0", "engine": "2.3.0", "system": "macOS 15.1", "via": "relay", "working": 0, "atWork": [], "limits": [], "features": kuvo_box::gate::REQUIRED,
+            json!({ "key": "key_studio", "name": "studio-mini", "kind": "mac", "shared": false, "reach": "away", "version": "0.8.0", "engine": "2.3.0", "system": "macOS 15.1", "via": "relay", "working": 0, "atWork": [], "limits": [], "features": kuvo_box::gate::REQUIRED,
                 "actions": [{ "id": "connect", "label": "Connect" }] }),
             // A Mac on an older Kuvo Code: what it answers lacks what this app needs, and it never said what's at work.
             json!({ "key": "key_old", "name": "old-mini", "kind": "mac", "shared": false, "reach": "connected", "version": "0.9.180", "engine": "1.14.0", "system": "macOS 14.6", "via": "relay", "limits": ["claude"], "features": ["sessions.list", "messages.send"], "actions": [] }),
@@ -165,7 +165,7 @@ fn computers(alone: bool, more: usize) -> Vec<Value> {
             }
             actions.push(remove(&name));
             computer["actions"] = json!(actions);
-            computer["version"] = json!("1.0.0");
+            computer["version"] = json!("0.8.0");
             computer["engine"] = json!("2.3.0");
             computer["system"] = json!(if ix % 2 == 0 { "Ubuntu 24.04.1 LTS" } else { "Debian 12" });
         }
