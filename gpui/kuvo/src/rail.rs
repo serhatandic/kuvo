@@ -90,7 +90,7 @@ fn area_button(area: Area, selected: bool, waiting: usize, cx: &mut Context<Work
 
 fn button(id: impl Into<SharedString>, icon: IconName, selected: bool, waiting: usize, cx: &App) -> gpui::Stateful<gpui::Div> {
     let c = &cx.theme().colors;
-    let (hover, selected_bg) = (c.hover, c.selected_card);
+    let (hover, selected_bg) = (c.hover, c.selected);
     let id: SharedString = id.into();
     let selector = id.to_string();
     div()
@@ -104,7 +104,7 @@ fn button(id: impl Into<SharedString>, icon: IconName, selected: bool, waiting: 
         .size(BUTTON)
         .rounded(radius::NAV)
         .cursor_pointer()
-        .map(|t| kuvo_ui::row::selected_card(t, selected, cx))
+        .when(selected, |t| t.bg(selected_bg))
         .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
         .child(Icon::new(icon).size(IconSize::Card).color(if selected { c.text } else { c.icon }))
         .when(waiting > 0, |t| t.child(div().absolute().top(px(-3.)).right(px(-5.)).child(count_badge(waiting, cx))))

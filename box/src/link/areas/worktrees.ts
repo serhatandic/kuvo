@@ -31,13 +31,11 @@ interface SessionsHere {
   active: Set<string>;
 }
 
-/** What a client sends `kuvo/worktrees…`, as it comes: a new one's project (and an older Mac's
- * branch prefix), one an older Mac kept, one to remove (`path`, `forget`, `discard`), or one to restore (`folder`, where
+/** What a client sends `kuvo/worktrees…`, as it comes: a new one's project, one an older Mac kept, one to remove (`path`, `forget`, `discard`), or one to restore (`folder`, where
  * its sessions ran). Each is checked as it's used. */
 export interface WorktreesBody {
   was?: unknown;
   project?: unknown;
-  branchPrefix?: unknown;
   root?: unknown;
   folder?: unknown;
   branch?: unknown;
@@ -264,8 +262,7 @@ export async function answerWorktrees(method: string, requestPath: string, body:
     if (typeof project !== "string" || !path.isAbsolute(project) || !fs.existsSync(project)) return { status: 400, value: message("Send the project's folder on this machine as {\"project\"}.") };
     if (!engine?.port) return { status: 503, value: message("The engine isn't running.") };
     // What its branch's name starts with: Settings › Git's on this computer.
-    // COMPAT(beta.1 worktree-prefix): a Mac's own, sent with each, used as given. Goes when 0.8.0 ships.
-    const prefix = typeof body?.branchPrefix === "string" ? body.branchPrefix : branchPrefixHere();
+    const prefix = branchPrefixHere();
     // Where the project is in its repository, as git sees it (through any links in its path).
     const subpath = gitIn(project, ["rev-parse", "--show-prefix"]);
     if (subpath === null) return { status: 409, value: message("That folder isn't in a git repository.") };

@@ -147,7 +147,7 @@ export function leaveMac(link: LinkState, mac: string): void {
     if (link.macs.length) link.mac = link.macs[0];
     else delete link.mac;
   }
-  // COMPAT(beta.1 peers-list): `legacy`, a beta.1 Mac's list. Goes when 0.8.0 ships.
+  // COMPAT(beta.1 peers-list): `legacy`, a beta.1 Mac's list. Goes on the user's word, once no Mac from before 1.0 connects.
   for (const field of ["macSeen", "macSigns", "macNames", "legacy"] as const) if (link[field]) delete link[field][mac];
   link.phones = (link.phones ?? []).filter(phone => !(phone.from === "mac" && phone.mac === mac));
   // The setup that Mac leads goes with it, as its peers document does (PROTOCOL.md, "Your setup").
@@ -161,7 +161,7 @@ export const cleanPeer = ({ key, address, name, kind, id, sign }: GivenPeer): Pe
 export const cleanMoved = (moved: unknown): MovedSession[] => (Array.isArray(moved) ? moved : []).filter(each => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY.test(each.key))
   .slice(0, 500).map(({ session, key }) => ({ session, key }));
 
-// COMPAT(beta.1 peers-list): a beta.1 Mac's list of peers, as its peers document. Goes when 0.8.0 ships.
+// COMPAT(beta.1 peers-list): a beta.1 Mac's list of peers, as its peers document. Goes on the user's word, once no Mac from before 1.0 connects.
 // A list of peers from a Mac that signs no documents yet (Kuvo Code 0.8.0-beta.1, PROTOCOL.md "For
 // released Macs"): that Mac's newest, by its own `at`, used as its peers document would be, and
 // never passed on. False when it isn't taken.
@@ -181,7 +181,7 @@ function macWords(link: LinkState | null | undefined): MacWord[] {
   return macsOf(link).map(mac => {
     const doc = macDoc(link, mac, "peers");
     if (doc) return { boxes: Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, MOST_PEERS) : [], moved: doc.body.moved };
-    // COMPAT(beta.1 peers-list): a beta.1 Mac's list, in place of its peers document. Goes when 0.8.0 ships.
+    // COMPAT(beta.1 peers-list): a beta.1 Mac's list, in place of its peers document. Goes on the user's word, once no Mac from before 1.0 connects.
     return link?.legacy?.[mac] ? { boxes: link.legacy[mac].peers ?? [], moved: link.legacy[mac].moved } : null;
   }).filter(Boolean) as MacWord[];
 }
@@ -190,7 +190,7 @@ function macWords(link: LinkState | null | undefined): MacWord[] {
 // box it left may still list it, until it's back to let it go.
 export function movedOf(link: LinkState | null | undefined): Map<string, string> {
   const moved = new Map<string, string>();
-  // COMPAT(beta.1 mac-moves): a Mac's word, from an app that ran moves before its boxes did. Goes when 0.8.0 ships.
+  // COMPAT(beta.1 mac-moves): a Mac's word, from an app that ran moves before its boxes did. Goes on the user's word, once no Mac from before 1.0 connects.
   // A Mac's word: what this Mac's app says (`kuvo/link/peers`), or a Mac's peers document.
   if (IS_MAC) for (const { session, key } of cleanMoved(link?.macMoved)) moved.set(session, key);
   else for (const word of macWords(link)) for (const { session, key } of cleanMoved(word.moved)) moved.set(session, key);

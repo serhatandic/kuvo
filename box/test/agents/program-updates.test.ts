@@ -214,8 +214,8 @@ describe("updating the agents' programs", () => {
     const box = bridge([codex.account()])
     await box.accounts()
 
-    // An older client's update, answered once it's done: the client quits while it waits.
-    const waited = box.ask("integration/codex-quit-cli/update", "POST")
+    // Asked for, and answered as it starts: the client quits meanwhile.
+    expect((await box.ask("kuvo/updates/codex-quit-cli", "POST")).value.data).toEqual({ updating: ["codex-quit"] })
     // The same client opened again, or the phone.
     expect((await box.accounts())["codex-quit-cli"].programUpdate.state).toBe("updating")
     // Asked again meanwhile: the one under way.
@@ -225,8 +225,10 @@ describe("updating the agents' programs", () => {
     const ended = told("codex-quit-cli")
     codex.end({ updated: false, version: "1.0.0" })
     await ended
-    expect((await waited).value.data).toEqual({ updated: false, version: "1.0.0" })
     expect((await box.accounts())["codex-quit-cli"].programUpdate).toMatchObject({ state: "current", version: "1.0.0" })
+    // The way a Mac of 0.7 or before asked, waiting for its answer, is no route now.
+    expect((await box.ask("integration/codex-quit-cli/update", "POST")).status).toBe(404)
+    expect(codex.updates).toBe(1)
   })
 
   test("a program its installer can't update isn't updated, alone or in Update All", async () => {

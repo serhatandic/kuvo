@@ -147,7 +147,7 @@ export function receiveMail(
   peerMail(sender, payload);
 }
 
-// COMPAT(beta.1 peers-list): the list of peers a beta.1 Mac mails. Goes when 0.8.0 ships.
+// COMPAT(beta.1 peers-list): the list of peers a beta.1 Mac mails. Goes on the user's word, once no Mac from before 1.0 connects.
 // Mail from one of this box's Macs: heard from (the 30 days a Mac counts for start again, noted
 // once an hour at most), and, from a Mac that signs no documents yet, its list of peers (Kuvo Code
 // 0.8.0-beta.1, PROTOCOL.md "For released Macs").

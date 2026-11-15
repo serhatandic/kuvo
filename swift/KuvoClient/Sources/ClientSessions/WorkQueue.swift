@@ -7,21 +7,18 @@ import ClientText
 // wire are milliseconds since 1970.
 
 /// Where an item stands, as the box lists them (its `statuses`: Needs you, In review, Waiting, Todo,
-/// Backlog, Done, Canceled; In progress is drawn as its own section, `WorkQueue.inProgressID`). The
-/// name is from when the box kept categories (#674): a section of the list is still one of these.
-/// None is yours to rename or remove (`builtIn`). Which are closed is the box's word (`closed`):
-/// no client keeps its own list of them.
-public struct WorkCategory: Codable, Hashable, Sendable, Identifiable {
+/// Backlog, Done, Canceled; In progress is drawn as its own section, `WorkQueue.inProgressID`).
+/// Every one is the box's: none is yours to rename or remove. Which are closed is the box's word
+/// (`closed`): no client keeps its own list of them.
+public struct WorkStatus: Codable, Hashable, Sendable, Identifiable {
     public var id: String
     public var name: String
-    public var builtIn: Bool
     /// An item here is finished (Done, Canceled), as the box's `statuses` say.
     public var closed: Bool
 
-    public init(id: String, name: String, builtIn: Bool, closed: Bool = false) {
+    public init(id: String, name: String, closed: Bool = false) {
         self.id = id
         self.name = name
-        self.builtIn = builtIn
         self.closed = closed
     }
 
@@ -416,8 +413,8 @@ public struct WorkItemDetail: Hashable, Sendable, Decodable {
         files = try container.decodeIfPresent([File].self, forKey: .files) ?? []
         links = try container.decodeIfPresent([Link].self, forKey: .links) ?? []
         handed = try container.decodeIfPresent([Handed].self, forKey: .handed) ?? []
-        // (A box from before `told` answered one on another computer only as it last told it.)
-        told = try container.decodeIfPresent(Bool.self, forKey: .told) ?? (item.computer != nil)
+        // (The box says it only of one on another of your computers: one of its own is whole.)
+        told = try container.decodeIfPresent(Bool.self, forKey: .told) ?? false
     }
 }
 
@@ -459,7 +456,7 @@ public struct WorkQueueView: Hashable, Sendable, Decodable {
     public var owner: String
     /// The statuses a list files items under, in the box's order (its `statuses`, but In progress,
     /// which has a section of its own).
-    public var categories: [WorkCategory]
+    public var categories: [WorkStatus]
     /// The labels the box lists, for an item's `labels`.
     public var labels: [WorkLabel]
     public var items: [WorkItem]
@@ -477,7 +474,7 @@ public struct WorkQueueView: Hashable, Sendable, Decodable {
         public init(open: Int) { self.open = open }
     }
 
-    public init(owner: String, categories: [WorkCategory] = [], labels: [WorkLabel] = [], items: [WorkItem] = [], owners: [WorkOwner] = [], removed: [WorkItem] = [], computers: [Told] = [], counts: Counts? = nil) {
+    public init(owner: String, categories: [WorkStatus] = [], labels: [WorkLabel] = [], items: [WorkItem] = [], owners: [WorkOwner] = [], removed: [WorkItem] = [], computers: [Told] = [], counts: Counts? = nil) {
         self.owner = owner
         self.categories = categories
         self.labels = labels
@@ -502,13 +499,12 @@ public struct WorkQueueView: Hashable, Sendable, Decodable {
         owner = try container.decode(String.self, forKey: .owner)
         let statuses = try container.decode([Status].self, forKey: .statuses)
         closed = Set(statuses.filter(\.closed).map(\.id))
-        categories = statuses.filter { $0.id != WorkQueue.inProgressID }.map { WorkCategory(id: $0.id, name: $0.name, builtIn: true, closed: $0.closed) }
+        categories = statuses.filter { $0.id != WorkQueue.inProgressID }.map { WorkStatus(id: $0.id, name: $0.name, closed: $0.closed) }
         labels = (try? container.decodeIfPresent([WorkLabel].self, forKey: .labels)) ?? []
         items = try container.decode([WorkItem].self, forKey: .items)
         owners = try container.decode([WorkOwner].self, forKey: .owners)
         removed = try container.decodeIfPresent([WorkItem].self, forKey: .removed) ?? []
-        // (A box from before piece 3 has none.)
-        computers = (try? container.decodeIfPresent([Told].self, forKey: .computers)) ?? []
+        computers = try container.decode([Told].self, forKey: .computers)
         counts = try container.decodeIfPresent(Counts.self, forKey: .counts)
         marksClosed()
     }
@@ -711,9 +707,9 @@ public enum WorkQueue {
 
     // MARK: Moving by hand
 
-    /// Where you put an item, as the box's move takes it (`kuvo/work-queue/items/:item/move`, the
-    /// same `before`/`after`/`top` agents give `queue_update`): before or after another item (in that
-    /// one's category), at the top of a category, or at its end.
+    /// Where you put an item, as the box takes it (`PATCH kuvo/work-queue/items/<item>`'s `status`
+    /// with `before`, `after` or `top`, the same agents give `queue_update`): before or after
+    /// another item (in that one's status), at the top of a status, or at its end.
     public enum Place: Hashable, Sendable {
         case top(String)
         case before(WorkItem)
@@ -844,7 +840,7 @@ public enum WorkQueue {
     }
 
     /// The category an item is kept in, by name.
-    public static func categoryName(_ id: String, in categories: [WorkCategory]) -> String {
+    public static func categoryName(_ id: String, in categories: [WorkStatus]) -> String {
         categories.first { $0.id == id }?.name ?? (id == inProgressID ? "In progress" : id.capitalized)
     }
 
@@ -858,7 +854,7 @@ public enum WorkQueue {
     /// a section of its own, and isn't one of `categories`), as far as the box says it may be
     /// (`can`): none where its status can't be set, or where the box said nothing of what may be
     /// done; neither Done nor Canceled where it can't be closed here (an issue's, closed on GitHub).
-    public static func moveTargets(for item: WorkItem, in categories: [WorkCategory]) -> [WorkCategory] {
+    public static func moveTargets(for item: WorkItem, in categories: [WorkStatus]) -> [WorkStatus] {
         guard canMove(item) else { return [] }
         return categories.filter { $0.id != item.category && (canClose(item) || !$0.closed) }
     }
