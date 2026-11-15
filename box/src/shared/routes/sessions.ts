@@ -25,6 +25,31 @@ export const SESSION_MOVED = object({ session: string, directory: string, "info?
 
 export type SessionMoved = Infer<typeof SESSION_MOVED>;
 
+/** One thing a session's menu offers (`kuvo/sessions/<id>/actions`): its id, the button's words,
+ * whether it destroys something, and where a client asks first, the question, what it comes to and
+ * the words of the button that goes ahead, all the box's. */
+export const SESSION_ACTION = object({
+  id: words("pin", "unpin", "rename", "archive", "unarchive", "delete"),
+  label: string,
+  "destructive?": literal(true),
+  "confirm?": object({ title: string, message: string, label: string }),
+});
+
+/** What a session's menu offers now, in order; with `held`, why none of it can be done now (it's
+ * moving to another computer), in words to show. */
+export const SESSION_ACTIONS = object({ session: string, actions: list(SESSION_ACTION), "held?": string });
+
+/** A session pinned, archived or renamed (or brought back, unpinned): the session as it is now
+ * (`info`, as the engine or the coding agents' bridge lists it). */
+export const SESSION_CHANGED = object({ session: string, info: any });
+
+/** Refused as it's moving to another computer, or lives on another now: in words, and for the
+ * latter that computer's key (`computer`), whose box a client asks instead. */
+const LIVES_ELSEWHERE = object({ message: string, "computer?": string });
+
+export type SessionAction = Infer<typeof SESSION_ACTION>;
+export type SessionActions = Infer<typeof SESSION_ACTIONS>;
+
 /** What an agent's tool says back to it: its words, and whether it didn't do what was asked. */
 export const TOOL_ANSWER = object({ text: string, isError: bool });
 
@@ -257,6 +282,11 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "POST kuvo/sessions/:id/agents", answers: { 200: CARRIED } },
   { route: "POST kuvo/sessions/:id/folders", answers: { 200: object({ session: string }), 404: REFUSED, 405: REFUSED, 502: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/move", answers: { 200: SESSION_MOVED, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 502: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/sessions/:id/actions", answers: { 200: SESSION_ACTIONS, 404: REFUSED, 405: REFUSED, 409: LIVES_ELSEWHERE, 503: REFUSED } },
+  { route: "POST kuvo/sessions/:id/archive", answers: { 200: SESSION_CHANGED, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: LIVES_ELSEWHERE, 502: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/sessions/:id/pin", answers: { 200: SESSION_CHANGED, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: LIVES_ELSEWHERE, 502: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/sessions/:id/rename", answers: { 200: SESSION_CHANGED, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: LIVES_ELSEWHERE, 502: REFUSED, 503: REFUSED } },
+  { route: "DELETE kuvo/sessions/:id", answers: { 200: object({ session: string }), 405: REFUSED, 409: LIVES_ELSEWHERE, 502: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions", answers: { 200: STARTED, 400: REFUSED, 403: REFUSED, 404: REFUSED, 409: object({ message: string, reason: words("fullAccessOff") }), 429: REFUSED, 502: object({ message: string, "session?": string }), 503: REFUSED } },
   { route: "POST kuvo/agent-tools", answers: { 200: TOOL_ANSWER, 400: REFUSED } },
   { route: "GET kuvo/sessions/queues/events", answers: { 200: object({ queues: map(QUEUE) }) } },

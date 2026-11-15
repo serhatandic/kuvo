@@ -133,6 +133,7 @@ export const FEATURES = [
   "sandbox.reviews.whole",
   "sandbox.words",
   "search",
+  "sessions.actions",
   "sessions.agents",
   "sessions.asks",
   "sessions.chat",
