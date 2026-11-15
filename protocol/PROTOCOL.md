@@ -8043,7 +8043,7 @@ other. Every box does it alike, a Mac's and a machine's, on macOS and Linux.
   takes it. A box takes one counted higher than its own, or at the same count with a name that sorts
   after its own (so every box keeps the same one); not one counted 0, a zone its runtime doesn't
   know, nor a count past 2^52. It keeps the rules sent with it where it has none of its own (a Linux
-  machine without tzdata). Never to or from a peer that isn't one of your own computers (a machine
+  machine without tzdata; rules that aren't a TZif file under 16 KB aren't kept). Never to or from a peer that isn't one of your own computers (a machine
   Macs of two setups share, or one of another setup, #701); a box that's such a machine takes none
   and tells none, and its pick is its own. A box with no pick takes the first it's told: a computer
   set up later takes yours at its first round with your others.
@@ -8062,8 +8062,9 @@ other. Every box does it alike, a Mac's and a machine's, on macOS and Linux.
   shows makes it a pick. Two machines `carried` with different zones keep each their own until you
   pick one.
 - **Where it goes**: each bot's folder and the folder above conversations' own (`wakes`) have the
-  `timezone` file `kuvo-wake` reads, and `zoneinfo` (its rules) where the setting has them, written
-  rules first and whole, by a rename: as the zone changes, as a bot is made, settled or arrives, and
+  `timezone` file `kuvo-wake` reads, and `zoneinfo` (its rules) where the setting has them, each
+  written whole, by a rename (the rules before the name; for a moment between, a computer without
+  zone files may read the old name with the new rules): as the zone changes, as a bot is made, settled or arrives, and
   each minute while the box runs; not for a bot that's moving, which the box it arrives at settles.
   With no pick: on a machine, its own clock (as before), or its `carried` zone; on a Mac, no file
   (they go by its clock as it changes). What a bot is told says the zone where there's a file, and

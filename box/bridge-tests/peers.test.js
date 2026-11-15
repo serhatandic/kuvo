@@ -687,7 +687,8 @@ test("your time zone reaches your other computers: a change on one box reaches t
     const zoneOf = each => opened(sent.find(bytes => k(bytes.subarray(1, 17)) === each.address), each).payload.zone;
     return Object.fromEntries([mac, second].map(each => {
       const told = zoneOf(each);
-      if (told) assert.equal(Buffer.from(told.zoneinfo ?? "VFppZg", "base64").subarray(0, 4).toString(), "TZif");
+      // (Where this computer has the zone's rules, they go with it.)
+      if (told && fs.existsSync(path.join("/usr/share/zoneinfo", told.zone))) assert.equal(Buffer.from(told.zoneinfo, "base64").subarray(0, 4).toString(), "TZif");
       return [each.peer.name, told && { zone: told.zone, n: told.n }];
     }));
   };

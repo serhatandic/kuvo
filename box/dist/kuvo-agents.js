@@ -32837,8 +32837,6 @@ function named6(unheard) {
 }
 function chatZone(settings) {
   const own = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  if (!yourZone() && settings?.boxTimeZone)
-    boxZoneIs(settings.boxTimeZone);
   const zone = yourZone() ?? settings?.timeZone;
   if (!zone)
     return own;
@@ -36718,4 +36716,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 41d6e4da9864c2638c886bf69e23b07bcf1efd70db259c1ef24f1c1df9d16a32
+// Built from Packages/Box/src/agents 550fca5bee4fe7ea39b7cfec0bfc973967bca334d0a8728f9f49f0df5813079a

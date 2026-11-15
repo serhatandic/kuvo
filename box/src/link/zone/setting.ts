@@ -96,7 +96,10 @@ export function zoneFromBefore(): ZoneSetting | null {
   return null;
 }
 
-const kitRules = (kit: { zoneinfo?: unknown }): { zoneinfo?: string } => (typeof kit.zoneinfo === "string" && kit.zoneinfo ? { zoneinfo: kit.zoneinfo } : {});
+const kitRules = (kit: { zoneinfo?: unknown }): { zoneinfo?: string } => {
+  const rules = givenRules(kit.zoneinfo);
+  return rules ? { zoneinfo: rules } : {};
+};
 
 // A Mac of 0.7 or before still connecting writes its kit again as it does, with its own clock: while
 // what this machine has is only carried from it, its zone follows (for this machine alone, as that
@@ -196,8 +199,8 @@ export function setZone(zone: string): ZoneSetting | null {
   const setting = locked(ZONE_LOCK, () => {
     const now = keptNow();
     if (now?.zone === zone && !now.carried) return now;
-    // (The same zone picked keeps its rules.)
-    const rules = now?.zone === zone ? now.zoneinfo ?? rulesOf(zone) : rulesOf(zone);
+    // (This computer's own rules, else the same zone's kept before.)
+    const rules = rulesOf(zone) ?? (now?.zone === zone ? now.zoneinfo ?? null : null);
     made = written({ kuvo: 1, zone, n: Math.min((now?.n ?? 0) + 1, MOST_COUNT), ...kept(now), ...(rules ? { zoneinfo: rules } : {}) });
     return made;
   });

@@ -147,11 +147,12 @@ test("the box's other clocks go by your zone too: the night's window it updates 
   assert.equal(JSON.parse(ran.stdout.trim()), "2030-01-02");
 });
 
-test("a Linux machine without time zone data takes your pick with its rules, and its bots wake on them, not on UTC", () => {
+test("a Linux machine without time zone data takes your pick with its rules, and keeps them where kuvo-wake reads them; not rules that aren't a zone's", () => {
   const folder = bot("bot_scout00001");
   const empty = path.join(home, "no-zoneinfo");
   fs.mkdirSync(empty, { recursive: true });
-  const rules = fs.readFileSync("/usr/share/zoneinfo/Asia/Tokyo").toString("base64");
+  // (A zone's rules as the box takes them: a TZif file, which it passes on as it is.)
+  const rules = Buffer.concat([Buffer.from("TZif2"), Buffer.alloc(64, 1)]).toString("base64");
   // As a peer's mail brings it (`zone` beside `agents`), taken as the box takes it.
   const ran = spawnSync(process.execPath, ["--input-type=module", "-e", `
     const link = await import(${JSON.stringify(script)});
@@ -179,4 +180,13 @@ test("a Linux machine without time zone data takes your pick with its rules, and
   const warning = rowOf(JSON.parse(JSON.parse(warned.stdout.trim().split("\n").pop()).body));
   assert.equal(warning.tone, "warning");
   assert.match(warning.line, /tzdata/);
+  // Rules that aren't a zone's: not kept.
+  for (const each of [setting, path.join(wakes, "timezone"), path.join(wakes, "zoneinfo")]) fs.rmSync(each, { force: true });
+  const junk = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    const link = await import(${JSON.stringify(script)});
+    console.log(JSON.stringify([link.takeZone({ zone: "Europe/Paris", n: 1, zoneinfo: ${JSON.stringify(Buffer.from("not rules").toString("base64"))} }), link.zoneMail()]));
+  `], { env: { ...env, KUVO_TEST_ZONEINFO: empty }, encoding: "utf8" });
+  const [took, mail] = JSON.parse(junk.stdout.trim());
+  assert.deepEqual([took, mail.zoneinfo], [true, undefined]);
+  assert.equal(read(path.join(folder, "zoneinfo")), null);
 });

@@ -8481,7 +8481,10 @@ function zoneFromBefore() {
     return { kuvo: 1, zone: launched, n: 0, carried: true };
   return null;
 }
-var kitRules = (kit) => typeof kit.zoneinfo === "string" && kit.zoneinfo ? { zoneinfo: kit.zoneinfo } : {};
+var kitRules = (kit) => {
+  const rules = givenRules(kit.zoneinfo);
+  return rules ? { zoneinfo: rules } : {};
+};
 function followOldKit(now) {
   if (IS_MAC)
     return now;
@@ -8567,7 +8570,7 @@ function setZone(zone) {
     const now = keptNow();
     if (now?.zone === zone && !now.carried)
       return now;
-    const rules = now?.zone === zone ? now.zoneinfo ?? rulesOf(zone) : rulesOf(zone);
+    const rules = rulesOf(zone) ?? (now?.zone === zone ? now.zoneinfo ?? null : null);
     made = written2({ kuvo: 1, zone, n: Math.min((now?.n ?? 0) + 1, MOST_COUNT2), ...kept3(now), ...rules ? { zoneinfo: rules } : {} });
     return made;
   });
@@ -45405,7 +45408,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "29890c53a8c7";
+var BRIDGE_VERSION = "9f29d52f7bea";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";

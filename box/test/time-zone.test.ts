@@ -132,7 +132,9 @@ test("group chats' meetings go by your zone: the box gives it to their bridge wi
   }
   rmSync(ZONE_FILE)
   const { boxZoneIs } = await import("../src/shared/zone")
-  expect(chatZone({ boxTimeZone: "Asia/Tokyo", timeZone: "Europe/Berlin" })).toBe("Asia/Tokyo")
+  // (As the bridge takes it from the box's group chats' settings: routes.ts, main.ts.)
+  boxZoneIs("Asia/Tokyo")
+  expect(chatZone({ timeZone: "Europe/Berlin" })).toBe("Asia/Tokyo")
   // (What the box gave this process is what its other clocks go by too.)
   expect(yourZone()).toBe("Asia/Tokyo")
   boxZoneIs(undefined)
@@ -147,13 +149,13 @@ test("a kit moving a carried zone is applied at once, whoever reads it first (he
   expect(read(join(folder, "timezone"))).toBe("America/New_York")
 })
 
-test("a pick told with its rules: kept where this computer has none of its own; the rules of the zone before go only once the new name is written", () => {
-  const rules = readFileSync("/usr/share/zoneinfo/Asia/Tokyo").toString("base64")
-  expect(takeZone({ zone: "Asia/Tokyo", n: 1, zoneinfo: rules })).toBe(true)
+test("a pick told with its rules passes them on, with this computer's own where it has them", () => {
+  // (Rules this computer has of its own come first; those sent are kept only without: time-zone.test.js.)
+  expect(takeZone({ zone: "Asia/Tokyo", n: 1, zoneinfo: Buffer.from("TZif sent").toString("base64") })).toBe(true)
   expect(read(join(folder, "timezone"))).toBe("Asia/Tokyo")
-  // (Not rules that aren't a zone's.)
-  expect(takeZone({ zone: "Europe/Paris", n: 2, zoneinfo: Buffer.from("not rules").toString("base64") })).toBe(true)
-  expect(readZoneSetting()?.zoneinfo?.length ? Buffer.from(readZoneSetting()!.zoneinfo!, "base64").subarray(0, 4).toString() : "TZif").toBe("TZif")
+  const told = zoneMail()
+  if (existsSync("/usr/share/zoneinfo/Asia/Tokyo")) expect(told?.zoneinfo).toBe(readFileSync("/usr/share/zoneinfo/Asia/Tokyo").toString("base64"))
+  else expect(told?.zoneinfo).toBe(Buffer.from("TZif sent").toString("base64"))
 })
 
 test("the zone a machine carried from before, picked as it is, becomes yours and goes to your other computers", async () => {
