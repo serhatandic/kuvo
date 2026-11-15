@@ -161,6 +161,8 @@ const needsWriting = (kept: ZoneSetting | null | undefined): boolean => {
 export function readZoneSetting(): ZoneSetting | null {
   const kept = readKept();
   if (!needsWriting(kept)) return kept ?? null;
+  // (No file, and nothing from before to carry: none, without the lock.)
+  if (kept === undefined && !zoneFromBefore()) return null;
   // (Under the lock: another process may have just done it.)
   let made: ZoneSetting | null = null;
   try {
@@ -191,7 +193,12 @@ function changed(setting: ZoneSetting): void {
   for (const told of [...zoneFollowers]) try { told(); } catch {}
 }
 
-/** Your zone changed to `zone` here, from a client: counted one more than any this box has seen.
+/** A new pick's count: one more than this box has, and at least the time it's made (ms since 1970),
+ * so a pick made on a box that hasn't heard your others' yet (reinstalled, just set up) still wins
+ * over an older one they had. */
+const pickCount = (now: ZoneSetting | null, at = Date.now()): number => Math.min(Math.max((now?.n ?? 0) + 1, at), MOST_COUNT);
+
+/** Your zone changed to `zone` here, from a client: counted past any this box has seen, and past now.
  * Null for a zone this computer doesn't know. */
 export function setZone(zone: string): ZoneSetting | null {
   if (!knownZone(zone)) return null;
@@ -201,7 +208,7 @@ export function setZone(zone: string): ZoneSetting | null {
     if (now?.zone === zone && !now.carried) return now;
     // (This computer's own rules, else the same zone's kept before.)
     const rules = rulesOf(zone) ?? (now?.zone === zone ? now.zoneinfo ?? null : null);
-    made = written({ kuvo: 1, zone, n: Math.min((now?.n ?? 0) + 1, MOST_COUNT), ...kept(now), ...(rules ? { zoneinfo: rules } : {}) });
+    made = written({ kuvo: 1, zone, n: pickCount(now), ...kept(now), ...(rules ? { zoneinfo: rules } : {}) });
     return made;
   });
   const moved = movedByKit();
@@ -226,6 +233,11 @@ export function takeZone(given: unknown): boolean {
   try {
     locked(ZONE_LOCK, () => {
       const now = keptNow();
+      // (The same pick told again with rules, after a first mail too big to carry them, and none here: kept.)
+      if (now && !now.carried && n === now.n && zone === now.zone && !now.zoneinfo && sent && !rulesOf(zone)) {
+        made = written({ ...now, zoneinfo: sent });
+        return;
+      }
       if (now && !now.carried && (n < now.n || (n === now.n && zone <= now.zone))) return;
       // (This computer's own rules, else those sent with it, else the same zone's kept before.)
       const rules = rulesOf(zone) ?? sent ?? (now?.zone === zone ? now.zoneinfo ?? null : null);

@@ -726,20 +726,23 @@ test("your time zone reaches your other computers: a change on one box reaches t
   };
   const row = (await ask("GET", "kuvo/settings/general")).json.groups[0].rows[0];
   assert.equal((await ask("PATCH", "kuvo/settings/general", { row: "time-zone", value: "Pacific/Auckland", was: row.revision })).status, 200);
-  assert.deepEqual(zone(), ["Pacific/Auckland", 6]);
-  assert.deepEqual(await toldTo(), { mac: { zone: "Pacific/Auckland", n: 6 }, second: { zone: "Pacific/Auckland", n: 6 } });
+  // (Counted past any it had: a pick's count is at least the time it's made.)
+  const [picked, n] = zone();
+  assert.equal(picked, "Pacific/Auckland");
+  assert.ok(n > 5);
+  assert.deepEqual(await toldTo(), { mac: { zone: "Pacific/Auckland", n }, second: { zone: "Pacific/Auckland", n } });
 
   // A peer that says it's a machine two people's Macs share, or of another setup: its zone isn't
   // taken, and it isn't told this one.
-  mail(second, { zone: "UTC", n: 99 }, { shared: true });
-  assert.deepEqual(zone(), ["Pacific/Auckland", 6]);
-  assert.deepEqual(await toldTo(), { mac: { zone: "Pacific/Auckland", n: 6 }, second: undefined });
+  mail(second, { zone: "UTC", n: n + 1 }, { shared: true });
+  assert.deepEqual(zone(), ["Pacific/Auckland", n]);
+  assert.deepEqual(await toldTo(), { mac: { zone: "Pacific/Auckland", n }, second: undefined });
 
   // This box a machine two people's Macs share: it takes no one's zone, and tells none.
   const other = box("mac");
   fresh({ macs: [mac.pub, other.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
-  mail(mac, { zone: "UTC", n: 100 });
-  assert.deepEqual(zone(), ["Pacific/Auckland", 6]);
+  mail(mac, { zone: "UTC", n: n + 1 });
+  assert.deepEqual(zone(), ["Pacific/Auckland", n]);
   mail(second, null);
   assert.deepEqual(await toldTo(), { mac: undefined, second: undefined });
 });

@@ -95,8 +95,25 @@ test("a zone you pick on a machine that updated overnight is told to your other 
   expect(row.value).toBe("Europe/Istanbul")
   expect(zoneMail()).toBe(null)
   expect((await ask(handler, "PATCH", "kuvo/settings/general", { row: "time-zone", value: "Asia/Tokyo", was: row.revision })).status).toBe(200)
-  expect(readZoneSetting()).toMatchObject({ zone: "Asia/Tokyo", n: 1 })
-  expect(zoneMail()).toMatchObject({ zone: "Asia/Tokyo", n: 1 })
+  expect(readZoneSetting()?.zone).toBe("Asia/Tokyo")
+  expect(zoneMail()?.zone).toBe("Asia/Tokyo")
+})
+
+test("a pick made on a box reinstalled (or just set up), before it hears your other computers, wins over the older pick they still have", async () => {
+  const row = rowOf((await ask(handler, "GET", "kuvo/settings/general")).json)
+  expect((await ask(handler, "PATCH", "kuvo/settings/general", { row: "time-zone", value: "Asia/Tokyo", was: row.revision })).status).toBe(200)
+  // Their pick, from before, counted on far past this box's own count: refused.
+  expect(takeZone({ zone: "Europe/Berlin", n: 5 })).toBe(false)
+  expect(readZoneSetting()?.zone).toBe("Asia/Tokyo")
+  // A pick made after it, elsewhere: taken.
+  expect(takeZone({ zone: "Europe/Berlin", n: zoneMail()!.n + 1 })).toBe(true)
+  expect(read(join(folder, "timezone"))).toBe("Europe/Berlin")
+})
+
+test("the same pick told again with its rules, after a mail that couldn't carry them, keeps them where there are none", () => {
+  // (A zone whose rules this computer has its own of keeps those: only a computer without them takes these.)
+  expect(takeZone({ zone: "Asia/Tokyo", n: 7 })).toBe(true)
+  expect(takeZone({ zone: "Asia/Tokyo", n: 7, zoneinfo: Buffer.from("TZif later").toString("base64") })).toBe(!existsSync("/usr/share/zoneinfo/Asia/Tokyo"))
 })
 
 test("a Mac of 0.7 still connecting, its clock moved (you travelled): the kit it writes again moves a machine's carried zone, for it alone, never a pick", () => {
@@ -166,5 +183,5 @@ test("the zone a machine carried from before, picked as it is, becomes yours and
   const picked = await ask(handler, "PATCH", "kuvo/settings/general", { row: "time-zone", value: "Europe/Istanbul", was: row.revision })
   expect(picked.status).toBe(200)
   expect(rowOf(picked.json).line).toContain("on all your computers")
-  expect(zoneMail()).toMatchObject({ zone: "Europe/Istanbul", n: 1 })
+  expect(zoneMail()?.zone).toBe("Europe/Istanbul")
 })

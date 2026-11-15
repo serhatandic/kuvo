@@ -8537,6 +8537,8 @@ function readZoneSetting() {
   const kept = readKept2();
   if (!needsWriting(kept))
     return kept ?? null;
+  if (kept === undefined && !zoneFromBefore())
+    return null;
   let made = null;
   try {
     made = locked(ZONE_LOCK, keptNow);
@@ -8562,6 +8564,7 @@ function changed(setting) {
       told();
     } catch {}
 }
+var pickCount = (now, at = Date.now()) => Math.min(Math.max((now?.n ?? 0) + 1, at), MOST_COUNT2);
 function setZone(zone) {
   if (!knownZone(zone))
     return null;
@@ -8571,7 +8574,7 @@ function setZone(zone) {
     if (now?.zone === zone && !now.carried)
       return now;
     const rules = rulesOf(zone) ?? (now?.zone === zone ? now.zoneinfo ?? null : null);
-    made = written2({ kuvo: 1, zone, n: Math.min((now?.n ?? 0) + 1, MOST_COUNT2), ...kept3(now), ...rules ? { zoneinfo: rules } : {} });
+    made = written2({ kuvo: 1, zone, n: pickCount(now), ...kept3(now), ...rules ? { zoneinfo: rules } : {} });
     return made;
   });
   const moved = movedByKit();
@@ -8590,6 +8593,10 @@ function takeZone(given) {
   try {
     locked(ZONE_LOCK, () => {
       const now = keptNow();
+      if (now && !now.carried && n === now.n && zone === now.zone && !now.zoneinfo && sent && !rulesOf(zone)) {
+        made = written2({ ...now, zoneinfo: sent });
+        return;
+      }
       if (now && !now.carried && (n < now.n || n === now.n && zone <= now.zone))
         return;
       const rules = rulesOf(zone) ?? sent ?? (now?.zone === zone ? now.zoneinfo ?? null : null);
@@ -45408,7 +45415,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "9f29d52f7bea";
+var BRIDGE_VERSION = "21893efd8922";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";

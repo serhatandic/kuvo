@@ -484,13 +484,15 @@ test("two Macs updated in different zones each keep their own clock; a zone pick
     assert.doesNotMatch(told, /this Mac's clock/);
     // Picked here, it goes back with a higher count.
     link.setZone("Asia/Tokyo");
-    assert.deepEqual([link.zoneMail().zone, link.zoneMail().n], ["Asia/Tokyo", 2]);
+    const pick = link.zoneMail();
+    assert.equal(pick.zone, "Asia/Tokyo");
+    assert.ok(pick.n > 1);
     // This Mac's clock moving (you travel) moves nothing: your pick stays.
     process.env.TZ = "Asia/Tokyo";
     assert.equal(fs.readFileSync(path.join(folder, "timezone"), "utf8"), "Asia/Tokyo");
     process.env.TZ = "Europe/London";
     link.applyZone();
-    assert.deepEqual([link.zoneMail().zone, link.zoneMail().n], ["Asia/Tokyo", 2]);
+    assert.deepEqual([link.zoneMail().zone, link.zoneMail().n], ["Asia/Tokyo", pick.n]);
     assert.equal(fs.readFileSync(path.join(folder, "timezone"), "utf8"), "Asia/Tokyo");
   } finally {
     if (was === undefined) delete process.env.TZ; else process.env.TZ = was;

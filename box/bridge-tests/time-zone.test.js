@@ -81,7 +81,9 @@ test("your time zone is a setting of the box: read and changed through its setti
   assert.equal(after.value, "Asia/Tokyo");
   assert.equal(after.choices.some(choice => choice.id === "own-clock"), false, "yours now: its own clock isn't offered again");
   assert.equal(general().value, "Asia/Tokyo", "kept");
-  assert.deepEqual([JSON.parse(read(setting)).zone, JSON.parse(read(setting)).n], ["Asia/Tokyo", 1]);
+  const first = JSON.parse(read(setting));
+  assert.equal(first.zone, "Asia/Tokyo");
+  assert.ok(first.n >= 1);
   // Where its wake-ups read it: its bots' folders, and the folder above its conversations' own.
   assert.equal(read(path.join(folder, "timezone")), "Asia/Tokyo");
   assert.equal(read(path.join(wakes, "timezone")), "Asia/Tokyo");
@@ -99,7 +101,9 @@ test("your time zone is a setting of the box: read and changed through its setti
   assert.equal(route("PATCH", "kuvo/settings/general", { row: "time-zone", value: "Mars/Olympus", was: after.revision }).status, 400);
   // A new one counts on.
   assert.equal(route("PATCH", "kuvo/settings/general", { row: "time-zone", value: "Europe/Istanbul", was: after.revision }).status, 200);
-  assert.deepEqual([JSON.parse(read(setting)).zone, JSON.parse(read(setting)).n], ["Europe/Istanbul", 2]);
+  const second = JSON.parse(read(setting));
+  assert.equal(second.zone, "Europe/Istanbul");
+  assert.ok(second.n > first.n);
   assert.equal(read(path.join(folder, "timezone")), "Europe/Istanbul");
 });
 
@@ -180,6 +184,13 @@ test("a Linux machine without time zone data takes your pick with its rules, and
   const warning = rowOf(JSON.parse(JSON.parse(warned.stdout.trim().split("\n").pop()).body));
   assert.equal(warning.tone, "warning");
   assert.match(warning.line, /tzdata/);
+  // The same pick told again, now with its rules (its first mail couldn't carry them): kept.
+  const later = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    const link = await import(${JSON.stringify(script)});
+    console.log(JSON.stringify(link.takeZone({ zone: "Asia/Tokyo", n: 1, zoneinfo: ${JSON.stringify(rules)} })));
+  `], { env: { ...env, KUVO_TEST_ZONEINFO: empty }, encoding: "utf8" });
+  assert.equal(later.stdout.trim(), "true");
+  assert.equal(fs.readFileSync(path.join(folder, "zoneinfo")).toString("base64"), rules);
   // Rules that aren't a zone's: not kept.
   for (const each of [setting, path.join(wakes, "timezone"), path.join(wakes, "zoneinfo")]) fs.rmSync(each, { force: true });
   const junk = spawnSync(process.execPath, ["--input-type=module", "-e", `
