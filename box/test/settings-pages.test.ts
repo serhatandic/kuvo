@@ -60,14 +60,15 @@ test("the box lists its sections, each with what a sidebar and search show", asy
   const { status, json } = await ask(handler, "GET", "kuvo/settings")
   expect(status).toBe(200)
   expect(json.sections.map((section: any) => [section.id, section.title, section.group, section.icon])).toEqual([
-    ["general", "General", "General", "settings"],
+    ["clock", "Clock", "General", "settings"],
     ["permissions", "Permissions", "Agents & Tools", "shield"],
     ["browser", "Browser", "System", "globe"],
-    ["git", "Git", "System", "branch"],
-    ["worktrees", "Worktrees", "System", "folder"],
+    ["git", "Git", "Projects", "branch"],
+    ["worktrees", "Worktrees", "Projects", "folder"],
     ["storage", "Storage", "System", "drive"],
     ["archived", "Archived Sessions", "System", "archive"],
   ])
+  expect((await ask(handler, "GET", "kuvo/settings/general")).status).toBe(404)
   expect(json.sections[0].keywords).toContain("time zone")
   expect(json.sections[1].keywords).toContain("sandbox")
   expect((await ask(handler, "GET", "kuvo/settings/vault")).status).toBe(404)

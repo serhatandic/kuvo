@@ -64,9 +64,9 @@ pub const LATER: &[Listed] = &[
     listed("mcp", "MCP Servers", IconName::Sliders, "Agents & Tools", ""),
     listed("git", "Git", IconName::Branch, "Projects", ""),
     listed("worktrees", "Worktrees", IconName::Folder, "Projects", ""),
-    listed("archived", "Archived Sessions", IconName::Clock, "Projects", ""),
+    listed("archived", "Archived Sessions", IconName::Archive, "System", ""),
     listed("engine", "Engine", IconName::Computer, "System", ""),
-    listed("storage", "Storage", IconName::File, "System", ""),
+    listed("storage", "Storage", IconName::Drive, "System", ""),
     listed("phone", "Phone", IconName::Message, "System", "pair iphone"),
 ];
 
@@ -75,6 +75,8 @@ pub const LATER: &[Listed] = &[
 pub fn icon_named(name: &str) -> IconName {
     match name {
         "settings" => IconName::Settings,
+        "drive" => IconName::Drive,
+        "archive" => IconName::Archive,
         "shield" => IconName::Shield,
         "globe" => IconName::Globe,
         "user" => IconName::User,

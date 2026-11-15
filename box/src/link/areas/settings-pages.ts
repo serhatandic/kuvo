@@ -53,7 +53,7 @@ export const SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/(
 
 const SECTIONS: SettingsSection[] = [
   {
-    id: "general", title: "General", group: "General", icon: "settings",
+    id: "clock", title: "Clock", group: "General", icon: "settings",
     line: "Your time zone, which bots' wake-ups and times of day go by on all your computers.",
     keywords: ["time zone", "timezone", "clock", "wake-ups", "schedule", "travel"],
   },
@@ -67,11 +67,11 @@ const SECTIONS: SettingsSection[] = [
     line: "The browser's search engine, and offering to save sign-ins.",
     keywords: ["search engine", "google", "duckduckgo", "sign-ins", "passwords", "tabs", "never offered"],
   },
-  { id: "git", title: "Git", group: "System", icon: "branch",
+  { id: "git", title: "Git", group: "Projects", icon: "branch",
     line: "How sessions' branches are named, and commit messages and pull requests are written.",
     keywords: ["branch prefix", "worktree", "commit", "pull request", "instructions"],
   },
-  { id: "worktrees", title: "Worktrees", group: "System", icon: "folder", line: "Where new projects and worktrees go, and sessions’ own copies of a project.", keywords: ["projects", "folders", "branches", "remove"] },
+  { id: "worktrees", title: "Worktrees", group: "Projects", icon: "folder", line: "Where new projects and worktrees go, and sessions’ own copies of a project.", keywords: ["projects", "folders", "branches", "remove"] },
   { id: "storage", title: "Storage", group: "System", icon: "drive", line: "Copies of what agents made, and how much older versions keep.", keywords: ["copies", "older versions", "budget", "disk", "clear"] },
   { id: "archived", title: "Archived Sessions", group: "System", icon: "archive", line: "Sessions out of the sidebar, still searchable; bring them back or delete them.", keywords: ["archive", "unarchive", "delete", "sessions"] },
 ];
@@ -563,9 +563,9 @@ async function archivedPage(context: RouteContext): Promise<SettingsPage> {
   const projects = readProjects();
   const projectTitle = (project: string) => chats.has(project) ? "Chats" : read.value.projects[project]?.name ?? projects.find(each => each.directory === project)?.name ?? path.basename(project);
   return { id: "archived", title: "Archived Sessions", groups: [
-    { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "None yet. Right-click a session in the sidebar and choose Archive to put it away." }, ...(all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {}) }] })] },
+    { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "Archived sessions show here." }, ...(all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {}) }] })] },
     ...[...groups].map(([project, items]) => ({ id: `project-${project}`, title: projectTitle(project), rows: [row({ id: `archived-${project}`, title: projectTitle(project), kind: "list", items, search: { placeholder: "Search archived sessions", empty: "No archived session matches “{query}”." } })] })),
-  ], ...(states.length ? {} : { notes: [{ words: "None yet. Right-click a session in the sidebar and choose Archive to put it away.", tone: "quiet" as const }] }) };
+  ], ...(states.length ? {} : { notes: [{ words: "Archived sessions show here.", tone: "quiet" as const }] }) };
 }
 
 async function archivedAct(context: RouteContext, at: SettingItem, action: SettingAction): Promise<Refused | null> {
@@ -583,7 +583,7 @@ async function archivedAct(context: RouteContext, at: SettingItem, action: Setti
   return noActions();
 }
 
-// MARK: General
+// MARK: Clock
 
 /** A zone's name as a menu shows it: "Europe/Istanbul" as "Europe › Istanbul", "America/New_York" as
  * "America › New York". */
@@ -608,7 +608,7 @@ function offsetOf(zone: string, at = new Date()): string {
 /** The value of the time zone row while this box has no zone of yours yet: its own clock's. */
 const OWN_CLOCK = "own-clock";
 
-async function generalPage(context: RouteContext): Promise<SettingsPage> {
+async function clockPage(context: RouteContext): Promise<SettingsPage> {
   const name = context.info.name || "this computer";
   const setting = readZoneSetting();
   const here = zoneHere(setting);
@@ -632,7 +632,7 @@ async function generalPage(context: RouteContext): Promise<SettingsPage> {
           ? `None set yet: ${name} goes by its own clock. Pick one for ${name}.`
           : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
   return {
-    id: "general", title: "General",
+    id: "clock", title: "Clock",
     groups: [{
       id: "clock", title: "Clock", rows: [row({
         id: "time-zone", title: "Time zone", line, ...(unruled ? { tone: "warning" as const } : {}), kind: "choice", value: here.yours ? here.zone : OWN_CLOCK, choices, can: true,
@@ -641,7 +641,7 @@ async function generalPage(context: RouteContext): Promise<SettingsPage> {
   };
 }
 
-async function generalChange(_context: RouteContext, at: SettingItem, value: unknown): Promise<Refused | null> {
+async function clockChange(_context: RouteContext, at: SettingItem, value: unknown): Promise<Refused | null> {
   if (at.id !== "time-zone") return { status: 400, message: "That isn't something to change." };
   // (Its own clock while none is set is what applies already: nothing to write. The zone it shows
   // picked again is nothing to write either, but where it's only carried from before: then it's yours.)
@@ -670,7 +670,7 @@ interface Section {
 const mtime = (file: string): number => { try { return fs.statSync(file).mtimeMs; } catch { return 0; } };
 
 const PAGES: Record<string, Section> = {
-  general: { read: generalPage, change: generalChange, act: noActions, look: () => `${mtime(ZONE_FILE)} ${ownClock()}` },
+  clock: { read: clockPage, change: clockChange, act: noActions, look: () => `${mtime(ZONE_FILE)} ${ownClock()}` },
   permissions: {
     read: permissionsPage, change: permissionsChange, act: permissionsAct,
     look: () => {

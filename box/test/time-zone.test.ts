@@ -52,11 +52,11 @@ test("this computer's own clock is the system's as it is now", () => {
 })
 
 test("a machine's zone, changed through its settings, is what its bots, its conversations' wake-ups and its own clocks go by", async () => {
-  const before = (await ask(handler, "GET", "kuvo/settings/general")).json
+  const before = (await ask(handler, "GET", "kuvo/settings/clock")).json
   expect(rowOf(before).value).toBe("own-clock")
   // (Nothing yours yet: a machine's bots go by its own clock, as before.)
   expect(zoneFilesFor().timezone).toBe(ownClock())
-  const changed = await ask(handler, "PATCH", "kuvo/settings/general", { row: "time-zone", value: "America/Sao_Paulo", was: rowOf(before).revision })
+  const changed = await ask(handler, "PATCH", "kuvo/settings/clock", { row: "time-zone", value: "America/Sao_Paulo", was: rowOf(before).revision })
   expect(changed.status).toBe(200)
   expect(rowOf(changed.json).value).toBe("America/Sao_Paulo")
   expect(read(join(folder, "timezone"))).toBe("America/Sao_Paulo")
@@ -91,17 +91,17 @@ test("a machine updated from 0.7 keeps its Mac's zone as carried: told to no one
 
 test("a zone you pick on a machine that updated overnight is told to your other computers; its carried zone never was", async () => {
   write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "Europe/Istanbul" }))
-  const row = rowOf((await ask(handler, "GET", "kuvo/settings/general")).json)
+  const row = rowOf((await ask(handler, "GET", "kuvo/settings/clock")).json)
   expect(row.value).toBe("Europe/Istanbul")
   expect(zoneMail()).toBe(null)
-  expect((await ask(handler, "PATCH", "kuvo/settings/general", { row: "time-zone", value: "Asia/Tokyo", was: row.revision })).status).toBe(200)
+  expect((await ask(handler, "PATCH", "kuvo/settings/clock", { row: "time-zone", value: "Asia/Tokyo", was: row.revision })).status).toBe(200)
   expect(readZoneSetting()?.zone).toBe("Asia/Tokyo")
   expect(zoneMail()?.zone).toBe("Asia/Tokyo")
 })
 
 test("a pick made on a box reinstalled (or just set up), before it hears your other computers, wins over the older pick they still have", async () => {
-  const row = rowOf((await ask(handler, "GET", "kuvo/settings/general")).json)
-  expect((await ask(handler, "PATCH", "kuvo/settings/general", { row: "time-zone", value: "Asia/Tokyo", was: row.revision })).status).toBe(200)
+  const row = rowOf((await ask(handler, "GET", "kuvo/settings/clock")).json)
+  expect((await ask(handler, "PATCH", "kuvo/settings/clock", { row: "time-zone", value: "Asia/Tokyo", was: row.revision })).status).toBe(200)
   // Their pick, from before, counted on far past this box's own count: refused.
   expect(takeZone({ zone: "Europe/Berlin", n: 5 })).toBe(false)
   expect(readZoneSetting()?.zone).toBe("Asia/Tokyo")
@@ -182,10 +182,10 @@ test("a pick told with its rules passes them on, with this computer's own where 
 
 test("the zone a machine carried from before, picked as it is, becomes yours and goes to your other computers", async () => {
   write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "Europe/Istanbul" }))
-  const row = rowOf((await ask(handler, "GET", "kuvo/settings/general")).json)
+  const row = rowOf((await ask(handler, "GET", "kuvo/settings/clock")).json)
   expect([row.value, row.line]).toEqual(["Europe/Istanbul", expect.stringContaining("Kept from what your Mac last gave")])
   expect(zoneMail()).toBe(null)
-  const picked = await ask(handler, "PATCH", "kuvo/settings/general", { row: "time-zone", value: "Europe/Istanbul", was: row.revision })
+  const picked = await ask(handler, "PATCH", "kuvo/settings/clock", { row: "time-zone", value: "Europe/Istanbul", was: row.revision })
   expect(picked.status).toBe(200)
   expect(rowOf(picked.json).line).toContain("on all your computers")
   expect(zoneMail()?.zone).toBe("Europe/Istanbul")

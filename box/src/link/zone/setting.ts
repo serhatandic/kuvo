@@ -1,4 +1,4 @@
-// Your time zone (PROTOCOL.md, "Your time zone"): a zone you pick (`kuvo/settings/general`, from any
+// Your time zone (PROTOCOL.md, "Your time zone"): a zone you pick (`kuvo/settings/clock`, from any
 // client) is kept by the box (`box/time-zone.json`) and carried to your other computers in peers' mail
 // (`zone: {zone, n, zoneinfo?}`), the pick counted highest winning. Until you pick one, each box goes by
 // its own clock, as before; a machine keeps what an older Mac gave it, for itself alone. What goes by

@@ -45,7 +45,7 @@ pub struct Settings {
     browser: Value,
     usage: Value,
     usage_version: u32,
-    /// Your time zone, once picked (`kuvo/settings/general`).
+    /// Your time zone, once picked (`kuvo/settings/clock`).
     zone: Option<String>,
     /// Your own rule for what the agent does without asking, by kind (`when-<kind>`).
     when: BTreeMap<String, String>,

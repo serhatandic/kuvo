@@ -1,5 +1,5 @@
 // Your time zone as a box's setting (PROTOCOL.md, "Your time zone"): read and changed by any client
-// through the box's settings (`kuvo/settings/general`), carried from what a Mac app gave a machine
+// through the box's settings (`kuvo/settings/clock`), carried from what a Mac app gave a machine
 // before (its kit, the zone above its conversations' wake-ups, its launch's KUVO_TZ), and written
 // where `kuvo-wake` reads it, so a machine's bots and conversations wake on your clock, not the
 // machine's. A machine's box (the real kuvo-link.js, each call a process of its own as a client's
@@ -42,7 +42,7 @@ function route(method, p, body) {
 }
 const rowOf = page => page.groups.flatMap(group => group.rows).find(row => row.id === "time-zone");
 const general = () => {
-  const { status, json } = route("GET", "kuvo/settings/general");
+  const { status, json } = route("GET", "kuvo/settings/clock");
   assert.equal(status, 200, JSON.stringify(json));
   return rowOf(json);
 };
@@ -72,7 +72,7 @@ test("your time zone is a setting of the box: read and changed through its setti
   assert.ok(before.choices.some(choice => choice.id === "Asia/Tokyo" && choice.title === "Asia › Tokyo"));
   assert.equal(read(setting), null, "nothing written by reading it");
 
-  const changed = route("PATCH", "kuvo/settings/general", { row: "time-zone", value: "Asia/Tokyo", was: before.revision });
+  const changed = route("PATCH", "kuvo/settings/clock", { row: "time-zone", value: "Asia/Tokyo", was: before.revision });
   assert.equal(changed.status, 200, JSON.stringify(changed.json));
   const after = rowOf(changed.json);
   assert.equal(after.value, "Asia/Tokyo");
@@ -91,13 +91,13 @@ test("your time zone is a setting of the box: read and changed through its setti
   assert.deepEqual(dueOf(folder), [Date.UTC(2030, 0, 1, 0, 0) / 1000]);
 
   // Changed again, from what was read before (another client changed it since): refused, with the page now.
-  const stale = route("PATCH", "kuvo/settings/general", { row: "time-zone", value: "Europe/Istanbul", was: before.revision });
+  const stale = route("PATCH", "kuvo/settings/clock", { row: "time-zone", value: "Europe/Istanbul", was: before.revision });
   assert.equal(stale.status, 409);
   assert.equal(rowOf(stale.json.page).value, "Asia/Tokyo");
   // A zone that isn't one: refused.
-  assert.equal(route("PATCH", "kuvo/settings/general", { row: "time-zone", value: "Mars/Olympus", was: after.revision }).status, 400);
+  assert.equal(route("PATCH", "kuvo/settings/clock", { row: "time-zone", value: "Mars/Olympus", was: after.revision }).status, 400);
   // A new one counts on.
-  assert.equal(route("PATCH", "kuvo/settings/general", { row: "time-zone", value: "Europe/Istanbul", was: after.revision }).status, 200);
+  assert.equal(route("PATCH", "kuvo/settings/clock", { row: "time-zone", value: "Europe/Istanbul", was: after.revision }).status, 200);
   const second = JSON.parse(read(setting));
   assert.equal(second.zone, "Europe/Istanbul");
   assert.ok(second.n > first.n);
@@ -166,7 +166,7 @@ test("a Linux machine without time zone data takes your pick with its rules, and
   assert.equal(read(path.join(folder, "timezone")), "Asia/Tokyo");
   assert.equal(fs.readFileSync(path.join(folder, "zoneinfo")).toString("base64"), rules, "beside it, where kuvo-wake reads them");
   // The row doesn't warn: it has the rules.
-  const page = spawnSync(process.execPath, [script, "box", "route"], { env: { ...env, KUVO_TEST_ZONEINFO: empty }, input: JSON.stringify({ method: "GET", path: "kuvo/settings/general" }), encoding: "utf8" });
+  const page = spawnSync(process.execPath, [script, "box", "route"], { env: { ...env, KUVO_TEST_ZONEINFO: empty }, input: JSON.stringify({ method: "GET", path: "kuvo/settings/clock" }), encoding: "utf8" });
   const row = rowOf(JSON.parse(JSON.parse(page.stdout.trim().split("\n").pop()).body));
   assert.equal(row.tone, undefined);
   // Without them (a pick told by a box that had none, on a machine that never had them), the row says
@@ -177,7 +177,7 @@ test("a Linux machine without time zone data takes your pick with its rules, and
     console.log(JSON.stringify(link.takeZone({ zone: "Asia/Tokyo", n: 1 })));
   `], { env: { ...env, KUVO_TEST_ZONEINFO: empty }, encoding: "utf8" });
   assert.equal(bare.stdout.trim(), "true");
-  const warned = spawnSync(process.execPath, [script, "box", "route"], { env: { ...env, KUVO_TEST_ZONEINFO: empty }, input: JSON.stringify({ method: "GET", path: "kuvo/settings/general" }), encoding: "utf8" });
+  const warned = spawnSync(process.execPath, [script, "box", "route"], { env: { ...env, KUVO_TEST_ZONEINFO: empty }, input: JSON.stringify({ method: "GET", path: "kuvo/settings/clock" }), encoding: "utf8" });
   const warning = rowOf(JSON.parse(JSON.parse(warned.stdout.trim().split("\n").pop()).body));
   assert.equal(warning.tone, "warning");
   assert.match(warning.line, /tzdata/);
