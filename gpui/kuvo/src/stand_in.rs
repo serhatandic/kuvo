@@ -922,6 +922,13 @@ impl StandIn {
         }
         let made = state.made.unwrap_or_else(now_ms);
         let bots: Vec<Value> = state.bots.bots.iter().chain(&state.bots.elsewhere).cloned().collect();
+        if let ("GET", ["kuvo", "groups", group, "mentions"]) = (method, route.split('/').collect::<Vec<_>>().as_slice()) {
+            let typed = query(path, "q").map(decoded).unwrap_or_default();
+            return match state.groups.mentions(group, &typed, &bots) {
+                Some(mentions) => answer(200, json!({ "mentions": mentions })),
+                None => answer(404, json!({ "message": "There’s no such group chat here." })),
+            };
+        }
         if let Some((status, value, changed)) = state.groups.answer(method, route, &body, &bots, if method == "GET" { made } else { now_ms() }) {
             if let Some(group) = changed {
                 state.group_changed(&group);

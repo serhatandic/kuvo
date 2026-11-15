@@ -110,7 +110,7 @@ impl Default for Settings {
             ways(json!([{ "type": "oauth", "id": "max", "label": "Claude Pro/Max" }, { "type": "oauth", "id": "console", "label": "Create an API Key" }, { "type": "key", "label": "Manually enter API Key" }, { "type": "oauth", "id": "legacy-device", "label": "Device code (legacy)", "legacy": true }]), json!(["ANTHROPIC_API_KEY"]), "Claude Pro/Max"),
         );
         all.insert("openai".into(), ways(json!([{ "type": "key", "label": "Use an API key" }]), json!(["OPENAI_API_KEY"]), "API key"));
-        all.insert("amazon-bedrock".into(), ways(json!([{ "type": "external", "id": "aws", "label": "AWS credentials on this computer", "form": region }, { "type": "key", "label": "Bedrock API key", "form": region }]), json!(["AWS_ACCESS_KEY_ID", "AWS_PROFILE"]), "API key"));
+        all.insert("amazon-bedrock".into(), ways(json!([{ "type": "external", "id": "aws", "label": "AWS credentials on this computer", "form": region }, { "type": "key", "label": "Bedrock API key", "form": region }]), json!(["AWS_ACCESS_KEY_ID", "AWS_PROFILE"]), "Connect"));
         all.insert("deepseek".into(), ways(json!([{ "type": "key", "label": "Use an API key" }]), json!(["DEEPSEEK_API_KEY"]), "API key"));
         all.insert("groq".into(), ways(json!([]), json!(["GROQ_API_KEY"]), "Connect"));
         all.insert("mistral".into(), ways(json!([{ "type": "key", "label": "Use an API key" }]), json!(["MISTRAL_API_KEY"]), "API key"));
@@ -499,6 +499,13 @@ fn key_only(offered: &Value) -> bool {
     offered["methods"].as_array().is_some_and(|methods| !methods.is_empty() && methods.iter().all(|method| method["type"] == "key"))
 }
 
+/// Whether an account is reached with the computer's credentials (a key perhaps beside them) and
+/// no sign-in page: one you connect, not sign in to.
+fn connects(offered: &Value) -> bool {
+    let methods = offered["methods"].as_array().map(Vec::as_slice).unwrap_or_default();
+    methods.iter().any(|method| method["type"] == "external") && !methods.iter().any(|method| method["type"] == "oauth")
+}
+
 /// Whether an account is a plan you sign in to: one of its ways in is its sign-in page
 /// (`sign-in.accounts.plan`).
 pub fn is_plan(offered: &Value) -> bool {
@@ -550,8 +557,15 @@ pub fn said_of(account: &Value, offered: &Value, agents: bool, ended: Option<&st
     let in_use = said.first();
     let saved_in_use = listed.iter().position(|each| each["type"] == "credential").and_then(|at| said.get(at));
     let signs_in = offered["methods"].as_array().is_some_and(|methods| !methods.is_empty());
-    // Keys are entered, never signed into: a key-only account's buttons say so.
-    let (first, again, another) = if key_only(offered) { ("Add Key", "Replace Key", "Add Another Key") } else { ("Sign In", "Sign In Again", "Add Another Account") };
+    // Keys are entered, never signed into: a key-only account's buttons say so; one reached with
+    // the computer's credentials is connected.
+    let (first, again, another) = if key_only(offered) {
+        ("Add Key", "Replace Key", "Add Another Key")
+    } else if connects(offered) {
+        ("Connect", "Reconnect", "Add Another Account")
+    } else {
+        ("Sign In", "Sign In Again", "Add Another Account")
+    };
     let added = agents && (id.contains('@') || meta["accountID"].as_str().is_some_and(|account| !account.is_empty() && account != "default"));
     let installs = agents && meta["installed"] == false && meta["install"].as_str().is_some_and(|install| !install.is_empty());
     let state = if installs {

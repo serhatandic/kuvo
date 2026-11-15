@@ -260,7 +260,7 @@
      "AWS_ACCESS_KEY_ID",
      "AWS_PROFILE"
     ],
-    "hint": "API key"
+    "hint": "Connect"
    }
   },
   {
@@ -2556,6 +2556,130 @@
     {
      "id": "cred_3",
      "state": "signedIn",
+     "line": "Credentials on Studio"
+    }
+   ]
+  },
+  {
+   "about": "an account reached with the computer's credentials or a key, not signed in to: its button says Connect, never Sign In (#734)",
+   "account": {
+    "id": "amazon-bedrock",
+    "name": "Amazon Bedrock",
+    "methods": [
+     {
+      "type": "external",
+      "id": "aws",
+      "label": "AWS credentials on this computer"
+     },
+     {
+      "type": "key",
+      "label": "Bedrock API key",
+      "form": [
+       {
+        "key": "region",
+        "type": "text",
+        "label": "Region",
+        "default": "us-east-1"
+       }
+      ]
+     }
+    ],
+    "connections": []
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "external",
+      "id": "aws",
+      "label": "AWS credentials on this computer"
+     },
+     {
+      "type": "key",
+      "label": "Bedrock API key",
+      "form": [
+       {
+        "key": "region",
+        "type": "text",
+        "label": "Region",
+        "default": "us-east-1"
+       }
+      ]
+     }
+    ],
+    "environment": [],
+    "hint": "Connect"
+   },
+   "plan": false,
+   "state": "signedOut",
+   "line": "Connect",
+   "actions": [
+    {
+     "id": "signIn",
+     "label": "Connect"
+    }
+   ],
+   "connections": []
+  },
+  {
+   "about": "credentials the computer had, ended: Reconnect, beside another account",
+   "account": {
+    "id": "amazon-bedrock",
+    "name": "Amazon Bedrock",
+    "methods": [
+     {
+      "type": "external",
+      "id": "aws",
+      "label": "AWS credentials on this computer"
+     }
+    ],
+    "connections": [
+     {
+      "type": "credential",
+      "id": "cred_4",
+      "method": "external"
+     }
+    ]
+   },
+   "computer": "Studio",
+   "ended": "cred_4",
+   "offered": {
+    "methods": [
+     {
+      "type": "external",
+      "id": "aws",
+      "label": "AWS credentials on this computer"
+     }
+    ],
+    "environment": [],
+    "hint": "Connect"
+   },
+   "plan": false,
+   "state": "ended",
+   "line": "Sign-in ended",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Reconnect"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account"
+    },
+    {
+     "id": "disconnect",
+     "label": "Disconnect",
+     "confirm": {
+      "title": "Disconnect Amazon Bedrock?",
+      "message": "Its sign-ins and keys go from Studio, and its models leave the model picker there. Sessions on its models stop until you sign in again.",
+      "label": "Disconnect"
+     }
+    }
+   ],
+   "connections": [
+    {
+     "id": "cred_4",
+     "state": "ended",
      "line": "Credentials on Studio"
     }
    ]

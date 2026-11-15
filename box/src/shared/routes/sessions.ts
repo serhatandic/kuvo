@@ -188,6 +188,7 @@ export const SESSION_MODEL = object({
   "missing?": words("model", "signIn", "key", "install", "gone"),
   "account?": object({ id: string, name: string, "label?": string }),
   "plan?": object({ name: string, agent: string, provider: string }),
+  "connects?": bool,
   "refusal?": string,
   "choose?": bool,
   "action?": MODEL_ACTION,

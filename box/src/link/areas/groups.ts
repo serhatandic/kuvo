@@ -4,6 +4,7 @@ import { IS_MAC } from "../home";
 import { agentsDown } from "./agents-down";
 import { listedAgents, nameMissing, refreshOwnShared } from "../server/naming";
 import type { Target } from "../../shared/records";
+import type { Groups, ListedGroup } from "../../shared/routes/groups";
 import type { AnswerPiece, LinkRequest, RouteContext } from "../server/context";
 
 // What a client asks of them (PROTOCOL.md, `kuvo/groups`): the list and one chat (read, or followed
@@ -24,6 +25,22 @@ export async function askGroups<Value = unknown>(target: Target, method: string,
   });
   const value = await response.json().catch(() => ({})) as Value;
   return { status: response.status, value };
+}
+
+// The chats that live here, as a client lists them (`kuvo/groups`), from the bridge that runs
+// them; null while it doesn't answer.
+export async function listedGroups(target: Target, signal: AbortSignal | undefined): Promise<ListedGroup[] | null> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${target.port}/api/kuvo/link/groups`, {
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` },
+      signal,
+    });
+    if (!response.ok) return null;
+    const groups = ((await response.json()) as Partial<Groups> | null)?.groups;
+    return Array.isArray(groups) ? groups : null;
+  } catch {
+    return null;
+  }
 }
 
 // A client's group chat route, to the bridge that runs them and back as it answers (a followed
@@ -53,7 +70,9 @@ export async function* forwardGroups(target: Target, route: string, request: Lin
   } catch {}
 }
 
-const groupsNotAnswering = () => (IS_MAC ? "Group chats on this Mac aren’t answering. Try again in a moment." : "The coding agents’ bridge here isn’t answering. Try again in a moment.");
+/** Why there are no group chats to ask now: the bridge that runs them isn't running. */
+export const groupsAbsent = () => agentsDown() ?? (IS_MAC ? "Group chats on this Mac are starting. Try again in a moment." : "Group chats run with the coding agents' bridge, which isn't running on this machine.");
+export const groupsNotAnswering = () => (IS_MAC ? "Group chats on this Mac aren’t answering. Try again in a moment." : "The coding agents’ bridge here isn’t answering. Try again in a moment.");
 
 export function* groupJSON(status: number, value: { message: string }): Generator<AnswerPiece> {
   yield { head: { status, headers: { "content-type": "application/json" } } };
@@ -65,7 +84,7 @@ export function* groupJSON(status: number, value: { message: string }): Generato
 export async function* groupsRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, signal, route, readEngine, bridge } = context;
   const target = bridge();
-  if (!target) return yield* groupJSON(503, { message: agentsDown() ?? (IS_MAC ? "Group chats on this Mac are starting. Try again in a moment." : "Group chats run with the coding agents' bridge, which isn't running on this machine.") });
+  if (!target) return yield* groupJSON(503, { message: groupsAbsent() });
   // Who a message names with "&" is worked out there, from the list as it is now: worked out
   // again meanwhile, and waited for (two seconds at most) only when a name after "&" isn't
   // there yet, as a message from a phone (`namingHere`).

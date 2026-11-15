@@ -168,11 +168,12 @@ export function signInMethods(account: ListedAccount): OfferedMethods {
 
 /** The way in a card names: its first sign-in that isn't legacy, in one wording ("Login with" is the
  * engine's for some), or plain "Sign in" where its words only name the account again ("OpenCode
- * Console account" under OpenCode Console); else "API key" for a key, else "Connect". */
+ * Console account" under OpenCode Console); else "API key" for keys alone, else "Connect". */
 function hintOf(methods: OfferedMethod[], name: string): string {
   const signIn = methods.find(method => method.type === "oauth" && !method.legacy);
   if (signIn) return name && signIn.label.toLowerCase().includes(name.toLowerCase()) ? "Sign in" : signIn.label.replaceAll("Login with", "Sign in with");
-  return methods.some(method => method.type === "key") ? "API key" : "Connect";
+  // (The computer's credentials, a key perhaps beside them: connected, as its button says.)
+  return methods.some(method => method.type === "key") && !methods.some(method => method.type === "external") ? "API key" : "Connect";
 }
 
 /** Whether an account is a plan you sign in to (one of its ways in is its sign-in page), rather

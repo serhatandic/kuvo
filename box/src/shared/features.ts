@@ -93,6 +93,7 @@ export const FEATURES = [
   "groups.edit",
   "groups.joinable",
   "groups.make",
+  "groups.mentions",
   "groups.seats",
   "handoff",
   "integrations",

@@ -154,6 +154,8 @@ fn accounts_lists_the_agents_and_providers_as_the_box_says_them(cx: &mut TestApp
     for key_only in ["openai", "deepseek", "mistral"] {
         assert!(shown(cx, &format!("account-{key_only}-add-key")) && !shown(cx, &format!("account-{key_only}-sign-in")), "{key_only}");
     }
+    // Nor are the computer's credentials (#734): Amazon Bedrock's button is the box's Connect.
+    assert!(shown(cx, "account-amazon-bedrock-connect") && !shown(cx, "account-amazon-bedrock-sign-in"));
     // What each offers is the box's `actions`, no more: the agent's own sign-in has no Remove
     // Account (only one you added does), and one signed in from where nothing's kept, no Disconnect.
     click(cx, "account-claude-code-menu");
@@ -265,7 +267,7 @@ fn credentials_on_the_computer_take_their_forms_answer(cx: &mut TestAppContext) 
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     let view = section(&workspace, cx, "Accounts");
-    click(cx, "account-amazon-bedrock-sign-in");
+    click(cx, "account-amazon-bedrock-connect");
     assert_eq!(step(&view, cx), Some(Step::Choose), "two ways: chosen");
     assert!(shown(cx, "sign-in-way-0") && shown(cx, "sign-in-way-1"));
     click(cx, "sign-in-way-0");

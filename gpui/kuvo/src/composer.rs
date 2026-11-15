@@ -143,8 +143,8 @@ pub struct Composer {
     noted: String,
     /// Files and pictures that go with what's written, in the order they were added.
     attached: Vec<PathBuf>,
-    /// What "@" or "&" suggests for the mention being typed (the box's, `sessions.mentions`), and
-    /// which mention that was; which read of them is the latest.
+    /// What "@" or "&" suggests for the mention being typed (the box's: `sessions.mentions`, or in a
+    /// group chat `groups.mentions`), and which mention that was; which read of them is the latest.
     mentions: Vec<Mention>,
     mentions_for: Option<(For, String)>,
     mention_reads: u64,
@@ -876,18 +876,13 @@ impl Composer {
 
     /// The mention being typed, if one is, and what the box suggests for it: read as it changes.
     fn read_mentions(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.target, Target::Group { .. }) {
-            let text = self.text(cx);
-            let typed = group_mention_query(&text).map(|(_, query)| (For::Agents, query.to_owned()));
-            if typed != self.mentions_for {
-                self.mentions_for = typed.clone();
-                self.mentions = typed.map(|(_, query)| member_offers(&self.members, &query)).unwrap_or_default();
-            }
-            return;
-        }
-        let Target::Session { id, .. } = &self.target else { return };
         let text = self.text(cx);
-        let typed = mention_query(&text).map(|(wanted, _, query)| (wanted, query.to_owned()));
+        // A group chat's "&" (its bots, then guests) or a conversation's "@" and "&", by where it goes.
+        let (place, typed) = match &self.target {
+            Target::Group { id } => (Place::Group(id.clone()), group_mention_query(&text).map(|(_, query)| (For::Agents, query.to_owned()))),
+            Target::Session { id, .. } => (Place::Session(id.clone()), mention_query(&text).map(|(wanted, _, query)| (wanted, query.to_owned()))),
+            _ => return,
+        };
         if typed == self.mentions_for {
             return;
         }
@@ -903,7 +898,11 @@ impl Composer {
         // Until the box answers, Return and Tab wait with the list rather than send the mention
         // half typed.
         self.mention_pending = true;
-        let (client, id) = (self.client.clone(), id.clone());
+        let client = self.client.clone();
+        let ask = move || match &place {
+            Place::Group(group) => client.group_mentions(group, &query),
+            Place::Session(session) => client.mentions(session, wanted, &query),
+        };
         if self.live {
             // Asked once typing pauses a moment, not on every key.
             self.tasks.retain(|task| !task.is_ready());
@@ -912,7 +911,7 @@ impl Composer {
                 if this.read_with(cx, |this, _| this.mention_reads != read).unwrap_or(true) {
                     return;
                 }
-                let found = cx.background_executor().spawn(async move { client.mentions(&id, wanted, &query) }).await;
+                let found = cx.background_executor().spawn(async move { ask() }).await;
                 this.update(cx, |this, cx| {
                     if this.mention_reads == read {
                         this.mentions = found.unwrap_or_default();
@@ -924,7 +923,7 @@ impl Composer {
             }));
         } else {
             // (Tests and shots: at once, as the box would answer.)
-            self.mentions = client.mentions(&id, wanted, &query).unwrap_or_default();
+            self.mentions = ask().unwrap_or_default();
             self.mention_pending = false;
         }
     }
@@ -1189,24 +1188,10 @@ pub fn group_mention_query(text: &str) -> Option<(usize, &str)> {
     (!rest.starts_with(char::is_whitespace) && !rest.contains('\n')).then_some((at, rest))
 }
 
-/// A group chat's bots that what's typed names: those whose name starts with it first, then those
-/// containing it, in the chat's order, as the slash list orders its offers.
-// BOX-NEEDED: what "&" offers in a group chat, ranked by its box (its bots, then the guests
-// `kuvo/named` offers there): `GET kuvo/groups/<id>/mentions?q=`. Until then, the chat's own bots.
-fn member_offers(members: &[GroupMember], query: &str) -> Vec<Mention> {
-    let query = query.to_lowercase();
-    let mut found: Vec<(bool, Mention)> = members
-        .iter()
-        .filter_map(|member| {
-            let name = member.name.to_lowercase();
-            name.contains(&query).then(|| {
-                let detail = member.computer.as_ref().map(|computer| format!("On {computer}"));
-                (!name.starts_with(&query), Mention { text: format!("&{}", member.name), title: member.name.clone(), detail, kind: "bot".into(), session: None })
-            })
-        })
-        .collect();
-    found.sort_by_key(|(later, _)| *later);
-    found.into_iter().map(|(_, mention)| mention).collect()
+/// Where a mention's suggestions are asked: a group chat, or a conversation.
+enum Place {
+    Group(String),
+    Session(String),
 }
 
 /// Whether `name` (as "&" put it in) is still in `text`, as a word of its own.

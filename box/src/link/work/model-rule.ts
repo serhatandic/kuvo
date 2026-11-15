@@ -60,14 +60,17 @@ export const FEATURED = ["openai", "github-copilot", "anthropic", "google", "xai
  * in to it (`[type, id]`) are only that, else a sign-in; a plan that goes through a coding agent of
  * its own isn't offered for the engine's. With the ways it's offered, as their ids
  * (`oauth:<id>`, `key`, `external:<id>`). */
-export function signInNeed(providerID: string, methods: string[][]): { missing: "key" | "signIn"; offered: string[]; plan?: { name: string; agent: string; provider: string } } {
+export function signInNeed(providerID: string, methods: string[][]): { missing: "key" | "signIn"; offered: string[]; plan?: { name: string; agent: string; provider: string }; connects?: true } {
   const plan = PLANS[providerID];
   const offered = methods.filter(([type, id]) => ["oauth", "key", "external"].includes(type!) && !(type === "oauth" && planHides(providerID, id ?? "")));
   const key = offered.length > 0 && offered.every(([type]) => type === "key");
+  // Reached with the computer's credentials (a key perhaps beside them), no sign-in page: connected.
+  const connects = !key && offered.some(([type]) => type === "external") && !offered.some(([type]) => type === "oauth");
   return {
     missing: key ? "key" : "signIn",
     offered: offered.map(([type, id]) => (type === "key" ? "key" : `${type}:${id}`)),
     ...(key && plan ? { plan: { name: plan.name, agent: plan.agent, provider: plan.provider } } : {}),
+    ...(connects ? { connects: true as const } : {}),
   };
 }
 
@@ -346,7 +349,7 @@ function onEngine(ref: Ref, engine: EngineLists | null): ModelState | undefined 
   }
   // Signed out: its key, or a sign-in (`signInNeed`).
   const need = signInNeed(ref.providerID, account!.methods);
-  return { ...name, runs: false, missing: need.missing, account: accountOf(account!), ...(need.plan ? { plan: need.plan } : {}) };
+  return { ...name, runs: false, missing: need.missing, account: accountOf(account!), ...(need.plan ? { plan: need.plan } : {}), ...(need.connects ? { connects: true } : {}) };
 }
 
 /** What `ref`, a coding agent's model or a Custom Auto list, can do; undefined for what the bridge

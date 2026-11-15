@@ -41,6 +41,8 @@ public enum BoxGate {
     /// from any box, as each computer's `actions` say).
     /// Then #727's `settings`: a box describes its own settings (`kuvo/settings`), so no client
     /// writes a computer's settings pages itself.
+    /// Then #736's, for the desktop client's group chats, whose "&" lists what the box offers there
+    /// (the chat's bots, then guests) and filters nothing itself: `groups.mentions`.
     /// Then #668's messages: `messages.commands` (a command's message read as typed, by its id),
     /// `queue.removed.keyword` (a queued message taken back keeps its keyword) and
     /// `queue.stop.arriving` (Stop holds what's still on its way, so no client waits for it).
@@ -67,6 +69,7 @@ public enum BoxGate {
         "git.merge",
         "git.pull-request",
         "git.status",
+        "groups.mentions",
         "limits.rings",
         "messages.commands",
         "messages.send",
