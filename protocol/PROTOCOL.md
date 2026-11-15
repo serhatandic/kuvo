@@ -7596,7 +7596,8 @@ above. Only on a Mac.
   a move left at `switched`; sign-outs and clean-ups still owed to machines that were away
   (`machineSignOuts`, `machines.waiting`); what the app kept for its machines' projects and
   worktrees (`ssh://…` entries: names, folders, Run commands, which project a worktree's
-  sessions belong to); API keys pasted into the usage panel (its own Keychain items); starred
+  sessions belong to); an API key pasted into the usage panel (its own Keychain items: said where the panel had
+  OpenRouter or Z.ai connected); starred
   models; a list the app set aside as unreadable (a file, or its machines'); usage keys or a proxy set
   up by hand (`Usage/*.json`); a group chat that couldn't be read; a machine's bot's seat in a
   group chat (it takes one again where it lives); messages for machines that were away; and,
@@ -7728,9 +7729,11 @@ words for it, `kuvo/box/rehome`'s `progress`), then `{"result", "verdict", "star
 own, its answer kept in a file of this installer's own (`updates/rehome/run.<its pid>.out`)
 until it's read and what it says besides in `updates/rehome/run.log`, and follows it: an app that quits meanwhile doesn't stop the move, and
 at its next open `status` says `waits` (with `status.progress` to draw) while it's still at
-work, or what it came to. `progress` is only there while the move's journal is: null while an
-old keeper is stopped and the refusals are checked (the installer's first line, `plan`, stands
-for that), and null again while what's owed is settled after `done`. `status.dropped` says what wasn't carried.
+work, or what it came to. `progress` is there the whole time a move the box runs itself is at
+work: `plan` while what still runs is stopped and the refusals are checked, each step of its
+journal, then `{step: "done", title: "Starting Kuvo on this Mac", index: of, of}` while Kuvo is
+started and what's owed is settled (`updates/rehome/run.phase`, believed only while a process
+holds the move's lock). `status.dropped` says what wasn't carried.
 
 #### This Mac's app
 

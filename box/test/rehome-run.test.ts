@@ -465,3 +465,25 @@ test.if(mac)("a move whose own record can't be read says so in words with what t
   expect(existsSync(join(m.K, "box"))).toBe(false)
   expect(snapshot(m.S)).toEqual(before)
 }, LIMIT)
+
+test.if(mac)("while a move is at work outside its journal, checking first or starting Kuvo after, its progress still says so; a mark left by one that was killed says nothing", async () => {
+  const m = mac07(root)
+  // (A move at work: a process that holds the move's lock, named as one is.)
+  const holder = spawn("/bin/sh", ["-c", "echo ready; read line", "rehome"], { stdio: ["pipe", "pipe", "ignore"] })
+  try {
+    await new Promise<void>(resolve => holder.stdout.once("data", () => resolve()))
+    put(join(m.K, "updates", "rehome", "lock", "pid"), String(holder.pid))
+    put(join(m.K, "updates", "rehome", "run.phase"), "plan")
+    expect(rehome(m, ["--status"]).said!.progress).toEqual({ step: "plan", title: "Checking this Mac", index: 1, of: 11 })
+    put(join(m.K, "updates", "rehome", "run.phase"), "settle")
+    expect(rehome(m, ["--status"]).said!.progress).toEqual({ step: "done", title: "Starting Kuvo on this Mac", index: 11, of: 11 })
+  } finally {
+    holder.stdin.end()
+    await new Promise(resolve => holder.once("exit", resolve))
+  }
+  expect(rehome(m, ["--status"]).said!.progress).toBe(null)
+  // And a move run to its end leaves no mark.
+  rmSync(join(m.K, "updates", "rehome", "lock"), { recursive: true })
+  expect(run(m).said).toMatchObject({ result: "done", status: { progress: null } })
+  expect(existsSync(join(m.K, "updates", "rehome", "run.phase"))).toBe(false)
+}, LIMIT)

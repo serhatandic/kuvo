@@ -555,8 +555,10 @@ function said({ S, prefs, dropped }: Upgrade): void {
   if (theirProjects) dropped.push(`${theirProjects === 1 ? "A project" : `${theirProjects} projects`} on your machines may have lost ${theirProjects === 1 ? "its" : "their"} name, extra folders or Run command, which the earlier Kuvo Code kept on this Mac. Set them again in each project's settings.`);
   if (theirWorktrees) dropped.push(`${theirWorktrees === 1 ? "A worktree" : `${theirWorktrees} worktrees`} on your machines may show ${theirWorktrees === 1 ? "its" : "their"} sessions under another project: the earlier Kuvo Code kept which project ${theirWorktrees === 1 ? "it" : "each"} belonged to on this Mac.`);
   if (Object.keys(prefs).some(key => key.startsWith("machines.unreadable-"))) dropped.push("The earlier Kuvo Code had set aside a list of machines it couldn't read. It isn't brought along: add any machine that's missing again.");
-  // (API keys pasted into the usage panel are its own Keychain items, which nothing here can
-  // see: who has any can't be told, so it isn't said to everyone.)
+  // (API keys pasted into the usage panel, OpenRouter's and Z.ai's, are its own Keychain items,
+  // which nothing here can see: said only where the panel had one of those two connected.)
+  const keyed = strings(prefs["kuvo.usage.connectedProviders.v1"]).filter(id => /openrouter|zai|z\.ai/i.test(id)).length;
+  if (keyed) dropped.push("An API key you pasted into the usage panel (OpenRouter's or Z.ai's) isn't brought along. Paste it again in the usage panel.");
   const starred = typeof prefs.favoriteModels === "string" && prefs.favoriteModels !== "";
   if (starred || prefs.lastModelRef !== undefined || prefs.lastModel !== undefined) dropped.push(starred ? "Your starred models, and the model new sessions start with, are chosen again in the new app." : "The model new sessions start with is chosen again in the new app.");
   if (prefs["notifications.enabled"] === false || prefs["notifications.sound"] === false || prefs["notifications.badge"] === false) dropped.push("You had turned off some of Kuvo Code's notifications (or their sound or badge). Set that again in the new app.");

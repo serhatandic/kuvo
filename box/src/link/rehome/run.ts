@@ -27,7 +27,7 @@ import { NOTHING_TO_MOVE, diskKind, freeBytes, locked, nearest, planMove, releas
 import { PATH_REWRITER, type Rewriter } from "./rewrite";
 import { handOverPasswords } from "./passwords";
 import { deleteOriginalKeys, heldRefusal } from "./run-steps";
-import { noteRecord, readRecord, rehomeFolder, rehomeStatus, type RunPlan } from "./state";
+import { noteRecord, notePhase, readRecord, rehomeFolder, rehomeStatus, type RunPlan } from "./state";
 
 /** The rewriter of a move the box runs itself: the engine's database is judged from a clone of it
  * (`schemaRefusal` below), never opened where the earlier Kuvo Code keeps it. */
@@ -200,6 +200,7 @@ function settleStart(home: string, options: Pick<RunOptions, "bundle" | "id">) {
 /** And an earlier Kuvo Code's saved sign-ins, into the vault, once the box's server answers
  * (`passwords.ts`): tried again at the next run where it couldn't be yet. */
 async function settle(home: string, options: Pick<RunOptions, "bundle" | "id">): Promise<RunOutcome> {
+  notePhase(home, "settle");
   const { owes, bundle, app, started, message } = settleStart(home, options);
   let said = message;
   if (owes("passwords") && !owes("start")) {
@@ -228,6 +229,7 @@ async function settle(home: string, options: Pick<RunOptions, "bundle" | "id">):
   // What the installer staged, once the box runs from its own (the helper the copies trust is the
   // one in its `bin` now).
   if (!owes("start")) fs.rmSync(path.join(home, "updates", "install"), { recursive: true, force: true });
+  notePhase(home, null);
   return { result: "done", status: rehomeStatus(home), ...(started !== undefined ? { started } : {}), ...(said ? { message: said } : {}) };
 }
 
@@ -237,6 +239,15 @@ export async function rehomeRun(folders: Folders, options: RunOptions): Promise<
   const { appFolder, home } = folders;
   if (process.platform !== "darwin") return { result: "refused", message: NOTHING_TO_MOVE, status: rehomeStatus(home) };
   return locked(home, options.waiting ?? (() => {}), async () => {
+    try {
+      return await whole();
+    } finally {
+      notePhase(home, null);
+    }
+  });
+
+  async function whole(): Promise<RunOutcome> {
+    notePhase(home, "plan");
     // An earlier try first: one that stopped before it could only go forward goes back, and this
     // one starts afresh; one past that is carried on.
     const earlier = await resumed(home, RUN_REWRITER);
@@ -280,5 +291,5 @@ export async function rehomeRun(folders: Folders, options: RunOptions): Promise<
     }, RUN_REWRITER);
     if (outcome.result === "stuck") return { ...outcome, message: STUCK };
     return outcome.result === "done" ? settle(home, options) : outcome;
-  });
+  }
 }

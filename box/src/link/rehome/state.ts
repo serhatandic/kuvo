@@ -106,7 +106,7 @@ export function rehomeStatus(home: string, now = Date.now()): RehomeStatus {
     asked: kept.asked ?? null,
     from: kept.from ?? underWay?.from ?? null,
     to: kept.to ?? underWay?.to ?? null,
-    progress: underWay && underWay.way === "move" && underWay.run ? progressOf(underWay.step) : null,
+    progress: underWay && underWay.way === "move" && underWay.run ? progressOf(underWay.step) : phaseProgress(home),
     dropped: Array.isArray(kept.dropped) ? kept.dropped.filter((each): each is string => typeof each === "string") : [],
   };
 }
@@ -126,6 +126,25 @@ const STEP_TITLES: Record<Exclude<RehomeStep, "done">, string> = {
   fix: "Reconnecting your worktrees",
   clear: "Finishing up",
 };
+/** Where a move the box runs itself is while it has no journal: before one (`plan`: what still
+ * runs stopped, the refusals checked) and after it's done (`settle`: Kuvo started, what's owed
+ * settled). Said by the process that holds the move's lock (`run.phase`), and only believed while
+ * one does: a mark left by one that was killed says nothing. */
+const phaseFile = (home: string) => path.join(rehomeFolder(home), "run.phase");
+export function notePhase(home: string, phase: "plan" | "settle" | null): void {
+  if (phase === null) return void fs.rmSync(phaseFile(home), { force: true });
+  fs.mkdirSync(rehomeFolder(home), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(phaseFile(home), phase, { mode: 0o600 });
+}
+function phaseProgress(home: string): RehomeStatus["progress"] {
+  let phase = "";
+  try { phase = fs.readFileSync(phaseFile(home), "utf8").trim(); } catch { return null; }
+  if (!holdsLock(home) && !heldByAnother(home)) return null;
+  const of = STEPS.length - 1;
+  if (phase === "plan") return progressOf("plan");
+  return phase === "settle" ? { step: "done", title: "Starting Kuvo on this Mac", index: of, of } : null;
+}
+
 export function progressOf(step: RehomeStep): NonNullable<RehomeStatus["progress"]> {
   const shown = STEPS.filter(each => each !== "done");
   const at = step === "done" ? "clear" : step;
