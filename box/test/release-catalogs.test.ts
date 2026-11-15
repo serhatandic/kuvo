@@ -47,26 +47,33 @@ test("the engine a release pins is the one the Swift side pins: its version and 
   }
 })
 
+/** The box's sources as this checkout has them, in a folder of the test's own, for `engine`:
+ * what's built isn't looked at here (it changes with every change to the box, and isn't sent
+ * where only the box's sources are), so stand-ins. */
+function sources(engine: string): string {
+  const checkout = join(import.meta.dir, "../..")
+  const root = mkdtempSync(join(tmpdir(), "kuvo-release-sources-"))
+  for (const folder of ["box/src/keeper", "box/src/plugins"]) cpSync(join(checkout, folder), join(root, folder), { recursive: true })
+  cpSync(join(checkout, "box/src/shared/bot-words.json"), join(root, "box/src/shared/bot-words.json"))
+  const body = "// the browser\n"
+  const built = { "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js": "// the link\n", "box/dist/kuvo-agents.js": "// the bridge\n", "box/dist/kuvo-browser.js": `// kuvo-browser ${createHash("sha256").update(body).digest("hex").slice(0, 16)}\n${body}` }
+  for (const [file, text] of Object.entries(built)) {
+    mkdirSync(dirname(join(root, file)), { recursive: true })
+    writeFileSync(join(root, file), text)
+  }
+  const build = { url: `https://example.invalid/engine-${engine}.tgz`, integrity: `sha512-${"A".repeat(86)}==` }
+  writeFileSync(join(root, "box/src/shared/engine-pin.json"), JSON.stringify({ version: engine, linux: { x86_64: build, aarch64: build }, darwin: { x86_64: build, aarch64: build } }))
+  return root
+}
+
 // The one-time check the move asked for (#715), kept for as long as each file stays what it was:
 // what the box writes is, byte for byte and mode for mode, what the retired Swift Mac app last
 // wrote into a release, for the engine that release had.
 test("a release's files are what the Swift Mac app last wrote, byte for byte, where they haven't been changed on purpose since", () => {
   const made = JSON.parse(readFileSync(join(import.meta.dir, "fixtures/release/swift-made.json"), "utf8")) as { engine: string; files: Record<string, { sha256: string; mode: string }> }
-  const checkout = join(import.meta.dir, "../..")
   // This checkout's sources, with that release's engine pinned in place of today's.
-  const root = mkdtempSync(join(tmpdir(), "kuvo-swift-made-"))
+  const root = sources(made.engine)
   try {
-    for (const folder of ["box/src/keeper", "box/src/plugins"]) cpSync(join(checkout, folder), join(root, folder), { recursive: true })
-    cpSync(join(checkout, "box/src/shared/bot-words.json"), join(root, "box/src/shared/bot-words.json"))
-    // (What's built isn't compared, as it changes with every change to the box: stand-ins.)
-    const body = "// the browser\n"
-    const built = { "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js": "// the link\n", "box/dist/kuvo-agents.js": "// the bridge\n", "box/dist/kuvo-browser.js": `// kuvo-browser ${createHash("sha256").update(body).digest("hex").slice(0, 16)}\n${body}` }
-    for (const [file, text] of Object.entries(built)) {
-      mkdirSync(dirname(join(root, file)), { recursive: true })
-      writeFileSync(join(root, file), text)
-    }
-    const build = { url: `https://example.invalid/engine-${made.engine}.tgz`, integrity: `sha512-${"A".repeat(86)}==` }
-    writeFileSync(join(root, "box/src/shared/engine-pin.json"), JSON.stringify({ version: made.engine, linux: { x86_64: build, aarch64: build }, darwin: { x86_64: build, aarch64: build } }))
     const files = new Map(boxFiles(root, "0.7.2").map(file => [file.path, file]))
     const written = Object.fromEntries(Object.keys(made.files).map(path => {
       const file = files.get(path)
@@ -85,12 +92,11 @@ test("a release's files are what the Swift Mac app last wrote, byte for byte, wh
 test("writing a release's files changes nothing above their folder, however the folder is named", () => {
   // A private folder, as your temporary folder is, and the release's folder in it, named with a
   // last slash and with two in a row (a Mac's TMPDIR ends in one).
-  const parent = mkdtempSync(join(tmpdir(), "kuvo-release-above-"))
+  const parent = mkdtempSync(join(tmpdir(), "kuvo-release-above-")), root = sources("1.1.0")
   try {
     chmodSync(parent, 0o700)
-    const checkout = join(import.meta.dir, "../..")
     for (const given of [`${parent}/one/`, `${parent}//two`, `${parent}/deep//three/`]) {
-      writeBoxFiles(checkout, "1.2.3", given)
+      writeBoxFiles(root, "1.2.3", given)
       expect(statSync(parent).mode & 0o777).toBe(0o700)
     }
     for (const made of ["one", "two", "deep/three"]) {
@@ -99,5 +105,6 @@ test("writing a release's files changes nothing above their folder, however the 
     }
   } finally {
     rmSync(parent, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true })
   }
 })
