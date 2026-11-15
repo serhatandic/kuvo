@@ -588,6 +588,34 @@ fn a_conversation_shows_each_message_by_its_parts_and_pages_back() {
 }
 
 #[test]
+fn a_message_that_ran_a_command_reads_as_typed_by_its_id() {
+    // The engine kept the prompt the command made; its box keeps what was typed, by the message's id.
+    let made = json!({ "type": "user", "id": "msg_cmd", "time": { "created": 2 }, "text": "Review the code on this branch: look for bugs" });
+    let plain = json!({ "type": "user", "id": "msg_plain", "time": { "created": 1 }, "text": "hello" });
+    let stand_in = StandInBox::start(move |seen| match (seen.method.as_str(), seen.route()) {
+        (_, "kuvo/info") => Answer::json(200, mac_info(current_features())),
+        (_, "api/session/ses_1") => Answer::json(200, json!({ "data": { "id": "ses_1" } })),
+        (_, "api/session/ses_1/message") => Answer::json(200, json!({ "data": [made.clone(), plain.clone()] })),
+        ("POST", "kuvo/messages/parts") => {
+            let body = seen.body.clone().unwrap();
+            let ids: Vec<String> = serde_json::from_value(body["ids"].clone()).unwrap_or_default();
+            let texts: Vec<String> = serde_json::from_value(body["texts"].clone()).unwrap();
+            if ids.len() != texts.len() {
+                return Answer::json(400, json!({ "message": "Send an id for each text (ids)." }));
+            }
+            Answer::json(200, json!({ "parts": ids.iter().zip(&texts).map(|(id, text)| if id == "msg_cmd" { json!({ "words": "this branch", "keyword": "/review", "command": true }) } else { json!({ "words": text }) }).collect::<Vec<_>>() }))
+        }
+        _ => Answer::json(404, json!({})),
+    });
+    let _events = stand_in.stream_for("api/event");
+    let (_home, _serve, client) = this_mac(&stand_in);
+    let follow = client.follow_conversation("ses_1", at_once());
+    let ConversationUpdate::Conversation(shown) = follow.next_blocking().unwrap() else { panic!() };
+    let Some(Message::User(user)) = shown.messages.iter().find(|message| message.id() == "msg_cmd") else { panic!() };
+    assert_eq!((user.parts().words.as_str(), user.parts().keyword.as_deref()), ("this branch", Some("/review")));
+}
+
+#[test]
 fn after_a_gap_a_conversation_starts_again_from_its_newest() {
     // First the newest are 1–3; then (the stream down while more came than a read holds) 7–9.
     let user = |n: usize| json!({ "type": "user", "id": format!("msg_{n}"), "time": { "created": n }, "text": format!("text {n}") });

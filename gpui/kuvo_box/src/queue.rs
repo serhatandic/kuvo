@@ -40,13 +40,18 @@ impl Item {
     }
 }
 
-/// One taken back: its words as shown, and its files as the send takes them, to put back in the
-/// composer.
+/// One taken back: its words as shown, the keyword it went with, what goes back in the composer as
+/// its box says (`draft`: a command's or a goal's words with it in front, another keyword's words
+/// alone), and its files as the send takes them.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Removed {
     pub id: String,
     #[serde(default)]
     pub words: String,
+    #[serde(default)]
+    pub keyword: Option<String>,
+    #[serde(default)]
+    pub draft: String,
     #[serde(default)]
     pub files: Vec<File>,
 }

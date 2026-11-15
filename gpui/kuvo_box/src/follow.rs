@@ -487,8 +487,7 @@ fn read_parts(client: &BoxClient, shown: &Mutex<Shown>, messages: &[Message]) ->
     if unread.is_empty() {
         return Vec::new();
     }
-    let texts: Vec<String> = unread.iter().map(|(_, text)| text.clone()).collect();
-    match client.read_parts(&texts) {
+    match client.read_parts(&unread) {
         Ok(parts) => unread.into_iter().zip(parts).collect(),
         Err(_) => Vec::new(),
     }

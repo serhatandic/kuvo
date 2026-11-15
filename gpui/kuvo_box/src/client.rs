@@ -322,16 +322,17 @@ impl BoxClient {
         Ok(Sent::Typed { answer: Box::new(answer), message: Some(draft.id.clone()) })
     }
 
-    /// The parts of messages from before (none kept with them), read from their texts by the box
-    /// (`kuvo/messages/parts`), one for each, in order.
-    pub fn read_parts(&self, texts: &[String]) -> Result<Vec<Parts>> {
+    /// The parts of messages from before (none kept with them) and of those that ran one of the
+    /// engine's commands, by their ids and texts (`kuvo/messages/parts`): one for each, in order.
+    pub fn read_parts(&self, messages: &[(String, String)]) -> Result<Vec<Parts>> {
         #[derive(serde::Deserialize)]
         struct Told {
             parts: Vec<Parts>,
         }
-        let mut all = Vec::with_capacity(texts.len());
-        for batch in texts.chunks(parts::READ_MOST) {
-            let told: Told = self.value(&Request::post(parts::READ_ROUTE, json!({ "texts": batch })))?;
+        let mut all = Vec::with_capacity(messages.len());
+        for batch in messages.chunks(parts::READ_MOST) {
+            let (ids, texts): (Vec<&String>, Vec<&String>) = batch.iter().map(|(id, text)| (id, text)).unzip();
+            let told: Told = self.value(&Request::post(parts::READ_ROUTE, json!({ "texts": texts, "ids": ids })))?;
             if told.parts.len() != batch.len() {
                 return Err(Error::BadAnswer("The box read a different number of messages than it was asked.".into()));
             }

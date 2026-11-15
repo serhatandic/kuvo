@@ -294,8 +294,8 @@ pub struct ReadParts(HashMap<String, (String, Parts)>);
 
 impl ReadParts {
     /// Of `messages`, yours and other agents' whose parts are still to be read from their box (none
-    /// kept with them, none read yet, not the box's own notes): their ids and texts. (A message that
-    /// ran one of the engine's commands is read too, for now: which did isn't kept yet, on the README's phase 2 list.)
+    /// kept with them, none read yet, not the box's own notes): their ids and texts. One that ran one
+    /// of the engine's commands is among them: its box keeps it as typed, by its id.
     pub fn unread(&self, messages: &[Message]) -> Vec<(String, String)> {
         messages
             .iter()
