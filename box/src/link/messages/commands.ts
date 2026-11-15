@@ -10,6 +10,7 @@ import path from "node:path";
 import { isObject } from "../../shared/json";
 import { textOf, writePrivate } from "../files";
 import { RUN } from "../home";
+import { writtenByYou } from "../engine/queue";
 import type { MessageParts } from "./parts";
 
 const FILE = path.join(RUN, "commands.json");
@@ -74,12 +75,15 @@ export interface CommandEvent {
 }
 
 /** Whether the prompt a command made, `text`, could be the one made of `words`: each word typed
- * after the command is in it (a template takes them whole, `$ARGUMENTS`, or one by one, `$1`…). */
-const madeOf = (text: string, words: string): boolean => words.split(/\s+/).filter(Boolean).every(word => text.includes(word));
+ * after the command is in it (a template takes them whole, `$ARGUMENTS`, or one by one, `$1`…,
+ * without the quotes that kept them together). */
+const madeOf = (text: string, words: string): boolean =>
+  words.split(/\s+/).map(word => word.replace(/^["']+|["']+$/g, "")).filter(Boolean).every(word => text.includes(word));
 
 /** Each event from the engine: a user message in the inbox that the box didn't mark as its own
- * (`kuvo` in its metadata, its parts or its note), with the words typed after the command in it, is
- * the one the oldest such command waiting in its session made. */
+ * (`kuvo` in its metadata, its parts or its note) and isn't someone else's (a wake-up, another
+ * agent's letter, `writtenByYou`), with the words typed after the command in it, is the one the
+ * oldest such command waiting in its session made. */
 export function heardCommand(event: CommandEvent): void {
   if (event.type !== "session.inbox.enqueued" || event.data?.item?.type !== "user") return;
   const { sessionID: session, inboxID: id } = event.data;
@@ -87,6 +91,7 @@ export function heardCommand(event: CommandEvent): void {
   const payload = event.data.item.payload;
   if (isObject(payload?.metadata) && payload.metadata.kuvo !== undefined) return;
   const text = typeof payload?.text === "string" ? payload.text : "";
+  if (!writtenByYou(text, payload?.metadata)) return;
   const at = expected.findIndex(each => each.session === session && madeOf(text, each.parts.words));
   if (at < 0) return;
   const [found] = expected.splice(at, 1);

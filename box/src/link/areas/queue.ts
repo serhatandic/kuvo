@@ -13,7 +13,7 @@ import { asked } from "../engine/client";
 import { dropWaiting, holdQueue, inboxFollowers, inboxFor, inboxNow, keepWaitingBefore, queueFollowers, queueItems, queueOf, readQueues, resumeQueue, sendNow, showsQueue, shownQueue, takeBackFromInbox } from "../engine/queue";
 import type { QueueShown } from "../../shared/routes/sessions";
 import { forgetStopped } from "../work/background";
-import { holdArriving, sendsSettled } from "../messages/arriving";
+import { forgetArriving, holdArriving, sendsSettled } from "../messages/arriving";
 import { draftOf } from "../messages/commands";
 import { stopConversation } from "../work/stopping";
 import { messageID } from "../engine/sessions";
@@ -159,8 +159,10 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
       if (!once) return yield* add(context, target, session);
       return yield* answering(await sentOnce(once, () => collected(add(context, target, session))));
     }
-    // (You set it going: if it was stopped, what comes of it is news again.)
+    // (You set it going: if it was stopped, what comes of it is news again, and what Stop named as
+    // on its way goes as it was sent when it comes.)
     forgetStopped(session);
+    forgetArriving(session);
     if (step === "resume") return yield* json(200, shownQueue(await resumeQueue(place.target, session)));
     if (!(await sendNow(place.target, session, decodeURIComponent(item)))) return yield* json(404, { message: "That message isn't waiting any more." });
     return yield* json(200, shownQueue(queueOf(session)));

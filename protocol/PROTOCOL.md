@@ -1221,7 +1221,8 @@ the same for every client and with none connected, and keeps them in `run/queues
   held first, in that order, where they're waiting already, and each that comes in the next two
   minutes (`kuvo/sessions/<id>/send` with that `id`, answered `{waits: true}`) waits on the box,
   held after those that came before it, as what arrives while it's stopped does ("What arrives
-  waits"), rather than set going; once, and only those named. `POST …/queue/hold` (`{items?}`):
+  waits"), rather than set going; once, only those named, and not once Resume or Send Now set it
+  going again. `POST …/queue/hold` (`{items?}`):
   held and paused without stopping (before an undo, or a move); `items`, messages a client held
   as they went to the engine, go first, in that order. `POST …/queue/resume`: unpaused, and the
   next one goes now. `POST …/queue/<item>/now` (Send Now): unpaused, the item steered (one waiting
@@ -6348,7 +6349,8 @@ the box sends keeps its parts, which clients draw it by. No client writes or rea
   with the message, as any message's. The engine's commands take no metadata and say no id, so
   for one of the engine's its box keeps them itself, by the message's id, once the engine's events
   say which it made (its inbox item, an item's id being its message's: the first in that
-  conversation the box didn't mark as its own with each word typed after the command in it, heard
+  conversation the box didn't mark as its own, nor someone else's (a wake-up, another agent's
+  letter), with each word typed after the command in it (quotes aside), heard
   until 3 s after the engine's answer), the latest 2000 in
   `run/commands.json`: `kuvo/messages/parts` takes `{texts, ids}` (an id for each text) and answers
   those by id, waiting a moment (2 s at most) for a command still on its way, so a client that

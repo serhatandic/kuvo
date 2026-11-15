@@ -238,10 +238,10 @@ describe("Stop takes what's on its way with it", () => {
     expect(engineAsked.filter(each => each.path === "/api/session/ses_cmd/prompt").map(each => each.body.id)[0]).toBe("msg_late")
   })
 
-  test("a wake-up landing while a command is on its way isn't taken for the command's message", async () => {
+  test.each([["with words after it", "main"], ["with none", ""]])("a wake-up landing while a command %s is on its way isn't taken for the command's message", async (_, words) => {
     hearing = "hold"
     const ran = whenAsked(each => each.path === "/api/session/ses_cmd/command")
-    const sending = send("ses_cmd", { words: "main", command: "review" })
+    const sending = send("ses_cmd", { words, command: "review" })
     await ran
     // (Another message with no parts of the box's comes first: a wake-up, a terminal's.)
     mod.heardCommand({ type: "session.inbox.enqueued", data: { sessionID: "ses_cmd", inboxID: "msg_wake", item: { type: "user", payload: { text: "[Wake-up] Check the deploy" } } } })
@@ -249,7 +249,7 @@ describe("Stop takes what's on its way with it", () => {
     await sending
     const made = inbox.find(each => each.id.startsWith("msg_made"))!
     const { json } = await readParts({ ids: ["msg_wake", made.id], texts: ["[Wake-up] Check the deploy", made.payload.text] })
-    expect(json.parts).toEqual([{ words: "[Wake-up] Check the deploy" }, { words: "main", keyword: "/review", command: true }])
+    expect(json.parts).toEqual([{ words: "[Wake-up] Check the deploy" }, { words, keyword: "/review", command: true }])
   })
 
   test("one the box is still sending as Stop comes reaches the engine first, and is held with the rest", async () => {
@@ -270,6 +270,14 @@ describe("Stop takes what's on its way with it", () => {
     const queued = engineAsked.findIndex(each => each.method === "PATCH" && each.path === "/api/session/ses_cmd/inbox/msg_slow")
     expect(queued).toBeGreaterThan(-1)
     expect(queued).toBeLessThan(interrupted)
+  })
+
+  test("one Stop named that comes after Resume goes as you sent it", async () => {
+    await queueAsk("POST", "kuvo/sessions/ses_cmd/stop", { items: ["msg_after"] })
+    await queueAsk("POST", "kuvo/sessions/ses_cmd/queue/resume", {})
+    await send("ses_cmd", { id: "msg_after", words: "go on", delivery: "steer" })
+    expect(engineAsked.find(each => each.path === "/api/session/ses_cmd/prompt")!.body.delivery).toBe("steer")
+    expect((await queueAsk("GET", "kuvo/sessions/ses_cmd/queue", undefined)).json).toMatchObject({ paused: false, held: [] })
   })
 
   test("one Stop didn't name goes as you sent it", async () => {

@@ -1438,7 +1438,7 @@ function keep(id, parts) {
 }
 var expected = [];
 var pending = new Set;
-var madeOf = (text, words) => words.split(/\s+/).filter(Boolean).every((word) => text.includes(word));
+var madeOf = (text, words) => words.split(/\s+/).map((word) => word.replace(/^["']+|["']+$/g, "")).filter(Boolean).every((word) => text.includes(word));
 function heardCommand(event) {
   if (event.type !== "session.inbox.enqueued" || event.data?.item?.type !== "user")
     return;
@@ -1449,6 +1449,8 @@ function heardCommand(event) {
   if (isObject(payload?.metadata) && payload.metadata.kuvo !== undefined)
     return;
   const text = typeof payload?.text === "string" ? payload.text : "";
+  if (!writtenByYou(text, payload?.metadata))
+    return;
   const at = expected.findIndex((each) => each.session === session && madeOf(text, each.parts.words));
   if (at < 0)
     return;
@@ -44041,7 +44043,7 @@ import fs140 from "node:fs";
 import path149 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "cb7469306692";
+var BRIDGE_VERSION = "7969fe7c34fc";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -49603,6 +49605,9 @@ function holdArriving(session, items, now = Date.now()) {
     held.set(id, now + ARRIVING_FOR);
   arriving.set(session, held);
 }
+function forgetArriving(session) {
+  arriving.delete(session);
+}
 function heldAsItComes(session, id, now = Date.now()) {
   const held = arriving.get(session);
   const until = id ? held?.get(id) : undefined;
@@ -49868,6 +49873,7 @@ async function* queueRoute(context, match) {
       return yield* answering(await sentOnce(once, () => collected(add2(context, target, session))));
     }
     forgetStopped(session);
+    forgetArriving(session);
     if (step === "resume")
       return yield* json(200, shownQueue(await resumeQueue(place.target, session)));
     if (!await sendNow(place.target, session, decodeURIComponent(item)))

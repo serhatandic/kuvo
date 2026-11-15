@@ -46,6 +46,12 @@ export function holdArriving(session: string, items: readonly string[], now = Da
   arriving.set(session, held);
 }
 
+/** What Stop named for `session` forgotten: it went on since (Resume, Send Now), so what comes
+ * now goes as it was sent. */
+export function forgetArriving(session: string): void {
+  arriving.delete(session);
+}
+
 /** Whether message `id` to `session`, coming now, is one Stop named: it's held then, once. */
 export function heldAsItComes(session: string, id: string | undefined, now = Date.now()): boolean {
   const held = arriving.get(session);
