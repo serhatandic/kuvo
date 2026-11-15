@@ -142,7 +142,7 @@ test("group chats' meetings go by your zone: the box gives it to their bridge wi
   // A machine with its words for bots and settings of its own, as group chats need them.
   const words = join(K, "bin", "bot-words.json")
   const hadWords = existsSync(words), hadConfig = existsSync(CONFIG_FILE)
-  if (!hadWords) write(words, readFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), "utf8"))
+  if (!hadWords) write(words, readFileSync(new URL("../src/shared/bot-words.json", import.meta.url), "utf8"))
   if (!hadConfig) write(CONFIG_FILE, JSON.stringify({ permissions: [] }))
   try {
     expect(groupSettingsHere()?.timeZone).toBeUndefined()

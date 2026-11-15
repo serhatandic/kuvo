@@ -67,7 +67,7 @@ beforeEach(() => {
   write(path.join(home, "run", "engine.json"), JSON.stringify({ port: engine.address().port, password: "p", version: "0.0.0" }));
   // What a box makes and changes bots with, as a client puts it beside the script.
   fs.mkdirSync(path.join(home, "bin"), { recursive: true });
-  fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), path.join(home, "bin", "bot-words.json"));
+  fs.copyFileSync(new URL("../src/shared/bot-words.json", import.meta.url), path.join(home, "bin", "bot-words.json"));
 });
 
 // The box's answer to one request, as a machine's tool asks it: a process of its own.

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Kuvo Code: starts a command in a session of its own, as Linux's setsid does.
+if [ -x /usr/bin/perl ]; then exec /usr/bin/perl -e 'use POSIX (); POSIX::setsid(); exec { $ARGV[0] } @ARGV; die "$ARGV[0]: $!\n"' -- "$@"; fi
+trap '' HUP
+exec "$@"

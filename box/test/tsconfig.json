@@ -9,7 +9,8 @@
   "include": [
     ".",
     "../src/link",
-    "../src/shared"
+    "../src/shared",
+    "../src/release"
   ],
   "exclude": [
     "agents"

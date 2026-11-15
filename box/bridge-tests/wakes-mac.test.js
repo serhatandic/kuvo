@@ -39,12 +39,9 @@ const changedOnDisk = file => {
 };
 const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
 
-const swift = fs.readFileSync(new URL("../../swift/OpenCodeKit/Sources/OpenCodeKit/Engine/Wakes.swift", import.meta.url), "utf8");
-const opening = 'public static let script = #"""\n';
-const from = swift.indexOf(opening) + opening.length;
-const script = swift.slice(from, swift.indexOf('\n    """#', from)).split("\n").map(line => line.replace(/^ {4}/, "")).join("\n");
+const script = fs.readFileSync(new URL("../src/keeper/kuvo-wake", import.meta.url), "utf8");
 fs.mkdirSync(path.join(support, "bin"), { recursive: true });
-fs.writeFileSync(process.env.KUVO_WAKE_COMMAND, script + "\n", { mode: 0o755 });
+fs.writeFileSync(process.env.KUVO_WAKE_COMMAND, script, { mode: 0o755 });
 
 // The engine: the conversations it has (each test's), its tools all connected, and the prompts
 // it's sent. Each answer closes its connection. The box's fetch (in this process) gives one it keeps

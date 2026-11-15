@@ -1050,7 +1050,7 @@ test("a machine makes bots with its own words and its own facts, whatever a Mac'
 
 test("a bot on a machine is told, in Kuvo Code's own words, that it runs on that machine, in your time zone, with a browser there that keeps working with Kuvo Code closed", () => {
   const file = path.join(home, "bin", "bot-words.json");
-  fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), file);
+  fs.copyFileSync(new URL("../src/shared/bot-words.json", import.meta.url), file);
   try {
     // Its name as its peers know it (`run/link.json`), your zone its setting's.
     write(path.join(home, "run", "link.json"), JSON.stringify({ id: "lab" }));
