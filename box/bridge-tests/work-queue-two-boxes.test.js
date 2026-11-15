@@ -215,3 +215,30 @@ test("an item kept on a machine takes its number from this Mac and shows in this
   assert.equal(inView.computer.name, "lab");
   assert.equal(labQueue("ses_far").filter(item => item.number === 1).length, 1);
 });
+
+test("an item lab deleted, which it tells no computer of, is read whole from lab through this Mac's box, and brought back there; one on neither is not found", { timeout: 120_000 }, async t => {
+  signal = t.signal;
+  // (As lab's own client left it: deleted, so lab tells this Mac nothing of it.)
+  const at = Date.now();
+  write(path.join(machineHome, "run", "work-queue", "queues", "ses_old.json"), { owner: "ses_old", items: [{ id: "wqi_labitemlabitemlabi02", number: 4321, owner: "ses_old", title: "Drop the old importer", body: "Only lab keeps this.", status: "todo", order: 0, priority: "normal", labels: [], notes: [], files: [], links: [], sessions: [], created: { at, by: { user: true } }, updated: { at, by: { user: true } }, removed: { at, by: { user: true } } }] });
+  // (Once lab's link is on the relay and has said what it takes.)
+  const whole = await eventually(async () => {
+    const answer = await ask("GET", "kuvo/work-queue/items/4321");
+    return answer.status === 200 ? answer.json.item : null;
+  });
+  assert.deepEqual([whole.title, whole.body, whole.told, Boolean(whole.removed)], ["Drop the old importer", "Only lab keeps this.", false, true]);
+  assert.deepEqual(whole.computer, { key: lab.key, name: "lab", kind: "machine", id: "lab" });
+  // (All that may be done to a deleted one: bringing it back.)
+  assert.deepEqual([whole.can.restore, whole.can.edit, whole.can.delete], [true, false, false]);
+  assert.equal((await ask("GET", "kuvo/work-queue?owner=all")).json.items.some(item => item.number === 4321), false, "in no list: lab told nothing of it");
+
+  // Brought back, asked of this Mac: done on lab.
+  const back = await ask("POST", "kuvo/work-queue/items/4321/restore");
+  assert.equal(back.status, 200, JSON.stringify(back.json));
+  assert.equal(back.json.item.computer.name, "lab");
+  assert.equal(labQueue("ses_old")[0].removed, undefined);
+  assert.equal((await ask("GET", "kuvo/work-queue?owner=all")).json.items.some(item => item.number === 4321), true, "shown at once, as lab answered");
+
+  // One on neither computer, lab having said so: not found.
+  assert.deepEqual(await ask("GET", "kuvo/work-queue/items/654321"), { status: 404, json: { message: "There's no such item." } });
+});

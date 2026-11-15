@@ -1738,6 +1738,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "wakes.events": ["POST", "kuvo/wakes/events"],
     work: ["GET", "kuvo/work"],
     "work-queue": ["GET", "kuvo/work-queue/labels"],
+    "work-queue.anywhere": ["GET", "kuvo/work-queue/items/1"],
     "work-queue.counts": ["GET", "kuvo/work-queue?owner=all&counts=1"],
     // (Statuses, priorities, labels and a search, on the view; a client's own add and change answer only a client.)
     "work-queue.edit": ["GET", "kuvo/work-queue?owner=all&q=none"],

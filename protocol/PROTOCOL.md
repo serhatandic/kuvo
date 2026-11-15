@@ -5864,6 +5864,12 @@ before (a linked item is its owner's to change). A client shows them first, as "
   `events`, `files`, `links` and `handed`: `told: true`. Its files' bytes, for a client, come from
   there the same way, 4 MB at most (413 for a bigger one, read from that computer itself: a machine
   by `computer.id`; a Mac, its own box), with 409 or 503 `{message, computer}` as for what you do.
+  One no computer told this box of (an old Done one, a deleted one), asked by a client, is asked
+  of each of your other computers ("Across your computers", Found where it's kept), so a client
+  asks one box, whichever keeps the item, and never each computer in turn: it comes whole from the
+  one that keeps it (`computer`, `told: false`); 404 only once every one said it hasn't it; 503
+  `{message, computers}` while some couldn't say (`computers`: those, as `computer` names one;
+  `message` says which and why, in words a client shows).
 - `GET kuvo/work-queue/refs?refs=243,12`, or `POST kuvo/work-queue/refs {refs: [...],
   conversation?}` (a list, so a ref with a comma in it, an outside one later, goes whole;
   `conversation` is taken and not used yet: it's for "issue #12" in a project bound to a tracker,
@@ -5881,7 +5887,9 @@ route` with its Mac's proof for that request alone, `x-kuvo-vault-proof` as the 
 else, a command on that computer included, gets 403). A client sends what it does to an item to
 any of your boxes, whichever computer keeps it: one on another computer is done there, by that
 computer's box, which this box asks ("Across your computers", Done where it's kept), and the answer
-is that box's, its `item` with `computer` as this box names it. When it can't be done there, it
+is that box's, its `item` with `computer` as this box names it. One no computer told this box of
+is looked for first, as a read of it is (Found where it's kept; 503 `{message, computers}` while
+some computer couldn't say, nothing done). When it can't be done there, it
 answers `{message, computer}`: 503 while that computer isn't answering or this box isn't on the
 relay (said at once, nothing sent), or when no answer came in 20 seconds (a file's, 60) or that
 computer stopped answering meanwhile (it may have been done: a client looks again); 409 for one that doesn't take it
@@ -6195,6 +6203,22 @@ item on its way to another computer (`handing`) goes with the move and is sent f
   (`run/work-queue/deleted-there.json`, 200 at most, until that computer or this box has it again),
   so a client's bringing it back (Undo) and reading it reach that computer after it has told without
   it. Nothing else (agents' tools, chips) sees those.
+- **Found where it's kept** (`work-queue.anywhere` in `kuvo/info`): a box tells only its latest
+  items, and none it deleted, so one a client names may be in nothing this box was told. For a
+  client (never anything else on the computer, nor on a machine Macs share outside one setup,
+  which asks no other computer), the box asked sends each peer that takes `act` a `GET` with `item`
+  the ref as the client named it (its number, id or issue; 300 characters at most, else no one is
+  asked), all at once. A peer's answer counts when it's a whole item that ref names: a live one is
+  taken at once, the others not waited for; a deleted one only once every peer answered and none
+  has it live (of two deleted, the one changed last). That peer keeps it, and a file or a change
+  then goes there by its id, as above. One that answers 404 hasn't it. One that isn't answering or
+  doesn't answer in 20 seconds, one that doesn't take `act` (an older box), and one that refuses
+  or answers something else couldn't say: while any couldn't and none had it live, the box
+  answers 503 `{message, computers}` and does nothing, as the item may be there; so too, naming
+  every peer, while it isn't on the relay itself. `message` says which computer and why (it isn't
+  answering; it needs a newer Kuvo Code; what it refused with, in its words), and to try again only
+  where one isn't answering. A client shows `message`; it asks no other box for what this one
+  answers for.
 
 ### Side questions, handoffs and reviews
 
@@ -6701,6 +6725,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `wakes.events` | `kuvo/wakes/events`, and making a watch (`POST kuvo/wakes/<session>/watch`) |
 | `work` | a bot's work ("Work"): `kuvo/work`, `…/events`, `kuvo/bots/<id>/stop-all`, `start_session`'s and `kuvo/sessions`' new fields, the work tools, `limits` in `kuvo/bots` (bridge 0.9.106) |
 | `work-queue` | `kuvo/work-queue…` and the `queue_…` tools ("The Work Queue") |
+| `work-queue.anywhere` | an item no computer told this box of is asked of each of your other computers, for a client: read, its files, and what you do to it; 503 `{message, computers}` while some couldn't say ("The Work Queue", Across your computers, Found where it's kept; #668) |
 | `work-queue.counts` | `counts` in `kuvo/work-queue` and its events with `counts=1` ("The Work Queue", #711) |
 | `work-queue.edit` | statuses, priorities and labels in place of categories: `status`, `priority`, `labels`, `assignee`, `due` and `can` on items, `statuses`, `priorities`, `labels`, `colors` and `assignees` in views, `q`, `kuvo/work-queue/labels`, a client's `POST kuvo/work-queue/items` and `PATCH kuvo/work-queue/items/<item>`, and the tools' fields ("The Work Queue", #674); `kuvo/work-queue/categories` and `…/items/<item>/move` are gone |
 | `work-queue.elsewhere` | (in a peer's agents' mail) it tells and takes the Work Queue across your computers: `told`, `had`, `part`, `hand`, `handed`, and numbers' asks through a peer ("The Work Queue", Across your computers); also `POST kuvo/work-queue/refs`, `computer` and `computers` in its views, and 409 for an item elsewhere |
