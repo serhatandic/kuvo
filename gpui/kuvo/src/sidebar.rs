@@ -672,7 +672,6 @@ fn session_row(workspace: &mut Workspace, id: &str, section: &str, cursor: bool,
     let asked = facts.as_ref().is_some_and(|facts| facts.asked.is_some());
     let pinned = facts.as_ref().is_some_and(Facts::is_pinned);
     let archived = facts.as_ref().is_some_and(Facts::is_archived);
-    let away = facts.as_ref().is_some_and(|facts| facts.away == Some(true));
     let unsent = workspace.is_unsent(id);
     // With "Needs you" on top, the open session is highlighted there only, never twice.
     let selected = workspace.opened() == Some(id) && !needs_you(workspace, id);
@@ -684,7 +683,7 @@ fn session_row(workspace: &mut Workspace, id: &str, section: &str, cursor: bool,
     let popover = active_row_popover(workspace, &row_key);
     let is_hovered = workspace.session_menu().hovered_row.as_deref() == Some(row_key.as_str());
     let gate_held = workspace.client().gate().is_held();
-    let hover_buttons = (!gate_held && !away)
+    let hover_buttons = (!gate_held)
         .then(|| workspace.session_menu().cached_actions(id))
         .flatten()
         .map(hover_action_specs)
@@ -868,7 +867,6 @@ fn needs_row(workspace: &mut Workspace, id: &str, asks: &str, cursor: bool, cx: 
         None => asks.to_owned(),
     };
     let when = facts.as_ref().and_then(|facts| facts.asked).map(|asked| time::ago(asked, workspace.now())).unwrap_or_default();
-    let away = facts.as_ref().is_some_and(|facts| facts.away == Some(true));
     let selected = workspace.opened() == Some(id);
     let (hover, selected_bg) = (c.hover, c.selected);
     let open = id.to_owned();
@@ -879,7 +877,7 @@ fn needs_row(workspace: &mut Workspace, id: &str, asks: &str, cursor: bool, cx: 
     let popover = active_row_popover(workspace, &row_key);
     let is_hovered = workspace.session_menu().hovered_row.as_deref() == Some(row_key.as_str());
     let gate_held = workspace.client().gate().is_held();
-    let hover_buttons = (!gate_held && !away)
+    let hover_buttons = (!gate_held)
         .then(|| workspace.session_menu().cached_actions(id))
         .flatten()
         .map(hover_action_specs)

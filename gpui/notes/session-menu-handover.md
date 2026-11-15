@@ -104,18 +104,31 @@ Reviewed internally before handover and then in the Foreman review round:
    - **MUST 1 (Active search excludes archived):** Filtered both `named` and `in_conversations` in
      `sidebar.rs` `found_lines` with `listing.facts(id).is_some_and(|f| f.is_archived() == archived_only)`.
    - **MUST 2 (Box-driven hover buttons):** Cached `GET kuvo/sessions/<id>/actions` per session
-     in `SessionMenu::row_actions` (epoch-guarded, refreshed on hover/menu/action/listing change)
-     and rendered row hover buttons purely from box actions — hiding on `away`/`held`, omitting
-     `Unarchive` on engine-archived sessions, and removing all client-side `if archived` rules.
+     in `SessionMenu::row_actions` and rendered row hover buttons purely from box actions — hiding
+     on `held` / errors, omitting `Unarchive` on engine-archived sessions, and removing all
+     client-side `if archived` / `away` rules.
    - **MUST 3 (Confirm-only deletion):** Removed the direct-delete branch from
-     `Workspace::run_delete_action`; deletion now runs solely through
-     `ConfirmDeletePopover::confirm_delete`, synthesizing a plain title-only confirm when the box
-     gives `confirm: None`.
+     `Workspace::run_delete_action`; deletion runs solely through
+     `ConfirmDeletePopover::confirm_delete`.
    - **SHOULD (Shortcuts & popover cleanup):** Bound `⌘R` / `⌘⌫` / `⇧⌘⌫` in
      `Workspace && !KuvoTextField` so text inputs ignore them while walked rows (`Sidebar`) still
      work; cleared `walked` / `hovered_row` in `archive_session` and returned `None` from
-     `shortcut_target` when `walked` is missing from `sidebar::lines`; and cleared/pruned
-     `active_popover` when its anchor leaves (`new_session`, `open_session` including the already-open
-     session, `search_changed`, `clear_search`, `toggle_project`, `toggle_all`, `show_area`,
-     `rail_pressed`, and `take_list`).
+     `shortcut_target` when `walked` is missing from `sidebar::lines` or while sidebar list focus
+     remains with nothing walked; and cleared/pruned `active_popover` when its anchor leaves
+     (`new_session`, `open_session` including the already-open session, `search_changed`,
+     `clear_search`, `toggle_project`, `toggle_all`, `show_area`, `rail_pressed`, and `take_list`).
+5. **Foreman re-review fixes (1 SHOULD, 3 NIT):**
+   - **Non-flickering, facts-diff action caching (`session_menu.rs`, `workspace.rs`):** Replaced the
+     `RowActions` enum with a struct that keeps prior `Actions` visible while `stale` or `fetching`,
+     and diffed `previous_listing.facts(id) != current_listing.facts(id)` in `take_list` so only
+     changed sessions are marked stale / refetched.
+   - **No client delete-confirm wording (`workspace.rs`):** When the box gives `confirm: None`,
+     `run_delete_action` treats it as a `BadAnswer` error (`session-action-error`), opens no
+     client-worded confirm popover, and never deletes.
+   - **Second `⌘⌫` after keyboard archive (`workspace.rs`, `tests/session_menu.rs`):**
+     `shortcut_target` now returns `None` when `walked` is `None` while `list_focus` has focus so a
+     follow-up shortcut never hits the background open session; updated tests and comments.
+   - **Drop client `away` check & dead test helper (`sidebar.rs`, `tests/session_menu.rs`):**
+     Removed client-side `away` checks from `session_row` and `needs_row` (relying on the box's
+     `actions.held` / `409`), and removed `_unused_actions_type_check`.
 

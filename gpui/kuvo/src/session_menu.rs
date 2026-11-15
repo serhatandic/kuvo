@@ -13,9 +13,9 @@ use gpui::{
     ParentElement, Render, Styled, Subscription, Task, WeakEntity, Window, actions, anchored,
     deferred, div, point, px,
 };
-use kuvo_box::BoxClient;
 use kuvo_box::accounts::Confirm;
 use kuvo_box::session_actions::Actions;
+use kuvo_box::{BoxClient, Listing};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, StyledType, TextField, TextFieldEvent, TypeSize,
     menu::{Menu, MenuEntry, MenuItem, PopoverMenuHandle},
@@ -52,11 +52,13 @@ pub fn session_from_row_key(key: &str) -> Option<&str> {
 }
 
 /// Cached `GET kuvo/sessions/<id>/actions` state for a sidebar row.
-#[derive(Clone, Debug)]
-pub enum RowActions {
-    Loading,
-    Ready(Actions),
-    Failed,
+/// Keeps previously fetched actions visible while stale or refreshing so hover buttons never flicker.
+#[derive(Clone, Debug, Default)]
+pub struct RowActions {
+    pub actions: Option<Actions>,
+    pub fetching: Option<u64>,
+    pub stale: bool,
+    pub failed: bool,
 }
 
 /// An active Rename or Delete confirm popover.
@@ -114,23 +116,79 @@ impl SessionMenu {
     }
 
     pub fn cached_actions(&self, session: &str) -> Option<&Actions> {
-        match self.row_actions.get(session) {
-            Some(RowActions::Ready(actions)) => Some(actions),
-            _ => None,
-        }
+        self.row_actions.get(session).and_then(|entry| entry.actions.as_ref())
     }
 
     pub fn cache_actions(&mut self, session: &str, actions: Actions) {
-        self.row_actions.insert(session.to_owned(), RowActions::Ready(actions));
+        self.row_actions.insert(
+            session.to_owned(),
+            RowActions {
+                actions: Some(actions),
+                fetching: None,
+                stale: false,
+                failed: false,
+            },
+        );
     }
 
-    pub fn invalidate_actions(&mut self, session: Option<&str>) {
+    pub fn begin_fetch(&mut self, session: &str) -> u64 {
         self.actions_epoch = self.actions_epoch.wrapping_add(1);
-        match session {
-            Some(id) => {
-                self.row_actions.remove(id);
+        let seq = self.actions_epoch;
+        let entry = self.row_actions.entry(session.to_owned()).or_default();
+        entry.fetching = Some(seq);
+        entry.stale = false;
+        entry.failed = false;
+        seq
+    }
+
+    pub fn finish_fetch(&mut self, session: &str, seq: u64, result: kuvo_box::Result<Actions>) -> bool {
+        let Some(entry) = self.row_actions.get_mut(session) else {
+            return false;
+        };
+        if entry.fetching != Some(seq) {
+            return false;
+        }
+        entry.fetching = None;
+        match result {
+            Ok(actions) => {
+                entry.actions = Some(actions);
+                entry.stale = false;
+                entry.failed = false;
             }
-            None => self.row_actions.clear(),
+            Err(_) => {
+                entry.actions = None;
+                entry.stale = false;
+                entry.failed = true;
+            }
+        }
+        true
+    }
+
+    pub fn invalidate_session(&mut self, session: &str) {
+        if let Some(entry) = self.row_actions.get_mut(session) {
+            entry.stale = true;
+            entry.failed = false;
+            entry.fetching = None;
+        }
+    }
+
+    pub fn remove_actions(&mut self, session: &str) {
+        self.row_actions.remove(session);
+    }
+
+    pub fn clear_actions(&mut self) {
+        self.actions_epoch = self.actions_epoch.wrapping_add(1);
+        self.row_actions.clear();
+    }
+
+    pub fn mark_changed_actions(&mut self, previous: &Listing, current: &Listing) {
+        self.row_actions.retain(|id, _| current.facts(id).is_some());
+        for (id, entry) in &mut self.row_actions {
+            if previous.facts(id) != current.facts(id) {
+                entry.stale = true;
+                entry.failed = false;
+                entry.fetching = None;
+            }
         }
     }
 }

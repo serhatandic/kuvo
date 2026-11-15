@@ -10,7 +10,7 @@ use kuvo::sidebar::SHOWN;
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo::workspace::Workspace;
 use kuvo_box::BoxClient;
-use kuvo_box::session_actions::{Action, Actions};
+use kuvo_box::session_actions::Action;
 use kuvo_box::transport::{Closer, Request, Response, Stream, Transport};
 use kuvo_ui::menu::MenuItem;
 use kuvo_ui::{Appearance, Theme};
@@ -350,6 +350,38 @@ fn row_hover_buttons_use_cached_box_actions_labels_and_held_state(cx: &mut TestA
     // Pinning invalidates and refreshes cached actions on change.
     click(cx, "pin-session-project:ses_dark");
     assert_eq!(stand_in.seen_at("GET", "kuvo/sessions/ses_dark/actions").len(), 2);
+
+    // An unrelated session changing in a list update neither clears nor refetches ses_dark.
+    stand_in.send(&Request::post("kuvo/sessions/ses_signup/pin", serde_json::json!({ "pinned": true }))).unwrap();
+    workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        stand_in.seen_at("GET", "kuvo/sessions/ses_dark/actions").len(),
+        2,
+        "unrelated list updates must not refetch hovered ses_dark actions"
+    );
+    assert!(bounds(cx, "pin-session-project:ses_dark").is_some(), "hover buttons stay visible on unrelated updates");
+
+    // Even while ses_dark is stale or an async refetch is in flight, old hover buttons stay visible (no flicker).
+    let seq = workspace.update_in(cx, |workspace, _, cx| {
+        workspace.session_menu_mut().invalidate_session("ses_dark");
+        let seq = workspace.session_menu_mut().begin_fetch("ses_dark");
+        cx.notify();
+        seq
+    });
+    cx.run_until_parked();
+    assert!(
+        bounds(cx, "pin-session-project:ses_dark").is_some()
+            && bounds(cx, "archive-session-project:ses_dark").is_some(),
+        "cached hover buttons stay drawn while a refetch is in flight"
+    );
+    let fresh = workspace.read_with(cx, |w, _| w.client().session_actions("ses_dark")).unwrap();
+    workspace.update_in(cx, |workspace, _, cx| {
+        workspace.session_menu_mut().finish_fetch("ses_dark", seq, Ok(fresh));
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert!(bounds(cx, "pin-session-project:ses_dark").is_some());
 }
 
 #[gpui::test]
@@ -484,42 +516,27 @@ fn delete_never_deletes_without_confirm_popover(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    // Even when the box gives confirm: None, ⇧⌘⌫ opens a plain confirm popover with the session's title
-    // and never deletes until ConfirmDeletePopover::confirm_delete is triggered.
+    // When the box gives confirm: None, ⇧⌘⌫ refuses to delete, opens no confirm popover with client wording,
+    // and surfaces the box error instead.
     cx.simulate_keystrokes("cmd-shift-backspace");
     cx.run_until_parked();
     assert!(stand_in.seen_at("DELETE", "kuvo/sessions/ses_recipes").is_empty());
-    assert!(bounds(cx, "confirm-delete-popover").is_some());
-    assert!(bounds(cx, "delete-confirm-title").is_some());
-    assert!(bounds(cx, "delete-confirm-message").is_none());
-    // Also verify direct run_delete_action(_, None, ...) opens confirm popover and never deletes directly.
+    assert!(bounds(cx, "confirm-delete-popover").is_none());
+    assert!(workspace.read_with(cx, |w, _| w.session_menu().active_popover.is_none()));
+    assert!(bounds(cx, "session-action-error").is_some());
+    assert!(bounds(cx, "session-chat-ses_recipes").is_some());
+    click(cx, "dismiss-session-error");
+    assert!(bounds(cx, "session-action-error").is_none());
+
+    // Direct run_delete_action(_, None, ...) likewise shows the error and never deletes.
     workspace.update_in(cx, |workspace, window, cx| {
         workspace.run_delete_action("ses_recipes", None, PopoverAnchor::TitleBar, window, cx);
     });
     cx.run_until_parked();
     assert!(stand_in.seen_at("DELETE", "kuvo/sessions/ses_recipes").is_empty());
-    assert!(bounds(cx, "confirm-delete-popover").is_some());
-    assert!(bounds(cx, "delete-confirm-title").is_some());
-    assert!(bounds(cx, "delete-confirm-message").is_none());
-    let has_delete_view = workspace.read_with(cx, |w, _| {
-        matches!(w.session_menu().active_popover, Some(ActivePopover::Delete { .. }))
-    });
-    assert!(has_delete_view);
-
-    click(cx, "delete-go");
-    assert_eq!(stand_in.seen_at("DELETE", "kuvo/sessions/ses_recipes").len(), 1);
-    assert!(bounds(cx, "session-chat-ses_recipes").is_none());
-
-    // Box-driven delete with confirm: None via ⇧⌘⌫ also opens confirm popover first.
-    workspace.update_in(cx, |workspace, window, cx| {
-        workspace.open_read_at_once("ses_signup", window, cx);
-        window.focus(&workspace.focus_handle(cx), cx);
-    });
-    cx.run_until_parked();
-    cx.simulate_keystrokes("cmd-shift-backspace");
-    cx.run_until_parked();
-    assert!(stand_in.seen_at("DELETE", "kuvo/sessions/ses_signup").is_empty());
-    assert!(bounds(cx, "confirm-delete-popover").is_some());
+    assert!(bounds(cx, "confirm-delete-popover").is_none());
+    assert!(workspace.read_with(cx, |w, _| w.session_menu().active_popover.is_none()));
+    assert!(bounds(cx, "session-action-error").is_some());
 }
 
 #[gpui::test]
@@ -555,7 +572,8 @@ fn keyboard_shortcuts_respect_textfield_walked_rows_and_popover_cleanup(cx: &mut
     click(cx, "clear-search");
 
     // Walk to ses_recipes while ses_dark is open in the background, then archive it via ⌘⌫:
-    // archive_session clears walked & hovered_row so a follow-up shortcut cannot hit ses_dark.
+    // archive_session clears walked & hovered_row, and while sidebar list focus stays with nothing walked,
+    // a follow-up ⌘⌫ / ⌘R / ⇧⌘⌫ acts on nothing instead of hitting the background ses_dark.
     workspace.update_in(cx, |workspace, window, cx| {
         workspace.open_read_at_once("ses_dark", window, cx);
         workspace.set_hovered_row(Some("session-chat:ses_recipes".into()), cx);
@@ -574,6 +592,24 @@ fn keyboard_shortcuts_respect_textfield_walked_rows_and_popover_cleanup(cx: &mut
     assert_eq!(stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/archive").len(), 1);
     assert_eq!(workspace.read_with(cx, |w, _| w.walked().map(str::to_owned)), None);
     assert_eq!(workspace.read_with(cx, |w, _| w.session_menu().hovered_row.clone()), None);
+
+    // Pressing ⌘⌫ (or ⌘R / ⇧⌘⌫) again right after archiving the walked row acts on nothing.
+    cx.simulate_keystrokes("cmd-backspace cmd-r cmd-shift-backspace");
+    cx.run_until_parked();
+    assert!(stand_in.seen_at("POST", "kuvo/sessions/ses_dark/archive").is_empty());
+    assert!(bounds(cx, "rename-popover").is_none());
+    assert!(bounds(cx, "confirm-delete-popover").is_none());
+
+    // Moving focus out of the sidebar list (e.g. into the open conversation) acts on open ses_dark again.
+    workspace.update_in(cx, |workspace, window, cx| {
+        window.focus(&workspace.focus_handle(cx), cx);
+    });
+    cx.simulate_keystrokes("cmd-r");
+    cx.run_until_parked();
+    assert!(bounds(cx, "rename-popover").is_some());
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(bounds(cx, "rename-popover").is_none());
 
     // If walked holds a key missing from sidebar lines (e.g. its project collapsed), shortcuts return None instead of hitting opened().
     let website_dir = format!("{}/Projects/website", kuvo::stand_in::HOME);
@@ -694,7 +730,4 @@ fn active_popover_clears_when_anchor_leaves(cx: &mut TestAppContext) {
 fn point_outside_sidebar() -> Point<Pixels> {
     gpui::point(px(900.), px(400.))
 }
-
-#[allow(dead_code)]
-fn _unused_actions_type_check(_: Actions) {}
 
