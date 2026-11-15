@@ -1748,7 +1748,7 @@ machines; a client that wants every computer's facts asks the box that has it as
     code?}], answers: [{id, label, kind}]}`, `kind` `primary`, `plain` or `danger`), answered with
     `POST kuvo/computers/add/<id>/answer {"answer": <an answer's id>, "at"}` → `200 {try}` (`409`
     when it asks nothing now, or not that). `at` is the ask's number, which a client sends back:
-    an answer that names another ask (a late one, for a fingerprint shown before) isn't taken:
+    an answer that names another ask (a late one, for a fingerprint shown before), or none, isn't taken:
     - `hostKey`: the host's key isn't known. The box reads it as `ssh` reaches the host (your
       config's port and jump host), offering no key and no agent to a host not trusted yet, and
       shows its fingerprint (`SHA256:…`). `trust` keeps it in the box's own
@@ -1762,9 +1762,11 @@ machines; a client that wants every computer's facts asks the box that has it as
     `cancel`, on each, stops the try.
   - `DELETE kuvo/computers/add/<id>` stops one under way (at its next step: what it runs there
     now ends first, and its start is never cut short; it says `stopping` meanwhile, then leaves
-    the list), or forgets one that's over: `200 {}`, `404`. One stopped as it started, on a
-    computer that had no Kuvo Code, is taken off there again; where that couldn't be done the
-    try fails, saying it still runs there.
+    the list), or forgets one that's over: `200 {}`, `404`. One stopped, or failed, after it
+    started on a computer that had nothing of Kuvo Code and before it's one of yours, is taken
+    off there again (stopped, its start after a restart removed, the keys and sign-ins copied
+    there deleted), and a failure's words say so; where that couldn't be done the try fails,
+    saying it may still run there.
   - **What it does**, in order: connects with the keys and agent of the box's computer (never a
     password; refused, it tries once through an agent of its own that offers the first few SSH keys
     in the vault, "Vault"); probes the computer, changing nothing (its system and kind, what the engine needs,
@@ -1780,7 +1782,8 @@ machines; a client that wants every computer's facts asks the box that has it as
     written as the box's own record of it (its peers document, `machines.json`, and
     `phone-link.json` for `kuvo/hosts`).
   - **What a new computer starts with** (`seeding`), once, as it's added, and only one that had
-    no Kuvo Code: a copy of the box's engine settings (not its shell or worktrees' folder, nor
+    nothing of Kuvo Code (no box found there and no Kuvo Code app's folder, judged `free`: a Mac
+    with Kuvo Code's app is someone's already, and keeps its own): a copy of the box's engine settings (not its shell or worktrees' folder, nor
     the integrations that use a Mac's own apps) and of its integrations' keys (not a bot's own),
     which go with its start on the script's standard input and are taken by `box adopt` there
     ("Settings per box"); and of its accounts' sign-ins in use that stay the same (a provider's

@@ -214,7 +214,8 @@ pub fn adding(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Opt
     if areas.tries[at]["state"] != json!("asking") {
         return Some(((409, json!({ "message": "It isn’t asking that now." })), false));
     }
-    if body.get("at").is_some_and(|at| *at != areas.tries[at_ix(&areas.tries, id)]["question"]["at"]) {
+    // (An answer names the ask it's for: one that doesn't, or names another, isn't taken.)
+    if body.get("at") != Some(&areas.tries[at_ix(&areas.tries, id)]["question"]["at"]) {
         return Some(((409, json!({ "message": "It isn’t asking that now." })), false));
     }
     if body["answer"] != json!("trust") {

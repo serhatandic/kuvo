@@ -213,12 +213,13 @@ export function stopTry(it: Running): void {
   note();
 }
 
-/** Answers what the try `id` asks now: null when it asks nothing, or not that (`at`, where the
- * client says which ask it answers: another's number is never taken). */
-export function answerTry(id: string, answer: string, at?: number): AddTry | null {
+/** Answers what the try `id` asks now: null when it asks nothing, or not that. `at` says which ask
+ * is answered (its number): one that names another ask is never taken, as two questions of one
+ * try can share an answer's id (`trust`). */
+export function answerTry(id: string, answer: string, at: number): AddTry | null {
   const it = running.get(id);
   if (!it?.answer || !it.seen.question?.answers.some(each => each.id === answer)) return null;
-  if (at !== undefined && at !== it.seen.question.at) return null;
+  if (at !== it.seen.question.at) return null;
   it.answer(answer);
   return it.seen;
 }

@@ -287,41 +287,57 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     tell.step("starting");
     const own = link ? ownKey(link) : null;
     const notes = JSON.stringify({ mac: own ? launcherID(own) : "", macName: ownName().replace(/[{}"\\]/g, ""), box: mine });
-    // (What a computer with no Kuvo Code starts with goes with its start, on its standard input:
-    // this box's settings and integrations' keys. One that has its own keeps them.)
-    const given = found ? null : await gatherSeed();
-    const started = await reach.run(scripts.start(ENGINE_VERSION, name, notes), { most: 600_000, ...(given ? { input: Buffer.from(JSON.stringify({ settings: given.settings, keys: given.keys })) } : {}) });
-    if (started.status === 7) throw new Failed(`${name} was removed from Kuvo Code while it was starting, so it wasn’t started. Add it again to use it.`);
-    if (started.status === 6) throw new Failed(`${name}’s settings couldn’t be made ready. ${lastLine(started.stderr)}`.trim());
-    if (started.status !== 0) throw new Failed(`Kuvo Code didn’t start on ${name}. ${lastLine(started.stderr)}`.trim(), true, `Kuvo Code didn’t start on ${name}`);
-
-    // Stopped as it started, on a computer that had no Kuvo Code before: taken off again, so
-    // nothing runs there, or starts after a restart, that no computer of yours knows of.
-    if (tell.signal.aborted && own && !found) {
-      const undone = await reach.run(scripts.uninstall(ENGINE_VERSION, own, true), { most: 600_000, anyway: true }).catch(() => null);
-      if (undone?.status !== 0) throw new Failed(`Kuvo Code had started on ${name} when this was stopped, and couldn’t be stopped there again. Add ${name} again, then uninstall it from its page.`, true, `${name} is still running Kuvo Code`);
-    }
-    // Its accounts, once: the keys and the sign-ins that stay the same. Never what renews itself.
-    const renewing = given?.renewing ? ` ${given.renewing === 1 ? "One sign-in renews itself" : `${given.renewing} sign-ins renew themselves`}, so sign in to ${given.renewing === 1 ? "it" : "those"} on ${name}.` : "";
-    if (!given) tell.skip("seeding", "It keeps its own");
-    else {
-      tell.step("seeding");
-      const settings = /^seeded$/m.test(started.stdout);
-      let taken = 0;
-      if (given.credentials.length) {
-        const ran = await reach.run(scripts.seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({ credentials: given.credentials })), most: 300_000 });
-        let said: unknown = null;
-        try { said = JSON.parse(ran.stdout.trim().split("\n").pop() ?? ""); } catch {}
-        taken = isObject(said) && typeof said.taken === "number" ? said.taken : 0;
+    // A computer with nothing of Kuvo Code on it: no box found there, no Kuvo Code app's folder
+    // either, judged free, and being added (never set up again). Only such a one is given a copy
+    // of this box's keys and sign-ins, and only such a one is taken off again if this doesn't end
+    // with it one of your computers: a Mac with Kuvo Code's app, or any box, is someone's already.
+    const fresh = kind === "add" && judged.verdict === "free" && foundOf(probe.lines).length === 0 && appsOf(probe.lines) === 0;
+    // (What it starts with goes with its start, on its standard input: this box's settings and
+    // integrations' keys.)
+    const given = fresh ? await gatherSeed() : null;
+    // Started there, on a computer that had nothing, and not one of yours yet: whatever ends this
+    // before it is (stopped, or failed), it's stopped there and what was copied is deleted.
+    let unjoined = false;
+    try {
+      unjoined = fresh;
+      const started = await reach.run(scripts.start(ENGINE_VERSION, name, notes), { most: 600_000, ...(given ? { input: Buffer.from(JSON.stringify({ settings: given.settings, keys: given.keys })) } : {}) });
+      if (started.status === 7) throw new Failed(`${name} was removed from Kuvo Code while it was starting, so it wasn’t started. Add it again to use it.`);
+      if (started.status === 6) throw new Failed(`${name}’s settings couldn’t be made ready. ${lastLine(started.stderr)}`.trim());
+      if (started.status !== 0) throw new Failed(`Kuvo Code didn’t start on ${name}. ${lastLine(started.stderr)}`.trim(), true, `Kuvo Code didn’t start on ${name}`);
+      // Its accounts, once: the keys and the sign-ins that stay the same. Never what renews itself.
+      const renewing = given?.renewing ? ` ${given.renewing === 1 ? "One sign-in renews itself" : `${given.renewing} sign-ins renew themselves`}, so sign in to ${given.renewing === 1 ? "it" : "those"} on ${name}.` : "";
+      if (!given) tell.skip("seeding", "It keeps its own");
+      else {
+        tell.step("seeding");
+        const settings = /^seeded$/m.test(started.stdout);
+        let taken = 0;
+        if (given.credentials.length) {
+          const ran = await reach.run(scripts.seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({ credentials: given.credentials })), most: 300_000 });
+          let said: unknown = null;
+          try { said = JSON.parse(ran.stdout.trim().split("\n").pop() ?? ""); } catch {}
+          taken = isObject(said) && typeof said.taken === "number" ? said.taken : 0;
+        }
+        const keys = settings ? Object.keys(given.keys).length : 0;
+        const copied = [keys ? `${keys} ${keys === 1 ? "key" : "keys"}` : "", taken ? `${taken} ${taken === 1 ? "account" : "accounts"}` : ""].filter(Boolean).join(" and ");
+        tell.skip("seeding", `${copied ? `Copied ${copied}.` : settings ? "Copied your settings." : "Nothing to copy."}${renewing}`);
       }
-      const keys = settings ? Object.keys(given.keys).length : 0;
-      const copied = [keys ? `${keys} ${keys === 1 ? "key" : "keys"}` : "", taken ? `${taken} ${taken === 1 ? "account" : "accounts"}` : ""].filter(Boolean).join(" and ");
-      tell.skip("seeding", `${copied ? `Copied ${copied}.` : settings ? "Copied your settings." : "Nothing to copy."}${renewing}`);
+      tell.step("joining");
+      const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
+      const computer = await join(reach, destination, name, identity);
+      unjoined = false;
+      tell.came(computer);
+    } catch (error) {
+      if (!unjoined || !own) throw error;
+      // (Run though the try was stopped: this is its own tidying up.)
+      const undone = await reach.run(scripts.uninstall(ENGINE_VERSION, own, true), { most: 600_000, anyway: true }).catch(() => null);
+      const still = `Kuvo Code may still be running on ${name}, with the keys and sign-ins copied there. Add ${name} again, then uninstall it from its page.`;
+      if (error instanceof Stopped || tell.signal.aborted) {
+        if (undone?.status !== 0) throw new Failed(`This was stopped after Kuvo Code had started on ${name}, and it couldn’t be stopped there again. ${still}`, true, `${name} is still running Kuvo Code`);
+        throw error;
+      }
+      const failure = error instanceof Failed ? error : new Failed(error instanceof Error && error.message ? error.message : "Something went wrong.");
+      throw new Failed(`${failure.message} ${undone?.status === 0 ? `Kuvo Code was stopped on ${name} again, and the keys and sign-ins copied there were deleted.` : still}`, failure.again, failure.title);
     }
-    tell.step("joining");
-    const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-    const computer = await join(reach, destination, name, identity);
-    tell.came(computer);
   } finally {
     await reach.close();
   }

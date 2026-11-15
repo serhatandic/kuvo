@@ -33,7 +33,9 @@ const program = (): string => {
 // What every connection has: no questions on a terminal nobody's at, no command or terminal your
 // config would add, a host that doesn't answer given up on, and none of your config's forwards.
 const BASE = ["-o", "BatchMode=yes", "-o", "RemoteCommand=none", "-o", "RequestTTY=no", "-o", "ConnectTimeout=15",
-  "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no"];
+  "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
+  // (Whatever your config says: a host's other keys are never written to your own known hosts from here.)
+  "-o", "UpdateHostKeys=no"];
 
 const quoted = (file: string): string => `"${file.replace(/(["\\])/g, "\\$1")}"`;
 
@@ -204,7 +206,7 @@ export async function readHostKey(destination: string, signal?: AbortSignal): Pr
   const file = path.join(folder, crypto.randomBytes(9).toString("base64url"));
   try {
     const ran = await run([
-      "-o", "BatchMode=yes", "-o", "RemoteCommand=none", "-o", "RequestTTY=no", "-o", "ConnectTimeout=15", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no",
+      "-o", "BatchMode=yes", "-o", "RemoteCommand=none", "-o", "RequestTTY=no", "-o", "ConnectTimeout=15", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
       "-o", "ControlMaster=no", "-o", "ControlPath=none",
       "-o", "StrictHostKeyChecking=accept-new", "-o", `UserKnownHostsFile=${quoted(file)}`, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "UpdateHostKeys=no",
       // (Its name as it is, and no line for its address beside it: what's kept is what's read here.)

@@ -62,7 +62,7 @@ fs.writeFileSync(fakeEngine, `
 import fs from "node:fs"; import http from "node:http";
 const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
 // (Its sign-ins, kept as an engine keeps them: listed, and stored as they're given.)
-const kept = ${JSON.stringify(path.join(there, "engine-credentials.json"))};
+const kept = process.env.HOME + "/engine-credentials.json";
 const credentials = () => { try { return JSON.parse(fs.readFileSync(kept, "utf8")); } catch { return []; } };
 const server = http.createServer((request, response) => {
   const chunks = [];
@@ -78,7 +78,7 @@ const server = http.createServer((request, response) => {
   });
 });
 server.listen(port, "127.0.0.1", () => console.log("server listening on http://127.0.0.1:" + port));
-setInterval(() => { if (!fs.existsSync(${JSON.stringify(there)})) process.exit(0); }, 300);
+setInterval(() => { if (!fs.existsSync(process.env.HOME)) process.exit(0); }, 300);
 `);
 // Its binary, the same on both computers (they're the same kind: this box gives its own): its
 // version, the link's script run as the engine's Bun runs it (here this Node), and the engine.
@@ -100,7 +100,7 @@ for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "
   write(path.join(root, file), fs.readFileSync(path.join(checkout, file)));
 }
 write(path.join(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), fs.readFileSync(script));
-write(path.join(root, "box/dist/kuvo-agents.js"), `import fs from "node:fs";\nconsole.log(JSON.stringify({ url: "http://127.0.0.1:" + process.env.KUVO_AGENTS_PORT }));\nsetInterval(() => { if (!fs.existsSync(${JSON.stringify(there)})) process.exit(0); }, 300);\n`);
+write(path.join(root, "box/dist/kuvo-agents.js"), `import fs from "node:fs";\nconsole.log(JSON.stringify({ url: "http://127.0.0.1:" + process.env.KUVO_AGENTS_PORT }));\nsetInterval(() => { if (!fs.existsSync(process.env.KUVO_HOME)) process.exit(0); }, 300);\n`);
 const release = path.join(base, "release");
 const packed = spawnSync("sh", [path.join(checkout, "scripts", "box-release.sh"), "--files", "1.0.0", release], {
   env: { ...process.env, BUN: process.env.BUN || process.env.KUVO_TEST_BUN || (process.versions.bun ? process.execPath : "bun"), BOX_SOURCES: root }, encoding: "utf8",
@@ -122,7 +122,7 @@ F="$FAKE_SSH"
 strict=; known=; pubkey=yes; control=
 while [ $# -gt 0 ]; do
   case "$1" in
-    -o) case "$2" in
+    -o) echo "$2" >>"$F/options"; case "$2" in
           StrictHostKeyChecking=*) strict=\${2#*=} ;;
           UserKnownHostsFile=*) known=\${2#*=} ;;
           PubkeyAuthentication=*) pubkey=\${2#*=} ;;
@@ -157,6 +157,11 @@ else
   fi
 fi
 if [ "$pubkey" = no ] || [ -f "$F/refuse" ]; then echo "you@$dest: Permission denied (publickey)." >&2; exit 255; fi
+[ -f "$F/home-$dest" ] && FAKE_SSH_HOME=$(cat "$F/home-$dest")
+if [ -f "$F/fail" ]; then
+  text=$(printf %s "$cmd" | sed -n 's/.*printf %s \\([A-Za-z0-9+/=]*\\) | base64 -d.*/\\1/p' | base64 -d 2>/dev/null)
+  case "$text" in *"$(cat "$F/fail")"*) cat >/dev/null; echo "it broke" >&2; exit 1 ;; esac
+fi
 if [ -f "$F/hold" ]; then
   text=$(printf %s "$cmd" | sed -n 's/.*printf %s \\([A-Za-z0-9+/=]*\\) | base64 -d.*/\\1/p' | base64 -d 2>/dev/null)
   case "$text" in *"$(cat "$F/hold")"*) while [ -f "$F/hold" ]; do sleep 0.05; done ;; esac
@@ -252,10 +257,17 @@ const until = async (id, wanted) => {
 const over = id => until(id, found => !found || found.state === "done" || found.state === "failed" || found.state === "asking");
 const steps = found => found.steps.map(step => `${step.id}:${step.state}`);
 const sshLog = () => (fs.existsSync(path.join(fake, "log")) ? fs.readFileSync(path.join(fake, "log"), "utf8").trim().split("\n") : []);
-const pidsThere = () => {
+// (Two more computers, each a home of its own: a Mac that has Kuvo Code's app, and one with nothing.)
+const homes = { macbook: path.join(base, "macbook"), mini: path.join(base, "mini") };
+for (const [name, folder] of Object.entries(homes)) {
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(fake, `home-${name}`), folder);
+  for (const tool of ["pkill", "caffeinate"]) write(path.join(folder, ".kuvo-code", "bin", tool), `#!/bin/sh\nexit 0\n`, 0o755);
+}
+const pidsThere = (kuvo = remote) => {
   const pids = [];
-  try { pids.push(read(path.join(remote, "run", "engine.json")).pid); } catch {}
-  for (const file of ["box.pid", "link.pid", "agents.pid"]) try { pids.push(Number(fs.readFileSync(path.join(remote, "run", file), "utf8"))); } catch {}
+  try { pids.push(read(path.join(kuvo, "run", "engine.json")).pid); } catch {}
+  for (const file of ["box.pid", "link.pid", "agents.pid"]) try { pids.push(Number(fs.readFileSync(path.join(kuvo, "run", file), "utf8"))); } catch {}
   return pids.filter(pid => Number.isInteger(pid) && pid > 1);
 };
 
@@ -263,9 +275,13 @@ atEnd(async () => {
   await link.forgetTries();
   fs.rmSync(path.join(fake, "hold"), { force: true });
   // Off (as a box removed), by its own keeper, then only what's still the test's own by its command.
-  const pids = pidsThere();
-  if (fs.existsSync(path.join(remote, "bin", "kuvo-start"))) spawnSync("sh", [path.join(remote, "bin", "kuvo-start"), "off"], { env: { ...process.env, HOME: there }, timeout: 120_000 });
-  for (const pid of pids) if (alive(pid) && command(pid).includes(base)) try { process.kill(pid); } catch {}
+  fs.rmSync(path.join(fake, "fail"), { force: true });
+  for (const folder of [there, ...Object.values(homes)]) {
+    const kuvo = path.join(folder, ".kuvo-code");
+    const pids = pidsThere(kuvo);
+    if (fs.existsSync(path.join(kuvo, "bin", "kuvo-start"))) spawnSync("sh", [path.join(kuvo, "bin", "kuvo-start"), "off"], { env: { ...process.env, HOME: folder }, timeout: 120_000 });
+    for (const pid of pids) if (alive(pid) && command(pid).includes(base)) try { process.kill(pid); } catch {}
+  }
 });
 
 test("a box says whether it adds computers, and suggests the hosts in ~/.ssh/config that aren't patterns", async () => {
@@ -297,7 +313,9 @@ test("adding a computer: the box shows a host key it doesn't know, and on Trust 
   assert.deepEqual(asking.question.answers.map(each => each.id), ["cancel", "trust"]);
   assert.equal(fs.existsSync(path.join(remote, "bin", "kuvo-link.js")), false, "nothing put there before you answer");
   assert.equal(fs.existsSync(link.KNOWN_HOSTS), false, "and its key not kept yet");
-  assert.equal((await ask("POST", `kuvo/computers/add/${id}/answer`, { answer: "sure" })).status, 409, "only one of its answers");
+  assert.equal((await ask("POST", `kuvo/computers/add/${id}/answer`, { answer: "sure", at: asking.question.at })).status, 409, "only one of its answers");
+  assert.equal((await ask("POST", `kuvo/computers/add/${id}/answer`, { answer: "trust" })).status, 409, "nor one that doesn't say which ask it answers");
+  assert.equal(fs.existsSync(link.KNOWN_HOSTS), false, "nothing trusted by any of those");
 
   assert.equal((await ask("POST", `kuvo/computers/add/${id}/answer`, { answer: "trust", at: asking.question.at })).status, 200);
   const done = await over(id);
@@ -371,6 +389,11 @@ test("adding a computer: the box shows a host key it doesn't know, and on Trust 
   assert.deepEqual(listed.actions.map(action => action.id), ["rename", "remove", "setup", "uninstall"]);
   assert.match(listed.actions.find(action => action.id === "uninstall").confirm.message, /Studio connects to studio over SSH/);
   assert.deepEqual((await ask("GET", "kuvo/computers/add")).body.hosts, ["gpu", "github.com"]);
+  // Every connection, whatever your config says: no host key written to your own known hosts, no X11.
+  const options = fs.readFileSync(path.join(fake, "options"), "utf8").split("\n");
+  const count = option => options.filter(each => each === option).length;
+  assert.ok(count("BatchMode=yes") > 5);
+  assert.deepEqual([count("UpdateHostKeys=no"), count("ForwardX11=no"), count("ForwardAgent=no")], [count("BatchMode=yes"), count("BatchMode=yes"), count("BatchMode=yes")]);
   // One connection shared by its scripts, and let go of at the end.
   // (Where a socket's path fits: a Mac's short folder in /tmp; on Linux the box's own `run/ssh`,
   // which a test's deep home can be too long for, and then each script connects by itself.)
@@ -412,7 +435,7 @@ test("a host that can't be reached, one that refuses your keys, and one whose ke
     const begun = await ask("POST", "kuvo/computers/add", { destination: "gpu" });
     const asking = await until(begun.body.try.id, found => found?.state === "asking");
     assert.equal(asking.question.id, "hostKey");
-    await ask("POST", `kuvo/computers/add/${begun.body.try.id}/answer`, { answer: "trust" });
+    await ask("POST", `kuvo/computers/add/${begun.body.try.id}/answer`, { answer: "trust", at: asking.question.at });
     const refused = await over(begun.body.try.id);
     assert.equal(refused.failure.title, "gpu refused the connection");
     assert.match(refused.failure.message, /didn’t accept Studio’s SSH keys/);
@@ -438,13 +461,13 @@ test("a host key that changed from the one you trusted here is asked about again
     assert.equal(asking.question.id, "hostKeyChanged");
     assert.equal(asking.question.facts[1].value, link.fingerprintOf(keyTwo));
     assert.deepEqual(asking.question.answers.map(each => [each.id, each.kind]), [["cancel", "plain"], ["trust", "danger"]]);
-    await ask("POST", `kuvo/computers/add/${begun.body.try.id}/answer`, { answer: "cancel" });
+    await ask("POST", `kuvo/computers/add/${begun.body.try.id}/answer`, { answer: "cancel", at: asking.question.at });
     assert.equal(await over(begun.body.try.id), null, "stopped, and gone from the list");
     assert.equal(fs.readFileSync(link.KNOWN_HOSTS, "utf8"), before);
     // Trust New Key: the new key takes the old one's line (its other address's stays), and it goes on.
     const again = await ask("POST", `kuvo/computers/${peer.key}/setup`);
-    await until(again.body.try.id, found => found?.state === "asking");
-    await ask("POST", `kuvo/computers/add/${again.body.try.id}/answer`, { answer: "trust" });
+    const asked = await until(again.body.try.id, found => found?.state === "asking");
+    await ask("POST", `kuvo/computers/add/${again.body.try.id}/answer`, { answer: "trust", at: asked.question.at });
     const done = await over(again.body.try.id);
     assert.equal(done.state, "done", JSON.stringify(done.failure));
     assert.deepEqual(fs.readFileSync(link.KNOWN_HOSTS, "utf8").trim().split("\n").filter(line => line.startsWith("studio")).sort(), [`studio ${hostKey(keyTwo)}`, `studio.lan ${hostKey(keyOne)}`]);
@@ -508,6 +531,75 @@ test("uninstalling while it's being set up waits for the start under way, then n
   assert.deepEqual(read(path.join(home, "machines.json")), []);
   assert.ok(fs.existsSync(path.join(remote, "data")));
   assert.equal((await ask("POST", `kuvo/computers/${peer.key}/uninstall`)).status, 404, "no longer one it set up");
+});
+
+// Adds `destination`, trusting its key: the try as it ended (or as `wanted` says).
+const added = async (destination, wanted) => {
+  const begun = await ask("POST", "kuvo/computers/add", { destination });
+  const asking = await until(begun.body.try.id, found => found?.state === "asking");
+  assert.equal(asking.question.id, "hostKey");
+  await ask("POST", `kuvo/computers/add/${begun.body.try.id}/answer`, { answer: "trust", at: asking.question.at });
+  return wanted ? until(begun.body.try.id, wanted) : over(begun.body.try.id);
+};
+const nothingOfOurs = folder => {
+  const kuvo = path.join(folder, ".kuvo-code");
+  let keys = [];
+  try { keys = fs.readdirSync(path.join(kuvo, "box", "keys")); } catch {}
+  assert.deepEqual(keys, [], "no key of this box's there");
+  for (const file of ["box/opencode.json", "run/engine.json", "run/link.json"]) {
+    let text = "";
+    try { text = fs.readFileSync(path.join(kuvo, file), "utf8"); } catch {}
+    for (const secret of secrets) assert.equal(text.includes(secret), false, `${file}: ${secret}`);
+  }
+};
+
+test("a Mac that has Kuvo Code's app is someone's already: it's added, and none of this box's keys or sign-ins are copied there", async () => {
+  // Only the app's folder, no box of a machine's: judged free, and added with no question.
+  fs.mkdirSync(path.join(homes.macbook, "Library", "Application Support", "run.kuvo.code"), { recursive: true });
+  const done = await added("macbook");
+  assert.equal(done.state, "done", JSON.stringify(done.failure));
+  assert.equal(done.steps.find(step => step.id === "seeding").detail, "It keeps its own");
+  nothingOfOurs(homes.macbook);
+  assert.equal(fs.existsSync(path.join(homes.macbook, "engine-credentials.json")), false, "nor any account in its engine");
+  assert.equal(fs.existsSync(path.join(homes.macbook, ".kuvo-code", "run", "seeded.json")), false);
+  // Taken off again, for the tests after.
+  const uninstall = await ask("POST", `kuvo/computers/${done.computer.key}/uninstall`);
+  assert.equal((await over(uninstall.body.try.id)).state, "done");
+});
+
+test("an add that fails, or is stopped, after Kuvo Code started on a computer that had nothing leaves nothing running there and no key behind", async () => {
+  const kuvo = path.join(homes.mini, ".kuvo-code");
+  const gone = why => {
+    assert.deepEqual(pidsThere(kuvo).filter(alive), [], `${why}: nothing of it runs`);
+    assert.doesNotMatch(fs.readFileSync(crontabFile, "utf8"), /kuvo-code/, `${why}: nothing starts it again`);
+    assert.equal(fs.existsSync(path.join(homes.mini, "Library", "LaunchAgents", "run.kuvo.code.machine.plist")), false);
+    assert.equal(fs.existsSync(path.join(kuvo, "box", "keys")), false, `${why}: the keys copied there are deleted`);
+    assert.equal(fs.existsSync(path.join(kuvo, "run", "launch.env")), false);
+    assert.deepEqual(link.macPeersBody(link.readLink()).boxes.filter(each => each.kind === "machine"), [], `${why}: not one of your computers`);
+  };
+  // Its join fails (its link breaks as it's signed in): it had started, with this box's keys.
+  fs.writeFileSync(path.join(fake, "fail"), 'kuvo-link.js" setup');
+  let failed;
+  try {
+    failed = await added("mini");
+  } finally {
+    fs.rmSync(path.join(fake, "fail"));
+  }
+  assert.equal(failed.state, "failed");
+  assert.deepEqual(steps(failed), ["checking:done", "files:done", "engine:done", "starting:done", "seeding:done", "joining:failed"]);
+  assert.equal(failed.failure.message, "Kuvo Code on mini couldn’t join your computers. it broke Kuvo Code was stopped on mini again, and the keys and sign-ins copied there were deleted.");
+  assert.equal(fs.existsSync(path.join(homes.mini, "engine-credentials.json")), true, "(it had been given its accounts)");
+  gone("failed");
+
+  // Stopped while its accounts are being copied: the copy under way ends, then it's taken off again.
+  fs.writeFileSync(path.join(fake, "hold"), 'kuvo-link.js" box seed');
+  const begun = await ask("POST", "kuvo/computers/add", { destination: "mini" });
+  const seeding = await until(begun.body.try.id, found => found?.steps.find(step => step.id === "seeding")?.state === "now");
+  assert.ok(pidsThere(kuvo).filter(alive).length > 0, "it runs there by now");
+  assert.equal((await ask("DELETE", `kuvo/computers/add/${seeding.id}`)).status, 200);
+  fs.rmSync(path.join(fake, "hold"));
+  assert.equal(await over(seeding.id), null, "stopped, and gone from the list");
+  gone("stopped");
 });
 
 test("a member of a setup, and a request that can't stay, are told where to add from", async () => {

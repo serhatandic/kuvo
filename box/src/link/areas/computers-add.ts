@@ -46,7 +46,8 @@ export async function* computersAddRoute(context: RouteContext, match: RegExpMat
   if (id && answering) {
     if (method !== "POST") return yield* json(405, { message: "Only POST." });
     const given = parsed(request.body) as Body<"answer" | "at">;
-    const answered = typeof given?.answer === "string" ? answerTry(id, given.answer, typeof given.at === "number" ? given.at : undefined) : null;
+    // (An answer names the ask it's for: one that doesn't is never taken.)
+    const answered = typeof given?.answer === "string" && typeof given.at === "number" ? answerTry(id, given.answer, given.at) : null;
     if (!answered) return yield* json(409, { message: "It isn’t asking that now." });
     return yield* json(200, { try: answered });
   }

@@ -215,7 +215,7 @@ if [ ! -x "$E" ] || [ ! -f "$K/bin/kuvo-link.js" ]; then echo '{"result":"none"}
 ${link(`leave ${quote(key)}`)} >/dev/null 2>&1 || true
 ${only ? "" : "echo kept; exit 0"}
 ${link("uninstall")} 2>/dev/null; did=$?
-[ $did -eq 0 ] || exit 1
+# (What it keeps of sign-ins and keys goes whether or not everything stopped just now.)
 if [ -f "$K/data/opencode/opencode.db" ]; then
   KUVO_DB="$K/data/opencode/opencode.db" BUN_BE_BUN=1 "$E" -e 'const { Database } = require("bun:sqlite"); const db = new Database(process.env.KUVO_DB); try { db.run("DELETE FROM credential"); } catch {} db.close()' >/dev/null 2>&1 || true
 fi
@@ -224,4 +224,5 @@ rm -f "$K/run/launch.env" "$K/run/launch.notes"
 if [ -d "$K/agents" ]; then
   find "$K/agents" -path "$K/agents/runtime" -prune -o -type f \( -name .credentials.json -o -name 'auth.json*' -o -name 'acp_token.json*' -o -name 'oauth-token.json*' -o -path '*/claude/tokens/*' \) -exec rm -f {} + 2>/dev/null
 fi
+[ $did -eq 0 ] || exit 1
 true`;

@@ -39035,7 +39035,7 @@ if [ ! -x "$E" ] || [ ! -f "$K/bin/kuvo-link.js" ]; then echo '{"result":"none"}
 ${link(`leave ${quote(key)}`)} >/dev/null 2>&1 || true
 ${only ? "" : "echo kept; exit 0"}
 ${link("uninstall")} 2>/dev/null; did=$?
-[ $did -eq 0 ] || exit 1
+# (What it keeps of sign-ins and keys goes whether or not everything stopped just now.)
 if [ -f "$K/data/opencode/opencode.db" ]; then
   KUVO_DB="$K/data/opencode/opencode.db" BUN_BE_BUN=1 "$E" -e 'const { Database } = require("bun:sqlite"); const db = new Database(process.env.KUVO_DB); try { db.run("DELETE FROM credential"); } catch {} db.close()' >/dev/null 2>&1 || true
 fi
@@ -39044,6 +39044,7 @@ rm -f "$K/run/launch.env" "$K/run/launch.notes"
 if [ -d "$K/agents" ]; then
   find "$K/agents" -path "$K/agents/runtime" -prune -o -type f \( -name .credentials.json -o -name 'auth.json*' -o -name 'acp_token.json*' -o -name 'oauth-token.json*' -o -path '*/claude/tokens/*' \) -exec rm -f {} + 2>/dev/null
 fi
+[ $did -eq 0 ] || exit 1
 true`;
 
 // box/src/link/add/ssh.ts
@@ -39734,7 +39735,11 @@ var BASE = [
   "-o",
   "ClearAllForwardings=yes",
   "-o",
-  "ForwardAgent=no"
+  "ForwardAgent=no",
+  "-o",
+  "ForwardX11=no",
+  "-o",
+  "UpdateHostKeys=no"
 ];
 var quoted = (file) => `"${file.replace(/(["\\])/g, "\\$1")}"`;
 var strict = () => {
@@ -39884,6 +39889,8 @@ async function readHostKey(destination, signal) {
       "ClearAllForwardings=yes",
       "-o",
       "ForwardAgent=no",
+      "-o",
+      "ForwardX11=no",
       "-o",
       "ControlMaster=no",
       "-o",
@@ -40181,7 +40188,7 @@ function answerTry(id, answer, at) {
   const it = running4.get(id);
   if (!it?.answer || !it.seen.question?.answers.some((each) => each.id === answer))
     return null;
-  if (at !== undefined && at !== it.seen.question.at)
+  if (at !== it.seen.question.at)
     return null;
   it.answer(answer);
   return it.seen;
@@ -40433,43 +40440,56 @@ async function setUp2(tell, destination, name, kind) {
     tell.step("starting");
     const own = link ? ownKey(link) : null;
     const notes = JSON.stringify({ mac: own ? launcherID(own) : "", macName: ownName().replace(/[{}"\\]/g, ""), box: mine });
-    const given = found ? null : await gatherSeed();
-    const started = await reach.run(start(ENGINE_VERSION, name, notes), { most: 600000, ...given ? { input: Buffer.from(JSON.stringify({ settings: given.settings, keys: given.keys })) } : {} });
-    if (started.status === 7)
-      throw new Failed(`${name} was removed from Kuvo Code while it was starting, so it wasn’t started. Add it again to use it.`);
-    if (started.status === 6)
-      throw new Failed(`${name}’s settings couldn’t be made ready. ${lastLine(started.stderr)}`.trim());
-    if (started.status !== 0)
-      throw new Failed(`Kuvo Code didn’t start on ${name}. ${lastLine(started.stderr)}`.trim(), true, `Kuvo Code didn’t start on ${name}`);
-    if (tell.signal.aborted && own && !found) {
-      const undone = await reach.run(uninstall2(ENGINE_VERSION, own, true), { most: 600000, anyway: true }).catch(() => null);
-      if (undone?.status !== 0)
-        throw new Failed(`Kuvo Code had started on ${name} when this was stopped, and couldn’t be stopped there again. Add ${name} again, then uninstall it from its page.`, true, `${name} is still running Kuvo Code`);
-    }
-    const renewing = given?.renewing ? ` ${given.renewing === 1 ? "One sign-in renews itself" : `${given.renewing} sign-ins renew themselves`}, so sign in to ${given.renewing === 1 ? "it" : "those"} on ${name}.` : "";
-    if (!given)
-      tell.skip("seeding", "It keeps its own");
-    else {
-      tell.step("seeding");
-      const settings = /^seeded$/m.test(started.stdout);
-      let taken = 0;
-      if (given.credentials.length) {
-        const ran = await reach.run(seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({ credentials: given.credentials })), most: 300000 });
-        let said = null;
-        try {
-          said = JSON.parse(ran.stdout.trim().split(`
+    const fresh = kind === "add" && judged.verdict === "free" && foundOf(probe.lines).length === 0 && appsOf(probe.lines) === 0;
+    const given = fresh ? await gatherSeed() : null;
+    let unjoined = false;
+    try {
+      unjoined = fresh;
+      const started = await reach.run(start(ENGINE_VERSION, name, notes), { most: 600000, ...given ? { input: Buffer.from(JSON.stringify({ settings: given.settings, keys: given.keys })) } : {} });
+      if (started.status === 7)
+        throw new Failed(`${name} was removed from Kuvo Code while it was starting, so it wasn’t started. Add it again to use it.`);
+      if (started.status === 6)
+        throw new Failed(`${name}’s settings couldn’t be made ready. ${lastLine(started.stderr)}`.trim());
+      if (started.status !== 0)
+        throw new Failed(`Kuvo Code didn’t start on ${name}. ${lastLine(started.stderr)}`.trim(), true, `Kuvo Code didn’t start on ${name}`);
+      const renewing = given?.renewing ? ` ${given.renewing === 1 ? "One sign-in renews itself" : `${given.renewing} sign-ins renew themselves`}, so sign in to ${given.renewing === 1 ? "it" : "those"} on ${name}.` : "";
+      if (!given)
+        tell.skip("seeding", "It keeps its own");
+      else {
+        tell.step("seeding");
+        const settings = /^seeded$/m.test(started.stdout);
+        let taken = 0;
+        if (given.credentials.length) {
+          const ran = await reach.run(seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({ credentials: given.credentials })), most: 300000 });
+          let said = null;
+          try {
+            said = JSON.parse(ran.stdout.trim().split(`
 `).pop() ?? "");
-        } catch {}
-        taken = isObject(said) && typeof said.taken === "number" ? said.taken : 0;
+          } catch {}
+          taken = isObject(said) && typeof said.taken === "number" ? said.taken : 0;
+        }
+        const keys = settings ? Object.keys(given.keys).length : 0;
+        const copied = [keys ? `${keys} ${keys === 1 ? "key" : "keys"}` : "", taken ? `${taken} ${taken === 1 ? "account" : "accounts"}` : ""].filter(Boolean).join(" and ");
+        tell.skip("seeding", `${copied ? `Copied ${copied}.` : settings ? "Copied your settings." : "Nothing to copy."}${renewing}`);
       }
-      const keys = settings ? Object.keys(given.keys).length : 0;
-      const copied = [keys ? `${keys} ${keys === 1 ? "key" : "keys"}` : "", taken ? `${taken} ${taken === 1 ? "account" : "accounts"}` : ""].filter(Boolean).join(" and ");
-      tell.skip("seeding", `${copied ? `Copied ${copied}.` : settings ? "Copied your settings." : "Nothing to copy."}${renewing}`);
+      tell.step("joining");
+      const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
+      const computer = await join3(reach, destination, name, identity);
+      unjoined = false;
+      tell.came(computer);
+    } catch (error) {
+      if (!unjoined || !own)
+        throw error;
+      const undone = await reach.run(uninstall2(ENGINE_VERSION, own, true), { most: 600000, anyway: true }).catch(() => null);
+      const still = `Kuvo Code may still be running on ${name}, with the keys and sign-ins copied there. Add ${name} again, then uninstall it from its page.`;
+      if (error instanceof Stopped || tell.signal.aborted) {
+        if (undone?.status !== 0)
+          throw new Failed(`This was stopped after Kuvo Code had started on ${name}, and it couldn’t be stopped there again. ${still}`, true, `${name} is still running Kuvo Code`);
+        throw error;
+      }
+      const failure = error instanceof Failed ? error : new Failed(error instanceof Error && error.message ? error.message : "Something went wrong.");
+      throw new Failed(`${failure.message} ${undone?.status === 0 ? `Kuvo Code was stopped on ${name} again, and the keys and sign-ins copied there were deleted.` : still}`, failure.again, failure.title);
     }
-    tell.step("joining");
-    const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-    const computer = await join3(reach, destination, name, identity);
-    tell.came(computer);
   } finally {
     await reach.close();
   }
@@ -48190,7 +48210,7 @@ import fs158 from "node:fs";
 import path166 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "6f0b028110c8";
+var BRIDGE_VERSION = "5d3d0c2fe234";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync10 } from "node:child_process";
@@ -56077,7 +56097,7 @@ async function* computersAddRoute(context, match) {
     if (method !== "POST")
       return yield* json(405, { message: "Only POST." });
     const given = parsed(request.body);
-    const answered = typeof given?.answer === "string" ? answerTry(id, given.answer, typeof given.at === "number" ? given.at : undefined) : null;
+    const answered = typeof given?.answer === "string" && typeof given.at === "number" ? answerTry(id, given.answer, given.at) : null;
     if (!answered)
       return yield* json(409, { message: "It isn’t asking that now." });
     return yield* json(200, { try: answered });
