@@ -154,7 +154,7 @@ fn a_machine_that_cant_be_added_says_why_and_can_be_tried_again(cx: &mut TestApp
     cx.simulate_keystrokes("enter");
     let failed = page.read_with(cx, |page, _| page.tries_drawn()).pop().expect("the try");
     assert_eq!(failed.state, "failed");
-    assert!(shown(cx, "add-failure") && shown(cx, "add-form"), "what failed stays under the form");
+    assert!(shown(cx, "add-failure") && shown(cx, "add-form"), "what failed stays, with the form for another");
     assert!(failed.failure.as_ref().is_some_and(|failure| failure.message.starts_with("Couldn’t reach nowhere.example.")));
     click(cx, "add-try-again");
     assert_eq!(stand_in.seen_at("POST", "kuvo/computers/add").len(), 3);

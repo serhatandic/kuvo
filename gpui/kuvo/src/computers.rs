@@ -406,6 +406,8 @@ impl ComputersView {
         items.extend(tries.iter().filter(|tried| tried.under_way()).map(|tried| Item::Try(Box::new((*tried).clone()))));
         // One at a time on this page: while one is being added, its steps are the page.
         if !tries.iter().any(|tried| tried.under_way()) {
+            // How the last ones ended, first: what you were waiting for, then the form for another.
+            items.extend(tries.iter().filter(|tried| !tried.under_way()).map(|tried| Item::Try(Box::new((*tried).clone()))));
             items.push(Item::AddForm { can: adding.can });
             if let Some(why) = adding.why.as_ref().filter(|_| !adding.can) {
                 items.push(Item::Notice { key: "add-cannot".into(), tone: Tone::Info, title: format!("Machines aren’t added from {this}"), words: why.clone() });
@@ -421,11 +423,6 @@ impl ComputersView {
                 items.push(Item::Notice { key: "add-problem".into(), tone: Tone::Attention, title: "That can’t be added".into(), words: problem.clone() });
             }
             items.push(Item::AddFoot { ready: adding.can && !self.host.read(cx).text().trim().is_empty(), busy: self.add_busy.is_some() });
-            let over: Vec<&&AddTry> = tries.iter().filter(|tried| !tried.under_way()).collect();
-            if !over.is_empty() {
-                items.push(Item::Group("Earlier".into()));
-                items.extend(over.into_iter().map(|tried| Item::Try(Box::new((*tried).clone()))));
-            }
         } else if let Some(problem) = &self.add_problem {
             items.push(Item::Notice { key: "add-problem".into(), tone: Tone::Attention, title: "That couldn’t be done".into(), words: problem.clone() });
         }
@@ -1047,7 +1044,8 @@ impl ComputersView {
                     .flex()
                     .flex_col()
                     .child(head)
-                    .child(div().pb(space::S3).flex().flex_col().children(steps))
+                    // (One that's done says so in a line: its steps are all behind it.)
+                    .when(tried.state != "done", |d| d.child(div().pb(space::S3).flex().flex_col().children(steps)))
                     .children(question)
                     .children(failure)
                     .children(done),
