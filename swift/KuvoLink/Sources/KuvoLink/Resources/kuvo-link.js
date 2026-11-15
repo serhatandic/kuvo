@@ -2583,11 +2583,11 @@ var SESSION_ROUTES = [
   { route: "POST kuvo/sessions/:id/agents", answers: { 200: CARRIED } },
   { route: "POST kuvo/sessions/:id/folders", answers: { 200: object({ session: string }), 404: REFUSED2, 405: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
   { route: "POST kuvo/sessions/:id/move", answers: { 200: SESSION_MOVED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
-  { route: "GET kuvo/sessions/:id/actions", answers: { 200: SESSION_ACTIONS, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 503: REFUSED2 } },
+  { route: "GET kuvo/sessions/:id/actions", answers: { 200: SESSION_ACTIONS, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 503: REFUSED2 } },
   { route: "POST kuvo/sessions/:id/archive", answers: { 200: SESSION_CHANGED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
   { route: "POST kuvo/sessions/:id/pin", answers: { 200: SESSION_CHANGED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
   { route: "POST kuvo/sessions/:id/rename", answers: { 200: SESSION_CHANGED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
-  { route: "DELETE kuvo/sessions/:id", answers: { 200: object({ session: string }), 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
+  { route: "DELETE kuvo/sessions/:id", answers: { 200: object({ session: string }), 400: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
   { route: "POST kuvo/sessions", answers: { 200: STARTED, 400: REFUSED2, 403: REFUSED2, 404: REFUSED2, 409: object({ message: string, reason: words("fullAccessOff") }), 429: REFUSED2, 502: object({ message: string, "session?": string }), 503: REFUSED2 } },
   { route: "POST kuvo/agent-tools", answers: { 200: TOOL_ANSWER, 400: REFUSED2 } },
   { route: "GET kuvo/sessions/queues/events", answers: { 200: object({ queues: map(QUEUE) }) } },
@@ -43842,7 +43842,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f019a683af4c";
+var BRIDGE_VERSION = "e4bf1838d93f";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -47422,6 +47422,9 @@ import fs144 from "node:fs";
 import path153 from "node:path";
 var SESSION_ACTION_ROUTE = /^kuvo\/sessions\/(ses[^/]+)(?:\/(actions|archive|pin|rename))?$/;
 var UNTITLED = "New Session";
+
+class Moving extends Error {
+}
 function livesElsewhere(session) {
   const moved = movedAway().find((each) => each.session === session);
   if (!moved)
@@ -47430,11 +47433,12 @@ function livesElsewhere(session) {
   const name = peer ? computerName(peer) : "";
   return { message: `It’s on ${plainName(name) || "another of your computers"} now. Change it there.`, computer: moved.key };
 }
+var engineArchived = (session) => Boolean(session.time?.archived);
 function actionsOf(session, deletes) {
   const title = session.title || UNTITLED;
   if (isArchived3(session)) {
     return [
-      { id: "unarchive", label: "Unarchive" },
+      ...engineArchived(session) ? [] : [{ id: "unarchive", label: "Unarchive" }],
       { id: "delete", label: "Delete", destructive: true, confirm: { title: `Delete “${title}”?`, message: deletes, label: "Delete" } }
     ];
   }
@@ -47450,17 +47454,22 @@ async function deletesOf(session, context, signal) {
   const directory = session.location?.directory ?? session.directory ?? "";
   const inside = (folder, root) => folder === root || folder.startsWith(root + path153.sep);
   const tree = directory ? readWorktrees().find((each) => inside(directory, each.root)) : undefined;
-  if (!tree)
+  const removed = directory && !tree ? readRestorableWorktrees().find((each) => inside(directory, each.root)) : undefined;
+  if (!tree && !removed)
     return plain;
+  const root = (tree ?? removed).root;
   const list = await listNow(context, signal).catch(() => null);
-  const others = Object.entries(list?.sessions ?? {}).filter(([id, entry]) => id !== session.id && entry.facts.kind !== "subagent" && inside(entry.facts.directory, tree.root));
+  const others = Object.entries(list?.sessions ?? {}).filter(([id, entry]) => id !== session.id && !NOT_CONVERSATIONS.has(entry.facts.kind) && inside(entry.facts.directory, root));
+  if (removed)
+    return others.length || !removed.snapshot ? plain : "The changes kept to restore its worktree are deleted too.";
   if (others.some(([, entry]) => !entry.facts.archived))
     return plain;
   if (others.length)
     return "Its worktree is deleted too.";
-  const status = fs144.existsSync(tree.root) ? await gitLater(tree.root, ["status", "--porcelain", "--untracked-files=normal"]) : null;
+  const status = fs144.existsSync(root) ? await gitLater(root, ["status", "--porcelain", "--untracked-files=normal"]) : null;
   return status === "" ? "Its worktree is deleted too." : "Its worktree and changes that weren’t committed are deleted too.";
 }
+var NOT_CONVERSATIONS = new Set(["subagent", "seat", "hidden"]);
 function forgetWakes2(session) {
   if (!/^ses_[A-Za-z0-9]+$/.test(session))
     return;
@@ -47476,6 +47485,8 @@ async function* sessionActionRoute(context, match) {
   try {
     id = decodeURIComponent(match[1]);
   } catch {}
+  if (!/^ses[A-Za-z0-9_-]+$/.test(id))
+    return yield* json(400, { message: "That isn't a conversation's id." });
   if (action === null && method !== "DELETE")
     return yield* json(405, { message: "Delete it with DELETE." });
   if (action === "actions" && method !== "GET")
@@ -47508,6 +47519,12 @@ async function* sessionActionRoute(context, match) {
     const elsewhere = livesElsewhere(id);
     if (elsewhere)
       return yield* json(409, elsewhere);
+    let record = null;
+    try {
+      record = context.readBridge();
+    } catch {}
+    if (record?.port && !context.bridge())
+      return yield* json(503, { message: "The coding agents on this computer are starting. Try again in a moment." });
     if (action === null)
       return yield* json(200, { session: id });
     return yield* json(404, { message: "That conversation isn't here." });
@@ -47538,17 +47555,24 @@ async function* sessionActionRoute(context, match) {
     }
     return yield* json(200, { session: id, info: isObject(renamed) ? renamed : { ...session, title } });
   }
+  if (action === "archive" && given.archived === false && engineArchived(session)) {
+    return yield* json(409, { message: "It was archived by the engine, which keeps it so. Start a new session to carry on." });
+  }
   const key = action === "pin" ? "kuvo.pinned" : "kuvo.archived";
   const value = action === "pin" ? given.pinned : given.archived;
   let done;
   try {
     done = await rewriteOn(target, id, (now) => {
+      if (frozen().has(id))
+        throw new Moving;
       if ((action === "pin" ? isPinned(now) : isArchived3(now)) === value)
         return null;
       const nested = action === "archive" && value === false && isObject(now.metadata?.kuvo) && "archived" in now.metadata.kuvo;
       return { metadata: withNotes(now.metadata, nested ? { archived: undefined } : null, { [key]: value }) };
     }, signal);
   } catch (error) {
+    if (error instanceof Moving)
+      return yield* json(409, { message: MOVING });
     return yield* json(502, { message: `It couldn't be changed: ${String(error?.message ?? error)}` });
   }
   if (!done)

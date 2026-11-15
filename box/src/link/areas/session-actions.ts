@@ -26,7 +26,7 @@ import { peersOf } from "../peers/known";
 import { readLink } from "../state";
 import { stopIfWaiting } from "../work/answers";
 import { holdArchived } from "./wakes";
-import { readWorktrees } from "./worktree-records";
+import { readRestorableWorktrees, readWorktrees } from "./worktree-records";
 import type { EngineSession } from "../engine/sessions";
 import type { Target } from "../../shared/records";
 import type { SessionAction, SessionActions } from "../../shared/routes/sessions";
@@ -36,6 +36,9 @@ import type { AnswerPiece, RouteContext } from "../server/context";
 export const SESSION_ACTION_ROUTE = /^kuvo\/sessions\/(ses[^/]+)(?:\/(actions|archive|pin|rename))?$/;
 
 const UNTITLED = "New Session";
+
+/** A move took it while it waited for its turn. */
+class Moving extends Error {}
 
 /** Where a session that isn't here lives now, in words, and that computer's key: one moved away
  * from this box in the last two days. Null for one that never lived here. */
@@ -47,12 +50,16 @@ function livesElsewhere(session: string): { message: string; computer: string } 
   return { message: `It’s on ${plainName(name) || "another of your computers"} now. Change it there.`, computer: moved.key };
 }
 
+/** Archived by the engine itself (`time.archived`), which only the engine can undo. */
+const engineArchived = (session: Partial<EngineSession>): boolean => Boolean(session.time?.archived);
+
 /** What can be done with a session now, in the order a menu offers them. */
 export function actionsOf(session: EngineSession, deletes: string): SessionAction[] {
   const title = session.title || UNTITLED;
   if (isArchived(session)) {
     return [
-      { id: "unarchive", label: "Unarchive" },
+      // (Not one the engine archived itself: only it can bring that back.)
+      ...(engineArchived(session) ? [] : [{ id: "unarchive" as const, label: "Unarchive" }]),
       { id: "delete", label: "Delete", destructive: true, confirm: { title: `Delete “${title}”?`, message: deletes, label: "Delete" } },
     ];
   }
@@ -64,24 +71,32 @@ export function actionsOf(session: EngineSession, deletes: string): SessionActio
   ];
 }
 
-/** What Delete says goes with a session: its worktree where it has one of its own (no other
- * conversation open in it), and what isn't committed there unless an archived one left in it keeps
- * that for Restore Worktree (as the box's tidying of worktrees does); else that it can't be undone. */
+/** What Delete says goes with a session, by the rule the box's tidying of worktrees goes by
+ * (`tidyWorktrees`: only conversations count, never a subagent, a group chat's seat or a hidden run
+ * such as a coding agent's engine run): its worktree where no other conversation is open in it,
+ * and what isn't committed there unless an archived one left in it keeps that for Restore Worktree;
+ * a removed worktree's kept changes, where it's the last one that could bring them back; else that
+ * it can't be undone. Where the others can't be read, it says the most that may go. */
 export async function deletesOf(session: EngineSession, context: Pick<RouteContext, "readEngine" | "bridge">, signal?: AbortSignal): Promise<string> {
   const plain = "This can’t be undone.";
   const directory = session.location?.directory ?? session.directory ?? "";
   const inside = (folder: string, root: string) => folder === root || folder.startsWith(root + path.sep);
   const tree = directory ? readWorktrees().find(each => inside(directory, each.root)) : undefined;
-  if (!tree) return plain;
-  // The others in it, as the lists have them (subagents' aside: they go with their conversation).
+  const removed = directory && !tree ? readRestorableWorktrees().find(each => inside(directory, each.root)) : undefined;
+  if (!tree && !removed) return plain;
+  const root = (tree ?? removed)!.root;
   const list = await listNow(context, signal).catch(() => null);
-  const others = Object.entries(list?.sessions ?? {}).filter(([id, entry]) => id !== session.id && entry.facts.kind !== "subagent" && inside(entry.facts.directory, tree.root));
+  const others = Object.entries(list?.sessions ?? {}).filter(([id, entry]) => id !== session.id && !NOT_CONVERSATIONS.has(entry.facts.kind) && inside(entry.facts.directory, root));
+  if (removed) return others.length || !removed.snapshot ? plain : "The changes kept to restore its worktree are deleted too.";
   if (others.some(([, entry]) => !entry.facts.archived)) return plain;
   if (others.length) return "Its worktree is deleted too.";
   // (Not known to be clean, it may have some.)
-  const status = fs.existsSync(tree.root) ? await gitLater(tree.root, ["status", "--porcelain", "--untracked-files=normal"]) : null;
+  const status = fs.existsSync(root) ? await gitLater(root, ["status", "--porcelain", "--untracked-files=normal"]) : null;
   return status === "" ? "Its worktree is deleted too." : "Its worktree and changes that weren’t committed are deleted too.";
 }
+
+/** What a worktree's tidying doesn't count as a conversation in it. */
+const NOT_CONVERSATIONS = new Set(["subagent", "seat", "hidden"]);
 
 /** A deleted session's own wake-ups and watches: gone with it (a bot's are its bot's). */
 function forgetWakes(session: string): void {
@@ -95,6 +110,7 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
   const action = match[2] ?? null;
   let id = "";
   try { id = decodeURIComponent(match[1]!); } catch {}
+  if (!/^ses[A-Za-z0-9_-]+$/.test(id)) return yield* json(400, { message: "That isn't a conversation's id." });
   if (action === null && method !== "DELETE") return yield* json(405, { message: "Delete it with DELETE." });
   if (action === "actions" && method !== "GET") return yield* json(405, { message: "Ask with GET." });
   if (action !== null && action !== "actions" && method !== "POST") return yield* json(405, { message: "Change it with POST." });
@@ -119,6 +135,10 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
   if (!place) {
     const elsewhere = livesElsewhere(id);
     if (elsewhere) return yield* json(409, elsewhere);
+    // The coding agents' bridge starting again: whether it's one of theirs can't be told yet.
+    let record: { port?: number } | null = null;
+    try { record = context.readBridge(); } catch {}
+    if (record?.port && !context.bridge()) return yield* json(503, { message: "The coding agents on this computer are starting. Try again in a moment." });
     // Deleted already (from another client while this one wasn't listening): done.
     if (action === null) return yield* json(200, { session: id });
     return yield* json(404, { message: "That conversation isn't here." });
@@ -152,18 +172,25 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
     return yield* json(200, { session: id, info: isObject(renamed) ? renamed : { ...session, title } });
   }
 
-  // Pin and Archive: written in its turn, onto its notes as they are then.
+  if (action === "archive" && given.archived === false && engineArchived(session)) {
+    return yield* json(409, { message: "It was archived by the engine, which keeps it so. Start a new session to carry on." });
+  }
+
+  // Pin and Archive: written in its turn, onto its notes as they are then (and not once a move
+  // took it meanwhile).
   const key = action === "pin" ? "kuvo.pinned" : "kuvo.archived";
   const value = action === "pin" ? given.pinned : given.archived;
   let done: Awaited<ReturnType<typeof rewriteOn>>;
   try {
     done = await rewriteOn(target, id, now => {
+      if (frozen().has(id)) throw new Moving();
       if ((action === "pin" ? isPinned(now) : isArchived(now)) === value) return null;
       // (Brought back: an older client's mark in its `kuvo` goes too.)
       const nested = action === "archive" && value === false && isObject(now.metadata?.kuvo) && "archived" in now.metadata.kuvo;
       return { metadata: withNotes(now.metadata, nested ? { archived: undefined } : null, { [key]: value }) };
     }, signal);
   } catch (error) {
+    if (error instanceof Moving) return yield* json(409, { message: MOVING });
     return yield* json(502, { message: `It couldn't be changed: ${String((error as Error | null)?.message ?? error)}` });
   }
   if (!done) return yield* json(404, { message: "That conversation isn't here." });

@@ -1578,14 +1578,19 @@ update gate.
 
 - `GET kuvo/sessions/<id>/actions` → `{session, actions: [{id, label, destructive?, confirm?}],
   held?}`: what its menu offers now, in order. `id` is `pin` or `unpin`, `rename`, `archive`, and
-  `delete`, or for an archived one `unarchive` and `delete`; `label` is the button's words;
+  `delete`, or for an archived one `unarchive` (not for one the engine archived itself,
+  `time.archived`, which only it can bring back) and `delete`; `label` is the button's words;
   `destructive: true` where it destroys something; `confirm`, where a client asks first, `{title,
   message, label}`, the question, what it comes to and the go-ahead button's words, all the box's
   (a client marks such a button as its platform does, an ellipsis, and never reads one in `label`).
-  Delete's `message` says what goes with it: "Its worktree is deleted too." where it runs in a
-  worktree of its own (no other conversation open in it), "Its worktree and changes that weren’t
-  committed are deleted too." where that worktree has some (or git can't say) and no archived
-  conversation left in it keeps them for Restore Worktree, else "This can’t be undone." `rename`
+  Delete's `message` says what goes with it, by the rule the box's tidying of worktrees goes by
+  (only conversations count: never a subagent, a group chat's seat or a hidden run, such as a coding
+  agent's engine run): "Its worktree is deleted too." where it runs in a worktree of its own (no
+  other conversation open in it), "Its worktree and changes that weren’t committed are deleted
+  too." where that worktree has some (or git can't say) and no archived conversation left in it
+  keeps them for Restore Worktree, "The changes kept to restore its worktree are deleted too."
+  where it's the last conversation of a removed worktree whose changes were kept, else "This
+  can’t be undone." `rename`
   asks for a name (a client draws its own field). `held`: none of it can be done now, in words to
   show (it's moving to another computer); a client shows the actions unavailable.
 - `POST kuvo/sessions/<id>/pin {pinned}`, `…/archive {archived}`, `…/rename {title}` → `200 {session,
@@ -1595,11 +1600,13 @@ update gate.
   notes goes too. Written only where it isn't so already.
 - `DELETE kuvo/sessions/<id>` → `200 {session}`: deleted where it runs, its own wake-ups and watches
   with it; one that's gone already is done too.
-- Every one: `409 {message}` for one moving to another computer ("It’s moving to another computer.
+- Every one: `400` for an id that isn't a session's; `409 {message}` for one moving to another computer ("It’s moving to another computer.
   Try again once it’s there."); `409 {message, computer}` for one that moved to another of your
   computers in the last two days (`computer`, that box's key, which a client asks instead; the box
   asked doesn't pass it on); `404` for no such conversation (but Delete); `502` where the engine or
-  bridge didn't take it; `503` with neither running.
+  bridge didn't take it; `503` with neither running, and while the coding agents' bridge starts
+  again for one the engine hasn't (whether it's one of theirs can't be told yet). `…/archive
+  {archived: false}` for one the engine archived itself is `409 {message}`.
 
 ### A session's model
 

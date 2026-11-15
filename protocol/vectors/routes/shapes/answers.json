@@ -10588,6 +10588,11 @@
       "held?": "string"
      }
     },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
     "404": {
      "object": {
       "message": "string"
@@ -10743,6 +10748,11 @@
     "200": {
      "object": {
       "session": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
      }
     },
     "405": {

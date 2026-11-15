@@ -174,6 +174,49 @@ test("the menu says what can be done, and what Delete takes with it", async () =
   expect(await confirm()).toBe("This can’t be undone.")
 })
 
+test("what Delete says counts only the conversations a worktree's tidying counts: a coding agent's engine run there isn't one", async () => {
+  const tree = join(root, "agent-tree")
+  mkdirSync(tree)
+  spawnSync("git", ["init", "-q", tree])
+  writeFileSync(join(tree, "draft.md"), "not committed")
+  mkdirSync(join(kuvo, "box"), { recursive: true })
+  writeFileSync(join(kuvo, "box", "worktrees.json"), JSON.stringify({ worktrees: [{ project: root, root: tree, folder: tree, branch: "agent" }] }))
+  bridge.sessions.set("ses_agent", session("ses_agent", "With Codex", tree, { kuvoAgent: "codex-cli" }))
+  // Auto's engine run for it, in the same folder, and a group chat's seat: not conversations.
+  engine.sessions.set("ses_run", session("ses_run", "Engine run", tree, { kuvo: { engineFor: "ses_agent" } }))
+  engine.sessions.set("ses_seat", session("ses_seat", "Seat", tree, { kuvo: { seat: "grp_1" } }))
+  const actions = (await ask(handler, "GET", "kuvo/sessions/ses_agent/actions")).json.actions
+  expect(actions.find((each: any) => each.id === "delete").confirm.message).toBe("Its worktree and changes that weren’t committed are deleted too.")
+})
+
+test("a removed worktree's kept changes are said to go with the last conversation that could bring them back", async () => {
+  const gone = join(root, "removed-tree")
+  mkdirSync(join(kuvo, "box"), { recursive: true })
+  writeFileSync(join(kuvo, "box", "worktrees.json"), JSON.stringify({ worktrees: [], restorable: [{ project: root, root: gone, folder: gone, branch: "old", head: "abc", snapshot: "def" }] }))
+  engine.sessions.set("ses_last", session("ses_last", "Last", gone, { "kuvo.archived": true }))
+  const confirm = async () => (await ask(handler, "GET", "kuvo/sessions/ses_last/actions")).json.actions.find((each: any) => each.id === "delete").confirm.message
+  expect(await confirm()).toBe("The changes kept to restore its worktree are deleted too.")
+  engine.sessions.set("ses_also", session("ses_also", "Also", gone, { "kuvo.archived": true }))
+  expect(await confirm()).toBe("This can’t be undone.")
+})
+
+test("one the engine archived itself isn't offered Unarchive, and is refused it in words", async () => {
+  engine.sessions.set("ses_old", { ...session("ses_old", "Old", root), time: { created: 1, updated: 2, archived: 3 } as any })
+  expect((await ask(handler, "GET", "kuvo/sessions/ses_old/actions")).json.actions.map((each: any) => each.id)).toEqual(["delete"])
+  const refused = await ask(handler, "POST", "kuvo/sessions/ses_old/archive", { archived: false })
+  expect(refused.status).toBe(409)
+  expect(engine.sessions.get("ses_old")!.metadata).toBeUndefined()
+})
+
+test("while the coding agents' bridge starts again, one of theirs isn't said gone, and a malformed id is refused", async () => {
+  const restarting = engineHandler(() => ({ port: engine.server.port, password: "pw" }) as any, { name: "test" }, () => ({ port: bridge.server.port, password: "pw", pid: 999999999 }) as any)
+  const said = { status: 503, json: { message: "The coding agents on this computer are starting. Try again in a moment." } }
+  expect(await ask(restarting, "DELETE", "kuvo/sessions/ses_codexcli")).toEqual(said)
+  expect(await ask(restarting, "POST", "kuvo/sessions/ses_codexcli/pin", { pinned: true })).toEqual(said)
+  expect(bridge.deleted).toEqual([])
+  expect((await ask(handler, "GET", "kuvo/sessions/ses%E0/actions")).status).toBe(400)
+})
+
 test("one moving to another computer is refused in words, and its menu says why it's held", async () => {
   mkdirSync(join(kuvo, "run", "moves"), { recursive: true })
   writeFileSync(join(kuvo, "run", "moves", "mov_trip.json"), JSON.stringify({ id: "mov_trip", kind: "chat", thing: "ses_plan", name: "Plan the trip", from: "a", to: "b", role: "from", stage: "copying", sessions: ["ses_plan"], peer: "peerkey", tries: 0, started: Date.now() }))
