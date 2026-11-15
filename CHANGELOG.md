@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- In a group chat, & offers the chat's own bots first, then other bots and sessions you can name there, ranked by the computer the chat is on, the same on every device.
+- In Settings › Accounts, Amazon Bedrock (reached with your computer's AWS credentials or a key) offers **Connect** rather than Sign In, and **Reconnect** once its credentials stop working.
 - Pinning, renaming, archiving and deleting a session from your iPhone is done by the computer the session is on: deleting one now cancels its wake-ups too, Delete warns about a worktree’s uncommitted changes in that computer’s words, and a session that’s moving to another computer says so rather than change.
 - The desktop app opens **group chats** from Bots: each bot's messages under its face and name, who's talking now and what it's doing, a wrap-up's parts with Resume for one waiting on a stopped conversation, and Keep Going once a discussion pauses. Write & (or @) to name one of the chat's bots, or click its face under the field. **New Group** (the + beside Group Chats) and **Edit** change a chat's name, purpose and bots, and Delete asks first. Undo, Reply, meetings and other computers' chats aren't in the desktop app yet.
 - The desktop app's **Computers** area lists your computers side by side (how each stands, what's at work there, the Kuvo Code it has) and opens a page for each, saying why one can't be reached or needs an update. Adding, renaming and removing computers say plainly that they aren't in the desktop app yet.

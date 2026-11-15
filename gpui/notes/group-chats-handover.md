@@ -76,10 +76,8 @@ is frontmost.
 
 ## BOX-NEEDED
 
-- **What "&" offers in a group chat**, ranked by the box: its bots, then the guests it would name
-  there (`kuvo/named`, others' bots): `GET kuvo/groups/<id>/mentions?q=` (as
-  `kuvo/sessions/<id>/mentions`). Until then the composer offers the chat's own bots, filtered by
-  what's typed (`composer.rs`, `member_offers`, marked). No guests are offered.
+- None now. What "&" offers in a group chat is the box's (`GET kuvo/groups/<id>/mentions`,
+  `groups.mentions`, #736): the chat's bots, then guests; the composer filters nothing.
 - Nothing else was stood in for: every other fact drawn is the box's today.
 
 ## Left (not built)
