@@ -653,6 +653,104 @@ is made (but `desktop`), under the move's lock; the box's own relay is for the r
   own); a switch for "Let my devices connect" that needs no relay from the client (the desktop
   app's Settings, #644).
 
+## 8d. Piece 4 plan: the move from 0.7, `rehome --run` (2026-11-15)
+
+**What binds** (the user, 11-15), where it changes §4.2, §5 and #333 §3.7:
+
+- Straight from 0.7 to the desktop app. Nothing runs until the move succeeds; every refusal says
+  what to do, with Try Again.
+- **No going back to 0.7.2**: no `rehome --restore`, no 30-day keep of `S`.
+- **`S` is never changed.** The move clones `S` into staging and works there; nothing in `S` is
+  renamed, written or opened for writing (its engine database isn't opened at all: reading a
+  database that keeps a log beside it can rewrite the log's index). So there's no Clear of `S`, and
+  the step named `clear` is only the point the move goes forward from.
+- `two` (a machine's box in `K` and 0.7's data in `S`) **merges** `S` into the box in `K`, on a
+  staged copy, keeping both where they clash; what can't be merged safely stops it before anything
+  is swapped, saying exactly what.
+- "Let my devices connect" after the move: on, unless that Mac's link already had it set.
+- Words: never "box" or "Kuvo Core"; the computer's name, and "Kuvo on <computer>" for a noun. Each
+  step's words come from the box (`progress: {step, title, index, of}`).
+
+**Everything here is the box's** (`box/src/link/rehome`, `box/src/link/install`). The desktop app
+runs `sh kuvo-install move` and draws its lines (piece 5); `kuvo-keys` is the helper package's
+(`mac/helper`). The move itself is a Mac's alone: Linux has no app folder to move from, and
+`install --move` there says there's nothing to move.
+
+**`kuvo-link.js rehome <root> --run --app <bundle> --release <folder> --engine <folder>`**, which
+`install --move` starts in a session of its own (the app quitting doesn't stop it) and follows,
+printing `{"step", "title", "index", "of"}` lines, then its answer. Holding the move's lock, it:
+
+1. finishes or undoes an earlier try (a journal before `clear` goes back, then this try starts
+   afresh; one at `clear` or later is carried on);
+2. judges what's here: `app-07`, `app-box`, or `two` (the merge);
+3. stops what runs: for `app-box`, the old keeper (`POST stop` on its control, `run/keeper.json`;
+   else its pid, then its lock waited for); for the merge, the box in `K` (its keeper's own
+   `stop`), started again after, whatever happens;
+4. refuses, in words, before anything changes: no room; another disk; a copy of the app into the
+   real home; the release or its helper missing; the engine not fetched (offline); `S`'s engine
+   database held open by a process (0.7 still open: `lsof`, never an open of the database); its
+   schema one nobody tried (read from a clone of the database alone);
+5. runs the steps, journaled as before, new ones in **bold**:
+   `plan` → `install` (what's in `K` that isn't a box set aside) → **`keys`** (`kuvo-keys copy`
+   trusting the release's helper, then `Kuvo Helper keys check`; undone by `keys uncopy` if it goes
+   back) → `clone` (`S` into staging; the engine from the installer's, never 0.7's) →
+   **`upgrade`** (the inventory's "box upgrade" rows, each reading `S`'s files or its preferences,
+   exported once with `/usr/bin/defaults export <id> -`, and writing into staging) →
+   **`database`** (the release's engine started once on the staged data, isolated, to migrate it;
+   then the schema must be the pinned one and nothing it held gone) → `rewrite` → `check` (as
+   before, and the counts below) → `place` → `fix` → `clear` (nothing of `S` cleared; checked first
+   that nothing in `S` changed since the clone and nothing holds its database) → `done`;
+6. settles what's owed, each tried again at the next run until done: `start` (the helper's launch
+   agent, `helper start`), `keychain` (`kuvo-keys delete-originals`), `agent` (the old keeper's
+   label booted out, `app-box` only), `passwords` (0.7's saved sign-ins into the vault once
+   `serve` answers), then what the installer staged is removed.
+
+**Counts held** (check step, from the staged copy before the upgrades and after everything):
+sessions and projects (the engine's database, as before), bots (`bots/<id>`), wake-ups
+(`wakes/<session>` and each bot's), worktrees (the engine's and the box's records), vault items,
+added accounts (`agents/<agent>/accounts/<id>`). A count that's lower stops the move.
+
+**`served.json`'s rule** goes for `--run`: the upgrades it waited for are run by the move, in
+staging. The keeper's `rehome --release` keeps it (nothing runs that any more).
+
+**Pacing.** `--run` is started by the user (the app opening, or Try Again): no wait between tries
+and no cap; tries are still counted. `--ready`'s rules stay for the keeper's way.
+
+**The inventory** (`.claude/notes/713-piece-4-inventory.md`): every preference key and every file
+in `S` the Swift app read as data in 0.6.6, 0.7.2, 0.8.0-beta.1 and main, from the code at each
+tag, each marked **box upgrade** (the move carries it: source shape → the box's file), **already
+moved** (cloned as it is, and the box reads it there), **client's own** (the retired app's window
+state: the desktop app keeps its own), or **dropped, said** (with what's lost, and said in
+`state.json`'s `dropped` for the app to show once). Each upgrade is a function in
+`box/src/link/rehome/upgrades.ts` with a fixture test; each can run twice.
+
+**The merge (`two`)**, built after the plain move:
+
+- The box in `K` is stopped; `K`'s data is cloned into staging beside `S`'s; both engine
+  databases are brought to the pinned schema; `S`'s is rewritten for `K`'s paths, then its rows
+  are added to `K`'s in one transaction, foreign keys checked.
+- Rules: a session, message or bot is added (its ID is its own); **the same project** (one ID, or
+  one folder) is one project with both sets of sessions, `K`'s row kept; a chat, sent file or
+  bot's folder named as one there keeps both (`<name> 2`), with what names it following; a bot
+  named as one there gets a suffix in its name; the box's lists (`projects.json`, worktrees)
+  are joined by folder; an added account that's there already keeps the newer sign-in, the other
+  kept aside (`<name>.from-earlier`), said; `K`'s settings, link, keys and vault stay `K`'s.
+- **Stops before swapping**, saying what: a row with the same ID and different content that no
+  rule covers; an engine database of `K`'s that can't be brought up to date; anything in `S` that
+  only the Keychain holds and a machine's box keeps in files (its vault's values).
+- The swap is journaled renames, `K`'s replaced folders kept in `updates/rehome/kept` for 30 days
+  (they're `K`'s own, replaced by the merged ones: not a way back to 0.7). The box keeps its kind
+  (`machine`), and the app attaches in place.
+
+**Tests** (`box/test/rehome-run.test.ts`, `box/test/rehome-upgrades.test.ts`,
+`box/bridge-tests/install.test.js`): fixtures of 0.7.2 (its real 2.0.32 database, made by
+`fixtures/rehome/make-engine-fixture.ts` with the real engine and recorded; its migration by the
+pinned engine recorded too, and made again by the real engine where `KUVO_TEST_ENGINE` names it),
+0.8.0-beta.1, 0.6 and `S/box`, each moved by `--run` with a stand-in `kuvo-keys` and helper; a stop
+at each step, then run again; a held database refuses; counts match; `S` byte for byte the same
+after every run (a snapshot of every file's bytes, the database's log included); the merge from
+fixtures with clashes; a merge it can't do stops before swapping.
+
 ## 9. Questions only the user can answer
 
 1. **Who keeps this Mac's box?**
