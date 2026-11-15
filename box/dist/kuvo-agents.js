@@ -3142,7 +3142,9 @@ class Auto {
     return lists.filter((list) => list && typeof list.id === "string" && /^[\w-]{1,64}$/.test(list.id) && !seen.has(list.id) && seen.add(list.id)).map((list) => ({
       id: list.id,
       name: typeof list.name === "string" && list.name.trim() ? list.name.trim().slice(0, 60) : "Custom Auto",
-      entries: (Array.isArray(list.entries) ? list.entries : []).filter((entry) => entry && typeof entry.providerID === "string" && typeof entry.modelID === "string" && entry.providerID !== autoProvider).map((entry) => ({ providerID: entry.providerID, modelID: entry.modelID, ...entry.variant ? { variant: entry.variant } : {} }))
+      entries: foldEntries((Array.isArray(list.entries) ? list.entries : []).filter((entry) => entry && typeof entry.providerID === "string" && typeof entry.modelID === "string" && entry.providerID !== autoProvider).map((entry) => ({ providerID: entry.providerID, modelID: entry.modelID, ...entry.variant ? { variant: entry.variant } : {} })), () => {
+        return;
+      })
     }));
   }
   get file() {
@@ -36760,4 +36762,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 6ba090ba451f445b5e8f35485ad75d461021b782ca613607b52ac996affa3eee
+// Built from Packages/Box/src/agents 6f63681543c9d0debfcd085a98abdc67be2fc3795405243ea235619372133162

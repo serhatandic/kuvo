@@ -86,3 +86,16 @@ test("an edit that waits for an agent's model alias refuses a revision changed w
     expect(auto.all()[0].entries).toEqual([{ providerID: "agent", modelID: "default" }])
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+test("list changes deduplicate exact entries while preserving effort and order", () => {
+  const root = mkdtempSync(join(tmpdir(), "auto-dedupe-"))
+  try {
+    const auto = new Auto(root)
+    const a = { providerID: "codex", modelID: "gpt" }
+    const b = { ...a, variant: "high" }
+    const c = { providerID: "claude-code", modelID: "opus" }
+    expect(auto.change("auto", auto.all()[0].revision, { entries: [a, b, a, c, b] })).toBe(true)
+    expect(auto.list()).toEqual([a, b, c])
+    expect(new Auto(root).list()).toEqual([a, b, c])
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})

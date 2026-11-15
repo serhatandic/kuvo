@@ -109,9 +109,9 @@ export class Auto {
       .map((list) => ({
         id: list.id,
         name: typeof list.name === "string" && list.name.trim() ? list.name.trim().slice(0, 60) : "Custom Auto",
-        entries: (Array.isArray(list.entries) ? list.entries : [])
+        entries: foldEntries((Array.isArray(list.entries) ? list.entries : [])
           .filter((entry: AutoEntry) => entry && typeof entry.providerID === "string" && typeof entry.modelID === "string" && entry.providerID !== autoProvider)
-          .map((entry: AutoEntry) => ({ providerID: entry.providerID, modelID: entry.modelID, ...(entry.variant ? { variant: entry.variant } : {}) })),
+          .map((entry: AutoEntry) => ({ providerID: entry.providerID, modelID: entry.modelID, ...(entry.variant ? { variant: entry.variant } : {}) })), () => undefined),
       }))
   }
 
