@@ -84,6 +84,7 @@ struct BotWorkTests {
         #expect(WorkWords.about(try item("codex-cli@work", #""account": {"name": "Codex", "label": "Work"},"#), model: "GPT-5.5").first == "GPT-5.5 · high · Codex · Work · Kuvo Code")
         #expect(WorkWords.about(try item("github-copilot", #""account": {"name": "GitHub Copilot", "title": "Copilot"},"#), model: "Opus 5.5").first == "Opus 5.5 · high · Copilot · Kuvo Code")
         #expect(WorkWords.about(try item("anthropic", #""account": {"name": "Anthropic"},"#), model: "Opus 5.5").first == "Opus 5.5 · high · Anthropic · Kuvo Code")
+        #expect(WorkWords.account(.init(name: "Provider", label: "Work", title: "The box words"), provider: "claude-code") == "The box words")
         // Custom Auto, or a box from before it said: as before.
         #expect(WorkWords.about(try item("auto", ""), model: "Auto") == ["Auto · high · Kuvo Code"])
     }
