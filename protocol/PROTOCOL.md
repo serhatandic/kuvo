@@ -9274,8 +9274,11 @@ The apps read Antigravity only from the box, with no older-box fallback (#679 up
 
 ## The browser's live view
 
-Feature `browser.view`. Every box's keeper owns its Chrome and page state. No client needs
-CDP to draw it. The Swift Mac app remains on its existing raw-CDP stream.
+Feature `browser.view`, a machine's box's (until a Mac's box has a browser of its own: a Mac's
+agents browse in Kuvo Code's panel on that Mac, so a Mac's box doesn't list the feature). Its keeper
+owns its Chrome and page state. No client needs CDP to draw it. The Swift Mac app remains on its
+existing raw-CDP stream. A Mac's box answers `GET kuvo/browser/view`, opened as a socket or not,
+`404 {message}` saying why, and opens nothing.
 
 Open `GET kuvo/browser/view` as a socket: locally, a WebSocket on `serve` with its
 `Authorization: Basic <base64(opencode:password)>` header; through the relay, a WebSocket
@@ -9308,8 +9311,13 @@ newline JSON stream, including raw CDP compatibility.
 | box → client | `Kuvo.dialog` | `{targetId,type,message,defaultPrompt?,url?,...}`, Chrome's dialog facts |
 | client → box | `Kuvo.dialogAnswer` | `{targetId,accept,promptText?}`, boolean accept and optional text |
 | box → client | `Kuvo.viewQuality` | `{targetId,quality,scale,reason:"oversize" \| "recovery"}`, reduced picture settings |
+| box → client | `Kuvo.status` | `{working,tool?,pages:[targetId],workers:[{targetId,session}]}`: the pages agents are at work in, as it changes |
+| box → client | `Kuvo.pointer` | `{targetId,action,rect}`: where an agent is about to act in a page, for the pointer drawn over it |
+| box → client | `Kuvo.cursor` | `{targetId,...}`: kept as each page's latest, like the pointer; no keeper sends it yet |
 
-The keeper also forwards its existing hello, ask, download, status and pointer facts.
+The keeper also forwards its existing hello, ask, download, status and pointer facts. Through the
+relay, `Kuvo.pages`, `Kuvo.status`, `Kuvo.viewport`, `Kuvo.pointer` and `Kuvo.cursor` are state: a newer
+one for the same page replaces one not yet sent.
 Pages are announced when Chrome reports creation, navigation, title, loading or destruction,
 and when agent status changes, only if the facts changed. The address comes from these facts even when an agent navigates.
 A tab's name is its nonempty title, else its address's host without `www.`, else “New Tab”.

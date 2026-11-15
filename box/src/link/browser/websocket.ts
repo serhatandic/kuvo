@@ -5,9 +5,11 @@ import type http from "node:http";
 import type { Duplex } from "node:stream";
 import { canonicalPath } from "../server/paths";
 import { browserView } from "./view";
+import { NO_VIEW_ON_MAC } from "./routes";
+import { IS_MAC } from "../home";
 import type { SocketEvents, SocketHandle } from "../relay/host";
 
-export function viewUpgrade(server: http.Server, password: string, connect: (events: SocketEvents) => SocketHandle = browserView): void {
+export function viewUpgrade(server: http.Server, password: string, connect: (events: SocketEvents) => SocketHandle = browserView, here = !IS_MAC): void {
   server.on("upgrade", (request, socket: Duplex, head) => {
     socket.on("error", () => socket.destroy());
     const expected = Buffer.from("Basic " + Buffer.from(`opencode:${password}`).toString("base64"));
@@ -15,6 +17,12 @@ export function viewUpgrade(server: http.Server, password: string, connect: (eve
     const refuse = (status: number) => socket.end(`HTTP/1.1 ${status} Refused\r\nConnection: close\r\n\r\n`, () => socket.destroy());
     if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) { refuse(401); return; }
     if (request.method !== "GET" || canonicalPath(request.url ?? "") !== "kuvo/browser/view") { refuse(403); return; }
+    // (A Mac's box has no browser of its own: why, in words.)
+    if (!here) {
+      const words = JSON.stringify({ message: NO_VIEW_ON_MAC });
+      socket.end(`HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(words)}\r\nConnection: close\r\n\r\n${words}`, () => socket.destroy());
+      return;
+    }
     const key = request.headers["sec-websocket-key"];
     if (request.headers["sec-websocket-version"] !== "13" || typeof key !== "string" || !/^[A-Za-z0-9+/]{22}==$/.test(key)
       || request.headers.upgrade?.toLowerCase() !== "websocket" || !/\bupgrade\b/i.test(String(request.headers.connection))) { refuse(400); return; }

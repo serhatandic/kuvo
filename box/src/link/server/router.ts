@@ -108,8 +108,10 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route === "kuvo/box/kept-keys", answer: keptKeysRoute },
   // (A machine's: this Mac's agents browse in its app's panel.)
   { when: route => !IS_MAC && route === "kuvo/browser", answer: browserRoute },
-  // Its browser's history, sites with data, and settings: every box's own (PROTOCOL.md, "The browser's data").
+  // Its browser's live view, a machine's (PROTOCOL.md, "The browser's live view"): a Mac's box says
+  // in words why it has none.
   { when: route => route === "kuvo/browser/view", answer: browserViewRoute },
+  // Its browser's history, sites with data, and settings: every box's own (PROTOCOL.md, "The browser's data").
   { when: route => route.match(BROWSER_DATA_ROUTE), answer: browserDataRoute },
   { when: (route, request) => /^kuvo\/integrations(\/|\?|$)/.test(request.path), answer: integrationsRoute },
   { when: route => route === "kuvo/folders", answer: foldersRoute },
