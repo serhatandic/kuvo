@@ -34,6 +34,7 @@ You need a Mac with Apple silicon, macOS 26 or later, and Xcode 27 or later.
 ```sh
 git clone https://github.com/serhatandic/kuvo-code.git
 cd kuvo-code
+scripts/merge-setup.sh   # once per clone: merges built files without a conflict ("What branches don't edit by hand")
 open swift/KuvoCode.xcodeproj
 ```
 
@@ -878,6 +879,15 @@ and the lists they add to merge line by line:
   (without union): the bridge's test of each name's route (`routes` in
   `box/bridge-tests/bridge.test.js`, whose order it checks), `MAC_FEATURES`, `MACHINE_FEATURES`, and
   PROTOCOL.md's table of names ("Features").
+- **The update gate's lists** (what a client needs of a box, PROTOCOL.md's "The update gate"): one
+  name a line, in order, in files of their own that git merges by union: KuvoClient's
+  `BoxGate+Required.swift` (what needs a name in a comment on its line), gpui's
+  `kuvo_box/src/gate/required.rs` and `protocol/gate-required.txt` (PROTOCOL.md points to it), and
+  the phone's `DemoBox+Features.swift` (the sample Mac's features). Names two branches add side by
+  side both stay, in either order, which is fine; gpui's tests (`kuvo_box/tests/vectors.rs`) hold
+  the three kuvo-ai lists to the same names, each once. Adding a name, change nothing else there.
+  Removing one, look at the lists after a merge: union keeps a line one side removed if the other
+  added a name beside it.
 - **A branch from before these were one a line** (#396) merges main into itself first, where the
   old lines conflict as they always did, and puts its names back one a line, in order. Merged the
   other way, into main, `features.ts`'s union takes its old line whole beside the new ones: it
@@ -886,10 +896,21 @@ and the lists they add to merge line by line:
   and `routes/features.json` (each box's `kuvo/info` features, which both route runners check);
   `./scripts/build-box.sh`, `./scripts/build-agents.sh` and `./scripts/build-browser.sh` write
   `kuvo-link.js`, `kuvo-agents.js` and `kuvo-browser.js` (with its keeper's version, `KEEPER`, a
-  hash: never bump it). Never edit them. After a merge, run the four scripts again and commit what
-  they write: that settles a conflict in one (take either side first: names added side by side
-  conflict in the JSON, and the bundles always do), and the `--check` of each (CI's, and the box's
-  suite for the route shapes) fails on one that isn't what its sources write.
+  hash: never bump it). Never edit them. They stay in git, because what builds the app, the
+  release and the phone (which builds `KuvoLink` with `kuvo-link.js` in it) takes them as they are,
+  with no Bun. Two branches that both built one would always conflict on it, and neither side is
+  right after a merge, so git keeps the side checked out (`merge=kuvo-built` in `.gitattributes`;
+  in a rebase or cherry-pick that's the branch replayed onto, not the commit replayed) and goes
+  on, saying so for each. **After a merge, rebase or cherry-pick, run `scripts/check-built.sh`**
+  (each script's `--check`): it fails on one that isn't what its sources build, and
+  `scripts/check-built.sh --build` builds all four again, to commit. With CI paused, nothing else
+  checks them before they're built in, except `scripts/try-update.sh`, which runs it first.
+- **Setting up the merge driver**: git needs the driver named in each clone's own config, once:
+  run `scripts/merge-setup.sh` after cloning. It writes `merge.kuvo-built` into `.git/config`,
+  which every worktree of that clone shares, so a new worktree needs nothing more. A clone without
+  it merges these files as text, and they conflict as they always did: then take either side and
+  build again. GitHub's own merge button doesn't run it, so a pull request can still show these
+  files as conflicting there.
 - **`CHANGELOG.md`**: add lines; it's merged by union too.
 
 ## Pull requests

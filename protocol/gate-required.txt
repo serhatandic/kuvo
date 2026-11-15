@@ -1,0 +1,61 @@
+# What a client needs a box to have before it uses it (PROTOCOL.md, "The update gate"): a box whose
+# `kuvo/info` features lack any of these is held until it's updated. The same names as KuvoClient's
+# BoxGate.required and gpui's kuvo_box (src/gate/required.rs), which gpui's tests hold to this.
+# One name a line, in order (LC_ALL=C sort): git merges this file by union (.gitattributes), so
+# branches that each add a name merge without a conflict (two added side by side may land in
+# either order, which is fine). Change nothing else here.
+agent-tools.own
+bots.deletes
+bots.effort
+bots.elsewhere
+bots.held
+bots.now
+computers
+computers.facts
+computers.manage
+file.text
+folders.suggested
+folders.tree
+git.branches
+git.branches.pullRequest
+git.branches.worktree
+git.changes.binary
+git.changes.path
+git.files
+git.files.does
+git.merge
+git.pull-request
+git.status
+groups.mentions
+limits.rings
+messages.commands
+messages.send
+models.offered
+models.offered.folder
+models.offered.free
+models.offered.sides
+models.readiness
+queue.items
+queue.removed.keyword
+queue.stop.arriving
+sandbox.opens
+sandbox.words
+sessions.actions
+sessions.asks
+sessions.list
+sessions.mentions
+sessions.models
+sessions.needsYou
+sessions.start.empty
+settings
+setup.welcomed
+sign-in.accounts.kinds
+sign-in.accounts.plan
+sign-in.accounts.state
+sign-in.codes
+typed
+usage.notices
+waiting
+waiting.cards
+work-queue.counts
+work-queue.edit
