@@ -43842,7 +43842,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e4bf1838d93f";
+var BRIDGE_VERSION = "4ed1ed0db926";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -47539,8 +47539,14 @@ async function* sessionActionRoute(context, match) {
   }
   if (action === null) {
     try {
-      await call(target, "DELETE", `/api/session/${encodeURIComponent(id)}`, undefined, signal);
+      await inTurnOn(target, id, async () => {
+        if (frozen().has(id))
+          throw new Moving;
+        return call(target, "DELETE", `/api/session/${encodeURIComponent(id)}`, undefined, signal);
+      }, signal);
     } catch (error) {
+      if (error instanceof Moving)
+        return yield* json(409, { message: MOVING });
       return yield* json(502, { message: `It couldn't be deleted: ${String(error?.message ?? error)}` });
     }
     forgetWakes2(id);
@@ -47549,8 +47555,14 @@ async function* sessionActionRoute(context, match) {
   if (action === "rename") {
     let renamed;
     try {
-      renamed = session.title === title ? session : await inTurnOn(target, id, () => call(target, "PATCH", `/api/session/${encodeURIComponent(id)}`, { title }, signal), signal);
+      renamed = session.title === title ? session : await inTurnOn(target, id, async () => {
+        if (frozen().has(id))
+          throw new Moving;
+        return call(target, "PATCH", `/api/session/${encodeURIComponent(id)}`, { title }, signal);
+      }, signal);
     } catch (error) {
+      if (error instanceof Moving)
+        return yield* json(409, { message: MOVING });
       return yield* json(502, { message: `It couldn't be renamed: ${String(error?.message ?? error)}` });
     }
     return yield* json(200, { session: id, info: isObject(renamed) ? renamed : { ...session, title } });

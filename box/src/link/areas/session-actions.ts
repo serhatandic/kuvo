@@ -153,8 +153,13 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
   }
   if (action === null) {
     try {
-      await call(target, "DELETE", `/api/session/${encodeURIComponent(id)}`, undefined, signal);
+      // (In its turn, so a move that took it meanwhile isn't undercut.)
+      await inTurnOn(target, id, async () => {
+        if (frozen().has(id)) throw new Moving();
+        return call(target, "DELETE", `/api/session/${encodeURIComponent(id)}`, undefined, signal);
+      }, signal);
     } catch (error) {
+      if (error instanceof Moving) return yield* json(409, { message: MOVING });
       return yield* json(502, { message: `It couldn't be deleted: ${String((error as Error | null)?.message ?? error)}` });
     }
     forgetWakes(id);
@@ -165,8 +170,12 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
     // (Its name only: in its turn all the same, so none of the box's writes of its notes is between.)
     let renamed: unknown;
     try {
-      renamed = session.title === title ? session : await inTurnOn(target, id, () => call(target, "PATCH", `/api/session/${encodeURIComponent(id)}`, { title }, signal), signal);
+      renamed = session.title === title ? session : await inTurnOn(target, id, async () => {
+        if (frozen().has(id)) throw new Moving();
+        return call(target, "PATCH", `/api/session/${encodeURIComponent(id)}`, { title }, signal);
+      }, signal);
     } catch (error) {
+      if (error instanceof Moving) return yield* json(409, { message: MOVING });
       return yield* json(502, { message: `It couldn't be renamed: ${String((error as Error | null)?.message ?? error)}` });
     }
     return yield* json(200, { session: id, info: isObject(renamed) ? renamed : { ...session, title } });
