@@ -35,7 +35,7 @@ pub enum Entry {
     /// How long a turn worked, or how it ended, at its end.
     TurnEnd { id: String, outcome: String, worked: Option<f64> },
     /// A run under way, after what it has said so far.
-    Working,
+    Working { summarizing: bool },
 }
 
 impl Entry {
@@ -43,7 +43,7 @@ impl Entry {
     pub fn key(&self) -> &str {
         match self {
             Entry::Earlier => "earlier",
-            Entry::Working => "working",
+            Entry::Working { .. } => "working",
             Entry::Message(message) => message.id(),
             Entry::TurnEnd { id, .. } => id,
         }
@@ -61,6 +61,7 @@ pub fn entries(mut conversation: Conversation) -> (Vec<Entry>, Vec<u64>) {
     }
     // A turn's length counts from its first message, as the Mac's does.
     let mut asked_at: Option<f64> = None;
+    let mut summarizing = false;
     for message in std::mem::take(&mut conversation.messages) {
         let revision = conversation.revision(message.id());
         let row = match &message {
@@ -72,7 +73,12 @@ pub fn entries(mut conversation: Conversation) -> (Vec<Entry>, Vec<u64>) {
             Message::Assistant(step) if shows(step) => Some(Entry::Message(Box::new(message))),
             Message::System(note) if !note.text.trim().is_empty() => Some(Entry::Message(Box::new(message))),
             Message::Shell(_) => Some(Entry::Message(Box::new(message))),
+            Message::Other { kind, raw, .. } if kind == "compaction" => {
+                summarizing = raw["status"].as_str() == Some("running");
+                Some(Entry::Message(Box::new(message)))
+            }
             Message::Idle { id, time, outcome } => {
+                summarizing = false;
                 let worked = asked_at.take().map(|asked| time.created - asked).filter(|worked| *worked > 0.0);
                 Some(Entry::TurnEnd { id: id.clone(), outcome: outcome.clone(), worked })
             }
@@ -84,7 +90,7 @@ pub fn entries(mut conversation: Conversation) -> (Vec<Entry>, Vec<u64>) {
         }
     }
     if conversation.running {
-        rows.push(Entry::Working);
+        rows.push(Entry::Working { summarizing });
         revisions.push(0);
     }
     (rows, revisions)
@@ -137,9 +143,9 @@ pub fn render(
         Entry::Earlier => earlier,
         Entry::Message(message) => message_body(ix, entry.key(), message, open, toggle, selection, cx),
         Entry::TurnEnd { outcome, worked, .. } => turn_end(outcome, *worked, cx),
-        Entry::Working => working(cx),
+        Entry::Working { summarizing } => working(*summarizing, cx),
     };
-    frame(ix, entry.key(), body, matches!(entry, Entry::Working))
+    frame(ix, entry.key(), body, matches!(entry, Entry::Working { .. }))
 }
 
 /// A message as a conversation draws it, its text selectable in `selection` under row `key` (as
@@ -158,8 +164,20 @@ pub fn message_body(
         Message::User(user) => user_message(ix, &user.parts(), sel(&[]), cx),
         Message::Assistant(step) => agent_step(step, open, toggle, &sel, cx),
         Message::System(note) => quiet_line(note.text.lines().next().unwrap_or("").to_owned(), cx),
-        Message::Shell(run) => shell_run(run, cx),
+        Message::Shell(run) => shell_run(run, open, toggle, &sel, cx),
+        Message::Other { kind, raw, .. } if kind == "compaction" => quiet_line(compaction_label(raw["status"].as_str()).to_owned(), cx),
         _ => div().into_any_element(),
+    }
+}
+
+/// What a compaction row reads for each `status`.
+pub fn compaction_label(status: Option<&str>) -> &'static str {
+    // BOX-NEEDED: compaction row display words, `GET api/session/<id>/message` & `GET kuvo/sessions/<id>/events`
+    match status {
+        Some("running") => "Compacting conversation…",
+        Some("completed") => "Conversation compacted",
+        Some("failed") => "Couldn’t compact conversation",
+        _ => "Conversation compaction",
     }
 }
 
@@ -195,6 +213,7 @@ pub fn message_units(message: &Message, open: &HashSet<Fold>) -> Vec<Unit> {
             let words = user.parts().words.trim().to_owned();
             if words.is_empty() { Vec::new() } else { vec![Unit::new(&[0], words, Lead::Paragraph)] }
         }
+        Message::Shell(run) => run.output.as_ref().map(|output| well_units(&output.output, Some(&run.command), open.contains(&Fold::Whole(run.id.clone(), 0, 0)), &[0])).unwrap_or_default(),
         Message::Assistant(step) => {
             let mut units = Vec::new();
             for (n, content) in step.content.iter().enumerate() {
@@ -576,13 +595,17 @@ fn callout(words: String, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-fn shell_run(run: &kuvo_box::messages::ShellRun, cx: &App) -> AnyElement {
+fn shell_run(run: &kuvo_box::messages::ShellRun, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, sel: &dyn Fn(&[u32]) -> Selectable, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     let busy = run.status == "running";
-    let failed = run.exit.is_some_and(|exit| exit != 0);
+    let failed = run.status == "failed" || run.exit.is_some_and(|exit| exit != 0);
     let exit = run.exit.filter(|exit| *exit != 0).map(|exit| format!("exit {exit}"));
-    step_row(SharedString::from(format!("shell-{}", run.id)), IconName::Terminal, if busy { "Running".into() } else { "You ran".into() }, Some(first_line(&run.command).into()), busy, failed, cx)
-        .children(exit.map(|exit| div().text_ui(TypeSize::Caption).text_color(c.danger).child(exit)))
+    let fold = Fold::Whole(run.id.clone(), 0, 0);
+    let output = run.output.as_ref().map(|output| OutputWell::new(SharedString::from(format!("shell-output-{}", run.id)), output.output.clone()).command(run.command.clone()).whole(open.contains(&fold)).on_toggle(move |_, cx| toggle(fold.clone(), cx)).selectable(sel(&[0])));
+    div().flex().flex_col().gap(space::S2).child(step_row(SharedString::from(format!("shell-{}", run.id)), IconName::Terminal, if busy { "Running".into() } else { "You ran".into() }, Some(first_line(&run.command).into()), busy, failed, cx)
+        .children(exit.map(|exit| div().text_ui(TypeSize::Caption).text_color(c.danger).child(exit))))
+        .children(output)
+        .when(run.output.as_ref().is_some_and(|output| output.truncated), |d| d.child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("Output truncated by the box")))
         .into_any_element()
 }
 
@@ -601,7 +624,13 @@ fn quiet_line(words: String, cx: &App) -> AnyElement {
     div().flex().justify_center().text_ui(TypeSize::Caption).text_color(c.text_faint).child(words).into_any_element()
 }
 
-fn working(cx: &App) -> AnyElement {
+/// What the bottom working row reads while a turn or compaction runs.
+pub fn working_label(summarizing: bool) -> &'static str {
+    // BOX-NEEDED: summarizing/working status words, `GET api/session/<id>/message` & `GET kuvo/sessions/<id>/events`
+    if summarizing { "Summarizing the conversation…" } else { "Working…" }
+}
+
+fn working(summarizing: bool, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     div()
         .flex()
@@ -610,7 +639,7 @@ fn working(cx: &App) -> AnyElement {
         .text_ui(TypeSize::Small)
         .text_color(c.text_faint)
         .child(div().flex().w(px(16.)).justify_center().child(spinner("working", IconSize::Nav, c.text_muted)))
-        .child("Working…")
+        .child(working_label(summarizing))
         .into_any_element()
 }
 
@@ -626,6 +655,42 @@ mod tests {
         newest_first.reverse();
         conversation.catch_up(newest_first, earlier.map(str::to_owned), &[], Some(running));
         conversation
+    }
+
+    #[test]
+    fn compactions_stay_in_the_conversation_for_every_status() {
+        for status in ["running", "completed", "failed"] {
+            let (rows, _) = entries(conversation(json!([
+                { "type": "compaction", "id": "summary", "time": { "created": 1000 }, "status": status, "reason": "manual" }
+            ]), false, None));
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].key(), "summary");
+        }
+    }
+
+    #[test]
+    fn active_compaction_since_last_idle_marks_working_as_summarizing() {
+        let (rows, _) = entries(conversation(json!([
+            { "type": "user", "id": "u1", "time": { "created": 100 }, "text": "Hi" },
+            { "type": "idle", "id": "i1", "time": { "created": 200 }, "outcome": "succeeded" },
+            { "type": "compaction", "id": "c1", "time": { "created": 300 }, "status": "running", "reason": "manual" }
+        ]), true, None));
+        assert_eq!(rows.last(), Some(&Entry::Working { summarizing: true }));
+        assert_eq!(working_label(true), "Summarizing the conversation…");
+
+        // Once compaction finishes or idle arrives, Working returns to normal.
+        let (rows, _) = entries(conversation(json!([
+            { "type": "compaction", "id": "c1", "time": { "created": 300 }, "status": "completed", "reason": "manual" }
+        ]), true, None));
+        assert_eq!(rows.last(), Some(&Entry::Working { summarizing: false }));
+
+        let (rows, _) = entries(conversation(json!([
+            { "type": "compaction", "id": "c1", "time": { "created": 300 }, "status": "running", "reason": "auto" },
+            { "type": "idle", "id": "i1", "time": { "created": 400 }, "outcome": "interrupted" },
+            { "type": "user", "id": "u2", "time": { "created": 500 }, "text": "Next" }
+        ]), true, None));
+        assert_eq!(rows.last(), Some(&Entry::Working { summarizing: false }));
+        assert_eq!(working_label(false), "Working…");
     }
 
     #[test]

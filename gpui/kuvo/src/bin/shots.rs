@@ -48,6 +48,8 @@ struct Screen {
 type Panel = fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
 
 const SCREENS: &[Screen] = &[
+    Screen { slug: "composer-shell", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "composer-compact", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "held-box-sessions", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "held-box", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     Screen { slug: "conversation", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -166,6 +168,11 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "computer-older", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_older) },
     Screen { slug: "computer-shared", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_shared) },
     Screen { slug: "computer-add", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
+    Screen { slug: "computer-add-key", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
+    Screen { slug: "computer-add-progress", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
+    Screen { slug: "computer-add-failed", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
+    Screen { slug: "computer-add-done", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
+    Screen { slug: "computer-add-cannot", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
     Screen { slug: "computer-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_narrow) },
     // Settings (`kuvo/src/settings`): each section, the search, a section not in this app yet, and
     // each step of signing in.
@@ -950,16 +957,25 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "computer-blocked" {
                 stand_in.block_vouching("key_devbox");
             }
+            // Add a Machine, as far as each of its states.
+            match screen.slug {
+                "computer-add-key" => stand_in.adding_at("mac-mini", "asking"),
+                "computer-add-progress" => stand_in.adding_at("mac-mini", "copying"),
+                "computer-add-failed" => stand_in.adding_at("nowhere.example", "asking"),
+                "computer-add-done" => stand_in.adding_at("mac-mini", "done"),
+                "computer-add-cannot" => stand_in.cannot_add("Add and remove computers from Studio."),
+                _ => {}
+            }
             if screen.slug == "computers-many" {
                 stand_in.more_computers(40);
             }
             if screen.slug.starts_with("settings-row-") {
                 use serde_json::json;
-                let confirm = json!({"value":805306368,"confirm":{"title":"Keep less of older versions?","body":"Older versions take 768 MiB now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.","button":"Keep up to"}});
+                let confirm = json!({"value":805306368,"confirm":{"title":"Keep less of older versions?","body":"Older versions take 805.3 MB now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.","button":"Keep up to"}});
                 let pages = [
                     ("storage","Storage","System","drive",json!([
-                        {"id":"copies","title":"Copies of what agents made","kind":"status","value":1342177280,"unit":{"name":"GiB","factor":1073741824,"decimals":1,"rounding":"nearest"}},
-                        {"id":"budget","title":"Older versions keep up to","line":"Past it, the oldest go first.","kind":"number","value":1073741824,"unit":{"name":"GiB","factor":1073741824,"decimals":2,"rounding":"nearest"},"can":true,"confirmBelow":confirm,"suggestions":[{"value":268435456,"title":"0.25 GiB"},{"value":536870912,"title":"0.5 GiB"},{"value":1073741824,"title":"1 GiB"},{"value":2147483648_u64,"title":"2 GiB"},{"value":5368709120_u64,"title":"5 GiB"},{"value":10737418240_u64,"title":"10 GiB"}]}
+                        {"id":"copies","title":"Copies of what agents made","kind":"status","value":1342177280,"unit":{"name":"GB","factor":1000000000,"decimals":1,"rounding":"nearest"}},
+                        {"id":"budget","title":"Older versions keep up to","line":"Past it, the oldest go first.","kind":"number","value":1073741824,"unit":{"name":"GB","factor":1000000000,"decimals":2,"rounding":"nearest"},"can":true,"confirmBelow":confirm,"suggestions":[{"value":250000000,"title":"0.25 GB"},{"value":500000000,"title":"0.5 GB"},{"value":1000000000,"title":"1 GB"},{"value":2000000000_u64,"title":"2 GB"},{"value":5000000000_u64,"title":"5 GB"},{"value":10000000000_u64,"title":"10 GB"}]}
                     ])),
                     ("worktrees","Worktrees","System","folder",json!([{"id":"folder","title":"Folder","kind":"folder","value":"","placeholder":"Kuvo Code’s Folder","can":true,"folder":{"choose":"Choose a Folder…","clear":"Kuvo Code’s Folder","prompt":"Choose","message":"Choose where new worktrees go. Each one is a folder in it."}}])),
                     ("git","Git","System","branch",json!([{"id":"instructions","title":"Commit instructions","kind":"text","value":"Write a short title.\nExplain why the change matters.","lines":{"min":3,"max":8},"can":true}])),
@@ -1022,6 +1038,30 @@ fn main() -> anyhow::Result<()> {
                 });
             })?;
             cx.run_until_parked();
+            if screen.slug == "composer-shell" || screen.slug == "composer-compact" {
+                let text = if screen.slug == "composer-shell" { "! ls" } else { "/compact" };
+                let session = screen.session.expect("a session");
+                cx.update_window(any, |root, _window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    workspace.update(cx, |workspace, cx| {
+                        let composer = workspace.conversation().expect("the conversation").read(cx).composer().clone();
+                        composer.update(cx, |composer, cx| {
+                            composer.field().clone().update(cx, |field, cx| field.set_text(text, cx));
+                            composer.send(cx);
+                        });
+                    });
+                })?;
+                cx.run_until_parked();
+                cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.open_read_at_once(session, window, cx);
+                        let field = workspace.conversation().expect("the conversation").read(cx).composer().read(cx).field().clone();
+                        window.focus(&field.focus_handle(cx), cx);
+                    });
+                })?;
+                cx.run_until_parked();
+            }
             // (After the search's change has come through, which leaves the list.)
             cx.update_window(any, |root, window, cx| {
                 let workspace = root.downcast::<Workspace>().expect("the workspace");

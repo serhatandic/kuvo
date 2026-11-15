@@ -179,7 +179,7 @@ pub struct Vouching {
 /** What can be done with a computer from the box that lists it, in the box's words. */
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ComputerAction {
-    /// `rename`, `connect` or `remove`.
+    /// `rename`, `connect`, `remove`, `allow-devices`, `setup` or `uninstall`.
     pub id: String,
     pub label: String,
     /// Where it asks first, the box's question.
@@ -188,6 +188,137 @@ pub struct ComputerAction {
     /// It can't be done now: why, to show beside it.
     #[serde(default)]
     pub why: Option<String>,
+}
+
+/// Adding computers, as a box says it (`computers.add`, PROTOCOL.md "Computers", Adding one):
+/// whether it adds them (`why`, in its words, where it doesn't), the hosts to suggest, and its
+/// tries, those under way first.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct Adding {
+    #[serde(default)]
+    pub can: bool,
+    #[serde(default)]
+    pub why: Option<String>,
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    #[serde(default, deserialize_with = "readable")]
+    pub tries: Vec<AddTry>,
+}
+
+/// A try at adding a computer over SSH, setting one up again or uninstalling Kuvo Code from one,
+/// as its box runs it: every word is the box's.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct AddTry {
+    pub id: String,
+    /// `add`, `setup` or `uninstall`.
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub destination: String,
+    #[serde(default)]
+    pub name: String,
+    /// `working`, `asking`, `stopping`, `failed` or `done`.
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub steps: Vec<AddStep>,
+    #[serde(default)]
+    pub question: Option<AddQuestion>,
+    #[serde(default)]
+    pub failure: Option<AddFailure>,
+    /// The computer it came to.
+    #[serde(default)]
+    pub computer: Option<AddedComputer>,
+    /// It was one of your computers already, at another address.
+    #[serde(default)]
+    pub known: bool,
+}
+
+impl AddTry {
+    /// Still going: working, asking you, or stopping.
+    pub fn under_way(&self) -> bool {
+        !matches!(self.state.as_str(), "failed" | "done")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct AddStep {
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    /// `waiting`, `now`, `done` or `failed`.
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+    /// How far a copy has got, in bytes.
+    #[serde(default)]
+    pub sent: Option<u64>,
+    #[serde(default)]
+    pub total: Option<u64>,
+}
+
+/// What a try asks before it goes on: facts to look at (a host key's fingerprint), and its answers.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct AddQuestion {
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub message: String,
+    /// This ask's number, which an answer names so one meant for an earlier ask isn't taken for it.
+    #[serde(default)]
+    pub at: u64,
+    #[serde(default)]
+    pub facts: Vec<AddFact>,
+    #[serde(default)]
+    pub answers: Vec<AddAnswer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct AddFact {
+    pub label: String,
+    #[serde(default)]
+    pub value: String,
+    /// Drawn in the code font (a fingerprint).
+    #[serde(default)]
+    pub code: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct AddAnswer {
+    pub id: String,
+    #[serde(default)]
+    pub label: String,
+    /// `primary`, `plain` or `danger`.
+    #[serde(default)]
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct AddFailure {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub message: String,
+    /// Trying again could go otherwise.
+    #[serde(default)]
+    pub again: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct AddedComputer {
+    pub key: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+#[derive(Deserialize)]
+struct Tried {
+    #[serde(rename = "try")]
+    tried: AddTry,
 }
 
 /// A session at work on a computer: its id there, and its title.
@@ -380,6 +511,42 @@ impl BoxClient {
     /// removed (asked of your setup's main computer).
     pub fn allow_devices(&self, key: &str) -> Result<()> {
         self.done(&Request::post(format!("kuvo/computers/{}/allow-devices", segment(key)), serde_json::json!({})))
+    }
+
+    /// Adding computers, as this box says it now (`computers.add`).
+    pub fn adding(&self) -> Result<Adding> {
+        self.get("kuvo/computers/add")
+    }
+
+    /// Follows it: now, and again as a try changes.
+    pub fn follow_adding(&self, timing: Timing) -> Follow<Followed<Adding>> {
+        follow_lines(self, "kuvo-box adding", "kuvo/computers/add/events".into(), "kuvo/computers/add".into(), timing)
+    }
+
+    /// Asks the box to add the computer at `destination` (a Host from its `~/.ssh/config`, a
+    /// host's name or `user@host`): the try it began. Refused in its words.
+    pub fn add_computer(&self, destination: &str) -> Result<AddTry> {
+        Ok(self.value::<Tried>(&Request::post("kuvo/computers/add", serde_json::json!({ "destination": destination })))?.tried)
+    }
+
+    /// Answers what the try `id` asks (its ask numbered `at`), with one of its answers' ids.
+    pub fn answer_add(&self, id: &str, at: u64, answer: &str) -> Result<AddTry> {
+        Ok(self.value::<Tried>(&Request::post(format!("kuvo/computers/add/{}/answer", segment(id)), serde_json::json!({ "answer": answer, "at": at })))?.tried)
+    }
+
+    /// Stops the try `id`, or forgets one that's over.
+    pub fn end_add(&self, id: &str) -> Result<()> {
+        self.done(&Request::delete(format!("kuvo/computers/add/{}", segment(id))))
+    }
+
+    /// Sets a machine this box added over SSH up again, at the address it was added under.
+    pub fn setup_computer(&self, key: &str) -> Result<AddTry> {
+        Ok(self.value::<Tried>(&Request::post(format!("kuvo/computers/{}/setup", segment(key)), serde_json::json!({})))?.tried)
+    }
+
+    /// Uninstalls Kuvo Code from a machine this box added over SSH, and removes it.
+    pub fn uninstall_computer(&self, key: &str) -> Result<AddTry> {
+        Ok(self.value::<Tried>(&Request::post(format!("kuvo/computers/{}/uninstall", segment(key)), serde_json::json!({})))?.tried)
     }
 
     /// Follows your computers: the list now, and again as it changes.

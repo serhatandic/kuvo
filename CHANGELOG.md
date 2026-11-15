@@ -6,6 +6,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Settings › Storage shows decimal GB and MB, like macOS, while keeping your existing storage budget unchanged.
+
+- The desktop composer runs `!` shell commands on the conversation’s computer and shows their output. `/compact` summarizes the conversation there and shows its status in the conversation.
+- **Add a Machine** works in the desktop app, under Computers: give a host from your SSH config or `user@host`, check the host's fingerprint when Kuvo Code hasn't connected to it before, and watch each step as Kuvo Code is copied there, started and added to your computers. Your computer does this itself, so it goes on with the window closed. A computer added this way also has **Set Up Again** and **Uninstall** on its page.
 - The desktop app reaches every one of your computers directly, as your iPhone does: the title bar's computer menu now switches the window to another computer's sessions, bots, Work Queue and settings, asked of that computer's own box, and coming back finds the window as you left it. The app adds itself to your devices through Kuvo Code on its own computer, with nothing to scan or paste, and is kept among them as a desktop app that any other device can remove (removing it takes every copy of the app that computer added off your devices, and stops that computer from adding one again until you choose **Allow Its App Again** on its page under Computers, in Kuvo Code on your main computer or on another of your computers). A computer that's away, needs an update, or isn't one of your own says so in the menu and isn't opened. A Mac's switch for this is now called **Let my devices connect**, for phones and desktop apps alike.
 - Settings asks before reducing storage enough to remove older copies, and shows storage units, folder choices, Git instructions and archived-session search correctly.
 - Antigravity plan limits name the Gemini, Claude and GPT, and Gemini 4 Argon pools separately, with their own available 5-hour and weekly windows.

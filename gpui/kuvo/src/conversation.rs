@@ -399,10 +399,10 @@ impl ConversationView {
         }
         let state = self.list.list_state().clone();
         let is_earlier = |entries: &[Entry]| matches!(entries.first(), Some(Entry::Earlier));
-        let is_working = |entries: &[Entry]| matches!(entries.last(), Some(Entry::Working));
+        let is_working = |entries: &[Entry]| matches!(entries.last(), Some(Entry::Working { .. }));
         // Each message's row by its key and revision: nothing is compared deeper.
         fn messages<'a>(entries: &'a [Entry], revisions: &[u64]) -> Vec<(&'a str, u64)> {
-            entries.iter().zip(revisions).filter(|(entry, _)| !matches!(entry, Entry::Earlier | Entry::Working)).map(|(entry, revision)| (entry.key(), *revision)).collect()
+            entries.iter().zip(revisions).filter(|(entry, _)| !matches!(entry, Entry::Earlier | Entry::Working { .. })).map(|(entry, revision)| (entry.key(), *revision)).collect()
         }
         let (old_messages, new_messages) = (messages(&old, &old_revisions), messages(new, &self.revisions));
         // Where what was shown sits among what's shown now.
@@ -454,6 +454,8 @@ impl ConversationView {
         }
         if !had_working && is_working(new) {
             self.list.push(1);
+        } else if had_working && old.last() != new.last() {
+            self.list.changed(new.len() - 1);
         }
         debug_assert_eq!(state.item_count(), self.entries.len());
     }
