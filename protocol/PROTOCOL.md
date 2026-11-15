@@ -1561,14 +1561,15 @@ machines; a client that wants every computer's facts asks the box that has it as
   when it's asked again (never answered as in doubt, as a Work Queue item's change is).
   - `PATCH kuvo/computers/<key> {"name"}`: renamed (1 to 100 characters, spaces and control
     characters folded): `200 {name}`. The writer keeps it apart from what its app says of its
-    machines (`peerNames` in link.json), so the app saying them again keeps it, until the app names
-    it otherwise (renamed there) or it's gone; a machine lists itself by the name its writer's
+    machines (`peerNames` in link.json), so the app saying them again keeps it (one missing from
+    its list for a moment too), until the app names it otherwise (renamed there) or it's removed; a machine lists itself by the name its writer's
     record gives it.
   - `DELETE kuvo/computers/<key>`: removed, as a Mac's app removes one: off the writer's peers
     document, named among those you removed (`left`, which the machine hears and lets that Mac go),
     and off that Mac's list of machines (`machines.json`); its app listing it again
-    (`kuvo/link/peers`) doesn't bring it back (`removedHere` in link.json) until it's set up again
-    (`kuvo/link/setup?key=`). It keeps running there, as a box of its own, with its sessions. `200
+    (`kuvo/link/peers`), or setting it up as it connects (`kuvo/link/setup?key=`), doesn't bring it
+    back (`removedHere` in link.json) until it's added again: on that Mac's list of machines
+    (`machines.json`) once more. It keeps running there, as a box of its own, with its sessions. `200
     {}`, and the same for one removed already.
   - `POST kuvo/computers/<key>/connect`: this box's own, for a peer that's `away`: its link tells
     that computer its agents now, asking for theirs (`run/reach-again.json`, sent by the process

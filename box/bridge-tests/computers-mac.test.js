@@ -96,21 +96,35 @@ test("two of your computers rename machines at once: this Mac does each in turn,
   assert.equal((await handed(devbox, { method: "DELETE", item: box("machine", "x").pub }))[0].status, 404);
 });
 
-test("a machine removed from any of your computers stays removed when this Mac's app says its machines again, until it's set up again; a name the app changes is the app's", async () => {
+test("a machine removed from any of your computers stays removed when this Mac's app says its machines again or sets it up as it connects, until it's added again; a name the app changes is the app's", async () => {
   fresh();
   assert.equal((await handed(devbox, { method: "DELETE", item: attic.pub }))[0].status, 200);
   // The app, as it was, still lists it: it isn't brought back, and is still among those removed.
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
   assert.deepEqual([names(), link.macPeersBody(link.readLink()).left], [["devbox", "mini"], [attic.pub]]);
-  // Set up again (its key named as the app sets it up): it's one of this Mac's machines again.
+  // The app setting it up as it connects (its key named, as it always is) doesn't bring it back either.
   assert.equal((await ask("GET", `kuvo/link/setup?key=${attic.pub}`)).status, 200);
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
+  assert.deepEqual(names(), ["devbox", "mini"]);
+  // Added again (back on this Mac's list of machines): it's one of this Mac's machines again.
+  fs.writeFileSync(path.join(home, "machines.json"), JSON.stringify([{ destination: "devbox" }, { destination: "mini" }, { destination: "attic" }]));
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
   assert.deepEqual(names(), ["devbox", "mini", "attic"]);
+  // Removed again later, and it's removed again.
+  assert.equal((await handed(devbox, { method: "DELETE", item: attic.pub }))[0].status, 200);
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
+  assert.deepEqual(names(), ["devbox", "mini"]);
 
+  // Renamed here, and missing from the app's list for a moment (it couldn't be set up just then):
+  // the name you gave it stays.
+  assert.equal((await handed(mini, { method: "PATCH", item: mini.pub, body: { name: "Mini" } }))[0].status, 200);
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, attic.peer], moved: [] })).status, 200);
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
+  assert.deepEqual(names(), ["devbox", "Mini"]);
   // Renamed here, then renamed in the app: the app's name is kept from then on.
   assert.equal((await handed(mini, { method: "PATCH", item: devbox.pub, body: { name: "Build box" } }))[0].status, 200);
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [{ ...devbox.peer, name: "CI" }, mini.peer, attic.peer], moved: [] })).status, 200);
-  assert.deepEqual(names(), ["CI", "mini", "attic"]);
+  assert.deepEqual(names(), ["CI", "Mini"]);
 });
 
 test("a rename or remove this Mac took and was cut short by a restart is done again when it's asked again, never left in doubt", async () => {

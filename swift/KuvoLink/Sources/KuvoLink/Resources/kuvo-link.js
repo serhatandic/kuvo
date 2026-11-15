@@ -27406,8 +27406,10 @@ function setMacPeers(link, given) {
   if (!isObject(given) || !Array.isArray(given.peers))
     return { link: null, gone: [] };
   const removedHere = Array.isArray(link.removedHere) ? link.removedHere : [];
-  const now = given.peers.slice(0, MOST_PEERS).map((peer) => ({ ...peer, kind: "machine" })).filter((peer) => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && !removedHere.includes(peer.key)).map(cleanPeer);
-  const skipped = given.peers.slice(0, MOST_PEERS).filter((peer) => !(isObject(peer) && removedHere.includes(peer.key))).length - now.length;
+  const listed = savedIds();
+  const keeps = (peer) => !removedHere.includes(peer.key) || typeof peer.id === "string" && listed.has(peer.id);
+  const now = given.peers.slice(0, MOST_PEERS).map((peer) => ({ ...peer, kind: "machine" })).filter((peer) => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && keeps(peer)).map(cleanPeer);
+  const skipped = given.peers.slice(0, MOST_PEERS).filter((peer) => !(isObject(peer) && typeof peer.key === "string" && !keeps(peer))).length - now.length;
   if (skipped)
     console.error(`${skipped} of this Mac's machines weren't records the box could take, and were left out.`);
   const removed = (Array.isArray(given.removed) ? given.removed : []).filter((key) => typeof key === "string" && KEY.test(key) && !now.some((peer) => peer.key === key));
@@ -27418,16 +27420,29 @@ function setMacPeers(link, given) {
   if (link.peerNames) {
     for (const key of Object.keys(link.peerNames)) {
       const named = now.find((peer) => peer.key === key);
-      if (!named || before.has(key) && before.get(key) !== named.name)
+      if (removed.includes(key) || named && before.has(key) && before.get(key) !== named.name)
         delete link.peerNames[key];
     }
     if (!Object.keys(link.peerNames).length)
       delete link.peerNames;
   }
+  if (link.removedHere) {
+    link.removedHere = link.removedHere.filter((key) => !now.some((peer) => peer.key === key));
+    if (!link.removedHere.length)
+      delete link.removedHere;
+  }
   link.macPeers = now;
   link.macMoved = cleanMoved(given.moved);
   pruneDocs(link);
   return { link, gone };
+}
+function savedIds() {
+  try {
+    const saved = JSON.parse(fs97.readFileSync(LIST_FILE, "utf8"));
+    return new Set(Array.isArray(saved) ? saved.filter((each) => typeof each?.destination === "string").map((each) => each.destination) : []);
+  } catch {
+    return new Set;
+  }
 }
 async function* macLinkRoute(route, request, signal) {
   const json = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
@@ -27506,8 +27521,6 @@ async function* macLinkRoute(route, request, signal) {
           return null;
         if (again && Array.isArray(link.left))
           link.left = link.left.filter((key) => key !== again);
-        if (again && Array.isArray(link.removedHere))
-          link.removedHere = link.removedHere.filter((key) => key !== again);
         noteKeyNow(link);
         const own = ownDocs({ link, library });
         docs = [...Object.values(own).map((made) => made.envelope), ...Object.values(link.docs ?? {}).sort((a, b) => a.d < b.d ? -1 : 1)];
@@ -44787,7 +44800,7 @@ import fs145 from "node:fs";
 import path152 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4d66d91ac7eb";
+var BRIDGE_VERSION = "df07fe6c3962";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
