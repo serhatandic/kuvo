@@ -8,7 +8,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { isObject, parsed } from "../../shared/json";
+import { CHANGED_SINCE } from "./config";
+import { isObject, parsed, sortedJSON } from "../../shared/json";
 import { withNotes } from "../../shared/session-notes";
 import { plainName } from "../../shared/text";
 import { call } from "../engine/client";
@@ -63,6 +64,13 @@ const UNTITLED = "New Session";
 
 /** A move took it while it waited for its turn. */
 class Moving extends Error {}
+class Stale extends Error {}
+
+/** Optional state comparison for settings actions, checked inside the session's existing turn. */
+export const sessionActionState = (session: EngineSession) => ({ updated: session.time.updated, archived: isArchived(session) });
+const checkWas = (given: Record<string, unknown>, session: EngineSession | null) => {
+  if ("was" in given && (!session?.id || sortedJSON(given.was) !== sortedJSON(sessionActionState(session)))) throw new Stale();
+};
 
 /** Where a session that isn't here lives now, in words, and that computer's key: one moved away
  * from this box in the last two days. Null for one that never lived here. */
@@ -165,7 +173,8 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
   if (action === null && method !== "DELETE") return yield* json(405, { message: "Delete it with DELETE." });
   if (action === "actions" && method !== "GET") return yield* json(405, { message: "Ask with GET." });
   if (action !== null && action !== "actions" && method !== "POST") return yield* json(405, { message: "Change it with POST." });
-  const given = action === "actions" || action === null ? {} : parsed(request.body);
+  const decoded = parsed(request.body);
+  const given = action === "actions" ? {} : action === null ? (isObject(decoded) ? decoded : {}) : decoded;
   if (!isObject(given)) return yield* json(400, { message: "Send what changes as JSON." });
   if (action === "archive" && typeof given.archived !== "boolean") return yield* json(400, { message: "Say whether it's archived: {\"archived\": true} or false." });
   if (action === "pin" && typeof given.pinned !== "boolean") return yield* json(400, { message: "Say whether it's pinned: {\"pinned\": true} or false." });
@@ -213,9 +222,14 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
       // (In its turn, so a move that took it meanwhile isn't undercut.)
       await inTurnOn(target, id, async () => {
         if (frozen().has(id)) throw new Moving();
+        if ("was" in given) {
+          const now = await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, signal) as EngineSession;
+          checkWas(given, now);
+        }
         return call(target, "DELETE", `/api/session/${encodeURIComponent(id)}`, undefined, signal);
       }, signal);
     } catch (error) {
+      if (error instanceof Stale) return yield* json(409, { message: CHANGED_SINCE });
       if (error instanceof Moving) return yield* json(409, { message: MOVING });
       return yield* json(502, { message: `It couldn't be deleted: ${String((error as Error | null)?.message ?? error)}` });
     }
@@ -232,6 +246,7 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
         return call(target, "PATCH", `/api/session/${encodeURIComponent(id)}`, { title }, signal);
       }, signal);
     } catch (error) {
+      if (error instanceof Stale) return yield* json(409, { message: CHANGED_SINCE });
       if (error instanceof Moving) return yield* json(409, { message: MOVING });
       return yield* json(502, { message: `It couldn't be renamed: ${String((error as Error | null)?.message ?? error)}` });
     }
@@ -250,12 +265,14 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
   try {
     done = await rewriteOn(target, id, now => {
       if (frozen().has(id)) throw new Moving();
+      checkWas(given, now);
       if ((action === "pin" ? isPinned(now) : isArchived(now)) === value) return null;
       // (Brought back: an older client's mark in its `kuvo` goes too.)
       const nested = action === "archive" && value === false && isObject(now.metadata?.kuvo) && "archived" in now.metadata.kuvo;
       return { metadata: withNotes(now.metadata, nested ? { archived: undefined } : null, { [key]: value }) };
     }, signal);
   } catch (error) {
+    if (error instanceof Stale) return yield* json(409, { message: CHANGED_SINCE });
     if (error instanceof Moving) return yield* json(409, { message: MOVING });
     return yield* json(502, { message: `It couldn't be changed: ${String((error as Error | null)?.message ?? error)}` });
   }

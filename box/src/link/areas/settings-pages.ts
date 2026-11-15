@@ -13,6 +13,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { listRoute, LIST_ROUTE } from "../lists/sessions";
+import { sessionActionRoute, SESSION_ACTION_ROUTE, deletesRoute } from "./session-actions";
 import { artifactsRoute } from "./artifacts";
 import { homeFolder } from "../home";
 import { workAsksRoute, WORK_ASKS_ROUTE } from "./work";
@@ -67,6 +69,7 @@ const SECTIONS: SettingsSection[] = [
   },
   { id: "worktrees", title: "Worktrees", group: "System", icon: "folder", line: "Where new projects and worktrees go, and sessions’ own copies of a project.", keywords: ["projects", "folders", "branches", "remove"] },
   { id: "storage", title: "Storage", group: "System", icon: "drive", line: "Copies of what agents made, and how much older versions keep.", keywords: ["copies", "older versions", "budget", "disk", "clear"] },
+  { id: "archived", title: "Archived Sessions", group: "System", icon: "archive", line: "Sessions out of the sidebar, still searchable; bring them back or delete them.", keywords: ["archive", "unarchive", "delete", "sessions"] },
 ];
 
 // MARK: Rows
@@ -515,6 +518,58 @@ async function storageAct(context: RouteContext, at: SettingItem, action: Settin
   return staleOrRefusal(await asked(context, artifactsRoute, "POST", "kuvo/artifacts/storage/clear", { was: at.value }));
 }
 
+// MARK: Archived Sessions
+
+const sessionsAnswer = (context: RouteContext) => listRoute(context, context.route.match(LIST_ROUTE)!);
+const sessionAnswer = (context: RouteContext) => sessionActionRoute(context, context.route.match(SESSION_ACTION_ROUTE)!);
+
+async function archivedPage(context: RouteContext): Promise<SettingsPage> {
+  const read = await asked(context, sessionsAnswer, "GET", "kuvo/sessions/list");
+  if (read.status !== 200) return unreadPage("archived", "Archived Sessions", read);
+  if (read.value.pending?.length) return unreadPage("archived", "Archived Sessions", { status: 503, value: { message: "Some sessions can't be read right now. Try again in a moment." } });
+  const archived = Object.entries(read.value.sessions as Record<string, any>).filter(([, facts]) => facts.archived && !facts.parent && !facts.away).sort((a, b) => b[1].updated - a[1].updated);
+  const groups = new Map<string, SettingItem[]>();
+  let held: string | undefined;
+  const states: { id: string; was: { updated: number; archived: boolean } }[] = [];
+  for (const [id, facts] of archived) {
+    const menu = await asked(context, sessionAnswer, "GET", `kuvo/sessions/${encodeURIComponent(id)}/actions`);
+    if (menu.status !== 200) return unreadPage("archived", "Archived Sessions", menu);
+    held ??= menu.value.held;
+    const was = { updated: facts.updated, archived: true };
+    states.push({ id, was });
+    const actions: SettingAction[] = menu.value.actions.map((each: any) => ({
+      id: each.id, title: each.label, ...(each.destructive ? { style: "destructive" } : {}),
+      ...(each.confirm ? { confirm: { title: each.confirm.title, body: each.confirm.message, button: each.confirm.label } } : {}),
+      ...(menu.value.held ? { can: { why: menu.value.held } } : {}),
+    }));
+    const project = facts.project ?? facts.directory;
+    const rows = groups.get(project) ?? [];
+    rows.push(item({ id: `session-${id}`, title: facts.title || "New Session", line: new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: zoneHere(readZoneSetting()).zone }).format(new Date(facts.updated)), kind: "actions", value: was, actions }));
+    groups.set(project, rows);
+  }
+  const all = states.length ? await asked(context, deletesRoute, "POST", "kuvo/sessions/deletes", { sessions: states.map(each => each.id) }) : null;
+  if (all && all.status !== 200) return unreadPage("archived", "Archived Sessions", all);
+  return { id: "archived", title: "Archived Sessions", groups: [
+    { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "None yet. Right-click a session in the sidebar and choose Archive to put it away." }, ...(all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {}) }] })] },
+    ...[...groups].map(([project, items]) => ({ id: `project-${project}`, title: read.value.projects[project]?.name ?? path.basename(project), rows: [row({ id: `archived-${project}`, title: read.value.projects[project]?.name ?? path.basename(project), kind: "list", items, search: { placeholder: "Search archived sessions", empty: "No archived session matches “{query}”." } })] })),
+  ], ...(states.length ? {} : { notes: [{ words: "None yet. Right-click a session in the sidebar and choose Archive to put it away.", tone: "quiet" as const }] }) };
+}
+
+async function archivedAct(context: RouteContext, at: SettingItem, action: SettingAction): Promise<Refused | null> {
+  if (at.id === "delete-all" && action.id === "delete-all") {
+    for (const each of at.value as { id: string; was: unknown }[]) {
+      const done = staleOrRefusal(await asked(context, sessionAnswer, "DELETE", `kuvo/sessions/${encodeURIComponent(each.id)}`, { was: each.was }));
+      if (done) return done;
+    }
+    return null;
+  }
+  if (!at.id.startsWith("session-")) return noActions();
+  const id = encodeURIComponent(at.id.slice(8));
+  if (action.id === "delete") return staleOrRefusal(await asked(context, sessionAnswer, "DELETE", `kuvo/sessions/${id}`, { was: at.value }));
+  if (action.id === "unarchive") return staleOrRefusal(await asked(context, sessionAnswer, "POST", `kuvo/sessions/${id}/archive`, { archived: false, was: at.value }));
+  return noActions();
+}
+
 // MARK: General
 
 /** A zone's name as a menu shows it: "Europe/Istanbul" as "Europe › Istanbul", "America/New_York" as
@@ -615,6 +670,7 @@ const PAGES: Record<string, Section> = {
   git: { read: gitPage, change: gitChange, act: noActions, look: () => `${mtime(CONFIG_FILE)}` },
   worktrees: { read: worktreesPage, change: worktreesChange, act: worktreesAct, look: () => String(Math.floor(Date.now() / 1000)) },
   storage: { read: storagePage, change: storageChange, act: storageAct, look: () => String(Math.floor(Date.now() / 1000)) },
+  archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) },
 };
 
 // Told as a change is made here, so a page followed shows it at once.

@@ -298,3 +298,85 @@ test("Delete All over live worktrees: one only they were in goes, with what isn'
   writeFileSync(join(kuvo, "box", "worktrees.json"), JSON.stringify({ worktrees: [], restorable: [{ project: root, root: mine, folder: mine, branch: "m", head: "abc" }] }))
   expect(await words(["ses_m1", "ses_m2"])).toBe("Their messages and undo snapshots go too. This can’t be undone.")
 })
+
+const archivedRow = (page: any, id: string): any => page.groups.flatMap((g: any) => g.rows.flatMap((r: any) => [r, ...(r.items ?? [])])).find((r: any) => r.id === id)
+const archivedPage = async () => (await ask(handler, "GET", "kuvo/settings/archived")).json
+const settingsAct = (row: any, action: string) => ask(handler, "POST", `kuvo/settings/archived/${encodeURIComponent(row.id)}/${action}`, { was: row.revision })
+const putAway = (id = "ses_plan") => { engine.sessions.get(id)!.metadata = { "kuvo.archived": true } }
+
+test("Archived Settings wraps the session menu and Delete All confirmation verbatim", async () => {
+  putAway()
+  const page = await archivedPage()
+  const row = archivedRow(page, "session-ses_plan")
+  const menu = (await ask(handler, "GET", "kuvo/sessions/ses_plan/actions")).json
+  expect(row.title).toBe("Plan the trip")
+  expect(row.actions).toEqual(menu.actions.map((a: any) => ({ id: a.id, title: a.label, ...(a.destructive ? { style: "destructive" } : {}), ...(a.confirm ? { confirm: { title: a.confirm.title, body: a.confirm.message, button: a.confirm.label } } : {}) })))
+  const all = (await ask(handler, "POST", "kuvo/sessions/deletes", { sessions: ["ses_plan"] })).json
+  expect(archivedRow(page, "delete-all").actions[0]).toMatchObject({ title: "Delete All…", confirm: { title: all.title, body: all.message, button: all.label } })
+  expect(page.groups[1].title).toBe(root.split("/").at(-1))
+  expect(page.groups[1].rows[0].search).toEqual({ placeholder: "Search archived sessions", empty: "No archived session matches “{query}”." })
+  const { revised } = await import("../src/link/areas/settings-pages")
+  expect(revised({ ...row, line: "Reworded" }).revision).toBe(row.revision)
+})
+
+test("Archived Settings refuses stale actions while an unrelated row can unarchive", async () => {
+  putAway()
+  engine.sessions.set("ses_other", session("ses_other", "Another", root, { "kuvo.archived": true }))
+  const page = await archivedPage()
+  engine.sessions.get("ses_plan")!.time.updated++
+  expect((await settingsAct(archivedRow(page, "session-ses_plan"), "unarchive")).status).toBe(409)
+  expect((await settingsAct(archivedRow(page, "session-ses_other"), "unarchive")).status).toBe(200)
+  const wrong = await ask(handler, "PATCH", "kuvo/settings/archived", { row: "session-ses_plan", value: false, was: archivedRow(await archivedPage(), "session-ses_plan").revision })
+  expect(wrong.status).toBe(400)
+})
+
+test("Archived Settings holds moving sessions with the menu's reason and changes nothing", async () => {
+  putAway()
+  mkdirSync(join(kuvo, "run", "moves"), { recursive: true })
+  writeFileSync(join(kuvo, "run", "moves", "mov_trip.json"), JSON.stringify({ id: "mov_trip", kind: "chat", thing: "ses_plan", name: "Plan the trip", from: "a", to: "b", role: "from", stage: "copying", sessions: ["ses_plan"], peer: "peerkey", tries: 0, started: Date.now() }))
+  const row = archivedRow(await archivedPage(), "session-ses_plan")
+  const before = JSON.stringify(engine.sessions.get("ses_plan"))
+  expect(row.actions[0].can.why).toBe("It’s moving to another computer. Try again once it’s there.")
+  const result = await settingsAct(row, "unarchive")
+  expect([result.status, result.json.message]).toEqual([403, row.actions[0].can.why])
+  expect(JSON.stringify(engine.sessions.get("ses_plan"))).toBe(before)
+})
+
+test("Session actions accept optional was atomically and preserve old calls", async () => {
+  putAway()
+  const first = engine.sessions.get("ses_plan")!
+  const was = { updated: first.time.updated, archived: true }
+  const stale = { updated: was.updated - 1, archived: true }
+  expect((await ask(handler, "POST", "kuvo/sessions/ses_plan/archive", { archived: false, was: stale })).status).toBe(409)
+  expect((await ask(handler, "DELETE", "kuvo/sessions/ses_plan", { was: stale })).status).toBe(409)
+  expect(engine.deleted).toEqual([])
+  expect((await ask(handler, "POST", "kuvo/sessions/ses_plan/archive", { archived: false, was })).status).toBe(200)
+  expect((await ask(handler, "POST", "kuvo/sessions/ses_plan/archive", { archived: true })).status).toBe(200)
+  expect((await ask(handler, "DELETE", "kuvo/sessions/ses_plan")).status).toBe(200)
+})
+
+test("Archived Settings events follow archive, unarchive and delete routes", async () => {
+  const { follow } = await import("./route-answer")
+  const events = follow(handler, "kuvo/settings/archived/events")
+  try {
+    const empty = await events.next()
+    expect(empty.notes[0].words).toBe("None yet. Right-click a session in the sidebar and choose Archive to put it away.")
+    await ask(handler, "POST", "kuvo/sessions/ses_plan/archive", { archived: true })
+    let page = await events.next()
+    expect(archivedRow(page, "session-ses_plan")).toBeDefined()
+    await settingsAct(archivedRow(page, "session-ses_plan"), "unarchive")
+    expect(archivedRow(await events.next(), "session-ses_plan")).toBeUndefined()
+    await ask(handler, "POST", "kuvo/sessions/ses_plan/archive", { archived: true })
+    page = await events.next()
+    await settingsAct(archivedRow(page, "delete-all"), "delete-all")
+    expect(archivedRow(await events.next(), "session-ses_plan")).toBeUndefined()
+    expect(engine.deleted).toEqual(["ses_plan"])
+  } finally { events.stop() }
+})
+
+test("Archived Settings warns without rows when its source cannot be read", async () => {
+  const noSource = engineHandler(() => { throw new Error("No engine") }, { name: "test" }, () => { throw new Error("No bridge") })
+  const page = (await ask(noSource, "GET", "kuvo/settings/archived")).json
+  expect(page.groups).toEqual([])
+  expect(page.notes[0].tone).toBe("warning")
+})

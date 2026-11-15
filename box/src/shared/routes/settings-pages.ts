@@ -47,6 +47,8 @@ const ROW_FIELDS = {
   "choices?": list(SETTING_CHOICE),
   /** Preferred visible lines for a multi-line text editor; presentation only, outside revisions. */
   "lines?": object({ min: number, max: number }),
+  /** Client-side filtering of a list by its title and its items’ title and line; empty replaces {query} with the query. */
+  "search?": object({ placeholder: string, empty: string }),
   /** Number/status values in bytes; clients format them as file sizes. */
   "unit?": words("bytes"),
   "suggestions?": list(object({ value: number, title: string })),

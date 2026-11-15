@@ -45432,7 +45432,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "3765593a1131";
+var BRIDGE_VERSION = "4e429412ce9b";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -48696,6 +48696,14 @@ var UNTITLED = "New Session";
 
 class Moving extends Error {
 }
+
+class Stale extends Error {
+}
+var sessionActionState = (session) => ({ updated: session.time.updated, archived: isArchived3(session) });
+var checkWas = (given, session) => {
+  if ("was" in given && (!session?.id || sortedJSON(given.was) !== sortedJSON(sessionActionState(session))))
+    throw new Stale;
+};
 function livesElsewhere(session) {
   const moved = movedAway().find((each) => each.session === session);
   if (!moved)
@@ -48784,7 +48792,8 @@ async function* sessionActionRoute(context, match) {
     return yield* json(405, { message: "Ask with GET." });
   if (action !== null && action !== "actions" && method !== "POST")
     return yield* json(405, { message: "Change it with POST." });
-  const given = action === "actions" || action === null ? {} : parsed(request.body);
+  const decoded = parsed(request.body);
+  const given = action === "actions" ? {} : action === null ? isObject(decoded) ? decoded : {} : decoded;
   if (!isObject(given))
     return yield* json(400, { message: "Send what changes as JSON." });
   if (action === "archive" && typeof given.archived !== "boolean")
@@ -48841,9 +48850,15 @@ async function* sessionActionRoute(context, match) {
       await inTurnOn(target, id, async () => {
         if (frozen().has(id))
           throw new Moving;
+        if ("was" in given) {
+          const now = await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, signal);
+          checkWas(given, now);
+        }
         return call(target, "DELETE", `/api/session/${encodeURIComponent(id)}`, undefined, signal);
       }, signal);
     } catch (error) {
+      if (error instanceof Stale)
+        return yield* json(409, { message: CHANGED_SINCE });
       if (error instanceof Moving)
         return yield* json(409, { message: MOVING });
       return yield* json(502, { message: `It couldn't be deleted: ${String(error?.message ?? error)}` });
@@ -48860,6 +48875,8 @@ async function* sessionActionRoute(context, match) {
         return call(target, "PATCH", `/api/session/${encodeURIComponent(id)}`, { title }, signal);
       }, signal);
     } catch (error) {
+      if (error instanceof Stale)
+        return yield* json(409, { message: CHANGED_SINCE });
       if (error instanceof Moving)
         return yield* json(409, { message: MOVING });
       return yield* json(502, { message: `It couldn't be renamed: ${String(error?.message ?? error)}` });
@@ -48876,12 +48893,15 @@ async function* sessionActionRoute(context, match) {
     done = await rewriteOn(target, id, (now) => {
       if (frozen().has(id))
         throw new Moving;
+      checkWas(given, now);
       if ((action === "pin" ? isPinned(now) : isArchived3(now)) === value)
         return null;
       const nested = action === "archive" && value === false && isObject(now.metadata?.kuvo) && "archived" in now.metadata.kuvo;
       return { metadata: withNotes(now.metadata, nested ? { archived: undefined } : null, { [key]: value }) };
     }, signal);
   } catch (error) {
+    if (error instanceof Stale)
+      return yield* json(409, { message: CHANGED_SINCE });
     if (error instanceof Moving)
       return yield* json(409, { message: MOVING });
     return yield* json(502, { message: `It couldn't be changed: ${String(error?.message ?? error)}` });
@@ -56836,7 +56856,8 @@ var SECTIONS = [
     keywords: ["branch prefix", "worktree", "commit", "pull request", "instructions"]
   },
   { id: "worktrees", title: "Worktrees", group: "System", icon: "folder", line: "Where new projects and worktrees go, and sessions’ own copies of a project.", keywords: ["projects", "folders", "branches", "remove"] },
-  { id: "storage", title: "Storage", group: "System", icon: "drive", line: "Copies of what agents made, and how much older versions keep.", keywords: ["copies", "older versions", "budget", "disk", "clear"] }
+  { id: "storage", title: "Storage", group: "System", icon: "drive", line: "Copies of what agents made, and how much older versions keep.", keywords: ["copies", "older versions", "budget", "disk", "clear"] },
+  { id: "archived", title: "Archived Sessions", group: "System", icon: "archive", line: "Sessions out of the sidebar, still searchable; bring them back or delete them.", keywords: ["archive", "unarchive", "delete", "sessions"] }
 ];
 function revised(row) {
   const can = (value) => value === undefined ? undefined : value === true;
@@ -57279,6 +57300,63 @@ async function storageAct(context, at, action) {
     return noActions();
   return staleOrRefusal(await asked8(context, artifactsRoute, "POST", "kuvo/artifacts/storage/clear", { was: at.value }));
 }
+var sessionsAnswer = (context) => listRoute(context, context.route.match(LIST_ROUTE));
+var sessionAnswer = (context) => sessionActionRoute(context, context.route.match(SESSION_ACTION_ROUTE));
+async function archivedPage(context) {
+  const read = await asked8(context, sessionsAnswer, "GET", "kuvo/sessions/list");
+  if (read.status !== 200)
+    return unreadPage("archived", "Archived Sessions", read);
+  if (read.value.pending?.length)
+    return unreadPage("archived", "Archived Sessions", { status: 503, value: { message: "Some sessions can't be read right now. Try again in a moment." } });
+  const archived = Object.entries(read.value.sessions).filter(([, facts]) => facts.archived && !facts.parent && !facts.away).sort((a, b) => b[1].updated - a[1].updated);
+  const groups = new Map;
+  let held;
+  const states = [];
+  for (const [id, facts] of archived) {
+    const menu = await asked8(context, sessionAnswer, "GET", `kuvo/sessions/${encodeURIComponent(id)}/actions`);
+    if (menu.status !== 200)
+      return unreadPage("archived", "Archived Sessions", menu);
+    held ??= menu.value.held;
+    const was = { updated: facts.updated, archived: true };
+    states.push({ id, was });
+    const actions = menu.value.actions.map((each) => ({
+      id: each.id,
+      title: each.label,
+      ...each.destructive ? { style: "destructive" } : {},
+      ...each.confirm ? { confirm: { title: each.confirm.title, body: each.confirm.message, button: each.confirm.label } } : {},
+      ...menu.value.held ? { can: { why: menu.value.held } } : {}
+    }));
+    const project = facts.project ?? facts.directory;
+    const rows = groups.get(project) ?? [];
+    rows.push(item({ id: `session-${id}`, title: facts.title || "New Session", line: new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: zoneHere(readZoneSetting()).zone }).format(new Date(facts.updated)), kind: "actions", value: was, actions }));
+    groups.set(project, rows);
+  }
+  const all = states.length ? await asked8(context, deletesRoute, "POST", "kuvo/sessions/deletes", { sessions: states.map((each) => each.id) }) : null;
+  if (all && all.status !== 200)
+    return unreadPage("archived", "Archived Sessions", all);
+  return { id: "archived", title: "Archived Sessions", groups: [
+    { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "None yet. Right-click a session in the sidebar and choose Archive to put it away." }, ...all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {} }] })] },
+    ...[...groups].map(([project, items]) => ({ id: `project-${project}`, title: read.value.projects[project]?.name ?? path182.basename(project), rows: [row({ id: `archived-${project}`, title: read.value.projects[project]?.name ?? path182.basename(project), kind: "list", items, search: { placeholder: "Search archived sessions", empty: "No archived session matches “{query}”." } })] }))
+  ], ...states.length ? {} : { notes: [{ words: "None yet. Right-click a session in the sidebar and choose Archive to put it away.", tone: "quiet" }] } };
+}
+async function archivedAct(context, at, action) {
+  if (at.id === "delete-all" && action.id === "delete-all") {
+    for (const each of at.value) {
+      const done = staleOrRefusal(await asked8(context, sessionAnswer, "DELETE", `kuvo/sessions/${encodeURIComponent(each.id)}`, { was: each.was }));
+      if (done)
+        return done;
+    }
+    return null;
+  }
+  if (!at.id.startsWith("session-"))
+    return noActions();
+  const id = encodeURIComponent(at.id.slice(8));
+  if (action.id === "delete")
+    return staleOrRefusal(await asked8(context, sessionAnswer, "DELETE", `kuvo/sessions/${id}`, { was: at.value }));
+  if (action.id === "unarchive")
+    return staleOrRefusal(await asked8(context, sessionAnswer, "POST", `kuvo/sessions/${id}/archive`, { archived: false, was: at.value }));
+  return noActions();
+}
 var zoneTitle = (zone) => zone.replaceAll("_", " ").split("/").join(" › ");
 function zoneNames() {
   let names = [];
@@ -57367,7 +57445,8 @@ var PAGES2 = {
   browser: { read: browserPage, change: browserChange, act: browserAct, look: () => browserSettingsFiles().map(mtime2).join(" ") },
   git: { read: gitPage, change: gitChange, act: noActions, look: () => `${mtime2(CONFIG_FILE)}` },
   worktrees: { read: worktreesPage, change: worktreesChange, act: worktreesAct, look: () => String(Math.floor(Date.now() / 1000)) },
-  storage: { read: storagePage, change: storageChange, act: storageAct, look: () => String(Math.floor(Date.now() / 1000)) }
+  storage: { read: storagePage, change: storageChange, act: storageAct, look: () => String(Math.floor(Date.now() / 1000)) },
+  archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) }
 };
 var followers2 = new Set;
 var changed5 = () => {

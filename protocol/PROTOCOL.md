@@ -8055,7 +8055,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
 - `GET kuvo/settings`: `{sections}`, in order, each `{id, title, group, icon, line, keywords}`:
   the heading it's under in a sidebar (`group`), its icon by name (`shield`, `globe`, …: a set every
   client has; one a client hasn't, it draws with its own), and the words search finds it by besides
-  its title and line. Today `general`, `permissions`, `browser`, `git`, `worktrees` and `storage`; the rest come page by page.
+  its title and line. Today `general`, `permissions`, `browser`, `git`, `worktrees`, `storage` and `archived`; the rest come page by page.
 - `GET kuvo/settings/<section>`: `{id, title, line?, groups, notes?}`; `404 {message}` for a section
   this box hasn't. A group is `{id, title?, note?, rows}`, a card with its heading and the words
   under it; `notes` are `{words, tone}` (`quiet` or `warning`) after the groups: what couldn't be
@@ -8068,9 +8068,9 @@ so a client still on those (the phone) sees every change kept just as they keep 
   | `choice` | `value`: a choice's `id`; `choices: [{id, title, line?}]` | A menu |
   | `text`, `number`, `folder` | `value`, `placeholder?`, `min?`, `max?`, `lines?: {min, max}`, `unit?: "bytes"`, `suggestions?: [{value, title}]`, `confirmBelow?: {value, confirm}` | A field (text may request a multi-line editor with its preferred visible line range; presentation only, outside revisions; byte values use file size formatting; numeric suggestions are common values, not limits; a number below confirmBelow.value requires its confirmation, whose button appends the formatted proposed value) (a folder's opens the box's folder picker, `kuvo/folders`) |
   | `secret` | `set`: whether one is set; never its value | A field written only; Replace and Remove once set |
-  | `status` | `value`: words | The words, on the right |
+  | `status` | `value`: words, or a number with `unit?: "bytes"` | The words or formatted file size, on the right |
   | `actions` | `actions` | Buttons (past one, a menu) |
-  | `list` | `items`: rows; `add?`: an action; `empty?`: words for none | The rows in its card, or its `empty` words |
+  | `list` | `items`: rows; `add?`: an action; `empty?`: words for none; `search?: {placeholder, empty}` | The rows in its card, or its `empty` words |
   | `meter` | `windows: [{title, used, resets?}]` (`used` 0 to 1, `resets` ms since 1970) | Usage windows |
   | `open` | `section` (this box's) or `address` | A row with › |
   | `steps` | `start`: an action | A flow the box leads (to come, with Accounts) |
@@ -8176,6 +8176,17 @@ The sections now:
   covering its settings, copies and live disk usage. An unavailable bridge gives no rows and a warning.
   The native Mac-only measurement, session cleanup links and log/download deletion groups have
   no box routes and are not included here.
+
+- **Archived Sessions** (`archived`): archived sessions grouped by project, from
+  `kuvo/sessions/list`; each row uses `kuvo/sessions/<id>/actions` verbatim, including
+  Unarchive, Delete and the box's confirmation words. Delete All’s confirmation comes from
+  `POST kuvo/sessions/deletes`; confirmed deletion calls each existing session DELETE route.
+  No session rules are added here. A list may offer `search: {placeholder, empty}` for client-side
+  filtering by list title and item title and line (`{query}` in empty is replaced with the query). A missing source gives no rows and a warning.
+  Session archive/pin and DELETE routes accept optional `was: {updated, archived}` compared
+  inside the existing session turn before mutation. Mismatch answers `409 {message:
+  "It changed since you read it."}`; absent `was` preserves old calls. Page events poll every
+  second, covering session lists, live session actions, moves, worktree confirmations and time zone.
 
 ### Your time zone
 
