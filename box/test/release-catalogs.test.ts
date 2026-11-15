@@ -5,10 +5,10 @@
 import { expect, test } from "bun:test"
 import "./safety"
 import { createHash } from "node:crypto"
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { boxFiles } from "../src/release/files"
+import { boxFiles, writeBoxFiles } from "../src/release/files"
 import { integrationsCatalog, mcpCatalog } from "../src/shared/integrations/catalogs"
 
 const vector = (name: string) => JSON.parse(readFileSync(join(import.meta.dir, "../../protocol/vectors/routes/box", name), "utf8"))
@@ -72,10 +72,32 @@ test("a release's files are what the Swift Mac app last wrote, byte for byte, wh
       const file = files.get(path)
       return [path, file ? { sha256: createHash("sha256").update(file.data).digest("hex"), mode: file.mode.toString(8) } : null]
     }))
+    // (A file changed on purpose in box/src: take its line out of fixtures/release/swift-made.json,
+    // and `bin/.kuvo-boot`'s with a keeper file's. The fixture goes when #713 is done.)
     expect(written).toEqual(made.files)
     // And nothing a release didn't have then, but what's built or named for the version.
     expect([...files.keys()].filter(path => !(path in made.files))).toEqual(["bin/box-version", "bin/kuvo-agents.js", "bin/kuvo-browser.js", "bin/kuvo-link.js"])
   } finally {
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("writing a release's files changes nothing above their folder, however the folder is named", () => {
+  // A private folder, as your temporary folder is, and the release's folder in it, named with a
+  // last slash and with two in a row (a Mac's TMPDIR ends in one).
+  const parent = mkdtempSync(join(tmpdir(), "kuvo-release-above-"))
+  try {
+    chmodSync(parent, 0o700)
+    const checkout = join(import.meta.dir, "../..")
+    for (const given of [`${parent}/one/`, `${parent}//two`, `${parent}/deep//three/`]) {
+      writeBoxFiles(checkout, "1.2.3", given)
+      expect(statSync(parent).mode & 0o777).toBe(0o700)
+    }
+    for (const made of ["one", "two", "deep/three"]) {
+      expect(statSync(join(parent, made)).mode & 0o777).toBe(0o755)
+      expect(statSync(join(parent, made, "bin/kuvo-start")).mode & 0o777).toBe(0o700)
+    }
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
   }
 })

@@ -19,10 +19,10 @@
 #                  an engine of their own), by this checkout's builder and table. Never in a
 #                  release: a pack is made from them only when its URL is under `.invalid`, a
 #                  name nothing is ever published at (RFC 6761), and refused otherwise.
+#   NODE           the Node to sign with (default: node)
 # The same files pack to the same bytes, whenever they're packed (on one system: a Mac's tar and
 # Linux's write their headers their own ways): each entry in name order, with one fixed time and
 # no owner, and gzip keeping neither a name nor a time.
-#   NODE           the Node to sign with (default: node)
 # What's built and kept in git (kuvo-link.js, kuvo-agents.js, kuvo-browser.js) goes in as it is:
 # scripts/check-built.sh says whether it's what the sources build.
 set -eu
@@ -46,8 +46,9 @@ else
         *) echo "The pack's URL must end in box-$VERSION.tar.gz." >&2; exit 2 ;;
     esac
     if [ -n "${BOX_SOURCES:-}" ]; then
-        case "$URL" in
-            https://*.invalid/*) ;;
+        host=${URL#https://}
+        case "${host%%/*}" in
+            *.invalid) ;;
             *) echo "BOX_SOURCES is for tests: a release is packed from this checkout's own sources." >&2; exit 2 ;;
         esac
     fi
@@ -149,7 +150,11 @@ if tar --version 2>/dev/null | grep -q bsdtar; then
 else
     tar --format=ustar --owner=0 --group=0 --numeric-owner --no-recursion -cf "$work/pack.tar" -C "$box" -T "$work/entries"
 fi
-gzip -n -9 <"$work/pack.tar" >"$pack.new"
+# All of them in it: a name too long for the format is left out by a Mac's tar with only a word
+# about it, and the pack would be one no box takes.
+tar -tf "$work/pack.tar" | sed 's|/$||' | LC_ALL=C sort >"$work/packed"
+cmp -s "$work/entries" "$work/packed" || { echo "Not everything could be packed (a name too long?):" >&2; diff "$work/entries" "$work/packed" >&2 || true; exit 1; }
+env -u GZIP gzip -n -9 <"$work/pack.tar" >"$pack.new"
 # Each bundle, as a box unpacks it, still signed as it was (a signature kept in extended attributes
 # doesn't survive packing). Where there's codesign: a Mac, as a release is built.
 if command -v codesign >/dev/null 2>&1 && [ $# -gt 0 ]; then

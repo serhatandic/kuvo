@@ -760,7 +760,7 @@ function builtHelper() {
 }
 // The Bun the release's files are written with: the one named, the one on the PATH, or (run by
 // Bun) this one.
-const bun = process.env.BUN || (process.versions.bun ? process.execPath : "bun");
+const bun = process.env.BUN || process.env.KUVO_TEST_BUN || (process.versions.bun ? process.execPath : "bun");
 const boxRelease = (env, ...args) => spawnSync("sh", [path.join(checkout, "scripts", "box-release.sh"), ...args], {
   env: { ...process.env, BUN: bun, NODE: process.execPath, ...env }, encoding: "utf8",
 });
@@ -847,10 +847,19 @@ test("scripts/box-release.sh packs the box's release from its sources with its h
   assert.deepEqual(fs.readdirSync(temporary), [], "and nothing left in it");
   assert.equal(sha256(fs.readFileSync(path.join(again, "box-0.10.0.tar.gz"))), sha256(fs.readFileSync(path.join(out, "box-0.10.0.tar.gz"))), "the same pack, byte for byte");
 
+  // A bundle with a file whose name is too long to pack isn't signed short of it.
+  const long = path.join(bundle, "Contents", "Resources", `${"n".repeat(120)}.txt`);
+  write(long, "x\n");
+  const short = pack("0.10.0", "https://example.invalid/box-0.10.0.tar.gz", path.join(scratch, "never"), bundle);
+  assert.notEqual(short.status, 0, "a pack missing a file box.json names is never made");
+  fs.rmSync(path.dirname(long), { recursive: true });
+
   // A test's sources never make a pack for a place something is published at.
-  const published = pack("0.10.0", "https://github.com/example/example/releases/download/v0.10.0/box-0.10.0.tar.gz", path.join(scratch, "never"), bundle);
-  assert.equal(published.status, 2);
-  assert.match(published.stderr, /BOX_SOURCES is for tests/);
+  for (const url of ["https://github.com/example/example/releases/download/v0.10.0/box-0.10.0.tar.gz", "https://github.com/example/example.invalid/box-0.10.0.tar.gz"]) {
+    const published = pack("0.10.0", url, path.join(scratch, "never"), bundle);
+    assert.equal(published.status, 2, url);
+    assert.match(published.stderr, /BOX_SOURCES is for tests/);
+  }
   // A browser that isn't what its first line says (changed by hand, cut short) isn't packed.
   fs.appendFileSync(path.join(root, "box/dist/kuvo-browser.js"), "// changed\n");
   const edited = pack("0.10.0", "https://example.invalid/box-0.10.0.tar.gz", path.join(scratch, "never"), bundle);

@@ -55,6 +55,17 @@ const server = http.createServer((request, response) => {
 server.listen(port, "127.0.0.1", () => console.log("server listening on http://127.0.0.1:" + port));
 setInterval(() => { if (!fs.existsSync(${JSON.stringify(home)})) process.exit(0); }, 300);
 `);
+// What only the keeper's own loop does (`kuvo-start keep`: ending an older Mac's watchdogs by
+// pattern, keeping a Mac awake, setting up the box's browser), which this test never means to
+// reach: stand-ins first on the PATH, in the box's own `bin` (where the launcher's PATH starts)
+// and before the system's, each only noting it was asked.
+const reached = path.join(scratch, "reached");
+const tools = path.join(scratch, "tools");
+function standInTools(folder) {
+  for (const tool of ["pkill", "caffeinate", "crontab", "launchctl"]) write(path.join(folder, tool), `#!/bin/sh\necho "${tool} $*" >>'${reached}'\n`, 0o755);
+}
+standInTools(tools);
+process.env.PATH = `${tools}${path.delimiter}${process.env.PATH}`;
 // Its binary: its version, the link's script run as the engine's Bun runs it (here this Node), and
 // the engine itself as its own child, so the process the keeper started and looks for by its
 // path (`<home>/engine/<version>/opencode`) is this one, and goes with its engine when it's told to.
@@ -63,8 +74,8 @@ const engineBinary = version => `#!/bin/sh
 [ "$1" = --no-env-file ] && shift
 case "$1" in
 --version) echo ${version}; exit 0 ;;
-*.js) exec '${process.execPath}' "$@" ;;
-serve) trap 'kill "$c" 2>/dev/null' TERM INT HUP; '${process.execPath}' '${fakeEngine}' "$@" & c=$!; wait "$c" ;;
+*.js) case "$2" in browser) echo "$*" >>'${reached}'; exit 0 ;; esac; BUN_BE_BUN=1 exec '${process.execPath}' "$@" ;;
+serve) trap 'kill "$c" 2>/dev/null' TERM INT HUP; BUN_BE_BUN=1 '${process.execPath}' '${fakeEngine}' "$@" & c=$!; wait "$c" ;;
 esac
 `;
 // The version before's keeper and engine, stand-ins as in updates.test.js: only its stop is asked.
@@ -93,8 +104,12 @@ esac
 const started = new Set();
 let keeping;
 atEnd(async () => {
+  // Off first (a box removed): from here no start, the update's own included, starts an engine
+  // or a keeper, even once the keeper's stand-in below is gone.
+  try { write(path.join(home, "run", "off"), ""); } catch {}
   if (fs.existsSync(path.join(home, "bin", "kuvo-start"))) realKeeper("stop");
-  for (const pid of started) try { process.kill(pid); } catch {}
+  // Only what's still the test's own: a pid given to another process since is left alone.
+  for (const pid of started) if (command(pid).includes(base) || command(pid).includes(scratch)) try { process.kill(pid); } catch {}
   if (keeping && keeping.exitCode === null && keeping.signalCode === null) {
     keeping.kill();
     await new Promise(resolve => keeping.once("exit", resolve));
@@ -122,6 +137,7 @@ test("a box takes a release with the real keeper: it starts the release's engine
   write(path.join(home, "engine", "1.0.0", "opencode"), engineBinary("1.0.0"), 0o755);
   write(path.join(home, "run", "launch.env"), "LANG=C\n", 0o600);
   write(path.join(home, "run", "launch.notes"), '{"mac":"mac-1"}', 0o600);
+  standInTools(path.join(home, "bin"));
   keeping = spawn("sh", ["-c", "while :; do sleep 1; done", "kuvo-start"], { stdio: "ignore" });
   write(path.join(home, "run", "box.pid"), `${keeping.pid}\n`);
   assert.equal(spawnSync("sh", [path.join(home, "bin", "kuvo-start"), "start"], { env: process.env, timeout: 60_000 }).status, 0, "the old engine runs");
@@ -147,7 +163,7 @@ test("a box takes a release with the real keeper: it starts the release's engine
   write(path.join(root, "box/src/shared/engine-pin.json"), JSON.stringify({ version: "1.1.0", linux: builds, darwin: builds }));
   const out = path.join(scratch, "box-release");
   const packed = spawnSync("sh", [path.join(checkout, "scripts", "box-release.sh"), "0.10.0", "https://example.invalid/releases/download/v0.10.0/box-0.10.0.tar.gz", out], {
-    env: { ...process.env, BUN: process.env.BUN || (process.versions.bun ? process.execPath : "bun"), NODE: process.execPath, BOX_SOURCES: root, KUVO_BOX_SIGNING_KEY: privateKey.export({ type: "pkcs8", format: "pem" }) }, encoding: "utf8",
+    env: { ...process.env, BUN: process.env.BUN || process.env.KUVO_TEST_BUN || (process.versions.bun ? process.execPath : "bun"), NODE: process.execPath, BOX_SOURCES: root, KUVO_BOX_SIGNING_KEY: privateKey.export({ type: "pkcs8", format: "pem" }) }, encoding: "utf8",
   });
   assert.equal(packed.status, 0, packed.stderr);
 
@@ -199,4 +215,5 @@ test("a box takes a release with the real keeper: it starts the release's engine
   assert.equal(alive(second.pid), false);
   // And no keeper but the one noted before: the real one found it running, and started none.
   assert.equal(Number(fs.readFileSync(path.join(home, "run", "box.pid"), "utf8")), keeping.pid);
+  assert.equal(fs.existsSync(reached), false, `nothing of the keeper's own loop ran: ${fs.existsSync(reached) ? fs.readFileSync(reached, "utf8") : ""}`);
 });
