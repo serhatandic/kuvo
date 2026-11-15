@@ -3740,7 +3740,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
       ("you@example.com", "API key", "From OPENAI_API_KEY"; a key the engine named after its
       provider, or only "API key", says "API key"). A client that draws a row for each draws these.
     - `actions`: what can be done with it now, in the order to offer them, `{id, label, confirm?,
-      here?}`. `label` is the button's words. `confirm`, where a client asks first: `{title,
+      here?, sheetTitle?}`. `label` is the button's words. `sheetTitle` is required on `signIn`, `signInAgain` and `addAnother` (`account-action-sheet-title`): the sheet title, drawn verbatim by clients. Key actions say "Add Key · OpenAI" (or Replace Key / Add Another Key); credentials say "Connect · Amazon Bedrock"; real sign-ins keep "Sign In to <name>". `confirm`, where a client asks first: `{title,
       message, label}`, the question, what it comes to and the words of the button that goes
       ahead, all the box's; a client marks such a button as its platform does (an ellipsis) and
       never reads one in `label`. `here`: it only works on the box's computer (a coding agent's
@@ -6931,6 +6931,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `shell.stop` | `POST kuvo/shell/<id>/stop` |
 | `sign-in.accounts.kinds` | `kind`, `listed` and `service` on each account in `GET kuvo/sign-in/accounts`: which are providers Accounts lists, and each one's mark ("Signing in", #711) |
 | `sign-in.accounts.plan` | `plan` on each account in `GET kuvo/sign-in/accounts`: a plan you sign in to, or an account you enter a key or credentials for; and a key-only account's buttons say Add Key ("Signing in", #733) |
+| `account-action-sheet-title` | `sheetTitle` on account actions that open a sign-in sheet; clients draw the supplied title verbatim (#734) |
 | `sign-in.accounts.state` | `state`, `line`, `connections` and `actions` on each account in `GET kuvo/sign-in/accounts`: how it stands, the line under its name, each of its sign-ins' own line, and what can be done with it, each with its button's words and its confirm's ("Signing in", #668), and `added` on one you added |
 | `sign-in.codes` | `POST kuvo/sign-in/start`, and `userCode` wherever a sign-in has a device code, the engine's own plans too ("Signing in", #711) |
 | `sign-in.methods` | `GET kuvo/sign-in/methods`, `GET kuvo/sign-in/accounts` and `GET kuvo/sign-in/status`: the ways to sign in, in the box's order and words, and what to say when a sign-in didn't work ("Signing in") |

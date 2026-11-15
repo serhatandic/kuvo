@@ -755,6 +755,11 @@ pub fn said_of(account: &Value, offered: &Value, agents: bool, ended: Option<&st
             actions.push(json!({ "id": "disconnect", "label": "Disconnect", "confirm": { "title": format!("Disconnect {name}?"), "message": message, "label": "Disconnect" } }));
         }
     }
+    for action in &mut actions {
+        if matches!(action["id"].as_str(), Some("signIn" | "signInAgain" | "addAnother")) {
+            action["sheetTitle"] = json!(if key_only(offered) || connects(offered) { format!("{} · {name}", action["label"].as_str().unwrap_or_default()) } else { format!("Sign In to {name}") });
+        }
+    }
     let mut answer = json!({ "state": state, "line": line, "actions": actions, "connections": said.into_iter().map(|each| each.0).collect::<Vec<_>>() });
     if added {
         answer["added"] = json!(true);

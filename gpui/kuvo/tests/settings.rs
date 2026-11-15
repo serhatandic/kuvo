@@ -889,7 +889,7 @@ fn an_account_is_drawn_from_the_boxs_state_line_and_actions(cx: &mut TestAppCont
     };
     let asks = json!({ "id": "disconnect", "label": "Forget This Plan", "confirm": { "title": "Forget it?", "message": "The box’s own words.", "label": "Forget" } });
     // A plan that isn't signed in, said by the box to have ended, with words of its own.
-    stand_in.set_account_said("anthropic", json!({ "state": "ended", "line": "The box’s line", "actions": [{ "id": "signInAgain", "label": "Sign In Once More" }, asks] }));
+    stand_in.set_account_said("anthropic", json!({ "state": "ended", "line": "The box’s line", "actions": [{ "id": "signInAgain", "label": "Sign In Once More", "sheetTitle": "Continue with Anthropic" }, asks] }));
     let view = again(&workspace, cx);
     assert_eq!(view.read_with(cx, |view, _| view.row_detail("account-anthropic")).as_deref(), Some("The box’s line"));
     assert!(shown(cx, "account-anthropic-sign-in-once-more") && shown(cx, "account-anthropic-forget-this-plan"));
@@ -898,8 +898,12 @@ fn an_account_is_drawn_from_the_boxs_state_line_and_actions(cx: &mut TestAppCont
     assert!(stand_in.seen_at("POST", "kuvo/accounts/anthropic/forget").is_empty(), "nothing sent until it's confirmed");
     cx.simulate_keystrokes("escape");
 
+    click(cx, "account-anthropic-sign-in-once-more");
+    assert_eq!(view.read_with(cx, |view, cx| view.sign_in().map(|sheet| sheet.read(cx).title())), Some("Continue with Anthropic".into()));
+    cx.simulate_keystrokes("escape");
+
     // Signed in with several: a menu, the one that asks first marked by this app, not in its label.
-    stand_in.set_account_said("anthropic", json!({ "state": "signedIn", "line": "Signed in", "actions": [{ "id": "signInAgain", "label": "Sign In Again" }, asks] }));
+    stand_in.set_account_said("anthropic", json!({ "state": "signedIn", "line": "Signed in", "actions": [{ "id": "signInAgain", "label": "Sign In Again", "sheetTitle": "Sign In to Anthropic" }, asks] }));
     again(&workspace, cx);
     click(cx, "account-anthropic-menu");
     assert!(shown(cx, "menu-item-Sign In Again…") && shown(cx, "menu-item-Forget This Plan…"));
@@ -915,7 +919,7 @@ fn an_account_is_drawn_from_the_boxs_state_line_and_actions(cx: &mut TestAppCont
     }
 
     // A sign-in whose page comes back to the box's computer: only where this app runs there.
-    stand_in.set_account_said("cursor", json!({ "actions": [{ "id": "signIn", "label": "Sign In", "here": true }] }));
+    stand_in.set_account_said("cursor", json!({ "actions": [{ "id": "signIn", "label": "Sign In", "sheetTitle": "Sign In to Cursor", "here": true }] }));
     again(&workspace, cx);
     assert!(shown(cx, "account-cursor-sign-in"));
     stand_in.set_elsewhere(true);

@@ -122,10 +122,10 @@ test("how each account stands and what can be done with it, in the box's words: 
   // page coming back to its computer: Sign In only there.
   const before = await answer("GET", "kuvo/sign-in/accounts");
   assert.deepEqual(before.json.accounts.map(({ id, state, line, actions, connections }) => ({ id, state, line, actions, connections })).at(-1), {
-    id: "github-copilot", state: "signedOut", line: "Sign in with GitHub", actions: [{ id: "signIn", label: "Sign In" }], connections: [],
+    id: "github-copilot", state: "signedOut", line: "Sign in with GitHub", actions: [{ id: "signIn", label: "Sign In", sheetTitle: "Sign In to GitHub Copilot" }], connections: [],
   });
   const agents = await answer("GET", "kuvo/sign-in/accounts?agents=1");
-  assert.deepEqual(agents.json.accounts.map(({ state, line, actions }) => ({ state, line, actions })), [{ state: "signedOut", line: "Not signed in", actions: [{ id: "signIn", label: "Sign In", here: true }] }]);
+  assert.deepEqual(agents.json.accounts.map(({ state, line, actions }) => ({ state, line, actions })), [{ state: "signedOut", line: "Not signed in", actions: [{ id: "signIn", label: "Sign In", sheetTitle: "Sign In to Claude Code", here: true }] }]);
 
   // Signed in with two accounts, the first in use.
   const signedIn = await standIn(url => {
@@ -140,7 +140,7 @@ test("how each account stands and what can be done with it, in the box's words: 
   const on = link.engineHandler(() => ({ pid: process.pid, ...signedIn, version: "2.0.32" }), { name: "Studio" }, () => null);
   const copilot = async () => (await answer("GET", "kuvo/sign-in/accounts", on)).json.accounts[0];
   const disconnect = { id: "disconnect", label: "Disconnect", confirm: { title: "Disconnect GitHub Copilot?", message: "Its sign-ins and keys go from Studio, and its models leave the model picker there. Sessions on its models stop until you sign in again.", label: "Disconnect" } };
-  const another = { id: "addAnother", label: "Add Another Account" };
+  const another = { id: "addAnother", label: "Add Another Account", sheetTitle: "Sign In to GitHub Copilot" };
   let said = await copilot();
   assert.deepEqual({ state: said.state, line: said.line, actions: said.actions, connections: said.connections }, {
     state: "signedIn", line: "Signed in as you@example.com · 2 accounts", actions: [another, disconnect],
@@ -151,7 +151,7 @@ test("how each account stands and what can be done with it, in the box's words: 
   await link.noteSignIn({ type: "session.execution.failed", data: { sessionID: "ses_1", error: { type: "provider.auth", message: "Request failed" } } }, signedIn);
   said = await copilot();
   assert.deepEqual({ state: said.state, line: said.line, actions: said.actions, connections: said.connections.map(each => each.state) }, {
-    state: "ended", line: "Sign-in ended", actions: [{ id: "signInAgain", label: "Sign In Again" }, another, disconnect], connections: ["ended", "signedIn"],
+    state: "ended", line: "Sign-in ended", actions: [{ id: "signInAgain", label: "Sign In Again", sheetTitle: "Sign In to GitHub Copilot" }, another, disconnect], connections: ["ended", "signedIn"],
   });
   // The same as `kuvo/accounts/ended` says.
   assert.deepEqual((await answer("GET", "kuvo/accounts/ended", on)).json, { providers: ["github-copilot"] });

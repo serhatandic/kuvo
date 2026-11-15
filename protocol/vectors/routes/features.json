@@ -13,6 +13,7 @@
        "json": {
         "features": {
          "<includes>": [
+          "account-action-sheet-title",
           "accounts.credentials",
           "accounts.ended",
           "accounts.found",
@@ -227,6 +228,7 @@
        "status": 200,
        "json": {
         "features": [
+         "account-action-sheet-title",
          "accounts.credentials",
          "accounts.ended",
          "accounts.found",

@@ -1109,7 +1109,7 @@ impl SettingsView {
                 self.search.update(cx, |field, cx| field.set_text("", cx));
                 cx.emit(Pick { place, record: true });
             }
-            Act::SignIn { side, account, name } => self.open_sign_in(side, &account, &name, cx),
+            Act::SignIn { side, account, name, sheet_title } => self.open_sign_in_titled(side, &account, &name, sheet_title, cx),
             Act::Install { account, name } => {
                 let key = format!("account-{account}");
                 self.set_busy(&key, "Installing…");
@@ -1298,8 +1298,17 @@ impl SettingsView {
     }
 
     pub fn open_sign_in(&mut self, side: AccountSide, account: &str, name: &str, cx: &mut Context<Self>) {
+        let Reading::Ready(accounts) = &self.accounts else { return };
+        let list = if side == AccountSide::Agents { &accounts.agents } else { &accounts.engine };
+        let Some(title) = list.iter().find(|entry| entry.integration.id == account)
+            .and_then(|entry| entry.actions.iter().find(|action| action.signs_in()))
+            .and_then(|action| action.sheet_title.clone()) else { return };
+        self.open_sign_in_titled(side, account, name, title, cx);
+    }
+
+    fn open_sign_in_titled(&mut self, side: AccountSide, account: &str, name: &str, title: String, cx: &mut Context<Self>) {
         let Some(client) = self.client.clone() else { return };
-        let sheet = cx.new(|cx| SignIn::new(client, self.live, side, account, name, cx));
+        let sheet = cx.new(|cx| SignIn::new(client, self.live, side, account, name, cx).sheet_title(title));
         // Closed, however it ended (a key may have gone in as it closed): Accounts read again.
         self.sign_in_closed = Some(cx.subscribe(&sheet, |this: &mut SettingsView, _, _: &sign_in::Closed, cx| {
             this.sign_in = None;

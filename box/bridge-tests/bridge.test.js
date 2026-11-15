@@ -1515,6 +1515,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
   // has now, never as one it doesn't have (403).
   const routes = {
     // One a line, in order (as `FEATURES` are), so branches that each add one merge cleanly.
+    "account-action-sheet-title": ["GET", "kuvo/sign-in/accounts"],
     "accounts.credentials": ["GET", "kuvo/accounts/credentials"],
     "accounts.ended": ["GET", "kuvo/accounts/ended"],
     "accounts.found": ["GET", "kuvo/accounts/found"],
