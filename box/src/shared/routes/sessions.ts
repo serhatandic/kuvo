@@ -175,7 +175,7 @@ export type ModelAction = Infer<typeof MODEL_ACTION>;
  * picker; a picker leaves either out, though a conversation on it carries on; `side`, where a
  * conversation on it runs, the engine or the coding agents' bridge, Custom Auto's too; `efforts`, its
  * variants; `aliases`, other ids a conversation may name it by; `free`, it needs no account:
- * OpenCode Zen's free models, a local provider's); whether the engine's and the coding agents' could be said
+ * OpenCode Zen's free models); whether the engine's and the coding agents' could be said
  * (`known`); the coding agents' accounts still listing theirs (`listing`: one of theirs not
  * listed may still run); and the model a new session starts on, for the one wanted (`starting`: null for none
  * that runs; left out while the engine can't say). */

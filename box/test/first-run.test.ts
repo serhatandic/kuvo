@@ -33,6 +33,27 @@ test("the first run is done once a client says so, for every client of the box, 
   expect((await ask("POST", "kuvo/setup/welcomed", { welcomed: "yes" })).status).toBe(400)
   expect((await ask("GET", "kuvo/setup/welcomed")).status).toBe(405)
   expect(await welcomed()).toBe(true)
+  // A client following the setup hears the change as it's said.
+  const following = new AbortController()
+  const lines: any[] = []
+  const heard = (async () => {
+    let text = ""
+    for await (const piece of handler({ method: "GET", path: "kuvo/setup/events", headers: {}, body: undefined }, undefined, following.signal)) {
+      if (!("body" in piece)) continue
+      text += Buffer.from(piece.body).toString()
+      const done = text.split("\n").slice(0, -1)
+      text = text.slice(text.lastIndexOf("\n") + 1)
+      lines.push(...done.filter(Boolean).map(line => JSON.parse(line)))
+      if (lines.length === 1) await ask("POST", "kuvo/setup/welcomed", { welcomed: false })
+      if (lines.length >= 2) break
+    }
+    following.abort()
+  })()
+  await heard
+  expect(lines.map(line => line.welcomed)).toEqual([true, false])
+  expect(await welcomed()).toBe(false)
+  // Said again.
+  expect(await ask("POST", "kuvo/setup/welcomed", { welcomed: true })).toEqual({ status: 200, body: { welcomed: true } })
   // To be had again.
   expect(await ask("POST", "kuvo/setup/welcomed", { welcomed: false })).toEqual({ status: 200, body: { welcomed: false } })
   expect(await welcomed()).toBe(false)

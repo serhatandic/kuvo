@@ -294,8 +294,9 @@ computer. Changing the main computer and joining two setups come later: #183.)
   earlier Mac doesn't lead either, with none of them named. Once it leads, a machine not heard from
   for days stays gone until it's heard from again (so a Mac back from a long sleep doesn't step
   aside while the relay hasn't looked again).
-  `welcomed` (`setup.welcomed`, #733): whether you've had Kuvo Code's first run with this box, kept
-  on it (`run/welcomed.json`), so every client of it agrees and one installed again doesn't
+  `welcomed` (`setup.welcomed`, #733): whether you've had Kuvo Code's first run with this box (each
+  box its own: a client asks the box it opens with, its own computer's), kept on it
+  (`run/welcomed.json`), so every client of it agrees and one installed again doesn't
   welcome you again. **`POST kuvo/setup/welcomed {"welcomed": true | false}`** sets it (`false`:
   the first run is to be had again), from any client of the box, and answers `{"welcomed"}`
   (`kuvo/setup/events` says it too); `400` without a yes or no, `405` for anything but `POST`.
@@ -1700,10 +1701,10 @@ start on a model by the same rule.
   one that has none. `aliases`: other ids a conversation may name it by (Claude Code's `default`,
   the model it stands for now). A box says these with `models.offered.sides`, which the update gate
   requires. `free: true` (`models.offered.free`, #733): it needs no account, so a client can say
-  "free models" without knowing the engine's providers: one of the engine's that costs nothing by
-  its prices, from OpenCode Zen (whose free models run signed out) or a provider with nothing to
-  sign in to (a local one). Never a coding agent's, nor one that costs nothing only with its
-  account (Copilot's included models).
+  "free models" without knowing the engine's providers: OpenCode Zen's that cost nothing by its
+  prices, which run signed out. Never a coding agent's, one that costs nothing only with its
+  account (Copilot's included models), nor a provider of your own (one listing no prices reads as
+  costing nothing, though it may be a paid gateway).
 - `known`: whether the engine's models, and the coding agents' with Custom Auto's lists, could be
   said. One that couldn't (not answering, an engine that hasn't loaded yet, or the bridge not
   running: starting, or started again) has none in `models`, rather than none at all: a client
@@ -3411,7 +3412,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     `methods` is `oauth`, its sign-in page: every coding agent's, ChatGPT's, Copilot's), rather
     than an account you enter a key or the computer's credentials for (OpenAI's, whose ChatGPT
     plan comes through Codex; DeepSeek's; Amazon Bedrock's). A first run lists plans and keeps
-    keys apart by it, so no client works it out from `methods`.
+    keys apart by it, so no client works it out from `methods`. It means something for a
+    `provider` alone: an MCP server's sign-in has a sign-in page too, and isn't listed.
   - `POST kuvo/sign-in/start?integration=<id>[&agents=1]` `{methodID, answer?}`
     (`sign-in.codes`, #711): starts a sign-in in the browser as the engine's (or the bridge's) own
     `api/integration/<id>/connect/oauth` does, and answers what that answered (`attemptID`, `url`,
@@ -4041,15 +4043,18 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   `kuvo/folders` refuses, with `reason`.
 - `GET kuvo/folders/suggested` (`folders.suggested`, #733): folders worth starting in on this box's
   computer, for a first run's or a new session's folder picker → `{"home", "folders": [{path, name,
-  repository?, seen}]}`: first where its agents worked lately (its sessions', a project's or a
-  chat's, the engine's and the coding agents', not archived; never the home folder itself or the
-  box's own folder, nor one gone since), the latest first, twelve at most, `seen` when a session
+  repository?, seen}]}`: first the projects its agents worked in lately (each project session's
+  project folder, a worktree's session's the project it's of, the engine's and the coding agents',
+  not archived; never a chat's, a bot's or a subagent's, the home folder itself, the box's own
+  folder or its chats folder, nor one gone since; compared as the system names them, so a home
+  reached through a link lists each once), the latest first, twelve at most, `seen` when a session
   there last changed (ms); then the git repositories directly in `~/Projects` and `~/Developer`
   (one level, never deeper, hidden ones left out, the first 500 entries of each read), the one
   changed latest first, `seen` null; 20 in all at most, each once. `repository: true` for a git
   repository (a linked worktree's too); on a Mac a folder in the home folder's Desktop,
-  Documents, Downloads, Library, Movies, Music or Pictures isn't looked into (macOS would ask):
-  suggested as the session had it, without `repository`. Each box says its own computer's;
+  Documents, Downloads, Library, Movies, Music or Pictures, or on another disk (`/Volumes`), isn't
+  looked into (macOS would ask): suggested as the session had it, without `repository`, and a link
+  in `~/Projects` or `~/Developer` leading there isn't followed. Each box says its own computer's;
   `kuvo/folders` still browses any other.
 - `GET kuvo/programs?name=<program>` (`programs`): whether the box has a program an MCP server's
   command names, found on its PATH as its engine finds it (a name like `npx`, or a path, `~/`

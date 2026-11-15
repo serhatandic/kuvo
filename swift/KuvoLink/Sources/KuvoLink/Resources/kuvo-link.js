@@ -19571,13 +19571,8 @@ function offeredHere(lists) {
     ...auto.map((list) => ({ providerID: "auto", id: list.id, name: list.name, aliases: [], efforts: [], provisional: false, retiring: false, hidden: false, agents: true, free: false }))
   ];
 }
-function needsNoAccount(model, engine) {
-  if (!model.free || !engine)
-    return false;
-  if (model.providerID === "opencode")
-    return true;
-  const account = engine.accounts.get(model.providerID);
-  return !account || account.methods.length === 0;
+function needsNoAccount(model) {
+  return model.free && model.providerID === "opencode";
 }
 function stillListing(lists) {
   if (!lists.bridge)
@@ -43855,7 +43850,7 @@ import fs140 from "node:fs";
 import path148 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "33ff85d75ad8";
+var BRIDGE_VERSION = "9cba63237516";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -48720,7 +48715,7 @@ var MOST_SUGGESTED = 20;
 var MOST_WORKED = 12;
 var LOOKED_IN = ["Projects", "Developer"];
 var MOST_READ3 = 500;
-var WORKED_KINDS = new Set(["project", "chat"]);
+var WORKED_KINDS = new Set(["project"]);
 var isFolder3 = (at) => {
   try {
     return fs149.statSync(at).isDirectory();
@@ -48731,14 +48726,19 @@ var isFolder3 = (at) => {
 var isRepository2 = (at) => fs149.existsSync(path159.join(at, ".git"));
 var within6 = (at, folder) => at === folder || at.startsWith(folder.endsWith(path159.sep) ? folder : folder + path159.sep);
 function suggestedFolders(home, sessions, box = K, platform = process.platform) {
-  const prompted = [...promptedFolders(platform)].map((name) => path159.join(home, name));
+  const prompted = [...promptedFolders(platform)].flatMap((name) => [path159.join(home, name), path159.join(located(home), name)]);
+  if (platform === "darwin")
+    prompted.push("/Volumes");
   const asks = (at) => prompted.some((folder) => within6(at, folder));
+  const realHome = located(home), realBox = located(box);
+  const real = (at) => asks(at) ? at : located(at);
   const latest = new Map;
   for (const session of sessions) {
-    if (!WORKED_KINDS.has(session.kind) || session.archived || typeof session.directory !== "string" || !path159.isAbsolute(session.directory))
+    const folder = typeof session.project === "string" && path159.isAbsolute(session.project) ? session.project : session.directory;
+    if (!WORKED_KINDS.has(session.kind) || session.archived || typeof folder !== "string" || !path159.isAbsolute(folder))
       continue;
-    const at = path159.resolve(session.directory);
-    if (at === home || at === path159.parse(at).root || within6(at, box))
+    const at = real(path159.resolve(folder));
+    if (at === realHome || at === home || at === path159.parse(at).root || within6(at, realBox) || within6(at, box) || !asks(at) && isChatsFolder(at))
       continue;
     if ((latest.get(at) ?? -Infinity) < session.updated)
       latest.set(at, session.updated);
@@ -48771,7 +48771,18 @@ function suggestedFolders(home, sessions, box = K, platform = process.platform) 
         if (entry.name.startsWith("."))
           continue;
         const at = path159.join(folder, entry.name);
-        if (taken.has(at) || !(entry.isDirectory() || entry.isSymbolicLink() && isFolder3(at)) || !isRepository2(at))
+        if (entry.isSymbolicLink()) {
+          let to;
+          try {
+            to = path159.resolve(folder, fs149.readlinkSync(at));
+          } catch {
+            continue;
+          }
+          if (asks(to))
+            continue;
+        }
+        const isDirectory = entry.isDirectory() || !entry.isFile() && isFolder3(at);
+        if (taken.has(located(at)) || !isDirectory || !isRepository2(at))
           continue;
         let changed = 0;
         try {
@@ -50241,7 +50252,7 @@ function offeredAnswer(lists, wanted) {
   const starting = startingModel([wanted], lists);
   const listing = stillListing(lists);
   return {
-    models: offeredHere(lists).map((model) => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" : "engine", efforts: model.efforts, aliases: model.aliases, ...model.retiring ? { retiring: true } : {}, ...model.hidden ? { hidden: true } : {}, ...!model.agents && needsNoAccount(model, lists.engine) ? { free: true } : {} })),
+    models: offeredHere(lists).map((model) => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" : "engine", efforts: model.efforts, aliases: model.aliases, ...model.retiring ? { retiring: true } : {}, ...model.hidden ? { hidden: true } : {}, ...!model.agents && needsNoAccount(model) ? { free: true } : {} })),
     known: { engine: lists.engine !== null, agents: lists.bridge !== null },
     ...listing.length ? { listing } : {},
     ...starting !== undefined ? { starting: starting?.model ?? null } : {}

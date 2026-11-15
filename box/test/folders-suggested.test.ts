@@ -1,13 +1,14 @@
-// Folders worth starting in (#733, PROTOCOL.md `kuvo/folders/suggested`): where this box's agents
-// worked lately, newest first, then the git repositories directly in ~/Projects and ~/Developer;
-// bounded and quick on a home with many folders, and never deeper than one level. A home of the
+// Folders worth starting in (#733, PROTOCOL.md `kuvo/folders/suggested`): the projects this box's
+// agents worked in lately, newest first, then the git repositories directly in ~/Projects and
+// ~/Developer; bounded on a home with many folders, and never deeper than one level. A home of the
 // test's own.
 
 import "./safety"
 import { afterAll, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { CHATS } from "../src/link/home"
 import { MOST_SUGGESTED, suggestedFolders } from "../src/link/areas/folders-suggested"
 
 const home = realpathSync(mkdtempSync(join(tmpdir(), "kuvo-suggested-")))
@@ -18,7 +19,7 @@ const folder = (at: string, repository = false) => {
   return join(home, at)
 }
 
-test("where agents worked lately first, newest first, then the repositories in Projects and Developer", () => {
+test("the projects agents worked in lately first, newest first, then the repositories in Projects and Developer", () => {
   const website = folder("Projects/website", true)
   const notes = folder("Documents/notes", true)
   const api = folder("work/api", true)
@@ -31,31 +32,61 @@ test("where agents worked lately first, newest first, then the repositories in P
   const linked = folder("Developer/linked")
   writeFileSync(join(linked, ".git"), "gitdir: ../dotfiles/.git/worktrees/linked\n")
   writeFileSync(join(home, "Projects", "README.md"), "not a folder")
+  // A link into a folder macOS asks about isn't followed there.
+  folder("Documents/secret", true)
+  symlinkSync(join(home, "Documents", "secret"), join(home, "Projects", "secret-link"))
   const box = folder(".kuvo-code")
+  mkdirSync(CHATS, { recursive: true })
   const sessions = [
     { kind: "project", directory: website, updated: 300 },
-    { kind: "chat", directory: scratch, updated: 500 },
+    { kind: "project", directory: scratch, updated: 500 },
     { kind: "project", directory: website + "/", updated: 100 },
+    // A worktree's session, in the box's folder: suggested as the project it's of.
+    { kind: "project", project: api, directory: join(box, "worktree", "api-1"), updated: 450 },
     { kind: "project", directory: api, updated: 200, archived: true },
-    { kind: "bot", directory: api, updated: 900 },
-    { kind: "subagent", directory: api, updated: 900 },
-    { kind: "chat", directory: join(box, "chats", "c1"), updated: 800 },
-    { kind: "chat", directory: home, updated: 700 },
+    { kind: "bot", directory: dotfiles, updated: 900 },
+    { kind: "subagent", directory: dotfiles, updated: 900 },
+    // A chat runs in the chats folder (on a Mac, the app's, outside the box's): never suggested.
+    { kind: "chat", directory: CHATS, updated: 950 },
+    { kind: "project", directory: CHATS, updated: 940 },
+    { kind: "project", directory: join(box, "chats", "c1"), updated: 800 },
+    { kind: "project", directory: home, updated: 700 },
     { kind: "project", directory: join(home, "gone"), updated: 600 },
     { kind: "project", directory: notes, updated: 50 },
   ]
   const suggested = suggestedFolders(home, sessions, box, "darwin")
-  expect(suggested.slice(0, 3)).toEqual([
+  expect(suggested.slice(0, 4)).toEqual([
     { path: scratch, name: "scratch", seen: 500 },
+    { path: api, name: "api", repository: true, seen: 450 },
     { path: website, name: "website", repository: true, seen: 300 },
     // In a folder macOS asks about first: suggested as it is, not looked into.
     { path: notes, name: "notes", seen: 50 },
   ])
   // Then the repositories found, each once (website already above), none deeper, none hidden.
-  expect(suggested.slice(3).map(each => [each.name, each.repository, each.seen]).sort()).toEqual([["dotfiles", true, null], ["linked", true, null]])
-  expect(suggested.some(each => each.path === dotfiles)).toBe(true)
-  // On Linux nothing's asked about first: the same folder is looked into.
-  expect(suggestedFolders(home, sessions, box, "linux").find(each => each.path === notes)).toEqual({ path: notes, name: "notes", repository: true, seen: 50 })
+  expect(suggested.slice(4).map(each => [each.name, each.repository, each.seen]).sort()).toEqual([["dotfiles", true, null], ["linked", true, null]])
+  // On Linux nothing's asked about first: the same folder is looked into, and the link followed.
+  const onLinux = suggestedFolders(home, sessions, box, "linux")
+  expect(onLinux.find(each => each.path === notes)).toEqual({ path: notes, name: "notes", repository: true, seen: 50 })
+  expect(onLinux.some(each => each.name === "secret-link")).toBe(true)
+})
+
+test("a home reached through a link: the engine's real paths are the same folders, each once", () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "kuvo-suggested-linked-")))
+  const real = join(base, "var-home"), linkedHome = join(base, "home")
+  try {
+    mkdirSync(join(real, "Projects", "app", ".git"), { recursive: true })
+    symlinkSync(real, linkedHome)
+    const sessions = [
+      { kind: "project", directory: join(real, "Projects", "app"), updated: 10 },
+      { kind: "project", directory: real, updated: 20 },
+      { kind: "project", directory: join(real, ".kuvo-code", "worktree", "x"), updated: 30 },
+    ]
+    expect(suggestedFolders(linkedHome, sessions, join(linkedHome, ".kuvo-code"), "linux")).toEqual([
+      { path: join(real, "Projects", "app"), name: "app", repository: true, seen: 10 },
+    ])
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
 })
 
 test("a home with many folders: a bounded list, each folder looked at once and nothing deeper (no clock: the bounds are what keep it quick)", () => {

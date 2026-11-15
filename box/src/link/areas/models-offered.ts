@@ -67,8 +67,8 @@ export function offeredAnswer(lists: Lists, wanted: Ref | null) {
     // `side`: where a conversation on it runs (the engine, or the coding agents' bridge, Custom
     // Auto's lists too), so a client offers in place only its own side's; `efforts`, its variants;
     // `aliases`, other ids a conversation may name it by (Claude Code's `default`); `free`, it
-    // needs no account (OpenCode Zen's free models, a local one's).
-    models: offeredHere(lists).map(model => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" : "engine", efforts: model.efforts, aliases: model.aliases, ...(model.retiring ? { retiring: true } : {}), ...(model.hidden ? { hidden: true } : {}), ...(!model.agents && needsNoAccount(model, lists.engine) ? { free: true } : {}) })),
+    // needs no account (OpenCode Zen's free models).
+    models: offeredHere(lists).map(model => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" : "engine", efforts: model.efforts, aliases: model.aliases, ...(model.retiring ? { retiring: true } : {}), ...(model.hidden ? { hidden: true } : {}), ...(!model.agents && needsNoAccount(model) ? { free: true } : {}) })),
     // (The bridge not running is one that can't say yet: it's starting, or started again.)
     known: { engine: lists.engine !== null, agents: lists.bridge !== null },
     ...(listing.length ? { listing } : {}),

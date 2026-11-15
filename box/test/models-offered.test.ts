@@ -39,9 +39,10 @@ test("a side that can't say has none of its models, and says so", () => {
 })
 
 // Which models need no account (#733), so a client says "free models" without knowing OpenCode's
-// provider: OpenCode Zen's free ones (signed out), a local provider's; never one that costs
-// nothing only with its account (Copilot's), a paid one, or a coding agent's.
-test("a model that needs no account says so: OpenCode Zen's free ones and a local one's, not Copilot's", () => {
+// provider: OpenCode Zen's free ones (signed out); never one that costs nothing only with its
+// account (Copilot's), one of your own listing no prices (perhaps a paid gateway), a paid one, or a
+// coding agent's.
+test("a model that needs no account says so: OpenCode Zen's free ones, not Copilot's or one of your own", () => {
   const free = (model: Listed): Listed => ({ ...model, free: true })
   const answer = offeredAnswer({
     engine: {
@@ -65,7 +66,7 @@ test("a model that needs no account says so: OpenCode Zen's free ones and a loca
     ["github-copilot", "gpt-5-mini", false],
     ["anthropic", "claude-opus-5-5", false],
     ["opencode", "big-pickle", true],
-    ["ollama", "qwen3", true],
+    ["ollama", "qwen3", false],
     ["claude-code", "opus", false],
     ["auto", "auto_1", false],
   ])
