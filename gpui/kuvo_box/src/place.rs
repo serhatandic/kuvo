@@ -45,11 +45,17 @@ pub fn recorded_kind(folder: &Path) -> Option<String> {
 /// else the app's box in its folder. None on a computer with neither (Linux has no app's folder:
 /// a machine's box there isn't this client's own; see [`crate::BoxClient::machine`]).
 pub fn this_mac(home: &Path) -> Option<HomeFolder> {
-    let own = own_home_folder(home);
+    this_mac_of(home, crate::install::REAL_ROOT, crate::install::REAL_APP)
+}
+
+/// The same for a copy of the app (a demo's, a test's), which keeps its box in a root of its own
+/// (`root`: a folder's name in the home folder) and its old data under its own bundle ID.
+pub fn this_mac_of(home: &Path, root: &str, app_id: &str) -> Option<HomeFolder> {
+    let own = home.join(root);
     if recorded_kind(&own).as_deref() == Some("mac") {
         return Some(HomeFolder { folder: own, speaker: Speaker::App });
     }
-    let app = app_box_folder(home);
+    let app = home.join("Library/Application Support").join(app_id).join("box");
     app.is_dir().then_some(HomeFolder { folder: app, speaker: Speaker::App })
 }
 
