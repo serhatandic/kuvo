@@ -11871,10 +11871,10 @@ async function readCursorPlan(client, now = Date.now) {
 
 // box/src/agents/usage/antigravity-plan.ts
 var specs = [
-  ["gemini-5h", "Session", 300],
-  ["gemini-weekly", "Weekly", 10080],
-  ["3p-5h", "Claude", 300],
-  ["3p-weekly", "Claude Weekly", 10080]
+  ["gemini-5h", "Gemini \xB7 5-hour", 300],
+  ["gemini-weekly", "Gemini \xB7 Weekly", 10080],
+  ["3p-5h", "Claude and GPT \xB7 5-hour", 300],
+  ["3p-weekly", "Claude and GPT \xB7 Weekly", 10080]
 ];
 var finite = (v) => typeof v === "number" && Number.isFinite(v);
 var text4 = (v) => typeof v === "string" && v.trim() ? v.trim() : undefined;
@@ -11904,7 +11904,7 @@ function antigravitySummary(bodies) {
     if (weekly.length !== 1 || !text4(b?.bucketId) || specs.some(([id]) => id === b.bucketId) || b.disabled != null && typeof b.disabled !== "boolean" || b.disabled === true || !finite(b.remainingFraction))
       continue;
     const index = windows.findIndex((w) => w.id === "3p-5h" || w.id === "3p-weekly");
-    windows.splice(index < 0 ? windows.length : index, 0, windowOf("argon-weekly", "Argon Weekly", 10080, b.remainingFraction, b.resetTime));
+    windows.splice(index < 0 ? windows.length : index, 0, windowOf("argon-weekly", "Gemini 4 Argon \xB7 Weekly", 10080, b.remainingFraction, b.resetTime));
     break;
   }
   return windows;
@@ -36770,4 +36770,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents e3e7ece79395ea776cca0622c1673747f9d2aead5ac037da802d8ca312f6596c
+// Built from Packages/Box/src/agents 5524721a6bb2b09021495c1742e1368d266b0e3053f3261870db60c2cd68bb6e
