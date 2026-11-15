@@ -75,7 +75,7 @@ One reviewer pass; every MUST and SHOULD fixed, with a scenario for each where o
 ## Left
 
 - **Not built (scope):** wake-ups (the list, Pause; `paused`, `wakes`, `watching` are read by the
-  box but not drawn), goals, Work limits and what's allowed without asking, a bot's own keys, the
+  box but not drawn), goals, Work limits and what's allowed without asking, the
   vault, its memory, Export and Import, Move to Computer, a bot made on another computer (the app
   reaches this Mac's box only), group chats' pages, the work bar over a bot's conversation and Stop.
 - **Faces:** the app draws one still face (calm eyes); the box offers six. The Look sheet picks
