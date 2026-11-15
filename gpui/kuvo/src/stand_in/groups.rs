@@ -309,9 +309,11 @@ impl Groups {
         let taken = |name: &str, session: &str| members.iter().any(|member| member["name"].as_str().is_some_and(|each| each.eq_ignore_ascii_case(name)) || member["session"] == json!(session));
         let guest_bots = bots.iter().filter(|bot| !chat.members.iter().any(|id| bot["id"] == json!(id))).map(|bot| {
             let name = bot["name"].as_str().unwrap_or("").to_owned();
+            // (As the box says it: its job, else "Bot", then where it is.)
+            let job = bot["job"].as_str().filter(|job| !job.is_empty()).unwrap_or("Bot");
             let detail = match bot["computer"].as_str() {
-                Some(computer) => format!("Bot · on {computer}"),
-                None => "Bot".to_owned(),
+                Some(computer) => format!("{job} · on {computer}"),
+                None => job.to_owned(),
             };
             (name.clone(), json!({ "text": format!("&{name}"), "title": name, "detail": detail, "kind": "bot", "session": bot["session"] }))
         });

@@ -27,6 +27,8 @@ export function readiness(model: { providerID: string; id: string } | null, stat
   const choose = (help: string): ModelAction => ({ do: "choose", label: "Choose a Model", help });
   switch (state.missing) {
     case "signIn":
+      // (One reached with the computer's credentials, as Accounts' Connect says it.)
+      if (state.connects) return { refusal: `${name} needs ${account} connected: connect it, or choose another model.`, action: { do: "signIn", label: "Connect", help: `Connect ${account}` } };
       return { refusal: `${name} needs a sign-in to ${account}: sign in, or choose another model.`, action: { do: "signIn", label: "Sign In", help: `Sign in to ${account}` } };
     case "key": {
       const plan = state.plan;

@@ -17,6 +17,11 @@
       "readiness": { "refusal": "GPT-5.5 needs a sign-in to GitHub Copilot: sign in, or choose another model.", "action": { "do": "signIn", "label": "Sign In", "help": "Sign in to GitHub Copilot" } }
     },
     {
+      "about": "an account reached with the computer's credentials, connected rather than signed in to (#734)",
+      "state": { "model": { "providerID": "amazon-bedrock", "id": "anthropic.claude-opus-5-5" }, "name": "Claude Opus 5.5", "runs": false, "missing": "signIn", "account": { "id": "amazon-bedrock", "name": "Amazon Bedrock" }, "connects": true },
+      "readiness": { "refusal": "Claude Opus 5.5 needs Amazon Bedrock connected: connect it, or choose another model.", "action": { "do": "signIn", "label": "Connect", "help": "Connect Amazon Bedrock" } }
+    },
+    {
       "about": "a sign-in to a coding agent's account you added, named as Accounts names it",
       "state": { "model": { "providerID": "claude-code@work", "id": "claude-opus-5-5" }, "runs": false, "missing": "signIn", "account": { "id": "claude-code@work", "name": "Claude Code · Work", "label": "Work" } },
       "readiness": { "refusal": "claude-opus-5-5 needs a sign-in to Claude Code · Work: sign in, or choose another model.", "action": { "do": "signIn", "label": "Sign In", "help": "Sign in to Claude Code · Work" } }

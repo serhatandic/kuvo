@@ -9,11 +9,13 @@ import { ask } from "./route-answer"
 
 const { engineHandler } = await import("../src/link/server/router")
 
-// The engine's sessions, newest first: a chat bot's own conversation, one of a bot that left the
-// chat, and others "&" can name.
+// The engine's sessions, newest first: a chat bot's own conversation under another title, one by
+// the name of the chat's bot on another computer (which `kuvo/named` lists by its own
+// conversation there), one of a bot that left the chat, and others "&" can name.
 const session = (id: string, title: string, updated: number) => ({ id, title, location: { directory: "/work/app" }, time: { created: updated, updated } })
 const sessions = [
-  session("ses_mira", "Mira", 100),
+  session("ses_mira", "Mira’s desk", 100),
+  session("ses_max_there", "Max", 95),
   session("ses_otto", "Otto", 90),
   session("ses_map", "Mapping work", 80),
   session("ses_notes", "Max’s notes", 70),
@@ -57,6 +59,7 @@ const offered = async (query: string) => {
 }
 
 test("\"&\" in a group chat offers its own bots first, then the guests a message can name, each once", async () => {
+  // (Mira's conversation, and Max by his name, aren't offered again as guests.)
   const shown = await offered("q=")
   expect(shown.map((each: any) => each.title)).toEqual(["Mira", "Max", "Otto", "Mapping work", "Max’s notes", "Docs"])
   expect(shown[0]).toEqual({ text: "&Mira", title: "Mira", detail: "In this chat", kind: "bot", session: "ses_mira" })
@@ -75,19 +78,27 @@ test("what's typed ranks each part, the chat's bots still first", async () => {
 })
 
 test("a bot taken out of the chat is offered as a guest, after the chat's own", async () => {
+  const before = members
   members = members.filter(each => each.id !== "bot_otto")
-  const shown = await offered("q=")
-  expect(shown.map((each: any) => each.title)).toEqual(["Mira", "Max", "Otto", "Mapping work", "Max’s notes", "Docs"])
-  expect(shown[2]).toEqual({ text: "&Otto", title: "Otto", detail: "app", kind: "session", session: "ses_otto" })
-  members = [...members, member("bot_otto", "Otto", "ses_otto")]
+  try {
+    const shown = await offered("q=")
+    expect(shown.map((each: any) => each.title)).toEqual(["Mira", "Max", "Otto", "Mapping work", "Max’s notes", "Docs"])
+    expect(shown[2]).toEqual({ text: "&Otto", title: "Otto", detail: "app", kind: "session", session: "ses_otto" })
+  } finally {
+    members = before
+  }
 })
 
 test("for no such chat, or while its bridge doesn't run or answer, it says so", async () => {
   expect((await ask(handler, "GET", "kuvo/groups/grp_none/mentions?q=")).status).toBe(404)
-  answering = false
-  expect((await ask(handler, "GET", "kuvo/groups/grp_team/mentions?q=")).status).toBe(503)
-  answering = true
-  bridgeRuns = false
-  expect((await ask(handler, "GET", "kuvo/groups/grp_team/mentions?q=")).status).toBe(503)
-  bridgeRuns = true
+  try {
+    answering = false
+    expect((await ask(handler, "GET", "kuvo/groups/grp_team/mentions?q=")).status).toBe(503)
+    answering = true
+    bridgeRuns = false
+    expect((await ask(handler, "GET", "kuvo/groups/grp_team/mentions?q=")).status).toBe(503)
+  } finally {
+    answering = true
+    bridgeRuns = true
+  }
 })

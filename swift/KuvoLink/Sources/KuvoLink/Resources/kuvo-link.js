@@ -2538,6 +2538,7 @@ var SESSION_MODEL = object({
   "missing?": words("model", "signIn", "key", "install", "gone"),
   "account?": object({ id: string, name: string, "label?": string }),
   "plan?": object({ name: string, agent: string, provider: string }),
+  "connects?": bool,
   "refusal?": string,
   "choose?": bool,
   "action?": MODEL_ACTION
@@ -19983,10 +19984,12 @@ function signInNeed(providerID, methods) {
   const plan = PLANS[providerID];
   const offered = methods.filter(([type, id]) => ["oauth", "key", "external"].includes(type) && !(type === "oauth" && planHides(providerID, id ?? "")));
   const key = offered.length > 0 && offered.every(([type]) => type === "key");
+  const connects = !key && offered.some(([type]) => type === "external") && !offered.some(([type]) => type === "oauth");
   return {
     missing: key ? "key" : "signIn",
     offered: offered.map(([type, id]) => type === "key" ? "key" : `${type}:${id}`),
-    ...key && plan ? { plan: { name: plan.name, agent: plan.agent, provider: plan.provider } } : {}
+    ...key && plan ? { plan: { name: plan.name, agent: plan.agent, provider: plan.provider } } : {},
+    ...connects ? { connects: true } : {}
   };
 }
 var asked4 = (target, route, folder) => call(target, "GET", route, undefined, AbortSignal.timeout(ASK_WAIT), folder).catch(() => {
@@ -20211,7 +20214,7 @@ function onEngine(ref, engine) {
     return { runs: false, missing: "gone", ...account ? { account: accountOf(account) } : {} };
   }
   const need = signInNeed(ref.providerID, account.methods);
-  return { ...name, runs: false, missing: need.missing, account: accountOf(account), ...need.plan ? { plan: need.plan } : {} };
+  return { ...name, runs: false, missing: need.missing, account: accountOf(account), ...need.plan ? { plan: need.plan } : {}, ...need.connects ? { connects: true } : {} };
 }
 function withAgents(ref, bridge) {
   if (!bridge)
@@ -43945,7 +43948,7 @@ import fs140 from "node:fs";
 import path148 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ae4a9ff49a82";
+var BRIDGE_VERSION = "fe3a5942cdf8";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -50471,6 +50474,8 @@ function readiness(model, state, known) {
   const choose = (help) => ({ do: "choose", label: "Choose a Model", help });
   switch (state.missing) {
     case "signIn":
+      if (state.connects)
+        return { refusal: `${name} needs ${account} connected: connect it, or choose another model.`, action: { do: "signIn", label: "Connect", help: `Connect ${account}` } };
       return { refusal: `${name} needs a sign-in to ${account}: sign in, or choose another model.`, action: { do: "signIn", label: "Sign In", help: `Sign in to ${account}` } };
     case "key": {
       const plan = state.plan;
@@ -54840,7 +54845,7 @@ function hintOf(methods, name) {
   const signIn = methods.find((method) => method.type === "oauth" && !method.legacy);
   if (signIn)
     return name && signIn.label.toLowerCase().includes(name.toLowerCase()) ? "Sign in" : signIn.label.replaceAll("Login with", "Sign in with");
-  return methods.some((method) => method.type === "key") ? "API key" : "Connect";
+  return methods.some((method) => method.type === "key") && !methods.some((method) => method.type === "external") ? "API key" : "Connect";
 }
 var isPlan = (offered) => offered.methods.some((method) => method.type === "oauth");
 function failureWords(status, message) {

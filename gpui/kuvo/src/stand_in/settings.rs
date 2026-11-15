@@ -110,7 +110,7 @@ impl Default for Settings {
             ways(json!([{ "type": "oauth", "id": "max", "label": "Claude Pro/Max" }, { "type": "oauth", "id": "console", "label": "Create an API Key" }, { "type": "key", "label": "Manually enter API Key" }, { "type": "oauth", "id": "legacy-device", "label": "Device code (legacy)", "legacy": true }]), json!(["ANTHROPIC_API_KEY"]), "Claude Pro/Max"),
         );
         all.insert("openai".into(), ways(json!([{ "type": "key", "label": "Use an API key" }]), json!(["OPENAI_API_KEY"]), "API key"));
-        all.insert("amazon-bedrock".into(), ways(json!([{ "type": "external", "id": "aws", "label": "AWS credentials on this computer", "form": region }, { "type": "key", "label": "Bedrock API key", "form": region }]), json!(["AWS_ACCESS_KEY_ID", "AWS_PROFILE"]), "API key"));
+        all.insert("amazon-bedrock".into(), ways(json!([{ "type": "external", "id": "aws", "label": "AWS credentials on this computer", "form": region }, { "type": "key", "label": "Bedrock API key", "form": region }]), json!(["AWS_ACCESS_KEY_ID", "AWS_PROFILE"]), "Connect"));
         all.insert("deepseek".into(), ways(json!([{ "type": "key", "label": "Use an API key" }]), json!(["DEEPSEEK_API_KEY"]), "API key"));
         all.insert("groq".into(), ways(json!([]), json!(["GROQ_API_KEY"]), "Connect"));
         all.insert("mistral".into(), ways(json!([{ "type": "key", "label": "Use an API key" }]), json!(["MISTRAL_API_KEY"]), "API key"));

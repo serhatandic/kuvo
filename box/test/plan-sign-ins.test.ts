@@ -16,3 +16,11 @@ test.each(vectors.cases.map((each: any) => [each.provider, each]))("%s: the ways
   expect(need.missing).toBe(each.missing)
   expect(need.plan ?? null).toEqual(each.plan)
 })
+
+test("an account reached with the computer's credentials, a key perhaps beside them, is connected, not signed in to (#734)", () => {
+  // Amazon Bedrock: its AWS credentials, or a key.
+  expect(signInNeed("amazon-bedrock", [["external", "aws"], ["key", ""]])).toEqual({ missing: "signIn", offered: ["external:aws", "key"], connects: true })
+  // One with a sign-in page beside them is signed in to; one with only a key, given a key.
+  expect(signInNeed("acme", [["oauth", "device"], ["external", "aws"]]).connects).toBeUndefined()
+  expect(signInNeed("deepseek", [["key", ""]]).connects).toBeUndefined()
+})

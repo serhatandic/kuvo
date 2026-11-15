@@ -11534,6 +11534,7 @@
            "provider": "string"
           }
          },
+         "connects?": "bool",
          "refusal?": "string",
          "choose?": "bool",
          "action?": {

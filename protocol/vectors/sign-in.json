@@ -260,7 +260,7 @@
      "AWS_ACCESS_KEY_ID",
      "AWS_PROFILE"
     ],
-    "hint": "API key"
+    "hint": "Connect"
    }
   },
   {
@@ -2608,11 +2608,11 @@
      }
     ],
     "environment": [],
-    "hint": "API key"
+    "hint": "Connect"
    },
    "plan": false,
    "state": "signedOut",
-   "line": "API key",
+   "line": "Connect",
    "actions": [
     {
      "id": "signIn",

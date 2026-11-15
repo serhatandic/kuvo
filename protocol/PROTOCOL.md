@@ -1365,7 +1365,7 @@ the Mac's composer ranked them, so every client shows the same list.
   `{"mentions": [...]}`: the chat's own bots first (as its list has them), `detail` "In this chat"
   (then " · on <computer>" for one on another), `session` its conversation or null where that
   computer didn't say; then the guests a message there can name, who `kuvo/named` lists but a
-  chat's bot (by conversation or name, since the chat reads "&Name" as its own), as `agents`
+  chat's bot (by conversation, or by name, so each name is offered once), as `agents`
   words them. Each part ranked as `agents` ranks, so a guest never comes before a chat bot; a
   bot that left the chat is a guest. `404 {"message"}` for no such chat here, `503 {"message"}`
   while the coding agents' bridge that runs the chats isn't running or answering. A client
@@ -1658,7 +1658,8 @@ box decides it from what its engine and coding agents list, so every client show
 - `runs`: it can run here now. Else `missing` says what it needs:
   - `model`: none to run on: choose one.
   - `signIn`: a sign-in to `account` (an engine provider's, or a coding agent's account, `label`
-    the name you gave one you added).
+    the name you gave one you added); `connects: true` where it's reached with the computer's credentials (a key perhaps beside
+    them) and no sign-in page, as Amazon Bedrock is: its words say Connect (#734).
   - `key`: a key for `account`, where the only way Accounts offers to sign in to it is a key. The
     engine's OpenAI and xAI are offered only a key, as their ChatGPT and SuperGrok plans sign in
     through Codex and Grok: those come with `plan` (`{name: "SuperGrok", agent: "Grok", provider:
