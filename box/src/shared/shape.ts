@@ -77,5 +77,5 @@ export function fitsShape(shape: Shape, value: unknown): boolean {
   const fields = value as Record<string, unknown>;
   if ("map" in shape) return Object.values(fields).every(each => fitsShape(shape.map, each));
   const declared = Object.entries(shape.object);
-  return declared.every(([key, field]) => key.endsWith("?") && !(key.slice(0, -1) in fields) || (key.replace(/\?$/, "") in fields && fitsShape(field, fields[key.replace(/\?$/, "")]))) && Object.keys(fields).every(key => key in shape.object || key + "?" in shape.object);
+  return declared.every(([key, field]) => key.endsWith("?") && !(key.slice(0, -1) in fields) || (key.replace(/\?$/, "") in fields && fitsShape(field, fields[key.replace(/\?$/, "")]))) && Object.keys(fields).every(key => Object.hasOwn(shape.object, key) || Object.hasOwn(shape.object, key + "?"));
 }
