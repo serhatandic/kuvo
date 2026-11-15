@@ -155,8 +155,47 @@ impl StandIn {
     pub fn at(replies: Replies, now: f64) -> StandIn {
         let stand_in = StandIn { inner: Arc::new(Inner { state: Mutex::new(State { at: 1, next: 1, ..State::default() }), replies }) };
         stand_in.fill(now);
-        stand_in.state().peers.insert("key_devbox".into(), StandIn::machine(replies, "devbox"));
+        let devbox = StandIn::machine(replies, "devbox");
+        devbox.fill_machine(now);
+        stand_in.state().peers.insert("key_devbox".into(), devbox);
         stand_in
+    }
+
+    /// What runs on the stand-in's machine: a project with a lead's session at work and one
+    /// finished, each with a short conversation.
+    fn fill_machine(&self, now: f64) {
+        let mut state = self.state();
+        state.made = Some(now);
+        let billing = "/home/sam/billing".to_owned();
+        state.projects.insert(billing.clone(), json!({ "name": "Billing", "updated": now - 4.0 * MINUTE }));
+        for (id, title, ago, running) in [("ses_releases", "Plan this week’s releases", 4.0 * MINUTE, true), ("ses_invoices", "Reconcile the invoices export", 6.0 * HOUR, false)] {
+            let mut facts = json!({ "kind": "project", "directory": billing, "project": billing, "title": title, "created": now - ago - HOUR, "updated": now - ago });
+            if running {
+                facts["running"] = json!(true);
+                state.running.insert(id.to_owned());
+            }
+            state.sessions.insert(id.to_owned(), facts);
+            state.models.insert(id.to_owned(), json!({ "providerID": "anthropic", "id": "claude-opus-5-5", "variant": "high" }));
+        }
+        let t = now - 10.0 * MINUTE;
+        state.messages.insert(
+            "ses_releases".into(),
+            vec![
+                user("msg_d1", t, "What’s left before Thursday’s release?", None),
+                json!({ "type": "assistant", "id": "msg_d2", "time": { "created": t + 1000.0, "completed": t + 9000.0 }, "agent": "build", "finish": "stop", "content": [
+                    { "type": "text", "text": "Three things are still open:\n\n- the invoice export’s rounding fix, in review\n- the migration for the new tax table\n- release notes" }
+                ] }),
+            ],
+        );
+        let t = now - 7.0 * HOUR;
+        state.messages.insert(
+            "ses_invoices".into(),
+            vec![
+                user("msg_i1", t, "Does the export match the ledger for October?", None),
+                json!({ "type": "assistant", "id": "msg_i2", "time": { "created": t + 1000.0, "completed": t + 9000.0 }, "agent": "build", "finish": "stop", "content": [{ "type": "text", "text": "It does now: 1,204 rows on both sides, and the totals agree to the cent." }] }),
+                json!({ "type": "idle", "id": "msg_i3", "time": { "created": t + 9000.0 }, "outcome": "succeeded" }),
+            ],
+        );
     }
 
     /// One of your machines' boxes, as this app reaches it from another computer: a Linux
@@ -306,6 +345,38 @@ impl StandIn {
         self.state().queue.add_many_labels();
     }
 
+    /// It adds no computers, saying why (a member of a setup, say).
+    pub fn cannot_add(&self, why: &str) {
+        self.state().areas.add_cannot = Some(why.to_owned());
+    }
+
+    /// A try at adding `destination`, as far as `stage` (`asking`: its host key's question;
+    /// `copying`: trusted, the engine going over; `done`; a host named `nowhere…` fails at once).
+    pub fn adding_at(&self, destination: &str, stage: &str) {
+        let tried = {
+            let mut state = self.state();
+            let begun = areas::adding(&mut state.areas, "POST", "kuvo/computers/add", &serde_json::json!({ "destination": destination }));
+            begun.and_then(|((_, value), _)| value["try"]["id"].as_str().map(str::to_owned))
+        };
+        if let (Some(id), "copying" | "done") = (tried, stage) {
+            areas::adding(&mut self.state().areas, "POST", &format!("kuvo/computers/add/{id}/answer"), &serde_json::json!({ "answer": "trust" }));
+            if stage == "done" {
+                self.adding_goes_on();
+            }
+        }
+    }
+
+    /// Its tries at adding a computer that are under way come to their end.
+    pub fn adding_goes_on(&self) {
+        let mut state = self.state();
+        if areas::adding_goes_on(&mut state.areas)
+            && let Some((_, now)) = state.area("GET", "kuvo/computers")
+        {
+            let line = now.to_string();
+            state.computers.retain(|_, sender| sender.send(line.clone()).is_ok());
+        }
+    }
+
     /// Its list of computers has this computer alone.
     pub fn computers_alone(&self) {
         self.state().areas.computers_alone = true;
@@ -318,6 +389,11 @@ impl StandIn {
 
     /// What renaming and removing say (`503`) instead of doing it, as a box that can't ask the
     /// computer that writes the record says it.
+    /// A computer's app was removed from your devices: its box adds none until it's allowed again.
+    pub fn block_vouching(&self, key: &str) {
+        self.state().areas.vouch_blocked.push(key.to_owned());
+    }
+
     pub fn manage_refused(&self, words: &str) {
         self.state().areas.manage_refused = Some(words.to_owned());
     }
@@ -1267,7 +1343,8 @@ impl StandIn {
         if let Some((status, value)) = state.area(method, route) {
             return answer(status, value);
         }
-        if let Some(((status, value), changed)) = areas::manage(&mut state.areas, method, route) {
+        let added = areas::adding(&mut state.areas, method, route, &request.body.clone().unwrap_or(Value::Null));
+        if let Some(((status, value), changed)) = added.or_else(|| areas::manage(&mut state.areas, method, route)) {
             // Those following your computers hear the list as it is now.
             if changed && let Some((_, now)) = state.area("GET", "kuvo/computers") {
                 let line = now.to_string();

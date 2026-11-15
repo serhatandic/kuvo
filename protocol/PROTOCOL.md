@@ -130,11 +130,17 @@ pairing; the host learns the phone's from the first message and checks it.
 The first message's payload is JSON:
 
 ```json
-{"v": 1, "name": "My iPhone", "app": "0.1.0", "pair": "<token>"}
+{"v": 1, "name": "My iPhone", "app": "0.1.0", "pair": "<token>", "client": "desktop"}
 ```
 
-`pair` is there only while pairing. The host answers if the phone's key is one it has
-paired, or if `pair` is the token it's showing; otherwise it sends a close. Its answer's
+`pair` is there only while pairing. `client` (`clients.kind`) says what the client is: `desktop`
+for Kuvo Code's desktop app, which reaches each of your computers' boxes as a paired device of its
+own ("Paired phones", `kuvo/devices/pair`); left out, or anything else, it's a phone. A desktop
+client is a remote client like a phone for everything it may do (never the app on the box's own
+computer); the one difference is that what it sends a conversation isn't marked as a phone's (no
+`<from-phone>` block, "A message's parts"), so a phone that says `desktop` only loses that note.
+Paired by token, what it said is kept with its pairing. The host answers if the phone's key is one
+it has paired, or if `pair` is the token it's showing; otherwise it sends a close. Its answer's
 payload:
 
 ```json
@@ -207,8 +213,10 @@ each box pairs and removes (`phones`), and each box's view of your personalities
   mails them on its relay connection, as a machine's bridge does; its peers are the machines its
   app set up (`kuvo/link/peers`, "This Mac's box: the relay"). It takes `peers` only of its own (a
   copy it lost count of), and `phones` and `personalities` from its machines and itself.
-- **`phones`**, one per box: `{phones: [{key, name, address?, pairing}], removed: [{key,
-  pairing}]}`: the phones paired there, and every removal it knows of ("Paired phones"). A box
+- **`phones`**, one per box: `{phones: [{key, name, address?, pairing, kind?}], removed: [{key,
+  pairing}]}`: the phones paired there, and every removal it knows of ("Paired phones"); `kind:
+  "desktop"` on Kuvo Code's desktop app (`clients.kind`; left out for a phone, and a box that
+  doesn't know it reads the entry as a phone's). A box
   lets in its own and its Macs' phones, less every pairing removed in any phones document it
   takes, which it notes as its own removal too. A Mac with the phone link off signs none.
 - **`personalities`**, each box's view: the library (`{personalities, removed}`, "Personalities").
@@ -315,7 +323,9 @@ computer. Changing the main computer and joining two setups come later: #183.)
   `GET` (or `HEAD`), whatever can't be said; `405` otherwise. Read as it's asked (the accounts anew
   each time; the models as the box keeps them, read again once its engine or bridge says
   something changed), so a client asks again after a sign-in.
-- **Only the main computer adds and pairs** (`setup.mainOnly`). A member (a box whose setup names
+- **Only the main computer adds and pairs** (`setup.mainOnly`). The one exception is Kuvo Code's
+  own desktop app on a member's computer, which that member's box vouches for and the main computer
+  still pairs ("Paired phones", `kuvo/devices/pair`): the member itself pairs no one. A member (a box whose setup names
   another computer as main, kept aside too: a shared machine, or its main computer not naming it
   now) answers, with `primary` the main computer's static key and words naming it for a client to
   show as they are:
@@ -1592,6 +1602,14 @@ machines; a client that wants every computer's facts asks the box that has it as
     (300 names, "Peers"): it can't be said what's missing then, and a client doesn't call it older;
   - `via`: how the box that answers knows it: `here` (itself), `relay` (a peer it talks to) or
     `peer` (by another computer's word alone, `through` that one's name);
+  - `address?` and `relay?` (`computers.reach`, #742): where a client of your own reaches that
+    computer's box itself: its address on the relay (base64url, as its setup's peers document
+    names it; the box's own from its relay secret) and the relay's URL, the one this box reaches
+    it through. With the box's key (`key`) that's all a paired device needs to open a session
+    there ("Sessions"), so Kuvo Code's desktop app connects to each of your computers directly
+    and no box relays for another. Only on your own computers: left out on one that's `apart`, on
+    one known by a peer's word alone, on a machine shared with another setup (its own entry too),
+    and while this box has no relay;
   - `working?` and `atWork?` (`computers.facts`): how many of its sessions are at work
     (conversations, not their subagents, never one that waits on you), and which, newest first,
     each `{id, title?}` (its session's id on that computer, and its title): its own from its session
@@ -1613,7 +1631,14 @@ machines; a client that wants every computer's facts asks the box that has it as
     never a Mac, which goes by its own name, nor one shared with another setup but on the Mac that
     set it up, which keeps its own record of it), `connect` (a peer
     this box reaches through the relay that's `away`, while no try is under way) and `remove` (as
-    `rename`, never the box itself). A client draws the ids it has a control for.
+    `rename`, never the box itself). `allow-devices` (`devices.allow`), last, with its `confirm`:
+    only on a computer that carries `vouching`, below. A client draws the ids it has a control for.
+  - `vouching?` (`devices.allow`, #742): `{"blocked": true, "words": "<Device> was removed from
+    your devices. <Computer> can't add Kuvo Code's app again until you allow it."}` on a computer
+    whose box is kept from vouching for Kuvo Code's desktop app ("Paired phones",
+    `kuvo/devices/pair`), `words` for a client to show as they are. Only the setup's main computer
+    says it (it alone keeps the list), and never on a computer that's `apart`; left out
+    otherwise, and by every other box.
   `405` for anything but `GET`.
 - **Managing them** (`computers.manage`, #735), from any box, with no client or Mac's app open. A
   machine's record (its name, that it's one of your computers) is in the peers document of the Mac
@@ -1648,6 +1673,20 @@ machines; a client that wants every computer's facts asks the box that has it as
     that holds the relay connection, as `box route` leaves it), so its answer marks it back
     (`noteHeard`), and it's listed `connecting` for 20 seconds meanwhile. `202 {}`; `503` while this
     box is off the relay itself.
+  - `POST kuvo/computers/<key>/allow-devices` (`devices.allow`, #742): the computer is let add
+    Kuvo Code's app to your devices again: off the main computer's list (`vouchBlocked` in
+    link.json), `200 {}`, and the same for one that isn't on it; `kuvo/computers` and its events
+    say so at once. What was removed stays removed. **The main computer's own, for its own
+    clients only**: a device paired with it, over the relay (a phone, or the desktop app's
+    session), or Kuvo Code's app beside its box, over the box's own server (as for
+    `kuvo/devices/pair`). `403 {"message"}` from `box route` (a Mac over SSH, an agent's command),
+    from a device the computer `<key>` itself vouched for (`by`, whether or not it's kept out
+    now: nobody at that computer allows it), and from anything else; `405` for anything but `POST`; `404` for a key the box doesn't list.
+    It's never handed to another box: no act carries it (an ask by mail that names it is dropped,
+    as any that isn't an act), so the computer kept out can't allow itself, and a member's box
+    answers `409 {"message": "Allow it from <main>.", "primary": "<its key>"}`. `409 {"message"}`
+    too on a box that leads no setup, for the box itself, and for a computer that isn't the main
+    computer's own (`apart`, or known by a peer's word alone).
   - **While the old app is attached** (the Mac app before 0.8, which keeps its own list of machines
     and writes all of it back, `machines.json` and `kuvo/link/peers`, so a removal there wouldn't
     hold): the box that writes a machine's record takes no removal, from a client of its own or
@@ -1671,7 +1710,107 @@ machines; a client that wants every computer's facts asks the box that has it as
 - `GET kuvo/computers/events` (ndjson): the same now, and a line as it changes (a peer's word, one
   going away or coming back, this box's sessions starting or stopping work, and every 15 seconds
   for the rest); through `box route` a client asks again instead.
-- A box says what it knows, never more: SSH connections are a Mac app's own (`kuvo/machines`), so
+- **Adding one** (`computers.add`, #636): a box adds a computer over SSH itself, for whichever
+  client asks, with no app: a client sends an address, draws the box's steps and words, and
+  answers what it asks. (Before, a Mac's app did all of it: `kuvo/machines`, which stays the old
+  app's.) SSH is used to set a computer up, set it up again and uninstall it, never after: the
+  computer's own keeper runs it, and boxes talk through the relay ("Peers").
+  - **Who adds**: a Mac's box that isn't a member of another's setup ("Your setup", Only the main
+    computer adds), with a relay and keys for its link and its own release's files in its folder.
+    A member answers `409 {message, primary}`; a Linux box `409 {message}` (only a Mac's box
+    writes the record of a setup's computers yet, #183); a Mac while the old app is attached to
+    its box `409` (that app keeps its own list); `503 {message}` for the rest. `GET
+    kuvo/computers/add` says the same as `can: false` with `why`.
+  - `GET kuvo/computers/add` → `{can, why?, hosts, tries}`: `hosts`, the `Host`s of the box's
+    computer's `~/.ssh/config` and the files it includes (names only, never a pattern), 50 at
+    most, those not an address of a computer it set up; `tries`, those under way first, then the
+    last few that are over. `GET kuvo/computers/add/events` (ndjson) follows it.
+  - `POST kuvo/computers/add {"destination"}` → `202 {try}`. A destination is what `ssh` takes: a
+    Host's name, a host's name or `user@host`; one with `:`, `/`, white space or a leading `-`
+    (a port, a path, an IPv6 address, an option) is `400 {message}` and never reaches `ssh`. One
+    being added or set up at that address already is answered as it is; one being stopped is
+    waited for, and the new try runs after it; `409 {message}` while that computer is being
+    uninstalled, and through `kuvo-link.js box route`, which can't stay to do it.
+  - **A try**: `{id, kind, destination, name, state, title, steps, question?, failure?, computer?,
+    known?}`. `kind` is `add`, `setup` or `uninstall`; `state` is `working`, `asking`, `stopping`,
+    `failed` or `done`; `steps` are `[{id, title, state, detail?, sent?, total?}]`, each
+    `waiting`, `now`, `done` or `failed`, with `sent` of `total` bytes while it copies (and
+    `detail` saying the same in words, "41 of 98 MB"). Adding
+    and setting up again have `checking`, `files`, `engine`, `starting`, `seeding`, `joining`; uninstalling
+    `checking`, `removing`, `forgetting`. `failure` is `{title, message, again}` (`again`: trying
+    again could go otherwise); `computer` `{key, name}` once it's one of yours (`known`: it was
+    here already, at another address, which is kept as one of its addresses: told by its
+    `machine-id` and, where its card says it, its box's key, so a copy of another machine's disk is
+    a computer of its own). Every word is the
+    box's. Kept in `run/adding.json`: a box that started again says a try was cut short, and
+    never takes it up again by itself.
+  - **What it asks** (`state: "asking"`, `question: {id, title, message, at, facts: [{label, value,
+    code?}], answers: [{id, label, kind}]}`, `kind` `primary`, `plain` or `danger`), answered with
+    `POST kuvo/computers/add/<id>/answer {"answer": <an answer's id>, "at"}` → `200 {try}` (`409`
+    when it asks nothing now, or not that). `at` is the ask's number, which a client sends back:
+    an answer that names another ask (a late one, for a fingerprint shown before), or none, isn't taken:
+    - `hostKey`: the host's key isn't known. The box reads it as `ssh` reaches the host (your
+      config's port and jump host), offering no key and no agent to a host not trusted yet, and
+      shows its fingerprint (`SHA256:…`). `trust` keeps it in the box's own
+      `~/.kuvo-code/ssh/known_hosts`; your `~/.ssh/known_hosts` is read, never written.
+    - `hostKeyChanged`: the key differs from one the box kept. `trust` puts the new one in its
+      place: the old key's line goes, with every other key kept under that host's name. A key that differs from one in your own known hosts is never asked about: the try
+      fails, saying to remove it with `ssh-keygen -R`.
+    - `inAnotherSetup`: a box found there is another setup's, or an older Kuvo Code's ("Your
+      setup", Already in a setup?, judged as `kuvo/setup/judge` does). `add` goes on, and it's
+      shared from then on.
+    `cancel`, on each, stops the try.
+  - `DELETE kuvo/computers/add/<id>` stops one under way (at its next step: what it runs there
+    now ends first, and its start is never cut short; it says `stopping` meanwhile, then leaves
+    the list), or forgets one that's over: `200 {}`, `404`. One stopped, or failed, after it
+    started on a computer that had nothing of Kuvo Code and before it's one of yours, is taken
+    off there again (stopped, its start after a restart removed, the keys and sign-ins copied
+    there deleted), and a failure's words say so; where that couldn't be done the try fails,
+    saying it may still run there.
+  - **What it does**, in order: connects with the keys and agent of the box's computer (never a
+    password; refused, it tries once through an agent of its own that offers the first few SSH keys
+    in the vault, "Vault"); probes the computer, changing nothing (its system and kind, what the engine needs,
+    its `machine-id` where it has one, what Kuvo Code it has); puts its own release's files there, each checked by its
+    SHA-256 before it's put in place, unless they're there already or the computer has a newer
+    Kuvo Code, which is left as it is; the engine, its own binary where the two are the same
+    kind, else the pinned package fetched and checked on the box's computer (the computer added
+    downloads no code); then, in one script, the computer's settings made its own (one with none starts
+    with the box's, below), how its keeper starts it (`run/launch.env`: the session's PATH, shell and
+    language and its name; no password or key), its `machine-id` made once, the `@reboot` line and a Mac's launch agent, and
+    `kuvo-start start`: its own keeper starts its engine, with a port and passwords that never
+    leave it; then `kuvo-link.js setup` there with this box's keys and documents, its answer
+    written as the box's own record of it (its peers document, `machines.json`, and
+    `phone-link.json` for `kuvo/hosts`).
+  - **What a new computer starts with** (`seeding`), once, as it's added, and only one that had
+    nothing of Kuvo Code (no box found there, no Kuvo Code app's folder, no `machine-id` and
+    no `box-version`, judged `free`: a Mac with Kuvo Code's app is someone's already, and one
+    whose box is off or was uninstalled there still has its own sign-ins and keys, which are
+    never written over or deleted from here): a copy of the box's engine settings (not its shell or worktrees' folder, nor
+    the integrations that use a Mac's own apps) and of its integrations' keys (not a bot's own),
+    which go with its start on the script's standard input and are taken by `box adopt` there
+    ("Settings per box"); and of its accounts' sign-ins in use that stay the same (a provider's
+    API key, GitHub Copilot's sign-in), taken by `kuvo-link.js box seed` there (`{credentials:
+    [{integrationID, label, value}]}` on its standard input; it answers `{status, taken}`, how
+    many and never what), which stores each in its engine unless it has one for that account,
+    and notes it took them (`run/seeded.json`: never twice). A sign-in that renews itself (one
+    with a refresh token, but GitHub Copilot's: ChatGPT's, GitLab's) is never given, nor an
+    integration's server's own sign-in: each computer signs in to those itself, and the step
+    says how many weren't copied. None of it is in a script's arguments, a try's words,
+    `run/adding.json` or a log; there it's in files and an engine only you can read. A part the
+    box can't read now (its engine not answering, its Keychain not reachable) is left out, and
+    the computer is added all the same. One that had Kuvo Code keeps its own ("It keeps its
+    own"), and so does every computer set up again.
+  - `POST kuvo/computers/<key>/setup` → `202 {try}`: the same at the address it was added under
+    (Set Up Again), which brings an older Kuvo Code there up to this box's. `POST
+    kuvo/computers/<key>/uninstall` → `202 {try}`: over SSH the computer lets this box go
+    (`leave`) and, unless another Mac that set it up still uses it, runs its own `kuvo-link.js
+    uninstall` and deletes the sign-ins and keys it keeps; then the box removes it as `DELETE
+    kuvo/computers/<key>` does. Its folder stays. Asked while that computer is being set up, the
+    try under way is stopped first and waited for, so nothing starts it again behind the removal
+    (#603). Both are offered in `actions` (`setup`, `uninstall` with its `confirm`; `why` while
+    one is under way) on machines the box has an SSH address for, and are `404` for any other.
+    A computer that can't be reached isn't uninstalled later: the try fails, saying so.
+- A box says what it knows, never more: SSH is only how a computer was set up, so
   no box says a machine is reached "through SSH", and a computer no peer of this box names isn't
   listed.
 
@@ -2955,7 +3094,8 @@ no client shows yet.
 ## Notifications
 
 What the Mac shows as a notification goes to each paired phone too, as the relay's `push`
-with a mail frame, sealed with the sender's static key for the phone's. Its payload, JSON:
+with a mail frame, sealed with the sender's static key for the phone's. Only to phones: a paired
+device of kind `desktop` (`clients.kind`) is sent none, as Apple has nothing for its address. Its payload, JSON:
 
 ```json
 {"t": "notify", "title": "Fixer", "subtitle": "kuvo-ai", "body": "Wants to run a command: npm test",
@@ -4658,7 +4798,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   the words in `FromPhone.swift`, and a line `</from-phone>`. Every box adds it, in the same
   words (this Mac's box since bridge 0.9.64; the app did before); send the words without it. Show a
   message from its parts (`phone`), as sent from the phone. It tells the agent to keep replies short and to show files with
-  `show_file`.
+  `show_file`. Kuvo Code's desktop app over the link (a session whose first message said `client:
+  "desktop"`, `clients.kind`) gets none: who it names with `&` is said, as for a phone, and nothing
+  about a small screen.
 - A message whose request arrived whole (`POST api/session/<id>/prompt`, and
   `kuvo/agents/api/…` alike) goes on to its conversation even if the phone that sent it ends its
   session or cancels meanwhile: its files are kept on the box by then. So one a client counted as
@@ -6512,7 +6654,8 @@ the box sends keeps its parts, which clients draw it by. No client writes or rea
   comments (`<review-comments>`, a heading, then for each a blank line, `[<file>:<line>]` or
   `[<file>:<line> (removed)]`, `> <the line>`, what was said), the files' note (`<attached-files>`,
   the client's `notes` then what the box keeps, each list under its heading), and from a phone
-  (a request that isn't a Kuvo Code app's) `<from-phone>`. An `&` in a keyword or a title is written
+  (a request that isn't a Kuvo Code app's, nor the desktop app's over the link: `clients.kind`,
+  "Sessions") `<from-phone>`. An `&` in a keyword or a title is written
   `＆`; words ending like the named, comments' or files' block get a space after its tag, so they
   stay words.
 - **Parts:** kept in the engine message's (and inbox item's) `metadata.kuvo.parts`: `{words,
@@ -6630,11 +6773,16 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `btw` | `kuvo/agents/api/kuvo/btw…`: side questions ("Side questions, handoffs and reviews") |
 | `btw.threads` | a side question's `thread`, follow-ups and a thread's removal (bridge 0.9.98) |
 | `claude-code` | `kuvo/claude-code` (a Mac only, before #341) |
+| `clients.kind` | `client` in a session's first message (`desktop` for Kuvo Code's desktop app, "Sessions"), `kind` on each of `kuvo/phones`' devices and in phones documents, and no `<from-phone>` block on what a desktop client sends (#742) |
 | `computers` | `kuvo/computers` and `…/events`: your computers as one list, from any box ("Computers", #711) |
+| `computers.add` | `kuvo/computers/add…`: a box adds a computer over SSH itself, with its tries' steps, questions and words; `POST kuvo/computers/<key>/setup` and `/uninstall`, and `setup` and `uninstall` in `actions` ("Computers", Adding one, #636) |
 | `computers.facts` | `features`, `working` (left out where never said) and `atWork` on each of `kuvo/computers`' computers ("Computers", #735) |
 | `computers.manage` | `actions` on each of `kuvo/computers`' computers, `PATCH` and `DELETE kuvo/computers/<key>` (done by the box that writes the machine's record, or handed to it) and `POST kuvo/computers/<key>/connect` ("Computers", Managing them, #735) |
+| `computers.reach` | `address` and `relay` on each of your own computers in `kuvo/computers` ("Computers", #742) |
 | `config` | `kuvo/config` |
 | `config.apply` | `POST kuvo/config/apply` |
+| `devices.allow` | Removing a desktop app a computer's box vouched for keeps that box from vouching (`409`, `reason: "blocked"`), and the main computer says so on it in `kuvo/computers` (`vouching`, the `allow-devices` action) and takes `POST kuvo/computers/<key>/allow-devices` from its own clients ("Paired phones", "Computers", #742) |
+| `devices.pair` | `POST kuvo/devices/pair`: Kuvo Code's desktop app on the box's computer paired as one of your devices, by the main computer on a member's word; and `kuvo/phones/remove` from the app beside any box ("Paired phones", #742) |
 | `engine.restart` | `POST kuvo/engine/restart` |
 | `engine.start` | a machine only: `POST kuvo/engine/start` |
 | `file` | `kuvo/file` |
@@ -6804,18 +6952,24 @@ The phone opens a session with `pair` set to the token. The host checks it (and 
 asks you to confirm), then keeps the phone's static key. A token works for 10 minutes and
 once.
 
+Kuvo Code's desktop app pairs without a link: it asks the box on its own computer (`POST
+kuvo/devices/pair`, "Paired phones"), which pairs its key or, on a member of a setup, vouches for
+it to the main computer. Its key and relay secret are its own, made on its computer and never
+given to a box; what it then knows of each computer (`key`, `address`, `relay`: `kuvo/computers`)
+is what a pairing link holds.
+
 On a machine the bridge keeps its state in `~/.kuvo-code/run/link.json` (mode 600):
 
 ```json
 {"relay": "wss://…", "secret": "…", "key": "<static private key>", "sign": "<signing key's seed>", "mac": "<the last Mac's static key>",
  "macs": ["<each Mac that set it up>"], "macSigns": {"<Mac>": "<its signing key>"}, "macSeen": {"<Mac>": <when it came, here, moved on by time off since>}, "macNames": {"<Mac>": "<its name>"},
  "docs": {"<origin> <kind>": {"d": "…", "s": "…"}}, "own": {"<kind>": {"n", "h", "b"}}, "views": {"<origin>": {"n", "h"}},
- "phones": [{"key": "…", "name": "…", "added": 1760000000, "from": "mac", "mac": "<the Mac that listed it>", "address": "…", "pairing": "…"}],
+ "phones": [{"key": "…", "name": "…", "added": 1760000000, "from": "mac", "mac": "<the Mac that listed it>", "address": "…", "pairing": "…", "kind": "desktop"}],
  "removed": [{"key": "…", "pairing": "…"}]}
 ```
 
 `phones` is what its documents say ("Paired phones"): those its Macs list (`"from": "mac"`),
-and those paired with the machine itself (`"pair"`). `address` is the phone's on the relay, where its notifications go: the Mac passes on
+and those paired with the machine itself (`"pair"`); `kind` is there only on Kuvo Code's desktop app (`"desktop"`). `address` is the phone's on the relay, where its notifications go: the Mac passes on
 what it knows, and the bridge notes it each time the phone comes in. The machine's keys stay when no phones are left, so pairing again gives the same
 address. The bridge reads the file every 30 seconds: a phone taken off loses its sessions,
 and with no phones and no pairing waiting the bridge stops. The bridge notes when a phone last
@@ -7675,7 +7829,9 @@ answers now.
 For the app only (anyone else gets `403`):
 
 - `PUT kuvo/link/config {"phones", "machines", "relay", "name", "app"}`: whether the
-  phone link is on, whether there are machines to meet, the relay (`ws:` or `wss:`), and the Mac's
+  phone link is on (`phones`: the one switch people see as "Let my devices connect", which lets
+  in every client of yours from outside this Mac, phones and Kuvo Code's desktop app on your other
+  computers alike; "the phone link" below is that switch), whether there are machines to meet, the relay (`ws:` or `wss:`), and the Mac's
   name and version as phones are told them. The link is up while the phone link's on with a phone
   paired or a pairing waiting, or there are machines. Its keys are asked for before this answers,
   so a pairing link can be made right after. Answers the link's state. The app says it again each
@@ -7719,8 +7875,8 @@ For the app only (anyone else gets `403`):
   doesn't read it; the bridge's tests do).
 
 The app's `kuvo/phones/pair` makes a pairing link of its own (Settings › Phone's), apart from one a
-phone asks for, so neither ends the other; with the phone link off it's `409 {"message": "The phone
-link is off on this Mac."}`. The app's `kuvo/phones/remove` removes as the Mac does (any phone,
+phone asks for, so neither ends the other; with the phone link off it's `409 {"message": "“Let my
+devices connect” is off on this Mac."}`. The app's `kuvo/phones/remove` removes as the Mac does (any phone,
 and the removals a machine's phones document brings).
 
 Its routes are answered there for every client: a phone's through this Mac's link, and the Mac
@@ -8086,15 +8242,18 @@ so a client still on those (the phone) sees every change kept just as they keep 
   |---|---|---|
   | `switch` | `value`: true or false | A switch |
   | `choice` | `value`: a choice's `id`; `choices: [{id, title, line?}]` | A menu |
-  | `text`, `number`, `folder` | `value`, `placeholder?`, `min?`, `max?`, `lines?: {min, max}`, `folder?: {choose, clear, prompt, message}`, `unit?: "bytes"`, `suggestions?: [{value, title}]`, `confirmBelow?: {value, confirm}` | A field (text may request a multi-line editor with its preferred visible line range; presentation only, outside revisions; byte values use file size formatting; numeric suggestions are common values, not limits; a number below confirmBelow.value requires its confirmation, whose button appends the formatted proposed value) (a folder opens the box's picker, `kuvo/folders`, with its own choose/clear button words, picker prompt and message; clearing sends empty text) |
+  | `text`, `number`, `folder` | `value`, `placeholder?`, `min?`, `max?`, `lines?: {min, max}`, `folder?: {choose, clear, prompt, message}`, `unit?: {name, factor, decimals, rounding: "nearest"}`, `suggestions?: [{value, title}]`, `confirmBelow?: {value, confirm}` | A field (text may request a multi-line editor with its preferred visible line range; presentation only, outside revisions; unit values divide by factor and round to the nearest value with decimals fractional digits (ties away from zero), omitting trailing zeroes beside name; unchanged fields send their original value exactly; numeric suggestions are common values, not limits; a number below confirmBelow.value requires its confirmation, whose button appends the formatted proposed value) (a folder opens the box's picker, `kuvo/folders`, with its own choose/clear button words, picker prompt and message; clearing sends empty text) |
   | `secret` | `set`: whether one is set; never its value | A field written only; Replace and Remove once set |
-  | `status` | `value`: words, or a number with `unit?: "bytes"` | The words or formatted file size, on the right |
+  | `status` | `value`: words, or a number with `unit?: {name, factor, decimals, rounding: "nearest"}` | The words or formatted file size, on the right |
   | `actions` | `actions` | Buttons (past one, a menu) |
   | `list` | `items`: rows; `add?`: an action; `empty?`: words for none; `search?: {placeholder, empty}` | The rows in its card, or its `empty` words |
   | `meter` | `windows: [{title, used, resets?}]` (`used` 0 to 1, `resets` ms since 1970) | Usage windows |
   | `open` | `section` (this box's) or `address` | A row with › |
   | `steps` | `start`: an action | A flow the box leads (to come, with Accounts) |
   | `custom` | `name` | What only an installed app draws; any other client shows its `can`'s why |
+
+  List search matches the list title or each item’s title or line, case-insensitively. A matching
+  list title keeps every item. With no matches, replace `{query}` in `search.empty` with the typed query.
 
   `can` is `true` where it can be changed from here, or `{why}`, in words to show beside it (it's
   still drawn, never hidden); a row with nothing to change (a `status`) has none, or `{why}` where
@@ -8109,7 +8268,11 @@ so a client still on those (the phone) sees every change kept just as they keep 
   and what governs whether it can be changed (its value, `can`, its choices' and actions' ids, a
   list's items' revisions; a `secret`'s, whether one is set; whether `can` holds, not its why; action confirmations, so a growing destructive warning makes a reading stale), never its display words: the same value set
   again, a computer renamed or a line reworded leaves it.
-- `PATCH kuvo/settings/<section> {row, value, was}`: one row changed, `was` its `revision` as read.
+- `PATCH kuvo/settings/<section> {row, value, was, confirmed?}`: one row changed, `was` its `revision` as read.
+  For a row with `confirmBelow`, a numeric value strictly below `confirmBelow.value` requires
+  `confirmed: true`, sent only after accepting `confirmBelow.confirm` in the box's words.
+  Without it the box returns `400 {message: confirmBelow.confirm.body}` before changing anything.
+  At or above the threshold no confirmation is required. Cancel sends nothing.
   The answer is the page again (`200`), or a refusal in the box's words: `400` for a value that
   doesn't fit (a switch's isn't true or false, a choice's isn't one of its choices) or a body without
   `row` or `was`; `403` where `can` says why not (that `why`); `404` for a row not on the page now;
@@ -8188,10 +8351,14 @@ The sections now:
 - **Storage** (`storage`): the box-backed What Agents Made group only: copies (status in bytes),
   older-budget (number in bytes, with the Swift page's common budgets and confirmation when
   lowering below what older copies take), and older-copies (Clear…, with confirmation).
-  `POST kuvo/artifacts/storage {budget, was?}` compares optional `was` with the budget before
-  setting it; `POST kuvo/artifacts/storage/clear {was?}` compares with older copies' bytes before
+  `POST kuvo/artifacts/storage {budget, was?, wasOlder?, confirmed?}` compares optional `was` with the budget
+  and `wasOlder` with older copies’ bytes atomically before
+  setting it. Every budget write is guarded in the store: below the current older copies’ bytes,
+  only boolean `confirmed: true` permits deletion; otherwise `400 {message}` returns the box’s
+  confirmation body without changing settings or copies. This applies to both settings and direct
+  storage routes. `POST kuvo/artifacts/storage/clear {was?}` compares with older copies' bytes before
   clearing. Mismatches answer `409 {message: "It changed since you read it."}`. Both checks and
-  writes run synchronously in the bridge's event loop. Without `was`, both behave as before.
+  writes run synchronously in the bridge's event loop. Without `was`, revision checking is omitted; the confirmation requirement still applies.
   Page writes floor byte counts as the store does. Polling each second reads the bridge again,
   covering its settings, copies and live disk usage. An unavailable bridge gives no rows and a warning.
   The native Mac-only measurement, session cleanup links and log/download deletion groups have
@@ -9569,23 +9736,124 @@ machine's bridge, held to `vectors/link.json` (`phoneBooks`):
 
 On both, for a paired phone:
 
-- `kuvo/phones`: `{"phones": [{key, name, added, pairing, you}]}`, `added` in seconds since 1970,
-  `you` the one asking.
+- `kuvo/phones`: `{"phones": [{key, name, added, pairing, kind, you}]}`, `added` in seconds since
+  1970, `you` the one asking, `kind` (`clients.kind`) `phone` or `desktop` (Kuvo Code's desktop
+  app: as it said when it paired by token, as `kuvo/devices/pair` paired it, or as the phones
+  document that lists it says).
 - `POST kuvo/phones/remove` with `{"phones": [{key, pairing}]}` (`pairing` left out: the one
   there): removes them there, itself too, and their sessions end, once the answer's on its way.
   `200 {}`, or `400 {"message"}` when it names a Mac, nothing, too many or something that isn't a
   phone's key, or the one asking isn't paired there. A removal goes to each computer the phone pairs with, Mac
   and machines (`kuvo/hosts`); each also passes on the removals it has in its phones document.
+  Any device paired there removes any other, a phone the desktop app and the desktop app a phone;
+  and so does Kuvo Code's app on the box's own computer, beside any box (over the box's own
+  server, as for `kuvo/devices/pair` below; before `devices.pair`, only this Mac's app beside its
+  own box): never a Mac that set the machine up, and never by `box route`. A device removed on
+  another computer loses its sessions here as its removal arrives (a machine's link ends them as
+  it takes the document, and within 3 seconds of a removal another process made).
 - `POST kuvo/phones/pair`: a link for another phone to pair with, as Settings › Phone shows one
   (as a QR code): `{"link": "kuvo-link://pair?…", "ends"}`, good once, until `ends` (seconds
   since 1970). On a Mac it's the phones' own, apart from the one Settings › Phone shows, so
   neither ends the other; a new one takes the place of one a phone asked for before. `DELETE
   kuvo/phones/pair` ends it, as Done does (`200 {}`, with or without one); `?token=<its token>`
   ends that one alone, so one closed late never ends a newer one (bridge 0.9.61). `409 {"message"}`
-  while the phone link is off. A machine's bridge answers it too, with the Mac closed: the phone
+  while the Mac lets no device in (its one switch, "Let my devices connect": `phones` in
+  `kuvo/link/config`, which gates phones and desktop apps alike). A machine's bridge answers it too, with the Mac closed: the phone
   it pairs is the machine's own (as `kuvo-link.js pair` pairs one), and `409` when the machine has
   no relay. On a member of a setup, `409 {"message", primary}`: only its main computer pairs
   ("Your setup", `setup.mainOnly`).
+- `POST kuvo/devices/pair` with `{"key": "<the app's static key, 32 bytes, base64url>", "name":
+  "<up to 100 characters>", "kind": "desktop"}` (`devices.pair`, #742): Kuvo Code's desktop app on
+  this computer paired as one of your devices, with no link to paste and no token (it ends no
+  pairing link that waits). **Only from Kuvo Code's app on the box's own computer**: a request
+  over the box's own server there, with its password (`serve`, or `serve --kept`), that says
+  `x-kuvo-from: app` (a Mac's own box) or `x-kuvo-from: mac` (Kuvo Code attached to a box in
+  place, "Kept for clients"). `403 {"message"}` from a phone or any client over the relay, the
+  desktop app's own session too, and from `box route`, which a Mac over SSH and an agent's command
+  on the box can run; `405` for anything but `POST`; `400 {"message"}` for a key that isn't one
+  (or is a box's), a name too long, or another `kind`.
+  - **Where the box pairs phones** (your setup's main computer, or a box in no setup): the key is
+    paired at once, as a device paired there (`from: "pair"`, `kind: "desktop"`, a new `pairing`),
+    and its phones document carries it to your other computers. `200 {"paired": true, "pairing"}`.
+    Refused as a phone's pairing is: `409 {"message"}` on a Mac that lets no device in, and where
+    there's no relay.
+  - **On a member of a setup, its box vouches for the app**: it hands the ask to the main
+    computer's box by mail, as what you do to one of your machines is handed on ("Computers",
+    Managing them: `{workQueue: {act: {id, area: "devices", method: "POST", item: <the app's key>,
+    body: {name, kind: "desktop"}, at}}}`, answered `{workQueue: {acted: {id, status, value}}}`),
+    once the main computer's agents name `devices.pair`. The main computer pairs it, as above,
+    only when all of this holds: the mail opens as one of its peers'; its own peers document names
+    the sender as one of its machines; neither box is a machine shared with another setup, as the
+    sender says or as it knows ("Plan limits", Whose); it's the main computer of a setup it leads
+    now; and it lets devices in. A member that is a Mac with its own switch off ("Let my devices
+    connect") vouches for none: `409` in the switch's words, with nothing asked of the main
+    computer, so each Mac's switch counts. **Known limit, accepted for now:** a shared machine is
+    refused only on its own word (what it says in its agents' and Work Queue mail, and what the
+    main computer keeps of that), so a machine that another person also set up, and whose box
+    lies about being shared, could get that person's device vouched into your setup. Machines
+    shared between people aren't expected; closing it takes approval of each vouched device on the
+    main computer or a device already paired, or a notice on every paired device as one is added.
+    The member answers `200 {"paired": true, "pairing"}` with what it
+    said, or `409 {"message", "reason"?}` in the main computer's words (`reason`: `removed`, the
+    key was removed; `blocked`, `devices.allow`, this computer is kept from vouching, below). `503 {"message": "<main>
+    isn't answering. This app reaches your other computers once it does."}` when no answer comes
+    in 20 seconds, the main computer is away, this box is off the relay, or it hasn't heard yet
+    what the main computer takes; `409 {"message"}` for a main computer from before this. The app
+    asks again later: asked again, by either way, a key that's let in answers `200` with the
+    pairing it has, and nothing new is made. With the main computer's app closed it pairs all the
+    same: its box answers.
+  - **A machine shared with another setup** answers `409 {"message": "This computer is shared
+    with another setup, so it can't add your devices by itself."}`, and a member its main computer
+    doesn't name now `409 {"message"}` too: neither pairs, and neither vouches.
+  - **Removed stays removed**: a key with any pairing among the removals is never paired by this
+    route, here or by the main computer: `409 {"message": "This app was removed from your
+    devices.", "reason": "removed"}`. The app then makes a new key only on your word. (A pairing by
+    token still lets a removed key back in, as above.)
+  - **And the computer that vouched adds no other** (`devices.allow`), so whoever sits at it
+    can't have its app make a new key and come back. The main computer keeps who vouched on the
+    device it pairs on a member's word (`by`, that box's static key, on its entry in the main
+    computer's link.json alone: never in a phones document; none on one its own app or a token
+    paired). When that device is removed, by any way the removal reaches the main computer's box
+    (`kuvo/phones/remove` from a paired device there, from Kuvo Code's app beside it, or a removal
+    another box's phones document brings), the main computer's box:
+    - **removes every other device that same box vouched for** (all with that `by`), each by the
+      pairing it has now, noted among the removals as any removal is: its phones document carries
+      them, so they're out on every computer and their sessions end, and none is paired again by
+      asking (`reason: "removed"`). A second key someone there had the box vouch for earlier is
+      no way back in. What another computer vouched for, a phone, and what the main computer
+      paired itself are untouched;
+    - notes the box that vouched (`vouchBlocked` in link.json: `[{key, device, at}]`, the box's
+      key, the removed device's name and when, in milliseconds; one entry a box, the newest 64)
+      and from then on answers that box's vouch, for any new key, `409 {"message": "<Device> on
+      <computer> was removed from your devices, so <computer> can't add Kuvo Code's app by itself
+      now. Allow it again from Kuvo Code on <main> or another computer's app: Computers,
+      <computer>.", "reason": "blocked"}`, which the member's box passes on to its app as it is.
+
+    A removal that names a pairing the device doesn't have now takes nothing off and keeps no
+    computer out. It lasts until you allow that computer again on the main computer (`POST
+    kuvo/computers/<key>/allow-devices`, "Computers"), which neither the computer kept out nor a
+    device it vouched for can ask for. Allowing it un-removes nothing: the keys that were removed
+    stay out, the app there makes a new one on your word, and the vouch for that one is taken. (A
+    key that's let in now is still answered `200` with the pairing it has, and a removed one
+    `removed`, before this is looked at.)
+    **Not covered:**
+    - a desktop app the main computer's own box paired for the app beside it has no voucher, so
+      removing it keeps its key out and nothing more: that computer is the main one, which pairs
+      your devices itself. The same for a box in no setup;
+    - a device first vouched for and later paired again by token is the main computer's own from
+      then on (no `by`): removing it keeps no computer out;
+    - `by` and `vouchBlocked` are kept in the main computer's link.json alone, so **choosing a new
+      main computer drops them**: the new one knows neither who vouched for the devices it took
+      over nor which computer was kept out, and takes that computer's vouch again.
+
+    To keep a member out for good, remove the computer (`DELETE kuvo/computers/<key>`): its box
+    then vouches for nothing.
+  - **At most 16 desktop apps** are paired this way at once: one more is `409 {"message"}` until
+    one is removed, so a box that vouches never fills the list.
+  - Every box of the setup lets the device in from the main computer's phones document, as it
+    does a phone (above). A machine shared with another setup lets in what each of its Macs lists,
+    a desktop device too, but tells no client where it is (`kuvo/computers`, `apart`), and no box
+    of the other setup takes it.
 
 A machine keeps itself running: its keeper (`bin/kuvo-start keep`, `run/box.pid`) starts its
 engine again when it ends, unless it was stopped on purpose (`run/stopped`), and keeps the bridge

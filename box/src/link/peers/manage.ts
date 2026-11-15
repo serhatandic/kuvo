@@ -7,6 +7,8 @@
 // up), by mail (`work-queue/forward.ts`), and answers with what it said, or why it can't.
 // Connect is every box's own (`reach-again.ts`). What each computer offers is said on it
 // (`actions` in `kuvo/computers`), with the words for its confirm, so no client works it out.
+// Letting a computer add Kuvo Code's app to your devices again (`allow-devices`) is the main
+// computer's own, for its own clients: never handed on from another box (areas/computers.ts).
 
 import fs from "node:fs";
 import { plainName } from "../../shared/text";
@@ -133,6 +135,11 @@ export function actionsOf(computer: ListedComputer, here: string, trying: boolea
     // (Offered, and while it waits for the old app to be quit, said why rather than left out.)
     const waits = waitsFor(computer, here, facts);
     actions.push({ id: "remove", label: "Remove", ...(waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } }) });
+  }
+  // (Kept from adding Kuvo Code's app to your devices, as this box, the main computer, says of it:
+  // `vouching`, areas/computers.ts.)
+  if (computer.vouching?.blocked) {
+    actions.push({ id: "allow-devices", label: "Allow Its App Again", confirm: { title: `Let ${name} add Kuvo Code's app again?`, message: `Kuvo Code on ${name} can add itself to your devices again, and reach every computer of yours. What you removed stays removed.`, label: "Allow" } });
   }
   return actions;
 }

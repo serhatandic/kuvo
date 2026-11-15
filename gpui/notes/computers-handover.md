@@ -16,8 +16,15 @@ The Computers area (`kuvo/src/computers.rs`, the sidebar in `kuvo/src/areas.rs`)
    in Sessions for this window's own); About (kind, system, Kuvo Code, engine, how it's
    reached, plan limits it reads); Manage (Rename…, Connect for one that's away, Remove… for
    another), drawn and disabled, with a line saying they aren't in this app yet.
-4. **Add a Machine**: what a machine is, the SSH host field (taking no typing yet), and a notice
-   that adding isn't in this app yet; Add Machine waits (sends nothing).
+4. **Add a Machine** (#636): the box adds it (`kuvo/computers/add`, PROTOCOL.md "Adding one"); the
+   page takes the address, offers the hosts the box suggests (filtered by what's typed: drawing),
+   and draws the box's try: its steps, its question (a host key's fingerprint, in the code font,
+   with the box's buttons), a failure with Try Again and Dismiss, and done with Show. While one is
+   being added its steps are the page; the form comes back after. A computer's page draws the try
+   about it (set up again, uninstall) and Manage's Set Up Again and Uninstall… as the box offers
+   them. From Zed's remote dialog (read, not copied): one status per phase, the host's question
+   shown as it is, Cancel always there, retry on failure; ours is a page, keeps the steps listed,
+   and asks with buttons instead of "type yes".
 5. Stand-in: `computers_alone()`, `more_computers(n)`, `manage_refused(words)`, and old-mini (a Mac on 0.9.180) in its list; it answers the manage routes as a box does.
 6. Tests: `kuvo/tests/computers.rs` (6 scenarios, real clicks and a scroll wheel), unit tests in
    `computers.rs` and `kuvo_box/src/areas.rs`. Shots: `shots/screens-computers*`, `screens-computer-*`.
@@ -31,9 +38,6 @@ The Computers area (`kuvo/src/computers.rs`, the sidebar in `kuvo/src/areas.rs`)
    a refusal shows in the box's words on the page it was asked on.
 2. **Waiting on a design choice (drafts for the user):** the Rename editor (Rename… is drawn,
    not done) and listing `atWork`'s sessions under At Work (the count is drawn as before).
-3. **Still BOX-NEEDED:** adding a machine from a box (#636): its SSH setup steps (`POST
-   kuvo/machines {destination}` answered by the box, its `step`s as it goes) and the hosts to
-   suggest. The form's field takes no typing until then.
 
 ## Not built (the app's side)
 

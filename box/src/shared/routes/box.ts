@@ -149,7 +149,9 @@ export const BROWSER = object({
 });
 
 /** The phones paired here, `you` being the one asking. */
-export const PHONES = object({ phones: list(object({ key: string, name: string, added: nullable(number), pairing: string, you: bool })) });
+export const PHONES = object({ phones: list(object({ key: string, name: string, added: nullable(number), pairing: string, kind: words("phone", "desktop"), you: bool })) });
+/** Kuvo Code's desktop app paired as one of your devices (`kuvo/devices/pair`): the pairing it has. */
+export const DEVICE_PAIRED = object({ paired: literal(true), pairing: string });
 /** A link for another phone to pair with (good once), and when it ends, in seconds since 1970. */
 export const PAIRING = object({ link: string, ends: number });
 
@@ -271,8 +273,11 @@ export type Found = Infer<typeof FOUND>;
 /** What can be done with one of your computers from the box that lists it (`computers.manage`):
  * which, its button's words, and where a client asks first, the question, what it comes to and the
  * words of the button that goes ahead, all the box's; `why`, it can't be done now, in words a
- * client shows beside it. */
-export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
+ * client shows beside it. `allow-devices` (`devices.allow`): on your setup's main computer, a
+ * computer kept from adding Kuvo Code's app to your devices is let do it again. `setup` and
+ * `uninstall` (`computers.add`): on the box that set a machine up over SSH, setting it up again
+ * and uninstalling Kuvo Code from it. */
+export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "allow-devices", "setup", "uninstall"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
 export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
 
 /** One of your computers, as a box knows it (`kuvo/computers`, PROTOCOL.md "Computers"): its key
@@ -282,16 +287,19 @@ export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
  * heard from (`connected`), not yet or being reached again (`connecting`), not lately (`away`), or not this box's to say (`unknown`: one known by a peer's word alone); Kuvo Code's version
  * there, its engine's and its system, as it said them; what its box answers (`features`, as it
  * said them, whole); how this box knows it (`here`, itself; `relay`, a peer it talks to; `peer`, by
- * another computer's word alone, `through` that one); how many of its sessions are at work and
+ * another computer's word alone, `through` that one); where a client of your own reaches its box
+ * itself (`address`, on the relay, and `relay`, its URL: only on your own computers); how many of its sessions are at work and
  * which (the first few, by id and title), where it said; the services whose plan limits it reads;
- * and what can be done with it from here (`actions`). */
+ * what can be done with it from here (`actions`); and `vouching` (`devices.allow`, on your setup's
+ * main computer alone): it's kept from adding Kuvo Code's app to your devices, since one it added
+ * was removed, in words a client shows as they are. */
 export const LISTED_COMPUTER = object({
   key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
   shared: bool, "apart?": literal(true), reach: words("connected", "connecting", "away", "unknown"),
   "version?": string, "engine?": string, "system?": string, "features?": list(string),
-  via: words("here", "relay", "peer"), "through?": string,
+  via: words("here", "relay", "peer"), "through?": string, "address?": string, "relay?": string,
   "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string), limitServices: list(object({ id: string, title: string })),
-  actions: list(COMPUTER_ACTION),
+  actions: list(COMPUTER_ACTION), "vouching?": object({ blocked: literal(true), words: string }),
 });
 export const COMPUTERS = object({ computers: list(LISTED_COMPUTER) });
 export type ListedComputer = Infer<typeof LISTED_COMPUTER>;
@@ -306,12 +314,57 @@ export const FILE_TEXT = oneOf(
 export type FileText = Infer<typeof FILE_TEXT>;
 const FILE_REFUSED = object({ message: string });
 
+/** A step of a try at adding a computer (`computers.add`): its title, in the box's words; whether
+ * it waits, is under way, is done or failed; what it says beside it; and how far a copy has got,
+ * in bytes. */
+export const ADD_STEP = object({ id: string, title: string, state: words("waiting", "now", "done", "failed"), "detail?": string, "sent?": number, "total?": number });
+export type AddStep = Infer<typeof ADD_STEP>;
+/** What a try asks you before it goes on: the question, what it comes to, facts to look at (a
+ * host key's fingerprint, `code`: drawn in the code font), and its answers, each a button
+ * (`primary`, `plain` or `danger`). All the box's words. `at`: this ask's number, which an answer
+ * names so one meant for an earlier ask isn't taken for it. */
+export const ADD_QUESTION = object({
+  id: string, title: string, message: string, at: number,
+  facts: list(object({ label: string, value: string, "code?": bool })),
+  answers: list(object({ id: string, label: string, kind: words("primary", "plain", "danger") })),
+});
+export type AddQuestion = Infer<typeof ADD_QUESTION>;
+/** A try at adding a computer over SSH, setting one up again or uninstalling Kuvo Code from one
+ * (PROTOCOL.md, "Computers", Adding one): where it is, what it's called, how it stands, its steps,
+ * what it asks now, how it failed (`again`: trying again could go otherwise), and the computer it
+ * came to (`known`: one that was here already, at another address). */
+export const ADD_TRY = object({
+  id: string, kind: words("add", "setup", "uninstall"), destination: string, name: string,
+  state: words("working", "asking", "stopping", "failed", "done"), title: string,
+  steps: list(ADD_STEP),
+  "question?": ADD_QUESTION,
+  "failure?": object({ title: string, message: string, again: bool }),
+  "computer?": object({ key: string, name: string }),
+  "known?": bool,
+});
+export type AddTry = Infer<typeof ADD_TRY>;
+/** Adding computers, as this box says it: whether it adds them (`why`, in words, where it
+ * doesn't), the hosts to suggest (this computer's `~/.ssh/config`, those not added yet), and its
+ * tries, those under way first. */
+export const ADDING = object({ can: bool, "why?": string, hosts: list(string), tries: list(ADD_TRY) });
+export type Adding = Infer<typeof ADDING>;
+const ADD_REFUSED = object({ message: string, "primary?": string });
+const ADD_ANSWERS = { 400: ADD_REFUSED, 404: ADD_REFUSED, 405: ADD_REFUSED, 409: ADD_REFUSED, 503: ADD_REFUSED };
+
 export const BOX_ROUTES: RouteShape[] = [
+  { route: "GET kuvo/computers/add", answers: { 200: ADDING, ...ADD_ANSWERS } },
+  { route: "GET kuvo/computers/add/events", answers: { 200: ADDING, ...ADD_ANSWERS } },
+  { route: "POST kuvo/computers/add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+  { route: "POST kuvo/computers/add/:id/answer", answers: { 200: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+  { route: "DELETE kuvo/computers/add/:id", answers: { 200: NOTHING, ...ADD_ANSWERS } },
+  { route: "POST kuvo/computers/:key/setup", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+  { route: "POST kuvo/computers/:key/uninstall", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
   { route: "GET kuvo/computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
   { route: "GET kuvo/computers/events", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
   { route: "PATCH kuvo/computers/:key", answers: { 200: object({ name: string }), 400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
   { route: "DELETE kuvo/computers/:key", answers: { 200: NOTHING, 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
   { route: "POST kuvo/computers/:key/connect", answers: { 202: NOTHING, 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
+  { route: "POST kuvo/computers/:key/allow-devices", answers: { 200: NOTHING, 403: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string, "primary?": string }) } },
   { route: "GET kuvo/info", answers: { 200: INFO } },
   { route: "GET kuvo/update", answers: { 200: UPDATE } },
   { route: "POST kuvo/update", answers: { 202: UPDATE } },
@@ -331,6 +384,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "GET kuvo/phones", answers: { 200: PHONES } },
   { route: "POST kuvo/phones/remove", answers: { 200: NOTHING } },
   { route: "POST kuvo/phones/pair", answers: { 200: PAIRING } },
+  { route: "POST kuvo/devices/pair", answers: { 200: DEVICE_PAIRED, 400: object({ message: string }), 403: object({ message: string }), 409: object({ message: string, "reason?": words("removed", "blocked") }), 503: object({ message: string }) } },
   { route: "DELETE kuvo/phones/pair", answers: { 200: NOTHING } },
   { route: "GET kuvo/setup", answers: { 200: SETUP } },
   { route: "GET kuvo/setup/events", answers: { 200: SETUP } },

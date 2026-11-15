@@ -1038,7 +1038,10 @@ describe("what the record keeps a copy of", () => {
       writeFileSync(draft, text)
       await hear(turn("ses_code", `m${n}`, tool("ses_code", `c${n}`, "write", { filePath: draft })))
     }
-    expect((await route("POST", "kuvo/artifacts/storage", { budget: 0 })).value).toMatchObject({ budget: 0, older: 0 })
+    const before = store.storage()
+    expect((await route("POST", "kuvo/artifacts/storage", { budget: 0 })).status).toBe(400)
+    expect(store.storage()).toEqual(before)
+    expect((await route("POST", "kuvo/artifacts/storage", { budget: 0, confirmed: true })).value).toMatchObject({ budget: 0, older: 0 })
     store = new ArtifactStore(join(root, "artifacts"), { bots, disk: () => disk })
     expect((await route("GET", "kuvo/artifacts/storage")).value.budget).toBe(0)
     expect((await route("GET", `kuvo/artifacts/${ArtifactStore.idOf(draft)}`)).value.versions.map((version: any) => version.kept)).toEqual([false, true])

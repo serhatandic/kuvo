@@ -139,7 +139,10 @@ export async function* forward(target: Target, path: string, request: LinkReques
     if (!sending) return request.body;
     const session = decodeURIComponent(sending[1]!);
     const body = await attachedIn(request.body, session, modelInput(url, headers, delivering), request.fromMac === true, toAgents);
-    return sending[2] === "prompt" ? withPartsIn(prompt ? fromPhone(await namedIn(body, session, naming)) : body) : body;
+    if (sending[2] !== "prompt") return body;
+    // (The desktop app's over the link: who it names, without the phone's block.)
+    const named = prompt ? await namedIn(body, session, naming) : body;
+    return withPartsIn(prompt && !request.desktop ? fromPhone(named) : named);
   };
   // Not answering (starting again, say).
   const notAnswering = (): SentAnswer => ({ status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: down() })) });

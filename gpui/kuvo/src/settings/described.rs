@@ -21,6 +21,7 @@ pub struct Drawing<'a> {
     pub replacing: &'a [String],
     /// Whether the box is on the computer this app runs on.
     pub here: bool,
+    pub filters: &'a std::collections::HashMap<String, String>,
 }
 
 pub fn key(id: &str) -> String {
@@ -39,17 +40,28 @@ pub fn blocks(page: &Page, drawing: &Drawing) -> Vec<Block> {
                 rows.push(row(described, drawing));
                 continue;
             }
-            // A list alone in a group with no heading names the group; else it heads its items.
+            // A list alone in a group with no heading (or whose heading matches the group) names the group; else it heads its items.
             let adds = described.add.as_ref().map(|add| push(described, add, drawing));
-            if group.rows.len() == 1 && label.is_empty() && adds.is_none() {
-                label = described.title.clone();
-                words = described.line.clone().unwrap_or_default();
+            if group.rows.len() == 1 && adds.is_none() && (label.is_empty() || label == described.title) {
+                if label.is_empty() {
+                    label = described.title.clone();
+                }
+                if words.is_empty() {
+                    words = described.line.clone().unwrap_or_default();
+                }
             } else {
-                rows.push(Row::new(key(&described.id), described.title.clone(), described.line.clone().unwrap_or_default(), adds.map_or(Control::None, |add| Control::Buttons(vec![add]))));
+                rows.push(Row::new(if described.search.is_some() { format!("{}-heading", key(&described.id)) } else { key(&described.id) }, described.title.clone(), described.line.clone().unwrap_or_default(), adds.map_or(Control::None, |add| Control::Buttons(vec![add]))));
             }
-            rows.extend(described.items.iter().map(|item| row(item, drawing)));
-            if described.items.is_empty() {
-                rows.push(Row::new(format!("{}-empty", key(&described.id)), String::new(), described.empty.clone().unwrap_or_else(|| "None yet.".into()), Control::None));
+            let query = drawing.filters.get(&key(&described.id)).cloned().unwrap_or_default();
+            if let Some(search) = &described.search {
+                rows.push(Row::new(key(&described.id), String::new(), String::new(), Control::Field { unit: None, lines: None, masked: false, value: query.clone(), placeholder: search.placeholder.clone(), revision: String::new(), save: Act::Filter, more: Vec::new() }));
+            }
+            let query_lower = query.to_lowercase();
+            let list_matches = described.title.to_lowercase().contains(&query_lower);
+            let items: Vec<_> = described.items.iter().filter(|item| query.is_empty() || list_matches || item.title.to_lowercase().contains(&query_lower) || item.line.as_deref().unwrap_or_default().to_lowercase().contains(&query_lower)).collect();
+            rows.extend(items.iter().map(|item| row(item, drawing)));
+            if items.is_empty() {
+                rows.push(Row::new(format!("{}-empty", key(&described.id)), String::new(), if query.is_empty() { described.empty.clone().unwrap_or_else(|| "None yet.".into()) } else { described.search.as_ref().map(|search| search.empty.replace("{query}", &query)).unwrap_or_default() }, Control::None));
             }
         }
         blocks.push(Block::Group(label, words, rows));
@@ -81,24 +93,26 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
                     Control::Text(shown)
                 }
             }
-            Kind::Status => Control::Text(described.words().unwrap_or_default().to_owned()),
+            Kind::Status => Control::Text(match (&described.unit, described.value.as_ref().and_then(Value::as_f64)) {
+                (Some(unit), Some(value)) => unit.display(value),
+                _ => shown_value(described),
+            }),
             Kind::Text | Kind::Number | Kind::Folder => {
-                let value = match &described.value {
-                    Some(Value::String(text)) => text.clone(),
-                    Some(Value::Null) | None => String::new(),
-                    Some(other) => other.to_string(),
-                };
+                let value = shown_value(described);
                 if can {
                     let save = Act::Save { at: at.clone(), number: described.kind == Kind::Number };
-                    Control::Field { masked: false, value, placeholder: described.placeholder.clone().unwrap_or_default(), revision: described.revision.clone(), save: save.clone(), more: vec![Push::new("Save", save)] }
+                    Control::Field { unit: described.unit.as_ref().map(|unit| unit.name.clone()), lines: described.lines.as_ref().map(|lines| (lines.min, lines.max)), masked: false, value, placeholder: described.placeholder.clone().unwrap_or_default(), revision: described.revision.clone(), save: save.clone(), more: { let mut picks = vec![Push::new("Save", save)]; picks.extend(described.suggestions.iter().map(|pick| Push::new(pick.title.clone(), change(json!(pick.value))))); if let Some(folder) = &described.folder { picks.push(Push::new(folder.choose.clone(), Act::Folder { at: at.clone(), words: folder.clone() })); picks.push(Push::new(folder.clear.clone(), change(json!("")))); } picks } }
                 } else {
-                    Control::Text(value)
+                    Control::Text(match (&described.unit, described.value.as_ref().and_then(Value::as_f64)) {
+                        (Some(unit), Some(value)) => unit.display(value),
+                        _ => value,
+                    })
                 }
             }
             Kind::Secret => {
                 let replacing = drawing.replacing.contains(&described.id);
                 let save = Act::Save { at: at.clone(), number: false };
-                let field = |more: Vec<Push>| Control::Field { masked: true, value: String::new(), placeholder: described.placeholder.clone().unwrap_or_default(), revision: described.revision.clone(), save: save.clone(), more };
+                let field = |more: Vec<Push>| Control::Field { unit: None, lines: None, masked: true, value: String::new(), placeholder: described.placeholder.clone().unwrap_or_default(), revision: described.revision.clone(), save: save.clone(), more };
                 match (can, described.set, replacing) {
                     (false, set, _) => Control::Text(if set { "Set".into() } else { "Not set".into() }),
                     (true, false, _) => field(vec![Push::new("Save", save.clone())]),
@@ -158,4 +172,13 @@ fn push(described: &Described, action: &Action, drawing: &Drawing) -> Push {
         (None, None) => Some(Act::Do { at: At::of(drawing.section, described), action: action.id.clone(), confirm: action.confirm.clone(), asked: false }),
     };
     Push { label: action.title.clone(), act }
+}
+
+fn shown_value(row: &Described) -> String {
+    match row.value.as_ref() {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Number(number)) if row.unit.is_some() => row.unit.as_ref().unwrap().number(number.as_f64().unwrap_or_default()),
+        Some(Value::Null) | None => String::new(),
+        Some(value) => value.to_string(),
+    }
 }
