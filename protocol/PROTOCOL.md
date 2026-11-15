@@ -7807,7 +7807,11 @@ so a client still on those (the phone) sees every change kept just as they keep 
   `row` or `was`; `403` where `can` says why not (that `why`); `404` for a row not on the page now;
   `409 {message: "It changed since you read it.", page}` where the row changed since (by another
   client, an agent, a route of its own): only that row's revision counts, so a change to one row
-  never refuses another's. A refusal of the route underneath passes on with its status and words.
+  never refuses another's. A refusal of the route underneath passes on with its status and words; a
+  `409` without `page` is one of those (a settings file that can't be used), never a stale reading.
+  A box makes one change to a section at a time, each checked against the page as it is then
+  (a change through another of its processes, `box route` over SSH, is held to what the route
+  underneath checks).
 - `POST kuvo/settings/<section>/<row>/<action> {was}`: what a row (or a list's item) offers, the
   same answers; `400` for one that `opens`, which the client opens itself.
 - `GET kuvo/settings/<section>/events`: the page, a line now and one each time it changes (a change
@@ -7826,9 +7830,10 @@ The sections now:
   for `edit`, `shell`, `read`, `external_directory`, `webfetch`, `websearch`, `subagent` and `skill`:
   a `choice` of `allow`, `ask`, `deny` or `default`, kept as the Mac's Settings kept it, a rule for
   everything at the front of the engine's `permissions` in `kuvo/config`, the rest left as they are),
-  Sandbox (`sandbox`: its state, and its button as `kuvo/sandbox` names it: `retry` and `fix` check it
-  again, `restartEngine` restarts the engine, asked first where that stops work, `help` and
-  `softwareUpdate` open their page), and Also Allowed (`allowed`, a `list` of `allowed-<id>`, each
+  Sandbox (`sandbox`: its state, and its button as `kuvo/sandbox` names it, done by the route it
+  names: `retry` and `fix` check it again; `restartEngine` restarts the engine, asked first where
+  that stops work, on a Mac only while its keeper runs the box, the app restarting it otherwise
+  (`can` says so); `help` and `softwareUpdate` open their page), and Also Allowed (`allowed`, a `list` of `allowed-<id>`, each
   with `remove`). Rules for particular commands or files, approvals saved with Always and blocks
   aren't on it yet.
 - **Browser** (`browser`): `search-engine` (a `choice`), `tidies` and `offers` (`switch`es), and

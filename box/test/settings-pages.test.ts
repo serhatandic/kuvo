@@ -24,7 +24,7 @@ const handler = engineHandler(noEngine as any, { name: "devbox" }, noEngine as a
 // The box's long-running process, which keeps Also Allowed (vault/holder.ts), keeping no
 // conversation's SSH agent (there are none).
 const held = holdVault(handler, () => () => {})
-// A project and a folder outside Kuvo Code's own, as Also Allowed gives them.
+// A project and a folder of its, as Also Allowed keeps them.
 const outside = realpathSync(mkdtempSync(join(tmpdir(), "kuvo-settings-pages-")))
 afterAll(() => {
   held.close()
@@ -172,6 +172,27 @@ test("what agents may do is the engine's permissions, each choice a rule for eve
   shown = (await change("permissions", rowOf(read, "when-shell"), "default")).json
   expect(JSON.parse(readFileSync(CONFIG_FILE, "utf8")).permissions).toEqual([{ action: "read", resource: "*.pem", effect: "deny" }])
   expect(rowOf(shown, "when-shell").value).toBe("default")
+
+  // This choice changed by hand since it was read: refused, with the page now; another choice read
+  // at the same time still goes.
+  const before = await page("permissions")
+  write(CONFIG_FILE, { permissions: [{ action: "shell", resource: "*", effect: "ask" }] })
+  const stale = await change("permissions", rowOf(before, "when-shell"), "deny")
+  expect(stale.status).toBe(409)
+  expect(rowOf(stale.json.page, "when-shell").value).toBe("ask")
+  const edit = await change("permissions", rowOf(before, "when-edit"), "ask")
+  expect(edit.status).toBe(200)
+  expect(JSON.parse(readFileSync(CONFIG_FILE, "utf8")).permissions).toEqual([
+    { action: "edit", resource: "*", effect: "ask" },
+    { action: "shell", resource: "*", effect: "ask" },
+  ])
+
+  // Written by hand as something else than a list of rules: left as it is, and said why.
+  write(CONFIG_FILE, { permissions: { shell: "ask" } })
+  const unlisted = rowOf(await page("permissions"), "when-shell")
+  expect(unlisted.can.why).toContain("aren't a list of rules")
+  expect((await change("permissions", unlisted, "deny")).status).toBe(403)
+  expect(JSON.parse(readFileSync(CONFIG_FILE, "utf8")).permissions).toEqual({ shell: "ask" })
 })
 
 test("Also Allowed lists the folders given, and one removed from its row is gone from kuvo/sandbox/allowed", async () => {
@@ -179,9 +200,11 @@ test("Also Allowed lists the folders given, and one removed from its row is gone
   const folder = join(outside, "cache")
   mkdirSync(project, { recursive: true })
   mkdirSync(folder, { recursive: true })
-  const added = await ask(handler, "POST", "kuvo/sandbox/allowed", { project, kind: "write", path: folder })
-  expect(added.status).toBe(200)
-  const id = added.json.allowed[0].id
+  // Given with Always on a stopped command's card (as Also Allowed keeps it: what it lets a folder
+  // be is its own test's, fence/allowed.ts).
+  const id = "al_cache"
+  write(ALLOWED_FILE, { allowed: [{ id, project, kind: "write", path: folder, at: Date.now(), by: "Mac" }] })
+  expect((await ask(handler, "GET", "kuvo/sandbox/allowed")).json.allowed.map((rule: any) => rule.id)).toEqual([id])
   const shown = await page("permissions")
   const list = rowOf(shown, "allowed")
   expect(list).toMatchObject({ kind: "list", title: "Also Allowed" })
@@ -194,13 +217,38 @@ test("Also Allowed lists the folders given, and one removed from its row is gone
   expect((await ask(handler, "GET", "kuvo/sandbox/allowed")).json.allowed).toEqual([])
 })
 
-test("the sandbox's row says what the box says of it, and the page says what isn't on it yet", async () => {
+test("the sandbox's row is what kuvo/sandbox says, and its button does what that names", async () => {
+  const { sandboxAction } = await import("../src/link/areas/settings-pages")
   const shown = await page("permissions")
   const sandbox = rowOf(shown, "sandbox")
+  // (Not checked yet, in a test's home: Try Again, which checks it.)
   const state = (await ask(handler, "GET", "kuvo/sandbox")).json
-  expect(sandbox.value).toBe(state.on ? "On" : "Off")
-  if (!state.on) expect(sandbox.line).toBe(state.why)
+  expect([state.on, state.route]).toEqual([false, "POST kuvo/sandbox/check"])
+  expect(sandbox).toMatchObject({ kind: "actions", value: "Off", line: state.why, tone: "warning", actions: [sandboxAction(state, "devbox", true)] })
+  const done = await act("permissions", sandbox, String(state.action))
+  expect(done.status).toBe(200)
+  // Checked, as kuvo/sandbox/check checks it: the page says what it came to.
+  const now = (await ask(handler, "GET", "kuvo/sandbox")).json
+  expect(rowOf(done.json, "sandbox").line ?? "").toBe(now.on ? "Agents' commands here run in it." : now.why)
   expect(shown.notes.at(-1).words).toContain("aren't on this page yet")
+})
+
+test("Restart Engine starts the box's own tool, and answers done; where the app restarts a Mac's engine, it says so", async () => {
+  const { sandboxDoes } = await import("../src/link/areas/settings-pages")
+  const { toolRun } = await import("../src/link/areas/engine")
+  const { K, RUN } = await import("../src/link/home")
+  // The machine's tool as Kuvo Code sets it up (`bin/kuvo-start`), a stand-in noting what it's asked.
+  const asked = join(K, "start-asked")
+  for (const file of [join(K, "bin", "kuvo-launch"), join(RUN, "launch.env")]) { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, "") }
+  writeFileSync(join(K, "bin", "kuvo-start"), `echo "$1" > ${JSON.stringify(asked)}\n`)
+  const context = { info: { name: "devbox" } } as any
+  expect(await sandboxDoes(context, "POST kuvo/engine/restart", true)).toBeNull()
+  await toolRun()
+  expect(readFileSync(asked, "utf8").trim()).toBe("restart")
+  rmSync(asked)
+  expect(await sandboxDoes({ info: { name: "Studio" } } as any, "POST kuvo/engine/restart", false)).toEqual({ status: 403, message: "Kuvo Code on Studio restarts its engine: restart it there." })
+  expect(existsSync(asked)).toBe(false)
+  expect((await sandboxDoes(context, "POST kuvo/somewhere/else", true))?.status).toBe(404)
 })
 
 test("the sandbox's button is the box's: a route it runs, asked first where it stops work, and this Mac's own Software Update only from the app on it", async () => {

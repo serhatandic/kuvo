@@ -271,9 +271,9 @@ impl Page {
 pub enum Changed {
     /// Done: the page as it is now.
     Done(Page),
-    /// Refused: the row changed since it was read (`409`). The box's words, and the page as it
-    /// is now, to draw instead.
-    Stale { message: String, page: Option<Page> },
+    /// Refused: the row changed since it was read (`409` with the page). The box's words, and the
+    /// page as it is now, to draw instead.
+    Stale { message: String, page: Page },
 }
 
 #[derive(Deserialize)]
@@ -319,15 +319,16 @@ impl BoxClient {
 
 fn changed(client: &BoxClient, request: &Request) -> Result<Changed> {
     let response = client.send(request)?;
+    // (A 409 without the page is the route underneath refusing, a settings file that can't be
+    // used: a refusal in its words, like any other.)
     if response.status == 409 {
         #[derive(Deserialize)]
         struct Stale {
-            #[serde(default)]
-            page: Option<Value>,
+            page: Page,
         }
-        let refusal = Refusal::from_answer(response.status, &response.body);
-        let page = serde_json::from_slice::<Stale>(&response.body).ok().and_then(|stale| stale.page).and_then(|page| serde_json::from_value(page).ok());
-        return Ok(Changed::Stale { message: refusal.message, page });
+        if let Ok(stale) = serde_json::from_slice::<Stale>(&response.body) {
+            return Ok(Changed::Stale { message: Refusal::from_answer(response.status, &response.body).message, page: stale.page });
+        }
     }
     if !response.is_success() {
         return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));

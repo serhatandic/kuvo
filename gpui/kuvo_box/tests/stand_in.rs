@@ -778,6 +778,7 @@ fn a_boxs_settings_are_read_changed_and_followed_as_the_box_says_them() {
             _ => Answer::json(409, json!({ "message": "It changed since you read it.", "page": page(false, "of2") })),
         },
         ("PATCH", "kuvo/settings/permissions") => Answer::json(403, json!({ "message": held })),
+        ("PATCH", "kuvo/settings/engine") => Answer::json(409, json!({ "message": "The engine's settings file can't be changed from here: line 2." })),
         ("POST", "kuvo/settings/browser/never-localhost%3A3000/offer-again") => Answer::json(200, page(true, "of1")),
         _ => Answer::json(404, json!({})),
     });
@@ -804,13 +805,18 @@ fn a_boxs_settings_are_read_changed_and_followed_as_the_box_says_them() {
     match client.change_setting("browser", &stale, json!(true)).expect("answered") {
         Changed::Stale { message, page } => {
             assert_eq!(message, "It changed since you read it.");
-            assert_eq!(page.and_then(|page| page.row("offers").map(|row| row.revision.clone())).as_deref(), Some("of2"));
+            assert_eq!(page.row("offers").map(|row| row.revision.as_str()), Some("of2"));
         }
         other => panic!("stale, not {other:?}"),
     }
     // One it can't change from here: refused in the box's words.
     match client.change_setting("permissions", &offers, json!(true)) {
         Err(Error::Refused(refusal)) => assert_eq!((refusal.status, refusal.message.as_str()), (403, held)),
+        other => panic!("refused, not {other:?}"),
+    }
+    // A 409 of the route underneath (no page): a refusal in its words, not a stale reading.
+    match client.change_setting("engine", &offers, json!(true)) {
+        Err(Error::Refused(refusal)) => assert_eq!(refusal.status, 409),
         other => panic!("refused, not {other:?}"),
     }
     // What a list's row offers, sent to its own route, its id kept one part of the path.

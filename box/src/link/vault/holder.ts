@@ -145,6 +145,8 @@ export function holdVault(handle: LinkHandler, keepAgents: () => () => void = ke
   // Each conversation's SSH agent, from the vault's SSH keys, while its commands are in the sandbox.
   const stopAgents = keepAgents();
   server.on("close", stopAgents);
+  // (Closed, it holds nothing: what a test's holder does as it ends.)
+  server.on("close", () => { holding = false; });
   return server;
 }
 

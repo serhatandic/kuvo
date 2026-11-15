@@ -16,8 +16,8 @@ import { isObject, parsed, sortedJSON } from "../../shared/json";
 import type { SettingAction, SettingCan, SettingGroup, SettingItem, SettingRow, SettingsPage, SettingsSection } from "../../shared/routes/settings-pages";
 import { SEARCH_ENGINES } from "../../shared/routes/browser";
 import { approvalRoute } from "./approval";
-import { CONFIG_FILE } from "./config";
-import { engineControlRoute } from "./engine";
+import { CHANGED_SINCE, CONFIG_FILE } from "./config";
+import { engineControl } from "./engine";
 import { sandboxRoute } from "./sandbox";
 import { settingsRoute } from "./settings";
 import { BROWSER_DATA_ROUTE, browserDataRoute } from "../browser/routes";
@@ -26,6 +26,8 @@ import { ALLOWED_FILE } from "../fence/allowed";
 import { fenceState, SOFTWARE_UPDATE } from "../fence/state";
 import { followedLive } from "../follow";
 import { APPROVAL_FILE } from "../work/approval";
+import { IS_MAC } from "../home";
+import { boxAnswers } from "../mac/relay";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 export const SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+))?)?$/;
@@ -67,7 +69,6 @@ async function asked(context: RouteContext, answer: (context: RouteContext) => A
     ...(body === undefined ? {} : { body: Buffer.from(JSON.stringify(body)) }),
     ...(context.request.fromApp ? { fromApp: true } : {}),
     ...(context.request.fromMac ? { fromMac: true } : {}),
-    ...(context.request.vaultClient ? { vaultClient: true } : {}),
   };
   let status = 500;
   const chunks: Buffer[] = [];
@@ -81,16 +82,17 @@ async function asked(context: RouteContext, answer: (context: RouteContext) => A
 }
 
 const browserAnswer = (context: RouteContext) => browserDataRoute(context, context.route.match(BROWSER_DATA_ROUTE)!);
-const engineAnswer = (context: RouteContext) => engineControlRoute(context, ["kuvo/engine/restart", "restart"] as unknown as RegExpMatchArray);
 
 /** Why one of them didn't answer, in words. */
 const said = (answer: { status: number; value: any }, fallback: string): string =>
   typeof answer.value?.message === "string" && answer.value.message ? answer.value.message : fallback;
 
-/** A change or an action refused, in words: its status, and why. */
-type Refused = { status: number; message: string };
+/** A change or an action refused, in words: its status, and why; `stale` where the row changed since
+ * it was read (answered with the page now). */
+type Refused = { status: number; message: string; stale?: true };
 const refusal = (answer: { status: number; value: any }): Refused | null =>
-  answer.status === 200 ? null : { status: answer.status, message: said(answer, `It couldn't be changed (${answer.status}).`) };
+  answer.status >= 200 && answer.status < 300 ? null : { status: answer.status, message: said(answer, `It couldn't be changed (${answer.status}).`) };
+const STALE: Refused = { status: 409, message: CHANGED_SINCE, stale: true };
 
 // MARK: Permissions
 
@@ -111,6 +113,8 @@ const ACTIONS = [
 ] as const;
 const EFFECTS = [{ id: "allow", title: "Allow" }, { id: "ask", title: "Ask First" }, { id: "deny", title: "Don't Allow" }] as const;
 const engineDefault = (action: string) => (action === "external_directory" ? "ask" : "allow");
+
+const NOT_A_LIST = "The engine's permissions here aren't a list of rules: change them in its settings file.";
 
 type Rule = { action: string; resource: string; effect: string };
 const isRule = (value: unknown): value is Rule => isObject(value) && typeof value.action === "string" && typeof value.resource === "string" && typeof value.effect === "string";
@@ -154,6 +158,8 @@ async function permissionsPage(context: RouteContext): Promise<SettingsPage> {
 
   if (config.status === 200) {
     const rules = Array.isArray(config.value.permissions) ? config.value.permissions : [];
+    // (Written by hand as something else than a list of rules: left as it is, and said.)
+    const can = config.value.permissions === undefined || Array.isArray(config.value.permissions) ? true as const : { why: NOT_A_LIST };
     const rows = ACTIONS.map(action => {
       const chosen = choiceIn(rules, action.id);
       const fallback = EFFECTS.find(effect => effect.id === engineDefault(action.id))!.title;
@@ -163,7 +169,7 @@ async function permissionsPage(context: RouteContext): Promise<SettingsPage> {
         ...(chosen && !EFFECTS.some(effect => effect.id === chosen) ? [{ id: chosen, title: "Set by a Newer Engine" }] : []),
         { id: "default", title: `Default (${fallback})` },
       ];
-      return row({ id: `when-${action.id}`, title: action.title, ...("line" in action ? { line: action.line } : {}), kind: "choice", value: chosen ?? "default", choices, can: true });
+      return row({ id: `when-${action.id}`, title: action.title, ...("line" in action ? { line: action.line } : {}), kind: "choice", value: chosen ?? "default", choices, can });
     });
     groups.push({ id: "when", title: "When the Agent Wants To", note: "For every session and mode. Don't Allow holds even in Full Access. Codex, Cursor, Grok and Antigravity may read files without asking.", rows });
   } else {
@@ -207,12 +213,20 @@ async function permissionsPage(context: RouteContext): Promise<SettingsPage> {
   return { id: "permissions", title: "Permissions", groups, notes };
 }
 
+const CHECK = "POST kuvo/sandbox/check";
+const RESTART = "POST kuvo/engine/restart";
+
+/** Whether this box restarts its engine itself: a machine's always; a Mac's while its keeper runs
+ * it (`boxAnswers`), else the app that runs it does. */
+const restartsItself = () => !IS_MAC || boxAnswers("kuvo/engine/restart");
+
 /** The sandbox's button while it's off, as the box names it (`kuvo/sandbox`'s `action`): one that
  * runs a route (checking again, restarting the engine), one that opens a page, or this computer's
  * own Software Update, only from a client on it. */
-export function sandboxAction(state: any, name: string, here: boolean): SettingAction | null {
+export function sandboxAction(state: any, name: string, here: boolean, restarts = restartsItself()): SettingAction | null {
   if (!state.action || !state.actionLabel) return null;
   const title = String(state.actionLabel);
+  if (state.route === RESTART && !restarts) return { id: String(state.action), title, can: { why: `Kuvo Code on ${name} restarts its engine: restart it there.` } };
   if (state.route) {
     const confirm = state.action === "restartEngine" && title.endsWith("…")
       ? { confirm: { title: `Restart ${name}'s engine?`, body: "What agents are doing there now stops. Commands run in the sandbox once it's back.", button: "Restart Engine" } }
@@ -238,24 +252,42 @@ async function permissionsChange(context: RouteContext, at: SettingItem, value: 
       const read = await asked(context, settingsRoute, "GET", "kuvo/config");
       if (read.status !== 200) return refusal(read);
       const was = read.value.permissions ?? null;
+      if (was !== null && !Array.isArray(was)) return { status: 403, message: NOT_A_LIST };
+      // (This one changed since it was read, by hand or another client: refused, the page now.)
+      if ((choiceIn(was ?? [], action) ?? "default") !== at.value) return STALE;
       const items = (Array.isArray(was) ? was : []).filter((each: unknown) => !(isRule(each) && each.action === action && each.resource === "*"));
       if (value !== "default") items.unshift({ action, resource: "*", effect: value });
       const written = await asked(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["permissions"], value: items.length ? items : null, was }] });
-      if (written.status === 409 && written.value?.problem === undefined && written.value?.message === "It changed since you read it.") continue;
+      if (written.status === 409 && written.value?.problem === undefined && written.value?.message === CHANGED_SINCE) continue;
       return refusal(written);
     }
-    return { status: 409, message: "The engine's settings keep changing: try again in a moment." };
+    return { ...STALE, message: "The engine's settings keep changing: try again in a moment." };
   }
   return { status: 400, message: "That isn't something to change." };
 }
 
 async function permissionsAct(context: RouteContext, at: SettingItem, action: SettingAction): Promise<Refused | null> {
   if (at.id === "sandbox") {
-    if (action.id === "restartEngine") return refusal(await asked(context, engineAnswer, "POST", "kuvo/engine/restart", {}));
-    return refusal(await asked(context, sandboxRoute, "POST", "kuvo/sandbox/check", {}));
+    // As the sandbox names it now (the row's revision says it's the one that was read).
+    const state = await asked(context, sandboxRoute, "GET", "kuvo/sandbox");
+    if (state.status !== 200) return refusal(state);
+    if (String(state.value.action) !== action.id) return STALE;
+    return sandboxDoes(context, state.value.route);
   }
   if (at.id.startsWith("allowed-") && action.id === "remove") {
     return refusal(await asked(context, sandboxRoute, "DELETE", `kuvo/sandbox/allowed/${encodeURIComponent(at.id.slice(8))}?all`));
+  }
+  return { status: 404, message: "That isn't something it does." };
+}
+
+/** Runs the sandbox's button's route: checking it again, or restarting the engine where this box
+ * does that itself (begun: `202`, done). */
+export async function sandboxDoes(context: RouteContext, route: unknown, restarts = restartsItself()): Promise<Refused | null> {
+  if (route === CHECK) return refusal(await asked(context, sandboxRoute, "POST", "kuvo/sandbox/check", {}));
+  if (route === RESTART) {
+    if (!restarts) return { status: 403, message: `Kuvo Code on ${context.info.name || "this Mac"} restarts its engine: restart it there.` };
+    const { status, message } = await engineControl("restart");
+    return refusal({ status, value: message ? { message } : {} });
   }
   return { status: 404, message: "That isn't something it does." };
 }
@@ -342,6 +374,16 @@ function fits(at: SettingItem, value: unknown): boolean {
   return false;
 }
 
+// Each section's changes here, one after another (a change waits for the one before it to end).
+const turns = new Map<string, Promise<unknown>>();
+function inTurn<T>(key: string, work: () => Promise<T>): Promise<T> {
+  const mine = (turns.get(key) ?? Promise.resolve()).then(work, work);
+  const settled = mine.catch(() => {});
+  turns.set(key, settled);
+  void settled.then(() => { if (turns.get(key) === settled) turns.delete(key); });
+  return mine;
+}
+
 const whyNot = (can: SettingCan | undefined): string | null => (can === undefined || can === true ? null : can.why);
 
 const idOf = (part: string | undefined): string | null => {
@@ -367,44 +409,42 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
     return yield* followedLive(() => section.read(context), listen, signal, { look: section.look });
   }
 
+  if (method === "GET" && rowPart === undefined) return yield* json(200, await section.read(context));
+  if (rowPart !== undefined ? method !== "POST" : method !== "PATCH") {
+    return yield* json(405, { message: rowPart !== undefined ? "Do it with POST." : "Read it with GET, or change a row with PATCH." });
+  }
   const body = parsed(request.body);
   const given = isObject(body) ? body : {};
-  // What's asked is checked against the page as it is now: the row's own revision, then whether it
-  // can be changed from here, then the value.
-  const checked = async (rowId: unknown): Promise<{ at: SettingItem } | { refused: AnswerPiece[] }> => {
-    if (typeof rowId !== "string" || !rowId) return { refused: json(400, { message: "Name the row to change (row)." }) };
-    if (typeof given.was !== "string") return { refused: json(400, { message: "Send the row's revision as it was read (was)." }) };
+  const rowId = rowPart !== undefined ? idOf(rowPart) : given.row;
+  if (typeof rowId !== "string" || !rowId) return yield* json(400, { message: "Name the row to change (row)." });
+  if (typeof given.was !== "string") return yield* json(400, { message: "Send the row's revision as it was read (was)." });
+  // One change to a section at a time here, each checked against the page as it is then: the row's
+  // own revision, whether it can be changed from here, the value; then made. (Another of the box's
+  // processes, `box route`, is held to what the routes underneath check.)
+  const { status, value } = await inTurn(id!, async (): Promise<{ status: number; value: unknown }> => {
     const page = await section.read(context);
     const at = rowsOf(page).find(each => each.id === rowId);
-    if (!at) return { refused: json(404, { message: "That isn't on this page now." }) };
-    if (at.revision !== given.was) return { refused: json(409, { message: "It changed since you read it.", page }) };
-    return { at };
-  };
-  const answered = async function* (done: Refused | null): AsyncGenerator<AnswerPiece> {
-    if (done) return yield* json(done.status, { message: done.message });
+    if (!at) return { status: 404, value: { message: "That isn't on this page now." } };
+    if (at.revision !== given.was) return { status: 409, value: { message: CHANGED_SINCE, page } };
+    let done: Refused | null;
+    if (rowPart !== undefined) {
+      const action = (at.actions ?? []).find(each => each.id === idOf(actionPart));
+      if (!action) return { status: 404, value: { message: "That isn't something it does." } };
+      if (action.opens !== undefined) return { status: 400, value: { message: "That opens a page: open it in the app." } };
+      const why = whyNot(action.can);
+      if (why) return { status: 403, value: { message: why } };
+      done = await section.act(context, at, action);
+    } else {
+      if (at.can === undefined) return { status: 400, value: { message: "That isn't something to change." } };
+      const why = whyNot(at.can);
+      if (why) return { status: 403, value: { message: why } };
+      if (!("value" in given) || !fits(at, given.value)) return { status: 400, value: { message: at.kind === "choice" ? "Pick one of its choices." : "Send true or false." } };
+      done = await section.change(context, at, given.value);
+    }
+    if (done?.stale) return { status: 409, value: { message: done.message, page: await section.read(context) } };
+    if (done) return { status: done.status, value: { message: done.message } };
     changed();
-    return yield* json(200, await section.read(context));
-  };
-
-  if (rowPart !== undefined) {
-    if (method !== "POST") return yield* json(405, { message: "Do it with POST." });
-    const found = await checked(idOf(rowPart));
-    if ("refused" in found) return yield* found.refused;
-    const action = (found.at.actions ?? []).find(each => each.id === idOf(actionPart));
-    if (!action) return yield* json(404, { message: "That isn't something it does." });
-    if (action.opens !== undefined) return yield* json(400, { message: "That opens a page: open it in the app." });
-    const why = whyNot(action.can);
-    if (why) return yield* json(403, { message: why });
-    return yield* answered(await section.act(context, found.at, action));
-  }
-
-  if (method === "GET") return yield* json(200, await section.read(context));
-  if (method !== "PATCH") return yield* json(405, { message: "Read it with GET, or change a row with PATCH." });
-  const found = await checked(given.row);
-  if ("refused" in found) return yield* found.refused;
-  if (found.at.can === undefined) return yield* json(400, { message: "That isn't something to change." });
-  const why = whyNot(found.at.can);
-  if (why) return yield* json(403, { message: why });
-  if (!("value" in given) || !fits(found.at, given.value)) return yield* json(400, { message: found.at.kind === "choice" ? "Pick one of its choices." : "Send true or false." });
-  return yield* answered(await section.change(context, found.at, given.value));
+    return { status: 200, value: await section.read(context) };
+  });
+  return yield* json(status, value);
 }

@@ -80,7 +80,8 @@ export const SETTINGS_SECTION = object({ id: string, title: string, group: strin
 /** A box's sections, in order. */
 export const SETTINGS_SECTIONS = object({ sections: list(SETTINGS_SECTION) });
 
-/** A change refused because a row changed since it was read: the page as it is now. */
+/** A change refused because a row changed since it was read: the page as it is now (`page`). A 409
+ * without one is the route underneath refusing (a settings file that can't be used), in words. */
 export const SETTINGS_STALE = object({ message: string, "page?": SETTINGS_PAGE });
 
 const REFUSED = object({ message: string });
@@ -98,6 +99,6 @@ export const SETTINGS_PAGE_ROUTES: RouteShape[] = [
   { route: "GET kuvo/settings", answers: { 200: SETTINGS_SECTIONS } },
   { route: "GET kuvo/settings/:section", answers: { 200: SETTINGS_PAGE, 404: REFUSED } },
   { route: "GET kuvo/settings/:section/events", answers: { 200: SETTINGS_PAGE, 404: REFUSED } },
-  { route: "PATCH kuvo/settings/:section", answers: { 200: SETTINGS_PAGE, 409: SETTINGS_STALE } },
-  { route: "POST kuvo/settings/:section/:row/:action", answers: { 200: SETTINGS_PAGE, 409: SETTINGS_STALE } },
+  { route: "PATCH kuvo/settings/:section", answers: { 200: SETTINGS_PAGE, 400: REFUSED, 403: REFUSED, 404: REFUSED, 409: SETTINGS_STALE } },
+  { route: "POST kuvo/settings/:section/:row/:action", answers: { 200: SETTINGS_PAGE, 400: REFUSED, 403: REFUSED, 404: REFUSED, 409: SETTINGS_STALE } },
 ];

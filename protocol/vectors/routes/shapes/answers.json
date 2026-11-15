@@ -13963,6 +13963,21 @@
       }
      }
     },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
     "409": {
      "object": {
       "message": "string",
@@ -14843,6 +14858,21 @@
         }
        }
       }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
      }
     },
     "409": {

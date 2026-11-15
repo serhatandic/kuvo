@@ -5375,6 +5375,7 @@ import path19 from "node:path";
 var CONFIG_FILE = IS_MAC ? path19.join(ENGINE_CONFIG, "opencode", "opencode.json") : path19.join(BOX, "opencode.json");
 var OWN_MARK = IS_MAC ? null : CONFIG_FILE;
 var SERVERS = ["mcp", "servers"];
+var CHANGED_SINCE = "It changed since you read it.";
 var ownsSettings = (mark = OWN_MARK) => mark === null || fs19.existsSync(mark);
 var sortedKeys = (value) => Array.isArray(value) ? value.map(sortedKeys) : isObject(value) ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortedKeys(value[key])])) : value;
 function readSettings(file = CONFIG_FILE) {
@@ -5431,7 +5432,7 @@ function changeSettings(changes, file = CONFIG_FILE, lock = CONFIG_LOCK) {
     })))
       return { status: 400, message: "A path goes through objects only; send a list whole, at its own path." };
     if (changes.some((change) => ("was" in change) && sortedJSON(valueAt(settings, change.path) ?? null) !== sortedJSON(change.was))) {
-      return { status: 409, message: "It changed since you read it." };
+      return { status: 409, message: CHANGED_SINCE };
     }
     return writeSettings(settings, changes, file);
   });
@@ -43932,7 +43933,7 @@ import fs140 from "node:fs";
 import path148 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e236fd107f90";
+var BRIDGE_VERSION = "8b289dcb5a95";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -51489,6 +51490,9 @@ function holdVault(handle, keepAgents = keepSshAgents) {
   server.unref();
   const stopAgents = keepAgents();
   server.on("close", stopAgents);
+  server.on("close", () => {
+    holding4 = false;
+  });
   return server;
 }
 function socketLooksHeld() {
@@ -55143,8 +55147,7 @@ async function asked8(context, answer, method, path, body) {
     headers: {},
     ...body === undefined ? {} : { body: Buffer.from(JSON.stringify(body)) },
     ...context.request.fromApp ? { fromApp: true } : {},
-    ...context.request.fromMac ? { fromMac: true } : {},
-    ...context.request.vaultClient ? { vaultClient: true } : {}
+    ...context.request.fromMac ? { fromMac: true } : {}
   };
   let status = 500;
   const chunks = [];
@@ -55161,9 +55164,9 @@ async function asked8(context, answer, method, path, body) {
   return { status, value };
 }
 var browserAnswer = (context) => browserDataRoute(context, context.route.match(BROWSER_DATA_ROUTE));
-var engineAnswer = (context) => engineControlRoute(context, ["kuvo/engine/restart", "restart"]);
 var said8 = (answer, fallback) => typeof answer.value?.message === "string" && answer.value.message ? answer.value.message : fallback;
-var refusal3 = (answer) => answer.status === 200 ? null : { status: answer.status, message: said8(answer, `It couldn't be changed (${answer.status}).`) };
+var refusal3 = (answer) => answer.status >= 200 && answer.status < 300 ? null : { status: answer.status, message: said8(answer, `It couldn't be changed (${answer.status}).`) };
+var STALE = { status: 409, message: CHANGED_SINCE, stale: true };
 var MODE_NAMES = { askFirst: "Ask First", acceptEdits: "Accept Edits", auto: "Auto", fullAccess: "Full Access" };
 var ACTIONS = [
   { id: "edit", title: "Edit files", line: "Changing, creating or deleting files. Plan mode doesn't, by default." },
@@ -55177,6 +55180,7 @@ var ACTIONS = [
 ];
 var EFFECTS = [{ id: "allow", title: "Allow" }, { id: "ask", title: "Ask First" }, { id: "deny", title: "Don't Allow" }];
 var engineDefault = (action) => action === "external_directory" ? "ask" : "allow";
+var NOT_A_LIST = "The engine's permissions here aren't a list of rules: change them in its settings file.";
 var isRule2 = (value) => isObject(value) && typeof value.action === "string" && typeof value.resource === "string" && typeof value.effect === "string";
 var choiceIn = (rules, action) => rules.filter(isRule2).findLast((rule) => rule.action === action && rule.resource === "*")?.effect;
 async function permissionsPage(context) {
@@ -55218,6 +55222,7 @@ async function permissionsPage(context) {
   }
   if (config.status === 200) {
     const rules = Array.isArray(config.value.permissions) ? config.value.permissions : [];
+    const can = config.value.permissions === undefined || Array.isArray(config.value.permissions) ? true : { why: NOT_A_LIST };
     const rows = ACTIONS.map((action) => {
       const chosen = choiceIn(rules, action.id);
       const fallback = EFFECTS.find((effect) => effect.id === engineDefault(action.id)).title;
@@ -55226,7 +55231,7 @@ async function permissionsPage(context) {
         ...chosen && !EFFECTS.some((effect) => effect.id === chosen) ? [{ id: chosen, title: "Set by a Newer Engine" }] : [],
         { id: "default", title: `Default (${fallback})` }
       ];
-      return row({ id: `when-${action.id}`, title: action.title, ..."line" in action ? { line: action.line } : {}, kind: "choice", value: chosen ?? "default", choices, can: true });
+      return row({ id: `when-${action.id}`, title: action.title, ..."line" in action ? { line: action.line } : {}, kind: "choice", value: chosen ?? "default", choices, can });
     });
     groups.push({ id: "when", title: "When the Agent Wants To", note: "For every session and mode. Don't Allow holds even in Full Access. Codex, Cursor, Grok and Antigravity may read files without asking.", rows });
   } else {
@@ -55279,10 +55284,15 @@ async function permissionsPage(context) {
   notes.push({ words: "Rules for particular commands or files, approvals saved with Always, and blocks aren't on this page yet.", tone: "quiet" });
   return { id: "permissions", title: "Permissions", groups, notes };
 }
-function sandboxAction(state, name, here) {
+var CHECK2 = "POST kuvo/sandbox/check";
+var RESTART2 = "POST kuvo/engine/restart";
+var restartsItself = () => !IS_MAC || boxAnswers("kuvo/engine/restart");
+function sandboxAction(state, name, here, restarts = restartsItself()) {
   if (!state.action || !state.actionLabel)
     return null;
   const title = String(state.actionLabel);
+  if (state.route === RESTART2 && !restarts)
+    return { id: String(state.action), title, can: { why: `Kuvo Code on ${name} restarts its engine: restart it there.` } };
   if (state.route) {
     const confirm = state.action === "restartEngine" && title.endsWith("…") ? { confirm: { title: `Restart ${name}'s engine?`, body: "What agents are doing there now stops. Commands run in the sandbox once it's back.", button: "Restart Engine" } } : {};
     return { id: String(state.action), title, ...confirm };
@@ -55308,26 +55318,44 @@ async function permissionsChange(context, at, value) {
       if (read.status !== 200)
         return refusal3(read);
       const was = read.value.permissions ?? null;
+      if (was !== null && !Array.isArray(was))
+        return { status: 403, message: NOT_A_LIST };
+      if ((choiceIn(was ?? [], action) ?? "default") !== at.value)
+        return STALE;
       const items = (Array.isArray(was) ? was : []).filter((each) => !(isRule2(each) && each.action === action && each.resource === "*"));
       if (value !== "default")
         items.unshift({ action, resource: "*", effect: value });
       const written = await asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["permissions"], value: items.length ? items : null, was }] });
-      if (written.status === 409 && written.value?.problem === undefined && written.value?.message === "It changed since you read it.")
+      if (written.status === 409 && written.value?.problem === undefined && written.value?.message === CHANGED_SINCE)
         continue;
       return refusal3(written);
     }
-    return { status: 409, message: "The engine's settings keep changing: try again in a moment." };
+    return { ...STALE, message: "The engine's settings keep changing: try again in a moment." };
   }
   return { status: 400, message: "That isn't something to change." };
 }
 async function permissionsAct(context, at, action) {
   if (at.id === "sandbox") {
-    if (action.id === "restartEngine")
-      return refusal3(await asked8(context, engineAnswer, "POST", "kuvo/engine/restart", {}));
-    return refusal3(await asked8(context, sandboxRoute, "POST", "kuvo/sandbox/check", {}));
+    const state = await asked8(context, sandboxRoute, "GET", "kuvo/sandbox");
+    if (state.status !== 200)
+      return refusal3(state);
+    if (String(state.value.action) !== action.id)
+      return STALE;
+    return sandboxDoes(context, state.value.route);
   }
   if (at.id.startsWith("allowed-") && action.id === "remove") {
     return refusal3(await asked8(context, sandboxRoute, "DELETE", `kuvo/sandbox/allowed/${encodeURIComponent(at.id.slice(8))}?all`));
+  }
+  return { status: 404, message: "That isn't something it does." };
+}
+async function sandboxDoes(context, route, restarts = restartsItself()) {
+  if (route === CHECK2)
+    return refusal3(await asked8(context, sandboxRoute, "POST", "kuvo/sandbox/check", {}));
+  if (route === RESTART2) {
+    if (!restarts)
+      return { status: 403, message: `Kuvo Code on ${context.info.name || "this Mac"} restarts its engine: restart it there.` };
+    const { status, message } = await engineControl("restart");
+    return refusal3({ status, value: message ? { message } : {} });
   }
   return { status: 404, message: "That isn't something it does." };
 }
@@ -55417,6 +55445,17 @@ function fits4(at, value) {
     return typeof value === "string" && (at.choices ?? []).some((choice) => choice.id === value);
   return false;
 }
+var turns3 = new Map;
+function inTurn4(key, work) {
+  const mine = (turns3.get(key) ?? Promise.resolve()).then(work, work);
+  const settled = mine.catch(() => {});
+  turns3.set(key, settled);
+  settled.then(() => {
+    if (turns3.get(key) === settled)
+      turns3.delete(key);
+  });
+  return mine;
+}
 var whyNot = (can) => can === undefined || can === true ? null : can.why;
 var idOf6 = (part) => {
   try {
@@ -55450,58 +55489,54 @@ async function* settingsPageRoute(context, match) {
     };
     return yield* followedLive(() => section.read(context), listen, signal, { look: section.look });
   }
+  if (method === "GET" && rowPart === undefined)
+    return yield* json(200, await section.read(context));
+  if (rowPart !== undefined ? method !== "POST" : method !== "PATCH") {
+    return yield* json(405, { message: rowPart !== undefined ? "Do it with POST." : "Read it with GET, or change a row with PATCH." });
+  }
   const body = parsed(request.body);
   const given = isObject(body) ? body : {};
-  const checked = async (rowId) => {
-    if (typeof rowId !== "string" || !rowId)
-      return { refused: json(400, { message: "Name the row to change (row)." }) };
-    if (typeof given.was !== "string")
-      return { refused: json(400, { message: "Send the row's revision as it was read (was)." }) };
+  const rowId = rowPart !== undefined ? idOf6(rowPart) : given.row;
+  if (typeof rowId !== "string" || !rowId)
+    return yield* json(400, { message: "Name the row to change (row)." });
+  if (typeof given.was !== "string")
+    return yield* json(400, { message: "Send the row's revision as it was read (was)." });
+  const { status, value } = await inTurn4(id, async () => {
     const page = await section.read(context);
     const at = rowsOf4(page).find((each) => each.id === rowId);
     if (!at)
-      return { refused: json(404, { message: "That isn't on this page now." }) };
+      return { status: 404, value: { message: "That isn't on this page now." } };
     if (at.revision !== given.was)
-      return { refused: json(409, { message: "It changed since you read it.", page }) };
-    return { at };
-  };
-  const answered = async function* (done) {
+      return { status: 409, value: { message: CHANGED_SINCE, page } };
+    let done;
+    if (rowPart !== undefined) {
+      const action = (at.actions ?? []).find((each) => each.id === idOf6(actionPart));
+      if (!action)
+        return { status: 404, value: { message: "That isn't something it does." } };
+      if (action.opens !== undefined)
+        return { status: 400, value: { message: "That opens a page: open it in the app." } };
+      const why = whyNot(action.can);
+      if (why)
+        return { status: 403, value: { message: why } };
+      done = await section.act(context, at, action);
+    } else {
+      if (at.can === undefined)
+        return { status: 400, value: { message: "That isn't something to change." } };
+      const why = whyNot(at.can);
+      if (why)
+        return { status: 403, value: { message: why } };
+      if (!("value" in given) || !fits4(at, given.value))
+        return { status: 400, value: { message: at.kind === "choice" ? "Pick one of its choices." : "Send true or false." } };
+      done = await section.change(context, at, given.value);
+    }
+    if (done?.stale)
+      return { status: 409, value: { message: done.message, page: await section.read(context) } };
     if (done)
-      return yield* json(done.status, { message: done.message });
+      return { status: done.status, value: { message: done.message } };
     changed4();
-    return yield* json(200, await section.read(context));
-  };
-  if (rowPart !== undefined) {
-    if (method !== "POST")
-      return yield* json(405, { message: "Do it with POST." });
-    const found = await checked(idOf6(rowPart));
-    if ("refused" in found)
-      return yield* found.refused;
-    const action = (found.at.actions ?? []).find((each) => each.id === idOf6(actionPart));
-    if (!action)
-      return yield* json(404, { message: "That isn't something it does." });
-    if (action.opens !== undefined)
-      return yield* json(400, { message: "That opens a page: open it in the app." });
-    const why = whyNot(action.can);
-    if (why)
-      return yield* json(403, { message: why });
-    return yield* answered(await section.act(context, found.at, action));
-  }
-  if (method === "GET")
-    return yield* json(200, await section.read(context));
-  if (method !== "PATCH")
-    return yield* json(405, { message: "Read it with GET, or change a row with PATCH." });
-  const found = await checked(given.row);
-  if ("refused" in found)
-    return yield* found.refused;
-  if (found.at.can === undefined)
-    return yield* json(400, { message: "That isn't something to change." });
-  const why = whyNot(found.at.can);
-  if (why)
-    return yield* json(403, { message: why });
-  if (!("value" in given) || !fits4(found.at, given.value))
-    return yield* json(400, { message: found.at.kind === "choice" ? "Pick one of its choices." : "Send true or false." });
-  return yield* answered(await section.change(context, found.at, given.value));
+    return { status: 200, value: await section.read(context) };
+  });
+  return yield* json(status, value);
 }
 
 // box/src/link/areas/moves.ts
