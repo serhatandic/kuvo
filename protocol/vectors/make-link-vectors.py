@@ -107,7 +107,11 @@ sockets = [{"path": p, "allowed": a} for p, a in [
 agent_routes = [{"path": p, "allowed": a, "method": m} for p, a, m in [
     ("api/session/ses_1/prompt", True, "POST"), ("api/session", True, "GET"), ("api/event", True, "GET"),
     ("api/integration", True, "GET"), ("api/integration/claude-code@1f2e/connect/oauth", True, "POST"),
-    ("api/kuvo/auto", True, "PUT"), ("api/kuvo/auto/limits", True, "DELETE"), ("api/kuvo/accounts", True, "POST"),
+    ("api/kuvo/goals/ses_1/pause", True, "POST"),
+    ("api/kuvo/artifacts/noted", False, "POST"), ("api/kuvo/%61rtifacts/noted", False, "POST"),
+    ("api/kuvo/link/artifacts?bot=bot_x", True, "GET"),
+    ("api/kuvo/auto", True, "POST"), ("api/kuvo/auto/bugs", True, "PUT"),
+    ("api/kuvo/auto/order", True, "PUT"), ("api/kuvo/auto/bugs", True, "DELETE"), ("api/kuvo/auto/limits", True, "DELETE"), ("api/kuvo/accounts", True, "POST"),
     ("api/kuvo/accounts/codex-cli@9a8b", True, "PATCH"), ("api/model", True, "GET"),
     ("api/kuvo/engine", False, "PUT"), ("api/kuvo/%65ngine", False, "GET"), ("api/kuvo//engine", False, "POST"),
     ("api/integration/claude-code/update", False, "POST"), ("api/integration/claude-code/%75pdate", False, "POST"),
@@ -179,7 +183,7 @@ def phone_may(path):
     return sent is not None and re.match(r"api(/|\?|$)", sent) is not None
 
 def agents_may(path):
-    return phone_may(path) and re.match(r"api/kuvo/(engine|groups)(/|\?|$)", canonical(path)) is None
+    return phone_may(path) and re.match(r"api/kuvo/(engine|groups|artifacts/noted)(/|\?|$)", canonical(path)) is None
 
 agent_routes += [{"path": p, "allowed": False, "method": m} for p, m in [
     ("api/kuvo/groups", "GET"), ("api/kuvo/groups/grp_x/release", "POST"), ("api/kuvo/%67roups", "GET"),

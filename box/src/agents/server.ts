@@ -583,22 +583,26 @@ export function handler(context: Context) {
           emit("kuvo.auto.updated", {})
           return json({})
         }
-        if (!b && method === "PUT") {
-          const { entries, lists } = await body()
-          // Your lists; or, as before there were lists, the first one's models.
-          // (As they were given: each entry under the id it was kept by.)
-          if (Array.isArray(lists)) {
-            try {
-              auto.setLists(await sessions.asKept(lists))
-            } catch (problem) {
-              return error(400, (problem as Error).message)
+        if (!c && ((!b && method === "POST") || (b && b !== "limits" && (b !== "order" || method === "PUT") && ["PUT", "DELETE"].includes(method)))) {
+          const given = await body()
+          try {
+            let changed: boolean
+            if (b === "order") changed = auto.reorder(given.ids, given.was)
+            else if (method === "DELETE") changed = auto.remove(b!, given.revision)
+            else {
+              const id = b ?? given.id
+              if (typeof id !== "string" || !/^[\w-]{1,64}$/.test(id) || ["order", "limits"].includes(id)) return error(400, "Invalid list id.")
+              if (given.name !== undefined && (typeof given.name !== "string" || !given.name.trim())) return error(400, "Send a name.")
+              if (given.entries !== undefined && !Array.isArray(given.entries)) return error(400, "Send entries.")
+              const patch = { ...(given.name !== undefined ? { name: given.name } : {}), ...(given.entries !== undefined ? { entries: ((await sessions.asKept([{ id, entries: given.entries }]))[0] as AutoList).entries } : {}) }
+              changed = auto.change(id, given.revision, patch, method === "POST")
             }
-          } else if (Array.isArray(entries)) auto.set(((await sessions.asKept([{ ...auto.all()[0], entries }]))[0] as AutoList).entries)
-          else return error(400, "Send the lists, or the first one's entries.")
+            if (!changed) return error(409, "This list changed. Read it again before saving.")
+          } catch (problem) { return error(400, (problem as Error).message) }
           emit("kuvo.auto.updated", {})
+          return json({ data: { lists: await sessions.autoLists(), limits: auto.limits() } })
         }
-        // (Each as the models it names: one named by another id it's known by, as that model, once.)
-        if (!b && (method === "GET" || method === "PUT")) return json({ data: { entries: await sessions.autoEntries(), lists: await sessions.autoLists(), limits: auto.limits() } })
+        if (!b && method === "GET") return json({ data: { entries: await sessions.autoEntries(), lists: await sessions.autoLists(), limits: auto.limits() } })
       }
 
       if (area === "experimental" && a === "session" && b) {

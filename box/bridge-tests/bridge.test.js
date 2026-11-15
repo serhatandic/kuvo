@@ -1538,6 +1538,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     artifacts: ["GET", "kuvo/artifacts?bot=bot_none"],
     asks: ["GET", "kuvo/asks"],
     attention: ["GET", "kuvo/attention"],
+    "auto.lists": ["GET", "kuvo/agents/api/kuvo/auto"],
     autopilot: ["GET", "kuvo/sessions/ses_none/autopilot"],
     bots: ["GET", "kuvo/bots"],
     "bots.deletes": ["GET", "kuvo/bots"],

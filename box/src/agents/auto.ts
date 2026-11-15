@@ -6,6 +6,7 @@
 // allowance) skips only that model. A limit lasts until its reset, when the agent says when that
 // is, and otherwise half an hour (a few minutes for requests too close together).
 
+import { createHash } from "node:crypto"
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { emit } from "./events"
@@ -26,6 +27,7 @@ export interface AutoList {
   id: string
   name: string
   entries: AutoEntry[]
+  revision?: string
 }
 
 /** The first list's ID, which Auto had before there were lists. */
@@ -107,9 +109,9 @@ export class Auto {
       .map((list) => ({
         id: list.id,
         name: typeof list.name === "string" && list.name.trim() ? list.name.trim().slice(0, 60) : "Custom Auto",
-        entries: (Array.isArray(list.entries) ? list.entries : [])
+        entries: foldEntries((Array.isArray(list.entries) ? list.entries : [])
           .filter((entry: AutoEntry) => entry && typeof entry.providerID === "string" && typeof entry.modelID === "string" && entry.providerID !== autoProvider)
-          .map((entry: AutoEntry) => ({ providerID: entry.providerID, modelID: entry.modelID, ...(entry.variant ? { variant: entry.variant } : {}) })),
+          .map((entry: AutoEntry) => ({ providerID: entry.providerID, modelID: entry.modelID, ...(entry.variant ? { variant: entry.variant } : {}) })), () => undefined),
       }))
   }
 
@@ -125,7 +127,35 @@ export class Auto {
 
   /** Every list, in your order. */
   all(): AutoList[] {
-    return this.lists.map((list) => ({ ...list, entries: list.entries.map((entry) => ({ ...entry })) }))
+    return this.lists.map((list) => ({ ...list, revision: createHash("sha256").update(JSON.stringify(list)).digest("hex"), entries: list.entries.map((entry) => ({ ...entry })) }))
+  }
+
+  /** Compare and change synchronously, after any asynchronous model resolution has finished. */
+  change(id: string, revision: unknown, patch: { name?: unknown; entries?: unknown }, add = false) {
+    const current = this.all().find(list => list.id === id)
+    if (add ? !!current : !current || current.revision !== revision) return false
+    const cleaned = Auto.clean([{ ...(current ?? { id, entries: [] }), ...patch, id }])[0]
+    if (!cleaned) throw new Error("Invalid list id.")
+    this.lists = add ? [...this.lists, cleaned] : this.lists.map(list => list.id === id ? cleaned : list)
+    this.save()
+    return true
+  }
+
+  reorder(ids: unknown, was: unknown) {
+    const current = this.lists.map(list => list.id)
+    if (JSON.stringify(was) !== JSON.stringify(current)) return false
+    if (!Array.isArray(ids) || ids.length !== current.length || new Set(ids).size !== current.length || ids.some(id => !current.includes(id))) throw new Error("Send every list id once.")
+    this.lists = ids.map(id => this.lists.find(list => list.id === id)!)
+    this.save()
+    return true
+  }
+
+  remove(id: string, revision: unknown) {
+    if (this.all().find(list => list.id === id)?.revision !== revision || typeof revision !== "string") return false
+    if (this.lists.length === 1) throw new Error("Keep one list at least.")
+    this.lists = this.lists.filter(list => list.id !== id)
+    this.save()
+    return true
   }
 
   /** The first list's models (Auto as it was before there were lists). */

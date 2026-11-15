@@ -5,6 +5,7 @@
 # branches that each add a name merge without a conflict (two added side by side may land in
 # either order, which is fine). Change nothing else here.
 agent-tools.own
+auto.lists
 bots.deletes
 bots.effort
 bots.elsewhere
