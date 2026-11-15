@@ -26816,16 +26816,17 @@ async function takeAct(sender, given, reply, run, now = Date.now()) {
     return answer(mine.answer);
   }
   const kept = changes ? readDone(now).get(key) : undefined;
-  if (kept) {
+  const redo = kept !== undefined && kept.answer === null && act.area === "computers";
+  if (kept && !redo) {
     const value = kept.answer ?? { status: 409, value: { message: `${here} stopped while it was doing this, so it can't tell whether it was done. Look again in a moment.` } };
     did.set(key, { until: kept.until, answer: value, answered: now });
     return answer(value);
   }
   if (readTold3(sender.key)?.shared)
     return answer({ status: 409, value: { message: `${here} doesn't take changes from ${computerName(peer)}, a machine shared with other Macs: change it from ${here}.` } });
-  if (now - act.at > ACT_MEMORY || act.at - now > AHEAD)
+  if (!redo && (now - act.at > ACT_MEMORY || act.at - now > AHEAD))
     return answer({ status: 409, value: { message: `${here}'s clock and ${computerName(peer)}'s are too far apart to take it: check both computers' time.` } });
-  const entry = { until: Math.max(now, act.at) + ACT_MEMORY, answer: null };
+  const entry = { until: kept?.until ?? Math.max(now, act.at) + ACT_MEMORY, answer: null };
   did.set(key, entry);
   if (changes)
     keepDone(key, entry, now);
@@ -27387,14 +27388,25 @@ var macPhones = () => {
 function setMacPeers(link, given) {
   if (!isObject(given) || !Array.isArray(given.peers))
     return { link: null, gone: [] };
-  const now = given.peers.slice(0, MOST_PEERS).map((peer) => ({ ...peer, kind: "machine" })).filter((peer) => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign)).map(cleanPeer);
-  const skipped = Math.min(given.peers.length, MOST_PEERS) - now.length;
+  const removedHere = Array.isArray(link.removedHere) ? link.removedHere : [];
+  const now = given.peers.slice(0, MOST_PEERS).map((peer) => ({ ...peer, kind: "machine" })).filter((peer) => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && !removedHere.includes(peer.key)).map(cleanPeer);
+  const skipped = given.peers.slice(0, MOST_PEERS).filter((peer) => !(isObject(peer) && removedHere.includes(peer.key))).length - now.length;
   if (skipped)
     console.error(`${skipped} of this Mac's machines weren't records the box could take, and were left out.`);
   const removed = (Array.isArray(given.removed) ? given.removed : []).filter((key) => typeof key === "string" && KEY.test(key) && !now.some((peer) => peer.key === key));
   const gone = peersOf(link).filter((peer) => removed.includes(peer.key));
   const kept = (Array.isArray(link.left) ? link.left : []).filter((key) => !now.some((peer) => peer.key === key) && !removed.includes(key));
   link.left = [...kept, ...removed].slice(-64);
+  const before = new Map((Array.isArray(link.macPeers) ? link.macPeers : []).filter(fitsPeer).map(cleanPeer).map((peer) => [peer.key, peer.name]));
+  if (link.peerNames) {
+    for (const key of Object.keys(link.peerNames)) {
+      const named = now.find((peer) => peer.key === key);
+      if (!named || before.has(key) && before.get(key) !== named.name)
+        delete link.peerNames[key];
+    }
+    if (!Object.keys(link.peerNames).length)
+      delete link.peerNames;
+  }
   link.macPeers = now;
   link.macMoved = cleanMoved(given.moved);
   pruneDocs(link);
@@ -27477,6 +27489,8 @@ async function* macLinkRoute(route, request, signal) {
           return null;
         if (again && Array.isArray(link.left))
           link.left = link.left.filter((key) => key !== again);
+        if (again && Array.isArray(link.removedHere))
+          link.removedHere = link.removedHere.filter((key) => key !== again);
         noteKeyNow(link);
         const own = ownDocs({ link, library });
         docs = [...Object.values(own).map((made) => made.envelope), ...Object.values(link.docs ?? {}).sort((a, b) => a.d < b.d ? -1 : 1)];
@@ -27615,32 +27629,39 @@ function writtenMachines(link, writer) {
   const boxes = writer.here ? peersOf(link) : namedBoxes(link);
   return new Set(boxes.filter((box) => box.kind === "machine").map((box) => box.key));
 }
-var writerTakes = (writer) => Boolean(writer && (writer.here || (readPeerAgents()[writer.key]?.features ?? []).includes(MANAGE_FEATURE)));
-function whyNot(computer, what, here, link = readLink()) {
+function writerFacts(link = readLink()) {
+  const writer = writerOf(link);
+  const reachable = Boolean(writer && (writer.here || peersOf(link).some((peer) => peer.key === writer.key)));
+  return { writer, machines: writtenMachines(link, writer), takes: Boolean(writer && (writer.here || (readPeerAgents()[writer.key]?.features ?? []).includes(MANAGE_FEATURE))), reachable };
+}
+function whyNot(computer, what, here, link = readLink(), facts = writerFacts(link)) {
   const name = computer.name || "This computer";
-  if (computer.shared || computer.apart)
+  const { writer } = facts;
+  const mine = writer?.here === true && Boolean(computer.key) && facts.machines.has(computer.key);
+  if ((computer.shared || computer.apart) && !mine)
     return `${name} is shared with another setup, so it isn't yours to ${what} from here.`;
   if (computer.kind === "mac")
     return what === "rename" ? `${name} is a Mac: it goes by the name it has there.` : `A Mac can't be removed from here.`;
   if (what === "remove" && computer.here)
     return `${here} can't remove itself: remove it from another of your computers.`;
-  const writer = writerOf(link);
   if (!writer)
-    return `${name} was set up by more than one Mac, so no one of them keeps its record: ${what} it from the Mac that added it.`;
-  if (!computer.key || !writtenMachines(link, writer).has(computer.key))
+    return macsOf(readLink()).length > 1 || sharedMachine(link) ? `${name} was set up by more than one Mac, so no one of them keeps its record: ${what} it from the Mac that added it.` : `No Mac keeps ${name}'s record, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
+  if (!facts.reachable)
+    return `${here} can't reach ${writer.name}, which keeps your machines' records: ${what} ${name} from there.`;
+  if (!computer.key || !facts.machines.has(computer.key))
     return `${name} isn't one of ${writer.here ? here : writer.name}’s machines, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
-  if (!writerTakes(writer))
+  if (!facts.takes)
     return `${writer.name} needs a newer Kuvo Code to ${what} your machines. Update it, then try again.`;
   return null;
 }
-function actionsOf(computer, here, trying, link = readLink()) {
+function actionsOf(computer, here, trying, link = readLink(), facts = writerFacts(link)) {
   const actions = [];
   const name = computer.name || "this machine";
-  if (!whyNot(computer, "rename", here, link))
+  if (!whyNot(computer, "rename", here, link, facts))
     actions.push({ id: "rename", label: "Rename" });
   if (computer.via === "relay" && computer.reach === "away" && !trying)
     actions.push({ id: "connect", label: "Connect" });
-  if (!whyNot(computer, "remove", here, link)) {
+  if (!whyNot(computer, "remove", here, link, facts)) {
     actions.push({ id: "remove", label: "Remove", confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } });
   }
   return actions;
@@ -27662,18 +27683,21 @@ function renameHere(key, name) {
     return link;
   });
   if (!found)
-    return answer3(404, { message: "That isn't one of this Mac's machines." });
+    return answer3(404, { message: `That isn't one of ${ownName()}'s machines.` });
   macDocsChanged();
   return answer3(200, { name });
 }
 function removeHere(key) {
   let gone = [];
   let id;
+  let already = false;
   updateLink((link) => {
     const peer = link ? peersOf(link).find((each) => each.key === key) : undefined;
+    already = Boolean(link?.removedHere?.includes(key));
     if (!link || !peer)
       return null;
     id = peer.id;
+    link.removedHere = [...(link.removedHere ?? []).filter((each) => each !== key), key].slice(-64);
     const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter((each) => each?.key !== key), moved: link.macMoved, removed: [key] });
     if (!made.link)
       return null;
@@ -27683,7 +27707,7 @@ function removeHere(key) {
     return made.link;
   });
   if (!gone.length)
-    return answer3(404, { message: "That isn't one of this Mac's machines." });
+    return already ? answer3(200, {}) : answer3(404, { message: `That isn't one of ${ownName()}'s machines.` });
   if (id)
     forgetSaved(id);
   macDocsChanged();
@@ -27702,7 +27726,7 @@ async function writerAct(sender, act) {
   const link = readLink();
   const writer = writerOf(link);
   if (!writer?.here)
-    return answer3(409, { message: "This computer doesn't keep your machines' records." });
+    return answer3(409, { message: `${ownName()} doesn't keep your machines' records.` });
   if (isApart(sender.key, link))
     return answer3(409, { message: "Only your own computers can rename and remove your machines." });
   if (act.method === "PATCH") {
@@ -37243,7 +37267,7 @@ function systemName(platform = process.platform, read = (file) => fs120.readFile
 }
 var system = null;
 function atWorkHere() {
-  return Object.entries(keptList()?.sessions ?? {}).filter(([, { facts }]) => facts.running && facts.asked === undefined && !facts.archived && !facts.away && facts.kind !== "subagent" && facts.kind !== "hidden").sort(([one, a], [other, b]) => b.facts.updated - a.facts.updated || (one < other ? -1 : 1)).map(([id, { facts }]) => ({ id, ...facts.title ? { title: facts.title.slice(0, 200) } : {} }));
+  return Object.entries(keptList()?.sessions ?? {}).filter(([, { facts }]) => facts.running && facts.asked === undefined && !facts.archived && !facts.away && facts.kind !== "subagent" && facts.kind !== "hidden").sort(([one, a], [other, b]) => b.facts.updated - a.facts.updated || (one < other ? -1 : 1)).map(([id, { facts }]) => ({ id, ...plainName(facts.title) ? { title: plainName(facts.title).slice(0, 200) } : {} }));
 }
 function ownComputer() {
   system ??= { name: systemName() };
@@ -37313,7 +37337,8 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
   }];
   const withActions = () => {
     const here = computers[0].name;
-    return computers.map((computer) => ({ ...computer, actions: actionsOf(computer, here, tryingSince(computer.key, now, tries) !== null, link) }));
+    const facts = writerFacts(link);
+    return computers.map((computer) => ({ ...computer, actions: actionsOf(computer, here, tryingSince(computer.key, now, tries) !== null, link, facts) }));
   };
   if (sharedMachine(link))
     return withActions();
@@ -37377,6 +37402,8 @@ async function* manage(context, key, connect) {
       return yield* json(409, { message: `${here} is reaching ${computer.name} now.` });
     if (computer.reach !== "away")
       return yield* json(409, { message: `${computer.name} is connected.` });
+    if (offRelay())
+      return yield* json(503, { message: `${here} isn't connected to your other computers now, so it can't reach ${computer.name}. Try again in a moment.` });
     if (!askReachAgain(key))
       return yield* json(503, { message: `${here} couldn't try now. Try again in a moment.` });
     return yield* json(202, {});
@@ -37537,7 +37564,7 @@ async function announce(host, readEngine, link = readLink(), now = Date.now(), a
   const computer = sharedMachine(link) ? null : ownComputer();
   const told = computer ? readPeerAgents() : {};
   const trash = folderGoes().to;
-  const json = JSON.stringify([ownList, moved, boxes, where, computer && { ...computer, working: undefined, atWork: computer.atWork?.map((each) => each.id) }, trash]);
+  const json = JSON.stringify([ownList, moved, boxes, where, computer && { ...computer, working: undefined }, trash]);
   let have = null;
   for (const peer of peersOf(link)) {
     if (only !== undefined && peer.key !== only)
@@ -44743,7 +44770,7 @@ import fs145 from "node:fs";
 import path152 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "284c2ac54f1e";
+var BRIDGE_VERSION = "e0731acc85b3";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";

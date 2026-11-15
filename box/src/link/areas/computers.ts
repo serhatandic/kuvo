@@ -22,7 +22,9 @@ import { keptList, listFollowers, listNow } from "../lists/sessions";
 import { MOST_AT_WORK, PEER_AGENTS_FILE, readPeerAgents, vouchedOf } from "../peers/directory";
 import { isApart } from "../peers/apart";
 import { namedBoxes, ownKey, peersOf } from "../peers/known";
-import { actionsOf, givenName, MOST_NAME, removeHere, renameHere, whyNot, writerOf } from "../peers/manage";
+import { actionsOf, givenName, MOST_NAME, removeHere, renameHere, whyNot, writerFacts, writerOf } from "../peers/manage";
+import { offRelay } from "../letters/leave";
+import { plainName } from "../../shared/text";
 import { awaySince, PEER_REACH, readReach } from "../peers/reach";
 import { askReachAgain, REACH_AGAIN, readTries, tryingSince } from "../peers/reach-again";
 import { ownName } from "../letters/start";
@@ -67,7 +69,7 @@ export function atWorkHere(): AtWorkSession[] {
   return Object.entries(keptList()?.sessions ?? {})
     .filter(([, { facts }]) => facts.running && facts.asked === undefined && !facts.archived && !facts.away && facts.kind !== "subagent" && facts.kind !== "hidden")
     .sort(([one, a], [other, b]) => b.facts.updated - a.facts.updated || (one < other ? -1 : 1))
-    .map(([id, { facts }]) => ({ id, ...(facts.title ? { title: facts.title.slice(0, 200) } : {}) }));
+    .map(([id, { facts }]) => ({ id, ...(plainName(facts.title) ? { title: plainName(facts.title).slice(0, 200) } : {}) }));
 }
 
 /** How many of this box's sessions are at work now (`atWorkHere`). */
@@ -144,7 +146,8 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   }];
   const withActions = (): ListedComputer[] => {
     const here = computers[0]!.name;
-    return computers.map(computer => ({ ...computer, actions: actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link) }));
+    const facts = writerFacts(link);
+    return computers.map(computer => ({ ...computer, actions: actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts) }));
   };
   // A machine Macs of different setups share lists itself alone: the others there aren't all one
   // person's computers (as `kuvo/setup` refuses there).
@@ -211,6 +214,7 @@ async function* manage(context: RouteContext, key: string, connect: boolean): As
     if (computer.via !== "relay") return yield* json(409, { message: `${here} doesn't reach ${computer.name} itself, so it can't connect to it.` });
     if (computer.reach === "connecting") return yield* json(409, { message: `${here} is reaching ${computer.name} now.` });
     if (computer.reach !== "away") return yield* json(409, { message: `${computer.name} is connected.` });
+    if (offRelay()) return yield* json(503, { message: `${here} isn't connected to your other computers now, so it can't reach ${computer.name}. Try again in a moment.` });
     if (!askReachAgain(key)) return yield* json(503, { message: `${here} couldn't try now. Try again in a moment.` });
     return yield* json(202, {});
   }

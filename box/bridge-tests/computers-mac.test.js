@@ -34,7 +34,9 @@ const fresh = () => {
   fs.rmSync(run, { recursive: true, force: true });
   fs.mkdirSync(run, { recursive: true });
   link.forgetQueueActs();
-  link.writeLink({ key: k(mac), secret: k(crypto.randomBytes(32)), phones: [] });
+  // (Its keys from the app, kept in memory only, as the app gives them.)
+  link.macLink.overlay = { key: k(mac), secret: k(crypto.randomBytes(32)), sign: link.newSigningSeed(), relay: "wss://relay.test", name: "Studio" };
+  link.writeLink({ phones: [] });
   link.updateLink(state => link.setMacPeers(state, { peers: [devbox.peer, mini.peer, attic.peer], moved: [] }).link);
   // The app's list of machines, as it keeps it.
   fs.writeFileSync(path.join(home, "machines.json"), JSON.stringify([{ destination: "devbox" }, { destination: "mini" }, { destination: "attic" }]));
@@ -92,4 +94,44 @@ test("two of your computers rename machines at once: this Mac does each in turn,
   assert.deepEqual([unnamed.status, unnamed.value], [400, { message: "Give it a name of up to 100 characters." }]);
   assert.deepEqual(names(), ["devbox", "Second"]);
   assert.equal((await handed(devbox, { method: "DELETE", item: box("machine", "x").pub }))[0].status, 404);
+});
+
+test("a machine removed from any of your computers stays removed when this Mac's app says its machines again, until it's set up again; a name the app changes is the app's", async () => {
+  fresh();
+  assert.equal((await handed(devbox, { method: "DELETE", item: attic.pub }))[0].status, 200);
+  // The app, as it was, still lists it: it isn't brought back, and is still among those removed.
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
+  assert.deepEqual([names(), link.macPeersBody(link.readLink()).left], [["devbox", "mini"], [attic.pub]]);
+  // Set up again (its key named as the app sets it up): it's one of this Mac's machines again.
+  assert.equal((await ask("GET", `kuvo/link/setup?key=${attic.pub}`)).status, 200);
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
+  assert.deepEqual(names(), ["devbox", "mini", "attic"]);
+
+  // Renamed here, then renamed in the app: the app's name is kept from then on.
+  assert.equal((await handed(mini, { method: "PATCH", item: devbox.pub, body: { name: "Build box" } }))[0].status, 200);
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [{ ...devbox.peer, name: "CI" }, mini.peer, attic.peer], moved: [] })).status, 200);
+  assert.deepEqual(names(), ["CI", "mini", "attic"]);
+});
+
+test("a rename or remove this Mac took and was cut short by a restart is done again when it's asked again, never left in doubt", async () => {
+  fresh();
+  const id = `wqa_${crypto.randomBytes(16).toString("base64url")}`;
+  // As a box that stopped mid-act leaves it: taken, with no answer.
+  fs.mkdirSync(path.join(run, "work-queue"), { recursive: true });
+  fs.writeFileSync(path.join(run, "work-queue", "acted.json"), JSON.stringify({ [`${devbox.pub} ${id}`]: { until: Date.now() + 600_000, answer: null } }));
+  const answers = [];
+  await link.takeQueueAct(devbox.peer, { id, at: Date.now() - 900_000, area: "computers", method: "DELETE", item: mini.pub }, reply => answers.push(reply.acted), queued => link.writerAct(devbox.peer, queued));
+  assert.deepEqual(answers.map(each => each.status), [200]);
+  assert.deepEqual(names(), ["devbox", "attic"]);
+  // Removed already when it's done again: the same answer.
+  assert.deepEqual(link.removeHere(mini.pub), { status: 200, value: {} });
+});
+
+test("a machine this Mac set up that another setup shares too is still this Mac's to rename and remove", async () => {
+  fresh();
+  // It says it's shared with another setup's Mac.
+  link.receiveMail(link.sealOneWay(Buffer.from(JSON.stringify({ at: Date.now(), agents: { at: Date.now(), list: [], shared: true } })), devbox.key, link.publicOf(mac)).message, undefined, (sender, payload) => link.peerMail(sender, payload, null));
+  const shared = (await link.listComputers("Studio", null)).find(each => each.key === devbox.pub);
+  assert.deepEqual([shared.apart, shared.actions.map(action => action.id)], [true, ["rename", "remove"]]);
+  assert.deepEqual(await ask("DELETE", `kuvo/computers/${devbox.pub}`), { status: 200, body: {} });
 });

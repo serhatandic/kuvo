@@ -1538,7 +1538,8 @@ machines; a client that wants every computer's facts asks the box that has it as
     offer them, `{id, label, confirm?}`, as accounts' are ("Signing in"): `label` the button's
     words, `confirm` `{title, message, label}` where a client asks first (its question, what it
     comes to, its button), all the box's. `rename` (a machine whose record the writer keeps, below:
-    never a Mac, which goes by its own name, nor one shared with another setup), `connect` (a peer
+    never a Mac, which goes by its own name, nor one shared with another setup but on the Mac that
+    set it up, which keeps its own record of it), `connect` (a peer
     this box reaches through the relay that's `away`, while no try is under way) and `remove` (as
     `rename`, never the box itself). A client draws the ids it has a control for.
   `405` for anything but `GET`.
@@ -1548,24 +1549,32 @@ machines; a client that wants every computer's facts asks the box that has it as
   one numbers the Work Queue. The **writer** is this Mac's box for its own machines (a Mac that isn't
   a member of another's setup); for every other box, its setup's main computer, or the one Mac
   that set up a machine in no setup; none on a machine Macs of different setups share, or one more
-  than one Mac set up outside a setup. A box that isn't the writer hands what you do to it by mail,
+  than one Mac set up outside a setup. A Mac's box reaches only its own machines, never another Mac,
+  so on a Mac that's a member of another Mac's setup nothing is offered, and asked it says to do it
+  from the main computer (a known gap until a member Mac can hand it on). A box that isn't the writer hands what you do to it by mail,
   as a Work Queue item's change goes to the computer that keeps it ("The Work Queue", Done where
   it's kept: `{workQueue: {act: {id, area: "computers", method, item: <key>, body?, at}}}`, answered
   `{acted}`), once the writer's agents name `computers.manage`, and answers with what it said; the
   change reaches every computer with the writer's peers document. Two boxes renaming at once are
   done in turn there: neither change is lost, and of two names for one machine the later is kept.
+  Each is the same done twice, so one the writer took and was cut short by a restart is done again
+  when it's asked again (never answered as in doubt, as a Work Queue item's change is).
   - `PATCH kuvo/computers/<key> {"name"}`: renamed (1 to 100 characters, spaces and control
     characters folded): `200 {name}`. The writer keeps it apart from what its app says of its
-    machines (`peerNames` in link.json), so the app saying them again keeps it; a machine lists
-    itself by the name its writer's record gives it.
+    machines (`peerNames` in link.json), so the app saying them again keeps it, until the app names
+    it otherwise (renamed there) or it's gone; a machine lists itself by the name its writer's
+    record gives it.
   - `DELETE kuvo/computers/<key>`: removed, as a Mac's app removes one: off the writer's peers
     document, named among those you removed (`left`, which the machine hears and lets that Mac go),
-    and off that Mac's list of machines (`machines.json`). It keeps running there, as a box of its
-    own, with its sessions. `200 {}`.
+    and off that Mac's list of machines (`machines.json`); its app listing it again
+    (`kuvo/link/peers`) doesn't bring it back (`removedHere` in link.json) until it's set up again
+    (`kuvo/link/setup?key=`). It keeps running there, as a box of its own, with its sessions. `200
+    {}`, and the same for one removed already.
   - `POST kuvo/computers/<key>/connect`: this box's own, for a peer that's `away`: its link tells
     that computer its agents now, asking for theirs (`run/reach-again.json`, sent by the process
     that holds the relay connection, as `box route` leaves it), so its answer marks it back
-    (`noteHeard`), and it's listed `connecting` for 20 seconds meanwhile. `202 {}`.
+    (`noteHeard`), and it's listed `connecting` for 20 seconds meanwhile. `202 {}`; `503` while this
+    box is off the relay itself.
   - Refused in words a client shows as they are: `400 {"message"}` for a name that isn't one, `404`
     for a key that isn't one of the computers this box lists, `409` for what isn't offered there
     (with why: a Mac, the box itself, shared with another setup, not the writer's machine, a writer

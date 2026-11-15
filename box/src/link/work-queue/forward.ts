@@ -278,7 +278,9 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
   // A change this box took before it last started: as it went, or, cut short then, that it may
   // have been done.
   const kept = changes ? readDone(now).get(key) : undefined;
-  if (kept) {
+  // (Renaming or removing one of your machines is the same done twice: one cut short is done again.)
+  const redo = kept !== undefined && kept.answer === null && act.area === "computers";
+  if (kept && !redo) {
     const value = kept.answer ?? { status: 409, value: { message: `${here} stopped while it was doing this, so it can't tell whether it was done. Look again in a moment.` } };
     did.set(key, { until: kept.until, answer: value, answered: now });
     return answer(value);
@@ -288,8 +290,8 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
   if (readTold(sender.key)?.shared) return answer({ status: 409, value: { message: `${here} doesn't take changes from ${computerName(peer)}, a machine shared with other Macs: change it from ${here}.` } });
   // (One from long ago, sent again, or from a computer whose clock is far off: not done. Each is
   // remembered until it would be too old to take, so none is ever taken twice.)
-  if (now - act.at > ACT_MEMORY || act.at - now > AHEAD) return answer({ status: 409, value: { message: `${here}'s clock and ${computerName(peer)}'s are too far apart to take it: check both computers' time.` } });
-  const entry: Done = { until: Math.max(now, act.at) + ACT_MEMORY, answer: null };
+  if (!redo && (now - act.at > ACT_MEMORY || act.at - now > AHEAD)) return answer({ status: 409, value: { message: `${here}'s clock and ${computerName(peer)}'s are too far apart to take it: check both computers' time.` } });
+  const entry: Done = { until: kept?.until ?? Math.max(now, act.at) + ACT_MEMORY, answer: null };
   did.set(key, entry);
   if (changes) keepDone(key, entry, now);
   try {

@@ -290,8 +290,8 @@ const FILE_REFUSED = object({ message: string });
 export const BOX_ROUTES: RouteShape[] = [
   { route: "GET kuvo/computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
   { route: "GET kuvo/computers/events", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
-  { route: "PATCH kuvo/computers/:key", answers: { 200: object({ name: string }), 400: object({ message: string }), 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
-  { route: "DELETE kuvo/computers/:key", answers: { 200: NOTHING, 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
+  { route: "PATCH kuvo/computers/:key", answers: { 200: object({ name: string }), 400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
+  { route: "DELETE kuvo/computers/:key", answers: { 200: NOTHING, 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
   { route: "POST kuvo/computers/:key/connect", answers: { 202: NOTHING, 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
   { route: "GET kuvo/info", answers: { 200: INFO } },
   { route: "GET kuvo/update", answers: { 200: UPDATE } },

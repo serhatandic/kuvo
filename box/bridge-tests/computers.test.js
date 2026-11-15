@@ -205,6 +205,12 @@ test("Connect, for a computer that's away: this box tells it its agents and asks
   assert.equal((await ask("POST", `kuvo/computers/${mac.pub}/connect`)).status, 409);
 
   assert.deepEqual(await ask("POST", `kuvo/computers/${second.pub}/connect`), { status: 202, body: {} });
+  // Off the relay itself, it can't try: said so, rather than seeming to.
+  fs.rmSync(path.join(run, "reach-again.json"));
+  fs.writeFileSync(path.join(run, "relay-down"), "");
+  assert.deepEqual(await ask("POST", `kuvo/computers/${second.pub}/connect`), { status: 503, body: { message: "devbox isn't connected to your other computers now, so it can't reach second. Try again in a moment." } });
+  fs.rmSync(path.join(run, "relay-down"));
+  assert.equal((await ask("POST", `kuvo/computers/${second.pub}/connect`)).status, 202);
   const asked = link.readTries()[second.pub];
   computers = await listed();
   assert.deepEqual([computers.second.reach, ids(computers.second).includes("connect")], ["connecting", false]);

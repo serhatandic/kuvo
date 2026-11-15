@@ -3809,7 +3809,17 @@
       "message": "string"
      }
     },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
     "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "500": {
      "object": {
       "message": "string"
      }
@@ -3832,7 +3842,17 @@
       "message": "string"
      }
     },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
     "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "500": {
      "object": {
       "message": "string"
      }

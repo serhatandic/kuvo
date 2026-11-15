@@ -173,7 +173,7 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
   // And where a bot deleted here ends up (the Trash, or Kuvo Code's trash folder), so a box that
   // lists this one's bots says what deleting one takes with it as this computer would.
   const trash = folderGoes().to;
-  const json = JSON.stringify([ownList, moved, boxes, where, computer && { ...computer, working: undefined, atWork: computer.atWork?.map(each => each.id) }, trash]);
+  const json = JSON.stringify([ownList, moved, boxes, where, computer && { ...computer, working: undefined }, trash]);
   let have: DigestEntry[] | false | null = null;
   for (const peer of peersOf(link)) {
     if (only !== undefined && peer.key !== only) continue;

@@ -20,6 +20,7 @@ import { macName, mainElsewhere } from "../setup/main-only";
 import { sharedMachine } from "../setup/settle";
 import { readLink, updateLink } from "../state";
 import { writePrivate } from "../files";
+import { ownName } from "../letters/start";
 import type { LinkState } from "../state";
 import type { Act, Acted } from "../work-queue/forward";
 import { isApart } from "./apart";
@@ -56,31 +57,47 @@ function writtenMachines(link: LinkState | null | undefined, writer: Writer): Se
   return new Set(boxes.filter(box => box.kind === "machine").map(box => box.key));
 }
 
-/** Whether the writer takes what you do from this box: itself, or one whose agents said it does. */
-const writerTakes = (writer: Writer): boolean => Boolean(writer && (writer.here || (readPeerAgents()[writer.key]?.features ?? []).includes(MANAGE_FEATURE)));
+/** What this box knows of the writer, worked out once for a whole list: who it is, the machines
+ * whose records it keeps, whether it takes what you do from here, and whether this box can hand it
+ * on at all (a Mac's box reaches only its own machines, never another Mac). */
+export interface WriterFacts {
+  writer: Writer;
+  machines: Set<string>;
+  takes: boolean;
+  reachable: boolean;
+}
+
+export function writerFacts(link: LinkState | null = readLink()): WriterFacts {
+  const writer = writerOf(link);
+  const reachable = Boolean(writer && (writer.here || peersOf(link).some(peer => peer.key === writer.key)));
+  return { writer, machines: writtenMachines(link, writer), takes: Boolean(writer && (writer.here || (readPeerAgents()[writer.key]?.features ?? []).includes(MANAGE_FEATURE))), reachable };
+}
 
 /** Why `computer` can't be renamed (`rename`) or removed (`remove`) from this box, in words a client
  * shows as they are; null when it can. `here`: this box's own name. */
-export function whyNot(computer: Pick<ListedComputer, "key" | "name" | "kind" | "here" | "shared" | "apart" | "via">, what: "rename" | "remove", here: string, link: LinkState | null = readLink()): string | null {
+export function whyNot(computer: Pick<ListedComputer, "key" | "name" | "kind" | "here" | "shared" | "apart" | "via">, what: "rename" | "remove", here: string, link: LinkState | null = readLink(), facts: WriterFacts = writerFacts(link)): string | null {
   const name = computer.name || "This computer";
-  if (computer.shared || computer.apart) return `${name} is shared with another setup, so it isn't yours to ${what} from here.`;
+  const { writer } = facts;
+  // (The Mac that set up a machine shared with another setup keeps its own record of it.)
+  const mine = writer?.here === true && Boolean(computer.key) && facts.machines.has(computer.key);
+  if ((computer.shared || computer.apart) && !mine) return `${name} is shared with another setup, so it isn't yours to ${what} from here.`;
   if (computer.kind === "mac") return what === "rename" ? `${name} is a Mac: it goes by the name it has there.` : `A Mac can't be removed from here.`;
   if (what === "remove" && computer.here) return `${here} can't remove itself: remove it from another of your computers.`;
-  const writer = writerOf(link);
-  if (!writer) return `${name} was set up by more than one Mac, so no one of them keeps its record: ${what} it from the Mac that added it.`;
-  if (!computer.key || !writtenMachines(link, writer).has(computer.key)) return `${name} isn't one of ${writer.here ? here : writer.name}’s machines, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
-  if (!writerTakes(writer)) return `${(writer as { name: string }).name} needs a newer Kuvo Code to ${what} your machines. Update it, then try again.`;
+  if (!writer) return macsOf(readLink()).length > 1 || sharedMachine(link) ? `${name} was set up by more than one Mac, so no one of them keeps its record: ${what} it from the Mac that added it.` : `No Mac keeps ${name}'s record, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
+  if (!facts.reachable) return `${here} can't reach ${(writer as { name: string }).name}, which keeps your machines' records: ${what} ${name} from there.`;
+  if (!computer.key || !facts.machines.has(computer.key)) return `${name} isn't one of ${writer.here ? here : writer.name}’s machines, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
+  if (!facts.takes) return `${(writer as { name: string }).name} needs a newer Kuvo Code to ${what} your machines. Update it, then try again.`;
   return null;
 }
 
 /** What can be done with `computer` from this box now, in the order to offer them. `trying`: it's
  * being reached again now (Connect was asked). */
-export function actionsOf(computer: ListedComputer, here: string, trying: boolean, link: LinkState | null = readLink()): ComputerAction[] {
+export function actionsOf(computer: ListedComputer, here: string, trying: boolean, link: LinkState | null = readLink(), facts: WriterFacts = writerFacts(link)): ComputerAction[] {
   const actions: ComputerAction[] = [];
   const name = computer.name || "this machine";
-  if (!whyNot(computer, "rename", here, link)) actions.push({ id: "rename", label: "Rename" });
+  if (!whyNot(computer, "rename", here, link, facts)) actions.push({ id: "rename", label: "Rename" });
   if (computer.via === "relay" && computer.reach === "away" && !trying) actions.push({ id: "connect", label: "Connect" });
-  if (!whyNot(computer, "remove", here, link)) {
+  if (!whyNot(computer, "remove", here, link, facts)) {
     actions.push({ id: "remove", label: "Remove", confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } });
   }
   return actions;
@@ -105,7 +122,7 @@ export function renameHere(key: string, name: string): Acted {
     link.peerNames = { ...(link.peerNames ?? {}), [key]: name };
     return link;
   });
-  if (!found) return answer(404, { message: "That isn't one of this Mac's machines." });
+  if (!found) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
   macDocsChanged();
   return answer(200, { name });
 }
@@ -116,17 +133,21 @@ export function renameHere(key: string, name: string): Acted {
 export function removeHere(key: string): Acted {
   let gone: Peer[] = [];
   let id: string | undefined;
+  let already = false;
   updateLink(link => {
     const peer = link ? peersOf(link).find(each => each.key === key) : undefined;
+    // (Removed already, from here: the same again, as when it's asked again after a restart.)
+    already = Boolean(link?.removedHere?.includes(key));
     if (!link || !peer) return null;
     id = peer.id;
+    link.removedHere = [...(link.removedHere ?? []).filter(each => each !== key), key].slice(-64);
     const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter(each => each?.key !== key), moved: link.macMoved, removed: [key] });
     if (!made.link) return null;
     gone = made.gone;
     if (made.link.peerNames) delete made.link.peerNames[key];
     return made.link;
   });
-  if (!gone.length) return answer(404, { message: "That isn't one of this Mac's machines." });
+  if (!gone.length) return already ? answer(200, {}) : answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
   if (id) forgetSaved(id);
   macDocsChanged();
   tellGone(gone);
@@ -148,7 +169,7 @@ function forgetSaved(id: string): void {
 export async function writerAct(sender: MailSender, act: Act): Promise<Acted> {
   const link = readLink();
   const writer = writerOf(link);
-  if (!writer?.here) return answer(409, { message: "This computer doesn't keep your machines' records." });
+  if (!writer?.here) return answer(409, { message: `${ownName()} doesn't keep your machines' records.` });
   if (isApart(sender.key, link)) return answer(409, { message: "Only your own computers can rename and remove your machines." });
   if (act.method === "PATCH") {
     const name = givenName(act.body?.name);

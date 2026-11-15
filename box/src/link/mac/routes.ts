@@ -65,14 +65,26 @@ const macPhones = (): MacPhones => {
 // for what isn't a list.
 export function setMacPeers(link: LinkState, given: unknown): MacPeersSet {
   if (!isObject(given) || !Array.isArray(given.peers)) return { link: null, gone: [] };
+  // (One you removed from any of your computers stays removed until it's set up again: an app that
+  // still lists it doesn't bring it back.)
+  const removedHere = Array.isArray(link.removedHere) ? link.removedHere : [];
   const now = given.peers.slice(0, MOST_PEERS).map(peer => ({ ...peer, kind: "machine" }))
-    .filter(peer => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign)).map(cleanPeer);
-  const skipped = Math.min(given.peers.length, MOST_PEERS) - now.length;
+    .filter(peer => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && !removedHere.includes(peer.key)).map(cleanPeer);
+  const skipped = given.peers.slice(0, MOST_PEERS).filter(peer => !(isObject(peer) && removedHere.includes(peer.key as string))).length - now.length;
   if (skipped) console.error(`${skipped} of this Mac's machines weren't records the box could take, and were left out.`);
   const removed = (Array.isArray(given.removed) ? given.removed : []).filter((key: unknown): key is string => typeof key === "string" && KEY.test(key) && !now.some(peer => peer.key === key));
   const gone = peersOf(link).filter(peer => removed.includes(peer.key));
   const kept = (Array.isArray(link.left) ? link.left : []).filter(key => !now.some(peer => peer.key === key) && !removed.includes(key));
   link.left = [...kept, ...removed].slice(-64);
+  // A name you gave one goes once the app names it otherwise (renamed there), or it's gone.
+  const before = new Map((Array.isArray(link.macPeers) ? link.macPeers : []).filter(fitsPeer).map(cleanPeer).map(peer => [peer.key, peer.name]));
+  if (link.peerNames) {
+    for (const key of Object.keys(link.peerNames)) {
+      const named = now.find(peer => peer.key === key);
+      if (!named || (before.has(key) && before.get(key) !== named.name)) delete link.peerNames[key];
+    }
+    if (!Object.keys(link.peerNames).length) delete link.peerNames;
+  }
   link.macPeers = now;
   link.macMoved = cleanMoved(given.moved);
   pruneDocs(link);
@@ -151,6 +163,7 @@ export async function* macLinkRoute(route: string, request: LinkRequest, signal:
       const link = updateLink(link => {
         if (!link?.sign) return null;
         if (again && Array.isArray(link.left)) link.left = link.left.filter(key => key !== again);
+        if (again && Array.isArray(link.removedHere)) link.removedHere = link.removedHere.filter(key => key !== again);
         noteKeyNow(link);
         const own = ownDocs({ link, library });
         docs = [...Object.values(own).map(made => made.envelope), ...Object.values(link.docs ?? {}).sort((a, b) => (a.d < b.d ? -1 : 1))];
