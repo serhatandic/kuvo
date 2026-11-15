@@ -2550,7 +2550,9 @@ did: the box keeps working as itself ("For released Macs").
   browser as built, the catalogs (`integrations.json`, `integrations-mac.json` and
   `mcp-catalog.json`, written from the one table in `box/src/shared/integrations`), the bots'
   words (`box/src/shared/bot-words.json`) and `box-version`; then each Mac bundle it's given
-  (Kuvo Helper, signed and notarized already, `scripts/build-helper.sh`).
+  (Kuvo Helper, signed and notarized already, `scripts/build-helper.sh`). The same files pack to
+  the same bytes on one system: entries in name order, one fixed time, no owners, gzip without a
+  name or time.
 - **From a folder here** (`box.update`): Kuvo Code carries its version's release
   (`Contents/Resources/box-release`: `boxes.json` and `box-<version>.tar.gz`, as
   `scripts/box-release.sh` made them), for it to offer the box on its computer

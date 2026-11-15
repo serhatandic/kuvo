@@ -16,8 +16,12 @@
 #                  by that name beside boxes.json when it's given the folder
 #   BUN            the Bun to write the files with (as scripts/route-shapes.sh finds it)
 #   BOX_SOURCES    another checkout's box sources to write them from (its tests': a keeper and
-#                  an engine of their own), by this checkout's builder and table. Never for a
-#                  release: the workflow sets none.
+#                  an engine of their own), by this checkout's builder and table. Never in a
+#                  release: a pack is made from them only when its URL is under `.invalid`, a
+#                  name nothing is ever published at (RFC 6761), and refused otherwise.
+# The same files pack to the same bytes, whenever they're packed (on one system: a Mac's tar and
+# Linux's write their headers their own ways): each entry in name order, with one fixed time and
+# no owner, and gzip keeping neither a name nor a time.
 #   NODE           the Node to sign with (default: node)
 # What's built and kept in git (kuvo-link.js, kuvo-agents.js, kuvo-browser.js) goes in as it is:
 # scripts/check-built.sh says whether it's what the sources build.
@@ -41,6 +45,12 @@ else
         */"box-$VERSION.tar.gz") ;;
         *) echo "The pack's URL must end in box-$VERSION.tar.gz." >&2; exit 2 ;;
     esac
+    if [ -n "${BOX_SOURCES:-}" ]; then
+        case "$URL" in
+            https://*.invalid/*) ;;
+            *) echo "BOX_SOURCES is for tests: a release is packed from this checkout's own sources." >&2; exit 2 ;;
+        esac
+    fi
 fi
 OUT_GIVEN=$1
 shift
@@ -84,7 +94,9 @@ if [ "$ONLY_FILES" = 1 ]; then
     exit 0
 fi
 
-work=$(mktemp -d "${TMPDIR:-/tmp}/kuvo-box-release.XXXXXXXX")
+# (Without the last slash a Mac's temporary folder ends in.)
+temporary=${TMPDIR:-/tmp}
+work=$(mktemp -d "${temporary%/}/kuvo-box-release.XXXXXXXX")
 trap 'rm -rf "$work"; rm -f "$OUT/box-$VERSION.tar.gz.new" "$OUT/boxes.json.new"' EXIT
 box="$work/box"
 files "$box"
@@ -128,13 +140,16 @@ fs.writeFileSync(record, JSON.stringify(manifest, null, 2) + "\n");
 EOF
 
 pack="$OUT/box-$VERSION.tar.gz"
+# Every entry by name, in order, with the one time (see the top).
+(cd "$box" && find . -exec env TZ=UTC touch -t 202601010000 {} + && find . | LC_ALL=C sort >"$work/entries")
 # No owners, and on a Mac no extended attributes or AppleDouble files (so a helper's signature has
 # to be in its files, as a Mach-O program's is).
 if tar --version 2>/dev/null | grep -q bsdtar; then
-    COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata --uid 0 --gid 0 -czf "$pack.new" -C "$box" .
+    COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata --format ustar --uid 0 --gid 0 --uname "" --gname "" -n -cf "$work/pack.tar" -C "$box" -T "$work/entries"
 else
-    tar --owner=0 --group=0 --numeric-owner -czf "$pack.new" -C "$box" .
+    tar --format=ustar --owner=0 --group=0 --numeric-owner --no-recursion -cf "$work/pack.tar" -C "$box" -T "$work/entries"
 fi
+gzip -n -9 <"$work/pack.tar" >"$pack.new"
 # Each bundle, as a box unpacks it, still signed as it was (a signature kept in extended attributes
 # doesn't survive packing). Where there's codesign: a Mac, as a release is built.
 if command -v codesign >/dev/null 2>&1 && [ $# -gt 0 ]; then

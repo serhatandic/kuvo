@@ -277,7 +277,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir dist
-          ./scripts/box-release.sh "$VERSION" \
+          # (From this checkout's own sources, whatever the environment names.)
+          env -u BOX_SOURCES ./scripts/box-release.sh "$VERSION" \
             "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/box-$VERSION.tar.gz" \
             dist "build/helper/Kuvo Helper.app"
 

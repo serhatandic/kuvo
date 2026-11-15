@@ -28,7 +28,8 @@ set --
 for helper in "$APP/Contents/Helpers/"*.app; do
     [ ! -d "$helper" ] || set -- "$@" "$helper"
 done
-scripts/box-release.sh "$VERSION" "$BOX_URL" "$RELEASE.new" "$@"
+# (From this checkout's own sources, whatever the environment names.)
+env -u BOX_SOURCES scripts/box-release.sh "$VERSION" "$BOX_URL" "$RELEASE.new" "$@"
 mv "$RELEASE.new" "$RELEASE"
 
 # Sealed with the rest of the app again: only the app itself, as what's nested is signed already.

@@ -500,6 +500,50 @@ its helper", says each as it is. Three things piece 4 settles before anything ru
 Also for piece 4: `kuvo-keys` must be run directly by the process holding the move's lock
 (`spawnSync` from it, no shell between, not from `serve` later), or it exits 2.
 
+## 8b. Piece 2 (#715) as built, and the comparison with the last Swift-made release (2026-11-15)
+
+Built: `scripts/box-release.sh` and `box/src/release/files.ts` write, pack and sign the box's
+release from `box/` alone (`box/src/keeper`, `box/src/plugins`, `box/src/shared/engine-pin.json`,
+`box/src/shared/integrations`, `box/src/shared/bot-words.json`); `release.yml` builds Kuvo Helper
+on its own and packs with it, and stops a tag until piece 6 packages the desktop app.
+PROTOCOL.md, "Updates", says what a release holds.
+
+**What was compared.** No release artifact was downloaded. The Swift side was the newest local
+build of the Swift Mac app (`KuvoBatch`'s compile check of main at `2fe5710a0`, a debug build,
+bundle ID `run.kuvo.code.tests`), run as the release ran it: `"Kuvo Code" --write-box-files
+<folder>`, with `env -i` and a home and temporary folder of its own. Its generators (`swift/KuvoCode`,
+`swift/OpenCodeKit/…/Engine`, `bot-words.json`) hadn't changed between `2fe5710a0` and the commit
+this work started from (`git diff`), and none of them is behind `#if DEBUG`.
+
+**How.** (1) Its folder against `scripts/box-release.sh --files 0.7.2`, with `diff -r` and each
+entry's mode, the box's side built with that commit's three built bundles in place of HEAD's.
+(2) Both packed, with the same ad hoc Kuvo Helper and one throwaway key: main's `pack-box.sh`
+over a stand-in app writing the Swift-made folder, against `box-release.sh`; the unpacked trees
+with `diff -r`, `box.json` with `cmp`, the entries' kinds, modes and owners, and `boxes.json`'s
+manifest field by field.
+
+**Result.** All 16 files the same bytes and modes (the keeper's six, `.kuvo-boot`, the plugin,
+the three catalogs, the bots' words, `box-version`, the link, the bridge with its closing
+`// kuvo-agents <hash>` line, the browser), the helper bundle the same, the packed `box.json`
+byte for byte the same, `boxes.json` the same but for `released` and the pack's hash and size.
+Differences, each meant:
+
+- the Swift release packed an empty `bots/` folder (its install script's `mkdir`); an update
+  installs only what `box.json` names, so it never reached a box, and it's gone;
+- `--files` writes `box.json` with Node's spacing (the Swift app wrote Foundation's; packing
+  always rewrote it in Node's, so a pack's is unchanged);
+- since then (the separate review): a pack is reproducible, its entries in name order with one
+  fixed time and no owners' names, where the Swift-made one had the build's times and tar's own
+  order. A box reads neither;
+- on a real release, the helper carries its stapled notarization ticket (it was notarized inside
+  the app before). Not run: it needs the real identity.
+
+**Kept as a test.** `box/test/fixtures/release/swift-made.json` holds the twelve Swift-made files
+that aren't built or named for the version, by SHA-256 and mode, and
+`box/test/release-catalogs.test.ts` holds what the box writes for that engine to them; a file
+changed on purpose leaves the fixture. `box/bridge-tests/update-real-keeper.test.js` installs a
+pack with the real `kuvo-start` and `kuvo-launch` and a stand-in engine, on a Mac and on Linux.
+
 ## 9. Questions only the user can answer
 
 1. **Who keeps this Mac's box?**

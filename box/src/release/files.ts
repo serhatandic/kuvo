@@ -63,6 +63,17 @@ function keeperFile(root: string, name: string, engine: string): Buffer {
   return Buffer.from(parts.join(engine));
 }
 
+/** The browser as built (scripts/build-browser.ts): its first line names the rest
+ * (`// kuvo-browser <16 hex digits of its SHA-256>`), which a box tells copies apart by. One whose
+ * line doesn't (edited by hand, or cut short) goes into no release. */
+function browser(root: string, file: string): Buffer {
+  const data = built(root, file);
+  const end = data.indexOf("\n");
+  const mark = /^\/\/ kuvo-browser ([0-9a-f]{16})$/.exec(data.subarray(0, Math.max(end, 0)).toString("utf8"));
+  if (!mark || mark[1] !== sha256(data.subarray(end + 1)).slice(0, 16)) throw new Error(`${file} isn't what its first line says: build it again (scripts/build-browser.sh).`);
+  return data;
+}
+
 /** What built from the box's sources is kept in git (scripts/check-built.sh says whether it's what
  * they build now). */
 function built(root: string, file: string): Buffer {
@@ -93,7 +104,7 @@ export function boxFiles(root: string, version: string): BoxFile[] {
     // the coding agents' bridge and the browser.
     { path: "bin/kuvo-link.js", mode: 0o600, data: built(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js") },
     { path: "bin/kuvo-agents.js", mode: 0o644, data: marked(built(root, "box/dist/kuvo-agents.js")) },
-    { path: "bin/kuvo-browser.js", mode: 0o644, data: built(root, "box/dist/kuvo-browser.js") },
+    { path: "bin/kuvo-browser.js", mode: 0o644, data: browser(root, "box/dist/kuvo-browser.js") },
     // Settings › Integrations and › MCP Servers: a machine's, a Mac's box's, and the popular servers.
     { path: "bin/integrations.json", mode: 0o644, data: Buffer.from(integrationsCatalog(false)) },
     { path: "bin/integrations-mac.json", mode: 0o644, data: Buffer.from(integrationsCatalog(true)) },
@@ -122,19 +133,24 @@ export function boxManifest(root: string, version: string, files: BoxFile[]): st
 
 /** Writes a release's files into `folder` (new, or empty), each with its own mode whatever the
  * umask, and `box.json` beside them. */
-export function writeBoxFiles(root: string, version: string, folder: string): void {
+export function writeBoxFiles(root: string, version: string, given: string): void {
   const files = boxFiles(root, version);
+  // (As the system names it: a path given with `//` or a last `/` in it is the same folder.)
+  const folder = path.resolve(given);
   fs.mkdirSync(folder, { recursive: true });
   if (fs.readdirSync(folder).length) throw new Error(`${folder} isn't empty.`);
-  const folders = new Set<string>([folder]);
+  // The release's own folders, by their paths in it ("" is `folder` itself): nothing above it is
+  // ever touched.
+  const folders = new Set<string>([""]);
   for (const file of [...files, { path: "box.json", mode: 0o644, data: Buffer.from(boxManifest(root, version, files)) }]) {
+    const parts = file.path.split("/").slice(0, -1);
+    parts.forEach((_, index) => folders.add(parts.slice(0, index + 1).join("/")));
     const to = path.join(folder, file.path);
-    for (let parent = path.dirname(to); !folders.has(parent); parent = path.dirname(parent)) folders.add(parent);
     fs.mkdirSync(path.dirname(to), { recursive: true });
     fs.writeFileSync(to, file.data);
     fs.chmodSync(to, file.mode);
   }
-  for (const each of folders) fs.chmodSync(each, 0o755);
+  for (const each of folders) fs.chmodSync(path.join(folder, each), 0o755);
 }
 
 if (import.meta.main) {

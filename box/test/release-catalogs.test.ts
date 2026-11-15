@@ -3,8 +3,12 @@
 // (protocol/vectors/routes/box, scripts/route-vectors.sh): a change to the table that isn't
 // written there too would leave every box's runner on a catalog no release has.
 import { expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
+import "./safety"
+import { createHash } from "node:crypto"
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { boxFiles } from "../src/release/files"
 import { integrationsCatalog, mcpCatalog } from "../src/shared/integrations/catalogs"
 
 const vector = (name: string) => JSON.parse(readFileSync(join(import.meta.dir, "../../protocol/vectors/routes/box", name), "utf8"))
@@ -40,5 +44,31 @@ test("the engine a release pins is the one the Swift side pins: its version and 
       expect(installer).toContain(`"${pin[system][kind].url}"`)
       expect(installer).toContain(`"${pin[system][kind].integrity}"`)
     }
+  }
+})
+
+// The one-time check the move asked for (#715), kept for as long as each file stays what it was:
+// what the box writes is, byte for byte and mode for mode, what the retired Swift Mac app last
+// wrote into a release, for the engine that release had.
+test("a release's files are what the Swift Mac app last wrote, byte for byte, where they haven't been changed on purpose since", () => {
+  const made = JSON.parse(readFileSync(join(import.meta.dir, "fixtures/release/swift-made.json"), "utf8")) as { engine: string; files: Record<string, { sha256: string; mode: string }> }
+  const checkout = join(import.meta.dir, "../..")
+  // This checkout's sources, with that release's engine pinned in place of today's.
+  const root = mkdtempSync(join(tmpdir(), "kuvo-swift-made-"))
+  try {
+    for (const folder of ["box/src/keeper", "box/src/plugins", "box/dist"]) cpSync(join(checkout, folder), join(root, folder), { recursive: true })
+    for (const file of ["box/src/shared/bot-words.json", "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"]) cpSync(join(checkout, file), join(root, file), { dereference: true })
+    const build = { url: `https://example.invalid/engine-${made.engine}.tgz`, integrity: `sha512-${"A".repeat(86)}==` }
+    writeFileSync(join(root, "box/src/shared/engine-pin.json"), JSON.stringify({ version: made.engine, linux: { x86_64: build, aarch64: build }, darwin: { x86_64: build, aarch64: build } }))
+    const files = new Map(boxFiles(root, "0.7.2").map(file => [file.path, file]))
+    const written = Object.fromEntries(Object.keys(made.files).map(path => {
+      const file = files.get(path)
+      return [path, file ? { sha256: createHash("sha256").update(file.data).digest("hex"), mode: file.mode.toString(8) } : null]
+    }))
+    expect(written).toEqual(made.files)
+    // And nothing a release didn't have then, but what's built or named for the version.
+    expect([...files.keys()].filter(path => !(path in made.files))).toEqual(["bin/box-version", "bin/kuvo-agents.js", "bin/kuvo-browser.js", "bin/kuvo-link.js"])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
 })

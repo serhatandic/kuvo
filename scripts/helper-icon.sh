@@ -13,7 +13,8 @@ fi
 mkdir -p "$1"
 FOLDER=$(cd "$1" && pwd -P)
 cd "$(dirname "$0")/.."
-work=$(mktemp -d "${TMPDIR:-/tmp}/kuvo-helper-icon.XXXXXXXX")
+temporary=${TMPDIR:-/tmp}
+work=$(mktemp -d "${temporary%/}/kuvo-helper-icon.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT
 xcrun actool swift/KuvoCode/AppIcon.icon --compile "$work" --app-icon AppIcon --platform macosx \
     --minimum-deployment-target "${MIN_SYSTEM:-26.0}" --output-partial-info-plist "$work/partial.plist" >/dev/null
