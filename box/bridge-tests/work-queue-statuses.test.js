@@ -199,6 +199,8 @@ test("items kept under categories move over to statuses and labels once, with no
   // The statuses, in the order a client shows them, the closed ones last.
   assert.deepEqual(seen.statuses.map(each => [each.id, each.closed]), [["needs-you", false], ["in-review", false], ["in-progress", false], ["waiting", false], ["todo", false], ["backlog", false], ["done", true], ["canceled", true]]);
   assert.deepEqual(seen.items.map(item => item.status).filter((each, index, all) => each !== all[index - 1]), ["needs-you", "todo", "backlog", "done"]);
+  // The colours a label may be, as a picker offers them: the box's list, none a client keeps (#729).
+  assert.deepEqual(seen.colors, ["coral", "orange", "amber", "lime", "mint", "sky", "indigo", "violet", "pink", "graphite"]);
 
   // What was kept before is beside it, whole, byte for byte.
   for (const [name, text] of Object.entries(before.files)) assert.equal(fs.readFileSync(path.join(queues, "before-statuses", name), "utf8"), text, name);

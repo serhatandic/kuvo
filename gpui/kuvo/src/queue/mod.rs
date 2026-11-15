@@ -32,16 +32,8 @@ use crate::time;
 /// The fold's key for what's deleted.
 pub const DELETED: &str = "deleted";
 
-/// The two statuses an item is closed in, as the protocol names them: what Mark Done and Mark
-/// Canceled set, where the box's view lists them and says the item may be closed.
-pub const DONE: &str = "done";
-pub const CANCELED: &str = "canceled";
-
 /// The priority no mark is drawn for on a row: the one an item has when none was ever set.
 pub const NORMAL: &str = "normal";
-
-/// The colours a label may be: the looks' names, as the protocol lists them.
-pub const COLORS: [&str; 10] = ["coral", "orange", "amber", "lime", "mint", "sky", "indigo", "violet", "pink", "graphite"];
 
 /// Which of the queue's items the list shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -637,6 +629,12 @@ impl QueueView {
 
     fn lists_status(&self, id: &str) -> bool {
         self.queue().is_some_and(|said| said.statuses.iter().any(|status| status.id == id))
+    }
+
+    /// The statuses the box says an item is closed in (Done, Canceled), in its order, but `now`'s:
+    /// what an item's Mark menu offers, the first as its page's finish button.
+    fn closing(&self, now: &str) -> Vec<(String, String)> {
+        self.queue().map(|said| said.statuses.iter().filter(|status| status.closed && status.id != now).map(|status| (status.id.clone(), status.name.clone())).collect()).unwrap_or_default()
     }
 
     fn priority_name(&self, id: &str) -> Option<String> {

@@ -2,6 +2,7 @@
 // `browser.data`): `kuvo/browser/history` and `…/icons/:host`, `…/sites`, `…/settings`.
 
 import { parsed } from "../../shared/json";
+import { IS_MAC } from "../home";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { forgetHistory, iconOf, readHistory } from "./history";
 import { changeBrowserSettings, readBrowserSettings } from "./settings";
@@ -53,7 +54,13 @@ export async function* browserDataRoute(context: RouteContext, match: RegExpMatc
   return yield* json(200, { sites: site === null ? [] : sites.filter(each => each.site !== site) });
 }
 
-/** The ordinary HTTP path tells clients to open the authenticated socket. */
+/** Why a Mac's box has no live view (PROTOCOL.md, "The browser's live view"): its agents browse
+ * in its app's panel, until a Mac's box has a browser of its own. */
+export const NO_VIEW_ON_MAC = "A Mac's box has no browser of its own yet: its agents browse in Kuvo Code's panel on that Mac.";
+
+/** The ordinary HTTP path tells clients to open the authenticated socket (a Mac's box: why there's
+ * none). */
 export async function* browserViewRoute({ json }: RouteContext): AsyncGenerator<AnswerPiece> {
+  if (IS_MAC) return yield* json(404, { message: NO_VIEW_ON_MAC });
   yield* json(426, { message: "Open this route as a WebSocket." });
 }

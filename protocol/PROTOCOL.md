@@ -1538,10 +1538,16 @@ the same number and counts nothing.
   under their bots (not archived, this box's own copy), so the number is what a client's rows of
   waiting sessions show and a client adds nothing to it; `bots`, the bots that live here with a session waiting on you
   (`now.asking`, below; a session here working for a bot on another computer is that computer's
-  to count); `queue`, the Work Queue's items here (not Done or Canceled, not deleted) that a session linked to
-  them (not archived, this box's own copy) waits on you for. All zero while the engine can't be read. `405` for anything but `GET`.
+  to count); `queue`, the Work Queue's items here that need you (#729), each once: open (not in a
+  status the view says is `closed`) and not deleted, and either in the status Needs you
+  (`needs-you`: someone said it waits on you) or with a session linked to it (not archived, this
+  box's own copy) that asks now, whatever its status still says (its agent waits on you before it
+  could say so). One rule, the box's; a client counts nothing. So the badge can be more than the
+  Needs you status's count (`counts.statuses`): an item in another status whose session asks is in
+  the badge, under its own status in a list (a view says which items' sessions ask: none yet). While the engine can't be read, `sessions` and `bots` are zero
+  and `queue` counts only the items in Needs you. `405` for anything but `GET`.
 - `GET kuvo/waiting/events` (ndjson): the same now, and a line each time it changes (an ask comes
-  or is answered, a bot or an item changes); through `box route` it answers its first line, and a
+  or is answered, a bot or an item changes, an item's status among them); through `box route` it answers its first line, and a
   client asks again as that box's session list changes.
 - Each box counts its own: a client that shows several computers adds theirs up (a view). The three
   are counts of three areas, never added to each other: a bot's helper that asks is in `sessions`
@@ -5506,7 +5512,8 @@ everyone too. An item of a status a box doesn't know is kept as it came, and lis
 queue (60 at most), none built in: `{id, name, color}` (`lbl_…`, or `cat_…` for one that was a
 custom category; `color` one of `coral`, `orange`, `amber`, `lime`, `mint`, `sky`, `indigo`,
 `violet`, `pink`, `graphite`, the bots' looks' names, a client drawing one it doesn't know as
-graphite), in the order they were made. You and your agents make, rename, recolour and remove
+graphite; a view lists them as `colors`, in the order a picker offers them, so no client keeps its
+own list), in the order they were made. You and your agents make, rename, recolour and remove
 them; removing one takes it off every item on that box first (then off the list: cut off between
 the two, it's a label no item has, which removing it again finishes). Each box takes the labels of the
 primary it numbers from as it tells them (its list, order, names and colours; a label of the same
@@ -5585,7 +5592,10 @@ before (a linked item is its owner's to change). A client shows them first, as "
 (`item.owner` isn't the view's `owner`, and the item's `sessions` include it).
 
 - `GET kuvo/work-queue?owner=<ses_…|grp_…|usr_you>` → `{owner, statuses, priorities, labels,
-  assignees, new, today, items, owners, removed, computers}`: `new` (`{status, priority}`) is what an item
+  colors, assignees, new, today, items, owners, removed, computers}`: `statuses` say which are
+  `closed` (Done, Canceled): what a client folds, counts as not open and offers only where an item's
+  `can.close` says, never a list of its own (the first closed one, Done, is what finishing an item
+  sets: a client's one Mark button); `colors` the colours a label may be; `new` (`{status, priority}`) is what an item
   added with nothing said starts as, for a client's form to show; `today` (`YYYY-MM-DD`) the day it
   is on the box asked, which `overdue` goes by and a client counts days from ("Tomorrow", "Yesterday"),
   never its own clock; `items` in the statuses' order, then this box's first and each other computer's
@@ -6431,7 +6441,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `work` | a bot's work ("Work"): `kuvo/work`, `…/events`, `kuvo/bots/<id>/stop-all`, `start_session`'s and `kuvo/sessions`' new fields, the work tools, `limits` in `kuvo/bots` (bridge 0.9.106) |
 | `work-queue` | `kuvo/work-queue…` and the `queue_…` tools ("The Work Queue") |
 | `work-queue.counts` | `counts` in `kuvo/work-queue` and its events with `counts=1` ("The Work Queue", #711) |
-| `work-queue.edit` | statuses, priorities and labels in place of categories: `status`, `priority`, `labels`, `assignee`, `due` and `can` on items, `statuses`, `priorities`, `labels` and `assignees` in views, `q`, `kuvo/work-queue/labels`, a client's `POST kuvo/work-queue/items` and `PATCH kuvo/work-queue/items/<item>`, and the tools' fields ("The Work Queue", #674); `kuvo/work-queue/categories` and `…/items/<item>/move` are gone |
+| `work-queue.edit` | statuses, priorities and labels in place of categories: `status`, `priority`, `labels`, `assignee`, `due` and `can` on items, `statuses`, `priorities`, `labels`, `colors` and `assignees` in views, `q`, `kuvo/work-queue/labels`, a client's `POST kuvo/work-queue/items` and `PATCH kuvo/work-queue/items/<item>`, and the tools' fields ("The Work Queue", #674); `kuvo/work-queue/categories` and `…/items/<item>/move` are gone |
 | `work-queue.elsewhere` | (in a peer's agents' mail) it tells and takes the Work Queue across your computers: `told`, `had`, `part`, `hand`, `handed`, and numbers' asks through a peer ("The Work Queue", Across your computers); also `POST kuvo/work-queue/refs`, `computer` and `computers` in its views, and 409 for an item elsewhere |
 | `work-queue.forward` | (in a peer's agents' mail) it does what a client asked another box to do to an item it keeps, and answers (`act`, `acted`; "The Work Queue", Across your computers, Done where it's kept); a box with it sends what a client does to an item on another computer there itself, and reads one whole, and its files, there for a client (`told`) |
 | `work.elsewhere` | (in a peer's agents' mail) it takes a lead's `call` and tells `rows` ("Peers"; bridge 0.9.204) |
@@ -9266,8 +9276,11 @@ The apps read Antigravity only from the box, with no older-box fallback (#679 up
 
 ## The browser's live view
 
-Feature `browser.view`. Every box's keeper owns its Chrome and page state. No client needs
-CDP to draw it. The Swift Mac app remains on its existing raw-CDP stream.
+Feature `browser.view`, a machine's box's (until a Mac's box has a browser of its own: a Mac's
+agents browse in Kuvo Code's panel on that Mac, so a Mac's box doesn't list the feature). Its keeper
+owns its Chrome and page state. No client needs CDP to draw it. The Swift Mac app remains on its
+existing raw-CDP stream. A Mac's box answers `GET kuvo/browser/view`, opened as a socket or not,
+`404 {message}` saying why, and opens nothing.
 
 Open `GET kuvo/browser/view` as a socket: locally, a WebSocket on `serve` with its
 `Authorization: Basic <base64(opencode:password)>` header; through the relay, a WebSocket
@@ -9300,8 +9313,13 @@ newline JSON stream, including raw CDP compatibility.
 | box → client | `Kuvo.dialog` | `{targetId,type,message,defaultPrompt?,url?,...}`, Chrome's dialog facts |
 | client → box | `Kuvo.dialogAnswer` | `{targetId,accept,promptText?}`, boolean accept and optional text |
 | box → client | `Kuvo.viewQuality` | `{targetId,quality,scale,reason:"oversize" \| "recovery"}`, reduced picture settings |
+| box → client | `Kuvo.status` | `{working,tool?,pages:[targetId],workers:[{targetId,session}]}`: the pages agents are at work in, as it changes |
+| box → client | `Kuvo.pointer` | `{targetId,action,rect}`: where an agent is about to act in a page, for the pointer drawn over it |
+| box → client | `Kuvo.cursor` | `{targetId,...}`: kept as each page's latest, like the pointer; no keeper sends it yet |
 
-The keeper also forwards its existing hello, ask, download, status and pointer facts.
+The keeper also forwards its existing hello, ask, download, status and pointer facts. Through the
+relay, `Kuvo.pages`, `Kuvo.status`, `Kuvo.viewport`, `Kuvo.pointer` and `Kuvo.cursor` are state: a newer
+one for the same page replaces one not yet sent.
 Pages are announced when Chrome reports creation, navigation, title, loading or destruction,
 and when agent status changes, only if the facts changed. The address comes from these facts even when an agent navigates.
 A tab's name is its nonempty title, else its address's host without `www.`, else “New Tab”.

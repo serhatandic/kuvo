@@ -241,13 +241,16 @@ import ClientSessions
         #expect(WorkQueue.progressNote(Self.sessionView.items[1]) == nil)
     }
 
+    /// The closed statuses, as the box lists them (`closed`): what a page's activity is read with.
+    static let closedOnes = [WorkCategory(id: "done", name: "Done", builtIn: true, closed: true), WorkCategory(id: "canceled", name: "Canceled", builtIn: true, closed: true)]
+
     @Test func activityIsNotesAndWhatTheBoxKeptOldestFirst() throws {
         let json = """
         {"id":"wqi_1","number":243,"owner":"ses_b","title":"T","status":"done","doneAt":9000,"order":1,"sessions":[],"noteCount":2,"fileCount":0,"linkCount":0,"created":{"at":1000,"by":{"session":"ses_lead","name":"Kuvo Foreman"}},"updated":{"at":9000,"by":{"session":"ses_b","name":"Sign-in"}},
          "body":"","notes":[{"at":5000,"by":{"session":"ses_b","name":"Sign-in"},"text":"Halfway."},{"at":2000,"by":{"user":true},"text":"Use the new endpoint."}],"files":[],"links":[],"handed":[{"from":"ses_lead","to":"ses_b","at":3000}]}
         """
         let detail = try JSONDecoder().decode(WorkItemDetail.self, from: Data(json.utf8))
-        let view = WorkQueueView(owner: "ses_lead", owners: try JSONDecoder().decode([WorkOwner].self, from: Data(#"[{"owner":"ses_lead","kind":"bot","title":"Kuvo Foreman","bot":{"id":"bot_1","name":"Kuvo Foreman"}},{"owner":"ses_b","kind":"session","title":"Sign-in"}]"#.utf8)))
+        let view = WorkQueueView(owner: "ses_lead", categories: Self.closedOnes, owners: try JSONDecoder().decode([WorkOwner].self, from: Data(#"[{"owner":"ses_lead","kind":"bot","title":"Kuvo Foreman","bot":{"id":"bot_1","name":"Kuvo Foreman"}},{"owner":"ses_b","kind":"session","title":"Sign-in"}]"#.utf8)))
         let lines = WorkQueue.activity(of: detail, in: view)
         #expect(lines.map { "\($0.whoWords) \($0.what)" } == ["Kuvo Foreman added the item", "You left a note", "Kuvo Foreman handed it to Sign-in", "Sign-in left a note", "Sign-in marked it done"])
         #expect(lines[1].text == "Use the new endpoint.")
@@ -307,12 +310,12 @@ import ClientSessions
         """
         let detail = try JSONDecoder().decode(WorkItemDetail.self, from: Data(json.utf8))
         #expect(detail.events.isEmpty)
-        let lines = WorkQueue.activity(of: detail, in: WorkQueueView(owner: "ses_lead", owners: []))
+        let lines = WorkQueue.activity(of: detail, in: WorkQueueView(owner: "ses_lead", categories: Self.closedOnes, owners: []))
         #expect(lines.map { "\($0.whoWords) \($0.what)" } == ["You added the item", "You left a note", "You marked it done"])
 
         // Done again where no word of it was kept (on an older box), after a Done that was: said.
         let again = try JSONDecoder().decode(WorkItemDetail.self, from: Data(json.replacingOccurrences(of: #""handed":[]"#, with: #""handed":[],"events":[{"at":1500,"by":{"user":true},"kind":"done"},{"at":1600,"by":{"user":true},"kind":"moved","from":"done","to":"next"}]"#).utf8))
-        #expect(WorkQueue.activity(of: again, in: WorkQueueView(owner: "ses_lead", owners: [])).map { "\($0.whoWords) \($0.what)" }
+        #expect(WorkQueue.activity(of: again, in: WorkQueueView(owner: "ses_lead", categories: Self.closedOnes, owners: [])).map { "\($0.whoWords) \($0.what)" }
             == ["You added the item", "You marked it done", "You moved it to Next", "You left a note", "You marked it done"])
     }
 
@@ -372,6 +375,42 @@ import ClientSessions
         issue.can = WorkCan(edit: false, set: false, close: false, delete: false, restore: false)
         #expect(WorkQueue.moveTargets(for: issue, in: view.categories).isEmpty, "on a computer that isn't answering, nothing")
         #expect(WorkQueue.moveTargets(for: first, in: view.categories).map(\.id) == ["todo", "done", "canceled"])
+    }
+
+    /// Which statuses are closed is the box's word (`closed`), never a list the client keeps; and
+    /// how many are open is the box's count (`counts.open`), where it was asked for it.
+    @Test func whatsClosedAndHowManyAreOpenAreTheBoxsWord() throws {
+        let item = { (number: Int, status: String) in #"{"id":"wqi_\#(number)","number":\#(number),"owner":"ses_a","title":"T\#(number)","status":"\#(status)","order":\#(number),"can":{"edit":true,"set":true,"close":false,"delete":true,"restore":false},"sessions":[{"session":"ses_lead","title":"Lead","working":false}],"noteCount":0,"fileCount":0,"linkCount":0,"created":{"at":1,"by":{"user":true}},"updated":{"at":1,"by":{"user":true}}}"# }
+        let json = """
+        {"owner":"ses_lead","statuses":[{"id":"todo","name":"Todo","closed":false},{"id":"done","name":"Done","closed":true},{"id":"canceled","name":"Canceled","closed":true},{"id":"shelved","name":"Shelved","closed":true}],
+         "labels":[],"owners":[],"removed":[],"computers":[],"items":[\(item(1, "todo")),\(item(2, "done")),\(item(3, "canceled")),\(item(4, "shelved"))]
+        """
+        let view = try JSONDecoder().decode(WorkQueueView.self, from: Data((json + "}").utf8))
+        // A closed status the client never heard of is closed, as the box says.
+        #expect(view.items.map(\.isDone) == [false, true, true, true])
+        #expect(WorkQueue.openCount(view) == 1)
+        // Folded, every closed one goes: Canceled and Shelved with Done.
+        #expect(WorkQueue.items(view, .all, showsDone: false).map(\.name) == ["#1"])
+        // An item that may not be closed here is offered no closed status, whichever the box names.
+        #expect(WorkQueue.moveTargets(for: view.items[0], in: view.categories).isEmpty)
+        let shelved = try #require(WorkQueue.sections(view).first { $0.category == "shelved" })
+        #expect(WorkQueue.place(of: view.items[0], at: 0, in: shelved) == nil)
+        // Linked to the view's owner but closed: not under Working on.
+        #expect(WorkQueue.sections(view).first { $0.id == WorkQueue.workingOnID }?.items.map(\.name) == ["#1"])
+        // The page says its status by the box's name.
+        #expect(WorkQueue.properties(of: view.items[3], in: view).first?.words == "Shelved")
+        // Moved into a closed status here, at once, it's closed.
+        #expect(WorkQueue.moving(view.items[0], to: .top("shelved"), in: view).items.first { $0.id == "wqi_1" }?.isDone == true)
+        // Asked with `counts=1`: the box's count, whatever is listed.
+        let counted = try JSONDecoder().decode(WorkQueueView.self, from: Data((json + #","counts":{"open":7,"statuses":{},"priorities":{},"labels":{},"sources":{},"computers":{},"removed":0}}"#).utf8))
+        #expect(WorkQueue.openCount(counted) == 7)
+        // Moved, the box's count follows at once: closed, one fewer open; opened again, one more.
+        let shelvedNow = WorkQueue.moving(counted.items[0], to: .top("shelved"), in: counted)
+        #expect(WorkQueue.openCount(shelvedNow) == 6)
+        #expect(WorkQueue.openCount(WorkQueue.moving(shelvedNow.items.first { $0.id == "wqi_1" }!, to: .top("todo"), in: shelvedNow)) == 7)
+        #expect(WorkQueue.openCount(WorkQueue.moving(counted.items[1], to: .top("canceled"), in: counted)) == 7, "closed to closed")
+        // VoiceOver says a closed one's status by its name.
+        #expect(WorkQueue.spokenRow(view.items[3], in: view, now: Date(timeIntervalSince1970: 0)).hasPrefix("T4, Work item 4, shelved, "))
     }
 
     @Test func onlyWhatTheBoxSaysMayBeDoneIsOffered() throws {

@@ -11,7 +11,7 @@ import { watchFolders } from "../follow";
 import { targetsOf } from "../letters/tools";
 import { atWorkNow } from "../work/background";
 import { provedRequest } from "./vault";
-import { addLabel, changeLabel, labels, LABELS_FILE, removeLabel, type Label } from "../work-queue/labels";
+import { addLabel, changeLabel, LABEL_COLORS, labels, LABELS_FILE, removeLabel, type Label } from "../work-queue/labels";
 import { isClosed, PRIORITIES, statusName, STATUSES } from "../work-queue/statuses";
 import { assignable } from "../work-queue/assignees";
 import { stripLabel } from "../work-queue/ops";
@@ -132,6 +132,8 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
     statuses: [...STATUSES],
     priorities: [...PRIORITIES],
     labels: shown,
+    // (The colours a label may be, in the order a picker offers them: no client keeps its own list.)
+    colors: [...LABEL_COLORS],
     assignees: who,
     new: { status: "todo", priority: "normal" },
     today: todayHere(),

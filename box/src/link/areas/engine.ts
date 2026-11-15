@@ -9,6 +9,7 @@
 // when, in seconds since 1970); or starting (again).
 import { type ChildProcess, spawn } from "node:child_process";
 import { browserView } from "../browser/view";
+import { NO_VIEW_ON_MAC } from "../browser/routes";
 import fs from "node:fs";
 import path from "node:path";
 import type { EngineRecord, Target } from "../../shared/records";
@@ -189,7 +190,7 @@ export function engineConnect(readEngine: () => EngineRecord = readEngineFile, u
       return { send() {}, close() {} };
     };
     if (!socketAllowed(request.path)) return refuse("That isn't available over the link.");
-    if (canonicalPath(request.path) === "kuvo/browser/view") return browserView(events, true, undefined, undefined, { unsent });
+    if (canonicalPath(request.path) === "kuvo/browser/view") return IS_MAC ? refuse(NO_VIEW_ON_MAC) : browserView(events, true, undefined, undefined, { unsent });
     let engine: EngineRecord;
     try {
       engine = readEngine();

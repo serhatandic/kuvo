@@ -98,7 +98,10 @@ export const QUEUE_OWNER = object({ owner: string, kind: words("bot", "session",
 export const QUEUE_COUNTS = object({ open: number, statuses: map(number), priorities: map(number), labels: map(number), sources: map(number), computers: map(number), removed: number });
 
 /** An owner's view; with `counts=1`, its counts too; with `q`, only what the words are in. */
-export const QUEUE_VIEW = object({ owner: string, statuses: list(QUEUE_STATUS), priorities: list(QUEUE_PRIORITY), labels: list(QUEUE_LABEL), assignees: list(ASSIGNEE),
+export const QUEUE_VIEW = object({ owner: string, statuses: list(QUEUE_STATUS), priorities: list(QUEUE_PRIORITY), labels: list(QUEUE_LABEL),
+  /** The colours a label may be (the looks' names), in the order a picker offers them. */
+  colors: list(string),
+  assignees: list(ASSIGNEE),
   /** What an item added with nothing said starts as. */
   new: object({ status: string, priority: string }),
   /** The day it is on the box asked (`YYYY-MM-DD`): what `overdue` goes by, and what a client counts days from. */
