@@ -4287,6 +4287,9 @@
             "literal": "sandbox.check"
            },
            {
+            "literal": "sandbox.needsYou"
+           },
+           {
             "literal": "sandbox.opens"
            },
            {
@@ -4918,6 +4921,9 @@
            },
            {
             "literal": "sandbox.check"
+           },
+           {
+            "literal": "sandbox.needsYou"
            },
            {
             "literal": "sandbox.opens"
@@ -10154,6 +10160,9 @@
          }
         ]
        }
+      },
+      "needsYou?": {
+       "literal": true
       }
      }
     }
@@ -10265,6 +10274,9 @@
          }
         ]
        }
+      },
+      "needsYou?": {
+       "literal": true
       }
      }
     }
@@ -10376,6 +10388,9 @@
          }
         ]
        }
+      },
+      "needsYou?": {
+       "literal": true
       }
      }
     },
