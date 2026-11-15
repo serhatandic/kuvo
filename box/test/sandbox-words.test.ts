@@ -49,3 +49,15 @@ test("a check that failed twice in a row says what a report of it says; once, it
   expect(failed(2).report).toBe("The sandbox’s check failed 2 times in a row: Its check failed. (check: readsOwn)")
   expect(failed(3)).toMatchObject({ why: "Its check failed.", actionLabel: "Try Again" })
 })
+
+// #739: whether the sandbox's row warns is the box's one fact (`needsYou`), so no client keeps the
+// rule: off, for any reason or none (Kuvo Code's own switch), or on while commands can still reach
+// your login's services; on and whole, or with only git's files kept apart, it doesn't.
+test("the sandbox needs you while it's off or reaches your login's services, and only then", async () => {
+  const { worded } = await import("../src/link/fence/state")
+  expect(worded({ on: false, able: true, agents: false, reason: "checkFailed", action: "retry", route: "POST kuvo/sandbox/check" }).needsYou).toBe(true)
+  expect(worded({ on: false, able: true, agents: true, why: "Kuvo Code has it turned off on this computer for now." }).needsYou).toBe(true)
+  expect(worded({ on: true, able: true, agents: true, gaps: ["services"], needs: "user namespaces" }).needsYou).toBe(true)
+  expect(worded({ on: true, able: true, agents: true }).needsYou).toBeUndefined()
+  expect(worded({ on: true, able: true, agents: true, gaps: ["git"] }).needsYou).toBeUndefined()
+})

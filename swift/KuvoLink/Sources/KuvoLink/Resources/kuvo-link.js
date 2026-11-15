@@ -4532,6 +4532,7 @@ var FEATURES = [
   "sandbox",
   "sandbox.asks",
   "sandbox.check",
+  "sandbox.needsYou",
   "sandbox.opens",
   "sandbox.report",
   "sandbox.reviews.settled",
@@ -7424,11 +7425,12 @@ function worded(state) {
   if (state.on) {
     if (!state.gaps?.includes("services"))
       return state;
-    return { ...state, why: servicesWhy(state.needs), action: "help", actionLabel: actionLabel("help"), ...actionOpens("help") };
+    return { ...state, needsYou: true, why: servicesWhy(state.needs), action: "help", actionLabel: actionLabel("help"), ...actionOpens("help") };
   }
   const why = state.why ?? (state.reason ? WHY[state.reason] : undefined);
   return {
     ...state,
+    needsYou: true,
     ...why ? { why } : {},
     ...state.action ? { actionLabel: actionLabel(state.action, state.reason), ...state.route ? {} : actionOpens(state.action) } : {},
     ...(state.failures ?? 0) >= REPORT_AFTER ? { report: `The sandbox’s check failed ${state.failures} times in a row: ${why ?? "it didn’t say why"}${state.check ? ` (check: ${state.check})` : ""}` } : {}
@@ -45072,7 +45074,7 @@ import fs145 from "node:fs";
 import path153 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "a536a5c27956";
+var BRIDGE_VERSION = "d1c82a786323";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -56241,7 +56243,7 @@ var CHECK2 = "POST kuvo/sandbox/check";
 var RESTART2 = "POST kuvo/engine/restart";
 var restartsItself = () => !IS_MAC || boxAnswers("kuvo/engine/restart");
 function sandboxRow(state, name, here) {
-  const needsYou = !state.on || state.gaps?.includes("services") === true;
+  const needsYou = state.needsYou === true;
   const action = needsYou ? sandboxAction(state, name, here) : null;
   return {
     id: "sandbox",
