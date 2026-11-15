@@ -13,7 +13,7 @@ use std::{
 
 use gpui::{
     App, ClipboardItem, ElementId, Hsla, InteractiveElement, IntoElement,
-    ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, StyledText,
+    ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled,
     TextRun, Window, div, px,
 };
 use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
@@ -21,6 +21,7 @@ use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter}
 use crate::{
     button::{Button, ButtonSize},
     icon::IconName,
+    selection::{SelectableText, SelectionState, UnitId},
     theme::{ActiveTheme, MONO_FONT, StyledType, Syntax, TypeSize, radius, space},
 };
 
@@ -223,11 +224,13 @@ pub struct CodeBlock {
     compact: bool,
     /// Shows the Copy button as just used (for the gallery and tests).
     shown_copied: bool,
+    /// Where its code sits in a transcript's selection (none: it isn't selectable).
+    unit: Option<(SelectionState, UnitId)>,
 }
 
 impl CodeBlock {
     pub fn new(id: impl Into<ElementId>, code: impl Into<SharedString>) -> Self {
-        Self { id: id.into(), code: code.into(), language: None, line_numbers: false, compact: false, shown_copied: false }
+        Self { id: id.into(), code: code.into(), language: None, line_numbers: false, compact: false, shown_copied: false, unit: None }
     }
 
     pub fn language(mut self, language: impl Into<SharedString>) -> Self {
@@ -248,6 +251,12 @@ impl CodeBlock {
 
     pub fn shown_copied(mut self) -> Self {
         self.shown_copied = true;
+        self
+    }
+
+    /// Its code selectable in a transcript, as `unit` (its line numbers aren't).
+    pub fn selectable(mut self, unit: Option<(SelectionState, UnitId)>) -> Self {
+        self.unit = unit;
         self
     }
 }
@@ -350,7 +359,7 @@ impl RenderOnce for CodeBlock {
                             .px(space::S4)
                             .py(space::S3)
                             .children(gutter)
-                            .child(div().flex_none().child(StyledText::new(code).with_runs(runs))),
+                            .child(div().flex_none().child(SelectableText::new((self.id.clone(), "code"), code).runs(runs).selectable(self.unit))),
                     ),
             )
     }

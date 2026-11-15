@@ -45,6 +45,15 @@ type Panel = fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
 
 const SCREENS: &[Screen] = &[
     Screen { slug: "conversation", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    // Selecting text (`kuvo_ui/src/selection.rs`): across a paragraph, inside a code block, across
+    // messages, the right-click menu over a selection, and a drag in three steps.
+    Screen { slug: "select-paragraph", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(select_paragraph) },
+    Screen { slug: "select-code", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(select_code) },
+    Screen { slug: "select-across", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(select_across) },
+    Screen { slug: "select-menu", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(select_paragraph) },
+    Screen { slug: "select-drag-1", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "select-drag-2", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "select-drag-3", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "landing", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "asking", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "question", width: 1280., height: 820., session: Some("ses_cms"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -527,6 +536,43 @@ fn pull_request(workspace: &mut Workspace, window: &mut Window, cx: &mut Context
     view.update(cx, |view, cx| view.write_pull_request(window, cx));
 }
 
+/// Selects in the open conversation, from the first `from` to the end of `to` after it.
+fn select(workspace: &mut Workspace, from: &str, to: &str, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = workspace.conversation().expect("a conversation").clone();
+    let found = view.update(cx, |view, cx| view.select_text(from, to, window, cx));
+    assert!(found, "{from:?} … {to:?} isn't in the conversation");
+}
+
+fn select_paragraph(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    select(workspace, "into the success path", "under the email field?", window, cx);
+}
+
+fn select_code(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    select(workspace, "reset();", "error.message", window, cx);
+}
+
+fn select_across(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    select(workspace, "keeps what was typed", "the email field. The sign-up", window, cx);
+}
+
+/// Where `needle` (its start, or its end) shows in the open conversation.
+fn spot_of(workspace: &Workspace, needle: &str, end: bool, cx: &gpui::App) -> gpui::Point<gpui::Pixels> {
+    let view = workspace.conversation().expect("a conversation").read(cx);
+    view.units()
+        .iter()
+        .flat_map(|(row, units)| units.iter().map(move |unit| (row, unit)))
+        .find_map(|(row, unit)| {
+            let at = unit.text.find(needle)? + if end { needle.len() } else { 0 };
+            view.selection().point_for(&kuvo_ui::selection::UnitId { row: row.clone(), path: unit.path.clone() }, at)
+        })
+        .unwrap_or_else(|| panic!("{needle:?} isn't drawn"))
+}
+
+/// Sends what a person does with the mouse through the window, as the platform would.
+fn mouse(window: &mut Window, cx: &mut gpui::App, event: gpui::PlatformInput) {
+    window.dispatch_event(event, cx);
+}
+
 fn main() -> anyhow::Result<()> {
     let only: Vec<String> = std::env::args().skip(1).collect();
     let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../shots");
@@ -605,6 +651,31 @@ fn main() -> anyhow::Result<()> {
             cx.run_until_parked();
             cx.update_window(any, |_, window, _| window.refresh())?;
             cx.run_until_parked();
+            // A right-click on the selection, or a drag that's under way, through the window.
+            if screen.slug == "select-menu" || screen.slug.starts_with("select-drag-") {
+                use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, PlatformInput};
+                cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    if screen.slug == "select-menu" {
+                        let at = spot_of(workspace.read(cx), "success path", false, cx);
+                        mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers: Modifiers::default() }));
+                        mouse(window, cx, PlatformInput::MouseDown(MouseDownEvent { position: at, button: MouseButton::Right, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+                    } else {
+                        let from = spot_of(workspace.read(cx), "Moving", false, cx);
+                        let to = match screen.slug {
+                            "select-drag-1" => spot_of(workspace.read(cx), "what was typed", true, cx),
+                            "select-drag-2" => spot_of(workspace.read(cx), "say which", true, cx),
+                            _ => spot_of(workspace.read(cx), "sets the error", true, cx),
+                        };
+                        mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position: from, pressed_button: None, modifiers: Modifiers::default() }));
+                        mouse(window, cx, PlatformInput::MouseDown(MouseDownEvent { position: from, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+                        mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position: to, pressed_button: Some(MouseButton::Left), modifiers: Modifiers::default() }));
+                    }
+                })?;
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+            }
             let image = cx.capture_screenshot(any)?;
             let name = format!("screens-{}-{}.png", screen.slug, if appearance.is_dark() { "dark" } else { "light" });
             image.save(out.join(&name))?;

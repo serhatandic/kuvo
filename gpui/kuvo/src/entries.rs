@@ -15,8 +15,9 @@ use kuvo_box::messages::{Content, Message, Step};
 use kuvo_box::{Conversation, Parts};
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize,
-    markdown::Markdown,
-    output::{DiffView, OutputWell, parse_patch},
+    markdown::{self, Markdown, Selectable},
+    output::{DiffView, OutputWell, diff_units, parse_patch, well_units},
+    selection::{Lead, SelectableText, SelectionState, Unit},
     small::{Chip, ChipTone, spinner},
     theme::{radius, space},
 };
@@ -121,20 +122,23 @@ impl Fold {
     }
 }
 
-/// Draws row `ix`. `open`: what's opened; `toggle` opens or closes one.
+/// Draws row `ix`. `open`: what's opened; `toggle` opens or closes one. Its text is selectable in
+/// `selection`, as [`units`] says.
 pub fn render(
     ix: usize,
     entry: &Entry,
     open: &HashSet<Fold>,
     toggle: impl Fn(Fold, &mut App) + Clone + 'static,
     earlier: AnyElement,
+    selection: &SelectionState,
     cx: &App,
 ) -> AnyElement {
+    let sel = |base: &[u32]| Selectable::new(selection.clone(), SharedString::from(entry.key().to_owned()), base);
     let body: AnyElement = match entry {
         Entry::Earlier => earlier,
         Entry::Message(message) => match message.as_ref() {
-            Message::User(user) => user_message(ix, &user.parts(), cx),
-            Message::Assistant(step) => agent_step(step, open, toggle, cx),
+            Message::User(user) => user_message(ix, &user.parts(), sel(&[]), cx),
+            Message::Assistant(step) => agent_step(step, open, toggle, &sel, cx),
             Message::System(note) => quiet_line(note.text.lines().next().unwrap_or("").to_owned(), cx),
             Message::Shell(run) => shell_run(run, cx),
             _ => div().into_any_element(),
@@ -157,7 +161,44 @@ pub fn render(
         .into_any_element()
 }
 
-fn user_message(ix: usize, parts: &Parts, cx: &App) -> AnyElement {
+/// The selectable text of a row, as [`render`] draws it, in reading order: what you wrote; the
+/// agent's words (`[part, block…]`), its thinking (`[part, 0]`) and what an opened step printed
+/// or changed (`[part, 0 and 1]`, `[part, file, line]`). For copying, without laying anything out.
+pub fn units(entry: &Entry, open: &HashSet<Fold>) -> Vec<Unit> {
+    let Entry::Message(message) = entry else { return Vec::new() };
+    match message.as_ref() {
+        Message::User(user) => {
+            let words = user.parts().words.trim().to_owned();
+            if words.is_empty() { Vec::new() } else { vec![Unit::new(&[0], words, Lead::Paragraph)] }
+        }
+        Message::Assistant(step) => {
+            let mut units = Vec::new();
+            for (n, content) in step.content.iter().enumerate() {
+                let part = n as u32;
+                match content {
+                    Content::Text(text) if !text.trim().is_empty() => units.extend(markdown::units(text, &[part])),
+                    Content::Reasoning { text, .. } if open.contains(&Fold::Thinking(step.id.clone(), n)) && !text.trim().is_empty() => {
+                        units.push(Unit::new(&[part, 0], text.trim(), Lead::Paragraph));
+                    }
+                    Content::Tool { name, state, .. } if open.contains(&Fold::Step(step.id.clone(), n)) => match details(name, state) {
+                        Some(Details::Output { command, text }) => units.extend(well_units(&text, command.as_deref(), open.contains(&Fold::Whole(step.id.clone(), n, 0)), &[part])),
+                        Some(Details::Changes(files)) => {
+                            for (p, file) in files.iter().enumerate() {
+                                units.extend(diff_units(&parse_patch(&file.patch), open.contains(&Fold::Whole(step.id.clone(), n, p)), &[part, p as u32]));
+                            }
+                        }
+                        None => {}
+                    },
+                    _ => {}
+                }
+            }
+            units
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     // What went with it, above it: the keyword it was sent with as typed, who wrote it.
     let mut above: Vec<AnyElement> = Vec::new();
@@ -207,7 +248,7 @@ fn user_message(ix: usize, parts: &Parts, cx: &App) -> AnyElement {
                             .bg(c.sunken)
                             .text_ui(TypeSize::Body)
                             .text_color(c.text)
-                            .child(words),
+                            .child(SelectableText::new(("words", ix), words).selectable(Some(sel.unit(&[0])))),
                     )
                 }),
         )
@@ -215,15 +256,16 @@ fn user_message(ix: usize, parts: &Parts, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, cx: &App) -> AnyElement {
+fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, sel: &dyn Fn(&[u32]) -> Selectable, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     let chevron = |opened: bool| Icon::new(if opened { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.text_faint);
     let mut blocks: Vec<AnyElement> = Vec::new();
     for (n, content) in step.content.iter().enumerate() {
         let key = format!("{}:{n}", step.id);
+        let part = n as u32;
         match content {
             Content::Text(text) if !text.trim().is_empty() => {
-                blocks.push(div().child(Markdown::new(SharedString::from(key), text)).into_any_element());
+                blocks.push(div().child(Markdown::new(SharedString::from(key), text).selectable(sel(&[part]))).into_any_element());
             }
             Content::Reasoning { text, done } => {
                 let fold = Fold::Thinking(step.id.clone(), n);
@@ -250,7 +292,7 @@ fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App)
                                     .border_color(c.border_strong)
                                     .text_ui(TypeSize::Small)
                                     .text_color(c.text_muted)
-                                    .child(text.trim().to_owned()),
+                                    .child(SelectableText::new(SharedString::from(format!("thought-{key}")), text.trim().to_owned()).selectable(Some(sel(&[part]).unit(&[0])))),
                             )
                         })
                         .into_any_element(),
@@ -281,7 +323,7 @@ fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App)
                     blocks.push(div().ml(px(22.)).text_ui(TypeSize::Caption).text_color(c.danger).child(first_line(&error)).into_any_element());
                 }
                 if let (true, Some(shown)) = (opened, shown) {
-                    blocks.push(div().ml(px(22.)).child(details_view(&key, step, n, shown, open, toggle.clone())).into_any_element());
+                    blocks.push(div().ml(px(22.)).child(details_view(&key, step, n, shown, open, toggle.clone(), sel)).into_any_element());
                 }
             }
             _ => {}
@@ -387,12 +429,12 @@ pub fn details(name: &str, state: &Value) -> Option<Details> {
 }
 
 /// An opened step's output or changes, each folded until it's shown whole.
-fn details_view(key: &str, step: &Step, n: usize, shown: Details, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static) -> AnyElement {
+fn details_view(key: &str, step: &Step, n: usize, shown: Details, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, sel: &dyn Fn(&[u32]) -> Selectable) -> AnyElement {
     let whole = |part: usize| Fold::Whole(step.id.clone(), n, part);
     match shown {
         Details::Output { command, text } => {
             let fold = whole(0);
-            let mut well = OutputWell::new(SharedString::from(format!("output-{key}")), text).whole(open.contains(&fold)).on_toggle(move |_, cx| toggle(fold.clone(), cx));
+            let mut well = OutputWell::new(SharedString::from(format!("output-{key}")), text).whole(open.contains(&fold)).on_toggle(move |_, cx| toggle(fold.clone(), cx)).selectable(sel(&[n as u32]));
             if let Some(command) = command {
                 well = well.command(command);
             }
@@ -405,7 +447,10 @@ fn details_view(key: &str, step: &Step, n: usize, shown: Details, open: &HashSet
             let views = files.into_iter().enumerate().map(|(part, file)| {
                 let fold = whole(part);
                 let toggle = toggle.clone();
-                let mut view = DiffView::new(SharedString::from(format!("diff-{key}-{part}")), Rc::new(parse_patch(&file.patch))).whole(open.contains(&fold)).on_toggle(move |_, cx| toggle(fold.clone(), cx));
+                let mut view = DiffView::new(SharedString::from(format!("diff-{key}-{part}")), Rc::new(parse_patch(&file.patch)))
+                    .whole(open.contains(&fold))
+                    .on_toggle(move |_, cx| toggle(fold.clone(), cx))
+                    .selectable(sel(&[n as u32, part as u32]));
                 if titled {
                     let title = match file.status.as_deref() {
                         Some("added") => format!("{} (new)", short_path(&file.file)),
