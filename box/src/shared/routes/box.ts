@@ -273,8 +273,9 @@ export type Found = Infer<typeof FOUND>;
 /** What can be done with one of your computers from the box that lists it (`computers.manage`):
  * which, its button's words, and where a client asks first, the question, what it comes to and the
  * words of the button that goes ahead, all the box's; `why`, it can't be done now, in words a
- * client shows beside it. */
-export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
+ * client shows beside it. `allow-devices` (`devices.allow`): on your setup's main computer, a
+ * computer kept from adding Kuvo Code's app to your devices is let do it again. */
+export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "allow-devices"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
 export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
 
 /** One of your computers, as a box knows it (`kuvo/computers`, PROTOCOL.md "Computers"): its key
@@ -287,14 +288,16 @@ export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
  * another computer's word alone, `through` that one); where a client of your own reaches its box
  * itself (`address`, on the relay, and `relay`, its URL: only on your own computers); how many of its sessions are at work and
  * which (the first few, by id and title), where it said; the services whose plan limits it reads;
- * and what can be done with it from here (`actions`). */
+ * what can be done with it from here (`actions`); and `vouching` (`devices.allow`, on your setup's
+ * main computer alone): it's kept from adding Kuvo Code's app to your devices, since one it added
+ * was removed, in words a client shows as they are. */
 export const LISTED_COMPUTER = object({
   key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
   shared: bool, "apart?": literal(true), reach: words("connected", "connecting", "away", "unknown"),
   "version?": string, "engine?": string, "system?": string, "features?": list(string),
   via: words("here", "relay", "peer"), "through?": string, "address?": string, "relay?": string,
   "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string), limitServices: list(object({ id: string, title: string })),
-  actions: list(COMPUTER_ACTION),
+  actions: list(COMPUTER_ACTION), "vouching?": object({ blocked: literal(true), words: string }),
 });
 export const COMPUTERS = object({ computers: list(LISTED_COMPUTER) });
 export type ListedComputer = Infer<typeof LISTED_COMPUTER>;
@@ -315,6 +318,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "PATCH kuvo/computers/:key", answers: { 200: object({ name: string }), 400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
   { route: "DELETE kuvo/computers/:key", answers: { 200: NOTHING, 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
   { route: "POST kuvo/computers/:key/connect", answers: { 202: NOTHING, 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
+  { route: "POST kuvo/computers/:key/allow-devices", answers: { 200: NOTHING, 403: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string, "primary?": string }) } },
   { route: "GET kuvo/info", answers: { 200: INFO } },
   { route: "GET kuvo/update", answers: { 200: UPDATE } },
   { route: "POST kuvo/update", answers: { 202: UPDATE } },
@@ -334,7 +338,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "GET kuvo/phones", answers: { 200: PHONES } },
   { route: "POST kuvo/phones/remove", answers: { 200: NOTHING } },
   { route: "POST kuvo/phones/pair", answers: { 200: PAIRING } },
-  { route: "POST kuvo/devices/pair", answers: { 200: DEVICE_PAIRED, 400: object({ message: string }), 403: object({ message: string }), 409: object({ message: string, "reason?": literal("removed") }), 503: object({ message: string }) } },
+  { route: "POST kuvo/devices/pair", answers: { 200: DEVICE_PAIRED, 400: object({ message: string }), 403: object({ message: string }), 409: object({ message: string, "reason?": words("removed", "blocked") }), 503: object({ message: string }) } },
   { route: "DELETE kuvo/phones/pair", answers: { 200: NOTHING } },
   { route: "GET kuvo/setup", answers: { 200: SETUP } },
   { route: "GET kuvo/setup/events", answers: { 200: SETUP } },

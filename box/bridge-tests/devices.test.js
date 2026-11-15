@@ -130,6 +130,15 @@ test("the app beside a box that pairs phones is paired at once as a desktop devi
   link.updateLink(state => { link.pairPhone(state, { key: k(phone), name: "My iPhone", added: 5, from: "pair", pairing: "ph" }); return state; });
   const listed = await ask(RELAY, "GET", "kuvo/phones", undefined, { key: phone });
   assert.deepEqual(listed.body.phones.map(each => [each.name, each.kind, each.you]), [["Studio Display", "desktop", false], ["My iPhone", "phone", true]]);
+
+  // Nobody vouched for it (this box's own app asked): removing it keeps its key out, and no computer.
+  assert.equal(kept.phones[0].by, undefined);
+  assert.deepEqual(await ask(RELAY, "POST", "kuvo/phones/remove", { phones: [{ key }] }, { key: phone }), { status: 200, body: {} });
+  assert.equal(link.readLink().vouchBlocked, undefined);
+  // And no computer is allowed anything on a box that leads no setup; never by the box's CLI.
+  assert.equal((await ask(CLI, "POST", `kuvo/computers/${here.pub}/allow-devices`)).status, 403);
+  assert.equal((await ask(RELAY, "POST", `kuvo/computers/${here.pub}/allow-devices`, undefined, { key: crypto.randomBytes(32) })).status, 403, "a device that isn't paired here");
+  assert.equal((await ask(APP, "POST", `kuvo/computers/${here.pub}/allow-devices`)).status, 409);
 });
 
 test("an app removed from your devices stays out: this never pairs it again, and Kuvo Code on this computer removes a device as a paired one does, never a Mac", async () => {
@@ -190,6 +199,13 @@ test("a member's box vouches for the app beside it to the main computer, and ans
   act = await vouchSent(mac);
   link.receiveMail(mailFrom(mac, { workQueue: { acted: { id: act.id, status: 409, value: { message: "This app was removed from your devices.", reason: "removed" } } }, at: Date.now() }), undefined, takeMail);
   assert.deepEqual(await asked, { status: 409, body: { message: "This app was removed from your devices.", reason: "removed" } });
+  // This computer is kept from adding its app (one it added was removed): the main computer's
+  // words, and the reason the app goes by.
+  const keptOut = { message: "Lab screen on devbox was removed from your devices, so devbox can't add Kuvo Code's app by itself now. Allow it again from Studio or one of your devices: Computers, devbox.", reason: "blocked" };
+  asked = ask(APP, "POST", "kuvo/devices/pair", given);
+  act = await vouchSent(mac);
+  link.receiveMail(mailFrom(mac, { workQueue: { acted: { id: act.id, status: 409, value: keptOut } }, at: Date.now() }), undefined, takeMail);
+  assert.deepEqual(await asked, { status: 409, body: keptOut });
   // An answer from a box that isn't the main computer is no answer.
   const waits = { status: 503, body: { message: "Studio isn't answering. This app reaches your other computers once it does." } };
   const wait = link.queueForwardTiming.wait;

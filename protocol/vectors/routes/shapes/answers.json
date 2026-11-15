@@ -3582,6 +3582,9 @@
               },
               {
                "literal": "remove"
+              },
+              {
+               "literal": "allow-devices"
               }
              ]
             },
@@ -3595,6 +3598,14 @@
             },
             "why?": "string"
            }
+          }
+         },
+         "vouching?": {
+          "object": {
+           "blocked": {
+            "literal": true
+           },
+           "words": "string"
           }
          }
         }
@@ -3708,6 +3719,9 @@
               },
               {
                "literal": "remove"
+              },
+              {
+               "literal": "allow-devices"
               }
              ]
             },
@@ -3721,6 +3735,14 @@
             },
             "why?": "string"
            }
+          }
+         },
+         "vouching?": {
+          "object": {
+           "blocked": {
+            "literal": true
+           },
+           "words": "string"
           }
          }
         }
@@ -3827,6 +3849,35 @@
     "503": {
      "object": {
       "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/computers/:key/allow-devices",
+   "answers": {
+    "200": {
+     "object": {}
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
      }
     }
    }
@@ -4011,6 +4062,9 @@
            },
            {
             "literal": "config.apply"
+           },
+           {
+            "literal": "devices.allow"
            },
            {
             "literal": "devices.pair"
@@ -4668,6 +4722,9 @@
            },
            {
             "literal": "config.apply"
+           },
+           {
+            "literal": "devices.allow"
            },
            {
             "literal": "devices.pair"
@@ -6328,7 +6385,14 @@
      "object": {
       "message": "string",
       "reason?": {
-       "literal": "removed"
+       "oneOf": [
+        {
+         "literal": "removed"
+        },
+        {
+         "literal": "blocked"
+        }
+       ]
       }
      }
     },

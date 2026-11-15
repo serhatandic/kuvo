@@ -5,7 +5,8 @@ import { serviceTitle } from "../../shared/account-names";
 // runs and answers, which of its sessions are at work, which
 // services' plan limits it reads, and what can be done with it from here: renamed, removed
 // (`peers/manage.ts`, handed to the box that writes its record) or reached again
-// (`peers/reach-again.ts`). Every box answers it alike, a Mac's and a machine's, with no client
+// (`peers/reach-again.ts`); and, on your setup's main computer, which computer is kept from adding
+// Kuvo Code's app to your devices (`vouching`), with letting it again (`…/allow-devices`). Every box answers it alike, a Mac's and a machine's, with no client
 // there: each tells its peers its own facts with its agents (`peers/agents.ts`), so none is a hub.
 // Platform: the system's name is read from macOS's own record of its version, or Linux's
 // `os-release`; the rest is the same on both.
@@ -32,13 +33,19 @@ import { awaySince, PEER_REACH, readReach } from "../peers/reach";
 import { askReachAgain, REACH_AGAIN, readTries, tryingSince } from "../peers/reach-again";
 import { ownName } from "../letters/start";
 import { forwardAct } from "../work-queue/forward";
+import { allowVouching, vouchBlockOf } from "../phones";
+import { blockedWords } from "../peers/devices";
+import { mainElsewhere } from "../setup/main-only";
+import { followedSetup } from "../setup/record";
+import { fromLocalApp } from "../server/context";
+import { updateLink } from "../state";
 import { sharedMachine } from "../setup/settle";
 import { macLink, readLink } from "../state";
 import type { LinkState } from "../state";
 import { boxVersion } from "../updates/update";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
-export const COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect)?)?$/;
+export const COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect|\/allow-devices)?)?$/;
 
 /** The most sessions at work this box names of itself (it counts them all). */
 const MOST_HERE = 100;
@@ -173,6 +180,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   if (sharedMachine(link)) return withActions();
   const peers = peersOf(link);
   const reach = readReach();
+  const leads = followedSetup(link)?.role === "primary";
   // (Those that aren't your own: a shared machine, a box of another setup.)
   const apart = new Set(peers.filter(peer => isApart(peer.key, link, told)).map(peer => peer.key));
   for (const peer of byName(peers)) {
@@ -184,6 +192,8 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     const mine = said?.computer && !apart.has(peer.key) ? said.computer : undefined;
     // What it said it answers, whole (a list longer than peers keep can't say what's missing).
     const features = said?.features && !said.featuresCut && !apart.has(peer.key) ? said.features : undefined;
+    // (Kept from vouching, as only the main computer knows: a device it added was removed.)
+    const blocked = vouchBlockOf(link, peer.key);
     computers.push({
       key: peer.key,
       name: peer.name,
@@ -202,6 +212,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       // by one that never said it (an older box, or one that isn't yours).
       ...(mine?.working !== undefined ? (away ? { working: 0, atWork: [] } : { working: mine.working, ...(mine.atWork ? { atWork: mine.atWork } : {}) }) : {}),
       limits: limits.get(peer.key) ?? [],
+      ...(leads && blocked && !apart.has(peer.key) ? { vouching: { blocked: true as const, words: blockedWords(blocked.device, peer.name) } } : {}),
     });
   }
   // The boxes a peer vouches for (another Mac's, beside a machine two Macs share): known by that
@@ -221,9 +232,11 @@ const mtime = (file: string): number => { try { return fs.statSync(file).mtimeMs
 /** What a client does with one of your computers (`PATCH`/`DELETE kuvo/computers/<key>`, `POST
  * …/connect`): done here, or handed to the box that writes its record, and answered with what that
  * one said, or why it can't be, in words a client shows as they are. */
-async function* manage(context: RouteContext, key: string, connect: boolean): AsyncGenerator<AnswerPiece> {
+async function* manage(context: RouteContext, key: string, action: string | undefined): AsyncGenerator<AnswerPiece> {
   const { request, signal, json, info } = context;
   const method = request.method.toUpperCase();
+  if (action === "/allow-devices") return yield* allowDevices(context, key);
+  const connect = action === "/connect";
   const what = connect ? (method === "POST" ? "connect" : null) : method === "PATCH" ? "rename" : method === "DELETE" ? "remove" : null;
   if (!what) return yield* json(405, { message: connect ? "Only POST." : "Rename (PATCH) or remove (DELETE)." });
   const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
@@ -255,9 +268,37 @@ async function* manage(context: RouteContext, key: string, connect: boolean): As
   return yield* json(there.status, isObject(there.value) ? there.value : {});
 }
 
+/** `POST kuvo/computers/<key>/allow-devices` (`devices.allow`): the computer `key`, kept from adding
+ * Kuvo Code's app to your devices since one it added was removed, is let do it again. The main
+ * computer's own, and only for its own clients: a device paired with it, over the relay, or Kuvo
+ * Code's app beside it, over the box's own server. Never `box route`, which an agent's command
+ * could run, and never handed on from another box (no act carries it, work-queue/forward.ts): the
+ * computer that's kept out can't let itself back in. */
+async function* allowDevices(context: RouteContext, key: string): AsyncGenerator<AnswerPiece> {
+  const { request, phone, signal, json, info } = context;
+  if (request.method.toUpperCase() !== "POST") return yield* json(405, { message: "Only POST." });
+  const link = readLink();
+  const asking = phone?.key?.toString("base64url");
+  const paired = asking !== undefined && (link?.phones ?? []).some(each => each.key === asking);
+  if (!paired && !fromLocalApp(request)) return yield* json(403, { message: "Only Kuvo Code on this computer, or one of your devices, allows a computer to add your devices again." });
+  const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
+  const computer = computers.find(each => each.key === key);
+  if (!computer) return yield* json(404, { message: "That isn't one of your computers." });
+  const here = computers[0]!.name;
+  // Only the main computer keeps a computer from it, so only it allows it again.
+  const main = mainElsewhere(link);
+  if (main) return yield* json(409, { message: `Allow it from ${main.name || peersOf(link).find(peer => peer.key === main.key)?.name || "your main computer"}.`, primary: main.key });
+  if (followedSetup(link)?.role !== "primary") return yield* json(409, { message: `${here} isn't your setup's main computer, so no computer adds your devices through it.` });
+  if (computer.here) return yield* json(409, { message: `${here} is the computer you're asking: it adds its own app itself.` });
+  if (computer.apart || computer.via !== "relay") return yield* json(409, { message: `${computer.name} isn't one of ${here}'s own computers, so it adds none of your devices.` });
+  // (Not kept from it: the same answer. What was removed stays removed: its app makes a new key.)
+  updateLink(kept => (kept && allowVouching(kept, key) ? kept : null));
+  return yield* json(200, {});
+}
+
 export async function* computersRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, signal, json, info, bridge } = context;
-  if (match[2]) return yield* manage(context, match[2], Boolean(match[3]));
+  if (match[2]) return yield* manage(context, match[2], match[3]);
   if (request.method.toUpperCase() !== "GET") return yield* json(405, { message: "Only GET." });
   // (Its own sessions at work, from its list: read first where this process hasn't yet.)
   await listNow(context, signal ?? undefined).catch(() => null);

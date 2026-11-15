@@ -402,6 +402,8 @@ export function forgetActs(): void {
   sent.clear();
 }
 
+// (Nothing else is an act: letting a computer add Kuvo Code's app to your devices again,
+// `kuvo/computers/<key>/allow-devices`, is never one, so the box kept from it can't ask for itself.)
 const actOf = (given: unknown): Act | null => {
   if (!isObject(given) || typeof given.id !== "string" || !ID.test(given.id) || typeof given.item !== "string" || !given.item || given.item.length > 300) return null;
   if (typeof given.at !== "number" || !Number.isFinite(given.at)) return null;

@@ -1631,7 +1631,14 @@ machines; a client that wants every computer's facts asks the box that has it as
     never a Mac, which goes by its own name, nor one shared with another setup but on the Mac that
     set it up, which keeps its own record of it), `connect` (a peer
     this box reaches through the relay that's `away`, while no try is under way) and `remove` (as
-    `rename`, never the box itself). A client draws the ids it has a control for.
+    `rename`, never the box itself). `allow-devices` (`devices.allow`), last, with its `confirm`:
+    only on a computer that carries `vouching`, below. A client draws the ids it has a control for.
+  - `vouching?` (`devices.allow`, #742): `{"blocked": true, "words": "<Device> was removed from
+    your devices. <Computer> can't add Kuvo Code's app again until you allow it."}` on a computer
+    whose box is kept from vouching for Kuvo Code's desktop app ("Paired phones",
+    `kuvo/devices/pair`), `words` for a client to show as they are. Only the setup's main computer
+    says it (it alone keeps the list), and never on a computer that's `apart`; left out
+    otherwise, and by every other box.
   `405` for anything but `GET`.
 - **Managing them** (`computers.manage`, #735), from any box, with no client or Mac's app open. A
   machine's record (its name, that it's one of your computers) is in the peers document of the Mac
@@ -1666,6 +1673,19 @@ machines; a client that wants every computer's facts asks the box that has it as
     that holds the relay connection, as `box route` leaves it), so its answer marks it back
     (`noteHeard`), and it's listed `connecting` for 20 seconds meanwhile. `202 {}`; `503` while this
     box is off the relay itself.
+  - `POST kuvo/computers/<key>/allow-devices` (`devices.allow`, #742): the computer is let add
+    Kuvo Code's app to your devices again: off the main computer's list (`vouchBlocked` in
+    link.json), `200 {}`, and the same for one that isn't on it; `kuvo/computers` and its events
+    say so at once. What was removed stays removed. **The main computer's own, for its own
+    clients only**: a device paired with it, over the relay (a phone, or the desktop app's
+    session), or Kuvo Code's app beside its box, over the box's own server (as for
+    `kuvo/devices/pair`). `403 {"message"}` from `box route` (a Mac over SSH, an agent's command)
+    and from anything else; `405` for anything but `POST`; `404` for a key the box doesn't list.
+    It's never handed to another box: no act carries it (an ask by mail that names it is dropped,
+    as any that isn't an act), so the computer kept out can't allow itself, and a member's box
+    answers `409 {"message": "Allow it from <main>.", "primary": "<its key>"}`. `409 {"message"}`
+    too on a box that leads no setup, for the box itself, and for a computer that isn't the main
+    computer's own (`apart`, or known by a peer's word alone).
   - **While the old app is attached** (the Mac app before 0.8, which keeps its own list of machines
     and writes all of it back, `machines.json` and `kuvo/link/peers`, so a removal there wouldn't
     hold): the box that writes a machine's record takes no removal, from a client of its own or
@@ -6659,6 +6679,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `computers.reach` | `address` and `relay` on each of your own computers in `kuvo/computers` ("Computers", #742) |
 | `config` | `kuvo/config` |
 | `config.apply` | `POST kuvo/config/apply` |
+| `devices.allow` | Removing a desktop app a computer's box vouched for keeps that box from vouching (`409`, `reason: "blocked"`), and the main computer says so on it in `kuvo/computers` (`vouching`, the `allow-devices` action) and takes `POST kuvo/computers/<key>/allow-devices` from its own clients ("Paired phones", "Computers", #742) |
 | `devices.pair` | `POST kuvo/devices/pair`: Kuvo Code's desktop app on the box's computer paired as one of your devices, by the main computer on a member's word; and `kuvo/phones/remove` from the app beside any box ("Paired phones", #742) |
 | `engine.restart` | `POST kuvo/engine/restart` |
 | `engine.start` | a machine only: `POST kuvo/engine/start` |
@@ -9660,7 +9681,8 @@ On both, for a paired phone:
     shared between people aren't expected; closing it takes approval of each vouched device on the
     main computer or a device already paired, or a notice on every paired device as one is added.
     The member answers `200 {"paired": true, "pairing"}` with what it
-    said, or `409 {"message", "reason"?}` in the main computer's words. `503 {"message": "<main>
+    said, or `409 {"message", "reason"?}` in the main computer's words (`reason`: `removed`, the
+    key was removed; `blocked`, `devices.allow`, this computer is kept from vouching, below). `503 {"message": "<main>
     isn't answering. This app reaches your other computers once it does."}` when no answer comes
     in 20 seconds, the main computer is away, this box is off the relay, or it hasn't heard yet
     what the main computer takes; `409 {"message"}` for a main computer from before this. The app
@@ -9674,10 +9696,29 @@ On both, for a paired phone:
     route, here or by the main computer: `409 {"message": "This app was removed from your
     devices.", "reason": "removed"}`. The app then makes a new key only on your word. (A pairing by
     token still lets a removed key back in, as above.)
-    **Known gap, said in every client:** removing the device keeps that key out, not that
-    computer. Whoever sits at a computer of your setup can have its app make a new key, which its
-    box vouches for again (the pairing keeps no record of who vouched). To keep a computer out,
-    remove the computer (`DELETE kuvo/computers/<key>`): its box then vouches for nothing.
+  - **And the computer that vouched adds no other** (`devices.allow`), so whoever sits at it
+    can't have its app make a new key and come back. The main computer keeps who vouched on the
+    device it pairs on a member's word (`by`, that box's static key, on its entry in the main
+    computer's link.json alone: never in a phones document; none on one its own app or a token
+    paired). When that device is removed, by any way the removal reaches the main computer's box
+    (`kuvo/phones/remove` from a paired device there, from Kuvo Code's app beside it, or a removal
+    another box's phones document brings), it notes the box that vouched (`vouchBlocked` in
+    link.json: `[{key, device, at}]`, the box's key, the removed device's name and when, in
+    milliseconds; one entry a box, the newest 64) and from then on answers that box's vouch, for
+    any key, `409 {"message": "<Device> on <computer> was removed from your devices, so
+    <computer> can't add Kuvo Code's app by itself now. Allow it again from <main> or one of your
+    devices: Computers, <computer>.", "reason": "blocked"}`, which the member's box passes on to
+    its app as it is. A removal that names a pairing the device doesn't have now takes nothing
+    off and keeps no computer out. It lasts until you allow that computer again on the main
+    computer (`POST kuvo/computers/<key>/allow-devices`, "Computers"), which the computer kept out
+    can't ask for itself. Allowing it un-removes nothing: the key that was removed stays out, the
+    app there makes a new one on your word, and the vouch for that one is taken. (A key that's
+    let in now is still answered `200` with the pairing it has, and a removed one `removed`,
+    before this is looked at.)
+    **Not covered:** a desktop app the main computer's own box paired for the app beside it has
+    no voucher, so removing it keeps its key out and nothing more: that computer is the main one,
+    which pairs your devices itself. The same for a box in no setup. To keep a member out for
+    good, remove the computer (`DELETE kuvo/computers/<key>`): its box then vouches for nothing.
   - **At most 16 desktop apps** are paired this way at once: one more is `409 {"message"}` until
     one is removed, so a box that vouches never fills the list.
   - Every box of the setup lets the device in from the main computer's phones document, as it
