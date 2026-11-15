@@ -12,6 +12,7 @@ All paths on the right are in `../kuvo-web`.
 
 | When you change… | Check these files |
 | --- | --- |
+| `gpui/` (desktop app: areas, conversations, settings and box connection) | `src/content/docs/code/sessions.md`, `work-queue.md`, `machines.md`, `settings.md`, `privacy.md`, `installation.md`, `shortcuts.md`; this repo’s `README.md` and `gpui/README.md` |
 | `swift/KuvoCode/App/KuvoCodeApp.swift` (menus, shortcuts, the update menu item) | `src/content/docs/code/shortcuts.md`, and the pages that name those commands: `sessions.md`, `panel.md`, `changes.md` |
 | `swift/KuvoCode/App/AppModel.swift`, `AppInfo.swift` (starting the engine, data folders, the browser tools' config) | `src/content/docs/code/architecture.md`, `privacy.md`, `installation.md` (First launch), `troubleshooting.md` |
 | `swift/OpenCodeKit/Sources/OpenCodeKit/Engine/*` (engine download, checks, private server) | `src/content/docs/code/installation.md`, `architecture.md`, `privacy.md`, `troubleshooting.md`; also this repo's `README.md` (How it works) |

@@ -152,11 +152,13 @@ You need Xcode 27 or later.
 ```sh
 git clone https://github.com/serhatandic/kuvo-code.git
 cd kuvo-code
-open swift/KuvoCode.xcodeproj
+cd gpui
+cargo run -p kuvo
 ```
 
-Run the **KuvoCode** scheme. See [CONTRIBUTING.md](CONTRIBUTING.md) for
-building from Terminal, tests, and the debug launch variables.
+See [gpui/README.md](gpui/README.md) for Rust setup and desktop app builds,
+and [box/README.md](box/README.md) for the box. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for tests and contributing.
 
 ## Contributing and security
 

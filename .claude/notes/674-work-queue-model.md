@@ -38,7 +38,7 @@ worktree `~/.kuvo-code/data/opencode/worktree/c5e2b5/tidy-otter`. Never merged t
 3. `working: true` makes Todo/Backlog/Waiting → In progress; `working: false` leaves the status. Recommended: keep.
 4. Removing a label takes it off every item (no "in use" refusal); clients ask first.
 5. Phone: In progress isn't a Move To target (its own section); adding items and labels on the phone come later.
-6. The retired Swift Mac app's New/Rename/Remove Category and its move call the removed routes: it can't be edited; say so in release notes or ship with 1.0 only.
+6. The retired Swift Mac app's New/Rename/Remove Category and its move call the removed routes: it can't be edited; say so in release notes or ship with 0.8 only.
 
 ## After the first review (same day)
 - Fixed: an older box's change (it writes only `category`) is the later word (`standing`, statuses.ts); kept, handed and moved items carry a legacy `category` (`asKept`);
@@ -47,7 +47,7 @@ worktree `~/.kuvo-code/data/opencode/worktree/c5e2b5/tidy-otter`. Never merged t
 - Checked on a copy of the real queue (622 items, temp home): 0 lost, 0 differing, events intact, backup byte-identical.
 - Checks green at 23dc993c2: the four --check scripts, `bun run check`, bridge work-queue files + compat (121), bridge.test.js/seats/setup-* (95),
   Bun tests on lokum (43), KuvoClient package, phone compile + WorkQueueListTests 11 + DemoMacTests 3 + WorkItemChipsTests 5 + Release build.
-- kuvo-web `docs/674` committed (48e475d), not pushed: the page's "Opening it" still describes the pre-1.0 Mac app's panel.
+- kuvo-web `docs/674` committed (48e475d), not pushed: the page's "Opening it" still describes the pre-0.8 Mac app's panel.
 - Left: commit gpui once its helper's follow-up is in (run cargo test/clippy), second review's findings, final report.
 
 ## After the second and the desktop reviews
