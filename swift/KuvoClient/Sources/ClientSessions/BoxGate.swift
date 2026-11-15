@@ -36,6 +36,9 @@ public enum BoxGate {
     /// Then #733's, the facts a first run draws, which no client works out: `folders.suggested`,
     /// `models.offered.free`, `setup.welcomed` and `sign-in.accounts.plan` (with a key-only
     /// account's Add Key).
+    /// Then #668's messages: `messages.commands` (a command's message read as typed, by its id),
+    /// `queue.removed.keyword` (a queued message taken back keeps its keyword) and
+    /// `queue.stop.arriving` (Stop holds what's still on its way, so no client waits for it).
     public static let required: [String] = [
         "agent-tools.own",
         "bots.deletes",
@@ -58,6 +61,7 @@ public enum BoxGate {
         "git.pull-request",
         "git.status",
         "limits.rings",
+        "messages.commands",
         "messages.send",
         "models.offered",
         "models.offered.folder",
@@ -65,6 +69,8 @@ public enum BoxGate {
         "models.offered.sides",
         "models.readiness",
         "queue.items",
+        "queue.removed.keyword",
+        "queue.stop.arriving",
         "sandbox.opens",
         "sandbox.words",
         "sessions.asks",

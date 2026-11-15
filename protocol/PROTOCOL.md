@@ -1214,7 +1214,13 @@ the same for every client and with none connected, and keeps them in `run/queues
   says, the names of its files, when it came (ms). `GET kuvo/sessions/queues/events` follows them
   all (ndjson: `{"queues": {<session>: {paused, held, waiting?}}}` now and at each change; a session
   neither paused nor holding anything is left out).
-- `POST kuvo/sessions/<id>/stop`: held and paused, then the run stopped. `POST …/queue/hold` (`{items?}`):
+- `POST kuvo/sessions/<id>/stop` (`{items?}`): held and paused, then the run stopped. **It takes
+  what's on its way with it** (`queue.stop.arriving`), so no client waits before it asks: a send the
+  box is still making to that conversation reaches the engine first (10 s at most) and is held with
+  the rest, and `items`, the messages the client sent that may still be on their way to the box, are
+  held first, in that order, where they're waiting already, and each that comes in the next two
+  minutes (`kuvo/sessions/<id>/send` with that `id`) goes to the engine queued and is held, rather
+  than set going; once, and only those named. `POST …/queue/hold` (`{items?}`):
   held and paused without stopping (before an undo, or a move); `items`, messages a client held
   as they went to the engine, go first, in that order. `POST …/queue/resume`: unpaused, and the
   next one goes now. `POST …/queue/<item>/now` (Send Now): unpaused, the item steered (one waiting
@@ -1226,8 +1232,11 @@ the same for every client and with none connected, and keeps them in `run/queues
   else as its text; while it's paused it waits on the box (`from` names who it was from, for one put
   back), else it goes to the engine as asked (`queue` by default); its answer says which,
   `waits: true|false`. `DELETE …/queue/<item>`: one waiting on the box taken away, its answer
-  carrying it as it was, `removed: {id, text, files?, delivery, from?, words, before?}` (`words`, as
-  it was shown; `before`, what came after it, left out when it was last); 404 if it isn't. Undo
+  carrying it as it was, `removed: {id, text, files?, delivery, from?, words, keyword, draft, before?}` (`words`, as
+  it was shown; `keyword`, as the queue's items say it, null for none; `draft`, what Edit puts in the
+  composer: a command's or a goal's words with it in front, as sending them again runs it again, any
+  other keyword's words alone, as sending those again shouldn't switch to Plan or set another loop;
+  `before`, what came after it, left out when it was last; `queue.removed.keyword`); 404 if it isn't. Undo
   adds it back with `…/queue/add` and `kept: true` (its body as it was kept, its files not kept
   again, shown with its `words`). **Undo puts it back where it was** (bridge 0.9.137): `…/queue/add`
   takes `before`, what came after it as the client showed it (for one the engine held, which the
@@ -1251,7 +1260,7 @@ the same for every client and with none connected, and keeps them in `run/queues
   `[{id, words, files, keyword, from, on, delivery, held}]`. `words` is what was written, without
   what the box added for the agent (a message's kept parts' words; another agent's letter, a
   wake-up or the box's own note in its own words, its line); `files` its files' names; `keyword`
-  the one it was sent with (`/goal`), else null; `from` who it's from (an agent's name, `Wake-up`,
+  the one it was sent with (`/goal`), or the command it runs (`/review`, its arguments `words`), else null; `from` who it's from (an agent's name, `Wake-up`,
   `Goal`…), null for yours; `on` `engine` (the engine's or the coding agents' bridge's inbox) or
   `box`; `delivery` `steer` or `queue`; `held` whether Stop held it. `items` is null while the
   place the session runs can't be read, or is slow to say (a client keeps what it showed). A client draws the list
@@ -1259,13 +1268,13 @@ the same for every client and with none connected, and keeps them in `run/queues
   (ndjson) sends the same now and again as it changes (the box's queue, and the engine's or the
   bridge's `session.inbox.*` for it; every 15 s at least); through `box route`, its first line.
   `DELETE …/queue/<item>` takes back one the engine (or the bridge) holds too, from its inbox,
-  answering `removed` as for one on the box: `text` as the agent would have read it, `words` for
-  the composer, `files` as a send takes them (`{uri, name?}`), so Edit puts them back and they can
+  answering `removed` as for one on the box: `text` as the agent would have read it, `words` as
+  shown, `keyword`, `draft` for the composer, `files` as a send takes them (`{uri, name?}`), so Edit puts them back and they can
   go again; 404 when the agent took it first (or it isn't waiting anywhere), 502 when the engine
   still holds it, 503 while it can't be read.
 - Clients show what's held and whether it's paused from these; the in-flight record of a message
-  still on its way (and that Stop held it) stays with the client that sends it, which waits for its
-  request before it asks the box to stop, and for its hold before it asks the box to resume.
+  still on its way stays with the client that sends it, which names those in Stop's `items` (it
+  doesn't wait for them), and waits for its hold before it asks the box to resume.
 - A box without `queue` in its features is older than the update gate lets through: held until
   it's up to date, never carried by a client.
 
@@ -2557,8 +2566,8 @@ before it uses it, and meanwhile says so. A box is older than a client needs whe
 `agent-tools.own`, `bots.deletes`, `bots.effort`, `bots.elsewhere`, `bots.held`, `bots.now`, `computers`, `file.text`, `folders.suggested`, `folders.tree`, `git.branches`,
 `git.branches.pullRequest`, `git.branches.worktree`, `git.changes.binary`, `git.changes.path`,
 `git.files`, `git.files.does`, `git.merge`, `git.pull-request`,
-`git.status`, `limits.rings`, `messages.send`, `models.offered`, `models.offered.folder`,
-`models.offered.free`, `models.offered.sides`, `models.readiness`, `queue.items`, `sandbox.opens`, `sandbox.words`, `sessions.asks`,
+`git.status`, `limits.rings`, `messages.commands`, `messages.send`, `models.offered`, `models.offered.folder`,
+`models.offered.free`, `models.offered.sides`, `models.readiness`, `queue.items`, `queue.removed.keyword`, `queue.stop.arriving`, `sandbox.opens`, `sandbox.words`, `sessions.asks`,
 `sessions.list`, `sessions.mentions`, `sessions.models`, `sessions.needsYou`,
 `sessions.start.empty`, `setup.welcomed`, `sign-in.accounts.kinds`, `sign-in.accounts.plan`, `sign-in.accounts.state`, `sign-in.codes`, `typed`, `usage.notices`,
 `waiting`, `waiting.cards`, `work-queue.counts` and `work-queue.edit`
@@ -4405,7 +4414,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   `/goal`), and a line `</sent-with>`. Its box writes it from the message's `keyword` (and for a
   bot's /goal). Show the keyword (its parts' `keyword`) in front of the message's words, drawn as the composer draws it (its
   mark for the "/", the rest in bold, in the accent; Plan's in orange). Taken back (Undo, a failed
-  send, editing a queued one), it's the words alone, so sending them again sets no second loop.
+  send), it's the words alone, so sending them again sets no second loop; editing a queued one puts
+  back what its box says (`removed.draft`).
 - A message the box writes to an agent in its conversation (a goal starting, changed, at its
   end, declined or carrying on after a limit reset; its sessions' news to the bot that started
   them; your answer told late) is a user message to the engine, marked in its `metadata`:
@@ -6268,8 +6278,9 @@ the box sends keeps its parts, which clients draw it by. No client writes or rea
   stay words.
 - **Parts:** kept in the engine message's (and inbox item's) `metadata.kuvo.parts`: `{words,
   keyword?, widget?, comments?, paths?, agents?: [{name, session}], phone?: true, mail?: {name,
-  session}}` (`paths`: files its note names that it doesn't carry; `mail`: another agent wrote it,
-  `"[Message from <name> · <session>] (…)"`, and `words` is what they wrote). Those sent here and
+  session}, command?: true}` (`paths`: files its note names that it doesn't carry; `mail`: another agent wrote it,
+  `"[Message from <name> · <session>] (…)"`, and `words` is what they wrote; `command`: it ran a
+  command, `keyword` (`/review`), with `words` as its arguments). Those sent here and
   `queue/add`'s with fields keep them, as do a started session's task and a bot's /goal; a letter
   between agents, a prompt passed on the way before (`api/session/<id>/prompt`) and anything else
   the box sends keep them where there's more to them than the text. The box's own notes keep none
@@ -6278,8 +6289,19 @@ the box sends keeps its parts, which clients draw it by. No client writes or rea
   `{parts}`, one for each, read from the text as the apps read it before (every block, a /goal
   sent as `[Goal] …`, a file listed with ` (on the user's Mac: …)`, the named block's earlier
   heading). A client asks once for each message (KuvoClient's `MessageParts.read`), before it shows
-  the page, and shows one its box couldn't read as written. A command shows as typed: a client
-  keeps which messages ran one (`CommandMessages`).
+  the page, and shows one its box couldn't read as written.
+- **A command shows as typed** (`messages.commands`): the message a command sent with `command`
+  made has the parts `{words, keyword: "/<name>", command: true}`, so a client draws "/review this
+  branch" as it draws a keyword, never the prompt the command made. A coding agent's keeps them
+  with the message, as any message's. The engine's commands take no metadata and say no id, so
+  for one of the engine's its box keeps them itself, by the message's id, once the engine's events
+  say which it made (its inbox item: an item's id is its message's), the latest 2000 in
+  `run/commands.json`: `kuvo/messages/parts` takes `{texts, ids}` (an id for each text) and answers
+  those by id, waiting a moment (2 s at most) for a command still on its way, so a client that
+  sees the message first still reads it as typed; the queue's items and `removed` say them too. A
+  client sends `ids` with every text it asks about, commands' messages included, and keeps no
+  record of its own of which ran one. A command run before its box kept them, or one the engine
+  never said of (its events down meanwhile), shows as the engine kept it.
 - Both directions: `vectors/message-parts.json` (written from the apps' Swift before this), which
   the box (`test/message-parts.test.ts`) and KuvoClient (`MessagePartsTests`) are held to.
 - One waiting on the box (`waiting` in a queue) says the keyword it was sent with (`keyword`), for
@@ -6407,6 +6429,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `mac` | a Mac only: `kuvo/mac` |
 | `machines` | a Mac only: `kuvo/machines…` (with its app closed its box still lists them, and the rest says the app must be open) |
 | `mcp.catalog` | `kuvo/mcp/catalog…` |
+| `messages.commands` | A command's message read as typed: `{words, keyword, command: true}` kept with a coding agent's, and for the engine's answered by `POST kuvo/messages/parts` given `ids` ("A command shows as typed", #668) |
 | `messages.send` | `POST kuvo/sessions/<id>/send` and `…/queue/add` with fields: a message sent as what was written and what goes with it, the box writing what the agent reads and keeping its parts; `POST kuvo/messages/parts` for messages from before ("A message's parts", #668) |
 | `models.offered` | `GET kuvo/models/offered`: which models a session can use here, and the one a new session starts on, by the box's rule ("The models offered", #341) |
 | `models.offered.folder` | `kuvo/models/offered?folder=<path>`: what's offered in a project's folder, its own settings' models too ("The models offered") |
@@ -6430,6 +6453,8 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `queue` | `kuvo/sessions/<id>/queue…`, `…/stop` and `kuvo/sessions/queues/events`: the box carries the queue (bridge 0.9.100) |
 | `queue.items` | `items` in `kuvo/sessions/<id>/queue`, `…/queue/events`, and `DELETE …/queue/<item>` taking back one the engine holds ("The queue") |
 | `queue.once` | `…/queue/add` sent again under its `id` adds it once ("Sending again"): a phone sends it with `idempotency-key` only to a box that says this (#144) |
+| `queue.removed.keyword` | `DELETE …/queue/<item>`'s `removed` says its `keyword` and its `draft`, what Edit puts in the composer ("The queue", #668) |
+| `queue.stop.arriving` | `POST kuvo/sessions/<id>/stop` takes what's on its way with it: the box's own sends first, and `items` held as they come ("The queue", #668) |
 | `queue.waits` | A Stop holds the conversation: what arrives waits on the box (`waiting`), `…/queue/add` and `DELETE …/queue/<item>` (bridge 0.9.128) |
 | `reviews` | `kuvo/agents/api/kuvo/reviews…`: reviews with fresh eyes |
 | `reviews.parts` | a review's `parts`, each on the engine read in a `session` a client can open (bridge 0.9.102) |

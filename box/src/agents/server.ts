@@ -435,13 +435,14 @@ export function handler(context: Context) {
           }
           case "command": {
             // One of yours (Settings › Commands): what it says, with what you wrote after it. Any
-            // other: the agent's own, as it takes them, typed.
+            // other: the agent's own, as it takes them, typed. Its message keeps the parts the box
+            // sends with it (`metadata`), so it shows as typed.
             const input = await body()
             const name = String(input.name ?? "")
             const written = String(input.text ?? "")
             const template = name ? await link.commandTemplate(name, sessions.get(id).location.directory) : undefined
             const text = template ? expandCommand(template, written) : `/${name} ${written}`.trim()
-            sessions.prompt(id, { id: newID("msg"), text, files: input.files ?? [], delivery: input.delivery ?? "steer" })
+            sessions.prompt(id, { id: newID("msg"), text, files: input.files ?? [], delivery: input.delivery ?? "steer", metadata: input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? input.metadata : undefined })
             return json({})
           }
           case "interrupt":

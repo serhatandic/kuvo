@@ -7,6 +7,7 @@
 // the engine started again pause it until Resume; Stop holds what was for the next step ahead of
 // the queue, the latest Stop's first. Kept in `run/queues.json`, by session.
 
+import { draftOf, keptCommand } from "../messages/commands";
 import { keptParts, partsOf, withPartsOf } from "../messages/parts";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -379,7 +380,8 @@ function shownOfInbox(entry: InboxEntry): { from: string | null; words: string; 
   });
   const note = boxNoteOf(text, metadata);
   if (note) return { from: note.from, words: note.line, keyword: null, files };
-  const parts = keptParts(metadata) ?? partsOf(text);
+  // (One that runs one of the engine's commands, as it was typed.)
+  const parts = keptParts(metadata) ?? keptCommand(entry.id) ?? partsOf(text);
   if (parts.mail) return { from: parts.mail.name, words: parts.words, keyword: null, files };
   const held = shownOfHeld(text);
   if (held.from) return { from: held.from, words: held.words ?? text, keyword: null, files };
@@ -420,7 +422,7 @@ function sendableFiles(given: unknown): { uri: string; name?: string }[] {
  * (Edit, or Remove): as `DELETE …/queue/<item>` answers one waiting on the box (`removed`), with
  * what came after it (`before`, as `orderOf` shows them). Null when it isn't waiting there (any
  * more: the agent took it first). It throws when the engine doesn't answer, or keeps it. */
-export async function takeBackFromInbox(target: Target, session: string, item: string): Promise<{ id: string; text: string; files?: { uri: string; name?: string }[]; delivery: "steer" | "queue"; from?: string; words: string; before?: string } | null> {
+export async function takeBackFromInbox(target: Target, session: string, item: string): Promise<{ id: string; text: string; files?: { uri: string; name?: string }[]; delivery: "steer" | "queue"; from?: string; words: string; keyword: string | null; draft: string; before?: string } | null> {
   const inbox = messagesIn(await inboxOf(target, session));
   const entry = inbox.find(each => each.id === item);
   if (!entry) return null;
@@ -441,7 +443,7 @@ export async function takeBackFromInbox(target: Target, session: string, item: s
   const shown = shownOfInbox(entry);
   const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : "";
   const files = sendableFiles(entry.payload?.files);
-  return { id: item, text, ...(files.length ? { files } : {}), delivery: entry.delivery, ...(shown.from ? { from: shown.from } : {}), words: shown.words, ...(before ? { before } : {}) };
+  return { id: item, text, ...(files.length ? { files } : {}), delivery: entry.delivery, ...(shown.from ? { from: shown.from } : {}), words: shown.words, keyword: shown.keyword, draft: shown.from ? shown.words : draftOf({ words: shown.words, keyword: shown.keyword ?? undefined, command: (keptParts(entry.payload?.metadata) ?? keptCommand(entry.id))?.command }), ...(before ? { before } : {}) };
 }
 
 /** `session`'s next waiting message started, unless its queue is paused or a run is under way: as
@@ -517,9 +519,10 @@ export async function holdQueue(target: Target, session: string, since?: number,
 
 /** Stop: what waits held, the queue paused whether anything waits or not (what arrives later waits
  * on the box), then the run stopped. `holds` false (a bot stopping a session of its work, which it
- * may write to again): paused only when something waits, as a failed run's. */
-export async function stopSession(target: Target, session: string, holds = true): Promise<QueueState> {
-  const held = await holdQueue(target, session);
+ * may write to again): paused only when something waits, as a failed run's. `items`: messages a
+ * client sent as Stop came, held first, in that order. */
+export async function stopSession(target: Target, session: string, holds = true, items: string[] = []): Promise<QueueState> {
+  const held = await holdQueue(target, session, undefined, items);
   const state = holds ? changeQueue(session, current => ({ ...current, paused: true })) : held;
   await interrupt(target, session);
   return state;

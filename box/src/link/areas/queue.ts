@@ -13,6 +13,8 @@ import { asked } from "../engine/client";
 import { dropWaiting, holdQueue, inboxFollowers, inboxFor, inboxNow, keepWaitingBefore, queueFollowers, queueItems, queueOf, readQueues, resumeQueue, sendNow, showsQueue, shownQueue, takeBackFromInbox } from "../engine/queue";
 import type { QueueShown } from "../../shared/routes/sessions";
 import { forgetStopped } from "../work/background";
+import { holdArriving, sendsSettled } from "../messages/arriving";
+import { draftOf } from "../messages/commands";
 import { stopConversation } from "../work/stopping";
 import { messageID } from "../engine/sessions";
 import { attachedIn } from "../server/attached";
@@ -113,8 +115,10 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
     forgetSent(session, decodeURIComponent(item));
     // What it was, whole, for Undo to add back as it was, where it was (`queue/add` with `kept`,
     // and `before`, what came after it).
-    const { from, text: words } = dropped.shown;
-    const removed = dropped.message ? { ...dropped.message, ...(from ? { from } : {}), words, ...(dropped.before ? { before: dropped.before } : {}) } : undefined;
+    const { from, text: words, keyword } = dropped.shown;
+    const parts = keptParts(dropped.message?.metadata);
+    const draft = from ? words : draftOf({ words, keyword, command: parts?.command });
+    const removed = dropped.message ? { ...dropped.message, ...(from ? { from } : {}), words, keyword: keyword ?? null, draft, ...(dropped.before ? { before: dropped.before } : {}) } : undefined;
     return yield* json(200, { ...shownQueue(queueOf(session)), ...(removed ? { removed } : {}) });
   }
   if (method !== "POST") return yield* json(405, {});
@@ -132,7 +136,15 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
   }
   if (!place) return yield* json(404, { message: "There's no such conversation here." });
   try {
-    if (action === "stop") return yield* json(200, shownQueue(await stopConversation(place.target, { ...place.data, id: session })));
+    if (action === "stop") {
+      // (`{items}`: messages the client sent that may still be on their way: held as they come.
+      // What the box is sending meanwhile reaches the engine first, and is held with the rest.)
+      const given = parsed(request.body);
+      const items = isObject(given) && Array.isArray(given.items) ? given.items.filter((id): id is string => typeof id === "string") : [];
+      holdArriving(session, items);
+      await sendsSettled(session);
+      return yield* json(200, shownQueue(await stopConversation(place.target, { ...place.data, id: session }, items)));
+    }
     if (step === "hold") {
       // (`{items}`: messages a client held as they went, first.)
       const given = parsed(request.body);

@@ -3999,6 +3999,9 @@
             "literal": "mcp.catalog"
            },
            {
+            "literal": "messages.commands"
+           },
+           {
             "literal": "messages.send"
            },
            {
@@ -4066,6 +4069,12 @@
            },
            {
             "literal": "queue.once"
+           },
+           {
+            "literal": "queue.removed.keyword"
+           },
+           {
+            "literal": "queue.stop.arriving"
            },
            {
             "literal": "queue.waits"
@@ -4596,6 +4605,9 @@
             "literal": "mcp.catalog"
            },
            {
+            "literal": "messages.commands"
+           },
+           {
             "literal": "messages.send"
            },
            {
@@ -4663,6 +4675,12 @@
            },
            {
             "literal": "queue.once"
+           },
+           {
+            "literal": "queue.removed.keyword"
+           },
+           {
+            "literal": "queue.stop.arriving"
            },
            {
             "literal": "queue.waits"
@@ -12131,6 +12149,12 @@
         },
         "from?": "string",
         "words": "string",
+        "keyword": {
+         "oneOf": [
+          "string",
+          "null"
+         ]
+        },
         "before?": "string"
        }
       }

@@ -17,6 +17,7 @@ export const MESSAGE_PARTS = object({
   "agents?": list(object({ name: string, session: string })),
   "phone?": literal(true),
   "mail?": object({ name: string, session: string }),
+  "command?": literal(true),
 });
 
 export const MESSAGE_ROUTES: RouteShape[] = [
