@@ -27,8 +27,8 @@ import Security
 ///   under the helper's names, trusting only that helper (`KeychainMove.copy`).
 /// - `kuvo-keys delete-originals --home <box>`: the app's own taken away, once the move can't go
 ///   back and each copy is there (`KeychainMove.deleteOriginals`).
-/// - `kuvo-keys passwords --home <box>`: the sign-ins Kuvo Code 0.7 kept before the vault, written
-///   to `updates/rehome/passwords.json` for the box to take into its vault, then delete.
+/// - `kuvo-keys passwords --home <box>`: the sign-ins Kuvo Code 0.7 kept before the vault, said
+///   down a pipe to the move, which gives them to the box's vault. Never written to a file.
 ///
 /// One line of JSON on stdout. 0: done. 1: not done, with `error` (and `reason`). 2: asked wrongly.
 ///
@@ -100,7 +100,8 @@ public enum KeysTool {
                 try move.deleteOriginals()
                 say([:], 0)
             case ["passwords"]:
-                say(["passwords": try handOverPasswords(keychain: keychain, home: home)], 0)
+                guard saysDownAPipe else { usage("kuvo-keys says your saved sign-ins only down a pipe to the move that runs it.") }
+                say(try savedSignIns(keychain: keychain), 0)
             default:
                 usage("Usage: kuvo-keys copy --home <box> --helper <\(BoxHelperBundle.bundleName)> | delete-originals --home <box> | passwords --home <box>")
             }
@@ -157,18 +158,24 @@ public enum KeysTool {
         return URL(filePath: place)
     }
 
-    /// Where the sign-ins go for the box (`0600`, in the folder the move keeps).
-    static func passwordsFile(in home: URL) -> URL { home.appending(path: "updates/rehome/passwords.json") }
+    /// Whether standard output is a pipe to whatever started this (a pipe, or the pair of sockets
+    /// some runtimes give a child for one): never a terminal, nor a file.
+    static var saysDownAPipe: Bool {
+        var status = stat()
+        guard fstat(STDOUT_FILENO, &status) == 0 else { return false }
+        let kind = status.st_mode & S_IFMT
+        return kind == S_IFIFO || kind == S_IFSOCK
+    }
 
-    /// The sign-ins 0.7 kept as internet passwords, written whole for the box; how many. One the
-    /// Keychain lists but won't give out stops it with nothing written: none is left behind
-    /// unsaid. The Keychain's own stay as they are.
+    /// The sign-ins 0.7 kept as internet passwords, for the box's move to take into its vault:
+    /// `{"v": 1, "logins": [{host, account, password, modified?}]}`. One the Keychain lists but
+    /// won't give out stops it with nothing said: none is left behind unsaid. The Keychain's own
+    /// stay as they are.
     ///
-    /// The file holds them as plain text (`0600`): any program of yours outside the sandbox can
-    /// read it for as long as it's there, where the Keychain kept them from all but Kuvo Code.
-    /// Not to ship as it is: #713 piece 4 hands them over another way (Keychain items trusting
-    /// only the helper, as `copy` makes, or a pipe to the box's server), before anything runs this.
-    static func handOverPasswords(keychain: HostKeychain, home: URL) throws -> Int {
+    /// They're said only down a pipe to the move that runs this (which holds them in memory and
+    /// gives each to the box's own server): never written to a file, where any program of yours
+    /// outside the sandbox could read what the Keychain kept from all but Kuvo Code.
+    static func savedSignIns(keychain: HostKeychain) throws -> [String: Any] {
         guard !keychain.isLocked, let found = keychain.internetPasswords(creator: creator) else {
             throw KeychainMove.Failure.refused("your saved sign-ins", errSecInteractionNotAllowed)
         }
@@ -184,9 +191,7 @@ public enum KeysTool {
             case .refused(let status): throw KeychainMove.Failure.refused("\(login.account) at \(login.server)", status)
             }
         }
-        let data = try JSONSerialization.data(withJSONObject: ["v": 1, "logins": logins], options: [.sortedKeys])
-        try PrivateFile.write(data, to: passwordsFile(in: home))
-        return logins.count
+        return ["v": 1, "logins": logins]
     }
 
     private static func say(_ answer: [String: Any], _ status: Int32) -> Never {

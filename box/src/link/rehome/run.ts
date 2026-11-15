@@ -25,6 +25,7 @@ import { databasesIn, schemaMark } from "./database";
 import { takenSchema } from "./migrate";
 import { NOTHING_TO_MOVE, diskKind, freeBytes, locked, nearest, planMove, releaseRefusal, resumed, run, runningIn, settled, stamp, stopPoint, type Folders, type RehomeOutcome } from "./move";
 import { PATH_REWRITER, type Rewriter } from "./rewrite";
+import { handOverPasswords } from "./passwords";
 import { deleteOriginalKeys, heldRefusal } from "./run-steps";
 import { noteRecord, readRecord, rehomeFolder, rehomeStatus, type RunPlan } from "./state";
 
@@ -147,10 +148,10 @@ function startHelper(home: string, app: string): { started: boolean; message?: s
 }
 
 /** What a move that's done still owes, each settled once it's done and tried again at the next
- * run where it couldn't be: the box's start (its helper's launch agent), the Keychain's originals
- * taken away, and the old keeper's launch agent let go of. What the installer staged goes once
- * the box runs from its own files. */
-function settle(home: string, options: Pick<RunOptions, "bundle" | "id">): RunOutcome {
+ * run where it couldn't be: first the box's start (its helper's launch agent) and the Keychain's
+ * originals taken away; then (`settle`) an earlier Kuvo Code's saved sign-ins, and the old keeper's
+ * launch agent let go of. What the installer staged goes once the box runs from its own files. */
+function settleStart(home: string, options: Pick<RunOptions, "bundle" | "id">) {
   const owes = (what: string) => readRecord(home).owed?.includes(what as never) === true;
   const record = readRecord(home);
   const bundle = exists(options.bundle) ? options.bundle : record.app?.bundle ?? options.bundle;
@@ -170,6 +171,26 @@ function settle(home: string, options: Pick<RunOptions, "bundle" | "id">): RunOu
     const deleted = exists(keys) ? deleteOriginalKeys(keys, home) : { done: false, why: "kuvo-keys isn't in this copy of Kuvo Code" };
     if (deleted.done) settled(home, "keychain");
     else console.error(`The Keychain's originals couldn't be taken away yet: ${deleted.why}`);
+  }
+  return { owes, bundle, app, started, message };
+}
+
+/** And an earlier Kuvo Code's saved sign-ins, into the vault, once the box's server answers
+ * (`passwords.ts`): tried again at the next run where it couldn't be yet. */
+async function settle(home: string, options: Pick<RunOptions, "bundle" | "id">): Promise<RunOutcome> {
+  const { owes, bundle, app, started, message } = settleStart(home, options);
+  if (owes("passwords") && !owes("start")) {
+    const keys = path.join(bundle, "Contents", "MacOS", "kuvo-keys");
+    const record = readRecord(home);
+    const prefs = typeof record.from === "string" ? (await import("./upgrades")).appPreferences(record.from) : {};
+    const sites = Array.isArray(prefs["passwords.agentSignIn"]) ? prefs["passwords.agentSignIn"].filter((each): each is string => typeof each === "string") : [];
+    const accounts = isObject(prefs["passwords.agentSignInAccounts"]) ? Object.fromEntries(Object.entries(prefs["passwords.agentSignInAccounts"]).filter((each): each is [string, string] => typeof each[1] === "string")) : {};
+    // (Where nothing starts the box, a copy's home, its server never answers: not waited for.)
+    const handed = exists(keys) ? await handOverPasswords({ home, keys, agentSites: sites, agentAccounts: accounts, ...(launchTools() ? {} : { wait: 0 }) }) : { done: false, why: "kuvo-keys isn't in this copy of Kuvo Code", added: 0, short: 0 };
+    if (handed.done) {
+      if (handed.short) noteRecord(home, { dropped: [...(readRecord(home).dropped ?? []), `${handed.short === 1 ? "A saved password" : `${handed.short} saved passwords`} shorter than four characters ${handed.short === 1 ? "wasn't" : "weren't"} brought into the vault, which keeps none that short.`] });
+      settled(home, "passwords");
+    } else console.error(`Your saved sign-ins couldn't be brought into the vault yet: ${handed.why}`);
   }
   if (owes("agent")) {
     // The old keeper's launch agent, let go of: its program is gone with the app it was in.

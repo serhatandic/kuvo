@@ -81,11 +81,11 @@ export function judgeInstall(home: string, appFolder: string | null, { helperInP
   try { journal = readJournal(home); } catch { unreadable = true; }
   if (unreadable || (journal && journal.step !== "done" && forwardOnly(journal.step))) return say("stuck", "move");
   if (journal && journal.step !== "done") return say("moving", "move");
-  // (A move the box ran itself that still owes something, its start or the Keychain's originals,
-  // is finished by running it again.)
+  // (A move the box ran itself that still owes something, its start, the Keychain's originals or
+  // an earlier Kuvo Code's saved sign-ins, is finished by running it again.)
   if (recordedKind(path.join(home, "box", "kind")) === "mac" && !makingCutShort(home)) {
     const record = readRecord(home);
-    const owes = record.state === "done" && record.app !== undefined && (record.owed ?? []).some(each => each === "start" || each === "keychain" || each === "agent");
+    const owes = record.state === "done" && record.app !== undefined && (record.owed ?? []).length > 0;
     return say("ours", owes ? "move" : helperInPlace() === false ? "new" : null);
   }
   if (readRecord(home).movedBack === true) return say("back");

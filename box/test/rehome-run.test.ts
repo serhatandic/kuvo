@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSyn
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawn } from "node:child_process"
+import { judgeInstall } from "../src/link/install/verdict"
 import { databaseWithLog, git, mac07, put, readJSON, REAL_ENGINE, recorded, rehome, rows, run, sha, snapshot } from "./rehome-run-world"
 
 // An earlier Kuvo Code's sessions and settings moved into this Mac's box by the box itself
@@ -46,14 +47,14 @@ test.if(mac)("a Mac of 0.7.2 moves whole: its sessions brought up to date and in
   expect(readFileSync(join(m.repository, ".git", "worktrees", linked, "gitdir"), "utf8").trim()).toBe(join(worktree, ".git"))
   expect(git(worktree, ["status", "--porcelain"])).toBe("")
   // This Mac's keys: copied for the helper the release brings, read back, then the app's own taken away.
-  expect(readFileSync(join(m.home, "keys-asked"), "utf8").trim().split("\n")).toEqual(["copy Kuvo Helper.app", "delete-originals"])
+  expect(readFileSync(join(m.home, "keys-asked"), "utf8").trim().split("\n").map(line => line.trim())).toEqual(["copy Kuvo Helper.app", "delete-originals", "passwords"])
   expect(readdirSync(join(m.keychain, "helper")).sort()).toEqual(["integrations.KUVO_KEY_NOTION", "phone-link.key"])
   expect(readdirSync(join(m.keychain, "app"))).toEqual([])
   // Nothing of the move's left over: no staging, no kept copy, nothing the installer staged.
   expect(existsSync(join(m.K, "updates", "rehome", "staging"))).toBe(false)
   expect(existsSync(join(m.K, "updates", "rehome", "kept"))).toBe(false)
   expect(existsSync(join(m.K, "updates", "install"))).toBe(false)
-  expect(readJSON(join(m.K, "updates", "rehome", "state.json"))).toMatchObject({ state: "done", owed: ["passwords"], counts: { sessions: 5, sessionsBefore: 5, projects: 3, messages: 13 } })
+  expect(readJSON(join(m.K, "updates", "rehome", "state.json"))).toMatchObject({ state: "done", owed: [], counts: { sessions: 5, sessionsBefore: 5, projects: 3, messages: 13 } })
 })
 
 // What a clean move leaves, to hold the others to: made where the world held to it will be (what's
@@ -104,7 +105,7 @@ test.if(mac)("stopped once it can only go forward, running it again finishes it:
     expect(stopped.signal, `${point}: ${stopped.errors}`).toBe("SIGKILL")
     const again = run(m)
     expect(again.status, `${point}: ${again.errors}${JSON.stringify(again.said)}`).toBe(0)
-    expect(again.said, point).toMatchObject({ result: "done", status: { state: "done", owed: ["passwords"] } })
+    expect(again.said, point).toMatchObject({ result: "done", status: { state: "done", owed: [] } })
     expect(snapshot(m.S), point).toEqual(before)
     expect(snapshot(m.K, moveOwn), point).toEqual(clean.K)
     expect(snapshot(m.keychain), point).toEqual(clean.keychain)
@@ -234,4 +235,16 @@ test.if(mac)("run again once it's moved, nothing moves twice, and Move Back says
   expect(again.said).toMatchObject({ result: "done", status: { state: "done" } })
   expect(snapshot(m.K, moveOwn)).toEqual(K)
   expect(rehome(m, ["--back"]).said).toMatchObject({ result: "refused", message: "Kuvo on this Mac was moved from an earlier Kuvo Code, whose own folder is as it was: there's nothing to move back." })
+})
+
+test.if(mac)("saved sign-ins wait for Kuvo to answer on this Mac: until then they're still owed, never written anywhere, and the installer says to run the move again", () => {
+  const m = mac07(root, m => put(join(m.home, "keychain-passwords.json"), JSON.stringify({ v: 1, logins: [{ host: "example.com", account: "me", password: "hunter22" }] })))
+  const moved = run(m)
+  expect(moved.status, moved.errors).toBe(0)
+  expect(moved.said).toMatchObject({ result: "done", status: { state: "done", owed: ["passwords"] } })
+  expect(moved.errors).toContain("Your saved sign-ins couldn't be brought into the vault yet: Kuvo isn't answering on this Mac yet")
+  // Nowhere in the box's home: not in a file, not in the move's own records.
+  const everything = Object.keys(snapshot(m.K)).filter(name => !name.startsWith("engine/")).map(name => { try { return readFileSync(join(m.K, name), "utf8") } catch { return "" } }).join("\n")
+  expect(everything).not.toContain("hunter22")
+  expect(judgeInstall(m.K, m.S)).toMatchObject({ verdict: "ours", verb: "move" })
 })
