@@ -90,16 +90,32 @@ Read from `.zed-ref/crates` for interaction patterns and GPUI architecture only:
 
 ## Review
 
-Reviewed internally before handover; three edge cases were found and fixed:
+Reviewed internally before handover and then in the Foreman review round:
 
 1. **Sequential live action tasks (`gpui/kuvo/src/session_menu.rs`, `workspace.rs`):** Replaced the
    single `SessionMenu::action_task: Option<Task<()>>` slot with `action_tasks: Vec<Task<()>>` so
    triggering two quick actions (e.g. Pin then Archive) no longer drops and cancels the first task.
 2. **Archived filter toggle clearing active popovers (`gpui/kuvo/src/workspace.rs`,
-   `tests/session_menu.rs`):** `set_archived_filter` now clears `session_menu.active_popover` so a
-   popover anchored to a row that leaves view cannot block subsequent keyboard shortcuts.
+   `tests/session_menu.rs`):** `set_archived_filter` now clears `session_menu.active_popover`.
 3. **Click-away during live popover submit/delete (`gpui/kuvo/src/session_menu.rs`):** Added a
    shared `Rc<Cell<bool>>` (`restore_focus`) on `RenamePopover` and `ConfirmDeletePopover` so
-   clicking outside while a live request is in flight keeps focus where the user clicked instead of
-   pulling it back when the request completes.
+   clicking outside while a live request is in flight preserves user focus.
+4. **Foreman review fixes (3 MUST, 1 SHOULD):**
+   - **MUST 1 (Active search excludes archived):** Filtered both `named` and `in_conversations` in
+     `sidebar.rs` `found_lines` with `listing.facts(id).is_some_and(|f| f.is_archived() == archived_only)`.
+   - **MUST 2 (Box-driven hover buttons):** Cached `GET kuvo/sessions/<id>/actions` per session
+     in `SessionMenu::row_actions` (epoch-guarded, refreshed on hover/menu/action/listing change)
+     and rendered row hover buttons purely from box actions — hiding on `away`/`held`, omitting
+     `Unarchive` on engine-archived sessions, and removing all client-side `if archived` rules.
+   - **MUST 3 (Confirm-only deletion):** Removed the direct-delete branch from
+     `Workspace::run_delete_action`; deletion now runs solely through
+     `ConfirmDeletePopover::confirm_delete`, synthesizing a plain title-only confirm when the box
+     gives `confirm: None`.
+   - **SHOULD (Shortcuts & popover cleanup):** Bound `⌘R` / `⌘⌫` / `⇧⌘⌫` in
+     `Workspace && !KuvoTextField` so text inputs ignore them while walked rows (`Sidebar`) still
+     work; cleared `walked` / `hovered_row` in `archive_session` and returned `None` from
+     `shortcut_target` when `walked` is missing from `sidebar::lines`; and cleared/pruned
+     `active_popover` when its anchor leaves (`new_session`, `open_session` including the already-open
+     session, `search_changed`, `clear_search`, `toggle_project`, `toggle_all`, `show_area`,
+     `rail_pressed`, and `take_list`).
 

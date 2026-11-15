@@ -470,11 +470,16 @@ impl Workspace {
                 if self._waiting_follow.is_none() {
                     self.read_waiting(cx);
                 }
+                self.session_menu.invalidate_actions(None);
+                self.prune_session_popover(cx);
+                self.refresh_active_row_actions(cx);
             }
             ListUpdate::Waiting(why) => self.lists = Lists::Waiting(why),
             ListUpdate::Held { .. } => {
                 self.lists = Lists::Held;
                 self.box_state = BoxState::Held;
+                self.session_menu.invalidate_actions(None);
+                self.session_menu.active_popover = None;
             }
             ListUpdate::Failed(error) => {
                 if !self.listing.is_read() {
@@ -563,6 +568,7 @@ impl Workspace {
         if !self.collapsed.remove(project) {
             self.collapsed.insert(project.to_owned());
         }
+        self.prune_session_popover(cx);
         cx.notify();
     }
 
@@ -574,6 +580,7 @@ impl Workspace {
         if !self.showing_all.remove(project) {
             self.showing_all.insert(project.to_owned());
         }
+        self.prune_session_popover(cx);
         cx.notify();
     }
 
@@ -585,6 +592,8 @@ impl Workspace {
     /// Opens a session's conversation.
     pub fn open_session(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.area = Area::Sessions;
+        self.session_menu.active_popover = None;
+        self.session_menu.action_error = None;
         self.record(Nav::Session(session.to_owned()));
         if self.opened() == Some(session) {
             // Already open (back to it from another area): the keyboard goes back to it.
@@ -594,8 +603,6 @@ impl Workspace {
             cx.notify();
             return;
         }
-        self.session_menu.active_popover = None;
-        self.session_menu.action_error = None;
         self.unsent.remove(session);
         let (client, live) = (self.client.clone(), self.live);
         let composer = self.composer_for(session, window, cx);
@@ -735,6 +742,8 @@ impl Workspace {
             return;
         }
         self.area = Area::Sessions;
+        self.session_menu.active_popover = None;
+        self.session_menu.action_error = None;
         self.record(Nav::Landing);
         if let Some(project) = project {
             self.landing_place = Some(StartIn::Project(project));
@@ -972,6 +981,7 @@ impl Workspace {
         self.walked = None;
         let query = self.search_text(cx).trim().to_owned();
         if query == self.finds_for {
+            self.prune_session_popover(cx);
             cx.notify();
             return;
         }
@@ -995,6 +1005,7 @@ impl Workspace {
                 self.found(&query, found, cx);
             }
         }
+        self.prune_session_popover(cx);
         cx.notify();
     }
 
@@ -1008,12 +1019,14 @@ impl Workspace {
             Ok(finds) => self.finds = finds,
             Err(error) => self.find_failed = Some(error.to_string()),
         }
+        self.prune_session_popover(cx);
         cx.notify();
     }
 
     pub fn clear_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search.update(cx, |field, cx| field.set_text("", cx));
         self.walked = None;
+        self.prune_session_popover(cx);
         window.focus(&self.search.focus_handle(cx), cx);
         cx.notify();
     }
@@ -1176,6 +1189,7 @@ impl Workspace {
                 }
             }
         }
+        self.prune_session_popover(cx);
         self.show_composer_on_screen(cx);
         cx.notify();
     }
@@ -1205,6 +1219,7 @@ impl Workspace {
         } else {
             self.folded = !self.folded;
         }
+        self.prune_session_popover(cx);
         // Folded with the keyboard in it (its search, its list): the keyboard goes to the main view.
         if !self.sidebar_shown() && (self.search.focus_handle(cx).is_focused(window) || self.list_focus.is_focused(window)) {
             self.walked = None;
@@ -1514,8 +1529,140 @@ impl Workspace {
 
     pub fn set_hovered_row(&mut self, key: Option<String>, cx: &mut Context<Self>) {
         if self.session_menu.hovered_row != key {
-            self.session_menu.hovered_row = key;
+            self.session_menu.hovered_row = key.clone();
+            if let Some(id) = key.as_deref().and_then(session_menu::session_from_row_key) {
+                self.ensure_row_actions(id, true, cx);
+            }
             cx.notify();
+        }
+    }
+
+    fn ensure_row_actions(&mut self, session: &str, retry_failed: bool, cx: &mut Context<Self>) {
+        if self.client.gate().is_held() {
+            return;
+        }
+        match self.session_menu.row_actions.get(session) {
+            Some(session_menu::RowActions::Ready(_)) | Some(session_menu::RowActions::Loading) => return,
+            Some(session_menu::RowActions::Failed) if !retry_failed => return,
+            _ => {}
+        }
+        if !self.live {
+            match self.client.session_actions(session) {
+                Ok(actions) => {
+                    self.session_menu
+                        .row_actions
+                        .insert(session.to_owned(), session_menu::RowActions::Ready(actions));
+                }
+                Err(_) => {
+                    self.session_menu
+                        .row_actions
+                        .insert(session.to_owned(), session_menu::RowActions::Failed);
+                }
+            }
+            return;
+        }
+        let id = session.to_owned();
+        let client = self.client.clone();
+        let epoch = self.session_menu.actions_epoch;
+        self.session_menu
+            .row_actions
+            .insert(id.clone(), session_menu::RowActions::Loading);
+        self.session_menu.action_tasks.push(cx.spawn(async move |this, cx| {
+            let fetch_id = id.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { client.session_actions(&fetch_id) })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.session_menu.actions_epoch != epoch {
+                    return;
+                }
+                match result {
+                    Ok(actions) => this.session_menu.cache_actions(&id, actions),
+                    Err(_) => {
+                        this.session_menu
+                            .row_actions
+                            .insert(id, session_menu::RowActions::Failed);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    fn refresh_active_row_actions(&mut self, cx: &mut Context<Self>) {
+        let mut refresh_ids: Vec<String> = Vec::new();
+        if let Some(id) = self
+            .session_menu
+            .hovered_row
+            .as_deref()
+            .and_then(session_menu::session_from_row_key)
+        {
+            refresh_ids.push(id.to_owned());
+        }
+        for (key, handle) in &self.session_menu.row_menus {
+            if handle.is_open()
+                && let Some(id) = session_menu::session_from_row_key(key)
+                && !refresh_ids.iter().any(|existing| existing == id)
+            {
+                refresh_ids.push(id.to_owned());
+            }
+        }
+        if let Some(popover) = &self.session_menu.active_popover
+            && matches!(popover.anchor(), PopoverAnchor::Row(_))
+        {
+            let id = popover.session();
+            if !refresh_ids.iter().any(|existing| existing == id) {
+                refresh_ids.push(id.to_owned());
+            }
+        }
+        for id in refresh_ids {
+            self.ensure_row_actions(&id, false, cx);
+        }
+    }
+
+    fn prune_session_popover(&mut self, cx: &App) {
+        let Some(popover) = &self.session_menu.active_popover else {
+            return;
+        };
+        let keep = if self.area != Area::Sessions || self.client.gate().is_held() {
+            false
+        } else {
+            match popover.anchor() {
+                PopoverAnchor::TitleBar => self.opened().is_some_and(|open| {
+                    open == popover.session() && self.listing.facts(open).is_some()
+                }),
+                PopoverAnchor::Row(row_key) => {
+                    self.sidebar_shown()
+                        && sidebar::lines(self, cx)
+                            .iter()
+                            .any(|line| &line.key() == row_key)
+                }
+            }
+        };
+        if !keep {
+            self.session_menu.active_popover = None;
+        }
+    }
+
+    fn clear_row_target(&mut self, session: &str) {
+        if self
+            .walked
+            .as_deref()
+            .and_then(session_menu::session_from_row_key)
+            == Some(session)
+        {
+            self.walked = None;
+        }
+        if self
+            .session_menu
+            .hovered_row
+            .as_deref()
+            .and_then(session_menu::session_from_row_key)
+            == Some(session)
+        {
+            self.session_menu.hovered_row = None;
         }
     }
 
@@ -1526,11 +1673,19 @@ impl Workspace {
     }
 
     pub fn open_row_menu(&mut self, session: &str, key: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<Menu> {
+        let anchor = PopoverAnchor::Row(key.to_owned());
+        if !self.live {
+            let result = self.client.session_actions(session);
+            if let Ok(actions) = &result {
+                self.session_menu.cache_actions(session, actions.clone());
+            }
+            return session_menu::menu_from_actions(result, session.to_owned(), anchor, cx.entity().downgrade(), cx);
+        }
         session_menu::open_actions_menu(
             self.client.clone(),
             self.live,
             session.to_owned(),
-            PopoverAnchor::Row(key.to_owned()),
+            anchor,
             cx.entity().downgrade(),
             window,
             cx,
@@ -1538,6 +1693,19 @@ impl Workspace {
     }
 
     pub fn open_title_menu(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<Menu> {
+        if !self.live {
+            let result = self.client.session_actions(session);
+            if let Ok(actions) = &result {
+                self.session_menu.cache_actions(session, actions.clone());
+            }
+            return session_menu::menu_from_actions(
+                result,
+                session.to_owned(),
+                PopoverAnchor::TitleBar,
+                cx.entity().downgrade(),
+                cx,
+            );
+        }
         session_menu::open_actions_menu(
             self.client.clone(),
             self.live,
@@ -1584,7 +1752,11 @@ impl Workspace {
         let id = session.to_owned();
         if !self.live {
             match client.pin_session(&id, pinned) {
-                Ok(_) => self.refresh_list_now(cx),
+                Ok(_) => {
+                    self.session_menu.invalidate_actions(Some(&id));
+                    self.refresh_list_now(cx);
+                    self.refresh_active_row_actions(cx);
+                }
                 Err(error) => {
                     self.session_menu.action_error = Some(error.to_string());
                     cx.notify();
@@ -1593,9 +1765,14 @@ impl Workspace {
             return;
         }
         self.session_menu.action_tasks.push(cx.spawn(async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { client.pin_session(&id, pinned) }).await;
+            let pin_id = id.clone();
+            let result = cx.background_executor().spawn(async move { client.pin_session(&pin_id, pinned) }).await;
             this.update(cx, |this, cx| match result {
-                Ok(_) => this.refresh_list_after_action(cx),
+                Ok(_) => {
+                    this.session_menu.invalidate_actions(Some(&id));
+                    this.refresh_list_after_action(cx);
+                    this.refresh_active_row_actions(cx);
+                }
                 Err(error) => {
                     this.session_menu.action_error = Some(error.to_string());
                     cx.notify();
@@ -1612,7 +1789,11 @@ impl Workspace {
         let id = session.to_owned();
         if !self.live {
             match client.archive_session(&id, archived) {
-                Ok(_) => self.refresh_list_now(cx),
+                Ok(_) => {
+                    self.clear_row_target(&id);
+                    self.session_menu.invalidate_actions(Some(&id));
+                    self.refresh_list_now(cx);
+                }
                 Err(error) => {
                     self.session_menu.action_error = Some(error.to_string());
                     cx.notify();
@@ -1621,9 +1802,14 @@ impl Workspace {
             return;
         }
         self.session_menu.action_tasks.push(cx.spawn(async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { client.archive_session(&id, archived) }).await;
+            let archive_id = id.clone();
+            let result = cx.background_executor().spawn(async move { client.archive_session(&archive_id, archived) }).await;
             this.update(cx, |this, cx| match result {
-                Ok(_) => this.refresh_list_after_action(cx),
+                Ok(_) => {
+                    this.clear_row_target(&id);
+                    this.session_menu.invalidate_actions(Some(&id));
+                    this.refresh_list_after_action(cx);
+                }
                 Err(error) => {
                     this.session_menu.action_error = Some(error.to_string());
                     cx.notify();
@@ -1635,6 +1821,9 @@ impl Workspace {
 
     pub fn start_rename(&mut self, session: &str, anchor: PopoverAnchor, window: &mut Window, cx: &mut Context<Self>) {
         self.session_menu.action_error = None;
+        if matches!(anchor, PopoverAnchor::Row(_)) {
+            self.ensure_row_actions(session, false, cx);
+        }
         let original = self
             .listing
             .facts(session)
@@ -1666,56 +1855,37 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.session_menu.action_error = None;
-        if let Some(confirm) = confirm {
-            let target = session_menu::PopoverTarget {
-                session: session.to_owned(),
-                client: self.client.clone(),
-                live: self.live,
-                return_to: window.focused(cx),
-                workspace: cx.entity().downgrade(),
-            };
-            let view = cx.new(|cx| ConfirmDeletePopover::new(target, confirm, window, cx));
-            self.session_menu.active_popover = Some(ActivePopover::Delete {
-                session: session.to_owned(),
-                anchor,
-                view,
-            });
-            cx.notify();
-            return;
+        if matches!(anchor, PopoverAnchor::Row(_)) {
+            self.ensure_row_actions(session, false, cx);
         }
-        // Box didn't ask for a confirmation prompt: delete directly.
-        let client = self.client.clone();
-        let id = session.to_owned();
-        let return_to = window.focused(cx);
-        if !self.live {
-            match client.delete_session(&id) {
-                Ok(()) => self.finish_delete(&id, return_to, window, cx),
-                Err(error) => {
-                    self.session_menu.action_error = Some(error.to_string());
-                    cx.notify();
-                }
+        let confirm = confirm.unwrap_or_else(|| {
+            let title = self
+                .listing
+                .facts(session)
+                .and_then(|facts| facts.title.as_deref())
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .unwrap_or("New Session");
+            Confirm {
+                title: format!("Delete \u{201c}{title}\u{201d}?"),
+                message: String::new(),
+                label: "Delete".to_owned(),
             }
-            return;
-        }
-        let window_handle: AnyWindowHandle = window.window_handle();
-        self.session_menu.action_tasks.push(cx.spawn(async move |this, cx| {
-            let delete_id = id.clone();
-            let result = cx.background_executor().spawn(async move { client.delete_session(&delete_id) }).await;
-            match result {
-                Ok(()) => {
-                    let _ = window_handle.update(cx, |_, window, cx| {
-                        this.update(cx, |this, cx| this.finish_delete(&id, return_to, window, cx)).ok();
-                    });
-                }
-                Err(error) => {
-                    this.update(cx, |this, cx| {
-                        this.session_menu.action_error = Some(error.to_string());
-                        cx.notify();
-                    })
-                    .ok();
-                }
-            }
-        }));
+        });
+        let target = session_menu::PopoverTarget {
+            session: session.to_owned(),
+            client: self.client.clone(),
+            live: self.live,
+            return_to: window.focused(cx),
+            workspace: cx.entity().downgrade(),
+        };
+        let view = cx.new(|cx| ConfirmDeletePopover::new(target, confirm, window, cx));
+        self.session_menu.active_popover = Some(ActivePopover::Delete {
+            session: session.to_owned(),
+            anchor,
+            view,
+        });
+        cx.notify();
     }
 
     pub fn close_session_popover(&mut self, return_to: Option<FocusHandle>, window: &mut Window, cx: &mut Context<Self>) {
@@ -1732,7 +1902,9 @@ impl Workspace {
     }
 
     pub fn finish_rename(&mut self, return_to: Option<FocusHandle>, window: &mut Window, cx: &mut Context<Self>) {
+        let session = self.session_menu.active_popover.as_ref().map(|p| p.session().to_owned());
         self.session_menu.active_popover = None;
+        self.session_menu.invalidate_actions(session.as_deref());
         self.refresh_list_after_action(cx);
         if let Some(target) = return_to {
             window.focus(&target, cx);
@@ -1741,20 +1913,20 @@ impl Workspace {
     }
 
     pub fn finish_rename_no_focus(&mut self, cx: &mut Context<Self>) {
+        let session = self.session_menu.active_popover.as_ref().map(|p| p.session().to_owned());
         self.session_menu.active_popover = None;
+        self.session_menu.invalidate_actions(session.as_deref());
         self.refresh_list_after_action(cx);
         cx.notify();
     }
 
     pub fn finish_delete(&mut self, session: &str, return_to: Option<FocusHandle>, window: &mut Window, cx: &mut Context<Self>) {
         self.session_menu.active_popover = None;
-        self.session_menu.hovered_row = None;
+        self.clear_row_target(session);
+        self.session_menu.invalidate_actions(Some(session));
         self.composers.remove(session);
         self.started.remove(session);
         self.unsent.remove(session);
-        if self.walked.as_ref().is_some_and(|key| key.ends_with(&format!(":{session}"))) {
-            self.walked = None;
-        }
         let was_open = self.opened() == Some(session);
         if was_open {
             self.open = Open::Landing;
@@ -1783,6 +1955,7 @@ impl Workspace {
                     return Some((session, PopoverAnchor::Row(key.clone())));
                 }
             }
+            return None;
         }
         self.opened().map(|id| (id.to_owned(), PopoverAnchor::TitleBar))
     }
@@ -1810,7 +1983,10 @@ impl Workspace {
         let session = session.to_owned();
         if !self.live {
             match client.session_actions(&session) {
-                Ok(actions) => self.apply_shortcut(kind, &session, anchor, actions, window, cx),
+                Ok(actions) => {
+                    self.session_menu.cache_actions(&session, actions.clone());
+                    self.apply_shortcut(kind, &session, anchor, actions, window, cx);
+                }
                 Err(error) => {
                     self.session_menu.action_error = Some(error.to_string());
                     cx.notify();
@@ -1825,7 +2001,10 @@ impl Workspace {
             let result = cx.background_executor().spawn(async move { client.session_actions(&fetch_session) }).await;
             let _ = window_handle.update(cx, |_, window, cx| {
                 this.update(cx, |this, cx| match result {
-                    Ok(actions) => this.apply_shortcut(kind, &session, anchor, actions, window, cx),
+                    Ok(actions) => {
+                        this.session_menu.cache_actions(&session, actions.clone());
+                        this.apply_shortcut(kind, &session, anchor, actions, window, cx);
+                    }
                     Err(error) => {
                         this.session_menu.action_error = Some(error.to_string());
                         cx.notify();

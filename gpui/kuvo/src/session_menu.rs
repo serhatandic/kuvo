@@ -27,8 +27,10 @@ use crate::workspace::Workspace;
 actions!(session_menu, [RenameSession, ArchiveSession, DeleteSession]);
 
 /// Keyboard shortcuts for the session open or walked in Sessions.
+/// Ignored while a text field has focus so typing in the composer or search never triggers them.
 pub fn bind_keys(cx: &mut App) {
-    let context = Some("Workspace");
+    let context = format!("Workspace && !{}", kuvo_ui::text_field::CONTEXT);
+    let context = Some(context.as_str());
     cx.bind_keys([
         KeyBinding::new("cmd-r", RenameSession, context),
         KeyBinding::new("cmd-backspace", ArchiveSession, context),
@@ -41,6 +43,20 @@ pub fn bind_keys(cx: &mut App) {
 pub enum PopoverAnchor {
     Row(String),
     TitleBar,
+}
+
+/// Extracts the session ID from a sidebar row key (`session-*:<id>`, `found:<id>`, `needs:<id>`).
+pub fn session_from_row_key(key: &str) -> Option<&str> {
+    let (prefix, id) = key.split_once(':')?;
+    (prefix.starts_with("session-") || prefix == "found" || prefix == "needs").then_some(id)
+}
+
+/// Cached `GET kuvo/sessions/<id>/actions` state for a sidebar row.
+#[derive(Clone, Debug)]
+pub enum RowActions {
+    Loading,
+    Ready(Actions),
+    Failed,
 }
 
 /// An active Rename or Delete confirm popover.
@@ -58,6 +74,12 @@ pub enum ActivePopover {
 }
 
 impl ActivePopover {
+    pub fn session(&self) -> &str {
+        match self {
+            Self::Rename { session, .. } | Self::Delete { session, .. } => session,
+        }
+    }
+
     pub fn anchor(&self) -> &PopoverAnchor {
         match self {
             Self::Rename { anchor, .. } | Self::Delete { anchor, .. } => anchor,
@@ -78,6 +100,8 @@ impl ActivePopover {
 pub struct SessionMenu {
     pub hovered_row: Option<String>,
     pub row_menus: HashMap<String, PopoverMenuHandle>,
+    pub row_actions: HashMap<String, RowActions>,
+    pub actions_epoch: u64,
     pub title_menu: PopoverMenuHandle,
     pub active_popover: Option<ActivePopover>,
     pub action_error: Option<String>,
@@ -87,6 +111,27 @@ pub struct SessionMenu {
 impl SessionMenu {
     pub fn row_menu_handle(&mut self, key: &str) -> PopoverMenuHandle {
         self.row_menus.entry(key.to_owned()).or_default().clone()
+    }
+
+    pub fn cached_actions(&self, session: &str) -> Option<&Actions> {
+        match self.row_actions.get(session) {
+            Some(RowActions::Ready(actions)) => Some(actions),
+            _ => None,
+        }
+    }
+
+    pub fn cache_actions(&mut self, session: &str, actions: Actions) {
+        self.row_actions.insert(session.to_owned(), RowActions::Ready(actions));
+    }
+
+    pub fn invalidate_actions(&mut self, session: Option<&str>) {
+        self.actions_epoch = self.actions_epoch.wrapping_add(1);
+        match session {
+            Some(id) => {
+                self.row_actions.remove(id);
+            }
+            None => self.row_actions.clear(),
+        }
     }
 }
 
@@ -173,6 +218,25 @@ fn shortcut_for(id: &str) -> Option<&'static str> {
     }
 }
 
+/// Builds a [`Menu`] immediately from an already-fetched `GET kuvo/sessions/<id>/actions` result.
+pub fn menu_from_actions(
+    result: kuvo_box::Result<Actions>,
+    session_id: String,
+    anchor: PopoverAnchor,
+    workspace: WeakEntity<Workspace>,
+    cx: &mut App,
+) -> Entity<Menu> {
+    cx.new(|cx| {
+        let mut menu = Menu::new(cx).width(px(208.));
+        let items = match result {
+            Ok(actions) => build_menu_items(&actions, session_id, anchor, workspace),
+            Err(error) => vec![MenuItem::Header(error.to_string().into())],
+        };
+        menu.set_items(items, cx);
+        menu
+    })
+}
+
 /// Opens a box-driven [`Menu`] for `session_id`: immediately in tests/shots (`!live`), or
 /// loading and updating in place when `live`.
 pub fn open_actions_menu(
@@ -186,15 +250,7 @@ pub fn open_actions_menu(
 ) -> Entity<Menu> {
     if !live {
         let result = client.session_actions(&session_id);
-        return cx.new(|cx| {
-            let mut menu = Menu::new(cx).width(px(208.));
-            let items = match result {
-                Ok(actions) => build_menu_items(&actions, session_id, anchor, workspace),
-                Err(error) => vec![MenuItem::Header(error.to_string().into())],
-            };
-            menu.set_items(items, cx);
-            menu
-        });
+        return menu_from_actions(result, session_id, anchor, workspace, cx);
     }
 
     let menu = cx.new(|cx| Menu::new(cx).width(px(208.)).header("Loading…"));
@@ -206,6 +262,16 @@ pub fn open_actions_menu(
                 .background_executor()
                 .spawn(async move { client.session_actions(&session) })
                 .await;
+            if let Ok(actions) = &result {
+                let actions = actions.clone();
+                let id = session_id.clone();
+                workspace
+                    .update(cx, |workspace, cx| {
+                        workspace.session_menu_mut().cache_actions(&id, actions);
+                        cx.notify();
+                    })
+                    .ok();
+            }
             weak_menu
                 .update(cx, |menu, cx| {
                     let items = match result {
@@ -676,13 +742,13 @@ impl Render for ConfirmDeletePopover {
                     .text_color(c.text)
                     .child(self.confirm.title.clone()),
             )
-            .child(
+            .children((!self.confirm.message.is_empty()).then(|| {
                 div()
                     .debug_selector(|| "delete-confirm-message".into())
                     .text_ui(TypeSize::Small)
                     .text_color(c.text_muted)
-                    .child(self.confirm.message.clone()),
-            )
+                    .child(self.confirm.message.clone())
+            }))
             .children(self.error.as_ref().map(|error| {
                 div()
                     .debug_selector(|| "delete-error".into())

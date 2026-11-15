@@ -15,6 +15,7 @@ use gpui::{
     prelude::FluentBuilder as _, px,
 };
 use kuvo_box::search::SEARCHED_FROM;
+use kuvo_box::session_actions::{Action, Actions};
 use kuvo_box::sessions::{Facts, Listing, finder_order};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
@@ -211,7 +212,7 @@ fn found_lines(workspace: &Workspace, query: &str, archived_only: bool) -> Vec<L
     let named: Vec<String> = listing
         .named(query)
         .into_iter()
-        .filter(|id| !archived_only || listing.facts(id).is_some_and(Facts::is_archived))
+        .filter(|id| listing.facts(id).is_some_and(|facts| facts.is_archived() == archived_only))
         .collect();
     let searched = query.chars().count() >= SEARCHED_FROM;
     let finds = workspace.finds();
@@ -221,7 +222,7 @@ fn found_lines(workspace: &Workspace, query: &str, archived_only: bool) -> Vec<L
             !named.contains(&found.session)
                 && listing
                     .facts(&found.session)
-                    .is_some_and(|facts| !archived_only || facts.is_archived())
+                    .is_some_and(|facts| facts.is_archived() == archived_only)
         })
         .map(|found| Line::Found { id: found.session.clone(), snippet: found.snippet.clone() })
         .collect();
@@ -543,13 +544,31 @@ fn active_row_popover(workspace: &Workspace, row_key: &str) -> Option<AnyElement
     Some(row_anchored_popover(content))
 }
 
-fn row_hover_actions(id: &str, row_key: &str, pinned: bool, archived: bool, cx: &mut Context<Workspace>) -> AnyElement {
-    let pin_id = id.to_owned();
-    let arch_id = id.to_owned();
-    let del_id = id.to_owned();
-    let del_key = row_key.to_owned();
+fn hover_action_specs(actions: &Actions) -> Vec<Action> {
+    if actions.held.is_some() {
+        return Vec::new();
+    }
+    let has_archive = actions.actions.iter().any(|action| action.id == "archive");
+    actions
+        .actions
+        .iter()
+        .filter(|action| match action.id.as_str() {
+            "pin" | "unpin" | "archive" | "unarchive" => true,
+            "delete" => !has_archive,
+            _ => false,
+        })
+        .cloned()
+        .collect()
+}
+
+fn row_hover_actions(
+    id: &str,
+    row_key: &str,
+    actions: &[Action],
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
     let actions_id = SharedString::from(format!("actions-{row_key}"));
-    div()
+    let mut row = div()
         .id(actions_id)
         .flex()
         .flex_none()
@@ -559,48 +578,86 @@ fn row_hover_actions(id: &str, row_key: &str, pinned: bool, archived: bool, cx: 
         // Keeping buttons strictly pointer-driven and stopping left mouse_down prevents a narrow-row
         // slip between buttons from opening the row or triggering adjacent actions.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_click(|_, _, cx| cx.stop_propagation())
-        .map(|d| {
-            if archived {
-                d.child(
-                    Button::icon_only(SharedString::from(format!("unarchive-{row_key}")), IconName::Undo, "Unarchive")
-                        .ghost()
-                        .size(ButtonSize::Small)
-                        .tooltip("Unarchive")
-                        .on_click(cx.listener(move |this, _, window, cx| this.archive_session(&arch_id, false, window, cx))),
-                )
-                .child(
-                    Button::icon_only(SharedString::from(format!("delete-{row_key}")), IconName::Trash, "Delete…")
-                        .ghost()
-                        .size(ButtonSize::Small)
-                        .tooltip("Delete… ⇧⌘⌫")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.trigger_session_action(&del_id, "delete", PopoverAnchor::Row(del_key.clone()), window, cx);
-                        })),
-                )
-            } else {
-                d.child(
+        .on_click(|_, _, cx| cx.stop_propagation());
+
+    for action in actions {
+        let target_id = id.to_owned();
+        let target_key = row_key.to_owned();
+        let label = action.label.clone();
+        match action.id.as_str() {
+            "pin" | "unpin" => {
+                let pinned = action.id == "unpin";
+                row = row.child(
                     Button::icon_only(
                         SharedString::from(format!("pin-{row_key}")),
                         IconName::Pin,
-                        if pinned { "Unpin" } else { "Pin" },
+                        label.clone(),
                     )
                     .ghost()
                     .size(ButtonSize::Small)
                     .selected(pinned)
-                    .tooltip(if pinned { "Unpin" } else { "Pin" })
-                    .on_click(cx.listener(move |this, _, _, cx| this.pin_session(&pin_id, !pinned, cx))),
-                )
-                .child(
-                    Button::icon_only(SharedString::from(format!("archive-{row_key}")), IconName::Archive, "Archive")
-                        .ghost()
-                        .size(ButtonSize::Small)
-                        .tooltip("Archive ⌘⌫")
-                        .on_click(cx.listener(move |this, _, window, cx| this.archive_session(&arch_id, true, window, cx))),
-                )
+                    .tooltip(label)
+                    .on_click(cx.listener(move |this, _, _, cx| this.pin_session(&target_id, !pinned, cx))),
+                );
             }
-        })
-        .into_any_element()
+            "archive" => {
+                row = row.child(
+                    Button::icon_only(
+                        SharedString::from(format!("archive-{row_key}")),
+                        IconName::Archive,
+                        label.clone(),
+                    )
+                    .ghost()
+                    .size(ButtonSize::Small)
+                    .tooltip(format!("{label} ⌘⌫"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.archive_session(&target_id, true, window, cx)
+                    })),
+                );
+            }
+            "unarchive" => {
+                row = row.child(
+                    Button::icon_only(
+                        SharedString::from(format!("unarchive-{row_key}")),
+                        IconName::Undo,
+                        label.clone(),
+                    )
+                    .ghost()
+                    .size(ButtonSize::Small)
+                    .tooltip(label)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.archive_session(&target_id, false, window, cx)
+                    })),
+                );
+            }
+            "delete" => {
+                let display_label = format!("{label}…");
+                let confirm = action.confirm.clone();
+                row = row.child(
+                    Button::icon_only(
+                        SharedString::from(format!("delete-{row_key}")),
+                        IconName::Trash,
+                        display_label.clone(),
+                    )
+                    .ghost()
+                    .size(ButtonSize::Small)
+                    .tooltip(format!("{display_label} ⇧⌘⌫"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.run_delete_action(
+                            &target_id,
+                            confirm.clone(),
+                            PopoverAnchor::Row(target_key.clone()),
+                            window,
+                            cx,
+                        );
+                    })),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    row.into_any_element()
 }
 
 fn session_row(workspace: &mut Workspace, id: &str, section: &str, cursor: bool, cx: &mut Context<Workspace>) -> AnyElement {
@@ -615,6 +672,7 @@ fn session_row(workspace: &mut Workspace, id: &str, section: &str, cursor: bool,
     let asked = facts.as_ref().is_some_and(|facts| facts.asked.is_some());
     let pinned = facts.as_ref().is_some_and(Facts::is_pinned);
     let archived = facts.as_ref().is_some_and(Facts::is_archived);
+    let away = facts.as_ref().is_some_and(|facts| facts.away == Some(true));
     let unsent = workspace.is_unsent(id);
     // With "Needs you" on top, the open session is highlighted there only, never twice.
     let selected = workspace.opened() == Some(id) && !needs_you(workspace, id);
@@ -625,8 +683,13 @@ fn session_row(workspace: &mut Workspace, id: &str, section: &str, cursor: bool,
     let menu_open = menu_handle.is_open();
     let popover = active_row_popover(workspace, &row_key);
     let is_hovered = workspace.session_menu().hovered_row.as_deref() == Some(row_key.as_str());
-    let held = workspace.client().gate().is_held();
-    let show_actions = (is_hovered || menu_open || popover.is_some()) && !held;
+    let gate_held = workspace.client().gate().is_held();
+    let hover_buttons = (!gate_held && !away)
+        .then(|| workspace.session_menu().cached_actions(id))
+        .flatten()
+        .map(hover_action_specs)
+        .unwrap_or_default();
+    let show_actions = (is_hovered || menu_open || popover.is_some()) && !hover_buttons.is_empty();
 
     let leading: AnyElement = if unsent {
         status_dot(c.danger).into_any_element()
@@ -641,7 +704,7 @@ fn session_row(workspace: &mut Workspace, id: &str, section: &str, cursor: bool,
     };
     let when = facts.as_ref().map(|facts| time::ago(facts.updated, workspace.now())).unwrap_or_default();
     let end: AnyElement = if show_actions {
-        row_hover_actions(id, &row_key, pinned, archived, cx)
+        row_hover_actions(id, &row_key, &hover_buttons, cx)
     } else {
         div()
             .flex_none()
@@ -805,7 +868,7 @@ fn needs_row(workspace: &mut Workspace, id: &str, asks: &str, cursor: bool, cx: 
         None => asks.to_owned(),
     };
     let when = facts.as_ref().and_then(|facts| facts.asked).map(|asked| time::ago(asked, workspace.now())).unwrap_or_default();
-    let pinned = facts.as_ref().is_some_and(Facts::is_pinned);
+    let away = facts.as_ref().is_some_and(|facts| facts.away == Some(true));
     let selected = workspace.opened() == Some(id);
     let (hover, selected_bg) = (c.hover, c.selected);
     let open = id.to_owned();
@@ -815,15 +878,20 @@ fn needs_row(workspace: &mut Workspace, id: &str, asks: &str, cursor: bool, cx: 
     let menu_open = menu_handle.is_open();
     let popover = active_row_popover(workspace, &row_key);
     let is_hovered = workspace.session_menu().hovered_row.as_deref() == Some(row_key.as_str());
-    let held = workspace.client().gate().is_held();
-    let show_actions = (is_hovered || menu_open || popover.is_some()) && !held;
+    let gate_held = workspace.client().gate().is_held();
+    let hover_buttons = (!gate_held && !away)
+        .then(|| workspace.session_menu().cached_actions(id))
+        .flatten()
+        .map(hover_action_specs)
+        .unwrap_or_default();
+    let show_actions = (is_hovered || menu_open || popover.is_some()) && !hover_buttons.is_empty();
     let hover_key = row_key.clone();
     let menu_session = id.to_owned();
     let menu_key = row_key.clone();
     let workspace_handle = cx.entity();
 
     let end: AnyElement = if show_actions {
-        row_hover_actions(id, &row_key, pinned, false, cx)
+        row_hover_actions(id, &row_key, &hover_buttons, cx)
     } else {
         div().flex_none().text_ui(TypeSize::Caption).text_color(c.accent).child(when).into_any_element()
     };
