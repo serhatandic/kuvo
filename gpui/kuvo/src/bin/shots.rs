@@ -187,6 +187,16 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "sign-in-done", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sign_in_done) },
     Screen { slug: "sign-in-failed", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sign_in_failed) },
     Screen { slug: "sign-in-disconnect", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(disconnect) },
+    // The session menu (Draft B: row hover buttons, right-click & title-bar menus, popovers,
+    // pinned ordering, archived filter, and held sessions).
+    Screen { slug: "session-menu-row-hover", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(session_menu_row_hover) },
+    Screen { slug: "session-menu-row-menu", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "session-menu-title-menu", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(session_menu_title_menu) },
+    Screen { slug: "session-menu-rename", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(session_menu_rename) },
+    Screen { slug: "session-menu-delete-worktree", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(session_menu_delete_worktree) },
+    Screen { slug: "session-menu-pinned", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(session_menu_pinned) },
+    Screen { slug: "session-menu-archived", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(session_menu_archived) },
+    Screen { slug: "session-menu-held", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
 ];
 
 /// An area's row, picked: what its page shows.
@@ -674,6 +684,35 @@ fn spot_of(workspace: &Workspace, needle: &str, end: bool, cx: &gpui::App) -> gp
         .unwrap_or_else(|| panic!("{needle:?} isn't drawn"))
 }
 
+fn session_menu_row_hover(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.pin_session("ses_recipes", true, cx);
+    workspace.set_hovered_row(Some("session-project:ses_dark".into()), cx);
+}
+
+fn session_menu_title_menu(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let menu = workspace.open_title_menu("ses_dark", window, cx);
+    workspace.session_menu().title_menu.clone().open(menu, window, cx);
+}
+
+fn session_menu_rename(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.start_rename("ses_dark", kuvo::session_menu::PopoverAnchor::Row("session-project:ses_dark".into()), window, cx);
+}
+
+fn session_menu_delete_worktree(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.trigger_session_action("ses_dark", "delete", kuvo::session_menu::PopoverAnchor::Row("session-project:ses_dark".into()), window, cx);
+}
+
+fn session_menu_pinned(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.pin_session("ses_dark", true, cx);
+}
+
+fn session_menu_archived(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.archive_session("ses_dark", true, window, cx);
+    workspace.archive_session("ses_recipes", true, window, cx);
+    workspace.set_archived_filter(true, window, cx);
+    workspace.set_hovered_row(Some("session-archived-project:ses_dark".into()), cx);
+}
+
 /// Sends what a person does with the mouse through the window, as the platform would.
 fn mouse(window: &mut Window, cx: &mut gpui::App, event: gpui::PlatformInput) {
     window.dispatch_event(event, cx);
@@ -724,6 +763,9 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "bot-waiting" {
                 stand_in.refuse_bot_edit("bot_scout", "studio-mini", "studio-mini has no personality “Ship’s Cook”.");
             }
+            if screen.slug == "session-menu-held" {
+                stand_in.hold_session("ses_dark", Some("Moving to Studio…"));
+            }
             let client = BoxClient::new(stand_in);
             let window = cx.open_window(size(px(screen.width), px(screen.height)), |window, cx| cx.new(|cx| Workspace::new(client, false, window, cx)))?;
             let any = window.into();
@@ -773,12 +815,17 @@ fn main() -> anyhow::Result<()> {
             cx.run_until_parked();
             cx.update_window(any, |_, window, _| window.refresh())?;
             cx.run_until_parked();
-            // A right-click on the selection, or a drag that's under way, through the window.
-            if screen.slug == "select-menu" || screen.slug.starts_with("select-drag-") {
+            // A right-click on the selection, a row's session menu, or a drag that's under way, through the window.
+            if screen.slug == "select-menu" || screen.slug.starts_with("select-drag-") || screen.slug == "session-menu-row-menu" || screen.slug == "session-menu-held" {
                 use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, PlatformInput};
                 cx.update_window(any, |root, window, cx| {
                     let workspace = root.downcast::<Workspace>().expect("the workspace");
-                    if screen.slug == "select-menu" {
+                    if screen.slug == "session-menu-row-menu" || screen.slug == "session-menu-held" {
+                        let at = gpui::point(px(190.), px(338.));
+                        mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers: Modifiers::default() }));
+                        mouse(window, cx, PlatformInput::MouseDown(MouseDownEvent { position: at, button: MouseButton::Right, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+                        assert!(workspace.read(cx).session_menu().row_menus.get("session-project:ses_dark").is_some_and(|h| h.is_open()), "right-click at {at:?} missed ses_dark");
+                    } else if screen.slug == "select-menu" {
                         let at = spot_of(workspace.read(cx), "success path", false, cx);
                         mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers: Modifiers::default() }));
                         mouse(window, cx, PlatformInput::MouseDown(MouseDownEvent { position: at, button: MouseButton::Right, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
