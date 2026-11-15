@@ -111,6 +111,12 @@ pub trait Transport: Send + Sync {
         false
     }
 
+    /// How another of your computers' boxes is reached from where this one is, by its key
+    /// (`kuvo/computers`): none where this client can't reach it yet.
+    fn peer(&self, _key: &str) -> Option<std::sync::Arc<dyn Transport>> {
+        None
+    }
+
     /// Where it goes, in words (for a refusal of the client's own): "this Mac", a machine's name.
     fn describe(&self) -> String;
 }
