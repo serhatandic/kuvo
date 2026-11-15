@@ -837,7 +837,7 @@ private final class InTheTests {}
         #expect(try move.journal() == nil)
     }
 
-    @Test func kuvoKeysWritesTheSignInsKuvoCodeKeptBeforeTheVaultForTheBoxAlone() throws {
+    @Test func kuvoKeysSaysTheSignInsKuvoCodeKeptBeforeTheVaultDownAPipeAndWritesThemNowhere() throws {
         defer { cleanUp() }
         // As 0.7 saved them (internet passwords marked 'KUVO'), and one of something else's.
         func add(_ host: String, _ account: String, _ password: String, creator: String) throws {
@@ -850,15 +850,14 @@ private final class InTheTests {}
         _ = try moving()
         let handed = try keys(["passwords"])
         #expect(handed.status == 0, "\(handed.errors)")
-        #expect(said(handed)["passwords"] as? Int == 2)
-        let file = box.appending(path: "updates/rehome/passwords.json")
-        #expect((try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int) == 0o600)
-        let written = json(file)
-        #expect(written["v"] as? Int == 1)
-        let logins = try #require(written["logins"] as? [[String: Any]])
+        let told = said(handed)
+        #expect(told["v"] as? Int == 1)
+        let logins = try #require(told["logins"] as? [[String: Any]])
         #expect(logins.map { "\($0["host"] as? String ?? "") \($0["account"] as? String ?? "") \($0["password"] as? String ?? "")" } == ["example.org  pass word", "github.com ada hunter2"])
         #expect(logins.allSatisfy { $0["modified"] is Int })
-        #expect(!handed.output.contains("hunter2"), "said to no one but the file")
+        // Nowhere but the pipe: no file in the box's home holds them.
+        #expect(!FileManager.default.fileExists(atPath: box.appending(path: "updates/rehome/passwords.json").path))
+        #expect(!handed.errors.contains("hunter2"))
         // The Keychain's own stay as they are.
         #expect(try Self.ran("/usr/bin/security", ["find-internet-password", "-s", "github.com", keychainFile.path]).status == 0)
     }

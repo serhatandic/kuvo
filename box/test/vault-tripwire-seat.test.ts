@@ -1,7 +1,8 @@
 import "./safety"
 import { expect, test } from "bun:test"
 import { rmSync } from "node:fs"
-import { forgetKeys, makeVault, pausedFor, VAULT_FOLDER } from "../src/link/vault/store"
+import { VAULT_FOLDER } from "../src/link/home"
+import { forgetKeys, makeVault, pausedFor } from "../src/link/vault/store"
 import { setVaultTell, tripwire } from "../src/link/vault/use"
 
 // A bot's seat in a group chat browses too, and a page can steer it to sign in where its item

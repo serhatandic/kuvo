@@ -312,8 +312,8 @@ test("where Always would give nothing for good (a bot's seat, a conversation in 
 test("a use of the vault asks with whether Always would last, and the card offers it only then", async () => {
   const { mayUse } = await import("../src/link/vault/use")
   const { listAsks, onAsksChanged } = await import("../src/link/vault/asks")
-  const { homeFolder } = await import("../src/link/home")
-  const { forgetKeys, makeVault, VAULT_FOLDER } = await import("../src/link/vault/store")
+  const { homeFolder, VAULT_FOLDER } = await import("../src/link/home")
+  const { forgetKeys, makeVault } = await import("../src/link/vault/store")
   const item = { id: "itm_deploy", name: "Deploy key", kind: "key", sites: [], fields: ["value"] } as any
   // A vault of its own, made here.
   rmSync(VAULT_FOLDER, { recursive: true, force: true })
@@ -339,7 +339,8 @@ test("a use of the vault asks with whether Always would last, and the card offer
 
 test("an item a conversation needs from the vault is given from its card, one of the vault's items, to its clients alone", async () => {
   const { ask: askVault } = await import("../src/link/vault/asks")
-  const { addItem, forgetKeys, makeVault, unlockWith, VAULT_FOLDER } = await import("../src/link/vault/store")
+  const { VAULT_FOLDER } = await import("../src/link/home")
+  const { addItem, forgetKeys, makeVault, unlockWith } = await import("../src/link/vault/store")
   rmSync(VAULT_FOLDER, { recursive: true, force: true })
   forgetKeys()
   try {

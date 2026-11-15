@@ -84,7 +84,7 @@ export const UPDATE = object({
 });
 
 /** A step of moving this Mac's box into a home of its own (PROTOCOL.md, "Moving this Mac's box"). */
-const REHOME_STEP = words("plan", "install", "clone", "rewrite", "check", "place", "fix", "clear", "done");
+const REHOME_STEP = words("plan", "install", "keys", "clone", "upgrade", "database", "rewrite", "check", "place", "fix", "clear", "done");
 /** How moving this Mac's box into a home of its own stands (`kuvo/box/rehome`): its state (none
  * yet; `waiting` for a quiet moment; `moving` or `clearing`, under way, and the step; `done`;
  * `failed`, gone back; `back`, moved back), which way, its tries and the next one, since when it
@@ -101,10 +101,12 @@ export const REHOME = object({
   failed: nullable(object({ at: number, step: nullable(REHOME_STEP), message: string })),
   movedAt: nullable(number),
   keptUntil: nullable(number),
-  owed: list(words("keychain", "agent")),
+  owed: list(words("keychain", "agent", "start", "passwords")),
   asked: nullable(words("now", "back")),
   from: nullable(string),
   to: nullable(string),
+  "progress?": nullable(object({ step: REHOME_STEP, title: string, index: number, of: number })),
+  "dropped?": list(string),
 });
 
 /** What macOS allows the program this Mac's box runs under (`kuvo/box/permissions`, PROTOCOL.md,
