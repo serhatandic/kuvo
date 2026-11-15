@@ -28,11 +28,11 @@ export interface SettingChange {
   was?: unknown;
 }
 
-/** The settings as a change left them, or why it wasn't made (with a file's `problem`, for one
- * left alone). */
 /** What a change made from a value read before another changed it is told (409). */
 export const CHANGED_SINCE = "It changed since you read it.";
 
+/** The settings as a change left them, or why it wasn't made (with a file's `problem`, for one
+ * left alone). */
 export type SettingsChanged = { status: 200; settings: Settings } | { status: 400 | 409 | 500; message: string; problem?: string };
 
 // COMPAT(0.7 settings): the routes answer 409 until a Mac adopts the settings an older Mac's start left. Goes 3 months after 0.8.0.

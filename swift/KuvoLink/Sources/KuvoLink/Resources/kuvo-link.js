@@ -43933,7 +43933,7 @@ import fs140 from "node:fs";
 import path148 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "8b289dcb5a95";
+var BRIDGE_VERSION = "1cf0932f66d1";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -46963,9 +46963,7 @@ function macTell(notice) {
 }
 
 // box/src/link/mac/relay.ts
-import fs172 from "node:fs";
 import os21 from "node:os";
-import path178 from "node:path";
 
 // box/src/link/peers/mail.ts
 var answeringAsk = null;
@@ -55113,7 +55111,30 @@ async function* settingsRoute(context) {
 
 // box/src/link/areas/settings-pages.ts
 import crypto58 from "node:crypto";
+import fs168 from "node:fs";
+
+// box/src/link/mac/keeper-runs.ts
 import fs167 from "node:fs";
+import path175 from "node:path";
+var boxAnswers = (route) => route === "kuvo/engine/restart" && keeperRuns2();
+function keeperRuns2() {
+  let pid = 0;
+  try {
+    pid = Number(JSON.parse(fs167.readFileSync(path175.join(RUN, "keeper.json"), "utf8"))?.pid);
+  } catch {
+    return false;
+  }
+  if (!Number.isInteger(pid) || pid <= 0 || pid !== process.ppid)
+    return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// box/src/link/areas/settings-pages.ts
 var SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+))?)?$/;
 var SECTIONS = [
   {
@@ -55222,7 +55243,8 @@ async function permissionsPage(context) {
   }
   if (config.status === 200) {
     const rules = Array.isArray(config.value.permissions) ? config.value.permissions : [];
-    const can = config.value.permissions === undefined || Array.isArray(config.value.permissions) ? true : { why: NOT_A_LIST };
+    const listed = config.value.permissions === undefined || Array.isArray(config.value.permissions);
+    const can = listed ? true : { why: NOT_A_LIST };
     const rows = ACTIONS.map((action) => {
       const chosen = choiceIn(rules, action.id);
       const fallback = EFFECTS.find((effect) => effect.id === engineDefault(action.id)).title;
@@ -55231,9 +55253,11 @@ async function permissionsPage(context) {
         ...chosen && !EFFECTS.some((effect) => effect.id === chosen) ? [{ id: chosen, title: "Set by a Newer Engine" }] : [],
         { id: "default", title: `Default (${fallback})` }
       ];
+      if (!listed)
+        return row({ id: `when-${action.id}`, title: action.title, ..."line" in action ? { line: action.line } : {}, kind: "status", value: "Set in Its Settings File", can });
       return row({ id: `when-${action.id}`, title: action.title, ..."line" in action ? { line: action.line } : {}, kind: "choice", value: chosen ?? "default", choices, can });
     });
-    groups.push({ id: "when", title: "When the Agent Wants To", note: "For every session and mode. Don't Allow holds even in Full Access. Codex, Cursor, Grok and Antigravity may read files without asking.", rows });
+    groups.push({ id: "when", title: "When the Agent Wants To", note: listed ? "For every session and mode. Don't Allow holds even in Full Access. Codex, Cursor, Grok and Antigravity may read files without asking." : NOT_A_LIST, rows });
   } else {
     notes.push({ words: said8(config, "The engine's settings couldn't be read."), tone: "warning" });
   }
@@ -55412,7 +55436,7 @@ async function browserAct(context, at, action) {
 }
 var mtime2 = (file) => {
   try {
-    return fs167.statSync(file).mtimeMs;
+    return fs168.statSync(file).mtimeMs;
   } catch {
     return 0;
   }
@@ -55598,7 +55622,7 @@ async function* movePlacesRoute(context) {
 }
 
 // box/src/link/areas/work.ts
-import fs168 from "node:fs";
+import fs169 from "node:fs";
 var WORK_ROUTE = /^kuvo\/(?:work(?:\/events|\/oversight(?:\/events)?|\/background(?:\/events)?)?|bots\/([^/]+)\/stop-all)$/;
 var WORK_ASKS_ROUTE = /^kuvo\/work\/(?:settings|unanswering|asks(?:\/([^/]+))?)$/;
 var GOALS_ROUTE = /^kuvo\/work\/goals(?:\/([^/]+))?$/;
@@ -55798,7 +55822,7 @@ async function* appIconRoute(context) {
   const file = appIcon(id);
   let bytes = null;
   try {
-    bytes = file ? fs168.readFileSync(file) : null;
+    bytes = file ? fs169.readFileSync(file) : null;
   } catch {}
   if (!bytes)
     return yield* json(404, { message: "There's no icon for that app here." });
@@ -55807,8 +55831,8 @@ async function* appIconRoute(context) {
 }
 
 // box/src/link/mac/routes.ts
-import fs169 from "node:fs";
-import path175 from "node:path";
+import fs170 from "node:fs";
+import path176 from "node:path";
 var macPhones = () => {
   const link = readLink();
   return {
@@ -55951,7 +55975,7 @@ async function* macLinkRoute(route, request, signal) {
         return yield* json(400, { message: "Send {letters, seen}." });
       const now = Date.now();
       try {
-        fs169.mkdirSync(SENDING, { recursive: true, mode: 448 });
+        fs170.mkdirSync(SENDING, { recursive: true, mode: 448 });
         for (const letter of Array.isArray(given.letters) ? given.letters.slice(0, 500) : []) {
           if (!isObject(letter) || !LETTER_ID.test(letter.id ?? "") || typeof letter.to !== "string" || typeof letter.text !== "string" || typeof letter.peer !== "string")
             continue;
@@ -55964,7 +55988,7 @@ async function* macLinkRoute(route, request, signal) {
             peer: letter.peer,
             ...typeof letter.answers === "string" ? { answers: letter.answers } : {}
           };
-          writePrivate(path175.join(SENDING, `${letter.id}.json`), JSON.stringify(kept));
+          writePrivate(path176.join(SENDING, `${letter.id}.json`), JSON.stringify(kept));
         }
         if (isObject(given.seen)) {
           locked(PEER_LOCK, () => {
@@ -56017,12 +56041,12 @@ async function* linkRoute(context) {
 }
 
 // box/src/link/mac/app.ts
-import fs170 from "node:fs";
-import path176 from "node:path";
-var APP_FILE = () => path176.join(RUN, "app.json");
-var OPENING_FILE = () => path176.join(RUN, "app-opening.json");
-var FAILED_FILE = () => path176.join(RUN, "app-open-failed.json");
-var UPDATING_FILE = () => path176.join(RUN, "app-updating");
+import fs171 from "node:fs";
+import path177 from "node:path";
+var APP_FILE = () => path177.join(RUN, "app.json");
+var OPENING_FILE = () => path177.join(RUN, "app-opening.json");
+var FAILED_FILE = () => path177.join(RUN, "app-open-failed.json");
+var UPDATING_FILE = () => path177.join(RUN, "app-updating");
 var WAIT = 30000;
 var REST = 5 * 60000;
 var UPDATING_FOR = 2 * 60000;
@@ -56034,16 +56058,16 @@ var NEEDS_APP = "This tool needs Kuvo Code open on this Mac, and it isn't open n
 var NO_OPENER = "nothing that opens it is running on this Mac";
 function readJSON2(file) {
   try {
-    return JSON.parse(fs170.readFileSync(file, "utf8"));
+    return JSON.parse(fs171.readFileSync(file, "utf8"));
   } catch {
     return null;
   }
 }
 function bundleOf2(given) {
-  if (typeof given !== "string" || given.length > 1024 || given.includes("\x00") || !path176.isAbsolute(given))
+  if (typeof given !== "string" || given.length > 1024 || given.includes("\x00") || !path177.isAbsolute(given))
     return null;
   const bundle = given.replace(/\/+$/, "");
-  return bundle.endsWith(".app") && path176.normalize(bundle) === bundle ? bundle : null;
+  return bundle.endsWith(".app") && path177.normalize(bundle) === bundle ? bundle : null;
 }
 function toolsOf(given) {
   if (!isObject(given) || typeof given.url !== "string" || typeof given.token !== "string")
@@ -56092,7 +56116,7 @@ function readOpening() {
 }
 function updating2(now = Date.now()) {
   try {
-    return Math.abs(now - fs170.statSync(UPDATING_FILE()).mtimeMs) < UPDATING_FOR;
+    return Math.abs(now - fs171.statSync(UPDATING_FILE()).mtimeMs) < UPDATING_FOR;
   } catch {
     return false;
   }
@@ -56103,8 +56127,8 @@ function registerApp(given, now = Date.now()) {
   const record = { bundle: given.bundle ?? before?.bundle ?? null, tools: given.tools, host, at: now };
   writePrivate(APP_FILE(), JSON.stringify(record));
   if (record.tools) {
-    fs170.rmSync(FAILED_FILE(), { force: true });
-    fs170.rmSync(UPDATING_FILE(), { force: true });
+    fs171.rmSync(FAILED_FILE(), { force: true });
+    fs171.rmSync(UPDATING_FILE(), { force: true });
   }
   return record;
 }
@@ -56121,7 +56145,7 @@ function noteUpdating(now = Date.now()) {
   writePrivate(UPDATING_FILE(), String(now));
   const at = new Date(now);
   try {
-    fs170.utimesSync(UPDATING_FILE(), at, at);
+    fs171.utimesSync(UPDATING_FILE(), at, at);
   } catch {}
 }
 function appStatus(now = Date.now()) {
@@ -56147,7 +56171,7 @@ async function openApp(signal, ways = OPEN_WAYS) {
     let opening = readOpening();
     if (opening && stale(opening, now)) {
       if (JSON.stringify(readOpening()) === JSON.stringify(opening))
-        fs170.rmSync(OPENING_FILE(), { force: true });
+        fs171.rmSync(OPENING_FILE(), { force: true });
       opening = null;
     }
     if (!opening) {
@@ -56156,8 +56180,8 @@ async function openApp(signal, ways = OPEN_WAYS) {
         return failed.message;
       const mine = { at: now, by: process.pid };
       try {
-        fs170.mkdirSync(RUN, { recursive: true, mode: 448 });
-        fs170.writeFileSync(OPENING_FILE(), JSON.stringify(mine), { flag: "wx", mode: 384 });
+        fs171.mkdirSync(RUN, { recursive: true, mode: 448 });
+        fs171.writeFileSync(OPENING_FILE(), JSON.stringify(mine), { flag: "wx", mode: 384 });
       } catch (error) {
         if (error?.code === "EEXIST")
           continue;
@@ -56197,7 +56221,7 @@ async function openAndWait(mine, ways) {
     return said;
   } finally {
     if (JSON.stringify(readOpening()) === JSON.stringify(mine))
-      fs170.rmSync(OPENING_FILE(), { force: true });
+      fs171.rmSync(OPENING_FILE(), { force: true });
   }
 }
 async function hostOpens(bundle) {
@@ -56249,7 +56273,7 @@ function waitUntil(ready, deadline, signal) {
     const every = setInterval(look, 1000);
     const timer = setTimeout(done, Math.max(0, deadline - Date.now()));
     try {
-      watcher = fs170.watch(RUN, look);
+      watcher = fs171.watch(RUN, look);
       watcher.on("error", () => {});
     } catch {}
     signal?.addEventListener("abort", done, { once: true });
@@ -56394,15 +56418,15 @@ async function* keptKeysRoute({ request, json }) {
 }
 
 // box/src/link/serve-kept.ts
-import fs171 from "node:fs";
-import path177 from "node:path";
-var SERVE_NEEDED = () => path177.join(RUN, "serve.needed");
-var SERVE_FILE = () => path177.join(RUN, "serve.json");
+import fs172 from "node:fs";
+import path178 from "node:path";
+var SERVE_NEEDED = () => path178.join(RUN, "serve.needed");
+var SERVE_FILE = () => path178.join(RUN, "serve.json");
 var SERVE_ROLE = /kuvo-link\.js serve(\s|$)/;
 var KEPT_ROLE = /kuvo-link\.js serve --kept(\s|$)/;
 function runningServe() {
   try {
-    const record = JSON.parse(fs171.readFileSync(SERVE_FILE(), "utf8"));
+    const record = JSON.parse(fs172.readFileSync(SERVE_FILE(), "utf8"));
     if (isObject(record) && Number.isInteger(record.pid) && runsAs(record.pid, record.kept === true ? KEPT_ROLE : SERVE_ROLE)) {
       return { pid: record.pid, port: Number(record.port), kept: record.kept === true };
     }
@@ -56432,11 +56456,11 @@ async function* serveRoute({ request, json }) {
       writePrivate(SERVE_NEEDED(), "");
       keepKeeper();
     } else {
-      fs171.rmSync(SERVE_NEEDED(), { force: true });
+      fs172.rmSync(SERVE_NEEDED(), { force: true });
     }
   }
   const running = runningServe();
-  return yield* json(200, { needed: fs171.existsSync(SERVE_NEEDED()), serving: running !== null });
+  return yield* json(200, { needed: fs172.existsSync(SERVE_NEEDED()), serving: running !== null });
 }
 
 // box/src/link/server/router.ts
@@ -56570,23 +56594,6 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
 // box/src/link/mac/relay.ts
 var MAC_APP_ROUTES = ["kuvo/machines", "kuvo/hosts", "kuvo/asks", "kuvo/mac", "kuvo/engine"];
 var macAppAnswers = (route) => MAC_APP_ROUTES.some((area) => route === area || route.startsWith(`${area}/`));
-var boxAnswers = (route) => route === "kuvo/engine/restart" && keeperRuns2();
-function keeperRuns2() {
-  let pid = 0;
-  try {
-    pid = Number(JSON.parse(fs172.readFileSync(path178.join(RUN, "keeper.json"), "utf8"))?.pid);
-  } catch {
-    return false;
-  }
-  if (!Number.isInteger(pid) || pid <= 0 || pid !== process.ppid)
-    return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
 var APP_NOT_ANSWERING = "Kuvo Code on this Mac isn't answering. Try again in a moment.";
 var APP_CLOSED = "Kuvo Code isn't open on this Mac.";
 async function* toApp(request, phone, signal) {

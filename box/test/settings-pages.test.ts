@@ -3,6 +3,7 @@ import { afterAll, beforeEach, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import { spawn } from "node:child_process"
 import { ask, follow } from "./route-answer"
 
 // A box's settings as it describes them (PROTOCOL.md, "A box's settings"): its sections, the
@@ -189,8 +190,11 @@ test("what agents may do is the engine's permissions, each choice a rule for eve
 
   // Written by hand as something else than a list of rules: left as it is, and said why.
   write(CONFIG_FILE, { permissions: { shell: "ask" } })
-  const unlisted = rowOf(await page("permissions"), "when-shell")
-  expect(unlisted.can.why).toContain("aren't a list of rules")
+  const unlistedPage = await page("permissions")
+  const unlisted = rowOf(unlistedPage, "when-shell")
+  // (Not shown as a default it may not be: as it is, set in the file.)
+  expect([unlisted.kind, unlisted.value]).toEqual(["status", "Set in Its Settings File"])
+  expect(unlistedPage.groups.find((group: any) => group.id === "when").note).toContain("aren't a list of rules")
   expect((await change("permissions", unlisted, "deny")).status).toBe(403)
   expect(JSON.parse(readFileSync(CONFIG_FILE, "utf8")).permissions).toEqual({ shell: "ask" })
 })
@@ -217,6 +221,36 @@ test("Also Allowed lists the folders given, and one removed from its row is gone
   expect((await ask(handler, "GET", "kuvo/sandbox/allowed")).json.allowed).toEqual([])
 })
 
+/** What a Mac asks this box over SSH (`kuvo-link.js box route`): a process of its own, which passes
+ * Also Allowed to the one holding it (this test's), as it would to the box's long-running one. */
+async function boxRoute(method: string, path: string, body?: unknown): Promise<{ status: number; json: any }> {
+  // (The link from its source, as kuvo-link.js is built from it.)
+  const script = join(import.meta.dir, "..", "src", "link", "main.ts")
+  const home = process.env.KUVO_HOME!
+  mkdirSync(join(home, "route-home"), { recursive: true })
+  const child = spawn(process.execPath, [script, "box", "route"], { env: { PATH: process.env.PATH, BUN_BE_BUN: "1", KUVO_HOME: home, HOME: join(home, "route-home"), TMPDIR: join(home, "route-home") }, stdio: ["pipe", "pipe", "inherit"] })
+  child.stdin.end(JSON.stringify({ method, path, ...(body === undefined ? {} : { body }) }))
+  let out = ""
+  child.stdout.setEncoding("utf8")
+  for await (const chunk of child.stdout) out += chunk
+  const answer = JSON.parse(out.trim().split("\n").at(-1)!)
+  return { status: answer.status, json: JSON.parse(answer.body) }
+}
+
+test("over SSH, Also Allowed is read and removed through the process that holds it", async () => {
+  const project = join(outside, "shop")
+  mkdirSync(project, { recursive: true })
+  write(ALLOWED_FILE, { allowed: [{ id: "al_ssh", project, kind: "write", path: join(outside, "shop-data"), at: Date.now() }] })
+  const shown = await boxRoute("GET", "kuvo/settings/permissions")
+  expect(shown.status).toBe(200)
+  const rule = rowOf(shown.json, "allowed-al_ssh")
+  expect(rule.title).toBe(join(outside, "shop-data"))
+  const done = await boxRoute("POST", "kuvo/settings/permissions/allowed-al_ssh/remove", { was: rule.revision })
+  expect(done.status).toBe(200)
+  expect(rowOf(done.json, "allowed").items).toEqual([])
+  expect(JSON.parse(readFileSync(ALLOWED_FILE, "utf8")).allowed).toEqual([])
+})
+
 test("the sandbox's row is what kuvo/sandbox says, and its button does what that names", async () => {
   const { sandboxAction } = await import("../src/link/areas/settings-pages")
   const shown = await page("permissions")
@@ -239,16 +273,26 @@ test("Restart Engine starts the box's own tool, and answers done; where the app 
   const { K, RUN } = await import("../src/link/home")
   // The machine's tool as Kuvo Code sets it up (`bin/kuvo-start`), a stand-in noting what it's asked.
   const asked = join(K, "start-asked")
-  for (const file of [join(K, "bin", "kuvo-launch"), join(RUN, "launch.env")]) { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, "") }
-  writeFileSync(join(K, "bin", "kuvo-start"), `echo "$1" > ${JSON.stringify(asked)}\n`)
-  const context = { info: { name: "devbox" } } as any
-  expect(await sandboxDoes(context, "POST kuvo/engine/restart", true)).toBeNull()
-  await toolRun()
-  expect(readFileSync(asked, "utf8").trim()).toBe("restart")
-  rmSync(asked)
-  expect(await sandboxDoes({ info: { name: "Studio" } } as any, "POST kuvo/engine/restart", false)).toEqual({ status: 403, message: "Kuvo Code on Studio restarts its engine: restart it there." })
-  expect(existsSync(asked)).toBe(false)
-  expect((await sandboxDoes(context, "POST kuvo/somewhere/else", true))?.status).toBe(404)
+  const made = [join(K, "bin", "kuvo-launch"), join(RUN, "launch.env"), join(K, "bin", "kuvo-start"), asked]
+  try {
+    for (const file of made.slice(0, 2)) { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, "") }
+    writeFileSync(made[2]!, `echo "$1" > ${JSON.stringify(asked)}\n`)
+    const context = { info: { name: "devbox" } } as any
+    expect(await sandboxDoes(context, "POST kuvo/engine/restart", true)).toBeNull()
+    await toolRun()
+    expect(readFileSync(asked, "utf8").trim()).toBe("restart")
+    rmSync(asked)
+    expect(await sandboxDoes({ info: { name: "Studio" } } as any, "POST kuvo/engine/restart", false)).toEqual({ status: 403, message: "Kuvo Code on Studio restarts its engine: restart it there." })
+    expect(existsSync(asked)).toBe(false)
+    expect((await sandboxDoes(context, "POST kuvo/somewhere/else", true))?.status).toBe(404)
+  } finally {
+    // (The test home is every test file's: what a set-up machine has goes with this test.)
+    for (const file of made) rmSync(file, { force: true })
+  }
+  // Offered where the app restarts a Mac's engine: said, never sent.
+  const { sandboxAction } = await import("../src/link/areas/settings-pages")
+  const restart = sandboxAction({ on: false, action: "restartEngine", actionLabel: "Restart Engine…", route: "POST kuvo/engine/restart" }, "Studio", true, false)
+  expect(restart).toEqual({ id: "restartEngine", title: "Restart Engine…", can: { why: "Kuvo Code on Studio restarts its engine: restart it there." } })
 })
 
 test("the sandbox's button is the box's: a route it runs, asked first where it stops work, and this Mac's own Software Update only from the app on it", async () => {

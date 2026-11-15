@@ -27,7 +27,7 @@ import { fenceState, SOFTWARE_UPDATE } from "../fence/state";
 import { followedLive } from "../follow";
 import { APPROVAL_FILE } from "../work/approval";
 import { IS_MAC } from "../home";
-import { boxAnswers } from "../mac/relay";
+import { boxAnswers } from "../mac/keeper-runs";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 export const SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+))?)?$/;
@@ -158,8 +158,10 @@ async function permissionsPage(context: RouteContext): Promise<SettingsPage> {
 
   if (config.status === 200) {
     const rules = Array.isArray(config.value.permissions) ? config.value.permissions : [];
-    // (Written by hand as something else than a list of rules: left as it is, and said.)
-    const can = config.value.permissions === undefined || Array.isArray(config.value.permissions) ? true as const : { why: NOT_A_LIST };
+    // (Written by hand as something else than a list of rules: left as it is, shown as it is not
+    // known here, and said.)
+    const listed = config.value.permissions === undefined || Array.isArray(config.value.permissions);
+    const can = listed ? true as const : { why: NOT_A_LIST };
     const rows = ACTIONS.map(action => {
       const chosen = choiceIn(rules, action.id);
       const fallback = EFFECTS.find(effect => effect.id === engineDefault(action.id))!.title;
@@ -169,9 +171,10 @@ async function permissionsPage(context: RouteContext): Promise<SettingsPage> {
         ...(chosen && !EFFECTS.some(effect => effect.id === chosen) ? [{ id: chosen, title: "Set by a Newer Engine" }] : []),
         { id: "default", title: `Default (${fallback})` },
       ];
+      if (!listed) return row({ id: `when-${action.id}`, title: action.title, ...("line" in action ? { line: action.line } : {}), kind: "status", value: "Set in Its Settings File", can });
       return row({ id: `when-${action.id}`, title: action.title, ...("line" in action ? { line: action.line } : {}), kind: "choice", value: chosen ?? "default", choices, can });
     });
-    groups.push({ id: "when", title: "When the Agent Wants To", note: "For every session and mode. Don't Allow holds even in Full Access. Codex, Cursor, Grok and Antigravity may read files without asking.", rows });
+    groups.push({ id: "when", title: "When the Agent Wants To", note: listed ? "For every session and mode. Don't Allow holds even in Full Access. Codex, Cursor, Grok and Antigravity may read files without asking." : NOT_A_LIST, rows });
   } else {
     notes.push({ words: said(config, "The engine's settings couldn't be read."), tone: "warning" });
   }

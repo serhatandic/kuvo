@@ -7792,7 +7792,8 @@ so a client still on those (the phone) sees every change kept just as they keep 
   | `custom` | `name` | What only an installed app draws; any other client shows its `can`'s why |
 
   `can` is `true` where it can be changed from here, or `{why}`, in words to show beside it (it's
-  still drawn, never hidden); a row with nothing to change (a `status`) has none. An action is
+  still drawn, never hidden); a row with nothing to change (a `status`) has none, or `{why}` where
+  what it shows is changed elsewhere (a settings file written by hand). An action is
   `{id, title, style?, confirm?, opens?, can?}`: `style` `destructive`; `confirm` `{title, body,
   button}`, asked first in the box's words (a row's own `confirm` is asked before a change to it);
   `opens` an address the client opens itself, sending nothing (an address of the box's own computer,
@@ -7808,7 +7809,8 @@ so a client still on those (the phone) sees every change kept just as they keep 
   `409 {message: "It changed since you read it.", page}` where the row changed since (by another
   client, an agent, a route of its own): only that row's revision counts, so a change to one row
   never refuses another's. A refusal of the route underneath passes on with its status and words; a
-  `409` without `page` is one of those (a settings file that can't be used), never a stale reading.
+  `409` without `page` is one of those (a settings file that can't be used), never a stale reading:
+  `page` is what marks a stale answer, and its `message` is words to show.
   A box makes one change to a section at a time, each checked against the page as it is then
   (a change through another of its processes, `box route` over SSH, is held to what the route
   underneath checks).
