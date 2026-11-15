@@ -844,6 +844,21 @@ the Keychain (the same limit as §8a.1; taking them out of the Keychain once the
 would end it); and worktrees under `S` stay as second copies sharing one git record with those
 in `K`.
 
+**Where I am (2026-11-16, after the lead's separate review).** Both MUSTs and all but two of
+the SHOULDs are fixed, with tests, on tip `38c1359ce` (main merged, built): the helper's and
+launchd's words never reach the person; failures past `clear`, an unreadable journal and the
+installer's outer catch say one plain sentence (detail in `run.log` or on standard error); the
+engine's update is held to every table; the staged database's integrity and broken links are
+checked before the swap; a `K` that's this Mac's own already is refused by `--run` itself; a
+settle-only rerun needs no release; links by a whole path into `S` are repointed; more is said
+(a `bots.json` that won't parse, 0.6's bots on machines, notifications, analytics, the last
+model); the words named. Checks run on that tip: box 28 pass (also with the real 2.2.6), bridge
+files pass (`own-box-start`'s "server for clients" test failed once, then passed three times:
+not this piece's), static checks, Linux 0 fail. **Left of the SHOULDs:** usage API keys are now
+said to no one (who pasted any can't be told without the Keychain: decide to say it to
+everyone who used the panel, or not at all); `progress` is said to be null outside the
+journal's life in PROTOCOL.md rather than made true.
+
 **Left open by this piece** (decisions, in the report): the guard that keeps `kuvo-keys` to the
 box's move against a program of yours outside the sandbox (§8a.1) and the race in `copy`'s
 helper check (§8a.3), so no signed `kuvo-keys` yet; whether 0.7's saved sign-ins leave the Keychain once
