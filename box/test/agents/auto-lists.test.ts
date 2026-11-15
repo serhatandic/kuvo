@@ -60,3 +60,29 @@ test("Auto routes add, rename, set contents, order and refuse stale client write
     expect((await ask("DELETE", "/auto", { revision: lists[1].revision })).status).toBe(400)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+test("an edit that waits for an agent's model alias refuses a revision changed while waiting", async () => {
+  const root = mkdtempSync(join(tmpdir(), "auto-alias-"))
+  try {
+    const auto = new Auto(root)
+    auto.set([{ providerID: "agent", modelID: "default" }])
+    let entered!: () => void
+    let release!: (id: string) => void
+    const waiting = new Promise<void>(resolve => { entered = resolve })
+    const resolved = new Promise<string>(resolve => { release = resolve })
+    const roster = { find: () => ({ concreteModel: () => { entered(); return resolved } }) } as unknown as Roster
+    const sessions = new Sessions(new Store(join(root, "sessions")), roster, auto)
+    const answer = handler({ auto, sessions, roster, password: "pw" } as any)
+    const before = auto.all()[0]
+    const save = answer(new Request("http://box/api/kuvo/auto/auto", {
+      method: "PUT", headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64"), "content-type": "application/json" },
+      body: JSON.stringify({ revision: before.revision, entries: [{ providerID: "agent", modelID: "concrete" }] }),
+    }))
+    await waiting
+    expect(auto.change("auto", before.revision, { name: "Changed while resolving" })).toBe(true)
+    release("concrete")
+    expect((await save).status).toBe(409)
+    expect(auto.all()[0].name).toBe("Changed while resolving")
+    expect(auto.all()[0].entries).toEqual([{ providerID: "agent", modelID: "default" }])
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
