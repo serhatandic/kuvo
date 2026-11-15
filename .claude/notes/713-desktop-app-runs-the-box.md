@@ -923,42 +923,52 @@ refusing before anything runs. `kuvo/tests/launch.rs`: the window through each s
 by click and Return. `kuvo/tests/permissions.rs`: the heads-up, Not Now, the tile opening and
 going once allowed. Box: `own-box-helper.test.js`.
 
-**Where I am (2026-11-15, paused for pacing; resume here).**
+**Piece 5 as built (2026-11-16).** As planned above, with these differences:
 
-Done and committed on `kuvo/713-piece-5-the-desktop-app-runs-the` (main merged, at `ce51ac482`):
+- **A move's steps are drawn** now that piece 4 sends them: the box's `title` on this Mac's row
+  and `index` of `of` as a thin bar under it. A move still at work from an earlier open (`waits`
+  with `status.progress`) is drawn where it is and asked about again every two seconds, with
+  nothing run beside it. A move that stopped says "Nothing runs on this Mac until this is done."
+- **`ours` is waited for** (20 s) rather than attached to once: at login the app and Kuvo Helper
+  start together.
+- **Steps said while `status` is still asked** (a computer with no engine has it fetched before
+  anything is judged) turn the quiet line into "Setting up Kuvo…", not the Welcome card: an app
+  update unpacks its release at `status` too, and a returning user must never see a welcome.
+- **A copy of the app keeps to its own names** (`install::names_for`): its bundle ID and the root
+  it was given, or nothing. Only Kuvo Code itself and a build in no bundle use the real ones.
+- **What stopped here isn't passed over for another computer**: with no Kuvo answering on this
+  Mac, a failed setup is said even where the kept list has other computers to open.
+- **The tile gives up** when System Settings' window has been gone two seconds, and after ten
+  minutes whatever happens.
 
-- Box: `kuvo/box/permissions` with `bundle`, `list` (name, `settings`, `byHand`, `asks`) and
-  `POST {later}`; PROTOCOL.md, shapes and the built files; `own-box-helper.test.js` passes (9).
-- `kuvo_box`: `install.rs` (the carried installer run, the app's own guard, the stand-in
-  bundle), `permissions.rs`, `place::this_mac_of`; `tests/install.rs` passes (10).
-- `kuvo`: `launch.rs` (the window's root; `main.rs` opens it), `permissions/` (heads-up, the
-  tile as a GPUI `PopUp` window with `external_drag_payload`, `icns.rs`, `mac.rs`), the stand-in
-  box's permissions, shots `launch-*` and `permission-*`; `tests/launch.rs` (11) and
-  `tests/permissions.rs` (6) pass.
-- `cargo build`, `cargo test --workspace` and `cargo clippy --workspace --all-targets` (0
-  warnings) all passed on this tip.
+**BOX-NEEDED** (marked in the code where there's a place for it):
 
-Still to do, in order:
+1. Words for the installer's own steps (`checking`, `engine`), and whether a `status` that
+   fetches is a first setup, so a new Mac's download can be drawn in the Welcome card.
+2. Words for a verdict with nothing to run (`two`, `machine`, `back`, `waits` without progress):
+   `status` gives none, so the app says only that Kuvo isn't running.
+3. The row's lines ("Setting up Kuvo", "Moving your sessions", "Couldn't set up Kuvo", "Couldn't
+   move your sessions", "Nothing runs on this Mac until this is done.") and the heads-up's
+   sentences are the app's; a phone drawing the same would need them from the box.
+4. When an agent needed a permission (the box can only say it isn't allowed), so the heads-up
+   comes at that moment; a way back from Not Now (Settings › This Mac, piece 7); Full Disk
+   Access, Files and Folders, Local Network and Login Items as facts.
+5. The installer's own messages still say "box" in places (`command.ts`, `kuvo-install`): they
+   are drawn as they are.
 
-1. `gpui/scripts/deps-licenses.py`: I ran it with `--check`, which it doesn't have, and it hung
-   for ten minutes (stopped). Read how it's run, then regenerate `gpui/LICENSES-DEPS.md` if the
-   new direct dependencies (async-channel, core-foundation, core-graphics, libc, objc2,
-   raw-window-handle, tempfile: all in the lock already) change it.
-2. Box checks not run yet: `cd box && bun run check` again on the final tip, `scripts/check-built.sh`,
-   the install bridge file, compat and `bridge.test.js` (one per run), and the permissions
-   change on Linux (a test folder on devbox: `applies: false`, `bundle: null`, `list: []`, `409`).
-3. Docs: `gpui/README.md` (the app opening, permissions), `gpui/notes/screens-first-run.md` or a
-   new `screens-launch.md` (what was read in Zed: `gpui_macos/src/window.rs`'s
-   `start_external_drag`; `crates/recent_projects/src/remote_connections.rs` for behaviour),
-   `CHANGELOG.md`, `docs/docs-map.md`'s pages in `../kuvo-web` (worktree only), `uninstall.md`
-   and `privacy.md` for `box/permissions-later.json`, `docs/footprint.md`.
-4. The phone: `kuvo/box/permissions`' new fields are told to the phone session (nothing to
-   draw there: System Settings opens only on that Mac).
-5. The `reviewer` pass (high risk: the install path), fixes, then merge main again and report.
+**The reviewer's pass** (one `reviewer`, 2026-11-16). Blocker, fixed with a test: a copy of the
+app refused by the guard fell back to the real names when it attached (the real password,
+Keychain item and folder). Fixed too: the new Mac's download said nothing; a failed setup opened
+another computer's sessions without a word; the heads-up let clicks through to what's under it;
+a Kuvo a second from up was said not to run; an orphaned tile; an object printed after the
+answer took its place; a permission the box no longer lists counted as allowed; only a System
+Settings address is ever opened; a test asserted words its own stand-in made up. Left: no cap
+on how long the installer may run (the script's own timeouts hold); Not Now has no way back yet.
 
-Not seen in a running window: everything was rendered offscreen and driven in GPUI's test
-window. The drag into the real System Settings, the tile following its window, and the
-non-activating panel over it need the rehearsal account.
+**Not seen in a running window.** Rendered offscreen and driven in GPUI's test window. For the
+rehearsal account: the real installer from a signed bundle; the tile as a panel over the real
+System Settings, the drag into its list (the bundle's URL is handed without a trailing slash),
+the tile following its window; macOS's own alert beside the heads-up; VoiceOver and larger text.
 
 ## 9. Questions only the user can answer
 

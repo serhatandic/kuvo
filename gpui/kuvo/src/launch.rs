@@ -29,6 +29,9 @@ use crate::{Home, title_bar};
 /// didn't start.
 const STARTS_WITHIN: Duration = Duration::from_secs(60);
 const ASKED_EVERY: Duration = Duration::from_millis(500);
+/// How long a Kuvo that's here already is waited for as the app opens (at login the two start
+/// together; a move just finished starts it).
+const HERE_WITHIN: Duration = Duration::from_secs(20);
 /// How often a move still at work from an earlier open is asked about.
 const MOVE_ASKED_EVERY: Duration = Duration::from_secs(2);
 
@@ -36,6 +39,8 @@ const MOVE_ASKED_EVERY: Duration = Duration::from_secs(2);
 pub const HERE: &str = if cfg!(target_os = "macos") { "This Mac" } else { "This computer" };
 
 const HERE_IN_WORDS: &str = if cfg!(target_os = "macos") { "this Mac" } else { "this computer" };
+
+const NOT_ANSWERING: &str = if cfg!(target_os = "macos") { "Kuvo on this Mac isn’t answering." } else { "Kuvo on this computer isn’t answering." };
 
 /// Your boxes, and the one the window opens with; or why there's none to show.
 pub type Attached = Result<(Boxes, BoxClient), String>;
@@ -72,6 +77,11 @@ pub struct Launch {
     /// Whether it's drawn in the first run's card (a computer being set up or moved) rather than
     /// the quiet middle of the window (one whose Kuvo is here already).
     card: bool,
+    /// The installer said a step while it was still being asked what's here (a computer with no
+    /// engine yet has it fetched first): the quiet line says it's being set up.
+    // BOX-NEEDED: whether this is a first setup isn't known until `status` answers, so the
+    // Welcome card can't be shown for a new Mac's download; the installer could say so first.
+    setting_up: bool,
     focus: FocusHandle,
     wants_focus: bool,
     _work: Option<Task<()>>,
@@ -81,7 +91,7 @@ impl Launch {
     /// `live`: whether the app it opens follows your boxes (the app), or shows what it's handed
     /// (tests and shots).
     pub fn new(opens: Opens, live: bool, window: &mut Window, cx: &mut Context<Self>) -> Launch {
-        let mut launch = Launch { opens, live, stage: Stage::Asking, card: false, focus: cx.focus_handle(), wants_focus: true, _work: None };
+        let mut launch = Launch { opens, live, stage: Stage::Asking, card: false, setting_up: false, focus: cx.focus_handle(), wants_focus: true, _work: None };
         launch.begin(window, cx);
         launch
     }
@@ -105,6 +115,7 @@ impl Launch {
         }
         self.stage = Stage::Asking;
         self.card = false;
+        self.setting_up = false;
         cx.notify();
         self.ask(window, cx);
     }
@@ -142,12 +153,14 @@ impl Launch {
                 self.card = verdict.as_deref() != Some("ours");
                 self.stage = Stage::SettingUp { verb, title: None, at: None };
             }
-            Progress::Step(step) => {
-                if let Stage::SettingUp { title, at, .. } = &mut self.stage {
+            Progress::Step(step) => match &mut self.stage {
+                Stage::SettingUp { title, at, .. } => {
                     *title = step.title.map(SharedString::from);
                     *at = step.index.zip(step.of);
                 }
-            }
+                Stage::Asking => self.setting_up = true,
+                _ => {}
+            },
         }
         cx.notify();
     }
@@ -156,11 +169,17 @@ impl Launch {
     fn ended(&mut self, outcome: Outcome, window: &mut Window, cx: &mut Context<Self>) {
         let said = outcome.message.clone().map(SharedString::from);
         match outcome.end {
+            // This Mac's own Kuvo is here and kept running: it's up, or will be in a moment.
+            End::Attach if outcome.verdict.as_deref() == Some("ours") => {
+                self.stage = Stage::Starting;
+                cx.notify();
+                self.await_box(HERE_WITHIN, window, cx);
+            }
             End::Attach => self.attach(None, said, None, window, cx),
             End::Started => {
                 self.stage = Stage::Starting;
                 cx.notify();
-                self.await_box(window, cx);
+                self.await_box(STARTS_WITHIN, window, cx);
             }
             // Whatever stopped it, a box that answers here is still the user's to use (an earlier
             // build's that keeps running until it's moved; one whose update couldn't be checked).
@@ -193,6 +212,9 @@ impl Launch {
         self._work = Some(cx.spawn_in(window, async move |this, cx| {
             let reached = reached.await;
             this.update_in(cx, |this, window, cx| match reached {
+                // (What stopped setting up here isn't passed over for another computer's
+                // sessions: it's said, with Try Again.)
+                Ok((boxes, _)) if line.is_some() && boxes.nearest().is_none() => this.stop(line.unwrap_or_default(), message.unwrap_or_else(|| NOT_ANSWERING.into()), note, cx),
                 Ok((boxes, first)) => this.open(boxes, first, window, cx),
                 Err(why) => this.stop(line.unwrap_or_else(|| "Kuvo isn’t running".into()), message.unwrap_or_else(|| why.into()), note, cx),
             })
@@ -200,8 +222,8 @@ impl Launch {
         }));
     }
 
-    /// Waits for the box just made or started to answer, asking again every half second.
-    fn await_box(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Waits up to `within` for this computer's Kuvo to answer, asking again every half second.
+    fn await_box(&mut self, within: Duration, window: &mut Window, cx: &mut Context<Self>) {
         let attach = self.opens.attach.clone();
         self._work = Some(cx.spawn_in(window, async move |this, cx| {
             let mut waited = Duration::ZERO;
@@ -209,9 +231,11 @@ impl Launch {
                 let asked = attach.clone();
                 let reached = cx.background_spawn(async move { asked() }).await;
                 let here = reached.as_ref().is_ok_and(|(boxes, _)| boxes.nearest().is_some());
-                if here || waited >= STARTS_WITHIN {
+                if here || waited >= within {
+                    let wait_more = Some("It may still be starting. Try again in a moment.".into());
                     this.update_in(cx, |this, window, cx| match reached {
-                        Ok((boxes, first)) => this.open(boxes, first, window, cx),
+                        Ok((boxes, first)) if here => this.open(boxes, first, window, cx),
+                        Ok(_) => this.stop("Kuvo didn’t start".into(), NOT_ANSWERING.into(), wait_more, cx),
                         Err(why) => this.stop("Kuvo didn’t start".into(), why.into(), Some("It may still be starting. Try again in a moment.".into()), cx),
                     })
                     .ok();
@@ -276,6 +300,11 @@ impl Launch {
             Stage::Stopped { message, .. } => Some(message.clone()),
             _ => None,
         }
+    }
+
+    /// What the window's quiet middle says while it waits.
+    pub fn waiting_words(&self) -> &'static str {
+        if self.setting_up && matches!(self.stage, Stage::Asking) { "Setting up Kuvo…" } else { "Starting…" }
     }
 
     /// How far a move is, where the box says: its step, of how many.
@@ -355,7 +384,7 @@ impl Launch {
                 .children(note.clone().map(|note| div().debug_selector(|| "launch-note".into()).text_color(c.text_muted).child(note)))
                 .child(div().pt(space::S2).child(self.try_again(cx)))
                 .into_any_element(),
-            _ => div().flex().items_center().gap(space::S2).text_color(c.text_muted).child(spinner("launch-starting", IconSize::Nav, c.text_muted)).child("Starting…").into_any_element(),
+            _ => div().flex().items_center().gap(space::S2).text_color(c.text_muted).child(spinner("launch-starting", IconSize::Nav, c.text_muted)).child(self.waiting_words()).into_any_element(),
         };
         div()
             .size_full()

@@ -154,6 +154,9 @@ fn an_installer_that_says_nothing_readable_is_the_app_s_fault_and_said_so() {
     // Words that aren't JSON, and lines that aren't an answer.
     bundle.says("status", None, 0, &["sh: line 3: syntax error", "[1, 2]", r#"{"neither":"an answer"}"#]);
     assert_eq!(set_up(&installer).0.end, End::Broken);
+    // Something else it prints after its answer never takes the answer's place.
+    bundle.says("status", None, 0, &[r#"{"verdict":"ours","verb":null,"status":{}}"#, r#"{"note":"tidied"}"#]);
+    assert_eq!(set_up(&installer).0.end, End::Attach);
     // A verb this app doesn't know is never run.
     bundle.says("status", None, 0, &[r#"{"verdict":"fresh","verb":"erase","status":{}}"#]);
     let before = asked(&bundle).len();
@@ -217,6 +220,28 @@ fn a_build_that_isnt_the_app_in_its_bundle_never_starts_the_installer() {
     for bundle in [&copy, &real, &empty, &nameless] {
         assert_eq!(bundle.asked(), Vec::<String>::new());
     }
+}
+
+#[test]
+fn a_copy_of_the_app_never_uses_the_real_kuvo_s_folders_or_keys() {
+    use kuvo_box::install::{Names, names_for};
+    let made = tempfile::tempdir().unwrap();
+    let real = Names { root: ".kuvo-code".into(), app_id: "run.kuvo.code".into() };
+    // Kuvo Code itself, and a build in no bundle (which only ever attaches): the real ones.
+    let app = Bundle::make(&made.path().join("real"), "run.kuvo.code");
+    assert_eq!(names_for(&app.executable(), None), Some(real.clone()));
+    assert_eq!(names_for(&std::env::current_exe().unwrap(), None), Some(real));
+    // A copy with a root of its own: its own ID and that root.
+    let copy = Bundle::make(&made.path().join("copy"), TRIAL);
+    assert_eq!(names_for(&copy.executable(), Some(ROOT)), Some(Names { root: ROOT.into(), app_id: TRIAL.into() }));
+    // A copy opened with none (from Finder), or pointed at the real one: nothing at all, never
+    // the real Kuvo's password, Keychain item or folders.
+    for root in [None, Some(".kuvo-code"), Some(""), Some("../.kuvo-code")] {
+        assert_eq!(names_for(&copy.executable(), root), None, "{root:?}");
+    }
+    // Nor a bundle whose ID can't be read.
+    std::fs::write(copy.path.join("Contents/Info.plist"), "bplist00").unwrap();
+    assert_eq!(names_for(&copy.executable(), Some(ROOT)), None);
 }
 
 #[test]

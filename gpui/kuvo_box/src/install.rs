@@ -55,6 +55,37 @@ pub fn carried(executable: &Path) -> Option<Carried> {
     Some(Carried { bundle: bundle.to_owned(), id, release, installer, keys })
 }
 
+/// Whose folders a build keeps to: the box's home (a folder's name in your home folder) and the
+/// bundle ID its own things are named by (its folder in Application Support, its Keychain item).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Names {
+    pub root: String,
+    pub app_id: String,
+}
+
+/// The names the build at `executable` keeps to, or none for one that has no folders of its own
+/// to use. Kuvo Code itself, and a build in no bundle at all (`cargo run`, which only ever
+/// attaches), keep to the real ones. A copy of the app (a bundle with another ID) keeps to its
+/// own ID and the root it was given (`demo_root`); given none, or one that isn't its own, it has
+/// nothing: it never reads the real Kuvo's password, Keychain item or folders.
+pub fn names_for(executable: &Path, demo_root: Option<&str>) -> Option<Names> {
+    let real = || Names { root: REAL_ROOT.to_owned(), app_id: REAL_APP.to_owned() };
+    let Some(contents) = executable.parent().filter(|folder| folder.file_name().is_some_and(|name| name == "MacOS")).and_then(Path::parent).filter(|contents| contents.file_name().is_some_and(|name| name == "Contents") && contents.parent().is_some_and(|bundle| bundle.extension().is_some_and(|extension| extension == "app"))) else {
+        return Some(real());
+    };
+    // (A bundle whose ID can't be read is nobody's: nothing is taken for the real one.)
+    let id = std::fs::read_to_string(contents.join("Info.plist")).ok().and_then(|plist| bundle_id(&plist))?;
+    if id == REAL_APP {
+        return Some(real());
+    }
+    demo_root.filter(|root| own_root(root)).map(|root| Names { root: root.to_owned(), app_id: id })
+}
+
+/// Whether `root` can be a copy's own home: a plain folder's name, and not the real one.
+fn own_root(root: &str) -> bool {
+    root != REAL_ROOT && !root.is_empty() && root != "." && root != ".." && root.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
 /// `CFBundleIdentifier` in an Info.plist written as XML (as every build of ours writes it).
 fn bundle_id(plist: &str) -> Option<String> {
     let after = &plist[plist.find("<key>CFBundleIdentifier</key>")? + "<key>CFBundleIdentifier</key>".len()..];
@@ -197,7 +228,7 @@ impl Installer {
         let root = match (carried.id == REAL_APP, demo_root) {
             (true, None) => REAL_ROOT.to_owned(),
             (true, Some(_)) => return Err(OnlyAttaches("Kuvo Code itself sets up in ~/.kuvo-code only.".into())),
-            (false, Some(root)) if root != REAL_ROOT && !root.is_empty() && root != "." && root != ".." && root.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) => root.to_owned(),
+            (false, Some(root)) if own_root(root) => root.to_owned(),
             (false, _) => return Err(OnlyAttaches("This copy of Kuvo doesn’t set up a computer: only Kuvo Code itself does, or a copy given a folder of its own.".into())),
         };
         Ok(Installer { carried, root, shell: PathBuf::from("/bin/sh") })
@@ -216,10 +247,7 @@ impl Installer {
     pub fn run(&self, verb: Verb, on: &mut dyn FnMut(Progress)) -> Ran {
         let mut command = Command::new(&self.shell);
         command.arg(&self.carried.installer).arg(verb.word());
-        // (A Mac's installer is told its app; elsewhere there's no bundle to name.)
-        if cfg!(target_os = "macos") {
-            command.arg("--app").arg(&self.carried.bundle);
-        }
+        command.arg("--app").arg(&self.carried.bundle);
         if self.root != REAL_ROOT {
             command.arg("--root").arg(&self.root);
         }
@@ -253,6 +281,11 @@ impl Installer {
                     && let Some(step) = Step::said(&Value::Object(said.clone()))
                 {
                     on(Progress::Step(step));
+                    continue;
+                }
+                // (Its answer names a result or a verdict: anything else it prints is neither a
+                // step nor an answer, and never takes the answer's place.)
+                if said.get("result").is_none() && said.get("verdict").is_none() {
                     continue;
                 }
                 let word = |name: &str| said.get(name).and_then(Value::as_str).map(str::to_owned);

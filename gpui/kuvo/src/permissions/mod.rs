@@ -26,6 +26,10 @@ use tile::Tile;
 /// those go by between asks of the box (once a second).
 pub const FOLLOWS_EVERY: Duration = Duration::from_millis(250);
 const ASKS_EVERY: u32 = 4;
+/// How many of those System Settings' window may be gone before the tile goes too (two seconds),
+/// and after how many the tile is given up on whatever happens (ten minutes).
+const GONE_AFTER: u32 = 8;
+const GIVEN_UP_AFTER: u32 = 2400;
 
 /// The tile's window, and hearing it closed.
 type OpenTile = (WindowHandle<Tile>, Subscription);
@@ -125,11 +129,13 @@ impl HeadsUp {
     fn take(&mut self, facts: Permissions, cx: &mut Context<Self>) {
         // Allowed, the one System Settings was opened for: its tile goes, and Kuvo comes back to
         // the front.
-        let allowed = self.asking.as_ref().is_some_and(|(id, _)| facts.of(id).is_none_or(|permission| permission.allowed == Some(true)));
+        let allowed = self.asking.as_ref().is_some_and(|(id, _)| facts.of(id).is_some_and(|permission| permission.allowed == Some(true)));
+        // (One the box no longer lists at all isn't asked for any more, with nothing claimed.)
+        let gone = self.asking.as_ref().is_some_and(|(id, _)| facts.of(id).is_none());
         self.facts = Some(facts);
-        if allowed {
+        if allowed || gone {
             self.stop_asking(cx);
-            if self.live {
+            if allowed && self.live {
                 cx.activate(true);
             }
         }
@@ -140,6 +146,10 @@ impl HeadsUp {
     /// macOS has you add the program by hand.
     pub fn open_settings(&mut self, cx: &mut Context<Self>) {
         let Some(permission) = self.shown().cloned() else { return };
+        // (Only an address of System Settings' own is ever opened, whatever a box says.)
+        if !permission.settings.starts_with("x-apple.systempreferences:") {
+            return;
+        }
         self.stop_asking(cx);
         self.problem = None;
         cx.open_url(&permission.settings);
@@ -157,6 +167,8 @@ impl HeadsUp {
         // second whether it's allowed yet (macOS says nothing when Screen Recording changes).
         self._follow = Some(cx.spawn(async move |this, cx| {
             let mut ticks = 0u32;
+            // System Settings' window seen, and how long it's been gone since.
+            let (mut seen, mut gone) = (false, 0u32);
             loop {
                 cx.background_executor().timer(FOLLOWS_EVERY).await;
                 ticks += 1;
@@ -164,7 +176,17 @@ impl HeadsUp {
                     if this.asking.is_none() {
                         return false;
                     }
-                    this.place(cx);
+                    // System Settings closed without it (its window gone two seconds), or left
+                    // open and forgotten: the tile goes, and the box is asked no more.
+                    match this.place(cx) {
+                        Some(true) => (seen, gone) = (true, 0),
+                        Some(false) if seen => gone += 1,
+                        _ => {}
+                    }
+                    if gone >= GONE_AFTER || ticks >= GIVEN_UP_AFTER {
+                        this.stop_asking(cx);
+                        return false;
+                    }
                     if ticks.is_multiple_of(ASKS_EVERY) {
                         this.read(cx);
                     }
@@ -178,22 +200,24 @@ impl HeadsUp {
         cx.notify();
     }
 
-    /// Puts the tile beside System Settings' window, where it has one on screen.
-    fn place(&mut self, cx: &mut Context<Self>) {
-        // (Only the app follows a real window; tests and shots have none to follow.)
+    /// Puts the tile beside System Settings' window, where it has one on screen. Says whether
+    /// that window is there (none where that isn't looked for: tests and shots follow no real
+    /// window).
+    fn place(&mut self, cx: &mut Context<Self>) -> Option<bool> {
         #[cfg(target_os = "macos")]
-        if self.live
-            && let Some(tile) = self.tile()
-            && let Some(settings) = mac::settings_window()
-        {
-            let displays: Vec<_> = cx.displays().iter().map(|display| display.bounds()).collect();
-            let Some(main) = cx.primary_display().map(|display| display.bounds()) else { return };
-            let screen = displays.into_iter().find(|display| display.intersects(&settings)).unwrap_or(main);
-            let to = tile::beside(settings, screen);
-            tile.update(cx, |_, window, _| mac::move_window(window, to, main.size.height)).ok();
+        if self.live {
+            let Some(settings) = mac::settings_window() else { return Some(false) };
+            if let Some(tile) = self.tile() {
+                let displays: Vec<_> = cx.displays().iter().map(|display| display.bounds()).collect();
+                let main = cx.primary_display().map(|display| display.bounds())?;
+                let screen = displays.into_iter().find(|display| display.intersects(&settings)).unwrap_or(main);
+                let to = tile::beside(settings, screen);
+                tile.update(cx, |_, window, _| mac::move_window(window, to, main.size.height)).ok();
+            }
+            return Some(true);
         }
-        #[cfg(not(target_os = "macos"))]
         let _ = cx;
+        None
     }
 
     /// The tile goes, and the box is no longer asked each second.
@@ -237,7 +261,10 @@ impl HeadsUp {
         };
         Some(
             div()
+                .id("permission-heads-up")
                 .debug_selector(|| "permission-heads-up".into())
+                // (A click on it goes to nothing under it.)
+                .occlude()
                 .w_full()
                 .max_w(px(520.))
                 .flex()

@@ -79,11 +79,15 @@ fn stand_in() -> bool {
 fn opens() -> Opens {
     let demo_root = std::env::var("KUVO_DEMO_MACHINE_ROOT").ok();
     let installer = std::env::current_exe().map_err(|_| kuvo_box::install::OnlyAttaches("Kuvo couldn’t find where it’s installed.".into())).and_then(|executable| Installer::for_app(&executable, demo_root.as_deref()));
-    let (root, app_id) = match &installer {
-        Ok(installer) => (installer.root().to_owned(), installer.carried().id.clone()),
-        Err(_) => (kuvo_box::install::REAL_ROOT.to_owned(), kuvo_box::install::REAL_APP.to_owned()),
-    };
-    Opens { installer, attach: Arc::new(move || your_boxes(&root, &app_id)) }
+    // Whose folders and keys this build keeps to: a copy of the app never the real Kuvo's.
+    let names = std::env::current_exe().ok().and_then(|executable| kuvo_box::install::names_for(&executable, demo_root.as_deref()));
+    Opens {
+        installer,
+        attach: Arc::new(move || match &names {
+            Some(names) => your_boxes(&names.root, &names.app_id),
+            None => Err("This copy of Kuvo has no folder of its own to use.".to_owned()),
+        }),
+    }
 }
 
 /// Your boxes: the one on this computer (the nearest), and every other of your computers, each

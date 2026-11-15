@@ -46,7 +46,7 @@ impl Here {
                     let first = boxes.nearest().expect("the stand-in is the nearest box");
                     Ok((boxes, first))
                 }
-                None => Err("Kuvo Code isn't set up on this Mac.".into()),
+                None => Err(NOT_RUNNING.into()),
             }
         })
     }
@@ -115,6 +115,8 @@ fn verbs(bundle: &Bundle) -> Vec<String> {
     bundle.asked().iter().map(|line| line.split(' ').next().unwrap_or_default().to_owned()).collect()
 }
 
+/// What reaching this computer's Kuvo says when it isn't answering (`kuvo_box::place`'s words).
+const NOT_RUNNING: &str = "Kuvo Code on this Mac isn't running.";
 const FRESH: &str = r#"{"verdict":"fresh","verb":"new","status":{}}"#;
 const DONE: &str = r#"{"result":"done","verdict":"ours","started":true,"status":{}}"#;
 
@@ -309,9 +311,12 @@ fn a_mac_whose_kuvo_is_here_but_isnt_running_says_so_quietly(cx: &mut TestAppCon
     bundle.says("status", None, 0, &[r#"{"verdict":"ours","verb":null,"status":{}}"#]);
     let here = Here::default();
     let (launch, cx) = open(cx, installer, &here);
+    // It's waited for a little (at login the two start together), quietly.
+    assert!(!shown(cx, "launch-again") && !shown(cx, "first-run-card"));
+    wait(cx, Duration::from_secs(21));
     // No welcome for someone who's had it: the window's quiet middle, why, and Try Again.
     assert!(!shown(cx, "first-run-card") && shown(cx, "launch-message") && shown(cx, "launch-again"));
-    assert_eq!(message(&launch, cx).as_deref(), Some("Kuvo Code isn't set up on this Mac."));
+    assert_eq!(message(&launch, cx).as_deref(), Some(NOT_RUNNING));
     // Its helper wasn't in place: `new` starts it (the box's word), still with no card.
     bundle.says("status", None, 0, &[r#"{"verdict":"ours","verb":"new","status":{}}"#]).says("new", None, 0, &[r#"{"result":"nothing","verdict":"ours","started":true,"status":{}}"#]);
     click(cx, "launch-again");
@@ -320,6 +325,32 @@ fn a_mac_whose_kuvo_is_here_but_isnt_running_says_so_quietly(cx: &mut TestAppCon
     here.answers(&StandIn::at(Replies::Never, NOW));
     wait(cx, Duration::from_millis(500));
     assert!(opened(&launch, cx));
+}
+
+#[gpui::test]
+fn a_computer_whose_engine_is_fetched_before_it_s_judged_says_it_s_being_set_up(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, installer) = carried(made.path());
+    // As the real installer goes on a computer with nothing: `status` itself unpacks the release
+    // and fetches the engine, then fails offline.
+    let offline = "The engine couldn't be downloaded. Check that this Mac is online, then try again.";
+    bundle.says("status", None, 1, &[r#"{"step":"checking"}"#, r#"{"step":"engine"}"#, &format!(r#"{{"result":"failed","message":"{offline}"}}"#)]);
+    let here = Here::default();
+    let (launch, cx) = open(cx, installer, &here);
+    assert_eq!(message(&launch, cx).as_deref(), Some(offline));
+    assert!(shown(cx, "launch-again"));
+    assert_eq!(verbs(&bundle), ["status"]);
+    // While it worked, the window's quiet line said so: the steps came as it was still asked.
+    launch.update(cx, |launch, cx| {
+        launch.show(Stage::Asking, false, cx);
+        assert_eq!(launch.waiting_words(), "Setting up Kuvo…");
+    });
+    // A Mac whose Kuvo is here never says so: nothing is set up for whoever sees it.
+    let other = tempfile::tempdir().unwrap();
+    let (bundle, installer) = carried(other.path());
+    bundle.says("status", None, 0, &[r#"{"verdict":"ours","verb":null,"status":{}}"#]);
+    let (launch, cx) = open(cx, installer, &here);
+    assert_eq!(launch.read_with(cx, |launch, _| launch.waiting_words()), "Starting…");
 }
 
 #[gpui::test]
@@ -343,7 +374,7 @@ fn a_build_that_isnt_the_app_in_its_bundle_only_attaches(cx: &mut TestAppContext
     // Nothing here: it says so, and that this build installs nothing. Nothing was installed.
     let here = Here::default();
     let (launch, cx) = open(cx, dev.clone(), &here);
-    assert_eq!(message(&launch, cx).as_deref(), Some("Kuvo Code isn't set up on this Mac."));
+    assert_eq!(message(&launch, cx).as_deref(), Some(NOT_RUNNING));
     assert!(shown(cx, "launch-note") && shown(cx, "launch-again") && !shown(cx, "first-run-card"));
     // A box that's here (set up by Kuvo Code itself): it attaches, as it always did.
     let box_here = StandIn::at(Replies::Never, NOW);
