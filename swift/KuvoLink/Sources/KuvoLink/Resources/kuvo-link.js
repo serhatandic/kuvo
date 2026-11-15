@@ -4642,6 +4642,7 @@ var FEATURES = [
   "settings",
   "setup",
   "setup.mainOnly",
+  "setup.ready",
   "setup.welcomed",
   "shell.stop",
   "sign-in.accounts.kinds",
@@ -45378,7 +45379,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ac8283751520";
+var BRIDGE_VERSION = "f140a3740757";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -49517,6 +49518,350 @@ async function* engineRoute(context) {
   return yield* forward(engine, request.path, request, signal, allowed, namingHere(readEngine));
 }
 
+// box/src/link/areas/sign-in-state.ts
+var keyOnly = (offered) => offered.methods.length > 0 && offered.methods.every((method) => method.type === "key");
+var connects = (offered) => offered.methods.some((method) => method.type === "external") && !offered.methods.some((method) => method.type === "oauth");
+var SIGN_IN_WORDS = { first: "Sign In", again: "Sign In Again", another: "Add Another Account" };
+var KEY_WORDS = { first: "Add Key", again: "Replace Key", another: "Add Another Key" };
+var CONNECT_WORDS = { first: "Connect", again: "Reconnect", another: "Add Another Account" };
+var text5 = (value) => typeof value === "string" ? plainName(value) : "";
+function connectionSaid(connection, name, computer, ended) {
+  const status = isObject(connection.status) ? connection.status : {};
+  const label = text5(connection.label);
+  const kind = connection.method === "key" ? "API key" : connection.method === "external" ? `Credentials on ${computer}` : "";
+  const who = label && label !== name && label.toLowerCase() !== kind.toLowerCase() ? label : "";
+  const line = connection.type === "env" ? `From ${text5(connection.name) || "its environment"}` : kind ? who ? `${kind} · ${who}` : kind : who || "Signed in";
+  const trouble = status.status === "failed" ? text5(status.message) : "";
+  return {
+    ...connection.type === "credential" && typeof connection.id === "string" && connection.id ? { id: connection.id } : {},
+    state: ended || status.status === "needs_auth" ? "ended" : trouble ? "problem" : "signedIn",
+    line,
+    who,
+    signedInAs: connection.type !== "env" && !kind && who !== "",
+    what: connection.what === true,
+    trouble
+  };
+}
+function accountState(account, offered, { agents = false, ended, computer }) {
+  const id = typeof account.id === "string" ? account.id : "";
+  const name = text5(account.name) || id;
+  const meta = isObject(account.metadata) ? account.metadata : {};
+  const listed = (Array.isArray(account.connections) ? account.connections : []).filter(isObject);
+  const said = listed.map((each) => connectionSaid(each, name, computer, !agents && ended !== undefined && each.type === "credential" && each.id === ended));
+  const connections = said.map(({ id, state, line }) => ({ ...id ? { id } : {}, state, line }));
+  const inUse = said[0];
+  const savedInUse = said[listed.findIndex((each) => each.type === "credential")];
+  const signsIn = offered.methods.length > 0;
+  const words = keyOnly(offered) ? KEY_WORDS : connects(offered) ? CONNECT_WORDS : SIGN_IN_WORDS;
+  const added = agents && (id.includes("@") || typeof meta.accountID === "string" && meta.accountID !== "" && meta.accountID !== "default");
+  const installs = agents && meta.installed === false && typeof meta.install === "string" && meta.install !== "";
+  const state = installs ? "notInstalled" : (agents ? meta.signInEnded === true : inUse?.state === "ended" || savedInUse?.state === "ended") ? "ended" : inUse ? inUse.state === "problem" ? "problem" : "signedIn" : agents && meta.unchecked === true ? "unchecked" : "signedOut";
+  const line = (() => {
+    switch (state) {
+      case "notInstalled":
+        return `Not installed on ${computer}`;
+      case "ended":
+        return "Sign-in ended";
+      case "problem":
+        return inUse.trouble;
+      case "unchecked":
+        return "Couldn’t check just now";
+      case "signedIn": {
+        if (agents && meta.unchecked === true && !inUse.who)
+          return "Couldn’t check just now";
+        const first = inUse.signedInAs ? `Signed in ${inUse.what ? "with" : "as"} ${inUse.who}` : inUse.line;
+        return said.length > 1 ? `${first} · ${said.length} accounts` : first;
+      }
+      case "signedOut":
+        if (agents)
+          return "Not signed in";
+        if (!signsIn)
+          return offered.environment.length ? `Set ${offered.environment.join(" or ")} in your shell profile` : "Not signed in";
+        return offered.hint || "Not signed in";
+    }
+  })();
+  const actions = [];
+  const here = agents && meta.remoteSignIn !== true ? { here: true } : {};
+  const remove = {
+    id: "remove",
+    label: "Remove Account",
+    confirm: { title: `Remove ${name}?`, message: `It’s signed out on ${computer}, and its models leave the model picker. A turn running on it stops; its sessions stay.`, label: "Remove Account" }
+  };
+  if (agents) {
+    if (installs)
+      actions.push({ id: "install", label: "Install" });
+    else if (signsIn)
+      actions.push(said.length || state === "ended" ? { id: "signInAgain", label: words.again, ...here } : { id: "signIn", label: words.first, ...here });
+    const latest = text5(meta.latestVersion);
+    const updating = isObject(meta.programUpdate) && meta.programUpdate.state === "updating";
+    if (!added && !installs && meta.outdated === true && meta.updates === true && latest && !updating)
+      actions.push({ id: "update", label: `Update to ${latest}` });
+    if (meta.signsOut === true && said.length)
+      actions.push({ id: "signOut", label: "Sign Out" });
+    if (added)
+      actions.push({ id: "rename", label: "Rename" }, remove);
+    return { state, line, actions, connections, ...added ? { added: true } : {} };
+  }
+  if (!said.length) {
+    if (signsIn)
+      actions.push({ id: "signIn", label: words.first });
+    return { state, line, actions, connections };
+  }
+  if (signsIn) {
+    if (state === "ended" || state === "problem" || said.some((each) => each.state === "ended"))
+      actions.push({ id: "signInAgain", label: words.again });
+    actions.push({ id: "addAnother", label: words.another });
+  }
+  if (meta.source !== "mcp" && listed.some((each) => each.type === "credential")) {
+    const stays = listed.filter((each) => each.type === "env").map((each) => text5(each.name)).filter(Boolean);
+    const message = stays.length ? `Its saved sign-ins and keys go from ${computer}. It stays signed in from ${stays.join(" and ")} in its shell’s environment, so its models stay.` : `Its sign-ins and keys go from ${computer}, and its models leave the model picker there. Sessions on its models stop until you sign in again.`;
+    actions.push({ id: "disconnect", label: "Disconnect", confirm: { title: `Disconnect ${name}?`, message, label: "Disconnect" } });
+  }
+  return { state, line, actions, connections };
+}
+
+// box/src/link/areas/sign-in.ts
+var SIGN_IN_METHODS_ROUTE = "kuvo/sign-in/methods";
+var SIGN_IN_STATUS_ROUTE = "kuvo/sign-in/status";
+var SIGN_IN_ACCOUNTS_ROUTE = "kuvo/sign-in/accounts";
+var SIGN_IN_START_ROUTE = "kuvo/sign-in/start";
+var SEARCH_SERVICES = new Set(["exa", "firecrawl", "parallel", "tavily", "tinyfish"]);
+var AGENT_DUPLICATES = new Set(["claude-agent"]);
+function accountKind(account, agents = false) {
+  const id = typeof account.id === "string" ? account.id : "";
+  const source = account.metadata?.source;
+  if (agents)
+    return { kind: "provider", listed: true };
+  if (source === "mcp")
+    return { kind: "mcp", listed: false };
+  if (SEARCH_SERVICES.has(id))
+    return { kind: "search", listed: false };
+  if (AGENT_DUPLICATES.has(id))
+    return { kind: "agentDuplicate", listed: Array.isArray(account.connections) && account.connections.length > 0 };
+  return { kind: "provider", listed: true };
+}
+function serviceOf(account, agents = false) {
+  const id = typeof account.id === "string" ? account.id : "";
+  if (agents) {
+    const agent = account.metadata?.agent;
+    const kind = typeof agent === "string" && agent ? agent : id.split("@")[0].replace(/-code$/, "");
+    return AGENT_SERVICES.has(kind) ? kind : undefined;
+  }
+  return ENGINE_SERVICES[id];
+}
+var AGENT_SERVICES = new Set(["claude", "codex", "grok", "cursor", "antigravity"]);
+function userCodeOf(said) {
+  if (typeof said?.userCode === "string" && said.userCode)
+    return said.userCode;
+  if (typeof said?.url === "string") {
+    try {
+      const code = new URL(said.url).searchParams.get("user_code");
+      if (code)
+        return code;
+    } catch {}
+  }
+  const instructions = typeof said?.instructions === "string" ? said.instructions : "";
+  const at = instructions.toLowerCase().lastIndexOf("code:");
+  const after = at < 0 ? "" : instructions.slice(at + "code:".length).trim().replace(/[.,;:!]+$/, "");
+  if (after && !/\s/.test(after) && after.length <= 40)
+    return after;
+  return instructions.match(/(?<![A-Za-z0-9-])[A-Z0-9]{4}-[A-Z0-9]{4,5}(?![A-Za-z0-9-])/)?.[0];
+}
+var ORDER = { oauth: 0, external: 1, key: 2 };
+var KEY_LABEL = "Use an API key";
+var SIGN_IN_LABEL = "Sign in";
+function signInMethods(account) {
+  const provider = typeof account.id === "string" ? account.id : "";
+  const listed = (Array.isArray(account.methods) ? account.methods : []).filter((method) => !!method && typeof method === "object");
+  const connections = Array.isArray(account.connections) ? account.connections : [];
+  const signedInWithPlan = connections.some((connection) => connection?.method === "oauth");
+  const offered = [];
+  for (const method of listed) {
+    const type = method.type;
+    if (type !== "oauth" && type !== "external" && type !== "key")
+      continue;
+    const id = typeof method.id === "string" ? method.id : undefined;
+    if (type !== "key" && !id)
+      continue;
+    if (type === "oauth" && !signedInWithPlan && planHides(provider, id))
+      continue;
+    const given = typeof method.label === "string" ? method.label.trim() : "";
+    const label = given || (type === "key" ? KEY_LABEL : SIGN_IN_LABEL);
+    offered.push({
+      type,
+      ...type !== "key" ? { id } : {},
+      label,
+      ...Array.isArray(method.form) ? { form: method.form } : {},
+      .../legacy/i.test(label) ? { legacy: true } : {}
+    });
+  }
+  const methods = offered.map((method, at) => ({ method, at })).sort((a, b) => Number(!!a.method.legacy) - Number(!!b.method.legacy) || ORDER[a.method.type] - ORDER[b.method.type] || a.at - b.at).map((each) => each.method);
+  const environment = listed.filter((method) => method.type === "env" && Array.isArray(method.names)).flatMap((method) => method.names.filter((name) => typeof name === "string" && name !== ""));
+  return { methods, environment, hint: hintOf(methods, typeof account.name === "string" ? account.name : provider) };
+}
+function hintOf(methods, name) {
+  const signIn = methods.find((method) => method.type === "oauth" && !method.legacy);
+  if (signIn)
+    return name && signIn.label.toLowerCase().includes(name.toLowerCase()) ? "Sign in" : signIn.label.replaceAll("Login with", "Sign in with");
+  return methods.some((method) => method.type === "key") && !methods.some((method) => method.type === "external") ? "API key" : "Connect";
+}
+var isPlan = (offered) => offered.methods.some((method) => method.type === "oauth");
+function failureWords(status, message) {
+  if (status === "expired")
+    return "The sign-in timed out. Try again.";
+  const said = typeof message === "string" ? message.trim() : "";
+  if (!said)
+    return "Signing in didn’t work.";
+  const lower = said.toLowerCase();
+  if (lower.includes("access_denied"))
+    return "The sign-in was turned down on its page. Try again to sign in.";
+  if (lower.includes("server_error") || lower.includes("temporarily_unavailable"))
+    return "The service couldn’t sign you in just now. Try again in a moment.";
+  if (lower.includes("state mismatch") || lower.includes("state_mismatch"))
+    return "That page was from an earlier sign-in. Try again to sign in.";
+  if (/^[a-z]+(_[a-z]+)+$/i.test(said))
+    return `Signing in didn’t work (${lower.replaceAll("_", " ")}).`;
+  return said;
+}
+function placeOf2(query, context) {
+  if (query.get("agents") === "1") {
+    const bridge = context.bridge();
+    return bridge ? { target: bridge } : { down: agentsDown() ?? "The coding agents aren't running. Try again in a moment." };
+  }
+  try {
+    return { target: context.readEngine() };
+  } catch {
+    return { down: engineDown() };
+  }
+}
+var MOST_WAIT = 25;
+async function* accountsRoute2(context, query) {
+  const { signal, json } = context;
+  const place = placeOf2(query, context);
+  if ("down" in place)
+    return yield* json(503, { message: place.down });
+  const deadline = AbortSignal.timeout(15000);
+  try {
+    const listed = await call(place.target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, deadline]) : deadline);
+    const accounts = (Array.isArray(listed) ? listed : []).filter((each) => typeof each?.id === "string");
+    const agents = query.get("agents") === "1";
+    const ended = agents ? new Map : readEndedSignIns();
+    const computer = plainName(context.info.name) || "this computer";
+    return yield* json(200, {
+      accounts: accounts.map((account) => {
+        const service = serviceOf(account, agents);
+        const offered = signInMethods(account);
+        return { id: account.id, ...offered, ...accountKind(account, agents), plan: isPlan(offered), ...service ? { service } : {}, ...accountState(account, offered, { agents, ended: ended.get(account.id), computer }) };
+      })
+    });
+  } catch (error) {
+    if (deadline.aborted)
+      return yield* json(504, { message: "It didn't answer in time. Try again." });
+    const status = error?.status;
+    return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message: error instanceof Error && error.message ? error.message : "It didn't answer." });
+  }
+}
+async function* startRoute2(context, query) {
+  const { request, signal, json } = context;
+  if (request.method.toUpperCase() !== "POST")
+    return yield* json(405, {});
+  const integration = query.get("integration")?.trim() ?? "";
+  const given = parsed(request.body);
+  if (!integration || !isObject(given) || typeof given.methodID !== "string" || !given.methodID)
+    return yield* json(400, { message: "Say which account (integration) and which way in (methodID)." });
+  const place = placeOf2(query, context);
+  if ("down" in place)
+    return yield* json(503, { message: place.down });
+  const deadline = AbortSignal.timeout(120000);
+  try {
+    const started = await call(place.target, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, { methodID: given.methodID, ...isObject(given.answer) ? { answer: given.answer } : {} }, signal ? AbortSignal.any([signal, deadline]) : deadline);
+    if (!isObject(started))
+      return yield* json(502, { message: "The sign-in couldn't be started." });
+    const userCode = userCodeOf(started);
+    return yield* json(200, { ...started, ...userCode ? { userCode } : {} });
+  } catch (error) {
+    if (deadline.aborted)
+      return yield* json(504, { message: "It didn't answer in time. Try again." });
+    const status = error?.status;
+    return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message: error instanceof Error && error.message ? error.message : "It didn't answer." });
+  }
+}
+async function* signInRoute(context) {
+  const { request, route, signal, json } = context;
+  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  if (route === SIGN_IN_START_ROUTE)
+    return yield* startRoute2(context, query);
+  if (request.method.toUpperCase() !== "GET")
+    return yield* json(405, {});
+  if (route === SIGN_IN_ACCOUNTS_ROUTE)
+    return yield* accountsRoute2(context, query);
+  const integration = query.get("integration")?.trim() ?? "";
+  const attempt = route === SIGN_IN_STATUS_ROUTE ? query.get("attempt")?.trim() ?? "" : null;
+  if (!integration || attempt === "")
+    return yield* json(400, { message: attempt === "" ? "Say which sign-in (integration, attempt)." : "Say which account (integration)." });
+  const place = placeOf2(query, context);
+  if ("down" in place)
+    return yield* json(503, { message: place.down });
+  const deadline = AbortSignal.timeout(15000);
+  const asking = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  try {
+    if (attempt === null) {
+      const listed = await call(place.target, "GET", "/api/integration", undefined, asking);
+      const account = (Array.isArray(listed) ? listed : []).find((each) => each?.id === integration);
+      if (!account)
+        return yield* json(404, { message: `There's no ${integration} to sign in to here.` });
+      return yield* json(200, signInMethods(account));
+    }
+    const statusRoute = `/api/integration/${encodeURIComponent(integration)}/connect/oauth/${encodeURIComponent(attempt)}`;
+    const read = async () => {
+      const each = AbortSignal.timeout(15000);
+      return await call(place.target, "GET", statusRoute, undefined, signal ? AbortSignal.any([signal, each]) : each);
+    };
+    let said = await read();
+    const wait = Math.min(Math.max(Number(query.get("wait")) || 0, 0), MOST_WAIT) * 1000;
+    if (wait > 0) {
+      const first = JSON.stringify(said), until = Date.now() + wait;
+      while (said?.status === "pending" && JSON.stringify(said) === first && Date.now() < until && !signal?.aborted) {
+        await pause(1000, signal);
+        if (signal?.aborted)
+          break;
+        said = await read();
+      }
+    }
+    const status = said?.status;
+    if (status !== "pending" && status !== "complete" && status !== "failed" && status !== "expired")
+      return yield* json(502, { message: "The sign-in's status couldn't be read." });
+    const userCode = userCodeOf(said);
+    return yield* json(200, { ...said, ...userCode ? { userCode } : {}, ...status === "failed" || status === "expired" ? { failure: failureWords(status, said?.message) } : {} });
+  } catch (error) {
+    if (attempt === null ? deadline.aborted : error?.name === "TimeoutError")
+      return yield* json(504, { message: "It didn't answer in time. Try again." });
+    const status = error?.status;
+    const message = error instanceof Error && error.message ? error.message : "It didn't answer.";
+    return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message });
+  }
+}
+
+// box/src/link/setup/ready.ts
+function needing(accounts, agents, ended, computer) {
+  return accounts.flatMap((account) => {
+    const id = typeof account.id === "string" ? account.id : "";
+    if (!id || !accountKind(account, agents).listed)
+      return [];
+    const offered = signInMethods(account);
+    if (!isPlan(offered))
+      return [];
+    const said = accountState(account, offered, { agents, ended: ended.get(id), computer });
+    return !said.added && (said.state === "ended" || said.state === "problem") ? [id] : [];
+  });
+}
+function firstRunReady(lists, engine, agents, ended, computer) {
+  const runs = offeredHere(lists).some((model) => !model.retiring && !model.hidden && model.providerID !== "auto" && (model.agents || !needsNoAccount(model)));
+  const needsYou = [...needing(agents ?? [], true, new Map, computer), ...needing(engine ?? [], false, ended, computer)];
+  const said = lists.engine !== null && lists.bridge !== null && engine !== null && agents !== null;
+  return { ready: said && runs && needsYou.length === 0, runs, needsYou };
+}
+
 // box/src/link/areas/setup.ts
 var followers = new Set;
 onLinkWritten(() => {
@@ -49560,6 +49905,22 @@ async function* setupRoute(context) {
   }
   if (method !== "GET" && method !== "HEAD")
     return yield* json(405, {});
+  if (route === "kuvo/setup/ready") {
+    let engine = null;
+    try {
+      engine = context.readEngine();
+    } catch {}
+    const agents = context.bridge();
+    const accounts = async (target) => {
+      if (!target)
+        return null;
+      const deadline = AbortSignal.timeout(15000);
+      const listed = await call(target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, deadline]) : deadline).catch(() => null);
+      return Array.isArray(listed) ? listed.filter((each) => typeof each?.id === "string") : null;
+    };
+    const [lists, fromEngine, fromAgents] = await Promise.all([listsHere(engine, agents), accounts(engine), accounts(agents)]);
+    return yield* json(200, firstRunReady(lists, fromEngine, fromAgents, readEndedSignIns(), plainName(context.info.name) || "this computer"));
+  }
   if (route === "kuvo/setup/events") {
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
     return yield* followed(() => setupView(readLink()), followers, signal);
@@ -52864,7 +53225,7 @@ async function* glanceRoute(context, match) {
 
 // box/src/link/areas/session-asks.ts
 var SESSION_ASKS_ROUTE = /^kuvo\/sessions\/([^/]+)\/asks(?:\/([^/]+))?$/;
-var text5 = (value) => typeof value === "string" ? value : null;
+var text6 = (value) => typeof value === "string" ? value : null;
 var strings = (value) => Array.isArray(value) ? value.filter((each) => typeof each === "string") : [];
 function relativeTo(folder, file) {
   if (!folder)
@@ -52914,7 +53275,7 @@ function permissionAsk(request, asker, folder, command, home, forConversation = 
     kind: "permission",
     session: asker,
     title: permissionTitle(action, resources, folder, command),
-    message: text5(request.message),
+    message: text6(request.message),
     command,
     files,
     resources: resources.map((each) => action === "external_directory" ? outsideShown(each, home) : relativeTo(folder, each)),
@@ -52934,13 +53295,13 @@ function questionsOf(form) {
     const options = (Array.isArray(field.options) ? field.options : []).filter(isObject).map((option) => ({
       value: String(option.value ?? option.label ?? ""),
       label: String(option.label ?? option.value ?? ""),
-      description: text5(option.description)
+      description: text6(option.description)
     }));
     const multiple = field.type === "multiselect";
     return {
       key: field.key,
-      title: text5(field.title),
-      question: text5(field.description) ?? text5(field.title) ?? text5(form.title) ?? "",
+      title: text6(field.title),
+      question: text6(field.description) ?? text6(field.title) ?? text6(form.title) ?? "",
       options,
       multiple,
       custom: field.custom === true || !multiple && !options.length,
@@ -53072,7 +53433,7 @@ async function asksOf(target, session, folder, signal, place = {}) {
         continue;
       const fields = (Array.isArray(form.fields) ? form.fields : []).filter(isObject);
       const questions = questionsOf(form);
-      const title = text5(form.title) || "Question";
+      const title = text6(form.title) || "Question";
       const shown = questions ? { id: form.id, kind: "question", session: asker, title, questions } : { id: form.id, kind: "other", session: asker, title, message: describeForm(form), dismiss: true };
       found.push({ at: timeOf(form.id, form.time?.created), ask: { shown, target, asker, form: { fields } } });
     }
@@ -53082,13 +53443,13 @@ async function asksOf(target, session, folder, signal, place = {}) {
   }) : null;
   const get = (route) => call(target, "GET", `/${route}`, undefined, wait()).then((data) => ({ data }));
   for (const form of Array.isArray(shared) ? shared : []) {
-    const server = isObject(form) && isObject(form.metadata) ? text5(form.metadata.server) : null;
+    const server = isObject(form) && isObject(form.metadata) ? text6(form.metadata.server) : null;
     if (!isObject(form) || typeof form.id !== "string" || !server)
       continue;
     const owner = (await sessionsWaitingOnServer(server, folder, get))[0];
     if (!owner || !askers.includes(owner))
       continue;
-    const shown = { id: form.id, kind: "other", session, title: text5(form.title) || server, message: describeForm(form), dismiss: true };
+    const shown = { id: form.id, kind: "other", session, title: text6(form.title) || server, message: describeForm(form), dismiss: true };
     found.push({ at: timeOf(form.id, form.time?.created), ask: { shown, target, asker: "global", folder } });
   }
   const asking = new Set(askers);
@@ -53107,7 +53468,7 @@ async function asksOf(target, session, folder, signal, place = {}) {
   const elsewhere = (ask) => ask.shown.kind === "other" || ask.shown.kind === "vault" && !ask.shown.choices.length ? 1 : 0;
   return found.sort((a, b) => elsewhere(a.ask) - elsewhere(b.ask) || a.at - b.at).map((each) => each.ask);
 }
-async function placeOf2(context, session) {
+async function placeOf3(context, session) {
   const targets = targetsOf({ readEngine: context.readEngine, bridge: context.bridge });
   if (!targets.length)
     throw new Unreached("The engine isn't running.");
@@ -53171,7 +53532,7 @@ async function* sessionAsksRoute(context, match) {
   }
   let place;
   try {
-    place = await placeOf2(context, session);
+    place = await placeOf3(context, session);
   } catch (error) {
     if (error instanceof Unreached)
       return yield* json(503, { message: error.message });
@@ -53192,7 +53553,7 @@ async function* sessionAsksRoute(context, match) {
       if (held)
         return;
     }
-    const now = await placeOf2(context, session);
+    const now = await placeOf3(context, session);
     return now ? { asks: (await asksOf(now.target, session, now.folder, signal ?? undefined, { forConversation: now.forConversation, client })).map((each) => each.shown) } : { asks: [] };
   };
   if (!ask) {
@@ -56008,330 +56369,6 @@ async function* providerModelsRoute(context) {
   return yield* json(status, value);
 }
 
-// box/src/link/areas/sign-in-state.ts
-var keyOnly = (offered) => offered.methods.length > 0 && offered.methods.every((method) => method.type === "key");
-var connects = (offered) => offered.methods.some((method) => method.type === "external") && !offered.methods.some((method) => method.type === "oauth");
-var SIGN_IN_WORDS = { first: "Sign In", again: "Sign In Again", another: "Add Another Account" };
-var KEY_WORDS = { first: "Add Key", again: "Replace Key", another: "Add Another Key" };
-var CONNECT_WORDS = { first: "Connect", again: "Reconnect", another: "Add Another Account" };
-var text6 = (value) => typeof value === "string" ? plainName(value) : "";
-function connectionSaid(connection, name, computer, ended) {
-  const status = isObject(connection.status) ? connection.status : {};
-  const label = text6(connection.label);
-  const kind = connection.method === "key" ? "API key" : connection.method === "external" ? `Credentials on ${computer}` : "";
-  const who = label && label !== name && label.toLowerCase() !== kind.toLowerCase() ? label : "";
-  const line = connection.type === "env" ? `From ${text6(connection.name) || "its environment"}` : kind ? who ? `${kind} · ${who}` : kind : who || "Signed in";
-  const trouble = status.status === "failed" ? text6(status.message) : "";
-  return {
-    ...connection.type === "credential" && typeof connection.id === "string" && connection.id ? { id: connection.id } : {},
-    state: ended || status.status === "needs_auth" ? "ended" : trouble ? "problem" : "signedIn",
-    line,
-    who,
-    signedInAs: connection.type !== "env" && !kind && who !== "",
-    what: connection.what === true,
-    trouble
-  };
-}
-function accountState(account, offered, { agents = false, ended, computer }) {
-  const id = typeof account.id === "string" ? account.id : "";
-  const name = text6(account.name) || id;
-  const meta = isObject(account.metadata) ? account.metadata : {};
-  const listed = (Array.isArray(account.connections) ? account.connections : []).filter(isObject);
-  const said = listed.map((each) => connectionSaid(each, name, computer, !agents && ended !== undefined && each.type === "credential" && each.id === ended));
-  const connections = said.map(({ id, state, line }) => ({ ...id ? { id } : {}, state, line }));
-  const inUse = said[0];
-  const savedInUse = said[listed.findIndex((each) => each.type === "credential")];
-  const signsIn = offered.methods.length > 0;
-  const words = keyOnly(offered) ? KEY_WORDS : connects(offered) ? CONNECT_WORDS : SIGN_IN_WORDS;
-  const added = agents && (id.includes("@") || typeof meta.accountID === "string" && meta.accountID !== "" && meta.accountID !== "default");
-  const installs = agents && meta.installed === false && typeof meta.install === "string" && meta.install !== "";
-  const state = installs ? "notInstalled" : (agents ? meta.signInEnded === true : inUse?.state === "ended" || savedInUse?.state === "ended") ? "ended" : inUse ? inUse.state === "problem" ? "problem" : "signedIn" : agents && meta.unchecked === true ? "unchecked" : "signedOut";
-  const line = (() => {
-    switch (state) {
-      case "notInstalled":
-        return `Not installed on ${computer}`;
-      case "ended":
-        return "Sign-in ended";
-      case "problem":
-        return inUse.trouble;
-      case "unchecked":
-        return "Couldn’t check just now";
-      case "signedIn": {
-        if (agents && meta.unchecked === true && !inUse.who)
-          return "Couldn’t check just now";
-        const first = inUse.signedInAs ? `Signed in ${inUse.what ? "with" : "as"} ${inUse.who}` : inUse.line;
-        return said.length > 1 ? `${first} · ${said.length} accounts` : first;
-      }
-      case "signedOut":
-        if (agents)
-          return "Not signed in";
-        if (!signsIn)
-          return offered.environment.length ? `Set ${offered.environment.join(" or ")} in your shell profile` : "Not signed in";
-        return offered.hint || "Not signed in";
-    }
-  })();
-  const actions = [];
-  const here = agents && meta.remoteSignIn !== true ? { here: true } : {};
-  const remove = {
-    id: "remove",
-    label: "Remove Account",
-    confirm: { title: `Remove ${name}?`, message: `It’s signed out on ${computer}, and its models leave the model picker. A turn running on it stops; its sessions stay.`, label: "Remove Account" }
-  };
-  if (agents) {
-    if (installs)
-      actions.push({ id: "install", label: "Install" });
-    else if (signsIn)
-      actions.push(said.length || state === "ended" ? { id: "signInAgain", label: words.again, ...here } : { id: "signIn", label: words.first, ...here });
-    const latest = text6(meta.latestVersion);
-    const updating = isObject(meta.programUpdate) && meta.programUpdate.state === "updating";
-    if (!added && !installs && meta.outdated === true && meta.updates === true && latest && !updating)
-      actions.push({ id: "update", label: `Update to ${latest}` });
-    if (meta.signsOut === true && said.length)
-      actions.push({ id: "signOut", label: "Sign Out" });
-    if (added)
-      actions.push({ id: "rename", label: "Rename" }, remove);
-    return { state, line, actions, connections, ...added ? { added: true } : {} };
-  }
-  if (!said.length) {
-    if (signsIn)
-      actions.push({ id: "signIn", label: words.first });
-    return { state, line, actions, connections };
-  }
-  if (signsIn) {
-    if (state === "ended" || state === "problem" || said.some((each) => each.state === "ended"))
-      actions.push({ id: "signInAgain", label: words.again });
-    actions.push({ id: "addAnother", label: words.another });
-  }
-  if (meta.source !== "mcp" && listed.some((each) => each.type === "credential")) {
-    const stays = listed.filter((each) => each.type === "env").map((each) => text6(each.name)).filter(Boolean);
-    const message = stays.length ? `Its saved sign-ins and keys go from ${computer}. It stays signed in from ${stays.join(" and ")} in its shell’s environment, so its models stay.` : `Its sign-ins and keys go from ${computer}, and its models leave the model picker there. Sessions on its models stop until you sign in again.`;
-    actions.push({ id: "disconnect", label: "Disconnect", confirm: { title: `Disconnect ${name}?`, message, label: "Disconnect" } });
-  }
-  return { state, line, actions, connections };
-}
-
-// box/src/link/areas/sign-in.ts
-var SIGN_IN_METHODS_ROUTE = "kuvo/sign-in/methods";
-var SIGN_IN_STATUS_ROUTE = "kuvo/sign-in/status";
-var SIGN_IN_ACCOUNTS_ROUTE = "kuvo/sign-in/accounts";
-var SIGN_IN_START_ROUTE = "kuvo/sign-in/start";
-var SEARCH_SERVICES = new Set(["exa", "firecrawl", "parallel", "tavily", "tinyfish"]);
-var AGENT_DUPLICATES = new Set(["claude-agent"]);
-function accountKind(account, agents = false) {
-  const id = typeof account.id === "string" ? account.id : "";
-  const source = account.metadata?.source;
-  if (agents)
-    return { kind: "provider", listed: true };
-  if (source === "mcp")
-    return { kind: "mcp", listed: false };
-  if (SEARCH_SERVICES.has(id))
-    return { kind: "search", listed: false };
-  if (AGENT_DUPLICATES.has(id))
-    return { kind: "agentDuplicate", listed: Array.isArray(account.connections) && account.connections.length > 0 };
-  return { kind: "provider", listed: true };
-}
-function serviceOf(account, agents = false) {
-  const id = typeof account.id === "string" ? account.id : "";
-  if (agents) {
-    const agent = account.metadata?.agent;
-    const kind = typeof agent === "string" && agent ? agent : id.split("@")[0].replace(/-code$/, "");
-    return AGENT_SERVICES.has(kind) ? kind : undefined;
-  }
-  return ENGINE_SERVICES[id];
-}
-var AGENT_SERVICES = new Set(["claude", "codex", "grok", "cursor", "antigravity"]);
-function userCodeOf(said) {
-  if (typeof said?.userCode === "string" && said.userCode)
-    return said.userCode;
-  if (typeof said?.url === "string") {
-    try {
-      const code = new URL(said.url).searchParams.get("user_code");
-      if (code)
-        return code;
-    } catch {}
-  }
-  const instructions = typeof said?.instructions === "string" ? said.instructions : "";
-  const at = instructions.toLowerCase().lastIndexOf("code:");
-  const after = at < 0 ? "" : instructions.slice(at + "code:".length).trim().replace(/[.,;:!]+$/, "");
-  if (after && !/\s/.test(after) && after.length <= 40)
-    return after;
-  return instructions.match(/(?<![A-Za-z0-9-])[A-Z0-9]{4}-[A-Z0-9]{4,5}(?![A-Za-z0-9-])/)?.[0];
-}
-var ORDER = { oauth: 0, external: 1, key: 2 };
-var KEY_LABEL = "Use an API key";
-var SIGN_IN_LABEL = "Sign in";
-function signInMethods(account) {
-  const provider = typeof account.id === "string" ? account.id : "";
-  const listed = (Array.isArray(account.methods) ? account.methods : []).filter((method) => !!method && typeof method === "object");
-  const connections = Array.isArray(account.connections) ? account.connections : [];
-  const signedInWithPlan = connections.some((connection) => connection?.method === "oauth");
-  const offered = [];
-  for (const method of listed) {
-    const type = method.type;
-    if (type !== "oauth" && type !== "external" && type !== "key")
-      continue;
-    const id = typeof method.id === "string" ? method.id : undefined;
-    if (type !== "key" && !id)
-      continue;
-    if (type === "oauth" && !signedInWithPlan && planHides(provider, id))
-      continue;
-    const given = typeof method.label === "string" ? method.label.trim() : "";
-    const label = given || (type === "key" ? KEY_LABEL : SIGN_IN_LABEL);
-    offered.push({
-      type,
-      ...type !== "key" ? { id } : {},
-      label,
-      ...Array.isArray(method.form) ? { form: method.form } : {},
-      .../legacy/i.test(label) ? { legacy: true } : {}
-    });
-  }
-  const methods = offered.map((method, at) => ({ method, at })).sort((a, b) => Number(!!a.method.legacy) - Number(!!b.method.legacy) || ORDER[a.method.type] - ORDER[b.method.type] || a.at - b.at).map((each) => each.method);
-  const environment = listed.filter((method) => method.type === "env" && Array.isArray(method.names)).flatMap((method) => method.names.filter((name) => typeof name === "string" && name !== ""));
-  return { methods, environment, hint: hintOf(methods, typeof account.name === "string" ? account.name : provider) };
-}
-function hintOf(methods, name) {
-  const signIn = methods.find((method) => method.type === "oauth" && !method.legacy);
-  if (signIn)
-    return name && signIn.label.toLowerCase().includes(name.toLowerCase()) ? "Sign in" : signIn.label.replaceAll("Login with", "Sign in with");
-  return methods.some((method) => method.type === "key") && !methods.some((method) => method.type === "external") ? "API key" : "Connect";
-}
-var isPlan = (offered) => offered.methods.some((method) => method.type === "oauth");
-function failureWords(status, message) {
-  if (status === "expired")
-    return "The sign-in timed out. Try again.";
-  const said = typeof message === "string" ? message.trim() : "";
-  if (!said)
-    return "Signing in didn’t work.";
-  const lower = said.toLowerCase();
-  if (lower.includes("access_denied"))
-    return "The sign-in was turned down on its page. Try again to sign in.";
-  if (lower.includes("server_error") || lower.includes("temporarily_unavailable"))
-    return "The service couldn’t sign you in just now. Try again in a moment.";
-  if (lower.includes("state mismatch") || lower.includes("state_mismatch"))
-    return "That page was from an earlier sign-in. Try again to sign in.";
-  if (/^[a-z]+(_[a-z]+)+$/i.test(said))
-    return `Signing in didn’t work (${lower.replaceAll("_", " ")}).`;
-  return said;
-}
-function placeOf3(query, context) {
-  if (query.get("agents") === "1") {
-    const bridge = context.bridge();
-    return bridge ? { target: bridge } : { down: agentsDown() ?? "The coding agents aren't running. Try again in a moment." };
-  }
-  try {
-    return { target: context.readEngine() };
-  } catch {
-    return { down: engineDown() };
-  }
-}
-var MOST_WAIT = 25;
-async function* accountsRoute2(context, query) {
-  const { signal, json } = context;
-  const place = placeOf3(query, context);
-  if ("down" in place)
-    return yield* json(503, { message: place.down });
-  const deadline = AbortSignal.timeout(15000);
-  try {
-    const listed = await call(place.target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, deadline]) : deadline);
-    const accounts = (Array.isArray(listed) ? listed : []).filter((each) => typeof each?.id === "string");
-    const agents = query.get("agents") === "1";
-    const ended = agents ? new Map : readEndedSignIns();
-    const computer = plainName(context.info.name) || "this computer";
-    return yield* json(200, {
-      accounts: accounts.map((account) => {
-        const service = serviceOf(account, agents);
-        const offered = signInMethods(account);
-        return { id: account.id, ...offered, ...accountKind(account, agents), plan: isPlan(offered), ...service ? { service } : {}, ...accountState(account, offered, { agents, ended: ended.get(account.id), computer }) };
-      })
-    });
-  } catch (error) {
-    if (deadline.aborted)
-      return yield* json(504, { message: "It didn't answer in time. Try again." });
-    const status = error?.status;
-    return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message: error instanceof Error && error.message ? error.message : "It didn't answer." });
-  }
-}
-async function* startRoute2(context, query) {
-  const { request, signal, json } = context;
-  if (request.method.toUpperCase() !== "POST")
-    return yield* json(405, {});
-  const integration = query.get("integration")?.trim() ?? "";
-  const given = parsed(request.body);
-  if (!integration || !isObject(given) || typeof given.methodID !== "string" || !given.methodID)
-    return yield* json(400, { message: "Say which account (integration) and which way in (methodID)." });
-  const place = placeOf3(query, context);
-  if ("down" in place)
-    return yield* json(503, { message: place.down });
-  const deadline = AbortSignal.timeout(120000);
-  try {
-    const started = await call(place.target, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, { methodID: given.methodID, ...isObject(given.answer) ? { answer: given.answer } : {} }, signal ? AbortSignal.any([signal, deadline]) : deadline);
-    if (!isObject(started))
-      return yield* json(502, { message: "The sign-in couldn't be started." });
-    const userCode = userCodeOf(started);
-    return yield* json(200, { ...started, ...userCode ? { userCode } : {} });
-  } catch (error) {
-    if (deadline.aborted)
-      return yield* json(504, { message: "It didn't answer in time. Try again." });
-    const status = error?.status;
-    return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message: error instanceof Error && error.message ? error.message : "It didn't answer." });
-  }
-}
-async function* signInRoute(context) {
-  const { request, route, signal, json } = context;
-  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
-  if (route === SIGN_IN_START_ROUTE)
-    return yield* startRoute2(context, query);
-  if (request.method.toUpperCase() !== "GET")
-    return yield* json(405, {});
-  if (route === SIGN_IN_ACCOUNTS_ROUTE)
-    return yield* accountsRoute2(context, query);
-  const integration = query.get("integration")?.trim() ?? "";
-  const attempt = route === SIGN_IN_STATUS_ROUTE ? query.get("attempt")?.trim() ?? "" : null;
-  if (!integration || attempt === "")
-    return yield* json(400, { message: attempt === "" ? "Say which sign-in (integration, attempt)." : "Say which account (integration)." });
-  const place = placeOf3(query, context);
-  if ("down" in place)
-    return yield* json(503, { message: place.down });
-  const deadline = AbortSignal.timeout(15000);
-  const asking = signal ? AbortSignal.any([signal, deadline]) : deadline;
-  try {
-    if (attempt === null) {
-      const listed = await call(place.target, "GET", "/api/integration", undefined, asking);
-      const account = (Array.isArray(listed) ? listed : []).find((each) => each?.id === integration);
-      if (!account)
-        return yield* json(404, { message: `There's no ${integration} to sign in to here.` });
-      return yield* json(200, signInMethods(account));
-    }
-    const statusRoute = `/api/integration/${encodeURIComponent(integration)}/connect/oauth/${encodeURIComponent(attempt)}`;
-    const read = async () => {
-      const each = AbortSignal.timeout(15000);
-      return await call(place.target, "GET", statusRoute, undefined, signal ? AbortSignal.any([signal, each]) : each);
-    };
-    let said = await read();
-    const wait = Math.min(Math.max(Number(query.get("wait")) || 0, 0), MOST_WAIT) * 1000;
-    if (wait > 0) {
-      const first = JSON.stringify(said), until = Date.now() + wait;
-      while (said?.status === "pending" && JSON.stringify(said) === first && Date.now() < until && !signal?.aborted) {
-        await pause(1000, signal);
-        if (signal?.aborted)
-          break;
-        said = await read();
-      }
-    }
-    const status = said?.status;
-    if (status !== "pending" && status !== "complete" && status !== "failed" && status !== "expired")
-      return yield* json(502, { message: "The sign-in's status couldn't be read." });
-    const userCode = userCodeOf(said);
-    return yield* json(200, { ...said, ...userCode ? { userCode } : {}, ...status === "failed" || status === "expired" ? { failure: failureWords(status, said?.message) } : {} });
-  } catch (error) {
-    if (attempt === null ? deadline.aborted : error?.name === "TimeoutError")
-      return yield* json(504, { message: "It didn't answer in time. Try again." });
-    const status = error?.status;
-    const message = error instanceof Error && error.message ? error.message : "It didn't answer.";
-    return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message });
-  }
-}
-
 // box/src/link/areas/apply.ts
 import fs171 from "node:fs";
 var BUILT_IN_AGENTS2 = ["build", "plan", "general", "explore", "compaction", "title", "summary"];
@@ -58110,7 +58147,7 @@ var ROUTES = [
   { when: (route, request) => /^kuvo\/(skills|skill-library|skill-trash)(\/|\?|$)/.test(request.path), answer: skillsRoute },
   { when: (route, request) => /^kuvo\/(config|mcp\/catalog|keys)(\/|\?|$)/.test(request.path), answer: settingsRoute },
   { when: (route) => route.match(SETTINGS_PAGE_ROUTE), answer: settingsPageRoute },
-  { when: (route) => route === "kuvo/setup" || route === "kuvo/setup/events" || route === "kuvo/setup/judge" || route === "kuvo/setup/attached" || route === "kuvo/setup/welcomed", answer: setupRoute },
+  { when: (route) => route === "kuvo/setup" || route === "kuvo/setup/events" || route === "kuvo/setup/judge" || route === "kuvo/setup/attached" || route === "kuvo/setup/welcomed" || route === "kuvo/setup/ready", answer: setupRoute },
   { when: (route) => !IS_MAC && isMachinesRoute(route), answer: memberComputersRoute },
   { when: (route) => route === "kuvo/phones", answer: phonesRoute },
   { when: (route) => route === "kuvo/phones/remove", answer: phonesRemoveRoute },

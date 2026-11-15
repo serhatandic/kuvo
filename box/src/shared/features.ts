@@ -161,6 +161,7 @@ export const FEATURES = [
   "settings",
   "setup",
   "setup.mainOnly",
+  "setup.ready",
   "setup.welcomed",
   "shell.stop",
   "sign-in.accounts.kinds",
