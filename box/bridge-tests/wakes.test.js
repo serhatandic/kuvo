@@ -16,13 +16,10 @@ process.env.KUVO_HOME = home;
 removeAtEnd(home);
 const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
 
-// kuvo-wake, as Wakes.swift has it and BoxFiles puts it in every box's bin.
-const swift = fs.readFileSync(new URL("../../swift/OpenCodeKit/Sources/OpenCodeKit/Engine/Wakes.swift", import.meta.url), "utf8");
-const opening = 'public static let script = #"""\n';
-const from = swift.indexOf(opening) + opening.length;
-const script = swift.slice(from, swift.indexOf('\n    """#', from)).split("\n").map(line => line.replace(/^ {4}/, "")).join("\n");
+// kuvo-wake, as every box's release has it in its bin (box/src/keeper/kuvo-wake).
+const script = fs.readFileSync(new URL("../src/keeper/kuvo-wake", import.meta.url), "utf8");
 fs.mkdirSync(path.join(home, "bin"), { recursive: true });
-fs.writeFileSync(path.join(home, "bin", "kuvo-wake"), script + "\n", { mode: 0o755 });
+fs.writeFileSync(path.join(home, "bin", "kuvo-wake"), script, { mode: 0o755 });
 
 // The engine: one session, archived or not.
 let archived = false;

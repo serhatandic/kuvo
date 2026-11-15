@@ -22,6 +22,7 @@
   "include": [
     "src/link",
     "src/shared",
-    "src/browser"
+    "src/browser",
+    "src/release"
   ]
 }

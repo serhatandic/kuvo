@@ -30,11 +30,8 @@ const env = { ...process.env, KUVO_HOME: home, HOME: home, TMPDIR: home, TZ: "UT
 for (const name of Object.keys(env)) if (name.startsWith("KUVO_") && name !== "KUVO_HOME") delete env[name];
 
 // The box's own kuvo-wake, as a machine has it in its `bin`.
-const swift = read(new URL("../../swift/OpenCodeKit/Sources/OpenCodeKit/Engine/Wakes.swift", import.meta.url));
-const opening = 'public static let script = #"""\n';
-const from = swift.indexOf(opening) + opening.length;
 const wakeCommand = path.join(home, "bin", "kuvo-wake");
-write(wakeCommand, swift.slice(from, swift.indexOf('\n    """#', from)).split("\n").map(line => line.replace(/^ {4}/, "")).join("\n") + "\n");
+write(wakeCommand, read(new URL("../src/keeper/kuvo-wake", import.meta.url)));
 fs.chmodSync(wakeCommand, 0o755);
 
 // A route of the box's, asked as a client over SSH asks it.
