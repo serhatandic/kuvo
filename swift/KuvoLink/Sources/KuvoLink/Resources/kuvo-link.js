@@ -17835,6 +17835,10 @@ var MOST_BLOCKED = 64;
 function blockVoucher(link, phone, now) {
   if (!phone.by)
     return;
+  for (const other of link.phones ?? [])
+    if (other.by === phone.by && other.key !== phone.key)
+      noteRemoved(link, other.key, other.pairing ?? "");
+  link.phones = (link.phones ?? []).filter((each) => each.by !== phone.by);
   link.vouchBlocked = [...(link.vouchBlocked ?? []).filter((each) => each.key !== phone.by), { key: phone.by, device: phone.name ?? "", at: now }].slice(-MOST_BLOCKED);
 }
 var vouchBlockOf = (link, key) => key ? (link?.vouchBlocked ?? []).find((each) => each.key === key) : undefined;
@@ -17853,8 +17857,8 @@ function takeOff(link, key, pairing, now = Date.now()) {
   noteRemoved(link, key, which);
   if (!current || (current.pairing ?? "") !== which)
     return;
-  blockVoucher(link, current, now);
   link.phones = link.phones.filter((phone) => phone.key !== key);
+  blockVoucher(link, current, now);
 }
 var newPairing = () => crypto24.randomBytes(12).toString("base64url");
 function pairPhone(link, phone) {
@@ -17903,6 +17907,10 @@ function foldPhones(link, now = Date.now()) {
         noteRemoved(link, entry.key, entry.pairing);
     }
   }
+  for (const phone of [...link.phones ?? []]) {
+    if (phone.from === "pair" && link.phones.includes(phone) && removedAlready(link, phone.key, phone.pairing ?? ""))
+      blockVoucher(link, phone, now);
+  }
   const known = new Map((link.phones ?? []).map((phone) => [phone.key, phone]));
   const signed = macs.filter((mac) => macDoc(link, mac, "phones"));
   const listed = [];
@@ -17942,9 +17950,6 @@ function foldPhones(link, now = Date.now()) {
   for (const phone of link.phones ?? [])
     if (phone.from === "pair")
       add(phone);
-  for (const phone of link.phones ?? [])
-    if (phone.from === "pair" && removedAlready(link, phone.key, phone.pairing ?? ""))
-      blockVoucher(link, phone, now);
   link.phones = listed;
 }
 var ownPhones = (link) => ({
@@ -28262,7 +28267,7 @@ function isApart(key, link = readLink(), told = readPeerAgents()) {
 var DEVICES_FEATURE = "devices.pair";
 var namedDevice = (device) => device || "Kuvo Code's app";
 var blockedVouch = (device, computer, here) => ({
-  message: `${namedDevice(device)} on ${computer} was removed from your devices, so ${computer} can't add Kuvo Code's app by itself now. Allow it again from ${here} or one of your devices: Computers, ${computer}.`,
+  message: `${namedDevice(device)} on ${computer} was removed from your devices, so ${computer} can't add Kuvo Code's app by itself now. Allow it again from Kuvo Code on ${here} or another computer's app: Computers, ${computer}.`,
   reason: "blocked"
 });
 var blockedWords = (device, computer) => `${namedDevice(device)} was removed from your devices. ${computer} can't add Kuvo Code's app again until you allow it.`;
@@ -38273,8 +38278,8 @@ async function* allowDevices(context, key) {
     return yield* json(405, { message: "Only POST." });
   const link = readLink();
   const asking = phone?.key?.toString("base64url");
-  const paired = asking !== undefined && (link?.phones ?? []).some((each) => each.key === asking);
-  if (!paired && !fromLocalApp(request))
+  const device = asking === undefined ? undefined : (link?.phones ?? []).find((each) => each.key === asking);
+  if (!device && !fromLocalApp(request) || device?.by !== undefined && device.by === key)
     return yield* json(403, { message: "Only Kuvo Code on this computer, or one of your devices, allows a computer to add your devices again." });
   const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
   const computer = computers.find((each) => each.key === key);
@@ -45647,7 +45652,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f21535c918b4";
+var BRIDGE_VERSION = "a233859e1b31";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
