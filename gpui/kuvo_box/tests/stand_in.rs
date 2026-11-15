@@ -296,6 +296,7 @@ fn a_composer_sends_its_fields_and_asks_the_box_what_a_typed_text_means() {
     use kuvo_box::parts::{Comment, File, Notes, Side};
     let stand_in = StandInBox::start(|seen| match (seen.method.as_str(), seen.route()) {
         (_, "kuvo/info") => Answer::json(200, mac_info(current_features())),
+        ("GET", "api/session/ses_1") | ("POST", "api/session/ses_1/shell") => Answer::json(200, json!({})),
         ("POST", "kuvo/sessions/ses_1/send") => Answer::json(200, json!({})),
         ("POST", "kuvo/sessions/ses_1/typed") => match seen.body.as_ref().unwrap()["text"].as_str().unwrap() {
             "/plan sketch it" => Answer::json(200, json!({ "keyword": "plan", "agent": "plan", "send": { "text": "sketch it", "typed": "/plan", "quoted": true } })),
@@ -385,11 +386,12 @@ fn a_composer_sends_its_fields_and_asks_the_box_what_a_typed_text_means() {
     assert_eq!(answer.restore.map(|restore| restore.text), Some("what about tests?".to_owned()));
     assert_eq!(stand_in.seen().len(), before);
 
-    // "!ls": the client's to run; nothing's sent.
+    // "!ls": the box decides, then runs it without sending an agent message.
     let before = stand_in.seen().len();
     let Sent::Typed { answer, message } = client.send_draft("ses_1", &Draft::new("msg_s", "!ls"), None).unwrap() else { panic!() };
     assert_eq!((answer.shell.as_deref(), message), (Some("ls"), None));
-    assert_eq!(stand_in.seen().len(), before + 1);
+    assert_eq!(stand_in.seen().len(), before + 3);
+    assert_eq!(stand_in.seen().last().unwrap().body, Some(json!({ "command": "ls" })));
 
     // Refused: it all goes back to the composer, saying why.
     let Sent::Typed { answer, message } = client.send_draft("ses_1", &Draft::new("msg_r", "/review now"), None).unwrap() else { panic!() };
