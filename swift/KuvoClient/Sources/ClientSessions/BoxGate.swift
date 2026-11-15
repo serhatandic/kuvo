@@ -33,6 +33,9 @@ public enum BoxGate {
     /// `bots.effort` and `bots.elsewhere`.
     /// Then `sign-in.accounts.state` (#668): Accounts draws each account's state, line and actions
     /// as the box says them, and no client decides when Disconnect, Sign In Again or Install show.
+    /// Then #733's, the facts a first run draws, which no client works out: `folders.suggested`,
+    /// `models.offered.free`, `setup.welcomed` and `sign-in.accounts.plan` (with a key-only
+    /// account's Add Key).
     public static let required: [String] = [
         "agent-tools.own",
         "bots.deletes",
@@ -42,6 +45,7 @@ public enum BoxGate {
         "bots.now",
         "computers",
         "file.text",
+        "folders.suggested",
         "folders.tree",
         "git.branches",
         "git.branches.pullRequest",
@@ -57,6 +61,7 @@ public enum BoxGate {
         "messages.send",
         "models.offered",
         "models.offered.folder",
+        "models.offered.free",
         "models.offered.sides",
         "models.readiness",
         "queue.items",
@@ -68,7 +73,9 @@ public enum BoxGate {
         "sessions.models",
         "sessions.needsYou",
         "sessions.start.empty",
+        "setup.welcomed",
         "sign-in.accounts.kinds",
+        "sign-in.accounts.plan",
         "sign-in.accounts.state",
         "sign-in.codes",
         "typed",

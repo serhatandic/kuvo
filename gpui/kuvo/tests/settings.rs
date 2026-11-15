@@ -150,6 +150,10 @@ fn accounts_lists_the_agents_and_providers_as_the_box_says_them(cx: &mut TestApp
     assert!(shown(cx, "account-grok-cli-install"));
     assert!(shown(cx, "account-anthropic-sign-in"));
     assert!(!shown(cx, "account-groq-sign-in"), "no way in to offer: only its variable");
+    // Keys are entered, never signed into (#733): a key-only account's button is the box's Add Key.
+    for key_only in ["openai", "deepseek", "mistral"] {
+        assert!(shown(cx, &format!("account-{key_only}-add-key")) && !shown(cx, &format!("account-{key_only}-sign-in")), "{key_only}");
+    }
     // What each offers is the box's `actions`, no more: the agent's own sign-in has no Remove
     // Account (only one you added does), and one signed in from where nothing's kept, no Disconnect.
     click(cx, "account-claude-code-menu");
@@ -240,7 +244,7 @@ fn a_key_turned_down_stays_with_why_and_a_good_one_connects(cx: &mut TestAppCont
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     let view = section(&workspace, cx, "Accounts");
-    click(cx, "account-openai-sign-in");
+    click(cx, "account-openai-add-key");
     assert!(matches!(step(&view, cx), Some(Step::Key(_))), "its only way is a key");
     cx.simulate_input("not-a-real-key");
     cx.simulate_keystrokes("enter");

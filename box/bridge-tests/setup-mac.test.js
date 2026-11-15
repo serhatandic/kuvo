@@ -159,6 +159,7 @@ test("this Mac, numbering on its own, leads a setup of its own: its peers docume
     computers: [{ key: self.pub, name: "Studio", kind: "mac", role: "primary", app: true }, { key: lab.pub, name: "lab", kind: "machine", role: "member", app: false }],
     startsFromOthers: { value: null, default: "off" },
     heldBy: [],
+    welcomed: false,
   });
   // Its card, as it's next written: the same, with the item made since.
   link.writeCard();

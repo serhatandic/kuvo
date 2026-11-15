@@ -175,6 +175,12 @@ function hintOf(methods: OfferedMethod[], name: string): string {
   return methods.some(method => method.type === "key") ? "API key" : "Connect";
 }
 
+/** Whether an account is a plan you sign in to (one of its ways in is its sign-in page), rather
+ * than one you enter a key or the computer's credentials for: a coding agent's, ChatGPT's or
+ * Copilot's are plans; OpenAI's key, DeepSeek's or Amazon Bedrock's credentials aren't. From its
+ * ways in as the box offers them, so OpenAI, whose ChatGPT plan comes through Codex, is a key. */
+export const isPlan = (offered: OfferedMethods): boolean => offered.methods.some(method => method.type === "oauth");
+
 /** What a client says of a sign-in that ended without signing in: `expired`, or `failed` with the
  * engine's `message` (a sign-in page that sends back an error hands the engine its OAuth code, as
  * `access_denied` when you turn it down there, which the engine passes on as it is). */
@@ -227,7 +233,7 @@ async function* accountsRoute(context: RouteContext, query: URLSearchParams): As
       accounts: accounts.map(account => {
         const service = serviceOf(account, agents);
         const offered = signInMethods(account);
-        return { id: account.id as string, ...offered, ...accountKind(account, agents), ...(service ? { service } : {}), ...accountState(account, offered, { agents, ended: ended.get(account.id as string), computer }) };
+        return { id: account.id as string, ...offered, ...accountKind(account, agents), plan: isPlan(offered), ...(service ? { service } : {}), ...accountState(account, offered, { agents, ended: ended.get(account.id as string), computer }) };
       }),
     });
   } catch (error) {

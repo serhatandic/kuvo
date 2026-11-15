@@ -228,6 +228,7 @@ impl Settings {
                         let (kind, listed) = kind_of(each, agents);
                         ways["kind"] = json!(kind);
                         ways["listed"] = json!(listed);
+                        ways["plan"] = json!(is_plan(&ways));
                         if let Some(service) = service_of(each, agents) {
                             ways["service"] = json!(service);
                         }
@@ -493,6 +494,17 @@ fn service_of(account: &Value, agents: bool) -> Option<&str> {
 /// The stand-in's computer, as its box names it in a sentence.
 const COMPUTER: &str = super::NAME;
 
+/// Whether an account's only ways in are keys, as the box offers them.
+fn key_only(offered: &Value) -> bool {
+    offered["methods"].as_array().is_some_and(|methods| !methods.is_empty() && methods.iter().all(|method| method["type"] == "key"))
+}
+
+/// Whether an account is a plan you sign in to: one of its ways in is its sign-in page
+/// (`sign-in.accounts.plan`).
+pub fn is_plan(offered: &Value) -> bool {
+    offered["methods"].as_array().is_some_and(|methods| methods.iter().any(|method| method["type"] == "oauth"))
+}
+
 /// How an account stands, its line, its sign-ins and what can be done with it, as the box says
 /// them (box/src/link/areas/sign-in-state.ts; PROTOCOL.md, `sign-in.accounts.state`): the stand-in
 /// answers what a box would for its made-up accounts, held to the same cases
@@ -538,6 +550,8 @@ pub fn said_of(account: &Value, offered: &Value, agents: bool, ended: Option<&st
     let in_use = said.first();
     let saved_in_use = listed.iter().position(|each| each["type"] == "credential").and_then(|at| said.get(at));
     let signs_in = offered["methods"].as_array().is_some_and(|methods| !methods.is_empty());
+    // Keys are entered, never signed into: a key-only account's buttons say so.
+    let (first, again, another) = if key_only(offered) { ("Add Key", "Replace Key", "Add Another Key") } else { ("Sign In", "Sign In Again", "Add Another Account") };
     let added = agents && (id.contains('@') || meta["accountID"].as_str().is_some_and(|account| !account.is_empty() && account != "default"));
     let installs = agents && meta["installed"] == false && meta["install"].as_str().is_some_and(|install| !install.is_empty());
     let state = if installs {
@@ -579,7 +593,7 @@ pub fn said_of(account: &Value, offered: &Value, agents: bool, ended: Option<&st
         if installs {
             actions.push(json!({ "id": "install", "label": "Install" }));
         } else if signs_in {
-            actions.push(if !said.is_empty() || state == "ended" { sign_in("signInAgain", "Sign In Again") } else { sign_in("signIn", "Sign In") });
+            actions.push(if !said.is_empty() || state == "ended" { sign_in("signInAgain", again) } else { sign_in("signIn", first) });
         }
         let latest = text(&meta["latestVersion"]);
         if !added && !installs && meta["outdated"] == true && meta["updates"] == true && !latest.is_empty() && meta["programUpdate"]["state"] != "updating" {
@@ -594,14 +608,14 @@ pub fn said_of(account: &Value, offered: &Value, agents: bool, ended: Option<&st
         }
     } else if said.is_empty() {
         if signs_in {
-            actions.push(json!({ "id": "signIn", "label": "Sign In" }));
+            actions.push(json!({ "id": "signIn", "label": first }));
         }
     } else {
         if signs_in {
             if state == "ended" || state == "problem" || said.iter().any(|each| each.0["state"] == "ended") {
-                actions.push(json!({ "id": "signInAgain", "label": "Sign In Again" }));
+                actions.push(json!({ "id": "signInAgain", "label": again }));
             }
-            actions.push(json!({ "id": "addAnother", "label": "Add Another Account" }));
+            actions.push(json!({ "id": "addAnother", "label": another }));
         }
         if meta["source"] != "mcp" && listed.iter().any(|each| each["type"] == "credential") {
             let stays: Vec<String> = listed.iter().filter(|each| each["type"] == "env").map(|each| text(&each["name"])).filter(|name| !name.is_empty()).collect();
@@ -663,6 +677,7 @@ mod tests {
             for key in ["state", "line", "actions", "connections", "added"] {
                 assert_eq!(said[key], case[key], "{}: {key}", case["about"]);
             }
+            assert_eq!(json!(is_plan(&case["offered"])), case["plan"], "{}: plan", case["about"]);
         }
     }
 }

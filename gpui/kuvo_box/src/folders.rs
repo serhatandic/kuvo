@@ -29,6 +29,26 @@ pub struct Named {
     pub repository: bool,
 }
 
+/// A folder worth starting in, as the box suggests it (`kuvo/folders/suggested`,
+/// `folders.suggested`): its full path on the box, its name, whether it's a git repository, and
+/// when an agent last worked there (ms; none for a repository found in ~/Projects or ~/Developer).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Suggested {
+    pub path: String,
+    pub name: String,
+    #[serde(default)]
+    pub repository: bool,
+    pub seen: Option<u64>,
+}
+
+/// The folders worth starting in on a box's computer, in its order (those worked in first, the
+/// latest first), and its home folder, for showing a path from it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SuggestedFolders {
+    pub home: String,
+    pub folders: Vec<Suggested>,
+}
+
 /// Why a folder can't be read, as the box says it: what to show, and the computer's own reason
 /// ("Permission denied", "No such folder").
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +71,11 @@ pub struct FileText {
 pub const SHOWN_MOST: u64 = 2 * 1024 * 1024;
 
 impl BoxClient {
+    /// The folders worth starting in on this box's computer, as it suggests them.
+    pub fn suggested_folders(&self) -> Result<SuggestedFolders> {
+        self.get("kuvo/folders/suggested")
+    }
+
     /// The folder at `path` (a full one, on the box), as a Files panel lists it. A folder the box
     /// can't read is `Err(Ok(why))`; one it couldn't be asked about, `Err(Err(error))`.
     pub fn folder(&self, path: &str) -> std::result::Result<Folder, std::result::Result<Unreadable, Error>> {

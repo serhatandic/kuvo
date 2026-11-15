@@ -5,7 +5,7 @@
 import "./safety"
 import { expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
-import { accountKind, failureWords, serviceOf, signInMethods, userCodeOf } from "../src/link/areas/sign-in"
+import { accountKind, failureWords, isPlan, serviceOf, signInMethods, userCodeOf } from "../src/link/areas/sign-in"
 import { accountState } from "../src/link/areas/sign-in-state"
 
 const vectors = JSON.parse(readFileSync(new URL("../../protocol/vectors/sign-in.json", import.meta.url), "utf8"))
@@ -28,6 +28,7 @@ test.each(vectors.codes.map((each: any) => [each.about, each]))("a device sign-i
 
 test.each(vectors.states.map((each: any) => [each.about, each]))("an account's state, line and actions: %s", (_, each: any) => {
   expect(signInMethods(each.account)).toEqual(each.offered)
+  expect(isPlan(each.offered)).toBe(each.plan)
   expect(accountState(each.account, each.offered, { agents: each.agents === true, ended: each.ended, computer: each.computer })).toEqual({ state: each.state, line: each.line, actions: each.actions, connections: each.connections, ...(each.added ? { added: true } : {}) })
 })
 
@@ -47,6 +48,8 @@ test("Accounts' list says which are providers and their marks; a sign-in started
           { id: "exa", name: "Exa", methods: [{ type: "key" }], connections: [] },
           { id: "linear", name: "Linear", metadata: { source: "mcp" }, methods: [{ type: "oauth", id: "mcp", label: "Sign in" }], connections: [] },
           { id: "deepseek", name: "DeepSeek", methods: [{ type: "key" }], connections: [] },
+          // OpenAI as engine 2.2.5 lists it: its ChatGPT plan comes through Codex, so only its key.
+          { id: "openai", name: "OpenAI", methods: [{ type: "oauth", id: "chatgpt-browser", label: "ChatGPT Pro/Plus (browser)" }, { type: "key", label: "Manually enter API Key" }], connections: [] },
         ] })
       }
       if (url.pathname === "/api/integration/github-copilot/connect/oauth" && request.method === "POST") {
@@ -69,12 +72,16 @@ test("Accounts' list says which are providers and their marks; a sign-in started
     }
     const { body } = await ask("GET", "kuvo/sign-in/accounts")
     expect(body.accounts.map((each: any) => [each.id, each.kind, each.listed, each.service])).toEqual([
-      ["github-copilot", "provider", true, "copilot"], ["exa", "search", false, undefined], ["linear", "mcp", false, undefined], ["deepseek", "provider", true, undefined],
+      ["github-copilot", "provider", true, "copilot"], ["exa", "search", false, undefined], ["linear", "mcp", false, undefined], ["deepseek", "provider", true, undefined], ["openai", "provider", true, "codex"],
+    ])
+    // A plan you sign in to, or an account you enter a key for (#733): a key is never "Sign In".
+    expect(body.accounts.map((each: any) => [each.id, each.plan, each.actions.map((action: any) => action.label)])).toEqual([
+      ["github-copilot", true, ["Sign In"]], ["exa", false, ["Add Key"]], ["linear", true, ["Sign In"]], ["deepseek", false, ["Add Key"]], ["openai", false, ["Add Key"]],
     ])
     expect(body.accounts[0].hint).toBe("Sign in")
     // How each stands and what can be done with it, in this box's words (its name among them).
     expect(body.accounts.map((each: any) => [each.id, each.state, each.line, each.actions.map((action: any) => action.id)])).toEqual([
-      ["github-copilot", "signedOut", "Sign in", ["signIn"]], ["exa", "signedOut", "API key", ["signIn"]], ["linear", "signedOut", "Sign in", ["signIn"]], ["deepseek", "signedOut", "API key", ["signIn"]],
+      ["github-copilot", "signedOut", "Sign in", ["signIn"]], ["exa", "signedOut", "API key", ["signIn"]], ["linear", "signedOut", "Sign in", ["signIn"]], ["deepseek", "signedOut", "API key", ["signIn"]], ["openai", "signedOut", "API key", ["signIn"]],
     ])
 
     const started = await ask("POST", "kuvo/sign-in/start?integration=github-copilot", { methodID: "device" })

@@ -1,5 +1,5 @@
 {
- "why": "How every client offers the ways to sign in to an account and says why a sign-in didn't work, as the box decides them (box/src/link/areas/sign-in.ts: kuvo/sign-in/methods and kuvo/sign-in/status's failure). Signing in with an account comes first, then credentials the computer already has (external), then a key, each kind in the engine's order; a way whose label says legacy comes after all the others, marked legacy; a plan that goes through a coding agent (ChatGPT's, SuperGrok's) isn't offered for the engine's provider unless it's signed in that way already. `offered` is kuvo/sign-in/methods' answer, and each account's in kuvo/sign-in/accounts, with `hint`, the way in its card names (its first sign-in that isn't legacy, \"Login with\" said \"Sign in with\", plain \"Sign in\" where it only names the account again; else \"API key\" for a key; else \"Connect\"). Clients draw it as it is, and show `failure` as it is. Methods shaped as engine 2.2.5 lists them (api/integration): openai, xai, deepseek and github-copilot as it lists them; the others made up to hold each rule. The phone's sample Mac and its tests' computers serve these answers as recorded, matched by provider, name, methods and connections. `accounts`: what each account kuvo/sign-in/accounts lists is (`kind`), whether Accounts lists it (`listed`), and its mark by the plan limits' service ids (`service`; none: its letter), for the engine's or, with `agents`, the coding agents' bridge's (#711). `codes`: the code a device sign-in's page asks for (`userCode` in kuvo/sign-in/start's and kuvo/sign-in/status's answers), from what the engine or the bridge said of the attempt; none where it has none. `states`: how an account stands, the line under its name, each of its sign-ins and what can be done with it (box/src/link/areas/sign-in-state.ts: kuvo/sign-in/accounts' state, line, connections and actions), from the account as the engine or the bridge lists it (`agents`), its ways in as the box offers them (`offered`, as `methods` above), the saved sign-in the box saw end (`ended`) and the box's computer's name (`computer`).",
+ "why": "How every client offers the ways to sign in to an account and says why a sign-in didn't work, as the box decides them (box/src/link/areas/sign-in.ts: kuvo/sign-in/methods and kuvo/sign-in/status's failure). Signing in with an account comes first, then credentials the computer already has (external), then a key, each kind in the engine's order; a way whose label says legacy comes after all the others, marked legacy; a plan that goes through a coding agent (ChatGPT's, SuperGrok's) isn't offered for the engine's provider unless it's signed in that way already. `offered` is kuvo/sign-in/methods' answer, and each account's in kuvo/sign-in/accounts, with `hint`, the way in its card names (its first sign-in that isn't legacy, \"Login with\" said \"Sign in with\", plain \"Sign in\" where it only names the account again; else \"API key\" for a key; else \"Connect\"). Clients draw it as it is, and show `failure` as it is. Methods shaped as engine 2.2.5 lists them (api/integration): openai, xai, deepseek and github-copilot as it lists them; the others made up to hold each rule. The phone's sample Mac and its tests' computers serve these answers as recorded, matched by provider, name, methods and connections. `accounts`: what each account kuvo/sign-in/accounts lists is (`kind`), whether Accounts lists it (`listed`), and its mark by the plan limits' service ids (`service`; none: its letter), for the engine's or, with `agents`, the coding agents' bridge's (#711). `codes`: the code a device sign-in's page asks for (`userCode` in kuvo/sign-in/start's and kuvo/sign-in/status's answers), from what the engine or the bridge said of the attempt; none where it has none. `states`: whether an account is a plan you sign in to (`plan`: one of its ways in, as the box offers them, is its sign-in page; a key or the computer's credentials isn't), how an account stands, the line under its name, each of its sign-ins and what can be done with it (box/src/link/areas/sign-in-state.ts: kuvo/sign-in/accounts' state, line, connections and actions), from the account as the engine or the bridge lists it (`agents`), its ways in as the box offers them (`offered`, as `methods` above), the saved sign-in the box saw end (`ended`) and the box's computer's name (`computer`). An account whose only way in is a key is entered, never signed into: its buttons say Add Key, Replace Key and Add Another Key (#733).",
  "methods": [
   {
    "provider": "anthropic",
@@ -1191,6 +1191,7 @@
     "environment": [],
     "hint": "Claude Pro or Max"
    },
+   "plan": true,
    "state": "notInstalled",
    "line": "Not installed on Studio",
    "actions": [
@@ -1240,6 +1241,7 @@
     "environment": [],
     "hint": "Sign in with Google"
    },
+   "plan": true,
    "state": "signedOut",
    "line": "Not signed in",
    "actions": [
@@ -1297,6 +1299,7 @@
     "environment": [],
     "hint": "Claude Pro or Max"
    },
+   "plan": true,
    "state": "signedOut",
    "line": "Not signed in",
    "actions": [
@@ -1346,6 +1349,7 @@
     "environment": [],
     "hint": "Sign in with ChatGPT"
    },
+   "plan": true,
    "state": "signedOut",
    "line": "Not signed in",
    "actions": [
@@ -1414,6 +1418,7 @@
     "environment": [],
     "hint": "Claude Pro or Max"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Signed in as you@example.com · Max plan",
    "actions": [
@@ -1485,6 +1490,7 @@
     "environment": [],
     "hint": "Claude Pro or Max"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Signed in",
    "actions": [
@@ -1549,6 +1555,7 @@
     "environment": [],
     "hint": "Sign in"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Signed in as you@example.com",
    "actions": [
@@ -1627,6 +1634,7 @@
     "environment": [],
     "hint": "Claude Pro or Max"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Signed in as you@example.com",
    "actions": [
@@ -1709,6 +1717,7 @@
     "environment": [],
     "hint": "Claude Pro or Max"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Signed in as you@example.com",
    "actions": [
@@ -1782,6 +1791,7 @@
     "environment": [],
     "hint": "Claude Pro or Max"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Signed in as you@example.com",
    "actions": [
@@ -1848,6 +1858,7 @@
     "environment": [],
     "hint": "Claude Pro or Max"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Signed in as work@example.com · Team plan",
    "actions": [
@@ -1917,6 +1928,7 @@
     "environment": [],
     "hint": "Claude Pro or Max"
    },
+   "plan": true,
    "state": "signedOut",
    "line": "Not signed in",
    "actions": [
@@ -1988,6 +2000,7 @@
     "environment": [],
     "hint": "Claude Pro or Max"
    },
+   "plan": true,
    "state": "ended",
    "line": "Sign-in ended",
    "actions": [
@@ -2045,6 +2058,7 @@
     "environment": [],
     "hint": "Claude Pro or Max"
    },
+   "plan": true,
    "state": "unchecked",
    "line": "Couldn’t check just now",
    "actions": [
@@ -2112,6 +2126,7 @@
     "environment": [],
     "hint": "Claude Pro or Max"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Signed in as you@example.com",
    "actions": [
@@ -2153,6 +2168,7 @@
     "environment": [],
     "hint": "Sign in"
    },
+   "plan": true,
    "state": "signedOut",
    "line": "Sign in",
    "actions": [
@@ -2194,12 +2210,13 @@
     ],
     "hint": "API key"
    },
+   "plan": false,
    "state": "signedOut",
    "line": "API key",
    "actions": [
     {
      "id": "signIn",
-     "label": "Sign In"
+     "label": "Add Key"
     }
    ],
    "connections": []
@@ -2229,6 +2246,7 @@
     ],
     "hint": "Connect"
    },
+   "plan": false,
    "state": "signedOut",
    "line": "Set GOOGLE_CLOUD_PROJECT or GCP_PROJECT in your shell profile",
    "actions": [],
@@ -2248,6 +2266,7 @@
     "environment": [],
     "hint": "Connect"
    },
+   "plan": false,
    "state": "signedOut",
    "line": "Not signed in",
    "actions": [],
@@ -2289,6 +2308,7 @@
     "environment": [],
     "hint": "Sign in"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Signed in as you@example.com",
    "actions": [
@@ -2344,12 +2364,13 @@
     "environment": [],
     "hint": "API key"
    },
+   "plan": false,
    "state": "signedIn",
    "line": "API key",
    "actions": [
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Key"
     },
     {
      "id": "disconnect",
@@ -2399,12 +2420,13 @@
     "environment": [],
     "hint": "API key"
    },
+   "plan": false,
    "state": "signedIn",
    "line": "API key",
    "actions": [
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Key"
     },
     {
      "id": "disconnect",
@@ -2454,12 +2476,13 @@
     "environment": [],
     "hint": "API key"
    },
+   "plan": false,
    "state": "signedIn",
    "line": "API key · Work",
    "actions": [
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Key"
     },
     {
      "id": "disconnect",
@@ -2511,6 +2534,7 @@
     "environment": [],
     "hint": "Connect"
    },
+   "plan": false,
    "state": "signedIn",
    "line": "Credentials on Studio",
    "actions": [
@@ -2572,12 +2596,13 @@
     ],
     "hint": "API key"
    },
+   "plan": false,
    "state": "signedIn",
    "line": "From OPENAI_API_KEY",
    "actions": [
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Key"
     }
    ],
    "connections": [
@@ -2626,6 +2651,7 @@
     "environment": [],
     "hint": "Sign in"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Signed in as you@example.com · 2 accounts",
    "actions": [
@@ -2693,6 +2719,7 @@
     "environment": [],
     "hint": "Sign in"
    },
+   "plan": true,
    "state": "ended",
    "line": "Sign-in ended",
    "actions": [
@@ -2762,6 +2789,7 @@
     "environment": [],
     "hint": "Sign in"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Signed in as work@example.com · 2 accounts",
    "actions": [
@@ -2833,6 +2861,7 @@
     "environment": [],
     "hint": "Sign in"
    },
+   "plan": true,
    "state": "ended",
    "line": "Sign-in ended",
    "actions": [
@@ -2899,6 +2928,7 @@
     "environment": [],
     "hint": "Sign in"
    },
+   "plan": true,
    "state": "problem",
    "line": "GitHub didn't answer.",
    "actions": [
@@ -2949,6 +2979,7 @@
     "environment": [],
     "hint": "Connect"
    },
+   "plan": false,
    "state": "ended",
    "line": "Sign-in ended",
    "actions": [
@@ -3013,16 +3044,17 @@
     ],
     "hint": "API key"
    },
+   "plan": false,
    "state": "ended",
    "line": "Sign-in ended",
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Replace Key"
     },
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Key"
     },
     {
      "id": "disconnect",
@@ -3088,6 +3120,7 @@
     "environment": [],
     "hint": "Sign in"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Signed in as work@example.com · 2 accounts",
    "actions": [
@@ -3159,6 +3192,7 @@
     "environment": [],
     "hint": "Sign in"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Signed in as you@example.com",
    "actions": [
@@ -3233,6 +3267,7 @@
     "environment": [],
     "hint": "Sign in with ChatGPT"
    },
+   "plan": true,
    "state": "ended",
    "line": "Sign-in ended",
    "actions": [
@@ -3289,6 +3324,7 @@
     "environment": [],
     "hint": "Claude Pro or Max"
    },
+   "plan": true,
    "state": "ended",
    "line": "Sign-in ended",
    "actions": [
@@ -3363,6 +3399,7 @@
     "environment": [],
     "hint": "Sign in with Cursor"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Signed in as work@example.com",
    "actions": [
@@ -3442,6 +3479,7 @@
     "environment": [],
     "hint": "Sign in with ChatGPT"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Signed in with OpenAI API key",
    "actions": [
@@ -3492,6 +3530,7 @@
     "environment": [],
     "hint": "Sign in"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Signed in",
    "actions": [
@@ -3550,12 +3589,13 @@
     ],
     "hint": "API key"
    },
+   "plan": false,
    "state": "signedIn",
    "line": "API key · Work · 2 accounts",
    "actions": [
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Key"
     },
     {
      "id": "disconnect",
@@ -3635,6 +3675,7 @@
     "environment": [],
     "hint": "Claude Pro or Max"
    },
+   "plan": true,
    "state": "signedIn",
    "line": "Couldn’t check just now",
    "actions": [

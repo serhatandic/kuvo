@@ -144,7 +144,8 @@ export const PAIRING = object({ link: string, ends: number });
 /** Your setup as this box says it (`kuvo/setup`, PROTOCOL.md "Your setup"): its id and epoch, its
  * main computer, this box (its key, and its role, null in no setup), each computer in it, another
  * main computer named at the same epoch (never taken), the #181 switch: the value you set, or
- * null, and what it is then; and the machines holding this Mac back from leading a setup, by key. */
+ * null, and what it is then; the machines holding this Mac back from leading a setup, by key; and
+ * whether you've had the first run with this box (`welcomed`, set by `kuvo/setup/welcomed`). */
 export const SETUP = object({
   setup: nullable(string),
   epoch: nullable(number),
@@ -154,7 +155,11 @@ export const SETUP = object({
   "conflict?": object({ primary: string, epoch: number }),
   startsFromOthers: object({ value: nullable(words("on", "off")), default: words("on", "off") }),
   heldBy: list(string),
+  welcomed: bool,
 });
+
+/** Whether you've had the first run with this box, as `POST kuvo/setup/welcomed` left it. */
+export const WELCOMED = object({ welcomed: bool });
 
 /** One box found on a computer, as `kuvo/setup/judge` and `kuvo-link.js here` judge it: where it
  * is (its folder, from the home folder; `app`, Kuvo Code's own box on a Mac), its verdict, and what
@@ -299,6 +304,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "GET kuvo/setup/events", answers: { 200: SETUP } },
   { route: "POST kuvo/setup/judge", answers: { 200: JUDGED } },
   { route: "POST kuvo/setup/attached", answers: { 200: NOTHING } },
+  { route: "POST kuvo/setup/welcomed", answers: { 200: WELCOMED, 400: object({ message: string }) } },
   { route: "GET kuvo/attention", answers: { 200: ATTENTION } },
   { route: "POST kuvo/attention", answers: { 200: object({ for: number }) } },
   { route: "POST kuvo/attention/notice", answers: { 200: NOTHING } },
