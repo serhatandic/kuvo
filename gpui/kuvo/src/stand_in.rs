@@ -20,6 +20,7 @@ pub use crate::time::now_ms;
 pub mod areas;
 pub mod bots;
 pub mod first_run;
+pub mod permissions;
 pub mod git;
 pub mod groups;
 pub mod queue;
@@ -128,6 +129,7 @@ struct State {
     groups_followers: HashMap<u64, Sender<String>>,
     /// What it says for a first run.
     first_run: first_run::FirstRun,
+    permissions: permissions::Permissions,
     /// Sessions currently held because they are moving to another computer, with the box's words.
     held_sessions: HashMap<String, String>,
     /// Sessions archived by the engine itself (`time.archived`), which only it can unarchive.
@@ -289,6 +291,11 @@ impl StandIn {
     /// Changes what it says for a first run.
     pub fn set_first_run(&self, change: impl FnOnce(&mut first_run::FirstRun)) {
         change(&mut self.state().first_run);
+    }
+
+    /// What it says macOS allows the program it runs under, from now on.
+    pub fn set_permissions(&self, change: impl FnOnce(&mut permissions::Permissions)) {
+        change(&mut self.state().permissions);
     }
 
     /// A box from before the features required by the desktop app.
@@ -1309,6 +1316,9 @@ impl StandIn {
                 && !gits
                 && let Some((status, value)) = state.first_run.answer(method, route, &|name| query(path, name).map(decoded), &body, made)
             {
+                return answer(status, value);
+            }
+            if let Some((status, value)) = state.permissions.answer(method, route, &body) {
                 return answer(status, value);
             }
         }

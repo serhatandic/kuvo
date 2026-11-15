@@ -1115,7 +1115,175 @@ fn main() -> anyhow::Result<()> {
         }
     }
     first_run_shots(&mut cx, &only, &out)?;
+    launch_shots(&mut cx, &only, &out)?;
     home_shots(&mut cx, &only, &out)
+}
+
+/// The app opening on a computer (`launch-*`: this Mac's row in the Welcome card as it's set up,
+/// once it's ready, and where it stopped; the quiet middle for one that isn't running), and what
+/// macOS allows Kuvo Helper (`permission-*`: the heads-up, and the tile beside a stand-in for
+/// System Settings' window). `SHOTS_HELPER_ICON`: an `.icns` for the tile's stand-in helper
+/// (`scripts/helper-icon.sh`'s); without it the tile draws a plain one.
+fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
+    use kuvo::launch::{Launch, Opens, Stage};
+    use kuvo::stand_in::permissions::Permissions;
+    use kuvo_box::install::{OnlyAttaches, Verb};
+    let wanted = |slug: &str, group: &str| only.is_empty() || only.iter().any(|only| only == slug || only == group);
+    let save = |cx: &mut HeadlessAppContext, any: gpui::AnyWindowHandle, slug: &str, appearance: Appearance| -> anyhow::Result<()> {
+        cx.run_until_parked();
+        cx.update_window(any, |_, window, _| window.refresh())?;
+        cx.run_until_parked();
+        let image = cx.capture_screenshot(any)?;
+        let name = format!("screens-{slug}-{}.png", if appearance.is_dark() { "dark" } else { "light" });
+        image.save(out.join(&name))?;
+        println!("{name}: {}x{}", image.width(), image.height());
+        cx.update_window(any, |_, window, _| window.remove_window())?;
+        cx.run_until_parked();
+        Ok(())
+    };
+    let offline = "The engine couldn’t be downloaded. Check that this Mac is online, then try again.";
+    let not_yet = "This Mac has 2.1 GB free, and moving needs 6.4 GB. Free up some space, then try again.";
+    for slug in ["launch-setting-up", "launch-moving", "launch-starting", "launch-done", "launch-failed", "launch-move-refused", "launch-failed-narrow", "launch-not-running"] {
+        if !wanted(slug, "launch") {
+            continue;
+        }
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            cx.update(|cx| Theme::set_appearance(appearance, cx));
+            // (No installer is run for a picture: each stage is shown as it stands.)
+            let box_here = (slug == "launch-done").then(|| StandIn::first_run(Replies::Never, NOW, Scenario::Nothing));
+            let attach: Arc<dyn Fn() -> kuvo::launch::Attached + Send + Sync> = Arc::new(move || match box_here.clone() {
+                Some(stand_in) => {
+                    let boxes = kuvo::home::stand_in_boxes(stand_in);
+                    let first = boxes.nearest().expect("the stand-in is the nearest box");
+                    Ok((boxes, first))
+                }
+                None => Err("Kuvo Code isn’t set up on this Mac.".into()),
+            });
+            let opens = Opens { waits_within: kuvo::launch::WAITS_WITHIN, installer: Err(OnlyAttaches("This build of Kuvo doesn’t set up a computer. It connects to Kuvo where it’s already set up.".into())), attach };
+            let (width, height) = if slug == "launch-failed-narrow" { (720., 620.) } else { (1280., 820.) };
+            let window = cx.open_window(size(px(width), px(height)), |window, cx| cx.new(|cx| Launch::new(opens, false, window, cx)))?;
+            let any = window.into();
+            cx.run_until_parked();
+            cx.update_window(any, |root, _, cx| {
+                let launch = root.downcast::<Launch>().expect("the launch");
+                launch.update(cx, |launch, cx| match slug {
+                    "launch-setting-up" => launch.show(Stage::SettingUp { verb: Verb::New, title: None, at: None }, true, cx),
+                    "launch-moving" => launch.show(Stage::SettingUp { verb: Verb::Move, title: Some("Copying your sessions and settings".into()), at: Some((3, 12)) }, true, cx),
+                    "launch-starting" => launch.show(Stage::Starting, true, cx),
+                    "launch-failed" | "launch-failed-narrow" => launch.show(Stage::Stopped { line: "Couldn’t set up Kuvo".into(), message: offline.into(), note: None }, true, cx),
+                    "launch-move-refused" => launch.show(Stage::Stopped { line: "Couldn’t move your sessions".into(), message: not_yet.into(), note: Some("Nothing runs on this Mac until this is done.".into()) }, true, cx),
+                    "launch-done" => {
+                        let home = launch.home().cloned().expect("the app, open");
+                        home.update(cx, |home, cx| {
+                            home.set_now(NOW, cx);
+                            home.read_at_once(cx);
+                        });
+                    }
+                    _ => {}
+                });
+            })?;
+            save(cx, any, slug, appearance)?;
+        }
+    }
+    for slug in ["permission-heads-up", "permission-dragging", "permission-landing"] {
+        if !wanted(slug, "permission") {
+            continue;
+        }
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            cx.update(|cx| Theme::set_appearance(appearance, cx));
+            let stand_in = StandIn::at(Replies::Never, NOW);
+            // (A helper that's there, for the drag to be offered: a folder of this picture's own.)
+            let helper = std::env::temp_dir().join(format!("kuvo-shots-heads-up-{}", std::process::id())).join("Kuvo Helper.app");
+            std::fs::create_dir_all(&helper)?;
+            let bundle = helper.to_string_lossy().into_owned();
+            stand_in.set_permissions(|permissions| *permissions = Permissions { bundle, ..Permissions::nothing_allowed() });
+            let client = BoxClient::new(stand_in);
+            let window = cx.open_window(size(px(1280.), px(820.)), |window, cx| cx.new(|cx| Workspace::new(client, false, window, cx)))?;
+            let any = window.into();
+            cx.update_window(any, |root, window, cx| {
+                let workspace = root.downcast::<Workspace>().expect("the workspace");
+                workspace.update(cx, |workspace, cx| {
+                    workspace.set_now(NOW, cx);
+                    workspace.read_at_once(cx);
+                    if slug != "permission-landing" {
+                        workspace.open_read_at_once("ses_signup", window, cx);
+                    }
+                    if slug == "permission-dragging" {
+                        workspace.permissions().clone().update(cx, |heads_up, cx| heads_up.open_settings(cx));
+                    }
+                });
+            })?;
+            cx.run_until_parked();
+            // (The tile's own window isn't part of this picture: `permission-tile` draws it.)
+            cx.update_window(any, |root, _, cx| {
+                let workspace = root.downcast::<Workspace>().expect("the workspace");
+                let tile = workspace.read(cx).permissions().read(cx).tile();
+                if let Some(tile) = tile {
+                    tile.update(cx, |_, window, _| window.remove_window()).ok();
+                }
+            })?;
+            save(cx, any, slug, appearance)?;
+            if let Some(made) = helper.parent() {
+                std::fs::remove_dir_all(made)?;
+            }
+        }
+    }
+    if wanted("permission-tile", "permission") {
+        // A stand-in helper bundle in a folder of its own, with the icon given, if any.
+        let made = std::env::temp_dir().join(format!("kuvo-shots-helper-{}", std::process::id()));
+        let bundle = made.join("Kuvo Helper.app");
+        std::fs::create_dir_all(bundle.join("Contents/Resources"))?;
+        if let Some(icon) = std::env::var_os("SHOTS_HELPER_ICON") {
+            std::fs::copy(icon, bundle.join("Contents/Resources/AppIcon.icns"))?;
+        }
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            cx.update(|cx| Theme::set_appearance(appearance, cx));
+            let bundle = bundle.clone();
+            let window = cx.open_window(size(px(1120.), px(700.)), |_, cx| {
+                let tile = cx.new(|_| kuvo::permissions::tile::Tile::new("Kuvo Helper".into(), bundle));
+                cx.new(|_| BesideSettings { tile })
+            })?;
+            save(cx, window.into(), "permission-tile", appearance)?;
+        }
+        std::fs::remove_dir_all(&made)?;
+    }
+    Ok(())
+}
+
+/// The tile as it sits beside System Settings, for a picture: a stand-in for that window (a plain
+/// panel with a made-up list, nothing of macOS's) and the real tile, placed by the app's own rule.
+struct BesideSettings {
+    tile: gpui::Entity<kuvo::permissions::tile::Tile>,
+}
+
+impl gpui::Render for BesideSettings {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        use gpui::{ParentElement as _, Styled as _, div, point};
+        use kuvo::permissions::tile;
+        use kuvo_ui::{ActiveTheme as _, StyledType as _, TypeSize};
+        let c = cx.theme().colors.clone();
+        let screen = gpui::Bounds::new(point(px(0.), px(0.)), window.viewport_size());
+        let settings = gpui::Bounds::new(point(px(120.), px(70.)), size(px(640.), px(520.)));
+        let at = tile::beside(settings, screen);
+        let row = |name: &'static str, on: bool| {
+            div().flex().items_center().gap(px(10.)).px(px(14.)).py(px(10.)).border_b_1().border_color(c.border)
+                .child(div().size(px(22.)).rounded(px(6.)).bg(c.sunken).border_1().border_color(c.border))
+                .child(div().flex_1().text_ui(TypeSize::Small).text_color(c.text).child(name))
+                .child(div().w(px(34.)).h(px(20.)).rounded(px(10.)).bg(if on { c.success } else { c.border_strong }))
+        };
+        div()
+            .size_full()
+            .relative()
+            .bg(c.background)
+            .child(
+                div().absolute().left(settings.left()).top(settings.top()).w(settings.size.width).h(settings.size.height).flex().flex_col().rounded(px(12.)).bg(c.surface).border_1().border_color(c.border).overflow_hidden()
+                    .child(div().px(px(18.)).py(px(14.)).border_b_1().border_color(c.border).flex().flex_col().gap(px(2.))
+                        .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("A stand-in for System Settings › Privacy & Security"))
+                        .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child("Screen Recording")))
+                    .child(div().m(px(18.)).rounded(px(10.)).border_1().border_color(c.border).bg(c.card).flex().flex_col().child(row("Another App", true)).child(row("A Second App", false)).child(div().px(px(14.)).py(px(10.)).text_ui(TypeSize::Small).text_color(c.text_faint).child("+   −"))),
+            )
+            .child(div().absolute().left(at.x).top(at.y).w(tile::SIZE.width).h(tile::SIZE.height).shadow(cx.theme().elevated_shadow()).rounded(px(18.)).child(self.tile.clone()))
+    }
 }
 
 /// The window over your boxes: the switcher open on your computers, and a session open on another

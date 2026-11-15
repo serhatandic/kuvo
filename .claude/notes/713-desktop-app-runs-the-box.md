@@ -865,6 +865,120 @@ helper check (§8a.3), so no signed `kuvo-keys` yet; whether 0.7's saved sign-in
 they're in the vault; what `approveAll` becomes; the steps' and refusals' wording; `S` left on
 disk for good, with its worktrees; the usage panel's API keys in the Keychain.
 
+## 8f. Piece 5 plan: the desktop app's part (2026-11-15)
+
+**What's built here**, and where each piece of logic lives.
+
+- **`gpui/kuvo_box/src/install.rs`** (no GPUI; any Rust client's): finds what the app carries
+  from its own executable (`<bundle>/Contents/MacOS/kuvo` → `Contents/Resources/box-release/
+  kuvo-install`, `Contents/MacOS/kuvo-keys`), runs `sh kuvo-install <verb> --app <bundle>
+  [--root <name>]` with every `KUVO_*` dropped, reads its JSON lines as they come (`{"step"}`,
+  then the answer), and follows the box's word: `status`, then the `verb` it names, nothing
+  else. It judges nothing about the computer.
+- **The app's own guard, before the installer's** (the backstop stays `kuvo-install`'s): a build
+  that isn't run from a bundle carrying a release (`cargo run`) only attaches. A bundle that
+  isn't `run.kuvo.code` installs only into a root of its own (`KUVO_DEMO_MACHINE_ROOT`, a name),
+  and `run.kuvo.code` only into `.kuvo-code`. Anything else: refused in the app, the installer
+  never started.
+- **`gpui/kuvo/src/launch.rs`**: the window's root. It shows the quiet "Starting…" while
+  `status` runs, the Welcome card's row while a new Mac is set up (drafts 1 A), and `Home` once
+  a box answers.
+
+  | `status` says | The app |
+  | --- | --- |
+  | `fresh` (`new`) | runs `new`; the Welcome row says "Setting up Kuvo on this Mac…" with a spinner, then waits for the box's server and opens the first run on the same card |
+  | `ours`, no verb | attaches, offers the release it carries (`kuvo/box/update {from}`, where the box has `box.update`) |
+  | `ours` (`new`: its helper isn't in place) | runs `new` (the box's `helper start`), then attaches |
+  | `app-07`, `app-box`, `moving`, `stuck` (`move`) | runs `move` and draws its answer. Until piece 4 that's the box's refusal, in its words, with Try Again; a box that still answers (`app-box`'s) is attached to all the same |
+  | `waits` | the box's words where it gave any, Try Again |
+  | `back`, `machine`, `two` | attaches where a box of this Mac answers; else says it isn't running. Their own screens are piece 7's (`two`'s card) and 8's (a machine's box attached in place) |
+  | refused or failed | the box's `message`, as it is, under the row, with Try Again (Return) |
+  | no JSON, exit 2 | "Kuvo couldn't be set up on this Mac." and the installer's last line of stderr: an app's mistake, said plainly |
+
+- **Permissions.** The box says them (`kuvo/box/permissions`); the app draws a heads-up (drafts
+  3 C's card) over the conversation for the first one the box says to bring up, opens the pane
+  the box names, and, for one macOS has you add by hand, shows the drag tile. The tile is a GPUI
+  window (`WindowKind::PopUp`: a non-activating panel over System Settings) whose icon is a GPUI
+  drag with `external_drag_payload` (GPUI at our pinned revision hands a drag that leaves its
+  window to AppKit as a file drag: `gpui_macos/src/window.rs`, `start_external_drag`). No
+  hand-written `NSDraggingSource`. A small `#[cfg(target_os = "macos")]` module finds System
+  Settings' window (`CGWindowListCopyWindowInfo`) and moves the tile beside it. The tile goes
+  once the box says the permission is allowed.
+- **Box change (small, the box's facts and words):** `kuvo/box/permissions` gains `bundle` (the
+  helper's bundle on that Mac, what's dragged), and `list`: each permission with its `name`,
+  `allowed`, `settings` (the address of its System Settings pane), `byHand`, and `asks` (whether
+  a client brings it up now: not allowed, and not put off). `POST {later: "<id>"}` puts one off
+  ("Not Now"), kept in the box so every client agrees and it isn't asked at each open.
+- **`kuvo-keys`**: the bundle's layout names its place (`Contents/MacOS/kuvo-keys`), and the box
+  finds it through `--app <bundle>`; the app's window never runs it. Tested with a stand-in
+  bundle. Putting a real one there is piece 6's (and none signed exists until piece 4's guard).
+
+**Not here, said plainly:** B's card for a move (piece 7, with the box's step words); `two`'s
+card; Settings › This Mac; a machine's box attached in place; packaging (piece 6).
+
+**Tests.** `kuvo_box/tests/install.rs`: a stand-in `kuvo-install` (a shell script the test
+writes, answering from a file): `fresh` → `new` → done, each refusal and failure, `waits`
+(exit 4), output that isn't JSON, exit 2, `KUVO_*` dropped, a dev build and a mismatched bundle
+refusing before anything runs. `kuvo/tests/launch.rs`: the window through each state, Try Again
+by click and Return. `kuvo/tests/permissions.rs`: the heads-up, Not Now, the tile opening and
+going once allowed. Box: `own-box-helper.test.js`.
+
+**Piece 5 as built (2026-11-16).** As planned above, with these differences:
+
+- **A move's steps are drawn** now that piece 4 sends them: the box's `title` on this Mac's row
+  and `index` of `of` as a thin bar under it. A move still at work from an earlier open (`waits`
+  with `status.progress`) is drawn where it is and asked about again every two seconds, with
+  nothing run beside it. A move that stopped says "Nothing runs on this Mac until this is done."
+- **`ours` is waited for** (20 s) rather than attached to once: at login the app and Kuvo Helper
+  start together.
+- **Steps said while `status` is still asked** (a computer with no engine has it fetched before
+  anything is judged) turn the quiet line into "Setting up Kuvo…", not the Welcome card: an app
+  update unpacks its release at `status` too, and a returning user must never see a welcome.
+- **A copy of the app keeps to its own names** (`install::names_for`): its bundle ID and the root
+  it was given, or nothing. Only Kuvo Code itself and a build in no bundle use the real ones.
+- **What stopped here isn't passed over for another computer**: with no Kuvo answering on this
+  Mac, a failed setup is said even where the kept list has other computers to open.
+- **The tile gives up** when System Settings' window has been gone two seconds, and after ten
+  minutes whatever happens.
+
+**BOX-NEEDED** (marked in the code where there's a place for it):
+
+1. Words for the installer's own steps (`checking`, `engine`), and whether a `status` that
+   fetches is a first setup, so a new Mac's download can be drawn in the Welcome card.
+2. Words for a verdict with nothing to run (`two`, `machine`, `back`, `waits` without progress):
+   `status` gives none, so the app says only that Kuvo isn't running.
+3. The row's lines ("Setting up Kuvo", "Moving your sessions", "Couldn't set up Kuvo", "Couldn't
+   move your sessions", "Nothing runs on this Mac until this is done.") and the heads-up's
+   sentences are the app's; a phone drawing the same would need them from the box.
+4. When an agent needed a permission (the box can only say it isn't allowed), so the heads-up
+   comes at that moment; a way back from Not Now (Settings › This Mac, piece 7); Full Disk
+   Access, Files and Folders, Local Network and Login Items as facts.
+5. The installer's own messages still say "box" in places (`command.ts`, `kuvo-install`): they
+   are drawn as they are.
+
+**The reviewer's pass** (one `reviewer`, 2026-11-16). Blocker, fixed with a test: a copy of the
+app refused by the guard fell back to the real names when it attached (the real password,
+Keychain item and folder). Fixed too: the new Mac's download said nothing; a failed setup opened
+another computer's sessions without a word; the heads-up let clicks through to what's under it;
+a Kuvo a second from up was said not to run; an orphaned tile; an object printed after the
+answer took its place; a permission the box no longer lists counted as allowed; only a System
+Settings address is ever opened; a test asserted words its own stand-in made up. Left: no cap
+on how long the installer may run (the script's own timeouts hold); Not Now has no way back yet.
+
+**The lead's separate review** (2026-11-16): no MUST. Fixed, with tests: a copy's root is
+compared with the real home by place (the same folder, its name in any letters' case, never a
+link), not by spelling; a bundle's ID is read from a binary plist too; waiting on something else
+at work is capped (30 minutes, then said with Try Again) and says nothing of a move where there's
+no move's step; a Not Now that can't be kept answers `500 {message}`; the helper's bundle is
+checked to be there before the drag is offered. `box.permissions.list` names the new fields
+(the desktop app shows nothing where a box hasn't them, so no gate list needs it); PROTOCOL.md
+says any client may send `{later}`.
+
+**Not seen in a running window.** Rendered offscreen and driven in GPUI's test window. For the
+rehearsal account: the real installer from a signed bundle; the tile as a panel over the real
+System Settings, the drag into its list (the bundle's URL is handed without a trailing slash),
+the tile following its window; macOS's own alert beside the heads-up; VoiceOver and larger text.
+
 ## 9. Questions only the user can answer
 
 1. **Who keeps this Mac's box?**

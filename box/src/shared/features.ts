@@ -48,6 +48,7 @@ export const FEATURES = [
   "box.helper",
   "box.ownHome",
   "box.permissions",
+  "box.permissions.list",
   "box.rehome",
   "box.rehome.run",
   "box.serve",

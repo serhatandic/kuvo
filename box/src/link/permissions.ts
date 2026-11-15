@@ -8,7 +8,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { isObject, parsed } from "../shared/json";
 import type { BoxPermissions } from "../shared/routes/box";
-import { HELPER_NAME } from "./helper";
+import { writePrivate } from "./files";
+import { HELPER_NAME, helperBundle } from "./helper";
 import { APP_FOLDER, K, recordedKind } from "./home";
 import type { AnswerPiece, RouteContext } from "./server/context";
 
@@ -43,13 +44,51 @@ function wroteIt(pid: number, started: number): boolean {
   return began !== null && Math.abs(began - started) <= 3;
 }
 
+/** Each permission macOS can be asked about, as System Settings names it, and the address that
+ * opens its list there. Both are lists macOS has you add a program to yourself (`byHand`): it asks
+ * nothing for a program that never asks, and the helper doesn't. */
+const PERMISSIONS = [
+  { id: "screenRecording", name: "Screen Recording", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true },
+  { id: "accessibility", name: "Accessibility", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true },
+] as const;
+type PermissionID = (typeof PERMISSIONS)[number]["id"];
+
+/** What you've put off ("Not Now"), kept in the box so every client agrees and none asks at each
+ * open: `box/permissions-later.json`, `{"later": [<id>…]}`. */
+const LATER = () => path.join(K, "box", "permissions-later.json");
+function putOff(): Set<string> {
+  try {
+    const kept = parsed(fs.readFileSync(LATER(), "utf8"));
+    return new Set(isObject(kept) && Array.isArray(kept.later) ? kept.later.filter((id): id is string => typeof id === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+function keepPutOff(later: Set<string>): void {
+  if (!later.size) return fs.rmSync(LATER(), { force: true });
+  fs.mkdirSync(path.dirname(LATER()), { recursive: true, mode: 0o700 });
+  writePrivate(LATER(), JSON.stringify({ later: [...later].sort() }));
+}
+
 /** What macOS allows this box, as its helper last noted it. `applies`: whether this box runs under
  * a program macOS asks about as one (a Mac's own box in a home of its own). `known`: whether its
  * helper runs and has said (a note left by one that's gone says nothing: `wroteIt`). Each permission true or
- * false, or null where that isn't known. */
+ * false, or null where that isn't known. `bundle`: that program on this Mac, what you drag into a
+ * list in System Settings. `list`: each permission in words, with whether a client brings it up
+ * now (`asks`: known not to be allowed, and not put off). One that's allowed is no longer put off. */
 export function boxPermissions(): BoxPermissions {
   const applies = process.platform === "darwin" && !APP_FOLDER && recordedKind() === "mac";
-  const unknown: BoxPermissions = { applies, name: applies ? HELPER_NAME : null, known: false, screenRecording: null, accessibility: null };
+  const later = applies ? putOff() : new Set<string>();
+  const said = (allowed: Record<PermissionID, boolean> | null): BoxPermissions => ({
+    applies,
+    name: applies ? HELPER_NAME : null,
+    known: allowed !== null,
+    screenRecording: allowed ? allowed.screenRecording : null,
+    accessibility: allowed ? allowed.accessibility : null,
+    bundle: applies ? helperBundle() : null,
+    list: applies ? PERMISSIONS.map(each => ({ ...each, allowed: allowed ? allowed[each.id] : null, asks: allowed !== null && !allowed[each.id] && !later.has(each.id) })) : [],
+  });
+  const unknown = said(null);
   if (!applies) return unknown;
   let noted: unknown;
   try {
@@ -60,10 +99,33 @@ export function boxPermissions(): BoxPermissions {
   if (!isObject(noted) || noted.v !== 1 || typeof noted.pid !== "number" || !Number.isInteger(noted.pid) || noted.pid <= 0) return unknown;
   if (typeof noted.started !== "number" || !Number.isFinite(noted.started) || !wroteIt(noted.pid, noted.started)) return unknown;
   if (typeof noted.screenRecording !== "boolean" || typeof noted.accessibility !== "boolean") return unknown;
-  return { ...unknown, known: true, screenRecording: noted.screenRecording, accessibility: noted.accessibility };
+  const allowed = { screenRecording: noted.screenRecording, accessibility: noted.accessibility };
+  // (Allowed since it was put off: asked about again if it's ever taken away.)
+  const still = new Set([...later].filter(id => PERMISSIONS.some(each => each.id === id && !allowed[each.id])));
+  if (still.size !== later.size) {
+    try { keepPutOff(still); } catch { /* said again at the next ask */ }
+    later.clear();
+    for (const id of still) later.add(id);
+  }
+  return said(allowed);
 }
 
+/** `GET`: the facts. `POST {later: "<id>"}`: that one put off ("Not Now"), then the facts. Nothing
+ * here grants anything: only you do, in System Settings. */
 export async function* permissionsRoute({ request, json }: RouteContext): AsyncGenerator<AnswerPiece> {
-  if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
+  const method = request.method.toUpperCase();
+  if (method === "GET") return yield* json(200, boxPermissions());
+  if (method !== "POST") return yield* json(405, {});
+  let asked: unknown;
+  try { asked = parsed((request.body ?? Buffer.alloc(0)).toString("utf8")); } catch { asked = null; }
+  const id = isObject(asked) ? asked.later : null;
+  if (typeof id !== "string" || !PERMISSIONS.some(each => each.id === id)) return yield* json(400, { message: "Say which permission to ask about later." });
+  const now = boxPermissions();
+  if (!now.applies) return yield* json(409, { message: "Nothing on this computer needs macOS's permission." });
+  try {
+    keepPutOff(new Set([...putOff(), id]));
+  } catch {
+    return yield* json(500, { message: "Kuvo couldn't keep that on this Mac. Try again." });
+  }
   return yield* json(200, boxPermissions());
 }

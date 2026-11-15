@@ -249,8 +249,8 @@ async function served(where) {
     });
     ended.then(code => reject(new Error(`serve ended (${code})`)));
   });
-  const ask = async (route, method = "GET") => {
-    const answer = await fetch(`${url}/${route}`, { method, headers: { authorization: "Basic " + Buffer.from(`opencode:${password}`).toString("base64") } });
+  const ask = async (route, method = "GET", body) => {
+    const answer = await fetch(`${url}/${route}`, { method, headers: { authorization: "Basic " + Buffer.from(`opencode:${password}`).toString("base64"), ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   };
   return { ask, stop: async () => { child.stdin.end(); await ended; } };
@@ -262,15 +262,31 @@ test("kuvo/box/permissions: what macOS allows Kuvo Helper, as the helper running
   const facts = path.join(where.run, "permissions.json");
   // (When this test's process started, as the helper notes its own.)
   const started = Math.floor(Date.now() / 1000 - process.uptime());
-  const unknown = { applies: true, name: "Kuvo Helper", known: false, screenRecording: null, accessibility: null };
-  // No helper has said: it applies here, and nothing's known.
+  const bundle = path.join(where.K, "bin", "Kuvo Helper.app");
+  // Each permission in words: what System Settings calls it, the address of its list there, that
+  // you add the helper to it by hand, and whether a client brings it up now.
+  const listed = (screenRecording, accessibility, asks = {}) => [
+    { id: "screenRecording", name: "Screen Recording", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true, allowed: screenRecording, asks: asks.screenRecording ?? screenRecording === false },
+    { id: "accessibility", name: "Accessibility", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true, allowed: accessibility, asks: asks.accessibility ?? accessibility === false },
+  ];
+  const unknown = { applies: true, name: "Kuvo Helper", known: false, screenRecording: null, accessibility: null, bundle, list: listed(null, null) };
+  // No helper has said: it applies here, and nothing's known (so nothing's brought up).
   assert.deepEqual(await box.ask("kuvo/box/permissions"), { status: 200, body: unknown });
   // The helper running this box (a stand-in: this test's own process) noted what it's allowed.
   write(facts, JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: true, accessibility: false }));
-  assert.deepEqual((await box.ask("kuvo/box/permissions")).body, { applies: true, name: "Kuvo Helper", known: true, screenRecording: true, accessibility: false });
+  assert.deepEqual((await box.ask("kuvo/box/permissions")).body, { applies: true, name: "Kuvo Helper", known: true, screenRecording: true, accessibility: false, bundle, list: listed(true, false) });
+  // Not Now: put off in the box, so no client brings it up again, at this open or the next.
+  assert.deepEqual((await box.ask("kuvo/box/permissions", "POST", { later: "accessibility" })).body.list, listed(true, false, { accessibility: false }));
+  assert.deepEqual((await box.ask("kuvo/box/permissions")).body.list, listed(true, false, { accessibility: false }));
+  assert.equal((await box.ask("kuvo/box/permissions", "POST", { later: "the moon" })).status, 400);
+  assert.equal((await box.ask("kuvo/box/permissions", "POST", {})).status, 400);
   // Granted since: the helper notes it again, and the box says it as it's asked.
   write(facts, JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: true, accessibility: true }));
   assert.equal((await box.ask("kuvo/box/permissions")).body.accessibility, true);
+  // Taken away again later: it was allowed in between, so it's brought up again.
+  write(facts, JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: true, accessibility: false }));
+  assert.deepEqual((await box.ask("kuvo/box/permissions")).body.list, listed(true, false));
+  write(facts, JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: true, accessibility: true }));
   // A helper killed where it stood left its note, and its number went to another process of yours
   // (here this test's, which started at another time than the note says its writer did).
   for (const other of [started - 3600, started + 600]) {
@@ -289,8 +305,16 @@ test("kuvo/box/permissions: what macOS allows Kuvo Helper, as the helper running
     write(facts, text);
     assert.deepEqual((await box.ask("kuvo/box/permissions")).body, unknown, text);
   }
-  // Read only: nothing here grants anything.
-  assert.equal((await box.ask("kuvo/box/permissions", "POST")).status, 405);
+  // Not Now that can't be kept (its file's place taken by a folder) is said, never thrown.
+  fs.rmSync(path.join(where.K, "box", "permissions-later.json"), { force: true });
+  fs.mkdirSync(path.join(where.K, "box", "permissions-later.json", "in the way"), { recursive: true });
+  write(facts, JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: false, accessibility: true }));
+  const unkept = await box.ask("kuvo/box/permissions", "POST", { later: "screenRecording" });
+  assert.equal(unkept.status, 500);
+  assert.equal(typeof unkept.body.message, "string");
+  fs.rmSync(path.join(where.K, "box", "permissions-later.json"), { recursive: true });
+  // Nothing here grants anything, whatever it's sent.
+  assert.equal((await box.ask("kuvo/box/permissions", "PUT")).status, 405);
   await box.stop();
 });
 
@@ -299,6 +323,8 @@ test("kuvo/box/permissions: a machine's box runs under no such program, and says
   // (Whatever a file there says: nothing here is the helper's word.)
   write(path.join(where.run, "permissions.json"), JSON.stringify({ v: 1, pid: process.pid, started: Math.floor(Date.now() / 1000 - process.uptime()), screenRecording: true, accessibility: true }));
   const box = await served(where);
-  assert.deepEqual(await box.ask("kuvo/box/permissions"), { status: 200, body: { applies: false, name: null, known: false, screenRecording: null, accessibility: null } });
+  assert.deepEqual(await box.ask("kuvo/box/permissions"), { status: 200, body: { applies: false, name: null, known: false, screenRecording: null, accessibility: null, bundle: null, list: [] } });
+  // Nothing to put off where nothing's asked.
+  assert.equal((await box.ask("kuvo/box/permissions", "POST", { later: "accessibility" })).status, 409);
   await box.stop();
 });

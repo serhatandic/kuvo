@@ -4,16 +4,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui::{
-    App, AppContext as _, Bounds, Context, Focusable, IntoElement, Menu, MenuItem, ParentElement, Render, Styled, TitlebarOptions, Window,
-    WindowBounds, WindowOptions, div, point, px, size,
-};
+use gpui::{App, AppContext as _, Bounds, Focusable, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOptions, point, px, size};
+use kuvo::launch::{Launch, Opens};
 use kuvo::{Home, Quit, bind_keys};
 use kuvo_box::BoxClient;
 use kuvo_box::boxes::{Boxes, Options};
+use kuvo_box::install::Installer;
 use kuvo_box::link::WebSocketDial;
 use kuvo_box::transport::Transport;
-use kuvo_ui::{ActiveTheme, Appearance, Assets, StyledType, Theme, TypeSize};
+use kuvo_ui::{Appearance, Assets, Theme};
 
 fn main() {
     // Asked for the made-up box in a build without it: said plainly, never this Mac's real box instead.
@@ -21,14 +20,14 @@ fn main() {
         eprintln!("This build has no stand-in box. Run it with: cargo run -p kuvo --features stand-in -- --stand-in");
         std::process::exit(2);
     }
-    let boxes = if stand_in() { Ok(stand_in_boxes()) } else { your_boxes() };
     gpui_platform::application().with_assets(Assets).run(move |cx: &mut App| {
         bind_keys(cx);
         // Its menu, and quitting: with ⌘Q, or as its window closes (it has only the one).
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.set_menus([Menu { name: "Kuvo".into(), items: vec![MenuItem::action("Quit Kuvo", Quit)], disabled: false }]);
         cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
+            // (The small window beside System Settings isn't the app's own.)
+            if !cx.windows().iter().any(|window| window.downcast::<Home>().is_some() || window.downcast::<Launch>().is_some()) {
                 cx.quit();
             }
         })
@@ -40,26 +39,28 @@ fn main() {
             window_min_size: Some(size(px(720.), px(480.))),
             ..Default::default()
         };
-        let opened = match boxes.clone() {
-            Ok((boxes, first)) => cx
-                .open_window(options, |window, cx| {
-                    Theme::init(Appearance::of(window), cx);
-                    cx.new(|cx| Home::new(boxes, first, true, window, cx))
-                })
-                .map(|window| {
-                    window
-                        .update(cx, |home, window, cx| {
-                            let landing = home.workspace().read(cx).landing().focus_handle(cx);
-                            window.focus(&landing, cx);
-                        })
-                        .ok();
-                }),
-            Err(why) => cx
-                .open_window(options, |window, cx| {
-                    Theme::init(Appearance::of(window), cx);
-                    cx.new(|_| Missing(why))
-                })
-                .map(|_| ()),
+        let opened = if stand_in() {
+            let (boxes, first) = stand_in_boxes();
+            cx.open_window(options, |window, cx| {
+                Theme::init(Appearance::of(window), cx);
+                cx.new(|cx| Home::new(boxes, first, true, window, cx))
+            })
+            .map(|window| {
+                window
+                    .update(cx, |home, window, cx| {
+                        let landing = home.workspace().read(cx).landing().focus_handle(cx);
+                        window.focus(&landing, cx);
+                    })
+                    .ok();
+            })
+        } else {
+            // This computer's Kuvo, set up where it isn't yet, then the app.
+            let opens = opens();
+            cx.open_window(options, |window, cx| {
+                Theme::init(Appearance::of(window), cx);
+                cx.new(|cx| Launch::new(opens, true, window, cx))
+            })
+            .map(|_| ())
         };
         opened.expect("open Kuvo's window");
         cx.activate(true);
@@ -71,15 +72,35 @@ fn stand_in() -> bool {
     cfg!(feature = "stand-in") && std::env::args().any(|argument| argument == "--stand-in")
 }
 
+/// How this build sets up and reaches this computer's Kuvo: the installer the app's bundle
+/// carries (none for a build run outside one, which only attaches), and its own folders. Kuvo Code
+/// itself keeps to `~/.kuvo-code`; a copy of the app (a demo's) to the root it's given
+/// (`KUVO_DEMO_MACHINE_ROOT`, a folder's name in your home folder) and its own bundle ID.
+fn opens() -> Opens {
+    let demo_root = std::env::var("KUVO_DEMO_MACHINE_ROOT").ok();
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let installer = std::env::current_exe().map_err(|_| kuvo_box::install::OnlyAttaches("Kuvo couldn’t find where it’s installed.".into())).and_then(|executable| Installer::for_app(&executable, demo_root.as_deref(), &home));
+    // Whose folders and keys this build keeps to: a copy of the app never the real Kuvo's.
+    let names = std::env::current_exe().ok().and_then(|executable| kuvo_box::install::names_for(&executable, demo_root.as_deref(), &home));
+    Opens {
+        waits_within: kuvo::launch::WAITS_WITHIN,
+        installer,
+        attach: Arc::new(move || match &names {
+            Some(names) => your_boxes(&names.root, &names.app_id),
+            None => Err("This copy of Kuvo has no folder of its own to use.".to_owned()),
+        }),
+    }
+}
+
 /// Your boxes: the one on this computer (the nearest), and every other of your computers, each
 /// reached directly as a paired device. With none here, the computers kept from the last run; with
 /// neither, why the window has nothing to show.
-fn your_boxes() -> Result<(Boxes, BoxClient), String> {
+fn your_boxes(root: &str, app_id: &str) -> Result<(Boxes, BoxClient), String> {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let found = kuvo_box::place::this_mac(&home).ok_or_else(|| "Kuvo Code isn't set up on this Mac.".to_owned()).and_then(|found| kuvo_box::place::server(&found, "this Mac").map_err(|error| error.to_string()));
-    let folder = kuvo::keeper::folder(&home);
+    let found = kuvo_box::place::this_mac_of(&home, root, app_id).ok_or_else(|| "Kuvo Code isn't set up on this Mac.".to_owned()).and_then(|found| kuvo_box::place::server(&found, "this Mac").map_err(|error| error.to_string()));
+    let folder = kuvo::keeper::folder_of(&home, root, app_id);
     #[cfg(target_os = "macos")]
-    let keeper: Arc<dyn kuvo_box::link::Keeper> = Arc::new(kuvo::keeper::Keychain::new("run.kuvo.code.desktop"));
+    let keeper: Arc<dyn kuvo_box::link::Keeper> = Arc::new(kuvo::keeper::Keychain::new(format!("{app_id}.desktop")));
     #[cfg(not(target_os = "macos"))]
     let keeper: Arc<dyn kuvo_box::link::Keeper> = Arc::new(kuvo::keeper::PrivateFile::new(folder.join("identity")));
     let (nearest, missing) = match found {
@@ -125,23 +146,4 @@ fn stand_in_boxes() -> (Boxes, BoxClient) {
 #[cfg(not(feature = "stand-in"))]
 fn stand_in_boxes() -> (Boxes, BoxClient) {
     unreachable!("built without the stand-in box")
-}
-
-/// What the window says when there's no box to reach.
-struct Missing(String);
-
-impl Render for Missing {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let c = &cx.theme().colors;
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(px(6.))
-            .bg(c.background)
-            .child(div().text_ui(TypeSize::Body).text_color(c.text).child(self.0.clone()))
-            .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child("Open Kuvo Code on this Mac, then open Kuvo again."))
-    }
 }

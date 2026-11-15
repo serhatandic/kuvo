@@ -9209,6 +9209,7 @@ var FEATURES = [
   "box.helper",
   "box.ownHome",
   "box.permissions",
+  "box.permissions.list",
   "box.rehome",
   "box.rehome.run",
   "box.serve",
@@ -51653,7 +51654,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "8527712121ce";
+var BRIDGE_VERSION = "1249a4cf8b38";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63077,6 +63078,7 @@ async function* movePlacesRoute(context) {
 init_machines();
 
 // box/src/link/permissions.ts
+init_files2();
 import { spawnSync as spawnSync19 } from "node:child_process";
 import fs192 from "node:fs";
 import path199 from "node:path";
@@ -63103,9 +63105,38 @@ function wroteIt(pid, started) {
   const began = startedAt(pid);
   return began !== null && Math.abs(began - started) <= 3;
 }
+var PERMISSIONS = [
+  { id: "screenRecording", name: "Screen Recording", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true },
+  { id: "accessibility", name: "Accessibility", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true }
+];
+var LATER = () => path199.join(K, "box", "permissions-later.json");
+function putOff() {
+  try {
+    const kept = parsed(fs192.readFileSync(LATER(), "utf8"));
+    return new Set(isObject(kept) && Array.isArray(kept.later) ? kept.later.filter((id) => typeof id === "string") : []);
+  } catch {
+    return new Set;
+  }
+}
+function keepPutOff(later) {
+  if (!later.size)
+    return fs192.rmSync(LATER(), { force: true });
+  fs192.mkdirSync(path199.dirname(LATER()), { recursive: true, mode: 448 });
+  writePrivate(LATER(), JSON.stringify({ later: [...later].sort() }));
+}
 function boxPermissions() {
   const applies = process.platform === "darwin" && !APP_FOLDER && recordedKind() === "mac";
-  const unknown = { applies, name: applies ? HELPER_NAME : null, known: false, screenRecording: null, accessibility: null };
+  const later = applies ? putOff() : new Set;
+  const said = (allowed) => ({
+    applies,
+    name: applies ? HELPER_NAME : null,
+    known: allowed !== null,
+    screenRecording: allowed ? allowed.screenRecording : null,
+    accessibility: allowed ? allowed.accessibility : null,
+    bundle: applies ? helperBundle() : null,
+    list: applies ? PERMISSIONS.map((each) => ({ ...each, allowed: allowed ? allowed[each.id] : null, asks: allowed !== null && !allowed[each.id] && !later.has(each.id) })) : []
+  });
+  const unknown = said(null);
   if (!applies)
     return unknown;
   let noted;
@@ -63120,11 +63151,41 @@ function boxPermissions() {
     return unknown;
   if (typeof noted.screenRecording !== "boolean" || typeof noted.accessibility !== "boolean")
     return unknown;
-  return { ...unknown, known: true, screenRecording: noted.screenRecording, accessibility: noted.accessibility };
+  const allowed = { screenRecording: noted.screenRecording, accessibility: noted.accessibility };
+  const still = new Set([...later].filter((id) => PERMISSIONS.some((each) => each.id === id && !allowed[each.id])));
+  if (still.size !== later.size) {
+    try {
+      keepPutOff(still);
+    } catch {}
+    later.clear();
+    for (const id of still)
+      later.add(id);
+  }
+  return said(allowed);
 }
 async function* permissionsRoute({ request, json }) {
-  if (request.method.toUpperCase() !== "GET")
+  const method = request.method.toUpperCase();
+  if (method === "GET")
+    return yield* json(200, boxPermissions());
+  if (method !== "POST")
     return yield* json(405, {});
+  let asked;
+  try {
+    asked = parsed((request.body ?? Buffer.alloc(0)).toString("utf8"));
+  } catch {
+    asked = null;
+  }
+  const id = isObject(asked) ? asked.later : null;
+  if (typeof id !== "string" || !PERMISSIONS.some((each) => each.id === id))
+    return yield* json(400, { message: "Say which permission to ask about later." });
+  const now = boxPermissions();
+  if (!now.applies)
+    return yield* json(409, { message: "Nothing on this computer needs macOS's permission." });
+  try {
+    keepPutOff(new Set([...putOff(), id]));
+  } catch {
+    return yield* json(500, { message: "Kuvo couldn't keep that on this Mac. Try again." });
+  }
   return yield* json(200, boxPermissions());
 }
 

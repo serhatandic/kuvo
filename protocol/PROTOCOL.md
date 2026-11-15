@@ -6801,6 +6801,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `box.helper` | `kuvo-link.js helper install [--load] [--app <bundle ID>] \| status`: the launch agent that starts Kuvo Helper, a Mac's box's helper, at login ("This Mac's box: its helper"); `kuvo-start serve`; `serve` saying where it answers in `run/serve.json` |
 | `box.ownHome` | a Mac's box can run in a home of its own, laid out as a machine's (`box/kind`, "This Mac's box: a home of its own"); there, `keepsAwake` and `awakeNow` in `kuvo/work/settings` |
 | `box.permissions` | `kuvo/box/permissions`: what macOS allows Kuvo Helper, the program a Mac's box runs under, as its helper notes it ("This Mac's box: its helper", What macOS allows); `helper start` opening the helper itself where Login Items is off for it (`opened`) |
+| `box.permissions.list` | `kuvo/box/permissions`'s `bundle` and `list` (each permission in words, the address of its list in System Settings, `byHand`, `asks`), and `POST {later}` putting one off ("What macOS allows"). A client that draws them shows nothing where a box hasn't this |
 | `box.rehome` | `kuvo/box/rehome`: moving this Mac's box into a home of its own, and back ("This Mac's box: moving this Mac's box"); `kuvo-link.js rehome`, and `here`'s `moving` |
 | `box.rehome.run` | the move the box runs whole itself, from an earlier Kuvo Code with no keeper (`kuvo-link.js rehome --run`, `install --move`: "Moving this Mac's box", The whole move): `kuvo/box/rehome` says `progress` (each step in the box's own words) while one is under way, `dropped` (what it didn't carry), the steps `keys`, `upgrade` and `database`, and `start` and `passwords` among what's `owed` |
 | `box.serve` | `kuvo/box/serve`: the box's server kept running for clients ("Kept for clients"); `kuvo-link.js serve --kept` |
@@ -7989,17 +7990,31 @@ was named Kuvo Code Box, in no release.)
   you anything) as it starts and every ten seconds, and writes `run/permissions.json` when that
   changes or the note's gone: `{"v": 1, "pid": <its own>, "started": <when its process started, in
   seconds>, "screenRecording": bool, "accessibility": bool}`, `0600`, taken away as it goes. The box says it:
-  - `GET kuvo/box/permissions` → `{applies, name, known, screenRecording, accessibility}`.
+  - `GET kuvo/box/permissions` → `{applies, name, known, screenRecording, accessibility, bundle, list}`.
     `applies`: whether this box runs under such a program (a Mac's own box in a home of its own);
     `name`: what System Settings lists it as (`"Kuvo Helper"`), null where it doesn't apply;
     `known`: whether the helper runs now and has said (a note whose `pid` isn't a running process
     of yours that started when `started` says, to within three seconds, as `ps` has it, says
     nothing: a helper killed where it stood leaves its note, and its number goes to another
     process; nor does one that isn't as above); each permission `true` or `false`, null while not `known`.
-    `405` for anything but `GET`: nothing here grants anything, which only you do, in System
+  - `bundle`: that program on the Mac (a full path to `bin/Kuvo Helper.app` in the box's home),
+    what you drag into a list in System Settings; null where it doesn't apply.
+  - `list`: each permission in words, for a client to draw without naming any itself:
+    `[{id, name, allowed, settings, byHand, asks}]`. `id` is `screenRecording` or `accessibility`;
+    `name` what System Settings calls it; `allowed` as above; `settings` the address that opens
+    its list in System Settings (`x-apple.systempreferences:…`), which only an app on that Mac
+    can open; `byHand`: macOS asks nothing for it, you add the program to the list yourself (both,
+    today: the helper never asks); `asks`: whether a client brings it up now, true while it's
+    known not to be allowed and you haven't put it off. Empty where it doesn't apply.
+  - `POST kuvo/box/permissions {later: "<id>"}` puts one off (a client's "Not Now"), kept in the
+    box (`box/permissions-later.json`) so every client agrees and none asks at each open; once
+    it's allowed it's no longer put off, so one taken away later is brought up again. It answers
+    as `GET` does. `400 {message}` for no such permission; `409 {message}` where it doesn't
+    apply; `500 {message}` where it couldn't be kept. Any client of the box may send it, a phone
+    too: it only quiets a reminder, and grants nothing. `405` for any other method: nothing here grants anything, which only you do, in System
     Settings › Privacy & Security.
   - A machine's box (Linux, or a Mac set up as one) and a Mac's box still in its app's folder
-    answer `{applies: false, name: null, known: false, …null}`: on Linux there's nothing to allow,
+    answer `{applies: false, name: null, known: false, …null, bundle: null, list: []}`: on Linux there's nothing to allow,
     and on a Mac macOS asks about each program there by its own name.
   - Files and Folders and Local Network aren't here yet: macOS can't be asked about them, so they
     can only be told from what fails. Screen Recording as macOS has it for a running program may
