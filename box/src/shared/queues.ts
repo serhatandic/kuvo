@@ -38,6 +38,11 @@ export interface QueueState {
   /** Paused as its goal was (the goal's Pause, `link/work/goals.ts`'s `goalHolds`), until the goal
    * goes on: kept only while it's paused, never in a route's answer. */
   heldFor?: "goal";
+  /** Messages a Stop named as still on its way (`stop {items}`), held as they come, each until when
+   * (ms); never in a route's answer. */
+  arriving?: Record<string, number>;
+  /** Those of `held` that were held as they came, in that order (for where the next one goes). */
+  cameHeld?: string[];
 }
 
 /** A message waiting on the box for a paused conversation, as clients show it: who it's from (an
@@ -142,6 +147,9 @@ const keptState = (value: unknown): QueueState => {
     ...(isObject(value) && typeof value.resumed === "number" ? { resumed: value.resumed } : {}),
     ...(waiting.length ? { waiting } : {}),
     ...(isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" as const } : {}),
+    ...(isObject(value) && isObject(value.arriving) && Object.keys(value.arriving).length
+      ? { arriving: Object.fromEntries(Object.entries(value.arriving).filter((each): each is [string, number] => typeof each[1] === "number")) } : {}),
+    ...(isObject(value) && Array.isArray(value.cameHeld) && value.cameHeld.length ? { cameHeld: value.cameHeld.filter((id): id is string => typeof id === "string") } : {}),
   };
 };
 
@@ -165,13 +173,21 @@ export function changeQueue(files: QueueFiles, session: string, change: (state: 
     const before = all[session] ?? { paused: false, held: [] };
     const state = keptState(change(before));
     state.held = [...new Set(state.held)];
+    // (What came held and isn't held any more is no longer among those, whatever let it go.)
+    if (state.cameHeld) state.cameHeld = state.cameHeld.filter(id => state.held.includes(id));
+    if (!state.cameHeld?.length) delete state.cameHeld;
     made = JSON.stringify(state) !== JSON.stringify(before);
     if (!made) return state;
     all[session] = state;
-    // Kept while it's paused, holds something, or was resumed a moment ago.
+    // Kept while it's paused, holds something, was resumed a moment ago, or waits for a message
+    // a Stop named (until it's held, or its time is up).
     for (const [id, each] of Object.entries(all)) {
       if (each.resumed && Date.now() - each.resumed >= RESUMED_FOR) delete each.resumed;
-      if (!showsQueue(each) && !each.resumed) delete all[id];
+      if (each.arriving) {
+        for (const [message, until] of Object.entries(each.arriving)) if (until <= Date.now()) delete each.arriving[message];
+        if (!Object.keys(each.arriving).length) delete each.arriving;
+      }
+      if (!showsQueue(each) && !each.resumed && !each.arriving) delete all[id];
     }
     try { writePrivate(files.file, JSON.stringify(all)); } catch {}
     return state;

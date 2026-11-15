@@ -7,15 +7,19 @@ import { MOVING } from "../bots/here";
 import { messageID } from "../engine/sessions";
 import { isRefused, placeOfSessionPatiently } from "../letters/letter";
 import { targetsOf } from "../letters/tools";
+import { heldAsItComes, underWay } from "../messages/arriving";
+import { commandParts, commandsSettled, commandTemplate, keptCommand, madeText, sendingCommand } from "../messages/commands";
 import { composeArguments, composeWithParts, fieldsOf, partsOf, withParts } from "../messages/parts";
 import { withAttachedNote } from "../peers/naming";
 import type { MessageFields } from "../messages/parts";
+import { folderOf } from "../lists/rule";
 import { frozen } from "../moves/records";
 import { keptFiles } from "../server/attached";
 import type { PromptFile } from "../server/attached";
 import { answerHeaders, modelInput } from "../server/forward";
 import { everyoneFor, listedAgents } from "../server/naming";
 import { REQUEST_HEADERS } from "../server/paths";
+import { holdQueue, keepWaitingHeld, type Outgoing } from "../engine/queue";
 import { answering, BUSY, sentKey, sentOnce } from "../server/sent-once";
 import type { SentAnswer } from "../server/sent-once";
 import type { Target } from "../../shared/records";
@@ -82,11 +86,22 @@ export const isEmpty = (fields: MessageFields, files: unknown[]): boolean =>
 // bridge) answers it; a message sent again under its id goes once (`sentOnce`), whoever sent it
 // going meanwhile.
 export async function* sendRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
-  const { request, readEngine, bridge, signal, json } = context;
+  const { request, json } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, { message: "Send a message with POST." });
   let session = "";
   try { session = decodeURIComponent(match[1]!); } catch {}
   if (!session) return yield* json(404, { message: "There's no such conversation here." });
+  // (Under way until it's answered, for a Stop meanwhile to hold it with the rest.)
+  const finished = underWay(session);
+  try {
+    return yield* sending(context, session);
+  } finally {
+    finished();
+  }
+}
+
+async function* sending(context: RouteContext, session: string): AsyncGenerator<AnswerPiece> {
+  const { request, readEngine, bridge, signal, json } = context;
   const given = parsed(request.body);
   const again = isObject(given) && typeof given.text === "string" ? given.text : null;
   const fields = isObject(given) && again === null ? fieldsOf(given) : null;
@@ -110,20 +125,40 @@ export async function* sendRoute(context: RouteContext, match: RegExpMatchArray)
   const headers: Record<string, string> = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`, "content-type": "application/json" };
   const asked = Object.fromEntries(Object.entries(request.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]));
   for (const name of REQUEST_HEADERS) if (typeof asked[name] === "string") headers[name] = asked[name] as string;
-  const delivery = given.delivery === "queue" ? "queue" : given.delivery === "steer" || !command ? "steer" : undefined;
+  const id = !command && typeof given.id === "string" && given.id ? given.id : undefined;
+  // A command's message shows as typed: its parts go with it to the coding agents' bridge, and for
+  // the engine's, which take none, are kept here once it says which message it made (commands.ts).
+  const typed = command && fields ? commandParts(command, fields.words) : null;
   const at = `http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}/${command ? "command" : "prompt"}`;
   // A message goes on even if whoever sent it goes meanwhile (as `forward` sends one); a command
   // stops with its sender: it has no id, and sent again it would run twice.
   const send = async (): Promise<SentAnswer> => {
     try {
+      // (One of yours as the engine has it, asked meanwhile: what it will make, where this box can say.)
+      const template = typed && !toAgents ? commandTemplate(target, folderOf(place.data), command!, signal) : null;
       const message = fields
         ? await composed(fields, files, session, target, toAgents, request, readEngine, command ? signal : undefined, undefined, command !== null)
         : await sentAgain(again!, files, session, target, toAgents);
+      // One Stop named as still on its way, looked at as it goes (keeping its files can take a
+      // while, Stop meanwhile): held, waiting on the box (the engine would run all it holds with
+      // the first thing to reach a stopped conversation), not set going.
+      const held = heldAsItComes(session, id);
+      const delivery = held || given.delivery === "queue" ? "queue" : given.delivery === "steer" || !command ? "steer" : undefined;
       const body = command
-        ? { name: command, text: message.text, ...(message.files.length ? { files: message.files } : {}), ...(delivery ? { delivery } : {}) }
-        : { id: typeof given.id === "string" && given.id ? given.id : messageID(), text: message.text, ...(message.files.length ? { files: message.files } : {}), delivery, metadata: message.metadata };
-      const response = await fetch(at, { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined });
-      return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };
+        ? { name: command, text: message.text, ...(message.files.length ? { files: message.files } : {}), ...(delivery ? { delivery } : {}), ...(typed && toAgents ? { metadata: withParts(undefined, typed) } : {}) }
+        : { id: id ?? messageID(), text: message.text, ...(message.files.length ? { files: message.files } : {}), delivery, metadata: message.metadata };
+      if (held && id && keepWaitingHeld(session, { ...body, id, delivery: "queue" } as Outgoing & { id: string }, typeof given.words === "string" ? given.words : fields?.words)) {
+        return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
+      }
+      const post = async (): Promise<SentAnswer> => {
+        const response = await fetch(at, { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined });
+        return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };
+      };
+      const made = template ? madeText(await template, message.text) : null;
+      const answer = typed && !toAgents ? await sendingCommand(session, typed, made, post, each => each.status >= 200 && each.status < 300) : await post();
+      // (Stop hasn't paused it yet: it holds it with the rest, as it names it.)
+      if (held && id && answer.status >= 200 && answer.status < 300) await holdQueue(target, session, undefined, [id]).catch(() => {});
+      return answer;
     } catch (error) {
       if (error instanceof NotListed) return { status: 409, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: error.message })) };
       if (signal?.aborted && command) throw new Error("Stopped.");
@@ -134,8 +169,11 @@ export async function* sendRoute(context: RouteContext, match: RegExpMatchArray)
   return yield* answering(once ? await sentOnce(once, send) : await send());
 }
 
-// `kuvo/messages/parts`: `{texts}`, the texts of messages from before (which carry no parts), read
-// as `{parts}`, one for each, in order.
+// `kuvo/messages/parts`: `{texts, ids?, session?}`, the texts of messages from before (which carry
+// no parts) and their ids, read as `{parts}`, one for each, in order: one that ran one of the
+// engine's commands as it was typed (commands.ts; once each command on its way in `session` has been
+// given its message, so one a client sees before the command's answer still reads as typed), any
+// other from its text.
 export async function* partsRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, json } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, { message: "Send the texts with POST." });
@@ -143,5 +181,15 @@ export async function* partsRoute(context: RouteContext): AsyncGenerator<AnswerP
   const texts = isObject(given) && Array.isArray(given.texts) ? given.texts : null;
   if (!texts || texts.some(text => typeof text !== "string")) return yield* json(400, { message: "Send the messages' texts (texts)." });
   if (texts.length > PARTS_MOST) return yield* json(400, { message: `Send at most ${PARTS_MOST} texts at once.` });
-  return yield* json(200, { parts: (texts as string[]).map(partsOf) });
+  const ids = isObject(given) && Array.isArray(given.ids) ? given.ids : null;
+  if (ids && (ids.length !== texts.length || ids.some(id => typeof id !== "string"))) return yield* json(400, { message: "Send an id for each text (ids)." });
+  const session = isObject(given) && typeof given.session === "string" ? given.session : null;
+  const kept = () => ids?.map(id => keptCommand(id as string)) ?? [];
+  let commands = kept();
+  // (Only that conversation's commands on their way are waited for.)
+  if (session && commands.some(parts => !parts)) {
+    await commandsSettled(session);
+    commands = kept();
+  }
+  return yield* json(200, { parts: (texts as string[]).map((text, at) => commands[at] ?? partsOf(text)) });
 }

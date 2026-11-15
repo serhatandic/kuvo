@@ -1116,6 +1116,19 @@ fn the_queue_shows_what_waits_and_a_message_taken_back_comes_to_the_composer(cx:
     assert!(bounds(cx, "queue").is_none());
 }
 
+#[gpui::test]
+fn a_command_taken_back_to_edit_comes_back_as_its_box_says(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    // A command queued: its box says Edit puts it back with the command in front, to run again.
+    stand_in.set_queue("ses_signup", vec![json!({ "id": "msg_c1", "words": "the tests", "files": [], "keyword": "/review", "from": null, "on": "engine", "delivery": "queue", "held": false, "draft": "/review the tests" })]);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let composer = open_session(&workspace, "ses_signup", cx);
+    let edit = bounds(cx, "edit-msg_c1").expect("yours can be edited");
+    cx.simulate_click(edit.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(typed(&composer, cx).0, "/review the tests");
+}
+
 /// Runs the window until `done`, waiting (on no clock) for what the follows' own threads hand on:
 /// each time it's still not done, until the conversation is told something again.
 fn until(cx: &mut VisualTestContext, view: &Entity<kuvo::conversation::ConversationView>, mut done: impl FnMut(&mut VisualTestContext) -> bool) {

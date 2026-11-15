@@ -43,6 +43,7 @@ let partsRoute: typeof import("../src/link/areas/messages").partsRoute
 let SEND_ROUTE: RegExp
 let queueRoute: typeof import("../src/link/areas/queue").queueRoute
 let QUEUE_ROUTE: RegExp
+let heardCommand: typeof import("../src/link/messages/commands").heardCommand
 
 async function asked(request: Request): Promise<Asked> {
   const text = await request.text()
@@ -52,6 +53,7 @@ async function asked(request: Request): Promise<Asked> {
 beforeAll(async () => {
   ;({ sendRoute, partsRoute, SEND_ROUTE } = await import("../src/link/areas/messages"))
   ;({ queueRoute, QUEUE_ROUTE } = await import("../src/link/areas/queue"))
+  ;({ heardCommand } = await import("../src/link/messages/commands"))
   engine = Bun.serve({
     port: 0,
     async fetch(request) {
@@ -62,6 +64,8 @@ beforeAll(async () => {
       if (each.path === "/api/session/ses_text") return Response.json({ data: { id: "ses_text", location: { directory: "/srv/app" }, time: { created: 1, updated: 1 }, model: { id: "words", providerID: "p", capabilities: { input: ["text"] } } } })
       if (/^\/api\/session\/ses_text\//.test(each.path)) return Response.json({ data: {} })
       if (each.path === "/api/session/ses_main/inbox") return Response.json({ data: [] })
+      // (A command's prompt waits in the inbox, as the engine's events say.)
+      if (each.path === "/api/session/ses_main/command") heardCommand({ type: "session.inbox.enqueued", created: Date.now(), data: { sessionID: "ses_main", inboxID: `msg_ran${engineAsked.length}`, item: { type: "user", payload: { text: each.body.text } } } })
       if (/^\/api\/session\/ses_main\//.test(each.path)) return Response.json({ data: {} }, { status: engineAnswers })
       if (/^\/api\/session\//.test(each.path)) return Response.json({ message: "Not here." }, { status: 404 })
       return Response.json({ data: null })

@@ -99,7 +99,9 @@ test("Edit takes back one the engine holds, with its words and files for the com
   expect(status).toBe(200)
   expect(json.removed).toEqual({
     id: "msg_steer", text: "Use the blue one.\n\n<attached-files>\n- /tmp/shot.png\n</attached-files>",
-    files: [{ uri: "file:///Users/me/shot.png", name: "shot.png" }], delivery: "queue", words: "Use the blue one.", before: "msg_mail",
+    files: [{ uri: "file:///Users/me/shot.png", name: "shot.png" }], delivery: "queue", words: "Use the blue one.",
+    // (A goal: Edit puts it back as one, as sending it again asks for the goal again.)
+    keyword: "/goal", draft: "/goal Use the blue one.", before: "msg_mail",
   })
   expect(got).toContainEqual({ method: "DELETE", path: "/api/session/ses_q/inbox/msg_steer" })
   // Gone from the list, and from what's held.

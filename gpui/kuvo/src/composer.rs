@@ -109,6 +109,8 @@ pub struct Composer {
     /// Whether the conversation has a run under way (Send turns to Stop with nothing written).
     running: bool,
     sending: bool,
+    /// The message on its way to the conversation's box, for Stop to take with it.
+    on_its_way: Option<String>,
     /// Whether it reads the box by itself (the app), or shows what it's handed (tests and shots).
     live: bool,
     models: Models,
@@ -206,6 +208,7 @@ impl Composer {
             field_held: false,
             running: false,
             sending: false,
+            on_its_way: None,
             live: read,
             models: Models::default(),
             picked: None,
@@ -652,8 +655,12 @@ impl Composer {
                 });
             }
             Target::Session { id, .. } => {
+                // (One at a time: `send` refuses another while this one's on its way.)
+                debug_assert!(self.on_its_way.is_none(), "a second send while one was on its way");
+                self.on_its_way = Some(draft.id.clone());
                 self.spawn(cx, move || client.send_draft(&id, &draft, None), move |this, result, cx| {
                     this.sending = false;
+                    this.on_its_way = None;
                     match result {
                         Ok(sent) => this.sent(sent, &text, cx),
                         Err(error) => {
@@ -747,7 +754,9 @@ impl Composer {
         }
         let Target::Session { id, .. } = self.target.clone() else { return };
         let client = self.client.clone();
-        self.spawn(cx, move || client.stop_session(&id), |this, result, cx| {
+        // (What's still on its way goes with it: its box holds it as it comes.)
+        let on_its_way: Vec<String> = self.on_its_way.iter().cloned().collect();
+        self.spawn(cx, move || client.stop_session(&id, &on_its_way), |this, result, cx| {
             if let Err(error) = result {
                 this.set_note(Note { text: format!("It didn’t stop: {error}").into(), warning: true }, cx);
                 cx.notify();
@@ -755,8 +764,9 @@ impl Composer {
         });
     }
 
-    /// A message taken back from the queue to edit: its words ahead of anything written since, and
-    /// its files (those on this Mac's box; one sent inline can't come back as a file).
+    /// A message taken back from the queue to edit: what its box says goes back (`draft`: a
+    /// command with its arguments, say) ahead of anything written since, and its files (those on
+    /// this Mac's box; one sent inline can't come back as a file).
     pub fn restore(&mut self, words: &str, files: &[File], cx: &mut Context<Self>) {
         let paths: Vec<PathBuf> = files.iter().filter_map(|file| file.uri.strip_prefix("file://")).map(|path| PathBuf::from(percent_decoded(path))).collect();
         self.attach(paths, cx);

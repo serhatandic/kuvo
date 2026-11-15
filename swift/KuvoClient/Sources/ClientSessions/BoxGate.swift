@@ -43,6 +43,9 @@ public enum BoxGate {
     /// writes a computer's settings pages itself.
     /// Then #736's, for the desktop client's group chats, whose "&" lists what the box offers there
     /// (the chat's bots, then guests) and filters nothing itself: `groups.mentions`.
+    /// Then #668's messages: `messages.commands` (a command's message read as typed, by its id),
+    /// `queue.removed.keyword` (a queued message taken back keeps its keyword) and
+    /// `queue.stop.arriving` (Stop holds what's still on its way, so no client waits for it).
     public static let required: [String] = [
         "agent-tools.own",
         "bots.deletes",
@@ -68,6 +71,7 @@ public enum BoxGate {
         "git.status",
         "groups.mentions",
         "limits.rings",
+        "messages.commands",
         "messages.send",
         "models.offered",
         "models.offered.folder",
@@ -75,6 +79,8 @@ public enum BoxGate {
         "models.offered.sides",
         "models.readiness",
         "queue.items",
+        "queue.removed.keyword",
+        "queue.stop.arriving",
         "sandbox.opens",
         "sandbox.words",
         "sessions.actions",

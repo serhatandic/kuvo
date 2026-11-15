@@ -394,10 +394,10 @@ async function endBackground(target: Target, session: string, file = WORK_BACKGR
  * `holds` as there), what it left running, and its wake-ups and watches, so nothing comes of it until
  * it's written to again. Noted first: the end of a command stopped here must not read as news.
  */
-export async function stopWork(target: Target, session: string, holds = false): ReturnType<typeof stopSession> {
+export async function stopWork(target: Target, session: string, holds = false, items: string[] = []): ReturnType<typeof stopSession> {
   noteStopped(session);
   endWakeUps(session);
-  const state = await stopSession(target, session, holds);
+  const state = await stopSession(target, session, holds, items);
   await endBackground(target, session).catch(() => {});
   return state;
 }

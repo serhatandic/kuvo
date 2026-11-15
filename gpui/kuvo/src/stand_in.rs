@@ -385,7 +385,8 @@ impl StandIn {
         state.told(session, Followed::Asks);
     }
 
-    /// `session`'s queue from now on, in the box's order (each as `items` lists it).
+    /// `session`'s queue from now on, in the box's order (each as `items` lists it; a `draft` on one
+    /// is what its box puts back for Edit, else its words).
     pub fn set_queue(&self, session: &str, items: Vec<Value>) {
         let mut state = self.state();
         state.queues.insert(session.to_owned(), items);
@@ -1094,7 +1095,7 @@ impl StandIn {
                 let files: Vec<Value> = removed["files"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|name| json!({ "uri": format!("file://{HOME}/Downloads/{name}"), "name": name })).collect();
                 let words = removed["words"].clone();
                 state.told(&session, Followed::Queue);
-                answer(200, json!({ "paused": false, "held": [], "removed": { "id": item, "text": words, "words": words, "files": files, "delivery": removed["delivery"] } }))
+                answer(200, json!({ "paused": false, "held": [], "removed": { "id": item, "text": words, "words": words, "keyword": removed["keyword"], "draft": removed.get("draft").cloned().unwrap_or(words), "files": files, "delivery": removed["delivery"] } }))
             }
             ("GET", ["kuvo", "sessions", session, "asks"]) if state.sessions.contains_key(*session) => answer(200, json!({ "asks": state.asks.get(*session).cloned().unwrap_or_default() })),
             ("POST", ["kuvo", "sessions", session, "asks", ask]) => {

@@ -29,11 +29,11 @@ export async function leadWaitingOn(target: Target, data: Session, known?: { tur
 /** Stop for any conversation, from a client: one someone started goes as `stopWork`, and its lead is
  * told the user stopped it; your own conversation stops its turn and keeps what you left running and
  * set to come back (as Stop does in Claude Code and Codex: a command in the background ends from its
- * own row). */
-export async function stopConversation(target: Target, data: Session): ReturnType<typeof stopSession> {
-  if (!startedByOf(data)) return stopSession(target, data.id);
+ * own row). `items`: messages the client sent as Stop came, held first. */
+export async function stopConversation(target: Target, data: Session, items: string[] = []): ReturnType<typeof stopSession> {
+  if (!startedByOf(data)) return stopSession(target, data.id, true, items);
   const lead = await leadWaitingOn(target, data).catch(() => null);
-  const state = await stopWork(target, data.id, true);
+  const state = await stopWork(target, data.id, true, items);
   if (lead) tellStarters([{ starter: lead, line: stoppedLine(data) }]);
   // (Stopped at rest, its row changes all the same: a bot's work bar shows it stopped.)
   const bot = worksFor(data)?.bot;

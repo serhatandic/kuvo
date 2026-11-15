@@ -69,20 +69,37 @@ struct MessagePartsTests {
         let unread = MessageParts.unread(messages + [("msg_kept", "kept", kept)])
         #expect(unread.map(\.id) == messages.map(\.id))
         #expect(MessageParts.of(id: "msg_0", text: messages[0].text, metadata: nil).words == messages[0].text)
-        final class Asked: @unchecked Sendable { var texts: [[String]] = [] }
+        final class Asked: @unchecked Sendable { var texts: [[String]] = []; var ids: [[String]] = []; var sessions: [String?] = [] }
         let asked = Asked()
         let answer = try JSONSerialization.data(withJSONObject: ["parts": read.map { $0["parts"]! }])
-        let any = await MessageParts.read(unread) { body in
-            let texts = (try JSONSerialization.jsonObject(with: body) as? [String: Any])?["texts"] as? [String] ?? []
-            asked.texts.append(texts)
+        let any = await MessageParts.read(unread, session: "ses_1") { body in
+            let given = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            asked.texts.append(given?["texts"] as? [String] ?? [])
+            asked.ids.append(given?["ids"] as? [String] ?? [])
+            asked.sessions.append(given?["session"] as? String)
             return (200, answer)
         }
         #expect(any)
         #expect(asked.texts == [read.map { $0["text"] as! String }])
+        // Each with its id: a command's message is read by it, as typed.
+        #expect(asked.ids == [messages.map(\.id)])
+        #expect(asked.sessions == ["ses_1"], "their conversation, for a command still on its way there")
         for (index, each) in read.enumerated() {
             #expect(Self.json(encoding: MessageParts.of(id: "msg_\(index)", text: each["text"] as! String, metadata: nil)) == Self.json(each["parts"]!))
         }
         #expect(MessageParts.unread(messages).isEmpty)
+    }
+
+    /// A command's message, as its box keeps it or reads it by its id: the command as typed, and
+    /// that it ran one (so Retry runs it again).
+    @Test func aCommandsMessageSaysItRanOne() async throws {
+        MessageParts.forgetRead()
+        defer { MessageParts.forgetRead() }
+        let kept = try JSONDecoder().decode(JSONValue.self, from: JSONSerialization.data(withJSONObject: ["kuvo": ["parts": ["words": "this branch", "keyword": "/review", "command": true]]]))
+        #expect(MessageParts.kept(in: kept) == MessageParts(words: "this branch", keyword: "/review", command: true))
+        let answer = try JSONSerialization.data(withJSONObject: ["parts": [["words": "main", "keyword": "/review", "command": true]]])
+        #expect(await MessageParts.read([("msg_cmd", "Review the code on main")]) { _ in (200, answer) })
+        #expect(MessageParts.of(id: "msg_cmd", text: "Review the code on main", metadata: nil) == MessageParts(words: "main", keyword: "/review", command: true))
     }
 
     /// What a box read is for the text it read: another message under the same id is read anew.
