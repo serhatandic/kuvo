@@ -378,7 +378,7 @@ impl BotsView {
             .child(div().flex().items_center().justify_center().size(px(48.)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(IconName::Bot).size(IconSize::Card).color(c.icon)))
             .child(div().text_ui(TypeSize::Title).medium().text_color(c.text).child("Bots"))
             .child(div().max_w(px(420.)).text_center().text_ui(TypeSize::Body).text_color(c.text_muted).child(words))
-            .child(div().pt(space::S2).child(Button::new("bots-empty-new", "New Bot").icon(IconName::Plus).on_click(cx.listener(|this, _, _, cx| this.act(Act::New, cx)))))
+            .child(div().pt(space::S2).child(Button::new("bots-empty-new", "New Bot").disabled(self.client.gate().is_held()).icon(IconName::Plus).on_click(cx.listener(|this, _, _, cx| this.act(Act::New, cx)))))
             .into_any_element()
     }
 

@@ -280,7 +280,7 @@ fn windows(key: &str, account: &Account, now: f64, cx: &App) -> AnyElement {
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors.clone();
-        if self.client.gate().is_held() {
+        if self.client.gate().is_held() && rows::is_built(&self.section) && self.section != "General" {
             return div().id("settings-page").debug_selector(|| "settings-empty".into()).size_full()
                 .flex().items_center().justify_center().bg(c.sidebar)
                 .child(div().text_color(c.text_muted).child("No settings to show."));

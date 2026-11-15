@@ -149,6 +149,18 @@ impl StandIn {
         stand_in
     }
 
+    /// An older Linux machine reached remotely.
+    pub fn held_machine(replies: Replies) -> StandIn {
+        let stand_in = Self::held_older(replies);
+        stand_in.set_elsewhere(true);
+        stand_in
+    }
+
+    /// Change the compatibility answer without replacing the transport.
+    pub fn set_older(&self, older: bool) {
+        self.state().older = older;
+    }
+
     /// Whether its Work Queue can be read (else 503).
     pub fn queue_readable(&self, readable: bool) {
         self.state().queue.down = !readable;
@@ -861,7 +873,7 @@ impl StandIn {
                 features.extend(["queue", "asks"]);
                 features.extend(state.queue.features());
                 if state.older { features.clear(); }
-                answer(200, json!({ "kind": "mac", "name": NAME, "app": if state.older { "0.9.0" } else { "1.0.0" }, "engine": "2.3.0", "features": features, "agents": true, "started": 1.0, "chats": format!("{HOME}/.kuvo-code/chats") }))
+                answer(200, json!({ "kind": if state.elsewhere { "linux" } else { "mac" }, "name": if state.elsewhere { "build-linux" } else { NAME }, "app": if state.older { "0.9.0" } else { "1.0.0" }, "engine": "2.3.0", "features": features, "agents": true, "started": 1.0, "chats": format!("{HOME}/.kuvo-code/chats") }))
             }
             ("GET", ["kuvo", "sessions", "list"]) => answer(200, state.line(true)),
             ("GET", ["kuvo", "search"]) => {

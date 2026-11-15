@@ -352,6 +352,7 @@ impl Workspace {
 
     /// What `kuvo/info` said, or why it couldn't be read.
     pub fn connected(&mut self, result: kuvo_box::Result<BoxInfo>, cx: &mut Context<Self>) {
+        let was_held = matches!(self.box_state, BoxState::Held);
         match result {
             Ok(info) => {
                 self.info = Some(info);
@@ -362,6 +363,11 @@ impl Workspace {
                     view.update(cx, |view, cx| {
                         view.set_this_box(name.clone(), &kind, cx);
                     });
+                }
+                if was_held && !self.client.gate().is_held()
+                    && let Some(view) = self.area_view(self.area).cloned()
+                {
+                    view.update(cx, |view, cx| view.shown(cx));
                 }
                 // Reached (perhaps updated since): what it says of its accounts is asked again, and
                 // of your computers where they aren't followed.
@@ -382,10 +388,16 @@ impl Workspace {
     pub fn take_list(&mut self, update: ListUpdate, cx: &mut Context<Self>) {
         match update {
             ListUpdate::Listing(listing) => {
+                let was_held = matches!(self.box_state, BoxState::Held);
                 self.listing = listing;
                 self.lists = Lists::Ready;
                 if matches!(self.box_state, BoxState::Connecting | BoxState::Unreachable(_) | BoxState::Held) {
                     self.box_state = BoxState::Connected;
+                }
+                if was_held && !self.client.gate().is_held()
+                    && let Some(view) = self.area_view(self.area).cloned()
+                {
+                    view.update(cx, |view, cx| view.shown(cx));
                 }
                 // Where a new one starts: set once, as the list is first read.
                 if self.landing_place.is_none() {
@@ -451,9 +463,25 @@ impl Workspace {
     /// The box's name as the sidebar's foot says it: "This Mac" for this Mac's own.
     pub fn box_name(&self) -> SharedString {
         match &self.info {
-            Some(info) if !info.is_mac() => info.name.clone().into(),
+            Some(info) if !info.is_mac() || !self.client.here() => info.name.clone().into(),
             _ => "This Mac".into(),
         }
+    }
+
+    /// The gate supplies the held fact; this window supplies the computer and update path.
+    pub fn held_notice(&self) -> Option<(String, String)> {
+        if !self.client.gate().is_held() {
+            return None;
+        }
+        let name = self.info.as_ref().map(|_| self.box_name().to_string());
+        let subject = name.as_deref().filter(|name| !name.is_empty()).unwrap_or("This computer");
+        let title = format!("{subject}’s Kuvo is older than this app");
+        let next = if self.client.here() {
+            "It updates with Kuvo 1.0.".to_owned()
+        } else {
+            format!("Update Kuvo on {subject} to use it here.")
+        };
+        Some((title, next))
     }
 
     pub fn now(&self) -> f64 {
@@ -666,6 +694,9 @@ impl Workspace {
 
     /// The landing view, for a new conversation in `project` (or the one picked last).
     pub fn new_session(&mut self, project: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.client.gate().is_held() {
+            return;
+        }
         self.area = Area::Sessions;
         self.record(Nav::Landing);
         if let Some(project) = project {
@@ -1503,7 +1534,7 @@ impl Render for Workspace {
             .text_ui(TypeSize::Small)
             .text_color(c.text)
             .child(title_bar::render(self, cx))
-            .children(self.client.gate().notice().map(|(title, next)| {
+            .children(self.held_notice().map(|(title, next)| {
                 div().debug_selector(|| "held-box-notice".into()).flex_none().px(space::S4).py(space::S3)
                     .bg(c.surface).border_b_1().border_color(c.border).flex().flex_col().gap(space::S1)
                     .child(div().medium().text_color(c.text).child(title))

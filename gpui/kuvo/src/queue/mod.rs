@@ -602,7 +602,11 @@ impl QueueView {
                 this.whole = match (read, &this.whole) {
                     (Ok(value), _) => Reading::Ready(value),
                     (Err(_), Reading::Ready(value)) => Reading::Ready(value.clone()),
-                    (Err(kuvo_box::Error::NeedsUpdating { .. }), _) => Reading::NotYet,
+                    (Err(kuvo_box::Error::NeedsUpdating { .. }), _) => {
+                        this.scope = Scope::All;
+                        this.shown = Shown::List(Scope::All);
+                        return;
+                    },
                     (Err(error), _) => Reading::Failed(error.to_string()),
                 };
             }
@@ -930,6 +934,9 @@ impl QueueView {
 
     /// What a control asked for.
     pub fn act(&mut self, act: Act, cx: &mut Context<Self>) {
+        if self.client.gate().is_held() && matches!(act, Act::New | Act::NewLabel) {
+            return;
+        }
         match act {
             Act::Open(item) => cx.emit(QueueEvent::Select(Some(format!("item:{item}")))),
             Act::Back => cx.emit(QueueEvent::Select(self.scope.key())),

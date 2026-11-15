@@ -303,7 +303,7 @@ fn line_row(workspace: &Workspace, line: &Line, cursor: bool, cx: &mut Context<W
                 .icon(if collapsed { IconName::ChevronRight } else { IconName::Folder })
                 .cursor(cursor)
                 .hover_trailing(
-                    Button::icon_only(SharedString::from(format!("new-in-{directory}")), IconName::Plus, format!("New session in {}", group.name))
+                    Button::icon_only(SharedString::from(format!("new-in-{directory}")), IconName::Plus, format!("New session in {}", group.name)).disabled(workspace.client().gate().is_held())
                         .size(ButtonSize::Small)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();

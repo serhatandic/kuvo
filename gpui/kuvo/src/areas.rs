@@ -450,7 +450,7 @@ impl AreaView {
             .pr(space::S1)
             .mb(space::S1)
             .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child("Bots"))
-            .child(Button::icon_only("new-bot", kuvo_ui::IconName::Plus, "New Bot").ghost().size(ButtonSize::Small).selected(self.is_selected("new")).tooltip("New Bot").on_click(self.row_click("new".into(), cx)))
+            .child(Button::icon_only("new-bot", kuvo_ui::IconName::Plus, "New Bot").ghost().size(ButtonSize::Small).selected(self.is_selected("new")).tooltip("New Bot").disabled(self.client.gate().is_held()).on_click(self.row_click("new".into(), cx)))
             .into_any_element();
         let bots = match &self.bots {
             Reading::NotYet => return vec![header, quiet("Loading bots…", true, cx)],
@@ -611,7 +611,7 @@ impl AreaView {
         // Labels are the box's, and all yours: made from here, and each changed or removed from
         // its own menu (a right-click), through the box's route.
         let page = self.queue_page.clone();
-        let new_label = Button::icon_only("new-label", kuvo_ui::IconName::Plus, "New Label").ghost().size(ButtonSize::Small).tooltip("New Label").on_click(move |_, _, cx| {
+        let new_label = Button::icon_only("new-label", kuvo_ui::IconName::Plus, "New Label").ghost().size(ButtonSize::Small).tooltip("New Label").disabled(self.client.gate().is_held()).on_click(move |_, _, cx| {
             if let Some(page) = &page {
                 page.update(cx, |page, cx| page.act(QueueAct::NewLabel, cx));
             }
@@ -919,17 +919,17 @@ pub fn views(client: &BoxClient, live: bool, cx: &mut App) -> Vec<(Area, gpui::E
 #[cfg(test)]
 mod tests {
     use super::{computer_line, doing};
+    use kuvo_box::areas::BotNow;
 
     #[test]
     fn a_held_read_is_empty_without_an_area_error() {
         let gate = kuvo_box::gate::Gate::for_features::<String>(None);
-        assert!(gate.notice().is_some());
+        assert!(gate.is_held());
         let read = super::reading::<super::Bots>(Err(kuvo_box::Error::NeedsUpdating { missing: vec!["typed".into()] }), &super::Reading::NotYet);
         assert!(matches!(read, super::Reading::Ready(bots) if bots.bots.is_empty()));
-        assert!(kuvo_box::gate::Gate::Open.notice().is_none());
+        assert!(!kuvo_box::gate::Gate::Open.is_held());
     }
 
-    use kuvo_box::areas::BotNow;
 
     /// A computer's line says what the box says of it: one it only knows of through another is
     /// never said to be away.

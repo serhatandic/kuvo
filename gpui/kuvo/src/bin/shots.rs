@@ -44,6 +44,7 @@ struct Screen {
 type Panel = fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
 
 const SCREENS: &[Screen] = &[
+    Screen { slug: "held-box-sessions", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "held-box", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     Screen { slug: "conversation", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     // Selecting text (`kuvo_ui/src/selection.rs`): across a paragraph, inside a code block, across
@@ -590,7 +591,7 @@ fn main() -> anyhow::Result<()> {
         }
         for appearance in [Appearance::Light, Appearance::Dark] {
             cx.update(|cx| Theme::set_appearance(appearance, cx));
-            let stand_in = if screen.slug == "held-box" { StandIn::held_older(Replies::Never) } else if screen.empty { StandIn::empty(Replies::Never) } else { StandIn::at(Replies::Never, NOW) };
+            let stand_in = if screen.slug.starts_with("held-box") { StandIn::held_older(Replies::Never) } else if screen.empty { StandIn::empty(Replies::Never) } else { StandIn::at(Replies::Never, NOW) };
             // The rate limits' conversation waits on a permission; another one waits behind it.
             let mut second = kuvo::stand_in::redis_permission();
             second["id"] = serde_json::json!("per_push");

@@ -53,7 +53,7 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
             Button::icon_only("new-session", IconName::Plus, "New Session")
                 .ghost()
                 .size(ButtonSize::Small)
-                .tooltip("⌘N")
+                .tooltip("⌘N").disabled(workspace.client().gate().is_held())
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(NewSession), cx)),
         );
     let panel_button = (workspace.area() == Area::Sessions).then(|| {

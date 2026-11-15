@@ -335,6 +335,10 @@ impl SettingsView {
     }
 
     fn read_section(&mut self, section: &str, cx: &mut Context<Self>) {
+        if self.client.gate().is_held() {
+            self.rebuild(cx);
+            return;
+        }
         match section {
             "Accounts" => self.run("read-accounts", |client| client.sign_in_accounts(), |this, read, _| this.accounts = reading(read, &this.accounts), cx),
             "Usage" => self.run("read-limits", |client| client.accounts(), |this, read, _| this.limits = reading(read, &this.limits), cx),
@@ -594,7 +598,6 @@ fn reading<T: Clone>(read: kuvo_box::Result<T>, before: &Reading<T>) -> Reading<
     match (read, before) {
         (Ok(value), _) => Reading::Ready(value),
         (Err(_), Reading::Ready(value)) => Reading::Ready(value.clone()),
-        (Err(kuvo_box::Error::NeedsUpdating { .. }), _) => Reading::NotYet,
         (Err(error), _) => Reading::Failed(said(&error)),
     }
 }

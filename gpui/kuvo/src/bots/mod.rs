@@ -839,6 +839,9 @@ impl BotsView {
 
     /// What a control asked for.
     pub fn act(&mut self, act: Act, cx: &mut Context<Self>) {
+        if self.client.gate().is_held() && matches!(act, Act::New | Act::Create) {
+            return;
+        }
         match act {
             Act::Chat => {
                 if let Some(bot) = self.bot() {

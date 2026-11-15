@@ -898,7 +898,7 @@ impl QueueView {
                         .children(filter)
                         .child(more)
                         .when(self.queue().is_some(), |d| {
-                            d.child(div().debug_selector(|| "queue-new".into()).child(Button::icon_only("queue-new", IconName::Plus, "New Item").primary().size(ButtonSize::Small).tooltip("New Item").on_click(cx.listener(|this, _, _, cx| this.act(Act::New, cx)))))
+                            d.child(div().debug_selector(|| "queue-new".into()).child(Button::icon_only("queue-new", IconName::Plus, "New Item").primary().size(ButtonSize::Small).tooltip("New Item").disabled(self.client.gate().is_held()).on_click(cx.listener(|this, _, _, cx| this.act(Act::New, cx)))))
                         }),
                 )
                 .children(chips),
