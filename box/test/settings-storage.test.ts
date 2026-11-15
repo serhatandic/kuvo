@@ -47,8 +47,8 @@ test("Storage preserves the Swift box group's words, budgets, units and confirma
     ["older-copies", "Older versions", "None kept."],
   ])
   const budget = row(page, "older-budget")
-  expect([budget.kind, budget.unit, budget.min]).toEqual(["number", "bytes", 0])
-  expect(budget.suggestions.map((s: any) => s.value)).toEqual([256, 512, 1024, 2048, 5120, 10240].map(n => n * 1024 ** 2))
+  expect([budget.kind, budget.unit, budget.min]).toEqual(["number", { name: "GB", factor: 1_000_000_000, decimals: 2, rounding: "nearest" }, 0])
+  expect(budget.suggestions.map((s: any) => s.value)).toEqual([0.25, 0.5, 1, 2, 5, 10].map(n => n * 1_000_000_000))
   expect(budget.confirmBelow.confirm.title).toBe("Keep less of older versions?")
   expect(budget.confirmBelow.confirm.body).toBe("Older versions take 0 bytes now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.")
   expect(row(page, "older-copies").actions[0]).toMatchObject({ title: "Clear…", confirm: { title: "Clear older versions?", body: "Their copies go; each stays listed, without one. The newest version of each file, memory, skills and what’s kept stay.", button: "Clear" } })
@@ -128,7 +128,8 @@ test("Storage requires explicit confirmation below the threshold before deleting
   for (const confirmed of [undefined, ...confirmationVectors.cases.filter(each => each.status === 400).map(each => each.confirmed)]) {
     const answer = await ask(handler, "PATCH", "kuvo/settings/storage", { row: at.id, was: at.revision, value: 0, confirmed })
     expect(answer.status).toBe(400)
-    expect(answer.json.message).toBe(at.confirmBelow.confirm.body)
+    if (confirmed === undefined || confirmed === false) expect(answer.json.message).toBe(at.confirmBelow.confirm.body)
+    else expect(typeof answer.json.message).toBe("string")
     expect(store.storage()).toEqual(before)
   }
   expect((await change(at, at.confirmBelow.value + 100)).status).toBe(200)
@@ -147,4 +148,38 @@ test("Storage atomically refuses budget changes when the warning's older count c
   const answer = await ask(handler, "POST", "kuvo/artifacts/storage", { budget: 0, was: read.budget, wasOlder: read.older })
   expect(answer.status).toBe(409)
   expect(store.storage()).toEqual(before)
+})
+
+test("The artifact storage route requires confirmation before any shrinking write deletes copies", async () => {
+  await older()
+  const before = store.storage()
+  for (const confirmed of [undefined, null, false, "true", 1]) {
+    const answer = await ask(handler, "POST", "kuvo/artifacts/storage", { budget: 0, confirmed })
+    expect(answer.status).toBe(400)
+    expect(answer.json.message).toBe(row(await shown(), "older-budget").confirmBelow.confirm.body)
+    expect(store.storage()).toEqual(before)
+  }
+  expect((await ask(handler, "POST", "kuvo/artifacts/storage", { budget: before.older })).status).toBe(200)
+  expect(store.storage().older).toBe(before.older)
+  expect((await ask(handler, "POST", "kuvo/artifacts/storage", { budget: 0, confirmed: true })).status).toBe(200)
+  expect(store.storage().older).toBe(0)
+})
+
+test("The store itself refuses an unconfirmed shrink before writing settings or deleting copies", async () => {
+  store.setBudget(1_000_000_000)
+  const settings = join(root, `store-${serial}`, "settings.json")
+  const saved = readFileSync(settings, "utf8")
+  await older()
+  const before = store.storage()
+  expect(store.setBudget(0)).toBe(row(await shown(), "older-budget").confirmBelow.confirm.body)
+  expect(store.storage()).toEqual(before)
+  expect(readFileSync(settings, "utf8")).toBe(saved)
+  expect(store.setBudget(0, true)).toBeNull()
+  expect(store.storage().older).toBe(0)
+})
+
+
+test("New storage budgets use the same decimal base as the box's unit and suggestions", () => {
+  const fresh = new ArtifactStore(join(root, `default-${serial}`), { disk: () => disk })
+  expect(fresh.storage().budget).toBe(1_000_000_000)
 })

@@ -98,7 +98,8 @@ export async function artifactRoutes(store: ArtifactStore | undefined, method: s
       // No await between comparing and writing: all bridge requests use this store's event loop.
       if ("was" in given && given.was !== store.storage().budget) return message(409, "It changed since you read it.")
       if ("wasOlder" in given && given.wasOlder !== store.storage().older) return message(409, "It changed since you read it.")
-      store.setBudget(budget)
+      const refused = store.setBudget(budget, given.confirmed)
+      if (refused) return message(400, refused)
       return json(store.storage())
     }
     if (!second) return method === "GET" ? json(store.storage()) : message(405, "Read it with GET, or set its budget with POST.")
