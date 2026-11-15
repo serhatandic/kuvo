@@ -1,0 +1,721 @@
+//! Your boxes as one list (PROTOCOL.md, "Computers", "Paired phones"): every computer of your
+//! setup, each with a [`BoxClient`] of its own. No box is this client's own. The one on the same
+//! computer is only the nearest: reached over its local server, because that's faster and works
+//! offline. Every other is reached directly, over the link, as a paired device ([`crate::link`]).
+//!
+//! - The list is a box's `kuvo/computers`, followed on the nearest box (or, with none here, on
+//!   the first that answers). The client connects only to your own computers: never one filed
+//!   `apart` (a shared machine, another setup's), and only at the key and address a box it already
+//!   trusts gave it.
+//! - It pairs by asking the nearest box (`POST kuvo/devices/pair`): that box is a member of your
+//!   setup and vouches for the app on its computer to the main computer. Nothing is pasted or
+//!   scanned. What the box refuses is kept in its words.
+//! - The last list is kept (public facts only), so the app opens with your computers while the
+//!   nearest box is still starting.
+//!
+//! No GPUI here: any client reuses all of it.
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::areas::{Computer, Computers};
+use crate::client::BoxClient;
+use crate::error::{Error, Result};
+use crate::follow::{Follow, Followed, Timing as FollowTiming};
+use crate::gate::Gate;
+use crate::link::{self, Dial, Host, Identity, Keeper, LinkBox, LinkClient};
+use crate::transport::{Closer, Request, Response, Stream, Transport};
+
+/// How one of your computers stands with this client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reach {
+    /// The box on this computer.
+    Nearest,
+    /// Not asked yet, or being asked now.
+    Connecting,
+    Connected,
+    /// Its box is older than this client needs (PROTOCOL.md, "The update gate"): it waits for its
+    /// update, which this app can't bring to another computer.
+    Held { missing: Vec<String> },
+    /// It doesn't answer: asleep, off, or offline. Why, in words.
+    Away(String),
+    /// It turned this device away: not paired there (yet), or removed.
+    NotPaired,
+    /// Not one of your own computers: listed, never connected to.
+    Apart,
+    /// The list doesn't say where it is (its Kuvo Code is older, or it's known only by another
+    /// computer's word): it can't be reached from here.
+    Unreached,
+}
+
+/// Where this device stands with your setup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pairing {
+    /// Nothing asked yet (or nothing to pair with: no other computer).
+    NotAsked,
+    /// Your computers take this device.
+    Paired,
+    /// The nearest box couldn't say yet (its main computer isn't answering): asked again later.
+    Waiting(String),
+    /// Refused, in the box's words (the switch is off, a shared machine, an older box).
+    Refused(String),
+    /// This device was removed from your devices: only your word pairs it again
+    /// ([`Boxes::pair_again`]).
+    Removed(String),
+}
+
+/// One of your computers, as the list says it, with how this client stands with it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Row {
+    pub computer: Computer,
+    pub reach: Reach,
+}
+
+impl Row {
+    pub fn key(&self) -> &str {
+        &self.computer.key
+    }
+
+    /// Whether its sessions can be opened from here now.
+    pub fn usable(&self) -> bool {
+        matches!(self.reach, Reach::Nearest | Reach::Connected | Reach::Connecting | Reach::Held { .. })
+    }
+}
+
+/// How long it waits.
+#[derive(Debug, Clone, Copy)]
+pub struct Timing {
+    pub follow: FollowTiming,
+    pub link: link::Timing,
+    /// A computer that stopped answering is said to be away only after this long (PROTOCOL.md,
+    /// "When a client says a computer isn't connected": 10 s, then a check).
+    pub away_after: Duration,
+    /// How long before the nearest box is asked to pair again after it couldn't say.
+    pub pair_again: Duration,
+    /// With no box to follow the list on, how often the kept computers are tried.
+    pub look_again: Duration,
+}
+
+impl Default for Timing {
+    fn default() -> Timing {
+        Timing { follow: FollowTiming::default(), link: link::Timing::default(), away_after: Duration::from_secs(10), pair_again: Duration::from_secs(60), look_again: Duration::from_secs(30) }
+    }
+}
+
+/// What a [`Boxes`] is made with.
+pub struct Options {
+    /// The box on this computer, where there is one.
+    pub nearest: Option<Arc<dyn Transport>>,
+    /// Where this device's key is kept.
+    pub keeper: Arc<dyn Keeper>,
+    /// How the relay is reached.
+    pub dial: Arc<dyn Dial>,
+    /// What this device is called among your devices, and the app's version.
+    pub name: String,
+    pub app: String,
+    /// Where the last list is kept (a file in the app's own folder); none keeps nothing.
+    pub kept: Option<PathBuf>,
+    pub timing: Timing,
+}
+
+/// What's kept between runs: public facts only.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct Kept {
+    /// The device key your computers took (its public half).
+    #[serde(default)]
+    paired: Option<String>,
+    #[serde(default)]
+    computers: Vec<KeptComputer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct KeptComputer {
+    key: String,
+    name: String,
+    kind: String,
+    address: Option<String>,
+    relay: Option<String>,
+}
+
+/// How one computer is reached: over the link (its relay connection and where it is there), or as
+/// the nearest box's own transport says (a stand-in's peers).
+struct Linked {
+    client: BoxClient,
+    link: Option<(LinkClient, Host)>,
+    /// The address and relay it was made for: made anew when the list says another.
+    at: (Option<String>, Option<String>),
+}
+
+#[derive(Default)]
+struct State {
+    /// The list as last taken, and whether the nearest box said it.
+    list: Vec<Computer>,
+    rows: Vec<Row>,
+    nearest_key: Option<String>,
+    linked: HashMap<String, Linked>,
+    /// One connection per relay.
+    relays: HashMap<String, LinkClient>,
+    reach: HashMap<String, Reach>,
+    identity: Option<Identity>,
+    kept: Kept,
+    pairing: Option<Pairing>,
+    asked: Option<Instant>,
+    /// When each computer first stopped answering, and when each was last asked.
+    failing: HashMap<String, Instant>,
+    checked: HashMap<String, Instant>,
+    stopped: bool,
+    started: bool,
+    /// Which box the list is followed on (`""`: the nearest), and the follow.
+    source: Option<String>,
+    follow: Option<Arc<Follow<Followed<Computers>>>>,
+}
+
+struct Inner {
+    raw: Option<Arc<dyn Transport>>,
+    nearest: Option<BoxClient>,
+    keeper: Arc<dyn Keeper>,
+    dial: Arc<dyn Dial>,
+    name: String,
+    app: String,
+    kept: Option<PathBuf>,
+    timing: Timing,
+    state: Mutex<State>,
+    woken: Condvar,
+    changed: (async_channel::Sender<()>, async_channel::Receiver<()>),
+}
+
+/// Your boxes. Cheap to clone: clones share them.
+#[derive(Clone)]
+pub struct Boxes {
+    inner: Arc<Inner>,
+}
+
+/// A box's transport that also knows how your other computers are reached ([`Transport::peer`]),
+/// so anything holding one box's client finds another's ([`BoxClient::computer`]).
+struct Via {
+    inner: Arc<dyn Transport>,
+    boxes: Weak<Inner>,
+}
+
+impl Transport for Via {
+    fn send(&self, request: &Request) -> Result<Response> {
+        self.inner.send(request)
+    }
+
+    fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {
+        self.inner.open(request, hold)
+    }
+
+    fn refresh(&self) -> u64 {
+        self.inner.refresh()
+    }
+
+    fn streams(&self) -> bool {
+        self.inner.streams()
+    }
+
+    fn here(&self) -> bool {
+        self.inner.here()
+    }
+
+    fn peer(&self, key: &str) -> Option<Arc<dyn Transport>> {
+        let boxes = Boxes { inner: self.boxes.upgrade()? };
+        boxes.client(key).map(|client| client.transport())
+    }
+
+    fn describe(&self) -> String {
+        self.inner.describe()
+    }
+}
+
+/// What the nearest box says when it's from before `devices.pair`.
+const OLDER_NEAREST: &str = "Kuvo Code on this computer needs an update before this app can reach your other computers.";
+const NO_KEYCHAIN: &str = "This app couldn’t keep its key, so it can’t reach your other computers.";
+
+impl Boxes {
+    pub fn new(options: Options) -> Boxes {
+        let Options { nearest, keeper, dial, name, app, kept, timing } = options;
+        let inner = Arc::new_cyclic(|weak: &Weak<Inner>| Inner {
+            nearest: nearest.clone().map(|transport| BoxClient::new(Via { inner: transport, boxes: weak.clone() })),
+            raw: nearest,
+            keeper,
+            dial,
+            name,
+            app,
+            kept,
+            timing,
+            state: Mutex::new(State::default()),
+            woken: Condvar::new(),
+            changed: async_channel::bounded(1),
+        });
+        let boxes = Boxes { inner };
+        boxes.restore();
+        boxes
+    }
+
+    fn state(&self) -> MutexGuard<'_, State> {
+        self.inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn notify(&self) {
+        let _ = self.inner.changed.0.try_send(());
+        self.inner.woken.notify_all();
+    }
+
+    /// Something changed (the list, a computer's state, the pairing): read [`Boxes::rows`] again.
+    /// Only the latest waits to be taken.
+    pub fn changed(&self) -> async_channel::Receiver<()> {
+        self.inner.changed.1.clone()
+    }
+
+    /// The box on this computer, where there is one.
+    pub fn nearest(&self) -> Option<BoxClient> {
+        self.inner.nearest.clone()
+    }
+
+    /// The nearest box's key, once its list said it.
+    pub fn nearest_key(&self) -> Option<String> {
+        self.state().nearest_key.clone()
+    }
+
+    /// Your computers, in the order the box lists them, each with how this client stands with it.
+    pub fn rows(&self) -> Vec<Row> {
+        self.state().rows.clone()
+    }
+
+    pub fn pairing(&self) -> Pairing {
+        self.state().pairing.clone().unwrap_or(Pairing::NotAsked)
+    }
+
+    /// The client of the computer with this key: the nearest box's own for itself, a linked one
+    /// for another of your computers; none for one this client doesn't connect to.
+    pub fn client(&self, key: &str) -> Option<BoxClient> {
+        let state = self.state();
+        if state.nearest_key.as_deref() == Some(key) {
+            return self.inner.nearest.clone();
+        }
+        state.linked.get(key).map(|linked| linked.client.clone())
+    }
+
+    // MARK: The list
+
+    /// The kept list, as the app opens: your computers before any box has answered.
+    fn restore(&self) {
+        let Some(path) = &self.inner.kept else { return };
+        let Some(kept) = std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice::<Kept>(&bytes).ok()) else { return };
+        let computers: Vec<Computer> = kept.computers.iter().map(|kept| Computer { key: kept.key.clone(), name: kept.name.clone(), kind: kept.kind.clone(), address: kept.address.clone(), relay: kept.relay.clone(), ..Computer::default() }).collect();
+        self.state().kept = kept;
+        // (With a box here, its key isn't known until it lists itself: nothing's linked before.)
+        if self.inner.nearest.is_none() {
+            self.take(&computers, false);
+        }
+    }
+
+    fn save(&self, state: &mut State) {
+        let kept = Kept {
+            paired: state.kept.paired.clone(),
+            // Public facts of your own computers only, as the list gave them.
+            computers: state.list.iter().filter(|computer| !computer.apart && !computer.key.is_empty()).map(|computer| KeptComputer { key: computer.key.clone(), name: computer.name.clone(), kind: computer.kind.clone(), address: computer.address.clone(), relay: computer.relay.clone() }).collect(),
+        };
+        if kept == state.kept {
+            return;
+        }
+        state.kept = kept;
+        self.write_kept(state);
+    }
+
+    /// This device's key, made and kept the first time it's needed.
+    fn identity(&self, state: &mut State) -> Option<Identity> {
+        if state.identity.is_none() {
+            state.identity = link::keys::identity(&*self.inner.keeper);
+        }
+        state.identity.clone()
+    }
+
+    /// Takes a box's list of your computers (`from_nearest`: the nearest box said it, so the one it
+    /// calls `here` is this computer's): a client for each of your own it can reach, none for one
+    /// that's filed apart, and those it no longer lists let go.
+    pub fn take(&self, computers: &[Computer], from_nearest: bool) {
+        let mut state = self.state();
+        if from_nearest {
+            state.nearest_key = computers.iter().find(|computer| computer.here && !computer.key.is_empty()).map(|computer| computer.key.clone());
+        }
+        let mut listed = HashSet::new();
+        for computer in computers {
+            let key = computer.key.clone();
+            if key.is_empty() || computer.apart || state.nearest_key.as_deref() == Some(&key) || !listed.insert(key.clone()) {
+                continue;
+            }
+            let at = (computer.address.clone(), computer.relay.clone());
+            if state.linked.get(&key).is_some_and(|linked| linked.at == at) {
+                continue;
+            }
+            let host = match &at {
+                (Some(address), Some(_)) => Host::from_text(&key, address),
+                _ => None,
+            };
+            let made = match (host, &at.1) {
+                (Some(host), Some(relay)) => self.identity(&mut state).map(|identity| {
+                    let inner = &self.inner;
+                    let link = state.relays.entry(relay.clone()).or_insert_with(|| LinkClient::new(relay.clone(), identity, inner.name.clone(), inner.app.clone(), inner.dial.clone(), inner.timing.link)).clone();
+                    let transport: Arc<dyn Transport> = Arc::new(LinkBox::new(link.clone(), host.clone(), computer.name.clone()));
+                    (transport, Some((link, host)))
+                }),
+                // Where the list doesn't say, as the nearest box's own transport reaches it, if it does.
+                _ => self.inner.raw.as_ref().and_then(|raw| raw.peer(&key)).map(|transport| (transport, None)),
+            };
+            match made {
+                Some((transport, link)) => {
+                    let client = BoxClient::new(Via { inner: transport, boxes: Arc::downgrade(&self.inner) });
+                    state.linked.insert(key.clone(), Linked { client, link, at });
+                    state.reach.insert(key.clone(), Reach::Connecting);
+                    state.failing.remove(&key);
+                    state.checked.remove(&key);
+                }
+                None => {
+                    state.linked.remove(&key);
+                }
+            }
+        }
+        state.linked.retain(|key, _| listed.contains(key));
+        state.reach.retain(|key, _| listed.contains(key));
+        state.list = computers.to_vec();
+        Self::rebuild(&mut state);
+        self.save(&mut state);
+        drop(state);
+        self.notify();
+    }
+
+    /// The rows, from the list and each computer's state.
+    fn rebuild(state: &mut State) {
+        let rows = state
+            .list
+            .iter()
+            .map(|listed| {
+                let mut computer = listed.clone();
+                let nearest = !computer.key.is_empty() && state.nearest_key.as_deref() == Some(computer.key.as_str());
+                computer.here = nearest;
+                let reach = if nearest {
+                    Reach::Nearest
+                } else if computer.apart {
+                    Reach::Apart
+                } else if state.linked.contains_key(&computer.key) {
+                    state.reach.get(&computer.key).cloned().unwrap_or(Reach::Connecting)
+                } else {
+                    Reach::Unreached
+                };
+                Row { computer, reach }
+            })
+            .collect();
+        state.rows = rows;
+    }
+
+    /// Reads the list once from the box it's followed on, and takes it.
+    pub fn read_list(&self) -> Result<()> {
+        let (client, from_nearest) = self.source().ok_or_else(|| Error::NotRunning("None of your computers is answering.".into()))?;
+        let computers = client.computers()?;
+        self.take(&computers, from_nearest);
+        Ok(())
+    }
+
+    /// The box the list is read from: the nearest, else the first of your computers that answers.
+    fn source(&self) -> Option<(BoxClient, bool)> {
+        if let Some(nearest) = &self.inner.nearest {
+            return Some((nearest.clone(), true));
+        }
+        let state = self.state();
+        state.rows.iter().find(|row| row.reach == Reach::Connected).and_then(|row| state.linked.get(row.key())).map(|linked| (linked.client.clone(), false))
+    }
+
+    // MARK: Pairing
+
+    /// Whether there's anything to pair for: one of your own computers reached over the link.
+    fn wants_pairing(state: &State) -> bool {
+        state.linked.values().any(|linked| linked.link.is_some())
+    }
+
+    /// Asks the nearest box to pair this device with your setup (`POST kuvo/devices/pair`): it
+    /// vouches for the app on its computer to the main computer. Safe to ask again.
+    pub fn pair(&self) -> Pairing {
+        let Some(nearest) = &self.inner.nearest else { return self.pairing() };
+        let identity = {
+            let mut state = self.state();
+            state.asked = Some(Instant::now());
+            self.identity(&mut state)
+        };
+        let pairing = match identity {
+            None => Pairing::Refused(NO_KEYCHAIN.into()),
+            Some(identity) => {
+                let body = json!({ "key": link::keys::encode(&identity.public()), "name": self.inner.name, "kind": "desktop" });
+                match nearest.send(&Request::post("kuvo/devices/pair", body)) {
+                    Ok(response) if response.is_success() => Pairing::Paired,
+                    Ok(response) => {
+                        let refusal = crate::error::Refusal::from_answer(response.status, &response.body);
+                        if refusal.reason.as_deref() == Some("removed") {
+                            Pairing::Removed(refusal.message)
+                        } else if response.status == 503 {
+                            Pairing::Waiting(refusal.message)
+                        } else if refusal.older_box {
+                            Pairing::Refused(OLDER_NEAREST.into())
+                        } else {
+                            Pairing::Refused(refusal.message)
+                        }
+                    }
+                    Err(error) => Pairing::Waiting(error.to_string()),
+                }
+            }
+        };
+        let mut state = self.state();
+        if pairing == Pairing::Paired {
+            state.kept.paired = state.identity.as_ref().map(|identity| link::keys::encode(&identity.public()));
+            self.write_kept(&state);
+        }
+        state.pairing = Some(pairing.clone());
+        drop(state);
+        self.notify();
+        pairing
+    }
+
+    fn write_kept(&self, state: &State) {
+        let Some(path) = &self.inner.kept else { return };
+        if let Some(folder) = path.parent() {
+            let _ = std::fs::create_dir_all(folder);
+        }
+        if let Ok(bytes) = serde_json::to_vec(&state.kept) {
+            let _ = write_private(path, &bytes);
+        }
+    }
+
+    /// After this device was removed, on your word: a new key, paired anew. The old one stays
+    /// removed everywhere.
+    pub fn pair_again(&self) -> Pairing {
+        self.inner.keeper.forget();
+        let (list, from_nearest) = {
+            let mut state = self.state();
+            state.identity = None;
+            state.kept.paired = None;
+            state.pairing = None;
+            state.linked.clear();
+            state.relays.clear();
+            state.reach.clear();
+            self.write_kept(&state);
+            (state.list.clone(), self.inner.nearest.is_some())
+        };
+        let pairing = self.pair();
+        self.take(&list, from_nearest);
+        pairing
+    }
+
+    // MARK: Each computer's state
+
+    /// Asks the computer with this key what it is (`kuvo/info`), and says how it stands: what a
+    /// row shows. One that stops answering is `Connecting` until it's been so for a while
+    /// (`away_after`), then `Away`.
+    pub fn check(&self, key: &str) -> Option<Reach> {
+        let client = {
+            let mut state = self.state();
+            state.checked.insert(key.to_owned(), Instant::now());
+            state.linked.get(key)?.client.clone()
+        };
+        let answered = client.connect();
+        let mut state = self.state();
+        state.linked.get(key)?;
+        let reach = match answered {
+            Ok(_) => match client.gate() {
+                Gate::Held { missing } => Reach::Held { missing },
+                _ => Reach::Connected,
+            },
+            Err(Error::NeedsUpdating { missing }) => Reach::Held { missing },
+            Err(error) if link::is_unpaired(&error) => Reach::NotPaired,
+            Err(error) => {
+                let since = *state.failing.entry(key.to_owned()).or_insert_with(Instant::now);
+                if since.elapsed() >= self.inner.timing.away_after { Reach::Away(error.to_string()) } else { Reach::Connecting }
+            }
+        };
+        if matches!(reach, Reach::Connected | Reach::Held { .. } | Reach::NotPaired) {
+            state.failing.remove(key);
+        }
+        let changed = state.reach.insert(key.to_owned(), reach.clone()).as_ref() != Some(&reach);
+        if changed {
+            Self::rebuild(&mut state);
+            drop(state);
+            self.notify();
+        }
+        Some(reach)
+    }
+
+    /// Pairs if there's something to pair for and it hasn't yet, then asks each computer that's
+    /// due: one new to the list, one whose session went, one that turned this device away, one
+    /// that's away once its box is said to be back (or it's been a while).
+    pub fn settle(&self) {
+        let timing = self.inner.timing;
+        let ask = {
+            let mut state = self.state();
+            if !Self::wants_pairing(&state) {
+                false
+            } else if state.pairing.is_none() && self.identity(&mut state).is_some_and(|identity| state.kept.paired.as_deref() == Some(link::keys::encode(&identity.public()).as_str())) {
+                // Paired in a run before this one.
+                state.pairing = Some(Pairing::Paired);
+                false
+            } else {
+                let waited = state.asked.is_none_or(|asked| asked.elapsed() >= timing.pair_again);
+                let turned_away = state.reach.values().any(|reach| *reach == Reach::NotPaired);
+                match &state.pairing {
+                    None => true,
+                    Some(Pairing::Waiting(_)) => waited,
+                    // A computer that doesn't take a device its setup paired: asked again, which
+                    // says whether it was removed.
+                    Some(Pairing::Paired) => turned_away && waited,
+                    Some(Pairing::Refused(_)) => waited,
+                    Some(Pairing::Removed(_)) | Some(Pairing::NotAsked) => false,
+                }
+            }
+        };
+        if ask {
+            self.pair();
+        }
+        let due: Vec<String> = {
+            let state = self.state();
+            let paired = matches!(state.pairing, Some(Pairing::Paired)) || self.inner.nearest.is_none();
+            state
+                .linked
+                .iter()
+                .filter(|(key, linked)| {
+                    // Nothing's asked over the link before this device is paired.
+                    if linked.link.is_some() && !paired {
+                        return false;
+                    }
+                    let since = state.checked.get(*key).map(Instant::elapsed);
+                    match state.reach.get(*key) {
+                        None | Some(Reach::Connecting) => since.is_none_or(|since| since >= timing.away_after.min(Duration::from_secs(2))) || !state.failing.contains_key(*key),
+                        Some(Reach::Connected | Reach::Held { .. }) => linked.link.as_ref().is_some_and(|(link, host)| !link.is_open(host)) || matches!(state.reach.get(*key), Some(Reach::Held { .. })) && since.is_none_or(|since| since >= timing.follow.held_again),
+                        Some(Reach::NotPaired) => since.is_none_or(|since| since >= timing.away_after),
+                        Some(Reach::Away(_)) => {
+                            let back = state.list.iter().any(|computer| computer.key == **key && computer.reach == "connected");
+                            since.is_none_or(|since| since >= if back { timing.away_after } else { timing.look_again })
+                        }
+                        _ => false,
+                    }
+                })
+                .map(|(key, _)| key.clone())
+                .collect()
+        };
+        for key in due {
+            if self.state().stopped {
+                return;
+            }
+            self.check(&key);
+        }
+    }
+
+    // MARK: Running
+
+    /// Follows the list and keeps each computer's state, on threads of its own, until
+    /// [`Boxes::stop`].
+    pub fn start(&self) {
+        {
+            let mut state = self.state();
+            if state.started {
+                return;
+            }
+            state.started = true;
+        }
+        let boxes = self.clone();
+        let _ = std::thread::Builder::new().name("kuvo-boxes".into()).spawn(move || boxes.run());
+    }
+
+    fn run(&self) {
+        let timing = self.inner.timing;
+        loop {
+            if self.state().stopped {
+                return;
+            }
+            self.follow_list();
+            self.settle();
+            let state = self.state();
+            if state.stopped {
+                return;
+            }
+            // Again when something changes, when a computer that just stopped answering is due,
+            // or after a while.
+            let soon = state.reach.iter().any(|(key, reach)| matches!(reach, Reach::Connecting | Reach::NotPaired) && state.linked.contains_key(key)) || matches!(state.pairing, Some(Pairing::Waiting(_)) | None) && Self::wants_pairing(&state);
+            let wait = if soon { timing.away_after.min(timing.look_again) } else { timing.look_again };
+            let _ = self.inner.woken.wait_timeout(state, wait);
+        }
+    }
+
+    /// Follows the list on its source, if it isn't yet (or its source went).
+    fn follow_list(&self) {
+        let source = match &self.inner.nearest {
+            Some(nearest) => Some((String::new(), nearest.clone(), true)),
+            None => {
+                let state = self.state();
+                let current = state.source.clone().filter(|key| state.reach.get(key) == Some(&Reach::Connected));
+                let key = current.or_else(|| state.rows.iter().find(|row| row.reach == Reach::Connected).map(|row| row.key().to_owned()));
+                key.and_then(|key| state.linked.get(&key).map(|linked| (key.clone(), linked.client.clone(), false)))
+            }
+        };
+        let mut state = self.state();
+        let Some((key, client, from_nearest)) = source else {
+            state.follow = None;
+            state.source = None;
+            return;
+        };
+        if state.source.as_deref() == Some(key.as_str()) && state.follow.is_some() {
+            return;
+        }
+        let follow = Arc::new(client.follow_computers(self.inner.timing.follow));
+        state.source = Some(key);
+        state.follow = Some(follow.clone());
+        drop(state);
+        let boxes = self.clone();
+        let _ = std::thread::Builder::new().name("kuvo-boxes-list".into()).spawn(move || {
+            while let Some(update) = follow.next_blocking() {
+                if let Followed::Now(list) = update {
+                    boxes.take(&list.computers, from_nearest);
+                }
+            }
+        });
+    }
+
+    /// The computer woke, or its network changed: relay connections that may have died without
+    /// closing are let go, and everything's asked again.
+    pub fn wake(&self) {
+        let relays: Vec<LinkClient> = self.state().relays.values().cloned().collect();
+        for relay in relays {
+            relay.let_go();
+        }
+        self.state().checked.clear();
+        self.notify();
+    }
+
+    pub fn stop(&self) {
+        let follow = {
+            let mut state = self.state();
+            state.stopped = true;
+            state.follow.take()
+        };
+        if let Some(follow) = follow {
+            follow.stop();
+        }
+        self.inner.woken.notify_all();
+    }
+}
+
+/// Writes a file only you can read.
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(bytes)
+}

@@ -155,6 +155,12 @@ pub struct Computer {
     /// What can be done with it from this box now, in the box's order and words.
     #[serde(default, deserialize_with = "readable")]
     pub actions: Vec<ComputerAction>,
+    /// Where its box is on the relay, and which relay (`computers.reach`): one of your own
+    /// computers a paired device reaches directly. None for one that isn't yours.
+    #[serde(default)]
+    pub address: Option<String>,
+    #[serde(default)]
+    pub relay: Option<String>,
 }
 
 /** What can be done with a computer from the box that lists it, in the box's words. */
