@@ -7453,7 +7453,8 @@ decides nothing itself.
 - `--root`: the box's home in your home folder (default `.kuvo-code`, `K` below; a demo copy
   names its own). On Linux it's always `.kuvo-code`: the keeper names no other.
 - Kuvo Code itself (`run.kuvo.code`) goes with the real `~/.kuvo-code` only (your account's own,
-  whatever `HOME` says), and a copy of the app never with it; on a Mac the app must be named.
+  whatever `HOME` says and however the folder is written: through a link, or on a Mac's disk in
+  other letters' case; where the account's home can't be told, it's refused), and a copy of the app never with it; on a Mac the app must be named.
   The script checks this first, from the bundle's ID, before it writes anything: either mismatch,
   or no app, is `{"result": "refused", "message"}` (exit 1) with nothing made, not even the
   folder. (The link checks it again.) Linux has no bundle to tell a copy by.
