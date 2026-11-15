@@ -782,7 +782,9 @@ test("scripts/box-release.sh packs the box's release from its sources with its h
   assert.deepEqual(fs.readdirSync(out), [], "nothing left there by those");
   const packed = pack("0.10.0", "https://example.invalid/releases/download/v0.10.0/box-0.10.0.tar.gz", out, bundle);
   assert.equal(packed.status, 0, packed.stderr);
-  assert.deepEqual(fs.readdirSync(out).sort(), ["box-0.10.0.tar.gz", "boxes.json"]);
+  // (And the installer beside them, for an app that carries the release: install.test.js.)
+  assert.deepEqual(fs.readdirSync(out).sort(), ["box-0.10.0.tar.gz", "boxes.json", "kuvo-install"]);
+  assert.deepEqual(fs.readFileSync(path.join(out, "kuvo-install")), fs.readFileSync(path.join(checkout, "box/src/install/kuvo-install")));
   const manifest = link.verifyBoxes(fs.readFileSync(path.join(out, "boxes.json"), "utf8"), [pinned]);
   assert.equal(manifest.version, "0.10.0");
   assert.equal(manifest.engine, "1.1.0");

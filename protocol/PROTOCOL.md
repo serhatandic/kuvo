@@ -7371,7 +7371,9 @@ refused anything but `--status` on the real `~/.kuvo-code`.
   keys of its own, a card); a move's install step sets it aside, journaled, so a box moved there
   later is never taken for a making cut short. All of it holds the move's lock to the end; one that
   fails part way (not cut short) takes its mark away again. `done` (exit 0); made already,
-  `nothing`. No `state.json`: nothing moved, so there's nothing to move back. **`--new --check`**,
+  `nothing`. The box's installer ("Installing this computer's box") makes it the same way with
+  the engine it took itself rather than the app's folder's, and what it staged
+  (`updates/install`) is never set aside. No `state.json`: nothing moved, so there's nothing to move back. **`--new --check`**,
   changing nothing: `{ready, made, why?}`, `made` once its kind says so with no move under way (a
   move writes it before it's done: never `made` then), `ready` where it would be made now (the
   release aside).
@@ -7450,6 +7452,124 @@ only for the home `KUVO_MACHINE_ROOT` names, else nothing: it never reads or ask
 {now: true}` asks for Move Now and `{back: true}` (once it's moved) for Move Back, answering the
 same: only from Kuvo Code itself (the app, or `box route`; 403 from a phone), 409 with why when it
 can't (a machine, or nothing to move back).
+
+#### Installing this computer's box
+
+An app that carries the box's release ("Updates": `boxes.json` and the pack, in a folder) carries
+`kuvo-install` beside them, a POSIX shell script `scripts/box-release.sh` writes there from
+`box/src/install`. It's how a computer with no box gets one, and how the app learns what a
+computer holds before it starts or attaches to anything. The app runs it and draws its lines; it
+decides nothing itself.
+
+`sh <folder>/kuvo-install status|new|move [--app <bundle>] [--root <name>]`
+
+- `--app`: the app's bundle (a full path), on a Mac: its bundle ID names the folder an earlier
+  Kuvo Code kept its data in (`~/Library/Application Support/<ID>`, `S` below). Linux has none.
+- `--root`: the box's home in your home folder (default `.kuvo-code`, `K` below; a demo copy
+  names its own). On Linux it's always `.kuvo-code`: the keeper names no other.
+- Kuvo Code itself (`run.kuvo.code`) goes with the real `~/.kuvo-code` only (your account's own,
+  whatever `HOME` says and however the folder is written: through a link, or on a Mac's disk in
+  other letters' case; where the account's home can't be told, it's refused), and a copy of the app never with it; on a Mac the app must be named.
+  The script checks this first, from the bundle's ID, before it writes anything: either mismatch,
+  or no app, is `{"result": "refused", "message"}` (exit 1) with nothing made, not even the
+  folder. (The link checks it again.) Linux has no bundle to tell a copy by.
+- It prints JSON lines: `{"step": "checking" | "engine"}` while it works (the pack being checked
+  and unpacked; the engine being fetched), then one answer, last. Exit 0; 1 refused or failed,
+  with `message` in words to show as they are; 4 when another move holds the lock (`result`
+  `"waits"`). Exit 2 when it isn't asked as above: a usage line on standard error and no JSON
+  line (an app's mistake, never a user's). What the shell's part refuses or fails itself (the
+  refusals above, a damaged copy, an engine that can't be had) is `{"result", "message"}` alone,
+  with no `verdict` or `status`: nothing has judged the computer yet.
+- Every `KUVO_*` variable it was started with is dropped (but a test's, `KUVO_TEST_*`).
+
+**The shell's part**, since a new computer has nothing to run JavaScript with:
+
+1. `boxes.json`'s manifest is read (its version, its engine, this system's engine URL and npm
+   integrity, the pack's SHA-256). Its signature isn't checked again here: on a Mac the app's own
+   signature seals the folder; elsewhere it's as trusted as the app that carries it.
+2. The pack (`box-<version>.tar.gz`, beside it) is checked against that SHA-256 and unpacked into
+   `K/updates/install/release`: beside it first (`release.new.<pid>`, this run's own), renamed
+   whole, marked with the pack's sum (`.whole`), so the same release isn't unpacked twice and one
+   cut short is never used. Two runs at once each unpack and fetch their own, and the first in
+   place stays; what a run that's gone left is removed by the next.
+3. The engine: `K/updates/install/engine/<version>/opencode` if it was fetched before; else, for
+   `status`, the box's own as it is (`K/engine/<version>/opencode`, or whichever version it has:
+   a computer with a box is told how it stands offline too, with nothing fetched); else it's
+   fetched from the manifest's URL (`https` only, by `curl` or `wget`; a `file:` URL is a test's,
+   taken only outside the real home with `KUVO_TEST_INSTALL_FILE_ENGINE` set), checked against the integrity
+   (SHA-512), run once (`--version`), and only then put there. A copy of the box's own of that
+   version is taken for `new`. Where it can't be had and the box has an engine, the box's own
+   answers: a box already made needs no other, and a new one says the engine couldn't be
+   downloaded.
+4. `kuvo-link.js install --<verb> --root <name> --release <folder> --engine <folder> [--app
+   <bundle>]` from that release, on that engine, with `KUVO_HOME` the box's home.
+
+It writes only in `K/updates/install`, which goes once a box is made from it. Beside a box
+that's there already (`ours`, `machine`, `two`, nothing to run), the engine it fetched goes once
+that box has the same engine itself, and the installer runs on the box's own from then on; the
+unpacked release (a few megabytes) stays, one at a time, so it isn't unpacked at each ask.
+
+**`status`** → `{"verdict", "verb", "status"}`: what this computer holds, from its folders alone;
+`verb` is what to run next (`"new"`, `"move"` or null), and `status` is how a move stands
+(`kuvo/box/rehome`'s answer), for its step to be drawn. It changes nothing of a box or of an
+earlier Kuvo Code's data: only what the installer stages in `K/updates/install`, as above. The
+two refusals above (no app named on a Mac; a copy and the real one mixed) say nothing of what's
+there.
+
+| `verdict` | What's here | `verb` |
+| --- | --- | --- |
+| `waits` | another process holds the move's lock | null |
+| `stuck` | a move stopped at `clear` or later, or its journal can't be read | `move` |
+| `moving` | a move stopped before `clear` | `move` |
+| `ours` | a Mac's own box in `K` (`box/kind` says `mac`) | `new` while its helper isn't in place (its launch agent's file missing, or launchd not having it: a making cut short after the box was made, a start launchd refused, Login Items off for it), else null: the app attaches |
+| `back` | it was moved back | null: it moves again when you ask |
+| `two` | a machine's box in `K`, and an earlier Kuvo Code's data in `S` | null: both stay |
+| `machine` | a machine's box in `K`, nothing in `S` | null: the app attaches to it in place |
+| `app-box` | a box of the app's own ran in `S/box` (a keeper build's) | `move` |
+| `app-07` | an earlier Kuvo Code's data in `S`, no box of its own there (0.5 to 0.7, 0.8.0-beta.1) | `move` |
+| `fresh` | none of these | `new` |
+
+- A machine's box is one with a card or a link, keys of its own or `box/kind` `machine`, that the
+  computer that set it up hasn't removed (`here`'s rule); on Linux its start script alone
+  (`bin/kuvo-start`) is enough; but under the installer's mark (`updates/install/making`) only
+  one that runs is a box.
+- Data in `S` is anything there but what's nobody's: the engine's download (`engine`), caches
+  (`opencode/cache`, `Caches`, `cache`, `tmp`, logs), the desktop app's own folder (`desktop`), and
+  a `box` folder holding only `run` and `bin`. Broad on purpose: a Mac with data taken for a new
+  one would get a box beside what it has.
+
+**`new`** → `{"result", "verdict", "started"?, "setAside"?, "message"?, "status"}`. `result` is
+`done`, `nothing`, `refused`, `failed`, or `waits` (another move holds the lock: exit 4, never
+`refused`). `setAside` is the folder what was in `K` before went to, whole
+(`K/trash/earlier-box-<date>`), when anything was there:
+
+- **On a Mac**, only for `fresh`: the release's files checked against its `box.json`, then the
+  box made as `rehome --new` makes it ("Moving this Mac's box") from the installer's release and
+  engine (that version's alone), then its helper started by the link just put in place (`helper
+  start --app <the bundle's ID>`, the whole start: "This Mac's box: its helper"). `done`,
+  `started` true. For `ours`, only the helper: `nothing`, `started` true. A helper that couldn't
+  be started is `failed` with `started` false and why, the box made all the same: `status` then
+  says `ours` with `new` to run again. Any other verdict: `refused`, saying why (`waits`:
+  `waits`, exit 4). In a home that isn't the real one (a demo copy's), it's made but nothing outside the folder
+  is written: `started` false, said.
+- **On Linux**, only for `fresh`, under the move's lock: a machine's box, as a computer that's
+  added gets it ("Computers", Adding one). What's in `K` that isn't a box (one the computer that
+  set it up removed or turned off, with the sessions it left; what a making cut short left) is
+  set aside whole in `trash/earlier-box-<date>`, nothing deleted, as a Mac's new box does (but
+  the installer's own, the move's records, and the desktop app's own folder, `desktop`). Then the
+  engine and the release's files put in place by name with their modes (the keeper's mark and
+  the version last), `updates/installed.json`, then the one start script that adding runs there
+  (its settings its own, `run/launch.env`, its `@reboot` line, its id, `kuvo-start start`). No
+  helper, no `box/kind`. Refused while anything still runs from `K/run` (a keeper that's ending),
+  as on a Mac. One that couldn't be started is `failed`, and `fresh` with `new` still, whatever
+  its start left (keys and a link too): under the installer's mark, what doesn't run isn't a
+  box, and is set aside as it's made again. It has no relay until a Mac sets it up or
+  `kuvo-link.js pair <relay>`.
+- One cut short at any point is made again by running it again; `fresh` holds until a box is
+  whole.
+
+**`move`** (an earlier Kuvo Code's data moved by the box itself) isn't built yet: `refused`,
+saying so.
 
 #### This Mac's app
 
@@ -7830,7 +7950,22 @@ in `serve`'s process: your phones pair with it and open their sessions there. It
 relay secret, signing key) stay in the Mac's Keychain: the box asks the app for them
 (`link/identity`) once its link is on, keeps them in memory only, and never makes keys of its own;
 without them its link stays off and says why. What it keeps of its phones is in `box/run/link.json`,
-as on a machine, without the keys, the relay or its name. Nothing its link meets (the relay gone, a
+as on a machine, without the keys, the relay or its name.
+
+**With no app telling it** (#713): Kuvo Code's desktop app says nothing of the link
+(`kuvo/link/config` is the retired Mac app's), and a Mac that never ran that app has nothing kept
+in `run/mac-link.json`. A Mac's box in a home of its own then starts from its own settings: the
+relay everyone's on (`wss://kuvolink.porigam.com.tr`, the retired app's default), this Mac's name
+(as System Settings has it, `scutil --get ComputerName`; else its host's), and "Let my devices
+connect" on, as a machine's box always has it (so too a Mac moved over from 0.7, which never
+kept the switch in its link: your choice, 2026-11-15). Nothing connects until you pair a device or add a
+computer. Its keys come from its helper as ever (`link/identity`, made in your Keychain the first
+time they're asked for). What an app said before is kept instead, its switch as you left it; the
+box's own settings are never written to `mac-link.json`. Adding a computer asks for the keys
+whether or not anything else wants the link yet (`kuvo/link/setup`, and the box's own add). A
+test's or a demo copy's folder never takes the real relay by itself: only one it's given
+(`KUVO_TEST_RELAY`), else none: the box's own relay is for your account's own `~/.kuvo-code` alone. A Linux box has no settings of its own for this: its relay comes
+from the Mac that sets it up, or `kuvo-link.js pair <relay>`. Nothing its link meets (the relay gone, a
 frame that isn't one, the app away) stops the box's own routes.
 
 What a phone asks, it answers itself, as a machine's bridge does, with the app open or closed:

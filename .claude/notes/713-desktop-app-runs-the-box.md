@@ -573,6 +573,86 @@ that aren't built or named for the version, by SHA-256 and mode, and
 changed on purpose leaves the fixture. `box/bridge-tests/update-real-keeper.test.js` installs a
 pack with the real `kuvo-start` and `kuvo-launch` and a stand-in engine, on a Mac and on Linux.
 
+## 8c. Piece 3 plan: `kuvo-install` and `install --status/--new` (2026-11-15)
+
+**What's built here.** Everything is the box's; the desktop app's side (running it, drawing its
+lines) is piece 5, and `install --move` is piece 4 (asked now, it says plainly it isn't there yet).
+
+- **`box/src/install/kuvo-install`** (POSIX `sh`, macOS and Linux), written beside `boxes.json`
+  and the pack by `scripts/box-release.sh`. `sh kuvo-install status|new|move [--app <bundle>]
+  [--root <name>]`. It reads `boxes.json` (version, engine, this system's engine URL and npm
+  integrity, the pack's SHA-256), checks the pack, unpacks it into `K/updates/install/release`
+  (beside first, renamed whole), takes the engine (`K/updates/install/engine/<version>`: one
+  fetched before, the box's own of that version, else downloaded, checked against the integrity
+  and run once), then hands over to the release's `kuvo-link.js install`. JSON lines: `{"step"}`
+  while it works, the answer last. Every `KUVO_*` it was started with is dropped but a test's.
+- **`box/src/link/install/verdict.ts`**: the verdict, from the folders alone.
+- **`box/src/link/install/command.ts`**: `install --status | --new | --move`.
+- **`rehome --new`** (`rehome/move.ts`) takes the engine's folder as an option (the installer's,
+  not the app's folder) and leaves `updates/install` where it is; the move's lock knows an
+  `install` process as a holder.
+
+**Verdicts** (`install --status` → `{verdict, verb, status}`; `verb` is what the app runs next):
+
+| Verdict | From | `verb` |
+| --- | --- | --- |
+| `waits` | the move's lock held by a live process | none |
+| `stuck` | a journal at `clear` or later, or one that can't be read | `move` |
+| `moving` | a journal before `clear` | `move` |
+| `ours` | `K/box/kind` says `mac` (not a making cut short) | `new` only while its helper's launch agent isn't in place, else none |
+| `back` | the move's record says it was moved back | none (Move Again is the user's) |
+| `two` | a machine's box in `K` (a card, a link, keys or `kind: machine`, not removed) and data in `S` | none |
+| `machine` | a machine's box in `K`, nothing in `S` (on Linux, any box in `K`) | none |
+| `app-box` | `S/box` ran (`OWN_BOX_RAN`) | `move` |
+| `app-07` | anything of the old app's in `S` but its engine download, caches and the desktop app's own folder | `move` |
+| `fresh` | none of these | `new` |
+
+- **`--new` on a Mac:** only for `fresh` (and `ours` whose helper isn't in place: a making cut
+  short after the box was made). The release's files checked against its `box.json`, then `rehome
+  --new` with the installer's release and engine, then `helper start` by the installed link, then
+  `updates/install` removed. Real `~/.kuvo-code` only for `run.kuvo.code`, and the reverse.
+- **`--new` on Linux:** a machine-kind box in `~/.kuvo-code`, as a Mac adding it would leave it:
+  the release's files and the engine in place, then the one start script the add flow runs
+  (`add/scripts.ts`, `start`: settings its own, `launch.env`, the `@reboot` line, its id,
+  `kuvo-start start`). No helper.
+- **Cut short:** each stage is beside-then-renamed, so a second run makes it again.
+
+**The relay and keys of a Mac that never ran the old app** (#636/#742): the box owns them. A Mac's
+box in a home of its own with nothing kept in `run/mac-link.json` starts from its own: the default
+relay, this Mac's name, "Let my devices connect" on (a question for the user: on or off for a new
+Mac). Its keys come from its helper (made at first use, built). Adding a computer asks for the
+keys whether or not anything else wants the link yet. Linux: a box that installs itself has no
+relay until a Mac sets it up or `kuvo-link.js pair <relay>` (#183's work).
+
+**Tests.** `box/test/install-verdict.test.ts` (each verdict from fixtures);
+`box/bridge-tests/install.test.js` (`kuvo-install` against a test release, in a home of its own:
+status, `new`, a cut-short one made again, a damaged pack, an engine that isn't what the release
+says; on Linux `new` as a machine's start); `box/bridge-tests/own-link.test.js` (the link's own
+settings and keys).
+
+**Piece 3 as built (2026-11-15), and what it leaves.** As planned above, with these differences
+after the reviewer's pass: `ours` says `new` while its helper isn't in place *or launchd doesn't
+have it* (so a start launchd refused, or Login Items off, is tried at the next open: `helper
+start`, the whole start); `status` runs on whichever engine the box has, never waiting on a
+download; on Linux a removed or turned-off box's folder is set aside in the trash before a new one
+is made (but `desktop`), under the move's lock; the box's own relay is for the real
+`~/.kuvo-code` alone. PROTOCOL.md, "Installing this computer's box", says each as it is.
+
+- **For piece 4:** `install --move` answers "isn't in this version yet"; `back` has no verb (Move
+  Again is `kuvo/box/rehome {now}` then `--run`); `moving` and `stuck` name `move`. A 0.7 Mac has
+  no `mac-link.json`, so after its move it starts from the box's own link settings ("Let my
+  devices connect" on): if the inventory should carry the old app's `phoneLink` preference
+  instead, that's one more "box upgrade" line. `app-07` is broad (anything in `S` but what's
+  nobody's): `--run` must take a Mac with nothing real to move without failing.
+- **For piece 5:** the app runs `sh kuvo-install status`, then the verb it names, and draws the
+  lines; `--root` for a demo copy. On Linux there's no `--app`, so nothing keeps a copy of a Linux
+  app from installing into the real `~/.kuvo-code`: the app's own guard (a dev build only
+  attaches) is the only one there. Two installers at once aren't locked against each other in
+  the shell's part (a second can remove the first's download: a plain failure, tried again).
+- **Not built:** the box's own update reusing an engine the installer fetched (it fetches its
+  own); a switch for "Let my devices connect" that needs no relay from the client (the desktop
+  app's Settings, #644).
+
 ## 9. Questions only the user can answer
 
 1. **Who keeps this Mac's box?**
