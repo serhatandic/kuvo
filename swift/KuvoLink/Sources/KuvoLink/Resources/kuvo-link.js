@@ -3127,6 +3127,20 @@ function usage({ prefs, staged }) {
   fs160.mkdirSync(path168.dirname(file), { recursive: true, mode: 448 });
   new UsageSettings(file).take(parts);
 }
+function enginePlugin(release, { staged }) {
+  const name = "config/opencode/plugins/kuvo-code.js";
+  let brought;
+  try {
+    brought = fs160.readFileSync(path168.join(release, name));
+  } catch {
+    return;
+  }
+  const file = staged(name);
+  const temporary = `${file}.${process.pid}.new`;
+  fs160.writeFileSync(temporary, brought, { mode: 420 });
+  fs160.chmodSync(temporary, 420);
+  fs160.renameSync(temporary, file);
+}
 function said6({ S, prefs, dropped }) {
   const count = (value) => isObject(value) ? Object.keys(value).length : Array.isArray(value) ? value.length : 0;
   const drafts = count(prefs.composerDrafts);
@@ -3150,7 +3164,7 @@ function said6({ S, prefs, dropped }) {
   if (prefs.toolApproval !== "askFirst")
     dropped.push("New sessions start with Auto, Kuvo's own default, where the earlier Kuvo Code ran everything without asking.");
 }
-function runUpgrades(_run, move) {
+function runUpgrades(run, move) {
   const made = new Set;
   const upgrade = {
     S: move.appFolder,
@@ -3174,6 +3188,7 @@ function runUpgrades(_run, move) {
     fs160.mkdirSync(upgrade.staged(name), { recursive: true, mode: 448 });
   for (const each of [projects, worktrees, machines, engineSettings, boxSettings, link2, bots, personalities, groupChats, letters, usage, said6])
     each(upgrade);
+  enginePlugin(run.release, upgrade);
   for (const name of ["groups", "agents", "bots", "run"])
     try {
       fs160.rmdirSync(upgrade.staged(name));
@@ -51331,7 +51346,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ac1c6f6732fb";
+var BRIDGE_VERSION = "75d55413eaff";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -51361,7 +51376,7 @@ async function migrateDatabases({ engine, data, scratch }) {
   const before = tableCounts(database);
   fs156.rmSync(scratch, { recursive: true, force: true });
   try {
-    const started = await startIsolated({ engine, data, scratch, what: "your sessions, to bring them up to date" });
+    const started = await startIsolated({ engine, data, scratch, what: "your sessions (to bring them up to date)" });
     await started.stop();
   } finally {
     fs156.rmSync(scratch, { recursive: true, force: true });
@@ -51457,15 +51472,18 @@ function heldOpen(folder) {
   const files = databasesIn(folder).flatMap((file) => [file, `${file}-wal`, `${file}-shm`]).filter(exists5);
   if (!files.length || process.platform !== "darwin")
     return [];
-  const asked = spawnSync14("/usr/sbin/lsof", ["-F", "pc", "--", ...files], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "ignore"] });
+  const asked = spawnSync14("/usr/sbin/lsof", ["-F", "pcfa", "--", ...files], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "ignore"] });
   const names = new Set;
-  let pid = 0;
+  let pid = 0, name = "";
   for (const line of (asked.stdout ?? "").split(`
 `)) {
-    if (line.startsWith("p"))
+    if (line.startsWith("p")) {
       pid = Number(line.slice(1));
-    else if (line.startsWith("c") && pid !== process.pid)
-      names.add(line.slice(1));
+      name = "";
+    } else if (line.startsWith("c"))
+      name = line.slice(1);
+    else if (line.startsWith("a") && /[wu]/.test(line.slice(1)) && pid !== process.pid && name)
+      names.add(name);
   }
   return [...names];
 }
@@ -52579,7 +52597,7 @@ var NOT_NEW = {
   stuck: "Kuvo Code was moving your sessions to their new place on this Mac and stopped part way: that's finished first.",
   waits: "Another move is under way.",
   back: "Kuvo Code's sessions on this Mac were moved back: they move again when you ask.",
-  machine: "This computer is set up as one of your machines already: Kuvo Code uses the box that's here.",
+  machine: "This computer is set up as one of your machines already: Kuvo Code uses what's here.",
   two: "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: both stay as they are."
 };
 function bundleID(bundle) {
@@ -52693,6 +52711,7 @@ function tidyStaging(home, { verdict, verb }, release) {
 var NOT_MOVED2 = {
   fresh: "There's nothing of an earlier Kuvo Code's on this Mac to move.",
   machine: "This Mac is set up as one of your machines already: Kuvo Code uses what's here.",
+  two: "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.",
   back: "Kuvo Code's sessions on this Mac were moved back: they move again when you ask.",
   waits: "Another move is under way."
 };
@@ -53000,6 +53019,7 @@ var sizeOf2 = (file) => {
 };
 var NO_ENGINE2 = "Kuvo's engine couldn't be downloaded. Check that this Mac is online, then try again.";
 var DAMAGED = "This copy of Kuvo Code is damaged. Download it again, then try again.";
+var TWO = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.";
 var NO_RELEASE = "Kuvo's own files weren't unpacked. Open Kuvo Code again to try again.";
 function schemaRefusal2(appFolder, home) {
   const databases = databasesIn(path174.join(appFolder, "opencode", "data", "opencode"));
@@ -53037,6 +53057,8 @@ function runRefusal({ appFolder, home }, plan, pinned) {
     return NO_ENGINE2;
   if (real && !plan.keys)
     return DAMAGED;
+  if (!exists8(appFolder))
+    return "There's nothing of an earlier Kuvo Code's on this Mac to move.";
   const old = runningIn(path174.join(appFolder, "box", "run"));
   if (old.length)
     return `An earlier Kuvo Code is still running in the background on this Mac (${old.join(", ")}). Quit Kuvo Code wherever it's open, then try again.`;
@@ -53189,7 +53211,7 @@ async function rehomeRun(folders, options) {
     try {
       pinned = checkedRelease(plan.release).engine;
     } catch {}
-    const refusal = plan.merge ? "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet." : runRefusal(folders, plan, pinned);
+    const refusal = plan.merge ? TWO : runRefusal(folders, plan, pinned);
     if (refusal) {
       noteRecord(home, { state: "failed", way: "move", tries: (readRecord(home).tries ?? 0) + 1, nextTry: null, failed: { at: now, step: "plan", message: refusal }, asked: null });
       return { result: "refused", message: refusal, status: rehomeStatus(home) };
