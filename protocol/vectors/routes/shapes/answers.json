@@ -3484,6 +3484,1006 @@
    }
   },
   {
+   "route": "GET kuvo/computers/add",
+   "answers": {
+    "200": {
+     "object": {
+      "can": "bool",
+      "why?": "string",
+      "hosts": {
+       "list": "string"
+      },
+      "tries": {
+       "list": {
+        "object": {
+         "id": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "add"
+           },
+           {
+            "literal": "setup"
+           },
+           {
+            "literal": "uninstall"
+           }
+          ]
+         },
+         "destination": "string",
+         "name": "string",
+         "state": {
+          "oneOf": [
+           {
+            "literal": "working"
+           },
+           {
+            "literal": "asking"
+           },
+           {
+            "literal": "stopping"
+           },
+           {
+            "literal": "failed"
+           },
+           {
+            "literal": "done"
+           }
+          ]
+         },
+         "title": "string",
+         "steps": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "waiting"
+              },
+              {
+               "literal": "now"
+              },
+              {
+               "literal": "done"
+              },
+              {
+               "literal": "failed"
+              }
+             ]
+            },
+            "detail?": "string",
+            "sent?": "number",
+            "total?": "number"
+           }
+          }
+         },
+         "question?": {
+          "object": {
+           "id": "string",
+           "title": "string",
+           "message": "string",
+           "at": "number",
+           "facts": {
+            "list": {
+             "object": {
+              "label": "string",
+              "value": "string",
+              "code?": "bool"
+             }
+            }
+           },
+           "answers": {
+            "list": {
+             "object": {
+              "id": "string",
+              "label": "string",
+              "kind": {
+               "oneOf": [
+                {
+                 "literal": "primary"
+                },
+                {
+                 "literal": "plain"
+                },
+                {
+                 "literal": "danger"
+                }
+               ]
+              }
+             }
+            }
+           }
+          }
+         },
+         "failure?": {
+          "object": {
+           "title": "string",
+           "message": "string",
+           "again": "bool"
+          }
+         },
+         "computer?": {
+          "object": {
+           "key": "string",
+           "name": "string"
+          }
+         },
+         "known?": "bool"
+        }
+       }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/computers/add/events",
+   "answers": {
+    "200": {
+     "object": {
+      "can": "bool",
+      "why?": "string",
+      "hosts": {
+       "list": "string"
+      },
+      "tries": {
+       "list": {
+        "object": {
+         "id": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "add"
+           },
+           {
+            "literal": "setup"
+           },
+           {
+            "literal": "uninstall"
+           }
+          ]
+         },
+         "destination": "string",
+         "name": "string",
+         "state": {
+          "oneOf": [
+           {
+            "literal": "working"
+           },
+           {
+            "literal": "asking"
+           },
+           {
+            "literal": "stopping"
+           },
+           {
+            "literal": "failed"
+           },
+           {
+            "literal": "done"
+           }
+          ]
+         },
+         "title": "string",
+         "steps": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "waiting"
+              },
+              {
+               "literal": "now"
+              },
+              {
+               "literal": "done"
+              },
+              {
+               "literal": "failed"
+              }
+             ]
+            },
+            "detail?": "string",
+            "sent?": "number",
+            "total?": "number"
+           }
+          }
+         },
+         "question?": {
+          "object": {
+           "id": "string",
+           "title": "string",
+           "message": "string",
+           "at": "number",
+           "facts": {
+            "list": {
+             "object": {
+              "label": "string",
+              "value": "string",
+              "code?": "bool"
+             }
+            }
+           },
+           "answers": {
+            "list": {
+             "object": {
+              "id": "string",
+              "label": "string",
+              "kind": {
+               "oneOf": [
+                {
+                 "literal": "primary"
+                },
+                {
+                 "literal": "plain"
+                },
+                {
+                 "literal": "danger"
+                }
+               ]
+              }
+             }
+            }
+           }
+          }
+         },
+         "failure?": {
+          "object": {
+           "title": "string",
+           "message": "string",
+           "again": "bool"
+          }
+         },
+         "computer?": {
+          "object": {
+           "key": "string",
+           "name": "string"
+          }
+         },
+         "known?": "bool"
+        }
+       }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/computers/add",
+   "answers": {
+    "202": {
+     "object": {
+      "try": {
+       "object": {
+        "id": "string",
+        "kind": {
+         "oneOf": [
+          {
+           "literal": "add"
+          },
+          {
+           "literal": "setup"
+          },
+          {
+           "literal": "uninstall"
+          }
+         ]
+        },
+        "destination": "string",
+        "name": "string",
+        "state": {
+         "oneOf": [
+          {
+           "literal": "working"
+          },
+          {
+           "literal": "asking"
+          },
+          {
+           "literal": "stopping"
+          },
+          {
+           "literal": "failed"
+          },
+          {
+           "literal": "done"
+          }
+         ]
+        },
+        "title": "string",
+        "steps": {
+         "list": {
+          "object": {
+           "id": "string",
+           "title": "string",
+           "state": {
+            "oneOf": [
+             {
+              "literal": "waiting"
+             },
+             {
+              "literal": "now"
+             },
+             {
+              "literal": "done"
+             },
+             {
+              "literal": "failed"
+             }
+            ]
+           },
+           "detail?": "string",
+           "sent?": "number",
+           "total?": "number"
+          }
+         }
+        },
+        "question?": {
+         "object": {
+          "id": "string",
+          "title": "string",
+          "message": "string",
+          "at": "number",
+          "facts": {
+           "list": {
+            "object": {
+             "label": "string",
+             "value": "string",
+             "code?": "bool"
+            }
+           }
+          },
+          "answers": {
+           "list": {
+            "object": {
+             "id": "string",
+             "label": "string",
+             "kind": {
+              "oneOf": [
+               {
+                "literal": "primary"
+               },
+               {
+                "literal": "plain"
+               },
+               {
+                "literal": "danger"
+               }
+              ]
+             }
+            }
+           }
+          }
+         }
+        },
+        "failure?": {
+         "object": {
+          "title": "string",
+          "message": "string",
+          "again": "bool"
+         }
+        },
+        "computer?": {
+         "object": {
+          "key": "string",
+          "name": "string"
+         }
+        },
+        "known?": "bool"
+       }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/computers/add/:id/answer",
+   "answers": {
+    "200": {
+     "object": {
+      "try": {
+       "object": {
+        "id": "string",
+        "kind": {
+         "oneOf": [
+          {
+           "literal": "add"
+          },
+          {
+           "literal": "setup"
+          },
+          {
+           "literal": "uninstall"
+          }
+         ]
+        },
+        "destination": "string",
+        "name": "string",
+        "state": {
+         "oneOf": [
+          {
+           "literal": "working"
+          },
+          {
+           "literal": "asking"
+          },
+          {
+           "literal": "stopping"
+          },
+          {
+           "literal": "failed"
+          },
+          {
+           "literal": "done"
+          }
+         ]
+        },
+        "title": "string",
+        "steps": {
+         "list": {
+          "object": {
+           "id": "string",
+           "title": "string",
+           "state": {
+            "oneOf": [
+             {
+              "literal": "waiting"
+             },
+             {
+              "literal": "now"
+             },
+             {
+              "literal": "done"
+             },
+             {
+              "literal": "failed"
+             }
+            ]
+           },
+           "detail?": "string",
+           "sent?": "number",
+           "total?": "number"
+          }
+         }
+        },
+        "question?": {
+         "object": {
+          "id": "string",
+          "title": "string",
+          "message": "string",
+          "at": "number",
+          "facts": {
+           "list": {
+            "object": {
+             "label": "string",
+             "value": "string",
+             "code?": "bool"
+            }
+           }
+          },
+          "answers": {
+           "list": {
+            "object": {
+             "id": "string",
+             "label": "string",
+             "kind": {
+              "oneOf": [
+               {
+                "literal": "primary"
+               },
+               {
+                "literal": "plain"
+               },
+               {
+                "literal": "danger"
+               }
+              ]
+             }
+            }
+           }
+          }
+         }
+        },
+        "failure?": {
+         "object": {
+          "title": "string",
+          "message": "string",
+          "again": "bool"
+         }
+        },
+        "computer?": {
+         "object": {
+          "key": "string",
+          "name": "string"
+         }
+        },
+        "known?": "bool"
+       }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "DELETE kuvo/computers/add/:id",
+   "answers": {
+    "200": {
+     "object": {}
+    },
+    "400": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/computers/:key/setup",
+   "answers": {
+    "202": {
+     "object": {
+      "try": {
+       "object": {
+        "id": "string",
+        "kind": {
+         "oneOf": [
+          {
+           "literal": "add"
+          },
+          {
+           "literal": "setup"
+          },
+          {
+           "literal": "uninstall"
+          }
+         ]
+        },
+        "destination": "string",
+        "name": "string",
+        "state": {
+         "oneOf": [
+          {
+           "literal": "working"
+          },
+          {
+           "literal": "asking"
+          },
+          {
+           "literal": "stopping"
+          },
+          {
+           "literal": "failed"
+          },
+          {
+           "literal": "done"
+          }
+         ]
+        },
+        "title": "string",
+        "steps": {
+         "list": {
+          "object": {
+           "id": "string",
+           "title": "string",
+           "state": {
+            "oneOf": [
+             {
+              "literal": "waiting"
+             },
+             {
+              "literal": "now"
+             },
+             {
+              "literal": "done"
+             },
+             {
+              "literal": "failed"
+             }
+            ]
+           },
+           "detail?": "string",
+           "sent?": "number",
+           "total?": "number"
+          }
+         }
+        },
+        "question?": {
+         "object": {
+          "id": "string",
+          "title": "string",
+          "message": "string",
+          "at": "number",
+          "facts": {
+           "list": {
+            "object": {
+             "label": "string",
+             "value": "string",
+             "code?": "bool"
+            }
+           }
+          },
+          "answers": {
+           "list": {
+            "object": {
+             "id": "string",
+             "label": "string",
+             "kind": {
+              "oneOf": [
+               {
+                "literal": "primary"
+               },
+               {
+                "literal": "plain"
+               },
+               {
+                "literal": "danger"
+               }
+              ]
+             }
+            }
+           }
+          }
+         }
+        },
+        "failure?": {
+         "object": {
+          "title": "string",
+          "message": "string",
+          "again": "bool"
+         }
+        },
+        "computer?": {
+         "object": {
+          "key": "string",
+          "name": "string"
+         }
+        },
+        "known?": "bool"
+       }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/computers/:key/uninstall",
+   "answers": {
+    "202": {
+     "object": {
+      "try": {
+       "object": {
+        "id": "string",
+        "kind": {
+         "oneOf": [
+          {
+           "literal": "add"
+          },
+          {
+           "literal": "setup"
+          },
+          {
+           "literal": "uninstall"
+          }
+         ]
+        },
+        "destination": "string",
+        "name": "string",
+        "state": {
+         "oneOf": [
+          {
+           "literal": "working"
+          },
+          {
+           "literal": "asking"
+          },
+          {
+           "literal": "stopping"
+          },
+          {
+           "literal": "failed"
+          },
+          {
+           "literal": "done"
+          }
+         ]
+        },
+        "title": "string",
+        "steps": {
+         "list": {
+          "object": {
+           "id": "string",
+           "title": "string",
+           "state": {
+            "oneOf": [
+             {
+              "literal": "waiting"
+             },
+             {
+              "literal": "now"
+             },
+             {
+              "literal": "done"
+             },
+             {
+              "literal": "failed"
+             }
+            ]
+           },
+           "detail?": "string",
+           "sent?": "number",
+           "total?": "number"
+          }
+         }
+        },
+        "question?": {
+         "object": {
+          "id": "string",
+          "title": "string",
+          "message": "string",
+          "at": "number",
+          "facts": {
+           "list": {
+            "object": {
+             "label": "string",
+             "value": "string",
+             "code?": "bool"
+            }
+           }
+          },
+          "answers": {
+           "list": {
+            "object": {
+             "id": "string",
+             "label": "string",
+             "kind": {
+              "oneOf": [
+               {
+                "literal": "primary"
+               },
+               {
+                "literal": "plain"
+               },
+               {
+                "literal": "danger"
+               }
+              ]
+             }
+            }
+           }
+          }
+         }
+        },
+        "failure?": {
+         "object": {
+          "title": "string",
+          "message": "string",
+          "again": "bool"
+         }
+        },
+        "computer?": {
+         "object": {
+          "key": "string",
+          "name": "string"
+         }
+        },
+        "known?": "bool"
+       }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    }
+   }
+  },
+  {
    "route": "GET kuvo/computers",
    "answers": {
     "200": {
@@ -3585,6 +4585,12 @@
               },
               {
                "literal": "allow-devices"
+              },
+              {
+               "literal": "setup"
+              },
+              {
+               "literal": "uninstall"
               }
              ]
             },
@@ -3722,6 +4728,12 @@
               },
               {
                "literal": "allow-devices"
+              },
+              {
+               "literal": "setup"
+              },
+              {
+               "literal": "uninstall"
               }
              ]
             },
@@ -4047,6 +5059,9 @@
            },
            {
             "literal": "computers"
+           },
+           {
+            "literal": "computers.add"
            },
            {
             "literal": "computers.facts"
@@ -4707,6 +5722,9 @@
            },
            {
             "literal": "computers"
+           },
+           {
+            "literal": "computers.add"
            },
            {
             "literal": "computers.facts"

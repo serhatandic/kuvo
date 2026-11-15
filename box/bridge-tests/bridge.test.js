@@ -1586,6 +1586,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "clients.kind": ["GET", "kuvo/phones"],
     computers: ["GET", "kuvo/computers"],
     // (What each computer answers and which of its sessions are at work, in kuvo/computers' answer.)
+    // Adding a computer over SSH from this box: whether it can, and its tries ("Computers", Adding one).
+    "computers.add": ["GET", "kuvo/computers/add"],
     "computers.facts": ["GET", "kuvo/computers"],
     // (Renaming, removing and reaching one again: kuvo/computers/<key>, which says one isn't there.)
     "computers.manage": ["DELETE", "kuvo/computers/none"],

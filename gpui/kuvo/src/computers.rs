@@ -2,7 +2,8 @@
 //! the Kuvo Code it has), a computer's page, and Add a Machine. Every fact is its box's
 //! (`kuvo/computers`, PROTOCOL.md "Computers"), and so is what can be done with each (`actions`:
 //! connecting again, removing, each with the box's words), done by the box, never here instead.
-//! Renaming waits on its design, and adding a machine on the box (#636): drawn as not in this app yet.
+//! Renaming waits on its design. Adding a machine is the box's too (`kuvo/computers/add`, "Adding
+//! one"): this takes the address, and draws the box's steps, its question and its words.
 //!
 //! Picked by the area's sidebar: nothing (all of them), `this` (the computer this window shows),
 //! `computer:<key>` (another), or `add` (Add a Machine).
@@ -15,16 +16,17 @@ use gpui::{
 };
 use kuvo_box::BoxClient;
 use kuvo_box::accounts::{Confirm, said};
-use kuvo_box::areas::Computer;
+use kuvo_box::areas::{AddTry, Adding, Computer};
+use kuvo_box::follow::{Follow, Followed, Timing};
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize,
     button::{Button, ButtonSize},
     small::spinner,
-    text_field::TextField,
+    text_field::{TextField, TextFieldEvent},
     theme::{radius, space},
 };
 
-use crate::areas::Reading;
+use crate::areas::{Reading, reading};
 use crate::settings::page::{ConfirmIds, confirm_card, sheet};
 use crate::workspace::held_words;
 
@@ -89,8 +91,14 @@ enum Item {
     /// One of Manage's rows: what it does (none: not in this app yet), and its words while it's under way.
     Action { key: String, title: String, button: String, act: Option<Manage>, busy: Option<String>, why: Option<String>, first: bool, last: bool },
     Note { key: String, words: String, busy: bool },
-    AddForm,
-    AddFoot,
+    /// The address field; `can`: the box adds computers.
+    AddForm { can: bool },
+    /// The hosts the box suggests, those that go with what's typed.
+    Hosts(Vec<String>),
+    /// Cancel and Add Machine; `ready`: there's an address to add.
+    AddFoot { ready: bool, busy: bool },
+    /// A try at adding, setting up again or uninstalling, as its box says it.
+    Try(Box<AddTry>),
     End,
 }
 
@@ -114,6 +122,8 @@ enum What {
     Connect,
     Remove,
     AllowDevices,
+    SetUp,
+    Uninstall,
 }
 
 impl What {
@@ -123,6 +133,8 @@ impl What {
             What::Connect => "action-reconnect",
             What::Remove => "action-remove",
             What::AllowDevices => "action-allow-devices",
+            What::SetUp => "action-setup",
+            What::Uninstall => "action-uninstall",
         }
     }
 }
@@ -149,6 +161,15 @@ pub struct ComputersView {
     this_mac: bool,
     shown: Shown,
     host: Entity<TextField>,
+    /// Adding computers, as the box says it: whether it does, its hosts, its tries.
+    adding: Reading<Adding>,
+    /// Something asked of the box about a try, under way.
+    add_busy: Option<Task<()>>,
+    /// What the box last refused about adding, in its words.
+    add_problem: Option<String>,
+    _adding_follow: Option<Follow<Followed<Adding>>>,
+    _tasks: Vec<Task<()>>,
+    _subscriptions: Vec<gpui::Subscription>,
     items: Vec<Item>,
     list: ListState,
 }
@@ -157,11 +178,14 @@ impl EventEmitter<ComputersEvent> for ComputersView {}
 
 impl ComputersView {
     pub fn new(client: BoxClient, live: bool, this_mac: bool, cx: &mut Context<Self>) -> ComputersView {
-        // It takes no typing while nothing could be done with it (BOX-NEEDED below, `add_items`).
-        let host = cx.new(|cx| {
-            let mut field = TextField::new(cx).placeholder("my-server or user@host");
-            field.set_disabled(true, cx);
-            field
+        let host = cx.new(|cx| TextField::new(cx).placeholder("my-server or user@host"));
+        let typed = cx.subscribe(&host, |this: &mut ComputersView, _, event: &TextFieldEvent, cx| match event {
+            TextFieldEvent::Submit(_) => this.add(cx),
+            TextFieldEvent::Cancel => cx.emit(ComputersEvent::Select(None)),
+            _ => {
+                this.add_problem = None;
+                this.rebuild(cx);
+            }
         });
         let mut view = ComputersView {
             client,
@@ -178,9 +202,35 @@ impl ComputersView {
             this_mac,
             shown: Shown::All,
             host,
+            adding: Reading::NotYet,
+            add_busy: None,
+            add_problem: None,
+            _adding_follow: None,
+            _tasks: Vec::new(),
+            _subscriptions: vec![typed],
             items: Vec::new(),
             list: ListState::new(0, ListAlignment::Top, px(400.)),
         };
+        // The box's tries, followed as they go; in tests and shots, read as each thing is asked.
+        if live {
+            let follow = view.client.follow_adding(Timing::default());
+            let updates = follow.updates().clone();
+            view._adding_follow = Some(follow);
+            view._tasks.push(cx.spawn(async move |this, cx| {
+                while let Ok(update) = updates.recv().await {
+                    let read = match update {
+                        Followed::Now(said) => Ok(said),
+                        Followed::Failed(error) => Err(error),
+                    };
+                    if this.update(cx, |this, cx| this.take_adding(read, cx)).is_err() {
+                        break;
+                    }
+                }
+            }));
+        } else {
+            view.adding = reading(view.client.adding(), &Reading::NotYet);
+            view.fit_field(cx);
+        }
         view.rebuild(cx);
         view
     }
@@ -206,9 +256,190 @@ impl ComputersView {
         self.confirm.as_ref().map(|(confirm, _)| (confirm.title.clone(), confirm.message.clone(), confirm.label.clone()))
     }
 
+    /// The tries the page draws now, in its order, as the box says them.
+    pub fn tries_drawn(&self) -> Vec<AddTry> {
+        self.items.iter().filter_map(|item| if let Item::Try(tried) = item { Some((**tried).clone()) } else { None }).collect()
+    }
+
+    /// What's typed for a machine's address.
+    pub fn typed_host(&self, cx: &App) -> String {
+        self.host.read(cx).text().to_owned()
+    }
+
+    /// Reads the box's tries again (where they aren't followed).
+    pub fn read_adding(&mut self, cx: &mut Context<Self>) {
+        let read = self.client.adding();
+        self.take_adding(read, cx);
+    }
+
+    fn take_adding(&mut self, read: kuvo_box::Result<Adding>, cx: &mut Context<Self>) {
+        let adding = reading(read, &self.adding);
+        if self.adding != adding {
+            // A try that came to a computer: the list has it now.
+            let came = |adding: &Reading<Adding>| match adding {
+                Reading::Ready(adding) => adding.tries.iter().filter(|tried| tried.state == "done").count(),
+                _ => 0,
+            };
+            let more = came(&adding) != came(&self.adding);
+            self.adding = adding;
+            self.fit_field(cx);
+            if more {
+                cx.emit(ComputersEvent::ReadAgain);
+            }
+            self.rebuild(cx);
+        }
+    }
+
+    /// The address field as the box's word leaves it: taking typing only where the box adds
+    /// computers, and clear once what was typed is being added (refused, it stays to be mended).
+    fn fit_field(&mut self, cx: &mut Context<Self>) {
+        let Reading::Ready(adding) = &self.adding else { return };
+        let (can, typed) = (adding.can, self.host.read(cx).text().trim().to_owned());
+        let begun = !typed.is_empty() && adding.tries.iter().any(|tried| tried.kind == "add" && tried.under_way() && tried.destination == typed);
+        self.host.update(cx, |host, cx| {
+            host.set_disabled(!can, cx);
+            if begun {
+                host.set_text("", cx);
+            }
+        });
+    }
+
+    /// Asks the box something about adding (off this thread in the app); a refusal is shown in
+    /// its words, and its tries are read again where they aren't followed.
+    fn ask_adding(&mut self, work: Work, cx: &mut Context<Self>) {
+        if self.add_busy.is_some() {
+            return;
+        }
+        self.add_problem = None;
+        let client = self.client.clone();
+        let then = |this: &mut ComputersView, done: kuvo_box::Result<()>, cx: &mut Context<ComputersView>| {
+            this.add_busy = None;
+            if let Err(error) = done {
+                this.add_problem = Some(said(&error));
+            }
+            if this._adding_follow.is_none() {
+                this.read_adding(cx);
+            }
+            this.rebuild(cx);
+        };
+        if !self.live {
+            let done = work(&client);
+            return then(self, done, cx);
+        }
+        self.add_busy = Some(cx.spawn(async move |this, cx| {
+            let done = cx.background_executor().spawn(async move { work(&client) }).await;
+            this.update(cx, |this, cx| then(this, done, cx)).ok();
+        }));
+        self.rebuild(cx);
+    }
+
+    /// Asks the box to add the machine at the address typed. Whether it's an address is the box's to say.
+    fn add(&mut self, cx: &mut Context<Self>) {
+        let destination = self.host.read(cx).text().trim().to_owned();
+        if destination.is_empty() {
+            return;
+        }
+        self.add_to(destination, cx);
+    }
+
+    fn add_to(&mut self, destination: String, cx: &mut Context<Self>) {
+        self.ask_adding(Box::new(move |client| client.add_computer(&destination).map(|_| ())), cx);
+    }
+
+    fn answer(&mut self, id: String, at: u64, answer: String, cx: &mut Context<Self>) {
+        self.ask_adding(Box::new(move |client| client.answer_add(&id, at, &answer).map(|_| ())), cx);
+    }
+
+    /// Stops a try under way, or forgets one that's over.
+    fn end(&mut self, id: String, cx: &mut Context<Self>) {
+        self.ask_adding(Box::new(move |client| client.end_add(&id)), cx);
+    }
+
+    /// Tries again what failed: the same asked of the box anew.
+    fn again(&mut self, tried: &AddTry, cx: &mut Context<Self>) {
+        let (kind, destination, key) = (tried.kind.clone(), tried.destination.clone(), self.key_at(&tried.destination));
+        self.ask_adding(
+            Box::new(move |client| match (kind.as_str(), key) {
+                ("setup", Some(key)) => client.setup_computer(&key).map(|_| ()),
+                ("uninstall", Some(key)) => client.uninstall_computer(&key).map(|_| ()),
+                ("add", _) => client.add_computer(&destination).map(|_| ()),
+                // (A computer that's gone from the list since: nothing to ask again.)
+                _ => Ok(()),
+            }),
+            cx,
+        );
+    }
+
+    /// The machine added under `destination` (its name on this box), by its key.
+    fn key_at(&self, destination: &str) -> Option<String> {
+        match &self.computers {
+            Reading::Ready(computers) => computers.iter().find(|computer| computer.id.as_deref() == Some(destination)).map(|computer| computer.key.clone()),
+            _ => None,
+        }
+    }
+
+    /// The box's tries about `computer`: it's being set up again or uninstalled, or that failed.
+    fn tries_of(&self, computer: &Computer) -> Vec<AddTry> {
+        match &self.adding {
+            Reading::Ready(adding) if !computer.here => adding.tries.iter().filter(|tried| computer.id.as_deref() == Some(tried.destination.as_str()) && (tried.kind != "add" || tried.under_way())).cloned().collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Add a Machine: what a machine is; the box's tries at adding one, those under way first; and
+    /// the address to give, with the hosts the box suggests, unless one is being added now.
+    fn add_items(&self, cx: &App) -> Vec<Item> {
+        let this = &self.this_box;
+        let mut items = vec![Item::Title { title: "Add a Machine".into(), line: format!("A Mac or Linux server you reach with SSH, like a Mac mini or a VPS. Its sessions, bots and agents run there, and show here beside {this}’s."), add: false }];
+        let adding = match &self.adding {
+            Reading::NotYet => {
+                items.push(Item::Note { key: "add-loading".into(), words: format!("Asking {this}…"), busy: true });
+                items.push(Item::End);
+                return items;
+            }
+            Reading::Failed(why) => {
+                items.push(Item::Notice { key: "add-failed".into(), tone: Tone::Attention, title: format!("{this} couldn’t be asked about adding machines"), words: why.clone() });
+                items.push(Item::End);
+                return items;
+            }
+            Reading::Ready(adding) => adding,
+        };
+        let tries: Vec<&AddTry> = adding.tries.iter().filter(|tried| tried.kind == "add").collect();
+        items.extend(tries.iter().filter(|tried| tried.under_way()).map(|tried| Item::Try(Box::new((*tried).clone()))));
+        // One at a time on this page: while one is being added, its steps are the page.
+        if !tries.iter().any(|tried| tried.under_way()) {
+            // How the last ones ended, first: what you were waiting for, then the form for another.
+            items.extend(tries.iter().filter(|tried| !tried.under_way()).map(|tried| Item::Try(Box::new((*tried).clone()))));
+            items.push(Item::AddForm { can: adding.can });
+            if let Some(why) = adding.why.as_ref().filter(|_| !adding.can) {
+                items.push(Item::Notice { key: "add-cannot".into(), tone: Tone::Info, title: format!("Machines aren’t added from {this}"), words: why.clone() });
+            } else {
+                let typed = self.host.read(cx).text().trim().to_lowercase();
+                let hosts: Vec<String> = adding.hosts.iter().filter(|host| host.to_lowercase() != typed && host.to_lowercase().contains(&typed)).take(6).cloned().collect();
+                if !hosts.is_empty() {
+                    items.push(Item::Hosts(hosts));
+                }
+                items.push(Item::Note { key: "add-how".into(), words: format!("{this} connects with its SSH keys and agent, never a password, and installs Kuvo Code in ~/.kuvo-code there."), busy: false });
+            }
+            if let Some(problem) = &self.add_problem {
+                items.push(Item::Notice { key: "add-problem".into(), tone: Tone::Attention, title: "That can’t be added".into(), words: problem.clone() });
+            }
+            items.push(Item::AddFoot { ready: adding.can && !self.host.read(cx).text().trim().is_empty(), busy: self.add_busy.is_some() });
+        } else if let Some(problem) = &self.add_problem {
+            items.push(Item::Notice { key: "add-problem".into(), tone: Tone::Attention, title: "That couldn’t be done".into(), words: problem.clone() });
+        }
+        items.push(Item::End);
+        items
+    }
+
     pub fn show(&mut self, key: Option<&str>, cx: &mut Context<Self>) {
         let shown = Shown::from_key(key);
         if self.shown != shown {
+            self.add_problem = None;
+            if shown == Shown::Add && self._adding_follow.is_none() {
+                self.adding = reading(self.client.adding(), &self.adding);
+                self.fit_field(cx);
+            }
             self.shown = shown;
             self.confirm = None;
             // Each page opens at its top.
@@ -268,7 +499,7 @@ impl ComputersView {
                 Some(computer) => self.page_items(computer),
                 None => self.missing_items(),
             },
-            Shown::Add => add_items(),
+            Shown::Add => self.add_items(cx),
         };
         if let (Some((title, words)), Shown::All | Shown::This) = (&self.pairing, &self.shown) {
             items.insert(1.min(items.len()), Item::Notice { key: "notice-pairing".into(), tone: Tone::Attention, title: title.clone(), words: words.clone() });
@@ -310,6 +541,12 @@ impl ComputersView {
         let (apart, yours): (Vec<&Computer>, Vec<&Computer>) = computers.iter().partition(|computer| computer.shared || computer.apart);
         // (The computer this window shows is known without the list.)
         let yours: Vec<Computer> = if yours.iter().any(|computer| computer.here) { yours.into_iter().map(named).collect() } else { std::iter::once(self.this()).chain(yours.into_iter().map(named)).collect() };
+        // What this box did with a machine that's no longer listed (uninstalled, or it failed and
+        // the machine is gone since), where its own page can't say it.
+        if let Reading::Ready(adding) = &self.adding {
+            let gone = adding.tries.iter().filter(|tried| tried.kind != "add" && !tried.under_way() && !computers.iter().any(|computer| computer.id.as_deref() == Some(tried.destination.as_str())));
+            items.extend(gone.map(|tried| Item::Try(Box::new(tried.clone()))));
+        }
         rows(&mut items, yours);
         if yours_alone(computers) {
             items.push(Item::Note { key: "computers-alone".into(), words: "Add a machine (a Mac or Linux server you reach with SSH) to run sessions and bots there too.".into(), busy: false });
@@ -335,6 +572,8 @@ impl ComputersView {
         {
             items.push(Item::Notice { key: "manage-problem".into(), tone: Tone::Attention, title: "That couldn’t be done".into(), words: problem.clone() });
         }
+        // What this box is doing with it over SSH now (set up again, uninstalled), or that failed.
+        items.extend(self.tries_of(&computer).into_iter().map(|tried| Item::Try(Box::new(tried))));
         // What's at work there, as its box counts it, where it said (`working`); none is claimed of
         // one that never said. One that's away has no At Work (a drawing choice: its notice says
         // why, and the box's 0 there means "nothing seen", not "nothing at work"). This window's
@@ -395,6 +634,8 @@ impl ComputersView {
                     "connect" => (What::Connect.row(), "Connection".to_owned(), label, act(What::Connect), why),
                     "remove" => (What::Remove.row(), "Remove".to_owned(), label, act(What::Remove), why),
                     "allow-devices" => (What::AllowDevices.row(), "Kuvo Code’s app there".to_owned(), label, act(What::AllowDevices), why),
+                    "setup" => (What::SetUp.row(), "Kuvo Code there".to_owned(), label, act(What::SetUp), why),
+                    "uninstall" => (What::Uninstall.row(), "Uninstall".to_owned(), label, act(What::Uninstall), why),
                     _ => return None,
                 })
             })
@@ -433,7 +674,10 @@ impl ComputersView {
             What::Remove => ("Removing…", Box::new(move |client| client.remove_computer(&act.key))),
             What::Connect => ("Connecting…", Box::new(move |client| client.connect_computer(&act.key))),
             What::AllowDevices => ("Allowing…", Box::new(move |client| client.allow_devices(&act.key))),
+            What::SetUp => ("Starting…", Box::new(move |client| client.setup_computer(&act.key).map(|_| ()))),
+            What::Uninstall => ("Starting…", Box::new(move |client| client.uninstall_computer(&act.key).map(|_| ()))),
         };
+        let tries = matches!(act.what, What::SetUp | What::Uninstall);
         self.problem = None;
         let on = self.shown.clone();
         let done_with = busy.clone();
@@ -442,6 +686,10 @@ impl ComputersView {
             match done {
                 Ok(()) => cx.emit(ComputersEvent::ReadAgain),
                 Err(error) => this.problem = Some((on, said(&error))),
+            }
+            // (What it began is one of the box's tries: read where they aren't followed.)
+            if tries && this._adding_follow.is_none() {
+                this.read_adding(cx);
             }
         };
         let client = self.client.clone();
@@ -592,16 +840,35 @@ impl ComputersView {
                 .children(busy.then(|| div().pt(px(3.)).child(spinner("computers-reading", IconSize::Nav, c.text_muted))))
                 .child(div().flex_1().min_w_0().child(words))
                 .into_any_element(),
-            Item::AddForm => self.add_form(cx),
-            Item::AddFoot => div()
+            Item::AddForm { .. } => self.add_form(cx),
+            Item::Hosts(hosts) => div()
+                .debug_selector(|| "add-hosts".into())
+                .pt(space::S3)
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(space::S2)
+                .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child("From your SSH config"))
+                .children(hosts.into_iter().map(|host| {
+                    let picked = host.clone();
+                    let selector = format!("add-host-{host}");
+                    div().debug_selector(move || selector).child(Button::new(SharedString::from(format!("add-host-{host}")), host).size(ButtonSize::Small).pill().on_click(cx.listener(move |this, _, _, cx| {
+                        this.host.update(cx, |field, cx| field.set_text(picked.clone(), cx));
+                        this.add_problem = None;
+                        this.rebuild(cx);
+                    })))
+                }))
+                .into_any_element(),
+            Item::AddFoot { ready, busy } => div()
                 .pt(space::S5)
                 .flex()
                 .items_center()
                 .justify_end()
                 .gap(space::S3)
                 .child(Button::new("add-cancel", "Cancel").on_click(cx.listener(|_, _, _, cx| cx.emit(ComputersEvent::Select(None)))))
-                .child(Button::new("add-machine", "Add Machine").primary().disabled(true).tooltip(NOT_YET))
+                .child(div().debug_selector(|| "add-machine".into()).child(Button::new("add-machine", "Add Machine").primary().disabled(!ready || busy).loading(busy).on_click(cx.listener(|this, _, _, cx| this.add(cx)))))
                 .into_any_element(),
+            Item::Try(tried) => self.try_card(&tried, cx),
             Item::End => div().h(space::S10).into_any_element(),
         };
         // Each item in a column as wide as a page's cards, in the middle.
@@ -646,6 +913,149 @@ impl ComputersView {
             .into_any_element()
     }
 
+    /// A try as its box says it: its title and how it stands, its steps, what it asks or how it
+    /// ended, and what can be done about it. Every word is the box's but the buttons that stop,
+    /// retry and dismiss.
+    fn try_card(&mut self, tried: &AddTry, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let id = tried.id.clone();
+        let busy = self.add_busy.is_some();
+        let (icon, color): (Option<IconName>, Hsla) = match tried.state.as_str() {
+            "done" => (Some(IconName::Check), c.success),
+            "failed" => (Some(IconName::Warning), c.warning),
+            _ => (None, c.text_muted),
+        };
+        let head = div()
+            .flex()
+            .items_center()
+            .gap(space::S3)
+            .px(space::S5)
+            .py(space::S4)
+            .child(div().flex().flex_none().items_center().justify_center().size(px(20.)).map(|d| match icon {
+                Some(icon) => d.child(Icon::new(icon).color(color)),
+                None => d.child(spinner(SharedString::from(format!("add-try-spin-{id}")), IconSize::Nav, color)),
+            }))
+            .child(div().debug_selector(|| "add-try-title".into()).flex_1().min_w_0().text_ui(TypeSize::Body).medium().text_color(c.text).child(tried.title.clone()))
+            .when(tried.state == "working", |d| {
+                let id = id.clone();
+                d.child(div().debug_selector(|| "add-try-cancel".into()).child(Button::new(SharedString::from(format!("add-try-cancel-{id}")), "Cancel").size(ButtonSize::Small).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.end(id.clone(), cx)))))
+            });
+        let steps = tried.steps.iter().map(|step| {
+            let selector = format!("add-step-{}", step.id);
+            let mark: AnyElement = match step.state.as_str() {
+                "done" => Icon::new(IconName::Check).color(c.text_muted).into_any_element(),
+                "now" => spinner(SharedString::from(format!("add-step-spin-{}-{}", tried.id, step.id)), IconSize::Nav, c.text_muted).into_any_element(),
+                "failed" => Icon::new(IconName::Warning).color(c.warning).into_any_element(),
+                _ => div().size(px(6.)).rounded_full().bg(c.border).into_any_element(),
+            };
+            // What the step says beside it (how far a copy has got, in the box's words).
+            let detail = step.detail.clone();
+            let waiting = step.state == "waiting";
+            div()
+                .debug_selector(move || selector)
+                .flex()
+                .items_center()
+                .gap(space::S3)
+                .px(space::S5)
+                .py(space::S2)
+                .child(div().flex().flex_none().items_center().justify_center().size(px(20.)).child(mark))
+                .child(div().flex_1().min_w_0().text_ui(TypeSize::Body).text_color(if waiting { c.text_muted } else { c.text }).child(step.title.clone()))
+                .children(detail.map(|detail| div().flex_shrink_0().max_w(px(380.)).truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(detail)))
+        });
+        // What it asks: the box's question, its facts (a fingerprint in the code font), its answers.
+        let question = tried.question.as_ref().map(|question| {
+            let answers = question.answers.iter().map(|answer| {
+                let (try_id, at, answer_id) = (tried.id.clone(), question.at, answer.id.clone());
+                let selector = format!("add-answer-{}", answer.id);
+                let button = Button::new(SharedString::from(format!("add-answer-{}-{}", tried.id, answer.id)), answer.label.clone()).disabled(busy);
+                let button = match answer.kind.as_str() {
+                    "primary" => button.primary(),
+                    "danger" => button.destructive(),
+                    _ => button,
+                };
+                div().debug_selector(move || selector).child(button.on_click(cx.listener(move |this, _, _, cx| this.answer(try_id.clone(), at, answer_id.clone(), cx))))
+            });
+            div()
+                .debug_selector(|| "add-question".into())
+                .border_t_1()
+                .border_color(c.border)
+                .px(space::S5)
+                .py(space::S4)
+                .flex()
+                .flex_col()
+                .gap(space::S3)
+                .child(div().flex().flex_col().gap(space::S0_5).child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(question.title.clone())).child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(question.message.clone())))
+                .when(!question.facts.is_empty(), |d| {
+                    d.child(div().rounded(radius::NAV).bg(c.surface).px(space::S4).py(space::S3).flex().flex_col().gap(space::S2).children(question.facts.iter().map(|fact| {
+                        let value = div().flex_1().min_w_0().text_color(c.text);
+                        let value = if fact.code { value.text_mono(TypeSize::Body) } else { value.text_ui(TypeSize::Body) };
+                        div().flex().items_start().gap(space::S4).child(div().w(px(170.)).flex_none().text_ui(TypeSize::Small).text_color(c.text_muted).child(fact.label.clone())).child(value.child(fact.value.clone()))
+                    })))
+                })
+                .child(div().flex().items_center().justify_end().gap(space::S3).children(answers))
+        });
+        // How it ended: why it failed, with trying again; or the computer it came to.
+        let failure = tried.failure.as_ref().map(|failure| {
+            let (again, dismissed) = (tried.clone(), tried.id.clone());
+            div()
+                .debug_selector(|| "add-failure".into())
+                .border_t_1()
+                .border_color(c.border)
+                .px(space::S5)
+                .py(space::S4)
+                .flex()
+                .flex_col()
+                .gap(space::S3)
+                .child(div().flex().flex_col().gap(space::S0_5).when(failure.title != tried.title, |d| d.child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(failure.title.clone()))).child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(failure.message.clone())))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap(space::S3)
+                        .child(div().debug_selector(|| "add-try-dismiss".into()).child(Button::new(SharedString::from(format!("add-try-dismiss-{}", tried.id)), "Dismiss").size(ButtonSize::Small).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.end(dismissed.clone(), cx)))))
+                        .when(failure.again, |d| d.child(div().debug_selector(|| "add-try-again".into()).child(Button::new(SharedString::from(format!("add-try-again-{}", tried.id)), "Try Again").size(ButtonSize::Small).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.again(&again, cx)))))),
+                )
+        });
+        let done = (tried.state == "done").then(|| {
+            let dismissed = tried.id.clone();
+            let show = tried.computer.clone().filter(|_| tried.kind != "uninstall");
+            div()
+                .border_t_1()
+                .border_color(c.border)
+                .px(space::S5)
+                .py(space::S3)
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(space::S3)
+                .child(div().debug_selector(|| "add-try-dismiss".into()).child(Button::new(SharedString::from(format!("add-try-done-{}", tried.id)), "Dismiss").size(ButtonSize::Small).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.end(dismissed.clone(), cx)))))
+                .children(show.map(|computer| {
+                    let key = format!("computer:{}", computer.key);
+                    div().debug_selector(|| "add-try-show".into()).child(Button::new(SharedString::from(format!("add-try-show-{}", tried.id)), format!("Show {}", computer.name)).size(ButtonSize::Small).primary().on_click(cx.listener(move |_, _, _, cx| cx.emit(ComputersEvent::Select(Some(key.clone()))))))
+                }))
+        });
+        let selector = format!("add-try-{}", tried.id);
+        div()
+            .pt(space::S4)
+            .child(
+                div()
+                    .debug_selector(move || selector)
+                    .rounded(radius::POPOVER)
+                    .bg(c.card)
+                    .shadow(cx.theme().card_shadow())
+                    .flex()
+                    .flex_col()
+                    .child(head)
+                    // (One that's done says so in a line: its steps are all behind it.)
+                    .when(tried.state != "done", |d| d.child(div().pb(space::S3).flex().flex_col().children(steps)))
+                    .children(question)
+                    .children(failure)
+                    .children(done),
+            )
+            .into_any_element()
+    }
+
     fn add_form(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         div()
@@ -670,20 +1080,6 @@ impl ComputersView {
             )
             .into_any_element()
     }
-}
-
-/// Add a Machine: what a machine is, where it's named, and that adding one isn't here yet.
-// BOX-NEEDED: adding a machine from a box (#636): its SSH setup steps (`POST kuvo/machines
-// {destination}` answered by the box, not a Mac's app; its `step`s as it goes), and the hosts to
-// suggest (`hosts`, from that box's `~/.ssh/config`). Until then the form is drawn and Add Machine waits.
-fn add_items() -> Vec<Item> {
-    vec![
-        Item::Title { title: "Add a Machine".into(), line: "A Mac or Linux server you reach with SSH, like a Mac mini or a VPS. Its sessions, bots and agents run there, and show here beside this Mac’s.".into(), add: false },
-        Item::AddForm,
-        Item::Notice { key: "add-not-yet".into(), tone: Tone::Info, title: "Adding machines isn’t in this app yet".into(), words: "Machines you’ve added already show under Your Computers.".into() },
-        Item::AddFoot,
-        Item::End,
-    ]
 }
 
 /// Rows in one card.

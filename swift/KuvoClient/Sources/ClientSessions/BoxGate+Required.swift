@@ -18,6 +18,7 @@ extension BoxGate {
         "bots.now", // #711, the desktop client's sidebar and Settings draw what the box says
         "clients.kind", // #742: a client says what it is, so a desktop app isn't taken for a phone
         "computers", // #711
+        "computers.add", // #636: a box adds a computer over SSH itself, and says its steps and questions
         "computers.facts", // #735: what each computer answers, which of its sessions are at work
         "computers.manage", // #735: renaming, removing and reaching one again from any box, as its `actions` say
         "computers.reach", // #742: where each of your computers is reached, for a client that connects to each directly

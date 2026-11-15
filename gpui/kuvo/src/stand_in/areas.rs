@@ -22,6 +22,14 @@ pub struct Areas {
     pub removed: Vec<String>,
     /// The computers being reached again (`POST kuvo/computers/<key>/connect`), by key.
     pub reaching: Vec<String>,
+    /// Why it adds no computers (`can: false`), in its words; none: it does.
+    pub add_cannot: Option<String>,
+    /// Its tries at adding, setting up again and uninstalling (`kuvo/computers/add`), newest first.
+    pub tries: Vec<Value>,
+    /// The machines it added over SSH, by the address each was added under.
+    pub added: Vec<String>,
+    /// How many tries it has begun (their ids).
+    pub tried: usize,
     /// The computers whose app was removed from your devices: their boxes add none until allowed.
     pub vouch_blocked: Vec<String>,
     /// What renaming or removing says instead of doing it, as a box that can't ask the computer
@@ -110,10 +118,169 @@ pub fn manage(areas: &mut Areas, method: &str, route: &str) -> Option<((u16, Val
     }
 }
 
+/// The hosts in its `~/.ssh/config`, as Add a Machine suggests them.
+const SSH_HOSTS: [&str; 3] = ["mac-mini", "gpu-box", "build.internal"];
+
+fn step(id: &str, title: &str, state: &str) -> Value {
+    json!({ "id": id, "title": title, "state": state })
+}
+
+/// A try's steps for adding, the first `done` of them done and the next `now` (none: all waiting after).
+fn add_steps(done: usize, now: Option<Value>) -> Vec<Value> {
+    let titles = [("checking", "Checking it"), ("files", "Copying Kuvo Code"), ("engine", "Copying the engine"), ("starting", "Starting Kuvo Code there"), ("seeding", "Copying your keys and sign-ins"), ("joining", "Adding it to your computers")];
+    titles.iter().enumerate().map(|(ix, (id, title))| if ix < done { step(id, title, "done") } else if ix == done { now.clone().unwrap_or_else(|| step(id, title, "waiting")) } else { step(id, title, "waiting") }).collect()
+}
+
+/// What adding a computer over SSH comes to, as a box answers it (`kuvo/computers/add…`,
+/// `kuvo/computers/<key>/setup` and `/uninstall`): its answer, and whether the list of computers
+/// changed. An unknown host is asked about; Trust goes on to the engine's copy, where it waits
+/// for `adding_goes_on`; a host named `nowhere…` can't be reached.
+pub fn adding(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Option<((u16, Value), bool)> {
+    let said = |areas: &Areas| {
+        let hosts: Vec<&str> = if areas.add_cannot.is_some() { Vec::new() } else { SSH_HOSTS.iter().copied().filter(|host| !areas.added.iter().any(|added| added == host)).collect() };
+        let mut said = json!({ "can": areas.add_cannot.is_none(), "hosts": hosts, "tries": areas.tries });
+        if let Some(why) = &areas.add_cannot {
+            said["why"] = json!(why);
+        }
+        said
+    };
+    let rest = route.strip_prefix("kuvo/computers/")?;
+    if let Some(key) = rest.strip_suffix("/setup").or_else(|| rest.strip_suffix("/uninstall")) {
+        let uninstall = rest.ends_with("/uninstall");
+        let Some(name) = key.strip_prefix("key_added_").filter(|name| areas.added.iter().any(|added| added == name)).map(str::to_owned) else {
+            return Some(((404, json!({ "message": "That isn’t a computer this one set up over SSH." })), false));
+        };
+        areas.tried += 1;
+        let tried = if uninstall {
+            areas.added.retain(|added| *added != name);
+            json!({ "id": format!("add_{}", areas.tried), "kind": "uninstall", "destination": name, "name": name, "state": "done", "title": format!("{name} no longer has Kuvo Code running"),
+                "steps": [step("checking", "Reaching it", "done"), step("removing", "Stopping and removing Kuvo Code", "done"), step("forgetting", "Taking it off your computers", "done")] })
+        } else {
+            let mut steps = add_steps(3, Some(json!({ "id": "starting", "title": "Restarting Kuvo Code there", "state": "now" })));
+            steps[1]["detail"] = json!("It has them already");
+            steps[2]["detail"] = json!("It has it already");
+            json!({ "id": format!("add_{}", areas.tried), "kind": "setup", "destination": name, "name": name, "state": "working", "title": format!("Setting up {name}…"), "steps": steps })
+        };
+        areas.tries.insert(0, tried.clone());
+        return Some(((202, json!({ "try": tried })), uninstall));
+    }
+    let rest = rest.strip_prefix("add")?;
+    if !rest.is_empty() && !rest.starts_with('/') {
+        return None;
+    }
+    let rest = rest.trim_start_matches('/');
+    if rest.is_empty() {
+        if method == "GET" {
+            return Some(((200, said(areas)), false));
+        }
+        if let Some(why) = &areas.add_cannot {
+            return Some(((409, json!({ "message": why })), false));
+        }
+        let destination = body["destination"].as_str().unwrap_or_default().trim().to_owned();
+        if destination.is_empty() || destination.starts_with('-') || destination.contains([':', '/', ' ']) {
+            return Some(((400, json!({ "message": "Give a host name, or user@host. For a port or an IPv6 address, add a Host for the machine to ~/.ssh/config and give its name." })), false));
+        }
+        areas.tried += 1;
+        let id = format!("add_{}", areas.tried);
+        let tried = if destination.starts_with("nowhere") {
+            json!({ "id": id, "kind": "add", "destination": destination, "name": destination, "state": "failed", "title": format!("Couldn’t add {destination}"),
+                "steps": add_steps(0, Some(step("checking", "Checking it", "failed"))),
+                "failure": { "title": format!("Couldn’t add {destination}"), "message": format!("Couldn’t reach {destination}. ssh: Could not resolve hostname {destination}: nodename nor servname provided, or not known."), "again": true } })
+        } else {
+            json!({ "id": id, "kind": "add", "destination": destination, "name": destination, "state": "asking", "title": format!("Adding {destination}…"),
+                "steps": add_steps(0, Some(json!({ "id": "checking", "title": "Checking it", "state": "now", "detail": format!("Connecting to {destination}") }))),
+                "question": { "id": "hostKey", "at": areas.tried, "title": format!("Is this {destination}?"),
+                    "message": format!("{} hasn’t connected to {destination} before. Check that the fingerprint is its own (on that computer: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub), then trust it.", super::NAME),
+                    "facts": [{ "label": "Address", "value": destination }, { "label": "Fingerprint (ED25519)", "value": "SHA256:Vq0bYJx3mD2Wc7PpN1tKfUo9sLhGe5RaZi8XwCnEyTM", "code": true }],
+                    "answers": [{ "id": "cancel", "label": "Cancel", "kind": "plain" }, { "id": "trust", "label": "Trust", "kind": "primary" }] } })
+        };
+        // (One try a destination: a new one takes the place of what's over.)
+        areas.tries.retain(|each| each["destination"] != json!(destination));
+        areas.tries.insert(0, tried.clone());
+        return Some(((202, json!({ "try": tried })), false));
+    }
+    if rest == "events" {
+        return Some(((200, said(areas)), false));
+    }
+    let (id, answering) = match rest.strip_suffix("/answer") {
+        Some(id) => (id, true),
+        None => (rest, false),
+    };
+    let Some(at) = areas.tries.iter().position(|each| each["id"] == json!(id)) else { return Some(((404, json!({ "message": "There’s no such try." })), false)) };
+    if !answering {
+        areas.tries.remove(at);
+        return Some(((200, json!({})), false));
+    }
+    if areas.tries[at]["state"] != json!("asking") {
+        return Some(((409, json!({ "message": "It isn’t asking that now." })), false));
+    }
+    // (An answer names the ask it's for: one that doesn't, or names another, isn't taken.)
+    if body.get("at") != Some(&areas.tries[at_ix(&areas.tries, id)]["question"]["at"]) {
+        return Some(((409, json!({ "message": "It isn’t asking that now." })), false));
+    }
+    if body["answer"] != json!("trust") {
+        areas.tries.remove(at);
+        return Some(((200, json!({ "try": { "id": id, "state": "stopping", "title": "Stopping…" } })), false));
+    }
+    let tried = &mut areas.tries[at];
+    tried.as_object_mut().expect("a try").remove("question");
+    tried["state"] = json!("working");
+    let mut steps = add_steps(2, Some(json!({ "id": "engine", "title": "Copying the engine", "state": "now", "detail": "41 of 98 MB", "sent": 41_000_000u64, "total": 98_000_000u64 })));
+    steps[0]["detail"] = tried["steps"][0]["detail"].clone();
+    tried["steps"] = json!(steps);
+    Some(((200, json!({ "try": tried })), false))
+}
+
+fn at_ix(tries: &[Value], id: &str) -> usize {
+    tries.iter().position(|each| each["id"] == json!(id)).unwrap_or_default()
+}
+
+/// The tries under way come to their end: one being added is one of your computers, one being set
+/// up again is. True when the list of computers changed.
+pub fn adding_goes_on(areas: &mut Areas) -> bool {
+    let mut changed = false;
+    for tried in areas.tries.iter_mut().filter(|each| each["state"] == json!("working")) {
+        let name = tried["name"].as_str().unwrap_or_default().to_owned();
+        let again = tried["kind"] == json!("setup");
+        for step in tried["steps"].as_array_mut().into_iter().flatten() {
+            step["state"] = json!("done");
+            if step["id"] == json!("seeding") {
+                step["detail"] = json!(if again { "It keeps its own".to_owned() } else { format!("Copied 3 keys and 2 accounts. One sign-in renews itself, so sign in to it on {name}.") });
+            }
+            if let Some(step) = step.as_object_mut() {
+                step.remove("sent");
+                step.remove("total");
+            }
+        }
+        tried["state"] = json!("done");
+        tried["title"] = json!(if again { format!("{name} is set up again") } else { format!("{name} is one of your computers") });
+        tried["computer"] = json!({ "key": format!("key_added_{name}"), "name": name });
+        if !again && !areas.added.contains(&name) {
+            areas.added.push(name);
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// The computers as listed now: those removed gone, those being reached again so.
 fn listed(areas: &Areas) -> Vec<Value> {
+    let added = areas.added.iter().map(|name| {
+        let busy = areas.tries.iter().any(|each| each["destination"] == json!(name) && each["state"] == json!("working"));
+        let mut setup = json!({ "id": "setup", "label": "Set Up Again" });
+        if busy {
+            setup["why"] = json!("It’s being set up now.");
+        }
+        json!({ "key": format!("key_added_{name}"), "name": name, "kind": "machine", "id": name, "shared": false, "reach": "connected", "version": "0.8.0", "engine": "2.3.0", "system": "macOS 15.1", "via": "relay", "working": 0, "atWork": [], "limits": [],
+            "features": kuvo_box::gate::REQUIRED,
+            "actions": [{ "id": "rename", "label": "Rename" },
+                { "id": "remove", "label": "Remove", "confirm": { "title": format!("Remove {name}?"), "message": format!("Your other computers stop reaching {name}. It keeps running, with its sessions, and you can add it again later."), "label": "Remove" } },
+                setup,
+                { "id": "uninstall", "label": "Uninstall", "confirm": { "title": format!("Uninstall Kuvo Code from {name}?"), "message": format!("{} connects to {name} over SSH and stops Kuvo Code there: its engine and agents, and what starts them after a restart. The sign-ins and keys it keeps are deleted. Its sessions stay in ~/.kuvo-code on {name}.", super::NAME), "label": "Uninstall" } }] })
+    });
     computers(areas.empty || areas.computers_alone, areas.more_computers)
         .into_iter()
+        .chain(added)
         .filter(|computer| !areas.removed.iter().any(|key| computer["key"] == json!(key)))
         .map(|mut computer| {
             // (Removing waits while the old app is open on the Mac, saying so.)

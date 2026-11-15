@@ -112,6 +112,27 @@ function savedIds(): Set<string> {
   }
 }
 
+/** What setting up a machine over SSH gives it (`kuvo/link/setup`; `add/flow.ts`, the box adding
+ * one itself): this Mac's key, the key its documents are signed with, its own documents as they
+ * are now and those it keeps of your machines, and the keys this Mac had before, made anew since,
+ * for the machine to let go. `again`: the key of a machine set up again, no longer one this Mac
+ * removed. Null while this Mac's link has no keys. */
+export async function setupGift(again: string | null): Promise<{ mac: string | null; macSign: string | null; docs: SignedDoc[]; replaces: string[] } | null> {
+  await macKeys();
+  const library = readPersonalities();
+  let docs: SignedDoc[] = [];
+  const link = updateLink(link => {
+    if (!link?.sign) return null;
+    if (again && Array.isArray(link.left)) link.left = link.left.filter(key => key !== again);
+    noteKeyNow(link);
+    const own = ownDocs({ link, library });
+    docs = [...Object.values(own).map(made => made.envelope), ...Object.values(link.docs ?? {}).sort((a, b) => (a.d < b.d ? -1 : 1))];
+    return link;
+  });
+  if (!link) return null;
+  return { mac: ownKey(link), macSign: ownSign(link), docs, replaces: link.keysBefore ?? [] };
+}
+
 // `kuvo/link/…`, for this Mac's app.
 export async function* macLinkRoute(route: string, request: LinkRequest, signal: AbortSignal | undefined): AsyncGenerator<AnswerPiece> {
   const json = (status: number, value: unknown): AnswerPiece[] => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
@@ -177,22 +198,10 @@ export async function* macLinkRoute(route: string, request: LinkRequest, signal:
       // What setting up a machine over SSH gives it: this Mac's key, the key its documents are
       // signed with, its own documents as they are now and those it keeps of your machines.
       if (method !== "GET") return yield* json(405, {});
-      await macKeys();
       // `?key=`: a machine set up again, no longer one this Mac removed.
-      const again = new URLSearchParams(String(request.path ?? "").split("?")[1] ?? "").get("key");
-      const library = readPersonalities();
-      let docs: SignedDoc[] = [];
-      const link = updateLink(link => {
-        if (!link?.sign) return null;
-        if (again && Array.isArray(link.left)) link.left = link.left.filter(key => key !== again);
-        noteKeyNow(link);
-        const own = ownDocs({ link, library });
-        docs = [...Object.values(own).map(made => made.envelope), ...Object.values(link.docs ?? {}).sort((a, b) => (a.d < b.d ? -1 : 1))];
-        return link;
-      });
-      if (!link) return yield* json(503, { message: "This Mac's link has no keys yet." });
-      // (And the keys this Mac had before, made anew since, for the machine to let go.)
-      return yield* json(200, { mac: ownKey(link), macSign: ownSign(link), docs, replaces: link.keysBefore ?? [] });
+      const gift = await setupGift(new URLSearchParams(String(request.path ?? "").split("?")[1] ?? "").get("key"));
+      if (!gift) return yield* json(503, { message: "This Mac's link has no keys yet." });
+      return yield* json(200, gift);
     }
     case "kuvo/link/docs": {
       // Documents a machine gave as it was set up (over SSH): taken as if they'd come by mail.

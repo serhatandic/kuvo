@@ -166,6 +166,11 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "computer-older", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_older) },
     Screen { slug: "computer-shared", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_shared) },
     Screen { slug: "computer-add", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
+    Screen { slug: "computer-add-key", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
+    Screen { slug: "computer-add-progress", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
+    Screen { slug: "computer-add-failed", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
+    Screen { slug: "computer-add-done", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
+    Screen { slug: "computer-add-cannot", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
     Screen { slug: "computer-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_narrow) },
     // Settings (`kuvo/src/settings`): each section, the search, a section not in this app yet, and
     // each step of signing in.
@@ -949,6 +954,15 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug == "computer-blocked" {
                 stand_in.block_vouching("key_devbox");
+            }
+            // Add a Machine, as far as each of its states.
+            match screen.slug {
+                "computer-add-key" => stand_in.adding_at("mac-mini", "asking"),
+                "computer-add-progress" => stand_in.adding_at("mac-mini", "copying"),
+                "computer-add-failed" => stand_in.adding_at("nowhere.example", "asking"),
+                "computer-add-done" => stand_in.adding_at("mac-mini", "done"),
+                "computer-add-cannot" => stand_in.cannot_add("Add and remove computers from Studio."),
+                _ => {}
             }
             if screen.slug == "computers-many" {
                 stand_in.more_computers(40);
