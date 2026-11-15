@@ -6202,12 +6202,18 @@ item on its way to another computer (`handing`) goes with the move and is sent f
   items, and none it deleted, so one a client names may be in nothing this box was told. For a
   client (never anything else on the computer, nor on a machine Macs share outside one setup,
   which asks no other computer), the box asked sends each peer that takes `act` a `GET` with `item`
-  the ref as the client named it (its number, id or issue), all at once, and takes the first whole
-  item that ref names: that peer keeps it, and a file or a change then goes there by its id, as
-  above. One that answers 404 hasn't it. One that isn't answering, doesn't answer in 20 seconds,
-  doesn't take `act` (an older box) or refuses it couldn't say: while any couldn't and none had it,
-  the box answers 503 `{message, computers}` and does nothing, as the item may be there. A client
-  shows `message` and offers to try again; it asks no other box itself.
+  the ref as the client named it (its number, id or issue; 300 characters at most, else no one is
+  asked), all at once. A peer's answer counts when it's a whole item that ref names: a live one is
+  taken at once, the others not waited for; a deleted one only once every peer answered and none
+  has it live (of two deleted, the one changed last). That peer keeps it, and a file or a change
+  then goes there by its id, as above. One that answers 404 hasn't it. One that isn't answering or
+  doesn't answer in 20 seconds, one that doesn't take `act` (an older box), and one that refuses
+  or answers something else couldn't say: while any couldn't and none had it live, the box
+  answers 503 `{message, computers}` and does nothing, as the item may be there; so too, naming
+  every peer, while it isn't on the relay itself. `message` says which computer and why (it isn't
+  answering; it needs a newer Kuvo Code; what it refused with, in its words), and to try again only
+  where one isn't answering. A client shows `message`; it asks no other box for what this one
+  answers for.
 
 ### Side questions, handoffs and reviews
 

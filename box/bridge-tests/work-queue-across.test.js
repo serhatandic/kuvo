@@ -1160,10 +1160,23 @@ test("an item no computer told this box of, asked of this box by a client, comes
   const missing = ask("GET", "kuvo/work-queue/items/8");
   await asked({ lab: gone, Studio: gone });
   assert.deepEqual(await missing, { status: 404, body: { message: "There's no such item." } });
-  // An answer that isn't the item asked for is no answer.
+  // An answer that isn't the item asked for is no answer: the Mac couldn't say, so it may be there.
   const other = ask("GET", "kuvo/work-queue/items/8");
   await asked({ lab: gone, Studio: { status: 200, value: { item: whole7 } } });
-  assert.equal((await other).status, 404);
+  assert.deepEqual(await other, { status: 503, body: { message: "It isn't on devbox, and Studio couldn't say, so it may be there.", computers: [studio] } });
+  // One that refuses (its clock is far off): its own words, and no "try again", which wouldn't help.
+  const apart = ask("GET", "kuvo/work-queue/items/8");
+  await asked({ lab: gone, Studio: { status: 409, value: { message: "Studio's clock and devbox's are too far apart to take it: check both computers' time." } } });
+  assert.equal((await apart).body.message, `It isn't on devbox, and Studio couldn't say ("Studio's clock and devbox's are too far apart to take it: check both computers' time."), so it may be there.`);
+  // Deleted on lab, live on the Mac (an issue is one item): the live one, whichever answers first.
+  const deleted7 = { ...whole7, removed: { at: 3000, by: { user: true } } };
+  const twice = ask("GET", "kuvo/work-queue/items/7");
+  await asked({ lab: { status: 200, value: { item: deleted7 } }, Studio: { status: 200, value: { item: whole7 } } });
+  assert.deepEqual([(await twice).body.item.removed, (await twice).body.item.computer.name], [undefined, "Studio"]);
+  // Deleted on lab and on no other: that one, once the Mac said it hasn't it.
+  const once = ask("GET", "kuvo/work-queue/items/7");
+  await asked({ lab: { status: 200, value: { item: deleted7 } }, Studio: gone });
+  assert.deepEqual([(await once).body.item.removed.at, (await once).body.item.computer.name], [3000, "lab"]);
 
   // Lab isn't answering: it may be there, so it's never "not found". Said at once, with which.
   write(path.join(run, "peer-reach.json"), { [lab.pub]: Date.now() - 60_000 });
@@ -1171,7 +1184,7 @@ test("an item no computer told this box of, asked of this box by a client, comes
   const [toMac] = await sentTo(mac);
   receive(mac, { workQueue: { acted: { id: toMac.workQueue.act.id, ...gone } } });
   assert.deepEqual(await unsure, { status: 503, body: {
-    message: "It isn't on devbox, and lab isn't answering now (it may be asleep, off or offline), so it may be there. Try again once it answers.",
+    message: "It isn't on devbox, and lab isn't answering now (it may be asleep, off or offline), so it may be there. Try again once lab answers.",
     computers: [{ key: lab.pub, name: "lab", kind: "machine", id: "lab" }],
   } });
   assert.deepEqual(mailTo(lab), [], "and nothing goes to lab");
@@ -1204,7 +1217,7 @@ test("an item no computer told this box of, asked of this box by a client, comes
   const older = ask("GET", "kuvo/work-queue/items/8");
   const [only] = await sentTo(mac);
   receive(mac, { workQueue: { acted: { id: only.workQueue.act.id, ...gone } } });
-  assert.deepEqual((await older).body.message, "It isn't on devbox, and lab couldn't be asked from devbox, so it may be there. Try again once it answers.");
+  assert.deepEqual((await older).body.message, "It isn't on devbox, and lab needs a newer Kuvo Code to be asked from devbox, so it may be there.");
   assert.deepEqual(mailTo(lab), []);
   forwardsTold();
 

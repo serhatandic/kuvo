@@ -21,12 +21,12 @@ import { importItems, importWords, parseBacklog, readBacklogFiles } from "../wor
 import { primaryOf } from "../work-queue/numbers";
 import { changedThere, itemElsewhere, itemsElsewhere, tellQueuesAgain } from "../work-queue/across";
 import { Refusal, refuseMoving } from "../work-queue/ops";
-import { TOLD, toldItemOf, type ToldItem } from "../work-queue/told";
+import { TOLD, type ToldItem } from "../work-queue/told";
 import { readLink } from "../state";
 import { ownKey } from "../peers/known";
 import { awaySince } from "../peers/reach";
 import type { QueueCounts } from "../../shared/routes/work-queue";
-import { allItems, changeQueues, matching, OWNER, queueFollowers, readAll, refNames, WORK_QUEUE, type Item } from "../work-queue/store";
+import { allItems, changeQueues, matching, OWNER, queueFollowers, readAll, WORK_QUEUE, type Item } from "../work-queue/store";
 import { readSeen, SEEN_FILE } from "../work-queue/github";
 import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/tools";
 import { canOf, overdueOf, todayHere, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, summaryOf, type Computer, type Facts, type ItemSummary } from "../work-queue/view";
@@ -315,13 +315,10 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   // has it; `refuse` when some couldn't say, so it may be there.
   const seek = async (): Promise<{ far: Elsewhere; whole: Record<string, unknown> } | { refuse: { message: string; computers: Computer[] } } | null> => {
     if (!fromClient(context)) return null;
-    const sought = await seekElsewhere(named, signal);
+    const sought = await seekElsewhere(named, ref, signal);
     if ("missing" in sought) return null;
     if ("unsure" in sought) return { refuse: { message: sought.message, computers: sought.unsure } };
-    // (As this box reads any item another computer tells: one it can't read, or that isn't the
-    // one asked for, isn't one.)
-    const item = toldItemOf(sought.item);
-    return item && refNames(ref, item) ? { far: { ...item, computer: sought.computer }, whole: sought.item } : null;
+    return { far: { ...sought.told, computer: sought.computer }, whole: sought.item };
   };
   if (action === undefined && method === "GET") {
     if (find(allItems())) return yield* answered(await actHere({ method: "GET", ref, targets, signal }), json);
