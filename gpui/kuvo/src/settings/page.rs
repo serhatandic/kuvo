@@ -335,15 +335,16 @@ impl SettingsView {
                 }
             }
             Control::Buttons(buttons) => div().flex().gap(space::S2).children(self.buttons(key, buttons, cx)).into_any_element(),
-            Control::Field { more, .. } => {
+            Control::Field { more, lines, .. } => {
                 let field = self.field(key).cloned();
                 let selector = format!("{key}-field");
                 div()
                     .flex()
-                    .items_center()
+                    .flex_col()
+                    .items_start()
                     .gap(space::S2)
-                    .child(div().debug_selector(move || selector).w(px(200.)).h(px(32.)).px(space::S3).flex().items_center().rounded(radius::NAV).border_1().border_color(c.border_strong).bg(c.card).children(field.map(|field| div().flex_1().min_w_0().child(field))))
-                    .children(self.buttons(key, more, cx))
+                    .child(div().debug_selector(move || selector).w(px(if lines.is_some() { 320. } else { 200. })).min_h(px(if let Some((min, _)) = lines { min as f32 * 22. + 12. } else { 32. })).px(space::S3).flex().items_center().rounded(radius::NAV).border_1().border_color(c.border_strong).bg(c.card).children(field.map(|field| div().flex_1().min_w_0().child(field))))
+                    .child(div().flex().flex_wrap().gap(space::S2).children(self.buttons(key, more, cx)))
                     .into_any_element()
             }
             Control::Opens(act) => Button::icon_only(SharedString::from(format!("{key}-open")), IconName::ChevronRight, "Open").ghost().size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.act(act.clone(), cx))).into_any_element(),

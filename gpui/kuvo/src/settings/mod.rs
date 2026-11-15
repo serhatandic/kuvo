@@ -194,6 +194,7 @@ pub struct SettingsView {
     list: ListState,
     focus: FocusHandle,
     tasks: HashMap<String, Task<()>>,
+    list_filters: HashMap<String, String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -274,6 +275,7 @@ impl SettingsView {
             list: ListState::new(0, ListAlignment::Top, px(400.)),
             focus: cx.focus_handle(),
             tasks: HashMap::new(),
+            list_filters: HashMap::new(),
             _subscriptions: vec![subscription],
         };
         view.rebuild(cx);
@@ -558,7 +560,7 @@ impl SettingsView {
             Drawn::Yours => rows::yours(&entry.id, self.dark),
             Drawn::Own => rows::page(&entry.id, &self.facts()),
             Drawn::Described => match self.pages.get(&entry.id) {
-                Some(Reading::Ready(page)) => described::blocks(page, &described::Drawing { section: &entry.id, busy: &self.busy, replacing: &self.replacing, here: self.client.as_ref().is_some_and(BoxClient::here) }),
+                Some(Reading::Ready(page)) => described::blocks(page, &described::Drawing { section: &entry.id, busy: &self.busy, replacing: &self.replacing, here: self.client.as_ref().is_some_and(BoxClient::here), filters: &self.list_filters }),
                 Some(Reading::Failed(why)) => vec![Block::Note { key: "note-page".into(), words: format!("{} couldn’t be read: {why}", entry.title), busy: false, warning: true }],
                 _ => vec![rows::note("note-page", format!("Reading {}…", entry.title), true)],
             },
@@ -763,7 +765,7 @@ impl SettingsView {
         let mut kept = Vec::new();
         for item in items {
             let Item::Row { row, .. } = item else { continue };
-            let Control::Field { masked, value, placeholder, revision, .. } = &row.control else { continue };
+            let Control::Field { lines, masked, value, placeholder, revision, .. } = &row.control else { continue };
             kept.push(row.key.clone());
             match self.fields.get_mut(&row.key) {
                 Some((_, shown, _)) if shown == revision => {}
@@ -772,9 +774,10 @@ impl SettingsView {
                     *shown = revision.clone();
                 }
                 None => {
-                    let (masked, placeholder, value) = (*masked, placeholder.clone(), value.clone());
+                    let (masked, placeholder, value, lines) = (*masked, placeholder.clone(), value.clone(), *lines);
                     let field = cx.new(|cx| {
                         let mut field = TextField::new(cx).bare().placeholder(placeholder);
+                        if let Some((min, max)) = lines { field = field.multi_line(min, max).submits_on_enter(false); }
                         if masked {
                             field = field.masked();
                         }
@@ -782,7 +785,11 @@ impl SettingsView {
                         field
                     });
                     let key = row.key.clone();
-                    let subscription = cx.subscribe(&field, move |this: &mut SettingsView, _, event: &TextFieldEvent, cx| {
+                    let subscription = cx.subscribe(&field, move |this: &mut SettingsView, field, event: &TextFieldEvent, cx| {
+                        if matches!(event, TextFieldEvent::Changed) && this.items.iter().any(|item| matches!(item, Item::Row { row, .. } if row.key == key && matches!(row.control, Control::Field { save: Act::Filter, .. }))) {
+                            this.list_filters.insert(key.clone(), field.read(cx).text().to_owned());
+                            this.rebuild(cx);
+                        }
                         if let TextFieldEvent::Submit(_) = event {
                             let save = this.items.iter().find_map(|item| match item {
                                 Item::Row { row, .. } if row.key == key => match &row.control {
@@ -1018,7 +1025,7 @@ impl SettingsView {
         self.problem = None;
         match act {
             Act::Change { at, value, asked } => {
-                if let (false, Some(asks)) = (asked, at.confirm.clone()) {
+                if let (false, Some(asks)) = (asked, at.asks_for(&value)) {
                     self.ask(asks.title, asks.body, asks.button, Act::Change { at, value, asked: true });
                 } else {
                     let key = described::key(&at.row);
@@ -1026,7 +1033,7 @@ impl SettingsView {
                     let to = at.clone();
                     self.run(
                         key.clone(),
-                        move |client| client.change_setting_at(&to.section, &to.row, &to.revision, value),
+                        move |client| client.change_setting_confirmed_at(&to.section, &to.row, &to.revision, value, asked),
                         move |this, done, cx| {
                             this.done(&key);
                             this.take_changed(&at.section, &at.row, done, cx);
@@ -1054,10 +1061,10 @@ impl SettingsView {
                 }
             }
             Act::Save { at, number } => {
-                let Some(text) = self.fields.get(&described::key(&at.row)).map(|(field, _, _)| field.read(cx).text().trim().to_owned()) else { return };
+                let Some(text) = self.fields.get(&described::key(&at.row)).map(|(field, _, _)| field.read(cx).text().to_owned()) else { return };
                 // (What kind of thing was typed is all that's checked here; whether it fits is the box's.)
                 let value = if number {
-                    match text.parse::<f64>().ok().and_then(serde_json::Number::from_f64) {
+                    match text.trim().parse::<f64>().ok().and_then(|number| serde_json::Number::from_f64(if at.bytes { (number * 1_000_000_000.).round() } else { number })) {
                         Some(number) => Value::Number(number),
                         None => {
                             self.problem = Some(format!("{} takes a number.", at.title));
@@ -1070,6 +1077,16 @@ impl SettingsView {
                 };
                 self.act(Act::Change { at, value, asked: false }, cx);
                 return;
+            }
+            Act::Filter => {},
+            Act::Folder { at, prompt } => {
+                let picked = cx.prompt_for_paths(gpui::PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(prompt.into()) });
+                self.tasks.insert(format!("folder-{}", at.row), cx.spawn(async move |this, cx| {
+                    if let Ok(Ok(Some(paths))) = picked.await && let Some(path) = paths.first() {
+                        let value = json!(path.to_string_lossy());
+                        this.update(cx, |this, cx| this.act(Act::Change { at, value, asked: false }, cx)).ok();
+                    }
+                }));
             }
             Act::Replacing { row, on } => {
                 self.replacing.retain(|id| *id != row);

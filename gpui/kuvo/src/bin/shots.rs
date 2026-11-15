@@ -168,6 +168,11 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "computer-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_narrow) },
     // Settings (`kuvo/src/settings`): each section, the search, a section not in this app yet, and
     // each step of signing in.
+    Screen { slug: "settings-row-storage", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_storage) },
+    Screen { slug: "settings-row-storage-confirm", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_storage_confirm) },
+    Screen { slug: "settings-row-worktrees", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_worktrees) },
+    Screen { slug: "settings-row-git", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_git) },
+    Screen { slug: "settings-row-archived", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_archived) },
     Screen { slug: "settings-a-yours", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours) },
     Screen { slug: "settings-a-yours-later", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_later) },
     Screen { slug: "settings-a-general", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(general) },
@@ -509,6 +514,16 @@ fn yours(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
 /// One of your own sections that isn't in the desktop app yet.
 fn yours_later(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "yours/shortcuts", window, cx);
+}
+fn row_storage(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "storage", window, cx); }
+fn row_worktrees(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "worktrees", window, cx); }
+fn row_git(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "git", window, cx); }
+fn row_archived(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "archived", window, cx); }
+fn row_storage_confirm(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = settings(w, "storage", window, cx);
+    if let Some(row) = w.client().settings_page("storage").ok().and_then(|page| page.row("budget").cloned()) {
+        view.update(cx, |view, cx| view.act(kuvo::settings::Act::Change { at: kuvo::settings::At::of("storage", &row), value: serde_json::json!(1_000_000_000), asked: false }, cx));
+    }
 }
 fn general(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "General", window, cx);
@@ -928,6 +943,22 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug == "computers-many" {
                 stand_in.more_computers(40);
+            }
+            if screen.slug.starts_with("settings-row-") {
+                use serde_json::json;
+                let confirm = json!({"value":1500000000,"confirm":{"title":"Keep less of older versions?","body":"Older versions take 1.5 GB now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.","button":"Keep up to"}});
+                let pages = [
+                    ("storage","Storage",json!([
+                        {"id":"copies","title":"Copies of what agents made","kind":"status","value":2500000000_u64,"unit":"bytes"},
+                        {"id":"budget","title":"Older versions keep up to","line":"Past it, the oldest go first.","kind":"number","value":5000000000_u64,"unit":"bytes","can":true,"confirmBelow":confirm,"suggestions":[{"value":1000000000,"title":"1 GB"},{"value":2000000000,"title":"2 GB"},{"value":5000000000_u64,"title":"5 GB"}]}
+                    ])),
+                    ("worktrees","Worktrees",json!([{"id":"folder","title":"Folder","kind":"folder","value":"","placeholder":"Kuvo Code’s Folder","can":true,"folder":{"choose":"Choose a Folder…","clear":"Kuvo Code’s Folder","prompt":"Choose","message":"Choose where new worktrees go. Each one is a folder in it."}}])),
+                    ("git","Git",json!([{"id":"instructions","title":"Commit instructions","kind":"text","value":"Write a short title.\nExplain why the change matters.","lines":{"min":3,"max":8},"can":true}])),
+                    ("archived","Archived Sessions",json!([{"id":"sessions","title":"Archived Sessions","kind":"list","search":{"placeholder":"Search archived sessions…","empty":"No sessions match {query}."},"items":[{"id":"session","title":"Fix settings","line":"Kuvo Code","kind":"actions","actions":[{"id":"restore","title":"Restore"}]}]}]))
+                ];
+                for (id,title,rows) in pages {
+                    stand_in.add_settings_section(json!({"id":id,"title":title,"group":"Projects","icon":"folder"}),json!({"id":id,"title":title,"groups":[{"id":"settings","title": if id == "archived" { "Kuvo Code" } else { "" },"rows":rows}]}));
+                }
             }
             if screen.slug == "settings-a-kinds" {
                 let (section, page) = kuvo::stand_in::settings::every_kind();

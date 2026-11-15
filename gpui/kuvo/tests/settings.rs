@@ -988,3 +988,51 @@ mod live {
         assert_eq!(stand_in.seen_at("POST", "kuvo/sign-in/start").len(), 1, "its sign-in started");
     }
 }
+
+#[gpui::test]
+fn lowering_a_budget_asks_before_sending_and_cancel_sends_nothing(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.add_settings_section(json!({"id":"storage", "title":"Storage", "group":"System", "icon":"file"}), json!({
+        "id":"storage","title":"Storage","groups":[{"id":"copies","rows":[{
+            "id":"budget","title":"Budget","kind":"number","value":2000000000,"can":true,"unit":"bytes",
+            "confirmBelow":{"value":1500000000,"confirm":{"title":"Keep less?","body":"Old copies go.","button":"Keep"}}
+        }]}]
+    }));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "storage");
+    click(cx, "row-budget-field");
+    cx.simulate_keystrokes("cmd-a backspace");
+    cx.simulate_input("1.000000007");
+    click(cx, "row-budget-save");
+    assert_eq!(view.read_with(cx, |view, _| view.confirm_words()), Some(("Keep less?".into(), "Old copies go.".into(), "Keep".into())));
+    assert!(bodies(&stand_in,"PATCH","kuvo/settings/storage").is_empty());
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(bodies(&stand_in,"PATCH","kuvo/settings/storage").is_empty());
+    click(cx,"row-budget-save");
+    click(cx,"confirm-go");
+    let sent = bodies(&stand_in,"PATCH","kuvo/settings/storage");
+    assert_eq!(sent.len(),1);
+    assert_eq!(sent[0]["value"],json!(1000000007.0));
+    assert_eq!(sent[0]["confirmed"],json!(true));
+}
+
+#[gpui::test]
+fn a_described_list_search_filters_items_without_sending_a_change(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.add_settings_section(json!({"id":"archived","title":"Archived Sessions","group":"Projects","icon":"clock"}), json!({
+        "id":"archived","title":"Archived Sessions","groups":[{"id":"sessions","title":"Kuvo Code","rows":[{
+            "id":"sessions","title":"Archived Sessions","kind":"list",
+            "search":{"placeholder":"Search sessions…","empty":"No sessions match {query}."},
+            "items":[{"id":"alpha","title":"Alpha","line":"First project","kind":"status","value":3}, {"id":"beta","title":"Beta","line":"Second project","kind":"status","value":4}]
+        }]}]
+    }));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    section(&workspace,cx,"archived");
+    assert!(shown(cx,"row-alpha") && shown(cx,"row-beta"));
+    click(cx,"row-sessions-field");
+    cx.simulate_input("Second");
+    cx.run_until_parked();
+    assert!(!shown(cx,"row-alpha") && shown(cx,"row-beta"));
+    assert!(bodies(&stand_in,"PATCH","kuvo/settings/archived").is_empty());
+}

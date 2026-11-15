@@ -21,6 +21,7 @@ pub struct Drawing<'a> {
     pub replacing: &'a [String],
     /// Whether the box is on the computer this app runs on.
     pub here: bool,
+    pub filters: &'a std::collections::HashMap<String, String>,
 }
 
 pub fn key(id: &str) -> String {
@@ -45,11 +46,18 @@ pub fn blocks(page: &Page, drawing: &Drawing) -> Vec<Block> {
                 label = described.title.clone();
                 words = described.line.clone().unwrap_or_default();
             } else {
-                rows.push(Row::new(key(&described.id), described.title.clone(), described.line.clone().unwrap_or_default(), adds.map_or(Control::None, |add| Control::Buttons(vec![add]))));
+                rows.push(Row::new(if described.search.is_some() { format!("{}-heading", key(&described.id)) } else { key(&described.id) }, described.title.clone(), described.line.clone().unwrap_or_default(), adds.map_or(Control::None, |add| Control::Buttons(vec![add]))));
             }
-            rows.extend(described.items.iter().map(|item| row(item, drawing)));
-            if described.items.is_empty() {
-                rows.push(Row::new(format!("{}-empty", key(&described.id)), String::new(), described.empty.clone().unwrap_or_else(|| "None yet.".into()), Control::None));
+            let query = drawing.filters.get(&key(&described.id)).cloned().unwrap_or_default();
+            if let Some(search) = &described.search {
+                rows.push(Row::new(key(&described.id), String::new(), String::new(), Control::Field { lines: None, masked: false, value: query.clone(), placeholder: search.placeholder.clone(), revision: String::new(), save: Act::Filter, more: Vec::new() }));
+            }
+            let query_lower = query.to_lowercase();
+            let list_matches = described.title.to_lowercase().contains(&query_lower);
+            let items: Vec<_> = described.items.iter().filter(|item| query.is_empty() || list_matches || item.title.to_lowercase().contains(&query_lower) || item.line.as_deref().unwrap_or_default().to_lowercase().contains(&query_lower)).collect();
+            rows.extend(items.iter().map(|item| row(item, drawing)));
+            if items.is_empty() {
+                rows.push(Row::new(format!("{}-empty", key(&described.id)), String::new(), if query.is_empty() { described.empty.clone().unwrap_or_default() } else { described.search.as_ref().map(|search| search.empty.replace("{query}", &query)).unwrap_or_default() }, Control::None));
             }
         }
         blocks.push(Block::Group(label, words, rows));
@@ -81,16 +89,13 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
                     Control::Text(shown)
                 }
             }
-            Kind::Status => Control::Text(described.words().unwrap_or_default().to_owned()),
+            Kind::Status => Control::Text(if described.unit.as_deref() == Some("bytes") { described.value.as_ref().and_then(Value::as_f64).map(display_bytes).unwrap_or_default() } else { shown_value(described) }),
             Kind::Text | Kind::Number | Kind::Folder => {
-                let value = match &described.value {
-                    Some(Value::String(text)) => text.clone(),
-                    Some(Value::Null) | None => String::new(),
-                    Some(other) => other.to_string(),
-                };
+                let value = shown_value(described);
                 if can {
                     let save = Act::Save { at: at.clone(), number: described.kind == Kind::Number };
-                    Control::Field { masked: false, value, placeholder: described.placeholder.clone().unwrap_or_default(), revision: described.revision.clone(), save: save.clone(), more: vec![Push::new("Save", save)] }
+                    Control::Field { lines: described.lines.as_ref().map(|lines| (lines.min, lines.max)), masked: false, value, placeholder: described.placeholder.clone().unwrap_or_default(), revision: described.revision.clone(), save: save.clone(), more: { let mut picks = vec![Push::new("Save", save)]; picks.extend(described.suggestions.iter().map(|pick| Push::new(pick.title.clone(), change(json!(pick.value))))); if let Some(folder) = &described.folder { // BOX-NEEDED: remote directory browsing, kuvo/settings/:section.
+                        if drawing.here { picks.push(Push::new(folder.choose.clone(), Act::Folder { at: at.clone(), prompt: folder.prompt.clone() })); } picks.push(Push::new(folder.clear.clone(), change(json!("")))); } picks } }
                 } else {
                     Control::Text(value)
                 }
@@ -98,7 +103,7 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
             Kind::Secret => {
                 let replacing = drawing.replacing.contains(&described.id);
                 let save = Act::Save { at: at.clone(), number: false };
-                let field = |more: Vec<Push>| Control::Field { masked: true, value: String::new(), placeholder: described.placeholder.clone().unwrap_or_default(), revision: described.revision.clone(), save: save.clone(), more };
+                let field = |more: Vec<Push>| Control::Field { lines: None, masked: true, value: String::new(), placeholder: described.placeholder.clone().unwrap_or_default(), revision: described.revision.clone(), save: save.clone(), more };
                 match (can, described.set, replacing) {
                     (false, set, _) => Control::Text(if set { "Set".into() } else { "Not set".into() }),
                     (true, false, _) => field(vec![Push::new("Save", save.clone())]),
@@ -141,7 +146,7 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
             Kind::Unknown => Control::Text(NEWER.into()),
         }
     };
-    Row::new(key, described.title.clone(), described.line.clone().unwrap_or_default(), control).warning(described.tone == Said::Warning).why(why)
+    Row::new(key, described.title.clone(), [described.line.clone().unwrap_or_default(), described.folder.as_ref().map(|folder| folder.message.clone()).unwrap_or_default(), if described.kind == Kind::Number && described.unit.as_deref() == Some("bytes") { "GB".into() } else { String::new() }].into_iter().filter(|line| !line.is_empty()).collect::<Vec<_>>().join("\n"), control).warning(described.tone == Said::Warning).why(why)
 }
 
 /// A web page is opened at any box's word; anything else only at the word of the box on this
@@ -158,4 +163,20 @@ fn push(described: &Described, action: &Action, drawing: &Drawing) -> Push {
         (None, None) => Some(Act::Do { at: At::of(drawing.section, described), action: action.id.clone(), confirm: action.confirm.clone(), asked: false }),
     };
     Push { label: action.title.clone(), act }
+}
+
+fn shown_value(row: &Described) -> String {
+    match row.value.as_ref() {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Number(number)) if row.unit.as_deref() == Some("bytes") => format!("{}", number.as_f64().unwrap_or_default() / 1_000_000_000.),
+        Some(Value::Null) | None => String::new(),
+        Some(value) => value.to_string(),
+    }
+}
+
+fn display_bytes(bytes: f64) -> String {
+    if bytes >= 1_000_000_000. { format!("{:.1} GB", bytes / 1_000_000_000.) }
+    else if bytes >= 1_000_000. { format!("{:.1} MB", bytes / 1_000_000.) }
+    else if bytes >= 1_000. { format!("{:.1} KB", bytes / 1_000.) }
+    else { format!("{bytes} bytes") }
 }

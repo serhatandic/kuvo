@@ -118,6 +118,8 @@ pub enum Act {
     /// A field's text, saved as its row's value (`number`: read as one first).
     Save { at: At, number: bool },
     /// A secret's field shown, to replace the one set (or put away again).
+    Filter,
+    Folder { at: At, prompt: String },
     Replacing { row: String, on: bool },
     /// Opens the address the box named: a web page, or (from its own computer's box alone) what
     /// only an app on that computer can open.
@@ -144,11 +146,17 @@ pub struct At {
     pub revision: String,
     pub title: String,
     pub confirm: Option<Asks>,
+    pub confirm_below: Option<kuvo_box::settings_pages::ConfirmBelow>,
+    pub bytes: bool,
 }
 
 impl At {
+    pub fn asks_for(&self, value: &Value) -> Option<Asks> {
+        self.confirm.clone().or_else(|| self.confirm_below.as_ref().filter(|below| value.as_f64().is_some_and(|number| number < below.value)).map(|below| below.confirm.clone()))
+    }
+
     pub fn of(section: &str, row: &Described) -> At {
-        At { section: section.to_owned(), row: row.id.clone(), revision: row.revision.clone(), title: row.title.clone(), confirm: row.confirm.clone() }
+        At { section: section.to_owned(), row: row.id.clone(), revision: row.revision.clone(), title: row.title.clone(), confirm: row.confirm.clone(), confirm_below: row.confirm_below.clone(), bytes: row.unit.as_deref() == Some("bytes") }
     }
 }
 
@@ -193,7 +201,7 @@ pub enum Control {
     /// Buttons, in order.
     Buttons(Vec<Push>),
     /// A field (kept by the view under the row's key), and the buttons beside it.
-    Field { masked: bool, value: String, placeholder: String, revision: String, save: Act, more: Vec<Push> },
+    Field { lines: Option<(usize, usize)>, masked: bool, value: String, placeholder: String, revision: String, save: Act, more: Vec<Push> },
     /// It opens something: a section, a page.
     Opens(Act),
     /// A change on its way.
