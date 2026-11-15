@@ -1773,7 +1773,7 @@ impl StandIn {
                 state.emit("session.compaction.started", json!({ "sessionID": session, "reason": "manual" }));
                 state.messages.entry((*session).to_owned()).or_default().push(json!({
                     "type": "compaction", "id": id, "time": { "created": now, "completed": now },
-                    "status": "completed", "reason": "manual", "summary": "Kept the decisions and current work for the next turn."
+                    "status": "completed", "title": "Conversation compacted", "reason": "manual", "summary": "Kept the decisions and current work for the next turn."
                 }));
                 state.emit("session.compaction.ended", json!({ "sessionID": session }));
                 if let Some(facts) = state.sessions.get_mut(*session) {
@@ -1881,7 +1881,7 @@ impl StandIn {
                 state.emit("session.compaction.started", json!({ "sessionID": session, "reason": "manual" }));
                 state.messages.entry(session.clone()).or_default().push(json!({
                     "type": "compaction", "id": compact_id, "time": { "created": now, "completed": now },
-                    "status": "completed", "reason": "manual", "summary": "Kept the decisions and current work for the next turn."
+                    "status": "completed", "title": "Conversation compacted", "reason": "manual", "summary": "Kept the decisions and current work for the next turn."
                 }));
                 state.emit("session.compaction.ended", json!({ "sessionID": session }));
                 let compact_idle = state.id("msg");

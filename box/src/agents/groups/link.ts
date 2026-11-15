@@ -36,6 +36,10 @@ const failed = (status: number) => (status === 409 ? 409 : status >= 500 ? 503 :
 /** An object without what it doesn't have: a chat file may hold null for it, and an answer leaves it out. */
 const present = <T extends object>(value: T) => Object.fromEntries(Object.entries(value).filter(([, each]) => each !== null && each !== undefined)) as T
 
+export function taskTitle(state: string): string {
+  return ({ proposed: "Not started", waiting: "Waiting", working: "Working", done: "Done", failed: "Didn’t finish" } as Record<string, string>)[state] ?? state
+}
+
 export function clientMessage(message: GroupMessage | undefined, withSteps = true) {
   if (!message) return undefined
   const { named: _named, steps, time, tasks, author, ...rest } = message as GroupMessage & { named?: string }
@@ -47,7 +51,7 @@ export function clientMessage(message: GroupMessage | undefined, withSteps = tru
     ...(tasks
       ? {
           // `lost` is the box's own note (a report still taken), not a client's.
-          tasks: tasks.map(({ started, finished, lost: _lost, ...task }) => ({ ...task, ...(started ? { started: seconds(started) } : {}), ...(finished ? { finished: seconds(finished) } : {}) })),
+          tasks: tasks.map(({ started, finished, lost: _lost, ...task }) => ({ ...task, title: taskTitle(task.state), ...(started ? { started: seconds(started) } : {}), ...(finished ? { finished: seconds(finished) } : {}) })),
         }
       : {}),
   }

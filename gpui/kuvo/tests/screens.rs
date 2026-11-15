@@ -1423,20 +1423,18 @@ fn compaction_shows_its_row_active_status_and_refusals_in_composer(cx: &mut Test
         })
     }).expect("compaction entry in ConversationView");
     assert!(bounds(cx, &format!("entry-{compact_id}")).is_some(), "compaction row rendered");
-    assert_eq!(kuvo::entries::compaction_label(Some("completed")), "Conversation compacted");
 
     // While a compaction since the last idle is running, the bottom status row reads "Summarizing the conversation…".
     let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
     let mut active = read_now(&client, "ses_recipes").unwrap();
     let running_compaction: Message = serde_json::from_value(json!({
-        "type": "compaction", "id": "msg_cmp_run", "time": { "created": NOW + 100.0 }, "status": "running", "reason": "manual"
+        "type": "compaction", "id": "msg_cmp_run", "time": { "created": NOW + 100.0 }, "status": "running", "workingTitle": "Summarizing the conversation…", "reason": "manual"
     })).unwrap();
     active.catch_up(vec![running_compaction], None, &[], Some(true));
     view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(active), cx));
     cx.run_until_parked();
-    assert_eq!(view.read_with(cx, |view, _| view.entries().last().cloned()), Some(Entry::Working { summarizing: true }));
+    assert_eq!(view.read_with(cx, |view, _| view.entries().last().cloned()), Some(Entry::Working { title: "Summarizing the conversation…".into() }));
     assert!(bounds(cx, "entry-working").is_some(), "summarizing row rendered");
-    assert_eq!(kuvo::entries::working_label(true), "Summarizing the conversation…");
 
     // A /compact refusal restores the command and shows the error in the composer.
     stand_in.fail_sends();

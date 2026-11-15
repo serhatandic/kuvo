@@ -512,18 +512,6 @@ fn row_units(row: &Row, open: &HashSet<Fold>) -> Vec<selection::Unit> {
     }
 }
 
-/// A part's state, in words (a word a newer box adds, as it is).
-fn task_words(state: &str) -> String {
-    match state {
-        "proposed" => "Not started".into(),
-        "waiting" => "Waiting".into(),
-        "working" => "Working".into(),
-        "done" => "Done".into(),
-        "failed" => "Didn’t finish".into(),
-        other => other.to_owned(),
-    }
-}
-
 /// Names joined as a sentence: "Mira", "Mira and Bo", "Mira, Bo and Cy".
 pub fn joined(names: &[String]) -> String {
     match names {
@@ -662,7 +650,7 @@ impl GroupChatView {
             };
             let after: Vec<String> = task.after.iter().filter_map(|bot| self.name_of(bot)).collect();
             let stopped = task.state == "working" && self.chat.stopped.contains(&task.bot);
-            let state = if stopped { format!("Waiting: {name}’s conversation is stopped") } else { task_words(&task.state) };
+            let state = if stopped { format!("Waiting: {name}’s conversation is stopped") } else { task.title.clone() };
             let tone = match task.state.as_str() {
                 "done" => c.success,
                 "failed" => c.danger,

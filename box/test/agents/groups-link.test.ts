@@ -335,3 +335,9 @@ describe("the box's link and this bridge", () => {
     ])
   })
 })
+
+// State words travel with every task, so each client draws the same title.
+test("task state titles belong to the box", async () => {
+  const { taskTitle } = await import("../../src/agents/groups/link");
+  expect(["proposed", "waiting", "working", "done", "failed"].map(taskTitle)).toEqual(["Not started", "Waiting", "Working", "Done", "Didn’t finish"]);
+});
