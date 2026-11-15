@@ -829,10 +829,26 @@ of the real preferences; `lsof` seeing a running 0.7.2 and its engine; a real 0.
 beta.1 `S` moved whole (the fixtures here are laid out from the code, with a real database); the
 `app-box` keeper stopped on its control and its label booted out.
 
+**The reviewer's pass** (one `reviewer`, 2026-11-16). Found and fixed: an empty `bots`, `groups`
+or `agents` folder in `S` failed every try (the upgrades took the cloned empty folder away, and
+the check missed it); preferences that couldn't be read were taken for none (they stop the move
+now); rows of 2.0.32's `session_pending`, which the pinned engine's migration drops, are said;
+what the app kept for machines' projects and worktrees, usage API keys and starred models are
+said; failures that aren't the person's to act on are one plain sentence (the detail in
+`run.log`), and none blames Kuvo Code for an editor writing in a worktree; the old keeper is
+named by `ps` before anything is sent or stopped; `two` is refused before anything is stopped
+and noted nowhere, with its words from the installer too; the agents' grant is made on a retry;
+each installer reads its own answer file. Left as it is, for the user: `kuvo-keys passwords`
+gives 0.7's saved sign-ins to whatever can write the move's lock, for as long as they stay in
+the Keychain (the same limit as §8a.1; taking them out of the Keychain once they're in the vault
+would end it); and worktrees under `S` stay as second copies sharing one git record with those
+in `K`.
+
 **Left open by this piece** (decisions, in the report): the guard that keeps `kuvo-keys` to the
 box's move against a program of yours outside the sandbox (§8a.1) and the race in `copy`'s
-helper check (§8a.3), so no signed `kuvo-keys` yet; what `approveAll` becomes; the steps' and
-refusals' wording; `S` left on disk for good; the usage panel's API keys in the Keychain.
+helper check (§8a.3), so no signed `kuvo-keys` yet; whether 0.7's saved sign-ins leave the Keychain once
+they're in the vault; what `approveAll` becomes; the steps' and refusals' wording; `S` left on
+disk for good, with its worktrees; the usage panel's API keys in the Keychain.
 
 ## 9. Questions only the user can answer
 
