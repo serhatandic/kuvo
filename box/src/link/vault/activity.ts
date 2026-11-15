@@ -5,9 +5,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { newID, oneLine } from "../../shared/text";
 import type { VaultActivity } from "../../shared/routes/vault";
-import { KEPT_DAYS, VAULT_FOLDER, vaultWork } from "./store";
+import { KEPT_DAYS, VAULT_FOLDER } from "../home";
+import { vaultWork } from "./work";
 
-const activityFile = () => path.join(VAULT_FOLDER, "activity.jsonl");
+const ACTIVITY = path.join(VAULT_FOLDER, "activity.jsonl");
 const DAY = 86_400_000;
 
 /** A line as it's kept: with who did it on a client (`by`: a phone's link key, a Mac's), which
@@ -26,7 +27,7 @@ export function note(what: Noted, now = Date.now()): KeptActivity {
   if (entry.why) entry.why = oneLine(entry.why, 300);
   vaultWork(() => {
     fs.mkdirSync(VAULT_FOLDER, { recursive: true, mode: 0o700 });
-    fs.appendFileSync(activityFile(), JSON.stringify(entry) + "\n", { mode: 0o600 });
+    fs.appendFileSync(ACTIVITY, JSON.stringify(entry) + "\n", { mode: 0o600 });
     if (now - prunedAt > DAY) {
       prunedAt = now;
       prune(now);
@@ -40,14 +41,14 @@ function prune(now: number) {
   const lines = readLines();
   const kept = lines.filter(entry => now - entry.at < KEPT_DAYS * DAY);
   if (kept.length === lines.length) return;
-  const temporary = activityFile() + ".new";
+  const temporary = ACTIVITY + ".new";
   fs.writeFileSync(temporary, kept.map(entry => JSON.stringify(entry) + "\n").join(""), { mode: 0o600 });
-  fs.renameSync(temporary, activityFile());
+  fs.renameSync(temporary, ACTIVITY);
 }
 
 function readLines(): KeptActivity[] {
   let text = "";
-  try { text = fs.readFileSync(activityFile(), "utf8"); } catch { return []; }
+  try { text = fs.readFileSync(ACTIVITY, "utf8"); } catch { return []; }
   const entries: KeptActivity[] = [];
   for (const line of text.split("\n")) {
     if (!line) continue;

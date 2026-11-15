@@ -354,7 +354,7 @@ test("over SSH, two changes to one row from the same reading go through one proc
 
 test("the sandbox's row is what kuvo/sandbox says, and its button does what that names", async () => {
   const { sandboxAction } = await import("../src/link/areas/settings-pages")
-  const { fenceFiles } = await import("../src/link/fence/state")
+  const { fenceFiles, forgetFence } = await import("../src/link/fence/state")
   try {
     const shown = await page("permissions")
     const sandbox = rowOf(shown, "sandbox")
@@ -371,6 +371,7 @@ test("the sandbox's row is what kuvo/sandbox says, and its button does what that
   } finally {
     // (The check set the sandbox up in the run's own home: every later test file would run its
     // agents in it, where the engine's own runtime is hidden.)
+    forgetFence()
     rmSync(fenceFiles.folder, { recursive: true, force: true })
     rmSync(fenceFiles.launcher, { force: true })
     rmSync(fenceFiles.runner, { force: true })

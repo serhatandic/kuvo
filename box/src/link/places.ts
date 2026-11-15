@@ -14,7 +14,7 @@ import {
   RUN, SEARCH, SESSION_WAKES, SSH_AGENTS, UPDATES, WAKE_COMMAND,
 } from "./home";
 import { LIST_FILE, PHONE_LINK_FILE } from "./mac/machines";
-import { VAULT_FOLDER } from "./vault/store";
+import { VAULT_FOLDER } from "./home";
 import { APPS } from "./work/apps";
 
 /** How this box is laid out: in a home of its own (a machine's, or a Mac's in `~/.kuvo-code`), or in
