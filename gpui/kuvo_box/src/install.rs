@@ -279,6 +279,15 @@ impl Installer {
     }
 }
 
+impl crate::BoxClient {
+    /// Offers this box the release an app on its computer carries (`kuvo/box/update {from}`,
+    /// PROTOCOL.md, "Updates"): it takes one newer than itself at its next quiet moment, and
+    /// refuses any other (`409`).
+    pub fn offer_release(&self, folder: &Path) -> crate::Result<Value> {
+        self.value(&crate::transport::Request::post("kuvo/box/update", serde_json::json!({ "from": folder })))
+    }
+}
+
 /// Whether an answer says it went no further: another move holds the lock (exit 4), or it was
 /// refused or failed. None for one that's done, did nothing, or only judged.
 fn stopped(exit: i32, answer: &Answer) -> Option<End> {

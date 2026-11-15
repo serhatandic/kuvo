@@ -76,5 +76,11 @@ impl Keeper for PrivateFile {
 /// The app's own folder for what it keeps as a client, under `home`: beside its box's on a Mac,
 /// in `~/.kuvo-code` elsewhere. Nothing of a box's is in it.
 pub fn folder(home: &std::path::Path) -> PathBuf {
-    if cfg!(target_os = "macos") { home.join("Library/Application Support/run.kuvo.code/desktop") } else { home.join(".kuvo-code/desktop") }
+    folder_of(home, kuvo_box::install::REAL_ROOT, kuvo_box::install::REAL_APP)
+}
+
+/// The same for a copy of the app (a demo's, a test's): under its own bundle ID on a Mac, in its
+/// own root elsewhere, never the real app's.
+pub fn folder_of(home: &std::path::Path, root: &str, app_id: &str) -> PathBuf {
+    if cfg!(target_os = "macos") { home.join("Library/Application Support").join(app_id).join("desktop") } else { home.join(root).join("desktop") }
 }

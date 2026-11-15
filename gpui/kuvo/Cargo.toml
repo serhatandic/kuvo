@@ -12,6 +12,8 @@ gpui_platform.workspace = true
 kuvo_ui.workspace = true
 kuvo_box = { path = "../kuvo_box" }
 anyhow = "1"
+# The installer's steps, handed from the thread that runs it to the window.
+async-channel = "2.5"
 serde_json = "1"
 
 # The app's device key, in the Mac's keychain.
@@ -24,6 +26,8 @@ gpui = { workspace = true, features = ["test-support"] }
 kuvo = { path = ".", features = ["stand-in"] }
 # Waiting on a view's notifications while the follows' threads hand on what they read.
 futures = "0.3"
+# A stand-in app bundle, in a folder that goes with its test.
+tempfile = "3"
 
 [features]
 # The made-up box (`--stand-in`), and reading it at once for shots and tests; not in the app shipped.

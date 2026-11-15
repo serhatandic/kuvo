@@ -689,13 +689,13 @@ fn mark(service: Option<&str>, name: &str, cx: &App) -> AnyElement {
 }
 
 /// A round tile with an icon, where a row has no mark of its own.
-fn icon_tile(icon: IconName, cx: &App) -> AnyElement {
+pub(crate) fn icon_tile(icon: IconName, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     div().flex().flex_none().items_center().justify_center().size(px(32.)).rounded(radius::PILL).bg(c.sunken).border_1().border_color(c.border).child(Icon::new(icon).color(c.icon)).into_any_element()
 }
 
 /// Rows in a list, divided by hairlines.
-fn list(rows: Vec<AnyElement>, cx: &App) -> AnyElement {
+pub(crate) fn list(rows: Vec<AnyElement>, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     let mut card = div().flex().flex_col().flex_none().rounded(radius::POPOVER).border_1().border_color(c.border).bg(c.card).overflow_hidden();
     for (ix, row) in rows.into_iter().enumerate() {
@@ -705,7 +705,7 @@ fn list(rows: Vec<AnyElement>, cx: &App) -> AnyElement {
 }
 
 /// A step's title, and the line under it.
-fn heading(title: &str, line: Option<&str>, cx: &App) -> AnyElement {
+pub(crate) fn heading(title: &str, line: Option<&str>, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     div()
         .flex()
@@ -730,7 +730,7 @@ fn waiting(id: &'static str, words: &str, cx: &App) -> AnyElement {
 }
 
 /// A title over a detail, as every row here has them.
-fn two_lines(title: impl Into<SharedString>, detail: impl Into<SharedString>, detail_color: gpui::Hsla, cx: &App) -> gpui::Div {
+pub(crate) fn two_lines(title: impl Into<SharedString>, detail: impl Into<SharedString>, detail_color: gpui::Hsla, cx: &App) -> gpui::Div {
     let c = &cx.theme().colors;
     div()
         .flex_1()
@@ -1224,7 +1224,7 @@ impl FirstRun {
 }
 
 /// Where you are in the steps: the current one longer.
-fn step_dots(at: usize, cx: &App) -> AnyElement {
+pub(crate) fn step_dots(at: usize, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     div()
         .debug_selector(|| "first-run-dots".into())
@@ -1238,7 +1238,6 @@ fn step_dots(at: usize, cx: &App) -> AnyElement {
 
 impl Render for FirstRun {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let c = cx.theme().colors.clone();
         if std::mem::take(&mut self.wants_focus) {
             window.focus(&self.focus, cx);
         }
@@ -1254,8 +1253,8 @@ impl Render for FirstRun {
                 Step::Browse => self.browse_step(cx),
             }
         };
-        let width: Pixels = px(CARD);
-        div()
+        let dot = if held { 0 } else { self.step.dot() };
+        card_frame(card, dot, cx)
             .id("first-run")
             .debug_selector(|| "first-run".into())
             .key_context("FirstRun")
@@ -1277,51 +1276,59 @@ impl Render for FirstRun {
                 let next = cx.theme().appearance.toggled();
                 kuvo_ui::Theme::set_appearance(next, cx);
             }))
-            .relative()
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(c.background)
-            .text_ui(TypeSize::Small)
-            .text_color(c.text)
-            .child(backdrop())
-            // The window's own title bar: its buttons, and the window moved by it.
-            .child(div().id("first-run-title-bar").h(px(title_bar::HEIGHT)).flex_none().on_mouse_down(MouseButton::Left, |event, window, _| {
-                if event.click_count == 1 {
-                    window.start_window_move();
-                }
-            }))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap(space::S4)
-                    .px(space::S6)
-                    .pb(space::S10)
-                    .child(
-                        div()
-                            .debug_selector(|| "first-run-card".into())
-                            .w_full()
-                            .max_w(width)
-                            .min_h_0()
-                            .flex()
-                            .flex_col()
-                            .gap(space::S5)
-                            .p(space::S8)
-                            .rounded(radius::CARD + px(4.))
-                            .bg(c.surface)
-                            .border_1()
-                            .border_color(c.border)
-                            .shadow(cx.theme().elevated_shadow())
-                            .children(card),
-                    )
-                    .child(step_dots(if held { 0 } else { self.step.dot() }, cx)),
-            )
     }
+}
+
+/// The first run's frame: the dotted backdrop, the window's own title bar (its buttons, and the
+/// window moved by it), one card in the middle, and the steps' dots under it. Setting up this
+/// Mac draws in it too ([`crate::launch`]), so the welcome that follows is the same card.
+pub(crate) fn card_frame(card: Vec<AnyElement>, dot: usize, cx: &App) -> gpui::Div {
+    let c = cx.theme().colors.clone();
+    let width: Pixels = px(CARD);
+    div()
+        .relative()
+        .size_full()
+        .flex()
+        .flex_col()
+        .bg(c.background)
+        .text_ui(TypeSize::Small)
+        .text_color(c.text)
+        .child(backdrop())
+        .child(div().id("first-run-title-bar").h(px(title_bar::HEIGHT)).flex_none().on_mouse_down(MouseButton::Left, |event, window, _| {
+            if event.click_count == 1 {
+                window.start_window_move();
+            }
+        }))
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(space::S4)
+                .px(space::S6)
+                .pb(space::S10)
+                .child(
+                    div()
+                        .debug_selector(|| "first-run-card".into())
+                        .w_full()
+                        .max_w(width)
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .gap(space::S5)
+                        .p(space::S8)
+                        .rounded(radius::CARD + px(4.))
+                        .bg(c.surface)
+                        .border_1()
+                        .border_color(c.border)
+                        .shadow(cx.theme().elevated_shadow())
+                        .children(card),
+                )
+                .child(step_dots(dot, cx)),
+        )
 }
 
 #[cfg(test)]

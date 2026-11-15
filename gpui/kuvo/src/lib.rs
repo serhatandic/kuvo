@@ -19,6 +19,7 @@ pub mod groups;
 pub mod home;
 pub mod keeper;
 mod landing;
+pub mod launch;
 pub mod panel;
 pub mod queue;
 pub mod rail;
