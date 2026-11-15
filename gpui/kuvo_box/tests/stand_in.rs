@@ -672,6 +672,56 @@ fn what_waits_on_you_follows_the_boxs_counts() {
     assert_eq!(follow.next_blocking(), Some(Followed::Now(Waiting { sessions: 1, bots: 1, queue: 0 })));
 }
 
+/// A session's menu, done by its box (PROTOCOL.md, "A session's actions"): what it offers is read as
+/// the box says it, each change goes to the box's route (never the engine's metadata), and one the
+/// box refuses (moving to another computer) says why in the box's words.
+#[test]
+fn a_sessions_menu_is_what_its_box_says_and_does() {
+    let moving = "It’s moving to another computer. Try again once it’s there.";
+    let stand_in = StandInBox::start(move |seen| match (seen.method.as_str(), seen.route()) {
+        (_, "kuvo/info") => Answer::json(200, mac_info(current_features())),
+        ("GET", "kuvo/sessions/ses_a/actions") => Answer::json(200, json!({ "session": "ses_a", "actions": [
+            { "id": "pin", "label": "Pin" }, { "id": "rename", "label": "Rename" }, { "id": "archive", "label": "Archive" },
+            { "id": "delete", "label": "Delete", "destructive": true, "confirm": { "title": "Delete “Trip”?", "message": "This can’t be undone.", "label": "Delete" } }
+        ] })),
+        ("POST", "kuvo/sessions/ses_a/pin" | "kuvo/sessions/ses_a/archive" | "kuvo/sessions/ses_a/rename") => {
+            Answer::json(200, json!({ "session": "ses_a", "info": { "id": "ses_a", "title": "Trip", "metadata": seen.body.clone().unwrap_or_default() } }))
+        }
+        ("DELETE", "kuvo/sessions/ses_a") => Answer::json(200, json!({ "session": "ses_a" })),
+        ("POST", "kuvo/sessions/deletes") => Answer::json(200, json!({ "title": "Delete 2 sessions?", "message": "Their messages and undo snapshots go too. This can’t be undone.", "label": "Delete" })),
+        (_, route) if route.starts_with("kuvo/sessions/ses_moving") => Answer::json(409, json!({ "message": moving })),
+        _ => Answer::json(404, json!({})),
+    });
+    let (_home, _serve, client) = this_mac(&stand_in);
+    client.connect().expect("kuvo/info");
+
+    let menu = client.session_actions("ses_a").expect("its menu");
+    assert_eq!(menu.actions.iter().map(|action| action.label.as_str()).collect::<Vec<_>>(), vec!["Pin", "Rename", "Archive", "Delete"]);
+    assert_eq!(menu.actions[3].confirm.as_ref().map(|confirm| confirm.title.as_str()), Some("Delete “Trip”?"));
+    assert!(menu.held.is_none());
+
+    assert_eq!(client.pin_session("ses_a", true).expect("pinned")["id"], "ses_a");
+    client.archive_session("ses_a", true).expect("archived");
+    client.rename_session("ses_a", "Ship it").expect("renamed");
+    client.delete_session("ses_a").expect("deleted");
+    let sent: Vec<(String, String, Option<Value>)> = stand_in.seen().into_iter().filter(|seen| seen.route() != "kuvo/info").map(|seen| (seen.method.clone(), seen.route().to_owned(), seen.body.clone())).collect();
+    assert_eq!(sent[1..], [
+        ("POST".into(), "kuvo/sessions/ses_a/pin".into(), Some(json!({ "pinned": true }))),
+        ("POST".into(), "kuvo/sessions/ses_a/archive".into(), Some(json!({ "archived": true }))),
+        ("POST".into(), "kuvo/sessions/ses_a/rename".into(), Some(json!({ "title": "Ship it" }))),
+        ("DELETE".into(), "kuvo/sessions/ses_a".into(), None),
+    ]);
+
+    let all = client.deletes_confirm(&["ses_a", "ses_b"]).expect("Delete All's question");
+    assert_eq!(all.title, "Delete 2 sessions?");
+    assert_eq!(stand_in.seen().last().and_then(|seen| seen.body.clone()), Some(json!({ "sessions": ["ses_a", "ses_b"] })));
+
+    match client.archive_session("ses_moving", true) {
+        Err(Error::Refused(refusal)) => assert_eq!((refusal.status, refusal.message.as_str()), (409, moving)),
+        other => panic!("refused in the box's words, not {other:?}"),
+    }
+}
+
 /// What a first run reads from the box (#733), as the box says it: the folders worth starting in
 /// and whether you've been welcomed, and saying the first run is done.
 #[test]

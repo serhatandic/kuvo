@@ -4104,6 +4104,9 @@
             "literal": "search"
            },
            {
+            "literal": "sessions.actions"
+           },
+           {
             "literal": "sessions.agents"
            },
            {
@@ -4699,6 +4702,9 @@
            },
            {
             "literal": "search"
+           },
+           {
+            "literal": "sessions.actions"
            },
            {
             "literal": "sessions.agents"
@@ -10587,6 +10593,276 @@
     "409": {
      "object": {
       "message": "string"
+     }
+    },
+    "502": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/sessions/deletes",
+   "answers": {
+    "200": {
+     "object": {
+      "title": "string",
+      "message": "string",
+      "label": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/sessions/:id/actions",
+   "answers": {
+    "200": {
+     "object": {
+      "session": "string",
+      "actions": {
+       "list": {
+        "object": {
+         "id": {
+          "oneOf": [
+           {
+            "literal": "pin"
+           },
+           {
+            "literal": "unpin"
+           },
+           {
+            "literal": "rename"
+           },
+           {
+            "literal": "archive"
+           },
+           {
+            "literal": "unarchive"
+           },
+           {
+            "literal": "delete"
+           }
+          ]
+         },
+         "label": "string",
+         "destructive?": {
+          "literal": true
+         },
+         "confirm?": {
+          "object": {
+           "title": "string",
+           "message": "string",
+           "label": "string"
+          }
+         }
+        }
+       }
+      },
+      "held?": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "computer?": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/sessions/:id/archive",
+   "answers": {
+    "200": {
+     "object": {
+      "session": "string",
+      "info": "any"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "computer?": "string"
+     }
+    },
+    "502": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/sessions/:id/pin",
+   "answers": {
+    "200": {
+     "object": {
+      "session": "string",
+      "info": "any"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "computer?": "string"
+     }
+    },
+    "502": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/sessions/:id/rename",
+   "answers": {
+    "200": {
+     "object": {
+      "session": "string",
+      "info": "any"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "computer?": "string"
+     }
+    },
+    "502": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "DELETE kuvo/sessions/:id",
+   "answers": {
+    "200": {
+     "object": {
+      "session": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "computer?": "string"
      }
     },
     "502": {

@@ -1579,6 +1579,57 @@ the same number and counts nothing.
   ("1 at work, 1 waiting on you", "Finished 3h ago") alike, a view. A bot made or changed
   (`POST`, `PATCH`) answers without `now`.
 
+### A session's actions
+
+Pin, Rename, Archive and Delete, as a session's menu offers them (`sessions.actions`, #668): the
+box does each on its engine or its coding agents' bridge, whichever keeps the session (every coding
+agent's alike), owns the notes the lists go by (`kuvo.pinned` and `kuvo.archived` at the top of
+its metadata, written in its turn, "Session notes"), and does what goes with each. No client writes
+those notes or deletes a session through `api/…` itself; a box without the feature is held by the
+update gate.
+
+- `GET kuvo/sessions/<id>/actions` → `{session, actions: [{id, label, destructive?, confirm?}],
+  held?}`: what its menu offers now, in order. `id` is `pin` or `unpin`, `rename`, `archive`, and
+  `delete`, or for an archived one `unarchive` (not for one the engine archived itself,
+  `time.archived`, which only it can bring back) and `delete`; `label` is the button's words;
+  `destructive: true` where it destroys something; `confirm`, where a client asks first, `{title,
+  message, label}`, the question, what it comes to and the go-ahead button's words, all the box's
+  (a client marks such a button as its platform does, an ellipsis, and never reads one in `label`).
+  Delete's `message` says what goes with it, by the rule the box's tidying of worktrees goes by
+  (only conversations count: never a subagent, a group chat's seat or a hidden run, such as a coding
+  agent's engine run): "Its worktree is deleted too." where it runs in a worktree of its own (no
+  other conversation open in it), "Its worktree and changes that weren’t committed are deleted
+  too." where that worktree has some (or git can't say, or a session there is at work and may still
+  write some) and no archived conversation left in it
+  keeps them for Restore Worktree, "The changes kept to restore its worktree are deleted too."
+  where it's the last conversation of a removed worktree whose changes were kept, else "This
+  can’t be undone." `rename`
+  asks for a name (a client draws its own field). `held`: none of it can be done now, in words to
+  show (it's moving to another computer); a client shows the actions unavailable.
+- `POST kuvo/sessions/<id>/pin {pinned}`, `…/archive {archived}`, `…/rename {title}` → `200 {session,
+  info}` (`info`, the session as it is now, as its engine or bridge lists it). A title is trimmed;
+  none is `400`. Archived, its wake-ups wait (and come back with it), and one that waits on you stops
+  rather than wait out of sight; brought back, an older client's `kuvo.archived` inside its `kuvo`
+  notes goes too. Written only where it isn't so already.
+- `DELETE kuvo/sessions/<id>` → `200 {session}`: deleted where it runs, its own wake-ups and watches
+  with it; one that's gone already is done too.
+- `POST kuvo/sessions/deletes {sessions: [<id>]}` → `200 {title, message, label}`: Delete All's
+  question for several at once (Settings › Archived Sessions), by the same rule over the whole set
+  (a worktree only they're in goes, and a removed one's kept changes go with the last of them):
+  "Delete 2 sessions?", "Their messages and undo snapshots go too." then what goes with their
+  worktrees, then "This can’t be undone.". For one, it's as that session's own Delete asks. The title
+  counts every id asked about (a client's list may be older than the box's), but a subagent's, a
+  seat or a hidden run; what goes with worktrees is said of those the box lists; `400` for none given, `404` for none here, `503` while the engine
+  can't be read. A client then deletes each with `DELETE kuvo/sessions/<id>`.
+- Every one: `400` for an id that isn't a session's; `409 {message}` for a subagent's session, a group
+  chat's seat or a hidden run (each goes, and changes, with what it's part of); `409 {message}` for one moving to another computer ("It’s moving to another computer.
+  Try again once it’s there."); `409 {message, computer}` for one that moved to another of your
+  computers in the last two days (`computer`, that box's key, which a client may ask instead; the
+  box asked doesn't pass it on, and no client follows it yet); `404` for no such conversation (but Delete); `502` where the engine or
+  bridge didn't take it; `503` with neither running, and while the coding agents' bridge starts
+  again for one the engine hasn't (whether it's one of theirs can't be told yet). `…/archive
+  {archived: false}` for one the engine archived itself is `409 {message}`.
+
 ### A session's model
 
 What a conversation's model button names, and whether its model can run (`sessions.models`): the
@@ -2558,7 +2609,7 @@ before it uses it, and meanwhile says so. A box is older than a client needs whe
 `git.branches.pullRequest`, `git.branches.worktree`, `git.changes.binary`, `git.changes.path`,
 `git.files`, `git.files.does`, `git.merge`, `git.pull-request`,
 `git.status`, `limits.rings`, `messages.send`, `models.offered`, `models.offered.folder`,
-`models.offered.free`, `models.offered.sides`, `models.readiness`, `queue.items`, `sandbox.opens`, `sandbox.words`, `sessions.asks`,
+`models.offered.free`, `models.offered.sides`, `models.readiness`, `queue.items`, `sandbox.opens`, `sandbox.words`, `sessions.actions`, `sessions.asks`,
 `sessions.list`, `sessions.mentions`, `sessions.models`, `sessions.needsYou`,
 `sessions.start.empty`, `setup.welcomed`, `sign-in.accounts.kinds`, `sign-in.accounts.plan`, `sign-in.accounts.state`, `sign-in.codes`, `typed`, `usage.notices`,
 `waiting`, `waiting.cards`, `work-queue.counts` and `work-queue.edit`
@@ -6442,6 +6493,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sandbox.reviews.whole` | `reviews` on `kuvo/sandbox/asks` lists every ask to work outside a conversation's folder, so a client shows one only once it's listed `yours` ("Sandbox") |
 | `sandbox.words` | `why` for every `reason` and `actionLabel`, its button's words, in `kuvo/sandbox` ("Sandbox", #711) |
 | `search` | `kuvo/search` |
+| `sessions.actions` | `GET kuvo/sessions/<id>/actions`, `POST …/pin`, `…/archive`, `…/rename` and `DELETE kuvo/sessions/<id>`: a session's menu, done by the box ("A session's actions", #668), and Delete All's question, `POST kuvo/sessions/deletes` |
 | `sessions.agents` | `POST kuvo/sessions/<id>/agents` |
 | `sessions.asks` | `kuvo/sessions/<id>/asks`, `…/events`, and answering one ("A conversation's asks") |
 | `sessions.chat` | A chat made, moved or with its metadata written since carries `kuvo.chat` in its metadata, naming the chats folder it's in; older ones go by their folder ("Chats") |
