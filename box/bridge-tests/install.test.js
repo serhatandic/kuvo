@@ -318,7 +318,7 @@ test("a Mac's install cut short is made again: what a making left, and a box mad
   assert.equal(install(refused, "status").said.verb, null);
 });
 
-test("a Mac that holds an earlier Kuvo Code's sessions gets no new box beside them, and moving them isn't here yet, said plainly", { skip: !mac && "a Mac's app folder" }, () => {
+test("a Mac that holds an earlier Kuvo Code's sessions gets no new box beside them: they move instead", { skip: !mac && "a Mac's app folder" }, () => {
   const where = computer();
   write(path.join(where.S, "opencode", "data", "opencode", "opencode.db"), "sessions");
   const status = install(where, "status");
@@ -330,11 +330,87 @@ test("a Mac that holds an earlier Kuvo Code's sessions gets no new box beside th
   assert.equal(refused.said.message, "Kuvo Code has your sessions and settings on this Mac already: they move into their new place instead.");
   assert.deepEqual(fs.readdirSync(where.K), ["updates"], "no box made");
   assert.equal(exists(path.join(where.home, "Library", "LaunchAgents")), false);
+  // (Sessions only Kuvo's own engine can read: here the engine is a stand-in, which says so and changes nothing.)
   const move = install(where, "move");
   assert.equal(move.status, 1);
-  assert.equal(move.said.result, "refused");
-  assert.equal(move.said.message, "Moving an earlier Kuvo Code's sessions into their new place isn't in this version yet.");
+  assert.deepEqual({ result: move.said.result, verdict: move.said.verdict, message: move.said.message }, { result: "refused", verdict: "app-07", message: "Your sessions can only be moved by Kuvo's own engine." });
   assert.equal(read(path.join(where.S, "opencode", "data", "opencode", "opencode.db")), "sessions");
+  assert.equal(exists(path.join(where.K, "box")), false, "no box made");
+});
+
+// `kuvo-keys`, as a stand-in the app carries: it notes what it's asked, and like the real one does
+// nothing unless the move's lock names the very process that started it.
+const keysStandIn = `#!/bin/sh
+verb=$1; shift; H=""
+while [ $# -gt 0 ]; do case "$1" in --home) H=$2; shift 2 ;; *) shift ;; esac; done
+[ "$(cat "$H/updates/rehome/lock/pid" 2>/dev/null)" = "$PPID" ] || { echo "not the move" >&2; exit 2; }
+echo "$verb" >>"$HOME/keys-asked"
+case "$verb" in copy) echo '{"copied":0}' ;; passwords) echo '{"v":1,"logins":[]}' ;; *) echo '{}' ;; esac
+`;
+
+test("an earlier Kuvo Code's chats and settings move with `kuvo-install move`: each step said in the box's own words, its helper started, and the app's own folder as it was", { skip: !mac && "a Mac's app folder" }, () => {
+  const where = computer();
+  write(path.join(where.bundle, "Contents", "MacOS", "kuvo-keys"), keysStandIn, 0o755);
+  write(path.join(where.S, "Chats", "c1", "notes.md"), "a chat's notes");
+  write(path.join(where.S, "bots.json"), JSON.stringify([{ id: "bot_a1", name: "Scout", job: "Watch", instructions: "Watch.", look: {}, folder: path.join(where.S, "bots", "bot_a1"), sessionID: "ses_b", created: "2026-10-01T10:00:00Z" }]));
+  write(path.join(where.S, "bots", "bot_a1", "MEMORY.md"), "what Scout remembers");
+  write(path.join(where.S, "Browser", "history.json"), "[]");
+  const before = everything(where.S).map(name => [name, fs.statSync(path.join(where.S, name)).isFile() ? read(path.join(where.S, name)) : ""]);
+  assert.deepEqual({ verdict: install(where, "status").said.verdict, verb: install(where, "status").said.verb }, { verdict: "app-07", verb: "move" });
+
+  const moved = install(where, "move");
+  assert.equal(moved.status, 0, moved.stderr + JSON.stringify(moved.lines));
+  assert.deepEqual({ result: moved.said.result, verdict: moved.said.verdict, started: moved.said.started }, { result: "done", verdict: "ours", started: true });
+  // Its steps, as the box says them: which, in words to show, where it is and of how many.
+  const steps = moved.lines.filter(line => line.title);
+  assert.deepEqual(steps[0], { step: "plan", title: "Checking this Mac", index: 1, of: 11 });
+  assert.ok(steps.length >= 2 && steps.every(step => typeof step.title === "string" && step.of === 11 && step.index >= 1 && step.index <= 11), JSON.stringify(steps));
+  assert.deepEqual(steps.map(step => step.index), [...steps.map(step => step.index)].sort((a, b) => a - b), "in order");
+  // Moved: a Mac's own box, with the chat and the bot (described as the box reads one), its helper
+  // loaded, this Mac's keys asked of `kuvo-keys` by the move itself.
+  assert.equal(read(path.join(where.K, "box", "kind")), "mac\n");
+  assert.equal(read(path.join(where.K, "chats", "c1", "notes.md")), "a chat's notes");
+  assert.equal(JSON.parse(read(path.join(where.K, "bots", "bot_a1", "bot.json"))).name, "Scout");
+  assert.equal(read(path.join(where.K, "bots", "bot_a1", "directory")), path.join(where.K, "bots", "bot_a1", "workspace"));
+  assert.equal(read(path.join(where.K, "bin", "box-version")), VERSION);
+  assert.equal(read(path.join(where.K, "engine", ENGINE, "opencode")), engineBinary);
+  assert.equal(exists(path.join(where.home, "loaded")), true);
+  assert.deepEqual(read(path.join(where.home, "keys-asked")).trim().split("\n"), ["copy", "delete-originals", "passwords"]);
+  assert.deepEqual(moved.said.status.owed, []);
+  assert.deepEqual(moved.said.status.dropped, ["Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along.", "New sessions start with Auto, Kuvo's own default, where the earlier Kuvo Code ran everything without asking."]);
+  // The earlier Kuvo Code's folder: every file as it was. Nothing the installer staged is left.
+  assert.deepEqual(everything(where.S).map(name => [name, fs.statSync(path.join(where.S, name)).isFile() ? read(path.join(where.S, name)) : ""]), before);
+  assert.equal(exists(staging(where)), false);
+  // Asked again as the app next opens: this Mac's own box, nothing to run, nothing moved twice.
+  const after = install(where, "status");
+  assert.deepEqual({ verdict: after.said.verdict, verb: after.said.verb }, { verdict: "ours", verb: null });
+  const again = install(where, "move");
+  assert.deepEqual({ status: again.status, result: again.said.result }, { status: 0, result: "nothing" });
+});
+
+test("a move launchd wouldn't start is finished by running it again: until then the installer says to", { skip: !mac && "a Mac's app folder" }, () => {
+  const where = computer();
+  write(path.join(where.bundle, "Contents", "MacOS", "kuvo-keys"), keysStandIn, 0o755);
+  write(path.join(where.S, "Chats", "c1", "notes.md"), "a chat's notes");
+  write(path.join(where.home, "launchd-refuses"), "");
+  const moved = install(where, "move");
+  assert.equal(moved.status, 0, moved.stderr + JSON.stringify(moved.lines));
+  assert.deepEqual({ result: moved.said.result, started: moved.said.started, owed: moved.said.status.owed }, { result: "done", started: false, owed: ["start", "keychain", "passwords"] });
+  assert.match(moved.said.message, /launchd didn't start it now/);
+  assert.deepEqual({ verdict: install(where, "status").said.verdict, verb: install(where, "status").said.verb }, { verdict: "ours", verb: "move" });
+  fs.rmSync(path.join(where.home, "launchd-refuses"));
+  const again = install(where, "move");
+  assert.equal(again.status, 0, again.stderr + JSON.stringify(again.lines));
+  assert.deepEqual({ result: again.said.result, started: again.said.started, owed: again.said.status.owed }, { result: "done", started: true, owed: [] });
+  assert.equal(install(where, "status").said.verb, null);
+});
+
+test("on Linux there's nothing to move: said, and nothing made", { skip: mac && "Linux has no app's folder" }, () => {
+  const where = computer();
+  const refused = install(where, "move");
+  assert.equal(refused.status, 1);
+  assert.deepEqual({ result: refused.said.result, message: refused.said.message }, { result: "refused", message: "There's nothing to move on this computer: Kuvo is where it belongs already." });
+  assert.equal(exists(path.join(where.K, "bin")), false);
 });
 
 test("a copy of the app never judges or installs for the real one, and is refused before anything is written: Kuvo Code's own ID goes with ~/.kuvo-code alone", { skip: !mac && "a Mac's app" }, () => {
