@@ -98,7 +98,7 @@ pub fn held_words(name: Option<&str>, here: bool) -> (String, String) {
     let subject = name.filter(|name| !name.is_empty()).unwrap_or("This computer");
     let title = format!("{subject}’s Kuvo is older than this app");
     let next = if here {
-        "It updates with Kuvo 1.0.".to_owned()
+        "It updates with Kuvo 0.8.".to_owned()
     } else {
         let computer = if subject == "This computer" { "this computer" } else { subject };
         format!("Update Kuvo on {computer} to use it here.")

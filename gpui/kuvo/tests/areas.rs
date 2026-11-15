@@ -404,7 +404,7 @@ fn a_held_older_box_has_one_notice_without_claiming_its_content_is_empty(cx: &mu
         assert!(workspace.landing().read(cx).field().read(cx).text().is_empty());
     });
     workspace.read_with(cx, |workspace, _| {
-        assert_eq!(workspace.held_notice(), Some(("This Mac’s Kuvo is older than this app".into(), "It updates with Kuvo 1.0.".into())));
+        assert_eq!(workspace.held_notice(), Some(("This Mac’s Kuvo is older than this app".into(), "It updates with Kuvo 0.8.".into())));
         assert_eq!(workspace.lists(), &kuvo::workspace::Lists::Held);
     });
     click(cx, "rail-bots");

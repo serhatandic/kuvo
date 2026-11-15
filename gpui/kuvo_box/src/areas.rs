@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn your_computers_read_as_the_box_says_them() {
         let said: Computers = serde_json::from_str(
-            r#"{"computers":[{"key":"","name":"Studio","kind":"mac","here":true,"shared":false,"reach":"connected","version":"1.0.0","engine":"2.3.0","system":"macOS 15.1","via":"here","working":2,"limits":["claude"]},
+            r#"{"computers":[{"key":"","name":"Studio","kind":"mac","here":true,"shared":false,"reach":"connected","version":"0.8.0","engine":"2.3.0","system":"macOS 15.1","via":"here","working":2,"limits":["claude"]},
                 {"key":"k1","name":"devbox","kind":"machine","id":"devbox","shared":true,"reach":"unknown","via":"peer","through":"Studio","working":0,"limits":[]},
                 {"key":"k2"}]}"#,
         )

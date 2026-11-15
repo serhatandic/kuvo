@@ -418,7 +418,7 @@ fallback after it.
 - **0.7's internet passwords from before the vault:** `Passwords.swift:252` moves them inside the
   Swift app, the only program their Keychain lists trust.
   - The last Swift release runs it.
-  - Going from 0.7 straight to the GPUI 1.0 asks once per item, and the 1.0 notes must say so.
+  - Going from 0.7 straight to the GPUI 0.8 asks once per item, and the 0.8 notes must say so.
 - **Asked:** Local Network for Kuvo Code Box, the first time an agent opens an address on your
   network (after #333 that's asked for the helper anyway).
 - **Different** (question 10):

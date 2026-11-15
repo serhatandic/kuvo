@@ -1645,7 +1645,7 @@ machines; a client that wants every computer's facts asks the box that has it as
     that holds the relay connection, as `box route` leaves it), so its answer marks it back
     (`noteHeard`), and it's listed `connecting` for 20 seconds meanwhile. `202 {}`; `503` while this
     box is off the relay itself.
-  - **While the old app is attached** (the Mac app before 1.0, which keeps its own list of machines
+  - **While the old app is attached** (the Mac app before 0.8, which keeps its own list of machines
     and writes all of it back, `machines.json` and `kuvo/link/peers`, so a removal there wouldn't
     hold): the box that writes a machine's record takes no removal, from a client of its own or
     handed from another box: `409 {"message": "Quit the old Kuvo Code app on <Mac> first: it keeps
@@ -9667,20 +9667,20 @@ them, and only for them, is here; the rest of this file is the protocol as it is
 for phones: the phone link has never been on in a release, so no phone needs an earlier shape of
 anything.
 
-**What 1.0 keeps of this.** Kuvo Code 1.0 takes the place of every one of those Macs' apps, straight
+**What 0.8 keeps of this.** Kuvo Code 0.8 takes the place of every one of those Macs' apps, straight
 from 0.7 (or the beta), and its apps bring each box up to date before using it ("The update gate"),
 so nothing is kept for a client meeting an older box. The other way round still happens, on a
 machine:
 - A machine set up by 0.5 to 0.7.2 has no bridge and can't update itself; it gets this box when the
-  first Mac with 1.0 connects. Another of your Macs still on 0.7 may connect to it after that.
+  first Mac with 0.8 connects. Another of your Macs still on 0.7 may connect to it after that.
 - A machine set up by 0.8.0-beta.1 has a bridge that updates itself from the newest release, so
-  it may carry this box before its Mac has taken 1.0.
+  it may carry this box before its Mac has taken 0.8.
 
 So what's kept is of these kinds, and only these (`protocol/compat-kinds.txt` names each item's;
 one not named there is of the second):
 - **What keeps the box's work, files and peers right while such a Mac still connects** (its files
   put over the box's, its Stop, its visits holding updates back, its list of peers). It goes on the
-  user's word, once no Mac from before 1.0 connects.
+  user's word, once no Mac from before 0.8 connects.
 - **What an earlier version left** on a machine or on this Mac, taken in or cleaned up once. On a
   machine the box does it as it starts or as a Mac connects; on this Mac it's the box's move into
   its own home that carries it ("Moving this Mac's box", #713), which is where each of those goes
@@ -9695,8 +9695,7 @@ agent's program (`POST …/integration/<provider>/update` is no route now, and t
 couldn't), and the branch prefix it sent with a worktree (the computer's own names the branch).
 A marker in the code ends with what its item's kind says, but in the files whose bytes are the
 box's release (the keeper's shell, the browser's keeper), where it keeps the date it had. The
-dates below ("three months after 0.8.0", "once 0.8.0 is out") are from before 1.0 took 0.8.0's
-place and hold only until the item moves or goes as above.
+dates below ("three months after 0.8.0", "once 0.8.0 is out") hold only until the item moves or goes as above.
 
 **Session lists.** A released Mac doesn't read `kuvo/sessions/list`: it works its lists out from
 the engine's `api/session` as it did, which the box answers as before; nothing here changes for it.

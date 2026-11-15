@@ -69,7 +69,7 @@ fn only_this_mac_is_listed_with_a_way_to_add_a_machine(cx: &mut TestAppContext) 
     click(cx, "computers-row-this");
     assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::This);
     assert!(shown(cx, "computer-head") && !shown(cx, "notice-away") && !shown(cx, "notice-older"));
-    assert_eq!(said(&page, cx, "fact-version").map(|(_, value)| value).as_deref(), Some("1.0.0"));
+    assert_eq!(said(&page, cx, "fact-version").map(|(_, value)| value).as_deref(), Some("0.8.0"));
     assert_eq!(said(&page, cx, "fact-system").map(|(_, value)| value).as_deref(), Some("macOS 15.1"));
     assert_eq!(said(&page, cx, "fact-reached").map(|(_, value)| value).as_deref(), Some("Shown in this window"));
     assert!(!shown(cx, "action-remove"), "this window's own computer isn't removed from here");
