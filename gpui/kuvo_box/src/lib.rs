@@ -32,6 +32,7 @@ pub mod paths;
 pub mod place;
 pub mod queue;
 pub mod search;
+pub mod session_actions;
 pub mod sessions;
 pub mod settings;
 pub mod ssh;

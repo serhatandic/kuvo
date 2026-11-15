@@ -62,6 +62,7 @@ public enum BoxGate {
         "queue.items",
         "sandbox.opens",
         "sandbox.words",
+        "sessions.actions",
         "sessions.asks",
         "sessions.list",
         "sessions.mentions",
