@@ -37,13 +37,13 @@ pub fn settings_window() -> Option<Bounds<Pixels>> {
         let window: CFDictionary<CFString, CFType> = unsafe { CFDictionary::wrap_under_get_rule(item as CFDictionaryRef) };
         // SAFETY: the keys are constants of CoreGraphics' own.
         let key = |key: CFStringRef| unsafe { CFString::wrap_under_get_rule(key) };
-        let number = |named: CFStringRef| window.find(&key(named)).and_then(|value| value.downcast::<CFNumber>()).and_then(|number| number.to_i64());
+        let number = |named: CFStringRef| window.find(key(named)).and_then(|value| value.downcast::<CFNumber>()).and_then(|number| number.to_i64());
         // SAFETY: as above.
         if number(unsafe { kCGWindowLayer }) != Some(0) || !number(unsafe { kCGWindowOwnerPID }).is_some_and(is_settings) {
             continue;
         }
         // SAFETY: as above.
-        let Some(frame) = window.find(&key(unsafe { kCGWindowBounds })).and_then(|value| value.downcast::<CFDictionary>()).and_then(|bounds| CGRect::from_dict_representation(&bounds)) else { continue };
+        let Some(frame) = window.find(key(unsafe { kCGWindowBounds })).and_then(|value| value.downcast::<CFDictionary>()).and_then(|bounds| CGRect::from_dict_representation(&bounds)) else { continue };
         if frame.size.width > 200. {
             return Some(Bounds::new(point(px(frame.origin.x as f32), px(frame.origin.y as f32)), size(px(frame.size.width as f32), px(frame.size.height as f32))));
         }

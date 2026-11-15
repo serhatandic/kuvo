@@ -27,6 +27,9 @@ use tile::Tile;
 pub const FOLLOWS_EVERY: Duration = Duration::from_millis(250);
 const ASKS_EVERY: u32 = 4;
 
+/// The tile's window, and hearing it closed.
+type OpenTile = (WindowHandle<Tile>, Subscription);
+
 pub struct HeadsUp {
     client: BoxClient,
     live: bool,
@@ -37,7 +40,7 @@ pub struct HeadsUp {
     /// Which read is the latest asked for: an older one's answer is dropped.
     asked: u64,
     /// The permission System Settings was opened for, and the tile beside it.
-    asking: Option<(String, Option<(WindowHandle<Tile>, Subscription)>)>,
+    asking: Option<(String, Option<OpenTile>)>,
     /// A change that couldn't be made, in the box's words.
     problem: Option<SharedString>,
     _follow: Option<Task<()>>,
@@ -162,7 +165,7 @@ impl HeadsUp {
                         return false;
                     }
                     this.place(cx);
-                    if ticks % ASKS_EVERY == 0 {
+                    if ticks.is_multiple_of(ASKS_EVERY) {
                         this.read(cx);
                     }
                     true

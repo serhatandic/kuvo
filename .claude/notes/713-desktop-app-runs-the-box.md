@@ -711,6 +711,43 @@ refusing before anything runs. `kuvo/tests/launch.rs`: the window through each s
 by click and Return. `kuvo/tests/permissions.rs`: the heads-up, Not Now, the tile opening and
 going once allowed. Box: `own-box-helper.test.js`.
 
+**Where I am (2026-11-15, paused for pacing; resume here).**
+
+Done and committed on `kuvo/713-piece-5-the-desktop-app-runs-the` (main merged, at `ce51ac482`):
+
+- Box: `kuvo/box/permissions` with `bundle`, `list` (name, `settings`, `byHand`, `asks`) and
+  `POST {later}`; PROTOCOL.md, shapes and the built files; `own-box-helper.test.js` passes (9).
+- `kuvo_box`: `install.rs` (the carried installer run, the app's own guard, the stand-in
+  bundle), `permissions.rs`, `place::this_mac_of`; `tests/install.rs` passes (10).
+- `kuvo`: `launch.rs` (the window's root; `main.rs` opens it), `permissions/` (heads-up, the
+  tile as a GPUI `PopUp` window with `external_drag_payload`, `icns.rs`, `mac.rs`), the stand-in
+  box's permissions, shots `launch-*` and `permission-*`; `tests/launch.rs` (11) and
+  `tests/permissions.rs` (6) pass.
+- `cargo build`, `cargo test --workspace` and `cargo clippy --workspace --all-targets` (0
+  warnings) all passed on this tip.
+
+Still to do, in order:
+
+1. `gpui/scripts/deps-licenses.py`: I ran it with `--check`, which it doesn't have, and it hung
+   for ten minutes (stopped). Read how it's run, then regenerate `gpui/LICENSES-DEPS.md` if the
+   new direct dependencies (async-channel, core-foundation, core-graphics, libc, objc2,
+   raw-window-handle, tempfile: all in the lock already) change it.
+2. Box checks not run yet: `cd box && bun run check` again on the final tip, `scripts/check-built.sh`,
+   the install bridge file, compat and `bridge.test.js` (one per run), and the permissions
+   change on Linux (a test folder on devbox: `applies: false`, `bundle: null`, `list: []`, `409`).
+3. Docs: `gpui/README.md` (the app opening, permissions), `gpui/notes/screens-first-run.md` or a
+   new `screens-launch.md` (what was read in Zed: `gpui_macos/src/window.rs`'s
+   `start_external_drag`; `crates/recent_projects/src/remote_connections.rs` for behaviour),
+   `CHANGELOG.md`, `docs/docs-map.md`'s pages in `../kuvo-web` (worktree only), `uninstall.md`
+   and `privacy.md` for `box/permissions-later.json`, `docs/footprint.md`.
+4. The phone: `kuvo/box/permissions`' new fields are told to the phone session (nothing to
+   draw there: System Settings opens only on that Mac).
+5. The `reviewer` pass (high risk: the install path), fixes, then merge main again and report.
+
+Not seen in a running window: everything was rendered offscreen and driven in GPUI's test
+window. The drag into the real System Settings, the tile following its window, and the
+non-activating panel over it need the rehearsal account.
+
 ## 9. Questions only the user can answer
 
 1. **Who keeps this Mac's box?**
