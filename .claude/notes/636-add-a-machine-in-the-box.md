@@ -114,40 +114,33 @@ listed so a slow copy is seen in place; the fingerprint is a question with butto
 - **The phone's Add a Machine**: no UI in this task.
 - **0.7-Mac compatibility on the machine** (`bin/.own`, `mac-installing`).
 
-## Where I am (2026-11-15, paused for pacing at the lead's word)
+## Where it is (2026-11-15, second sitting)
 
-**Done and committed (box, first piece):**
-- `box/src/link/add/` (`address.ts`, `ssh.ts`, `files.ts`, `scripts.ts`, `tries.ts`, `flow.ts`),
-  `areas/computers-add.ts`, the routes of §2, feature `computers.add` (in `FEATURES` only),
-  `setup`/`uninstall` in a computer's `actions`, `setupGift` factored out of `kuvo/link/setup`.
-- `box/bridge-tests/computers-add.test.js`: 8 scenarios, passing on this Mac (one run:
-  `scripts/test-box.sh bridge computers-add.test.js`). Stand-in `ssh`; real keeper, launcher, link.
-- `bun run check` clean; `route-shapes.sh` and `build-box.sh` run and their files committed.
+**Built and committed on `kuvo/636-add-a-machine-over-ssh-moves-into`** (main merged in, with #742
+and #745):
+- Box: `box/src/link/add/`, `areas/computers-add.ts`, the routes of §2, `computers.add`, `setup`
+  and `uninstall` in `actions`; PROTOCOL.md ("Computers", Adding one); the gate lists; footprint;
+  changelog.
+- Desktop: `gpui/kuvo/src/computers.rs` (the form, suggested hosts, the try card: steps,
+  question, failure, done), `kuvo_box/src/areas.rs`, the stand-in, shots
+  `gpui/shots/screens-computer-add*-{light,dark}.png`.
+- Tests: `box/bridge-tests/computers-add.test.js` (8), `box/test/add-address.test.ts` (4),
+  `gpui/kuvo/tests/computers.rs` (3 new). On lokum: the bridge file and the address tests pass.
+- Docs: kuvo-web branch `docs/636` (worktree `~/.kuvo-code/tmp/opencode/kuvo-web-636`):
+  machines.md, privacy.md. Phone: branch `kuvo/636-computers-add` (worktree
+  `~/.kuvo-code/tmp/opencode/ios-636`): the sample Mac's feature list.
 
-**Not done yet, in order:**
-1. Box: `box/test/add-address.test.ts` (addresses, `Include`), a test holding `RELEASE_FILES` to
-   `release/files.ts`, the vault-key path (written in `ssh.ts` `vaultAgent`, not tested), and the
-   engine fetched for another kind of computer (`files.ts` `engineFor`, not tested).
-2. Not run yet: `compat.test.js`, `bridge.test.js`, `computers*.test.js`, `mac-machines.test.js`,
-   `setup-*.test.js`, `route-shapes --check`, `scripts/compat.sh`, `check-built.sh`, lokum (Linux).
-3. The feature name in `gpui/kuvo_box/src/gate/required.rs`, `BoxGate+Required.swift`,
-   `protocol/gate-required.txt`, the phone's `DemoBox+Features.swift`; PROTOCOL.md ("Computers",
-   Adding one); docs/footprint.md (`ssh/known_hosts`, `run/ssh`, `cache/engine-packs`).
-4. Desktop (gpui): nothing built. §3 is the plan; Zed's flow is summarized there.
-5. The before-proof (main + only the new test), the reviewer pass, kuvo-web docs (branch
-   `docs/636`), CHANGELOG, phone compile.
-
-**Decided while building (differs from §1 or adds to it):**
-- A try stopped as it starts, on a computer that had no Kuvo Code before, is uninstalled again
-  there, so nothing runs that no computer of yours knows of.
+**Decided while building:**
+- A try stopped as it starts, on a computer that had no Kuvo Code before, is uninstalled again there.
 - Uninstall on a machine another Mac still uses only lets this computer go and leaves it running.
-- #603's "Restarting…": I read it as the step's words for Set Up Again ("Restarting Kuvo Code
-  there") and the stopped try's "Stopping…", not a new `reach` value on `kuvo/computers` (clients
-  decode that as a closed set). To confirm with the lead.
+- #603's "Restarting…": the step's words for Set Up Again ("Restarting Kuvo Code there") and the
+  stopped try's "Stopping…", not a new `reach` value (clients decode that as a closed set).
 - `launch.env` gets no `KUVO_TZ` (the zone is the box's own setting now).
+- On the page, one machine is added at a time: while one is under way its steps are the page.
 
-**Open questions for the user (so far):**
-- This Mac's link needs a relay and keys before it can add (`macLink.config`, said by the old app
-  today). The desktop app doesn't say them yet (#713/#742): until it does, a Mac that never ran
-  the old app answers "isn't linked to your other computers yet".
-- A machine in another setup: asked "Add Anyway" (it becomes shared), or refused until #183?
+**Not tested (written):** the vault-key fallback (`ssh.ts` `vaultAgent`), the engine fetched for
+another kind of computer (`files.ts` `engineFor`'s download), a real `ssh`/`sshd` (the stand-in
+speaks ssh's own error lines), a Mac as the computer added on Linux and the reverse.
+
+**Open for the user:** see the final report (the relay and keys of a Mac that never ran the old
+app; a machine of another setup; the page's layout alternatives).
