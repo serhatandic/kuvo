@@ -5,9 +5,9 @@
 import { expect, test } from "bun:test"
 import "./safety"
 import { createHash } from "node:crypto"
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { boxFiles } from "../src/release/files"
 import { integrationsCatalog, mcpCatalog } from "../src/shared/integrations/catalogs"
 
@@ -56,8 +56,15 @@ test("a release's files are what the Swift Mac app last wrote, byte for byte, wh
   // This checkout's sources, with that release's engine pinned in place of today's.
   const root = mkdtempSync(join(tmpdir(), "kuvo-swift-made-"))
   try {
-    for (const folder of ["box/src/keeper", "box/src/plugins", "box/dist"]) cpSync(join(checkout, folder), join(root, folder), { recursive: true })
-    for (const file of ["box/src/shared/bot-words.json", "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"]) cpSync(join(checkout, file), join(root, file), { dereference: true })
+    for (const folder of ["box/src/keeper", "box/src/plugins"]) cpSync(join(checkout, folder), join(root, folder), { recursive: true })
+    cpSync(join(checkout, "box/src/shared/bot-words.json"), join(root, "box/src/shared/bot-words.json"))
+    // (What's built isn't compared, as it changes with every change to the box: stand-ins.)
+    const body = "// the browser\n"
+    const built = { "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js": "// the link\n", "box/dist/kuvo-agents.js": "// the bridge\n", "box/dist/kuvo-browser.js": `// kuvo-browser ${createHash("sha256").update(body).digest("hex").slice(0, 16)}\n${body}` }
+    for (const [file, text] of Object.entries(built)) {
+      mkdirSync(dirname(join(root, file)), { recursive: true })
+      writeFileSync(join(root, file), text)
+    }
     const build = { url: `https://example.invalid/engine-${made.engine}.tgz`, integrity: `sha512-${"A".repeat(86)}==` }
     writeFileSync(join(root, "box/src/shared/engine-pin.json"), JSON.stringify({ version: made.engine, linux: { x86_64: build, aarch64: build }, darwin: { x86_64: build, aarch64: build } }))
     const files = new Map(boxFiles(root, "0.7.2").map(file => [file.path, file]))
