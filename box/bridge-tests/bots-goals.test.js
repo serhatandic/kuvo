@@ -191,7 +191,7 @@ beforeEach(() => {
   write(path.join(home, "run", "engine.json"), JSON.stringify({ port: engine.address().port, password: "p", version: "0.0.0" }));
   write(path.join(home, "run", "bridge.json"), JSON.stringify({ port: bridge.address().port, password: "p", pid: bridgeProcess.pid }));
   fs.mkdirSync(path.join(home, "bin"), { recursive: true });
-  fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), path.join(home, "bin", "bot-words.json"));
+  fs.copyFileSync(new URL("../src/shared/bot-words.json", import.meta.url), path.join(home, "bin", "bot-words.json"));
 });
 
 // The box's answer to one request, as a machine's tool asks it: a process of its own, on a box that

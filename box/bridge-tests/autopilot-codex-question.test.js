@@ -93,7 +93,7 @@ test("on Autopilot, a Codex asleep for hours on its question goes on at once: ma
     return { status: response.status, json: text ? JSON.parse(text) : null };
   };
   fs.writeFileSync(path.join(home, "run", "bridge.json"), JSON.stringify({ port, password: "pw", pid: child.pid }));
-  fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), path.join(home, "bin", "bot-words.json"));
+  fs.copyFileSync(new URL("../src/shared/bot-words.json", import.meta.url), path.join(home, "bin", "bot-words.json"));
 
   const route = (method, pathname, body) => new Promise((resolve, reject) => {
     const process_ = spawn(process.execPath, [script, "box", "route"], { env: { ...process.env, KUVO_HOME: home, HOME: home, TMPDIR: `${home}/tmp` }, stdio: ["pipe", "pipe", "inherit"] });

@@ -719,49 +719,73 @@ test("`kuvo-link.js update --offered` takes the offered release in a process of 
   assert.equal(read(path.join(home, "run", "update.json")).last.to, "0.10.0");
 });
 
-test("scripts/pack-box.sh packs a built app's box release with its helper, signed, and a box takes it from the app's folder", async () => {
-  machine();
-  release();
-  const app = path.join(scratch, `app-${crypto.randomUUID()}`, "Kuvo Code.app");
-  // What the app's `--write-box-files` writes (BoxRelease.swift), laid out by a stand-in app.
-  const files = path.join(scratch, `written-${crypto.randomUUID()}`);
-  write(path.join(files, "bin", "box-version"), "0.10.0");
-  write(path.join(files, "bin", "kuvo-start"), keeper("1.1.0"), 0o700);
-  write(path.join(files, "bin", "kuvo-link.js"), fs.readFileSync(script, "utf8"), 0o600);
-  for (const tool of ["kuvo-browser.js", "kuvo-agents.js", "kuvo-launch"]) write(path.join(files, "bin", tool), `// ${tool}\n`, 0o600);
+// The box's sources as a checkout has them (scripts/box-release.sh, `BOX_SOURCES`), the keeper's
+// start and the engine it names stand-ins as everywhere here (the real ones would start a real box):
+// everything else the real files, written by the real builder.
+const checkout = fileURLToPath(new URL("../..", import.meta.url));
+// The browser as its build leaves it: a first line naming the rest.
+const browserBody = "// kuvo-browser.js\n";
+const builtBrowser = `// kuvo-browser ${sha256(browserBody).slice(0, 16)}\n${browserBody}`;
+function sources() {
+  const root = path.join(scratch, `sources-${crypto.randomUUID()}`);
+  for (const file of ["box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", "box/src/keeper/kuvo-wake", "box/src/keeper/kuvo-npx", "box/src/keeper/runtime/node", "box/src/plugins/kuvo-code.js", "box/src/shared/bot-words.json"]) {
+    write(path.join(root, file), fs.readFileSync(path.join(checkout, file)));
+  }
+  write(path.join(root, "box/src/keeper/kuvo-start"), keeper("@ENGINE@"));
+  write(path.join(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), fs.readFileSync(script));
+  write(path.join(root, "box/dist/kuvo-agents.js"), "// kuvo-agents.js\n");
+  write(path.join(root, "box/dist/kuvo-browser.js"), builtBrowser);
   const integrity = "sha512-" + crypto.createHash("sha512").update(served["/engine.tgz"]).digest("base64");
-  const engines_ = { x86_64: { url: `${base}/engine.tgz`, integrity }, aarch64: { url: `${base}/engine.tgz`, integrity } };
-  const box = { version: "0.10.0", engine: "1.1.0", linux: engines_, darwin: engines_, files: {} };
-  for (const file of fs.readdirSync(path.join(files, "bin"))) box.files[`bin/${file}`] = sha256(fs.readFileSync(path.join(files, "bin", file)));
-  write(path.join(files, "box.json"), JSON.stringify(box));
-  write(path.join(app, "Contents", "MacOS", "Kuvo Code"), `#!/bin/sh\n[ "$1" = --write-box-files ] || exit 64\nmkdir -p "$2" && cp -Rp ${JSON.stringify(files)}/. "$2"/\n`, 0o755);
-  // Its helper, signed as the build signs it (on a Mac, a program signed ad hoc, as packing checks
-  // the signature where codesign is).
-  const appHelper = path.join(app, "Contents", "Helpers", "Kuvo Helper.app");
-  const program = path.join(appHelper, "Contents", "MacOS", "Kuvo Helper");
+  served["/engine-1.1.0.tgz"] = served["/engine.tgz"];
+  const builds = { x86_64: { url: `${base}/engine-1.1.0.tgz`, integrity }, aarch64: { url: `${base}/engine-1.1.0.tgz`, integrity } };
+  write(path.join(root, "box/src/shared/engine-pin.json"), JSON.stringify({ version: "1.1.0", linux: builds, darwin: builds }));
+  return root;
+}
+// Kuvo Helper as its build leaves it (scripts/build-helper.sh): on a Mac a program signed ad hoc,
+// as packing checks the signature where codesign is.
+function builtHelper() {
+  const bundle = path.join(scratch, `helper-${crypto.randomUUID()}`, "Kuvo Helper.app");
+  const program = path.join(bundle, "Contents", "MacOS", "Kuvo Helper");
   if (process.platform === "darwin") {
-    write(path.join(appHelper, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleExecutable</key><string>Kuvo Helper</string><key>CFBundleIdentifier</key><string>run.kuvo.code.tests.box</string></dict></plist>\n`);
+    write(path.join(bundle, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleExecutable</key><string>Kuvo Helper</string><key>CFBundleIdentifier</key><string>run.kuvo.code.tests.box</string></dict></plist>\n`);
     fs.mkdirSync(path.dirname(program), { recursive: true });
     fs.copyFileSync("/usr/bin/true", program);
     fs.chmodSync(program, 0o755);
-    const signed = spawnSync("codesign", ["--force", "--sign", "-", appHelper], { encoding: "utf8" });
+    const signed = spawnSync("codesign", ["--force", "--sign", "-", bundle], { encoding: "utf8" });
     assert.equal(signed.status, 0, signed.stderr);
   } else {
-    for (const [name, text] of Object.entries(helper)) write(path.join(appHelper, name), text, name.includes("MacOS/") ? 0o755 : 0o644);
+    for (const [name, text] of Object.entries(helper)) write(path.join(bundle, name), text, name.includes("MacOS/") ? 0o755 : 0o644);
   }
+  return { bundle, program };
+}
+// The Bun the release's files are written with: the one named, the one on the PATH, or (run by
+// Bun) this one.
+const bun = process.env.BUN || process.env.KUVO_TEST_BUN || (process.versions.bun ? process.execPath : "bun");
+const boxRelease = (env, ...args) => spawnSync("sh", [path.join(checkout, "scripts", "box-release.sh"), ...args], {
+  env: { ...process.env, BUN: bun, NODE: process.execPath, ...env }, encoding: "utf8",
+});
+const signingKey = privateKey.export({ type: "pkcs8", format: "pem" });
 
-  const out = path.join(app, "Contents", "Resources", "box-release");
-  const pack = (...args) => spawnSync("sh", [fileURLToPath(new URL("../../scripts/pack-box.sh", import.meta.url)), ...args], {
-    env: { ...process.env, KUVO_BOX_SIGNING_KEY: privateKey.export({ type: "pkcs8", format: "pem" }), NODE: process.execPath }, encoding: "utf8",
-  });
-  const wrongURL = pack(app, "0.10.0", "https://example.invalid/pack.tgz", out);
+test("scripts/box-release.sh packs the box's release from its sources with its helper, signed, and a box takes it from a folder", async () => {
+  machine();
+  release();
+  const root = sources();
+  const { bundle, program } = builtHelper();
+  // As an app carries it (`Contents/Resources/box-release`), or any folder.
+  const out = path.join(scratch, `box-release-${crypto.randomUUID()}`);
+  const pack = (...args) => boxRelease({ KUVO_BOX_SIGNING_KEY: signingKey, BOX_SOURCES: root }, ...args);
+  const wrongURL = pack("0.10.0", "https://example.invalid/pack.tgz", out, bundle);
   assert.equal(wrongURL.status, 2, "a box finds the pack by the name its URL ends in");
-  assert.equal(pack(app, "0.11.0", "https://example.invalid/box-0.11.0.tar.gz", out).status, 1, "the app's own version, or none");
-  const packed = pack(app, "0.10.0", "https://example.invalid/releases/download/v0.10.0/box-0.10.0.tar.gz", out);
+  assert.equal(boxRelease({ BOX_SOURCES: root }, "0.10.0", "https://example.invalid/box-0.10.0.tar.gz", out, bundle).status, 2, "never unsigned");
+  assert.equal(pack("ten", "https://example.invalid/box-ten.tar.gz", out, bundle).status, 1, "a version, or none");
+  assert.equal(pack("0.10.0", "https://example.invalid/box-0.10.0.tar.gz", out, path.join(scratch, "no-such.app")).status, 2, "each bundle named is there");
+  assert.deepEqual(fs.readdirSync(out), [], "nothing left there by those");
+  const packed = pack("0.10.0", "https://example.invalid/releases/download/v0.10.0/box-0.10.0.tar.gz", out, bundle);
   assert.equal(packed.status, 0, packed.stderr);
   assert.deepEqual(fs.readdirSync(out).sort(), ["box-0.10.0.tar.gz", "boxes.json"]);
   const manifest = link.verifyBoxes(fs.readFileSync(path.join(out, "boxes.json"), "utf8"), [pinned]);
   assert.equal(manifest.version, "0.10.0");
+  assert.equal(manifest.engine, "1.1.0");
   assert.equal(manifest.pack.url, "https://example.invalid/releases/download/v0.10.0/box-0.10.0.tar.gz");
   // What's packed: the helper under `bundles`, so a box from before bundles, which refuses a file
   // in `files` outside its own rule, still takes the release (leaving the helper out).
@@ -771,13 +795,23 @@ test("scripts/pack-box.sh packs a built app's box release with its helper, signe
   const packedBox = read(path.join(unpacked, "box.json"));
   const before = /^(bin\/[A-Za-z0-9._-]+|bin\/runtime\/[A-Za-z0-9._-]+|config\/opencode\/plugins\/[A-Za-z0-9._-]+)$/;
   assert.deepEqual(Object.keys(packedBox.files).filter(file => !before.test(file)), []);
-  assert.deepEqual(Object.keys(packedBox.bundles["bin/Kuvo Helper.app"]).sort(), Object.keys(helper).sort());
+  assert.deepEqual(Object.keys(packedBox.bundles["bin/Kuvo Helper.app"]).sort(), process.platform === "darwin" ? ["Contents/Info.plist", "Contents/MacOS/Kuvo Helper", "Contents/_CodeSignature/CodeResources"] : Object.keys(helper).sort());
 
   assert.deepEqual(offer(out), { status: 202, version: "0.10.0" });
   assert.equal((await take()).result, "updated");
   engines.add(read(engineFile).pid);
   assert.equal(boxVersion(), "0.10.0");
-  assert.equal(fs.readFileSync(path.join(home, "bin", "kuvo-browser.js"), "utf8"), "// kuvo-browser.js\n");
+  assert.equal(read(engineFile).version, "1.1.0", "the engine its sources pin, started by the keeper they hold");
+  assert.equal(fs.readFileSync(path.join(home, "bin", "kuvo-browser.js"), "utf8"), builtBrowser);
+  // Everything a release brings, each as its sources have it and with its own mode.
+  const modes = Object.fromEntries(Object.keys(packedBox.files).map(file => [file, (fs.statSync(path.join(home, file)).mode & 0o777).toString(8)]));
+  assert.deepEqual(modes, {
+    "bin/.kuvo-boot": "644", "bin/bot-words.json": "644", "bin/box-version": "644", "bin/integrations-mac.json": "644", "bin/integrations.json": "644",
+    "bin/kuvo-agents.js": "644", "bin/kuvo-browser.js": "644", "bin/kuvo-launch": "700", "bin/kuvo-link.js": "600", "bin/kuvo-npx": "755", "bin/kuvo-setsid": "700",
+    "bin/kuvo-start": "700", "bin/kuvo-wake": "755", "bin/mcp-catalog.json": "644", "bin/runtime/node": "755", "config/opencode/plugins/kuvo-code.js": "644",
+  });
+  assert.ok(fs.readFileSync(path.join(home, "bin", "kuvo-wake")).equals(fs.readFileSync(path.join(checkout, "box/src/keeper/kuvo-wake"))));
+  assert.match(fs.readFileSync(path.join(home, "bin", "kuvo-npx"), "utf8"), /engine\/1\.1\.0\/opencode/, "the engine's version written into what names it");
   if (process.platform === "darwin") {
     assert.ok(fs.readFileSync(path.join(home, "bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper")).equals(fs.readFileSync(program)));
     const verified = spawnSync("codesign", ["--verify", "--strict", "--deep", path.join(home, "bin", "Kuvo Helper.app")], { encoding: "utf8" });
@@ -786,18 +820,104 @@ test("scripts/pack-box.sh packs a built app's box release with its helper, signe
   assert.equal(link.confirmUpdate(), true);
 
   // A bundle a box couldn't take (a link in it) isn't packed.
-  fs.symlinkSync("/etc/hosts", path.join(app, "Contents", "Helpers", "Kuvo Helper.app", "Contents", "hosts"));
-  const linked = pack(app, "0.10.0", "https://example.invalid/box-0.10.0.tar.gz", path.join(scratch, "never"));
+  fs.symlinkSync("/etc/hosts", path.join(bundle, "Contents", "hosts"));
+  const linked = pack("0.10.0", "https://example.invalid/box-0.10.0.tar.gz", path.join(scratch, "never"), bundle);
   assert.equal(linked.status, 1);
   assert.match(linked.stderr, /can't take .*hosts/);
-  fs.rmSync(path.join(appHelper, "Contents", "hosts"));
+  fs.rmSync(path.join(bundle, "Contents", "hosts"));
 
   // One whose signature doesn't hold once packed (here, changed after it was signed) isn't packed.
   if (process.platform === "darwin") {
-    fs.appendFileSync(path.join(appHelper, "Contents", "Info.plist"), "\n");
-    const broken = pack(app, "0.10.0", "https://example.invalid/box-0.10.0.tar.gz", path.join(scratch, "never"));
+    fs.appendFileSync(path.join(bundle, "Contents", "Info.plist"), "\n");
+    const broken = pack("0.10.0", "https://example.invalid/box-0.10.0.tar.gz", path.join(scratch, "never"), bundle);
     assert.equal(broken.status, 1);
     assert.match(broken.stderr, /Kuvo Helper\.app isn't signed as it was/);
-    assert.deepEqual(fs.readdirSync(path.join(scratch, "never")), [], "nothing left there");
   }
+  assert.deepEqual(fs.readdirSync(path.join(scratch, "never")), [], "nothing left there");
+
+  // The same files pack to the same bytes, wherever your temporary folder is: one named with a
+  // last slash (a Mac's own is) stays as private as it was, and nothing above the pack is touched.
+  // (The helper as it was signed again, where the line added above changed it.)
+  if (process.platform === "darwin") fs.writeFileSync(path.join(bundle, "Contents", "Info.plist"), fs.readFileSync(path.join(bundle, "Contents", "Info.plist"), "utf8").replace(/\n$/, ""));
+  const again = path.join(scratch, `again-${crypto.randomUUID()}`), temporary = path.join(scratch, `tmp-${crypto.randomUUID()}`);
+  fs.mkdirSync(temporary, { mode: 0o700 });
+  const repacked = boxRelease({ KUVO_BOX_SIGNING_KEY: signingKey, BOX_SOURCES: root, TMPDIR: `${temporary}/` }, "0.10.0", "https://example.invalid/releases/download/v0.10.0/box-0.10.0.tar.gz", again, bundle);
+  assert.equal(repacked.status, 0, repacked.stderr);
+  assert.equal((fs.statSync(temporary).mode & 0o777).toString(8), "700", "your temporary folder as it was");
+  assert.deepEqual(fs.readdirSync(temporary), [], "and nothing left in it");
+  assert.equal(sha256(fs.readFileSync(path.join(again, "box-0.10.0.tar.gz"))), sha256(fs.readFileSync(path.join(out, "box-0.10.0.tar.gz"))), "the same pack, byte for byte");
+
+  // A bundle with a file whose name is too long to pack isn't signed short of it.
+  const long = path.join(bundle, "Contents", "Resources", `${"n".repeat(120)}.txt`);
+  write(long, "x\n");
+  const short = pack("0.10.0", "https://example.invalid/box-0.10.0.tar.gz", path.join(scratch, "never"), bundle);
+  assert.notEqual(short.status, 0, "a pack missing a file box.json names is never made");
+  fs.rmSync(path.dirname(long), { recursive: true });
+
+  // A test's sources never make a pack for a place something is published at.
+  for (const url of ["https://github.com/example/example/releases/download/v0.10.0/box-0.10.0.tar.gz", "https://github.com/example/example.invalid/box-0.10.0.tar.gz"]) {
+    const published = pack("0.10.0", url, path.join(scratch, "never"), bundle);
+    assert.equal(published.status, 2, url);
+    assert.match(published.stderr, /BOX_SOURCES is for tests/);
+  }
+  // A browser that isn't what its first line says (changed by hand, cut short) isn't packed.
+  fs.appendFileSync(path.join(root, "box/dist/kuvo-browser.js"), "// changed\n");
+  const edited = pack("0.10.0", "https://example.invalid/box-0.10.0.tar.gz", path.join(scratch, "never"), bundle);
+  assert.equal(edited.status, 1);
+  assert.match(edited.stderr, /kuvo-browser\.js isn't what its first line says/);
+  write(path.join(root, "box/dist/kuvo-browser.js"), builtBrowser);
+  assert.deepEqual(fs.readdirSync(path.join(scratch, "never")), [], "nothing left there");
+
+  // A signing that fails leaves the release that was there whole: never a new pack beside the
+  // old boxes.json, nor one with none.
+  const kept = Object.fromEntries(fs.readdirSync(out).map(name => [name, sha256(fs.readFileSync(path.join(out, name)))]));
+  const unsigned = boxRelease({ KUVO_BOX_SIGNING_KEY: "not a key", BOX_SOURCES: root }, "0.10.0", "https://example.invalid/box-0.10.0.tar.gz", out);
+  assert.notEqual(unsigned.status, 0);
+  assert.deepEqual(Object.fromEntries(fs.readdirSync(out).map(name => [name, sha256(fs.readFileSync(path.join(out, name)))])), kept);
+});
+
+test("the release built from this checkout's own sources is whole: every file a box runs, as box.json names it, for the pinned engine", () => {
+  const folder = path.join(scratch, `files-${crypto.randomUUID()}`);
+  const written = boxRelease({}, "--files", "1.2.3-beta.4", folder);
+  assert.equal(written.status, 0, written.stderr);
+  const box = read(path.join(folder, "box.json"));
+  const pin = read(path.join(checkout, "box/src/shared/engine-pin.json"));
+  assert.deepEqual([box.version, box.engine, box.linux, box.darwin], ["1.2.3-beta.4", pin.version, pin.linux, pin.darwin]);
+  // Named: each file there but box.json itself, by what it holds, and nothing a box wouldn't take.
+  const there = fs.readdirSync(folder, { recursive: true, encoding: "utf8" }).filter(file => fs.statSync(path.join(folder, file)).isFile() && file !== "box.json").sort();
+  assert.deepEqual(Object.keys(box.files), there);
+  for (const file of there) assert.equal(box.files[file], sha256(fs.readFileSync(path.join(folder, file))), file);
+  assert.deepEqual(there, [
+    "bin/.kuvo-boot", "bin/bot-words.json", "bin/box-version", "bin/integrations-mac.json", "bin/integrations.json", "bin/kuvo-agents.js", "bin/kuvo-browser.js",
+    "bin/kuvo-launch", "bin/kuvo-link.js", "bin/kuvo-npx", "bin/kuvo-setsid", "bin/kuvo-start", "bin/kuvo-wake", "bin/mcp-catalog.json", "bin/runtime/node",
+    "config/opencode/plugins/kuvo-code.js",
+  ]);
+  const text = file => fs.readFileSync(path.join(folder, file), "utf8");
+  assert.equal(text("bin/box-version"), "1.2.3-beta.4");
+  // The keeper's files read, and run this engine: its version where each names it, never the mark it's written over.
+  for (const file of ["bin/kuvo-start", "bin/kuvo-launch", "bin/kuvo-setsid", "bin/kuvo-wake", "bin/kuvo-npx", "bin/runtime/node"]) {
+    assert.equal(spawnSync("sh", ["-n", path.join(folder, file)]).status, 0, `${file} reads`);
+    assert.doesNotMatch(text(file), /@ENGINE@/, file);
+  }
+  assert.ok(text("bin/kuvo-start").includes(`\nV=${pin.version}\n`));
+  assert.ok(text("bin/kuvo-launch").includes(`V=\${KUVO_VERSION:-${pin.version}}`));
+  for (const file of ["bin/kuvo-npx", "bin/runtime/node"]) assert.ok(text(file).includes(`/.kuvo-code/engine/${pin.version}/opencode"`), file);
+  // What says which keeper files a box has: their names and bytes, in the order a Mac wrote them.
+  assert.equal(text("bin/.kuvo-boot"), sha256(["kuvo-launch", "kuvo-start", "kuvo-setsid"].map(name => `${name}\n${text(`bin/${name}`)}`).join("\n")));
+  // The bridge, as built, then the line naming it.
+  const bridge = fs.readFileSync(path.join(checkout, "box/dist/kuvo-agents.js"));
+  assert.equal(text("bin/kuvo-agents.js"), `${bridge}\n// kuvo-agents ${sha256(bridge).slice(0, 16)}\n`);
+  assert.ok(fs.readFileSync(path.join(folder, "bin/kuvo-link.js")).equals(fs.readFileSync(script)));
+  // The catalogs: a machine's without what uses a Mac's own apps, a Mac's box's with it, each key
+  // named where a box keeps it.
+  const machines = read(path.join(folder, "bin/integrations.json")).integrations, macs = read(path.join(folder, "bin/integrations-mac.json")).integrations;
+  const catalog = read(path.join(folder, "bin/mcp-catalog.json"));
+  assert.deepEqual(macs.filter(each => each.macOnly).map(each => each.id), ["apple-calendar"]);
+  assert.deepEqual(machines, macs.filter(each => !each.macOnly));
+  assert.deepEqual(catalog.macOnly, ["apple-calendar", "chrome-devtools"]);
+  const github = machines.find(each => each.id === "github");
+  assert.deepEqual([github.variables, github.settings.headers], [{ TOKEN: "KUVO_KEY_GITHUB_TOKEN" }, { Authorization: "Bearer {file:~/.kuvo-code/box/keys/KUVO_KEY_GITHUB_TOKEN}" }]);
+  for (const each of macs) assert.equal(each.settings === undefined, each.way === "browser", `${each.id}: a server unless it's used on its site`);
+  assert.deepEqual(catalog.servers.filter(each => each.integration).map(each => each.id), ["linear", "notion", "atlassian"]);
+  assert.equal(read(path.join(folder, "bin/bot-words.json")).kuvo, 1);
 });

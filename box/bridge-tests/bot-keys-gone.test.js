@@ -41,7 +41,7 @@ write(path.join(home, "bin", "integrations.json"), JSON.stringify({ integrations
   { id: "github", title: "GitHub", summary: "Code", kind: "Code and Work", symbol: "chevron.left.forwardslash.chevron.right", site: "https://github.com", how: "Official · your token", way: "token",
     keys: [{ name: "TOKEN", label: "Token", prompt: "ghp_…" }], variables: { TOKEN: GITHUB }, settings: githubYours },
 ] }));
-fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), path.join(home, "bin", "bot-words.json"));
+fs.copyFileSync(new URL("../src/shared/bot-words.json", import.meta.url), path.join(home, "bin", "bot-words.json"));
 write(path.join(home, "bots", "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], startingModel: { id: "big-pickle", providerID: "opencode" }, projects: [], rules: [], timeZone: "Europe/Istanbul" }));
 
 const folderOf = id => path.join(home, "bots", id);

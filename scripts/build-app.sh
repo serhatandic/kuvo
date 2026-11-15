@@ -1,5 +1,7 @@
 #!/bin/sh
-# Builds a release "Kuvo Code.app" into ./build, the way the release workflow does.
+# Builds a release "Kuvo Code.app" into ./build: the retired Swift Mac app
+# (swift/MAC-APP-REFERENCE.md), as the release workflow built it until the box made its own
+# release (scripts/box-release.sh). Kept for trying an update over it (scripts/try-update.sh).
 #   VERSION         version to stamp into the app (default: the project's MARKETING_VERSION);
 #                   a beta's is like 0.7.0-beta.1
 #   SIGN_IDENTITY   codesigning identity, e.g. "Developer ID Application: …";
@@ -7,8 +9,8 @@
 #   FEED_URL        update feed (default: the newest GitHub release); for
 #                   testing updates against a local server
 #   KUVO_BOX_SIGNING_KEY  the box releases' key (PEM): with it, the app carries the box's
-#                   release, signed (scripts/app-box-release.sh); BOX_URL says where its pack
-#                   is published
+#                   release, signed (scripts/app-box-release.sh, which needs Bun); BOX_URL says
+#                   where its pack is published
 set -eu
 cd "$(dirname "$0")/.."
 

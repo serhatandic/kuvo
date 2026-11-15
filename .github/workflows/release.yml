@@ -1,22 +1,26 @@
 name: Release
 
-# Pushing an annotated vMAJOR.MINOR.PATCH tag on main builds Kuvo Code, attaches the
-# disk image and the update feed to a draft release, and publishes the release
-# once both are uploaded.
+# Builds the box's release: what every box runs, from the box's own sources (scripts/box-release.sh),
+# with Kuvo Helper, the program a Mac's box runs under (scripts/build-helper.sh), signed with a
+# Developer ID and notarized. The retired Swift Mac app isn't built here any more
+# (swift/MAC-APP-REFERENCE.md).
 #
-# The release notes, on the release page and in the app's update window, are the
-# version's section of CHANGELOG.md. Before tagging, rename its "## Unreleased"
-# heading to the version, like "## 0.1.0"; a tag without notes fails right away.
+# Running it by hand (Actions › Release › Run workflow) on main is a dry run: it builds, signs,
+# notarizes and checks the helper, packs and signs the box's release, and uploads both files
+# (boxes.json and box-<version>.tar.gz) as a workflow artifact instead of publishing a release. Use
+# it to check the secrets and the release build itself.
 #
-# A beta is a vMAJOR.MINOR.PATCH-beta.N tag on main, like v0.7.0-beta.1: the version
-# it leads up to. It's published as a prerelease, never the latest, with the
-# Unreleased notes as they are; only copies with Settings › General › Get beta
-# updates on are offered it. The update feed holds the newest release and, when
-# it's newer, the newest beta (scripts/merge-appcast.py); a beta's feed also
-# replaces the newest release's, which is where installed copies read it.
+# A tag publishes nothing yet. Kuvo Code 1.0 is the desktop app (gpui/), and a release is the
+# app's disk image and update feed together with the box's release: until the desktop app is
+# packaged here (#713, "Packaging the desktop app"), a vMAJOR.MINOR.PATCH tag stops at "verify
+# release tag", so no release goes out without its download and its feed (installed copies read
+# releases/latest/download/appcast.xml, and kuvo.run links to releases/latest/download/KuvoCode.dmg).
+# What publishing does is kept below for that work: a draft with every file in dist/, published
+# once all are uploaded; a vMAJOR.MINOR.PATCH-beta.N tag as a prerelease, never the latest, with the
+# Unreleased notes as they are. The release notes are the version's section of CHANGELOG.md.
 #
-# Every release is signed with a Developer ID and notarized, so macOS opens it
-# without a warning; the workflow stops if any of these secrets is missing.
+# The helper is signed with a Developer ID and notarized, so macOS runs it without a warning; the
+# workflow stops if any of these secrets is missing.
 #   MACOS_CERTIFICATE_P12       base64 of the Developer ID Application .p12
 #   MACOS_CERTIFICATE_PASSWORD  password of that .p12
 #   MACOS_SIGNING_IDENTITY      the certificate's SHA-1 fingerprint, from
@@ -24,21 +28,16 @@ name: Release
 #                               than its name, which codesign misses when the name
 #                               has accented letters
 #   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   for notarytool
+#   KUVO_BOX_SIGNING_KEY        the Ed25519 key (PEM) that signs boxes.json; boxes take only what's
+#                               signed with a key pinned in the box's link (UPDATE_KEYS, in box/src)
+# scripts/set-box-key.sh makes that key once, keeps it in your login keychain, uploads it and
+# prints the key to pin; the signing and notarization secrets come from
+# scripts/set-signing-secrets.sh and scripts/set-notary-secrets.sh. (SPARKLE_PRIVATE_KEY, which
+# signs the app's update feed, comes back with the desktop app's packaging: scripts/set-update-key.sh.)
 #
-# Every release also needs SPARKLE_PRIVATE_KEY, the EdDSA key that signs the
-# update feed (appcast.xml). Installed copies of Kuvo Code only accept updates
-# signed with it. With KUVO_BOX_SIGNING_KEY (an Ed25519 key, PEM) it also
-# publishes what remote machines run, for them to update themselves with
-# (boxes.json and box-<version>.tar.gz); machines take only what's signed with a
-# key pinned in the box's link (UPDATE_KEYS, in box/src). scripts/set-box-key.sh makes that
-# key once, keeps it in your login keychain, uploads it and prints the key to pin. scripts/set-update-key.sh uploads it; the signing and
-# notarization secrets come from scripts/set-signing-secrets.sh and
-# scripts/set-notary-secrets.sh.
-#
-# Running it by hand (Actions › Release › Run workflow) on main is a dry run: it
-# signs, notarizes and checks the app with Gatekeeper, then uploads it as a
-# workflow artifact instead of publishing a release. Use it to check the secrets,
-# and the release build itself, which CI doesn't make on every push.
+# No kuvo-keys is built here: signed as Kuvo Code it reads Kuvo Code's Keychain items with no
+# prompt, and none is to exist until #713 settles what keeps it to the box's move
+# (scripts/build-helper.sh, KUVO_SIGNED_KEYS).
 #
 # The signing job runs in the `release` environment. GitHub makes one with no rules
 # if it doesn't exist, so set it up in Settings › Environments before the next
@@ -51,7 +50,8 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+"
   workflow_dispatch:
 
-# One at a time, releases and betas alike: each writes the update feed from the one before. A
+# One at a time, releases and betas alike: each writes the update feed from the one before (once
+# the desktop app's feed is built here again). A
 # dry run waits in a line of its own, so starting one never cancels a release waiting its turn.
 concurrency:
   group: ${{ github.event_name == 'push' && 'release' || format('release-dry-run-{0}', github.run_id) }}
@@ -85,6 +85,15 @@ jobs:
             echo "A dry run signs with the release secrets, so it runs only from main." >&2
             exit 1
           fi
+
+      # Until the desktop app is packaged here (see the top): a release without its disk image and
+      # its update feed would leave installed copies with no feed and kuvo.run with no download.
+      - name: Check a release can be published
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          echo "This workflow builds only the box's release now: a tag publishes nothing until the desktop app is packaged here (#713). Run it by hand on main for a dry run." >&2
+          exit 1
 
       - name: Check the tag
         if: github.event_name == 'push'
@@ -125,16 +134,16 @@ jobs:
     runs-on: xcode-27
     # Limited in GitHub settings to main and v* tags, and holding the secrets (see the top).
     environment: release
-    # Building takes about 20 minutes and each notarization a few; a hung one mustn't run for hours.
-    timeout-minutes: 120
+    # The helper builds in a few minutes and its notarization takes a few; a hung one mustn't run for hours.
+    timeout-minutes: 60
     permissions:
       contents: write
     # Each secret goes only to the steps that use it, not to the actions (checkout, setup-node,
-    # upload-artifact) as well. No caches either: what's signed is built from the checkout alone.
+    # setup-bun, upload-artifact) as well. No caches either: what's signed is built from the
+    # checkout alone.
     env:
       # The certificate's fingerprint, which names it; not a key.
       MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
-      HAS_BOX_SIGNING_KEY: ${{ secrets.KUVO_BOX_SIGNING_KEY != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -145,10 +154,15 @@ jobs:
         with:
           node-version: 24
 
+      # For writing the box's files (box/src/release/files.ts), the Bun CI builds the box with.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+
       - name: Choose the version
         shell: bash
         env:
-          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          KUVO_BOX_SIGNING_KEY: ${{ secrets.KUVO_BOX_SIGNING_KEY }}
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -156,11 +170,6 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           set -euo pipefail
-          # Without the update key, installed copies could never update past this release.
-          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
-            echo "The SPARKLE_PRIVATE_KEY secret is missing." >&2
-            exit 1
-          fi
           # Notes come from CHANGELOG.md; checked now so a tag without them fails in seconds.
           # A beta's are what's under Unreleased so far.
           if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_NAME" == *-beta.* ]]; then
@@ -175,8 +184,9 @@ jobs:
             ./scripts/release-notes.sh > "$RUNNER_TEMP/notes.md" || echo "Dry run." > "$RUNNER_TEMP/notes.md"
             echo "VERSION=0.0.0" >> "$GITHUB_ENV"
           fi
-          # Unsigned or unnotarized builds make macOS warn people, so none go out.
-          for name in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD MACOS_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
+          # An unsigned or unnotarized helper makes macOS warn people, and a box takes no release
+          # its key didn't sign: none go out.
+          for name in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD MACOS_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD KUVO_BOX_SIGNING_KEY; do
             if [[ -z "${!name}" ]]; then
               echo "The $name secret is missing." >&2
               exit 1
@@ -206,147 +216,118 @@ jobs:
           security list-keychains -d user -s "$keychain" "${existing[@]}"
           rm "$RUNNER_TEMP/certificate.p12"
 
-      - name: Build the app
+      # Kuvo Helper, the program a Mac's box runs under (protocol/PROTOCOL.md, "This Mac's box: its
+      # helper"), from its own package, with Kuvo Code's icon and this version, signed with the
+      # hardened runtime and a secure timestamp. Its identifier (run.kuvo.code.box), its signer and
+      # its entitlements stay what they were inside the Mac app: macOS keeps what you allowed it,
+      # and its Keychain items, by them. KUVO_SIGNED_KEYS=0, whatever the environment says: no
+      # kuvo-keys (see the top).
+      - name: Build Kuvo Helper
         shell: bash
         run: |
           set -euo pipefail
-          # What's New as the changelog has it now (its section named for this version).
-          python3 scripts/whats-new.py
-          SIGN_IDENTITY="$MACOS_SIGNING_IDENTITY" ./scripts/build-app.sh
+          icon="$(./scripts/helper-icon.sh "$RUNNER_TEMP/helper-icon")"
+          KUVO_SIGNED_KEYS=0 SIGN_IDENTITY="$MACOS_SIGNING_IDENTITY" APP_ID=run.kuvo.code \
+            VERSION="$VERSION" BUILD="$(./scripts/build-version.sh "$VERSION")" ICON="$icon" \
+            ./scripts/build-helper.sh build/helper
+          helper="build/helper/Kuvo Helper.app"
+          test ! -e build/helper/kuvo-keys || { echo "A kuvo-keys was built: none is to exist yet." >&2; exit 1; }
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$helper/Contents/Info.plist")" = run.kuvo.code.box \
+            || { echo "Unexpected bundle identifier" >&2; exit 1; }
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$helper/Contents/Info.plist")" = "$VERSION"
+          test -f "$helper/Contents/Resources/AppIcon.icns" || { echo "Kuvo Helper has no icon" >&2; exit 1; }
+          codesign --verify --strict --deep --verbose=2 "$helper"
+          codesign -d --verbose=2 "$helper" 2>&1 | grep -q 'flags=.*runtime' \
+            || { echo "The hardened runtime is off" >&2; exit 1; }
+          # (What macOS asks Kuvo Helper about needs its entitlements: Calendars and Reminders for
+          # the box's integration, and the microphone.)
+          entitlements="$(codesign -d --entitlements - --xml "$helper" 2>/dev/null)"
+          for entitlement in personal-information.calendars device.audio-input; do
+            grep -q "$entitlement" <<< "$entitlements" || { echo "Kuvo Helper lost its $entitlement entitlement as it was signed." >&2; exit 1; }
+          done
 
-      # What every box runs, for machines to update themselves with (protocol/PROTOCOL.md,
-      # "Updates"): the files this version puts on every box, with the app's helper bundles, packed,
-      # and boxes.json, a manifest naming the pack and the engine's builds, signed. It goes in the
-      # app (Contents/Resources/box-release), for it to offer this Mac's box as it updates, before
-      # the app's signed again and notarized; "Package the box release" publishes the same files.
-      # Without the key, there's none, and machines update only as a Mac connects.
-      - name: Put the box release in the app
-        if: env.HAS_BOX_SIGNING_KEY == 'true'
+      # On its own now (it was notarized inside the Mac app), with its ticket stapled to it: a box
+      # that takes it offline still passes Gatekeeper. Before it's packed, so box.json names the
+      # ticket with its other files.
+      - name: Notarize Kuvo Helper
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          helper="build/helper/Kuvo Helper.app"
+          ditto -c -k --keepParent "$helper" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$helper"
+          codesign --verify --strict --deep --verbose=2 "$helper"
+          # The same check macOS makes when a box first runs it.
+          spctl --assess --type execute --verbose=2 "$helper"
+
+      # What every box runs, for boxes to update themselves with (protocol/PROTOCOL.md, "Updates"):
+      # the files this version puts on every box, from the box's sources, with Kuvo Helper, packed,
+      # and boxes.json, a manifest naming the pack and the engine's builds, signed. The key goes to
+      # this step alone.
+      - name: Package the box release
         shell: bash
         env:
           KUVO_BOX_SIGNING_KEY: ${{ secrets.KUVO_BOX_SIGNING_KEY }}
         run: |
           set -euo pipefail
-          SIGN_IDENTITY="$MACOS_SIGNING_IDENTITY" \
-            BOX_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/box-$VERSION.tar.gz" \
-            ./scripts/app-box-release.sh "build/Kuvo Code.app" "$VERSION"
-
-      # (CI checked these on every push while it built the app; only releases build it now.)
-      - name: Check the app bundle
-        shell: bash
-        run: |
-          set -euo pipefail
-          app="build/Kuvo Code.app"
-          for file in Assets.car AppIcon.icns LICENSE NOTICE THIRD_PARTY_LICENSES.txt prism-bundle.js buildDomTree.js kuvo-agents.js kuvo-browser.js; do
-            test -f "$app/Contents/Resources/$file" || { echo "Missing $file in the app bundle" >&2; exit 1; }
-          done
-          test -d "$app/Contents/Frameworks/Sparkle.framework" || { echo "Sparkle isn't embedded" >&2; exit 1; }
-          for key in SUFeedURL SUPublicEDKey; do
-            /usr/libexec/PlistBuddy -c "Print :$key" "$app/Contents/Info.plist" >/dev/null \
-              || { echo "Info.plist is missing $key" >&2; exit 1; }
-          done
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = run.kuvo.code \
-            || { echo "Unexpected bundle identifier" >&2; exit 1; }
-          if [[ "$HAS_BOX_SIGNING_KEY" == true ]]; then
-            for file in boxes.json "box-$VERSION.tar.gz"; do
-              test -s "$app/Contents/Resources/box-release/$file" || { echo "Missing box-release/$file in the app bundle" >&2; exit 1; }
-            done
-          fi
-          codesign --verify --strict --deep --verbose=2 "$app"
-          codesign -d --verbose=2 "$app" 2>&1 | grep -q 'flags=.*runtime' \
-            || { echo "The hardened runtime is off" >&2; exit 1; }
-
-      - name: Notarize
-        shell: bash
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-        run: |
-          set -euo pipefail
-          ditto -c -k --keepParent "build/Kuvo Code.app" "$RUNNER_TEMP/notarize.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
-            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
-          xcrun stapler staple "build/Kuvo Code.app"
-          # The same check macOS makes when someone opens the download.
-          spctl --assess --type execute --verbose=2 "build/Kuvo Code.app"
-
-      # The download: a disk image with the app and a link to Applications.
-      # It's notarized on its own, so it opens without a warning too.
-      - name: Build the disk image
-        shell: bash
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-        run: |
-          set -euo pipefail
-          SIGN_IDENTITY="$MACOS_SIGNING_IDENTITY" ./scripts/build-dmg.sh
-          mount=$(mktemp -d)
-          hdiutil attach -nobrowse -readonly -mountpoint "$mount" build/KuvoCode.dmg >/dev/null
-          trap 'hdiutil detach "$mount" >/dev/null 2>&1 || true' EXIT
-          test -d "$mount/Kuvo Code.app" || { echo "Kuvo Code.app is missing from the disk image" >&2; exit 1; }
-          test "$(readlink "$mount/Applications")" = /Applications || { echo "The Applications link is missing" >&2; exit 1; }
-          hdiutil detach "$mount" >/dev/null
-          trap - EXIT
-          xcrun notarytool submit build/KuvoCode.dmg \
-            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
-          xcrun stapler staple build/KuvoCode.dmg
-          spctl --assess --type open --context context:primary-signature --verbose=2 build/KuvoCode.dmg
-
-      - name: Package
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "build/Kuvo Code.app/Contents/Info.plist")" = "$VERSION"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "build/Kuvo Code.app/Contents/Info.plist")" = "$(./scripts/build-version.sh "$VERSION")"
-          # A release is two files: the disk image people download and the update
-          # feed installed copies read. Updates install from the same disk image.
-          # The license notices travel inside the app.
           mkdir dist
-          # Unversioned, so kuvo.run/code can always link to releases/latest/download/KuvoCode.dmg.
-          cp build/KuvoCode.dmg dist/KuvoCode.dmg
-          ./scripts/appcast.sh "$VERSION" dist/KuvoCode.dmg \
-            "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/KuvoCode.dmg" "$RUNNER_TEMP/notes.md" > "$RUNNER_TEMP/item.xml"
-          # With the newest of the other kind from the feed that's out, on the newest release.
-          # None before the first release; one that lost its feed starts it again. Anything
-          # else (GitHub not answering) stops here rather than leave betas or releases out.
-          mkdir "$RUNNER_TEMP/current"
-          if [[ "$GITHUB_EVENT_NAME" != push ]]; then
-            : # A dry run shows the feed of what it built.
-          elif latest="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>"$RUNNER_TEMP/view.err")"; then
-            if ! gh release download "$latest" --repo "$GITHUB_REPOSITORY" --pattern appcast.xml --dir "$RUNNER_TEMP/current" 2>"$RUNNER_TEMP/download.err"; then
-              grep -qi "no assets match" "$RUNNER_TEMP/download.err" || { cat "$RUNNER_TEMP/download.err" >&2; exit 1; }
-              echo "$latest has no update feed: this one starts it again." >&2
-            fi
-          elif ! grep -qi "release not found" "$RUNNER_TEMP/view.err"; then
-            cat "$RUNNER_TEMP/view.err" >&2
-            exit 1
-          fi
-          python3 ./scripts/merge-appcast.py "$RUNNER_TEMP/item.xml" "$RUNNER_TEMP/current/appcast.xml" > dist/appcast.xml
-          cat dist/appcast.xml
+          # (From this checkout's own sources, whatever the environment names.)
+          env -u BOX_SOURCES ./scripts/box-release.sh "$VERSION" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/box-$VERSION.tar.gz" \
+            dist "build/helper/Kuvo Helper.app"
 
-      - name: Package the box release
-        # The box's release the app carries ("Put the box release in the app"), the very same
-        # files, for machines to download.
-        if: env.HAS_BOX_SIGNING_KEY == 'true'
+      # As a box would find it: both files, the pack what boxes.json says, the helper in it still
+      # signed and notarized, and box.json naming this version and its files.
+      - name: Check the box release
         shell: bash
         run: |
           set -euo pipefail
-          cp "build/Kuvo Code.app/Contents/Resources/box-release/boxes.json" \
-            "build/Kuvo Code.app/Contents/Resources/box-release/box-$VERSION.tar.gz" dist/
+          for file in boxes.json "box-$VERSION.tar.gz"; do
+            test -s "dist/$file" || { echo "Missing dist/$file" >&2; exit 1; }
+          done
+          mkdir "$RUNNER_TEMP/box"
+          tar -xzf "dist/box-$VERSION.tar.gz" -C "$RUNNER_TEMP/box"
+          node --input-type=module - dist/boxes.json "dist/box-$VERSION.tar.gz" "$RUNNER_TEMP/box" "$VERSION" <<'EOF'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import path from "node:path";
+          const [boxes, pack, folder, version] = process.argv.slice(2);
+          const fail = message => { console.error(message); process.exit(1); };
+          const sha256 = file => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+          const manifest = JSON.parse(Buffer.from(JSON.parse(fs.readFileSync(boxes, "utf8")).manifest, "base64").toString("utf8"));
+          if (manifest.version !== version) fail(`boxes.json is ${manifest.version}'s, not ${version}'s.`);
+          if (manifest.pack.sha256 !== sha256(pack)) fail("boxes.json doesn't name this pack.");
+          const box = JSON.parse(fs.readFileSync(path.join(folder, "box.json"), "utf8"));
+          if (box.version !== version || box.engine !== manifest.engine) fail("box.json isn't this release's.");
+          for (const file of ["bin/kuvo-link.js", "bin/kuvo-agents.js", "bin/kuvo-browser.js", "bin/kuvo-start", "bin/kuvo-launch", "bin/kuvo-wake", "bin/integrations.json", "bin/bot-words.json"]) {
+            if (!box.files[file]) fail(`The release has no ${file}.`);
+          }
+          for (const [file, sha] of Object.entries(box.files)) if (sha256(path.join(folder, file)) !== sha) fail(`${file} isn't what box.json says.`);
+          const helper = box.bundles?.["bin/Kuvo Helper.app"];
+          if (!helper?.["Contents/MacOS/Kuvo Helper"]) fail("The release has no Kuvo Helper.");
+          for (const [file, sha] of Object.entries(helper)) if (sha256(path.join(folder, "bin/Kuvo Helper.app", file)) !== sha) fail(`Kuvo Helper's ${file} isn't what box.json says.`);
+          EOF
+          codesign --verify --strict --deep --verbose=2 "$RUNNER_TEMP/box/bin/Kuvo Helper.app"
+          spctl --assess --type execute --verbose=2 "$RUNNER_TEMP/box/bin/Kuvo Helper.app"
 
       - name: Upload the dry-run build
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: KuvoCode-dry-run
+          name: KuvoCode-box-dry-run
           path: dist/
           retention-days: 3
 
+      # Not reached today: a tag stops at "verify release tag" (see the top). Before that guard
+      # goes, the desktop app's disk image and its update feed have to be built into dist/ again
+      # (KuvoCode.dmg and appcast.xml: scripts/build-dmg.sh, scripts/appcast.sh and
+      # scripts/merge-appcast.py, with SPARKLE_PRIVATE_KEY), so this refuses a release without them.
       - name: Publish the release
         if: github.event_name == 'push'
         shell: bash
@@ -354,6 +335,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          for file in KuvoCode.dmg appcast.xml boxes.json "box-$VERSION.tar.gz"; do
+            test -s "dist/$file" || { echo "dist/$file is missing: a release is the app's disk image, its update feed and the box's release together." >&2; exit 1; }
+          done
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             if [[ "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != true ]]; then
               echo "A published release already exists for $GITHUB_REF_NAME." >&2

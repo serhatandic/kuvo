@@ -1,7 +1,7 @@
 // A box's integrations brought up to date by the box, with no client there: from the catalogs it has
 // (a Mac's, or the ones its own update brought). Kuvo Code on a Mac used to do this itself, so a box
 // may find settings it left, and each client's change around the box's has to stay. The catalog is the
-// one the Mac's own code writes (protocol/vectors/routes/box, scripts/route-vectors.sh), and what's written here
+// one a release carries, from the box's own table (protocol/vectors/routes/box, scripts/route-vectors.sh), and what's written here
 // as a Mac is what its `EngineConfig` sent: each server's whole value at its path.
 import "./safety"
 import { afterAll, beforeEach, expect, spyOn, test } from "bun:test"

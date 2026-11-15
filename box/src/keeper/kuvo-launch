@@ -1,0 +1,200 @@
+
+lines=
+while IFS= read -r line && [ -n "$line" ]; do export "$line"; lines="$lines$line
+"; done
+port=$KUVO_PORT; record=$KUVO_RECORD; unset KUVO_PORT KUVO_RECORD
+aport=${KUVO_AGENTS_PORT-}; unset KUVO_AGENTS_PORT
+replace=${KUVO_REPLACE-}; starting=${KUVO_START-}; unset KUVO_REPLACE KUVO_START
+V=${KUVO_VERSION:-@ENGINE@}; unset KUVO_VERSION
+K="$HOME/.kuvo-code"
+mkdir -p "$K" && chmod 700 "$K"
+[ -n "${KUVO_OWN_XDG_CONFIG_HOME+set}" ] || export KUVO_OWN_XDG_DATA_HOME="${XDG_DATA_HOME-}" KUVO_OWN_XDG_CONFIG_HOME="${XDG_CONFIG_HOME-}" KUVO_OWN_XDG_STATE_HOME="${XDG_STATE_HOME-}" KUVO_OWN_XDG_CACHE_HOME="${XDG_CACHE_HOME-}" KUVO_OWN_npm_config_cache="${npm_config_cache-}" KUVO_OWN_BUN_INSTALL="${BUN_INSTALL-}"
+export XDG_DATA_HOME="$K/data" XDG_CONFIG_HOME="$K/config" XDG_STATE_HOME="$K/state" XDG_CACHE_HOME="$K/cache" npm_config_cache="$K/cache/npm" BUN_INSTALL="$K/cache/bun" KUVO_INTEGRATIONS="$K/integrations" TMPDIR="$K/tmp"
+mkdir -p "$K/data" "$K/config" "$K/state" "$K/cache" "$K/workspace" "$K/integrations" "$K/tmp"
+find "$K/tmp" -mindepth 1 -maxdepth 1 -mtime +3 -exec rm -rf {} + 2>/dev/null
+R="$K/run"; mkdir -p "$R"; chmod 700 "$R"
+began=
+kuvo_runs() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null || return 1; if [ -d /proc/self ]; then grep -q -- "$2" "/proc/$1/cmdline" 2>/dev/null; else ps -ww -o command= -p "$1" 2>/dev/null | grep -q -- "$2"; fi; }
+S=setsid; command -v setsid >/dev/null 2>&1 || S="$K/bin/kuvo-setsid"
+# One launch at a time; one whose holder is gone goes (`launchLock`: a launch takes three
+# minutes at most). Never one without it.
+holding() { runs_as "$1" 'kuvo-start|kuvo-launch|kuvo_script|kuvo-link'; }
+starting() { runs_as "$1" 'kuvo-start|kuvo-launch|kuvo_script'; }
+runs_as() {
+  [ -n "$1" ] && [ "$1" != "$$" ] || return 1
+  if [ -d /proc/self ]; then grep -qE -- "$2" "/proc/$1/cmdline" 2>/dev/null; else ps -ww -o command= -p "$1" 2>/dev/null | grep -qE -- "$2"; fi
+}
+mine() {
+  if [ -d /proc/self ]; then [ -n "$(find "/proc/$1" -maxdepth 0 -user "$(id -u)" 2>/dev/null)" ]; else [ "$(ps -o uid= -p "$1" 2>/dev/null | tr -d ' ')" = "$(id -u)" ]; fi
+}
+locked() { unsaid=; { echo $$ >"$R/.launching.pid"; } 2>/dev/null || unsaid=1; }
+unlock() {
+  ( trap '' HUP INT TERM
+    [ -n "${unsaid-}" ] || [ "$(cat "$R/.launching.pid" 2>/dev/null)" = "$$" ] || exit 0
+    rm -f "$R/.launching.pid"; rmdir "$R/.launching" ) 2>/dev/null
+  unsaid=
+}
+believed() { newer=$(find "$R/.launching" -maxdepth 0 -newer "$R/.launching.pid" 2>/dev/null) && [ -z "$newer" ]; }
+held_by_gone() {
+  holder=$(cat "$R/.launching.pid" 2>/dev/null)
+  [ -n "$holder" ] && believed && ! holding "$holder"
+}
+held_long() { [ -n "$(find "$R/.launching" -maxdepth 0 -mmin +5 2>/dev/null)" ]; }
+unheld() {
+  held_by_gone || held_long || return 1
+  ( trap '' HUP INT TERM
+    taker=$(cat "$R/.launching.breaking/pid" 2>/dev/null)
+    if { [ -n "$taker" ] && ! holding "$taker"; } || { [ -z "$taker" ] && [ -n "$(find "$R/.launching.breaking" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
+      gone=$taker; [ -n "$gone" ] || gone=n$(ls -di "$R/.launching.breaking" | awk '{ print $1 }')
+      find "$R" -maxdepth 1 -name '.launching.breaking.gone-*' -mmin +1 -exec rmdir {} \;
+      mkdir "$R/.launching.breaking.gone-$gone" || exit 1
+      if mv "$R/.launching.breaking" "$R/.launching.breaking.$$"; then
+        if [ "$(cat "$R/.launching.breaking.$$/pid")" != "$taker" ]; then
+          [ -e "$R/.launching.breaking" ] || mv "$R/.launching.breaking.$$" "$R/.launching.breaking"
+          exit 1
+        fi
+        rm -rf "$R/.launching.breaking.$$"
+      fi
+    fi
+    mkdir "$R/.launching.breaking" || exit 1
+    echo $$ >"$R/.launching.breaking/pid" || exit 1
+    if held_by_gone; then
+      if mv "$R/.launching.pid" "$R/.launching.pid.$$"; then
+        if [ "$(cat "$R/.launching.pid.$$")" = "$holder" ]; then
+          [ -n "$(find "$R/.launching" -maxdepth 0 -newer "$R/.launching.pid.$$")" ] || rmdir "$R/.launching"
+        else
+          ln "$R/.launching.pid.$$" "$R/.launching.pid"
+        fi
+        rm -f "$R/.launching.pid.$$"
+      fi
+    elif held_long; then
+      rm -f "$R/.launching.pid"; rmdir "$R/.launching"
+    fi
+    [ "$(cat "$R/.launching.breaking/pid")" != "$$" ] || rm -rf "$R/.launching.breaking" ) 2>/dev/null
+}
+take_lock() {
+  waited=0
+  while :; do
+    # The box's folder gone meanwhile (removed): nothing to wait for.
+    [ -d "$R" ] || return 1
+    ( trap '' HUP INT TERM; mkdir "$R/.launching" 2>/dev/null || exit 1; locked; [ -z "$unsaid" ] || exit 2 )
+    case $? in 0) unsaid=; return 0 ;; 2) unsaid=1; return 0 ;; esac
+    unheld
+    waited=$((waited + 1)); [ $waited -lt "$1" ] || return 1
+    sleep 0.1
+  done
+}
+# The lock goes as it ends, after an engine it started but didn't get to note with it:
+# nothing else would know to stop that one; one that won't end is ended, as `halt` does.
+# (Whole: a second TERM, `off` ending its keeper and it, doesn't cut it short.)
+# (Its own, never a `pid` its environment brought.)
+unset pid noted unsaid
+trap 'trap "" HUP INT TERM PIPE; [ -z "${began-}" ] || rm -f "$began"; [ -z "${pid-}" ] || [ -n "${noted-}" ] || { kill "$pid" 2>/dev/null; n=0; while kuvo_runs "$pid" "$K/engine/" && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; kuvo_runs "$pid" "$K/engine/" && kill -9 "$pid" 2>/dev/null; }; unlock' EXIT
+trap 'exit 1' HUP INT TERM PIPE
+take_lock 2400 || exit 0
+# Off (the machine removed): it starts nothing until a Mac starts it there. From a Mac, an
+# `off` since it began means it was removed meanwhile.
+[ -f "$R/off" ] && exit 0
+# COMPAT(0.7 engine-stop): an engine an older Mac stopped stays down until Start. Goes 3 months after 0.8.0.
+# Stopped on purpose (Stop, from the Mac or a phone): it stays stopped, unless this is Start.
+if [ -f "$R/stopped" ]; then
+  exit 0
+fi
+# One that started meanwhile (after a restart, or for another Mac) is used as it is; from
+# the Mac, the one it found to replace (another version, other settings), and only that
+# one, is stopped here, under the lock, so nothing starts one in between.
+old=$(sed -n 's/^{"pid":\([0-9]*\),.*/\1/p' "$R/engine.json" 2>/dev/null)
+if kuvo_runs "$old" "$K/engine/"; then
+  exit 0
+  
+  
+fi
+unset KUVO_BOOT
+# COMPAT(0.7 settings): the settings an older Mac still sends, left out. Goes 3 months after 0.8.0.
+# A box of its own (KuvoLink's PROTOCOL.md, "Settings per box"): its own settings and keys,
+# in `box`, never a Mac's, which an older Mac may still send. What's below them goes as
+# this start begins, the engine that read it gone: the Mac's copy, and the global file once
+# it came into the box whole.
+# A Mac's own box (`box/kind` says `mac`) has its settings in `config` from the start, its
+# own: nothing a machine's start did (a Mac's settings, those adopted into `box`) writes
+# over them or is read before them.
+own_mac=; [ "$(tr -d ' \t\r\n' 2>/dev/null <"$K/box/kind")" = mac ] && own_mac=1
+if [ -n "$own_mac" ]; then
+  unset KUVO_SETTINGS KUVO_PRIVATE_SETTINGS
+  rm -f "$K/keys/settings.json"
+elif [ -f "$K/box/opencode.json" ]; then
+  unset KUVO_SETTINGS KUVO_PRIVATE_SETTINGS
+  rm -f "$K/keys/settings.json"
+  [ -f "$K/box/global-adopted" ] && mkdir -p "$K/config/opencode" && (umask 077; printf '{}\n' >"$K/config/opencode/opencode.json")
+fi
+# Its settings only once it's the start that goes ahead: one that finds an engine running
+# (another Mac's, started at the same moment) leaves that one's as they are.
+if [ -n "${KUVO_SETTINGS+set}" ]; then
+  mkdir -p "$K/config/opencode" && (umask 077; printf '%s\n' "$KUVO_SETTINGS" >"$K/config/opencode/opencode.json")
+  unset KUVO_SETTINGS
+fi
+mkdir -p "$K/keys"; chmod 700 "$K/keys"
+for v in $(env | sed -n 's/^\(KUVO_KEY_[A-Za-z0-9_]*\)=.*/\1/p'); do
+  (umask 077; printf '%s' "$(printenv "$v")" >"$K/keys/$v"); unset "$v"
+done
+if [ -n "${KUVO_PRIVATE_SETTINGS+set}" ]; then
+  (umask 077; printenv KUVO_PRIVATE_SETTINGS >"$K/keys/settings.json")
+  unset KUVO_PRIVATE_SETTINGS
+fi
+if [ -z "$own_mac" ]; then
+  [ -f "$K/keys/settings.json" ] && export OPENCODE_CONFIG="$K/keys/settings.json"
+  [ -f "$K/box/opencode.json" ] && export OPENCODE_CONFIG="$K/box/opencode.json"
+fi
+# What the engine starts with, as its box gives it (its link's `engine-config`), which also
+# puts what some providers need from the engine, as the box learned it, beside its
+# settings: after a restart with no Mac there too. A box too old to know it starts as before.
+if [ -f "$K/bin/kuvo-link.js" ]; then
+  c=$(cd "$K" && KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" engine-config 2>/dev/null) && case "$c" in "{"*"}") export OPENCODE_CONFIG_CONTENT="$c" ;; esac
+fi
+
+
+
+# The PATH your login shell sets up there (`~/.local/bin`, nvm's node), which a start over
+# SSH or from cron doesn't get, for the engine and what it starts, as the box reads it (its
+# link's `login-path`). Without it (a box too old to know it), the PATH it has.
+if [ -f "$K/bin/kuvo-link.js" ]; then
+  p=$(cd "$K" && KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" "$K/bin/kuvo-link.js" login-path 2>/dev/null </dev/null) && case "$p" in /*) PATH=$p ;; esac
+fi
+export PATH="$K/bin:$PATH"
+# Bots' and sessions' folders under this root, for `kuvo-wake` (its default is the app's own root).
+export KUVO_BOTS="$K/bots" KUVO_WAKES="$K/wakes"
+cd "$K/workspace"
+env -u KUVO_AGENTS_PASSWORD -u BUN_BE_BUN "$S" "$K/engine/$V/opencode" serve --port "$port" --hostname 127.0.0.1 >"$R/engine.log" 2>&1 </dev/null &
+pid=$!
+i=0
+until grep -q "server listening" "$R/engine.log" 2>/dev/null; do
+  if ! kill -0 "$pid" 2>/dev/null || [ $i -ge 900 ]; then tail -n 5 "$R/engine.log" >&2; kill "$pid" 2>/dev/null; exit 3; fi
+  sleep 0.1; i=$((i + 1))
+done
+# Noted, or it's stopped (by the trap): one nothing knows of would run on unseen.
+(umask 077; printf '{"pid":%s,%s\n' "$pid" "$record" >"$R/engine.json") || { echo "Its engine couldn't be noted down there." >&2; exit 3; }
+noted=1
+if [ -n "$aport" ] && [ -n "${KUVO_AGENTS_PASSWORD-}" ] && [ -f "$K/bin/kuvo-agents.js" ]; then
+  apid=$(cat "$R/agents.pid" 2>/dev/null)
+if kuvo_runs "$apid" kuvo-agents; then kill -- "-$apid" 2>/dev/null || kill "$apid" 2>/dev/null; i=0; while kill -0 "$apid" 2>/dev/null && [ $i -lt 30 ]; do sleep 0.1; i=$((i + 1)); done; fi
+rm -f "$R/agents.pid"
+  mkdir -p "$K/agents" && chmod 700 "$K/agents"
+  try=0
+  while :; do
+    : >"$R/agents.log"
+    KUVO_AGENTS_REMOTE=1 KUVO_AGENTS_HOME="$K/agents" KUVO_HOME="$K" KUVO_AGENTS_PORT="$aport" KUVO_ENGINE_PORT="$port" KUVO_ENGINE_PID="$pid" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" sh -c 'n=0; while kill -0 "$1" 2>/dev/null && [ $n -lt 5 ]; do s=$(date +%s); "$2" --config=/dev/null --no-env-file "$3" >>"$4" 2>&1 </dev/null; e=$?; [ $e -eq 98 ] && exit 98; [ $(($(date +%s) - s)) -ge 600 ] && n=0; n=$((n + 1)); sleep 5; done' kuvo-agents "$pid" "$K/engine/$V/opencode" "$K/bin/kuvo-agents.js" "$R/agents.log" </dev/null >/dev/null 2>&1 &
+    apid=$!
+    echo "$apid" >"$R/agents.pid"
+    i=0; until grep -q '"url"' "$R/agents.log" 2>/dev/null || ! kill -0 "$apid" 2>/dev/null || [ $i -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+    kill -0 "$apid" 2>/dev/null && break
+    try=$((try + 1)); [ $try -ge 3 ] && break
+    old=$aport; aport=$(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 40000 + 20000 ))
+    (umask 077; sed "s/\"agentsPort\":$old\([,}]\)/\"agentsPort\":$aport\1/" "$R/engine.json" >"$R/engine.json.new" && mv -f "$R/engine.json.new" "$R/engine.json")
+  done
+fi
+unset KUVO_AGENTS_PASSWORD
+
+# The box's keeper, which keeps it all running from here on (the phone link, wake-ups, the
+# engine itself after a crash or a restart): once.
+[ -f "$K/bin/kuvo-start" ] && sh "$K/bin/kuvo-start" box
+echo "$pid${aport:+ $aport}"
