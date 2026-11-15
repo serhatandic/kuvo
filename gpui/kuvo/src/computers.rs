@@ -137,11 +137,6 @@ impl ComputersView {
         })
     }
 
-    /// The Add a Machine page's host field.
-    pub fn host_field(&self) -> &Entity<TextField> {
-        &self.host
-    }
-
     pub fn show(&mut self, key: Option<&str>, cx: &mut Context<Self>) {
         let shown = Shown::from_key(key);
         if self.shown != shown {
@@ -306,7 +301,7 @@ impl ComputersView {
             actions.push(("action-reconnect", "Connection".to_owned(), "Connect"));
         }
         if !computer.here {
-            actions.push(("action-remove", "Your computers".to_owned(), "Remove…"));
+            actions.push(("action-remove", "Remove".to_owned(), "Remove…"));
         }
         let count = actions.len();
         items.extend(actions.into_iter().enumerate().map(|(ix, (key, title, button))| Item::Action { key: key.into(), title, button: button.into(), first: ix == 0, last: ix + 1 == count }));

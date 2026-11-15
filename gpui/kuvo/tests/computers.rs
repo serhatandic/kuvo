@@ -80,7 +80,7 @@ fn only_this_mac_is_listed_with_a_way_to_add_a_machine(cx: &mut TestAppContext) 
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.area()), Area::Sessions);
 }
 
-/// Add a Machine: reached from the sidebar's row, its +, and the page's button; it draws the form
+/// Add a Machine: reached from the sidebar's row and the page's button; it draws the form
 /// and says plainly that adding isn't here yet, sending nothing; Cancel goes back to all of them.
 #[gpui::test]
 fn add_a_machine_says_its_not_here_yet_and_sends_nothing(cx: &mut TestAppContext) {

@@ -395,12 +395,9 @@ fn computer_older(workspace: &mut Workspace, window: &mut Window, cx: &mut Conte
 fn computer_shared(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Computers, "computer:key_build", window, cx);
 }
-/// Add a Machine, a host typed.
+/// Add a Machine, its field waiting.
 fn computer_add(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Computers, "add", window, cx);
-    let page = workspace.area_view(Area::Computers).and_then(|view| view.read(cx).computers_page().cloned()).expect("Computers");
-    let field = page.read(cx).host_field().clone();
-    field.update(cx, |field, cx| field.set_text("sam@build.example.com", cx));
 }
 fn computer_narrow(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     computer_away(workspace, window, cx);
