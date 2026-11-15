@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A message that ran a command shows it as you typed it (**/review** main) on your Mac and your iPhone alike, kept by the computer the conversation is on, not the long prompt it gave the agent. Editing a queued command or goal brings it back with what you wrote after it, and Stop takes a message you sent a moment before with it, held with the rest, without waiting for it.
 - Pinning, renaming, archiving and deleting a session from your iPhone is done by the computer the session is on: deleting one now cancels its wake-ups too, Delete warns about a worktree’s uncommitted changes in that computer’s words, and a session that’s moving to another computer says so rather than change.
 - The desktop app's **Computers** area lists your computers side by side (how each stands, what's at work there, the Kuvo Code it has) and opens a page for each, saying why one can't be reached or needs an update. Adding, renaming and removing computers say plainly that they aren't in the desktop app yet.
 - The Work Queue's count of what waits on you (on the rail and your iPhone's badge) now counts items in **Needs you** too, not only those whose session is asking you something. Canceled items fold away with Done, and a computer that adds a closed status or a label colour shows it without an update. On a Mac, asking for the browser's live view says plainly that a Mac's agents browse in Kuvo Code's panel.
