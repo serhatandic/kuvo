@@ -44,6 +44,10 @@ public struct SessionActions: Decodable, Sendable, Equatable {
     /// The one with `id`, where the menu offers it.
     public func action(_ id: String) -> Action? { actions.first { $0.id == id } }
 
+    /// Where Delete All asks its box what deleting several at once comes to (`POST {sessions: [<id>]}`,
+    /// answered with a `Confirm`), before each is deleted on its own route.
+    public static let deletesRoute = "kuvo/sessions/deletes"
+
     /// Its route on the session's box: what the menu offers (`actions`), or one of them (`pin`,
     /// `archive`, `rename`; Delete is `DELETE` on the session's own, `action` nil).
     public static func route(_ session: String, _ action: String? = nil) -> String {

@@ -73,6 +73,12 @@ impl BoxClient {
         Ok(())
     }
 
+    /// What deleting several at once comes to (Delete All), in the box's words: asked once, then
+    /// each is deleted with `delete_session`.
+    pub fn deletes_confirm(&self, sessions: &[&str]) -> Result<Confirm> {
+        self.value(&Request::post("kuvo/sessions/deletes", json!({ "sessions": sessions })))
+    }
+
     fn change(&self, session: &str, action: &str, body: Value) -> Result<Value> {
         let changed: Changed = self.value(&Request::post(route(session, action), body))?;
         Ok(changed.info)

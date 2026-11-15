@@ -28,5 +28,8 @@ struct SessionActionsTests {
         #expect(SessionActions.route("ses_a", "actions") == "kuvo/sessions/ses_a/actions")
         #expect(SessionActions.route("ses_a") == "kuvo/sessions/ses_a")
         #expect(SessionActions.route("ses a/b", "pin") == "kuvo/sessions/ses%20a%2Fb/pin")
+        #expect(SessionActions.deletesRoute == "kuvo/sessions/deletes")
+        let all = try? JSONDecoder().decode(SessionActions.Confirm.self, from: Data(#"{"title": "Delete 2 sessions?", "message": "Their messages and undo snapshots go too. This can’t be undone.", "label": "Delete"}"#.utf8))
+        #expect(all?.title == "Delete 2 sessions?")
     }
 }

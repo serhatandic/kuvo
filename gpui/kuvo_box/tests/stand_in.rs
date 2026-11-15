@@ -688,6 +688,7 @@ fn a_sessions_menu_is_what_its_box_says_and_does() {
             Answer::json(200, json!({ "session": "ses_a", "info": { "id": "ses_a", "title": "Trip", "metadata": seen.body.clone().unwrap_or_default() } }))
         }
         ("DELETE", "kuvo/sessions/ses_a") => Answer::json(200, json!({ "session": "ses_a" })),
+        ("POST", "kuvo/sessions/deletes") => Answer::json(200, json!({ "title": "Delete 2 sessions?", "message": "Their messages and undo snapshots go too. This can’t be undone.", "label": "Delete" })),
         (_, route) if route.starts_with("kuvo/sessions/ses_moving") => Answer::json(409, json!({ "message": moving })),
         _ => Answer::json(404, json!({})),
     });
@@ -710,6 +711,10 @@ fn a_sessions_menu_is_what_its_box_says_and_does() {
         ("POST".into(), "kuvo/sessions/ses_a/rename".into(), Some(json!({ "title": "Ship it" }))),
         ("DELETE".into(), "kuvo/sessions/ses_a".into(), None),
     ]);
+
+    let all = client.deletes_confirm(&["ses_a", "ses_b"]).expect("Delete All's question");
+    assert_eq!(all.title, "Delete 2 sessions?");
+    assert_eq!(stand_in.seen().last().and_then(|seen| seen.body.clone()), Some(json!({ "sessions": ["ses_a", "ses_b"] })));
 
     match client.archive_session("ses_moving", true) {
         Err(Error::Refused(refusal)) => assert_eq!((refusal.status, refusal.message.as_str()), (409, moving)),
