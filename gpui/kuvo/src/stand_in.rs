@@ -343,6 +343,38 @@ impl StandIn {
         self.state().queue.add_many_labels();
     }
 
+    /// It adds no computers, saying why (a member of a setup, say).
+    pub fn cannot_add(&self, why: &str) {
+        self.state().areas.add_cannot = Some(why.to_owned());
+    }
+
+    /// A try at adding `destination`, as far as `stage` (`asking`: its host key's question;
+    /// `copying`: trusted, the engine going over; `done`; a host named `nowhere…` fails at once).
+    pub fn adding_at(&self, destination: &str, stage: &str) {
+        let tried = {
+            let mut state = self.state();
+            let begun = areas::adding(&mut state.areas, "POST", "kuvo/computers/add", &serde_json::json!({ "destination": destination }));
+            begun.and_then(|((_, value), _)| value["try"]["id"].as_str().map(str::to_owned))
+        };
+        if let (Some(id), "copying" | "done") = (tried, stage) {
+            areas::adding(&mut self.state().areas, "POST", &format!("kuvo/computers/add/{id}/answer"), &serde_json::json!({ "answer": "trust" }));
+            if stage == "done" {
+                self.adding_goes_on();
+            }
+        }
+    }
+
+    /// Its tries at adding a computer that are under way come to their end.
+    pub fn adding_goes_on(&self) {
+        let mut state = self.state();
+        if areas::adding_goes_on(&mut state.areas)
+            && let Some((_, now)) = state.area("GET", "kuvo/computers")
+        {
+            let line = now.to_string();
+            state.computers.retain(|_, sender| sender.send(line.clone()).is_ok());
+        }
+    }
+
     /// Its list of computers has this computer alone.
     pub fn computers_alone(&self) {
         self.state().areas.computers_alone = true;
@@ -1286,7 +1318,8 @@ impl StandIn {
         if let Some((status, value)) = state.area(method, route) {
             return answer(status, value);
         }
-        if let Some(((status, value), changed)) = areas::manage(&mut state.areas, method, route) {
+        let added = areas::adding(&mut state.areas, method, route, &request.body.clone().unwrap_or(Value::Null));
+        if let Some(((status, value), changed)) = added.or_else(|| areas::manage(&mut state.areas, method, route)) {
             // Those following your computers hear the list as it is now.
             if changed && let Some((_, now)) = state.area("GET", "kuvo/computers") {
                 let line = now.to_string();

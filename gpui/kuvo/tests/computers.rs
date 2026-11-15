@@ -80,21 +80,116 @@ fn only_this_mac_is_listed_with_a_way_to_add_a_machine(cx: &mut TestAppContext) 
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.area()), Area::Sessions);
 }
 
-/// Add a Machine: reached from the sidebar's row and the page's button; it draws the form
-/// and says plainly that adding isn't here yet, sending nothing; Cancel goes back to all of them.
+/// Add a Machine, start to end: reached from the sidebar's row and the page's button; a host the
+/// box suggests fills the field; the box asks about the host's key, with its fingerprint; Trust
+/// goes on, the copy says how far it's got; done, the machine is one of your computers and its
+/// page opens. Only the address and the answer are sent: every word drawn is the box's.
 #[gpui::test]
-fn add_a_machine_says_its_not_here_yet_and_sends_nothing(cx: &mut TestAppContext) {
+fn adding_a_machine_asks_about_its_key_then_shows_each_step_until_its_one_of_yours(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, page, cx) = open(cx, stand_in.clone());
     click(cx, "computers-add");
-    assert!(shown(cx, "add-machine-page") && shown(cx, "add-form") && shown(cx, "add-not-yet"));
+    assert!(shown(cx, "add-machine-page") && shown(cx, "add-form") && shown(cx, "add-hosts") && shown(cx, "add-how"));
     assert_eq!(title(&workspace, cx).as_deref(), Some("Add a Machine"));
+    // Nothing typed: nothing to add, and nothing is sent.
     click(cx, "add-machine");
-    assert!(stand_in.seen_at("POST", "kuvo/machines").is_empty(), "nothing is sent while no box offers it");
-    click(cx, "add-cancel");
-    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::All);
+    assert!(stand_in.seen_at("POST", "kuvo/computers/add").is_empty());
+    // A host from the box's SSH config, picked.
+    click(cx, "add-host-mac-mini");
+    assert_eq!(page.read_with(cx, |page, cx| page.typed_host(cx)), "mac-mini");
+    assert!(!shown(cx, "add-host-mac-mini"), "what's typed already isn't suggested");
+    click(cx, "add-machine");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/computers/add").last().and_then(|seen| seen.body.clone()), Some(serde_json::json!({ "destination": "mac-mini" })));
+    // The box asks: its question and the fingerprint, as it says them; the form gives way to the try.
+    assert!(shown(cx, "add-question") && !shown(cx, "add-form") && !shown(cx, "add-machine"));
+    let tried = page.read_with(cx, |page, _| page.tries_drawn()).pop().expect("the try");
+    assert_eq!(tried.title, "Adding mac-mini…");
+    let question = tried.question.expect("its question");
+    assert_eq!(question.title, "Is this mac-mini?");
+    assert_eq!(question.facts[1].value, "SHA256:Vq0bYJx3mD2Wc7PpN1tKfUo9sLhGe5RaZi8XwCnEyTM");
+    assert!(shown(cx, "add-answer-cancel") && shown(cx, "add-answer-trust"));
+    click(cx, "add-answer-trust");
+    assert_eq!(stand_in.seen_at("POST", &format!("kuvo/computers/add/{}/answer", tried.id)).last().and_then(|seen| seen.body.clone()), Some(serde_json::json!({ "answer": "trust" })));
+    // Copying: each step as the box says it stands, the one under way with how far it's got.
+    let tried = page.read_with(cx, |page, _| page.tries_drawn()).pop().expect("the try");
+    assert_eq!(tried.steps.iter().map(|step| step.state.as_str()).collect::<Vec<_>>(), ["done", "done", "now", "waiting", "waiting"]);
+    assert!(!shown(cx, "add-question") && shown(cx, "add-step-engine") && shown(cx, "add-try-cancel"));
+    assert!(!shown(cx, "computers-row-key_added_mac-mini"));
+    // Done: it's one of your computers, and Show opens its page, with what the box offers for it.
+    stand_in.adding_goes_on();
+    page.update(cx, |page, cx| page.read_adding(cx));
+    cx.run_until_parked();
+    let tried = page.read_with(cx, |page, _| page.tries_drawn()).pop().expect("the try");
+    assert_eq!((tried.state.as_str(), tried.title.as_str()), ("done", "mac-mini is one of your computers"));
+    assert!(shown(cx, "add-form"), "the form is back for another");
+    click(cx, "add-try-show");
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::Computer("key_added_mac-mini".into()));
+    assert!(shown(cx, "action-setup") && shown(cx, "action-uninstall"));
+    // Uninstall asks first, in the box's words, and then it's gone from your computers.
+    click(cx, "action-uninstall-button");
+    assert_eq!(page.read_with(cx, |page, _| page.confirm_words()).map(|(title, _, label)| (title, label)), Some(("Uninstall Kuvo Code from mac-mini?".into(), "Uninstall".into())));
+    click(cx, "computers-confirm-go");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_added_mac-mini/uninstall").len(), 1);
+    assert!(shown(cx, "computer-missing"));
+}
+
+/// What can't be added is said in the box's words, where it's asked: an address that isn't one
+/// keeps what was typed to mend; a host that can't be reached fails with why, and Try Again asks
+/// again; Dismiss forgets it; Cancel on the question stops the try.
+#[gpui::test]
+fn a_machine_that_cant_be_added_says_why_and_can_be_tried_again(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_workspace, page, cx) = open(cx, stand_in.clone());
     click(cx, "computers-add-row");
     assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::Add);
+    click(cx, "add-form");
+    cx.simulate_input("host:2222");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(said(&page, cx, "add-problem").map(|(_, words)| words).as_deref(), Some("Give a host name, or user@host. For a port or an IPv6 address, add a Host for the machine to ~/.ssh/config and give its name."));
+    assert_eq!(page.read_with(cx, |page, cx| page.typed_host(cx)), "host:2222");
+    // Typing again clears what was said.
+    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_input("nowhere.example");
+    assert!(!shown(cx, "add-problem"));
+    cx.simulate_keystrokes("enter");
+    let failed = page.read_with(cx, |page, _| page.tries_drawn()).pop().expect("the try");
+    assert_eq!(failed.state, "failed");
+    assert!(shown(cx, "add-failure") && shown(cx, "add-form"), "what failed stays under the form");
+    assert!(failed.failure.as_ref().is_some_and(|failure| failure.message.starts_with("Couldn’t reach nowhere.example.")));
+    click(cx, "add-try-again");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/computers/add").len(), 3);
+    click(cx, "add-try-dismiss");
+    assert!(page.read_with(cx, |page, _| page.tries_drawn()).is_empty());
+    // Cancel on the box's question stops it: nothing was trusted, and the form is back.
+    // (What failed stays typed, to mend; the hosts suggested go with what's typed.)
+    assert_eq!(page.read_with(cx, |page, cx| page.typed_host(cx)), "nowhere.example");
+    click(cx, "add-form");
+    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_input("gpu");
+    assert!(shown(cx, "add-host-gpu-box") && !shown(cx, "add-host-mac-mini"));
+    click(cx, "add-host-gpu-box");
+    click(cx, "add-machine");
+    click(cx, "add-answer-cancel");
+    assert!(page.read_with(cx, |page, _| page.tries_drawn()).is_empty() && shown(cx, "add-form"));
+    click(cx, "add-cancel");
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::All);
+}
+
+/// A box that doesn't add computers (a member of a setup) says so in its words: the field takes
+/// no typing, and nothing is sent.
+#[gpui::test]
+fn a_box_that_doesnt_add_machines_says_where_to_add_them(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.cannot_add("Add and remove computers from Studio.");
+    let (_workspace, page, cx) = open(cx, stand_in.clone());
+    click(cx, "computers-add");
+    assert_eq!(said(&page, cx, "add-cannot"), Some(("Machines aren’t added from This Mac".into(), "Add and remove computers from Studio.".into())));
+    assert!(!shown(cx, "add-hosts"));
+    click(cx, "add-form");
+    cx.simulate_input("studio");
+    assert_eq!(page.read_with(cx, |page, cx| page.typed_host(cx)), "");
+    click(cx, "add-machine");
+    assert!(stand_in.seen_at("POST", "kuvo/computers/add").is_empty());
 }
 
 /// This Mac and its other computers: each row says how it stands; a Mac that can't be reached and
