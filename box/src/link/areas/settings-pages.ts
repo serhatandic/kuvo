@@ -29,7 +29,7 @@ import { APPROVAL_FILE } from "../work/approval";
 import { IS_MAC } from "../home";
 import { boxAnswers } from "../mac/keeper-runs";
 import { askHolder, holdsVault } from "../vault/holder";
-import { hasZoneRules, setZone, ZONE_FILE, zoneFilesFor, zoneHere } from "../zone/setting";
+import { hasZoneRules, readZoneSetting, setZone, ZONE_FILE, zoneFilesFor, zoneHere } from "../zone/setting";
 import { ownClock } from "../../shared/zone";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
@@ -400,19 +400,22 @@ const OWN_CLOCK = "own-clock";
 
 async function generalPage(context: RouteContext): Promise<SettingsPage> {
   const name = context.info.name || "this computer";
-  const here = zoneHere();
+  const setting = readZoneSetting();
+  const here = zoneHere(setting);
   const offset = offsetOf(here.zone);
   const choices = zoneNames().map(zone => ({ id: zone, title: zoneTitle(zone) }));
   // (One a peer's runtime knows and this one doesn't is still shown as it is.)
   if (here.yours && !choices.some(choice => choice.id === here.zone)) choices.unshift({ id: here.zone, title: zoneTitle(here.zone) });
   if (!here.yours) choices.unshift({ id: OWN_CLOCK, title: `${name}'s clock (${zoneTitle(here.zone)})` });
   // (A computer without the zone's rules, a Linux machine without tzdata, wakes on UTC: said so.)
-  const unruled = here.yours && !zoneFilesFor().zoneinfo && !hasZoneRules(here.zone);
+  const unruled = here.yours && !zoneFilesFor(setting).zoneinfo && !hasZoneRules(here.zone);
   const line = unruled
     ? `${name} has no rules for this time zone, so its wake-ups go by UTC. Install its time zone data (tzdata) to fix it.`
-    : here.yours
-      ? `Bots' wake-ups and times of day go by it on all your computers. It's ${offset} now.`
-      : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
+    : setting?.carried
+      ? `Kept from what your Mac last gave ${name}: its bots' wake-ups go by it. Pick it, or another, to set it for all your computers.`
+      : here.yours
+        ? `Bots' wake-ups and times of day go by it on all your computers. It's ${offset} now.`
+        : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
   return {
     id: "general", title: "General",
     groups: [{
@@ -426,8 +429,9 @@ async function generalPage(context: RouteContext): Promise<SettingsPage> {
 
 async function generalChange(_context: RouteContext, at: SettingItem, value: unknown): Promise<Refused | null> {
   if (at.id !== "time-zone") return { status: 400, message: "That isn't something to change." };
-  // (Its own clock while none is set is what applies already: nothing to write.)
-  if (value === at.value || value === OWN_CLOCK) return null;
+  // (Its own clock while none is set is what applies already: nothing to write. The zone it shows
+  // picked again is nothing to write either, but where it's only carried from before: then it's yours.)
+  if (value === OWN_CLOCK || (value === at.value && !readZoneSetting()?.carried)) return null;
   try {
     return setZone(String(value)) ? null : { status: 400, message: "This computer doesn't know that time zone." };
   } catch {

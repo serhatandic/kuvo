@@ -132,3 +132,31 @@ test("group chats' meetings go by your zone: the box gives it to their bridge wi
   expect(chatZone({ boxTimeZone: "Asia/Tokyo", timeZone: "Europe/Berlin" })).toBe("Asia/Tokyo")
   expect(chatZone({ timeZone: "Europe/Berlin" })).toBe("Europe/Berlin")
 })
+
+test("a kit moving your zone is applied at once, whoever reads it first: a peer's mail that's then refused still leaves the bots on the new zone", () => {
+  write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "Europe/Istanbul" }))
+  expect(takeZone({ zone: "Europe/Istanbul", n: 3 })).toBe(true)
+  write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "America/New_York" }))
+  expect(takeZone({ zone: "Asia/Tokyo", n: 1 })).toBe(false)
+  expect(read(join(folder, "timezone"))).toBe("America/New_York")
+  expect(zoneMail()).toEqual({ zone: "America/New_York", n: 4 })
+})
+
+test("a 0.7 Mac connecting for the first time to a machine that has your zone from elsewhere doesn't replace your pick; only its clock moving after does", () => {
+  expect(takeZone({ zone: "Asia/Tokyo", n: 1 })).toBe(true)
+  write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "Europe/Istanbul" }))
+  expect(readZoneSetting()).toMatchObject({ zone: "Asia/Tokyo", n: 1, kitSeen: "Europe/Istanbul" })
+  write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "Europe/London" }))
+  expect(readZoneSetting()).toMatchObject({ zone: "Europe/London", n: 2 })
+})
+
+test("the zone a machine carried from before, picked as it is, becomes yours and goes to your other computers", async () => {
+  write(join(BOTS, "kit.json"), JSON.stringify({ kuvo: 1, personalities: [], projects: [], timeZone: "Europe/Istanbul" }))
+  const row = rowOf((await ask(handler, "GET", "kuvo/settings/general")).json)
+  expect([row.value, row.line]).toEqual(["Europe/Istanbul", expect.stringContaining("Kept from what your Mac last gave")])
+  expect(zoneMail()).toBe(null)
+  const picked = await ask(handler, "PATCH", "kuvo/settings/general", { row: "time-zone", value: "Europe/Istanbul", was: row.revision })
+  expect(picked.status).toBe(200)
+  expect(rowOf(picked.json).line).toContain("on all your computers")
+  expect(zoneMail()).toEqual({ zone: "Europe/Istanbul", n: 1 })
+})

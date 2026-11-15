@@ -8433,8 +8433,17 @@ function followOldKit(now) {
   if (!knownZone(kit?.timeZone) || kit.timeZone === now.kitSeen)
     return now;
   const zone = kit.timeZone;
-  return written2({ ...now, zone, kitSeen: zone, n: now.carried ? now.n : Math.min(now.n + 1, MOST_COUNT2), zoneinfo: undefined, ...kitRules(kit) });
+  if (now.kitSeen === undefined && !now.carried)
+    return written2({ ...now, kitSeen: zone });
+  kitMoved = written2({ ...now, zone, kitSeen: zone, n: now.carried ? now.n : Math.min(now.n + 1, MOST_COUNT2), zoneinfo: undefined, ...kitRules(kit) });
+  return kitMoved;
 }
+var kitMoved = null;
+var movedByKit = () => {
+  const moved = kitMoved;
+  kitMoved = null;
+  return moved;
+};
 function written2(setting) {
   writePrivate(ZONE_FILE, JSON.stringify(setting));
   forgetZoneRead();
@@ -8475,8 +8484,9 @@ function readZoneSetting() {
   } catch {
     return kept ?? null;
   }
-  if (made && kept && made.zone !== kept.zone)
-    changed(made);
+  const moved = movedByKit();
+  if (moved)
+    changed(moved);
   return made;
 }
 function zoneHere(setting = readZoneSetting()) {
@@ -8505,8 +8515,9 @@ function setZone(zone) {
     made = written2({ kuvo: 1, zone, n: Math.min((now?.n ?? 0) + 1, MOST_COUNT2), ...kept3(now), ...rules ? { zoneinfo: rules } : {} });
     return made;
   });
-  if (made)
-    changed(made);
+  const moved = movedByKit();
+  if (made || moved)
+    changed(made ?? moved);
   return setting;
 }
 var kept3 = (now) => ({ ...now?.seen ? { seen: now.seen } : {}, ...now?.kitSeen ? { kitSeen: now.kitSeen } : {} });
@@ -8527,10 +8538,10 @@ function takeZone(given) {
   } catch {
     return false;
   }
-  if (!made)
-    return false;
-  changed(made);
-  return true;
+  const moved = movedByKit();
+  if (made || moved)
+    changed(made ?? moved);
+  return Boolean(made);
 }
 function followOwnClock() {
   if (!IS_MAC)
@@ -8550,8 +8561,9 @@ function followOwnClock() {
   } catch {
     return false;
   }
-  if (made)
-    changed(made);
+  const moved = movedByKit();
+  if (made || moved)
+    changed(made ?? moved);
   return Boolean(made);
 }
 function zoneFilesFor(setting = readZoneSetting()) {
@@ -45336,7 +45348,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "91d877fc1f53";
+var BRIDGE_VERSION = "10fb9c51e568";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -56668,15 +56680,16 @@ function offsetOf(zone, at = new Date) {
 var OWN_CLOCK = "own-clock";
 async function generalPage(context) {
   const name = context.info.name || "this computer";
-  const here = zoneHere();
+  const setting = readZoneSetting();
+  const here = zoneHere(setting);
   const offset = offsetOf(here.zone);
   const choices = zoneNames().map((zone) => ({ id: zone, title: zoneTitle(zone) }));
   if (here.yours && !choices.some((choice) => choice.id === here.zone))
     choices.unshift({ id: here.zone, title: zoneTitle(here.zone) });
   if (!here.yours)
     choices.unshift({ id: OWN_CLOCK, title: `${name}'s clock (${zoneTitle(here.zone)})` });
-  const unruled = here.yours && !zoneFilesFor().zoneinfo && !hasZoneRules(here.zone);
-  const line = unruled ? `${name} has no rules for this time zone, so its wake-ups go by UTC. Install its time zone data (tzdata) to fix it.` : here.yours ? `Bots' wake-ups and times of day go by it on all your computers. It's ${offset} now.` : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
+  const unruled = here.yours && !zoneFilesFor(setting).zoneinfo && !hasZoneRules(here.zone);
+  const line = unruled ? `${name} has no rules for this time zone, so its wake-ups go by UTC. Install its time zone data (tzdata) to fix it.` : setting?.carried ? `Kept from what your Mac last gave ${name}: its bots' wake-ups go by it. Pick it, or another, to set it for all your computers.` : here.yours ? `Bots' wake-ups and times of day go by it on all your computers. It's ${offset} now.` : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
   return {
     id: "general",
     title: "General",
@@ -56700,7 +56713,7 @@ async function generalPage(context) {
 async function generalChange(_context, at, value) {
   if (at.id !== "time-zone")
     return { status: 400, message: "That isn't something to change." };
-  if (value === at.value || value === OWN_CLOCK)
+  if (value === OWN_CLOCK || value === at.value && !readZoneSetting()?.carried)
     return null;
   try {
     return setZone(String(value)) ? null : { status: 400, message: "This computer doesn't know that time zone." };

@@ -8025,7 +8025,11 @@ Every box does it alike, a Mac's and a machine's, on macOS and Linux.
   yours (and the box never writes its own clock above its conversations' wake-ups, where it would be
   read as yours). A Mac of 0.7 or before still connecting writes its kit again with its own clock: a
   `timeZone` there other than the one last seen (`kitSeen`) is your zone changing, counted on (only
-  replaced, while what the machine has is `carried`). A change made here keeps nothing `carried`.
+  replaced, while what the machine has is `carried`); a kit seen for the first time by a box whose
+  zone came from elsewhere is only noted. A change made here keeps nothing `carried`; picking the
+  zone a `carried` one shows makes it yours. Until you pick one, two cases settle by themselves: two
+  machines `carried` with different zones keep each their own (each came from a Mac), and two Macs
+  whose clocks differ at count 0 agree on the name that sorts last.
 - **Where it goes**: each bot's folder and the folder above conversations' own (`wakes`) have the
   `timezone` file `kuvo-wake` reads (and `zoneinfo`, a zone's rules as a TZif file, base64 in the
   setting, kept from an older Mac's kit for a machine without zone files of its own, only for that

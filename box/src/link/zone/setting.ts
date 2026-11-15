@@ -97,8 +97,21 @@ function followOldKit(now: ZoneSetting): ZoneSetting {
   const kit = readMacKit();
   if (!knownZone(kit?.timeZone) || kit.timeZone === now.kitSeen) return now;
   const zone = kit.timeZone;
-  return written({ ...now, zone, kitSeen: zone, n: now.carried ? now.n : Math.min(now.n + 1, MOST_COUNT), zoneinfo: undefined, ...kitRules(kit) });
+  // (A kit seen for the first time, by a box whose zone came from elsewhere: only noted. Its zone is
+  // where that Mac was, not a change you made.)
+  if (now.kitSeen === undefined && !now.carried) return written({ ...now, kitSeen: zone });
+  kitMoved = written({ ...now, zone, kitSeen: zone, n: now.carried ? now.n : Math.min(now.n + 1, MOST_COUNT), zoneinfo: undefined, ...kitRules(kit) });
+  return kitMoved;
 }
+
+// What an older Mac's kit moved your zone to just now, under the lock, for whoever took it to say
+// so once out of it (`movedByKit`).
+let kitMoved: ZoneSetting | null = null;
+const movedByKit = (): ZoneSetting | null => {
+  const moved = kitMoved;
+  kitMoved = null;
+  return moved;
+};
 
 function written(setting: ZoneSetting): ZoneSetting {
   writePrivate(ZONE_FILE, JSON.stringify(setting));
@@ -145,7 +158,8 @@ export function readZoneSetting(): ZoneSetting | null {
     return kept ?? null;
   }
   // (An older Mac's kit changed it: what goes by it here, and your other computers, follow.)
-  if (made && kept && made.zone !== kept.zone) changed(made);
+  const moved = movedByKit();
+  if (moved) changed(moved);
   return made;
 }
 
@@ -179,7 +193,8 @@ export function setZone(zone: string): ZoneSetting | null {
     made = written({ kuvo: 1, zone, n: Math.min((now?.n ?? 0) + 1, MOST_COUNT), ...kept(now), ...(rules ? { zoneinfo: rules } : {}) });
     return made;
   });
-  if (made) changed(made);
+  const moved = movedByKit();
+  if (made || moved) changed(made ?? moved!);
   return setting;
 }
 
@@ -206,10 +221,9 @@ export function takeZone(given: unknown): boolean {
   } catch {
     return false;
   }
-  if (!made) return false;
-  // (Only the count moved: nothing on this computer goes by it differently.)
-  changed(made);
-  return true;
+  const moved = movedByKit();
+  if (made || moved) changed(made ?? moved!);
+  return Boolean(made);
 }
 
 /** A Mac's box: its own clock moved since it last looked (you travelled, or changed it in System
@@ -230,7 +244,8 @@ export function followOwnClock(): boolean {
   } catch {
     return false;
   }
-  if (made) changed(made);
+  const moved = movedByKit();
+  if (made || moved) changed(made ?? moved!);
   return Boolean(made);
 }
 
