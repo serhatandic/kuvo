@@ -1292,7 +1292,9 @@ waiting in the conversation and its subagents, on the engine or the coding agent
 Auto's reviewer took up; and what the box asks you itself for them (`sessions.asks.box`): a command
 outside the sandbox, something from the vault. Those wait in the box's long-running process, which
 answers these routes: another (`box route`, a machine's kept server) passes the list and an answer
-to it over `run/vault.sock`, and with none listening lists what the engine asks alone.
+to it over `run/vault.sock`, and with none listening (or one from before, answering `404 {}`)
+lists what the engine asks alone. A client never takes the box's own asks' first answer as the
+default (Return): only its number or a click answers one.
 
 - `GET kuvo/sessions/<id>/asks` → `{"asks": [ask…]}`, oldest first, those a client answers
   ahead of those answered elsewhere (`other`, below), so the card it can answer shows first. Each has `id`, `kind`,
@@ -1328,10 +1330,10 @@ to it over `run/vault.sock`, and with none listening lists what the engine asks 
     choices}`: `need` `use` ("Scout wants to use GitHub token": `once`, `always` where it may be
     given for good, never from a bot's seat, and `reject`) or `item` ("Scout needs an OpenAI API
     key": for each item in the vault, `once` "Give" and `always` "Always Give" naming it, with its
-    `item`, then `reject`). `message` its words or null, `site` the site it's for or null. Items are
-    listed only to the vault's clients (a phone, this Mac's app, the Mac proving itself) and only
-    while it's unlocked; `note` says why there are none ("Give it an item in Kuvo Code on your Mac
-    or iPhone."), else null. A choice with `confirm: true` makes a grant: a client makes sure it's
+    `item`, those for its `site` first, then `reject`). `message` its words or null, `site` the
+    site it's for or null. Only the vault's clients (a phone, this Mac's app, the Mac proving
+    itself) are offered answers: to another, `choices` is empty and `note` says where to answer it.
+    Items are listed only while it's unlocked; `note` says why there are none, else null. A choice with `confirm: true` makes a grant: a client makes sure it's
     you first (Touch ID, the device's password), as a grant made in Settings does, and one that
     can't doesn't offer it.
   - `other`: anything else it waits on you for: a form a card can't take (an MCP server's: one
