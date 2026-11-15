@@ -169,3 +169,10 @@ renewing one doesn't; none of it in the try, `adding.json`, `launch.env` or a lo
 `box/test/add-seed.test.ts`. Linux's `sh` caught `$((` in the start script (fixed).
 Not ported: the Swift app's later two-way exchange of one account's sign-in between computers.
 
+**After the security review (2026-11-15):** seeding and the undo go only for a computer with
+nothing of Kuvo Code (`fresh`: being added, judged free, no box and no app folder found); a
+stopped or failed add there, from its start until it's joined, is uninstalled again and the words
+say so; `UpdateHostKeys=no` and `ForwardX11=no` on every connection; an answer without `at` is a
+409. Tests: an app-only Mac isn't seeded; a failed join and a stop during `box seed` leave nothing.
+Left: a join that fails after this box wrote `machines.json` keeps that line here.
+
