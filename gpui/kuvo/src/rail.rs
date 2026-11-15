@@ -216,7 +216,7 @@ impl Render for Rings {
             );
         }
         // None signed in: an empty ring that says where to sign in.
-        if accounts.is_empty() {
+        if accounts.is_empty() && !self.client.gate().is_held() {
             let hover = c.hover;
             rings.push(
                 div()

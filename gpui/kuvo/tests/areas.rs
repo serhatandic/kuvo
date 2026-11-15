@@ -388,3 +388,75 @@ fn back_passes_over_a_session_gone_since(cx: &mut TestAppContext) {
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)), Some("ses_signup".into()));
     assert_eq!(area(&workspace, cx), Area::Sessions);
 }
+
+#[gpui::test]
+fn a_held_older_box_has_one_notice_without_claiming_its_content_is_empty(cx: &mut TestAppContext) {
+    let (workspace, cx) = open(cx, StandIn::held_older(Replies::Never));
+    assert!(bounds(cx, "held-box-notice").is_some());
+    assert!(bounds(cx, "held-sessions").is_some());
+    assert!(bounds(cx, "no-accounts").is_none());
+    workspace.update_in(cx, |workspace, window, cx| {
+        window.focus(&gpui::Focusable::focus_handle(workspace.landing().read(cx), cx), cx);
+    });
+    cx.simulate_input("cannot be sent");
+    workspace.read_with(cx, |workspace, cx| {
+        assert!(workspace.landing().read(cx).field().read(cx).text().is_empty());
+    });
+    workspace.read_with(cx, |workspace, _| {
+        assert_eq!(workspace.held_notice(), Some(("This Mac’s Kuvo is older than this app".into(), "It updates with Kuvo 1.0.".into())));
+        assert_eq!(workspace.lists(), &kuvo::workspace::Lists::Held);
+    });
+    click(cx, "rail-bots");
+    assert!(bounds(cx, "held-box-notice").is_some());
+    assert!(bounds(cx, "held-area").is_some());
+    assert!(bounds(cx, "held-area-sidebar").is_some());
+    assert!(bounds(cx, "bots-empty").is_none());
+    assert!(bounds(cx, "new-bot").is_none());
+    click(cx, "rail-queue");
+    assert!(bounds(cx, "held-area").is_some());
+    assert!(bounds(cx, "queue-empty").is_none());
+    click(cx, "rail-settings");
+    assert!(bounds(cx, "row-theme").is_some(), "local appearance remains available");
+    click(cx, "setting-Accounts");
+    assert!(bounds(cx, "settings-held").is_some());
+    assert!(bounds(cx, "held-box-notice").is_some());
+}
+
+#[gpui::test]
+fn a_held_machine_notice_names_the_machine_and_its_update_path(cx: &mut TestAppContext) {
+    let (workspace, cx) = open(cx, StandIn::held_machine(Replies::Never));
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.held_notice()), Some((
+        "build-linux’s Kuvo is older than this app".into(),
+        "Update Kuvo on build-linux to use it here.".into(),
+    )));
+    assert!(bounds(cx, "held-box-notice").is_some());
+}
+
+#[gpui::test]
+fn opening_the_gate_refreshes_the_area_already_on_screen(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_older(true);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    click(cx, "rail-bots");
+    assert!(bounds(cx, "held-area").is_some());
+    assert!(bounds(cx, "bots-empty").is_none());
+    stand_in.set_older(false);
+    workspace.update_in(cx, |workspace, _, cx| {
+        // A live session follower opens the gate and delivers Listing without connected().
+        workspace.client().connect().unwrap();
+        let mut listing = kuvo_box::Listing::new();
+        listing.take(workspace.client().session_list(None).unwrap());
+        workspace.take_list(kuvo_box::follow::ListUpdate::Listing(listing), cx);
+    });
+    cx.run_until_parked();
+    assert!(bounds(cx, "held-box-notice").is_none());
+    assert!(bounds(cx, "bot-bot_mira").is_some(), "already shown area is read again");
+    click(cx, "rail-sessions");
+    workspace.update_in(cx, |workspace, window, cx| {
+        window.focus(&gpui::Focusable::focus_handle(workspace.landing().read(cx), cx), cx);
+    });
+    cx.simulate_input("ready");
+    workspace.read_with(cx, |workspace, cx| {
+        assert_eq!(workspace.landing().read(cx).field().read(cx).text(), "ready");
+    });
+}

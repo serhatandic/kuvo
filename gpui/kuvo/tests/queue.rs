@@ -920,6 +920,42 @@ fn a_status_this_app_has_never_heard_of_is_listed_as_the_box_says(cx: &mut TestA
 }
 
 #[gpui::test]
+fn which_statuses_close_an_item_and_a_labels_colours_are_the_boxs(cx: &mut TestAppContext) {
+    // A newer box lists a closed status (Shelved) and a label colour (teal) this app has never
+    // heard of: Shelved folds with Done and Canceled, is offered wherever closing is, and teal is
+    // one of the colours a label may be. The app keeps no list of its own of either.
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.newer_closed_status();
+    let (_workspace, _page, cx) = queue(cx, &stand_in);
+    assert!(shown(cx, "group-shelved") && top(cx, "group-canceled") < top(cx, "group-shelved") && !shown(cx, "item-wqi_225"));
+    assert!(shown(cx, "queue-open-19"), "the box's count of what's open");
+    click(cx, "group-shelved");
+    assert!(shown(cx, "item-wqi_225-status-shelved"));
+
+    // From a row: each closed status, by the box's name.
+    click(cx, "item-wqi_234-more");
+    assert!(shown(cx, "menu-item-Mark Done") && shown(cx, "menu-item-Mark Canceled") && shown(cx, "menu-item-Mark Shelved"));
+    click(cx, "menu-item-Mark Shelved");
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/work-queue/items/wqi_234").last(), Some(&json!({ "status": "shelved" })));
+
+    // On its page, shelved: Mark Done is its button, and Mark Canceled is in its menu; Mark
+    // Shelved is offered no more.
+    click(cx, "item-wqi_234");
+    assert!(shown(cx, "item-finish"));
+    click(cx, "item-more");
+    assert!(shown(cx, "menu-item-Mark Canceled") && !shown(cx, "menu-item-Mark Shelved"));
+    keys(cx, "escape");
+    click(cx, "item-back");
+
+    // A label in the box's colours, teal among them.
+    click(cx, "new-label");
+    cx.simulate_input("Ops");
+    click(cx, "color-teal");
+    keys(cx, "enter");
+    assert_eq!(bodies(&stand_in, "POST", "kuvo/work-queue/labels").last(), Some(&json!({ "add": "Ops", "color": "teal" })));
+}
+
+#[gpui::test]
 fn an_item_in_a_status_the_view_doesnt_list_isnt_hidden(cx: &mut TestAppContext) {
     // One kept as it came from a newer box, in a status this box's view doesn't list: it has a
     // group of its own, after the rest, under the name it came by.

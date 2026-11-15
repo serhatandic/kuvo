@@ -15107,6 +15107,9 @@
         }
        }
       },
+      "colors": {
+       "list": "string"
+      },
       "assignees": {
        "list": {
         "object": {
@@ -15673,6 +15676,9 @@
          "color": "string"
         }
        }
+      },
+      "colors": {
+       "list": "string"
       },
       "assignees": {
        "list": {

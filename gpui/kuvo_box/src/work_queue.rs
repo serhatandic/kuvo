@@ -368,6 +368,8 @@ pub struct QueueSaid {
     pub priorities: Vec<Priority>,
     /// The labels, in the order they were made.
     pub labels: Vec<Label>,
+    /// The colours a label may be (the looks' names), in the order a picker offers them.
+    pub colors: Vec<String>,
     /// Who an item may be for.
     pub assignees: Vec<Assignee>,
     /// What an item added with nothing said starts as.
@@ -496,6 +498,7 @@ impl BoxClient {
             statuses: read_all(answer.get("statuses")),
             priorities: read_all(answer.get("priorities")),
             labels: read_all(answer.get("labels")),
+            colors: read_all(answer.get("colors")),
             assignees: read_all(answer.get("assignees")),
             new: answer.get("new").cloned().and_then(|new| serde_json::from_value(new).ok()),
             today: answer.get("today").and_then(Value::as_str).unwrap_or_default().to_owned(),

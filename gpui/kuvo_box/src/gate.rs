@@ -56,9 +56,6 @@ pub const REQUIRED: &[&str] = &[
     "work-queue.edit",
 ];
 
-/// The state's title, wherever it shows.
-pub const UPDATING: &str = "Updating…";
-
 /// What `features` lack of [`REQUIRED`], in its order: none when the box is up to date.
 pub fn missing<S: AsRef<str>>(features: &[S]) -> Vec<String> {
     REQUIRED
