@@ -1,8 +1,9 @@
 import Foundation
 import Testing
+@testable import KuvoHelperKit
 @testable import OpenCodeKit
 
-/// `kuvo-start serve` (#333 piece 4): a Mac's own box's server, which its helper (Kuvo Code Box)
+/// `kuvo-start serve` (#333 piece 4): a Mac's own box's server, which its helper (Kuvo Helper)
 /// starts and keeps: run in the foreground with the engine's Bun, its stdin (the password and the
 /// vault's secrets) passed through untouched; never on a machine's box, nor one turned off. The real
 /// script, in a home of the test's own, with a stand-in engine that notes how it was started.

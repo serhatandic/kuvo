@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Kuvo Helper</string>
+	<key>CFBundleDisplayName</key>
+	<string>Kuvo Helper</string>
+	<key>CFBundleExecutable</key>
+	<string>Kuvo Helper</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>The Apple Calendar and Reminders integration lets the agent read and add events, when you've turned it on in Settings › Integrations.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>The Apple Calendar and Reminders integration lets the agent read and add reminders, when you've turned it on in Settings › Integrations.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Kuvo Code listens while you talk instead of typing, only when you start voice input. Your voice is recognized on this Mac and isn't kept or sent anywhere.</string>
+</dict>
+</plist>

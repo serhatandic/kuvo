@@ -3,13 +3,13 @@ import Darwin
 import Foundation
 import Security
 
-/// Kuvo Code Box, the helper a Mac's box runs under once it lives in a home of its own (#333 piece
+/// Kuvo Helper, the helper a Mac's box runs under once it lives in a home of its own (#333 piece
 /// 4; KuvoLink's PROTOCOL.md, "This Mac's box: its helper"): its names and places, and the checks
-/// on its signature. The app carries it (`Contents/Helpers/Kuvo Code Box.app`), the box's release
+/// on its signature. The app carries it (`Contents/Helpers/Kuvo Helper.app`), the box's release
 /// brings it into the box's `bin`, and it runs from there.
 public enum BoxHelperBundle {
     /// What macOS shows for it: in Login Items, and in every permission it asks about.
-    public static let name = "Kuvo Code Box"
+    public static let name = "Kuvo Helper"
     public static let bundleName = "\(name).app"
     /// Its bundle ID is the app's with this after it (`run.kuvo.code.box`), so a test or demo copy's
     /// keeps its own, and its Keychain items are named apart from the app's.
@@ -17,6 +17,8 @@ public enum BoxHelperBundle {
     /// The launch agent that starts a box at login on a Mac: one per computer, whatever set it up
     /// (a machine's runs `kuvo-start` with `/bin/sh`; a Mac's own box's runs this).
     public static let launchAgent = "run.kuvo.code.machine"
+    /// The box's home, in your account's home folder.
+    public static let homeFolder = ".kuvo-code"
 
     public static func helperID(ofApp app: String) -> String { app + idSuffix }
     public static func appID(ofHelper helper: String) -> String? {
@@ -38,6 +40,14 @@ public enum BoxHelperBundle {
         guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
               let information = information as? [String: Any] else { return nil }
         return information[kSecCodeInfoTeamIdentifier as String] as? String
+    }
+
+    /// The identifier the code at `url` (or the running process: nil) is signed with, if signed.
+    public static func identifier(of url: URL? = nil) -> String? {
+        guard let code = staticCode(url) else { return nil }
+        var information: CFDictionary?
+        guard SecCodeCopySigningInformation(code, [], &information) == errSecSuccess else { return nil }
+        return (information as? [String: Any])?[kSecCodeInfoIdentifier as String] as? String
     }
 
     private static func staticCode(_ url: URL?) -> SecStaticCode? {
@@ -106,7 +116,7 @@ public enum BoxHelperBundle {
         return (information as? [String: Any])?[kSecCodeInfoUnique as String] as? Data
     }
 
-    /// Why the helper installed in `home` won't be opened: missing, or not Kuvo Code Box as the app
+    /// Why the helper installed in `home` won't be opened: missing, or not Kuvo Helper as the app
     /// asking (`app`, its bundle ID) carries it. Nil: it's well.
     public static func trouble(installedIn home: URL, app: String, signer: Signer? = .ofThisProgram, carrier: URL = Bundle.main.bundleURL) -> String? {
         let bundle = installed(in: home)
@@ -129,8 +139,7 @@ public enum BoxHelperBundle {
     /// runs already stays (it holds the box's lock). Checked first (`trouble`).
     public static func open(home: URL, app: String, opener: String = "/usr/bin/open", signer: Signer? = .ofThisProgram, carrier: URL = Bundle.main.bundleURL) async throws {
         if let trouble = trouble(installedIn: home, app: app, signer: signer, carrier: carrier) { throw Refused(trouble) }
-        let result = try await ChildProcess.run(opener, ["-g", "-j", "-n", installed(in: home).path(percentEncoded: false), "--args", "keep", "--home", home.path(percentEncoded: false)],
-                                                output: .discard, errors: .collect, limit: .seconds(20), cancellable: false)
+        let result = try await ShortCommand.run(opener, ["-g", "-j", "-n", installed(in: home).path(percentEncoded: false), "--args", "keep", "--home", home.path(percentEncoded: false)], limit: .seconds(20))
         guard result.succeeded else {
             let said = result.errorText.trimmingCharacters(in: .whitespacesAndNewlines)
             throw Refused(result.timedOut ? "macOS didn’t open \(name) in time." : said.isEmpty ? "macOS didn’t open \(name)." : said)

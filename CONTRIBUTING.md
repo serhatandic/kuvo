@@ -427,6 +427,7 @@ README says how.
 | Path | What's there |
 | --- | --- |
 | `box/` | The box (TypeScript): its link, built to `kuvo-link.js`, and the agents bridge (Claude Code, Codex, Cursor, Grok and Antigravity in the engine's API) and the browser's keeper and tools, built to `dist/kuvo-agents.js` and `dist/kuvo-browser.js` (its `README.md`); its tests in `test/`, and the bridge's, on Node, in `bridge-tests/` |
+| `mac/helper/` | Kuvo Helper (Swift, macOS only): the signed program this Mac's box runs under, and `kuvo-keys`, the one-time hand-over of 0.7's Keychain items to it. Built on its own by `scripts/build-helper.sh`; its tests are `swift test` there |
 | `protocol/` | How boxes and clients talk (`PROTOCOL.md`), and the vectors every side is held to (`vectors/`) |
 | `swift/KuvoCode/` | The retired Swift Mac app, kept only to read (`swift/MAC-APP-REFERENCE.md`): views, stores and the design system; its project is `swift/KuvoCode.xcodeproj`, its tests `swift/KuvoCodeTests/` |
 | `swift/OpenCodeKit/` | The engine client: API, models, event stream, transcript reducer, engine installer |

@@ -286,8 +286,7 @@ public final class BoxHelperHost {
         guard BoxHelperBundle.isKuvoCode(bundle, identifier: app) else { return Self.said(403, "That isn’t Kuvo Code.") }
         if let executable = Bundle(url: bundle)?.executableURL, RunningApp.runs(executable) { return .json([:]) }
         do {
-            let result = try await ChildProcess.run(opener, ["-g", "-j", "-a", bundle.path(percentEncoded: false), "--args", "--in-background"],
-                                                    output: .discard, errors: .collect, limit: .seconds(20), cancellable: false)
+            let result = try await ShortCommand.run(opener, ["-g", "-j", "-a", bundle.path(percentEncoded: false), "--args", "--in-background"], limit: .seconds(20))
             guard result.succeeded else {
                 let said = result.errorText.trimmingCharacters(in: .whitespacesAndNewlines)
                 return Self.said(502, result.timedOut ? "macOS didn’t open it in time." : said.isEmpty ? "macOS refused." : said)

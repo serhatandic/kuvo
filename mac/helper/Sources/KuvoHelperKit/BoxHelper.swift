@@ -1,4 +1,5 @@
 #if os(macOS)
+import ApplicationServices
 import CoreGraphics
 import Darwin
 import Foundation
@@ -6,7 +7,7 @@ import os
 
 nonisolated private let log = Logger(subsystem: "run.kuvo.code", category: "box-helper")
 
-/// Kuvo Code Box: the program a Mac's box in a home of its own runs under (#333 piece 4; KuvoLink's
+/// Kuvo Helper: the program a Mac's box in a home of its own runs under (#333 piece 4; KuvoLink's
 /// PROTOCOL.md, "This Mac's box: its helper"). launchd starts it at login (the launch agent
 /// `run.kuvo.code.machine`), or the app opens it once while Login Items doesn't. It holds no box
 /// logic: everything the box does is `kuvo-start`'s and the box's own, as on every computer. It's
@@ -14,11 +15,13 @@ nonisolated private let log = Logger(subsystem: "run.kuvo.code", category: "box-
 ///
 /// - **what macOS asks about**: it's the parent of `kuvo-start keep` (and so the responsible process
 ///   of the engine, the bridge and every agent's command), so folders, Screen Recording and the
-///   rest are asked for Kuvo Code Box, and kept for it;
+///   rest are asked for Kuvo Helper, and kept for it;
 /// - **the box's host interface** (`BoxHelperHost`): its keys in your Keychain;
 /// - **`serve`**, which it starts (`kuvo-start serve`) and keeps running with the vault's secrets on
 ///   its stdin, never in a file or its environment;
-/// - **macOS asking you something**, noted in `run/.system-asking` for the box's watch.
+/// - **macOS asking you something**, noted in `run/.system-asking` for the box's watch;
+/// - **what macOS allows it** (Screen Recording, Accessibility), noted in `run/permissions.json`
+///   for the box to say (`kuvo/box/permissions`): only it can ask macOS that about itself.
 @MainActor
 public final class BoxHelper {
     let home: URL
@@ -27,6 +30,10 @@ public final class BoxHelper {
     let environment: [String: String]
     /// Whether macOS is asking you something now (a test's says).
     var asking: () -> Bool = { BoxHelper.systemPromptOpen }
+
+    /// What macOS allows this program now (a test's says).
+    var allowed: () -> Permissions = { Permissions.asMacOSSays }
+    private var notedPermissions: Permissions?
 
     private var keeper: Child?
     private var serve: Child?
@@ -50,7 +57,7 @@ public final class BoxHelper {
 
     // MARK: Entry
 
-    /// `Kuvo Code Box [keep] [--home <box>]`: runs the box until launchd stops it, or the box is
+    /// `Kuvo Helper [keep] [--home <box>]`: runs the box until launchd stops it, or the box is
     /// turned off (`kuvo-start off`). `keys check|uncopy|back [--app <Kuvo Code.app>]`: one of the
     /// Keychain's steps a box's move owes it (`KeychainMove`), said in JSON; 0 once done.
     public nonisolated static func main(_ arguments: [String]) -> Never {
@@ -68,8 +75,11 @@ public final class BoxHelper {
         #if DEBUG
         // Tests alone: a keychain file of their own.
         if let file = option("--test-keychain"), let password = option("--test-keychain-password") { keychain = HostKeychain(testFile: file, password: password) }
+        // Nor does a test's build ask macOS what it's allowed: the test says (`screen-recording,accessibility`; nothing unless said).
+        let said = Set((option("--test-permissions") ?? "").split(separator: ",").map(String.init))
+        let allowed: @Sendable () -> Permissions = { Permissions(screenRecording: said.contains("screen-recording"), accessibility: said.contains("accessibility")) }
         // (A debug build is the tests' alone, and never reaches your login keychain: the release's is
-        // built by scripts/build-box-helper.sh.)
+        // built by scripts/build-helper.sh.)
         guard keychain.isTests else { fail("A test build of \(BoxHelperBundle.name) reads only a test's keychain: --test-keychain <file> --test-keychain-password <password>.") }
         #endif
         // (launchd's `open` adds a process serial number for an app it opens.)
@@ -82,6 +92,7 @@ public final class BoxHelper {
         let pinned = false
         #else
         let pinned = true
+        let allowed: @Sendable () -> Permissions = { Permissions.asMacOSSays }
         #endif
         let home: URL
         switch box(given: given, bundle: Bundle.main.bundleURL, accountHome: accountHome(), pinned: pinned, keeping: command == "keep") {
@@ -97,7 +108,7 @@ public final class BoxHelper {
         }
         switch command {
         case "keep" where words.count <= 1:
-            MainActor.assumeIsolated { keep(home: home, keychain: keychain, prefix: prefix, app: app) }
+            MainActor.assumeIsolated { keep(home: home, keychain: keychain, prefix: prefix, app: app, allowed: allowed) }
             dispatchMain()
         case "keys" where words.count == 2:
             let move = KeychainMove(keychain: keychain, home: home, app: app, helper: prefix)
@@ -173,7 +184,7 @@ public final class BoxHelper {
         let home: URL
         if pinned {
             guard let accountHome else { return .failure(Refused(why: "Your home folder can’t be found.")) }
-            home = accountHome.appending(path: RemoteEngineInstaller.root)
+            home = accountHome.appending(path: BoxHelperBundle.homeFolder)
             if let given, place(URL(filePath: given)) != place(home) {
                 return .failure(Refused(why: "\(BoxHelperBundle.name) runs only this Mac’s box, \(home.path(percentEncoded: false))."))
             }
@@ -213,13 +224,13 @@ public final class BoxHelper {
     }
 
     /// The box kept, in this process, for as long as it runs.
-    private static func keep(home: URL, keychain: HostKeychain, prefix: String, app: String) {
+    private static func keep(home: URL, keychain: HostKeychain, prefix: String, app: String, allowed: @escaping () -> Permissions) {
         let run = home.appending(path: "run")
         try? FileManager.default.createDirectory(at: run, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         // One at a time: one opened while launchd's runs goes at once, and cleanly.
         let lock = open(run.appending(path: "helper.lock").path(percentEncoded: false), O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
         guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else {
-            log.info("Another Kuvo Code Box runs this box already")
+            log.info("Another Kuvo Helper runs this box already")
             exit(0)
         }
         // Nothing starts from a helper changed since it was signed (what it runs as is what macOS
@@ -250,6 +261,7 @@ public final class BoxHelper {
         var environment = childEnvironment(ProcessInfo.processInfo.environment)
         environment["HOME"] = home.deletingLastPathComponent().path(percentEncoded: false)
         let helper = BoxHelper(home: home, host: BoxHelperHost(home: home, keychain: keychain, prefix: prefix, app: app), environment: environment)
+        helper.allowed = allowed
         helper.begin()
     }
 
@@ -263,7 +275,7 @@ public final class BoxHelper {
             return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? ["unreadable": true]
         }
         if let journal = object("journal.json"), journal["step"] as? String != "done" {
-            return "This Mac’s box is moving: Kuvo Code Box starts it once the move’s finished."
+            return "This Mac’s box is moving: Kuvo Helper starts it once the move’s finished."
         }
         let journal: KeychainMove.Journal?
         do {
@@ -307,6 +319,7 @@ public final class BoxHelper {
             signals.append(source)
         }
         host.failed = { [weak self] in Task { @MainActor in await self?.startHost() } }
+        notePermissions()
         Task {
             await startHost()
             startServe()
@@ -366,7 +379,7 @@ public final class BoxHelper {
     private func ended(_ child: Child) {
         guard !finishing else { return }
         if isOff {
-            log.notice("This Mac's box was turned off: Kuvo Code Box goes too")
+            log.notice("This Mac's box was turned off: Kuvo Helper goes too")
             return finish(0)
         }
         let wait = child.nextWait()
@@ -378,11 +391,12 @@ public final class BoxHelper {
         }
     }
 
-    /// Every ten seconds: macOS asking you something noted for the box, and `serve` started again
-    /// once the vault's file key it lacked can be read.
+    /// Every ten seconds: macOS asking you something and what it allows noted for the box, and
+    /// `serve` started again once the vault's file key it lacked can be read.
     private func look() async {
         while !finishing, !Task.isCancelled {
             noteAsking(asking())
+            notePermissions()
             if serveLacksFileKey, let serve, serve.isRunning, host.vaultFileKey().key != nil {
                 log.info("The vault's key can be read now: the box's server starts again with it")
                 serve.planned = true
@@ -399,6 +413,18 @@ public final class BoxHelper {
         if open { FileManager.default.createFile(atPath: file.path(percentEncoded: false), contents: nil) } else { try? FileManager.default.removeItem(at: file) }
     }
 
+    var permissionsFile: URL { run.appending(path: "permissions.json") }
+
+    /// What macOS allows this program, written for the box when it changes (and first): facts only,
+    /// with this process's number, so the box can tell a record left by one that's gone.
+    func notePermissions() {
+        let now = allowed()
+        guard now != notedPermissions else { return }
+        let record: [String: Any] = ["v": 1, "pid": Int(getpid()), "screenRecording": now.screenRecording, "accessibility": now.accessibility]
+        guard let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]), (try? PrivateFile.write(data, to: permissionsFile)) != nil else { return }
+        notedPermissions = now
+    }
+
     /// Everything it started, told to stop (`serve` by its stdin closing, the keeper by SIGTERM: the
     /// engine, link and bridge, detached, go on for the next keeper to take over); its record taken
     /// away, and gone.
@@ -410,6 +436,7 @@ public final class BoxHelper {
         keeper?.terminate()
         host.stop()
         noteAsking(false)
+        try? FileManager.default.removeItem(at: permissionsFile)
         let children = [serve, keeper].compactMap { $0 }
         Task {
             // A few seconds for them to go, then SIGTERM, and a second after that, SIGKILL.
@@ -425,6 +452,19 @@ public final class BoxHelper {
     nonisolated static var systemPromptOpen: Bool {
         let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
         return windows.contains { $0[kCGWindowOwnerName as String] as? String == "UserNotificationCenter" }
+    }
+}
+
+/// What macOS allows the helper (and so everything the box runs under it), where macOS can be asked
+/// without asking you: Screen Recording and Accessibility. (Files and Folders and Local Network
+/// can't be asked about: they show only in what fails.)
+struct Permissions: Equatable, Sendable {
+    var screenRecording: Bool
+    var accessibility: Bool
+
+    /// As macOS says of this process now. Neither call asks you anything.
+    static var asMacOSSays: Permissions {
+        Permissions(screenRecording: CGPreflightScreenCaptureAccess(), accessibility: AXIsProcessTrusted())
     }
 }
 
