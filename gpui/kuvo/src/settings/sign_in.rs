@@ -81,6 +81,9 @@ pub struct SignIn {
     fields: Vec<Field>,
     misses: u32,
     wants_focus: bool,
+    /// Drawn in place, under its account's row (the first run), rather than as a sheet: no card
+    /// or title of its own.
+    in_place: bool,
     /// Closed: a sign-in still starting is given up on as soon as it has started.
     closed: Arc<AtomicBool>,
     focus: FocusHandle,
@@ -124,11 +127,18 @@ impl SignIn {
             fields: Vec::new(),
             misses: 0,
             wants_focus: true,
+            in_place: false,
             closed: Arc::new(AtomicBool::new(false)),
             focus: cx.focus_handle(),
             poll: None,
             work: None,
         }
+    }
+
+    /// Drawn in place, under its account's row, with no card or title of its own.
+    pub fn in_place(mut self) -> SignIn {
+        self.in_place = true;
+        self
     }
 
     pub fn step(&self) -> &Step {
@@ -516,15 +526,23 @@ impl Render for SignIn {
                 ]),
             ],
         };
-        div()
+        let sheet = div()
             .id("sign-in")
             .debug_selector(|| "sign-in".into())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" {
                     this.close(cx);
+                    // (In place, Escape gives up the sign-in alone, not the step it's in.)
+                    if this.in_place {
+                        cx.stop_propagation();
+                    }
                 }
-            }))
+            }));
+        if self.in_place {
+            return sheet.w_full().flex().flex_col().gap(space::S3).children(body);
+        }
+        sheet
             .w(px(440.))
             .max_w_full()
             .flex()
@@ -749,11 +767,12 @@ impl SignIn {
         }
         let url = attempt.url.clone();
         let copy = attempt.url.clone();
-        out.push(footer(vec![
-            Button::new("sign-in-cancel", "Cancel").ghost().on_click(cx.listener(|this, _, _, cx| this.back(cx))).into_any_element(),
+        // (In place, its row has Cancel.)
+        let cancel = (!self.in_place).then(|| Button::new("sign-in-cancel", "Cancel").ghost().on_click(cx.listener(|this, _, _, cx| this.back(cx))).into_any_element());
+        out.push(footer(cancel.into_iter().chain([
             Button::new("sign-in-copy-link", "Copy Link").ghost().on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))).into_any_element(),
             Button::new("sign-in-open", "Open the Page Again").icon_after(IconName::External).on_click(move |_, _, cx| cx.open_url(&url)).into_any_element(),
-        ]));
+        ]).collect()));
         out
     }
 }
