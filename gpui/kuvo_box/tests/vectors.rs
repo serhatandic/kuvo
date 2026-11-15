@@ -226,6 +226,17 @@ fn a_held_box_is_asked_only_what_keeps_work_going() {
     }
 }
 
+/// The names in a list kept one a line, in order: each once, sorted, as union merges may leave two
+/// branches' names side by side in either order (which changes nothing a client does).
+fn names_once(list: Vec<&str>, file: &str) -> Vec<String> {
+    let mut names: Vec<String> = list.into_iter().map(str::to_owned).collect();
+    names.sort();
+    for pair in names.windows(2) {
+        assert_ne!(pair[0], pair[1], "{} names {:?} twice: a union merge kept both branches' line", file, pair[0]);
+    }
+    names
+}
+
 /// The gate holds the same boxes as the Swift apps': the names in KuvoClient's `BoxGate.required`,
 /// whose file is one name a line, each maybe with a comment saying what needs it.
 #[test]
@@ -238,28 +249,17 @@ fn the_gate_needs_what_the_swift_clients_need() {
         .map(|line| line.split("//").next().unwrap().trim().trim_end_matches(',').trim_matches('"'))
         .filter(|name| !name.is_empty())
         .collect();
-    assert_eq!(names, gate::REQUIRED);
+    assert_eq!(names_once(names, "BoxGate+Required.swift"), names_once(gate::REQUIRED.to_vec(), "gate/required.rs"));
 }
 
-/// The lists merge by union (.gitattributes), which can leave two branches' names out of order or
-/// one twice: each name once, in order (`LC_ALL=C sort`), as a branch adds it.
-#[test]
-fn the_gates_names_are_each_once_in_order() {
-    for pair in gate::REQUIRED.windows(2) {
-        assert!(pair[0].as_bytes() < pair[1].as_bytes(), "{:?} then {:?}: one name a line, in order, each once", pair[0], pair[1]);
-    }
-}
-
-/// The protocol names exactly the same required features as both native clients.
+/// The protocol names exactly the same required features as both native clients
+/// (protocol/gate-required.txt, which PROTOCOL.md's "The update gate" points to).
 #[test]
 fn the_gate_matches_the_protocols_update_gate_list() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol/PROTOCOL.md");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol/gate-required.txt");
     let protocol = std::fs::read_to_string(path).unwrap();
-    let list = protocol.split("### The update gate").nth(1)
-        .and_then(|rest| rest.split("one a line and in order, so branches that each add one merge cleanly:\n").nth(1))
-        .and_then(|rest| rest.trim_start().split("\n\n").next()).expect("documented gate list");
-    let names: Vec<&str> = list.lines().map(|line| line.trim_start_matches("- `").trim_end_matches('`')).collect();
-    assert_eq!(names, gate::REQUIRED);
+    let names: Vec<&str> = protocol.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).collect();
+    assert_eq!(names_once(names, "gate-required.txt"), names_once(gate::REQUIRED.to_vec(), "gate/required.rs"));
 }
 
 /// A message's parts as every client reads them, kept with a message or read by its box from one

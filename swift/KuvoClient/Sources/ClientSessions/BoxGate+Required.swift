@@ -1,13 +1,13 @@
 extension BoxGate {
     /// What this client uses with no way around it on a box that hasn't it. A name goes in here
     /// when the client drops its fallback for a box without it, or would say it needs a newer
-    /// Kuvo Code; the same names in gpui's `kuvo_box` (src/gate/required.rs) and PROTOCOL.md ("The
-    /// update gate"), which gpui's tests hold to this list.
+    /// Kuvo Code; the same names in gpui's `kuvo_box` (src/gate/required.rs) and
+    /// protocol/gate-required.txt (PROTOCOL.md, "The update gate"), which gpui's tests hold to this.
     ///
-    /// One name a line, in order (`LC_ALL=C sort`), what needs it in a comment on that line, and nothing
-    /// else changes in this file: git merges it by union (.gitattributes), so branches
-    /// that each add a name merge without a conflict (CONTRIBUTING.md, "What branches don't edit
-    /// by hand").
+    /// One name a line, in order (`LC_ALL=C sort`), what needs it in a comment on that line, and
+    /// nothing else changes in this file: git merges it by union (.gitattributes), so branches that
+    /// each add a name merge without a conflict, two added side by side in either order
+    /// (CONTRIBUTING.md, "What branches don't edit by hand").
     public static let required: [String] = [
         "agent-tools.own",
         "bots.deletes", // the desktop client's Bots area draws what the box says of a delete

@@ -2,12 +2,14 @@ CHANGELOG.md merge=union
 # Lists that many branches add to, one name a line, in order: union keeps the lines both sides
 # added instead of a conflict (CONTRIBUTING.md, "What branches don't edit by hand"). Only where
 # each line of the list is whole by itself (a trailing comma on each) and nothing else in the file
-# changes often. A union that leaves a list out of order, or a name twice, fails its tests:
-# features.ts the box's (test/features.test.ts) and `route-shapes.sh --check`; the update gate's
-# lists gpui's (kuvo_box/tests/vectors.rs).
+# changes often. features.ts: a union that leaves its list out of order, or a name twice, fails the
+# box's tests (test/features.test.ts) and `route-shapes.sh --check`. The update gate's lists: a name
+# twice, or one missing from another, fails gpui's (kuvo_box/tests/vectors.rs); two names side by
+# side in either order are fine.
 box/src/shared/features.ts merge=union
 swift/KuvoClient/Sources/ClientSessions/BoxGate+Required.swift merge=union
 gpui/kuvo_box/src/gate/required.rs merge=union
+protocol/gate-required.txt merge=union
 # What's built from sources and kept in git: two branches that both built one conflict on it, and
 # neither side is right after the merge. The kuvo-built driver keeps this side's, so the merge goes
 # on; build again after it and commit what that writes, as each script's `--check` (and the box's

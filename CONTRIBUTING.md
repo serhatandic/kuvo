@@ -880,12 +880,12 @@ and the lists they add to merge line by line:
   `box/bridge-tests/bridge.test.js`, whose order it checks), `MAC_FEATURES`, `MACHINE_FEATURES`, and
   PROTOCOL.md's table of names ("Features").
 - **The update gate's lists** (what a client needs of a box, PROTOCOL.md's "The update gate"): one
-  name a line, in order, in KuvoClient's `BoxGate+Required.swift` (what needs a name in a comment
-  on its line), gpui's `kuvo_box/src/gate/required.rs` and PROTOCOL.md's list, and in the phone's
-  `DemoBox+Features.swift` (the sample Mac's features). The two code files and the phone's are
-  files of their own that git merges by union, so names two branches add side by side both stay;
-  gpui's tests (`kuvo_box/tests/vectors.rs`) hold the three kuvo-ai lists to each other, each name
-  once and in order. Adding a name, change nothing else in those files.
+  name a line, in order, in files of their own that git merges by union: KuvoClient's
+  `BoxGate+Required.swift` (what needs a name in a comment on its line), gpui's
+  `kuvo_box/src/gate/required.rs` and `protocol/gate-required.txt` (PROTOCOL.md points to it), and
+  the phone's `DemoBox+Features.swift` (the sample Mac's features). Names two branches add side by
+  side both stay, in either order, which is fine; gpui's tests (`kuvo_box/tests/vectors.rs`) hold
+  the three kuvo-ai lists to the same names, each once. Adding a name, change nothing else there.
 - **A branch from before these were one a line** (#396) merges main into itself first, where the
   old lines conflict as they always did, and puts its names back one a line, in order. Merged the
   other way, into main, `features.ts`'s union takes its old line whole beside the new ones: it

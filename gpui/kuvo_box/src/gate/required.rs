@@ -1,9 +1,10 @@
 //! What this client uses with no way around it on a box that hasn't it: the same names as
 //! KuvoClient's `BoxGate.required` (BoxGate+Required.swift, which says what needs each) and
-//! PROTOCOL.md's ("The update gate"), as tests/vectors.rs checks.
+//! protocol/gate-required.txt (PROTOCOL.md, "The update gate"), as tests/vectors.rs checks.
 //!
 //! One name a line, in order (`LC_ALL=C sort`), and nothing else changes in this file: git merges it
-//! by union (.gitattributes), so branches that each add a name merge without a conflict.
+//! by union (.gitattributes), so branches that each add a name merge without a conflict (two
+//! added side by side may land in either order, which is fine).
 
 pub const REQUIRED: &[&str] = &[
     "agent-tools.own",
