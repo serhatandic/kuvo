@@ -7824,17 +7824,30 @@ was named Kuvo Code Box, in no release.)
   you anything) as it starts and every ten seconds, and writes `run/permissions.json` when that
   changes or the note's gone: `{"v": 1, "pid": <its own>, "started": <when its process started, in
   seconds>, "screenRecording": bool, "accessibility": bool}`, `0600`, taken away as it goes. The box says it:
-  - `GET kuvo/box/permissions` → `{applies, name, known, screenRecording, accessibility}`.
+  - `GET kuvo/box/permissions` → `{applies, name, known, screenRecording, accessibility, bundle, list}`.
     `applies`: whether this box runs under such a program (a Mac's own box in a home of its own);
     `name`: what System Settings lists it as (`"Kuvo Helper"`), null where it doesn't apply;
     `known`: whether the helper runs now and has said (a note whose `pid` isn't a running process
     of yours that started when `started` says, to within three seconds, as `ps` has it, says
     nothing: a helper killed where it stood leaves its note, and its number goes to another
     process; nor does one that isn't as above); each permission `true` or `false`, null while not `known`.
-    `405` for anything but `GET`: nothing here grants anything, which only you do, in System
+  - `bundle`: that program on the Mac (a full path to `bin/Kuvo Helper.app` in the box's home),
+    what you drag into a list in System Settings; null where it doesn't apply.
+  - `list`: each permission in words, for a client to draw without naming any itself:
+    `[{id, name, allowed, settings, byHand, asks}]`. `id` is `screenRecording` or `accessibility`;
+    `name` what System Settings calls it; `allowed` as above; `settings` the address that opens
+    its list in System Settings (`x-apple.systempreferences:…`), which only an app on that Mac
+    can open; `byHand`: macOS asks nothing for it, you add the program to the list yourself (both,
+    today: the helper never asks); `asks`: whether a client brings it up now, true while it's
+    known not to be allowed and you haven't put it off. Empty where it doesn't apply.
+  - `POST kuvo/box/permissions {later: "<id>"}` puts one off (a client's "Not Now"), kept in the
+    box (`box/permissions-later.json`) so every client agrees and none asks at each open; once
+    it's allowed it's no longer put off, so one taken away later is brought up again. It answers
+    as `GET` does. `400 {message}` for no such permission; `409 {message}` where it doesn't
+    apply. `405` for any other method: nothing here grants anything, which only you do, in System
     Settings › Privacy & Security.
   - A machine's box (Linux, or a Mac set up as one) and a Mac's box still in its app's folder
-    answer `{applies: false, name: null, known: false, …null}`: on Linux there's nothing to allow,
+    answer `{applies: false, name: null, known: false, …null, bundle: null, list: []}`: on Linux there's nothing to allow,
     and on a Mac macOS asks about each program there by its own name.
   - Files and Folders and Local Network aren't here yet: macOS can't be asked about them, so they
     can only be told from what fails. Screen Recording as macOS has it for a running program may

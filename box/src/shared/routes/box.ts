@@ -110,13 +110,18 @@ export const REHOME = object({
 /** What macOS allows the program this Mac's box runs under (`kuvo/box/permissions`, PROTOCOL.md,
  * "What macOS allows"): whether there's such a program here (`applies`: a Mac's own box in a home of
  * its own; never on Linux) and its name as System Settings lists it, whether it runs and has said
- * (`known`), and each permission macOS can be asked about, null where that isn't known. */
+ * (`known`), and each permission macOS can be asked about, null where that isn't known; that
+ * program's bundle on the Mac (`bundle`), and each permission in words (`list`): what System
+ * Settings calls it, the address of its list there, whether you add the program to it by hand, and
+ * whether a client brings it up now (`asks`). */
 export const BOX_PERMISSIONS = object({
   applies: bool,
   name: nullable(string),
   known: bool,
   screenRecording: nullable(bool),
   accessibility: nullable(bool),
+  bundle: nullable(string),
+  list: list(object({ id: words("screenRecording", "accessibility"), name: string, allowed: nullable(bool), settings: string, byHand: bool, asks: bool })),
 });
 
 /** This Mac's app as its box knows it (`kuvo/box/app`, PROTOCOL.md, "This Mac's app"): where it's
@@ -373,6 +378,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "GET kuvo/box/rehome", answers: { 200: REHOME } },
   { route: "POST kuvo/box/rehome", answers: { 200: REHOME } },
   { route: "GET kuvo/box/permissions", answers: { 200: BOX_PERMISSIONS } },
+  { route: "POST kuvo/box/permissions", answers: { 200: BOX_PERMISSIONS, 400: object({ message: string }), 409: object({ message: string }) } },
   { route: "GET kuvo/box/app", answers: { 200: BOX_APP } },
   { route: "POST kuvo/box/app", answers: { 200: BOX_APP } },
   { route: "POST kuvo/box/app/open", answers: { 200: BOX_APP } },
