@@ -288,7 +288,10 @@ test("adding a computer: the box shows a host key it doesn't know, and on Trust 
   assert.match(listed.actions.find(action => action.id === "uninstall").confirm.message, /Studio connects to studio over SSH/);
   assert.deepEqual((await ask("GET", "kuvo/computers/add")).body.hosts, ["gpu", "github.com"]);
   // One connection shared by its scripts, and let go of at the end.
-  assert.equal(sshLog().at(-1), "studio  exit");
+  // (Where a socket's path fits: a Mac's short folder in /tmp; on Linux the box's own `run/ssh`,
+  // which a test's deep home can be too long for, and then each script connects by itself.)
+  const shares = process.platform === "darwin" || Buffer.byteLength(path.join(home, "run", "ssh")) <= 55;
+  assert.equal(sshLog().at(-1), shares ? "studio  exit" : "studio yes run");
 });
 
 test("the same computer under another address is the one already here, not a second one", async () => {
