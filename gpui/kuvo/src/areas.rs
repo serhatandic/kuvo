@@ -4,9 +4,9 @@
 //! view, kept while another area shows and drawn only while its own does; Bots and the Work Queue
 //! ask the box as they open, and the window hands Computers the list its title bar draws too.
 //!
-//! Bots' main view is its own (`crate::bots`): a bot's page, New Bot. So is the Work Queue's
-//! (`crate::queue`): the queue and an item's page. Computers' pages, and a group chat's, aren't in
-//! the app yet: picking a row there shows a plain page saying so.
+//! Bots' main view is its own (`crate::bots`): a bot's page, New Bot; and a group chat's
+//! (`crate::groups`): its conversation, its editor, New Group. So is the Work Queue's
+//! (`crate::queue`): the queue and an item's page; and Computers' (`crate::computers`).
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, EventEmitter, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString,
@@ -27,6 +27,7 @@ use kuvo_ui::{
 use crate::area::Area;
 use crate::bots::{BotsEvent, BotsView, There};
 use crate::computers::{ComputersEvent, ComputersView};
+use crate::groups::{GroupsEvent, GroupsView};
 use crate::queue::marks::{label_dot, status_mark};
 use crate::queue::{Act as QueueAct, QueueEvent, QueueView};
 use crate::settings::{Pick, SettingsView};
@@ -52,6 +53,8 @@ pub struct Bots {
     /// The box couldn't say what it holds just now: what it last said is kept.
     pub held_unsaid: bool,
     pub groups: Vec<Group>,
+    /// Why the group chats couldn't be read just now (those last read are kept meanwhile).
+    pub groups_failed: Option<String>,
 }
 
 impl Bots {
@@ -104,9 +107,14 @@ pub struct AreaView {
     /// Bots' main view: a bot's page and New Bot.
     page: Option<gpui::Entity<BotsView>>,
     _page: Vec<gpui::Subscription>,
+    /// The group chats' main view, in Bots: a chat, its editor, New Group.
+    groups: Option<gpui::Entity<GroupsView>>,
+    _groups: Vec<gpui::Subscription>,
     /// The Work Queue's main view: the queue and an item's page.
     queue_page: Option<gpui::Entity<QueueView>>,
     _queue_page: Vec<gpui::Subscription>,
+    /// The group chats followed, in Bots (the app): the list as it changes.
+    _groups_follow: Option<(kuvo_box::Follow<kuvo_box::follow::Followed<kuvo_box::groups::Groups>>, Task<()>)>,
 }
 
 impl EventEmitter<Picked> for AreaView {}
@@ -145,6 +153,25 @@ impl AreaView {
                     }),
                     // Its sheet dims the sidebar too: redrawn as it opens and closes.
                     cx.observe(page, |_, _, cx| cx.notify()),
+                ]
+            })
+            .unwrap_or_default();
+        let groups = (area == Area::Bots).then(|| cx.new(|cx| GroupsView::new(client.clone(), live, cx)));
+        let groups_subscriptions = groups
+            .as_ref()
+            .map(|groups| {
+                vec![
+                    cx.subscribe(groups, |this: &mut AreaView, _, event: &GroupsEvent, cx| match event {
+                        GroupsEvent::BotChat { bot, session } => cx.emit(Go::BotChat { bot: bot.clone(), session: session.clone(), draft: None }),
+                        GroupsEvent::Select(Some(key)) => this.pick(key.clone(), cx),
+                        GroupsEvent::Select(None) => {
+                            this.select(None, cx);
+                            cx.emit(Picked);
+                        }
+                        // The chats as the box lists them now (a change's answer shows meanwhile).
+                        GroupsEvent::Changed => this.read_list(cx),
+                    }),
+                    cx.observe(groups, |_, _, cx| cx.notify()),
                 ]
             })
             .unwrap_or_default();
@@ -190,7 +217,21 @@ impl AreaView {
                 })]
             })
             .unwrap_or_default();
-        AreaView { computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_changes: changes }
+        let groups_follow = (area == Area::Bots && live).then(|| {
+            let follow = client.follow_groups(kuvo_box::Timing::default());
+            let updates = follow.updates().clone();
+            let task = cx.spawn(async move |this, cx| {
+                while let Ok(update) = updates.recv().await {
+                    if let kuvo_box::follow::Followed::Now(list) = update
+                        && this.update(cx, |this, cx| this.take_groups(list.groups, cx)).is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+            (follow, task)
+        });
+        AreaView { _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
@@ -203,6 +244,35 @@ impl AreaView {
         self.page.as_ref()
     }
 
+    /// The group chats' main view, in the Bots area.
+    pub fn groups(&self) -> Option<&gpui::Entity<GroupsView>> {
+        self.groups.as_ref()
+    }
+
+    /// The group chats as the box lists them now (followed): drawn in the sidebar and handed to
+    /// their view. Before the bots are read, they wait for the list's next read.
+    fn take_groups(&mut self, groups: Vec<Group>, cx: &mut Context<Self>) {
+        let Reading::Ready(bots) = &mut self.bots else { return };
+        if bots.groups == groups && bots.groups_failed.is_none() {
+            return;
+        }
+        bots.groups = groups.clone();
+        bots.groups_failed = None;
+        let all = bots.bots.clone();
+        if let Some(view) = &self.groups {
+            view.update(cx, |view, cx| view.set_listed(groups, all, cx));
+        }
+        cx.notify();
+    }
+
+    /// Whether Bots' main view is on screen (Bots shown, no bot's conversation over it): a group
+    /// chat is followed and marked read only then.
+    pub fn set_on_screen(&mut self, on: bool, cx: &mut Context<Self>) {
+        if let Some(groups) = &self.groups {
+            groups.update(cx, |groups, cx| groups.set_on_screen(on, cx));
+        }
+    }
+
     /// The Work Queue's main view, in the Work Queue area.
     pub fn queue_page(&self) -> Option<&gpui::Entity<QueueView>> {
         self.queue_page.as_ref()
@@ -213,9 +283,8 @@ impl AreaView {
         self.computers_page.as_ref()
     }
 
-    /// The area's own main view, for what's picked: a bot's page or New Bot, the Work Queue or one
-    /// of its items, your computers or one of them. None where the page isn't in the app yet (a
-    /// group chat).
+    /// The area's own main view, for what's picked: a bot's page or New Bot, a group chat, its
+    /// editor or New Group, the Work Queue or one of its items, your computers or one of them.
     pub fn main(&self) -> Option<gpui::AnyView> {
         if let Some(page) = &self.computers_page {
             return Some(page.clone().into());
@@ -223,9 +292,12 @@ impl AreaView {
         if let Some(page) = &self.queue_page {
             return Some(page.clone().into());
         }
-        let page = self.page.as_ref()?;
-        let other = self.selected.as_deref().is_some_and(|key| key.starts_with("group:"));
-        (!other).then(|| page.clone().into())
+        if self.selected.as_deref().is_some_and(is_group_key)
+            && let Some(groups) = &self.groups
+        {
+            return Some(groups.clone().into());
+        }
+        self.page.as_ref().map(|page| page.clone().into())
     }
 
     pub fn area(&self) -> Area {
@@ -239,6 +311,9 @@ impl AreaView {
         }
         if let Some(page) = &self.page {
             page.update(cx, |page, _| page.set_now(now));
+        }
+        if let Some(groups) = &self.groups {
+            groups.update(cx, |groups, cx| groups.set_now(now, cx));
         }
         if let Some(page) = &self.queue_page {
             page.update(cx, |page, _| page.set_now(now));
@@ -291,6 +366,9 @@ impl AreaView {
         if let Some(page) = &self.page {
             page.update(cx, |page, cx| page.read(cx));
         }
+        if let Some(groups) = &self.groups {
+            groups.update(cx, |groups, cx| groups.read(cx));
+        }
         if let Some(page) = &self.queue_page {
             page.update(cx, |page, cx| page.read(cx));
         }
@@ -316,6 +394,12 @@ impl AreaView {
             Read::Bots(bots) => {
                 // What the box couldn't say it holds just now stays as it last said it.
                 let bots = bots.map(|mut bots| {
+                    // Chats that couldn't be read just now stay as they were last read.
+                    if bots.groups_failed.is_some()
+                        && let Reading::Ready(before) = &self.bots
+                    {
+                        bots.groups = before.groups.clone();
+                    }
                     if bots.held_unsaid
                         && let Reading::Ready(before) = &self.bots
                     {
@@ -334,6 +418,13 @@ impl AreaView {
                 };
                 if let Some(page) = &self.page {
                     page.update(cx, |page, cx| page.set_said(said, cx));
+                }
+                // (Chats that couldn't be read aren't said to be gone: what was there stays.)
+                if let (Some(groups), Reading::Ready(bots)) = (&self.groups, &self.bots)
+                    && bots.groups_failed.is_none()
+                {
+                    let (chats, all) = (bots.groups.clone(), bots.bots.clone());
+                    groups.update(cx, |groups, cx| groups.set_listed(chats, all, cx));
                 }
             }
             Read::Queue(queue) => {
@@ -378,8 +469,12 @@ impl AreaView {
             settings.update(cx, |settings, cx| settings.set_section(&section, cx));
         }
         if let Some(page) = &self.page {
-            let key = self.selected.clone();
+            let key = self.selected.clone().filter(|key| !is_group_key(key));
             page.update(cx, |page, cx| page.show(key.as_deref(), cx));
+        }
+        if let Some(groups) = &self.groups {
+            let key = self.selected.clone();
+            groups.update(cx, |groups, cx| groups.show(key.as_deref(), cx));
         }
         if let Some(page) = &self.queue_page {
             let key = self.selected.clone();
@@ -399,6 +494,8 @@ impl AreaView {
             "bot" => ready(&self.bots).and_then(|bots| bots.bots.iter().find(|bot| bot.id == id).map(|bot| bot.name.clone())),
             "elsewhere" => ready(&self.bots).and_then(|bots| bots.there().into_iter().find(|there| there.id == id).map(|there| there.name)),
             _ if key == "new" => Some("New Bot".into()),
+            _ if key == "new-group" => Some("New Group".into()),
+            "edit-group" => ready(&self.bots).and_then(|bots| bots.groups.iter().find(|group| group.id == id).map(|group| format!("Edit {}", group.name))),
             _ if key == "add" => Some("Add a Machine".into()),
             "group" => ready(&self.bots).and_then(|bots| bots.groups.iter().find(|group| group.id == id).map(|group| group.name.clone())),
             "status" => ready(&self.queue).and_then(|queue| queue.statuses.iter().find(|status| status.id == id).map(|status| status.name.clone())),
@@ -426,8 +523,11 @@ fn read(area: Area, client: &BoxClient) -> Read {
     match area {
         Area::Bots => Read::Bots(client.bots_said().map(|said| {
             // Group chats come from the same box; a box whose chats can't be read still lists its bots.
-            let groups = client.groups().unwrap_or_default();
-            Bots { bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups }
+            let (groups, groups_failed) = match client.groups() {
+                Ok(groups) => (groups, None),
+                Err(error) => (Vec::new(), Some(kuvo_box::accounts::said(&error))),
+            };
+            Bots { bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups, groups_failed }
         })),
         Area::Queue => Read::Queue(Box::new(client.work_queue_view())),
         _ => Read::Nothing,
@@ -442,6 +542,11 @@ pub fn reading<T: Clone + Default>(read: kuvo_box::Result<T>, before: &Reading<T
         (Err(kuvo_box::Error::NeedsUpdating { .. }), _) => Reading::Ready(T::default()),
         (Err(error), _) => Reading::Failed(error.to_string()),
     }
+}
+
+/// Whether a sidebar key picks one of the group chats' pages.
+pub fn is_group_key(key: &str) -> bool {
+    key == "new-group" || key.starts_with("group:") || key.starts_with("edit-group:")
 }
 
 fn ready<T>(reading: &Reading<T>) -> Option<&T> {
@@ -607,20 +712,32 @@ impl AreaView {
                 );
             }
         }
-        if !bots.groups.is_empty() {
-            rows.push(SectionHeader::new("groups", "Group Chats").into_any_element());
-            let now = self.now();
-            for group in &bots.groups {
-                let key = format!("group:{}", group.id);
-                let when = group.last.as_ref().map(|last| time::ago(last.time, now)).unwrap_or_default();
-                let selector = format!("group-{}", group.id);
-                let row = NavRow::new(SharedString::from(selector.clone()), group.name.clone())
-                    .leading(if group.unread { status_dot(c.accent).into_any_element() } else { Icon::new(kuvo_ui::IconName::Message).color(c.icon).into_any_element() })
-                    .trailing(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(when))
-                    .selected(self.is_selected(&key))
-                    .on_click(self.row_click(key, cx));
-                rows.push(div().debug_selector(move || selector).pb(space::S0_5).child(row).into_any_element());
-            }
+        // Group chats: those that live on this box, and New Group beside their header.
+        let new_group = Button::icon_only("new-group", kuvo_ui::IconName::Plus, "New Group").ghost().size(ButtonSize::Small).tooltip("New Group").selected(self.is_selected("new-group")).disabled(self.client.gate().is_held()).on_click(self.row_click("new-group".into(), cx));
+        rows.push(SectionHeader::new("groups", "Group Chats").action(div().debug_selector(|| "new-group".into()).child(new_group)).into_any_element());
+        if let (true, Some(why)) = (bots.groups.is_empty(), &bots.groups_failed) {
+            rows.push(div().debug_selector(|| "groups-failed".into()).child(quiet(&format!("Group chats couldn’t be read: {why}"), false, cx)).into_any_element());
+        } else if bots.groups.is_empty() {
+            rows.push(div().debug_selector(|| "groups-none".into()).child(quiet("No group chats yet. Make one with the + beside Group Chats, to bring a few bots together.", false, cx)).into_any_element());
+        }
+        let now = self.now();
+        for group in &bots.groups {
+            let key = format!("group:{}", group.id);
+            let when = group.last.as_ref().map(|last| time::ago(last.at_ms(), now)).unwrap_or_default();
+            let selector = format!("group-{}", group.id);
+            let when_selector = format!("group-{}-when-{when}", group.id);
+            let leading = if group.unread {
+                div().debug_selector({ let id = group.id.clone(); move || format!("group-{id}-unread") }).flex().items_center().justify_center().size(px(16.)).child(status_dot(c.accent)).into_any_element()
+            } else {
+                Icon::new(kuvo_ui::IconName::Message).color(c.icon).into_any_element()
+            };
+            let selected = self.is_selected(&key) || self.is_selected(&format!("edit-group:{}", group.id));
+            let row = NavRow::new(SharedString::from(selector.clone()), group.name.clone())
+                .leading(leading)
+                .trailing(div().debug_selector(move || when_selector).text_ui(TypeSize::Caption).text_color(c.text_faint).child(when))
+                .selected(selected)
+                .on_click(self.row_click(key, cx));
+            rows.push(div().debug_selector(move || selector).pb(space::S0_5).child(row).into_any_element());
         }
         rows
     }

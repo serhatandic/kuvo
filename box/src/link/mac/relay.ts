@@ -9,9 +9,7 @@
 // Mac's own routes (`MAC_APP_ROUTES`), which go to the app through the host (`link/route`); of
 // those it answers what it can of its machines while the app isn't there (`machines`).
 
-import fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
 import { engineConnect } from "../areas/engine";
 import { docsChanged } from "../documents/exchange";
 import { peerPlaces, readBridgeFile, readEngineFile } from "../engine/client";
@@ -21,7 +19,8 @@ import { authorizePhone, confirmPhone } from "../phones";
 import { connectOnce, nextTry } from "../relay/connection";
 import { LinkHost } from "../relay/host";
 import { engineHandler } from "../server/router";
-import { OWN_HOME_MAC, RUN } from "../home";
+import { OWN_HOME_MAC } from "../home";
+import { boxAnswers } from "./keeper-runs";
 import { openAppHost } from "../host-interface";
 import { macLink, readLink } from "../state";
 import { appAnswer, passedOn } from "./app-route";
@@ -41,27 +40,7 @@ import type { LinkState } from "../state";
 export const MAC_APP_ROUTES = ["kuvo/machines", "kuvo/hosts", "kuvo/asks", "kuvo/mac", "kuvo/engine"];
 export const macAppAnswers = (route: string): boolean => MAC_APP_ROUTES.some(area => route === area || route.startsWith(`${area}/`));
 
-/** Those of the app's areas this box answers itself now, with the app closed too: its engine's
- * restart while the keeper runs this box (`kuvo-start restart` asks it, as a machine's box asks
- * its own). While the app runs the box itself, the app restarts the engine: `bin/kuvo-start` stays
- * once a keeper has run, and would answer 202 with nothing to ask. */
-export const boxAnswers = (route: string): boolean => route === "kuvo/engine/restart" && keeperRuns();
-
-/** Whether this Mac's keeper runs this box now: its record in `run/keeper.json` names the process
- * that started it, alive. (A record a keeper left as it crashed, its ID another's since, isn't.)
- * So the keeper starts the box itself, nothing between them: `MacBoxTests.theBoxIsItsKeepersOwnChild`. */
-export function keeperRuns(): boolean {
-  let pid = 0;
-  try { pid = Number(JSON.parse(fs.readFileSync(path.join(RUN, "keeper.json"), "utf8"))?.pid); } catch { return false; }
-  if (!Number.isInteger(pid) || pid <= 0 || pid !== process.ppid) return false;
-  // (Another user's process with its ID, after a restart, isn't it: the keeper is always yours.)
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
+export { boxAnswers, keeperRuns } from "./keeper-runs";
 
 const APP_NOT_ANSWERING = "Kuvo Code on this Mac isn't answering. Try again in a moment.";
 /** A Mac's box in a home of its own, its app closed (it said so, or never registered): as its helper says it. */

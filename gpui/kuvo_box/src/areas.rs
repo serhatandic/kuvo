@@ -87,24 +87,8 @@ pub struct DeleteLine {
     pub kept: bool,
 }
 
-/// The last thing said in a group chat.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct GroupLast {
-    pub time: f64,
-}
-
 /// One group chat, as `kuvo/groups` lists it.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct Group {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub discussing: bool,
-    #[serde(default)]
-    pub unread: bool,
-    #[serde(default)]
-    pub last: Option<GroupLast>,
-}
+pub use crate::groups::Group;
 
 // MARK: Computers
 
@@ -407,17 +391,6 @@ impl BoxClient {
         // One a newer box lists in a shape this can't read is left out, not the whole list.
         Ok(answer.bots.into_iter().filter_map(|bot| serde_json::from_value(bot).ok()).collect())
     }
-
-    /// The group chats that live on this box.
-    pub fn groups(&self) -> Result<Vec<Group>> {
-        #[derive(Deserialize)]
-        struct Answer {
-            groups: Vec<serde_json::Value>,
-        }
-        let answer: Answer = self.get("kuvo/groups")?;
-        Ok(answer.groups.into_iter().filter_map(|group| serde_json::from_value(group).ok()).collect())
-    }
-
 
     /// Your computers as one list, the box that answers first.
     pub fn computers(&self) -> Result<Vec<Computer>> {

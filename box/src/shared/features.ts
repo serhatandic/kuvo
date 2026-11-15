@@ -149,6 +149,7 @@ export const FEATURES = [
   "sessions.needsYou",
   "sessions.start",
   "sessions.start.empty",
+  "settings",
   "setup",
   "setup.mainOnly",
   "setup.welcomed",

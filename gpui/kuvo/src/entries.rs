@@ -133,22 +133,41 @@ pub fn render(
     selection: &SelectionState,
     cx: &App,
 ) -> AnyElement {
-    let sel = |base: &[u32]| Selectable::new(selection.clone(), SharedString::from(entry.key().to_owned()), base);
     let body: AnyElement = match entry {
         Entry::Earlier => earlier,
-        Entry::Message(message) => match message.as_ref() {
-            Message::User(user) => user_message(ix, &user.parts(), sel(&[]), cx),
-            Message::Assistant(step) => agent_step(step, open, toggle, &sel, cx),
-            Message::System(note) => quiet_line(note.text.lines().next().unwrap_or("").to_owned(), cx),
-            Message::Shell(run) => shell_run(run, cx),
-            _ => div().into_any_element(),
-        },
+        Entry::Message(message) => message_body(ix, entry.key(), message, open, toggle, selection, cx),
         Entry::TurnEnd { outcome, worked, .. } => turn_end(outcome, *worked, cx),
         Entry::Working => working(cx),
     };
-    // Each row is centred in a readable column and spaced from the next.
-    let last_gap = if matches!(entry, Entry::Working) { space::S8 } else { space::S5 };
-    let selector = format!("entry-{}", entry.key());
+    frame(ix, entry.key(), body, matches!(entry, Entry::Working))
+}
+
+/// A message as a conversation draws it, its text selectable in `selection` under row `key` (as
+/// [`units`] says): what you wrote in your bubble, the agent's steps and words, a note's line.
+pub fn message_body(
+    ix: usize,
+    key: &str,
+    message: &Message,
+    open: &HashSet<Fold>,
+    toggle: impl Fn(Fold, &mut App) + Clone + 'static,
+    selection: &SelectionState,
+    cx: &App,
+) -> AnyElement {
+    let sel = |base: &[u32]| Selectable::new(selection.clone(), SharedString::from(key.to_owned()), base);
+    match message {
+        Message::User(user) => user_message(ix, &user.parts(), sel(&[]), cx),
+        Message::Assistant(step) => agent_step(step, open, toggle, &sel, cx),
+        Message::System(note) => quiet_line(note.text.lines().next().unwrap_or("").to_owned(), cx),
+        Message::Shell(run) => shell_run(run, cx),
+        _ => div().into_any_element(),
+    }
+}
+
+/// Row `ix` of a conversation, `key`: centred in a readable column and spaced from the next
+/// (`last`: the run under way, at the end, with more room under it).
+pub fn frame(ix: usize, key: &str, body: AnyElement, last: bool) -> AnyElement {
+    let last_gap = if last { space::S8 } else { space::S5 };
+    let selector = format!("entry-{key}");
     div()
         .debug_selector(move || selector)
         .w_full()
@@ -166,7 +185,12 @@ pub fn render(
 /// or changed (`[part, 0 and 1]`, `[part, file, line]`). For copying, without laying anything out.
 pub fn units(entry: &Entry, open: &HashSet<Fold>) -> Vec<Unit> {
     let Entry::Message(message) = entry else { return Vec::new() };
-    match message.as_ref() {
+    message_units(message, open)
+}
+
+/// The selectable text of a message, as [`message_body`] draws it.
+pub fn message_units(message: &Message, open: &HashSet<Fold>) -> Vec<Unit> {
+    match message {
         Message::User(user) => {
             let words = user.parts().words.trim().to_owned();
             if words.is_empty() { Vec::new() } else { vec![Unit::new(&[0], words, Lead::Paragraph)] }

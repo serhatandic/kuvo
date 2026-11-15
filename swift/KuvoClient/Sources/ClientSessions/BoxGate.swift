@@ -39,6 +39,8 @@ public enum BoxGate {
     /// Then #735's, for the Computers areas: `computers.facts` (what each computer answers, which of
     /// its sessions are at work) and `computers.manage` (renaming, removing and reaching one again
     /// from any box, as each computer's `actions` say).
+    /// Then #727's `settings`: a box describes its own settings (`kuvo/settings`), so no client
+    /// writes a computer's settings pages itself.
     public static let required: [String] = [
         "agent-tools.own",
         "bots.deletes",
@@ -79,6 +81,7 @@ public enum BoxGate {
         "sessions.models",
         "sessions.needsYou",
         "sessions.start.empty",
+        "settings",
         "setup.welcomed",
         "sign-in.accounts.kinds",
         "sign-in.accounts.plan",

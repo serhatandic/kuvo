@@ -1691,6 +1691,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "sessions.start": ["POST", "kuvo/sessions"],
     // (A client's start without a task, `kuvo/sessions` too.)
     "sessions.start.empty": ["POST", "kuvo/sessions"],
+    // (This box's settings as it describes them, for any client to draw.)
+    settings: ["GET", "kuvo/settings"],
     // (Your setup, and who's its main computer.)
     setup: ["GET", "kuvo/setup"],
     "setup.mainOnly": ["GET", "kuvo/setup"],

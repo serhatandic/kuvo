@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use kuvo_box::models::{ModelState, Offered, OfferedModel, Side, StartIn, effort_title};
 use kuvo_box::typed::{self, Answer, ModelRef, Offers};
+use kuvo_box::groups::GroupMember;
 use kuvo_box::mentions::{For, Mention};
 use kuvo_box::parts::File;
 use kuvo_box::{BoxClient, Draft, Sent, Where};
@@ -58,6 +59,9 @@ pub enum Target {
     Session { id: String, place: Where },
     /// A new one, started in a project (or as a chat) when it's sent.
     New(StartIn),
+    /// A group chat on the box: only words go to it (`POST kuvo/groups/<id>`), and the box there
+    /// names whoever they name.
+    Group { id: String },
 }
 
 /// What the composer tells its owner.
@@ -67,6 +71,8 @@ pub enum ComposerEvent {
     /// was written (`written`) sent to it: what the box said of it, or why it couldn't go, is for
     /// the conversation's own composer.
     Started { session: String, folder: Option<String>, project: Option<String>, written: String, sent: Result<Sent, String> },
+    /// A group chat took what was written, or stopped: it's to be read again.
+    Wrote,
 }
 
 /// What the chips show, as the box says it.
@@ -145,6 +151,10 @@ pub struct Composer {
     /// The agents and sessions picked from "&"'s list, by what went in the message: the send names
     /// those still in it.
     named: Vec<(String, String)>,
+    /// A group chat's bots, as its box lists them: "&" offers them, and each face asks one.
+    members: Vec<GroupMember>,
+    /// What the empty field says.
+    placeholder: SharedString,
     tasks: Vec<Task<()>>,
     _field: Subscription,
 }
@@ -167,11 +177,12 @@ impl Composer {
     /// The same, for a conversation in `folder` (as its box lists it): what's offered is read
     /// there from the first read (`set_folder`).
     pub fn in_folder(client: BoxClient, target: Target, folder: Option<String>, read: bool, cx: &mut Context<Self>) -> Composer {
-        let placeholder = match &target {
-            Target::Session { .. } => "Ask anything, / for commands",
-            Target::New(_) => "What should we work on?",
+        let placeholder: SharedString = match &target {
+            Target::Session { .. } => "Ask anything, / for commands".into(),
+            Target::New(_) => "What should we work on?".into(),
+            Target::Group { .. } => "Message the group…".into(),
         };
-        let field = cx.new(|cx| TextField::new(cx).multi_line(1, 10).bare().submits_on_enter(true).placeholder(placeholder));
+        let field = cx.new(|cx| TextField::new(cx).multi_line(1, 10).bare().submits_on_enter(true).placeholder(placeholder.clone()));
         let subscription = cx.subscribe(&field, |this: &mut Composer, _, event: &TextFieldEvent, cx| match event {
             TextFieldEvent::Submit(_) => this.send(cx),
             TextFieldEvent::Cancel => {
@@ -218,14 +229,58 @@ impl Composer {
             mention_reads: 0,
             mention_pending: false,
             named: Vec::new(),
+            members: Vec::new(),
+            placeholder,
             tasks: Vec::new(),
             _field: subscription,
         };
-        if read {
+        // A group chat has no model of its own to pick, nor "/" to offer: its bots each have theirs.
+        if read && !matches!(composer.target, Target::Group { .. }) {
             composer.read_models(cx);
             composer.read_offers(cx);
         }
         composer
+    }
+
+    /// A composer for group chat `id`, named `name` in its placeholder.
+    pub fn for_group(client: BoxClient, id: String, name: &str, live: bool, cx: &mut Context<Self>) -> Composer {
+        let mut composer = Composer::new(client, Target::Group { id }, live, cx);
+        composer.set_group_name(name, cx);
+        composer
+    }
+
+    /// The group chat's name, as its placeholder says it.
+    pub fn set_group_name(&mut self, name: &str, cx: &mut Context<Self>) {
+        let placeholder: SharedString = format!("Message {name}…").into();
+        if self.placeholder != placeholder {
+            self.placeholder = placeholder.clone();
+            if !self.client.gate().is_held() {
+                self.field.update(cx, |field, _| field.set_placeholder(placeholder));
+            }
+            cx.notify();
+        }
+    }
+
+    /// A group chat's bots, as its box lists them now.
+    pub fn set_members(&mut self, members: Vec<GroupMember>, cx: &mut Context<Self>) {
+        if self.members != members {
+            self.members = members;
+            self.mentions_for = None;
+            self.read_mentions(cx);
+            cx.notify();
+        }
+    }
+
+    /// "&Name " where the message goes on: the bot's asked by name.
+    pub fn ask(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let mut text = self.text(cx);
+        if !text.is_empty() && !text.ends_with(char::is_whitespace) {
+            text.push(' ');
+        }
+        text.push_str(&format!("&{name} "));
+        self.field.update(cx, |field, cx| field.set_text(text, cx));
+        window.focus(&self.field.focus_handle(cx), cx);
+        cx.notify();
     }
 
     pub fn field(&self) -> &Entity<TextField> {
@@ -285,7 +340,7 @@ impl Composer {
             Target::Session { .. } => self.folder.clone(),
             // (The box reads its own lists for one that isn't a folder there.)
             Target::New(StartIn::Project(project)) => Some(project.clone()),
-            Target::New(_) => None,
+            Target::New(_) | Target::Group { .. } => None,
         }
     }
 
@@ -311,6 +366,7 @@ impl Composer {
         match &self.target {
             Target::Session { .. } => self.models.state.as_ref().and_then(|state| state.model.clone()),
             Target::New(_) => self.picked.clone(),
+            Target::Group { .. } => None,
         }
     }
 
@@ -319,7 +375,7 @@ impl Composer {
     pub fn menu_models(&self) -> Vec<OfferedModel> {
         let side = match &self.target {
             Target::Session { place, .. } => Some(Side::of(*place)),
-            Target::New(_) => None,
+            Target::New(_) | Target::Group { .. } => None,
         };
         let models = self.models.offered.as_ref().map(|offered| offered.models.as_slice()).unwrap_or_default();
         models.iter().filter(|model| model.is_offered() && side.is_none_or(|side| model.side == side)).cloned().collect()
@@ -375,6 +431,7 @@ impl Composer {
         match &self.target {
             Target::Session { .. } => self.models.state.as_ref().is_some_and(|state| state.choose),
             Target::New(_) => self.picked.is_none() && self.models.offered.as_ref().is_some_and(|offered| offered.starting == Some(None)),
+            Target::Group { .. } => false,
         }
     }
 
@@ -508,6 +565,8 @@ impl Composer {
     /// Picks a model (and effort) for the conversation, or for the new one.
     pub fn pick(&mut self, model: ModelRef, cx: &mut Context<Self>) {
         match self.target.clone() {
+            // (Each of a group chat's bots has its own model.)
+            Target::Group { .. } => {}
             Target::New(_) => {
                 self.picked = Some(model);
                 self.read_models(cx);
@@ -547,7 +606,8 @@ impl Composer {
     pub fn send(&mut self, cx: &mut Context<Self>) {
         if self.client.gate().is_held() { return; }
         let text = self.text(cx);
-        if (text.trim().is_empty() && self.attached.is_empty()) || self.sending {
+        let group = matches!(self.target, Target::Group { .. });
+        if (text.trim().is_empty() && (group || self.attached.is_empty())) || self.sending {
             return;
         }
         let mut draft = Draft::new(BoxClient::new_id(), text.clone());
@@ -577,6 +637,20 @@ impl Composer {
         cx.notify();
         let client = self.client.clone();
         match self.target.clone() {
+            Target::Group { id } => {
+                self.attached = files;
+                self.named.clear();
+                let words = text.clone();
+                self.spawn(cx, move || client.write_to_group(&id, &words), move |this, result, cx| {
+                    this.sending = false;
+                    match result {
+                        Ok(()) => cx.emit(ComposerEvent::Wrote),
+                        // Turned down (moving, its bridge not there): it stays to send again, with why.
+                        Err(error) => this.put_back(&text, Some(kuvo_box::accounts::said(&error)), cx),
+                    }
+                    cx.notify();
+                });
+            }
             Target::Session { id, .. } => {
                 self.spawn(cx, move || client.send_draft(&id, &draft, None), move |this, result, cx| {
                     this.sending = false;
@@ -660,6 +734,17 @@ impl Composer {
     }
 
     fn stop(&mut self, cx: &mut Context<Self>) {
+        if let Target::Group { id } = self.target.clone() {
+            let client = self.client.clone();
+            self.spawn(cx, move || client.stop_group(&id), |this, result, cx| {
+                match result {
+                    Ok(()) => cx.emit(ComposerEvent::Wrote),
+                    Err(error) => this.set_note(Note { text: format!("It didn’t stop: {}", kuvo_box::accounts::said(&error)).into(), warning: true }, cx),
+                }
+                cx.notify();
+            });
+            return;
+        }
         let Target::Session { id, .. } = self.target.clone() else { return };
         let client = self.client.clone();
         self.spawn(cx, move || client.stop_session(&id), |this, result, cx| {
@@ -781,6 +866,15 @@ impl Composer {
 
     /// The mention being typed, if one is, and what the box suggests for it: read as it changes.
     fn read_mentions(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.target, Target::Group { .. }) {
+            let text = self.text(cx);
+            let typed = group_mention_query(&text).map(|(_, query)| (For::Agents, query.to_owned()));
+            if typed != self.mentions_for {
+                self.mentions_for = typed.clone();
+                self.mentions = typed.map(|(_, query)| member_offers(&self.members, &query)).unwrap_or_default();
+            }
+            return;
+        }
         let Target::Session { id, .. } = &self.target else { return };
         let text = self.text(cx);
         let typed = mention_query(&text).map(|(wanted, _, query)| (wanted, query.to_owned()));
@@ -829,7 +923,11 @@ impl Composer {
     /// typed, else "/"'s. Each as it shows: its name, and what's beside it.
     pub fn shown_offers(&self, cx: &App) -> (Vec<Offer>, bool) {
         let text = self.text(cx);
-        if mention_query(&text).is_some() && self.slash_dismissed.as_deref() != Some(text.as_str()) {
+        let typing = match self.target {
+            Target::Group { .. } => group_mention_query(&text).is_some(),
+            _ => mention_query(&text).is_some(),
+        };
+        if typing && self.slash_dismissed.as_deref() != Some(text.as_str()) {
             let offers = self.mentions.iter().map(|mention| Offer {
                     name: mention.title.clone(),
                     summary: mention.detail.clone().unwrap_or_default(),
@@ -850,7 +948,11 @@ impl Composer {
     /// named when it's sent.
     fn mention_pick(&mut self, at: usize, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.text(cx);
-        let Some((_, start, _)) = mention_query(&text) else { return };
+        let start = match self.target {
+            Target::Group { .. } => group_mention_query(&text).map(|(start, _)| start),
+            _ => mention_query(&text).map(|(_, start, _)| start),
+        };
+        let Some(start) = start else { return };
         let Some(mention) = self.mentions.get(at.min(self.mentions.len().saturating_sub(1))).cloned() else { return };
         if let Some(session) = &mention.session {
             self.named.retain(|(text, _)| text != &mention.text);
@@ -923,6 +1025,36 @@ impl Composer {
             .shadow(theme.elevated_shadow())
             .children(rows)
             .into_any_element()
+    }
+
+    /// A group chat's bots, each a still face that asks it by name.
+    fn member_faces(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let c = cx.theme().colors.clone();
+        let held = self.client.gate().is_held();
+        self.members
+            .iter()
+            .map(|member| {
+                let name = member.name.clone();
+                let selector = format!("ask-{}", member.id);
+                let face = crate::groups::chat::face(member.look.as_ref(), px(20.), cx);
+                div()
+                    .id(SharedString::from(selector.clone()))
+                    .debug_selector(move || selector)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(30.))
+                    .h(px(28.))
+                    .rounded(radius::PILL)
+                    .when(!held, |d| d.cursor_pointer().hover(|s| s.bg(c.hover)).on_click(cx.listener(move |this, _, window, cx| this.ask(&name, window, cx))))
+                    .tooltip({
+                        let tip = format!("Ask {}", member.name);
+                        move |_, cx| kuvo_ui::menu::Tooltip::new(tip.clone()).build(cx)
+                    })
+                    .child(face)
+                    .into_any_element()
+            })
+            .collect()
     }
 
     fn model_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1013,7 +1145,7 @@ fn models_of(client: &BoxClient, target: &Target, picked: Option<&ModelRef>, fol
     let offered = offered.map(|offered| offered.keeping(before));
     let state = match target {
         Target::Session { id, .. } => Some(client.session_models(&[id.as_str()]).ok().and_then(|mut all| all.remove(id)).map_or(Said::Unsaid, |state| Said::Is(Box::new(state)))),
-        Target::New(_) => None,
+        Target::New(_) | Target::Group { .. } => None,
     };
     (offered, said_all, state)
 }
@@ -1035,6 +1167,36 @@ pub fn mention_query(text: &str) -> Option<(For, usize, &str)> {
         (None, Some(agent)) => Some((For::Agents, agent, &text[agent + 1..])),
         (None, None) => None,
     }
+}
+
+/// The bot being named at the end of `text` in a group chat: "&" (as the chat names its bots), or
+/// "@" (as you might write it), starting a word, a name running over spaces to the line's end.
+/// Where its mark is, and what's typed after it.
+pub fn group_mention_query(text: &str) -> Option<(usize, &str)> {
+    let starts_word = |at: usize| at == 0 || text[..at].chars().next_back().is_some_and(char::is_whitespace);
+    let at = text.rfind(['&', '@']).filter(|at| starts_word(*at))?;
+    let rest = &text[at + 1..];
+    (!rest.starts_with(char::is_whitespace) && !rest.contains('\n')).then_some((at, rest))
+}
+
+/// A group chat's bots that what's typed names: those whose name starts with it first, then those
+/// containing it, in the chat's order, as the slash list orders its offers.
+// BOX-NEEDED: what "&" offers in a group chat, ranked by its box (its bots, then the guests
+// `kuvo/named` offers there): `GET kuvo/groups/<id>/mentions?q=`. Until then, the chat's own bots.
+fn member_offers(members: &[GroupMember], query: &str) -> Vec<Mention> {
+    let query = query.to_lowercase();
+    let mut found: Vec<(bool, Mention)> = members
+        .iter()
+        .filter_map(|member| {
+            let name = member.name.to_lowercase();
+            name.contains(&query).then(|| {
+                let detail = member.computer.as_ref().map(|computer| format!("On {computer}"));
+                (!name.starts_with(&query), Mention { text: format!("&{}", member.name), title: member.name.clone(), detail, kind: "bot".into(), session: None })
+            })
+        })
+        .collect();
+    found.sort_by_key(|(later, _)| *later);
+    found.into_iter().map(|(_, mention)| mention).collect()
 }
 
 /// Whether `name` (as "&" put it in) is still in `text`, as a word of its own.
@@ -1146,13 +1308,10 @@ impl Render for Composer {
         let held = self.client.gate().is_held();
         if self.field_held != held {
             self.field_held = held;
-            let placeholder = if held {
-                "Can’t send until Kuvo is updated."
+            let placeholder: SharedString = if held {
+                "Can’t send until Kuvo is updated.".into()
             } else {
-                match &self.target {
-                    Target::Session { .. } => "Ask anything, / for commands",
-                    Target::New(_) => "What should we work on?",
-                }
+                self.placeholder.clone()
             };
             self.field.update(cx, |field, cx| {
                 field.set_placeholder(placeholder);
@@ -1167,7 +1326,8 @@ impl Render for Composer {
         self.slash_at = self.slash_at.min(offers.len().saturating_sub(1));
         // The keyword it starts with, as the box will read it (and as the sent message shows it).
         let keyword = typed::keyword(&text).map(|(keyword, _)| Chip::new("typed-keyword", format!("/{keyword}")).icon(IconName::Sparkle).tone(ChipTone::Accent));
-        let stop = self.running && empty && matches!(self.target, Target::Session { .. });
+        let group = matches!(self.target, Target::Group { .. });
+        let stop = self.running && empty && matches!(self.target, Target::Session { .. } | Target::Group { .. });
         let send = if stop {
             Button::icon_only("stop", IconName::Stop, "Stop").style(kuvo_ui::ButtonStyle::Secondary).pill().on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
         } else {
@@ -1187,7 +1347,7 @@ impl Render for Composer {
                 .child(note.text)
         });
         // The list's keys while it shows, and while a mention's suggestions are on their way.
-        let waiting = self.mention_pending && mention_query(&text).is_some();
+        let waiting = self.mention_pending && !group && mention_query(&text).is_some();
         let context = if offers.is_empty() && !waiting { CONTEXT.to_owned() } else { format!("{CONTEXT} {SLASH}") };
         let card = div()
             .relative()
@@ -1211,7 +1371,8 @@ impl Render for Composer {
                     .items_center()
                     .gap(space::S1)
                     .ml(-space::S2)
-                    .child(Button::icon_only("attach", IconName::Paperclip, "Attach Files").ghost().size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.pick_files(cx))))
+                    .when(!group, |d| d.child(Button::icon_only("attach", IconName::Paperclip, "Attach Files").ghost().size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.pick_files(cx)))))
+                    .when(group, |d| d.children(self.member_faces(cx)))
                     .children(self.model_chip(cx))
                     .children(self.effort_chip(cx))
                     .child(div().flex_1())
@@ -1227,7 +1388,7 @@ impl Render for Composer {
                 this.slash_dismissed = Some(this.text(cx));
                 cx.notify();
             }))
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.attach(paths.paths().to_vec(), cx)))
+            .when(!group, |d| d.on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.attach(paths.paths().to_vec(), cx))))
             .w_full()
             .flex()
             .flex_col()

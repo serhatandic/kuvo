@@ -46,6 +46,7 @@ pub const REQUIRED: &[&str] = &[
     "sessions.models",
     "sessions.needsYou",
     "sessions.start.empty",
+    "settings",
     "setup.welcomed",
     "sign-in.accounts.kinds",
     "sign-in.accounts.plan",
