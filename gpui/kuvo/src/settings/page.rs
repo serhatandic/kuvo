@@ -281,9 +281,7 @@ impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors.clone();
         if self.client.gate().is_held() && rows::is_built(&self.section) && self.section != "General" {
-            return div().id("settings-page").debug_selector(|| "settings-empty".into()).size_full()
-                .flex().items_center().justify_center().bg(c.sidebar)
-                .child(div().text_color(c.text_muted).child("No settings to show."));
+            return div().id("settings-page").debug_selector(|| "settings-held".into()).size_full().bg(c.sidebar);
         }
         if std::mem::take(&mut self.focus_confirm) && self.confirm.is_some() {
             window.focus(&self.confirm_focus, cx);

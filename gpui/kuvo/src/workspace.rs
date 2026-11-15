@@ -479,7 +479,8 @@ impl Workspace {
         let next = if self.client.here() {
             "It updates with Kuvo 1.0.".to_owned()
         } else {
-            format!("Update Kuvo on {subject} to use it here.")
+            let computer = if subject == "This computer" { "this computer" } else { subject };
+            format!("Update Kuvo on {computer} to use it here.")
         };
         Some((title, next))
     }
@@ -1462,7 +1463,11 @@ impl Render for Workspace {
         self.narrow = narrow;
 
         let sessions = self.area == Area::Sessions;
-        let content: AnyElement = match (&self.open, self.area_view(self.area)) {
+        let held_content = self.client.gate().is_held()
+            && (self.area != Area::Sessions && self.area != Area::Settings || self.area == Area::Sessions && matches!(self.open, Open::Conversation { .. }));
+        let content: AnyElement = if held_content {
+            div().debug_selector(|| "held-area".into()).size_full().into_any_element()
+        } else { match (&self.open, self.area_view(self.area)) {
             (_, Some(view)) if !sessions => match (self.bot_chat(), view.read(cx).settings(), view.read(cx).main()) {
                 (Some((bot, chat)), _, _) => self.bot_chat_view(bot, chat, cx),
                 (None, Some(settings), _) => settings.clone().into_any_element(),
@@ -1471,12 +1476,12 @@ impl Render for Workspace {
             },
             (Open::Conversation { view, .. }, _) => view.clone().into_any_element(),
             _ => landing::render(self, window, cx),
-        };
+        } };
         let sidebar: Option<AnyElement> = self.sidebar_shown().then(|| match self.area_view(self.area) {
             Some(view) if !sessions => view.clone().into_any_element(),
             _ => sidebar::render(self, window, cx),
         });
-        let panel = (sessions && self.panel_open).then(|| self.panel_card(window, cx));
+        let panel = (sessions && self.panel_open && !self.client.gate().is_held()).then(|| self.panel_card(window, cx));
         div()
             .key_context("Workspace")
             .track_focus(&self.focus)

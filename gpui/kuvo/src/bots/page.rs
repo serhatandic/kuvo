@@ -548,6 +548,9 @@ fn face_or_blank(look: Option<&Look>, size: gpui::Pixels, cx: &App) -> AnyElemen
 impl Render for BotsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors.clone();
+        if self.client.gate().is_held() {
+            return div().id("bots-page").debug_selector(|| "held-area".into()).size_full().bg(c.sidebar);
+        }
         if let Some(focus) = self.wants_focus.take() {
             window.focus(&focus, cx);
         }

@@ -99,6 +99,7 @@ pub struct Composer {
     client: BoxClient,
     target: Target,
     field: Entity<TextField>,
+    field_held: bool,
     /// Whether the conversation has a run under way (Send turns to Stop with nothing written).
     running: bool,
     sending: bool,
@@ -191,6 +192,7 @@ impl Composer {
             client,
             target,
             field,
+            field_held: false,
             running: false,
             sending: false,
             live: read,
@@ -1141,6 +1143,22 @@ fn said(answer: &Answer) -> Option<Note> {
 
 impl Render for Composer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let held = self.client.gate().is_held();
+        if self.field_held != held {
+            self.field_held = held;
+            let placeholder = if held {
+                "Can’t send until Kuvo is updated."
+            } else {
+                match &self.target {
+                    Target::Session { .. } => "Ask anything, / for commands",
+                    Target::New(_) => "What should we work on?",
+                }
+            };
+            self.field.update(cx, |field, cx| {
+                field.set_placeholder(placeholder);
+                field.set_disabled(held, cx);
+            });
+        }
         let theme = cx.theme().clone();
         let c = &theme.colors;
         let text = self.text(cx);

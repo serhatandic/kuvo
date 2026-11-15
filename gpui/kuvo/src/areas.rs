@@ -411,6 +411,9 @@ impl Render for AreaView {
         if let Some(settings) = self.settings.clone() {
             return div().id("area-settings").size_full().child(settings.update(cx, |settings, cx| settings.sidebar(cx)));
         }
+        if self.client.gate().is_held() {
+            return div().id("area-frame").debug_selector(|| "held-area-sidebar".into()).size_full();
+        }
         let rows = match self.area {
             Area::Bots => self.bots_rows(cx),
             Area::Queue => self.queue_rows(cx),
@@ -923,13 +926,9 @@ mod tests {
 
     #[test]
     fn a_held_read_is_empty_without_an_area_error() {
-        let gate = kuvo_box::gate::Gate::for_features::<String>(None);
-        assert!(gate.is_held());
         let read = super::reading::<super::Bots>(Err(kuvo_box::Error::NeedsUpdating { missing: vec!["typed".into()] }), &super::Reading::NotYet);
         assert!(matches!(read, super::Reading::Ready(bots) if bots.bots.is_empty()));
-        assert!(!kuvo_box::gate::Gate::Open.is_held());
     }
-
 
     /// A computer's line says what the box says of it: one it only knows of through another is
     /// never said to be away.

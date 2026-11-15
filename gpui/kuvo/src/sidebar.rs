@@ -177,10 +177,13 @@ fn found_lines(workspace: &Workspace, query: &str) -> Vec<Line> {
 }
 
 pub fn render(workspace: &Workspace, window: &mut Window, cx: &mut Context<Workspace>) -> AnyElement {
+    if workspace.client().gate().is_held() {
+        return div().debug_selector(|| "held-sessions".into()).size_full().into_any_element();
+    }
     let lists: Vec<AnyElement> = match workspace.lists() {
         Lists::Loading => vec![quiet(Some("Loading sessions…"), true, cx)],
         Lists::Waiting(why) => vec![quiet(Some(&format!("Loading sessions… {why}")), true, cx)],
-        Lists::Held => sessions(workspace, window, cx),
+        Lists::Held => Vec::new(),
         Lists::Failed(why) if !workspace.listing().is_read() => vec![quiet(Some(why), false, cx)],
         _ => sessions(workspace, window, cx),
     };
