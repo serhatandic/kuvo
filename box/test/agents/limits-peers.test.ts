@@ -672,14 +672,14 @@ describe("whose computers see what's yours alone (#701, the separate review)", (
     const [row] = limitRows([
       { key: "key-mac", name: "MacBook Pro", here: true, away: false, accounts: [account(time - 60_000, [capped, resets]) as any] },
       { key: "key-shared", name: "shared", here: false, away: false, vouched: true, accounts: [account(time, [{ ...resets, count: 1 }]) as any] },
-    ])
+    ], time)
     expect(row!.extras?.map((extra) => extra.kind)).toEqual(["capped", "resets"])
     expect(row!.windows[0]!.read).toBe(time)
     // None of yours read it without a problem: the other's reading, as it was told.
     const [only] = limitRows([
       { key: "key-mac", name: "MacBook Pro", here: true, away: false, accounts: [{ provider: "claude-code", service: "claude", identity: "aaaaaaaaaaaaaaaa", windows: [] } as any] },
       { key: "key-shared", name: "shared", here: false, away: false, vouched: true, accounts: [account(time, [{ ...resets, count: 1 }]) as any] },
-    ])
+    ], time)
     expect(only!.extras?.map((extra) => extra.kind)).toEqual(["resets"])
   })
 })

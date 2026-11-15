@@ -68,7 +68,11 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
     /// The account at its maker, the same from every box signed in to it (an opaque hash): rows with
     /// one are one account (`UsageListing.accounts`). None from a box that can't tell, or an older one.
     public var identity: String?
-    /// Its row's name where a listing gave it one (two rows of one name: the box it's from added).
+    /// Its name, as its box says it (`title`, `limits.titles`): "Claude", "Claude · Work", "ChatGPT";
+    /// in a box's rows, told apart from another row of that name ("Claude · hetzner").
+    public var said: String
+    /// Its row's name where a client's own merge gave it one (two rows of one name: the boxes it's
+    /// from added, `UsageListing.accounts(_:)`).
     public var name: String?
     public var plan: String?
     public var windows: [LimitsWindow]
@@ -97,6 +101,9 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
     /// higher of its rings', or, with none, of what's left of a balance or a capped extra that has
     /// a limit. Nil where nothing says a limit (spend alone): no level, which isn't calm.
     public var rowLevel: LimitsLevel?
+    /// The ring a client with room for one bar draws, as its box picks it (`bar`, `limits.bar`):
+    /// `short` or `long`; nil outside a row, and for a plan with no rings.
+    public var barSpan: String?
 
     /// One of an account's rings: the window it's of (by its `id`), how much of it is gone, when it
     /// resets, and how close it is to its limit in the box's word.
@@ -312,9 +319,10 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
         }
     }
 
-    public init(provider: String, service: String, agent: String? = nil, account: String? = nil, label: String? = nil, identity: String? = nil, plan: String? = nil,
+    public init(provider: String, service: String, title: String = "", agent: String? = nil, account: String? = nil, label: String? = nil, identity: String? = nil, plan: String? = nil,
                 windows: [LimitsWindow] = [], balance: Balance? = nil, checked: Date? = nil, problem: Problem? = nil) {
         self.provider = provider
+        self.said = title
         self.service = service
         self.agent = agent
         self.account = account
@@ -327,7 +335,7 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
         self.problem = problem
     }
 
-    private enum CodingKeys: String, CodingKey { case provider, service, agent, account, label, identity, plan, windows, balance, extras, agentsReset, checked, next, problem, id, boxes, away, rings, level }
+    private enum CodingKeys: String, CodingKey { case provider, service, title, agent, account, label, identity, plan, windows, balance, extras, agentsReset, checked, next, problem, id, boxes, away, rings, level, bar }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -335,6 +343,7 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
         // (A box from before it said: its coding agents' only.)
         agent = try container.decodeIfPresent(String.self, forKey: .agent)
         service = try container.decodeIfPresent(String.self, forKey: .service) ?? agent ?? provider
+        said = (try? container.decodeIfPresent(String.self, forKey: .title)) ?? ""
         account = try container.decodeIfPresent(String.self, forKey: .account)
         label = try container.decodeIfPresent(String.self, forKey: .label)
         identity = (try? container.decodeIfPresent(String.self, forKey: .identity))?.flatMap { $0.isEmpty ? nil : $0 }
@@ -351,15 +360,12 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
         away = (try? container.decodeIfPresent(Bool.self, forKey: .away)) ?? false
         rings = try? container.decodeIfPresent(Rings.self, forKey: .rings)
         rowLevel = try? container.decodeIfPresent(LimitsLevel.self, forKey: .level)
+        barSpan = try? container.decodeIfPresent(String.self, forKey: .bar)
     }
 
-    /// Its row's name: "Claude", "Claude · Work" for one you added, "Copilot" for the engine's.
-    public var title: String {
-        if let name { return name }
-        let base = agent.map { AccountNames.agents[$0] ?? $0.capitalized } ?? AccountNames.services[service] ?? service.capitalized
-        guard let label = label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty else { return base }
-        return "\(base) · \(label)"
-    }
+    /// Its row's name, as its box says it ("Claude", "Claude · Work", "Copilot"), or as a client's
+    /// own merge told it apart.
+    public var title: String { name ?? said }
 
     /// Its service's brand color in light mode, "#RRGGBB", as the Mac's usage panel draws it
     /// (UsageKit's `TotalSpendPalette`), for a client drawing its bar in a pastel of it.
@@ -373,36 +379,35 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
     ]
 
 
-    /// Its windows still current: one that started over since it was read is left out (what's used
-    /// now isn't known).
-    public func windows(at now: Date) -> [LimitsWindow] {
-        windows.filter { ($0.resetsAt ?? .distantFuture) > now }
+    /// Its windows with a reading: one its box says started over since it was read (`expired`) is
+    /// left out (what's used now isn't known).
+    public var current: [LimitsWindow] {
+        windows.filter { !$0.expired }
     }
 
-    /// Its rings as a client draws them at `now`, the short one first: one whose reset has passed
-    /// is empty, in its place.
-    public func rings(at now: Date) -> [Ring] {
-        [rings?.short, rings?.long].compactMap { $0 }.map { ring in
-            (ring.resetsAt ?? .distantFuture) > now ? ring : Ring(window: ring.window, used: 0, resetsAt: ring.resetsAt, level: .calm)
+    /// Its rings as its box says to draw them, the short one first (one that started over is empty,
+    /// in its place: the box says so).
+    public var drawnRings: [Ring] {
+        [rings?.short, rings?.long].compactMap { $0 }
+    }
+
+    /// The one of its rings a client with room for a single bar draws, as its box picks it (`bar`).
+    /// None for a plan with no rings.
+    public var bar: Ring? {
+        switch barSpan {
+        case "short": rings?.short
+        case "long": rings?.long
+        default: nil
         }
     }
 
-    /// The one of its rings a client with room for a single bar draws: the fuller of the two its box
-    /// picked (the short one where they're as full). None for a plan with no rings.
-    public func ring(at now: Date) -> Ring? {
-        rings(at: now).reduce(nil) { shown, ring in shown.map { ring.used > $0.used ? ring : $0 } ?? ring }
-    }
-
-    /// How close the account is to a limit, in the box's word: its rings' nearer one (a ring
-    /// whose reset has passed drawn empty), and with no rings its row's own (a balance's). Nil
-    /// where its box says none: no level, which a client draws apart from calm.
-    public func level(at now: Date) -> LimitsLevel? {
-        rings(at: now).compactMap(\.level).max() ?? rowLevel
-    }
+    /// How close the account is to a limit, in its box's word (its row's `level`). Nil where its box
+    /// says none: no level, which a client draws apart from calm.
+    public var level: LimitsLevel? { rowLevel }
 
     /// When it was last heard of or read: its "as of" (a turn tells one window, the rest stay as read).
     public func readAt(now: Date) -> Date? {
-        windows(at: now).map(\.read).max()
+        current.map(\.read).max()
     }
 
     /// How old a reading is when it's shown as out of date ("As of …" on the Mac): longer than a
@@ -448,6 +453,12 @@ public struct LimitsWindow: Decodable, Hashable, Sendable, Identifiable {
     public var level: LimitsLevel?
     /// Which of its account's rings it is, `short` or `long`, where it's one.
     public var span: String?
+    /// Its name, as its box says it (`title`, `limits.titles`): "Session", "Weekly", "Sonnet",
+    /// "Premium requests".
+    public var title: String
+    /// It started over since it was read, as its box says (`expired`, `limits.bar`): `used` is 0 and
+    /// it has no `resetsAt`; shown as not read since.
+    public var expired: Bool
 
     public struct Amount: Decodable, Hashable, Sendable {
         public var used: Double
@@ -456,7 +467,7 @@ public struct LimitsWindow: Decodable, Hashable, Sendable, Identifiable {
         public var unit: String
     }
 
-    private enum CodingKeys: String, CodingKey { case id, used, resetsAt, minutes, model, name, amount, read, source, level, span }
+    private enum CodingKeys: String, CodingKey { case id, used, resetsAt, minutes, model, name, amount, read, source, level, span, title, expired }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -471,10 +482,15 @@ public struct LimitsWindow: Decodable, Hashable, Sendable, Identifiable {
         source = try container.decodeIfPresent(String.self, forKey: .source) ?? "usage"
         level = try? container.decodeIfPresent(LimitsLevel.self, forKey: .level)
         span = try? container.decodeIfPresent(String.self, forKey: .span)
+        title = (try? container.decodeIfPresent(String.self, forKey: .title)) ?? ""
+        expired = (try? container.decodeIfPresent(Bool.self, forKey: .expired)) ?? false
     }
 
-    public init(id: String, used: Double, resetsAt: Date? = nil, minutes: Int? = nil, model: String? = nil, name: String? = nil, amount: Amount? = nil, read: Date, source: String = "usage") {
+    public init(id: String, used: Double, resetsAt: Date? = nil, minutes: Int? = nil, model: String? = nil, name: String? = nil, amount: Amount? = nil, read: Date, source: String = "usage",
+                title: String = "", expired: Bool = false) {
         self.id = id
+        self.title = title
+        self.expired = expired
         self.used = used
         self.resetsAt = resetsAt
         self.minutes = minutes
@@ -483,20 +499,6 @@ public struct LimitsWindow: Decodable, Hashable, Sendable, Identifiable {
         self.amount = amount
         self.read = read
         self.source = source
-    }
-
-    /// Its name on a row, as the usage panel names them: "Session", "Weekly", "Sonnet", "Premium requests".
-    public var title: String {
-        if let name, !name.isEmpty { return name }
-        if let model, !model.isEmpty { return model }
-        switch minutes {
-        case 300: return "Session"
-        case 10_080: return "Weekly"
-        case let minutes? where (40_000...45_000).contains(minutes): return "Monthly"
-        case let minutes? where minutes >= 1_440: return "\(minutes / 1_440)-day"
-        case let minutes? where minutes >= 60: return "\(minutes / 60)-hour"
-        default: return "Limit"
-        }
     }
 }
 
@@ -662,16 +664,12 @@ extension UsageListing {
     }
 
     /// A box's rows (`BoxLimits.rows`) as they are, each from the computers it says, the box that
-    /// answered (`here`, the client's key for it) taken as the client's own; named as below.
+    /// answered (`here`, the client's key for it) taken as the client's own; named as the box says.
     public static func accounts(rows: [LimitsAccount], here: String = "") -> [Account] {
-        var listed = rows.map { row in
+        rows.map { row in
             Account(id: row.rowID ?? row.provider, account: row,
                     sources: row.boxes.map { Account.Source(box: $0.here ? here : $0.key, provider: $0.provider, name: $0.here ? nil : $0.name) })
         }
-        named(&listed, members: rows.map { row in
-            row.boxes.map { (name: $0.here ? nil : Optional($0.name), account: LimitsAccount(provider: $0.provider, service: row.service, agent: $0.agent, account: $0.account, label: $0.label)) }
-        })
-        return listed
     }
 
     /// One row per account across the boxes, in their order (the client's own computer first): rows
@@ -700,9 +698,10 @@ extension UsageListing {
         return listed
     }
 
-    /// Each row's name: its account's (`title`), unless two would have one name.
+    /// Each row's name, in a client's own merge (`accounts(_:)`): its account's (`title`, as its box
+    /// says it), unless two would have one name, told apart as a box tells its rows apart.
     /// `members`: each row's accounts as each computer has it, with the computer's name (none for
-    /// the client's own).
+    /// the client's own). (Yet to move to the box with the merge itself.)
     static func named(_ listed: inout [Account], members: [[(name: String?, account: LimitsAccount)]]) {
         // Two rows of one name (two accounts, or one whose boxes can't say it's the same) are told
         // apart: a row whose sign-in on this computer is the engine's by the service's name

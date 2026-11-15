@@ -8,19 +8,19 @@ struct PlanLimitsTests {
     /// and a window from a newer box this copy can't read.
     let answer = """
     {"data": {"services": ["claude", "codex", "copilot"], "accounts": [
-      {"provider": "claude-code", "service": "claude", "agent": "claude", "account": "default", "plan": "Max 20x", "next": 1794170000000,
+      {"provider": "claude-code", "service": "claude", "title": "Claude", "agent": "claude", "account": "default", "plan": "Max 20x", "next": 1794170000000,
        "windows": [
-         {"id": "five_hour", "used": 0.42, "minutes": 300, "resetsAt": 1794180000000, "read": 1794160000000, "source": "turn"},
-         {"id": "seven_day", "used": 0.18, "minutes": 10080, "resetsAt": 1794600000000, "read": 1794150000000, "source": "turn"},
-         {"id": "seven_day_fable", "used": 0.07, "minutes": 10080, "model": "Fable", "resetsAt": 1794600000000, "read": 1794150000000, "source": "turn"},
+         {"id": "five_hour", "title": "Session", "used": 0.42, "minutes": 300, "resetsAt": 1794180000000, "read": 1794160000000, "source": "turn"},
+         {"id": "seven_day", "title": "Weekly", "used": 0.18, "minutes": 10080, "resetsAt": 1794600000000, "read": 1794150000000, "source": "turn"},
+         {"id": "seven_day_fable", "title": "Fable", "used": 0.07, "minutes": 10080, "model": "Fable", "resetsAt": 1794600000000, "read": 1794150000000, "source": "turn"},
          {"id": "from_the_future", "used": "a lot"}
        ]},
-      {"provider": "claude-code@1f2e3d4c", "service": "claude", "agent": "claude", "account": "1f2e3d4c", "label": "Work",
-       "windows": [{"id": "five_hour", "used": 0.9, "minutes": 300, "resetsAt": 1794100000000, "read": 1794090000000, "source": "usage"}],
+      {"provider": "claude-code@1f2e3d4c", "service": "claude", "title": "Claude · Work", "agent": "claude", "account": "1f2e3d4c", "label": "Work",
+       "windows": [{"id": "five_hour", "title": "Session", "used": 0, "minutes": 300, "expired": true, "read": 1794090000000, "source": "usage"}],
        "problem": {"kind": "rate-limited", "message": "Anthropic is turning away reads of the plan's limits for now.", "until": 1794173000000}},
-      {"provider": "github-copilot", "service": "copilot", "plan": "Individual Pro",
-       "windows": [{"id": "premium_interactions", "name": "Premium requests", "used": 0.6, "minutes": 43200, "amount": {"used": 180, "limit": 300, "unit": "requests"}, "read": 1794160000000, "source": "usage"}]},
-      {"provider": "openrouter", "service": "openrouter", "windows": [], "balance": {"left": 12.5, "unit": "usd"}}
+      {"provider": "github-copilot", "service": "copilot", "title": "Copilot", "plan": "Individual Pro",
+       "windows": [{"id": "premium_interactions", "title": "Premium requests", "name": "Premium requests", "used": 0.6, "minutes": 43200, "amount": {"used": 180, "limit": 300, "unit": "requests"}, "read": 1794160000000, "source": "usage"}]},
+      {"provider": "openrouter", "service": "openrouter", "title": "OpenRouter", "windows": [], "balance": {"left": 12.5, "unit": "usd"}}
     ]}}
     """
 
@@ -33,7 +33,8 @@ struct PlanLimitsTests {
         #expect(limits.accounts[3].balance?.left == 12.5)
     }
 
-    @Test func windowsAreNamedAsTheUsagePanelNamesThem() throws {
+    /// Every name is the box's (`limits.titles`): no client keeps a table of them.
+    @Test func windowsAreNamedAsTheBoxNamesThem() throws {
         let limits = try BoxLimits.decode(Data(answer.utf8))
         // The one this copy can't read is left out, not the account.
         #expect(limits.accounts[0].windows.map(\.title) == ["Session", "Weekly", "Fable"])
@@ -43,22 +44,24 @@ struct PlanLimitsTests {
 
     @Test func aWindowThatStartedOverSinceIsNotShownAsUsed() throws {
         let limits = try BoxLimits.decode(Data(answer.utf8))
-        // Work's session reset after it was read: what's used now isn't known.
-        #expect(limits.accounts[1].windows(at: now).isEmpty)
+        // Work's session reset after it was read, as its box says (`expired`): what's used now isn't known.
+        #expect(limits.accounts[1].current.isEmpty)
+        #expect(limits.accounts[1].windows.map(\.expired) == [true])
         #expect(limits.accounts[1].problem?.kind == "rate-limited")
-        #expect(limits.accounts[0].windows(at: now).map(\.id).first == "five_hour")
+        #expect(limits.accounts[0].current.map(\.id).first == "five_hour")
         // As of when it was last heard of; out of date once that's over half an hour.
         #expect(limits.accounts[0].readAt(now: now) == Date(timeIntervalSince1970: 1_794_160_000))
         #expect(!limits.accounts[0].isOutdated(now: Date(timeIntervalSince1970: 1_794_161_000)))
         #expect(limits.accounts[0].isOutdated(now: Date(timeIntervalSince1970: 1_794_162_000)))
     }
 
-    // How close each window is to its limit, and which two an account's rings are of, are the
-    // box's word (`limits.rings`): a client draws them and keeps no threshold of its own.
+    // How close each window is to its limit, which two an account's rings are of, and which one a
+    // single bar shows, are the box's word (`limits.rings`, `limits.bar`): a client draws them and
+    // keeps no threshold, comparison or clock of its own.
     @Test func ringsAndLevelsAreTheBoxsWord() throws {
         let row = """
         {"data": {"services": ["claude"], "accounts": [], "rows": [
-          {"id": "claude#a1", "provider": "claude-code", "service": "claude", "agent": "claude", "boxes": [],
+          {"id": "claude#a1", "provider": "claude-code", "service": "claude", "title": "Claude", "agent": "claude", "boxes": [], "level": "over", "bar": "long",
            "windows": [
              {"id": "five_hour", "used": 0.42, "minutes": 300, "resetsAt": 1794180000000, "read": 1794160000000, "level": "calm", "span": "short"},
              {"id": "seven_day", "used": 0.93, "minutes": 10080, "resetsAt": 1794600000000, "read": 1794150000000, "level": "over", "span": "long"},
@@ -66,8 +69,8 @@ struct PlanLimitsTests {
            ],
            "rings": {"short": {"window": "five_hour", "used": 0.42, "resetsAt": 1794180000000, "level": "calm"},
                      "long": {"window": "seven_day", "used": 0.93, "resetsAt": 1794600000000, "level": "over"}}},
-          {"id": "openrouter#b2", "provider": "openrouter", "service": "openrouter", "boxes": [], "windows": [], "balance": {"left": 12.5, "unit": "usd"}, "rings": {}},
-          {"id": "codex#c3", "provider": "codex-cli", "service": "codex", "agent": "codex", "boxes": [],
+          {"id": "openrouter#b2", "provider": "openrouter", "service": "openrouter", "title": "OpenRouter", "boxes": [], "windows": [], "balance": {"left": 12.5, "unit": "usd"}, "rings": {}},
+          {"id": "codex#c3", "provider": "codex-cli", "service": "codex", "title": "Codex", "agent": "codex", "boxes": [], "level": "later", "bar": "short",
            "windows": [{"id": "primary", "used": 0.2, "minutes": 300, "resetsAt": 1794180000000, "read": 1794160000000, "level": "later", "span": "short"}],
            "rings": {"short": {"window": "primary", "used": 0.2, "resetsAt": 1794180000000, "level": "later"}}}
         ]}}
@@ -75,24 +78,19 @@ struct PlanLimitsTests {
         let rows = try #require(try BoxLimits.decode(Data(row.utf8)).rows)
         #expect(rows[0].windows.map(\.level) == [.calm, .over, .near])
         #expect(rows[0].windows.map(\.span) == ["short", "long", nil])
-        #expect(rows[0].rings(at: now).map(\.window) == ["five_hour", "seven_day"])
-        // With room for one bar: the fuller of the two the box picked, and the account as near
-        // its limit as the nearer of them.
-        #expect(rows[0].ring(at: now)?.window == "seven_day")
-        #expect(rows[0].level(at: now) == .over)
-        // A ring whose reset has passed is drawn empty, in its place.
-        let later = Date(timeIntervalSince1970: 1_794_200_000)
-        #expect(rows[0].rings(at: later).map(\.used) == [0, 0.93])
-        #expect(rows[0].rings(at: later).map(\.level) == [.calm, .over])
-        // A plan with no windows has no rings, and no level.
-        #expect(rows[1].rings(at: now).isEmpty && rows[1].ring(at: now) == nil && rows[1].level(at: now) == nil)
+        #expect(rows[0].drawnRings.map(\.window) == ["five_hour", "seven_day"])
+        // With room for one bar: the ring the box says, and the account's level as it says it.
+        #expect(rows[0].bar?.window == "seven_day")
+        #expect(rows[0].level == .over)
+        // A plan with no windows has no rings, no bar and no level.
+        #expect(rows[1].drawnRings.isEmpty && rows[1].bar == nil && rows[1].level == nil)
         // A word a newer box says for a level reads as none: its ring still shows.
-        #expect(rows[2].ring(at: now)?.window == "primary" && rows[2].level(at: now) == nil)
+        #expect(rows[2].bar?.window == "primary" && rows[2].level == nil)
         #expect(LimitsLevel.calm < .near && LimitsLevel.near < .over)
     }
 
     @Test func theEventCarriesTheAccountsAlone() throws {
-        let event = #"{"accounts": [{"provider": "codex-cli", "agent": "codex", "windows": []}]}"#
+        let event = #"{"accounts": [{"provider": "codex-cli", "agent": "codex", "title": "Codex", "windows": []}]}"#
         let limits = try BoxLimits.decode(Data(event.utf8))
         #expect(limits.accounts.map(\.title) == ["Codex"])
         // (A box from before it said what service an account is: its agent.)
@@ -128,8 +126,8 @@ struct PlanLimitsTests {
 
     /// Claude's own sign-in, as a box states it: `used` of its session and week, read at `read` (s).
     func claude(_ identity: String?, used: Double, read: Double, provider: String = "claude-code", label: String? = nil, problem: Bool = false) -> String {
-        let windows = #"[{"id": "five_hour", "used": \#(used), "minutes": 300, "resetsAt": 1794180000000, "read": \#(read * 1000), "source": "usage"}, {"id": "seven_day", "used": \#(used / 2), "minutes": 10080, "resetsAt": 1794600000000, "read": \#(read * 1000), "source": "usage"}]"#
-        return #"{"provider": "\#(provider)", "service": "claude", "agent": "claude", "account": "default", "plan": "Max 20x", "checked": \#(read * 1000), "windows": \#(windows)"#
+        let windows = #"[{"id": "five_hour", "title": "Session", "used": \#(used), "minutes": 300, "resetsAt": 1794180000000, "read": \#(read * 1000), "source": "usage"}, {"id": "seven_day", "title": "Weekly", "used": \#(used / 2), "minutes": 10080, "resetsAt": 1794600000000, "read": \#(read * 1000), "source": "usage"}]"#
+        return #"{"provider": "\#(provider)", "service": "claude", "title": "\#(label.map { "Claude · \($0)" } ?? "Claude")", "agent": "claude", "account": "default", "plan": "Max 20x", "checked": \#(read * 1000), "windows": \#(windows)"#
             + (identity.map { #", "identity": "\#($0)""# } ?? "") + (label.map { #", "label": "\#($0)""# } ?? "")
             + (problem ? #", "problem": {"kind": "rate-limited", "message": "Anthropic is turning away reads of the plan's limits for now."}"# : "") + "}"
     }
@@ -141,7 +139,7 @@ struct PlanLimitsTests {
             .init(key: "mini", name: "mini-local", accounts: try box(claude("a1b2c3d4e5f60718", used: 0.45, read: 1_794_162_000))),
         ])
         #expect(rows.map(\.account.title) == ["Claude"])
-        #expect(rows[0].account.windows(at: now).map(\.used).max() == 0.53)
+        #expect(rows[0].account.current.map(\.used).max() == 0.53)
         #expect(rows[0].account.readAt(now: now) == Date(timeIntervalSince1970: 1_794_164_000))
         #expect(rows[0].sources.map(\.box) == ["mac", "hetzner", "mini"])
     }
@@ -194,7 +192,7 @@ struct PlanLimitsTests {
             ].joined(separator: ","))),
         ])
         #expect(rows.map(\.account.title) == ["Claude", "Claude · Athas"])
-        #expect(rows.map { $0.account.windows(at: now).map(\.used).max() } == [0.5, 0.9])
+        #expect(rows.map { $0.account.current.map(\.used).max() } == [0.5, 0.9])
     }
 
     @Test func aBoxThatDoesntSayWhoAnAccountIsStillShowsIt() throws {
@@ -205,7 +203,7 @@ struct PlanLimitsTests {
             .init(key: "mac", name: nil, accounts: try box(claude(nil, used: 0.4, read: 1_794_160_000))),
             .init(key: "hetzner", name: "hetzner", accounts: try box(claude("aaaaaaaaaaaaaaaa", used: 0.5, read: 1_794_161_000))),
             .init(key: "lokum", name: "lokum", accounts: try box(claude("aaaaaaaaaaaaaaaa", used: 0.5, read: 1_794_161_000))),
-            .init(key: "old", name: "old-box", accounts: try box(#"{"provider": "codex-cli", "agent": "codex", "windows": []}"#)),
+            .init(key: "old", name: "old-box", accounts: try box(#"{"provider": "codex-cli", "agent": "codex", "title": "Codex", "windows": []}"#)),
         ])
         #expect(rows.map(\.account.title) == ["Claude", "Claude · hetzner, lokum", "Codex"])
         #expect(rows[1].sources.map(\.box) == ["hetzner", "lokum"])
@@ -228,13 +226,13 @@ struct PlanLimitsTests {
         // Codex's own sign-in and the engine's ChatGPT, one account, each naming its windows its own
         // way: one row, each window once, as read last.
         let accounts = try box(#"""
-        {"provider": "codex-cli", "service": "codex", "agent": "codex", "account": "default", "identity": "c0dec0dec0dec0de", "windows": [
-          {"id": "primary", "used": 0.30, "minutes": 300, "read": 1794160000000, "source": "turn"},
-          {"id": "codex_spark.primary", "used": 0.05, "minutes": 300, "model": "GPT-5.3-Codex-Spark", "read": 1794160000000, "source": "usage"}]},
-        {"provider": "openai", "service": "codex", "identity": "c0dec0dec0dec0de", "plan": "Pro", "windows": [
-          {"id": "primary", "used": 0.25, "minutes": 300, "read": 1794150000000, "source": "usage"},
-          {"id": "secondary", "used": 0.60, "minutes": 10080, "read": 1794150000000, "source": "usage"},
-          {"id": "GPT-5.3-Codex-Spark.primary", "used": 0.07, "minutes": 300, "model": "GPT-5.3-Codex-Spark", "read": 1794162000000, "source": "usage"}]}
+        {"provider": "codex-cli", "service": "codex", "title": "Codex", "agent": "codex", "account": "default", "identity": "c0dec0dec0dec0de", "windows": [
+          {"id": "primary", "title": "Session", "used": 0.30, "minutes": 300, "read": 1794160000000, "source": "turn"},
+          {"id": "codex_spark.primary", "title": "GPT-5.3-Codex-Spark", "used": 0.05, "minutes": 300, "model": "GPT-5.3-Codex-Spark", "read": 1794160000000, "source": "usage"}]},
+        {"provider": "openai", "service": "codex", "title": "ChatGPT", "identity": "c0dec0dec0dec0de", "plan": "Pro", "windows": [
+          {"id": "primary", "title": "Session", "used": 0.25, "minutes": 300, "read": 1794150000000, "source": "usage"},
+          {"id": "secondary", "title": "Weekly", "used": 0.60, "minutes": 10080, "read": 1794150000000, "source": "usage"},
+          {"id": "GPT-5.3-Codex-Spark.primary", "title": "GPT-5.3-Codex-Spark", "used": 0.07, "minutes": 300, "model": "GPT-5.3-Codex-Spark", "read": 1794162000000, "source": "usage"}]}
         """#)
         let listed = UsageListing.items(panel: [Entry](), covers: \.covers, accounts: accounts)
         guard listed.count == 1, case .account(let row, _) = listed[0] else {
@@ -250,7 +248,7 @@ struct PlanLimitsTests {
 
     @Test func rowsOfOneNameAreToldApart() throws {
         let codex = { (provider: String, identity: String, agent: Bool) -> String in
-            #"{"provider": "\#(provider)", "service": "codex", \#(agent ? #""agent": "codex", "account": "default","# : "") "identity": "\#(identity)", "windows": [{"id": "primary", "used": 0.5, "minutes": 300, "read": 1794160000000, "source": "usage"}]}"#
+            #"{"provider": "\#(provider)", "service": "codex", "title": "\#(agent ? "Codex" : "ChatGPT")", \#(agent ? #""agent": "codex", "account": "default","# : "") "identity": "\#(identity)", "windows": [{"id": "primary", "used": 0.5, "minutes": 300, "read": 1794160000000, "source": "usage"}]}"#
         }
         // This Mac's Codex is one account and its ChatGPT sign-in another, which hetzner's Codex is
         // signed in to: "Codex" and "ChatGPT", as this Mac names them.
@@ -288,13 +286,13 @@ struct PlanLimitsTests {
     /// signed in only on hetzner, which isn't heard from lately.
     let rowsAnswer = """
     {"data": {"services": ["claude"], "accounts": [
-      {"provider": "claude-code", "service": "claude", "agent": "claude", "account": "default", "identity": "aaaaaaaaaaaaaaaa", "windows": []}
+      {"provider": "claude-code", "service": "claude", "title": "Claude", "agent": "claude", "account": "default", "identity": "aaaaaaaaaaaaaaaa", "windows": []}
     ], "rows": [
-      {"id": "claude#aaaaaaaaaaaaaaaa", "provider": "claude-code", "service": "claude", "agent": "claude", "account": "default", "identity": "aaaaaaaaaaaaaaaa", "plan": "Max 20x", "checked": 1794164000000,
+      {"id": "claude#aaaaaaaaaaaaaaaa", "provider": "claude-code", "service": "claude", "title": "Claude", "agent": "claude", "account": "default", "identity": "aaaaaaaaaaaaaaaa", "plan": "Max 20x", "checked": 1794164000000,
        "windows": [{"id": "five_hour", "used": 0.53, "minutes": 300, "resetsAt": 1794180000000, "read": 1794164000000, "source": "usage"}],
        "boxes": [{"key": "kmac", "name": "MacBook Pro", "provider": "claude-code", "agent": "claude", "account": "default", "here": true},
                  {"key": "klokum", "name": "lokum", "provider": "claude-code", "agent": "claude", "account": "default", "checked": 1794164000000}]},
-      {"id": "claude#bbbbbbbbbbbbbbbb", "provider": "claude-code", "service": "claude", "agent": "claude", "account": "default", "identity": "bbbbbbbbbbbbbbbb", "checked": 1794164500000, "away": true,
+      {"id": "claude#bbbbbbbbbbbbbbbb", "provider": "claude-code", "service": "claude", "title": "Claude · hetzner", "agent": "claude", "account": "default", "identity": "bbbbbbbbbbbbbbbb", "checked": 1794164500000, "away": true,
        "windows": [{"id": "five_hour", "used": 0.2, "minutes": 300, "resetsAt": 1794180000000, "read": 1794164500000, "source": "usage"}],
        "boxes": [{"key": "khetzner", "name": "hetzner", "provider": "claude-code", "agent": "claude", "account": "default", "checked": 1794164500000, "away": true}]}
     ]}}
@@ -313,11 +311,11 @@ struct PlanLimitsTests {
                 row.account.title + (below.map { " +\($0.id)" } ?? "") + " on " + row.sources.map { $0.name ?? "here" }.joined(separator: ",")
             }
         }
-        // Its own numbers are lokum's: the box listed it so; the other, only on hetzner, named for it.
+        // Its own numbers are lokum's: the box listed it so; the other, only on hetzner, named for it by the box.
         #expect(listed == ["Claude +claude on here,lokum", "Claude · hetzner on hetzner"])
         let first = UsageListing.accounts(rows: rows)[0]
         #expect(first.id == "claude#aaaaaaaaaaaaaaaa")
-        #expect(first.account.windows(at: now).map(\.used).max() == 0.53)
+        #expect(first.account.current.map(\.used).max() == 0.53)
         #expect(first.sources.map(\.box) == ["", "klokum"])
     }
 
@@ -350,7 +348,7 @@ struct PlanLimitsTests {
         #expect(UsageListing.listing([.init(key: "", name: nil, limits: mac), .init(key: "hetzner", name: "hetzner", limits: hetzner)]).lister == "")
         // A machine just added, whose account the Mac's box hasn't heard of: each box's own, merged.
         let added = try BoxLimits.decode(Data(#"""
-        {"data": {"services": ["grok"], "accounts": [{"provider": "grok-cli", "service": "grok", "agent": "grok", "identity": "6600660066006600", "windows": []}], "rows": [
+        {"data": {"services": ["grok"], "accounts": [{"provider": "grok-cli", "service": "grok", "title": "Grok", "agent": "grok", "identity": "6600660066006600", "windows": []}], "rows": [
           {"id": "grok#6600660066006600", "provider": "grok-cli", "service": "grok", "identity": "6600660066006600", "windows": [],
            "boxes": [{"key": "kadded", "name": "added", "provider": "grok-cli", "here": true}]}]}}
         """#.utf8))

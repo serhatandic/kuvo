@@ -196,7 +196,7 @@ export class LimitsPeers {
       const visible = this.noticePeer(key, kept) ? accounts.map(a => ({ ...a, ...(a.notices ? { notices: a.notices.filter(n => currentNotice(n, now)) } : {}) })) : withoutNotices(accounts)
       boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now - kept.heard > PEER_AWAY, ...(!ours ? { vouched: true } : {}), accounts: visible })
     }
-    return limitRows(boxes)
+    return limitRows(boxes, now)
   }
 
   /**

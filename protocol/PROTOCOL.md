@@ -4859,6 +4859,11 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
   been read (or a turn told of it, or a peer's reading stood for a read here); one with no plan
   limits to read (signed out, an API key) isn't.
   Each `account`:
+  - `title` (`limits.titles`, #668): its name, the same in every client: its coding agent's
+    ("Claude", "Codex", "Grok", "Cursor", "Antigravity"), else its plan's (the engine's sign-ins:
+    "ChatGPT", "SuperGrok", "Copilot", "OpenRouter", "Z.ai", "Ollama", "OpenCode Go"; a service the
+    box has no name for, capitalized), with what you called it ("Claude · Work"). In `rows`, told
+    apart from another row of that name (below, "Names").
   - `provider` (`claude-code`, `claude-code@1f2e3d4c` for one you added, the engine's
     `github-copilot`…), `service` (its mark and color, as above), and for a coding agent's,
     `agent` (`claude`…) and `account` (`default` for its own sign-in, else the ID of one you
@@ -4886,8 +4891,12 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     unit}` (`requests`, `usd`, `credits`) where the limit is a count or an amount; `read`, when
     this was read; `source`, `usage` (read from its maker) or `turn` (what a turn heard on the way,
     Claude Code's and Codex's rate-limit events, which keep a window current between reads). A
-    window whose `resetsAt` has passed has started over since: show it as not read yet, not as
-    used.
+    window whose `resetsAt` had passed when the box answered has started over since (`limits.bar`,
+    #668): it says `expired: true`, `used` 0 and neither `resetsAt` nor `amount` (in a row, `level`
+    `calm`); a client shows it as not read since, not as used. The box tells clients again
+    (`kuvo.limits.updated`) the moment a window listed starts over, so no client watches a clock
+    for it. `title`, its name (`limits.titles`): `name`, else `model`, else by its length
+    ("Session" for 300 minutes, "Weekly" for 10080, "Monthly", "3-day", "8-hour"), else "Limit".
   - `balance` `{left, limit?, unit}`: credits left to spend, where the account has them.
   - `balance` with `limit`: what was bought (OpenRouter's total credits), so a client draws what's
     left of it as a meter.
@@ -5048,8 +5057,10 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     length); one with none, `rings: {}`. Where every window is named for what it counts
     (Antigravity's pools, Copilot's counts), the rings are of one pool, the first listed's (those
     whose `id` differs only in its last part: `gemini-5h` with `gemini-weekly`, never with
-    `3p-weekly`); where every window is a model's, the first model's stand for the plan. A client colours by `level` and never by a threshold of its own,
-    and draws a ring whose `resetsAt` has passed empty, in its place (as a window). Since #718 a row
+    `3p-weekly`); where every window is a model's, the first model's stand for the plan. A client colours by `level` and never by a threshold of its own.
+    A ring whose window started over (`expired`) is `used` 0, `calm`, with no `resetsAt`, in its
+    place. `bar` (`limits.bar`, #668): `short` or `long`, the ring a client with room for one bar
+    draws: the fuller of the two (`short` where they're as full); absent with no rings. Since #718 a row
     also says `level` for the account as a whole, for a client's one mark of it (a gauge): the
     higher of its rings' levels; with no ring, what it has with a most it may come to, by the same
     shares: its `balance` (what's gone of `limit`) and each `capped` extra (`amount` of `limit`), the
@@ -5060,13 +5071,12 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
   your computers that states accounts, a machine's on Linux too), refreshed
   through that box alone, while they have every row each other box the client reaches says is
   signed in there (`here`), with that box among the row's `boxes` and not `away`. A row whose computers are all away shows "As of" its reading's time.
-  Naming, a view: a row's name is its account's ("Claude", "Codex", "ChatGPT", "Claude · Work");
-  where two rows would have one name: a row whose sign-in on the answering box is the engine's
-  takes the service's name ("ChatGPT"); rows not on the answering box add the names of the boxes
-  they're from ("Claude · hetzner, lokum"), as does one beside a bar the Mac panel shows of its
-  own of that name (a provider's card that reads your own login's limits, when this Mac's box has
-  no row of it: Codex's, say; Claude's card has none, so the accounts take its place, `covers`);
-  rows still alike add their other boxes' names. Otherwise (a computer the client reaches whose own
+  **Names** (`limits.titles`, #668): a row's `title` is the box's: its account's ("Claude",
+  "Codex", "ChatGPT", "Claude · Work"); where two rows would have one name, a row whose sign-in on
+  the answering box is the engine's alone takes the service's name ("ChatGPT"); rows not on the
+  answering box add the names of the computers they're on ("Claude · hetzner, lokum"); rows still
+  alike, each on the answering box, add their other computers' names. A client shows it as it is.
+  Otherwise (a computer the client reaches whose own
   rows the first box doesn't have from it as it hears it now, not `away`: just added, or the relay
   down; or a held box's older bridge, which answers without `rows`, as this Mac's own does just
   after an update from a release before them), the client merges each box's `accounts` itself, by
@@ -6600,7 +6610,9 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `letters-read` | (in a peer's agents' mail) it takes a letter with `read` (bridge 0.9.100) |
 | `limits` | `kuvo/agents/api/kuvo/limits…` and `plan_limits`: each account's plan limits ("Plan limits") |
 | `limits.resets` | `kuvo/agents/api/kuvo/limits/reset…` and `use_limit_reset`: using a plan's resets, once, on the computer with its sign-in ("Plan limits", "Resets") |
+| `limits.bar` | `bar` on each of the plan limits' `rows`, and `expired` on a window that started over, the rows and `accounts` told again when one does ("Plan limits", "Rings and levels", #668) |
 | `limits.rings` | `rings`, and `level` and `span` on each window, in the plan limits' `rows` ("Plan limits", "Rings and levels", #711) |
+| `limits.titles` | `title` on each of the plan limits' `rows` and `accounts` and on each window ("Plan limits", "Names", #668) |
 | `mac` | a Mac only: `kuvo/mac` |
 | `machines` | a Mac only: `kuvo/machines…` (with its app closed its box still lists them, and the rest says the app must be open) |
 | `mcp.catalog` | `kuvo/mcp/catalog…` |
@@ -6638,6 +6650,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sandbox.asks` | `kuvo/sandbox/asks…`, `kuvo/sandbox/allowed…` and `kuvo/sandbox/tools` ("Sandbox", "Asks", bridge 0.9.118) |
 | `sandbox.check` | `reason`, `action` and the rest in `kuvo/sandbox`, and `POST kuvo/sandbox/check` |
 | `sandbox.opens` | `opens`, the address a button with no route opens, and `opensHere`, in `kuvo/sandbox` ("Sandbox", #708) |
+| `sandbox.report` | `kuvo/sandbox` says `why` and its docs' page (`action`, `actionLabel`, `opens`) while it's on with `gaps` `services`, and `report` once its check failed twice in a row ("Sandbox", #668) |
 | `sandbox.reviews.settled` | `settled` on `kuvo/sandbox/asks`: each ask Auto's reviewer was checking or left for you that was answered or went since, so no client takes it for one that waits, heard or not ("Sandbox") |
 | `sandbox.reviews.whole` | `reviews` on `kuvo/sandbox/asks` lists every ask to work outside a conversation's folder, so a client shows one only once it's listed `yours` ("Sandbox") |
 | `sandbox.words` | `why` for every `reason` and `actionLabel`, its button's words, in `kuvo/sandbox` ("Sandbox", #711) |
@@ -9023,7 +9036,10 @@ it's empty.
   repositories they write (a Linux machine where a folder can't be made read-only in a command's
   namespace, tried in the box's own folder as it's checked: commands in a repository there don't
   run, 126, rather than run with those open to them). A client says so beside it (`services`;
-  the apps don't show `git` yet).
+  the apps don't show `git` yet). With `sandbox.report` (#668), `services` comes with the box's
+  words for it too: `why`, a sentence to show as it is (what commands can still reach, and what
+  waits until the machine allows user namespaces or has util-linux), and the docs' page on what a
+  machine needs as its button (`action` `help`, `actionLabel`, `opens`), so no client keeps either.
   When it isn't on, also `reason`, a word for a client to map rather than reading `why`, with what
   you can do (`action`) and the box's route that does it (`route`, where there is one). With
   `sandbox.words` (#711), the words are the box's too, so no client keeps a table of them: `why`
@@ -9054,7 +9070,10 @@ it's empty.
   | `waiting` | the engine hasn't loaded it yet | `restartEngine` | `POST kuvo/engine/restart` |
 
   `failures`, with
-  `checking` and `checkFailed`: checks failed in a row (the box tries again each minute). A box
+  `checking` and `checkFailed`: checks failed in a row (the box tries again each minute). With
+  `sandbox.report` (#668), from two in a row the state adds `report`, what a report of it says (how
+  many, `why` and `check`): a client offers Report a Problem beside its button then, and sends
+  those words with it (adding which computer it is), never before. A box
   without `sandbox.check` in its features gives none of these; without `sandbox`, it has no sandbox
   (an older Kuvo Code, to update).
 - `POST kuvo/sandbox/check` → the state, after setting it up and checking it again.

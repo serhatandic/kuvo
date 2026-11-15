@@ -439,6 +439,26 @@ fn the_sandbox_is_drawn_in_the_boxs_words(cx: &mut TestAppContext) {
     }
 }
 
+/// On, but on a machine whose commands can still reach your login's services (`gaps`): the row
+/// warns with the box's words and the page it names, as for off (#668), not a quiet "On".
+#[gpui::test]
+fn a_machine_whose_commands_reach_your_services_says_so_in_the_boxs_words(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_sandbox(json!({ "on": true, "able": true, "agents": true, "gaps": ["services"], "needs": "user namespaces", "why": "Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd.", "action": "help", "actionLabel": "How to Check…", "opens": "https://docs.stand-in.invalid/sandbox" }));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    section(&workspace, cx, "Permissions");
+    let line = settings(&workspace, cx).read_with(cx, |view, _| view.row_detail("row-sandbox"));
+    assert_eq!(line.as_deref(), Some("Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd."));
+    click(cx, "row-sandbox-how-to-check");
+    assert_eq!(cx.opened_url().as_deref(), Some("https://docs.stand-in.invalid/sandbox"));
+    // Only git's files kept apart: nothing to say.
+    stand_in.set_sandbox(json!({ "on": true, "able": true, "agents": true, "gaps": ["git"] }));
+    section(&workspace, cx, "Browser");
+    section(&workspace, cx, "Permissions");
+    assert_eq!(settings(&workspace, cx).read_with(cx, |view, _| view.row_detail("row-sandbox")).as_deref(), Some(""));
+    assert!(!shown(cx, "row-sandbox-how-to-check"));
+}
+
 #[gpui::test]
 fn usage_notices_change_as_one_part_from_the_version_read(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);

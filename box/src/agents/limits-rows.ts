@@ -43,10 +43,16 @@ export type LimitLevel = "calm" | "near" | "over"
 /** Which of an account's two rings a window is: its short limit (a 5-hour session) or its long one (the week, the month). */
 export type LimitSpan = "short" | "long"
 
-/** A window as a row states it: with how close it is, and which ring it is, where it's one. */
+/**
+ * A window as a row states it: its name (`title`), how close it is, and which ring it is, where it's
+ * one. One whose `resetsAt` had passed when the box answered has started over (`expired`): not read
+ * since, so `used` 0, `calm`, and neither its `resetsAt` nor its `amount`.
+ */
 export interface RowWindow extends LimitWindow {
+  title: string
   level: LimitLevel
   span?: LimitSpan
+  expired?: true
 }
 
 /** One of an account's rings: its window (by `id`), how much of it is gone, when it starts over, and how close that is. */
@@ -59,6 +65,8 @@ export interface LimitRing {
 
 /** One account across your computers: its newest reading, and every computer it's signed in on. */
 export interface LimitRow extends AccountLimits {
+  /** Its name, the same in every client: its account's (`accountTitle`), told apart from another row of that name (`named`). */
+  title: string
   windows: RowWindow[]
   /** Its two rings, the short limit and the long one; one alone where its plan has one window; none where it has none. */
   rings: { short?: LimitRing; long?: LimitRing }
@@ -66,6 +74,8 @@ export interface LimitRow extends AccountLimits {
    * rings'; with no window, its balance's or a capped extra's (used of the most it may come to).
    * Left out where nothing says a limit (a balance with no cap, spend alone): not calm, unknown. */
   level?: LimitLevel
+  /** The ring a client with room for one bar draws: the fuller of the two (the short one where they're as full), a ring that started over counting as empty. None with no rings. */
+  bar?: LimitSpan
   /** The same for the account on every box: `<service>#<identity>`, or `<box key>/<provider>` for one that can't say who it is. */
   id: string
   boxes: LimitRowBox[]
@@ -75,9 +85,10 @@ export interface LimitRow extends AccountLimits {
 
 /**
  * One row per account across the boxes, in their order (this box first): rows of one `service` with
- * one `identity` are one account, from any box; one without an identity is its box's own.
+ * one `identity` are one account, from any box; one without an identity is its box's own. `now`, the
+ * box's clock: a window whose reset has passed by then has started over.
  */
-export function limitRows(boxes: LimitsBox[]): LimitRow[] {
+export function limitRows(boxes: LimitsBox[], now: number): LimitRow[] {
   const groups: { id: string; members: { box: LimitsBox; account: AccountLimits }[] }[] = []
   const found = new Map<string, number>()
   for (const box of boxes) {
@@ -91,9 +102,10 @@ export function limitRows(boxes: LimitsBox[]): LimitRow[] {
       }
     }
   }
-  return groups.map(({ id, members }) => {
+  const rows = groups.map(({ id, members }) => {
     const row: LimitRow = {
-      ...ringed(merged(members)),
+      ...ringed(merged(members), now),
+      title: "",
       id,
       boxes: members.map(({ box, account }) => ({
         key: box.key,
@@ -111,6 +123,65 @@ export function limitRows(boxes: LimitsBox[]): LimitRow[] {
     withResetsOn(row, members)
     return row
   })
+  named(rows)
+  return rows
+}
+
+/** The coding agents by their own names, and the engine's sign-ins by the plan they're for. */
+const AGENT_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", grok: "Grok", cursor: "Cursor", antigravity: "Antigravity" }
+const SERVICE_NAMES: Record<string, string> = { codex: "ChatGPT", grok: "SuperGrok", copilot: "Copilot", openrouter: "OpenRouter", zai: "Z.ai", ollama: "Ollama", opencode: "OpenCode Go" }
+const capitalized = (word: string) => word.charAt(0).toUpperCase() + word.slice(1)
+
+/** An account's name (PROTOCOL.md, "Plan limits", `title`): its coding agent's, else its plan's ("ChatGPT"), with what you called it ("Claude · Work"). */
+export function accountTitle(account: { agent?: string; service: string; label?: string }): string {
+  const base = account.agent ? (AGENT_NAMES[account.agent] ?? capitalized(account.agent)) : (SERVICE_NAMES[account.service] ?? capitalized(account.service))
+  const label = account.label?.trim()
+  return label ? `${base} · ${label}` : base
+}
+
+/** A window's name: its maker's for what it counts, its model's, else how long it is ("Session", "Weekly", "Monthly", "3-day", "8-hour"); "Limit" where it says none. */
+export function windowTitle(window: Pick<LimitWindow, "name" | "model" | "minutes">): string {
+  if (window.name) return window.name
+  if (window.model) return window.model
+  const minutes = window.minutes
+  if (minutes === 300) return "Session"
+  if (minutes === 10_080) return "Weekly"
+  if (minutes !== undefined && minutes >= 40_000 && minutes <= 45_000) return "Monthly"
+  if (minutes !== undefined && minutes >= DAY) return `${Math.floor(minutes / DAY)}-day`
+  if (minutes !== undefined && minutes >= 60) return `${Math.floor(minutes / 60)}-hour`
+  return "Limit"
+}
+
+/**
+ * Each row's name: its account's, unless two would have one name. Then a row whose sign-in on this
+ * box is the engine's alone takes the service's name ("ChatGPT"); a row not on this box adds the
+ * names of the computers it's on ("Claude · hetzner, lokum"); rows still alike, each on this box,
+ * add their other computers' names.
+ */
+function named(rows: LimitRow[]) {
+  const names = rows.map((row) => accountTitle(row))
+  const here = (index: number) => rows[index]!.boxes.filter((box) => box.here)
+  const elsewhere = (index: number) => [...new Set(rows[index]!.boxes.filter((box) => !box.here).map((box) => box.name))].join(", ")
+  const alike = () => {
+    const counts = new Map<string, number>()
+    for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1)
+    return new Set([...counts].filter(([, count]) => count > 1).map(([name]) => name))
+  }
+  let clash = alike()
+  names.forEach((name, index) => {
+    const mine = here(index)
+    if (!clash.has(name) || !mine.length || mine.some((box) => box.agent)) return
+    names[index] = accountTitle({ service: rows[index]!.service, label: mine[0]!.label })
+  })
+  for (const onHere of [false, true]) {
+    clash = alike()
+    names.forEach((name, index) => {
+      if (!clash.has(name) || (here(index).length > 0) !== onHere) return
+      const boxes = elsewhere(index)
+      if (boxes) names[index] = `${name} · ${boxes}`
+    })
+  }
+  rows.forEach((row, index) => (row.title = names[index]!))
 }
 
 export const levelOf = (used: number): LimitLevel => (used >= 0.9 ? "over" : used >= 0.7 ? "near" : "calm")
@@ -171,18 +242,36 @@ export function accountLevel(account: Pick<AccountLimits, "balance" | "extras">,
   return highest(shares.map(levelOf))
 }
 
-/** An account as a row states it: each window with its level and which ring it is, the rings themselves, and its level as a whole. */
-function ringed(account: AccountLimits): AccountLimits & Pick<LimitRow, "windows" | "rings" | "level"> {
+/**
+ * A window as a client is shown it at `now`: named, and one whose reset has passed started over
+ * (`expired`: nothing used that's known, no reset or amount of the period that ended).
+ */
+export function shownWindow(window: LimitWindow, now: number): LimitWindow & { title: string; expired?: true } {
+  const title = windowTitle(window)
+  if (window.resetsAt === undefined || window.resetsAt > now) return { ...window, title }
+  const { resetsAt: _, amount: __, ...rest } = window
+  return { ...rest, used: 0, title, expired: true }
+}
+
+/** An account as a client is shown it at `now` (the `accounts` list): named, each window as `shownWindow`. */
+export function shownAccount(account: AccountLimits, now: number): AccountLimits & { title: string } {
+  return { ...account, title: accountTitle(account), windows: account.windows.map((window) => shownWindow(window, now)) }
+}
+
+/** An account as a row states it at `now`: each window named, with its level and which ring it is (one that started over empty, in its place), the rings themselves, the one a single bar shows, and its level as a whole. */
+function ringed(account: AccountLimits, now: number): AccountLimits & Pick<LimitRow, "windows" | "rings" | "level" | "bar"> {
   const spans = spansOf(account.windows)
   const rings: LimitRow["rings"] = {}
-  const windows = account.windows.map((window) => {
+  const windows = account.windows.map((read) => {
+    const window = shownWindow(read, now)
     const level = levelOf(window.used)
-    const span = spans.get(window)
+    const span = spans.get(read)
     if (span) rings[span] = { window: window.id, used: window.used, ...(window.resetsAt ? { resetsAt: window.resetsAt } : {}), level }
     return { ...window, level, ...(span ? { span } : {}) }
   })
   const level = accountLevel(account, rings)
-  return { ...account, windows, rings, ...(level ? { level } : {}) }
+  const bar: LimitSpan | undefined = rings.short && (!rings.long || rings.short.used >= rings.long.used) ? "short" : rings.long ? "long" : undefined
+  return { ...account, windows, rings, ...(level ? { level } : {}), ...(bar ? { bar } : {}) }
 }
 
 /**
