@@ -43912,7 +43912,7 @@ import fs140 from "node:fs";
 import path148 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "303a9540d338";
+var BRIDGE_VERSION = "a6dd08befe49";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -48819,7 +48819,7 @@ function suggestedFolders(home, sessions, box = K, platform = process.platform) 
   }
   const found = [];
   for (const top of LOOKED_IN) {
-    const folder = path159.join(home, top);
+    const folder = path159.join(realHome, top);
     let listing;
     try {
       listing = fs149.opendirSync(folder);
@@ -48868,7 +48868,7 @@ async function* foldersSuggestedRoute(context) {
   const { request, json } = context;
   if (request.method.toUpperCase() !== "GET")
     return yield* json(405, {});
-  const home = homeFolder();
+  const home = located(homeFolder());
   const sessions = Object.values(keptList()?.sessions ?? {}).map((each) => each.facts);
   return yield* json(200, { home, folders: suggestedFolders(home, sessions) });
 }

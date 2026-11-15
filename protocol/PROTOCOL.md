@@ -4053,7 +4053,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   project folder, a worktree's session's the project it's of, the engine's and the coding agents',
   not archived; never a chat's, a bot's or a subagent's, the home folder itself, the box's own
   folder or its chats folder, nor one gone since; compared as the system names them, so a home
-  reached through a link lists each once), the latest first, twelve at most, `seen` when a session
+  reached through a link lists each once, and `home` and every path are said that way too), the latest first, twelve at most, `seen` when a session
   there last changed (ms); then the git repositories directly in `~/Projects` and `~/Developer`
   (one level, never deeper, hidden ones left out, the first 500 entries of each read), the one
   changed latest first, `seen` null; 20 in all at most, each once. `repository: true` for a git

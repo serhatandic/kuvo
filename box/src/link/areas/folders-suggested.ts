@@ -93,7 +93,8 @@ export function suggestedFolders(home: string, sessions: WorkedIn[], box: string
   }
   const found: { at: string; changed: number }[] = [];
   for (const top of LOOKED_IN) {
-    const folder = path.join(home, top);
+    // (Under the home folder as the system names it, as the sessions' folders are.)
+    const folder = path.join(realHome, top);
     let listing: fs.Dir;
     try {
       listing = fs.opendirSync(folder);
@@ -141,7 +142,8 @@ export function suggestedFolders(home: string, sessions: WorkedIn[], box: string
 export async function* foldersSuggestedRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
-  const home = homeFolder();
+  // As the system names it, as every folder suggested is.
+  const home = located(homeFolder());
   const sessions = Object.values(keptList()?.sessions ?? {}).map(each => each.facts);
   return yield* json(200, { home, folders: suggestedFolders(home, sessions) });
 }

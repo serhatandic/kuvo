@@ -75,6 +75,7 @@ test("a home reached through a link: the engine's real paths are the same folder
   const real = join(base, "var-home"), linkedHome = join(base, "home")
   try {
     mkdirSync(join(real, "Projects", "app", ".git"), { recursive: true })
+    mkdirSync(join(real, "Developer", "web", ".git"), { recursive: true })
     symlinkSync(real, linkedHome)
     const sessions = [
       { kind: "project", directory: join(real, "Projects", "app"), updated: 10 },
@@ -83,6 +84,8 @@ test("a home reached through a link: the engine's real paths are the same folder
     ]
     expect(suggestedFolders(linkedHome, sessions, join(linkedHome, ".kuvo-code"), "linux")).toEqual([
       { path: join(real, "Projects", "app"), name: "app", repository: true, seen: 10 },
+      // Found by looking, under the same real home: one prefix for a client to shorten.
+      { path: join(real, "Developer", "web"), name: "web", repository: true, seen: null },
     ])
   } finally {
     rmSync(base, { recursive: true, force: true })
@@ -133,7 +136,7 @@ test("the route answers this computer's home and its folders", async () => {
   }
   const { status, body } = await ask("GET", "kuvo/folders/suggested")
   expect(status).toBe(200)
-  expect(body.home).toBe(process.env.HOME)
+  expect(body.home).toBe(realpathSync(process.env.HOME!))
   expect(Array.isArray(body.folders)).toBe(true)
   expect((await ask("POST", "kuvo/folders/suggested")).status).toBe(405)
 })
