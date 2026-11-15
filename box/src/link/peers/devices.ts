@@ -55,10 +55,15 @@ const answer = (status: number, value: unknown): Acted => ({ status, value });
 const REMOVED = { message: "This app was removed from your devices.", reason: "removed" };
 const NOT_GIVEN = { message: "Send the app's key (key), its name (name, up to 100 characters) and what it is (kind: desktop)." };
 
+/** Whether this Mac lets no device in (its one switch, "Let my devices connect"): it pairs none
+ * then, and vouches for none either, whatever its part in the setup. A machine has no switch. */
+const switchOff = (): boolean => IS_MAC && !macLink.config?.phones;
+const switchOffWords = () => ({ message: `“Let my devices connect” is off on ${ownName()}.` });
+
 /** `device` paired on this box, which pairs phones itself: at once, as a paired device of its own.
  * Refused as a phone's pairing is: a Mac that lets no device in, or a box with no relay. */
 export function pairHere(device: AskingDevice): Acted {
-  if (IS_MAC && !macLink.config?.phones) return answer(409, { message: `“Let my devices connect” is off on ${ownName()}.` });
+  if (switchOff()) return answer(409, switchOffWords());
   let made: ReturnType<typeof pairDevice> | null = null;
   let fresh = false;
   updateLink(link => {
@@ -105,6 +110,8 @@ export async function pairDeviceFromHere(given: unknown, signal?: AbortSignal | 
   const device = givenDevice(given, link);
   if (!device) return answer(400, NOT_GIVEN);
   if (sharedMachine(link)) return answer(409, { message: "This computer is shared with another setup, so it can't add your devices by itself." });
+  // Each Mac's own switch counts: one that lets no device in asks its main computer for none.
+  if (switchOff()) return answer(409, switchOffWords());
   const main = mainElsewhere(link);
   if (!main) return pairHere(device);
   const named = main.name || peersOf(link).find(peer => peer.key === main.key)?.name || "your main computer";

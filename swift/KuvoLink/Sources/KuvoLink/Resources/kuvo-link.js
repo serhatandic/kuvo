@@ -28248,9 +28248,11 @@ function givenDevice(given, link = readLink()) {
 var answer2 = (status, value) => ({ status, value });
 var REMOVED2 = { message: "This app was removed from your devices.", reason: "removed" };
 var NOT_GIVEN = { message: "Send the app's key (key), its name (name, up to 100 characters) and what it is (kind: desktop)." };
+var switchOff = () => IS_MAC && !macLink.config?.phones;
+var switchOffWords = () => ({ message: `“Let my devices connect” is off on ${ownName()}.` });
 function pairHere(device) {
-  if (IS_MAC && !macLink.config?.phones)
-    return answer2(409, { message: `“Let my devices connect” is off on ${ownName()}.` });
+  if (switchOff())
+    return answer2(409, switchOffWords());
   let made = null;
   let fresh = false;
   updateLink((link) => {
@@ -28295,6 +28297,8 @@ async function pairDeviceFromHere(given, signal) {
     return answer2(400, NOT_GIVEN);
   if (sharedMachine(link))
     return answer2(409, { message: "This computer is shared with another setup, so it can't add your devices by itself." });
+  if (switchOff())
+    return answer2(409, switchOffWords());
   const main = mainElsewhere(link);
   if (!main)
     return pairHere(device);
@@ -45572,7 +45576,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "9dfceeba18ef";
+var BRIDGE_VERSION = "1597e7ea1ca4";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";

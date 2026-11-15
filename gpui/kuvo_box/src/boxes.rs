@@ -527,9 +527,6 @@ impl Boxes {
 
     fn write_kept(&self, state: &State) {
         let Some(path) = &self.inner.kept else { return };
-        if let Some(folder) = path.parent() {
-            let _ = std::fs::create_dir_all(folder);
-        }
         if let Ok(bytes) = serde_json::to_vec(&state.kept) {
             let _ = write_private(path, &bytes);
         }
@@ -767,17 +764,30 @@ impl Boxes {
     }
 }
 
-/// Writes a file only you can read.
-fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Writes a file only you can read (`0600`), in a folder only you can open (`0700`): the modes
+/// are set each time, so one that was there already, wider, is narrowed before anything's written.
+pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
+    let folder = path.parent().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "no folder"))?;
+    std::fs::create_dir_all(folder)?;
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create(true).truncate(false);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o700))?;
         options.mode(0o600);
+        let file = options.open(path)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.set_len(0)?;
+        (&file).write_all(bytes)
     }
-    options.open(path)?.write_all(bytes)
+    #[cfg(not(unix))]
+    {
+        let file = options.open(path)?;
+        file.set_len(0)?;
+        (&file).write_all(bytes)
+    }
 }
 
 /// What this computer is called, for this device's name among your devices.

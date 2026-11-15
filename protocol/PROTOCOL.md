@@ -9651,7 +9651,15 @@ On both, for a paired phone:
     only when all of this holds: the mail opens as one of its peers'; its own peers document names
     the sender as one of its machines; neither box is a machine shared with another setup, as the
     sender says or as it knows ("Plan limits", Whose); it's the main computer of a setup it leads
-    now; and it lets devices in. The member answers `200 {"paired": true, "pairing"}` with what it
+    now; and it lets devices in. A member that is a Mac with its own switch off ("Let my devices
+    connect") vouches for none: `409` in the switch's words, with nothing asked of the main
+    computer, so each Mac's switch counts. **Known limit, accepted for now:** a shared machine is
+    refused only on its own word (what it says in its agents' and Work Queue mail, and what the
+    main computer keeps of that), so a machine that another person also set up, and whose box
+    lies about being shared, could get that person's device vouched into your setup. Machines
+    shared between people aren't expected; closing it takes approval of each vouched device on the
+    main computer or a device already paired, or a notice on every paired device as one is added.
+    The member answers `200 {"paired": true, "pairing"}` with what it
     said, or `409 {"message", "reason"?}` in the main computer's words. `503 {"message": "<main>
     isn't answering. This app reaches your other computers once it does."}` when no answer comes
     in 20 seconds, the main computer is away, this box is off the relay, or it hasn't heard yet

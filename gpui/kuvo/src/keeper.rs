@@ -65,19 +65,7 @@ impl Keeper for PrivateFile {
     }
 
     fn write(&self, kept: &str) -> bool {
-        use std::io::Write;
-        let Some(folder) = self.path.parent() else { return false };
-        let mut make = std::fs::DirBuilder::new();
-        make.recursive(true);
-        let mut open = std::fs::OpenOptions::new();
-        open.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-            make.mode(0o700);
-            open.mode(0o600);
-        }
-        make.create(folder).is_ok() && open.open(&self.path).and_then(|mut file| file.write_all(kept.as_bytes())).is_ok()
+        kuvo_box::boxes::write_private(&self.path, kept.as_bytes()).is_ok()
     }
 
     fn forget(&self) {

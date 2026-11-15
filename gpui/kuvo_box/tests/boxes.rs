@@ -492,3 +492,20 @@ fn paired_again_every_computer_gets_a_new_client() {
     boxes.settle();
     assert_eq!(whoami(&boxes, "Mac mini").unwrap()["name"], "Mac mini");
 }
+
+#[cfg(unix)]
+#[test]
+fn what_it_keeps_is_yours_alone_even_where_a_wider_file_was_there_already() {
+    use std::os::unix::fs::PermissionsExt;
+    let made = tempfile::tempdir().unwrap();
+    let folder = made.path().join("desktop");
+    let path = folder.join("identity");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(&path, "something longer that was there before").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    kuvo_box::boxes::write_private(&path, b"kept").unwrap();
+    let mode = |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!((mode(&path), mode(&folder)), (0o600, 0o700));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "kept");
+}

@@ -396,6 +396,17 @@ test("the desktop app on a member's computer is paired through its own box and r
   assert.deepEqual(answered, { id: act.id, status: 409, value: { message: "Only computers in Studio Mac's own setup can add your devices." } });
   const now = (await ask("GET", "kuvo/phones")).json.phones.map(each => each.key);
   assert.ok(!now.includes(act.item) && !now.includes(stray), "neither vouch paired anyone");
+  // A Mac that lets no device in ("Let my devices connect" off) vouches for none either, were it
+  // a member: its own switch counts, not only its main computer's.
+  const wasConfig = link.macLink.config;
+  const wasSetup = link.readLink().setup;
+  link.macLink.config = { ...wasConfig, phones: false };
+  link.updateLink(state => ({ ...state, setup: { ...state.setup, role: "member", primary: lab.key } }));
+  const off = await ask("POST", "kuvo/devices/pair", { key: link.publicOf(link.newKey()).toString("base64url"), name: "Laptop", kind: "desktop" }, { served: true, fromApp: true });
+  link.updateLink(state => ({ ...state, setup: wasSetup }));
+  link.macLink.config = wasConfig;
+  assert.equal(off.status, 409);
+  assert.match(off.json.message, /^“Let my devices connect” is off on /);
   // (7) And one that isn't yours says no way in: listed apart, with no address or relay.
   const theirs = (await ask("GET", "kuvo/computers")).json.computers.find(each => each.key === lab.key);
   assert.deepEqual([theirs.apart, theirs.address, theirs.relay], [true, undefined, undefined]);

@@ -365,6 +365,14 @@ I'd recommend drawing.
   sums usage across boxes itself, and reads limits from one box, which already applies the rule.
   A badge summed across boxes counts only your own computers' boxes, since those are the only
   ones it connects to.
+- **Known limit of the member's vouch (as built, accepted 2026-11-15):** the main computer
+  refuses a shared machine's vouch only on that machine's own word (`deviceAct`, `isApart`,
+  `saysShared`). Another person who also set up a shared machine could have its box not say so,
+  and get their device vouched into your setup. The user doesn't expect machines shared between
+  people. The two fixes, if that changes: each vouched device is approved on the main computer or
+  on a device already paired; or every paired device is told as one is added.
+- **Each Mac's switch counts:** a Mac with "Let my devices connect" off pairs no device and
+  vouches for none.
 - **A member can't widen access:** pairing stays the main computer's alone. The app pairing
   itself works only where the box would pair a phone.
 - **The relay** sees addresses and sizes, as for a phone, and never content. The app gets a
