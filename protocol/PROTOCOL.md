@@ -8055,7 +8055,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
 - `GET kuvo/settings`: `{sections}`, in order, each `{id, title, group, icon, line, keywords}`:
   the heading it's under in a sidebar (`group`), its icon by name (`shield`, `globe`, …: a set every
   client has; one a client hasn't, it draws with its own), and the words search finds it by besides
-  its title and line. Today `general`, `permissions`, `browser`, `git` and `worktrees`; the rest come page by page.
+  its title and line. Today `general`, `permissions`, `browser`, `git`, `worktrees` and `storage`; the rest come page by page.
 - `GET kuvo/settings/<section>`: `{id, title, line?, groups, notes?}`; `404 {message}` for a section
   this box hasn't. A group is `{id, title?, note?, rows}`, a card with its heading and the words
   under it; `notes` are `{words, tone}` (`quiet` or `warning`) after the groups: what couldn't be
@@ -8066,7 +8066,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
   |---|---|---|
   | `switch` | `value`: true or false | A switch |
   | `choice` | `value`: a choice's `id`; `choices: [{id, title, line?}]` | A menu |
-  | `text`, `number`, `folder` | `value`, `placeholder?`, `min?`, `max?`, `lines?: {min, max}` | A field (text may request a multi-line editor with its preferred visible line range; presentation only, outside revisions) (a folder's opens the box's folder picker, `kuvo/folders`) |
+  | `text`, `number`, `folder` | `value`, `placeholder?`, `min?`, `max?`, `lines?: {min, max}`, `unit?: "bytes"`, `suggestions?: [{value, title}]`, `confirmBelow?: {value, confirm}` | A field (text may request a multi-line editor with its preferred visible line range; presentation only, outside revisions; byte values use file size formatting; numeric suggestions are common values, not limits; a number below confirmBelow.value requires its confirmation, whose button appends the formatted proposed value) (a folder's opens the box's folder picker, `kuvo/folders`) |
   | `secret` | `set`: whether one is set; never its value | A field written only; Replace and Remove once set |
   | `status` | `value`: words | The words, on the right |
   | `actions` | `actions` | Buttons (past one, a menu) |
@@ -8164,6 +8164,18 @@ The sections now:
   `POST kuvo/worktrees/remove` accepts optional `was: {record, uncommitted?, ahead?}`, the worktree record and git facts read;
   removals of one root share a turn and compare the record and git facts before removal. Absent `was`
   keeps its old behavior. A mismatch answers the same 409, mapped to a stale page.
+
+- **Storage** (`storage`): the box-backed What Agents Made group only: copies (status in bytes),
+  older-budget (number in bytes, with the Swift page's common budgets and confirmation when
+  lowering below what older copies take), and older-copies (Clear…, with confirmation).
+  `POST kuvo/artifacts/storage {budget, was?}` compares optional `was` with the budget before
+  setting it; `POST kuvo/artifacts/storage/clear {was?}` compares with older copies' bytes before
+  clearing. Mismatches answer `409 {message: "It changed since you read it."}`. Both checks and
+  writes run synchronously in the bridge's event loop. Without `was`, both behave as before.
+  Page writes floor byte counts as the store does. Polling each second reads the bridge again,
+  covering its settings, copies and live disk usage. An unavailable bridge gives no rows and a warning.
+  The native Mac-only measurement, session cleanup links and log/download deletion groups have
+  no box routes and are not included here.
 
 ### Your time zone
 

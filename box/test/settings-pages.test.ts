@@ -64,6 +64,7 @@ test("the box lists its sections, each with what a sidebar and search show", asy
     ["browser", "Browser", "System", "globe"],
     ["git", "Git", "System", "branch"],
     ["worktrees", "Worktrees", "System", "folder"],
+    ["storage", "Storage", "System", "drive"],
   ])
   expect(json.sections[0].keywords).toContain("time zone")
   expect(json.sections[1].keywords).toContain("sandbox")

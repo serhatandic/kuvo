@@ -47,6 +47,11 @@ const ROW_FIELDS = {
   "choices?": list(SETTING_CHOICE),
   /** Preferred visible lines for a multi-line text editor; presentation only, outside revisions. */
   "lines?": object({ min: number, max: number }),
+  /** Number/status values in bytes; clients format them as file sizes. */
+  "unit?": words("bytes"),
+  "suggestions?": list(object({ value: number, title: string })),
+  /** Ask only when the proposed number is below this threshold. */
+  "confirmBelow?": object({ value: number, confirm: SETTING_CONFIRM }),
   "placeholder?": string, "min?": number, "max?": number,
   /** A `secret`'s: whether one is set (never its value). */
   "set?": bool,

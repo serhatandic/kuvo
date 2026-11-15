@@ -13392,6 +13392,33 @@
               "max": "number"
              }
             },
+            "unit?": {
+             "oneOf": [
+              {
+               "literal": "bytes"
+              }
+             ]
+            },
+            "suggestions?": {
+             "list": {
+              "object": {
+               "value": "number",
+               "title": "string"
+              }
+             }
+            },
+            "confirmBelow?": {
+             "object": {
+              "value": "number",
+              "confirm": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              }
+             }
+            },
             "placeholder?": "string",
             "min?": "number",
             "max?": "number",
@@ -13576,6 +13603,33 @@
                 "object": {
                  "min": "number",
                  "max": "number"
+                }
+               },
+               "unit?": {
+                "oneOf": [
+                 {
+                  "literal": "bytes"
+                 }
+                ]
+               },
+               "suggestions?": {
+                "list": {
+                 "object": {
+                  "value": "number",
+                  "title": "string"
+                 }
+                }
+               },
+               "confirmBelow?": {
+                "object": {
+                 "value": "number",
+                 "confirm": {
+                  "object": {
+                   "title": "string",
+                   "body": "string",
+                   "button": "string"
+                  }
+                 }
                 }
                },
                "placeholder?": "string",
@@ -13850,6 +13904,33 @@
               "max": "number"
              }
             },
+            "unit?": {
+             "oneOf": [
+              {
+               "literal": "bytes"
+              }
+             ]
+            },
+            "suggestions?": {
+             "list": {
+              "object": {
+               "value": "number",
+               "title": "string"
+              }
+             }
+            },
+            "confirmBelow?": {
+             "object": {
+              "value": "number",
+              "confirm": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              }
+             }
+            },
             "placeholder?": "string",
             "min?": "number",
             "max?": "number",
@@ -14034,6 +14115,33 @@
                 "object": {
                  "min": "number",
                  "max": "number"
+                }
+               },
+               "unit?": {
+                "oneOf": [
+                 {
+                  "literal": "bytes"
+                 }
+                ]
+               },
+               "suggestions?": {
+                "list": {
+                 "object": {
+                  "value": "number",
+                  "title": "string"
+                 }
+                }
+               },
+               "confirmBelow?": {
+                "object": {
+                 "value": "number",
+                 "confirm": {
+                  "object": {
+                   "title": "string",
+                   "body": "string",
+                   "button": "string"
+                  }
+                 }
                 }
                },
                "placeholder?": "string",
@@ -14308,6 +14416,33 @@
               "max": "number"
              }
             },
+            "unit?": {
+             "oneOf": [
+              {
+               "literal": "bytes"
+              }
+             ]
+            },
+            "suggestions?": {
+             "list": {
+              "object": {
+               "value": "number",
+               "title": "string"
+              }
+             }
+            },
+            "confirmBelow?": {
+             "object": {
+              "value": "number",
+              "confirm": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              }
+             }
+            },
             "placeholder?": "string",
             "min?": "number",
             "max?": "number",
@@ -14492,6 +14627,33 @@
                 "object": {
                  "min": "number",
                  "max": "number"
+                }
+               },
+               "unit?": {
+                "oneOf": [
+                 {
+                  "literal": "bytes"
+                 }
+                ]
+               },
+               "suggestions?": {
+                "list": {
+                 "object": {
+                  "value": "number",
+                  "title": "string"
+                 }
+                }
+               },
+               "confirmBelow?": {
+                "object": {
+                 "value": "number",
+                 "confirm": {
+                  "object": {
+                   "title": "string",
+                   "body": "string",
+                   "button": "string"
+                  }
+                 }
                 }
                },
                "placeholder?": "string",
@@ -14774,6 +14936,33 @@
                 "max": "number"
                }
               },
+              "unit?": {
+               "oneOf": [
+                {
+                 "literal": "bytes"
+                }
+               ]
+              },
+              "suggestions?": {
+               "list": {
+                "object": {
+                 "value": "number",
+                 "title": "string"
+                }
+               }
+              },
+              "confirmBelow?": {
+               "object": {
+                "value": "number",
+                "confirm": {
+                 "object": {
+                  "title": "string",
+                  "body": "string",
+                  "button": "string"
+                 }
+                }
+               }
+              },
               "placeholder?": "string",
               "min?": "number",
               "max?": "number",
@@ -14958,6 +15147,33 @@
                   "object": {
                    "min": "number",
                    "max": "number"
+                  }
+                 },
+                 "unit?": {
+                  "oneOf": [
+                   {
+                    "literal": "bytes"
+                   }
+                  ]
+                 },
+                 "suggestions?": {
+                  "list": {
+                   "object": {
+                    "value": "number",
+                    "title": "string"
+                   }
+                  }
+                 },
+                 "confirmBelow?": {
+                  "object": {
+                   "value": "number",
+                   "confirm": {
+                    "object": {
+                     "title": "string",
+                     "body": "string",
+                     "button": "string"
+                    }
+                   }
                   }
                  },
                  "placeholder?": "string",
@@ -15229,6 +15445,33 @@
               "max": "number"
              }
             },
+            "unit?": {
+             "oneOf": [
+              {
+               "literal": "bytes"
+              }
+             ]
+            },
+            "suggestions?": {
+             "list": {
+              "object": {
+               "value": "number",
+               "title": "string"
+              }
+             }
+            },
+            "confirmBelow?": {
+             "object": {
+              "value": "number",
+              "confirm": {
+               "object": {
+                "title": "string",
+                "body": "string",
+                "button": "string"
+               }
+              }
+             }
+            },
             "placeholder?": "string",
             "min?": "number",
             "max?": "number",
@@ -15413,6 +15656,33 @@
                 "object": {
                  "min": "number",
                  "max": "number"
+                }
+               },
+               "unit?": {
+                "oneOf": [
+                 {
+                  "literal": "bytes"
+                 }
+                ]
+               },
+               "suggestions?": {
+                "list": {
+                 "object": {
+                  "value": "number",
+                  "title": "string"
+                 }
+                }
+               },
+               "confirmBelow?": {
+                "object": {
+                 "value": "number",
+                 "confirm": {
+                  "object": {
+                   "title": "string",
+                   "body": "string",
+                   "button": "string"
+                  }
+                 }
                 }
                },
                "placeholder?": "string",
@@ -15695,6 +15965,33 @@
                 "max": "number"
                }
               },
+              "unit?": {
+               "oneOf": [
+                {
+                 "literal": "bytes"
+                }
+               ]
+              },
+              "suggestions?": {
+               "list": {
+                "object": {
+                 "value": "number",
+                 "title": "string"
+                }
+               }
+              },
+              "confirmBelow?": {
+               "object": {
+                "value": "number",
+                "confirm": {
+                 "object": {
+                  "title": "string",
+                  "body": "string",
+                  "button": "string"
+                 }
+                }
+               }
+              },
               "placeholder?": "string",
               "min?": "number",
               "max?": "number",
@@ -15879,6 +16176,33 @@
                   "object": {
                    "min": "number",
                    "max": "number"
+                  }
+                 },
+                 "unit?": {
+                  "oneOf": [
+                   {
+                    "literal": "bytes"
+                   }
+                  ]
+                 },
+                 "suggestions?": {
+                  "list": {
+                   "object": {
+                    "value": "number",
+                    "title": "string"
+                   }
+                  }
+                 },
+                 "confirmBelow?": {
+                  "object": {
+                   "value": "number",
+                   "confirm": {
+                    "object": {
+                     "title": "string",
+                     "body": "string",
+                     "button": "string"
+                    }
+                   }
                   }
                  },
                  "placeholder?": "string",
