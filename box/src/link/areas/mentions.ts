@@ -8,12 +8,15 @@ import { foldersOf } from "./projects";
 import { listTree } from "./folders";
 import { namedNow } from "./named";
 import { sessionHere, Unreached } from "./glance";
+import { groupsAbsent, groupsNotAnswering, listedGroups } from "./groups";
 import type { Mention } from "../../shared/routes/sessions";
 import type { Named } from "../../shared/routes/box";
+import type { GroupMember } from "../../shared/routes/groups";
 import type { EngineSession } from "../engine/sessions";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 export const MENTIONS_ROUTE = /^kuvo\/sessions\/([^/]+)\/mentions$/;
+export const GROUP_MENTIONS_ROUTE = /^kuvo\/groups\/(grp_[a-z0-9]+)\/mentions$/;
 
 /** How many it suggests, unless asked for fewer or more, and at most. */
 export const MENTIONS_SHOWN = 8;
@@ -72,6 +75,9 @@ export function rankFiles(query: string, files: MentionableFile[], limit: number
     .slice(0, limit)
     .map(each => each.file);
 }
+
+/** What's asked after a route's first "?": a "?" typed in what's asked is part of it. */
+const queryOf = (route: string) => new URLSearchParams(route.includes("?") ? route.slice(route.indexOf("?") + 1) : "");
 
 /** A name as "&" matches it: case and accents aside. */
 const folded = (text: string) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
@@ -153,7 +159,7 @@ export function filesFor(roots: string[], dated: boolean, signal?: AbortSignal):
 export async function* mentionsRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, readEngine, bridge, signal, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
-  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  const query = queryOf(request.path);
   const kind = query.get("for");
   if (kind !== "files" && kind !== "agents") return yield* json(400, { message: "Say what's suggested: for=files (\"@\") or for=agents (\"&\")." });
   const typed = query.get("q") ?? "";
@@ -186,4 +192,40 @@ export async function* mentionsRoute(context: RouteContext, match: RegExpMatchAr
     return { text: `@${file.mention}`, title: file.name, detail: file.isFolder || inside === "." ? null : inside, kind: file.isFolder ? "folder" : "file", session: null };
   });
   return yield* json(200, { mentions });
+}
+
+/** What "&" offers in a group chat (`groups.mentions`): the chat's own bots first, then the guests
+ * a message there can name (`kuvo/named`, as the chat's bots are told of them), each ranked as
+ * `rankAgents` ranks; at most `limit` in all. A guest with a chat bot's conversation or name isn't
+ * offered again (the chat reads "&Name" as its own bot). A bot that left the chat is a guest. */
+export function rankGroupMentions(query: string, members: readonly GroupMember[], agents: Named["agents"], limit: number): Mention[] {
+  // (Ranked as agents; each brings its bot back.)
+  const asAgents = new Map<Named["agents"][number], GroupMember>(members.map(member => [{ session: member.session, name: member.name, kind: "bot", machine: null, project: null, about: null }, member]));
+  const theirs: Mention[] = rankAgents(query, [...asAgents.keys()], limit).map(agent => {
+    const member = asAgents.get(agent)!;
+    return { text: `&${member.name}`, title: member.name, detail: "In this chat" + (member.computer ? ` · on ${member.computer}` : ""), kind: "bot", session: member.session || null };
+  });
+  const sessions = new Set(members.map(member => member.session).filter(Boolean));
+  const names = new Set(members.map(member => folded(member.name)));
+  const guests = agents.filter(agent => !sessions.has(agent.session) && !names.has(folded(agent.name)));
+  const others: Mention[] = rankAgents(query, guests, limit - theirs.length).map(agent => ({ text: `&${agent.name}`, title: agent.name, detail: agentDetail(agent), kind: agent.kind, session: agent.session }));
+  return [...theirs, ...others];
+}
+
+// `GET kuvo/groups/<id>/mentions?q=<typed>[&limit=<n>]`: the chat's bots as the bridge that runs
+// it lists them, and who "&" can name here.
+export async function* groupMentionsRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
+  const { request, readEngine, bridge, signal, json } = context;
+  if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
+  const query = queryOf(request.path);
+  const typed = query.get("q") ?? "";
+  const asked = Number.parseInt(query.get("limit") ?? "", 10);
+  const limit = Number.isFinite(asked) && asked > 0 ? Math.min(asked, MENTIONS_MOST) : MENTIONS_SHOWN;
+  const target = bridge();
+  if (!target) return yield* json(503, { message: groupsAbsent() });
+  const groups = await listedGroups(target, signal ?? undefined);
+  if (!groups) return yield* json(503, { message: groupsNotAnswering() });
+  const chat = groups.find(group => group.id === match[1]);
+  if (!chat) return yield* json(404, { message: "There's no such group chat here." });
+  return yield* json(200, { mentions: rankGroupMentions(typed, chat.members, await namedNow(readEngine), limit) });
 }

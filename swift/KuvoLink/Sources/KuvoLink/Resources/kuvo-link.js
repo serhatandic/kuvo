@@ -2552,6 +2552,7 @@ var SESSION_MODEL = object({
   "missing?": words("model", "signIn", "key", "install", "gone"),
   "account?": object({ id: string, name: string, "label?": string }),
   "plan?": object({ name: string, agent: string, provider: string }),
+  "connects?": bool,
   "refusal?": string,
   "choose?": bool,
   "action?": MODEL_ACTION
@@ -4293,6 +4294,7 @@ var FEATURES = [
   "groups.edit",
   "groups.joinable",
   "groups.make",
+  "groups.mentions",
   "groups.seats",
   "handoff",
   "integrations",
@@ -20022,10 +20024,12 @@ function signInNeed(providerID, methods) {
   const plan = PLANS[providerID];
   const offered = methods.filter(([type, id]) => ["oauth", "key", "external"].includes(type) && !(type === "oauth" && planHides(providerID, id ?? "")));
   const key = offered.length > 0 && offered.every(([type]) => type === "key");
+  const connects = !key && offered.some(([type]) => type === "external") && !offered.some(([type]) => type === "oauth");
   return {
     missing: key ? "key" : "signIn",
     offered: offered.map(([type, id]) => type === "key" ? "key" : `${type}:${id}`),
-    ...key && plan ? { plan: { name: plan.name, agent: plan.agent, provider: plan.provider } } : {}
+    ...key && plan ? { plan: { name: plan.name, agent: plan.agent, provider: plan.provider } } : {},
+    ...connects ? { connects: true } : {}
   };
 }
 var asked4 = (target, route, folder) => call(target, "GET", route, undefined, AbortSignal.timeout(ASK_WAIT), folder).catch(() => {
@@ -20250,7 +20254,7 @@ function onEngine(ref, engine) {
     return { runs: false, missing: "gone", ...account ? { account: accountOf(account) } : {} };
   }
   const need = signInNeed(ref.providerID, account.methods);
-  return { ...name, runs: false, missing: need.missing, account: accountOf(account), ...need.plan ? { plan: need.plan } : {} };
+  return { ...name, runs: false, missing: need.missing, account: accountOf(account), ...need.plan ? { plan: need.plan } : {}, ...need.connects ? { connects: true } : {} };
 }
 function withAgents(ref, bridge) {
   if (!bridge)
@@ -24939,6 +24943,20 @@ async function askGroups(target, method, route, body, signal) {
   const value = await response.json().catch(() => ({}));
   return { status: response.status, value };
 }
+async function listedGroups(target, signal) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${target.port}/api/kuvo/link/groups`, {
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` },
+      signal
+    });
+    if (!response.ok)
+      return null;
+    const groups = (await response.json())?.groups;
+    return Array.isArray(groups) ? groups : null;
+  } catch {
+    return null;
+  }
+}
 async function* forwardGroups(target, route, request, signal) {
   const method = request.method.toUpperCase();
   const sends = !["GET", "HEAD", "DELETE"].includes(method);
@@ -24965,6 +24983,7 @@ async function* forwardGroups(target, route, request, signal) {
       yield { body: Buffer.from(chunk) };
   } catch {}
 }
+var groupsAbsent = () => agentsDown() ?? (IS_MAC ? "Group chats on this Mac are starting. Try again in a moment." : "Group chats run with the coding agents' bridge, which isn't running on this machine.");
 var groupsNotAnswering = () => IS_MAC ? "Group chats on this Mac aren’t answering. Try again in a moment." : "The coding agents’ bridge here isn’t answering. Try again in a moment.";
 function* groupJSON(status, value) {
   yield { head: { status, headers: { "content-type": "application/json" } } };
@@ -24974,7 +24993,7 @@ async function* groupsRoute(context) {
   const { request, signal, route, readEngine, bridge } = context;
   const target = bridge();
   if (!target)
-    return yield* groupJSON(503, { message: agentsDown() ?? (IS_MAC ? "Group chats on this Mac are starting. Try again in a moment." : "Group chats run with the coding agents' bridge, which isn't running on this machine.") });
+    return yield* groupJSON(503, { message: groupsAbsent() });
   if (request.method.toUpperCase() === "POST" && route.split("/").length === 3 && Buffer.from(request.body ?? []).includes("&")) {
     let text = "";
     try {
@@ -44841,7 +44860,7 @@ import fs145 from "node:fs";
 import path152 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d7e32a0f8c63";
+var BRIDGE_VERSION = "df4dc1d3e211";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -50826,6 +50845,7 @@ async function* sessionAsksRoute(context, match) {
 // box/src/link/areas/mentions.ts
 import path166 from "node:path";
 var MENTIONS_ROUTE = /^kuvo\/sessions\/([^/]+)\/mentions$/;
+var GROUP_MENTIONS_ROUTE = /^kuvo\/groups\/(grp_[a-z0-9]+)\/mentions$/;
 var MENTIONS_SHOWN = 8;
 var MENTIONS_MOST = 20;
 var length = (text) => [...new Intl.Segmenter().segment(text)].length;
@@ -50866,6 +50886,7 @@ function rankFiles(query, files, limit) {
     return at === null ? [] : [{ file, at, size: length(file.path) }];
   }).sort((a, b) => a.at - b.at || a.file.folder - b.file.folder || a.size - b.size || (a.file.path < b.file.path ? -1 : a.file.path > b.file.path ? 1 : 0)).slice(0, limit).map((each) => each.file);
 }
+var queryOf = (route) => new URLSearchParams(route.includes("?") ? route.slice(route.indexOf("?") + 1) : "");
 var folded3 = (text) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 function rankAgents(query, agents, limit) {
   const typed = folded3(query);
@@ -50939,7 +50960,7 @@ async function* mentionsRoute(context, match) {
   const { request, readEngine, bridge, signal, json } = context;
   if (request.method.toUpperCase() !== "GET")
     return yield* json(405, {});
-  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  const query = queryOf(request.path);
   const kind = query.get("for");
   if (kind !== "files" && kind !== "agents")
     return yield* json(400, { message: `Say what's suggested: for=files ("@") or for=agents ("&").` });
@@ -50977,6 +50998,37 @@ async function* mentionsRoute(context, match) {
   });
   return yield* json(200, { mentions });
 }
+function rankGroupMentions(query, members, agents, limit) {
+  const asAgents = new Map(members.map((member) => [{ session: member.session, name: member.name, kind: "bot", machine: null, project: null, about: null }, member]));
+  const theirs = rankAgents(query, [...asAgents.keys()], limit).map((agent) => {
+    const member = asAgents.get(agent);
+    return { text: `&${member.name}`, title: member.name, detail: "In this chat" + (member.computer ? ` · on ${member.computer}` : ""), kind: "bot", session: member.session || null };
+  });
+  const sessions = new Set(members.map((member) => member.session).filter(Boolean));
+  const names = new Set(members.map((member) => folded3(member.name)));
+  const guests = agents.filter((agent) => !sessions.has(agent.session) && !names.has(folded3(agent.name)));
+  const others = rankAgents(query, guests, limit - theirs.length).map((agent) => ({ text: `&${agent.name}`, title: agent.name, detail: agentDetail(agent), kind: agent.kind, session: agent.session }));
+  return [...theirs, ...others];
+}
+async function* groupMentionsRoute(context, match) {
+  const { request, readEngine, bridge, signal, json } = context;
+  if (request.method.toUpperCase() !== "GET")
+    return yield* json(405, {});
+  const query = queryOf(request.path);
+  const typed = query.get("q") ?? "";
+  const asked = Number.parseInt(query.get("limit") ?? "", 10);
+  const limit = Number.isFinite(asked) && asked > 0 ? Math.min(asked, MENTIONS_MOST) : MENTIONS_SHOWN;
+  const target = bridge();
+  if (!target)
+    return yield* json(503, { message: groupsAbsent() });
+  const groups = await listedGroups(target, signal ?? undefined);
+  if (!groups)
+    return yield* json(503, { message: groupsNotAnswering() });
+  const chat = groups.find((group) => group.id === match[1]);
+  if (!chat)
+    return yield* json(404, { message: "There's no such group chat here." });
+  return yield* json(200, { mentions: rankGroupMentions(typed, chat.members, await namedNow(readEngine), limit) });
+}
 
 // box/src/link/work/model-words.ts
 function article(word) {
@@ -50993,6 +51045,8 @@ function readiness(model, state, known) {
   const choose = (help) => ({ do: "choose", label: "Choose a Model", help });
   switch (state.missing) {
     case "signIn":
+      if (state.connects)
+        return { refusal: `${name} needs ${account} connected: connect it, or choose another model.`, action: { do: "signIn", label: "Connect", help: `Connect ${account}` } };
       return { refusal: `${name} needs a sign-in to ${account}: sign in, or choose another model.`, action: { do: "signIn", label: "Sign In", help: `Sign in to ${account}` } };
     case "key": {
       const plan = state.plan;
@@ -53582,7 +53636,7 @@ var ONLY_CLIENTS = "Only Kuvo Code on your Mac or iPhone can do this: agents cha
 var NOT_PROVED = "This machine couldn't tell the request was from the Mac that set it up (its proof was missing or too old; check both computers' clocks): try again.";
 var notClient = ({ request }) => request.fromMac && request.headers["x-kuvo-vault-proof"] ? NOT_PROVED : ONLY_CLIENTS;
 var fromClient = ({ request, phone }) => Boolean(phone?.key || request.fromApp || request.fromMac && provedRequest(request));
-var queryOf = (request) => new URLSearchParams(request.path.split("?")[1] ?? "");
+var queryOf2 = (request) => new URLSearchParams(request.path.split("?")[1] ?? "");
 function says2(q, item, names) {
   const text = [item.title, item.number !== undefined ? `#${item.number}` : "", item.source?.ref ?? "", item.source?.name ?? "", ...item.labels.map((each) => names.get(each) ?? ""), item.body ?? "", ...(item.notes ?? []).map((each) => each.text), item.lastNote?.text ?? ""].join(`
 `).toLowerCase();
@@ -53707,7 +53761,7 @@ async function* workQueueRoute(context, match) {
   if (part === "refs") {
     if (method !== "GET" && method !== "POST")
       return yield* json(405, {});
-    const listed = method === "POST" ? Array.isArray(given.refs) ? given.refs : [] : (queryOf(request).get("refs") ?? "").split(",");
+    const listed = method === "POST" ? Array.isArray(given.refs) ? given.refs : [] : (queryOf2(request).get("refs") ?? "").split(",");
     const wanted = listed.filter((each) => typeof each === "string").map((each) => each.trim()).filter((each) => each && each.length <= 300).slice(0, 200);
     const items = allItems();
     const facts = await factsOf(targets, signal ?? undefined);
@@ -53777,13 +53831,13 @@ async function* workQueueRoute(context, match) {
   if (part === "events" || part === undefined) {
     if (method !== "GET")
       return yield* json(405, {});
-    const owner = queryOf(request).get("owner") ?? "";
+    const owner = queryOf2(request).get("owner") ?? "";
     if (!OWNER2.test(owner) && owner !== ALL)
       return yield* json(400, { message: "Say whose queue (owner): a conversation's address, a group chat's id, or all." });
-    const glance = queryOf(request).get("glance") === "1";
-    const counts = queryOf(request).get("counts") === "1";
-    const q = (queryOf(request).get("q") ?? "").trim().slice(0, 200);
-    const filters = filtersOf(queryOf(request));
+    const glance = queryOf2(request).get("glance") === "1";
+    const counts = queryOf2(request).get("counts") === "1";
+    const q = (queryOf2(request).get("q") ?? "").trim().slice(0, 200);
+    const filters = filtersOf(queryOf2(request));
     if (part === undefined)
       return yield* json(200, withCounts(await viewOf2(owner, targets, undefined, signal ?? undefined, undefined, glance ? null : GITHUB_WAIT, q, filters), counts));
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
@@ -55182,8 +55236,10 @@ async function* providerModelsRoute(context) {
 
 // box/src/link/areas/sign-in-state.ts
 var keyOnly = (offered) => offered.methods.length > 0 && offered.methods.every((method) => method.type === "key");
+var connects = (offered) => offered.methods.some((method) => method.type === "external") && !offered.methods.some((method) => method.type === "oauth");
 var SIGN_IN_WORDS = { first: "Sign In", again: "Sign In Again", another: "Add Another Account" };
 var KEY_WORDS = { first: "Add Key", again: "Replace Key", another: "Add Another Key" };
+var CONNECT_WORDS = { first: "Connect", again: "Reconnect", another: "Add Another Account" };
 var text6 = (value) => typeof value === "string" ? plainName(value) : "";
 function connectionSaid(connection, name, computer, ended) {
   const status = isObject(connection.status) ? connection.status : {};
@@ -55212,7 +55268,7 @@ function accountState(account, offered, { agents = false, ended, computer }) {
   const inUse = said[0];
   const savedInUse = said[listed.findIndex((each) => each.type === "credential")];
   const signsIn = offered.methods.length > 0;
-  const words = keyOnly(offered) ? KEY_WORDS : SIGN_IN_WORDS;
+  const words = keyOnly(offered) ? KEY_WORDS : connects(offered) ? CONNECT_WORDS : SIGN_IN_WORDS;
   const added = agents && (id.includes("@") || typeof meta.accountID === "string" && meta.accountID !== "" && meta.accountID !== "default");
   const installs = agents && meta.installed === false && typeof meta.install === "string" && meta.install !== "";
   const state = installs ? "notInstalled" : (agents ? meta.signInEnded === true : inUse?.state === "ended" || savedInUse?.state === "ended") ? "ended" : inUse ? inUse.state === "problem" ? "problem" : "signedIn" : agents && meta.unchecked === true ? "unchecked" : "signedOut";
@@ -55363,7 +55419,7 @@ function hintOf(methods, name) {
   const signIn = methods.find((method) => method.type === "oauth" && !method.legacy);
   if (signIn)
     return name && signIn.label.toLowerCase().includes(name.toLowerCase()) ? "Sign in" : signIn.label.replaceAll("Login with", "Sign in with");
-  return methods.some((method) => method.type === "key") ? "API key" : "Connect";
+  return methods.some((method) => method.type === "key") && !methods.some((method) => method.type === "external") ? "API key" : "Connect";
 }
 var isPlan = (offered) => offered.methods.some((method) => method.type === "oauth");
 function failureWords(status, message) {
@@ -56896,6 +56952,7 @@ var ROUTES = [
   { when: (route) => route.match(QUEUE_ROUTE), answer: queueRoute },
   { when: (route) => route.match(SESSION_ASKS_ROUTE), answer: sessionAsksRoute },
   { when: (route) => route.match(MENTIONS_ROUTE), answer: mentionsRoute },
+  { when: (route) => route.match(GROUP_MENTIONS_ROUTE), answer: groupMentionsRoute },
   { when: (route) => route.match(GLANCE_ROUTE), answer: glanceRoute },
   { when: (route) => route.match(LIST_ROUTE), answer: listRoute },
   { when: (route) => route.match(WAITING_ROUTE), answer: waitingRoute },

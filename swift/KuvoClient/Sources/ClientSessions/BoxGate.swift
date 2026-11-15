@@ -41,6 +41,8 @@ public enum BoxGate {
     /// from any box, as each computer's `actions` say).
     /// Then #727's `settings`: a box describes its own settings (`kuvo/settings`), so no client
     /// writes a computer's settings pages itself.
+    /// Then #736's, for the desktop client's group chats, whose "&" lists what the box offers there
+    /// (the chat's bots, then guests) and filters nothing itself: `groups.mentions`.
     public static let required: [String] = [
         "agent-tools.own",
         "bots.deletes",
@@ -64,6 +66,7 @@ public enum BoxGate {
         "git.merge",
         "git.pull-request",
         "git.status",
+        "groups.mentions",
         "limits.rings",
         "messages.send",
         "models.offered",

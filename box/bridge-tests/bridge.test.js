@@ -1617,6 +1617,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "groups.edit": ["PATCH", "kuvo/groups/grp_none"],
     "groups.joinable": ["GET", "kuvo/groups/joinable"],
     "groups.make": ["POST", "kuvo/groups"],
+    "groups.mentions": ["GET", "kuvo/groups/grp_none/mentions"],
     // (Its turns for chats on other computers, which kuvo/groups/joinable shows from theirs.)
     "groups.seats": ["GET", "kuvo/groups/joinable"],
     handoff: ["POST", "kuvo/agents/api/kuvo/handoff/ses_none"],

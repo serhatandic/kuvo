@@ -67,9 +67,14 @@ interface ListedConnection {
  * to (a plan's). */
 export const keyOnly = (offered: OfferedMethods): boolean => offered.methods.length > 0 && offered.methods.every(method => method.type === "key");
 
+/** Whether `offered` reaches its account with credentials the computer has (Amazon Bedrock's AWS
+ * credentials), a key perhaps beside them, and no sign-in page: one you connect, not sign in to. */
+export const connects = (offered: OfferedMethods): boolean => offered.methods.some(method => method.type === "external") && !offered.methods.some(method => method.type === "oauth");
+
 /** The words of a sign-in's buttons: signing in to an account, or entering a key. */
 const SIGN_IN_WORDS = { first: "Sign In", again: "Sign In Again", another: "Add Another Account" };
 const KEY_WORDS = { first: "Add Key", again: "Replace Key", another: "Add Another Key" };
+const CONNECT_WORDS = { first: "Connect", again: "Reconnect", another: "Add Another Account" };
 
 const text = (value: unknown): string => (typeof value === "string" ? plainName(value) : "");
 
@@ -111,8 +116,9 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
   const savedInUse = said[listed.findIndex(each => each.type === "credential")];
   const signsIn = offered.methods.length > 0;
   // Keys are entered, never signed into: an account whose only way in is a key says so on its
-  // buttons ("Add Key", never "Sign In").
-  const words = keyOnly(offered) ? KEY_WORDS : SIGN_IN_WORDS;
+  // buttons ("Add Key", never "Sign In"); one reached with the computer's credentials is connected
+  // ("Connect", never "Sign In").
+  const words = keyOnly(offered) ? KEY_WORDS : connects(offered) ? CONNECT_WORDS : SIGN_IN_WORDS;
   // One you added beside the agent's own sign-in (`claude-code@1f2e3d4c`).
   const added = agents && (id.includes("@") || (typeof meta.accountID === "string" && meta.accountID !== "" && meta.accountID !== "default"));
   // Its program isn't there and has an installer to run; one Kuvo Code brings itself comes as it
