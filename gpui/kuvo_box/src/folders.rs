@@ -38,7 +38,13 @@ pub struct Suggested {
     pub name: String,
     #[serde(default)]
     pub repository: bool,
+    /// (Read whether the box writes it whole or with a fraction, as a file's time may have.)
+    #[serde(default, deserialize_with = "milliseconds")]
     pub seen: Option<u64>,
+}
+
+fn milliseconds<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Option<u64>, D::Error> {
+    Ok(Option::<f64>::deserialize(deserializer)?.filter(|ms| ms.is_finite() && *ms >= 0.0).map(|ms| ms as u64))
 }
 
 /// The folders worth starting in on a box's computer, in its order (those worked in first, the
