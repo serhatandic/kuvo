@@ -1247,7 +1247,8 @@
    "actions": [
     {
      "id": "signIn",
-     "label": "Sign In"
+     "label": "Sign In",
+     "sheetTitle": "Sign In to Antigravity"
     }
    ],
    "connections": []
@@ -1305,7 +1306,8 @@
    "actions": [
     {
      "id": "signIn",
-     "label": "Sign In"
+     "label": "Sign In",
+     "sheetTitle": "Sign In to Claude Code"
     }
    ],
    "connections": []
@@ -1356,7 +1358,8 @@
     {
      "id": "signIn",
      "label": "Sign In",
-     "here": true
+     "here": true,
+     "sheetTitle": "Sign In to Codex"
     }
    ],
    "connections": []
@@ -1424,7 +1427,8 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code"
     }
    ],
    "connections": [
@@ -1496,7 +1500,8 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code"
     }
    ],
    "connections": [
@@ -1561,7 +1566,8 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Cursor"
     },
     {
      "id": "signOut",
@@ -1640,7 +1646,8 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code"
     },
     {
      "id": "update",
@@ -1723,7 +1730,8 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code"
     }
    ],
    "connections": [
@@ -1797,7 +1805,8 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code"
     }
    ],
    "connections": [
@@ -1864,7 +1873,8 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code · Work"
     },
     {
      "id": "rename",
@@ -1934,7 +1944,8 @@
    "actions": [
     {
      "id": "signIn",
-     "label": "Sign In"
+     "label": "Sign In",
+     "sheetTitle": "Sign In to Claude Code · Work"
     },
     {
      "id": "rename",
@@ -2006,7 +2017,8 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code"
     }
    ],
    "connections": []
@@ -2064,7 +2076,8 @@
    "actions": [
     {
      "id": "signIn",
-     "label": "Sign In"
+     "label": "Sign In",
+     "sheetTitle": "Sign In to Claude Code"
     }
    ],
    "connections": []
@@ -2132,7 +2145,8 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code"
     }
    ],
    "connections": [
@@ -2174,7 +2188,8 @@
    "actions": [
     {
      "id": "signIn",
-     "label": "Sign In"
+     "label": "Sign In",
+     "sheetTitle": "Sign In to GitHub Copilot"
     }
    ],
    "connections": []
@@ -2216,7 +2231,8 @@
    "actions": [
     {
      "id": "signIn",
-     "label": "Add Key"
+     "label": "Add Key",
+     "sheetTitle": "Add Key · DeepSeek"
     }
    ],
    "connections": []
@@ -2314,7 +2330,8 @@
    "actions": [
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to GitHub Copilot"
     },
     {
      "id": "disconnect",
@@ -2370,7 +2387,8 @@
    "actions": [
     {
      "id": "addAnother",
-     "label": "Add Another Key"
+     "label": "Add Another Key",
+     "sheetTitle": "Add Another Key · DeepSeek"
     },
     {
      "id": "disconnect",
@@ -2426,7 +2444,8 @@
    "actions": [
     {
      "id": "addAnother",
-     "label": "Add Another Key"
+     "label": "Add Another Key",
+     "sheetTitle": "Add Another Key · DeepSeek"
     },
     {
      "id": "disconnect",
@@ -2482,7 +2501,8 @@
    "actions": [
     {
      "id": "addAnother",
-     "label": "Add Another Key"
+     "label": "Add Another Key",
+     "sheetTitle": "Add Another Key · DeepSeek"
     },
     {
      "id": "disconnect",
@@ -2540,7 +2560,8 @@
    "actions": [
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Account",
+     "sheetTitle": "Add Another Account · Amazon Bedrock"
     },
     {
      "id": "disconnect",
@@ -2616,7 +2637,8 @@
    "actions": [
     {
      "id": "signIn",
-     "label": "Connect"
+     "label": "Connect",
+     "sheetTitle": "Connect · Amazon Bedrock"
     }
    ],
    "connections": []
@@ -2660,11 +2682,13 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Reconnect"
+     "label": "Reconnect",
+     "sheetTitle": "Reconnect · Amazon Bedrock"
     },
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Account",
+     "sheetTitle": "Add Another Account · Amazon Bedrock"
     },
     {
      "id": "disconnect",
@@ -2726,7 +2750,8 @@
    "actions": [
     {
      "id": "addAnother",
-     "label": "Add Another Key"
+     "label": "Add Another Key",
+     "sheetTitle": "Add Another Key · OpenAI"
     }
    ],
    "connections": [
@@ -2781,7 +2806,8 @@
    "actions": [
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to GitHub Copilot"
     },
     {
      "id": "disconnect",
@@ -2849,11 +2875,13 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to GitHub Copilot"
     },
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to GitHub Copilot"
     },
     {
      "id": "disconnect",
@@ -2919,11 +2947,13 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to GitHub Copilot"
     },
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to GitHub Copilot"
     },
     {
      "id": "disconnect",
@@ -2991,11 +3021,13 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to GitHub Copilot"
     },
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to GitHub Copilot"
     },
     {
      "id": "disconnect",
@@ -3058,11 +3090,13 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to GitHub Copilot"
     },
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to GitHub Copilot"
     },
     {
      "id": "disconnect",
@@ -3174,11 +3208,13 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Replace Key"
+     "label": "Replace Key",
+     "sheetTitle": "Replace Key · OpenAI"
     },
     {
      "id": "addAnother",
-     "label": "Add Another Key"
+     "label": "Add Another Key",
+     "sheetTitle": "Add Another Key · OpenAI"
     },
     {
      "id": "disconnect",
@@ -3250,11 +3286,13 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to GitHub Copilot"
     },
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to GitHub Copilot"
     },
     {
      "id": "disconnect",
@@ -3322,7 +3360,8 @@
    "actions": [
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to GitHub Copilot"
     },
     {
      "id": "disconnect",
@@ -3398,7 +3437,8 @@
     {
      "id": "signInAgain",
      "label": "Sign In Again",
-     "here": true
+     "here": true,
+     "sheetTitle": "Sign In to Codex"
     }
    ],
    "connections": [
@@ -3454,7 +3494,8 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code · Work"
     },
     {
      "id": "rename",
@@ -3529,7 +3570,8 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Cursor · Work"
     },
     {
      "id": "signOut",
@@ -3609,7 +3651,8 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Codex"
     }
    ],
    "connections": [
@@ -3660,7 +3703,8 @@
    "actions": [
     {
      "id": "addAnother",
-     "label": "Add Another Account"
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to Linear"
     }
    ],
    "connections": [
@@ -3719,7 +3763,8 @@
    "actions": [
     {
      "id": "addAnother",
-     "label": "Add Another Key"
+     "label": "Add Another Key",
+     "sheetTitle": "Add Another Key · OpenAI"
     },
     {
      "id": "disconnect",
@@ -3805,7 +3850,8 @@
    "actions": [
     {
      "id": "signInAgain",
-     "label": "Sign In Again"
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code"
     }
    ],
    "connections": [

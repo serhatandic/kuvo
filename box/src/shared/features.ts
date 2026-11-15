@@ -11,6 +11,7 @@
 // twice. test/features.test.ts fails on a list out of order or a name twice.
 
 export const FEATURES = [
+  "account-action-sheet-title",
   "accounts.credentials",
   "accounts.ended",
   "accounts.found",
