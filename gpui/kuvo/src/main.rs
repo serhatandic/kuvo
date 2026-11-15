@@ -71,10 +71,23 @@ fn stand_in() -> bool {
     cfg!(feature = "stand-in") && std::env::args().any(|argument| argument == "--stand-in")
 }
 
+/// The made-up box; with `--first-run <nothing|crowded|running>`, one whose first run hasn't been
+/// had, standing so.
 #[cfg(feature = "stand-in")]
 fn stand_in_box() -> BoxClient {
-    use kuvo::stand_in::{Replies, StandIn};
-    BoxClient::new(StandIn::new(Replies::Live))
+    use kuvo::stand_in::{Replies, StandIn, first_run::Scenario};
+    let arguments: Vec<String> = std::env::args().collect();
+    let first_run = arguments.iter().position(|argument| argument == "--first-run").map(|at| {
+        let name = arguments.get(at + 1).map(String::as_str).unwrap_or("crowded");
+        Scenario::named(name).unwrap_or_else(|| {
+            eprintln!("There's no first run “{name}”. Use nothing, crowded or running.");
+            std::process::exit(2);
+        })
+    });
+    match first_run {
+        Some(scenario) => BoxClient::new(StandIn::first_run(Replies::Live, kuvo::time::now_ms(), scenario)),
+        None => BoxClient::new(StandIn::new(Replies::Live)),
+    }
 }
 
 #[cfg(not(feature = "stand-in"))]

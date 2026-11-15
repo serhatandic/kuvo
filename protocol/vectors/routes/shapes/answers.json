@@ -4281,6 +4281,9 @@
             "literal": "setup.mainOnly"
            },
            {
+            "literal": "setup.ready"
+           },
+           {
             "literal": "setup.welcomed"
            },
            {
@@ -4921,6 +4924,9 @@
            },
            {
             "literal": "setup.mainOnly"
+           },
+           {
+            "literal": "setup.ready"
            },
            {
             "literal": "setup.welcomed"
@@ -6671,6 +6677,32 @@
    "answers": {
     "200": {
      "object": {}
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/setup/ready",
+   "answers": {
+    "200": {
+     "object": {
+      "ready": "bool",
+      "runs": "bool",
+      "needsYou": {
+       "list": "string"
+      },
+      "pending": {
+       "list": {
+        "oneOf": [
+         {
+          "literal": "engine"
+         },
+         {
+          "literal": "agents"
+         }
+        ]
+       }
+      }
+     }
     }
    }
   },

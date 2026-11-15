@@ -300,6 +300,21 @@ computer. Changing the main computer and joining two setups come later: #183.)
   welcome you again. **`POST kuvo/setup/welcomed {"welcomed": true | false}`** sets it (`false`:
   the first run is to be had again), from any client of the box, and answers `{"welcomed"}`
   (`kuvo/setup/events` says it too); `400` without a yes or no, `405` for anything but `POST`.
+  **`GET kuvo/setup/ready`** (`setup.ready`): whether a first run has anything to ask about your
+  accounts on this box → `{"ready", "runs", "needsYou": [<account id>], "pending": ["engine" |
+  "agents"]}`. The box decides it, so no client keeps the rule: `runs`, a model that needs an
+  account runs here now, as a picker offers it (one of the engine's that isn't `free`, or any of a
+  coding agent's; never one being retired, one its agent keeps out of its picker, or a Custom Auto
+  list; "The models offered"); `needsYou`, the plans Accounts lists (`listed` and `plan`, and not
+  `added`) whose `state` is `ended` or `problem`, the coding agents' first; `pending`, the sides
+  that can't say yet (not running, not answering in time, or, the coding agents', an account
+  signed in whose models are still being listed): what's said of them may change in a moment;
+  `ready`, `runs` with none needing you and both sides having said their lists. Where it's `ready`,
+  a client's first run passes over its accounts step and goes on to where to work; otherwise it
+  shows it, and while anything is `pending` it may wait a moment and ask again. Always `200` to a
+  `GET` (or `HEAD`), whatever can't be said; `405` otherwise. Read as it's asked (the accounts anew
+  each time; the models as the box keeps them, read again once its engine or bridge says
+  something changed), so a client asks again after a sign-in.
 - **Only the main computer adds and pairs** (`setup.mainOnly`). A member (a box whose setup names
   another computer as main, kept aside too: a shared machine, or its main computer not naming it
   now) answers, with `primary` the main computer's static key and words naming it for a client to
@@ -6717,6 +6732,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `settings` | `kuvo/settings`, `kuvo/settings/<section>`, `…/events`, a row changed with `PATCH` and an action done with `POST …/<row>/<action>`: the box's settings as it describes them, Permissions and Browser first ("A box's settings", #727) |
 | `setup` | `kuvo/setup`, `…/events`: your setup and its main computer ("Your setup") |
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
+| `setup.ready` | `GET kuvo/setup/ready`: whether a first run has anything to ask about your accounts here, decided by the box ("Your setup") |
 | `setup.welcomed` | `welcomed` in `kuvo/setup`, and `POST kuvo/setup/welcomed`: whether you've had the first run with this box ("Your setup", #733) |
 | `shell.stop` | `POST kuvo/shell/<id>/stop` |
 | `sign-in.accounts.kinds` | `kind`, `listed` and `service` on each account in `GET kuvo/sign-in/accounts`: which are providers Accounts lists, and each one's mark ("Signing in", #711) |
