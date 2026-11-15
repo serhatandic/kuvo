@@ -650,6 +650,13 @@ pub enum Followed<T> {
 /// Follows `events` (ndjson: the state now, then a line as it changes); over SSH, `once` (the same
 /// answered once) is read again every few seconds.
 pub(crate) fn follow_lines<T: serde::de::DeserializeOwned + Send + 'static>(client: &BoxClient, name: &str, events: String, once: String, timing: Timing) -> Follow<Followed<T>> {
+    follow_lines_filled(client, name, events, once, timing, |now| now)
+}
+
+/// The same, each line passed through `fill` on the follow's own thread before it's handed on: a
+/// line that leaves out what's as it was gets it there, so one dropped for a later line (only the
+/// latest waits to be taken) loses nothing.
+pub(crate) fn follow_lines_filled<T: serde::de::DeserializeOwned + Send + 'static>(client: &BoxClient, name: &str, events: String, once: String, timing: Timing, mut fill: impl FnMut(T) -> T + Send + 'static) -> Follow<Followed<T>> {
     let client = client.clone();
     spawn(name, move |latest, stop| {
         let mut backoff = Backoff::new(timing);
@@ -684,7 +691,7 @@ pub(crate) fn follow_lines<T: serde::de::DeserializeOwned + Send + 'static>(clie
                     Ok(Some(text)) => match serde_json::from_str::<T>(&text) {
                         Ok(now) => {
                             backoff.reset();
-                            latest.put(Followed::Now(now));
+                            latest.put(Followed::Now(fill(now)));
                         }
                         Err(error) => latest.put(Followed::Failed(Error::BadAnswer(format!("What the box said couldn't be read: {error}")))),
                     },

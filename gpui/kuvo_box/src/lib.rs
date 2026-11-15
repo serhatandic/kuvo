@@ -20,6 +20,7 @@ pub mod folders;
 pub mod follow;
 pub mod gate;
 pub mod git;
+pub mod groups;
 pub mod ids;
 pub mod info;
 pub mod lines;
