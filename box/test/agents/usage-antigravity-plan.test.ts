@@ -7,26 +7,42 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, readFileSyn
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AntigravityPlan, antigravitySummary, antigravityLegacy, antigravityProcPorts, discoverAntigravity, antigravityMacOwns, antigravityPlanName, antigravityOAuthDefaults } from "../../src/agents/usage/antigravity-plan"
+import { limitRows } from "../../src/agents/limits-rows"
 import { Limits, LimitsProblem } from "../../src/agents/limits"
 
+// UsageKit retains its historical labels; quota values still share the parity fixtures.
+const poolNames: Record<string, string> = { Session: "Gemini · 5-hour", Weekly: "Gemini · Weekly", Claude: "Claude and GPT · 5-hour", "Claude Weekly": "Claude and GPT · Weekly", "Argon Weekly": "Gemini 4 Argon · Weekly" }
+const poolLabel = (label: string) => poolNames[label] ?? label
+const expectedPools = (expected: any) => expected?.map((w: any) => ({ ...w, label: poolLabel(w.label) })) ?? null
 const summary = (fraction = 0.75) => ({ groups: [{ buckets: ["gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"].map(bucketId => ({ bucketId, remainingFraction: fraction })) }] })
 const temp = () => mkdtempSync(join(tmpdir(), "kuvo-agy-plan-"))
 function credential(profile: string, access = "fixture-token") { mkdirSync(join(profile, "antigravity-acp"), { recursive: true }); writeFileSync(join(profile, "antigravity-acp/acp_token.json"), JSON.stringify({ access_token: access })) }
 
 describe("Antigravity quota mapper", () => {
   test("shared legacy and plan-name parity fixtures", () => {
-    for (const fixture of legacyFixtures.legacy) expect(antigravityLegacy(fixture.configs).map(w => ({ label: w.name, used: Math.round(w.used * 100), periodMs: w.minutes! * 60_000 }))).toEqual(fixture.expected)
+    for (const fixture of legacyFixtures.legacy) expect(antigravityLegacy(fixture.configs).map(w => ({ label: w.name, used: Math.round(w.used * 100), periodMs: w.minutes! * 60_000 }))).toEqual(expectedPools(fixture.expected))
     for (const fixture of legacyFixtures.plans) expect(antigravityPlanName(fixture.input) ?? null).toEqual(fixture.expected)
     expect(antigravityOAuthDefaults).toEqual(oauthFixture.defaults)
   })
   test("shared Swift parity fixtures", () => {
-    for (const fixture of fixtures) expect(antigravitySummary(fixture.bodies)?.map(w => ({ label: w.name, used: Math.round(w.used * 100), periodMs: w.minutes! * 60_000 })) ?? null, fixture.name).toEqual(fixture.expected)
+    for (const fixture of fixtures) expect(antigravitySummary(fixture.bodies)?.map(w => ({ label: w.name, used: Math.round(w.used * 100), periodMs: w.minutes! * 60_000 })) ?? null, fixture.name).toEqual(expectedPools(fixture.expected))
   })
   test("exact pools, first usable wins, clamp and Swift rounding", () => {
     const result = antigravitySummary([{ groups: [{ buckets: [{ bucketId: "gemini-5h", remainingFraction: "bad" }, { bucketId: "gemini-image-5h", remainingFraction: 0 }, { bucketId: "gemini-weekly", remainingFraction: -1 }] }] }, summary(0.754)])!
     expect(result.map(w => [w.id, w.used])).toEqual([["gemini-5h", 0.25], ["gemini-weekly", 1], ["3p-5h", 0.25], ["3p-weekly", 0.25]])
     expect(antigravitySummary([{}])).toBeUndefined()
     expect(antigravitySummary([{ groups: [] }])).toEqual([])
+  })
+  test("all three pools retain independent windows in client rows", () => {
+    const windows = antigravitySummary([summary(0.75), { groups: [{ displayName: "Gemini 4 Argon", buckets: [{ bucketId: "argon", window: "weekly", remainingFraction: 0.1 }] }] }])!
+    const rows = limitRows([{ key: "fixture", name: "Fixture", here: true, away: false, accounts: [{ provider: "antigravity", service: "antigravity", windows: windows.map(w => ({ ...w, read: 0, source: "usage" as const })) }] }], 0)
+    expect(rows[0]!.windows.map(w => [w.title, w.used])).toEqual([
+      ["Gemini · 5-hour", 0.25], ["Gemini · Weekly", 0.25],
+      ["Gemini 4 Argon · Weekly", 0.9],
+      ["Claude and GPT · 5-hour", 0.25], ["Claude and GPT · Weekly", 0.25],
+    ])
+    expect(rows[0]!.rings.short?.window).toBe("gemini-5h")
+    expect(rows[0]!.rings.long?.window).toBe("gemini-weekly")
   })
   test("Argon is separate and unambiguous", () => {
     const b = { bucketId: "argon", window: "weekly", remainingFraction: 0.5 }
@@ -35,7 +51,7 @@ describe("Antigravity quota mapper", () => {
     for (const buckets of [[b, b], [{ ...b, disabled: true }], [{ ...b, disabled: "false" }], [{ ...b, bucketId: "gemini-weekly" }]]) expect(antigravitySummary([group(buckets)])).toEqual([])
   })
   test("legacy worst pool, blacklist, missing fraction and Argon exclusions", () => {
-    expect(antigravityLegacy([{ label: "Gemini 3 Pro", quotaInfo: { remainingFraction: 0.8 } }, { label: "Gemini 3 Flash" }, { label: "Claude", quotaInfo: { remainingFraction: 0.5 } }, { label: "Gemini 4 Argon" }, { label: "Hidden", model: "MODEL_CHAT_20706" }]).map(w => [w.name, w.used])).toEqual([["Session", 1], ["Claude", 0.5]])
+    expect(antigravityLegacy([{ label: "Gemini 3 Pro", quotaInfo: { remainingFraction: 0.8 } }, { label: "Gemini 3 Flash" }, { label: "Claude", quotaInfo: { remainingFraction: 0.5 } }, { label: "Gemini 4 Argon" }, { label: "Hidden", model: "MODEL_CHAT_20706" }]).map(w => [w.name, w.used])).toEqual([["Gemini · 5-hour", 1], ["Claude and GPT · 5-hour", 0.5]])
   })
 })
 
