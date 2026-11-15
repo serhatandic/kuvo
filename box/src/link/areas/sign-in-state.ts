@@ -63,6 +63,14 @@ interface ListedConnection {
   what?: unknown;
 }
 
+/** Whether `offered`'s only ways in are keys: an account you enter a key for, not one you sign in
+ * to (a plan's). */
+export const keyOnly = (offered: OfferedMethods): boolean => offered.methods.length > 0 && offered.methods.every(method => method.type === "key");
+
+/** The words of a sign-in's buttons: signing in to an account, or entering a key. */
+const SIGN_IN_WORDS = { first: "Sign In", again: "Sign In Again", another: "Add Another Account" };
+const KEY_WORDS = { first: "Add Key", again: "Replace Key", another: "Add Another Key" };
+
 const text = (value: unknown): string => (typeof value === "string" ? plainName(value) : "");
 
 /** One sign-in or key: who or what it is ("you@example.com", "API key", "From OPENAI_API_KEY"), and
@@ -102,6 +110,9 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
   // (accounts.ts): ended, its plan's sign-in ended, whatever its shell's environment adds.
   const savedInUse = said[listed.findIndex(each => each.type === "credential")];
   const signsIn = offered.methods.length > 0;
+  // Keys are entered, never signed into: an account whose only way in is a key says so on its
+  // buttons ("Add Key", never "Sign In").
+  const words = keyOnly(offered) ? KEY_WORDS : SIGN_IN_WORDS;
   // One you added beside the agent's own sign-in (`claude-code@1f2e3d4c`).
   const added = agents && (id.includes("@") || (typeof meta.accountID === "string" && meta.accountID !== "" && meta.accountID !== "default"));
   // Its program isn't there and has an installer to run; one Kuvo Code brings itself comes as it
@@ -145,7 +156,7 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
   };
   if (agents) {
     if (installs) actions.push({ id: "install", label: "Install" });
-    else if (signsIn) actions.push(said.length || state === "ended" ? { id: "signInAgain", label: "Sign In Again", ...here } : { id: "signIn", label: "Sign In", ...here });
+    else if (signsIn) actions.push(said.length || state === "ended" ? { id: "signInAgain", label: words.again, ...here } : { id: "signIn", label: words.first, ...here });
     // Its program's update, on the agent's own sign-in (one program serves every account with it),
     // where the installer that owns it can update it and it isn't updating now.
     const latest = text(meta.latestVersion);
@@ -156,14 +167,14 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
     return { state, line, actions, connections, ...(added ? { added: true as const } : {}) };
   }
   if (!said.length) {
-    if (signsIn) actions.push({ id: "signIn", label: "Sign In" });
+    if (signsIn) actions.push({ id: "signIn", label: words.first });
     return { state, line, actions, connections };
   }
   if (signsIn) {
     // Wherever one of its sign-ins ended, the one in use or another, or the one in use failed.
-    if (state === "ended" || state === "problem" || said.some(each => each.state === "ended")) actions.push({ id: "signInAgain", label: "Sign In Again" });
+    if (state === "ended" || state === "problem" || said.some(each => each.state === "ended")) actions.push({ id: "signInAgain", label: words.again });
     // (The engine uses one at a time: another is kept beside it.)
-    actions.push({ id: "addAnother", label: "Add Another Account" });
+    actions.push({ id: "addAnother", label: words.another });
   }
   // A sign-in or key this box keeps can be forgotten; one from the shell's environment can't,
   // and stays (its models with it). Never an integration's server's: Disconnect is a plan's.

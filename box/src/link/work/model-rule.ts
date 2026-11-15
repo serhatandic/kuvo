@@ -416,6 +416,17 @@ export function offeredHere(lists: Lists): Offered[] {
   ];
 }
 
+/** Whether a model of the engine's that runs here needs no account (`free` in
+ * `kuvo/models/offered`): one that costs nothing, from OpenCode Zen (whose free models run signed
+ * out) or a provider with nothing to sign in to (a local one). Copilot's included models cost
+ * nothing too, but only with its account. `free`: what it costs is nothing (`Listed.free`). */
+export function needsNoAccount(model: { providerID: string; free: boolean }, engine: EngineLists | null): boolean {
+  if (!model.free || !engine) return false;
+  if (model.providerID === "opencode") return true;
+  const account = engine.accounts.get(model.providerID);
+  return !account || account.methods.length === 0;
+}
+
 /** The coding agents' accounts whose list isn't all they run yet: signed in and installed, with
  * none listed, only their agent's usual ones (Claude Code's as it starts), or from a bridge (or an
  * agent) that can't say its list is whole. One of theirs not listed may still run. */

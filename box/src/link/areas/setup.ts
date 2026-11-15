@@ -2,6 +2,7 @@
 // this box says it, on every box, for every client; and its events, a line now and one as it changes.
 // `POST kuvo/setup/judge`: what a Mac adding a computer found there over SSH, judged by this box.
 // `POST kuvo/setup/attached`: Kuvo Code on this computer attached to this box in place.
+// `POST kuvo/setup/welcomed {welcomed}`: you've had the first run with this box (or will again).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -16,6 +17,7 @@ import { sharedMachine } from "../setup/settle";
 import { setupView } from "../setup/view";
 import { engineRoute } from "../server/forward";
 import { onLinkWritten, readLink } from "../state";
+import { isWelcomed, setWelcomed } from "../setup/welcomed";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 // Those following it here: told as this process writes link.json; what another process wrote
@@ -45,6 +47,16 @@ export async function* setupRoute(context: RouteContext): AsyncGenerator<AnswerP
     if (!fs.existsSync(path.join(RUN, ATTACHED_FILE))) writePrivate(path.join(RUN, ATTACHED_FILE), JSON.stringify({ at: Date.now() }));
     writeCard();
     return yield* json(200, {});
+  }
+  if (route === "kuvo/setup/welcomed") {
+    if (method !== "POST") return yield* json(405, {});
+    // Any client of this box's (the app, the phone): the first run is done, or (`false`) to be
+    // had again.
+    const given = parsed(request.body) as Body<"welcomed">;
+    if (typeof given?.welcomed !== "boolean") return yield* json(400, { message: "Say whether the first run is done, as welcomed (true or false)." });
+    setWelcomed(given.welcomed);
+    for (const tell of followers) tell();
+    return yield* json(200, { welcomed: isWelcomed() });
   }
   if (method !== "GET" && method !== "HEAD") return yield* json(405, {});
   if (route === "kuvo/setup/events") {

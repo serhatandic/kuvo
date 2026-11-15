@@ -37,3 +37,36 @@ test("a side that can't say has none of its models, and says so", () => {
   expect(answer.models.map(model => model.side)).toEqual(["engine"])
   expect(answer.known).toEqual({ engine: true, agents: false })
 })
+
+// Which models need no account (#733), so a client says "free models" without knowing OpenCode's
+// provider: OpenCode Zen's free ones (signed out), a local provider's; never one that costs
+// nothing only with its account (Copilot's), a paid one, or a coding agent's.
+test("a model that needs no account says so: OpenCode Zen's free ones and a local one's, not Copilot's", () => {
+  const free = (model: Listed): Listed => ({ ...model, free: true })
+  const answer = offeredAnswer({
+    engine: {
+      ready: new Set(["anthropic", "github-copilot", "ollama"]),
+      models: [
+        listed("anthropic", "claude-opus-5-5", "Claude Opus 5.5", []),
+        free(listed("github-copilot", "gpt-5-mini", "GPT-5 mini", [])),
+        free(listed("opencode", "big-pickle", "Big Pickle", [])),
+        free(listed("ollama", "qwen3", "Qwen3", [])),
+      ],
+      accounts: new Map([
+        ["anthropic", { id: "anthropic", name: "Anthropic", methods: [["oauth", "claude"], ["key", ""]], signedIn: true, installed: true, complete: false }],
+        ["github-copilot", { id: "github-copilot", name: "GitHub Copilot", methods: [["oauth", "device"]], signedIn: true, installed: true, complete: false }],
+        ["opencode", { id: "opencode", name: "OpenCode Zen", methods: [["key", ""]], signedIn: false, installed: true, complete: false }],
+      ]),
+      fallback: null,
+    },
+    bridge: { ...lists.bridge!, models: [free(listed("claude-code", "opus", "Opus", []))] },
+  }, null)
+  expect(answer.models.map(model => [model.providerID, model.id, model.free ?? false])).toEqual([
+    ["github-copilot", "gpt-5-mini", false],
+    ["anthropic", "claude-opus-5-5", false],
+    ["opencode", "big-pickle", true],
+    ["ollama", "qwen3", true],
+    ["claude-code", "opus", false],
+    ["auto", "auto_1", false],
+  ])
+})
