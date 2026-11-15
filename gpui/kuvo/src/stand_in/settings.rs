@@ -164,6 +164,26 @@ impl Settings {
         self.ended.clear();
     }
 
+    /// The plans that need you, as a box says them in `kuvo/setup/ready` (`needsYou`): those
+    /// Accounts lists, not added beside an agent's own, whose sign-in ended or says something's
+    /// wrong, the coding agents' first; none where a side can't say.
+    pub fn needs_you(&mut self) -> Option<Vec<String>> {
+        let mut needing = Vec::new();
+        for agents in [true, false] {
+            let query = move |name: &str| (agents && name == "agents").then(|| "1".to_owned());
+            let (status, said) = self.answer("GET", "kuvo/sign-in/accounts", &query, &Value::Null)?;
+            if status != 200 {
+                return None;
+            }
+            for account in said["accounts"].as_array().into_iter().flatten() {
+                if account["listed"] == true && account["plan"] == true && account["added"] != true && (account["state"] == "ended" || account["state"] == "problem") {
+                    needing.extend(account["id"].as_str().map(str::to_owned));
+                }
+            }
+        }
+        Some(needing)
+    }
+
     /// Every sign-in there is works: none has ended.
     pub fn all_well(&mut self) {
         for agent in &mut self.agents {

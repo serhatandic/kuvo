@@ -422,3 +422,41 @@ fn signed_in_with_a_key_alone_the_welcome_lists_it_and_goes_straight_on(cx: &mut
     click(cx, "first-run-next");
     assert_eq!(step(&workspace, cx), Step::Where);
 }
+
+#[gpui::test]
+fn whether_the_accounts_step_is_passed_over_is_the_boxs_to_say(cx: &mut TestAppContext) {
+    // Everything's signed in, but the box says there's something to ask: the step is shown.
+    let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Running);
+    stand_in.set_first_run(|first_run| first_run.ready_says = Some(false));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    assert_eq!(stand_in.seen_at("GET", "kuvo/setup/ready").len(), 1);
+    assert!(!shown(cx, "first-run-signed-in"));
+    click(cx, "first-run-next");
+    assert_eq!(step(&workspace, cx), Step::Agents);
+}
+
+#[gpui::test]
+fn a_box_that_cant_say_whether_theres_anything_to_ask_shows_the_accounts_step(cx: &mut TestAppContext) {
+    let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Running);
+    stand_in.set_first_run(|first_run| first_run.ready_fails = true);
+    let (workspace, cx) = open(cx, stand_in);
+    click(cx, "first-run-next");
+    assert_eq!(step(&workspace, cx), Step::Agents);
+}
+
+#[gpui::test]
+fn signing_in_asks_the_box_again_whether_theres_anything_left_to_ask(cx: &mut TestAppContext) {
+    // A sign-in that ended is fixed in the first run: the box is asked again, and says ready.
+    let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Crowded);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    assert!(!run(&workspace, cx).read_with(cx, |run, _| run.ready()));
+    click(cx, "first-run-next");
+    for (act, done) in [("first-run-agent-antigravity-act", "first-run-agent-antigravity-signed-in"), ("first-run-account-gitlab-act", "first-run-account-gitlab-signed-in")] {
+        click(cx, act);
+        stand_in.end_sign_ins(Ending::Complete, None);
+        tick(cx);
+        assert!(shown(cx, done));
+    }
+    assert!(stand_in.seen_at("GET", "kuvo/setup/ready").len() >= 3);
+    assert!(run(&workspace, cx).read_with(cx, |run, _| run.ready()));
+}

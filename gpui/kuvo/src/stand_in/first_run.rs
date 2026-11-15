@@ -41,6 +41,10 @@ pub struct FirstRun {
     pub welcomed_fails: bool,
     /// Its setup can't be read now (`503`).
     pub setup_fails: bool,
+    /// What it says of `ready` in `kuvo/setup/ready`, in place of what it would work out; and
+    /// that it can't say now (`503`).
+    pub ready_says: Option<bool>,
+    pub ready_fails: bool,
     /// The models that need no account are offered too.
     pub free: bool,
     /// No account's model runs: only the free ones are offered.
@@ -53,7 +57,7 @@ pub struct FirstRun {
 
 impl Default for FirstRun {
     fn default() -> FirstRun {
-        FirstRun { welcomed: true, welcomed_fails: false, setup_fails: false, free: false, only_free: false, no_folders: false, folders_fail: false }
+        FirstRun { welcomed: true, welcomed_fails: false, setup_fails: false, ready_says: None, ready_fails: false, free: false, only_free: false, no_folders: false, folders_fail: false }
     }
 }
 

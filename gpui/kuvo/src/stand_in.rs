@@ -970,6 +970,16 @@ impl StandIn {
         let segments: Vec<&str> = route.split('/').collect();
         {
             let (body, made) = (request.body.clone().unwrap_or(Value::Null), state.made.unwrap_or_else(now_ms));
+            // Whether a first run has anything to ask, as a box decides it (`kuvo/setup/ready`).
+            if !state.older && (method, route) == ("GET", "kuvo/setup/ready") {
+                if state.first_run.ready_fails {
+                    return answer(503, json!({ "message": "The box isn’t answering." }));
+                }
+                let runs = !state.first_run.only_free && !state.nothing_runs;
+                let needing = state.settings.needs_you();
+                let ready = state.first_run.ready_says.unwrap_or(runs && needing.as_ref().is_some_and(Vec::is_empty));
+                return answer(200, json!({ "ready": ready, "runs": runs, "needsYou": needing.unwrap_or_default() }));
+            }
             // (A folder its git lists is git's to answer, with its files; the home's are these.)
             let gits = route == "kuvo/folders" && query(path, "path").map(decoded).is_some_and(|folder| state.git.as_ref().is_some_and(|git| git.folders.contains_key(&folder)));
             if !state.older

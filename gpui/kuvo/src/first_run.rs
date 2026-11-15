@@ -6,7 +6,7 @@
 //! Every fact is the box's: the accounts, how each stands and what can be done with it, in its
 //! words (`kuvo/sign-in/accounts`: `plan` keeps the plans in the list and the keys apart, `added`
 //! leaves out an account you added beside an agent's own); the models that need no account and
-//! whether one runs already (`kuvo/models/offered`: `free`, `starting`); your computers
+//! whether there's anything to ask about them at all (`kuvo/models/offered`'s `free`; `kuvo/setup/ready`); your computers
 //! (`kuvo/computers`); and the folders worth starting in (`kuvo/folders/suggested`, browsed with
 //! `kuvo/folders`). Signing in happens in place, under the account's row, with Settings' own
 //! sign-in ([`SignIn`]); nothing here opens Settings or leaves the flow.
@@ -85,6 +85,8 @@ pub struct FirstRun {
     box_name: SharedString,
     accounts: Reading<Accounts>,
     offered: Reading<Offered>,
+    /// Whether the box says there's nothing to ask about your accounts (`kuvo/setup/ready`).
+    ready: Reading<bool>,
     computers: Reading<Vec<Computer>>,
     folders: Reading<SuggestedFolders>,
     /// The computer picked, by its key (none: the box's own).
@@ -148,6 +150,7 @@ impl FirstRun {
             box_name,
             accounts: Reading::NotYet,
             offered: Reading::NotYet,
+            ready: Reading::NotYet,
             computers: Reading::NotYet,
             folders: Reading::NotYet,
             computer: None,
@@ -200,7 +203,7 @@ impl FirstRun {
             cx.notify();
         }
         // Reached (again, or let go by its update): what it couldn't say before is asked now.
-        if reached && (!matches!(self.accounts, Reading::Ready(_)) || !matches!(self.offered, Reading::Ready(_)) || !matches!(self.folders, Reading::Ready(_))) {
+        if reached && (!matches!(self.accounts, Reading::Ready(_)) || !matches!(self.offered, Reading::Ready(_)) || !matches!(self.ready, Reading::Ready(_)) || !matches!(self.folders, Reading::Ready(_))) {
             self.read(cx);
         }
     }
@@ -263,6 +266,20 @@ impl FirstRun {
             cx,
         );
         self.run(|client| client.offered_models(None, None), |this, read, _| this.offered = keeping(read, &this.offered), cx);
+        self.run(
+            |client| client.first_run_ready(),
+            move |this, read, _| {
+                // (As the accounts: the latest asked for is the one gone by. One it couldn't say
+                // is not ready, never what it said before a change.)
+                if asked == this.accounts_asked {
+                    this.ready = match read {
+                        Ok(said) => Reading::Ready(said.ready),
+                        Err(error) => Reading::Failed(said(&error)),
+                    };
+                }
+            },
+            cx,
+        );
     }
 
     fn read_folders(&mut self, cx: &mut Context<Self>) {
@@ -307,18 +324,11 @@ impl FirstRun {
         }
     }
 
-    /// Whether a model on one of your accounts runs already and nothing needs you, as the box says:
-    /// a new session has a model to start on that isn't one of the free ones, and no plan's
-    /// sign-in has ended or says something's wrong. Then the welcome goes straight on to where to
-    /// work.
-    // BOX-NEEDED: this is a rule the box should state (say `ready` in `kuvo/setup`), so the phone
-    // and any other client don't keep a copy of it. Built here, from the box's facts alone, as the
-    // first run's brief asks for the skip; listed in `notes/first-run-handover.md` as left to move.
+    /// Whether the box says a first run has nothing to ask about your accounts (`kuvo/setup/ready`:
+    /// a model on one of them runs already and no plan needs you). Then the welcome goes straight
+    /// on to where to work. The box decides; one that couldn't say isn't taken as ready.
     pub fn ready(&self) -> bool {
-        let (Reading::Ready(offered), Reading::Ready(accounts)) = (&self.offered, &self.accounts) else { return false };
-        let Some(Some(starting)) = &offered.starting else { return false };
-        let free = offered.models.iter().any(|model| model.is(starting) && model.free);
-        !free && accounts.agents_down.is_none() && accounts.engine_down.is_none() && !self.plans().iter().any(|entry| entry.state.needs_you())
+        matches!(self.ready, Reading::Ready(true))
     }
 
     /// Your own computers, the box's first (one that isn't yours is left out).
@@ -351,7 +361,7 @@ impl FirstRun {
         match self.step {
             // (Once the box has said its accounts and models, or that it can't: whether the next
             // step is passed over goes by them.)
-            Step::Welcome => self.box_state == BoxState::Connected && !matches!(self.accounts, Reading::NotYet) && !matches!(self.offered, Reading::NotYet),
+            Step::Welcome => self.box_state == BoxState::Connected && !self.settling(),
             Step::Agents | Step::Keys => true,
             Step::Where => self.place.is_some() && self.elsewhere().is_none(),
             Step::Browse => matches!(self.browsing, Some((_, Listed::Ready(_)))),
@@ -718,7 +728,7 @@ impl FirstRun {
 
     /// Whether the welcome still waits for the box's accounts and models before it can go on.
     fn settling(&self) -> bool {
-        self.step == Step::Welcome && self.box_state == BoxState::Connected && !self.client.gate().is_held() && (matches!(self.accounts, Reading::NotYet) || matches!(self.offered, Reading::NotYet))
+        self.step == Step::Welcome && self.box_state == BoxState::Connected && !self.client.gate().is_held() && (matches!(self.accounts, Reading::NotYet) || matches!(self.offered, Reading::NotYet) || matches!(self.ready, Reading::NotYet))
     }
 
     /// The scrolling middle of a card: what a step lists, however long.

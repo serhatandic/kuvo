@@ -30,9 +30,10 @@ shown once, remembered in its own store.
   then opens the sign-in.
 - **The free models** are a row of their own (`free` in `kuvo/models/offered`), so nothing has to
   be signed in to go on.
-- **Skipping ahead**: where the box says a new session has a model to start on that isn't a free
-  one, and no plan's sign-in ended or reports a problem, Get Started goes to Where to work, and the
-  welcome lists what's signed in. Agents and plans stays a step Back.
+- **Skipping ahead**: where the box says there's nothing to ask (`ready` in `GET
+  kuvo/setup/ready`: a model on one of your accounts runs, and no plan's sign-in ended or reports
+  a problem), Get Started goes to Where to work, and the welcome lists what's signed in. The box
+  decides; the app only goes by it. Agents and plans stays a step Back.
 - **Where to work**: your computers as tiles where there's more than this one (selected is the
   theme's `selected` wash, not a raised card); under them the folders the box suggests
   (`kuvo/folders/suggested`), the latest worked in picked to begin with, "No project" as a row,
