@@ -41,8 +41,8 @@ impl Item {
 }
 
 /// One taken back: its words as shown, the keyword it went with, what goes back in the composer as
-/// its box says (`draft`: a command's or a goal's words with it in front, another keyword's words
-/// alone), and its files as the send takes them.
+/// its box says (`draft`: its words with the command or keyword in front, a /loop's alone), and its
+/// files as the send takes them.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Removed {
     pub id: String,

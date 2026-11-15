@@ -8,7 +8,7 @@ import { messageID } from "../engine/sessions";
 import { isRefused, placeOfSessionPatiently } from "../letters/letter";
 import { targetsOf } from "../letters/tools";
 import { heldAsItComes, underWay } from "../messages/arriving";
-import { commandParts, commandsSettled, keptCommand, madeText, sendingCommand } from "../messages/commands";
+import { commandParts, commandsSettled, commandTemplate, keptCommand, madeText, sendingCommand } from "../messages/commands";
 import { composeArguments, composeWithParts, fieldsOf, partsOf, withParts } from "../messages/parts";
 import { withAttachedNote } from "../peers/naming";
 import type { MessageFields } from "../messages/parts";
@@ -134,6 +134,8 @@ async function* sending(context: RouteContext, session: string): AsyncGenerator<
   // stops with its sender: it has no id, and sent again it would run twice.
   const send = async (): Promise<SentAnswer> => {
     try {
+      // (One of yours as the engine has it, asked meanwhile: what it will make, where this box can say.)
+      const template = typed && !toAgents ? commandTemplate(target, folderOf(place.data), command!, signal) : null;
       const message = fields
         ? await composed(fields, files, session, target, toAgents, request, readEngine, command ? signal : undefined, undefined, command !== null)
         : await sentAgain(again!, files, session, target, toAgents);
@@ -152,8 +154,7 @@ async function* sending(context: RouteContext, session: string): AsyncGenerator<
         const response = await fetch(at, { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined });
         return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };
       };
-      // (What the engine will make of one of yours, where this box can say: the message to look for.)
-      const made = typed && !toAgents ? await madeText(target, folderOf(place.data), command!, message.text) : null;
+      const made = template ? madeText(await template, message.text) : null;
       const answer = typed && !toAgents ? await sendingCommand(session, typed, made, post, each => each.status >= 200 && each.status < 300) : await post();
       // (Stop hasn't paused it yet: it holds it with the rest, as it names it.)
       if (held && id && answer.status >= 200 && answer.status < 300) await holdQueue(target, session, undefined, [id]).catch(() => {});

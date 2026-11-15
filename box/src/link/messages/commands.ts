@@ -12,7 +12,6 @@ import { textOf, writePrivate } from "../files";
 import { RUN } from "../home";
 import { writtenByYou } from "../engine/queue";
 import type { MessageParts } from "./parts";
-import { engineGet } from "../engine/client";
 import type { Target } from "../../shared/records";
 
 const FILE = path.join(RUN, "commands.json");
@@ -28,10 +27,11 @@ const WORDS_MOST = 4000;
 export const commandParts = (command: string, words: string): MessageParts => ({ words: words.trim().slice(0, WORDS_MOST), keyword: `/${command}`, command: true });
 
 /** What goes back in the composer for a message taken back to edit (`removed.draft`): its words with
- * the command or keyword it went with in front, so sending it again does what it did (Undo and a
- * failed send put back the words alone). */
+ * the command or keyword it went with in front, so sending it again does what it did; but a /loop's
+ * words alone, as its wake-up was set as it was sent, and sending "/loop …" again would set a
+ * second (Undo and a failed send put back the words alone). */
 export const draftOf = ({ words, keyword }: Pick<MessageParts, "words" | "keyword">): string =>
-  keyword ? `${keyword} ${words}`.trim() : words;
+  keyword && !/^\/loop(?:\s|$)/i.test(keyword) ? `${keyword} ${words}`.trim() : words;
 
 // What's kept, read once (only this process writes it), oldest first.
 let kept: Map<string, MessageParts> | null = null;
@@ -64,8 +64,12 @@ function keep(id: string, parts: MessageParts): void {
 /** One of your commands (Settings › Commands, or a command file in a settings folder) as the engine
  * in `folder` has it: what it says, from the last that has it; none for the engine's own, an MCP
  * server's prompt, or when the engine can't say. */
-async function templateOf(engine: Target, folder: string, name: string): Promise<string | undefined> {
-  const answer = await engineGet(engine, "api/config", folder || undefined).catch(() => undefined) as unknown;
+async function templateOf(engine: Target, folder: string, name: string, signal?: AbortSignal): Promise<string | undefined> {
+  const within = AbortSignal.timeout(SETTINGS_WITHIN);
+  const answer = await fetch(`http://127.0.0.1:${engine.port}/api/config`, {
+    headers: { authorization: `Basic ${Buffer.from(`opencode:${engine.password}`).toString("base64")}`, ...(folder ? { "x-opencode-directory": encodeURIComponent(folder) } : {}) },
+    signal: signal ? AbortSignal.any([signal, within]) : within,
+  }).then(response => (response.ok ? response.json() : undefined)).catch(() => undefined) as unknown;
   if (answer === undefined) return undefined;
   const sources: unknown[] = Array.isArray(answer) ? answer : isObject(answer) && Array.isArray(answer.data) ? answer.data : [{ info: isObject(answer) ? answer.data ?? answer : answer }];
   let template: string | undefined;
@@ -73,13 +77,14 @@ async function templateOf(engine: Target, folder: string, name: string): Promise
     if (!isObject(source)) continue;
     const info = isObject(source.info) ? source.info : {};
     for (const list of [info.commands, info.command]) {
+      // (As written: the engine fills it in so.)
       const own = isObject(list) && isObject(list[name]) ? list[name].template : undefined;
-      if (typeof own === "string" && own.trim()) template = own.trim();
+      if (typeof own === "string" && own.trim()) template = own;
     }
     if (source.type === "directory" && typeof source.path === "string" && /^[\w.-]+(\/[\w.-]+)*$/.test(name) && !name.split("/").includes("..")) {
       for (const kept of ["command", "commands"]) {
         const text = textOf(path.join(source.path, kept, `${name}.md`));
-        const body = text?.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
+        const body = text?.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/, "").trim();
         if (body) template = body;
       }
     }
@@ -91,8 +96,8 @@ const NAMED = /\$(?:ARGUMENTS|([1-9]\d*))/g;
 const WORD = /(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi;
 
 /** `template` with `text` (what goes after the command's name) filled in, as the engine fills it:
- * `$ARGUMENTS` all of it, `$1`, `$2`… a word each (quotes taken off), the highest the rest; after
- * it, when it names none. */
+ * `$ARGUMENTS` all of it, `$1`, `$2`… a word each (quotes taken off), the highest the rest; on a
+ * line after it, when it names none. */
 export function filledIn(template: string, text: string): string {
   const words = (text.match(WORD) ?? []).map(word => word.replace(/^["']|["']$/g, ""));
   const numbered = template.match(/\$([1-9]\d*)/g) ?? [];
@@ -103,16 +108,25 @@ export function filledIn(template: string, text: string): string {
     if (at >= words.length) return "";
     return Number(index) === highest ? words.slice(at).join(" ") : words[at]!;
   });
-  return numbered.length === 0 && !template.includes("$ARGUMENTS") && text.trim() ? `${filled} ${text}`.trim() : filled.trim();
+  return numbered.length === 0 && !template.includes("$ARGUMENTS") && text.trim() ? `${filled}\n${text}`.trim() : filled.trim();
 }
 
-/** The prompt the engine in `folder` will make of `command` with `text` after it, where this box can
- * say for sure: one of yours with no shell step in it (`!\`…\``, whose output it can't know); null
- * otherwise. */
-export async function madeText(engine: Target, folder: string, command: string, text: string): Promise<string | null> {
-  const template = await templateOf(engine, folder, command);
-  return template && !template.includes("!`") ? filledIn(template, text) : null;
+/** One of your commands as the engine in `folder` has it (`templateOf`), asked as a command goes
+ * (`signal`: its sender gone); none when its settings don't come within a moment. */
+export const commandTemplate = (engine: Target, folder: string, command: string, signal?: AbortSignal): Promise<string | undefined> =>
+  templateOf(engine, folder, command, signal);
+
+/** The prompt the engine will make of `template` (a command's, `commandTemplate`) with `text` after
+ * it, where this box can say for sure: with no shell step in it (`!\`…\``, whose output it can't
+ * know); null otherwise, or with no template. */
+export function madeText(template: string | undefined, text: string): string | null {
+  const made = template ? filledIn(template, text) : null;
+  return made && !SHELL_STEP.test(made) ? made : null;
 }
+const SHELL_STEP = /!`[^`]+`/;
+/** How long a command waits for the engine's settings before it goes (ms): then it's matched by
+ * its words. */
+const SETTINGS_WITHIN = 2000;
 
 /** A command on its way to the engine, waiting to hear which message it made: what the engine will
  * make of it where this box can say (`made`), when it was sent and, once it was, answered (ms). */

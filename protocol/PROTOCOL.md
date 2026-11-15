@@ -1240,7 +1240,8 @@ the same for every client and with none connected, and keeps them in `run/queues
   carrying it as it was, `removed: {id, text, files?, delivery, from?, words, keyword, draft, before?}` (`words`, as
   it was shown; `keyword`, as the queue's items say it, null for none; `draft`, what Edit puts in the
   composer: its words with the command or keyword it went with in front (`/review main`, `/plan
-  sketch it`, `/goal Ship v2`), so sending it again does what it did;
+  sketch it`, `/goal Ship v2`), so sending it again does what it did, but a /loop's words alone (its
+  wake-up was set as it was sent: "/loop …" again would set a second);
   `before`, what came after it, left out when it was last; `queue.removed.keyword`); 404 if it isn't. Undo
   adds it back with `…/queue/add` and `kept: true` (its body as it was kept, its files not kept
   again, shown with its `words`). **Undo puts it back where it was** (bridge 0.9.137): `…/queue/add`
@@ -4543,7 +4544,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   bot's /goal). Show the keyword (its parts' `keyword`) in front of the message's words, drawn as the composer draws it (its
   mark for the "/", the rest in bold, in the accent; Plan's in orange). Taken back (Undo, a failed
   send), it's the words alone, so sending them again sets no second loop; editing a queued one puts
-  back what its box says (`removed.draft`), the keyword in front.
+  back what its box says (`removed.draft`), the keyword in front (a /loop's words alone).
 - A message the box writes to an agent in its conversation (a goal starting, changed, at its
   end, declined or carrying on after a limit reset; its sessions' news to the bot that started
   them; your answer told late) is a user message to the engine, marked in its `metadata`:
@@ -6427,8 +6428,9 @@ the box sends keeps its parts, which clients draw it by. No client writes or rea
   `run/commands.json`. It's the first in that conversation that the box didn't mark as its own, nor
   someone else's (a wake-up, another agent's letter), that the engine made after the command was
   sent and before it answered, and that is the very prompt the command makes, where the box can
-  work it out (one of your commands, from the engine's settings or a command file, with no
-  `` !`…` `` step), else one with each word typed after the command in it (quotes aside); a command
+  work it out (one of your commands, from the engine's settings or a command file, filled in as the
+  engine fills it, what was typed on a line after it where it names no `$ARGUMENTS` or `$1`…, with
+  no `` !`…` `` step), else one with each word typed after the command in it (quotes aside); a command
   with nothing after it that the box can't work out is never matched, and shows as the engine kept
   it. `kuvo/messages/parts` takes `{texts, ids, session?}` (an id for each text) and answers those
   by id; with `session`, the conversation they're in, it waits a moment (2 s at most) for a command

@@ -1409,7 +1409,7 @@ var KEPT = 2000;
 var HEARD_WITHIN = 3000;
 var WORDS_MOST = 4000;
 var commandParts = (command, words) => ({ words: words.trim().slice(0, WORDS_MOST), keyword: `/${command}`, command: true });
-var draftOf = ({ words, keyword }) => keyword ? `${keyword} ${words}`.trim() : words;
+var draftOf = ({ words, keyword }) => keyword && !/^\/loop(?:\s|$)/i.test(keyword) ? `${keyword} ${words}`.trim() : words;
 var kept = null;
 function readKept() {
   if (kept)
@@ -1436,8 +1436,12 @@ function keep(id, parts) {
     all.delete(old);
   writePrivate(FILE, JSON.stringify(Object.fromEntries(all)));
 }
-async function templateOf(engine, folder, name) {
-  const answer = await engineGet(engine, "api/config", folder || undefined).catch(() => {
+async function templateOf(engine, folder, name, signal) {
+  const within = AbortSignal.timeout(SETTINGS_WITHIN);
+  const answer = await fetch(`http://127.0.0.1:${engine.port}/api/config`, {
+    headers: { authorization: `Basic ${Buffer.from(`opencode:${engine.password}`).toString("base64")}`, ...folder ? { "x-opencode-directory": encodeURIComponent(folder) } : {} },
+    signal: signal ? AbortSignal.any([signal, within]) : within
+  }).then((response) => response.ok ? response.json() : undefined).catch(() => {
     return;
   });
   if (answer === undefined)
@@ -1451,12 +1455,12 @@ async function templateOf(engine, folder, name) {
     for (const list of [info.commands, info.command]) {
       const own = isObject(list) && isObject(list[name]) ? list[name].template : undefined;
       if (typeof own === "string" && own.trim())
-        template = own.trim();
+        template = own;
     }
     if (source.type === "directory" && typeof source.path === "string" && /^[\w.-]+(\/[\w.-]+)*$/.test(name) && !name.split("/").includes("..")) {
       for (const kept of ["command", "commands"]) {
         const text = textOf(path8.join(source.path, kept, `${name}.md`));
-        const body = text?.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
+        const body = text?.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/, "").trim();
         if (body)
           template = body;
       }
@@ -1478,12 +1482,16 @@ function filledIn(template, text) {
       return "";
     return Number(index) === highest ? words.slice(at).join(" ") : words[at];
   });
-  return numbered.length === 0 && !template.includes("$ARGUMENTS") && text.trim() ? `${filled} ${text}`.trim() : filled.trim();
+  return numbered.length === 0 && !template.includes("$ARGUMENTS") && text.trim() ? `${filled}
+${text}`.trim() : filled.trim();
 }
-async function madeText(engine, folder, command, text) {
-  const template = await templateOf(engine, folder, command);
-  return template && !template.includes("!`") ? filledIn(template, text) : null;
+var commandTemplate = (engine, folder, command, signal) => templateOf(engine, folder, command, signal);
+function madeText(template, text) {
+  const made = template ? filledIn(template, text) : null;
+  return made && !SHELL_STEP.test(made) ? made : null;
 }
+var SHELL_STEP = /!`[^`]+`/;
+var SETTINGS_WITHIN = 2000;
 var expected = [];
 var pending = new Map;
 var madeOf = (text, words) => {
@@ -45026,7 +45034,7 @@ import fs145 from "node:fs";
 import path153 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e01168eb1001";
+var BRIDGE_VERSION = "15b250f1c842";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -50341,6 +50349,7 @@ async function* sending3(context, session) {
   const at = `http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}/${command ? "command" : "prompt"}`;
   const send = async () => {
     try {
+      const template = typed && !toAgents ? commandTemplate(target, folderOf4(place.data), command, signal) : null;
       const message = fields ? await composed(fields, files, session, target, toAgents, request, readEngine, command ? signal : undefined, undefined, command !== null) : await sentAgain(again, files, session, target, toAgents);
       const held = heldAsItComes(session, id);
       const delivery = held || given.delivery === "queue" ? "queue" : given.delivery === "steer" || !command ? "steer" : undefined;
@@ -50352,7 +50361,7 @@ async function* sending3(context, session) {
         const response = await fetch(at, { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined });
         return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };
       };
-      const made = typed && !toAgents ? await madeText(target, folderOf4(place.data), command, message.text) : null;
+      const made = template ? madeText(await template, message.text) : null;
       const answer = typed && !toAgents ? await sendingCommand(session, typed, made, post, (each) => each.status >= 200 && each.status < 300) : await post();
       if (held && id && answer.status >= 200 && answer.status < 300)
         await holdQueue(target, session, undefined, [id]).catch(() => {});

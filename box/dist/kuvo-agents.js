@@ -3580,7 +3580,7 @@ ${directory}`;
         for (const folder of ["command", "commands"]) {
           try {
             const text = readFileSync8(join11(source.path, folder, `${name}.md`), "utf8");
-            const body = text.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
+            const body = text.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/, "").trim();
             if (body)
               template = body;
           } catch {}
@@ -36568,4 +36568,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents a931fd1e575c10fe677dd0420b59350b2e8a31eeb4e2adffa94cf8c67ef5b7fa
+// Built from Packages/Box/src/agents 7a5a853b14d73fbb3a8acb6875cd3d591dfc4f90593029cd8969df7ce540716a

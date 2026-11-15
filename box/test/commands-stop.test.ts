@@ -74,7 +74,7 @@ beforeAll(async () => {
         }
         return session("ses_cmd")
       }
-      if (each.path === "/api/config") return commandsSet ? Response.json([{ info: { command: Object.fromEntries(Object.entries(commandsSet).map(([name, template]) => [name, { template }])) } }]) : Response.json({ message: "Not now." }, { status: 503 })
+      if (each.path === "/api/config") return commandsSet ? Response.json([{ info: { commands: Object.fromEntries(Object.entries(commandsSet).map(([name, template]) => [name, { template }])) } }]) : Response.json({ message: "Not now." }, { status: 503 })
       if (each.path === "/api/session/active") return Response.json({ data: [] })
       if (each.path === "/api/session/ses_cmd/inbox") return Response.json({ data: inbox })
       if (each.path === "/api/session/ses_cmd/message") return Response.json({ data: [] })
@@ -201,6 +201,22 @@ describe("a command's message shows as typed", () => {
   })
 })
 
+describe("what the engine makes of one of your commands", () => {
+  // The engine's own filling-in (2.2.5's), case by case.
+  test.each([
+    ["$ARGUMENTS takes it all, as written", "Review $ARGUMENTS now", " the branch ", "Review  the branch  now"],
+    ["none named: on a line after it", "Tidy up the imports.", "src/app.ts", "Tidy up the imports.\nsrc/app.ts"],
+    ["none named and nothing written: as it is", "Tidy up the imports.\n", "", "Tidy up the imports."],
+    ["$1 $2: a word each, the highest the rest", "Fix $1 in $2", "login page header", "Fix login in page header"],
+    ["quoted words keep together, without their quotes", "Fix $1 in $2", "\"login page\" 'the header'", "Fix login page in the header"],
+    ["a word not given is left out", "Fix $1 in $2", "login", "Fix login in"],
+    ["a picture counts as a word", "Look at $1 then $2", "[Image 1] closely", "Look at [Image 1] then closely"],
+  ])("%s", async (_, template, text, made) => {
+    const { filledIn } = await import("../src/link/messages/commands")
+    expect(filledIn(template, text)).toBe(made)
+  })
+})
+
 describe("a queued message taken back to edit keeps its keyword", () => {
   test("one the engine holds", async () => {
     await send("ses_cmd", { id: "msg_plan", words: "sketch it", keyword: "/plan", delivery: "queue" })
@@ -221,7 +237,8 @@ describe("a queued message taken back to edit keeps its keyword", () => {
     await queueAsk("POST", "kuvo/sessions/ses_cmd/stop", {})
     await queueAsk("POST", "kuvo/sessions/ses_cmd/queue/add", { id: "msg_loop", words: "check CI", keyword: "/loop every hour", delivery: "queue" })
     const { json } = await queueAsk("DELETE", "kuvo/sessions/ses_cmd/queue/msg_loop", undefined)
-    expect(json.removed).toMatchObject({ id: "msg_loop", words: "check CI", keyword: "/loop every hour", draft: "/loop every hour check CI" })
+    // (A /loop's words alone: its wake-up was set as it was sent, and "/loop …" again would set another.)
+    expect(json.removed).toMatchObject({ id: "msg_loop", words: "check CI", keyword: "/loop every hour", draft: "check CI" })
   })
 
   test("a goal: with it in front", async () => {
@@ -302,13 +319,11 @@ describe("Stop takes what's on its way with it", () => {
   test("one the engine made after it answered isn't the command's", async () => {
     const ran = whenAsked(each => each.path === "/api/session/ses_cmd/command")
     hearing = "hold"
-    const answered = Date.now()
     await send("ses_cmd", { words: "main", command: "review" })
     await ran
     mod.heardCommand({ type: "session.inbox.enqueued", created: Date.now() + 1000, data: { sessionID: "ses_cmd", inboxID: "msg_later", item: { type: "user", payload: { text: "Review main again" } } } })
     const { json } = await readParts({ ids: ["msg_later"], texts: ["Review main again"] })
     expect(json.parts).toEqual([{ words: "Review main again" }])
-    expect(answered).toBeLessThanOrEqual(Date.now())
   })
 
   test("one the box is still sending as Stop comes reaches the engine first, and is held with the rest", async () => {
