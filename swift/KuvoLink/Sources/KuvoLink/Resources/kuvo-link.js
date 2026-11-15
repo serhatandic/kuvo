@@ -45116,7 +45116,7 @@ import fs145 from "node:fs";
 import path153 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f0e9449875cd";
+var BRIDGE_VERSION = "7ef5eee19b19";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -52766,8 +52766,6 @@ function vaultAskShown(asked, givable) {
 async function givableTo(client, site) {
   if (!client)
     return { refused: NOT_A_CLIENT };
-  if (onHost())
-    await primeGenerations().catch(() => {});
   if (isLocked())
     return { note: "This computer’s vault is locked: unlock it to give it an item." };
   const forSite = (sites) => !!site && sites.some((each) => each === site || site.endsWith("." + each) || each.endsWith("." + site));
@@ -52835,11 +52833,13 @@ async function asksOf(target, session, folder, signal, place = {}) {
     found.push({ at: asked.at, ask: { shown: sandboxAskShown({ ...asked, session: asked.session }), target, asker: asked.session } });
   }
   const vault = listAsks().filter((asked) => asked.session && asking.has(asked.session));
+  if (vault.length && place.client && onHost())
+    await primeGenerations().catch(() => {});
   for (const asked of vault) {
     const givable = await givableTo(place.client ?? null, asked.kind === "item" ? asked.site : undefined);
     found.push({ at: asked.at, ask: { shown: vaultAskShown({ ...asked, session: asked.session }, givable), target, asker: asked.session } });
   }
-  const elsewhere = (ask) => ask.shown.kind === "other" ? 1 : 0;
+  const elsewhere = (ask) => ask.shown.kind === "other" || ask.shown.kind === "vault" && !ask.shown.choices.length ? 1 : 0;
   return found.sort((a, b) => elsewhere(a.ask) - elsewhere(b.ask) || a.at - b.at).map((each) => each.ask);
 }
 async function placeOf2(context, session) {

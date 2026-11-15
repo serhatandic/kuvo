@@ -274,8 +274,11 @@ test("what a subagent asks of the vault shows with its asks, and only the vault'
   })
   // Something on this computer that isn't one of your clients (not the app, a phone, nor the Mac
   // proving itself): refused, and it still waits.
-  // It's offered no answers, and none it sends is taken, Don't Allow neither.
-  expect((await askAs(false, "GET", "kuvo/sessions/ses_root/asks")).json.asks.find((each: any) => each.kind === "vault").choices).toEqual([])
+  // It's offered no answers, and none it sends is taken, Don't Allow neither; listed after those it
+  // can answer, as one answered elsewhere.
+  const unanswerable = (await askAs(false, "GET", "kuvo/sessions/ses_root/asks")).json.asks
+  expect(unanswerable.find((each: any) => each.kind === "vault").choices).toEqual([])
+  expect(unanswerable.findIndex((each: any) => each.kind === "vault")).toBeGreaterThan(unanswerable.findIndex((each: any) => each.id === "per_push"))
   for (const answer of ["always", "reject"]) expect((await askAs(false, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer })).status).toBe(403)
   expect((await ask(handler, "GET", "kuvo/sessions/ses_root/asks")).json.asks.some((each: any) => each.id === vault.id)).toBe(true)
   expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "always" })).status).toBe(200)
@@ -335,6 +338,20 @@ test("through `box route` (a machine over SSH), the box's own asks are listed an
     expect((await boxRoute("POST", `kuvo/sessions/ses_root/asks/${sandbox.id}`, { answer: "once" })).status).toBe(404)
   } finally {
     held.close()
+  }
+}, 30_000)
+
+test("a long-running process from before these routes (it answers `404 {}`) is read around, not taken for no conversation", async () => {
+  const { holdVault } = await import("../src/link/vault/holder")
+  // (What an older process answers every route it doesn't hold.)
+  const older = holdVault((async function* () { yield { head: { status: 404, headers: { "content-type": "application/json" } } }; yield { body: Buffer.from("{}") } }) as any, () => () => {})
+  try {
+    // Read where it's asked: here, a `box route` with no engine of its own, which says so.
+    const listed = await boxRoute("GET", "kuvo/sessions/ses_root/asks")
+    expect(listed.status).toBe(503)
+    expect(listed.json.message).toContain("engine")
+  } finally {
+    older.close()
   }
 }, 30_000)
 

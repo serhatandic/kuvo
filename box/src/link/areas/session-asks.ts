@@ -248,7 +248,6 @@ export function vaultAskShown(asked: VaultAsk & { session: string }, givable: Gi
  * site asked about first. */
 async function givableTo(client: VaultClient, site: string | undefined): Promise<Givable> {
   if (!client) return { refused: NOT_A_CLIENT };
-  if (onHost()) await primeGenerations().catch(() => {});
   if (isLocked()) return { note: "This computer’s vault is locked: unlock it to give it an item." };
   const forSite = (sites: readonly string[]) => !!site && sites.some(each => each === site || site.endsWith("." + each) || each.endsWith("." + site));
   return {
@@ -323,14 +322,16 @@ async function asksOf(target: Target, session: string, folder: string, signal?: 
     found.push({ at: asked.at, ask: { shown: sandboxAskShown({ ...asked, session: asked.session }), target, asker: asked.session } });
   }
   const vault = listVaultAsks().filter(asked => asked.session && asking.has(asked.session));
+  // (This Mac's vault read as its app last wrote it, once a read.)
+  if (vault.length && place.client && onHost()) await primeGenerations().catch(() => {});
   for (const asked of vault) {
     const givable = await givableTo(place.client ?? null, asked.kind === "item" ? asked.site : undefined);
     found.push({ at: asked.at, ask: { shown: vaultAskShown({ ...asked, session: asked.session! }, givable), target, asker: asked.session! } });
   }
-  // Those a client answers first, oldest first; then those answered elsewhere (`other`), so a card
-  // a client can answer shows ahead of one it can't. (Stable: what came at the same time, or
+  // Those a client answers first, oldest first; then those answered elsewhere (`other`, a vault ask
+  // it may not answer), so a card a client can answer shows ahead of one it can't. (Stable: what came at the same time, or
   // unnoted, stays in the order it was listed.)
-  const elsewhere = (ask: Found) => (ask.shown.kind === "other" ? 1 : 0);
+  const elsewhere = (ask: Found) => (ask.shown.kind === "other" || (ask.shown.kind === "vault" && !ask.shown.choices.length) ? 1 : 0);
   return found.sort((a, b) => elsewhere(a.ask) - elsewhere(b.ask) || a.at - b.at).map(each => each.ask);
 }
 
