@@ -207,6 +207,8 @@ export async function readHostKey(destination: string, signal?: AbortSignal): Pr
       "-o", "BatchMode=yes", "-o", "RemoteCommand=none", "-o", "RequestTTY=no", "-o", "ConnectTimeout=15", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no",
       "-o", "ControlMaster=no", "-o", "ControlPath=none",
       "-o", "StrictHostKeyChecking=accept-new", "-o", `UserKnownHostsFile=${quoted(file)}`, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "UpdateHostKeys=no",
+      // (Its name as it is, and no line for its address beside it: what's kept is what's read here.)
+      "-o", "HashKnownHosts=no", "-o", "CheckHostIP=no",
       "-o", "PubkeyAuthentication=no", "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no", "-o", "GSSAPIAuthentication=no", "-o", "HostbasedAuthentication=no",
       "-o", "IdentityAgent=none",
       "--", destination, "true",
@@ -220,20 +222,17 @@ export async function readHostKey(destination: string, signal?: AbortSignal): Pr
   }
 }
 
-/** Keeps `keys` as trusted, in this box's own file (yours alone to read); `replacing` first takes
- * out the lines there that named the same host with another key (a key you saw change, and took). */
-export function trustHostKeys(keys: HostKey[], replacing = false): void {
+/** Keeps `keys` as trusted, in this box's own file (yours alone to read). `replacing`: the line
+ * there (counted from 1, as `ssh` names it) that holds the key the host had before, which you saw
+ * change and took the new one for: that line goes, whichever way its host is written (a name, or
+ * hashed, as `HashKnownHosts` writes them). */
+export function trustHostKeys(keys: HostKey[], replacing?: number): void {
   fs.mkdirSync(path.dirname(KNOWN_HOSTS), { recursive: true, mode: 0o700 });
   let had = "";
   try { had = fs.readFileSync(KNOWN_HOSTS, "utf8"); } catch {}
-  const hosts = new Set(keys.map(key => key.line.split(" ")[0]!));
-  const kinds = new Set(keys.map(key => key.kind));
-  const kept = had.split("\n").filter(line => {
-    if (!line.trim()) return false;
-    if (keys.some(key => key.line === line.trim())) return false;
-    const [host, kind] = line.trim().split(/\s+/);
-    return !(replacing && hosts.has(host!) && kinds.has(kind!));
-  });
+  // (With it, every other key kept under that host's name: only the one you just saw stays.)
+  const hosts = new Set(replacing ? keys.map(key => key.line.split(" ")[0]!) : []);
+  const kept = had.split("\n").filter((line, index) => line.trim() && index + 1 !== replacing && !hosts.has(line.trim().split(/\s+/)[0]!) && !keys.some(key => key.line === line.trim()));
   const text = [...kept, ...keys.map(key => key.line)].join("\n") + "\n";
   const next = `${KNOWN_HOSTS}.${process.pid}.new`;
   fs.writeFileSync(next, text, { mode: 0o600 });
@@ -243,8 +242,9 @@ export function trustHostKeys(keys: HostKey[], replacing = false): void {
 /** How a connection that didn't come about went wrong, from what `ssh` said (status 255). */
 export type Trouble =
   | { kind: "unknownHost" }
-  /** `own`: the key it had before is one this box kept (not one in your own known hosts). */
-  | { kind: "changedHost"; own: boolean; host: string | null }
+  /** `own`: the key it had before is one this box kept (not one in your own known hosts), on that
+   * line of its file. */
+  | { kind: "changedHost"; own: boolean; line: number; host: string | null }
   | { kind: "refused" }
   | { kind: "unreachable"; said: string };
 
@@ -261,8 +261,8 @@ export function troubleOf(ran: Ran): Trouble | null {
   if (said.includes("REMOTE HOST IDENTIFICATION HAS CHANGED")) {
     // (Only a whole line of ssh's own names the host: nothing a host could have written there.)
     const host = /^Host key for ([A-Za-z0-9._:\-[\]]+) has changed and you have requested strict checking\.\s*$/m.exec(said)?.[1] ?? null;
-    const offending = /^Offending (?:\S+ )?key in (.+):\d+\s*$/m.exec(said)?.[1] ?? "";
-    return { kind: "changedHost", own: path.resolve(offending) === path.resolve(KNOWN_HOSTS), host };
+    const offending = /^Offending (?:\S+ )?key in (.+):(\d+)\s*$/m.exec(said);
+    return { kind: "changedHost", own: Boolean(offending) && path.resolve(offending![1]!) === path.resolve(KNOWN_HOSTS), line: Number(offending?.[2] ?? 0), host };
   }
   if (said.includes("Host key verification failed")) return { kind: "unknownHost" };
   if (/permission denied|too many authentication failures/i.test(said)) return { kind: "refused" };
@@ -278,7 +278,8 @@ export async function vaultAgent(): Promise<{ way: Way; close: () => void } | nu
   let keys: AgentKey[] = [];
   try {
     if (isLocked()) return null;
-    for (const item of readItems().filter(isSshKey).slice(0, 20)) {
+    // (A few: a server gives up after half a dozen keys tried, yours included.)
+    for (const item of readItems().filter(isSshKey).slice(0, 4)) {
       try { keys.push({ id: item.id, name: item.name, ...privateKeyOf((await valuesOf(item.id)).private_key ?? "") }); } catch {}
     }
   } catch {

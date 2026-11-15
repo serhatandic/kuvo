@@ -39,6 +39,7 @@ export interface Running {
 
 const running = new Map<string, Running>();
 let finished: AddTry[] | null = null;
+let asks = 0;
 /** Told as any try changes (`kuvo/computers/add/events`). */
 export const tryFollowers = new Set<() => void>();
 const chains = new Map<string, Promise<void>>();
@@ -92,14 +93,15 @@ export interface Telling {
   /** A step that needed nothing, with why. */
   skip(id: string, detail: string): void;
   /** Asks you, and waits: the id of the answer you gave. Stopped while it waits, it throws. */
-  ask(question: AddQuestion): Promise<string>;
+  ask(question: Omit<AddQuestion, "at">): Promise<string>;
   /** The computer it came to (shown with Done). */
   came(computer: { key: string; name: string }, known?: boolean): void;
   rename(name: string): void;
 }
 
-/** The try under way for `destination`, if any. */
-export const underWay = (destination: string): Running | undefined => [...running.values()].find(each => each.seen.destination === destination);
+/** The try under way for `destination`, if any: the newest, never one that's being stopped (what
+ * it runs there now ends first, and whatever's asked next waits its turn behind it). */
+export const underWay = (destination: string): Running | undefined => [...running.values()].reverse().find(each => each.seen.destination === destination && !each.stop.signal.aborted);
 
 /** Starts a try: after whatever's under way for that computer has ended, `work` runs, telling how
  * it goes; it ends done, failed (`Failed`'s words, or anything else's as they are) or stopped
@@ -127,13 +129,16 @@ export function startTry(kind: AddTry["kind"], destination: string, name: string
       const now = Date.now();
       if (bytes < total && now - lastSaid < 250) return;
       lastSaid = now;
-      change({ steps: it.seen.steps.map(step => (step.state === "now" ? { ...step, sent: bytes, total } : step)) });
+      const megabytes = (count: number) => Math.max(1, Math.round(count / 1_000_000));
+      change({ steps: it.seen.steps.map(step => (step.state === "now" ? { ...step, detail: `${megabytes(bytes)} of ${megabytes(total)} MB`, sent: bytes, total } : step)) });
     },
     skip(id, detail) {
       change({ steps: steady(it.seen.steps).map(step => (step.id === id ? { id: step.id, title: step.title, state: "done" as const, detail } : step)) });
     },
     ask(question) {
       tell.check();
+      // (Each ask its own number: an answer meant for an earlier one, late, isn't taken for this.)
+      const asked = { ...question, at: ++asks };
       return new Promise<string>((resolve, reject) => {
         const gone = () => { it.answer = null; reject(new Stopped()); };
         stop.signal.addEventListener("abort", gone, { once: true });
@@ -146,7 +151,7 @@ export function startTry(kind: AddTry["kind"], destination: string, name: string
           note();
           resolve(id);
         };
-        change({ state: "asking", question });
+        change({ state: "asking", question: asked });
       });
     },
     came(computer, known) { change({ computer, ...(known ? { known: true } : {}) }); },
@@ -159,9 +164,12 @@ export function startTry(kind: AddTry["kind"], destination: string, name: string
       tell.check();
       await work(tell);
       const { question: _question, ...rest } = it.seen;
-      it.seen = { ...rest, state: "done", title: doneTitle(kind, it.seen.name), steps: steady(it.seen.steps) };
+      // (One that was here already says so: the address given is another way to it.)
+      const title = kind === "add" && it.seen.known ? `${destination} is ${it.seen.name}, already one of your computers` : doneTitle(kind, it.seen.name);
+      it.seen = { ...rest, state: "done", title, steps: steady(it.seen.steps) };
     } catch (error) {
-      if (error instanceof Stopped || stop.signal.aborted) {
+      // (Stopped: gone from the list, unless stopping it left something to say.)
+      if (error instanceof Stopped || (stop.signal.aborted && !(error instanceof Failed))) {
         running.delete(seen.id);
         return;
       }
@@ -205,10 +213,12 @@ export function stopTry(it: Running): void {
   note();
 }
 
-/** Answers what the try `id` asks now: false when it asks nothing, or not that. */
-export function answerTry(id: string, answer: string): AddTry | null {
+/** Answers what the try `id` asks now: null when it asks nothing, or not that (`at`, where the
+ * client says which ask it answers: another's number is never taken). */
+export function answerTry(id: string, answer: string, at?: number): AddTry | null {
   const it = running.get(id);
   if (!it?.answer || !it.seen.question?.answers.some(each => each.id === answer)) return null;
+  if (at !== undefined && at !== it.seen.question.at) return null;
   it.answer(answer);
   return it.seen;
 }

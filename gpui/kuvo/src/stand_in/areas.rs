@@ -189,7 +189,7 @@ pub fn adding(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Opt
         } else {
             json!({ "id": id, "kind": "add", "destination": destination, "name": destination, "state": "asking", "title": format!("Adding {destination}…"),
                 "steps": add_steps(0, Some(json!({ "id": "checking", "title": "Checking it", "state": "now", "detail": format!("Connecting to {destination}") }))),
-                "question": { "id": "hostKey", "title": format!("Is this {destination}?"),
+                "question": { "id": "hostKey", "at": areas.tried, "title": format!("Is this {destination}?"),
                     "message": format!("{} hasn’t connected to {destination} before. Check that the fingerprint is its own (on that computer: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub), then trust it.", super::NAME),
                     "facts": [{ "label": "Address", "value": destination }, { "label": "Fingerprint (ED25519)", "value": "SHA256:Vq0bYJx3mD2Wc7PpN1tKfUo9sLhGe5RaZi8XwCnEyTM", "code": true }],
                     "answers": [{ "id": "cancel", "label": "Cancel", "kind": "plain" }, { "id": "trust", "label": "Trust", "kind": "primary" }] } })
@@ -214,6 +214,9 @@ pub fn adding(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Opt
     if areas.tries[at]["state"] != json!("asking") {
         return Some(((409, json!({ "message": "It isn’t asking that now." })), false));
     }
+    if body.get("at").is_some_and(|at| *at != areas.tries[at_ix(&areas.tries, id)]["question"]["at"]) {
+        return Some(((409, json!({ "message": "It isn’t asking that now." })), false));
+    }
     if body["answer"] != json!("trust") {
         areas.tries.remove(at);
         return Some(((200, json!({ "try": { "id": id, "state": "stopping", "title": "Stopping…" } })), false));
@@ -221,10 +224,14 @@ pub fn adding(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Opt
     let tried = &mut areas.tries[at];
     tried.as_object_mut().expect("a try").remove("question");
     tried["state"] = json!("working");
-    let mut steps = add_steps(2, Some(json!({ "id": "engine", "title": "Copying the engine", "state": "now", "detail": "98 MB", "sent": 41_000_000u64, "total": 98_000_000u64 })));
+    let mut steps = add_steps(2, Some(json!({ "id": "engine", "title": "Copying the engine", "state": "now", "detail": "41 of 98 MB", "sent": 41_000_000u64, "total": 98_000_000u64 })));
     steps[0]["detail"] = tried["steps"][0]["detail"].clone();
     tried["steps"] = json!(steps);
     Some(((200, json!({ "try": tried })), false))
+}
+
+fn at_ix(tries: &[Value], id: &str) -> usize {
+    tries.iter().position(|each| each["id"] == json!(id)).unwrap_or_default()
 }
 
 /// The tries under way come to their end: one being added is one of your computers, one being set

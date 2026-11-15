@@ -30,7 +30,7 @@ import { addressProblem } from "./address";
 import { ENGINE_VERSION, RELEASE_FILES, engineFor, ownFiles, tarOf, type Kind } from "./files";
 import * as scripts from "./scripts";
 import { type HostKey, type Ran, type Way, hangUp, lastLine, readHostKey, remote, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
-import { Failed, type Running, type Telling, startTry, stopTry, underWay } from "./tries";
+import { Failed, type Running, Stopped, type Telling, startTry, stopTry, underWay } from "./tries";
 
 /** A computer this box set up over SSH, as its list keeps it (`machines.json`, as the Mac app kept
  * it): the address it was added under (its id among this Mac's machines), its other addresses, and
@@ -144,13 +144,13 @@ class Reach {
       if (tries >= 3) throw new Failed(`Couldn’t reach ${this.name}.`);
       if (trouble.kind === "unknownHost") {
         await this.askKey("hostKey", `Is this ${this.name}?`,
-          `${ownName()} hasn’t connected to ${this.name} before. Check that the fingerprint is its own (on that computer: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub), then trust it.`, "Trust", false);
+          `${ownName()} hasn’t connected to ${this.name} before. Check that the fingerprint is its own (on that computer: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub), then trust it.`, "Trust");
       } else if (trouble.kind === "changedHost") {
         if (!trouble.own) {
           throw new Failed(`${this.name}’s host key has changed since ${ownName()} last connected. If you expect that (it was reinstalled, say), remove the old key in a terminal on ${ownName()} with ssh-keygen -R ${trouble.host ? `'${trouble.host}'` : "and its address"}, then try again. If not, someone may be intercepting the connection.`, true, `${this.name}’s host key changed`);
         }
         await this.askKey("hostKeyChanged", `${this.name}’s host key changed`,
-          `It isn’t the key you trusted when you added it. If you expect that (it was reinstalled, say), trust the new one. If not, someone may be intercepting the connection: cancel.`, "Trust New Key", true);
+          `It isn’t the key you trusted when you added it. If you expect that (it was reinstalled, say), trust the new one. If not, someone may be intercepting the connection: cancel.`, "Trust New Key", trouble.line);
       } else if (trouble.kind === "refused") {
         const vault = this.way ? null : await vaultAgent();
         if (!vault) {
@@ -165,7 +165,7 @@ class Reach {
   }
 
   // Reads the host's key without signing in, shows it, and keeps it once you say so.
-  private async askKey(id: string, title: string, message: string, label: string, replacing: boolean): Promise<void> {
+  private async askKey(id: string, title: string, message: string, label: string, replacing?: number): Promise<void> {
     const read = await readHostKey(this.destination, this.tell.signal);
     this.tell.check();
     if (!read.keys.length) {
@@ -179,7 +179,11 @@ class Reach {
       facts: [{ label: "Address", value: this.destination }, { label: `Fingerprint (${shown.kind.replace(/^ssh-/, "").toUpperCase()})`, value: shown.fingerprint, code: true }],
       answers: [{ id: "cancel", label: "Cancel", kind: "plain" }, { id: "trust", label, kind: replacing ? "danger" : "primary" }],
     });
-    if (answer !== "trust") this.tell.signal.aborted || stopFrom(this.tell);
+    // (Anything but Trust stops the try: nothing is kept.)
+    if (answer !== "trust") {
+      stopFrom(this.tell);
+      throw new Stopped();
+    }
     this.tell.check();
     trustHostKeys(read.keys, replacing);
   }
@@ -222,9 +226,14 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     // The same computer, here already under another address: that address is kept as one of its own.
     const saved = savedMachines();
     if (!saved) throw new Failed(`${ownName()}’s list of machines can’t be read right now.`);
-    const same = kind === "add" && probe.id ? saved.find(each => each.identity === probe.id && each.destination !== destination) : undefined;
+    // (By its id there, and its box's own key where its card says it: a copy of another machine's
+    // disk has that machine's id, and is a computer of its own.)
+    const found = foundOf(probe.lines).find(box => !box.app);
+    const sameID = kind === "add" && probe.id ? saved.find(each => each.identity === probe.id && each.destination !== destination) : undefined;
+    const itsPeer = sameID ? peersOf(link).find(each => each.id === sameID.destination) : undefined;
+    const same = sameID && (!found?.card?.self.key || !itsPeer || found.card.self.key === itsPeer.key) ? sameID : undefined;
     if (same) {
-      const peer = peersOf(link).find(each => each.id === same.destination);
+      const peer = itsPeer;
       writePrivate(LIST_FILE, JSON.stringify(saved.map(each => (each === same ? { ...each, otherAddresses: [...new Set([...(each.otherAddresses ?? []), destination])] } : each)), null, 2));
       for (const id of ["files", "engine", "starting", "joining"]) tell.skip(id, `It’s ${peer?.name ?? same.destination}, already one of your computers`);
       tell.rename(peer?.name ?? same.destination);
@@ -243,7 +252,10 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
         facts: [{ label: "Address", value: destination }, ...(whose ? [{ label: "Set up by", value: whose }] : [])],
         answers: [{ id: "cancel", label: "Cancel", kind: "plain" }, { id: "add", label: "Add Anyway", kind: "primary" }],
       });
-      if (answer !== "add") stopFrom(tell);
+      if (answer !== "add") {
+        stopFrom(tell);
+        throw new Stopped();
+      }
       tell.check();
     }
 
@@ -281,11 +293,13 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
 
     // Stopped as it started, on a computer that had no Kuvo Code before: taken off again, so
     // nothing runs there, or starts after a restart, that no computer of yours knows of.
-    if (tell.signal.aborted && own && !foundOf(probe.lines).some(box => !box.app)) {
-      await reach.run(scripts.uninstall(ENGINE_VERSION, own, true), { most: 600_000, anyway: true }).catch(() => {});
+    if (tell.signal.aborted && own && !found) {
+      const undone = await reach.run(scripts.uninstall(ENGINE_VERSION, own, true), { most: 600_000, anyway: true }).catch(() => null);
+      if (undone?.status !== 0) throw new Failed(`Kuvo Code had started on ${name} when this was stopped, and couldn’t be stopped there again. Add ${name} again, then uninstall it from its page.`, true, `${name} is still running Kuvo Code`);
     }
     tell.step("joining");
-    const computer = await join(reach, destination, name, probe.id);
+    const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
+    const computer = await join(reach, destination, name, identity);
     tell.came(computer);
   } finally {
     await reach.close();
@@ -343,10 +357,19 @@ function begin(kind: AddTry["kind"], destination: string, name: string, steps: r
   return made;
 }
 
+/** What `begin…` answers where something else is under way for that computer, in words. */
+export interface Busy {
+  busy: string;
+}
+
+// Why a computer can't be set up now: it's being uninstalled.
+const uninstalling = (now: Running | undefined): Busy | null => (now?.seen.kind === "uninstall" ? { busy: `Kuvo Code is being uninstalled from ${now.seen.name} now. Add it again once that’s done.` } : null);
+
 /** Begins adding the computer at `destination` (checked first: `addressProblem`, `canAdd`). One
- * being added there already is answered as it is. */
-export function beginAdd(destination: string): Running {
-  return underWay(destination) ?? begin("add", destination, destination, SETUP_STEPS, tell => setUp(tell, destination, destination, "add"));
+ * being added or set up there already is answered as it is; one being stopped is waited for. */
+export function beginAdd(destination: string): Running | Busy {
+  const now = underWay(destination);
+  return uninstalling(now) ?? now ?? begin("add", destination, destination, SETUP_STEPS, tell => setUp(tell, destination, destination, "add"));
 }
 
 /** The address this box set the computer `key` up at, and its name: null for one it didn't. */
@@ -358,14 +381,15 @@ export function sshAddressOf(key: string): { destination: string; name: string }
 
 /** Begins setting the computer `key` up again, at the address it was added under: the same steps,
  * which bring an older Kuvo Code there up to this one's. */
-export function beginSetup(key: string): Running | null {
+export function beginSetup(key: string): Running | Busy | null {
   const at = sshAddressOf(key);
   if (!at) return null;
-  return underWay(at.destination) ?? begin("setup", at.destination, at.name, AGAIN_STEPS, tell => setUp(tell, at.destination, at.name, "setup"));
+  const now = underWay(at.destination);
+  return uninstalling(now) ?? now ?? begin("setup", at.destination, at.name, AGAIN_STEPS, tell => setUp(tell, at.destination, at.name, "setup"));
 }
 
-/** Begins uninstalling Kuvo Code from the computer `key`: what's under way there (it's being set
- * up) is stopped first and waited for, so nothing starts it again behind the removal; then it lets
+/** Begins uninstalling Kuvo Code from the computer `key` (one being uninstalled already is
+ * answered as it is): what's under way there (it's being set up) is stopped first and waited for, so nothing starts it again behind the removal; then it lets
  * this computer go, stops and removes what starts it, and this box takes it off its list. */
 export function beginUninstall(key: string): Running | null {
   const at = sshAddressOf(key);
@@ -397,7 +421,8 @@ export function beginUninstall(key: string): Running | null {
       }
       tell.step("forgetting");
       const removed = removeHere(key);
-      if (removed.status !== 200) throw new Failed(isObject(removed.value) && typeof removed.value.message === "string" ? removed.value.message : `${ownName()} couldn’t take ${at.name} off its list.`);
+      // (Gone from the list already, as when it was asked twice: done all the same.)
+      if (removed.status !== 200 && removed.status !== 404) throw new Failed(isObject(removed.value) && typeof removed.value.message === "string" ? removed.value.message : `${ownName()} couldn’t take ${at.name} off its list.`);
     } finally {
       await reach.close();
     }

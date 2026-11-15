@@ -109,7 +109,7 @@ fn adding_a_machine_asks_about_its_key_then_shows_each_step_until_its_one_of_you
     assert_eq!(question.facts[1].value, "SHA256:Vq0bYJx3mD2Wc7PpN1tKfUo9sLhGe5RaZi8XwCnEyTM");
     assert!(shown(cx, "add-answer-cancel") && shown(cx, "add-answer-trust"));
     click(cx, "add-answer-trust");
-    assert_eq!(stand_in.seen_at("POST", &format!("kuvo/computers/add/{}/answer", tried.id)).last().and_then(|seen| seen.body.clone()), Some(serde_json::json!({ "answer": "trust" })));
+    assert_eq!(stand_in.seen_at("POST", &format!("kuvo/computers/add/{}/answer", tried.id)).last().and_then(|seen| seen.body.clone()), Some(serde_json::json!({ "answer": "trust", "at": question.at })));
     // Copying: each step as the box says it stands, the one under way with how far it's got.
     let tried = page.read_with(cx, |page, _| page.tries_drawn()).pop().expect("the try");
     assert_eq!(tried.steps.iter().map(|step| step.state.as_str()).collect::<Vec<_>>(), ["done", "done", "now", "waiting", "waiting"]);
@@ -131,6 +131,12 @@ fn adding_a_machine_asks_about_its_key_then_shows_each_step_until_its_one_of_you
     click(cx, "computers-confirm-go");
     assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_added_mac-mini/uninstall").len(), 1);
     assert!(shown(cx, "computer-missing"));
+    // What became of it is said with your computers, where its page no longer is.
+    click(cx, "computers-all");
+    let gone = page.read_with(cx, |page, _| page.tries_drawn()).pop().expect("the uninstall");
+    assert_eq!((gone.kind.as_str(), gone.title.as_str()), ("uninstall", "mac-mini no longer has Kuvo Code running"));
+    click(cx, "add-try-dismiss");
+    assert!(page.read_with(cx, |page, _| page.tries_drawn()).is_empty());
 }
 
 /// What can't be added is said in the box's words, where it's asked: an address that isn't one

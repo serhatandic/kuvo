@@ -180,6 +180,8 @@ const until = async (id, wanted) => {
       for (const line of lines) {
         const found = JSON.parse(line).tries.find(each => each.id === id) ?? null;
         if (wanted(found)) return found;
+        // (Never waited on for good: one that failed, or asks what the test didn't mean to answer.)
+        if (found?.state === "failed" || found?.state === "asking") throw new Error(`The try stands at ${found.state}: ${JSON.stringify(found.failure ?? found.question)}`);
       }
     }
   } finally {
@@ -187,7 +189,9 @@ const until = async (id, wanted) => {
   }
   throw new Error("The box stopped telling of its tries.");
 };
-const over = id => until(id, found => !found || found.state === "done" || found.state === "failed");
+// (Until it's over; one that asks something instead is handed back as it is, for the test to
+// fail on rather than wait for an answer no one gives.)
+const over = id => until(id, found => !found || found.state === "done" || found.state === "failed" || found.state === "asking");
 const steps = found => found.steps.map(step => `${step.id}:${step.state}`);
 const sshLog = () => (fs.existsSync(path.join(fake, "log")) ? fs.readFileSync(path.join(fake, "log"), "utf8").trim().split("\n") : []);
 const pidsThere = () => {
@@ -229,13 +233,15 @@ test("adding a computer: the box shows a host key it doesn't know, and on Trust 
   const asking = await until(id, found => found?.state === "asking");
   assert.equal(asking.question.id, "hostKey");
   assert.equal(asking.question.title, "Is this studio?");
+  assert.ok(Number.isInteger(asking.question.at));
+  assert.equal((await ask("POST", `kuvo/computers/add/${id}/answer`, { answer: "trust", at: asking.question.at + 1 })).status, 409, "an answer meant for another ask isn't taken");
   assert.deepEqual(asking.question.facts, [{ label: "Address", value: "studio" }, { label: "Fingerprint (ED25519)", value: link.fingerprintOf(keyOne), code: true }]);
   assert.deepEqual(asking.question.answers.map(each => each.id), ["cancel", "trust"]);
   assert.equal(fs.existsSync(path.join(remote, "bin", "kuvo-link.js")), false, "nothing put there before you answer");
   assert.equal(fs.existsSync(link.KNOWN_HOSTS), false, "and its key not kept yet");
   assert.equal((await ask("POST", `kuvo/computers/add/${id}/answer`, { answer: "sure" })).status, 409, "only one of its answers");
 
-  assert.equal((await ask("POST", `kuvo/computers/add/${id}/answer`, { answer: "trust" })).status, 200);
+  assert.equal((await ask("POST", `kuvo/computers/add/${id}/answer`, { answer: "trust", at: asking.question.at })).status, 200);
   const done = await over(id);
   assert.equal(done.state, "done", JSON.stringify(done.failure));
   assert.deepEqual(steps(done), ["checking:done", "files:done", "engine:done", "starting:done", "joining:done"]);
@@ -300,6 +306,7 @@ test("the same computer under another address is the one already here, not a sec
   const done = await over(begun.body.try.id);
   assert.equal(done.state, "done", JSON.stringify(done.failure));
   assert.equal(done.known, true);
+  assert.equal(done.title, "studio.lan is studio, already one of your computers");
   assert.equal(done.computer.name, "studio");
   assert.deepEqual(read(path.join(home, "machines.json")).map(each => [each.destination, each.otherAddresses]), [["studio", ["studio.lan"]]]);
   assert.equal(link.macPeersBody(link.readLink()).boxes.filter(each => each.kind === "machine").length, 1);
@@ -356,7 +363,15 @@ test("a host key that changed from the one you trusted here is asked about again
     await ask("POST", `kuvo/computers/add/${begun.body.try.id}/answer`, { answer: "cancel" });
     assert.equal(await over(begun.body.try.id), null, "stopped, and gone from the list");
     assert.equal(fs.readFileSync(link.KNOWN_HOSTS, "utf8"), before);
+    // Trust New Key: the new key takes the old one's line (its other address's stays), and it goes on.
+    const again = await ask("POST", `kuvo/computers/${peer.key}/setup`);
+    await until(again.body.try.id, found => found?.state === "asking");
+    await ask("POST", `kuvo/computers/add/${again.body.try.id}/answer`, { answer: "trust" });
+    const done = await over(again.body.try.id);
+    assert.equal(done.state, "done", JSON.stringify(done.failure));
+    assert.deepEqual(fs.readFileSync(link.KNOWN_HOSTS, "utf8").trim().split("\n").filter(line => line.startsWith("studio")).sort(), [`studio ${hostKey(keyTwo)}`, `studio.lan ${hostKey(keyOne)}`]);
   } finally {
+    fs.writeFileSync(link.KNOWN_HOSTS, before);
     fs.writeFileSync(path.join(fake, "hostkey"), hostKey(keyOne));
   }
 });
@@ -388,6 +403,12 @@ test("uninstalling while it's being set up waits for the start under way, then n
   assert.equal(tries.find(each => each.id === setup.body.try.id).state, "stopping");
   assert.equal(tries.find(each => each.id === setup.body.try.id).title, "Stopping…");
   assert.deepEqual(steps(tries.find(each => each.id === uninstall.body.try.id)), ["checking:waiting", "removing:waiting", "forgetting:waiting"], "not begun while the start is under way");
+  // Asked twice (a second click, another client): the one uninstall, and setting it up waits for it.
+  assert.equal((await ask("POST", `kuvo/computers/${peer.key}/uninstall`)).body.try.id, uninstall.body.try.id);
+  const meanwhile = await ask("POST", `kuvo/computers/${peer.key}/setup`);
+  assert.deepEqual([meanwhile.status, meanwhile.body.message], [409, "Kuvo Code is being uninstalled from studio now. Add it again once that’s done."]);
+  const offered = (await ask("GET", "kuvo/computers")).body.computers.find(each => each.key === peer.key).actions;
+  assert.equal(offered.find(action => action.id === "uninstall").why, "Kuvo Code is being uninstalled from it now.");
   fs.rmSync(path.join(fake, "hold"));
 
   const done = await over(uninstall.body.try.id);

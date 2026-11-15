@@ -321,9 +321,10 @@ export const ADD_STEP = object({ id: string, title: string, state: words("waitin
 export type AddStep = Infer<typeof ADD_STEP>;
 /** What a try asks you before it goes on: the question, what it comes to, facts to look at (a
  * host key's fingerprint, `code`: drawn in the code font), and its answers, each a button
- * (`primary`, `plain` or `danger`). All the box's words. */
+ * (`primary`, `plain` or `danger`). All the box's words. `at`: this ask's number, which an answer
+ * names so one meant for an earlier ask isn't taken for it. */
 export const ADD_QUESTION = object({
-  id: string, title: string, message: string,
+  id: string, title: string, message: string, at: number,
   facts: list(object({ label: string, value: string, "code?": bool })),
   answers: list(object({ id: string, label: string, kind: words("primary", "plain", "danger") })),
 });

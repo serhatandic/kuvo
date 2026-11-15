@@ -1728,28 +1728,33 @@ machines; a client that wants every computer's facts asks the box that has it as
   - `POST kuvo/computers/add {"destination"}` → `202 {try}`. A destination is what `ssh` takes: a
     Host's name, a host's name or `user@host`; one with `:`, `/`, white space or a leading `-`
     (a port, a path, an IPv6 address, an option) is `400 {message}` and never reaches `ssh`. One
-    being added at that address already is answered as it is. `409` through `kuvo-link.js box
-    route`, which can't stay to do it.
+    being added or set up at that address already is answered as it is; one being stopped is
+    waited for, and the new try runs after it; `409 {message}` while that computer is being
+    uninstalled, and through `kuvo-link.js box route`, which can't stay to do it.
   - **A try**: `{id, kind, destination, name, state, title, steps, question?, failure?, computer?,
     known?}`. `kind` is `add`, `setup` or `uninstall`; `state` is `working`, `asking`, `stopping`,
     `failed` or `done`; `steps` are `[{id, title, state, detail?, sent?, total?}]`, each
-    `waiting`, `now`, `done` or `failed`, with `sent` of `total` bytes while it copies. Adding
+    `waiting`, `now`, `done` or `failed`, with `sent` of `total` bytes while it copies (and
+    `detail` saying the same in words, "41 of 98 MB"). Adding
     and setting up again have `checking`, `files`, `engine`, `starting`, `joining`; uninstalling
     `checking`, `removing`, `forgetting`. `failure` is `{title, message, again}` (`again`: trying
     again could go otherwise); `computer` `{key, name}` once it's one of yours (`known`: it was
-    here already, at another address, which is kept as one of its addresses). Every word is the
+    here already, at another address, which is kept as one of its addresses: told by its
+    `machine-id` and, where its card says it, its box's key, so a copy of another machine's disk is
+    a computer of its own). Every word is the
     box's. Kept in `run/adding.json`: a box that started again says a try was cut short, and
     never takes it up again by itself.
-  - **What it asks** (`state: "asking"`, `question: {id, title, message, facts: [{label, value,
+  - **What it asks** (`state: "asking"`, `question: {id, title, message, at, facts: [{label, value,
     code?}], answers: [{id, label, kind}]}`, `kind` `primary`, `plain` or `danger`), answered with
-    `POST kuvo/computers/add/<id>/answer {"answer": <an answer's id>}` → `200 {try}` (`409` when
-    it asks nothing now, or not that):
+    `POST kuvo/computers/add/<id>/answer {"answer": <an answer's id>, "at"}` → `200 {try}` (`409`
+    when it asks nothing now, or not that). `at` is the ask's number, which a client sends back:
+    an answer that names another ask (a late one, for a fingerprint shown before) isn't taken:
     - `hostKey`: the host's key isn't known. The box reads it as `ssh` reaches the host (your
       config's port and jump host), offering no key and no agent to a host not trusted yet, and
       shows its fingerprint (`SHA256:…`). `trust` keeps it in the box's own
       `~/.kuvo-code/ssh/known_hosts`; your `~/.ssh/known_hosts` is read, never written.
     - `hostKeyChanged`: the key differs from one the box kept. `trust` puts the new one in its
-      place. A key that differs from one in your own known hosts is never asked about: the try
+      place: the old key's line goes, with every other key kept under that host's name. A key that differs from one in your own known hosts is never asked about: the try
       fails, saying to remove it with `ssh-keygen -R`.
     - `inAnotherSetup`: a box found there is another setup's, or an older Kuvo Code's ("Your
       setup", Already in a setup?, judged as `kuvo/setup/judge` does). `add` goes on, and it's
@@ -1758,17 +1763,18 @@ machines; a client that wants every computer's facts asks the box that has it as
   - `DELETE kuvo/computers/add/<id>` stops one under way (at its next step: what it runs there
     now ends first, and its start is never cut short; it says `stopping` meanwhile, then leaves
     the list), or forgets one that's over: `200 {}`, `404`. One stopped as it started, on a
-    computer that had no Kuvo Code, is taken off there again.
+    computer that had no Kuvo Code, is taken off there again; where that couldn't be done the
+    try fails, saying it still runs there.
   - **What it does**, in order: connects with the keys and agent of the box's computer (never a
-    password; refused, it tries once through an agent of its own that offers the SSH keys in the
-    vault, "Vault"); probes the computer (its system and kind, what the engine needs, its
-    `machine-id`, what Kuvo Code it has); puts its own release's files there, each checked by its
+    password; refused, it tries once through an agent of its own that offers the first few SSH keys
+    in the vault, "Vault"); probes the computer, changing nothing (its system and kind, what the engine needs,
+    its `machine-id` where it has one, what Kuvo Code it has); puts its own release's files there, each checked by its
     SHA-256 before it's put in place, unless they're there already or the computer has a newer
     Kuvo Code, which is left as it is; the engine, its own binary where the two are the same
     kind, else the pinned package fetched and checked on the box's computer (the computer added
     downloads no code); then, in one script, the computer's settings made its own (nothing of the
     box's is copied), how its keeper starts it (`run/launch.env`: the session's PATH, shell and
-    language and its name; no password or key), the `@reboot` line and a Mac's launch agent, and
+    language and its name; no password or key), its `machine-id` made once, the `@reboot` line and a Mac's launch agent, and
     `kuvo-start start`: its own keeper starts its engine, with a port and passwords that never
     leave it; then `kuvo-link.js setup` there with this box's keys and documents, its answer
     written as the box's own record of it (its peers document, `machines.json`, and

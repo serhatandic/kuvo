@@ -346,8 +346,8 @@ impl ComputersView {
         self.ask_adding(Box::new(move |client| client.add_computer(&destination).map(|_| ())), cx);
     }
 
-    fn answer(&mut self, id: String, answer: String, cx: &mut Context<Self>) {
-        self.ask_adding(Box::new(move |client| client.answer_add(&id, &answer).map(|_| ())), cx);
+    fn answer(&mut self, id: String, at: u64, answer: String, cx: &mut Context<Self>) {
+        self.ask_adding(Box::new(move |client| client.answer_add(&id, at, &answer).map(|_| ())), cx);
     }
 
     /// Stops a try under way, or forgets one that's over.
@@ -362,7 +362,9 @@ impl ComputersView {
             Box::new(move |client| match (kind.as_str(), key) {
                 ("setup", Some(key)) => client.setup_computer(&key).map(|_| ()),
                 ("uninstall", Some(key)) => client.uninstall_computer(&key).map(|_| ()),
-                _ => client.add_computer(&destination).map(|_| ()),
+                ("add", _) => client.add_computer(&destination).map(|_| ()),
+                // (A computer that's gone from the list since: nothing to ask again.)
+                _ => Ok(()),
             }),
             cx,
         );
@@ -539,6 +541,12 @@ impl ComputersView {
         let (apart, yours): (Vec<&Computer>, Vec<&Computer>) = computers.iter().partition(|computer| computer.shared || computer.apart);
         // (The computer this window shows is known without the list.)
         let yours: Vec<Computer> = if yours.iter().any(|computer| computer.here) { yours.into_iter().map(named).collect() } else { std::iter::once(self.this()).chain(yours.into_iter().map(named)).collect() };
+        // What this box did with a machine that's no longer listed (uninstalled, or it failed and
+        // the machine is gone since), where its own page can't say it.
+        if let Reading::Ready(adding) = &self.adding {
+            let gone = adding.tries.iter().filter(|tried| tried.kind != "add" && !tried.under_way() && !computers.iter().any(|computer| computer.id.as_deref() == Some(tried.destination.as_str())));
+            items.extend(gone.map(|tried| Item::Try(Box::new(tried.clone()))));
+        }
         rows(&mut items, yours);
         if yours_alone(computers) {
             items.push(Item::Note { key: "computers-alone".into(), words: "Add a machine (a Mac or Linux server you reach with SSH) to run sessions and bots there too.".into(), busy: false });
@@ -940,12 +948,8 @@ impl ComputersView {
                 "failed" => Icon::new(IconName::Warning).color(c.warning).into_any_element(),
                 _ => div().size(px(6.)).rounded_full().bg(c.border).into_any_element(),
             };
-            // How far a copy has got, beside what the step says.
-            let detail = match (step.sent, step.total, &step.detail) {
-                (Some(sent), Some(total), _) if total > 0 => Some(format!("{} of {} MB", megabytes(sent), megabytes(total))),
-                (_, _, Some(detail)) => Some(detail.clone()),
-                _ => None,
-            };
+            // What the step says beside it (how far a copy has got, in the box's words).
+            let detail = step.detail.clone();
             let waiting = step.state == "waiting";
             div()
                 .debug_selector(move || selector)
@@ -961,7 +965,7 @@ impl ComputersView {
         // What it asks: the box's question, its facts (a fingerprint in the code font), its answers.
         let question = tried.question.as_ref().map(|question| {
             let answers = question.answers.iter().map(|answer| {
-                let (try_id, answer_id) = (tried.id.clone(), answer.id.clone());
+                let (try_id, at, answer_id) = (tried.id.clone(), question.at, answer.id.clone());
                 let selector = format!("add-answer-{}", answer.id);
                 let button = Button::new(SharedString::from(format!("add-answer-{}-{}", tried.id, answer.id)), answer.label.clone()).disabled(busy);
                 let button = match answer.kind.as_str() {
@@ -969,7 +973,7 @@ impl ComputersView {
                     "danger" => button.destructive(),
                     _ => button,
                 };
-                div().debug_selector(move || selector).child(button.on_click(cx.listener(move |this, _, _, cx| this.answer(try_id.clone(), answer_id.clone(), cx))))
+                div().debug_selector(move || selector).child(button.on_click(cx.listener(move |this, _, _, cx| this.answer(try_id.clone(), at, answer_id.clone(), cx))))
             });
             div()
                 .debug_selector(|| "add-question".into())
@@ -1025,7 +1029,6 @@ impl ComputersView {
                 .items_center()
                 .justify_end()
                 .gap(space::S3)
-                .children(tried.known.then(|| div().flex_1().min_w_0().text_ui(TypeSize::Small).text_color(c.text_muted).child("It was one of your computers already: this address is kept as another way to reach it.")))
                 .child(div().debug_selector(|| "add-try-dismiss".into()).child(Button::new(SharedString::from(format!("add-try-done-{}", tried.id)), "Dismiss").size(ButtonSize::Small).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.end(dismissed.clone(), cx)))))
                 .children(show.map(|computer| {
                     let key = format!("computer:{}", computer.key);
@@ -1077,11 +1080,6 @@ impl ComputersView {
             )
             .into_any_element()
     }
-}
-
-/// Bytes as whole megabytes (one at least: a copy that began has sent something).
-fn megabytes(bytes: u64) -> u64 {
-    (bytes / 1_000_000).max(1)
 }
 
 /// Rows in one card.

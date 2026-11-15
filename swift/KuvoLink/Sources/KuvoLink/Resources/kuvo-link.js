@@ -38572,15 +38572,7 @@ elif ldd --version 2>&1 | grep -qi musl; then echo musl; else echo glibc; fi
 echo "kuvo version $(cat "$K/bin/box-version" 2>/dev/null | tr -cd '0-9a-z.-')"
 [ -d "$K/run/.updating" ] && echo "kuvo updating"
 [ -x "$K/engine/${version}/opencode" ] && "$K/engine/${version}/opencode" --version >/dev/null 2>&1 && echo "kuvo engine"
-F="$K/machine-id"
-if [ ! -s "$F" ]; then
-  mkdir -p "$K" && chmod 700 "$K" || exit 1
-  T="$F.$$"
-  (umask 077; od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >"$T") || exit 1
-  ln "$T" "$F" 2>/dev/null || [ -s "$F" ] || mv -f "$T" "$F"
-  rm -f "$T"
-fi
-echo "kuvo id $(cat "$F")"
+[ -s "$K/machine-id" ] && echo "kuvo id $(cat "$K/machine-id")"
 ${FOUND}
 true`;
 var filesCheck = (files) => `${K2}
@@ -38669,9 +38661,18 @@ if [ ! -f "$R/launch.env" ]; then
 fi
 [ -s "$R/launch.notes" ] || (umask 077; printf '%s' ${quote(notes)} >"$R/launch.notes")
 ${START_AT_BOOT}
+F="$K/machine-id"
+if [ ! -s "$F" ]; then
+  T="$F.$$"
+  (umask 077; od -An -N16 -tx1 /dev/urandom | tr -d ' 
+' >"$T") || exit 1
+  ln "$T" "$F" 2>/dev/null || [ -s "$F" ] || mv -f "$T" "$F"
+  rm -f "$T"
+fi
 rm -f "$R/off"
 if sh "$K/bin/kuvo-start" start >/dev/null 2>&1; then
   [ -f "$R/off" ] && exit 7
+  echo "id $(cat "$F")"
   echo started
 else
   [ -f "$R/off" ] && exit 7
@@ -39549,6 +39550,10 @@ async function readHostKey(destination, signal) {
       "-o",
       "UpdateHostKeys=no",
       "-o",
+      "HashKnownHosts=no",
+      "-o",
+      "CheckHostIP=no",
+      "-o",
       "PubkeyAuthentication=no",
       "-o",
       "PasswordAuthentication=no",
@@ -39576,23 +39581,15 @@ async function readHostKey(destination, signal) {
     } catch {}
   }
 }
-function trustHostKeys(keys, replacing = false) {
+function trustHostKeys(keys, replacing) {
   fs129.mkdirSync(path136.dirname(KNOWN_HOSTS), { recursive: true, mode: 448 });
   let had = "";
   try {
     had = fs129.readFileSync(KNOWN_HOSTS, "utf8");
   } catch {}
-  const hosts = new Set(keys.map((key) => key.line.split(" ")[0]));
-  const kinds = new Set(keys.map((key) => key.kind));
+  const hosts = new Set(replacing ? keys.map((key) => key.line.split(" ")[0]) : []);
   const kept = had.split(`
-`).filter((line) => {
-    if (!line.trim())
-      return false;
-    if (keys.some((key) => key.line === line.trim()))
-      return false;
-    const [host, kind] = line.trim().split(/\s+/);
-    return !(replacing && hosts.has(host) && kinds.has(kind));
-  });
+`).filter((line, index) => line.trim() && index + 1 !== replacing && !hosts.has(line.trim().split(/\s+/)[0]) && !keys.some((key) => key.line === line.trim()));
   const text = [...kept, ...keys.map((key) => key.line)].join(`
 `) + `
 `;
@@ -39612,8 +39609,8 @@ function troubleOf(ran) {
   const said = ran.stderr;
   if (said.includes("REMOTE HOST IDENTIFICATION HAS CHANGED")) {
     const host = /^Host key for ([A-Za-z0-9._:\-[\]]+) has changed and you have requested strict checking\.\s*$/m.exec(said)?.[1] ?? null;
-    const offending = /^Offending (?:\S+ )?key in (.+):\d+\s*$/m.exec(said)?.[1] ?? "";
-    return { kind: "changedHost", own: path136.resolve(offending) === path136.resolve(KNOWN_HOSTS), host };
+    const offending = /^Offending (?:\S+ )?key in (.+):(\d+)\s*$/m.exec(said);
+    return { kind: "changedHost", own: Boolean(offending) && path136.resolve(offending[1]) === path136.resolve(KNOWN_HOSTS), line: Number(offending?.[2] ?? 0), host };
   }
   if (said.includes("Host key verification failed"))
     return { kind: "unknownHost" };
@@ -39629,7 +39626,7 @@ async function vaultAgent() {
   try {
     if (isLocked())
       return null;
-    for (const item of readItems().filter(isSshKey).slice(0, 20)) {
+    for (const item of readItems().filter(isSshKey).slice(0, 4)) {
       try {
         keys.push({ id: item.id, name: item.name, ...privateKeyOf((await valuesOf(item.id)).private_key ?? "") });
       } catch {}
@@ -39673,6 +39670,7 @@ class Failed extends Error {
 }
 var running4 = new Map;
 var finished2 = null;
+var asks = 0;
 var tryFollowers = new Set;
 var chains = new Map;
 var isOver2 = (seen) => seen.state === "failed" || seen.state === "done";
@@ -39715,7 +39713,7 @@ var NAMES2 = { add: ["Adding", "is one of your computers", "Couldn’t add"], se
 var workingTitle = (kind, name) => `${NAMES2[kind][0]} ${name}…`;
 var doneTitle = (kind, name) => `${name} ${NAMES2[kind][1]}`;
 var failedTitle = (kind, name) => `${NAMES2[kind][2]} ${name}`;
-var underWay2 = (destination) => [...running4.values()].find((each) => each.seen.destination === destination);
+var underWay2 = (destination) => [...running4.values()].reverse().find((each) => each.seen.destination === destination && !each.stop.signal.aborted);
 function startTry(kind, destination, name, steps, work) {
   const seen = { id: newID("add_"), kind, destination, name, state: "working", title: workingTitle(kind, name), steps: steps.map(([id, title]) => ({ id, title, state: "waiting" })) };
   const stop = new AbortController;
@@ -39741,13 +39739,15 @@ function startTry(kind, destination, name, steps, work) {
       if (bytes < total && now - lastSaid < 250)
         return;
       lastSaid = now;
-      change({ steps: it.seen.steps.map((step) => step.state === "now" ? { ...step, sent: bytes, total } : step) });
+      const megabytes = (count) => Math.max(1, Math.round(count / 1e6));
+      change({ steps: it.seen.steps.map((step) => step.state === "now" ? { ...step, detail: `${megabytes(bytes)} of ${megabytes(total)} MB`, sent: bytes, total } : step) });
     },
     skip(id, detail) {
       change({ steps: steady(it.seen.steps).map((step) => step.id === id ? { id: step.id, title: step.title, state: "done", detail } : step) });
     },
     ask(question) {
       tell.check();
+      const asked = { ...question, at: ++asks };
       return new Promise((resolve, reject) => {
         const gone = () => {
           it.answer = null;
@@ -39764,7 +39764,7 @@ function startTry(kind, destination, name, steps, work) {
           note3();
           resolve(id);
         };
-        change({ state: "asking", question });
+        change({ state: "asking", question: asked });
       });
     },
     came(computer, known) {
@@ -39781,9 +39781,10 @@ function startTry(kind, destination, name, steps, work) {
       tell.check();
       await work(tell);
       const { question: _question, ...rest } = it.seen;
-      it.seen = { ...rest, state: "done", title: doneTitle(kind, it.seen.name), steps: steady(it.seen.steps) };
+      const title = kind === "add" && it.seen.known ? `${destination} is ${it.seen.name}, already one of your computers` : doneTitle(kind, it.seen.name);
+      it.seen = { ...rest, state: "done", title, steps: steady(it.seen.steps) };
     } catch (error) {
-      if (error instanceof Stopped || stop.signal.aborted) {
+      if (error instanceof Stopped || stop.signal.aborted && !(error instanceof Failed)) {
         running4.delete(seen.id);
         return;
       }
@@ -39829,9 +39830,11 @@ function stopTry(it) {
   it.stop.abort();
   note3();
 }
-function answerTry(id, answer) {
+function answerTry(id, answer, at) {
   const it = running4.get(id);
   if (!it?.answer || !it.seen.question?.answers.some((each) => each.id === answer))
+    return null;
+  if (at !== undefined && at !== it.seen.question.at)
     return null;
   it.answer(answer);
   return it.seen;
@@ -39948,12 +39951,12 @@ class Reach {
       if (tries >= 3)
         throw new Failed(`Couldn’t reach ${this.name}.`);
       if (trouble.kind === "unknownHost") {
-        await this.askKey("hostKey", `Is this ${this.name}?`, `${ownName()} hasn’t connected to ${this.name} before. Check that the fingerprint is its own (on that computer: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub), then trust it.`, "Trust", false);
+        await this.askKey("hostKey", `Is this ${this.name}?`, `${ownName()} hasn’t connected to ${this.name} before. Check that the fingerprint is its own (on that computer: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub), then trust it.`, "Trust");
       } else if (trouble.kind === "changedHost") {
         if (!trouble.own) {
           throw new Failed(`${this.name}’s host key has changed since ${ownName()} last connected. If you expect that (it was reinstalled, say), remove the old key in a terminal on ${ownName()} with ssh-keygen -R ${trouble.host ? `'${trouble.host}'` : "and its address"}, then try again. If not, someone may be intercepting the connection.`, true, `${this.name}’s host key changed`);
         }
-        await this.askKey("hostKeyChanged", `${this.name}’s host key changed`, `It isn’t the key you trusted when you added it. If you expect that (it was reinstalled, say), trust the new one. If not, someone may be intercepting the connection: cancel.`, "Trust New Key", true);
+        await this.askKey("hostKeyChanged", `${this.name}’s host key changed`, `It isn’t the key you trusted when you added it. If you expect that (it was reinstalled, say), trust the new one. If not, someone may be intercepting the connection: cancel.`, "Trust New Key", trouble.line);
       } else if (trouble.kind === "refused") {
         const vault = this.way ? null : await vaultAgent();
         if (!vault) {
@@ -39981,8 +39984,10 @@ class Reach {
       facts: [{ label: "Address", value: this.destination }, { label: `Fingerprint (${shown.kind.replace(/^ssh-/, "").toUpperCase()})`, value: shown.fingerprint, code: true }],
       answers: [{ id: "cancel", label: "Cancel", kind: "plain" }, { id: "trust", label, kind: replacing ? "danger" : "primary" }]
     });
-    if (answer !== "trust")
-      this.tell.signal.aborted || stopFrom(this.tell);
+    if (answer !== "trust") {
+      stopFrom(this.tell);
+      throw new Stopped;
+    }
     this.tell.check();
     trustHostKeys(read.keys, replacing);
   }
@@ -40021,9 +40026,12 @@ async function setUp2(tell, destination, name, kind) {
     const saved = savedMachines2();
     if (!saved)
       throw new Failed(`${ownName()}’s list of machines can’t be read right now.`);
-    const same = kind === "add" && probe.id ? saved.find((each) => each.identity === probe.id && each.destination !== destination) : undefined;
+    const found = foundOf(probe.lines).find((box) => !box.app);
+    const sameID = kind === "add" && probe.id ? saved.find((each) => each.identity === probe.id && each.destination !== destination) : undefined;
+    const itsPeer = sameID ? peersOf(link).find((each) => each.id === sameID.destination) : undefined;
+    const same = sameID && (!found?.card?.self.key || !itsPeer || found.card.self.key === itsPeer.key) ? sameID : undefined;
     if (same) {
-      const peer = peersOf(link).find((each) => each.id === same.destination);
+      const peer = itsPeer;
       writePrivate(LIST_FILE, JSON.stringify(saved.map((each) => each === same ? { ...each, otherAddresses: [...new Set([...each.otherAddresses ?? [], destination])] } : each), null, 2));
       for (const id of ["files", "engine", "starting", "joining"])
         tell.skip(id, `It’s ${peer?.name ?? same.destination}, already one of your computers`);
@@ -40042,8 +40050,10 @@ async function setUp2(tell, destination, name, kind) {
         facts: [{ label: "Address", value: destination }, ...whose ? [{ label: "Set up by", value: whose }] : []],
         answers: [{ id: "cancel", label: "Cancel", kind: "plain" }, { id: "add", label: "Add Anyway", kind: "primary" }]
       });
-      if (answer !== "add")
+      if (answer !== "add") {
         stopFrom(tell);
+        throw new Stopped;
+      }
       tell.check();
     }
     const newer = newerVersion(probe.version, mine);
@@ -40083,11 +40093,14 @@ async function setUp2(tell, destination, name, kind) {
       throw new Failed(`${name}’s settings couldn’t be made ready. ${lastLine(started.stderr)}`.trim());
     if (started.status !== 0)
       throw new Failed(`Kuvo Code didn’t start on ${name}. ${lastLine(started.stderr)}`.trim(), true, `Kuvo Code didn’t start on ${name}`);
-    if (tell.signal.aborted && own && !foundOf(probe.lines).some((box) => !box.app)) {
-      await reach.run(uninstall2(ENGINE_VERSION, own, true), { most: 600000, anyway: true }).catch(() => {});
+    if (tell.signal.aborted && own && !found) {
+      const undone = await reach.run(uninstall2(ENGINE_VERSION, own, true), { most: 600000, anyway: true }).catch(() => null);
+      if (undone?.status !== 0)
+        throw new Failed(`Kuvo Code had started on ${name} when this was stopped, and couldn’t be stopped there again. Add ${name} again, then uninstall it from its page.`, true, `${name} is still running Kuvo Code`);
     }
     tell.step("joining");
-    const computer = await join3(reach, destination, name, probe.id);
+    const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
+    const computer = await join3(reach, destination, name, identity);
     tell.came(computer);
   } finally {
     await reach.close();
@@ -40146,8 +40159,10 @@ function begin(kind, destination, name, steps, work) {
   it = made;
   return made;
 }
+var uninstalling = (now) => now?.seen.kind === "uninstall" ? { busy: `Kuvo Code is being uninstalled from ${now.seen.name} now. Add it again once that’s done.` } : null;
 function beginAdd(destination) {
-  return underWay2(destination) ?? begin("add", destination, destination, SETUP_STEPS, (tell) => setUp2(tell, destination, destination, "add"));
+  const now = underWay2(destination);
+  return uninstalling(now) ?? now ?? begin("add", destination, destination, SETUP_STEPS, (tell) => setUp2(tell, destination, destination, "add"));
 }
 function sshAddressOf(key) {
   const peer = peersOf(readLink()).find((each) => each.key === key);
@@ -40159,7 +40174,8 @@ function beginSetup(key) {
   const at = sshAddressOf(key);
   if (!at)
     return null;
-  return underWay2(at.destination) ?? begin("setup", at.destination, at.name, AGAIN_STEPS, (tell) => setUp2(tell, at.destination, at.name, "setup"));
+  const now = underWay2(at.destination);
+  return uninstalling(now) ?? now ?? begin("setup", at.destination, at.name, AGAIN_STEPS, (tell) => setUp2(tell, at.destination, at.name, "setup"));
 }
 function beginUninstall(key) {
   const at = sshAddressOf(key);
@@ -40198,7 +40214,7 @@ function beginUninstall(key) {
       }
       tell.step("forgetting");
       const removed = removeHere(key);
-      if (removed.status !== 200)
+      if (removed.status !== 200 && removed.status !== 404)
         throw new Failed(isObject(removed.value) && typeof removed.value.message === "string" ? removed.value.message : `${ownName()} couldn’t take ${at.name} off its list.`);
     } finally {
       await reach.close();
@@ -47806,7 +47822,7 @@ import fs157 from "node:fs";
 import path165 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "817cf01995f8";
+var BRIDGE_VERSION = "cae7fcbf9560";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync10 } from "node:child_process";
@@ -55685,13 +55701,15 @@ async function* computersAddRoute(context, match) {
     const begun = action === "setup" ? beginSetup(key) : beginUninstall(key);
     if (!begun)
       return yield* json(404, { message: "That isn’t a computer this one set up over SSH." });
+    if ("busy" in begun)
+      return yield* json(409, { message: begun.busy });
     return yield* json(202, { try: begun.seen });
   }
   if (id && answering) {
     if (method !== "POST")
       return yield* json(405, { message: "Only POST." });
     const given = parsed(request.body);
-    const answered = typeof given?.answer === "string" ? answerTry(id, given.answer) : null;
+    const answered = typeof given?.answer === "string" ? answerTry(id, given.answer, typeof given.at === "number" ? given.at : undefined) : null;
     if (!answered)
       return yield* json(409, { message: "It isn’t asking that now." });
     return yield* json(200, { try: answered });
@@ -55716,7 +55734,10 @@ async function* computersAddRoute(context, match) {
   const problem = addressProblem(destination);
   if (problem)
     return yield* json(400, { message: problem });
-  return yield* json(202, { try: beginAdd(destination).seen });
+  const begun = beginAdd(destination);
+  if ("busy" in begun)
+    return yield* json(409, { message: begun.busy });
+  return yield* json(202, { try: begun.seen });
 }
 
 // box/src/link/work/model-words.ts

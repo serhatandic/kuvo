@@ -41,8 +41,8 @@ for a in "$HOME/Library/Application Support"/run.kuvo.code*; do [ -d "$a" ] && e
 
 /** The probe: the computer's kind and what the engine needs of it, what Kuvo Code it has (its
  * version, whether it's updating itself, whether `version`'s engine is there and runs), its id
- * (`machine-id`, made once: the same computer under another address is told by it), and what's
- * found there. Changes nothing but the id's file. Lines: `uname -sm`'s; `glibc`/`musl`, or a Mac's
+ * where it has one (`machine-id`, made as it's started: the same computer under another address
+ * is told by it), and what's found there. Changes nothing. Lines: `uname -sm`'s; `glibc`/`musl`, or a Mac's
  * `tools`/`no-tools` and `macos <version>`; `kuvo version <v>`, `kuvo updating`, `kuvo engine`,
  * `kuvo id <32 hex>`; then the found lines. */
 export const probe = (version: string): string => String.raw`${K}
@@ -54,15 +54,7 @@ elif ldd --version 2>&1 | grep -qi musl; then echo musl; else echo glibc; fi
 echo "kuvo version $(cat "$K/bin/box-version" 2>/dev/null | tr -cd '0-9a-z.-')"
 [ -d "$K/run/.updating" ] && echo "kuvo updating"
 [ -x "$K/engine/${version}/opencode" ] && "$K/engine/${version}/opencode" --version >/dev/null 2>&1 && echo "kuvo engine"
-F="$K/machine-id"
-if [ ! -s "$F" ]; then
-  mkdir -p "$K" && chmod 700 "$K" || exit 1
-  T="$F.$$"
-  (umask 077; od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >"$T") || exit 1
-  ln "$T" "$F" 2>/dev/null || [ -s "$F" ] || mv -f "$T" "$F"
-  rm -f "$T"
-fi
-echo "kuvo id $(cat "$F")"
+[ -s "$K/machine-id" ] && echo "kuvo id $(cat "$K/machine-id")"
 ${FOUND}
 true`;
 
@@ -158,7 +150,8 @@ fi`;
  * computer's goes there), how its keeper starts its engine noted once (the session's PATH, shell
  * and language, which cron doesn't give it, and the name you know it by), its start after a
  * restart, and then its own keeper's start, which gives its engine a port and passwords of its own.
- * All in one script, so a removal is never between its parts. `started`, or exit 3 with its
+ * All in one script, so a removal is never between its parts. Its id (`id <32 hex>`, made here
+ * once) then `started`, or exit 3 with its
  * engine's last words; 6 when its settings couldn't be made its own; 7 when it was removed
  * meanwhile. `notes`: who started it, as its keeper notes each start (`{…}`, JSON on one line). */
 export const start = (version: string, name: string, notes: string): string => `${K}; R="$K/run"
@@ -172,9 +165,17 @@ if [ ! -f "$R/launch.env" ]; then
 fi
 [ -s "$R/launch.notes" ] || (umask 077; printf '%s' ${quote(notes)} >"$R/launch.notes")
 ${START_AT_BOOT}
+F="$K/machine-id"
+if [ ! -s "$F" ]; then
+  T="$F.$$"
+  (umask 077; od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >"$T") || exit 1
+  ln "$T" "$F" 2>/dev/null || [ -s "$F" ] || mv -f "$T" "$F"
+  rm -f "$T"
+fi
 rm -f "$R/off"
 if sh "$K/bin/kuvo-start" start >/dev/null 2>&1; then
   [ -f "$R/off" ] && exit 7
+  echo "id $(cat "$F")"
   echo started
 else
   [ -f "$R/off" ] && exit 7

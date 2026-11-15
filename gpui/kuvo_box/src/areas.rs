@@ -268,6 +268,9 @@ pub struct AddQuestion {
     pub title: String,
     #[serde(default)]
     pub message: String,
+    /// This ask's number, which an answer names so one meant for an earlier ask isn't taken for it.
+    #[serde(default)]
+    pub at: u64,
     #[serde(default)]
     pub facts: Vec<AddFact>,
     #[serde(default)]
@@ -526,9 +529,9 @@ impl BoxClient {
         Ok(self.value::<Tried>(&Request::post("kuvo/computers/add", serde_json::json!({ "destination": destination })))?.tried)
     }
 
-    /// Answers what the try `id` asks, with one of its answers' ids.
-    pub fn answer_add(&self, id: &str, answer: &str) -> Result<AddTry> {
-        Ok(self.value::<Tried>(&Request::post(format!("kuvo/computers/add/{}/answer", segment(id)), serde_json::json!({ "answer": answer })))?.tried)
+    /// Answers what the try `id` asks (its ask numbered `at`), with one of its answers' ids.
+    pub fn answer_add(&self, id: &str, at: u64, answer: &str) -> Result<AddTry> {
+        Ok(self.value::<Tried>(&Request::post(format!("kuvo/computers/add/{}/answer", segment(id)), serde_json::json!({ "answer": answer, "at": at })))?.tried)
     }
 
     /// Stops the try `id`, or forgets one that's over.

@@ -40,12 +40,13 @@ export async function* computersAddRoute(context: RouteContext, match: RegExpMat
     if (!sshAddressOf(key)) return yield* json(404, { message: "That isn’t a computer this one set up over SSH." });
     const begun = action === "setup" ? beginSetup(key) : beginUninstall(key);
     if (!begun) return yield* json(404, { message: "That isn’t a computer this one set up over SSH." });
+    if ("busy" in begun) return yield* json(409, { message: begun.busy });
     return yield* json(202, { try: begun.seen });
   }
   if (id && answering) {
     if (method !== "POST") return yield* json(405, { message: "Only POST." });
-    const given = parsed(request.body) as Body<"answer">;
-    const answered = typeof given?.answer === "string" ? answerTry(id, given.answer) : null;
+    const given = parsed(request.body) as Body<"answer" | "at">;
+    const answered = typeof given?.answer === "string" ? answerTry(id, given.answer, typeof given.at === "number" ? given.at : undefined) : null;
     if (!answered) return yield* json(409, { message: "It isn’t asking that now." });
     return yield* json(200, { try: answered });
   }
@@ -62,5 +63,7 @@ export async function* computersAddRoute(context: RouteContext, match: RegExpMat
   const destination = cleanAddress((parsed(request.body) as Body<"destination">)?.destination);
   const problem = addressProblem(destination);
   if (problem) return yield* json(400, { message: problem });
-  return yield* json(202, { try: beginAdd(destination).seen });
+  const begun = beginAdd(destination);
+  if ("busy" in begun) return yield* json(409, { message: begun.busy });
+  return yield* json(202, { try: begun.seen });
 }
