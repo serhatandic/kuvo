@@ -23,8 +23,6 @@ import { LAUNCH_AGENT, REBOOT_TAG } from "./marks";
 import { SERVE_ROLE } from "./serve-kept";
 import { readLink } from "./state";
 
-export { LAUNCH_AGENT, REBOOT_TAG };
-
 /** Where `launchctl`, `crontab` and `open` are, and the folder the launch agent's file is in: the
  * real ones for the real `~/.kuvo-code` alone, a test's stand-ins for a test's home, else none. (The
  * helper's launch agent is put in place with the same, and the helper opened, helper.ts.) */
