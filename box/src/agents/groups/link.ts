@@ -6,7 +6,7 @@
 import { subscribe } from "../events"
 import { trim, type GroupMessage } from "./rules"
 import { groupRoutes } from "./routes"
-import type { GroupRunner } from "./runner"
+import { chatZone, type GroupRunner } from "./runner"
 import type { PeerBot } from "./peer"
 import type { GroupStore, MachineBot } from "./store"
 import { planMeeting } from "./time"
@@ -308,7 +308,7 @@ async function make(runner: GroupRunner, store: GroupStore, given: any, here: Se
   const purpose = typeof given.purpose === "string" && given.purpose.trim() ? given.purpose.trim() : undefined
   let meeting
   if (given.meeting !== undefined && given.meeting !== null) {
-    const planned = planMeeting(given.meeting, undefined, store.settings()?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone)
+    const planned = planMeeting(given.meeting, undefined, chatZone(store.settings()?.timeZone))
     if (typeof planned === "string") return message(400, planned)
     meeting = planned
   }

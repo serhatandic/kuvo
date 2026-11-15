@@ -19,7 +19,9 @@ import { frozen } from "../moves/records";
 import { attentionGiven } from "../notices/hold";
 import { macSign, readLink, updateLink } from "../state";
 import { announce, toldPeers, writeAgents } from "./agents";
-import { saysApart } from "./apart";
+import { isApart, saysApart } from "./apart";
+import { sharedMachine } from "../setup/settle";
+import { takeZone } from "../zone/setting";
 import { takeAgents, vouchedOf } from "./directory";
 import { forgetOldMacs, macsOf, mailFor, openMail, peersOf, takeLegacyPeers } from "./known";
 import { bridgeAsk, takeLimits, takeSeat } from "./seats";
@@ -54,6 +56,10 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
       if (!saysApart(sender.key, payload.agents)) noteBotsChanged();
     }
   }
+  // Your time zone (`zone/setting.ts`), only from one of your own computers in this box's setup,
+  // and never on a machine two setups share: as the agents' mail it comes with says, else as it
+  // last told.
+  if (isObject(payload.zone) && !sharedMachine(readLink()) && !(isObject(payload.agents) ? saysApart(sender.key, payload.agents) : isApart(sender.key))) takeZone(payload.zone);
   // Documents (PROTOCOL.md, "Documents"): given, in parts, or a digest of what it has.
   if (isObject(payload.docs)) receiveDocs(sender, payload.docs as DocsMail, host).catch(() => {});
   // It's just connected, and may have missed what this box told it (the relay keeps nothing):

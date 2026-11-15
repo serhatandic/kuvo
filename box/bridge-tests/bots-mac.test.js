@@ -54,8 +54,11 @@ const words = {
 };
 const wordsFile = path.join(home, "bin", "bot-words.json");
 
-// What's this Mac's own that the app gives its box (its kit): the model a bot starts on, the rules
-// a new conversation gets.
+// The engine's model and default here.
+const pickle = { id: "big-pickle", providerID: "opencode", name: "Big Pickle", enabled: true };
+
+// What an older Mac app gave its box (its kit): the model a bot started on, the rules a new
+// conversation got. Nothing reads it now but what's carried from it.
 const kit = {
   kuvo: 1,
   personalities: [],
@@ -117,6 +120,11 @@ async function engine({ rules = {} } = {}) {
       if (instruction && request.method === "PUT") { (entries[instruction[1]] ??= {})[instruction[2]] = given.value; reply({}); }
       else if (instruction && request.method === "GET" && !instruction[2]) reply({ data: Object.entries(entries[instruction[1]] ?? {}).map(([key, value]) => ({ key, value })) });
       else if (request.method === "GET" && request.url === "/api/provider") reply({ data: [{ id: "opencode" }] });
+      // Its models, its default and its accounts, as it lists them: a new bot's model goes by the
+      // box's one rule (work/model-rule.ts).
+      else if (request.method === "GET" && request.url === "/api/model") reply({ data: [pickle] });
+      else if (request.method === "GET" && request.url === "/api/model/default") reply({ data: pickle });
+      else if (request.method === "GET" && request.url === "/api/integration") reply({ data: [{ id: "opencode", name: "opencode", methods: [{ type: "key" }], connections: [{ type: "credential", method: "key" }] }] });
       else if (request.method === "POST" && request.url === "/api/session") reply({ data: { id: `ses_made${next++}` } });
       else if (one && request.method === "GET") reply({ data: { id: one[1], permissions: rules[one[1]] ?? [] } });
       else if (one && request.method === "PATCH" && given?.permissions) { rules[one[1]] = given.permissions; reply({ data: {} }); }
@@ -156,9 +164,9 @@ test("this Mac's bots are its own: listed without a machine, made here with this
   assert.equal(listed.json.bots[0].id, "bot_scout00001");
   assert.equal("machine" in listed.json.bots[0], false, "a Mac leaves machine out for its own");
 
-  // What New Bot offers here: this Mac's starting model, by the name a Mac's has.
+  // What New Bot offers here: the model a new conversation here starts on, by the name a Mac's has.
   const offered = await ask(handle, "GET", "kuvo/bots/templates");
-  assert.deepEqual(offered.json.startingModel, { mac: kit.startingModel });
+  assert.deepEqual(offered.json.startingModel, { mac: { id: "big-pickle", providerID: "opencode" } });
 
   const made = await ask(handle, "POST", "kuvo/bots", { name: "Inbox Helper" });
   assert.equal(made.status, 201);
@@ -350,6 +358,19 @@ test("a client follows this Mac's bots as they change (kuvo/bots/events)", async
   assert.ok(await until(line => line.bots?.[0]?.name === "Scout Two"));
 });
 
+test("this Mac's box makes bots with no Mac app's kit at all (the desktop app writes none): New Bot works, by your zone", async t => {
+  fs.rmSync(path.join(bots, "kit.json"));
+  const fake = await engine();
+  t.after(fake.close);
+  const handle = link.engineHandler(fake.read, { name: "Mac" }, () => null);
+  const offered = await ask(handle, "GET", "kuvo/bots/templates");
+  assert.equal(offered.status, 200, offered.text);
+  const made = await ask(handle, "POST", "kuvo/bots", { name: "Scout" });
+  assert.equal(made.status, 201, made.text);
+  assert.deepEqual(made.json.bot.model, { id: "big-pickle", providerID: "opencode" });
+  assert.match(told(fake.asked, made.json.bot.session)[0].body.value, /You run on this Mac\./);
+});
+
 test("a bot made from a shared one's job waits with it for your composer; one with none writes first", async t => {
   const fake = await engine();
   t.after(fake.close);
@@ -434,4 +455,33 @@ test("a bot brought here from another computer is made this Mac's: its folder sa
   assert.match(told(fake.asked, "ses_bot_moved00001").at(-1).body.value, /You run on this Mac\./);
   assert.equal(fs.readFileSync(path.join(folder, "paused"), "utf8"), "moving", "still held: its move lets it go");
   assert.equal((await ask(handle, "POST", "kuvo/bots/bot_nobody01/arrived")).status, 404);
+});
+
+// Your time zone on this Mac's box (PROTOCOL.md, "Your time zone"): it starts at this Mac's clock,
+// and this Mac's clock moving (you travelled) is your zone changing, counted on, so your other
+// computers take it. Its own bots go by its clock as it changes: a zone file only for one that's
+// yours and not its clock's (picked from a client, or taken from another computer).
+test("this Mac's clock moving is your time zone changing; its bots get a zone of their own only when yours isn't its clock", () => {
+  const was = process.env.TZ;
+  try {
+    process.env.TZ = "Europe/Istanbul";
+    const folder = bot("bot_clock00001");
+    fs.rmSync(path.join(home, "box", "time-zone.json"), { force: true });
+    assert.deepEqual([link.readZoneSetting().zone, link.readZoneSetting().n], ["Europe/Istanbul", 1], "this Mac's clock, counted over what a machine had from it before");
+    assert.equal(link.followOwnClock(), false, "nothing moved");
+    process.env.TZ = "Asia/Tokyo";
+    assert.equal(link.followOwnClock(), true);
+    assert.deepEqual([link.readZoneSetting().zone, link.readZoneSetting().n], ["Asia/Tokyo", 2]);
+    assert.equal(fs.existsSync(path.join(folder, "timezone")), false, "its clock's: no file, it goes by the clock");
+    // Picked from a client: yours, not this Mac's clock.
+    link.setZone("America/New_York");
+    assert.equal(fs.readFileSync(path.join(folder, "timezone"), "utf8"), "America/New_York");
+    assert.equal(link.followOwnClock(), false, "the clock didn't move: yours stays");
+    // You travel there: the clock agrees, the file goes.
+    process.env.TZ = "America/New_York";
+    assert.equal(link.followOwnClock(), true);
+    assert.equal(fs.existsSync(path.join(folder, "timezone")), false);
+  } finally {
+    if (was === undefined) delete process.env.TZ; else process.env.TZ = was;
+  }
 });

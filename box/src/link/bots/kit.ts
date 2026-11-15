@@ -1,16 +1,18 @@
-// What a box makes its bots with and tells them: the kit the Mac gives it, Kuvo Code's words for
-// bots, New Bot's templates, and whether a model runs with the coding agents.
+// What a box makes its bots with and tells them: Kuvo Code's words for bots, New Bot's templates,
+// and the box's own facts (its name, your time zone, its projects, the personalities you made);
+// and whether a model runs with the coding agents.
 
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isObject } from "../../shared/json";
-import { boxProjects } from "../areas/projects";
+import { boxProjects, changeProjects, PROJECTS_FILE } from "../areas/projects";
 import { textOf } from "../files";
-import { BOTS, IS_MAC, K, UPDATES } from "../home";
-import { botPersonalities } from "../personalities/library";
+import { IS_MAC, K, UPDATES } from "../home";
+import { botPersonalities, meetPersonalities, readPersonalities } from "../personalities/library";
 import { readLink } from "../state";
-import type { OfferedProject } from "../areas/projects";
+import { zoneHere } from "../zone/setting";
+import { KIT_FILE, readMacKit } from "./mac-kit";
 import type { BotPersonality } from "../personalities/library";
 import type { BotModel, BotTemplates } from "../../shared/routes/bots";
 
@@ -67,26 +69,13 @@ export interface BotWords {
   greeting: string;
 }
 
-/** What a Mac gave this box of what's its own (`bots/kit.json`, the Mac's Bots.MachineKit): the
- * name it calls this machine, the personalities you made, the model a bot starts on, its projects,
- * your time zone and (for a machine) its rules, base64. (An older Mac's has the rules a new
- * conversation gets, from its own last pick, too: not read, as this box makes a bot's from its own.) */
-export interface MacKit {
-  kuvo: 1;
-  machine?: string;
-  personalities: BotPersonality[];
-  startingModel?: BotModel | null;
-  projects: OfferedProject[];
-  timeZone: string;
-  zoneinfo?: string;
-}
 
 /** What this box makes bots with (`readKit`): the words filled in for where it runs, with what's
- * its own from its Mac's kit. */
+ * its own. */
 export interface BotKit {
   kuvo: 1;
   templates: BotTemplate[];
-  /** Kuvo Code's own, then the ones you made that a Mac's kit has, each with what a bot is told. */
+  /** Kuvo Code's own, each with what a bot is told (yours are the library's: `botPersonalities`). */
   personalities: BotPersonality[];
   personalityWords: string;
   looks: BotLooks;
@@ -97,10 +86,8 @@ export interface BotKit {
   identityNote: string;
   memory: string;
   greeting: string;
-  startingModel: BotModel | null;
-  projects: OfferedProject[];
+  /** Your time zone, as what a bot is told has it. */
   timeZone: string;
-  zoneinfo?: string;
 }
 
 /** A bot's job, for what it's told: its line, and all of it. */
@@ -109,10 +96,8 @@ export interface BotJobText {
   section?: string;
 }
 
-// What New Bot needs here, which the Mac gives the machine as it connects (Bots.MachineKit), and
-// what's said while there's none.
-export const NO_KIT = IS_MAC ? "Kuvo Code is still setting up bots on this Mac. Try again in a moment." : "Connect to this machine from your Mac once, then try again.";
-const KIT_FILE = path.join(BOTS, "kit.json");
+// What's said while this box hasn't Kuvo Code's words for bots (an install that's missing them).
+export const NO_KIT = "Kuvo Code on this computer is missing its words for bots: update it, then try again.";
 // The coding agents' providers (the Mac's OutsideAgents): a bot on one of theirs runs with them.
 const AGENT_PROVIDERS = ["claude-code", "codex-cli", "cursor", "grok-cli", "antigravity"];
 export const runsWithAgents = (model: { providerID?: string } | null | undefined): boolean => model?.providerID === "auto" || AGENT_PROVIDERS.includes(String(model?.providerID ?? "").split("@")[0]);
@@ -137,37 +122,51 @@ export function readWords(file = WORDS_FILE): BotWords | null {
   }
 }
 
-// What this box makes bots with: its own words, filled in for where it runs, with what's its own
-// from the kit its Mac gave it (the name the Mac calls it, your time zone, the model a bot starts
-// on, its projects, and the personalities you made, until its library has them), or else its own. This Mac's box needs its app's kit; a machine makes bots
-// without one. An older Mac's kit has its own words too, which aren't used: the box is never older
-// than a Mac that connects.
+// What this box makes bots with: its own words, filled in for where it runs, with its own facts:
+// its name (as its peers know it), your time zone (`zone/setting.ts`). What an older Mac gave it
+// (`bots/kit.json`) is carried into its own facts first, once (`carryMacKit`). Null without its words.
 // `system` is a platform name, only a test passes it: a box says which system it is from its own.
 export function readKit(system: string = process.platform): BotKit | null {
   const words = readWords();
-  const mac = readMacKit();
-  if (!words || (IS_MAC && !mac)) return null;
-  const timeZone = zoneOf(mac);
-  const machine = (typeof mac?.machine === "string" && mac.machine) || readLink()?.id || os.hostname();
+  if (!words) return null;
+  carryMacKit();
+  const timeZone = zoneHere().zone;
+  const machine = readLink()?.id || os.hostname();
   const here = IS_MAC ? words.here.mac : words.here.machine;
   const told = (each: PresetPersonality) => words.personalityWords.replaceAll("⟦name⟧", () => each.name).replaceAll("⟦description⟧", () => each.description);
   return {
     kuvo: 1,
     templates: words.templates,
-    // Kuvo Code's own, then the ones you made that a Mac's kit has.
-    personalities: [
-      ...words.personalities.map(each => ({ id: each.id, name: each.name, description: each.description, custom: false, instruction: told(each) })),
-      ...(Array.isArray(mac?.personalities) ? mac.personalities.filter(each => each?.custom) : []),
-    ],
+    personalities: words.personalities.map(each => ({ id: each.id, name: each.name, description: each.description, custom: false, instruction: told(each) })),
     personalityWords: words.personalityWords,
     looks: words.looks,
     instructions: wordsHere(words, here, system, machine, timeZone),
     job: { none: String(words.job.none ?? ""), line: String(words.job.line ?? ""), details: String(words.job.details ?? "") },
     projectNote: words.projectNote, identityNote: words.identityNote, memory: words.memory, greeting: words.greeting,
-    startingModel: mac?.startingModel ?? null, projects: Array.isArray(mac?.projects) ? mac.projects : [],
-    timeZone: timeZone || "UTC",
-    ...(typeof mac?.zoneinfo === "string" ? { zoneinfo: mac.zoneinfo } : {}),
+    timeZone,
   };
+}
+
+// What an older Mac's kit had that the box keeps itself now, carried in whenever there's a kit (a
+// Mac app of 0.7 may write it again): its projects, while the box has no list of its own yet; the
+// personalities you made that the library hasn't had (at count 0, so any copy's own, or a removal,
+// wins). Your zone is carried by its setting (`zone/setting.ts`).
+// COMPAT(0.7 bot-kit): what a Mac of 0.7 or before gave a box, carried into its own facts. Goes 3 months after 0.8.0.
+export function carryMacKit(): void {
+  const kit = readMacKit();
+  if (!kit) return;
+  try {
+    const projects = Array.isArray(kit.projects) ? kit.projects.filter(each => typeof each?.directory === "string" && path.isAbsolute(each.directory)) : [];
+    if (projects.length && !fs.existsSync(PROJECTS_FILE)) {
+      changeProjects(now => (now.length ? now : projects.map(each => ({ directory: each.directory, ...(typeof each.name === "string" && each.name && each.name !== path.basename(each.directory) ? { name: each.name } : {}), folders: [] }))));
+    }
+  } catch {}
+  try {
+    const library = readPersonalities();
+    const missing = (Array.isArray(kit.personalities) ? kit.personalities : []).filter(each => each?.custom && typeof each.id === "string"
+      && !library.personalities.some(mine => mine.id === each.id) && !library.removed.some(gone => gone.id === each.id));
+    if (missing.length) meetPersonalities({ personalities: missing.map(({ id, name, description }) => ({ id, name, description, updated: 0 })), removed: [] });
+  } catch {}
 }
 
 // What a bot is told, filled in for where it runs: `here` (this Mac, or a machine by its name,
@@ -178,24 +177,6 @@ export function wordsHere(words: Pick<BotWords, "instructions">, here: BotPlace,
   const named = String(systems[system] ?? systems.other ?? "machine");
   return words.instructions.join("\n\n").replace(/⟦(place|clock|browser)⟧/g, (_, key: "place" | "clock" | "browser") => String(here[key] ?? ""))
     .replaceAll("⟦system⟧", () => named).replaceAll("⟦machine⟧", () => machine).replaceAll("⟦timeZone⟧", () => timeZone || "UTC");
-}
-
-// What a Mac gave this box of what's its own (`bots/kit.json`), or null.
-export function readMacKit(): MacKit | null {
-  try {
-    const kit: MacKit | null = JSON.parse(textOf(KIT_FILE) ?? "");
-    return kit?.kuvo === 1 ? kit : null;
-  } catch {
-    return null;
-  }
-}
-
-// The time zone a machine's bots go by: yours, as a Mac's kit has it, or else the machine's own
-// ("" on a Mac, whose bots go by its own clock).
-export function zoneOf(mac: MacKit | null | undefined): string {
-  if (IS_MAC) return "";
-  if (typeof mac?.timeZone === "string" && mac.timeZone) return mac.timeZone;
-  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { return ""; }
 }
 
 // A release's kit from before boxes had their words of their own (`bin/bot-kit.json`), gone once no
@@ -212,14 +193,14 @@ export function forgetOldKit(): void {
 
 
 // `kuvo/bots/templates`, as the Mac's: what New Bot offers, the model a bot starts on here (by
-// this machine's name, as its bots' `machine` has it), and its projects.
-export function botTemplates(kit: BotKit, machine?: string | null): BotTemplates {
+// this machine's name, as its bots' `machine` has it; `startingModel`, by the box's rule), and its projects.
+export function botTemplates(kit: BotKit, machine?: string | null, startingModel: BotModel | null = null): BotTemplates {
   return {
     templates: kit.templates.map(({ firstMessage: _, ...template }) => template),
     personalities: botPersonalities(kit).map(({ instruction: _, ...personality }) => personality),
     looks: kit.looks,
-    startingModel: { [IS_MAC ? "mac" : machine || "machine"]: kit.startingModel ?? null },
-    projects: boxProjects(kit).map(project => ({ ...project, machine: IS_MAC ? undefined : machine || undefined })),
+    startingModel: { [IS_MAC ? "mac" : machine || "machine"]: startingModel },
+    projects: boxProjects().map(project => ({ ...project, machine: IS_MAC ? undefined : machine || undefined })),
   };
 }
 

@@ -15,7 +15,8 @@ import { withoutFormerAsks } from "../work/former-asks";
 import { approvalOf, approvalRules } from "../work/approval";
 import { botHere, isMoving, noteBotsChanged } from "./here";
 import { jobOf } from "./jobs";
-import { botInstructions, NO_KIT, readKit, readMacKit, zoneOf } from "./kit";
+import { botInstructions, NO_KIT, readKit } from "./kit";
+import { writeZoneFiles } from "../zone/setting";
 import { listBots } from "./list";
 import type { Target } from "../../shared/records";
 import type { ChangedBot } from "../../shared/routes/bots";
@@ -106,8 +107,8 @@ async function freshenOne(target: Target, sessionID: string): Promise<void> {
 }
 
 // What a bot's folder says of where it is, as this box has it: the folder it works in, the time zone
-// its wake-ups go by and that zone's rules, for a machine without zone files of its own (a
-// machine's: yours, as its kit has it; this Mac's go by its own clock), and its memory file (for
+// its wake-ups go by and that zone's rules, for a machine without zone files of its own (yours:
+// `zone/setting.ts`), and its memory file (for
 // one made before it was made with it), which needs this box's words (`kit`, null without them).
 // For one that came from another computer (Move to Computer), those are this one's from now on.
 function settleFolder(here: BotHere, kit: BotKit | null): void {
@@ -119,13 +120,7 @@ function settleFolder(here: BotHere, kit: BotKit | null): void {
   };
   try {
     write("directory", typeof here.described.project === "string" ? here.described.project : path.join(here.folder, "workspace"));
-    if (IS_MAC) {
-      for (const name of ["timezone", "zoneinfo"]) fs.rmSync(path.join(here.folder, name), { force: true });
-    } else {
-      const mac = readMacKit(), zone = zoneOf(mac);
-      if (zone) write("timezone", zone);
-      if (typeof mac?.zoneinfo === "string" && mac.zoneinfo) write("zoneinfo", Buffer.from(mac.zoneinfo, "base64"));
-    }
+    writeZoneFiles(here.folder);
     if (kit && !fs.existsSync(path.join(here.folder, "MEMORY.md"))) write("MEMORY.md", kit.memory.replaceAll("⟦name⟧", () => here.described.name));
   } catch {}
 }

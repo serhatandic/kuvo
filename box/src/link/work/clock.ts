@@ -1,20 +1,16 @@
 // A goal's clock (PROTOCOL.md, "Work › Goals"): days, weeks and months as you live them, in your time
-// zone (`KUVO_TZ`, which a machine's box is given, else this computer's), for a spend cap's period,
-// a daily limit's midnight, and an end written without a zone.
+// zone (the box's setting, "Your time zone"; else `KUVO_TZ`, which an older Mac gave a machine's
+// box; else this computer's), for a spend cap's period, a daily limit's midnight, and an end
+// written without a zone.
 
-/** Your time zone, if `KUVO_TZ` names one this runtime knows; this computer's otherwise. */
+import { yourZone } from "../../shared/zone";
+
+/** Your time zone, if the box's setting (or `KUVO_TZ`) names one this runtime knows; this
+ * computer's otherwise (undefined). */
 export function zone(): string | undefined {
-  const name = process.env.KUVO_TZ;
-  if (!name) return undefined;
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: name });
-    return name;
-  } catch {
-    return undefined;
-  }
+  return yourZone();
 }
 
-/** The wall clock at `at`, in your zone. */
 export function wall(at: number, timeZone = zone()): { year: number; month: number; day: number; hour: number; minute: number; second: number } {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(new Date(at));
   const part = (type: string) => Number(parts.find(each => each.type === type)?.value ?? 0);

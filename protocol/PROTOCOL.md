@@ -443,7 +443,8 @@ connection.
   attached to it, for `kuvo/computers`, "Computers"; only to a peer that's one of
   your own computers, #701, once that peer has said what it is (never in the first mail to one),
   and never by a shared machine; one from a peer that isn't yours is dropped as its mail is taken; told again at its next round, within a
-  minute, as it starts or stops working at all, else with the rest). A box sends its bots and its 40 latest
+  minute, as it starts or stops working at all, else with the rest). Beside `agents`, the same mail
+  carries `zone: {zone, n}`, your time zone, by the same rule as `computer` ("Your time zone"). A box sends its bots and its 40 latest
   sessions (its engine's and its coding agents') when they change and every ten minutes. Each box
   keeps the newest list from each peer. The relay keeps nothing, so a box that has just connected adds `"ask": "agents"` to
   what it sends first (its agents; a Mac's digest), and whoever gets it tells that box its agents
@@ -2309,7 +2310,7 @@ beside it.
   mode is another than it was), `{action: clear, waiting:
   <id>}` (what waited, put away) and `{action: decided, decided: <id>, choice}` ("Interactive or
   Autopilot", below). An end written without a zone (`2026-11-30T18:00`) is in yours
-  (`KUVO_TZ`, else the computer's). Never a tool, an agent's message or another computer's mail. 400 for one in the
+  ("Your time zone"). Never a tool, an agent's message or another computer's mail. 400 for one in the
   wrong state or a card from more than a day ago; 404 for none; 409 for starting one (or asking
   for one) while its bot moves to another computer (a goal stays on the box it started on, and a
   bot working on one doesn't move: `kuvo/moves`), when the bot isn't told anything of its goal
@@ -2542,7 +2543,7 @@ did: the box keeps working as itself ("For released Macs").
     then a day after each next failure (`offerFailed.tries`); offered again meanwhile, it's there
     already (202).
   - Its engine, when the box doesn't have it yet, still comes from the manifest's URL.
-- **When**: the night's window, 02:00 to 05:00 in `KUVO_TZ`, once a night, always (there's no
+- **When**: the night's window, 02:00 to 05:00 in your time zone ("Your time zone"), once a night, always (there's no
   switch: a machine keeps up with the Macs and phones that use it), for a release at least three
   days old. Or now (Update Now), whatever its age.
 - **Never**:
@@ -2653,7 +2654,7 @@ new version without cutting a turn:
     clients read what they show; each is waited for while it's answered. Then it holds new turns, and a
     second later, if it's still quiet, it stops as it always does (what it has is kept) and exits,
     and its launch starts the new bundle. If that second wasn't quiet, it lets go and looks again.
-  - **When there isn't one**: after an hour, in the night's window (02:00 to 05:00 in `KUVO_TZ`),
+  - **When there isn't one**: after an hour, in the night's window (02:00 to 05:00 in your time zone),
     or after a day whatever the hour, it holds new turns: a message (or a summary, a note) that
     would start a turn stays in its session's line (`inbox`, kept with the session, marked `held`,
     and switched to `delivery: "steer"` so it goes first). Turns under way go on to their end,
@@ -4356,7 +4357,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   it); one that wasn't made is tried again. Since a bot is made whole once it's started, whatever
   becomes of the request, a client that sends none can make it twice.
   Errors are `{"message"}`: 400 for a missing name or an unknown template, personality or
-  project; 409 while its box has no kit yet (below); 422 for a model that can't run there (its
+  project; 409 while its box has no words for bots (below); 422 for a model that can't run there (its
   account isn't signed in there); 503 when it couldn't be made.
 - `PATCH kuvo/bots/<id>` with any of `{name, look, personality, model, effort, job}` changes a bot as Edit
   Bot does (`personality: null` for the model's own way, `model` as `{providerID, id, variant?}`,
@@ -4446,8 +4447,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
 - `POST kuvo/bots/<id>/arrived`: a bot whose folder and conversation a client just brought to this
   box from another computer (Move to Computer: the client holds it where it was, copies its folder
   and carries its conversation over, under the same id) is made this box's: what its folder says
-  of where it works, the time zone its wake-ups go by and its rules (yours, from the machine's kit;
-  this Mac's own clock on a Mac), its rules here (its approval with this box's Settings ›
+  of where it works, the time zone its wake-ups go by and its rules (yours, "Your time zone"), its rules here (its approval with this box's Settings ›
   Permissions, as the Mac makes them, held to `vectors/routes/box/approval.json`; a machine whose
   settings aren't its own yet keeps the rules it runs with; and its folder here), and what it's told here, one at a time with its other
   tellings. `200 {"bot"}`; 404 for no such bot here; 409 without the box's words, and 503 when its
@@ -4459,17 +4459,20 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   (`bin/bot-words.json`, KuvoLink's `Resources/bot-words.json`), which a client puts beside the
   bridge as it connects and a release brings: New Bot's templates, Kuvo Code's own personalities,
   the looks a bot can have, and what a bot is told, filled in by the box for where it runs (this
-  Mac, or a machine by the name a Mac calls it, in your time zone), its job, name, folder and
-  personality. A box tells its bots its own words, whichever Mac connects (a box is never older
-  than one that does). And its kit (`bots/kit.json` in its bots' folder), what's that computer's
-  own: a machine's from a Mac, which gives it each time it connects (the name it calls the machine,
-  your time zone, its projects, the model a new bot starts on, and the personalities you made,
-  until the box's library has them), or else the machine's own; this Mac's from its app, as its
-  box starts and as your personalities change. Without its
-  words, or on a Mac without its kit, New Bot and changes to a bot there answer `409 {"message"}`.
-  A new bot's rules are the box's own: its default approval ("Approval") and Settings › Permissions
-  (an older Mac's kit has `rules` from its own last pick, which aren't read). The model a new bot
-  starts on comes from a Mac for now; it's to become each box's own setting.
+  Mac, or a machine by its name as its peers know it, `run/link.json`'s `id`, else its host name, in
+  your time zone), its job, name, folder and personality. A box tells its bots its own words,
+  whichever client connects. Everything else it makes them with is its own: your time zone ("Your
+  time zone"), its projects (`kuvo/projects`), the personalities you made (its library), and the
+  model a new bot starts on, the one a new conversation there would (`work/model-rule.ts`: the
+  engine's default while it can run, else the first that can; a client names another with
+  `model`). Without its words, New Bot and changes to a bot there answer `409 {"message"}`. A new
+  bot's rules are the box's own: its default approval ("Approval") and Settings › Permissions.
+  A Mac app of 0.7 or before gave each box a kit (`bots/kit.json` in its bots' folder: the name it
+  called the machine, your time zone and its rules, its projects, the model it picked last, the
+  personalities you made). A box no longer goes by it: it carries what it had into its own facts
+  whenever it finds one (your zone into its setting, once, "Your time zone"; its projects, while the
+  box has no list of its own; the personalities the library hasn't had, at count 0), and reads
+  nothing else of it.
 - What every group chat on a computer goes by is its box's own, worked out with no client there:
   what each personality tells a bot (Kuvo Code's own in its words, yours in its library), who sets
   what about a bot (the words' `identityNote`), Ask First (its default approval is Ask First or
@@ -4477,10 +4480,11 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   gives them to the coding agents' bridge that runs the chats (`PUT api/kuvo/groups/box-settings`
   there), as it starts and within five seconds of any of them changing, never while its Settings ›
   Permissions can't be read or have a rule that isn't one (its chats keep what they have); the bridge keeps them through its
-  restarts. Your clock (time zone, and how you write dates, for meetings and a chat's recap) is a
-  client's to say, as a machine can't know it: `PUT api/kuvo/groups/clock {"timeZone", "locale"}`
-  on the bridge (a Mac to each computer's it reaches, as it connects and as either changes);
-  without one, the computer's own. Each has a path of its own, which a bridge from before turns
+  restarts. A chat's meetings and recap go by your time zone, the box's setting ("Your time zone",
+  which the bridge reads from the box's folder); how you write dates, and a zone where the box has
+  none, are a client's to say: `PUT api/kuvo/groups/clock {"timeZone", "locale"}` on the bridge (an
+  older Mac to each computer's it reached, as it connected and as either changed); without either,
+  the computer's own. Each has a path of its own, which a bridge from before turns
   away (`404`) rather than taking it for all of them. An older Mac sends all of them to `PUT
   api/kuvo/groups/settings`: only its clock is taken.
 - A client keeps what you change of a bot whose computer is away (its machine not connected) and
@@ -6367,7 +6371,7 @@ client does with the rest; a client keeps the draft, puts back what it's told to
   conversation, each from the mode the one before left; the Mac's Plan Mode item goes this way too), with words turns it on and sends them
   (with files alone, on); "/autopilot" alone toggles it, with words or files the box turns it on
   first; "/loop <how often> <what to do>" adds a wake-up that sends the words again, first due by the
-  box's clock (`KUVO_TZ`), and sends them now unless it keeps a time of day ("every morning at 9"
+  box's clock (your time zone, "Your time zone"), and sends them now unless it keeps a time of day ("every morning at 9"
   waits for it); "/btw", "/handoff" and "/review …" start one; "/goal" alone shows the goal (with
   none, "/goal " comes back to finish), "/goal pause|resume|clear" changes it, "/goal <words>" sets
   it, or in a bot's chat asks the bot to plan it.
@@ -6806,8 +6810,8 @@ of in `box/trash` (`KUVO_TRASH`; the bridge says `kuvo.group.trashed {id, path}`
 it to the Finder's Trash), and who can be named with `&` in `box/run/agents.json`
 (`KUVO_AGENTS_FILE`, as a machine's `run/agents.json`, which the box writes: "Peers"). `KUVO_BOX=mac` says
 it's a Mac's: its bots are the Mac's own (`machine` left out), made with the words the app puts in its
-`bin` and the kit it gives it in their folder (`bots/kit.json`, what's this Mac's own), with no time zone of
-their own (they go by the Mac's clock). Its bots remember its
+`bin`, with no time zone of their own while yours is the Mac's clock (they go by it as it changes;
+"Your time zone"). Its bots remember its
 chats under `kuvo.groups` (`KUVO_GROUPS_MEMORY_KEY`). The box passes a client's `kuvo/groups…`
 on to that bridge, as a machine's does (bridge 0.9.65; the app did before), saying "Group chats on
 this Mac are starting" or "aren't answering" when it can't; from 0.9.202, while the bridge is down,
@@ -7891,7 +7895,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
 - `GET kuvo/settings`: `{sections}`, in order, each `{id, title, group, icon, line, keywords}`:
   the heading it's under in a sidebar (`group`), its icon by name (`shield`, `globe`, …: a set every
   client has; one a client hasn't, it draws with its own), and the words search finds it by besides
-  its title and line. Today `permissions` and `browser`; the rest come page by page.
+  its title and line. Today `general`, `permissions` and `browser`; the rest come page by page.
 - `GET kuvo/settings/<section>`: `{id, title, line?, groups, notes?}`; `404 {message}` for a section
   this box hasn't. A group is `{id, title?, note?, rows}`, a card with its heading and the words
   under it; `notes` are `{words, tone}` (`quiet` or `warning`) after the groups: what couldn't be
@@ -7949,6 +7953,11 @@ so a client still on those (the phone) sees every change kept just as they keep 
 
 The sections now:
 
+- **General** (`general`): Clock (`time-zone`, a `choice` of every zone the box's runtime knows by
+  its IANA name, titled `Europe › Istanbul`; while it has no zone of yours yet, `own-clock` first,
+  its own clock, its value, which writes nothing when picked and isn't offered once one is set).
+  A change sets your time zone ("Your time zone"), which your other computers take; `400` for a
+  zone the box doesn't know.
 - **Permissions** (`permissions`): Approval (`default-mode`, the mode a new conversation starts in,
   a `status`; `full-access`, a `switch` turned off here, asked first, and turned on only in a
   conversation, its `can` saying so; `auto-held-engine`, `auto-held-agents`, why Auto asks first for
@@ -7970,6 +7979,41 @@ The sections now:
   Never Offered (`never`, a `list` of `never-<site>`, each with `offer-again`, which takes that one
   site out and leaves the rest as they are then): `kuvo/browser/settings`,
   the box's browser. How the side panel's own browser keeps its data is each client's.
+
+### Your time zone
+
+One time zone for all your own computers in a setup, which what happens at a time of day goes by:
+bots' and conversations' wake-ups, a `/loop`'s time of day, goals' days and ends written without a
+zone, the night's window updates wait for, a chat's meetings, and the times limits reset. Each box
+keeps it (`box/time-zone.json` in its folder: `{kuvo: 1, zone, n, seen?, zoneinfo?}`), any client
+changes it there (`kuvo/settings/general`, "A box's settings"), and boxes carry it to each other.
+Every box does it alike, a Mac's and a machine's, on macOS and Linux.
+
+- **Carried**: in the agents' mail ("Peers"), beside `agents`, as `zone: {zone, n}`, to each peer
+  that's one of your own computers and has said what it is (as `computer` goes), and on to the rest
+  as each takes it. `n` counts changes: one more than the box had with each change made there. A
+  box takes a peer's when it's counted higher than its own, or at the same count when its name
+  sorts after its own (so every box keeps the same one); not a zone its runtime doesn't know, nor a
+  count past 2^52. Never to or from a peer that isn't one of your own computers (a machine Macs of
+  two setups share, or one of another setup, #701), and a box that's such a machine takes none and
+  tells none. A box with none tells none, and takes the first it's told: a computer set up later
+  takes your zone at its first round with your others.
+- **A Mac's clock**: a Mac's box takes its own clock moving (you travelled, or changed it in System
+  Settings) as your zone changing, counted on (looked at each minute, `/etc/localtime`, `TZ` where
+  it's set). A machine's clock says nothing of where you are and is never taken.
+- **Carried from before**, the first time a box reads it with none kept: a Mac's box, its own clock
+  (count 1); a machine's, what its Mac last gave it (count 0, so a Mac's own clock wins): its kit's
+  `timeZone` and `zoneinfo` (`bots/kit.json`), else the zone above its conversations' wake-ups
+  (`wakes/timezone`, `wakes/zoneinfo`), else its launch's `KUVO_TZ` (`run/launch.env`). With none of
+  them, none: its own clock until it's told yours.
+- **Where it goes**: each bot's folder and the folder above conversations' own (`wakes`) have the
+  `timezone` file `kuvo-wake` reads (and `zoneinfo`, a zone's rules as a TZif file, base64 in the
+  setting, kept from an older Mac's kit for a machine without zone files of its own, only for that
+  zone): written as the zone changes, as a bot is made, settled or arrives, and each minute while the
+  box runs; not for a bot that's moving, which the box it arrives at settles. On a machine, your zone
+  (its own clock while it has none, as before); on a Mac, nothing while your zone is its clock (they
+  go by it as it changes), else yours. The box's own times read the setting, else `KUVO_TZ`, else the
+  computer's clock; so does its coding agents' bridge on a machine (from `KUVO_HOME`).
 
 ### Personalities
 
@@ -9439,6 +9483,12 @@ before connects (the box notes one: `run/attached`).
   to the machine with `POST kuvo/worktrees/record`, those it removed too (`removed`), so the box's
   session lists file their sessions as that Mac did.
   <!-- compat: 0.7 worktrees -->
+- **Its kit and your time zone**: it gave each box a kit (`bots/kit.json`: your time zone and its
+  rules, the machine's projects, the personalities you made), put your zone above a machine's
+  conversations' wake-ups (`wakes/timezone`) and started its engine with `KUVO_TZ`. A box carries
+  them into its own facts ("Your time zone"; `kuvo/bots`, what a box makes its bots with), and goes
+  by `KUVO_TZ` while it has no zone of its own.
+  <!-- compat: 0.7 bot-kit -->
 - **Its agents bridge** installed the agents' programs in `~/.kuvo-code/agents/runtime` on a
   machine, carried the Mac's sign-ins over (`<file>.from-mac`), and kept its downloads in its cache
   (`cache/install`): the agents bridge takes those away as it starts.

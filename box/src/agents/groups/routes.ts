@@ -1,7 +1,7 @@
 // The group chats on this machine, for the Mac and the phone (`/api/kuvo/groups`, behind the
 // bridge's password): read them, bring one here or let it go (a move), and take part.
 
-import type { GroupRunner } from "./runner"
+import { chatZone, type GroupRunner } from "./runner"
 import { isGroup, isMeeting, isMessages, version, type GroupStore } from "./store"
 import { namedBlock, readDirectory } from "./named"
 import { planMeeting } from "./time"
@@ -61,7 +61,7 @@ export async function groupRoutes(runner: GroupRunner | undefined, store: GroupS
         if (edits.meetingPlan === null) {
           edits.meeting = null
         } else {
-          const planned = planMeeting(edits.meetingPlan, runner.get(id)?.group.meeting, store.settings()?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone)
+          const planned = planMeeting(edits.meetingPlan, runner.get(id)?.group.meeting, chatZone(store.settings()?.timeZone))
           if (typeof planned === "string") return error(400, planned)
           edits.meeting = planned
         }

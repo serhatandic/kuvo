@@ -9,7 +9,7 @@ import { FEATURES } from "../../shared/features";
 import { macFeatures } from "../../shared/routes/mac";
 import { processRuns as runs } from "../../shared/platform";
 import { boxProjects } from "../areas/projects";
-import { readKit } from "../bots/kit";
+import { carryMacKit } from "../bots/kit";
 import { folderGoes, listBots } from "../bots/list";
 import { currentDigest } from "../documents/work";
 import { readBridgeFile } from "../engine/client";
@@ -25,7 +25,7 @@ import { followedSetup } from "../setup/record";
 import { ownComputer } from "../areas/computers";
 import { isApart } from "./apart";
 import { sharedMachine } from "../setup/settle";
-import type { BotKit } from "../bots/kit";
+import { zoneMail } from "../zone/setting";
 import type { DigestEntry } from "../documents/work";
 import type { EngineSession } from "../engine/sessions";
 import type { LinkHost } from "../relay/host";
@@ -57,7 +57,7 @@ export function forgetMacsAgents(mac: string, link: LinkState | null): void {
 // agents' (not a bot's, a subagent's, a group chat's seat, nor one put away), as the Mac lists its
 // own: one without a title is "New session", and a chat's project is "Chats". Null when its engine
 // can't say (then what it last said stands).
-export async function ownAgents(readEngine: () => Target, machine?: string, kit: BotKit | null = readKit(), readBridge: () => BridgeRecord = readBridgeFile): Promise<ListedAgent[] | null> {
+export async function ownAgents(readEngine: () => Target, machine?: string, readBridge: () => BridgeRecord = readBridgeFile): Promise<ListedAgent[] | null> {
   // Not what doesn't live here (a copy a move brought, not switched to yet; an original going).
   const away = new Set(awaySessions());
   const bots = listBots(machine).filter(bot => !away.has(bot.session)).map(bot => ({ session: bot.session, name: bot.name, kind: "bot" as const, id: bot.id, ...(bot.job ? { about: bot.job } : {}), ...(bot.look ? { look: bot.look } : {}) }));
@@ -74,7 +74,9 @@ export async function ownAgents(readEngine: () => Target, machine?: string, kit:
     const bridge = readBridge();
     if (bridge?.port && bridge?.password && runs(bridge.pid, "kuvo-agents")) sessions = sessions.concat(await sessionsOf(bridge));
   } catch {}
-  const projects = boxProjects(kit);
+  // (What an older Mac's kit named is the box's own first.)
+  carryMacKit();
+  const projects = boxProjects();
   const named = (directory: string | undefined): string | undefined => projects.find(project => project.directory === directory)?.name
     ?? (isChatsFolder(directory) ? "Chats" : directory ? path.basename(directory) : undefined);
   const recent = sessions
@@ -169,11 +171,14 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
   // box tells a peer that isn't one of yours (`isApart`), nor one that hasn't said what it is yet
   // (its first word says whether it's shared, or of another setup).
   const computer = sharedMachine(link) ? null : ownComputer();
-  const told = computer ? readPeerAgents() : {};
+  // And your time zone, by the same rule: one for your own computers in a setup, carried box to box
+  // (`zone/setting.ts`), never to or from a shared machine or another setup's.
+  const zone = sharedMachine(link) ? null : zoneMail();
+  const told = computer || zone ? readPeerAgents() : {};
   // And where a bot deleted here ends up (the Trash, or Kuvo Code's trash folder), so a box that
   // lists this one's bots says what deleting one takes with it as this computer would.
   const trash = folderGoes().to;
-  const json = JSON.stringify([ownList, moved, boxes, where, computer && { ...computer, working: undefined }, trash]);
+  const json = JSON.stringify([ownList, moved, boxes, where, computer && { ...computer, working: undefined }, trash, zone]);
   let have: DigestEntry[] | false | null = null;
   for (const peer of peersOf(link)) {
     if (only !== undefined && peer.key !== only) continue;
@@ -183,11 +188,12 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
     // Not as it connects: `docsChanged` greets each with its digest then.
     if (have === null) have = ask ? false : currentDigest();
     const docs = peer.sign && have ? { docs: { have } } : {};
+    const yours = Boolean(told[peer.key]) && !isApart(peer.key, link, told);
     // As many as fit in one mail: the first (bots, then the latest sessions) first.
     let bytes: Buffer | null = null, sent: ListedAgent[] = [];
     for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
       sent = ownList.slice(0, count);
-      bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter(box => box.key !== peer.key), trash, ...where, ...(computer && told[peer.key] && !isApart(peer.key, link, told) ? { computer } : {}) }, ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
+      bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter(box => box.key !== peer.key), trash, ...where, ...(computer && yours ? { computer } : {}) }, ...(zone && yours ? { zone } : {}), ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
       if (bytes) break;
     }
     if (!bytes) continue;

@@ -29,11 +29,18 @@ import { APPROVAL_FILE } from "../work/approval";
 import { IS_MAC } from "../home";
 import { boxAnswers } from "../mac/keeper-runs";
 import { askHolder, holdsVault } from "../vault/holder";
+import { setZone, ZONE_FILE, zoneHere } from "../zone/setting";
+import { ownClock } from "../../shared/zone";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 export const SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+))?)?$/;
 
 const SECTIONS: SettingsSection[] = [
+  {
+    id: "general", title: "General", group: "General", icon: "settings",
+    line: "Your time zone, which bots' wake-ups and times of day go by on all your computers.",
+    keywords: ["time zone", "timezone", "clock", "wake-ups", "schedule", "travel"],
+  },
   {
     id: "permissions", title: "Permissions", group: "Agents & Tools", icon: "shield",
     line: "What agents may do without asking, and the sandbox their commands run in.",
@@ -362,6 +369,68 @@ async function browserAct(context: RouteContext, at: SettingItem, action: Settin
   return null;
 }
 
+// MARK: General
+
+/** A zone's name as a menu shows it: "Europe/Istanbul" as "Europe › Istanbul", "America/New_York" as
+ * "America › New York". */
+const zoneTitle = (zone: string): string => zone.replaceAll("_", " ").split("/").join(" › ");
+
+/** Every zone this runtime knows, by name, UTC among them. */
+function zoneNames(): string[] {
+  let names: string[] = [];
+  try { names = Intl.supportedValuesOf("timeZone"); } catch {}
+  return [...new Set([...names, "UTC"])].sort();
+}
+
+/** The zone's offset from UTC now, as "GMT+3" or "GMT−4:30". */
+function offsetOf(zone: string, at = new Date()): string {
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: "shortOffset" }).formatToParts(at).find(part => part.type === "timeZoneName")?.value.replace("-", "−") ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** The value of the time zone row while this box has no zone of yours yet: its own clock's. */
+const OWN_CLOCK = "own-clock";
+
+async function generalPage(context: RouteContext): Promise<SettingsPage> {
+  const name = context.info.name || "this computer";
+  const here = zoneHere();
+  const offset = offsetOf(here.zone);
+  const choices = zoneNames().map(zone => ({ id: zone, title: zoneTitle(zone) }));
+  // (One a peer's runtime knows and this one doesn't is still shown as it is.)
+  if (here.yours && !choices.some(choice => choice.id === here.zone)) choices.unshift({ id: here.zone, title: zoneTitle(here.zone) });
+  if (!here.yours) choices.unshift({ id: OWN_CLOCK, title: `${name}'s Clock (${zoneTitle(here.zone)})` });
+  const line = here.yours
+    ? `Bots' wake-ups and times of day go by it on all your computers, ${name} too. It's ${offset} there now.`
+    : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
+  return {
+    id: "general", title: "General",
+    groups: [{
+      id: "clock", title: "Clock", rows: [row({
+        id: "time-zone", title: "Time zone", line, kind: "choice", value: here.yours ? here.zone : OWN_CLOCK, choices, can: true,
+      })],
+      ...(IS_MAC ? { note: "When this Mac's own clock changes (you travel), your time zone follows it." } : {}),
+    }],
+  };
+}
+
+async function generalChange(_context: RouteContext, at: SettingItem, value: unknown): Promise<Refused | null> {
+  if (at.id !== "time-zone") return { status: 400, message: "That isn't something to change." };
+  // (Its own clock while none is set is what applies already: nothing to write.)
+  if (value === at.value || value === OWN_CLOCK) return null;
+  try {
+    return setZone(String(value)) ? null : { status: 400, message: "This computer doesn't know that time zone." };
+  } catch {
+    return { status: 503, message: "Your time zone couldn't be changed here just now: try again in a moment." };
+  }
+}
+
+async function generalAct(): Promise<Refused | null> {
+  return { status: 404, message: "That isn't something it does." };
+}
+
 // MARK: Sections
 
 interface Section {
@@ -375,6 +444,7 @@ interface Section {
 const mtime = (file: string): number => { try { return fs.statSync(file).mtimeMs; } catch { return 0; } };
 
 const PAGES: Record<string, Section> = {
+  general: { read: generalPage, change: generalChange, act: generalAct, look: () => `${mtime(ZONE_FILE)} ${ownClock()}` },
   permissions: {
     read: permissionsPage, change: permissionsChange, act: permissionsAct,
     look: () => {

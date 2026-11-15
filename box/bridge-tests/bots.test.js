@@ -43,6 +43,8 @@ beforeEach(() => {
   fs.rmSync(bots, { recursive: true, force: true });
   fs.rmSync(path.join(home, "wakes"), { recursive: true, force: true });
   fs.rmSync(path.join(home, "run"), { recursive: true, force: true });
+  // (Your time zone, as each test's box has it from its own start.)
+  fs.rmSync(path.join(home, "box", "time-zone.json"), { force: true });
 });
 
 // What the handler answers a phone's request, whole.
@@ -352,7 +354,7 @@ const kit = {
 // its greeting; the providers ready; group chats there (`chats`), listed and changed.
 // `heard`: told of each request as it comes, before it's answered. `listed`: its models and its
 // default, as it lists them (none listed when not given).
-async function makingEngine(ready = ["opencode"], rules = {}, heard = () => {}, listed = null) {
+async function makingEngine(ready = ["opencode"], rules = {}, heard = () => {}, listed = { models: [{ id: "big-pickle", providerID: "opencode", name: "Big Pickle", enabled: true }], defaultModel: { id: "big-pickle", providerID: "opencode", name: "Big Pickle", enabled: true } }) {
   const asked = [];
   const chats = new Map();
   let next = 1;
@@ -413,7 +415,7 @@ test("New Bot offers the box's own projects once it keeps them, not those a Mac 
   assert.deepEqual(offered.json.projects, [{ directory: fs.realpathSync(app), name: "App", machine: "my-server" }]);
 });
 
-test("New Bot here offers, and starts a bot on, a model this box can use: not the one its Mac last named once its account is signed out here, or once its provider is retiring it", async () => {
+test("New Bot here offers, and starts a bot on, the model a new conversation here would, by the box's own rule: never the one an older Mac's kit named, nor one signed out here or being retired", async () => {
   // The engine lists Flint first, and its default is Big Pickle.
   const flint = { id: "flint", providerID: "opencode", name: "Flint", enabled: true };
   const pickle = { id: "big-pickle", providerID: "opencode", name: "Big Pickle", enabled: true };
@@ -439,8 +441,8 @@ test("New Bot here offers, and starts a bot on, a model this box can use: not th
   assert.deepEqual(await offeredWith({ id: "opus-old", providerID: "anthropic" }, ["opencode", "anthropic"], pickle), { id: "big-pickle", providerID: "opencode" });
   // The engine's default can't run here either: the first model that can.
   assert.deepEqual(await offeredWith({ id: "sonnet", providerID: "anthropic" }, ["opencode"], sonnet), { id: "flint", providerID: "opencode" });
-  // One it can: as the Mac named it.
-  assert.deepEqual(await offeredWith({ id: "sonnet", providerID: "anthropic" }, ["opencode", "anthropic"], pickle), { id: "sonnet", providerID: "anthropic" });
+  // One it can run: still the box's own rule (the engine's default), not what a Mac once named.
+  assert.deepEqual(await offeredWith({ id: "sonnet", providerID: "anthropic" }, ["opencode", "anthropic"], pickle), { id: "big-pickle", providerID: "opencode" });
 });
 
 test("New Bot here starts on the model a new conversation here would, by the box's one rule: with none named and a default being retired, the first that runs in the picker's order, not the engine's", async () => {
@@ -994,7 +996,7 @@ test("a bot being deleted as its box stops (an update, a crash) still loses its 
   }
 });
 
-test("a machine makes bots with its own words, whatever a Mac's kit says, filled in for where it runs, with what's its own from its Mac", async () => {
+test("a machine makes bots with its own words and its own facts, whatever a Mac's kit says: what an older Mac's kit had is carried into them once", async () => {
   // Its own name and clock, with no Mac's kit.
   const own = await makingEngine();
   try {
@@ -1009,18 +1011,33 @@ test("a machine makes bots with its own words, whatever a Mac's kit says, filled
     own.close();
   }
 
-  // An older Mac's kit, with its own words: the machine's words still, filled in with the name the
-  // Mac calls it, and the Mac's time zone, projects and the personalities you made; not its rules,
+  // An older Mac's kit, with its own words: the machine's words still, filled in with its own name
+  // (as its peers know it, not the kit's), and the Mac's time zone, projects and the personalities
+  // you made carried into the box's own (its setting, its projects, its library); not its rules,
   // which the machine makes from its own default.
+  fs.rmSync(path.join(home, "box", "time-zone.json"), { force: true });
+  fs.rmSync(path.join(home, "box", "projects.json"), { force: true });
+  write(path.join(home, "run", "link.json"), JSON.stringify({ id: "my-server" }));
   const custom = { id: "custom.calm", name: "Calm", description: "Calm.", custom: true, instruction: "Your personality: Calm." };
   write(path.join(bots, "kit.json"), JSON.stringify({ ...kit, version: "0.8.0", machine: "lab", personalities: [{ id: "preset.straight", name: "Straight Shooter", description: "Direct.", custom: false, instruction: "Older." }, custom],
     instructions: "Older words.", jobInstructions: "Older words: ⟦job⟧.", personalityWords: "Older." }));
   const kitNow = link.readKit();
   assert.equal(link.botInstructions(kitNow, "Scout", "/f", undefined, undefined), "You are Scout, one of the user's bots.\n\nMemory: the file \"/f/MEMORY.md\" is yours.\n\nWho sets what.");
   assert.equal(kitNow.timeZone, "Europe/Istanbul");
-  assert.deepEqual(kitNow.projects, kit.projects);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, "box", "time-zone.json"), "utf8")).zone, "Europe/Istanbul", "kept as the box's own setting");
+  assert.deepEqual(link.boxProjects(), kit.projects, "the box's own list now");
   assert.equal("rules" in kitNow, false);
-  assert.deepEqual(link.botPersonalities(kitNow).map(each => [each.id, each.instruction]), [["preset.straight", "Your personality: Straight Shooter. Direct."], ["custom.calm", "Your personality: Calm."]]);
+  assert.equal("startingModel" in kitNow, false, "a new bot's model is the box's rule's");
+  assert.deepEqual(link.botPersonalities(kitNow).map(each => [each.id, each.instruction]), [["preset.straight", "Your personality: Straight Shooter. Direct."], ["custom.calm", "Your personality: Calm. Calm."]]);
+  assert.ok(link.readPersonalities().personalities.some(each => each.id === "custom.calm"), "in the library");
+  // The kit gone (nothing reads it now): the same.
+  fs.rmSync(path.join(bots, "kit.json"));
+  const after = link.readKit();
+  assert.equal(after.timeZone, "Europe/Istanbul");
+  assert.deepEqual(link.boxProjects(), kit.projects);
+  assert.deepEqual(link.botPersonalities(after).map(each => each.id), ["preset.straight", "custom.calm"]);
+  fs.rmSync(path.join(home, "box", "projects.json"), { force: true });
+  link.changePersonalities(() => ({ personalities: [], removed: [] }));
 
   // Without its words (a box that's lost them), New Bot says what to do.
   const file = path.join(home, "bin", "bot-words.json");
@@ -1030,7 +1047,7 @@ test("a machine makes bots with its own words, whatever a Mac's kit says, filled
     for (const [method, route] of [["POST", "kuvo/bots"], ["GET", "kuvo/bots/templates"]]) {
       const refused = await ask(handle, method, route);
       assert.equal(refused.status, 409, route);
-      assert.equal(refused.json.message, "Connect to this machine from your Mac once, then try again.");
+      assert.equal(refused.json.message, "Kuvo Code on this computer is missing its words for bots: update it, then try again.");
     }
   } finally {
     fs.renameSync(file + ".kept", file);
@@ -1041,7 +1058,9 @@ test("a bot on a machine is told, in Kuvo Code's own words, that it runs on that
   const file = path.join(home, "bin", "bot-words.json");
   fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), file);
   try {
-    write(path.join(bots, "kit.json"), JSON.stringify({ ...kit, machine: "lab" }));
+    // Its name as its peers know it (`run/link.json`), your zone its setting's.
+    write(path.join(home, "run", "link.json"), JSON.stringify({ id: "lab" }));
+    write(path.join(bots, "kit.json"), JSON.stringify({ ...kit, machine: "not-the-name" }));
     const kitNow = link.readKit("linux");
     const told = link.botInstructions(kitNow, "Scout", "/home/me/.kuvo-code/bots/bot_scout00001", "Your personality: Calm.", undefined);
     assert.match(told, /^You are Scout, one of the user's bots in Kuvo Code\. .* You run on the Linux machine "lab"\./);
