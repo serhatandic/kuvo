@@ -571,3 +571,19 @@ mod tests {
         assert!(found(false, blocks, "nothing like it").is_empty());
     }
 }
+
+#[cfg(test)]
+mod storage_unit_tests {
+    use super::*;
+
+    #[test]
+    fn decimal_default_saved_untouched_keeps_exact_bytes() {
+        let row: Described = serde_json::from_value(serde_json::json!({
+            "id": "budget", "title": "Budget", "kind": "number", "value": 1073741824,
+            "unit": {"name": "GB", "factor": 1000000000, "decimals": 2, "rounding": "nearest"}
+        })).unwrap();
+        let at = At::of("storage", &row);
+        assert_eq!(at.unit.as_ref().unwrap().display(1073741824.0), "1.07 GB");
+        assert_eq!(at.field_value("1.07", true), Some(serde_json::json!(1073741824)));
+    }
+}

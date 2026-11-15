@@ -971,11 +971,11 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug.starts_with("settings-row-") {
                 use serde_json::json;
-                let confirm = json!({"value":805306368,"confirm":{"title":"Keep less of older versions?","body":"Older versions take 768 MiB now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.","button":"Keep up to"}});
+                let confirm = json!({"value":805306368,"confirm":{"title":"Keep less of older versions?","body":"Older versions take 805.3 MB now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.","button":"Keep up to"}});
                 let pages = [
                     ("storage","Storage","System","drive",json!([
-                        {"id":"copies","title":"Copies of what agents made","kind":"status","value":1342177280,"unit":{"name":"GiB","factor":1073741824,"decimals":1,"rounding":"nearest"}},
-                        {"id":"budget","title":"Older versions keep up to","line":"Past it, the oldest go first.","kind":"number","value":1073741824,"unit":{"name":"GiB","factor":1073741824,"decimals":2,"rounding":"nearest"},"can":true,"confirmBelow":confirm,"suggestions":[{"value":268435456,"title":"0.25 GiB"},{"value":536870912,"title":"0.5 GiB"},{"value":1073741824,"title":"1 GiB"},{"value":2147483648_u64,"title":"2 GiB"},{"value":5368709120_u64,"title":"5 GiB"},{"value":10737418240_u64,"title":"10 GiB"}]}
+                        {"id":"copies","title":"Copies of what agents made","kind":"status","value":1342177280,"unit":{"name":"GB","factor":1000000000,"decimals":1,"rounding":"nearest"}},
+                        {"id":"budget","title":"Older versions keep up to","line":"Past it, the oldest go first.","kind":"number","value":1073741824,"unit":{"name":"GB","factor":1000000000,"decimals":2,"rounding":"nearest"},"can":true,"confirmBelow":confirm,"suggestions":[{"value":250000000,"title":"0.25 GB"},{"value":500000000,"title":"0.5 GB"},{"value":1000000000,"title":"1 GB"},{"value":2000000000_u64,"title":"2 GB"},{"value":5000000000_u64,"title":"5 GB"},{"value":10000000000_u64,"title":"10 GB"}]}
                     ])),
                     ("worktrees","Worktrees","System","folder",json!([{"id":"folder","title":"Folder","kind":"folder","value":"","placeholder":"Kuvo Code’s Folder","can":true,"folder":{"choose":"Choose a Folder…","clear":"Kuvo Code’s Folder","prompt":"Choose","message":"Choose where new worktrees go. Each one is a folder in it."}}])),
                     ("git","Git","System","branch",json!([{"id":"instructions","title":"Commit instructions","kind":"text","value":"Write a short title.\nExplain why the change matters.","lines":{"min":3,"max":8},"can":true}])),

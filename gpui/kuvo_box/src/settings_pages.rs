@@ -434,13 +434,13 @@ mod row_metadata_tests {
     fn reads_every_presentation_and_confirmation_field() {
         let row: Row = serde_json::from_value(json!({
             "id":"budget", "title":"Budget", "kind":"number", "value":2000000000,
-            "unit":{"name":"GiB","factor":1073741824,"decimals":2,"rounding":"nearest"}, "suggestions":[{"value":1073741824,"title":"1 GiB"}],
+            "unit":{"name":"GB","factor":1000000000,"decimals":2,"rounding":"nearest"}, "suggestions":[{"value":1000000000,"title":"1 GB"}],
             "confirmBelow":{"value":1500000000,"confirm":{"title":"Keep less?","body":"Old copies go.","button":"Keep"}},
             "folder":{"choose":"Choose…","clear":"Default","prompt":"Choose","message":"Choose a folder."},
             "lines":{"min":3,"max":8},"search":{"placeholder":"Find","empty":"Nothing for {query}"}
         })).unwrap();
-        assert_eq!(row.unit.as_ref().unwrap().name,"GiB");
-        assert_eq!(row.suggestions[0].title,"1 GiB");
+        assert_eq!(row.unit.as_ref().unwrap().name,"GB");
+        assert_eq!(row.suggestions[0].title,"1 GB");
         assert_eq!(row.confirm_below.unwrap().confirm.body,"Old copies go.");
         assert_eq!(row.folder.unwrap().prompt,"Choose");
         assert_eq!(row.lines.unwrap().min,3);
@@ -449,12 +449,12 @@ mod row_metadata_tests {
 
     #[test]
     fn formats_units_with_nearest_rounding_and_trimmed_trailing_zeroes() {
-        let gib = Unit { name: "GiB".into(), factor: 1024.0 * 1024.0 * 1024.0, decimals: 2, rounding: Rounding::Nearest };
-        assert_eq!(gib.number(1073741831.0), "1");
-        assert_eq!(gib.display(536870912.0), "0.5 GiB");
-        assert_eq!(gib.display(268435456.0), "0.25 GiB");
-        assert_eq!(gib.number(-0.0), "0");
-        let tenths = Unit { name: "GiB".into(), factor: 1024.0 * 1024.0 * 1024.0, decimals: 1, rounding: Rounding::Nearest };
-        assert_eq!(tenths.display(1342177280.0), "1.3 GiB");
+        let gb = Unit { name: "GB".into(), factor: 1_000_000_000.0, decimals: 2, rounding: Rounding::Nearest };
+        assert_eq!(gb.number(1073741824.0), "1.07");
+        assert_eq!(gb.display(500000000.0), "0.5 GB");
+        assert_eq!(gb.display(250000000.0), "0.25 GB");
+        assert_eq!(gb.number(-0.0), "0");
+        let tenths = Unit { name: "GB".into(), factor: 1_000_000_000.0, decimals: 1, rounding: Rounding::Nearest };
+        assert_eq!(tenths.display(1342177280.0), "1.3 GB");
     }
 }
