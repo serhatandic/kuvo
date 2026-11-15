@@ -43942,7 +43942,7 @@ import fs140 from "node:fs";
 import path148 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "fd8796fe53a5";
+var BRIDGE_VERSION = "edcc306f8f62";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -51381,7 +51381,7 @@ function keepSshAgents(watch = watchFolder) {
 var VAULT_SOCKET = path169.join(RUN, "vault.sock");
 var holding4 = false;
 var holdsVault = () => holding4;
-var heldHere = (route) => /^kuvo\/(vault|sandbox\/(asks|tools|allowed|stopped)|settings\/[^/?]+)(\/|\?|$)/.test(route);
+var heldHere = (route) => /^kuvo\/(vault|sandbox\/(asks|tools|allowed|stopped)|settings\/[^/?]+(\/[^/?]+\/[^/?]+)?(\?|$))(\/|\?|$)/.test(route);
 var MOST4 = 8 * 1024 * 1024;
 var KEY3 = "x-kuvo-vault-key";
 var AUTH = "x-kuvo-vault-auth";
@@ -55164,11 +55164,12 @@ var SECTIONS = [
   }
 ];
 function revised(row) {
-  const action = (each) => each && { id: each.id, can: each.can, opens: each.opens };
+  const can = (value) => value === undefined ? undefined : value === true;
+  const action = (each) => each && { id: each.id, can: can(each.can), opens: each.opens };
   const governs = {
     kind: row.kind,
     value: row.kind === "secret" ? undefined : row.value,
-    can: row.can,
+    can: can(row.can),
     set: row.set,
     choices: row.choices?.map((choice) => choice.id),
     actions: row.actions?.map(action),
@@ -55271,9 +55272,11 @@ async function permissionsPage(context) {
     const can = listed ? true : { why: NOT_A_LIST };
     const rows = ACTIONS.map((action) => {
       const chosen = choiceIn(rules, action.id);
+      const ownDefault = chosen === engineDefault(action.id);
       const choices = [
-        ...EFFECTS.map((effect) => effect.id === engineDefault(action.id) ? { ...effect, title: `${effect.title} (Default)` } : effect),
-        ...chosen && !EFFECTS.some((effect) => effect.id === chosen) ? [{ id: chosen, title: "Set by a Newer Engine" }] : []
+        ...EFFECTS.map((effect) => effect.id !== engineDefault(action.id) ? effect : ownDefault ? { ...effect, title: `${effect.title} (Your Rule)`, line: "Applies in every mode, Plan mode too." } : { ...effect, title: `${effect.title} (Default)` }),
+        ...chosen && !EFFECTS.some((effect) => effect.id === chosen) ? [{ id: chosen, title: "Set by a Newer Engine" }] : [],
+        ...ownDefault ? [{ id: "default", title: `${EFFECTS.find((effect) => effect.id === chosen).title} (Default)` }] : []
       ];
       if (!listed)
         return row({ id: `when-${action.id}`, title: action.title, ..."line" in action ? { line: action.line } : {}, kind: "status", value: "Set in Its Settings File", can });
@@ -55368,8 +55371,10 @@ async function permissionsChange(context, at, value) {
         return { status: 403, message: NOT_A_LIST };
       if ((choiceIn(was ?? [], action) ?? engineDefault(action)) !== at.value)
         return STALE;
+      if (value === at.value)
+        return null;
       const items = (Array.isArray(was) ? was : []).filter((each) => !(isRule2(each) && each.action === action && each.resource === "*"));
-      if (value !== engineDefault(action))
+      if (value !== "default" && value !== engineDefault(action))
         items.unshift({ action, resource: "*", effect: value });
       if (sortedJSON(items) === sortedJSON(was ?? []))
         return null;
@@ -55540,9 +55545,10 @@ async function* settingsPageRoute(context, match) {
   }
   if (!holdsVault()) {
     const answer = await askHolder(request, signal);
-    if (!answer)
-      return yield* json(503, { message: "This computer's box isn't running its own process: try again in a moment." });
-    return yield* [{ head: { status: answer.status, headers: { "content-type": answer.type || "application/json" } } }, { body: Buffer.from(answer.body, "base64") }];
+    if (answer) {
+      const body = answer.status === 404 && !/"message"/.test(Buffer.from(answer.body, "base64").toString()) ? Buffer.from(JSON.stringify({ message: "This computer's box is updating: try again in a moment." })) : Buffer.from(answer.body, "base64");
+      return yield* [{ head: { status: answer.status, headers: { "content-type": answer.type || "application/json" } } }, { body }];
+    }
   }
   const body = parsed(request.body);
   const given = isObject(body) ? body : {};

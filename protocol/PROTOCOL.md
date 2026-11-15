@@ -7802,7 +7802,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
   way there. A box newer than a client may send a kind the client doesn't know: it draws the row's
   title and line, and says a newer Kuvo Code changes it. `revision` is a hash of what the row is
   and what governs whether it can be changed (its value, `can`, its choices' and actions' ids, a
-  list's items' revisions; a `secret`'s, whether one is set), never its words: the same value set
+  list's items' revisions; a `secret`'s, whether one is set; whether `can` holds, not its why), never its words: the same value set
   again, a computer renamed or a line reworded leaves it.
 - `PATCH kuvo/settings/<section> {row, value, was}`: one row changed, `was` its `revision` as read.
   The answer is the page again (`200`), or a refusal in the box's words: `400` for a value that
@@ -7815,7 +7815,8 @@ so a client still on those (the phone) sees every change kept just as they keep 
   `page` is what marks a stale answer, and its `message` is words to show.
   A box makes one change to a section at a time, each checked against the page as it is then, in
   its long-running process whichever process is asked (`box route` over SSH passes a change on to
-  it, as it does Also Allowed; with that process not running, `503` in words).
+  it, as it does Also Allowed; on a machine with none running, reached over SSH alone, the process
+  asked makes it).
 - `POST kuvo/settings/<section>/<row>/<action> {was}`: what a row (or a list's item) offers, the
   same answers; `400` for one that `opens`, which the client opens itself.
 - `GET kuvo/settings/<section>/events`: the page, a line now and one each time it changes (a change
@@ -7835,7 +7836,9 @@ The sections now:
   a `choice` of `allow`, `ask` or `deny`, the one that applies with no rule titled `(Default)`: a rule
   for everything at the front of the engine's `permissions` in `kuvo/config`, the rest left as they
   are; picking the default takes that rule away (none is ever written for it, so the engine's own,
-  Plan mode not editing, still apply), and picking what applies already writes nothing),
+  Plan mode not editing, still apply), and picking what applies already writes nothing. A rule of
+  yours that says what applies anyway (it holds in Plan mode too) is titled `(Your Rule)`, with
+  `default` beside it to take it away),
   Sandbox (`sandbox`: its state, and its button as `kuvo/sandbox` names it, done by the route it
   names: `retry` and `fix` check it again; `restartEngine` restarts the engine, asked first where
   that stops work, on a Mac only while its keeper runs the box, the app restarting it otherwise

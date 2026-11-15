@@ -24,7 +24,7 @@ const noEngine = () => { throw new Error("The engine isn't running.") }
 const handler = engineHandler(noEngine as any, { name: "devbox" }, noEngine as any)
 // The box's long-running process, which keeps Also Allowed (vault/holder.ts), keeping no
 // conversation's SSH agent (there are none).
-const held = holdVault(handler, () => () => {})
+let held = holdVault(handler, () => () => {})
 // A project and a folder of its, as Also Allowed keeps them.
 const outside = realpathSync(mkdtempSync(join(tmpdir(), "kuvo-settings-pages-")))
 afterAll(() => {
@@ -207,10 +207,18 @@ test("picking what an action does with no rule writes none, so Plan mode's own r
   const same = await change("permissions", edit, "allow")
   expect(same.status).toBe(200)
   expect(readFileSync(CONFIG_FILE, "utf8")).toBe(untouched)
-  // A rule for edits written by hand that allows them everywhere: picking Allow takes it away
-  // (the engine's own rules then apply), never one written for it.
+  // A rule of yours for edits that allows them everywhere (the Mac's Settings wrote one): shown apart
+  // from the default, which applies in Plan mode too; picking Allow again keeps it, the default
+  // takes it away (the engine's own rules then apply), never writing one for it.
   write(CONFIG_FILE, { permissions: [{ action: "edit", resource: "*", effect: "allow" }, { action: "shell", resource: "git push *", effect: "ask" }] })
-  await change("permissions", rowOf(await page("permissions"), "when-edit"), "allow")
+  const own = rowOf(await page("permissions"), "when-edit")
+  expect(own.value).toBe("allow")
+  expect(own.choices.map((choice: any) => [choice.id, choice.title])).toEqual([["allow", "Allow (Your Rule)"], ["ask", "Ask First"], ["deny", "Don't Allow"], ["default", "Allow (Default)"]])
+  expect(own.revision).not.toBe(edit.revision)
+  const kept = readFileSync(CONFIG_FILE, "utf8")
+  await change("permissions", own, "allow")
+  expect(readFileSync(CONFIG_FILE, "utf8")).toBe(kept)
+  await change("permissions", rowOf(await page("permissions"), "when-edit"), "default")
   expect(JSON.parse(readFileSync(CONFIG_FILE, "utf8")).permissions).toEqual([{ action: "shell", resource: "git push *", effect: "ask" }])
   // Don't Allow, then back: the rule comes and goes.
   await change("permissions", rowOf(await page("permissions"), "when-edit"), "deny")
@@ -322,6 +330,16 @@ test("over SSH, two changes to one row from the same reading go through one proc
   const done = await boxRoute("PATCH", "kuvo/settings/permissions", { row: "other-computers", value: false, was: rowOf(permissions, "other-computers").revision })
   expect(done.status).toBe(200)
   expect(rowOf(done.json, "other-computers").line).toBe("Their bots and agents can start sessions on devbox.")
+  // With no long-running process (a machine reached over SSH alone): made by the one asked.
+  held.close()
+  try {
+    const engine = rowOf((await boxRoute("GET", "kuvo/settings/browser")).json, "search-engine")
+    const alone = await boxRoute("PATCH", "kuvo/settings/browser", { row: engine.id, value: "ecosia", was: engine.revision })
+    expect(alone.status).toBe(200)
+    expect((await ask(handler, "GET", "kuvo/browser/settings")).json.searchEngine).toBe("ecosia")
+  } finally {
+    held = holdVault(handler, () => () => {})
+  }
 })
 
 test("the sandbox's row is what kuvo/sandbox says, and its button does what that names", async () => {

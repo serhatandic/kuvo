@@ -52,9 +52,11 @@ const SECTIONS: SettingsSection[] = [
  * `can`, its choices' and actions' ids, a list's items' revisions), never its words, so a computer
  * renamed or a line reworded changes none. A `secret`'s, of whether one is set (it has no value). */
 function revised<Row extends Omit<SettingItem, "revision"> & { items?: readonly SettingItem[] }>(row: Row): Row & { revision: string } {
-  const action = (each: SettingAction | undefined) => each && { id: each.id, can: each.can, opens: each.opens };
+  // (Whether it can be, not why not: a why names the computer.)
+  const can = (value: SettingCan | undefined) => (value === undefined ? undefined : value === true);
+  const action = (each: SettingAction | undefined) => each && { id: each.id, can: can(each.can), opens: each.opens };
   const governs = {
-    kind: row.kind, value: row.kind === "secret" ? undefined : row.value, can: row.can, set: row.set,
+    kind: row.kind, value: row.kind === "secret" ? undefined : row.value, can: can(row.can), set: row.set,
     choices: row.choices?.map(choice => choice.id), actions: row.actions?.map(action),
     start: action(row.start), section: row.section, address: row.address, name: row.name,
     items: row.items?.map(each => each.revision), add: action((row as { add?: SettingAction }).add),
@@ -176,10 +178,16 @@ async function permissionsPage(context: RouteContext): Promise<SettingsPage> {
       const chosen = choiceIn(rules, action.id);
       // What it does with no rule of yours is marked: picking that takes your rule away, so the
       // engine's own rules (Plan mode doesn't edit) stay.
+      // A rule of yours that says what applies anyway still counts in every mode (Plan mode edits
+      // under an Allow of yours): shown apart, with the default to take it away.
+      const ownDefault = chosen === engineDefault(action.id);
       const choices = [
-        ...EFFECTS.map(effect => (effect.id === engineDefault(action.id) ? { ...effect, title: `${effect.title} (Default)` } : effect)),
+        ...EFFECTS.map(effect => effect.id !== engineDefault(action.id) ? effect
+          : ownDefault ? { ...effect, title: `${effect.title} (Your Rule)`, line: "Applies in every mode, Plan mode too." }
+          : { ...effect, title: `${effect.title} (Default)` }),
         // (One a newer engine set, shown as it is, and kept unless another is picked.)
         ...(chosen && !EFFECTS.some(effect => effect.id === chosen) ? [{ id: chosen, title: "Set by a Newer Engine" }] : []),
+        ...(ownDefault ? [{ id: "default", title: `${EFFECTS.find(effect => effect.id === chosen)!.title} (Default)` }] : []),
       ];
       if (!listed) return row({ id: `when-${action.id}`, title: action.title, ...("line" in action ? { line: action.line } : {}), kind: "status", value: "Set in Its Settings File", can });
       return row({ id: `when-${action.id}`, title: action.title, ...("line" in action ? { line: action.line } : {}), kind: "choice", value: chosen ?? engineDefault(action.id), choices, can });
@@ -268,10 +276,11 @@ async function permissionsChange(context: RouteContext, at: SettingItem, value: 
       if (was !== null && !Array.isArray(was)) return { status: 403, message: NOT_A_LIST };
       // (This one changed since it was read, by hand or another client: refused, the page now.)
       if ((choiceIn(was ?? [], action) ?? engineDefault(action)) !== at.value) return STALE;
-      // What it does with no rule: none (yours taken away, never one written for it). Nothing
-      // written where nothing changes.
+      // Picking what applies already writes nothing (a rule of yours that says it stays); the
+      // default takes yours away, never writing one for it.
+      if (value === at.value) return null;
       const items = (Array.isArray(was) ? was : []).filter((each: unknown) => !(isRule(each) && each.action === action && each.resource === "*"));
-      if (value !== engineDefault(action)) items.unshift({ action, resource: "*", effect: value });
+      if (value !== "default" && value !== engineDefault(action)) items.unshift({ action, resource: "*", effect: value });
       if (sortedJSON(items) === sortedJSON(was ?? [])) return null;
       const written = await asked(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["permissions"], value: items.length ? items : null, was }] });
       if (written.status === 409 && written.value?.problem === undefined && written.value?.message === CHANGED_SINCE) continue;
@@ -428,11 +437,17 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
     return yield* json(405, { message: rowPart !== undefined ? "Do it with POST." : "Read it with GET, or change a row with PATCH." });
   }
   // Made by the box's long-running process, whichever is asked (`box route` over SSH passes it on),
-  // so every change to a section is checked in turn against the page as it is then.
+  // so every change to a section is checked in turn against the page as it is then. With none
+  // running (a machine with no phones, peers or vault, reached over SSH alone), here.
   if (!holdsVault()) {
     const answer = await askHolder(request, signal);
-    if (!answer) return yield* json(503, { message: "This computer's box isn't running its own process: try again in a moment." });
-    return yield* [{ head: { status: answer.status, headers: { "content-type": answer.type || "application/json" } } }, { body: Buffer.from(answer.body, "base64") }];
+    if (answer) {
+      // (A holder from before this, as the box updates, has no such route: said in words.)
+      const body = answer.status === 404 && !/"message"/.test(Buffer.from(answer.body, "base64").toString())
+        ? Buffer.from(JSON.stringify({ message: "This computer's box is updating: try again in a moment." }))
+        : Buffer.from(answer.body, "base64");
+      return yield* [{ head: { status: answer.status, headers: { "content-type": answer.type || "application/json" } } }, { body }];
+    }
   }
   const body = parsed(request.body);
   const given = isObject(body) ? body : {};
