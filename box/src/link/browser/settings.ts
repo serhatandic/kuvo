@@ -13,6 +13,8 @@ import { BROWSER_FOLDER } from "./history";
 
 const settingsFile = (folder: string) => path.join(folder, "settings.json");
 const keepsTabsFile = (folder: string) => path.join(folder, "keeps-agent-tabs");
+/** The files the settings are kept in: a client follows them changing (`kuvo/settings`). */
+export const browserSettingsFiles = (folder = BROWSER_FOLDER): string[] => [settingsFile(folder), keepsTabsFile(folder)];
 
 /** What `settings.json` keeps: each setting changed from its default. */
 interface Kept {

@@ -51,8 +51,9 @@ const covered = (theirs: string, method: string, route: string, body: string) =>
   `${theirs}\0${method.toUpperCase()}\0${route}\0${crypto.createHash("sha256").update(body).digest("base64url")}`;
 
 /** This process holds the vault from now on, answering the socket with `handle` (as a local request:
- * neither a phone nor this Mac's app, whatever it says). */
-export function holdVault(handle: LinkHandler): net.Server {
+ * neither a phone nor this Mac's app, whatever it says). `keepAgents`: what keeps each
+ * conversation's SSH agent (a test's keeps none). */
+export function holdVault(handle: LinkHandler, keepAgents: () => () => void = keepSshAgents): net.Server {
   holding = true;
   fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
   // Copies a box that ended mid-command left (it was killed): gone.
@@ -142,7 +143,7 @@ export function holdVault(handle: LinkHandler): net.Server {
   server.on("error", error => console.error(`The vault's socket (${VAULT_SOCKET}) couldn't listen: ${error.message}`));
   server.unref();
   // Each conversation's SSH agent, from the vault's SSH keys, while its commands are in the sandbox.
-  const stopAgents = keepSshAgents();
+  const stopAgents = keepAgents();
   server.on("close", stopAgents);
   return server;
 }
