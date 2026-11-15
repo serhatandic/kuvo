@@ -772,6 +772,11 @@ test("the primary's labels are this box's: added, renamed, recoloured and remove
   // Nor does a primary that tells no labels at all (a list it lost) take any away.
   receive(lab, { workQueue: telling([], { labels: [], primary: { key: first.pub, kind: "mac", since: 500 } }) });
   assert.deepEqual(await names(), ["lbl_old=Old", "lbl_review=Reviewing", "lbl_mine=Mine"]);
+  // Told the same again, nothing is written again: the labels' file is as it was.
+  const labelsFile = path.join(queues, "labels.json");
+  const written = fs.statSync(labelsFile).ino;
+  receive(lab, { workQueue: telling([], { labels: [], primary: { key: first.pub, kind: "mac", since: 500 } }) });
+  assert.equal(fs.statSync(labelsFile).ino, written);
   sent.length = 0;
 });
 

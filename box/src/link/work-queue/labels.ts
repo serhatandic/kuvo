@@ -88,7 +88,7 @@ const change = (work: (kept: Kept) => LabelOutcome): LabelOutcome => {
     const kept = readKept();
     const outcome = work(kept);
     const fromPrimary = kept.fromPrimary.filter(id => kept.labels.some(each => each.id === id));
-    if ("done" in outcome) writePrivate(LABELS_FILE, JSON.stringify({ labels: kept.labels, ...(fromPrimary.length ? { fromPrimary, ...(kept.primary ? { primary: kept.primary } : {}) } : {}) }));
+    if ("done" in outcome) writePrivate(LABELS_FILE, JSON.stringify({ labels: kept.labels, ...(fromPrimary.length ? { fromPrimary } : {}), ...(kept.primary ? { primary: kept.primary } : {}) }));
     return outcome;
   });
   // (Every queue's view names them.)

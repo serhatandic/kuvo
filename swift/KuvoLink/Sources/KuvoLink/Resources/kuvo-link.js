@@ -14492,7 +14492,7 @@ var change3 = (work) => {
     const outcome = work(kept);
     const fromPrimary = kept.fromPrimary.filter((id) => kept.labels.some((each) => each.id === id));
     if ("done" in outcome)
-      writePrivate(LABELS_FILE2, JSON.stringify({ labels: kept.labels, ...fromPrimary.length ? { fromPrimary, ...kept.primary ? { primary: kept.primary } : {} } : {} }));
+      writePrivate(LABELS_FILE2, JSON.stringify({ labels: kept.labels, ...fromPrimary.length ? { fromPrimary } : {}, ...kept.primary ? { primary: kept.primary } : {} }));
     return outcome;
   });
   if ("done" in outcome)
@@ -30961,7 +30961,7 @@ function runMacPeers() {
         try {
           handUpkeepSoon(readLink());
         } catch {}
-      settleStarted(() => atWorkForSure());
+      settleStarted(() => atWorkForSure(AbortSignal.timeout(1e4)));
     }, 3000)
   ];
   macLink.stopPeers = () => {
@@ -43827,7 +43827,7 @@ import fs139 from "node:fs";
 import path147 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "69e74627a6dd";
+var BRIDGE_VERSION = "aff6935cd5b7";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -56725,7 +56725,7 @@ async function run6() {
       try {
         handUpkeepSoon(readLink());
       } catch {}
-    settleStarted(() => atWorkForSure());
+    settleStarted(() => atWorkForSure(AbortSignal.timeout(1e4)));
   }, 3000);
   let attempt = 0;
   while (true) {

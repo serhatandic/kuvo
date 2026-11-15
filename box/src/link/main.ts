@@ -496,7 +496,7 @@ async function run(): Promise<void> {
     if (current?.welcomed) pushQueues(current, readLink(), peerTargets()).catch(() => {});
     else try { handUpkeepSoon(readLink()); } catch {}
     // (Once: what was being worked on when the Work Queue's items moved over to statuses.)
-    void settleStarted(() => atWorkForSure());
+    void settleStarted(() => atWorkForSure(AbortSignal.timeout(10_000)));
   }, 3_000);
 
   let attempt = 0;
