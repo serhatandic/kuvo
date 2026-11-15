@@ -560,8 +560,7 @@ async function run(): Promise<void> {
 }
 
 // `kuvo-link.js box <command>`: a Mac's way to a machine's own settings, over SSH, the same way a
-// phone's goes (one answer, JSON, on stdout). `adopt` (a seed on stdin), `read`, `change`
-// ({changes} on stdin), `key <name>` (its value on stdin; none removes it), `route` (a request,
+// phone's goes (one answer, JSON, on stdout). `adopt` (a seed on stdin), `key <name>` (its value on stdin; none removes it), `route` (a request,
 // {method, path, body?}, answered as a phone's is: {status, body}).
 async function box(command: string): Promise<void> {
   const input = async (): Promise<string> => {
@@ -591,17 +590,6 @@ async function box(command: string): Promise<void> {
       // whether or not this box has a bridge or starts its engine again. (Stays when adopting goes.)
       await upgradeIntegrations().catch(() => {});
       return say({ ...adopted, settings: readSettings().settings ?? adopted.settings });
-    }
-    // COMPAT(beta.1 box-read-change): `box read` and `box change`, which beta.1 runs over SSH (`box route` took their place). Goes when 0.8.0 ships.
-    case "read": {
-      const { settings, problem } = readSettings();
-      return say(problem ? { status: 409, message: problem } : { status: 200, settings, own: ownsSettings() });
-    }
-    case "change": {
-      let given: { changes?: unknown } | null = {};
-      try { given = JSON.parse(await input()); } catch {}
-      // (Checked there.)
-      return say(ownsSettings() ? changeSettings(given?.changes) : { status: 409, message: "This machine's settings aren't its own yet." });
     }
     case "key": {
       const name = process.argv[4];
@@ -687,7 +675,7 @@ async function box(command: string): Promise<void> {
       return say({ status: 200, ...met });
     }
     default:
-      console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | update-status | update-now");
+      console.error("Usage: kuvo-link.js box adopt | key <name> | route | reconnect <server> | personalities | update-status | update-now");
       process.exit(2);
   }
 }
@@ -946,7 +934,7 @@ async function setup(): Promise<void> {
         next.macSigns = { ...(next.macSigns ?? {}), [mac]: input.macSign };
         if (next.legacy) delete next.legacy[mac];
       } else if (Array.isArray(input.peers)) {
-        // COMPAT(beta.1 peers-list): the list of peers a beta.1 Mac's setup gives. Goes when 0.8.0 ships.
+        // COMPAT(beta.1 peers-list): the list of peers a beta.1 Mac's setup gives. Goes on the user's word, once no Mac from before 1.0 connects.
         // A Mac that signs none yet (0.8.0-beta.1): its peers as it lists them.
         takeLegacyPeers(next, mac, input.peers, typeof input.peersAt === "number" ? input.peersAt : (typeof input.at === "number" ? input.at : 0), input.moved);
       }
@@ -955,7 +943,7 @@ async function setup(): Promise<void> {
       for (const key of formerMacs) leaveMac(next, key);
     }
     if (typeof input.id === "string") next.id = input.id.slice(0, 200);
-    // COMPAT(0.7 visits): a Mac that doesn't say it `tolerates` newer boxes holds updates back. Goes 3 months after 0.8.0.
+    // COMPAT(0.7 visits): a Mac that doesn't say it `tolerates` newer boxes holds updates back. Goes on the user's word, once no Mac from before 1.0 connects.
     // Whether this Mac leaves a newer box as it is, by its ID (as its engine launches name it): the
     // box updates itself only while every Mac that started its engine lately does (PROTOCOL.md, "Updates").
     if (typeof input.macID === "string" && /^[A-Za-z0-9-]{1,100}$/.test(input.macID)) next.tolerantIDs = { ...(next.tolerantIDs ?? {}), [input.macID]: input.tolerates === 1 };

@@ -34989,11 +34989,6 @@ function handler(context) {
           await agent.signInWithKey(String(key ?? "").trim());
           return json15({});
         }
-        if (b === "update" && method === "POST") {
-          if (!agent.update || !agent.maintenance)
-            return error2(400, `Update ${agent.name} the way you installed it.`);
-          return json15({ data: await updateProgram(agent, () => roster.all(), maintainedNow) });
-        }
         if (b === "install" && method === "POST") {
           if (!agent.installProgram)
             return error2(400, `Install ${agent.name} the way its maker says.`);
@@ -36716,4 +36711,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 3ff25f5ad1b0b996f7853c4e6ae00c984b0526a57ae9b81b679e6c6c07135ad8
+// Built from Packages/Box/src/agents e78a27ee787b50710ca108b9f7e3fede0736841f05baf1234b4a522d59dd8ec5

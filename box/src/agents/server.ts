@@ -291,11 +291,6 @@ export function handler(context: Context) {
           await agent.signInWithKey(String(key ?? "").trim())
           return json({})
         }
-        // COMPAT(0.7 update-answer): its program updated, answered once it's done, for a client from before `api/kuvo/updates` (which answers at once). Goes 3 months after 0.8.0.
-        if (b === "update" && method === "POST") {
-          if (!agent.update || !agent.maintenance) return error(400, `Update ${agent.name} the way you installed it.`)
-          return json({ data: await updateProgram(agent, () => roster.all(), maintainedNow) })
-        }
         // Its program installed with its maker's installer (the command `metadata.install` shows),
         // as you'd run it in Terminal; then what it lists.
         if (b === "install" && method === "POST") {

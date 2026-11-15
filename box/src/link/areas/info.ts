@@ -61,7 +61,7 @@ function movingNow(): Extract<BoxInfo, { kind: "mac" }>["moving"] | null {
 }
 
 function machineInfo(engine: Partial<EngineRecord>, started: number | null, chats: string, agents: boolean, info: RouteContext["info"]): MachineInfo {
-  // COMPAT(0.7 engine-stop): `stopped`, an engine an older Mac's Stop left down. Goes 3 months after 0.8.0.
+  // COMPAT(0.7 engine-stop): `stopped`, an engine an older Mac's Stop left down. Goes on the user's word, once no Mac from before 1.0 connects.
   // Whether it runs now, and whether it's stopped on purpose (until it's started, from anywhere).
   const running = Boolean(engine.pid && runs(engine.pid, `${K}/engine/`));
   const stopped = fs.existsSync(path.join(RUN, "stopped"));

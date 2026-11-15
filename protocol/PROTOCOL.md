@@ -3083,9 +3083,10 @@ a browser's, itself).
 - **`GET kuvo/notices/events`**: the same, a line now and one each time it changes (NDJSON).
 - **A client** shows each notice of the categories that are news (`finished`, `failed`, `report`,
   `message`) once, by its `id`, and none of what was listed the first time it read a box (news from
-  before it was there). Where a box says `telling: false`, or answers 404 (one from before), the
-  client words its own as it did before. The Mac does so, each notification counted as shown
-  (`kuvo/attention`); a phone needn't, as each box pushes it its notices.
+  before it was there). Where a box says `telling: false` (a machine whose bridge isn't running),
+  it has no news to show until its bridge runs again: no client words a box's news itself (the
+  retired Mac app did, for a box from before `kuvo/notices` too; a box from before is held by the
+  update gate now). A phone is pushed each box's notices.
 - The box keeps them in `run/notices/told.json`: the news ten minutes, what agents sent a day.
 
 ## Messages in a session
@@ -3313,9 +3314,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     they start, `{data: {updating: [<agent>]}}` (`metadata.agent`), with `integration.updated`
     for each account with the program as it starts and as it ends (and `model.updated` once it
     updated). A client draws them, says an outcome once and then that it was seen. Update All on
-    the phone asks each computer. (An older client's `POST …/integration/<provider>/update` runs
-    the same update and answers once it's done, `{data: {updated, version?, message?}}`; a box
-    from before these has no `updateAll`, and a client asks it that way.) Installing done,
+    the phone asks each computer. Installing done,
     `integration.updated` and `model.updated` follow, and how an update went before is gone.
   - Signing in to an agent: `POST kuvo/agents/api/integration/<provider>/connect/oauth {methodID,
     remote}` → `{data: {attemptID, url, instructions, mode, acceptsCode?, userCode?, time}}`; `GET
@@ -3978,8 +3977,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     {"project"}` makes one of the project's repository on a branch of its own, named with the
     computer's branch prefix (Settings › Git, `branch_prefix` in `kuvo/config`, as git takes it in a
     name; none set: `kuvo/`) →
-    `{project, root, folder, branch, base?, made, prefix}` (an older Mac sends its own, "For
-    released Macs"); make the session in `folder`. `400`
+    `{project, root, folder, branch, base?, made, prefix}` (a prefix a client sends counts for
+    nothing); make the session in `folder`. `400`
     for a project that isn't a folder there, `409 {"message"}` when it isn't in a git repository,
     `503` while the engine isn't running. A repository with no commits yet gets an empty first one
     (bridge 0.9.198; what's staged stays staged), as a project the box makes does. `POST kuvo/worktrees/record {project, root, folder?,
@@ -7975,8 +7974,7 @@ box's routes, the same way from a Mac and from a phone (`kuvo/config`), one chan
 `run/.config.lock`. A Mac reaches any of a machine's routes that answer once (never a stream) over
 SSH: `kuvo-link.js box route` takes `{method, path, body?}` on stdin and prints `{status, body}`,
 answered as a phone's request is: once (a followed route's first line), and bytes that aren't text
-as `{status, bodyBase64, type}`. (`kuvo-link.js box read | change` are the same, for Kuvo Code
-0.8.0-beta.1, which uses them; `key` sets one of its keys.) This Mac's own settings are its box's too
+as `{status, bodyBase64, type}`. (`kuvo-link.js box key` sets one of its keys.) This Mac's own settings are its box's too
 ("This Mac's box").
 
 What some providers need from the engine until opencode handles it is each box's own too: a
@@ -9592,6 +9590,31 @@ them, and only for them, is here; the rest of this file is the protocol as it is
 for phones: the phone link has never been on in a release, so no phone needs an earlier shape of
 anything.
 
+**What 1.0 keeps of this.** Kuvo Code 1.0 takes the place of every one of those Macs' apps, straight
+from 0.7 (or the beta), and its apps bring each box up to date before using it ("The update gate"),
+so nothing is kept for a client meeting an older box. The other way round still happens, on a
+machine:
+- A machine set up by 0.5 to 0.7.2 has no bridge and can't update itself; it gets this box when the
+  first Mac with 1.0 connects. Another of your Macs still on 0.7 may connect to it after that.
+- A machine set up by 0.8.0-beta.1 has a bridge that updates itself from the newest release, so
+  it may carry this box before its Mac has taken 1.0.
+
+So what's kept is of two kinds, and only these:
+- **What keeps the box's work, files and peers right while such a Mac still connects** (its files
+  put over the box's, its Stop, its visits holding updates back, its list of peers). It goes on the
+  user's word, once no Mac from before 1.0 connects.
+- **What an earlier version left** on a machine or on this Mac, taken in or cleaned up once. On a
+  machine the box does it as it starts or as a Mac connects; on this Mac it's the box's move into
+  its own home that carries it ("Moving this Mac's box", #713), which is where each of those goes
+  as it's built.
+
+What only gave such a Mac its own screens and buttons against a newer box is gone: its Update
+button for an agent's program (`POST …/integration/<provider>/update` is no route now), the
+beta's `kuvo-link.js box read` and `box change` (its Settings for a machine read nothing until it
+updates), and the branch prefix it sent with a worktree (the computer's own names the branch). An
+item's marker says which kind it is; the dates below ("three months after 0.8.0", "once 0.8.0 is
+out") are from before 1.0 took 0.8.0's place and hold only until the item moves or goes as above.
+
 **Session lists.** A released Mac doesn't read `kuvo/sessions/list`: it works its lists out from
 the engine's `api/session` as it did, which the box answers as before; nothing here changes for it.
 A Kuvo Code from #668 on reads only the box's list, and brings an older box up to date before using
@@ -9675,25 +9698,17 @@ before connects (the box notes one: `run/attached`).
 - **Updates**: the newest release on GitHub (0.7.2) has no `boxes.json`, which a box takes as
   "current", not a failure, until a release that has one is the newest.
   <!-- compat: 0.7 no-boxes-json -->
-- **A box's news**: a box from before `kuvo/notices` (the bridges of 0.7.x and 0.8.0-beta.1
-  Macs) doesn't tell its news, so a Mac words the finished-run and group-chat notices for it
-  itself. The same wording also covers a machine whose bridge isn't running (`telling: false`,
-  "Notices"), which stays until a box tells its news without its bridge: removing it before then
-  loses those notices.
-  <!-- compat: 0.7 box-notices -->
 - **Plan limits from before `rows`** (#210): a client from before them (a released Mac, a phone)
   reads each box's own `accounts` and merges them itself. A box that let a peer's reading stand
   for a read of an account lists it there with that reading's numbers (`accounts`, "Plan limits"),
   so such a client doesn't show it stale or empty.
   <!-- compat: 0.7 limits-own-numbers -->
 - **Updating an agent's program**: such a Mac asks `POST kuvo/agents/api/integration/<provider>/update`
-  and waits for its answer, `{data: {updated, version?, message?}}`, so the agents bridge still
-  answers that once the update is done (the same update every client sees, "Installing and
-  updating an agent's program"). (The other way round, a client of this version meets no box from
-  before `kuvo/updates`: "The update gate". Coding agents still running a build from before it, as
-  they move to the new one, answer `404`, which a client says as "haven't moved to this version
-  yet", asking no program the old way.)
-  <!-- compat: 0.7 update-answer -->
+  and waits for its answer, which no box gives now (`404`): its Update button for an agent's
+  program says it couldn't, until that Mac updates. (The other way round, a client of this version
+  meets no box from before `kuvo/updates`: "The update gate". Coding agents still running a build
+  from before it, as they move to the new one, answer `404`, which a client says as "haven't moved
+  to this version yet", asking no program the old way.)
 
 **This Mac's own group chats, from 0.5 to 0.8.0-beta.1.** Those Macs ran their group chats in the
 app (`groups.json`, each chat's messages in `groups/<id>.json`). A Mac with this version moves
@@ -9715,29 +9730,26 @@ a chat deleted since it was taken stays deleted. It can go three months after 0.
 
 **What else an earlier Kuvo Code left on this Mac.** A Mac with this version takes it in once. It
 can go three months after 0.8.0 ships.
-- What it kept of machines' group chats (`machine-groups.json`, from 0.7.0), taken into the box's
-  own, and the old file deleted. <!-- compat: 0.7 machine-group-cache -->
-- Your personalities (`personalities.json`, `personalities-removed.json`), moved to the box's
-  library. A copy stays there, so going back to an earlier one finds them, and what it changed
-  there is taken in again as this one starts. <!-- compat: 0.7 mac-personalities -->
-- Machines' bots' keys of their own, which it kept in your Keychain: gone from the Keychain, as
-  its box starts (bots have no keys of their own now: "Bots have no keys of their own").
-  <!-- compat: 0.7 bot-keys-keychain -->
-- Edits to machines' bots it kept while they were away (`botEditOutbox` in its preferences, and
-  `botEditsWaiting` from before it): each handed to this Mac's box once at launch (`PATCH` or
-  `DELETE kuvo/bots/<id>?on=<machine>`), which holds it for that machine ("Held for another
-  computer"), then gone from the preferences; one the box can't keep now stays for the next launch.
-  <!-- compat: 0.7 mac-bot-edits -->
+- **Still to be carried by the box's move (#713)**: these three are what the retired Mac app did
+  as it opened, and nothing in the box does them yet. They're listed here, unmarked, until the move
+  carries each ("Moving this Mac's box"):
+  - Your personalities (`personalities.json`, `personalities-removed.json` in the app's folder),
+    moved to the box's library.
+  - Edits to machines' bots it kept while they were away (`botEditsWaiting` in its preferences, and
+    `botEditOutbox`, which builds after 0.8.0-beta.1 kept): each handed to this Mac's box once
+    (`PATCH` or `DELETE kuvo/bots/<id>?on=<machine>`), which holds it for that machine ("Held for
+    another computer"), then gone from the preferences.
+  - Machines' bots' keys of their own, which it kept in your Keychain: gone from the Keychain
+    (bots have no keys of their own now: "Bots have no keys of their own").
+- What it kept of machines' group chats as it last saw them (`machine-groups.json`, from 0.7.0),
+  what it learned of GitHub Copilot's Claude models (`copilotClaudeModels` in its preferences) and
+  the moves it ran itself (`movesUnderWay` there) aren't carried: each box keeps its own group
+  chats, learns its models' ways itself ("Settings per box"), and lifts a `moving` hold a move cut
+  short left in a folder as it starts (`kuvo/moves`). No client keeps a copy of a box's state.
 - The letters it sent its agents' way and those it had delivered (`agent-letters.json`,
   `agent-letters-seen.json`, 0.8.0-beta.1), and the messages it kept for a machine that was away
   (`agent-messages.json`), handed to the box's outbox (`kuvo/link/letters/take`).
   <!-- compat: beta.1 mac-letters -->
-- What it learned of GitHub Copilot's Claude models (`copilotClaudeModels` in its preferences),
-  which each box learns now ("Settings per box"): removed as the engine starts.
-  <!-- compat: 0.7 provider-compatibility -->
-- Moves it ran itself (`movesUnderWay` in its preferences), which each box runs now
-  (`kuvo/moves`): forgotten. A `moving` hold one cut short left in a folder is lifted by its box
-  as it starts. <!-- compat: 0.7 mac-moves-under-way -->
 - On a machine: letters its tools or link left in `run/outbox` for a Mac to collect over SSH,
   sent by the link as its own. <!-- compat: beta.1 outbox -->
 - On a machine: `run/mac-agents.json`, the agents a Mac wrote there over SSH, no longer read, and
@@ -9781,9 +9793,9 @@ can go three months after 0.8.0 ships.
 - It lets go of a machine's bots deleted there by `~/.kuvo-code/bots/deleted.json`, which the box
   keeps ("kuvo/bots").
   <!-- compat: beta.1 deleted-bots -->
-- It reads and changes a machine's settings with `kuvo-link.js box read` and `box change` over SSH
-  ("Settings per box"), which `box route` does for later Macs.
-  <!-- compat: beta.1 box-read-change -->
+- It reads and changes a machine's settings with `kuvo-link.js box read` and `box change` over SSH,
+  which no box has now (`box route` does it, "Settings per box"): that Mac's Settings for the
+  machine read and change nothing until it updates. The machine's settings stay as they are.
 - It runs moves itself, over SSH, and its peers document's `moved` says where each conversation it
   moves lives now. A box takes that word under its own boxes' ("Peers", `moved`).
   <!-- compat: beta.1 mac-moves -->
@@ -9791,9 +9803,9 @@ can go three months after 0.8.0 ships.
   route`), which the box names itself now: it's refused, and that Mac reads the machine's records
   again.
 - It sends its own branch prefix with each worktree (`POST kuvo/worktrees {"project",
-  "branchPrefix"}`): used as given. (A box from before kept the last one given in `box/git.json`
-  for a client that sent none: no longer read.)
-  <!-- compat: beta.1 worktree-prefix -->
+  "branchPrefix"}`): it counts for nothing, and the computer's own names the branch (Settings ›
+  Git there, `kuvo/` with none). (A box from before kept the last one given in `box/git.json` for a
+  client that sent none: no longer read.)
 - Its keeper's box, still running after an update until the work under way ends, and a machine's
   box from before #660, are held by the update gate ("The update gate"): no client of this version
   runs Kuvo Code's own tools, git or a file walk itself for them any more.

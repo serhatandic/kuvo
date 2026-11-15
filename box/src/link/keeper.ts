@@ -33,7 +33,7 @@ export function noLongerNeeded() {
 export function keepKeeper() {
   let start = path.join(K, "bin", "kuvo-start");
   if (!fs.existsSync(start)) return;
-  // COMPAT(0.7 keeper): the keeper started from its own copy (`bin/.kuvo-start-keeper`) when an older Mac's kuvo-start has no `keep)`. Goes 3 months after 0.8.0.
+  // COMPAT(0.7 keeper): the keeper started from its own copy (`bin/.kuvo-start-keeper`) when an older Mac's kuvo-start has no `keep)`. Goes on the user's word, once no Mac from before 1.0 connects.
   // An older Kuvo Code on a Mac (0.7 and before) put its own kuvo-start here, which only starts
   // the engine after a restart: the box's keeper, from the copy it keeps of itself (which puts
   // itself back).

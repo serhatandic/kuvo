@@ -7,7 +7,8 @@
 # A marker is a comment beside the code, `COMPAT(<version> <item>): what it does. Goes …`, whose
 # item PROTOCOL.md names in that section (`<!-- compat: <version> <item> -->`). Code needed by both
 # versions is marked for 0.7, which goes last. box/bridge-tests/compat.test.js holds
-# the markers and the list to each other.
+# the markers and the list to each other. The retired Mac app (swift/KuvoCode) isn't read: it's
+# reference only, and what it alone did for an earlier version is the box's move to carry (#713).
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -19,7 +20,7 @@ esac
 
 # The same files the test reads: the code as written (a bundle leaves comments out), new files too.
 git grep --untracked -n -I -E 'COMPAT\((0\.7|beta\.1) [a-z0-9-]+\)' -- \
-  'swift/KuvoCode' 'box/src' 'mac/helper/Sources' 'swift/OpenCodeKit/Sources' 'swift/KuvoClient/Sources' 'swift/KuvoLink/Sources' 'scripts' \
+  'box/src' 'mac/helper/Sources' 'swift/OpenCodeKit/Sources' 'swift/KuvoClient/Sources' 'swift/KuvoLink/Sources' 'scripts' \
   ':(exclude)box/dist/kuvo-agents.js' ':(exclude)box/dist/kuvo-browser.js' ':(exclude)scripts/compat.sh' |
   grep -E '^[^:]+\.(swift|ts|js|mjs|sh|py):' |
   awk -v want="$want" '

@@ -214,8 +214,8 @@ describe("updating the agents' programs", () => {
     const box = bridge([codex.account()])
     await box.accounts()
 
-    // An older client's update, answered once it's done: the client quits while it waits.
-    const waited = box.ask("integration/codex-quit-cli/update", "POST")
+    // Asked for, and answered as it starts: the client quits meanwhile.
+    expect((await box.ask("kuvo/updates/codex-quit-cli", "POST")).value.data).toEqual({ updating: ["codex-quit"] })
     // The same client opened again, or the phone.
     expect((await box.accounts())["codex-quit-cli"].programUpdate.state).toBe("updating")
     // Asked again meanwhile: the one under way.
@@ -225,7 +225,6 @@ describe("updating the agents' programs", () => {
     const ended = told("codex-quit-cli")
     codex.end({ updated: false, version: "1.0.0" })
     await ended
-    expect((await waited).value.data).toEqual({ updated: false, version: "1.0.0" })
     expect((await box.accounts())["codex-quit-cli"].programUpdate).toMatchObject({ state: "current", version: "1.0.0" })
   })
 

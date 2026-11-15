@@ -215,7 +215,7 @@ async function* add({ request, bridge, readEngine, json, signal }: RouteContext,
     const metadata = parts ? withParts(mark, parts) : withPartsOf(mark, given.text);
     return yield* added({ json }, target, session, given, { id, text: given.text, files, metadata }, shownAs(undefined));
   }
-  // COMPAT(0.7 own-envelope): one a client wrote the blocks of itself (`text`, no `again`). Goes 3 months after 0.8.0.
+  // COMPAT(0.7 own-envelope): one a client wrote the blocks of itself (`text`, no `again`). Goes in #717's next part.
   const delivery = given.delivery === "steer" ? "steer" : "queue";
   const base = new URL(`http://127.0.0.1:${target.port}/`);
   const headers = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` };
