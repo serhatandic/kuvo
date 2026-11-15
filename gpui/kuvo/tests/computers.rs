@@ -257,3 +257,24 @@ fn remove_waits_for_the_old_app_and_says_so(cx: &mut TestAppContext) {
     click(cx, "action-remove-button");
     assert!(!shown(cx, "computers-confirm") && stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").is_empty(), "nothing asked, nothing sent");
 }
+
+#[gpui::test]
+fn a_computer_whose_app_was_removed_says_so_and_is_allowed_again_from_its_page(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.block_vouching("key_devbox");
+    let (workspace, page, cx) = open(cx, stand_in.clone());
+    click(cx, "computer-key_devbox");
+    // The box's own words, and its own action: nothing is asked before the confirm's button.
+    let (_, words) = said(&page, cx, "notice-vouching").expect("the notice");
+    assert_eq!(words, "Kuvo on devbox was removed from your devices. devbox can’t add Kuvo Code’s app again until you allow it.");
+    click(cx, "action-allow-devices-button");
+    assert!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/allow-devices").is_empty(), "it asks first");
+    click(cx, "computers-confirm-go");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/allow-devices").len(), 1);
+    // Allowed: the list says so, and the notice and the action go.
+    workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
+    cx.run_until_parked();
+    assert!(!shown(cx, "action-allow-devices") && said(&page, cx, "notice-vouching").is_none());
+    // A computer that isn't blocked never shows either.
+    assert!(shown(cx, "action-remove"));
+}

@@ -3,7 +3,7 @@
 //! Dragging it moves the window.
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Styled, div, prelude::FluentBuilder as _, px,
+    AnyElement, AppContext as _, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Styled, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, IconName, StyledType, TypeSize,
@@ -15,7 +15,8 @@ use kuvo_ui::{
 use crate::area::{Area, Back, Forward, ShowComputers};
 use crate::areas::{Reading, computer_line};
 use crate::session_menu::{ActivePopover, title_anchored_popover};
-use crate::workspace::{BoxState, Workspace};
+use crate::workspace::{BoxState, Switch, Workspace};
+use kuvo_box::boxes::{Pairing, Reach, Row};
 use crate::{NewSession, rail, sidebar};
 
 /// How tall it is.
@@ -153,7 +154,7 @@ fn buttons(child: impl IntoElement) -> impl IntoElement {
 }
 
 /// The computer whose box the window shows, and how it stands; it opens the list of your computers.
-fn computer_switcher(workspace: &Workspace, cx: &App) -> AnyElement {
+fn computer_switcher(workspace: &Workspace, cx: &Context<Workspace>) -> AnyElement {
     let c = &cx.theme().colors;
     let name = workspace.box_name();
     let (dot, said) = match workspace.box_state() {
@@ -167,37 +168,93 @@ fn computer_switcher(workspace: &Workspace, cx: &App) -> AnyElement {
     let trigger = Button::new("computer-switcher", shown).ghost().size(ButtonSize::Small).icon(IconName::Computer).icon_after(IconName::ChevronDown);
     let menu_name = name.clone();
     // Your other computers, as the box lists them (`kuvo/computers`), each with how it's reached.
-    // The app shows this Mac's box only: they're listed, and switching to one isn't built yet.
+    // A workspace by itself shows its one box: they're listed, and can't be switched to.
     let others: Vec<(String, bool, String)> = match workspace.computers() {
         Reading::Ready(computers) => computers.iter().filter(|computer| !computer.here).map(|computer| (computer.name.clone(), computer.is_mac(), computer_line(computer))).collect(),
         _ => Vec::new(),
     };
+    let switching = workspace.switching().cloned();
+    let this = cx.entity().downgrade();
     div()
         .flex()
         .items_center()
         .gap(space::S1)
         .child(
             PopoverMenu::new("computer-menu", trigger, move |_, cx| {
-                let (name, said, others) = (menu_name.clone(), said.clone(), others.clone());
+                let (name, said, others, switching, this) = (menu_name.clone(), said.clone(), others.clone(), switching.clone(), this.clone());
                 cx.new(|cx| {
                     let mut entry = MenuEntry::new(name).icon(IconName::Computer).checked(true);
                     if let Some(said) = said {
                         entry = entry.detail(said);
                     }
                     let mut menu = Menu::new(cx).width(px(280.)).header("Shown in This Window").entry(entry);
-                    if !others.is_empty() {
-                        menu = menu.header("Your Other Computers");
-                        for (name, mac, line) in others {
-                            menu = menu.entry(MenuEntry::new(name).icon(if mac { IconName::Computer } else { IconName::Terminal }).detail(line).disabled(true));
+                    match switching {
+                        // Your computers as this app reaches them: one it reaches shows its
+                        // sessions here; one it doesn't says why, and isn't picked.
+                        Some(switching) => {
+                            let rest: Vec<&Row> = switching.rows.iter().filter(|row| Some(row.key()) != switching.shown.as_deref() && !(switching.shown.is_none() && row.reach == Reach::Nearest)).collect();
+                            if !rest.is_empty() {
+                                menu = menu.header("Your Other Computers");
+                            }
+                            for row in rest {
+                                let (key, this) = (row.key().to_owned(), this.clone());
+                                let can = row.usable() && !key.is_empty();
+                                menu = menu.entry(MenuEntry::new(row.computer.name.clone()).icon(if row.computer.is_mac() { IconName::Computer } else { IconName::Terminal }).detail(reach_line(row)).disabled(!can).on_select(move |_, cx| {
+                                    this.update(cx, |_, cx| cx.emit(Switch::To(key.clone()))).ok();
+                                }));
+                            }
+                            // Why your other computers aren't reached, in the box's words.
+                            match switching.pairing {
+                                Pairing::Waiting(why) | Pairing::Refused(why) => menu = menu.separator().entry(MenuEntry::new("Your other computers aren’t reached yet").detail(why).disabled(true)),
+                                Pairing::Removed(why) => {
+                                    let this = this.clone();
+                                    menu = menu.separator().entry(MenuEntry::new("This app was removed from your devices").detail(why).disabled(true)).entry(MenuEntry::new("Connect This App Again").on_select(move |_, cx| {
+                                        this.update(cx, |_, cx| cx.emit(Switch::PairAgain)).ok();
+                                    }));
+                                }
+                                Pairing::Paired | Pairing::NotAsked => {}
+                            }
+                            menu.separator().entry(MenuEntry::new("Show Computers").shortcut("⌃4").on_select(|window, cx| window.dispatch_action(Box::new(ShowComputers), cx)))
+                        }
+                        None => {
+                            if !others.is_empty() {
+                                menu = menu.header("Your Other Computers");
+                                for (name, mac, line) in others {
+                                    menu = menu.entry(MenuEntry::new(name).icon(if mac { IconName::Computer } else { IconName::Terminal }).detail(line).disabled(true));
+                                }
+                            }
+                            menu.separator()
+                                .entry(MenuEntry::new("Switching to another computer").detail("not in this app yet").disabled(true))
+                                .entry(MenuEntry::new("Show Computers").shortcut("⌃4").on_select(|window, cx| window.dispatch_action(Box::new(ShowComputers), cx)))
                         }
                     }
-                    menu.separator()
-                        .entry(MenuEntry::new("Switching to another computer").detail("not in this app yet").disabled(true))
-                        .entry(MenuEntry::new("Show Computers").shortcut("⌃4").on_select(|window, cx| window.dispatch_action(Box::new(ShowComputers), cx)))
                 })
             })
             .into_any_element(),
         )
         .children(dot.map(status_dot))
         .into_any_element()
+}
+
+/// How this app stands with one of your computers, in the switcher's words.
+pub fn reach_line(row: &Row) -> String {
+    match &row.reach {
+        Reach::Nearest => "This computer".into(),
+        Reach::Connected => {
+            let mut computer = row.computer.clone();
+            // (As this app found it: reached.)
+            computer.reach = "connected".into();
+            computer.here = false;
+            computer_line(&computer)
+        }
+        Reach::Connecting => "Connecting…".into(),
+        Reach::Held { .. } => "Needs an update".into(),
+        Reach::Away(_) => "Can’t be reached".into(),
+        Reach::NotPaired => "Hasn’t taken this app yet".into(),
+        Reach::Apart => if row.computer.shared { "Shared machine" } else { "Another setup’s" }.into(),
+        // The list itself says why where it can (it's away, it's older); else that this app has no
+        // way to it.
+        Reach::Unreached if row.computer.is_older() || row.computer.reach == "away" => computer_line(&row.computer),
+        Reach::Unreached => "Can’t be reached from this app".into(),
+    }
 }

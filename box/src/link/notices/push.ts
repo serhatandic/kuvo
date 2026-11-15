@@ -25,7 +25,8 @@ export interface PushHost {
  * again. */
 export function sendToPhones(host: PushHost | null | undefined, link: LinkState | null | undefined, notice: Notice): boolean {
   const usage = notice.category === "usage" && !!notice.data?.notice;
-  const phones = (link?.phones ?? []).filter((phone): phone is Phone & { address: string } => typeof phone.address === "string" && phone.address !== "");
+  // (Only phones: Apple has nothing for the desktop app's address.)
+  const phones = (link?.phones ?? []).filter((phone): phone is Phone & { address: string } => typeof phone.address === "string" && phone.address !== "" && phone.kind !== "desktop");
   const pending = usage ? phones.filter(phone => !usageSentTo(notice, phone.key)) : phones;
   if (!pending.length) return true;
   if (!host?.welcomed || !link?.key) return false;

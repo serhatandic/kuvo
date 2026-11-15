@@ -155,6 +155,25 @@ pub struct Computer {
     /// What can be done with it from this box now, in the box's order and words.
     #[serde(default, deserialize_with = "readable")]
     pub actions: Vec<ComputerAction>,
+    /// Where its box is on the relay, and which relay (`computers.reach`): one of your own
+    /// computers a paired device reaches directly. None for one that isn't yours.
+    #[serde(default)]
+    pub address: Option<String>,
+    #[serde(default)]
+    pub relay: Option<String>,
+    /// How its box stands with adding Kuvo Code's app to your devices (`devices.allow`), where the
+    /// main computer says: blocked after its app was removed, until you allow it again.
+    #[serde(default)]
+    pub vouching: Option<Vouching>,
+}
+
+/// Whether a computer's box may add the app beside it to your devices, in the box's words.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct Vouching {
+    #[serde(default)]
+    pub blocked: bool,
+    #[serde(default)]
+    pub words: String,
 }
 
 /** What can be done with a computer from the box that lists it, in the box's words. */
@@ -355,6 +374,12 @@ impl BoxClient {
     /// Reaches one of your computers that's away again, from the box asked.
     pub fn connect_computer(&self, key: &str) -> Result<()> {
         self.done(&Request::post(format!("kuvo/computers/{}/connect", segment(key)), serde_json::json!({})))
+    }
+
+    /// Lets a computer's box add Kuvo Code's app there to your devices again, after its app was
+    /// removed (asked of your setup's main computer).
+    pub fn allow_devices(&self, key: &str) -> Result<()> {
+        self.done(&Request::post(format!("kuvo/computers/{}/allow-devices", segment(key)), serde_json::json!({})))
     }
 
     /// Follows your computers: the list now, and again as it changes.

@@ -98,6 +98,16 @@ impl BoxClient {
         BoxClient { transport: Arc::new(transport), gate: Arc::new(Mutex::new((Gate::Unknown, 0))) }
     }
 
+    /// A box reached through a transport that's shared already.
+    pub fn over(transport: Arc<dyn Transport>) -> BoxClient {
+        BoxClient { transport, gate: Arc::new(Mutex::new((Gate::Unknown, 0))) }
+    }
+
+    /// How it's reached.
+    pub fn transport(&self) -> Arc<dyn Transport> {
+        self.transport.clone()
+    }
+
     /// This Mac's own box, as found under `home` (the user's home folder): its server, by its record.
     /// [`Error::NotRunning`] when Kuvo Code isn't running here.
     pub fn this_mac(home: &Path) -> Result<BoxClient> {

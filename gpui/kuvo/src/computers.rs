@@ -113,6 +113,7 @@ struct Manage {
 enum What {
     Connect,
     Remove,
+    AllowDevices,
 }
 
 impl What {
@@ -121,6 +122,7 @@ impl What {
         match self {
             What::Connect => "action-reconnect",
             What::Remove => "action-remove",
+            What::AllowDevices => "action-allow-devices",
         }
     }
 }
@@ -130,6 +132,9 @@ pub struct ComputersView {
     /// Run against a live box (off this thread), else at once (tests and shots).
     live: bool,
     computers: Reading<Vec<Computer>>,
+    /// Why this app doesn't reach your other computers (its pairing, as the box on this computer
+    /// said it): a title and the box's words, whole. None while it does.
+    pairing: Option<(String, String)>,
     /// The actions under way, by computer and row: their words meanwhile, and the work.
     busy: HashMap<(String, &'static str), (String, Task<()>)>,
     /// What the box last refused, in its words, over the page it was asked on.
@@ -162,6 +167,7 @@ impl ComputersView {
             client,
             live,
             computers: Reading::NotYet,
+            pairing: None,
             busy: HashMap::new(),
             problem: None,
             confirm: None,
@@ -211,6 +217,14 @@ impl ComputersView {
         }
     }
 
+    /// How this app's pairing stands, where it isn't paired: said over All and This Computer.
+    pub fn set_pairing(&mut self, pairing: Option<(String, String)>, cx: &mut Context<Self>) {
+        if self.pairing != pairing {
+            self.pairing = pairing;
+            self.rebuild(cx);
+        }
+    }
+
     pub fn set_computers(&mut self, computers: Reading<Vec<Computer>>, cx: &mut Context<Self>) {
         if self.computers != computers {
             self.computers = computers;
@@ -247,7 +261,7 @@ impl ComputersView {
     }
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
-        let items = match self.shown.clone() {
+        let mut items = match self.shown.clone() {
             Shown::All => self.all_items(),
             Shown::This => self.page_items(self.this()),
             Shown::Computer(key) => match self.other(&key) {
@@ -256,6 +270,9 @@ impl ComputersView {
             },
             Shown::Add => add_items(),
         };
+        if let (Some((title, words)), Shown::All | Shown::This) = (&self.pairing, &self.shown) {
+            items.insert(1.min(items.len()), Item::Notice { key: "notice-pairing".into(), tone: Tone::Attention, title: title.clone(), words: words.clone() });
+        }
         // Only the items that changed are laid out again; the rest keep their places and the page
         // keeps its scroll.
         if items != self.items {
@@ -331,8 +348,8 @@ impl ComputersView {
             } else {
                 items.push(Item::Working { count: working, open: computer.here });
                 if !computer.here {
-                    // Not built: a window that shows another computer's box (`BoxClient::machine`).
-                    items.push(Item::Note { key: "at-work-elsewhere".into(), words: "Opening another computer’s sessions isn’t in this app yet.".into(), busy: false });
+                    // (The window shows another computer from the title bar's computer menu.)
+                    items.push(Item::Note { key: "at-work-elsewhere".into(), words: format!("To open them, pick {name} in the computer menu at the top of the window."), busy: false });
                 }
             }
         }
@@ -357,6 +374,11 @@ impl ComputersView {
         ];
         let count = facts.len();
         items.extend(facts.into_iter().enumerate().map(|(ix, (key, title, value))| Item::Fact { key: key.into(), title: title.into(), value, first: ix == 0, last: ix + 1 == count }));
+        // Its app was removed from your devices, and its box may add none until you allow it: said
+        // in the main computer's words, above what can be done about it.
+        if let Some(vouching) = computer.vouching.as_ref().filter(|vouching| vouching.blocked) {
+            items.push(Item::Notice { key: "notice-vouching".into(), tone: Tone::Attention, title: format!("Kuvo Code’s app on {name} isn’t one of your devices"), words: vouching.words.clone() });
+        }
         // What can be done with it, as its box offers it here (`actions`), in its order and words.
         let actions: Vec<Offered> = computer
             .actions
@@ -372,6 +394,7 @@ impl ComputersView {
                     "rename" => ("action-rename", "Name".to_owned(), format!("{}…", action.label), None, why),
                     "connect" => (What::Connect.row(), "Connection".to_owned(), label, act(What::Connect), why),
                     "remove" => (What::Remove.row(), "Remove".to_owned(), label, act(What::Remove), why),
+                    "allow-devices" => (What::AllowDevices.row(), "Kuvo Code’s app there".to_owned(), label, act(What::AllowDevices), why),
                     _ => return None,
                 })
             })
@@ -409,6 +432,7 @@ impl ComputersView {
         let (words, work): (&str, Work) = match act.what {
             What::Remove => ("Removing…", Box::new(move |client| client.remove_computer(&act.key))),
             What::Connect => ("Connecting…", Box::new(move |client| client.connect_computer(&act.key))),
+            What::AllowDevices => ("Allowing…", Box::new(move |client| client.allow_devices(&act.key))),
         };
         self.problem = None;
         let on = self.shown.clone();

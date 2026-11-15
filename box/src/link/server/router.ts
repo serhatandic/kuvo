@@ -28,7 +28,7 @@ import { integrationsRoute } from "../areas/integrations";
 import { namedRoute } from "../areas/named";
 import { noticesRoute } from "../areas/notices";
 import { personalitiesDocumentRoute, personalityEventsRoute, personalityRoute } from "../areas/personalities";
-import { pairingRoute, phonesRemoveRoute, phonesRoute } from "../areas/phones";
+import { devicesPairRoute, pairingRoute, phonesRemoveRoute, phonesRoute } from "../areas/phones";
 import { QUEUE_ROUTE, queueRoute } from "../areas/queue";
 import { SESSION_ASKS_ROUTE, sessionAsksRoute } from "../areas/session-asks";
 import { GROUP_MENTIONS_ROUTE, MENTIONS_ROUTE, groupMentionsRoute, mentionsRoute } from "../areas/mentions";
@@ -134,6 +134,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route === "kuvo/phones", answer: phonesRoute },
   { when: route => route === "kuvo/phones/remove", answer: phonesRemoveRoute },
   { when: route => route === "kuvo/phones/pair", answer: pairingRoute },
+  { when: route => route === "kuvo/devices/pair", answer: devicesPairRoute },
   { when: route => route === "kuvo/link" || route.startsWith("kuvo/link/"), answer: linkRoute },
   { when: route => route === "kuvo/attention/notice" || route === "kuvo/attention/answered", answer: appNoticeRoute },
   { when: route => route === "kuvo/attention", answer: attentionRoute },
@@ -239,6 +240,8 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
     const json = (status: number, value: unknown): AnswerPiece[] => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
     // A phone using this machine, whatever it asks; not the app beside a Mac's own box.
     if (!request.fromApp) phoneHere();
+    // (What only the link says of a session: never a request's own word.)
+    if (phone?.kind === "desktop") request = { ...request, desktop: true };
     const route = request.path.split("?")[0];
     const context: RouteContext = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
     for (const { when, answer } of ROUTES) {

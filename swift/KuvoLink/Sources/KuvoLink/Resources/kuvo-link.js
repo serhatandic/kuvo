@@ -4540,11 +4540,15 @@ var FEATURES = [
   "btw",
   "btw.threads",
   "claude-code",
+  "clients.kind",
   "computers",
   "computers.facts",
   "computers.manage",
+  "computers.reach",
   "config",
   "config.apply",
+  "devices.allow",
+  "devices.pair",
   "engine.restart",
   "engine.start",
   "file",
@@ -17809,7 +17813,7 @@ function authorizePhone(key, hello, address) {
       delete link[slot];
       return link;
     }
-    pairPhone(link, { key: encoded, name: String(hello.name ?? "").slice(0, 100), added: Math.floor(Date.now() / 1000), from: "pair", address: address?.toString("base64url"), pairing: newPairing() });
+    pairPhone(link, { key: encoded, name: String(hello.name ?? "").slice(0, 100), added: Math.floor(Date.now() / 1000), from: "pair", address: address?.toString("base64url"), pairing: newPairing(), ...hello.client === "desktop" ? { kind: "desktop" } : {} });
     delete link[slot];
     paired = true;
     return link;
@@ -17827,20 +17831,58 @@ function noteRemoved(link, key, pairing) {
   if (!removedAlready(link, key, pairing))
     link.removed = [...link.removed, { key, pairing }].slice(-MOST_KEPT);
 }
+var MOST_BLOCKED = 64;
+function blockVoucher(link, phone, now) {
+  if (!phone.by)
+    return;
+  for (const other of link.phones ?? [])
+    if (other.by === phone.by && other.key !== phone.key)
+      noteRemoved(link, other.key, other.pairing ?? "");
+  link.phones = (link.phones ?? []).filter((each) => each.by !== phone.by);
+  link.vouchBlocked = [...(link.vouchBlocked ?? []).filter((each) => each.key !== phone.by), { key: phone.by, device: phone.name ?? "", at: now }].slice(-MOST_BLOCKED);
+}
+var vouchBlockOf = (link, key) => key ? (link?.vouchBlocked ?? []).find((each) => each.key === key) : undefined;
+function allowVouching(link, key) {
+  if (!vouchBlockOf(link, key))
+    return false;
+  link.vouchBlocked = link.vouchBlocked.filter((each) => each.key !== key);
+  if (!link.vouchBlocked.length)
+    delete link.vouchBlocked;
+  return true;
+}
 var fits2 = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING.test(entry.pairing));
-function takeOff(link, key, pairing) {
+function takeOff(link, key, pairing, now = Date.now()) {
   const current = (link.phones ?? []).find((phone) => phone.key === key);
   const which = pairing == null ? current?.pairing ?? "" : String(pairing);
   noteRemoved(link, key, which);
-  if (current && (current.pairing ?? "") === which)
-    link.phones = link.phones.filter((phone) => phone.key !== key);
+  if (!current || (current.pairing ?? "") !== which)
+    return;
+  link.phones = link.phones.filter((phone) => phone.key !== key);
+  blockVoucher(link, current, now);
 }
 var newPairing = () => crypto24.randomBytes(12).toString("base64url");
 function pairPhone(link, phone) {
   link.phones = [...(link.phones ?? []).filter((each) => each.key !== phone.key), phone];
 }
+var MOST_DESKTOPS = 16;
+function pairDevice(link, device, now = Date.now()) {
+  const known = (link.phones ?? []).find((phone) => phone.key === device.key);
+  if (known)
+    return { pairing: known.pairing ?? "" };
+  if ((link.removed ?? []).some((each) => each.key === device.key))
+    return { removed: true };
+  const blocked = vouchBlockOf(link, device.by);
+  if (blocked)
+    return { blocked: { device: blocked.device } };
+  if ((link.phones ?? []).filter((phone) => phone.kind === "desktop").length >= MOST_DESKTOPS)
+    return { full: true };
+  const pairing = newPairing();
+  pairPhone(link, { key: device.key, name: device.name, added: Math.floor(now / 1000), from: "pair", pairing, kind: "desktop", ...device.by ? { by: device.by } : {} });
+  return { pairing };
+}
 function removeAsMac(link, entries) {
-  if (!Array.isArray(entries) || !entries.length || entries.length > MOST_KEPT || !entries.every((entry) => fits2(entry, [])))
+  const macs = macsOf(link);
+  if (!Array.isArray(entries) || !entries.length || entries.length > MOST_KEPT || !entries.every((entry) => fits2(entry, macs)))
     return false;
   for (const entry of entries)
     takeOff(link, entry.key, entry.pairing);
@@ -17864,6 +17906,10 @@ function foldPhones(link, now = Date.now()) {
       if (fits2(entry, macs) && typeof entry.pairing === "string")
         noteRemoved(link, entry.key, entry.pairing);
     }
+  }
+  for (const phone of [...link.phones ?? []]) {
+    if (phone.from === "pair" && link.phones.includes(phone) && removedAlready(link, phone.key, phone.pairing ?? ""))
+      blockVoucher(link, phone, now);
   }
   const known = new Map((link.phones ?? []).map((phone) => [phone.key, phone]));
   const signed = macs.filter((mac) => macDoc(link, mac, "phones"));
@@ -17891,7 +17937,8 @@ function foldPhones(link, now = Date.now()) {
         from: "mac",
         mac,
         address: typeof phone.address === "string" && ADDRESS.test(phone.address) ? phone.address : known.get(phone.key)?.address,
-        pairing: typeof phone.pairing === "string" ? phone.pairing : ""
+        pairing: typeof phone.pairing === "string" ? phone.pairing : "",
+        ...phone.kind === "desktop" ? { kind: "desktop" } : {}
       });
     }
   }
@@ -17906,7 +17953,7 @@ function foldPhones(link, now = Date.now()) {
   link.phones = listed;
 }
 var ownPhones = (link) => ({
-  phones: (link.phones ?? []).filter((phone) => phone.from === "pair").map((phone) => ({ key: phone.key, name: phone.name ?? "", ...phone.address ? { address: phone.address } : {}, pairing: phone.pairing ?? "" })),
+  phones: (link.phones ?? []).filter((phone) => phone.from === "pair").map((phone) => ({ key: phone.key, name: phone.name ?? "", ...phone.address ? { address: phone.address } : {}, pairing: phone.pairing ?? "", ...phone.kind === "desktop" ? { kind: "desktop" } : {} })),
   removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing }))
 });
 function confirmPhone(phone) {
@@ -27899,6 +27946,7 @@ import fs99 from "node:fs";
 import path103 from "node:path";
 var FORWARD_FEATURE = "work-queue.forward";
 var takesForwarded = (key, feature = FORWARD_FEATURE) => (readPeerAgents()[key]?.features ?? []).includes(feature);
+var AREA_FEATURES = { computers: "computers.manage", devices: "devices.pair" };
 var FORWARDS = path103.join(WORK_QUEUE2, "forward");
 var DONE_FILE = path103.join(WORK_QUEUE2, "acted.json");
 var ID2 = /^wqa_[A-Za-z0-9_-]{16,40}$/;
@@ -27923,7 +27971,7 @@ var read2 = (file) => {
 };
 async function forwardAct(computer, named, act, signal, link = readLink(), now = Date.now()) {
   const peer = peersOf(link).find((each) => each.key === computer.key);
-  if (!peer || !takesForwarded(peer.key, act.area === "computers" ? "computers.manage" : FORWARD_FEATURE) || sharedMachine(link))
+  if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE) || sharedMachine(link))
     return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
   const here = ownName();
   if (awaySince(peer.key) !== null)
@@ -28159,7 +28207,7 @@ async function takeAct(sender, given, reply, run, now = Date.now()) {
     return answer(mine.answer);
   }
   const kept = changes ? readDone(now).get(key) : undefined;
-  const redo = kept !== undefined && kept.answer === null && act.area === "computers";
+  const redo = kept !== undefined && kept.answer === null && act.area !== undefined;
   if (kept && !redo) {
     const value = kept.answer ?? { status: 409, value: { message: `${here} stopped while it was doing this, so it can't tell whether it was done. Look again in a moment.` } };
     did.set(key, { until: kept.until, answer: value, answered: now });
@@ -28196,12 +28244,126 @@ var actOf = (given) => {
     return null;
   const { method, action, name } = given;
   const fits = method === "GET" && action === undefined || method === "DELETE" && action === undefined || method === "POST" && action === "restore" || method === "PATCH" && action === undefined || method === "GET" && action === "file" && typeof name === "string" && name.length > 0 && name.length <= 300;
-  if (!fits)
+  const devices = given.area === "devices" && method === "POST" && action === undefined;
+  if (!fits && !devices)
     return null;
-  if (given.area !== undefined && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined))
+  if (given.area !== undefined && !devices && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined))
     return null;
-  return { id: given.id, ...given.area === "computers" ? { area: "computers" } : {}, method, item: given.item, ...action ? { action } : {}, ...action === "file" ? { name } : {}, ...isObject(given.body) ? { body: given.body } : {}, at: given.at };
+  return { id: given.id, ...given.area === "computers" || given.area === "devices" ? { area: given.area } : {}, method, item: given.item, ...action ? { action } : {}, ...action === "file" ? { name } : {}, ...isObject(given.body) ? { body: given.body } : {}, at: given.at };
 };
+
+// box/src/link/peers/apart.ts
+var saysShared = (key, told = readPeerAgents()) => told[key]?.shared === true || toldShared(key) === true;
+function saysApart(key, given, link = readLink()) {
+  const setup = followedSetup(link);
+  return sharedMachine(link) || given.shared === true || toldShared(key) === true || !!setup && typeof given.setup === "string" && given.setup !== setup.id;
+}
+function isApart(key, link = readLink(), told = readPeerAgents()) {
+  const setup = followedSetup(link);
+  return sharedMachine(link) || saysShared(key, told) || !!setup && !!told[key]?.setup && told[key].setup !== setup.id;
+}
+
+// box/src/link/peers/devices.ts
+var DEVICES_FEATURE = "devices.pair";
+var namedDevice = (device) => device || "Kuvo Code's app";
+var blockedVouch = (device, computer, here) => ({
+  message: `${namedDevice(device)} on ${computer} was removed from your devices, so ${computer} can't add Kuvo Code's app by itself now. Allow it again from Kuvo Code on ${here} or another computer's app: Computers, ${computer}.`,
+  reason: "blocked"
+});
+var blockedWords = (device, computer) => `${namedDevice(device)} was removed from your devices. ${computer} can't add Kuvo Code's app again until you allow it.`;
+var MOST_NAME2 = 100;
+function givenDevice(given, link = readLink()) {
+  if (!isObject(given) || given.kind !== "desktop" || typeof given.name !== "string" || given.name.length > MOST_NAME2)
+    return null;
+  const boxes = link ? [...macsOf(link), ...peersOf(link).map((peer) => peer.key), ownKey(link) ?? ""] : [];
+  if (!fits2({ key: given.key }, boxes))
+    return null;
+  return { key: given.key, name: plainName(given.name).slice(0, MOST_NAME2), kind: "desktop" };
+}
+var answer2 = (status, value) => ({ status, value });
+var REMOVED2 = { message: "This app was removed from your devices.", reason: "removed" };
+var NOT_GIVEN = { message: "Send the app's key (key), its name (name, up to 100 characters) and what it is (kind: desktop)." };
+var switchOff = () => IS_MAC && !macLink.config?.phones;
+var switchOffWords = () => ({ message: `“Let my devices connect” is off on ${ownName()}.` });
+function pairHere(device, by) {
+  if (switchOff())
+    return answer2(409, switchOffWords());
+  let made = null;
+  let fresh = false;
+  updateLink((link) => {
+    if (!link?.relay || !link.secret)
+      return null;
+    const before = (link.phones ?? []).length;
+    made = pairDevice(link, { ...device, ...by ? { by: by.key } : {} });
+    fresh = (link.phones ?? []).length !== before;
+    return fresh ? link : null;
+  });
+  const paired = made;
+  if (!paired)
+    return answer2(409, { message: IS_MAC ? `${ownName()} isn't ready for your devices yet. Try again in a moment.` : "This machine has no relay to pair through." });
+  if ("removed" in paired)
+    return answer2(409, REMOVED2);
+  if ("blocked" in paired)
+    return answer2(409, blockedVouch(paired.blocked.device, by?.name || "that computer", ownName()));
+  if ("full" in paired)
+    return answer2(409, { message: "You have as many desktop apps among your devices as Kuvo Code keeps. Remove one you no longer use, then try again." });
+  if (fresh) {
+    noteDocsChanged();
+    macLink.wake?.();
+  }
+  return answer2(200, { paired: true, pairing: paired.pairing });
+}
+var ownMachines = (link) => new Set(IS_MAC ? macPeersBody(link).boxes.filter((box) => box.kind === "machine").map((box) => box.key) : []);
+async function deviceAct(sender, act) {
+  const here = ownName();
+  const link = readLink();
+  const device = act.method === "POST" ? givenDevice({ key: act.item, ...act.body ?? {} }, link) : null;
+  if (!device)
+    return answer2(400, NOT_GIVEN);
+  const setup = followedSetup(link);
+  if (!link || setup?.role !== "primary")
+    return answer2(409, { message: `${here} isn't your setup's main computer, so it adds no devices for your other computers.` });
+  if (sharedMachine(link) || isApart(sender.key, link) || !ownMachines(link).has(sender.key))
+    return answer2(409, { message: `Only computers in ${here}'s own setup can add your devices.` });
+  return pairHere(device, { key: sender.key, name: peersOf(link).find((peer) => peer.key === sender.key)?.name || "that computer" });
+}
+async function pairDeviceFromHere(given, signal) {
+  const link = readLink();
+  const device = givenDevice(given, link);
+  if (!device)
+    return answer2(400, NOT_GIVEN);
+  if (sharedMachine(link))
+    return answer2(409, { message: "This computer is shared with another setup, so it can't add your devices by itself." });
+  if (switchOff())
+    return answer2(409, switchOffWords());
+  const main = mainElsewhere(link);
+  if (!main)
+    return pairHere(device);
+  const named = main.name || peersOf(link).find((peer) => peer.key === main.key)?.name || "your main computer";
+  if (link?.setup?.aside)
+    return answer2(409, { message: `${named} doesn't list this computer in its setup now, so it can't add your devices by itself.` });
+  const known = (link?.phones ?? []).find((phone) => phone.key === device.key);
+  if (known)
+    return answer2(200, { paired: true, pairing: known.pairing ?? "" });
+  if ((link?.removed ?? []).some((each) => each.key === device.key))
+    return answer2(409, REMOVED2);
+  const waiting = { message: `${named} isn't answering. This app reaches your other computers once it does.` };
+  const peer = peersOf(link).find((each) => each.key === main.key);
+  if (!peer)
+    return answer2(503, waiting);
+  if (!readPeerAgents()[main.key]?.features)
+    return answer2(503, waiting);
+  if (!takesForwarded(main.key, DEVICES_FEATURE))
+    return answer2(409, { message: `${named} needs a newer Kuvo Code to add this app to your devices. Update it, then try again.` });
+  const there = await forwardAct({ key: main.key, name: named, kind: "mac" }, device.name, { area: "devices", method: "POST", item: device.key, body: { name: device.name, kind: device.kind } }, signal, link);
+  if ("refused" in there)
+    return answer2(503, waiting);
+  const said = isObject(there.value) ? there.value : {};
+  if (there.status === 200 && said.paired === true && typeof said.pairing === "string")
+    return answer2(200, { paired: true, pairing: said.pairing });
+  const message = typeof said.message === "string" && said.message ? said.message.slice(0, 700) : `${named} didn't add this app to your devices.`;
+  return answer2(409, { message, ...said.reason === "removed" || said.reason === "blocked" ? { reason: said.reason } : {} });
+}
 
 // box/src/link/peers/manage.ts
 import fs103 from "node:fs";
@@ -28491,7 +28653,7 @@ function hostsWithoutApp() {
   const hosts = Object.entries(kept ?? {}).flatMap(([machine, { name, address, key, anotherMac }]) => typeof name === "string" && typeof address === "string" && typeof key === "string" ? [{ kind: "machine", name: peers.find((peer) => peer.key === key)?.name || name, address, key, relay, machine, anotherMac: anotherMac === true, removed: !saved.some((each) => each.destination === machine) }] : []);
   return { hosts: hosts.sort((one, other) => one.name < other.name ? -1 : one.name > other.name ? 1 : 0) };
 }
-var answer2 = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
+var answer3 = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
 async function appWithin(request, phone, signal, wait) {
   const late = new AbortController;
   const timer = setTimeout(() => late.abort(), wait);
@@ -28538,7 +28700,7 @@ async function* machinesFollowed(request, phone, signal, timing) {
       return;
     const own = machinesWithoutApp();
     if (!own)
-      return started ? undefined : yield* answer2(503, { message: UNREADABLE });
+      return started ? undefined : yield* answer3(503, { message: UNREADABLE });
     if (!started)
       yield head;
     started = true;
@@ -28557,7 +28719,7 @@ async function* machinesRoute(request, phone, signal, route, timing = TIMING) {
   const read = request.method.toUpperCase() === "GET";
   const main = read ? null : mainElsewhere(readLink());
   if (main)
-    return yield* answer2(409, addElsewhere(main));
+    return yield* answer3(409, addElsewhere(main));
   if (read && route === "kuvo/machines/events")
     return yield* machinesFollowed(request, phone, signal, timing);
   const response = read ? await appWithin(request, phone, signal, timing.wait) : await appAnswer(request, phone, signal);
@@ -28569,9 +28731,9 @@ async function* machinesRoute(request, phone, signal, route, timing = TIMING) {
     return;
   if (own) {
     const said = own();
-    return yield* answer2(said ? 200 : 503, said ?? { message: UNREADABLE });
+    return yield* answer3(said ? 200 : 503, said ?? { message: UNREADABLE });
   }
-  yield* answer2(503, { message: `${notOpen()}. Open it there, then try again.` });
+  yield* answer3(503, { message: `${notOpen()}. Open it there, then try again.` });
 }
 
 // box/src/link/mac/link.ts
@@ -28955,20 +29117,9 @@ async function* linkRoute(context) {
   return yield* macLinkRoute(route, request, signal);
 }
 
-// box/src/link/peers/apart.ts
-var saysShared = (key, told = readPeerAgents()) => told[key]?.shared === true || toldShared(key) === true;
-function saysApart(key, given, link = readLink()) {
-  const setup = followedSetup(link);
-  return sharedMachine(link) || given.shared === true || toldShared(key) === true || !!setup && typeof given.setup === "string" && given.setup !== setup.id;
-}
-function isApart(key, link = readLink(), told = readPeerAgents()) {
-  const setup = followedSetup(link);
-  return sharedMachine(link) || saysShared(key, told) || !!setup && !!told[key]?.setup && told[key].setup !== setup.id;
-}
-
 // box/src/link/peers/manage.ts
 var MANAGE_FEATURE = "computers.manage";
-var MOST_NAME2 = 100;
+var MOST_NAME3 = 100;
 function writerOf(link) {
   if (!link || sharedMachine(link))
     return null;
@@ -29041,13 +29192,16 @@ function actionsOf(computer, here, trying, link = readLink(), facts = writerFact
     const waits = waitsFor(computer, here, facts);
     actions.push({ id: "remove", label: "Remove", ...waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } } });
   }
+  if (computer.vouching?.blocked) {
+    actions.push({ id: "allow-devices", label: "Allow Its App Again", confirm: { title: `Let ${name} add Kuvo Code's app again?`, message: `Kuvo Code on ${name} can add itself to your devices again, and reach every computer of yours. What you removed stays removed.`, label: "Allow" } });
+  }
   return actions;
 }
 function givenName(name) {
   const clean = plainName(name);
-  return clean && clean.length <= MOST_NAME2 ? clean : null;
+  return clean && clean.length <= MOST_NAME3 ? clean : null;
 }
-var answer3 = (status, value) => ({ status, value });
+var answer4 = (status, value) => ({ status, value });
 function renameHere(key, name) {
   let found = false;
   updateLink((link) => {
@@ -29060,9 +29214,9 @@ function renameHere(key, name) {
     return link;
   });
   if (!found)
-    return answer3(404, { message: `That isn't one of ${ownName()}'s machines.` });
+    return answer4(404, { message: `That isn't one of ${ownName()}'s machines.` });
   macDocsChanged();
-  return answer3(200, { name });
+  return answer4(200, { name });
 }
 function removeHere(key) {
   let gone = [];
@@ -29084,12 +29238,12 @@ function removeHere(key) {
     return made.link;
   });
   if (!gone.length)
-    return already ? answer3(200, {}) : answer3(404, { message: `That isn't one of ${ownName()}'s machines.` });
+    return already ? answer4(200, {}) : answer4(404, { message: `That isn't one of ${ownName()}'s machines.` });
   if (id)
     forgetSaved(id);
   macDocsChanged();
   tellGone(gone);
-  return answer3(200, {});
+  return answer4(200, {});
 }
 function forgetSaved(id) {
   try {
@@ -29103,23 +29257,23 @@ async function writerAct(sender, act) {
   const link = readLink();
   const writer = writerOf(link);
   if (!writer?.here)
-    return answer3(409, { message: `${ownName()} doesn't keep your machines' records.` });
+    return answer4(409, { message: `${ownName()} doesn't keep your machines' records.` });
   if (isApart(sender.key, link))
-    return answer3(409, { message: "Only your own computers can rename and remove your machines." });
+    return answer4(409, { message: "Only your own computers can rename and remove your machines." });
   const target = peersOf(link).find((peer) => peer.key === act.item);
   if (target && isApart(target.key, link))
-    return answer3(409, { message: `${target.name} is shared with another setup: only ${ownName()} itself can ${act.method === "DELETE" ? "remove" : "rename"} it.` });
+    return answer4(409, { message: `${target.name} is shared with another setup: only ${ownName()} itself can ${act.method === "DELETE" ? "remove" : "rename"} it.` });
   if (target && act.method === "DELETE" && oldAppAttached())
-    return answer3(409, { message: oldAppWords(ownName(), target.name) });
+    return answer4(409, { message: oldAppWords(ownName(), target.name) });
   if (act.method === "PATCH") {
     const name = givenName(act.body?.name);
     if (!name)
-      return answer3(400, { message: `Give it a name of up to ${MOST_NAME2} characters.` });
+      return answer4(400, { message: `Give it a name of up to ${MOST_NAME3} characters.` });
     return renameHere(act.item, name);
   }
   if (act.method === "DELETE")
     return removeHere(act.item);
-  return answer3(405, { message: "Rename or remove." });
+  return answer4(405, { message: "Rename or remove." });
 }
 
 // box/src/link/work-queue/across.ts
@@ -29328,7 +29482,7 @@ async function takeWorkQueueMail(sender, given, host, places) {
   if (isObject(whole.acted))
     takeActed(sender, whole.acted);
   if (isObject(whole.act))
-    await takeAct(sender, whole.act, reply, (act) => act.area === "computers" ? writerAct(sender, act) : actForPeer(act, places().targets)).catch(() => {});
+    await takeAct(sender, whole.act, reply, (act) => act.area === "computers" ? writerAct(sender, act) : act.area === "devices" ? deviceAct(sender, act) : actForPeer(act, places().targets)).catch(() => {});
 }
 function itemsElsewhere(owner, link = readLink(), here, deleted, { asTold = false, linked = false } = {}) {
   if (!here || !deleted) {
@@ -36945,7 +37099,7 @@ function ask2(what, signal, patience = PATIENCE) {
     asked.need = oneLine(asked.need, 300);
   return book2.ask(asked, signal, patience);
 }
-var answer4 = book2.answer;
+var answer5 = book2.answer;
 function vaultAskNotice(asked) {
   const who = asked.botName ?? asked.sessionName ?? "An agent";
   const title = asked.kind === "use" ? `${who} wants to use ${asked.itemName ?? "an item"}` : `${who} needs ${asked.need ?? "something from your vault"}`;
@@ -37914,8 +38068,12 @@ async function* listRoute(context, match) {
   }
 }
 
+// box/src/link/server/context.ts
+var fromLocalApp = (request) => request.served === true && (request.fromApp === true || request.fromMac === true);
+var fromAPhone = (request) => request.fromMac !== true && request.fromApp !== true && request.desktop !== true;
+
 // box/src/link/areas/computers.ts
-var COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect)?)?$/;
+var COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect|\/allow-devices)?)?$/;
 var MOST_HERE = 100;
 var HEARD_LATELY2 = 30 * 60000;
 function systemName(platform = process.platform, read = (file) => fs122.readFileSync(file, "utf8")) {
@@ -37975,6 +38133,18 @@ async function limitsRead(bridge, signal) {
   }
   return read;
 }
+function ownAddress(link) {
+  try {
+    return link?.secret ? addressOf(Buffer.from(link.secret, "base64url")).toString("base64url") : undefined;
+  } catch {
+    return;
+  }
+}
+function reachOf(link, address) {
+  if (!link?.relay || !address || !ADDRESS.test(address) || sharedMachine(link))
+    return {};
+  return { address, relay: link.relay };
+}
 async function listComputers(name, bridge, signal, now = Date.now()) {
   let link = null;
   try {
@@ -37996,6 +38166,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
     shared: sharedMachine(link),
     reach: "connected",
     via: "here",
+    ...reachOf(link, ownAddress(link)),
     ...version ? { version } : {},
     ...engine ? { engine } : {},
     ...runs ? { system: runs } : {},
@@ -38013,6 +38184,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
     return withActions();
   const peers = peersOf(link);
   const reach = readReach();
+  const leads = followedSetup(link)?.role === "primary";
   const apart = new Set(peers.filter((peer) => isApart(peer.key, link, told)).map((peer) => peer.key));
   for (const peer of byName(peers)) {
     const said = told[peer.key];
@@ -38021,6 +38193,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
     const reaching = trying !== null && !(said?.heard !== undefined && said.heard >= trying);
     const mine = said?.computer && !apart.has(peer.key) ? said.computer : undefined;
     const features = said?.features && !said.featuresCut && !apart.has(peer.key) ? said.features : undefined;
+    const blocked = vouchBlockOf(link, peer.key);
     computers.push({
       key: peer.key,
       name: peer.name,
@@ -38030,10 +38203,12 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
       ...apart.has(peer.key) ? { apart: true } : {},
       reach: reaching ? "connecting" : away ? "away" : said?.heard === undefined ? "connecting" : "connected",
       via: "relay",
+      ...apart.has(peer.key) ? {} : reachOf(link, peer.address),
       ...mine ? { ...mine.version ? { version: mine.version } : {}, ...mine.engine ? { engine: mine.engine } : {}, ...mine.system ? { system: mine.system } : {} } : {},
       ...features ? { features } : {},
       ...mine?.working !== undefined ? away ? { working: 0, atWork: [] } : { working: mine.working, ...mine.atWork ? { atWork: mine.atWork } : {} } : {},
-      limits: limits.get(peer.key) ?? []
+      limits: limits.get(peer.key) ?? [],
+      ...leads && blocked && !apart.has(peer.key) ? { vouching: { blocked: true, words: blockedWords(blocked.device, peer.name) } } : {}
     });
   }
   for (const box of byName(vouchedOf(link, told))) {
@@ -38051,9 +38226,12 @@ var mtime = (file) => {
     return 0;
   }
 };
-async function* manage(context, key, connect) {
+async function* manage(context, key, action) {
   const { request, signal, json, info } = context;
   const method = request.method.toUpperCase();
+  if (action === "/allow-devices")
+    return yield* allowDevices(context, key);
+  const connect = action === "/connect";
   const what = connect ? method === "POST" ? "connect" : null : method === "PATCH" ? "rename" : method === "DELETE" ? "remove" : null;
   if (!what)
     return yield* json(405, { message: connect ? "Only POST." : "Rename (PATCH) or remove (DELETE)." });
@@ -38079,7 +38257,7 @@ async function* manage(context, key, connect) {
   }
   const name = what === "rename" ? givenName(parsed(request.body)?.name) : null;
   if (what === "rename" && !name)
-    return yield* json(400, { message: `Give it a name of up to ${MOST_NAME2} characters.` });
+    return yield* json(400, { message: `Give it a name of up to ${MOST_NAME3} characters.` });
   const link = readLink();
   const why = refusal(computer, what, here, link);
   if (why)
@@ -38094,10 +38272,36 @@ async function* manage(context, key, connect) {
     return yield* json(there.status, { message: there.refused });
   return yield* json(there.status, isObject(there.value) ? there.value : {});
 }
+async function* allowDevices(context, key) {
+  const { request, phone, signal, json, info } = context;
+  if (request.method.toUpperCase() !== "POST")
+    return yield* json(405, { message: "Only POST." });
+  const link = readLink();
+  const asking = phone?.key?.toString("base64url");
+  const device = asking === undefined ? undefined : (link?.phones ?? []).find((each) => each.key === asking);
+  if (!device && !fromLocalApp(request) || device?.by !== undefined && device.by === key)
+    return yield* json(403, { message: "Only Kuvo Code on this computer, or one of your devices, allows a computer to add your devices again." });
+  const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
+  const computer = computers.find((each) => each.key === key);
+  if (!computer)
+    return yield* json(404, { message: "That isn't one of your computers." });
+  const here = computers[0].name;
+  const main = mainElsewhere(link);
+  if (main)
+    return yield* json(409, { message: `Allow it from ${main.name || peersOf(link).find((peer) => peer.key === main.key)?.name || "your main computer"}.`, primary: main.key });
+  if (followedSetup(link)?.role !== "primary")
+    return yield* json(409, { message: `${here} isn't your setup's main computer, so no computer adds your devices through it.` });
+  if (computer.here)
+    return yield* json(409, { message: `${here} is the computer you're asking: it adds its own app itself.` });
+  if (computer.apart || computer.via !== "relay")
+    return yield* json(409, { message: `${computer.name} isn't one of ${here}'s own computers, so it adds none of your devices.` });
+  updateLink((kept) => kept && allowVouching(kept, key) ? kept : null);
+  return yield* json(200, {});
+}
 async function* computersRoute(context, match) {
   const { request, signal, json, info, bridge } = context;
   if (match[2])
-    return yield* manage(context, match[2], Boolean(match[3]));
+    return yield* manage(context, match[2], match[3]);
   if (request.method.toUpperCase() !== "GET")
     return yield* json(405, { message: "Only GET." });
   await listNow(context, signal ?? undefined).catch(() => null);
@@ -45448,7 +45652,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "a3b6ba878096";
+var BRIDGE_VERSION = "a233859e1b31";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -48052,7 +48256,7 @@ function pushTo(phone, json, hostKey) {
 // box/src/link/notices/push.ts
 function sendToPhones(host, link, notice) {
   const usage = notice.category === "usage" && !!notice.data?.notice;
-  const phones = (link?.phones ?? []).filter((phone) => typeof phone.address === "string" && phone.address !== "");
+  const phones = (link?.phones ?? []).filter((phone) => typeof phone.address === "string" && phone.address !== "" && phone.kind !== "desktop");
   const pending = usage ? phones.filter((phone) => !usageSentTo(notice, phone.key)) : phones;
   if (!pending.length)
     return true;
@@ -48429,7 +48633,7 @@ class LinkHost {
     for (const old of this.sessions.values())
       if (old.from.equals(from))
         this.end(old, false);
-    const phone = { key: responder.rs, name: String(hello.name ?? ""), address: from };
+    const phone = { key: responder.rs, name: String(hello.name ?? ""), address: from, ...hello.client === "desktop" ? { kind: "desktop" } : {} };
     this.sessions.set(id, { id, from, number, phone, transport, incoming: new Map, running: new Map, sockets: new Map });
     this.send(relaySend(from, frame(Frame.handshake2, number, message)));
   }
@@ -49498,7 +49702,10 @@ async function* forward(target, path, request, signal, allows, naming = null, do
       return request.body;
     const session = decodeURIComponent(sending[1]);
     const body = await attachedIn(request.body, session, modelInput(url, headers, delivering), request.fromMac === true, toAgents);
-    return sending[2] === "prompt" ? withPartsIn(prompt ? fromPhone(await namedIn(body, session, naming)) : body) : body;
+    if (sending[2] !== "prompt")
+      return body;
+    const named = prompt ? await namedIn(body, session, naming) : body;
+    return withPartsIn(prompt && !request.desktop ? fromPhone(named) : named);
   };
   const notAnswering = () => ({ status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: down() })) });
   const once = sending && sending[2] === "prompt" ? sentKey(toAgents ? "agents" : "engine", decodeURIComponent(sending[1]), request.body) : null;
@@ -50974,7 +51181,7 @@ async function* phonesRoute(context) {
   const link = readLink();
   const asking = phone?.key?.toString("base64url");
   return yield* json(200, {
-    phones: (link?.phones ?? []).map((each) => ({ key: each.key, name: each.name, added: each.added ?? null, pairing: each.pairing ?? "", you: each.key === asking }))
+    phones: (link?.phones ?? []).map((each) => ({ key: each.key, name: each.name, added: each.added ?? null, pairing: each.pairing ?? "", kind: each.kind === "desktop" ? "desktop" : "phone", you: each.key === asking }))
   });
 }
 async function* phonesRemoveRoute(context) {
@@ -50982,7 +51189,7 @@ async function* phonesRemoveRoute(context) {
   if (request.method.toUpperCase() !== "POST")
     return yield* json(405, {});
   const given = parsed(request.body);
-  const asMac = IS_MAC && request.fromApp;
+  const asMac = IS_MAC && request.fromApp === true || fromLocalApp(request);
   const changed = updateLink((kept) => {
     const link = kept ?? (asMac ? { phones: [], removed: [] } : null);
     return link && (asMac ? removeAsMac(link, given?.phones) : removePhones(link, phone?.key?.toString("base64url"), given?.phones)) ? link : null;
@@ -50993,6 +51200,7 @@ async function* phonesRemoveRoute(context) {
   setTimeout(() => phonesChanged(readLink() ?? changed), 200);
   return yield* json(200, {});
 }
+var SWITCH_OFF = "“Let my devices connect” is off on this Mac.";
 async function* pairingRoute(context) {
   const { request, json } = context;
   const method = request.method.toUpperCase();
@@ -51014,12 +51222,21 @@ async function* pairingRoute(context) {
   if (main)
     return yield* json(409, pairElsewhere(main));
   if (IS_MAC && !macLink.config?.phones)
-    return yield* json(409, { message: "The phone link is off on this Mac." });
+    return yield* json(409, { message: SWITCH_OFF });
   const link = updateLink((current) => current?.relay && current?.secret ? { ...current, [slot]: newPairingToken() } : null);
   if (!link)
-    return yield* json(409, { message: IS_MAC ? "The phone link isn't ready yet. Try again in a moment." : "This machine has no relay to pair through." });
+    return yield* json(409, { message: IS_MAC ? "This Mac isn't ready for your devices yet. Try again in a moment." : "This machine has no relay to pair through." });
   macLink.wake?.();
   return yield* json(200, { link: pairingLink({ ...link, pairing: link[slot] }), ends: Math.floor(link[slot].expires / 1000) });
+}
+async function* devicesPairRoute(context) {
+  const { request, signal, json } = context;
+  if (request.method.toUpperCase() !== "POST")
+    return yield* json(405, {});
+  if (!fromLocalApp(request))
+    return yield* json(403, { message: "Only Kuvo Code on this computer adds itself to your devices." });
+  const done = await pairDeviceFromHere(parsed(request.body), signal);
+  return yield* json(done.status, done.value);
 }
 
 // box/src/link/messages/arriving.ts
@@ -51084,7 +51301,7 @@ async function composed(fields, files, session, target, toAgents, request, readE
   if (command)
     return { text: composeArguments(fields.words, fields.notes, kept ?? {}), files: kept?.files ?? files, metadata: {} };
   const everyone = fields.words.includes("&") ? await everyoneFor(fields.words, readEngine, fields.named ?? []) : listedAgents();
-  const phone = request.fromMac !== true && request.fromApp !== true;
+  const phone = fromAPhone(request);
   const listed = new Set(everyone.agents.map((agent) => agent.session));
   if (fields.words.includes("&") && fields.named?.some((picked) => !listed.has(picked)))
     throw new NotListed;
@@ -51377,9 +51594,10 @@ async function* add2({ request, bridge, readEngine, json, signal }, target, sess
   const base = new URL(`http://127.0.0.1:${target.port}/`);
   const headers = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` };
   const asGiven = Buffer.from(JSON.stringify({ id, text: given.text, ...files.length ? { files } : {}, delivery, ...mark ? { metadata: mark } : {} }));
-  const fromPhoneToo = request.fromMac !== true && request.fromApp !== true;
+  const overTheLink = request.fromMac !== true && request.fromApp !== true;
   const attached = await attachedIn(asGiven, session, modelInput(base, headers, signal), request.fromMac === true, !toAgents);
-  const body = fromPhoneToo ? fromPhone(await namedIn(attached, session, namingHere(readEngine))) : attached;
+  const named = overTheLink ? await namedIn(attached, session, namingHere(readEngine)) : attached;
+  const body = fromAPhone(request) ? fromPhone(named) : named;
   const message = parsed(body);
   return yield* added({ json }, target, session, given, { id: message.id, text: message.text, files: message.files, metadata: withPartsOf(message.metadata, message.text) }, shownAs(given.text));
 }
@@ -51593,7 +51811,7 @@ var message = (type, ...parts) => {
   const body = Buffer.concat([Buffer.from([type]), ...parts]);
   return Buffer.concat([u32(body.length), body]);
 };
-async function answer5(request, source, signal) {
+async function answer6(request, source, signal) {
   const type = request[0];
   const body = new Reader(request.subarray(1));
   try {
@@ -51640,7 +51858,7 @@ function serveAgent(socket, source) {
         held = held.subarray(4 + length);
         waiting++;
         working = working.then(async () => {
-          const reply = await answer5(request, source, gone.signal);
+          const reply = await answer6(request, source, gone.signal);
           if (!connection.destroyed)
             connection.write(reply);
         }).catch(() => {
@@ -53052,7 +53270,7 @@ async function* answerVault(context) {
     const item = typeof given.item === "string" ? given.item : undefined;
     if (item && !itemByID(item))
       return yield* json(404, { message: "That item isn't in this vault." });
-    return yield* json(answer4(idOf5(parts[3]), { answer, ...item ? { item } : {}, client: client.name, by: client.by }) ? 200 : 404, {});
+    return yield* json(answer5(idOf5(parts[3]), { answer, ...item ? { item } : {}, client: client.name, by: client.by }) ? 200 : 404, {});
   }
   if (route === "kuvo/vault/items") {
     if (method !== "POST")
@@ -53716,7 +53934,7 @@ async function* sessionAsksRoute(context, match) {
     if (found.shown.kind === "sandbox") {
       return answerSandboxAsk(found.shown.id, { answer: as, client: clientName(context) }) ? yield* json(200, {}) : yield* json(404, GONE2);
     }
-    return answer4(found.shown.id, { answer: as, ...picked.item ? { item: picked.item } : {}, client: client.name, by: client.by }) ? yield* json(200, {}) : yield* json(404, GONE2);
+    return answer5(found.shown.id, { answer: as, ...picked.item ? { item: picked.item } : {}, client: client.name, by: client.by }) ? yield* json(200, {}) : yield* json(404, GONE2);
   }
   const at = `/api/session/${encodeURIComponent(found.asker)}`;
   let sent;
@@ -58502,6 +58720,7 @@ var ROUTES = [
   { when: (route) => route === "kuvo/phones", answer: phonesRoute },
   { when: (route) => route === "kuvo/phones/remove", answer: phonesRemoveRoute },
   { when: (route) => route === "kuvo/phones/pair", answer: pairingRoute },
+  { when: (route) => route === "kuvo/devices/pair", answer: devicesPairRoute },
   { when: (route) => route === "kuvo/link" || route.startsWith("kuvo/link/"), answer: linkRoute },
   { when: (route) => route === "kuvo/attention/notice" || route === "kuvo/attention/answered", answer: appNoticeRoute },
   { when: (route) => route === "kuvo/attention", answer: attentionRoute },
@@ -58586,6 +58805,8 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
     const json = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
     if (!request.fromApp)
       phoneHere();
+    if (phone?.kind === "desktop")
+      request = { ...request, desktop: true };
     const route = request.path.split("?")[0];
     const context = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
     for (const { when, answer } of ROUTES) {
@@ -58897,7 +59118,7 @@ function serveBox(password, handle = engineHandler(readEngineFile, { name: os22.
       const from = request.headers["x-kuvo-from"];
       const fromApp = from === "app";
       const fromMac = from === "mac";
-      for await (const part of handle({ method: request.method ?? "GET", path: sent, headers: request.headers, body: Buffer.concat(chunks), fromApp, fromMac }, {}, abort.signal)) {
+      for await (const part of handle({ method: request.method ?? "GET", path: sent, headers: request.headers, body: Buffer.concat(chunks), fromApp, fromMac, served: true }, {}, abort.signal)) {
         if (abort.signal.aborted)
           break;
         if (part.head && !headed) {
@@ -59059,6 +59280,8 @@ onLinkWritten((link) => {
     }, 200);
     return;
   }
+  if (liveHost)
+    setTimeout(() => liveHost?.keepOnly(new Set((readLink()?.phones ?? []).map((phone) => phone.key))), 200).unref?.();
   if (needed(link))
     fs180.writeFileSync(NEEDED_FILE, "", { mode: 384 });
   else
@@ -59265,10 +59488,14 @@ async function run6() {
     forwardNow();
     heldNow();
     reachNow();
-    if (current?.welcomed && docsNoted())
+    if (current?.welcomed && docsNoted()) {
       try {
         docsChanged(current, { tell: true });
       } catch {}
+      try {
+        current.keepOnly(new Set((readLink()?.phones ?? []).map((phone) => phone.key)));
+      } catch {}
+    }
     if (current?.welcomed)
       lastWelcomed = Date.now();
     noteRelay(Boolean(current?.welcomed), lastWelcomed);
@@ -60011,6 +60238,7 @@ export {
   deliverLeftAnswers,
   describeForm,
   describePermission,
+  deviceAct,
   digestOf,
   docBytes,
   docMails,
@@ -60053,6 +60281,7 @@ export {
   fromPhone,
   fromRelay,
   giveBlock,
+  givenDevice,
   glances,
   goalFollowers,
   goalHolds,
@@ -60160,10 +60389,14 @@ export {
   ownAgents,
   ownComputer,
   ownDoc,
+  ownPhones,
   ownRefreshed,
   ownSign,
   ownsSettings,
   packWorkQueues,
+  pairDevice,
+  pairDeviceFromHere,
+  pairHere,
   pairPhone,
   pairingLink,
   parseBacklog,

@@ -40,6 +40,9 @@ export const FORWARD_FEATURE = "work-queue.forward";
  * says it takes, for another area's: renaming and removing your machines, `computers.manage`). */
 export const takesForwarded = (key: string, feature = FORWARD_FEATURE): boolean => (readPeerAgents()[key]?.features ?? []).includes(feature);
 
+/** What a box says it takes of each other area's asks. */
+const AREA_FEATURES = { computers: "computers.manage", devices: "devices.pair" } as const;
+
 export const FORWARDS = path.join(WORK_QUEUE, "forward");
 // What a keeper did for the asks it took, by asker and id (changes only: a read is done again).
 const DONE_FILE = path.join(WORK_QUEUE, "acted.json");
@@ -65,10 +68,12 @@ const MOST_REMEMBERED = 2_000;
  * files (`action` `file`, `name`), a delete, a change (`PATCH`, with what it said, `body`), or a
  * bringing back (`action` `restore`). `area` `computers`: one of your machines (`item`, its key)
  * renamed (`PATCH {name}`) or removed (`DELETE`) on the box that writes its record
- * (`peers/manage.ts`); a Work Queue item's otherwise. */
+ * (`peers/manage.ts`); `area` `devices`: Kuvo Code's desktop app on the asking box's computer
+ * (`item`, its key; `body`, `{name, kind}`) paired on the setup's main computer, which the asking
+ * box vouches for (`POST`, `peers/devices.ts`); a Work Queue item's otherwise. */
 export interface Act {
   id: string;
-  area?: "computers";
+  area?: "computers" | "devices";
   method: "GET" | "DELETE" | "POST" | "PATCH";
   item: string;
   action?: "restore" | "file";
@@ -105,7 +110,7 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
   const peer = peersOf(link).find(each => each.key === computer.key);
   // (One it doesn't know any more, or that doesn't take it yet: changed there, as before. Nor from
   // a machine Macs share outside one setup: another person's computers may tell it theirs.)
-  if (!peer || !takesForwarded(peer.key, act.area === "computers" ? "computers.manage" : FORWARD_FEATURE) || sharedMachine(link)) return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
+  if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE) || sharedMachine(link)) return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
   const here = ownName();
   if (awaySince(peer.key) !== null) return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
   if (offRelay()) return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };
@@ -361,8 +366,9 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
   // A change this box took before it last started: as it went, or, cut short then, that it may
   // have been done.
   const kept = changes ? readDone(now).get(key) : undefined;
-  // (Renaming or removing one of your machines is the same done twice: one cut short is done again.)
-  const redo = kept !== undefined && kept.answer === null && act.area === "computers";
+  // (Renaming or removing one of your machines, or pairing your app, is the same done twice: one
+  // cut short is done again.)
+  const redo = kept !== undefined && kept.answer === null && act.area !== undefined;
   if (kept && !redo) {
     const value = kept.answer ?? { status: 409, value: { message: `${here} stopped while it was doing this, so it can't tell whether it was done. Look again in a moment.` } };
     did.set(key, { until: kept.until, answer: value, answered: now });
@@ -396,13 +402,16 @@ export function forgetActs(): void {
   sent.clear();
 }
 
+// (Nothing else is an act: letting a computer add Kuvo Code's app to your devices again,
+// `kuvo/computers/<key>/allow-devices`, is never one, so the box kept from it can't ask for itself.)
 const actOf = (given: unknown): Act | null => {
   if (!isObject(given) || typeof given.id !== "string" || !ID.test(given.id) || typeof given.item !== "string" || !given.item || given.item.length > 300) return null;
   if (typeof given.at !== "number" || !Number.isFinite(given.at)) return null;
   const { method, action, name } = given;
   const fits = (method === "GET" && action === undefined) || (method === "DELETE" && action === undefined) || (method === "POST" && action === "restore") || (method === "PATCH" && action === undefined)
     || (method === "GET" && action === "file" && typeof name === "string" && name.length > 0 && name.length <= 300);
-  if (!fits) return null;
-  if (given.area !== undefined && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
-  return { id: given.id, ...(given.area === "computers" ? { area: "computers" } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
+  const devices = given.area === "devices" && method === "POST" && action === undefined;
+  if (!fits && !devices) return null;
+  if (given.area !== undefined && !devices && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
+  return { id: given.id, ...(given.area === "computers" || given.area === "devices" ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
 };

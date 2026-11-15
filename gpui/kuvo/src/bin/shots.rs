@@ -161,6 +161,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "computers-many", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers_all) },
     Screen { slug: "computer-this", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_this) },
     Screen { slug: "computer-page", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers) },
+    Screen { slug: "computer-blocked", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers) },
     Screen { slug: "computer-away", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_away) },
     Screen { slug: "computer-older", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_older) },
     Screen { slug: "computer-shared", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_shared) },
@@ -926,6 +927,9 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "computers-alone" {
                 stand_in.computers_alone();
             }
+            if screen.slug == "computer-blocked" {
+                stand_in.block_vouching("key_devbox");
+            }
             if screen.slug == "computers-many" {
                 stand_in.more_computers(40);
             }
@@ -1032,5 +1036,57 @@ fn main() -> anyhow::Result<()> {
             cx.run_until_parked();
         }
     }
-    first_run_shots(&mut cx, &only, &out)
+    first_run_shots(&mut cx, &only, &out)?;
+    home_shots(&mut cx, &only, &out)
+}
+
+/// The window over your boxes: the switcher open on your computers, and a session open on another
+/// of them (`switcher`, `elsewhere`).
+fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
+    use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
+    for slug in ["switcher", "elsewhere"] {
+        if !only.is_empty() && !only.iter().any(|only| only == slug) {
+            continue;
+        }
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            cx.update(|cx| Theme::set_appearance(appearance, cx));
+            let boxes = kuvo::home::stand_in_boxes(StandIn::at(Replies::Never, NOW));
+            let first = boxes.nearest().expect("the stand-in is the nearest box");
+            let window = cx.open_window(size(px(1280.), px(820.)), |window, cx| cx.new(|cx| kuvo::Home::new(boxes, first, false, window, cx)))?;
+            let any = window.into();
+            cx.update_window(any, |root, window, cx| {
+                let home = root.downcast::<kuvo::Home>().expect("the home");
+                home.update(cx, |home, cx| {
+                    home.set_now(NOW, cx);
+                    home.read_at_once(cx);
+                    if slug == "elsewhere" {
+                        assert!(home.switch_to("key_devbox", window, cx));
+                        home.workspace().clone().update(cx, |workspace, cx| workspace.open_read_at_once("ses_releases", window, cx));
+                    }
+                });
+            })?;
+            cx.run_until_parked();
+            cx.update_window(any, |_, window, _| window.refresh())?;
+            cx.run_until_parked();
+            if slug == "switcher" {
+                // A click on the switcher, through the window.
+                cx.update_window(any, |_, window, cx| {
+                    let at = gpui::point(px(130.), px(22.));
+                    mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers: Modifiers::default() }));
+                    mouse(window, cx, PlatformInput::MouseDown(MouseDownEvent { position: at, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+                    mouse(window, cx, PlatformInput::MouseUp(MouseUpEvent { position: at, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1 }));
+                })?;
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+            }
+            let image = cx.capture_screenshot(any)?;
+            let name = format!("screens-{slug}-{}.png", if appearance.is_dark() { "dark" } else { "light" });
+            image.save(out.join(&name))?;
+            println!("{name}: {}x{}", image.width(), image.height());
+            cx.update_window(any, |_, window, _| window.remove_window())?;
+            cx.run_until_parked();
+        }
+    }
+    Ok(())
 }

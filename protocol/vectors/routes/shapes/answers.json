@@ -3547,6 +3547,8 @@
           ]
          },
          "through?": "string",
+         "address?": "string",
+         "relay?": "string",
          "working?": "number",
          "atWork?": {
           "list": {
@@ -3580,6 +3582,9 @@
               },
               {
                "literal": "remove"
+              },
+              {
+               "literal": "allow-devices"
               }
              ]
             },
@@ -3593,6 +3598,14 @@
             },
             "why?": "string"
            }
+          }
+         },
+         "vouching?": {
+          "object": {
+           "blocked": {
+            "literal": true
+           },
+           "words": "string"
           }
          }
         }
@@ -3671,6 +3684,8 @@
           ]
          },
          "through?": "string",
+         "address?": "string",
+         "relay?": "string",
          "working?": "number",
          "atWork?": {
           "list": {
@@ -3704,6 +3719,9 @@
               },
               {
                "literal": "remove"
+              },
+              {
+               "literal": "allow-devices"
               }
              ]
             },
@@ -3717,6 +3735,14 @@
             },
             "why?": "string"
            }
+          }
+         },
+         "vouching?": {
+          "object": {
+           "blocked": {
+            "literal": true
+           },
+           "words": "string"
           }
          }
         }
@@ -3823,6 +3849,35 @@
     "503": {
      "object": {
       "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/computers/:key/allow-devices",
+   "answers": {
+    "200": {
+     "object": {}
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
      }
     }
    }
@@ -3988,6 +4043,9 @@
             "literal": "claude-code"
            },
            {
+            "literal": "clients.kind"
+           },
+           {
             "literal": "computers"
            },
            {
@@ -3997,10 +4055,19 @@
             "literal": "computers.manage"
            },
            {
+            "literal": "computers.reach"
+           },
+           {
             "literal": "config"
            },
            {
             "literal": "config.apply"
+           },
+           {
+            "literal": "devices.allow"
+           },
+           {
+            "literal": "devices.pair"
            },
            {
             "literal": "engine.restart"
@@ -4636,6 +4703,9 @@
             "literal": "claude-code"
            },
            {
+            "literal": "clients.kind"
+           },
+           {
             "literal": "computers"
            },
            {
@@ -4645,10 +4715,19 @@
             "literal": "computers.manage"
            },
            {
+            "literal": "computers.reach"
+           },
+           {
             "literal": "config"
            },
            {
             "literal": "config.apply"
+           },
+           {
+            "literal": "devices.allow"
+           },
+           {
+            "literal": "devices.pair"
            },
            {
             "literal": "engine.restart"
@@ -6244,6 +6323,16 @@
           ]
          },
          "pairing": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "phone"
+           },
+           {
+            "literal": "desktop"
+           }
+          ]
+         },
          "you": "bool"
         }
        }
@@ -6267,6 +6356,49 @@
      "object": {
       "link": "string",
       "ends": "number"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/devices/pair",
+   "answers": {
+    "200": {
+     "object": {
+      "paired": {
+       "literal": true
+      },
+      "pairing": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "reason?": {
+       "oneOf": [
+        {
+         "literal": "removed"
+        },
+        {
+         "literal": "blocked"
+        }
+       ]
+      }
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
      }
     }
    }

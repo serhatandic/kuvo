@@ -24,6 +24,7 @@ import type { Composed } from "./messages";
 import { fromPhone, modelInput } from "../server/forward";
 import { namedIn, namingHere } from "../server/naming";
 import { answering, BUSY, collected, forgetSent, SENDING_PATIENCE, sentKey, sentOnce } from "../server/sent-once";
+import { fromAPhone } from "../server/context";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
 
@@ -220,10 +221,12 @@ async function* add({ request, bridge, readEngine, json, signal }: RouteContext,
   const base = new URL(`http://127.0.0.1:${target.port}/`);
   const headers = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` };
   const asGiven = Buffer.from(JSON.stringify({ id, text: given.text, ...(files.length ? { files } : {}), delivery, ...(mark ? { metadata: mark } : {}) }));
-  // (A phone's also says who it names with "&", and that it's from the phone, as its prompt would.)
-  const fromPhoneToo = request.fromMac !== true && request.fromApp !== true;
+  // (A phone's also says who it names with "&", and that it's from the phone, as its prompt would;
+  // the desktop app's over the link, only who it names.)
+  const overTheLink = request.fromMac !== true && request.fromApp !== true;
   const attached = await attachedIn(asGiven, session, modelInput(base, headers, signal), request.fromMac === true, !toAgents);
-  const body = fromPhoneToo ? fromPhone(await namedIn(attached, session, namingHere(readEngine))) : attached;
+  const named = overTheLink ? await namedIn(attached, session, namingHere(readEngine)) : attached;
+  const body = fromAPhone(request) ? fromPhone(named) : named;
   const message = parsed(body) as { id: string; text: string; files?: unknown[]; delivery: "steer" | "queue"; metadata?: Record<string, unknown> };
   // Shown as written (`words`: without what the client added for the agent, like its files' notes).
   return yield* added({ json }, target, session, given, { id: message.id, text: message.text, files: message.files, metadata: withPartsOf(message.metadata, message.text) }, shownAs(given.text));

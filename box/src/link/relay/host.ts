@@ -14,6 +14,9 @@ export interface PhoneHello {
   name?: string;
   app?: string;
   pair?: string;
+  /** What the client is (`clients.kind`): `desktop` for Kuvo Code's desktop app; none, or anything
+   * else, is a phone. */
+  client?: string;
 }
 
 /** What this box says back: what it is (`machine` or `mac`), its name, and its bridge's and engine's versions. */
@@ -26,7 +29,7 @@ export interface BoxHello {
 }
 
 /** A phone with a session here: its static key, the name it gave, and where it is on the relay. */
-export type SessionPhone = Required<Asker>;
+export type SessionPhone = Required<Pick<Asker, "key" | "name" | "address">> & Pick<Asker, "kind">;
 
 /** A socket opened for a phone, as the box's side gives it: what the phone sends, and its end. */
 export interface SocketHandle {
@@ -197,7 +200,7 @@ export class LinkHost {
     const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify(this.hello)));
     // One session per phone: a new one replaces what's left of the last.
     for (const old of this.sessions.values()) if (old.from.equals(from)) this.end(old, false);
-    const phone = { key: responder.rs, name: String(hello.name ?? ""), address: from };
+    const phone: SessionPhone = { key: responder.rs, name: String(hello.name ?? ""), address: from, ...(hello.client === "desktop" ? { kind: "desktop" as const } : {}) };
     this.sessions.set(id, { id, from, number, phone, transport, incoming: new Map(), running: new Map(), sockets: new Map() });
     this.send(relaySend(from, frame(Frame.handshake2, number, message)));
   }
