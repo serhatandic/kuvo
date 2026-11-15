@@ -209,7 +209,7 @@ impl SignIn {
             })
             .collect();
         if self.fields.iter().any(|field| !field.spec.drawable()) {
-            self.step = Step::Failed(format!("This way of signing in to {} asks for something this app can’t show yet. Sign in from Kuvo Code on your Mac or iPhone.", self.name));
+            self.step = Step::Failed(format!("This way of signing in to {} asks for something the desktop app can’t show yet. Sign in from Kuvo Code on your Mac or iPhone.", self.name));
             return;
         }
         self.wants_focus = true;

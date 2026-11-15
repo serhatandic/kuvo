@@ -3,10 +3,10 @@
 //! any setting is; what can be changed, what's asked first and what's refused are the box's.
 
 use kuvo_box::areas::Level;
-use kuvo_box::settings_pages::{Action, Kind, Page, Row as Described, Tone as Said};
+use kuvo_box::settings_pages::{Action, Can, Kind, Page, Row as Described, Tone as Said};
 use serde_json::{Value, json};
 
-use super::rows::{Act, Block, Control, Meter, Push, Row};
+use super::rows::{Act, At, Block, Control, Meter, Push, Row};
 
 /// What draws a row whose kind this app has nothing for yet.
 const NEWER: &str = "A newer Kuvo changes this";
@@ -63,8 +63,10 @@ pub fn blocks(page: &Page, drawing: &Drawing) -> Vec<Block> {
 fn row(described: &Described, drawing: &Drawing) -> Row {
     let key = key(&described.id);
     let why = described.why_not().filter(|why| !why.is_empty()).map(str::to_owned);
-    let can = described.why_not().is_none();
-    let change = |value: Value| Act::Change { section: drawing.section.to_owned(), row: Box::new(described.clone()), value, asked: false };
+    // What can be changed from here says so (`can: true`); one that doesn't has nothing to change.
+    let can = described.can == Some(Can::Yes);
+    let at = At::of(drawing.section, described);
+    let change = |value: Value| Act::Change { at: at.clone(), value, asked: false };
     let mut why = why;
     let control = if let Some(words) = described.busy.clone().or_else(|| drawing.busy.iter().find(|(busy, _)| *busy == key).map(|(_, words)| words.clone())) {
         Control::Busy(words)
@@ -74,7 +76,7 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
             Kind::Choice => {
                 let shown = described.chosen().map(|choice| choice.title.clone()).or_else(|| described.words().map(str::to_owned)).unwrap_or_default();
                 if can {
-                    Control::Menu { shown, choices: described.choices.iter().map(|choice| (choice.title.clone(), choice.line.clone(), change(json!(choice.id)), Some(choice.id.as_str()) == described.words())).collect() }
+                    Control::Menu { shown: Some(shown), choices: described.choices.iter().map(|choice| (choice.title.clone(), choice.line.clone(), Some(change(json!(choice.id))), Some(choice.id.as_str()) == described.words())).collect() }
                 } else {
                     Control::Text(shown)
                 }
@@ -87,7 +89,7 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
                     Some(other) => other.to_string(),
                 };
                 if can {
-                    let save = Act::Save { section: drawing.section.to_owned(), row: Box::new(described.clone()), number: described.kind == Kind::Number };
+                    let save = Act::Save { at: at.clone(), number: described.kind == Kind::Number };
                     Control::Field { masked: false, value, placeholder: described.placeholder.clone().unwrap_or_default(), revision: described.revision.clone(), save: save.clone(), more: vec![Push::new("Save", save)] }
                 } else {
                     Control::Text(value)
@@ -95,7 +97,7 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
             }
             Kind::Secret => {
                 let replacing = drawing.replacing.contains(&described.id);
-                let save = Act::Save { section: drawing.section.to_owned(), row: Box::new(described.clone()), number: false };
+                let save = Act::Save { at: at.clone(), number: false };
                 let field = |more: Vec<Push>| Control::Field { masked: true, value: String::new(), placeholder: described.placeholder.clone().unwrap_or_default(), revision: described.revision.clone(), save: save.clone(), more };
                 match (can, described.set, replacing) {
                     (false, set, _) => Control::Text(if set { "Set".into() } else { "Not set".into() }),
@@ -112,12 +114,10 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
                 let pushes: Vec<Push> = described.actions.iter().map(|action| push(described, action, drawing)).collect();
                 match pushes.len() {
                     0 => Control::Text(described.words().unwrap_or_default().to_owned()),
-                    // Past two, a menu (one that asks first, or opens something, ends in an ellipsis).
+                    // Past two, a menu, in the box's words as they are; one that can't be done
+                    // from here is still listed, and can't be picked.
                     1 | 2 => Control::Buttons(pushes),
-                    _ => Control::Menu {
-                        shown: String::new(),
-                        choices: described.actions.iter().zip(pushes).filter_map(|(action, push)| Some((if action.confirm.is_some() { format!("{}…", action.title) } else { action.title.clone() }, None, push.act?, false))).collect(),
-                    },
+                    _ => Control::Menu { shown: None, choices: pushes.into_iter().map(|push| (push.label, None, push.act, false)).collect() },
                 }
             }
             Kind::Meter => Control::Windows(
@@ -155,7 +155,7 @@ fn push(described: &Described, action: &Action, drawing: &Drawing) -> Push {
     let act = match (&action.opens, action.why_not()) {
         (_, Some(_)) => None,
         (Some(address), None) => opens(address, drawing.here).then(|| Act::Open(address.clone())),
-        (None, None) => Some(Act::Do { section: drawing.section.to_owned(), row: Box::new(described.clone()), action: Box::new(action.clone()), asked: false }),
+        (None, None) => Some(Act::Do { at: At::of(drawing.section, described), action: action.id.clone(), confirm: action.confirm.clone(), asked: false }),
     };
     Push { label: action.title.clone(), act }
 }

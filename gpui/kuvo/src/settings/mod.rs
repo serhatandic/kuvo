@@ -33,7 +33,7 @@ use serde_json::{Value, json};
 
 use crate::areas::Reading;
 
-pub use rows::{Act, Block, Control, Leading, Meter, Notice, Push, Row, Tone};
+pub use rows::{Act, At, Block, Control, Leading, Meter, Notice, Push, Row, Tone};
 use sign_in::SignIn;
 
 /// The widest a page's cards grow.
@@ -153,6 +153,8 @@ pub struct SettingsView {
     standing: Standing,
     /// The box's own sections, and each page read so far.
     sections: Reading<Vec<Section>>,
+    /// They're being asked for now.
+    reading_sections: bool,
     pages: HashMap<String, Reading<Page>>,
     /// The page open, followed as it changes (where the app runs against a box that streams).
     follow: Option<(String, Follow<Followed<Page>>)>,
@@ -217,7 +219,7 @@ impl Focusable for SettingsView {
     }
 }
 
-const YOURS_WORDS: &str = "This app’s own, on this device. Your other devices keep theirs.";
+const YOURS_WORDS: &str = "The desktop app’s own, on this device. Your other devices keep theirs.";
 const LATER_WORDS: &str = "This page isn’t in the desktop app yet. For now, open it in Kuvo Code on your Mac or iPhone.";
 
 impl SettingsView {
@@ -242,6 +244,7 @@ impl SettingsView {
             computers: Reading::NotYet,
             standing: Standing::Reached,
             sections: Reading::NotYet,
+            reading_sections: false,
             pages: HashMap::new(),
             follow: None,
             search,
@@ -333,20 +336,28 @@ impl SettingsView {
             return;
         }
         self.computers = computers;
-        // One that's no longer among them (removed), or the window's own picked by its key: the window's.
-        if let (Some(key), Reading::Ready(computers)) = (&self.computer, &self.computers)
-            && !computers.iter().any(|computer| computer.key == *key && !computer.here)
-        {
-            self.computer = None;
-        }
+        // One that's no longer among them (removed), or the window's own picked by its key: the
+        // window's, read afresh (nothing of the one that left stays under the window's name).
+        let gone = self.forget_missing_computer();
         let (client, standing) = self.reach();
-        if standing != self.standing || client.is_some() != self.client.is_some() {
+        if gone || standing != self.standing || client.is_some() != self.client.is_some() {
             self.connect(cx);
             if self.side == Side::Computer {
                 self.read_open(cx);
             }
         }
         self.rebuild(cx);
+    }
+
+    /// The computer shown is no longer among yours: the window's is, and it says whether it was.
+    fn forget_missing_computer(&mut self) -> bool {
+        if let (Some(key), Reading::Ready(computers)) = (&self.computer, &self.computers)
+            && !computers.iter().any(|computer| computer.key == *key && !computer.here)
+        {
+            self.computer = None;
+            return true;
+        }
+        false
     }
 
     /// Your computers the picker lists: your own (those of another setup aren't yours to set).
@@ -421,6 +432,7 @@ impl SettingsView {
         self.client = client;
         self.standing = standing;
         self.sections = Reading::NotYet;
+        self.reading_sections = false;
         self.pages.clear();
         self.accounts = Reading::NotYet;
         self.limits = Reading::NotYet;
@@ -454,11 +466,14 @@ impl SettingsView {
             self.section = id;
             if computer != self.computer {
                 self.computer = computer;
+                // (A place kept from before its computer was removed is the window's now.)
+                self.forget_missing_computer();
                 self.connect(cx);
             }
         }
         if self.place() != before {
             self.problem = None;
+            self.confirm = None;
             self.replacing.clear();
             self.list.scroll_to(gpui::ListOffset::default());
             if self.follow.as_ref().is_some_and(|(of, _)| self.side != Side::Computer || *of != self.section) {
@@ -810,12 +825,13 @@ impl SettingsView {
         self.tasks.insert(name.into(), task);
     }
 
-    /// Asks the computer's box what its sections are; `then_open`: and reads the page open once
-    /// it has said.
-    fn read_sections(&mut self, then_open: bool, cx: &mut Context<Self>) {
+    /// Asks the computer's box what its sections are, then reads the page open (and, while
+    /// searching, every page).
+    fn read_sections(&mut self, cx: &mut Context<Self>) {
         // Another computer's box is asked what it is first, as the window's was when it opened:
         // one older than this app needs is held, and says so.
         let other = self.computer.is_some();
+        self.reading_sections = true;
         self.run(
             "sections",
             move |client| {
@@ -825,32 +841,40 @@ impl SettingsView {
                 client.settings_sections()
             },
             move |this, read, cx| {
+                this.reading_sections = false;
                 this.sections = match (read, &this.sections) {
                     (Ok(sections), _) => Reading::Ready(sections),
                     (Err(_), Reading::Ready(sections)) => Reading::Ready(sections.clone()),
                     (Err(error), _) => Reading::Failed(said(&error)),
                 };
                 this.settle(cx);
-                if then_open {
-                    this.read_open(cx);
+                // (What this app draws itself is read even where the box's sections couldn't be.)
+                if this.side == Side::Computer {
+                    let section = this.section.clone();
+                    this.read_section(&section, cx);
                 }
                 if !this.query.is_empty() {
-                    this.read_all(cx);
+                    this.read_pages(cx);
                 }
             },
             cx,
         );
     }
 
-    /// Reads what the page open is drawn from (your own pages read nothing).
+    fn held(&self) -> bool {
+        self.client.as_ref().is_none_or(|client| client.gate().is_held())
+    }
+
+    /// Reads what the page open is drawn from (your own pages read nothing). Sections that
+    /// aren't read yet, or couldn't be the last time, are asked for first.
     fn read_open(&mut self, cx: &mut Context<Self>) {
-        if self.side != Side::Computer || self.client.as_ref().is_none_or(|client| client.gate().is_held()) {
+        if self.side != Side::Computer || self.held() {
             self.rebuild(cx);
             return;
         }
-        if self.sections == Reading::NotYet {
-            if !self.tasks.contains_key("sections") {
-                self.read_sections(true, cx);
+        if !matches!(self.sections, Reading::Ready(_)) {
+            if !self.reading_sections {
+                self.read_sections(cx);
             }
             return;
         }
@@ -860,15 +884,19 @@ impl SettingsView {
 
     /// Reads every page of the computer shown (for a search).
     fn read_all(&mut self, cx: &mut Context<Self>) {
-        if self.client.as_ref().is_none_or(|client| client.gate().is_held()) {
+        if self.held() {
             return;
         }
-        if self.sections == Reading::NotYet {
-            if !self.tasks.contains_key("sections") {
-                self.read_sections(false, cx);
+        if !matches!(self.sections, Reading::Ready(_)) {
+            if !self.reading_sections {
+                self.read_sections(cx);
             }
             return;
         }
+        self.read_pages(cx);
+    }
+
+    fn read_pages(&mut self, cx: &mut Context<Self>) {
         for entry in self.entries(Side::Computer) {
             let unread = match entry.drawn {
                 Drawn::Described => !matches!(self.pages.get(&entry.id), Some(Reading::Ready(_))),
@@ -953,8 +981,12 @@ impl SettingsView {
         match done {
             Ok(Changed::Done(page)) => {
                 self.replacing.retain(|id| id != row);
-                // (A secret's field is emptied: what was typed is the box's now, never kept here.)
-                self.fields.remove(&described::key(row));
+                // (A secret's field is let go: what was typed is the box's now, never kept here.)
+                let key = described::key(row);
+                let secret = self.items.iter().any(|item| matches!(item, Item::Row { row, .. } if row.key == key && matches!(row.control, Control::Field { masked: true, .. })));
+                if secret {
+                    self.fields.remove(&key);
+                }
                 self.pages.insert(section.to_owned(), Reading::Ready(page));
             }
             Ok(Changed::Stale { message, page }) => {
@@ -972,50 +1004,50 @@ impl SettingsView {
     pub fn act(&mut self, act: Act, cx: &mut Context<Self>) {
         self.problem = None;
         match act {
-            Act::Change { section, row, value, asked } => {
-                if let (false, Some(asks)) = (asked, row.confirm.clone()) {
-                    self.ask(asks.title, asks.body, asks.button, Act::Change { section, row, value, asked: true });
+            Act::Change { at, value, asked } => {
+                if let (false, Some(asks)) = (asked, at.confirm.clone()) {
+                    self.ask(asks.title, asks.body, asks.button, Act::Change { at, value, asked: true });
                 } else {
-                    let key = described::key(&row.id);
+                    let key = described::key(&at.row);
                     self.set_busy(&key, "Saving…");
-                    let (at, changing) = (section.clone(), row.clone());
+                    let to = at.clone();
                     self.run(
                         key.clone(),
-                        move |client| client.change_setting(&at, &changing, value),
+                        move |client| client.change_setting_at(&to.section, &to.row, &to.revision, value),
                         move |this, done, cx| {
                             this.done(&key);
-                            this.take_changed(&section, &row.id, done, cx);
+                            this.take_changed(&at.section, &at.row, done, cx);
                         },
                         cx,
                     );
                 }
             }
-            Act::Do { section, row, action, asked } => {
-                if let (false, Some(asks)) = (asked, action.confirm.clone()) {
-                    self.ask(asks.title, asks.body, asks.button, Act::Do { section, row, action, asked: true });
+            Act::Do { at, action, confirm, asked } => {
+                if let (false, Some(asks)) = (asked, confirm.clone()) {
+                    self.ask(asks.title, asks.body, asks.button, Act::Do { at, action, confirm, asked: true });
                 } else {
-                    let key = described::key(&row.id);
+                    let key = described::key(&at.row);
                     self.set_busy(&key, "Working…");
-                    let (at, on) = (section.clone(), row.clone());
+                    let to = at.clone();
                     self.run(
                         key.clone(),
-                        move |client| client.setting_action(&at, &on, &action),
+                        move |client| client.setting_action_at(&to.section, &to.row, &to.revision, &action),
                         move |this, done, cx| {
                             this.done(&key);
-                            this.take_changed(&section, &row.id, done, cx);
+                            this.take_changed(&at.section, &at.row, done, cx);
                         },
                         cx,
                     );
                 }
             }
-            Act::Save { section, row, number } => {
-                let Some(text) = self.fields.get(&described::key(&row.id)).map(|(field, _, _)| field.read(cx).text().trim().to_owned()) else { return };
+            Act::Save { at, number } => {
+                let Some(text) = self.fields.get(&described::key(&at.row)).map(|(field, _, _)| field.read(cx).text().trim().to_owned()) else { return };
                 // (What kind of thing was typed is all that's checked here; whether it fits is the box's.)
                 let value = if number {
                     match text.parse::<f64>().ok().and_then(serde_json::Number::from_f64) {
                         Some(number) => Value::Number(number),
                         None => {
-                            self.problem = Some(format!("{} takes a number.", row.title));
+                            self.problem = Some(format!("{} takes a number.", at.title));
                             self.rebuild(cx);
                             return;
                         }
@@ -1023,7 +1055,7 @@ impl SettingsView {
                 } else {
                     json!(text)
                 };
-                self.act(Act::Change { section, row, value, asked: false }, cx);
+                self.act(Act::Change { at, value, asked: false }, cx);
                 return;
             }
             Act::Replacing { row, on } => {

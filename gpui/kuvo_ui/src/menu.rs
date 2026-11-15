@@ -40,10 +40,10 @@ const MENU_PADDING: Pixels = px(4.);
 
 type Handler = Rc<dyn Fn(&mut Window, &mut App)>;
 
-/// One line of a menu.
 /// The tallest a menu grows before it scrolls.
 const MOST_HEIGHT: f32 = 420.;
 
+/// One line of a menu.
 pub enum MenuItem {
     Entry(MenuEntry),
     Header(SharedString),

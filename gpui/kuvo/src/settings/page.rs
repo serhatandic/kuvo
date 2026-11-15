@@ -335,11 +335,10 @@ impl SettingsView {
             Control::Menu { shown, choices } => {
                 let this = cx.entity().downgrade();
                 let id = SharedString::from(format!("{key}-menu"));
-                // A menu of actions shows "…"; a setting's shows what's chosen.
-                let trigger: AnyElement = if shown.is_empty() {
-                    Button::icon_only(id.clone(), IconName::More, "More").ghost().size(ButtonSize::Small).into_any_element()
-                } else {
-                    div()
+                // A menu of actions shows "…"; a setting's shows what's chosen (a dash for none).
+                let trigger: AnyElement = match shown {
+                    None => Button::icon_only(id.clone(), IconName::More, "More").ghost().size(ButtonSize::Small).into_any_element(),
+                    Some(shown) => div()
                         .id(id.clone())
                         .debug_selector({
                             let id = id.to_string();
@@ -356,9 +355,9 @@ impl SettingsView {
                         .border_color(c.border_strong)
                         .bg(c.card)
                         .cursor_pointer()
-                        .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(shown))
+                        .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(if shown.is_empty() { "—".to_owned() } else { shown }))
                         .child(div().flex().flex_none().flex_col().child(svg().path(IconName::ChevronUp.path()).size(px(10.)).text_color(c.icon)).child(svg().path(IconName::ChevronDown.path()).size(px(10.)).text_color(c.icon)))
-                        .into_any_element()
+                        .into_any_element(),
                 };
                 let wide = choices.iter().any(|(_, line, _, _)| line.is_some());
                 PopoverMenu::new(SharedString::from(format!("{key}-popover")), trigger, move |_, cx| {
@@ -367,9 +366,13 @@ impl SettingsView {
                         let mut menu = Menu::new(cx).width(px(if wide { 420. } else { 240. }));
                         for (label, line, act, checked) in choices {
                             let this = this.clone();
-                            let mut entry = MenuEntry::new(label).checked(checked).on_select(move |_, cx| {
-                                this.update(cx, |this, cx| this.act(act.clone(), cx)).ok();
-                            });
+                            let mut entry = MenuEntry::new(label).checked(checked);
+                            entry = match act {
+                                Some(act) => entry.on_select(move |_, cx| {
+                                    this.update(cx, |this, cx| this.act(act.clone(), cx)).ok();
+                                }),
+                                None => entry.disabled(true),
+                            };
                             if let Some(line) = line {
                                 entry = entry.detail(line);
                             }
@@ -443,11 +446,10 @@ impl Render for SettingsView {
         }
         let page = list(self.list.clone(), cx.processor(|this, ix, _, cx| this.item(ix, cx))).size_full();
         let problem = self.problem.clone().map(|problem| {
+            // Over the page, which starts under it: never over its title.
             div()
-                .absolute()
-                .top(space::S4)
-                .left_0()
-                .right_0()
+                .flex_none()
+                .pt(space::S4)
                 .flex()
                 .justify_center()
                 .px(space::S8)
@@ -501,8 +503,7 @@ impl Render for SettingsView {
             .relative()
             .size_full()
             .bg(c.sidebar)
-            .child(page)
-            .children(problem)
+            .child(div().size_full().flex().flex_col().children(problem).child(div().flex_1().min_h_0().child(page)))
             .children(confirm)
             .children(sign_in)
     }

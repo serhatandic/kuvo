@@ -552,7 +552,7 @@ fn stale(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let row = w.client().settings_page("browser").ok().and_then(|page| page.row("tidies").cloned());
     let _ = w.client().set_browser_settings(serde_json::json!({ "tidiesAgentTabs": false }));
     if let Some(row) = row {
-        view.update(cx, |view, cx| view.act(kuvo::settings::Act::Change { section: "browser".into(), row: Box::new(row), value: serde_json::json!(false), asked: false }, cx));
+        view.update(cx, |view, cx| view.act(kuvo::settings::Act::Change { at: kuvo::settings::At::of("browser", &row), value: serde_json::json!(false), asked: false }, cx));
     }
 }
 /// A row of every kind a box may describe.

@@ -53,6 +53,7 @@ impl Settings {
     pub(super) fn pages_answer(&mut self, method: &str, segments: &[&str], body: &Value, name: &str, here: bool) -> Option<(u16, Value)> {
         let ["kuvo", "settings", rest @ ..] = segments else { return None };
         Some(match (method, rest) {
+            ("GET", []) if self.pages_down => refused(503, "The box isn’t answering."),
             ("GET", []) => (200, json!({ "sections": self.sections() })),
             ("GET", [section]) | ("GET", [section, "events"]) => match self.page(section, name, here) {
                 Some(page) => (200, page),
@@ -82,6 +83,9 @@ impl Settings {
                 }
                 if offered.get("opens").is_some() {
                     return Some(refused(400, "The app opens that itself."));
+                }
+                if !body["was"].is_string() {
+                    return Some(refused(400, "Say the revision it was read at."));
                 }
                 if at["revision"] != body["was"] {
                     return Some((409, json!({ "message": "It changed since you read it.", "page": page })));

@@ -188,6 +188,78 @@ fn a_computer_thats_away_or_not_reached_says_so_and_is_asked_nothing(cx: &mut Te
 }
 
 #[gpui::test]
+fn the_rails_accounts_and_usage_are_the_windows_computers_whichever_settings_shows(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    section(&workspace, cx, "Browser");
+    click(cx, "settings-computer");
+    click(cx, "menu-item-studio-mini");
+    assert!(shown(cx, "settings-away"));
+    click(cx, "rail-sessions");
+    // Accounts, from anywhere in the window, is this window's computer's.
+    cx.dispatch_action(kuvo::area::ShowAccounts);
+    cx.run_until_parked();
+    assert!(shown(cx, "account-claude-code") && !shown(cx, "settings-away"));
+    assert_eq!(settings(&workspace, cx).read_with(cx, |view, _| view.computer_name()), "This Mac");
+}
+
+#[gpui::test]
+fn a_computer_removed_while_its_settings_show_gives_way_to_the_windows(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    section(&workspace, cx, "Permissions");
+    click(cx, "settings-computer");
+    click(cx, "menu-item-devbox");
+    assert!(shown(cx, "row-allowed-alw_srv"));
+    // Removed (from another of your computers, say): the list comes back without it.
+    stand_in.computers_alone();
+    workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
+    cx.run_until_parked();
+    let view = settings(&workspace, cx);
+    assert_eq!(view.read_with(cx, |view, _| view.computer_name()), "This Mac");
+    assert!(shown(cx, "row-allowed-alw_1") && !shown(cx, "row-allowed-alw_srv"), "this Mac's own page, read afresh");
+    // A change now is this Mac's, never the one that left's.
+    click(cx, "row-other-computers-switch");
+    assert_eq!(stand_in.seen_at("PATCH", "kuvo/settings/permissions").len(), 1);
+    assert!(stand_in.peer_box("key_devbox").expect("devbox").seen_at("PATCH", "kuvo/settings/permissions").is_empty());
+    // Back, to the place kept from when it was there, is the window's too: nothing waits forever.
+    cx.simulate_keystrokes("cmd-[");
+    cx.run_until_parked();
+    assert!(!shown(cx, "settings-away") && !shown(cx, "note-sections"));
+}
+
+#[gpui::test]
+fn sections_that_couldnt_be_read_say_so_and_are_asked_for_again(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.settings_readable(false);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    side(&workspace, cx, Side::Computer);
+    assert!(shown(cx, "note-sections") && shown(cx, "settings-sections-problem"));
+    // What the desktop app draws itself still opens.
+    click(cx, "setting-accounts");
+    assert!(shown(cx, "account-claude-code"));
+    // The box answers again: coming back to Settings reads them.
+    stand_in.settings_readable(true);
+    click(cx, "rail-sessions");
+    click(cx, "rail-settings");
+    assert!(shown(cx, "setting-permissions") && !shown(cx, "settings-sections-problem"));
+}
+
+#[gpui::test]
+fn a_computer_without_the_open_section_shows_its_general(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (added, page) = kuvo::stand_in::settings::every_kind();
+    stand_in.add_settings_section(added, page);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    section(&workspace, cx, "samples");
+    click(cx, "settings-computer");
+    click(cx, "menu-item-devbox");
+    // devbox's box has no such section: its General, and no page that never comes.
+    assert_eq!(title(&workspace, cx).as_deref(), Some("General"));
+    assert!(shown(cx, "row-time-zone"));
+}
+
+#[gpui::test]
 fn a_row_that_cant_be_changed_here_says_why_and_sends_nothing(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());

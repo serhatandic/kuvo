@@ -51,6 +51,8 @@ pub struct Settings {
     when: BTreeMap<String, String>,
     /// Sections a test added to `kuvo/settings`: each one's line there, and its page.
     more_sections: Vec<(Value, Value)>,
+    /// Its sections can't be read now (`503`).
+    pub pages_down: bool,
 }
 
 /// A section with a row of every kind a box may describe (PROTOCOL.md, "A box's settings"), for
@@ -175,6 +177,7 @@ impl Default for Settings {
             zone: None,
             when: BTreeMap::new(),
             more_sections: Vec::new(),
+            pages_down: false,
         }
     }
 }

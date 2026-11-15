@@ -1211,7 +1211,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Settings, on `section`.
+    /// Settings, on a place there (its key; a section's name alone is the computer shown's).
     pub fn show_setting(&mut self, section: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(view) = self.area_view(Area::Settings).cloned() {
             view.update(cx, |view, cx| view.select(Some(section.to_owned()), cx));
@@ -1553,8 +1553,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowQueue, window, cx| this.show_area(Area::Queue, window, cx)))
             .on_action(cx.listener(|this, _: &ShowComputers, window, cx| this.show_area(Area::Computers, window, cx)))
             .on_action(cx.listener(|this, _: &ShowSettings, window, cx| this.show_area(Area::Settings, window, cx)))
-            .on_action(cx.listener(|this, _: &ShowUsage, window, cx| this.show_setting("Usage", window, cx)))
-            .on_action(cx.listener(|this, _: &ShowAccounts, window, cx| this.show_setting("Accounts", window, cx)))
+            .on_action(cx.listener(|this, _: &ShowUsage, window, cx| this.show_setting(&crate::settings::box_key("", "usage"), window, cx)))
+            .on_action(cx.listener(|this, _: &ShowAccounts, window, cx| this.show_setting(&crate::settings::box_key("", "accounts"), window, cx)))
             .on_action(cx.listener(|this, _: &Back, window, cx| this.go_back(window, cx)))
             .on_action(cx.listener(|this, _: &Forward, window, cx| this.go_forward(window, cx)))
             .on_action(|_: &OpenHelp, _, cx| cx.open_url(crate::area::HELP))

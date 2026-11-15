@@ -174,6 +174,11 @@ impl StandIn {
         self.state().peers.clear();
     }
 
+    /// Whether it can say its settings' sections (else 503, as a box that isn't answering).
+    pub fn settings_readable(&self, readable: bool) {
+        self.state().settings.pages_down = !readable;
+    }
+
     /// A section added to its settings (`kuvo/settings`), with its page.
     pub fn add_settings_section(&self, section: Value, page: Value) {
         self.state().settings.add_section(section, page);
@@ -729,13 +734,13 @@ impl State {
         json!({ "at": self.at.to_string(), "full": full, "sessions": self.sessions, "projects": projects, "needsYou": self.needs_you() })
     }
 
-    /// The sessions waiting on you that the lists show, the one that asked last first, each with
-    /// what it asks.
     /// The computer's name, as its `kuvo/info` says it.
     fn name(&self) -> String {
         self.name.clone().unwrap_or_else(|| if self.elsewhere { "build-linux".into() } else { NAME.into() })
     }
 
+    /// The sessions waiting on you that the lists show, the one that asked last first, each with
+    /// what it asks.
     fn needs_you(&self) -> Vec<Value> {
         let mut asked: Vec<(&String, f64)> = self
             .sessions

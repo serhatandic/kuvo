@@ -7,7 +7,7 @@ use kuvo_box::accounts::{AccountEntry, Accounts, Action, Confirm, Side, State};
 use kuvo_box::areas::{Account, Level};
 use kuvo_box::models::Offered as OfferedModels;
 use kuvo_box::settings::{Config, UsageSettings};
-use kuvo_box::settings_pages::{Action as Offer, Row as Described};
+use kuvo_box::settings_pages::{Confirm as Asks, Row as Described};
 use kuvo_ui::IconName;
 use serde_json::Value;
 
@@ -111,11 +111,12 @@ pub enum Act {
     SetDark(bool),
     /// A row the box describes, changed to `value` from the revision it was read at (`asked`:
     /// its confirm, where it has one, was answered).
-    Change { section: String, row: Box<Described>, value: Value, asked: bool },
-    /// What a described row offers, done by the box.
-    Do { section: String, row: Box<Described>, action: Box<Offer>, asked: bool },
+    Change { at: At, value: Value, asked: bool },
+    /// What a described row offers (`action`: its id), done by the box, asked first where the
+    /// box says to.
+    Do { at: At, action: String, confirm: Option<Asks>, asked: bool },
     /// A field's text, saved as its row's value (`number`: read as one first).
-    Save { section: String, row: Box<Described>, number: bool },
+    Save { at: At, number: bool },
     /// A secret's field shown, to replace the one set (or put away again).
     Replacing { row: String, on: bool },
     /// Opens the address the box named: a web page, or (from its own computer's box alone) what
@@ -132,6 +133,23 @@ pub enum Notice {
     AlmostOut,
     CuttingItClose,
     WillRunOut,
+}
+
+/// Where a change to a row the box describes goes: its section, its id, the revision it was read
+/// at, and what's asked first. (Only these: a row's choices are never copied into each choice.)
+#[derive(Clone, Debug, PartialEq)]
+pub struct At {
+    pub section: String,
+    pub row: String,
+    pub revision: String,
+    pub title: String,
+    pub confirm: Option<Asks>,
+}
+
+impl At {
+    pub fn of(section: &str, row: &Described) -> At {
+        At { section: section.to_owned(), row: row.id.clone(), revision: row.revision.clone(), title: row.title.clone(), confirm: row.confirm.clone() }
+    }
 }
 
 /// A button in a row.
@@ -168,9 +186,10 @@ pub enum Control {
     /// A switch, and what flipping it does (none: it can't be flipped here, or not until another
     /// change in its group is answered).
     Switch { on: bool, act: Option<Act> },
-    /// A menu: what it shows now, and its choices (words, a quieter line, what picking one does,
-    /// whether it's it).
-    Menu { shown: String, choices: Vec<(String, Option<String>, Act, bool)> },
+    /// A menu: what it shows now (none: a menu of things to do, under "…"), and its choices
+    /// (words, a quieter line, what picking one does, or none where it can't be picked from here,
+    /// and whether it's it).
+    Menu { shown: Option<String>, choices: Vec<(String, Option<String>, Option<Act>, bool)> },
     /// Buttons, in order.
     Buttons(Vec<Push>),
     /// A field (kept by the view under the row's key), and the buttons beside it.
@@ -302,7 +321,7 @@ pub fn yours(section: &str, dark: bool) -> Vec<Block> {
                 "row-theme",
                 "Theme",
                 "Light or dark colours. ⌘⇧L switches them too.",
-                Control::Menu { shown: if dark { "Dark".into() } else { "Light".into() }, choices: vec![("Light".into(), None, Act::SetDark(false), !dark), ("Dark".into(), None, Act::SetDark(true), dark)] },
+                Control::Menu { shown: Some(if dark { "Dark".into() } else { "Light".into() }), choices: vec![("Light".into(), None, Some(Act::SetDark(false)), !dark), ("Dark".into(), None, Some(Act::SetDark(true)), dark)] },
             );
             vec![Block::Group("Theme".into(), String::new(), vec![theme])]
         }
@@ -358,8 +377,8 @@ fn account_row(entry: &AccountEntry, facts: &Facts) -> Row {
 /// Actions in a menu: one that opens something first (the box's confirm, or this app's sign-in
 /// sheet) ends in an ellipsis, as menus mark them. The mark is drawn here, never read in a label.
 fn menu(offered: &[(&Action, Act)]) -> Control {
-    let choices = offered.iter().map(|(action, act)| (if action.confirm.is_some() || action.signs_in() { format!("{}…", action.label) } else { action.label.clone() }, None, act.clone(), false)).collect();
-    Control::Menu { shown: String::new(), choices }
+    let choices = offered.iter().map(|(action, act)| (if action.confirm.is_some() || action.signs_in() { format!("{}…", action.label) } else { action.label.clone() }, None, Some(act.clone()), false)).collect();
+    Control::Menu { shown: None, choices }
 }
 
 /// An account's mark: the box's `service`; its name's first letter where the box names none.
@@ -479,9 +498,9 @@ fn models(facts: &Facts) -> Vec<Block> {
             let now = config.model_at(path);
             let control = facts.busy(&key).unwrap_or_else(|| {
                 let shown = now.as_ref().map(|now| offered.iter().find(|(id, _)| id == now).map_or_else(|| now.clone(), |(_, name)| name.clone())).unwrap_or_else(|| (*none).to_owned());
-                let mut choices = vec![((*none).to_owned(), None, Act::SetModel { path, model: None, was: now.clone() }, now.is_none())];
-                choices.extend(offered.iter().map(|(id, name)| (name.clone(), None, Act::SetModel { path, model: Some(id.clone()), was: now.clone() }, now.as_deref() == Some(id))));
-                Control::Menu { shown, choices }
+                let mut choices = vec![((*none).to_owned(), None, Some(Act::SetModel { path, model: None, was: now.clone() }), now.is_none())];
+                choices.extend(offered.iter().map(|(id, name)| (name.clone(), None, Some(Act::SetModel { path, model: Some(id.clone()), was: now.clone() }), now.as_deref() == Some(id))));
+                Control::Menu { shown: Some(shown), choices }
             });
             Row::new(key, *title, *detail, control)
         })
