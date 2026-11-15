@@ -55,3 +55,26 @@ computer's, a sidebar and a search each. What it is and how it's drawn: `notes/s
 - A long menu (every time zone) scrolls but has no type-to-filter; the keyboard's highlight doesn't
   scroll into view.
 - The phone: the same split there is its own piece.
+
+## From the review (2026-11-15)
+
+Fixed: the rail's Accounts and Usage always open the window's computer's; a computer removed while
+shown gives way to the window's (and a place kept from before is the window's too); sections that
+couldn't be read are asked for again; a change carries only its row's id and revision (never a copy
+of every choice); an action that can't be done stays listed in a menu; the box's titles are drawn
+as they are; a refusal sits above the page's title; a row with no `can` isn't changeable.
+
+Left:
+
+- Not tested: the live follow of the open page (the stand-in answers `…/events` once, it doesn't
+  stream), a described row's change on the app's own thread, a computer switched with a reading
+  in flight.
+- Client rules to settle in PROTOCOL.md or move to the box: the picker leaves out computers that
+  aren't yours (`apart`); only a web page is opened at the word of a box on another computer; a
+  number's field takes a number.
+- A row's key is its id alone, so a change in flight on one section would mark a row of the same
+  id on another busy.
+- Wording for the user: "This page isn't in the desktop app yet. For now, open it in Kuvo Code on
+  your Mac or iPhone." (kept from before; the window's own held notice still says "this app").
+- The thirteen sections under "Not in the Desktop App Yet" fill most of a computer's sidebar; one
+  folded row would do.
