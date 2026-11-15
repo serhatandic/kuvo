@@ -36648,7 +36648,7 @@ function vaultAskNotice(asked) {
   return {
     title,
     subtitle: asked.machine,
-    body: asked.why || (asked.kind === "use" ? asked.group ? "Allow it once, or say no." : "Allow it once, always, or say no." : "Give it an item from your vault, or say no."),
+    body: asked.why || (asked.kind === "use" ? asked.always === true && !asked.group ? "Allow it once, always, or say no." : "Allow it once, or say no." : "Give it an item from your vault, or say no."),
     category: "ask",
     thread: asked.group ?? asked.session ?? asked.id,
     data: { ...asked.group ? { group: asked.group } : asked.session ? { session: asked.session } : {}, vaultAsk: asked.id }
@@ -45136,7 +45136,7 @@ import fs145 from "node:fs";
 import path153 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "bf8bd3244c98";
+var BRIDGE_VERSION = "390044d4f9af";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -52345,6 +52345,9 @@ async function* answerVault(context) {
     const item = typeof given.item === "string" ? given.item : undefined;
     if (item && !itemByID(item))
       return yield* json(404, { message: "That item isn't in this vault." });
+    const asked = listAsks().find((each) => each.id === idOf5(parts[3]));
+    if (answer === "always" && asked && (asked.always !== true || asked.group))
+      return yield* json(400, { message: "This one can only be allowed once: answer “once” or “no”." });
     return yield* json(answer4(idOf5(parts[3]), { answer, ...item ? { item } : {}, client: client.name, by: client.by }) ? 200 : 404, {});
   }
   if (route === "kuvo/vault/items") {

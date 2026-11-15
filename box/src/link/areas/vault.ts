@@ -275,6 +275,9 @@ async function* answerVault(context: RouteContext): AsyncGenerator<AnswerPiece> 
     if (answer !== "once" && answer !== "always" && answer !== "no") return yield* json(400, { message: "Answer “once”, “always” or “no”." });
     const item = typeof given.item === "string" ? given.item : undefined;
     if (item && !itemByID(item)) return yield* json(404, { message: "That item isn't in this vault." });
+    // Always only where it would last (as the box decided when it asked): never quietly a once.
+    const asked = listAsks().find(each => each.id === idOf(parts[3]));
+    if (answer === "always" && asked && (asked.always !== true || asked.group)) return yield* json(400, { message: "This one can only be allowed once: answer “once” or “no”." });
     return yield* json(answerAsk(idOf(parts[3]), { answer, ...(item ? { item } : {}), client: client.name, by: client.by }) ? 200 : 404, {});
   }
 

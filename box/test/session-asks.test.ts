@@ -304,8 +304,43 @@ test("where Always would give nothing for good (a bot's seat, a conversation in 
     expect(vault.choices.map((each: any) => each.answer)).toEqual(["once", "reject"])
     // An Always sent anyway isn't taken, and it still waits.
     expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "always" })).json).toEqual({ message: "Answer once, reject." })
+    // Nor through the vault's own route, as an older phone would send it (in the process that holds it).
+    const held = (await import("../src/link/vault/holder")).holdVault(handler, () => () => {})
+    try {
+      expect((await ask(handler, "POST", `kuvo/vault/asks/${vault.id}`, { answer: "always" })).status).toBe(400)
+    } finally {
+      held.close()
+    }
     expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "once" })).status).toBe(200)
     expect(await answered).toEqual({ answer: "once", client: "Mac", by: "mac" })
+  }
+})
+
+test("a use of the vault asks with whether Always would last, and the card offers it only then", async () => {
+  const { mayUse } = await import("../src/link/vault/use")
+  const { listAsks, onAsksChanged } = await import("../src/link/vault/asks")
+  const { homeFolder } = await import("../src/link/home")
+  const { forgetKeys, makeVault, VAULT_FOLDER } = await import("../src/link/vault/store")
+  const item = { id: "itm_deploy", name: "Deploy key", kind: "key", sites: [], fields: ["value"] } as any
+  // A vault of its own, made here.
+  rmSync(VAULT_FOLDER, { recursive: true, force: true })
+  forgetKeys()
+  makeVault()
+  try {
+    for (const [folder, lasts] of [[homeFolder(), false], [work, true]] as const) {
+      const asked = new Promise<void>(done => { const stop = onAsksChanged(() => { if (listAsks().length) { stop(); done() } }) })
+      const using = mayUse(item, { session: "ses_root", root: "ses_root", folder }, { askWithout: true, why: "To deploy." })
+      // (One that answers at once, without asking, says why here.)
+      await Promise.race([asked, using.then(answer => { throw new Error(`answered without asking: ${JSON.stringify(answer)}`) })])
+      expect(listAsks()[0]!.always).toBe(lasts)
+      const vault = (await ask(handler, "GET", "kuvo/sessions/ses_root/asks")).json.asks.find((each: any) => each.kind === "vault")
+      expect(vault.choices.some((each: any) => each.answer === "always")).toBe(lasts)
+      expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "reject" })).status).toBe(200)
+      expect((await using).ok).toBe(false)
+    }
+  } finally {
+    forgetKeys()
+    rmSync(VAULT_FOLDER, { recursive: true, force: true })
   }
 })
 
