@@ -80,27 +80,40 @@ and each run first clears a `127.0.0.1` feed an earlier one left
 
 CI (`.github/workflows/ci.yml`) runs on GitHub's hosted runners, its jobs side by side: the
 generated files on Linux, the box's and the bridge's tests on macOS and Linux, and the shared
-Swift packages' tests. It doesn't build or test the retired Mac app: only the release workflow
-builds it, signed, for a tag or a dry run, for the box release machines update from. So run a dry run from `main` (Actions › Release › Run
-workflow) before tagging a release whose build changed. The release's signing job runs in the
+Swift packages' tests. It doesn't build or test the retired Mac app, and neither does the release
+workflow now: that builds the box's release from the box's own sources, with Kuvo Helper signed
+and notarized, for a dry run (Actions › Release › Run workflow, from `main`); a tag publishes
+nothing until the desktop app is packaged there too (`.github/workflows/release.yml` says why at
+its top). Run a dry run after a change to how the release is built. The release's signing job runs in the
 `release` environment (Settings › Environments), which should allow only `main` and `v*` tags and
 hold the signing, notarization and update keys.
 
-A release also carries what remote machines run, for them to update themselves
-with (today the only way they get updates, so the release workflow keeps building the retired
-Mac app until the box makes its own release), once the `KUVO_BOX_SIGNING_KEY` secret (an Ed25519 key) is set
-(`scripts/set-box-key.sh` makes it once, keeps it in your login keychain, uploads
-it and prints the public key to pin): the app writes those files
-(`"Kuvo Code" --write-box-files <folder>`), `scripts/pack-box.sh` packs them with
-the app's helper bundles (`Contents/Helpers/*.app`), and `scripts/sign-box.mjs`
-signs `boxes.json`, which names them. `scripts/app-box-release.sh` puts the
-two files in the app (`Contents/Resources/box-release`) and signs it again,
-before it's notarized, for the app to offer this Mac's box as it updates
-(`kuvo/box/update`; it doesn't yet), and the release publishes the same files. A local
-`scripts/build-app.sh` does it only with `KUVO_BOX_SIGNING_KEY` set, so a local
-build carries none. Machines take only
-what a key pinned in the box's link (`UPDATE_KEYS`, in `box/src`) signed; see
-`protocol/PROTOCOL.md`, "Updates".
+A release carries what every box runs, for boxes to update themselves with, signed with the
+`KUVO_BOX_SIGNING_KEY` secret (an Ed25519 key; `scripts/set-box-key.sh` makes it once, keeps it in
+your login keychain, uploads it and prints the public key to pin). The box builds it itself, from
+its own sources, with no app built or run: `scripts/box-release.sh` writes the files
+(`box/src/release/files.ts`: the keeper's from `box/src/keeper`, the engine's plugin from
+`box/src/plugins`, the catalogs from the table in `box/src/shared/integrations`, the bots' words,
+the link, the agents' bridge and the browser as built, and `box.json` with the engine pinned in
+`box/src/shared/engine-pin.json`), packs them with each Mac bundle it's given (Kuvo Helper, from
+`scripts/build-helper.sh`), and `scripts/sign-box.mjs` signs `boxes.json`, which names the pack.
+`scripts/box-release.sh --files <version> <folder>` writes only the files, with no key, to look
+at them. An app that carries the two files (`Contents/Resources/box-release`) offers them to the
+box on its computer (`kuvo/box/update`); `scripts/app-box-release.sh` still puts them in the
+retired Mac app's build, when `scripts/build-app.sh` is given the key. Boxes take only what a key
+pinned in the box's link (`UPDATE_KEYS`, in `box/src`) signed; see `protocol/PROTOCOL.md`,
+"Updates".
+
+The keeper's files are plain files: edit them in `box/src/keeper`, where the bridge's tests run
+`kuvo-wake` from. Where one names the engine's version it says `@ENGINE@`, which the release
+writes the pinned version over. `kuvo-start`, `kuvo-launch` and `kuvo-setsid` end without a last
+newline, as every release has had them; a newline added there is a change to the file like any
+other (a box takes it as a new keeper). The Swift copies of these files and of the catalogs
+(`swift/OpenCodeKit/…/Engine`, `swift/KuvoCode/Stores/Integrations.swift`) belong to the retired
+Mac app and go into no release: don't edit them to change what a box runs. What's in
+`box/src/shared` (the table, the bots' words, the engine's pin) is among what the agents' bridge
+is stamped with, so after a change there `scripts/check-built.sh` asks for
+`scripts/build-agents.sh` again (only its last line changes).
 
 Builds are signed ad hoc, so macOS treats every build as a new app and asks for
 privacy permissions (like access to Desktop) again. To keep one identity
@@ -225,7 +238,7 @@ scripts/test-box.sh box <test-filter>
 
 - `mac`: the retired Mac app's test suite, `scripts/test-app.sh` (`KuvoCodeTests-build`), which
   drives the real window and pointer, so one runs at a time and nothing else of this kind beside
-  it. Only `scripts/route-vectors.sh` still runs it. Older scripts also say `mac` for a plain
+  it. Only `scripts/route-vectors.sh --mac-kit` still runs it. Older scripts also say `mac` for a plain
   build, which still works, under the same lock;
 - `mac-build`: what doesn't drive the UI: the Mac's `xcodebuild` (builds, demo builds) and the
   packages' `swift build` and `swift test`. It has two slots, so two of these run at once, and
@@ -404,14 +417,15 @@ stand-in, the same small one on each. To add one:
   `routes/shapes/cases.json`. A field that can be null is sent as `null`, never left out (this
   Mac's encoder leaves a nil out, so its fields that can be null are `@SentAsNull`), and a refusal
   is JSON, `{}` at least.
-- Run the runners. `./scripts/route-vectors.sh` writes `routes/box` (what a Mac leaves on a
-  machine, and the kit this Mac's app gives its own box, which the bridge's runners use) after a
+- Run the runners. `./scripts/route-vectors.sh` writes `routes/box` (the catalogs a release
+  brings a box, from the table in `box/src/shared/integrations`; with `--mac-kit`, also the kit
+  the retired Mac app gave its own box, from that app's tests) after a
   change to the integrations, the MCP catalog, a bot's kit or how a conversation's rules are made
   from its approval and Settings › Permissions (`approval.json`, which the bridge's bots tests
   hold `refreshedRules` to). Bot templates, Kuvo Code's own
   personalities and what a bot is told are written once, in
-  `swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json`, which every box reads and the
-  runners use as it is; kuvo-web's `src/lib/bots.ts` copies its templates.
+  `box/src/shared/bot-words.json` (KuvoLink's `Resources/bot-words.json` is a link to it, for the
+  retired Mac app's build), which every box reads and the runners use as it is; kuvo-web's `src/lib/bots.ts` copies its templates.
 
 `swift/Tests/E2E` (the retired Mac app's, kept to read) tries the whole app the way people use it: a separate copy
 (`run.kuvo.code.e2e`) driven in the background through Accessibility, with
@@ -426,7 +440,7 @@ README says how.
 
 | Path | What's there |
 | --- | --- |
-| `box/` | The box (TypeScript): its link, built to `kuvo-link.js`, and the agents bridge (Claude Code, Codex, Cursor, Grok and Antigravity in the engine's API) and the browser's keeper and tools, built to `dist/kuvo-agents.js` and `dist/kuvo-browser.js` (its `README.md`); its tests in `test/`, and the bridge's, on Node, in `bridge-tests/` |
+| `box/` | The box (TypeScript): its link, built to `kuvo-link.js`, and the agents bridge (Claude Code, Codex, Cursor, Grok and Antigravity in the engine's API) and the browser's keeper and tools, built to `dist/kuvo-agents.js` and `dist/kuvo-browser.js` (its `README.md`); the keeper's shell files (`src/keeper`), the engine's plugin (`src/plugins`) and what writes its release's files (`src/release`); its tests in `test/`, and the bridge's, on Node, in `bridge-tests/` |
 | `mac/helper/` | Kuvo Helper (Swift, macOS only): the signed program this Mac's box runs under, and `kuvo-keys`, the one-time hand-over of 0.7's Keychain items to it. Built on its own by `scripts/build-helper.sh`; its tests are `swift test` there |
 | `protocol/` | How boxes and clients talk (`PROTOCOL.md`), and the vectors every side is held to (`vectors/`) |
 | `swift/KuvoCode/` | The retired Swift Mac app, kept only to read (`swift/MAC-APP-REFERENCE.md`): views, stores and the design system; its project is `swift/KuvoCode.xcodeproj`, its tests `swift/KuvoCodeTests/` |

@@ -2539,11 +2539,21 @@ did: the box keeps working as itself ("For released Macs").
   `config/opencode/plugins/<name>`; and `bundles`, Mac bundles (the box's helper, signed), each
   `{"bin/<name>.app": {<path in it>: <SHA-256>}}`. A box from before bundles passes `bundles` over,
   so a release with one still updates it. A bundle holds only folders and the files `bundles` names
-  (no links, no part starting with a dot), or the release isn't taken. `scripts/pack-box.sh` packs
-  it from a built app.
+  (no links, no part starting with a dot), or the release isn't taken. `scripts/box-release.sh`
+  builds it from the box's own sources, with no app: the keeper's files (`kuvo-start`,
+  `kuvo-launch`, `kuvo-setsid`, `kuvo-wake`, `kuvo-npx`, `runtime/node`, as `box/src/keeper` has
+  them, the engine's version written in from `box/src/shared/engine-pin.json`, which is also where
+  `box.json`'s engine and its builds come from), `.kuvo-boot` (the SHA-256 of the first three,
+  each as its name, a newline and its bytes, joined by newlines), the engine's plugin
+  (`box/src/plugins`), the link, the agents' bridge (with a last line `// kuvo-agents <16 hex
+  digits of its SHA-256>`, which a Mac from before boxes updated themselves tells it by) and the
+  browser as built, the catalogs (`integrations.json`, `integrations-mac.json` and
+  `mcp-catalog.json`, written from the one table in `box/src/shared/integrations`), the bots'
+  words (`box/src/shared/bot-words.json`) and `box-version`; then each Mac bundle it's given
+  (Kuvo Helper, signed and notarized already, `scripts/build-helper.sh`).
 - **From a folder here** (`box.update`): Kuvo Code carries its version's release
-  (`Contents/Resources/box-release`: `boxes.json` and `box-<version>.tar.gz`, put there by
-  `scripts/app-box-release.sh` when the release is built), for it to offer the box on its computer
+  (`Contents/Resources/box-release`: `boxes.json` and `box-<version>.tar.gz`, as
+  `scripts/box-release.sh` made them), for it to offer the box on its computer
   as it updates. The app offers it to a box on this Mac it's attached to in place that's older than
   it needs ("The update gate"), and to this Mac's own box in a home of its own each time it opens
   (with `movesOwnBox`, "The app attached to this Mac's own box"); a Mac's box in the app's folder is
@@ -4489,7 +4499,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   (its folder and clock are set either way). (An earlier client sends `{timeZone}`, which is
   ignored.)
 - What a box makes and tells its bots with: its words, the same file on every box of a version
-  (`bin/bot-words.json`, KuvoLink's `Resources/bot-words.json`), which a client puts beside the
+  (`bin/bot-words.json`, `box/src/shared/bot-words.json`), which a client puts beside the
   bridge as it connects and a release brings: New Bot's templates, Kuvo Code's own personalities,
   the looks a bot can have, and what a bot is told, filled in by the box for where it runs (this
   Mac, or a machine by its name as its peers know it, `run/link.json`'s `id`, else its host name, in
@@ -7170,8 +7180,8 @@ and the keeper is as "The keeper" says). Everything above it asks of the box wit
   can't be done yet), it starts nothing, and looks again every ten minutes.
 - **Running**, at its first look and every ten minutes after, and at once when `state.json`
   changes (Move Now asked), unless an update waits for it or something's under way: `--ready`. Ready
-  (`move` or `resume`), it makes the box's release (`--write-box-files`' files, with the helper the
-  app carries) and asks `--ready --release` with it, the box still running; still ready, it stops
+  (`move` or `resume`), it makes the box's release (the files `scripts/box-release.sh` writes now,
+  which the app wrote itself then, with the helper the app carries) and asks `--ready --release` with it, the box still running; still ready, it stops
   the engine, the bridge and `serve` (holding `run/box.lock`, so the
   app starts none meanwhile, and answering every control but `status` `503` with a `message`,
   Stop Background Work too, its `status` saying `moving: true`, and `movingWhy` while the move holds

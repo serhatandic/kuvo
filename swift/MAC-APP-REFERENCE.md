@@ -13,10 +13,11 @@ Its code stays here **only to read**, for two things:
 **Never edit it.** Don't fix, update or reformat it, and don't move logic into it. A finding goes
 to the box or the desktop app.
 
-The one exception, until the box makes its own release (#713): the release still builds this app
-(below), so it has to keep compiling against the shared packages. When a change to one of them
-breaks it (`scripts/batch-build.sh --compile-only mac`, after each merge, says so), make the
-smallest change here that compiles again, with nothing else in it, and say so in your report.
+The one exception was the box's release, which this app's build made until the box made its own
+(#715, below). Nothing that ships builds this app now. While its compile check still runs
+(`scripts/batch-build.sh --compile-only mac`, after each merge) and a change to a shared package
+breaks it, make the smallest change here that compiles again, with nothing else in it, and say so
+in your report.
 
 ## What's the retired app
 
@@ -62,17 +63,28 @@ Box) isn't this app's any more:
   which expects that name in the launch agent the box writes and in a message, and would fail on
   them now; this app's tests aren't run.
 
-## What it's still built for, until the box does it (#713)
+## What it was still built for, and what's left
 
-Machines and the protocol still need three things that only this app's code makes today. Each
-runs the app's code as it is, without editing it:
+Three things only this app's code made. The box makes the first two itself now (#715):
 
-- **The box release machines update from**: `.github/workflows/release.yml` builds this app and
-  runs `"Kuvo Code" --write-box-files` (`KuvoCode/Stores/BoxRelease.swift`, with OpenCodeKit's
-  `BoxFiles`). `scripts/pack-box.sh` and `sign-box.mjs` then pack and sign the release. This is
-  the only way machines get updates today, so release.yml and its scripts stay as they are.
-- **`protocol/vectors/routes/box`**: `scripts/route-vectors.sh` writes these from the app's
-  `RouteContractTests` (the integrations, the MCP catalog, the Mac's bot kit), through
-  `scripts/test-app.sh`.
-- **The Mac app's What's New**: `scripts/whats-new.py` writes `KuvoCode/Resources/whats-new.json`
-  as release.yml builds the app.
+- **The box's release**: the box builds it from its own sources, with no app
+  (`scripts/box-release.sh`, `box/src/release/files.ts`). What this app wrote into it
+  (`"Kuvo Code" --write-box-files`: `KuvoCode/Stores/BoxRelease.swift`, with OpenCodeKit's
+  `BoxFiles`) has its one copy in `box/`: the keeper's shell files (`box/src/keeper`; here they're
+  strings in `OpenCodeKit/…/Engine/RemoteEngine.swift`, `Wakes.swift`, `Launcher.swift` and
+  `CommandEnvironment.swift`), the integrations and the popular MCP servers
+  (`box/src/shared/integrations`; here `KuvoCode/Stores/Integrations.swift`, `MCPCatalog.swift`
+  and `MachineBox.swift`), the engine's pin (`box/src/shared/engine-pin.json`; here
+  `EngineInstaller.swift`) and the bots' words (`box/src/shared/bot-words.json`, which KuvoLink's
+  `Resources/bot-words.json` is now a link to, so this app still compiles). **The copies here go
+  into no release**: a change to what a box runs is made in `box/`, never here, and these aren't
+  kept in step. `.github/workflows/release.yml` doesn't build this app.
+- **`protocol/vectors/routes/box`**: the integrations and the MCP catalog are written from the
+  box's table (`scripts/route-vectors.sh`). Only the Mac's bot kit (`mac-bot-kit.json`) still
+  comes from this app's `RouteContractTests` (`scripts/route-vectors.sh --mac-kit`, through
+  `scripts/test-app.sh`).
+- **The Mac app's What's New**: `scripts/whats-new.py` writes `KuvoCode/Resources/whats-new.json`.
+  Nothing builds it into a release now.
+
+`scripts/build-app.sh` still builds this app, for trying an update over an installed copy
+(`scripts/try-update.sh`).
