@@ -5040,6 +5040,9 @@
             "literal": "box.permissions"
            },
            {
+            "literal": "box.permissions.list"
+           },
+           {
             "literal": "box.rehome"
            },
            {
@@ -5716,6 +5719,9 @@
            },
            {
             "literal": "box.permissions"
+           },
+           {
+            "literal": "box.permissions.list"
            },
            {
             "literal": "box.rehome"
@@ -7343,6 +7349,11 @@
      }
     },
     "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "500": {
      "object": {
       "message": "string"
      }

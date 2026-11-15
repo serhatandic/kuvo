@@ -9209,6 +9209,7 @@ var FEATURES = [
   "box.helper",
   "box.ownHome",
   "box.permissions",
+  "box.permissions.list",
   "box.rehome",
   "box.rehome.run",
   "box.serve",
@@ -51653,7 +51654,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "9dcce991521f";
+var BRIDGE_VERSION = "1249a4cf8b38";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63180,7 +63181,11 @@ async function* permissionsRoute({ request, json }) {
   const now = boxPermissions();
   if (!now.applies)
     return yield* json(409, { message: "Nothing on this computer needs macOS's permission." });
-  keepPutOff(new Set([...putOff(), id]));
+  try {
+    keepPutOff(new Set([...putOff(), id]));
+  } catch {
+    return yield* json(500, { message: "Kuvo couldn't keep that on this Mac. Try again." });
+  }
   return yield* json(200, boxPermissions());
 }
 
