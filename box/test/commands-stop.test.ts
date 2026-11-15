@@ -207,6 +207,7 @@ describe("what the engine makes of one of your commands", () => {
     ["$ARGUMENTS takes it all, as written", "Review $ARGUMENTS now", " the branch ", "Review  the branch  now"],
     ["none named: on a line after it", "Tidy up the imports.", "src/app.ts", "Tidy up the imports.\nsrc/app.ts"],
     ["none named and nothing written: as it is", "Tidy up the imports.\n", "", "Tidy up the imports."],
+    ["a template's own ending kept, words on a line after it", "Tidy\n", "src", "Tidy\n\nsrc"],
     ["$1 $2: a word each, the highest the rest", "Fix $1 in $2", "login page header", "Fix login in page header"],
     ["quoted words keep together, without their quotes", "Fix $1 in $2", "\"login page\" 'the header'", "Fix login page in the header"],
     ["a word not given is left out", "Fix $1 in $2", "login", "Fix login in"],
