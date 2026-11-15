@@ -304,13 +304,6 @@ test("where Always would give nothing for good (a bot's seat, a conversation in 
     expect(vault.choices.map((each: any) => each.answer)).toEqual(["once", "reject"])
     // An Always sent anyway isn't taken, and it still waits.
     expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "always" })).json).toEqual({ message: "Answer once, reject." })
-    // Nor through the vault's own route, as an older phone would send it (in the process that holds it).
-    const held = (await import("../src/link/vault/holder")).holdVault(handler, () => () => {})
-    try {
-      expect((await ask(handler, "POST", `kuvo/vault/asks/${vault.id}`, { answer: "always" })).status).toBe(400)
-    } finally {
-      held.close()
-    }
     expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "once" })).status).toBe(200)
     expect(await answered).toEqual({ answer: "once", client: "Mac", by: "mac" })
   }

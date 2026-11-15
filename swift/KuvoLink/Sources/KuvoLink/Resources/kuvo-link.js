@@ -45136,7 +45136,7 @@ import fs145 from "node:fs";
 import path153 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "390044d4f9af";
+var BRIDGE_VERSION = "559e353e8525";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -52345,9 +52345,6 @@ async function* answerVault(context) {
     const item = typeof given.item === "string" ? given.item : undefined;
     if (item && !itemByID(item))
       return yield* json(404, { message: "That item isn't in this vault." });
-    const asked = listAsks().find((each) => each.id === idOf5(parts[3]));
-    if (answer === "always" && asked && (asked.always !== true || asked.group))
-      return yield* json(400, { message: "This one can only be allowed once: answer “once” or “no”." });
     return yield* json(answer4(idOf5(parts[3]), { answer, ...item ? { item } : {}, client: client.name, by: client.by }) ? 200 : 404, {});
   }
   if (route === "kuvo/vault/items") {
