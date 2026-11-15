@@ -1710,7 +1710,80 @@ machines; a client that wants every computer's facts asks the box that has it as
 - `GET kuvo/computers/events` (ndjson): the same now, and a line as it changes (a peer's word, one
   going away or coming back, this box's sessions starting or stopping work, and every 15 seconds
   for the rest); through `box route` a client asks again instead.
-- A box says what it knows, never more: SSH connections are a Mac app's own (`kuvo/machines`), so
+- **Adding one** (`computers.add`, #636): a box adds a computer over SSH itself, for whichever
+  client asks, with no app: a client sends an address, draws the box's steps and words, and
+  answers what it asks. (Before, a Mac's app did all of it: `kuvo/machines`, which stays the old
+  app's.) SSH is used to set a computer up, set it up again and uninstall it, never after: the
+  computer's own keeper runs it, and boxes talk through the relay ("Peers").
+  - **Who adds**: a Mac's box that isn't a member of another's setup ("Your setup", Only the main
+    computer adds), with a relay and keys for its link and its own release's files in its folder.
+    A member answers `409 {message, primary}`; a Linux box `409 {message}` (only a Mac's box
+    writes the record of a setup's computers yet, #183); a Mac while the old app is attached to
+    its box `409` (that app keeps its own list); `503 {message}` for the rest. `GET
+    kuvo/computers/add` says the same as `can: false` with `why`.
+  - `GET kuvo/computers/add` → `{can, why?, hosts, tries}`: `hosts`, the `Host`s of the box's
+    computer's `~/.ssh/config` and the files it includes (names only, never a pattern), 50 at
+    most, those not an address of a computer it set up; `tries`, those under way first, then the
+    last few that are over. `GET kuvo/computers/add/events` (ndjson) follows it.
+  - `POST kuvo/computers/add {"destination"}` → `202 {try}`. A destination is what `ssh` takes: a
+    Host's name, a host's name or `user@host`; one with `:`, `/`, white space or a leading `-`
+    (a port, a path, an IPv6 address, an option) is `400 {message}` and never reaches `ssh`. One
+    being added at that address already is answered as it is. `409` through `kuvo-link.js box
+    route`, which can't stay to do it.
+  - **A try**: `{id, kind, destination, name, state, title, steps, question?, failure?, computer?,
+    known?}`. `kind` is `add`, `setup` or `uninstall`; `state` is `working`, `asking`, `stopping`,
+    `failed` or `done`; `steps` are `[{id, title, state, detail?, sent?, total?}]`, each
+    `waiting`, `now`, `done` or `failed`, with `sent` of `total` bytes while it copies. Adding
+    and setting up again have `checking`, `files`, `engine`, `starting`, `joining`; uninstalling
+    `checking`, `removing`, `forgetting`. `failure` is `{title, message, again}` (`again`: trying
+    again could go otherwise); `computer` `{key, name}` once it's one of yours (`known`: it was
+    here already, at another address, which is kept as one of its addresses). Every word is the
+    box's. Kept in `run/adding.json`: a box that started again says a try was cut short, and
+    never takes it up again by itself.
+  - **What it asks** (`state: "asking"`, `question: {id, title, message, facts: [{label, value,
+    code?}], answers: [{id, label, kind}]}`, `kind` `primary`, `plain` or `danger`), answered with
+    `POST kuvo/computers/add/<id>/answer {"answer": <an answer's id>}` → `200 {try}` (`409` when
+    it asks nothing now, or not that):
+    - `hostKey`: the host's key isn't known. The box reads it as `ssh` reaches the host (your
+      config's port and jump host), offering no key and no agent to a host not trusted yet, and
+      shows its fingerprint (`SHA256:…`). `trust` keeps it in the box's own
+      `~/.kuvo-code/ssh/known_hosts`; your `~/.ssh/known_hosts` is read, never written.
+    - `hostKeyChanged`: the key differs from one the box kept. `trust` puts the new one in its
+      place. A key that differs from one in your own known hosts is never asked about: the try
+      fails, saying to remove it with `ssh-keygen -R`.
+    - `inAnotherSetup`: a box found there is another setup's, or an older Kuvo Code's ("Your
+      setup", Already in a setup?, judged as `kuvo/setup/judge` does). `add` goes on, and it's
+      shared from then on.
+    `cancel`, on each, stops the try.
+  - `DELETE kuvo/computers/add/<id>` stops one under way (at its next step: what it runs there
+    now ends first, and its start is never cut short; it says `stopping` meanwhile, then leaves
+    the list), or forgets one that's over: `200 {}`, `404`. One stopped as it started, on a
+    computer that had no Kuvo Code, is taken off there again.
+  - **What it does**, in order: connects with the keys and agent of the box's computer (never a
+    password; refused, it tries once through an agent of its own that offers the SSH keys in the
+    vault, "Vault"); probes the computer (its system and kind, what the engine needs, its
+    `machine-id`, what Kuvo Code it has); puts its own release's files there, each checked by its
+    SHA-256 before it's put in place, unless they're there already or the computer has a newer
+    Kuvo Code, which is left as it is; the engine, its own binary where the two are the same
+    kind, else the pinned package fetched and checked on the box's computer (the computer added
+    downloads no code); then, in one script, the computer's settings made its own (nothing of the
+    box's is copied), how its keeper starts it (`run/launch.env`: the session's PATH, shell and
+    language and its name; no password or key), the `@reboot` line and a Mac's launch agent, and
+    `kuvo-start start`: its own keeper starts its engine, with a port and passwords that never
+    leave it; then `kuvo-link.js setup` there with this box's keys and documents, its answer
+    written as the box's own record of it (its peers document, `machines.json`, and
+    `phone-link.json` for `kuvo/hosts`).
+  - `POST kuvo/computers/<key>/setup` → `202 {try}`: the same at the address it was added under
+    (Set Up Again), which brings an older Kuvo Code there up to this box's. `POST
+    kuvo/computers/<key>/uninstall` → `202 {try}`: over SSH the computer lets this box go
+    (`leave`) and, unless another Mac that set it up still uses it, runs its own `kuvo-link.js
+    uninstall` and deletes the sign-ins and keys it keeps; then the box removes it as `DELETE
+    kuvo/computers/<key>` does. Its folder stays. Asked while that computer is being set up, the
+    try under way is stopped first and waited for, so nothing starts it again behind the removal
+    (#603). Both are offered in `actions` (`setup`, `uninstall` with its `confirm`; `why` while
+    one is under way) on machines the box has an SSH address for, and are `404` for any other.
+    A computer that can't be reached isn't uninstalled later: the try fails, saying so.
+- A box says what it knows, never more: SSH is only how a computer was set up, so
   no box says a machine is reached "through SSH", and a computer no peer of this box names isn't
   listed.
 
@@ -6675,6 +6748,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `claude-code` | `kuvo/claude-code` (a Mac only, before #341) |
 | `clients.kind` | `client` in a session's first message (`desktop` for Kuvo Code's desktop app, "Sessions"), `kind` on each of `kuvo/phones`' devices and in phones documents, and no `<from-phone>` block on what a desktop client sends (#742) |
 | `computers` | `kuvo/computers` and `…/events`: your computers as one list, from any box ("Computers", #711) |
+| `computers.add` | `kuvo/computers/add…`: a box adds a computer over SSH itself, with its tries' steps, questions and words; `POST kuvo/computers/<key>/setup` and `/uninstall`, and `setup` and `uninstall` in `actions` ("Computers", Adding one, #636) |
 | `computers.facts` | `features`, `working` (left out where never said) and `atWork` on each of `kuvo/computers`' computers ("Computers", #735) |
 | `computers.manage` | `actions` on each of `kuvo/computers`' computers, `PATCH` and `DELETE kuvo/computers/<key>` (done by the box that writes the machine's record, or handed to it) and `POST kuvo/computers/<key>/connect` ("Computers", Managing them, #735) |
 | `computers.reach` | `address` and `relay` on each of your own computers in `kuvo/computers` ("Computers", #742) |

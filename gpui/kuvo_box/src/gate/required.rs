@@ -16,6 +16,7 @@ pub const REQUIRED: &[&str] = &[
     "bots.now",
     "clients.kind",
     "computers",
+    "computers.add",
     "computers.facts",
     "computers.manage",
     "computers.reach",
