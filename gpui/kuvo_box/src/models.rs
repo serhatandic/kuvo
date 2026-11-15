@@ -137,6 +137,10 @@ pub struct OfferedModel {
     /// Its agent keeps it out of its picker: a picker leaves it out.
     #[serde(default)]
     pub hidden: bool,
+    /// It needs no account (OpenCode Zen's free models, a local one's), as the box says
+    /// (`models.offered.free`): left out, it needs one.
+    #[serde(default)]
+    pub free: bool,
 }
 
 impl OfferedModel {

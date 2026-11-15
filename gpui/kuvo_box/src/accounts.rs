@@ -203,6 +203,9 @@ pub struct AccountEntry {
     /// Its mark, by the plan limits' service ids (`claude`, `copilot`…), as the box says; none for
     /// one with no mark, drawn by its name's first letter.
     pub service: Option<String>,
+    /// A plan you sign in to, rather than an account you enter a key or credentials for, as the
+    /// box says (`plan`, `sign-in.accounts.plan`): a first run lists plans and keeps keys apart.
+    pub plan: bool,
     /// The box's ways in, for the sign-in sheet.
     pub ways: Ways,
     pub state: State,
@@ -315,6 +318,7 @@ impl BoxClient {
             /// Whether Accounts lists it, as the box decides (whatever `kind` it names).
             #[serde(default)]
             listed: bool,
+            plan: bool,
             #[serde(default)]
             service: Option<String>,
             #[serde(default)]
@@ -339,7 +343,7 @@ impl BoxClient {
             .into_iter()
             .filter_map(|integration| {
                 let entry = ways.iter().find(|entry| entry.id == integration.id).filter(|entry| entry.listed)?;
-                Some(AccountEntry { side, service: entry.service.clone(), ways: entry.ways.clone(), state: entry.state, line: entry.line.clone(), actions: entry.actions.clone(), integration })
+                Some(AccountEntry { side, service: entry.service.clone(), plan: entry.plan, ways: entry.ways.clone(), state: entry.state, line: entry.line.clone(), actions: entry.actions.clone(), integration })
             })
             .collect())
     }
@@ -495,6 +499,13 @@ mod tests {
             let state: State = serde_json::from_value(case["state"].clone()).unwrap();
             assert_eq!(state == State::SignedOut, case["state"] == "signedOut", "{}", case["about"]);
             let actions: Vec<Action> = serde_json::from_value(case["actions"].clone()).unwrap();
+            // Keys are entered, never signed into (#733): a key-only account's actions are never
+            // worded "Sign In", and it isn't a plan.
+            let key_only = case["offered"]["methods"].as_array().is_some_and(|methods| !methods.is_empty() && methods.iter().all(|method| method["type"] == "key"));
+            if key_only {
+                assert!(!case["plan"].as_bool().unwrap(), "{}", case["about"]);
+                assert!(actions.iter().all(|action| !action.label.contains("Sign In")), "{}", case["about"]);
+            }
             for (action, said) in actions.iter().zip(case["actions"].as_array().unwrap()) {
                 assert_eq!(action.label, said["label"].as_str().unwrap());
                 assert_eq!(action.here, said["here"] == json!(true), "{}", case["about"]);
