@@ -40,6 +40,13 @@ cargo run -p kuvo --features stand-in -- --stand-in   # against a made-up box: n
 cargo run -p kuvo                                       # this Mac's own box (Kuvo Code running here)
 ```
 
+- **The first run** (`notes/screens-first-run.md`): until the box says you've had it (`welcomed`
+  in `kuvo/setup`), the window is one card at a time: a welcome; the coding agents and plans, each
+  as the box lists it, signing in or installing in place; and where to work, a folder the box
+  suggests (or one chosen from its folders, or no project). Where the box says a model runs and
+  nothing needs you, the welcome goes straight to where to work. It ends on the landing view, set
+  to start where you picked, and tells the box. Try it: `cargo run -p kuvo --features stand-in --
+  --stand-in --first-run nothing` (or `crowded`, `running`).
 - **The rail** (`notes/screens-rail.md`) switches between the areas, Sessions, Bots, Work Queue,
   Computers and Settings (⌃1 to ⌃5), each with its own sidebar beside it in one raised panel with
   the main view; what waits on you shows on an area's icon, and clicking the open area folds its
