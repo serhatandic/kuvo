@@ -260,7 +260,7 @@ test("a command the sandbox can't say what it stopped (Linux) shows its error, a
 
 test("what a subagent asks of the vault shows with its asks, and only the vault's clients answer it", async () => {
   const { ask: askVault } = await import("../src/link/vault/asks")
-  const answered = askVault({ kind: "use", session: "ses_child", bot: "bot_scout", botName: "Scout", itemName: "GitHub token", why: "To open the pull request.", site: "github.com" })
+  const answered = askVault({ kind: "use", session: "ses_child", bot: "bot_scout", botName: "Scout", itemName: "GitHub token", why: "To open the pull request.", site: "github.com", always: true })
   const { status, json } = await ask(handler, "GET", "kuvo/sessions/ses_root/asks")
   expect(status).toBe(200)
   const vault = json.asks.find((each: any) => each.kind === "vault")
@@ -281,9 +281,32 @@ test("what a subagent asks of the vault shows with its asks, and only the vault'
   expect(unanswerable.findIndex((each: any) => each.kind === "vault")).toBeGreaterThan(unanswerable.findIndex((each: any) => each.id === "per_push"))
   for (const answer of ["always", "reject"]) expect((await askAs(false, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer })).status).toBe(403)
   expect((await ask(handler, "GET", "kuvo/sessions/ses_root/asks")).json.asks.some((each: any) => each.id === vault.id)).toBe(true)
+  // Asked in the conversation, answered there: not through another conversation's asks.
+  sessions.ses_other = { id: "ses_other", location: { directory: work }, time: { created: 3, updated: 3 } }
+  expect((await ask(handler, "POST", `kuvo/sessions/ses_other/asks/${vault.id}`, { answer: "always" })).json).toEqual({ message: "It isn't waiting any more." })
   expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "always" })).status).toBe(200)
   expect(await answered).toEqual({ answer: "always", client: "Mac", by: "mac" })
   expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "once" })).status).toBe(404)
+})
+
+test("where Always would give nothing for good (a bot's seat, a conversation in a home folder), the vault's ask offers it once alone", async () => {
+  const { ask: askVault } = await import("../src/link/vault/asks")
+  const { alwaysFor } = await import("../src/link/vault/use")
+  const { homeFolder } = await import("../src/link/home")
+  // What the box decides as it asks: a seat's, and a home folder's, are once.
+  expect(alwaysFor({ session: "ses_seat", bot: "bot_ship", seat: true, group: "grp_1" } as any)).toBeNull()
+  expect(alwaysFor({ session: "ses_root", folder: homeFolder() } as any)).toBeNull()
+  expect(alwaysFor({ session: "ses_root", folder: "/" } as any)).toBeNull()
+  expect(alwaysFor({ session: "ses_root", folder: work } as any)).toEqual({ project: work })
+  for (const asked of [{ group: "grp_1", always: false }, { always: false }]) {
+    const answered = askVault({ kind: "use", session: "ses_root", itemName: "GitHub token", ...asked })
+    const vault = (await ask(handler, "GET", "kuvo/sessions/ses_root/asks")).json.asks.find((each: any) => each.kind === "vault")
+    expect(vault.choices.map((each: any) => each.answer)).toEqual(["once", "reject"])
+    // An Always sent anyway isn't taken, and it still waits.
+    expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "always" })).json).toEqual({ message: "Answer once, reject." })
+    expect((await ask(handler, "POST", `kuvo/sessions/ses_root/asks/${vault.id}`, { answer: "once" })).status).toBe(200)
+    expect(await answered).toEqual({ answer: "once", client: "Mac", by: "mac" })
+  }
 })
 
 test("an item a conversation needs from the vault is given from its card, one of the vault's items, to its clients alone", async () => {
@@ -294,7 +317,7 @@ test("an item a conversation needs from the vault is given from its card, one of
   try {
     const key = makeVault()
     const item = await addItem({ kind: "key", name: "OpenAI key", values: { key: "sk-test" } })
-    const answered = askVault({ kind: "item", session: "ses_root", need: "an OpenAI API key", why: "To run the evals." })
+    const answered = askVault({ kind: "item", session: "ses_root", need: "an OpenAI API key", why: "To run the evals.", always: true })
     const vault = (await ask(handler, "GET", "kuvo/sessions/ses_root/asks")).json.asks.find((each: any) => each.kind === "vault")
     expect(vault).toMatchObject({ need: "item", title: "An agent needs an OpenAI API key", message: "To run the evals.", note: null })
     expect(vault.choices).toEqual([

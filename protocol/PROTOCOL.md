@@ -1328,7 +1328,7 @@ default (Return): only its number or a click answers one.
     chats') where the box names one, and `reject` "Don’t Allow", each with `help` and `spoken`.
   - `vault`: what it or a subagent asks of the vault ("Vault"), `{need, message, site, note,
     choices}`: `need` `use` ("Scout wants to use GitHub token": `once`, `always` where it may be
-    given for good, never from a bot's seat, and `reject`) or `item` ("Scout needs an OpenAI API
+    given for good, as its `always` says, and `reject`) or `item` ("Scout needs an OpenAI API
     key": for each item in the vault, `once` "Give" and `always` "Always Give" naming it, with its
     `item`, those for its `site` first, then `reject`). `message` its words or null, `site` the
     site it's for or null. Only the vault's clients (a phone, this Mac's app, the Mac proving
@@ -8173,7 +8173,10 @@ what runs as you on a machine (its `bin/kuvo-link.js`, its engine) could take it
   `client`, so no client reads it as its own; a client says what happened without saying who.
 - `GET kuvo/vault/asks` → `{asks}`, and `GET kuvo/vault/asks/events` (`application/x-ndjson`, the
   list now and on each change): what agents wait on you for, `{id, kind: "use" | "item", at,
-  session?, sessionName?, bot?, botName?, item?, itemName?, need?, why?, site?, machine?, group?}`.
+  session?, sessionName?, bot?, botName?, item?, itemName?, need?, why?, site?, machine?, group?, always?}`.
+  `always`: whether Always would give it for good (to its bot, or its project), decided as it's
+  asked: false for a seat, or a conversation in a home folder or at the disk's top, whose Always is
+  a once.
   `use`: an item it may use only by asking (or has no grant for); `item`: something it needs
   (`need`). `group`: asked from a bot's seat in that group chat (`session` the seat, `bot` its
   bot), which a client shows in the chat, since no one opens a seat. The seat is on its bot's own

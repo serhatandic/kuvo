@@ -219,8 +219,9 @@ const NOT_A_CLIENT = "Answer it on your iPhone: only a device this computer’s 
  * the vault has). Always is a grant: a client makes sure it's you first. */
 export function vaultAskShown(asked: VaultAsk & { session: string }, givable: Givable): VaultAskShown {
   const asker = asked.botName ?? asked.sessionName ?? "An agent";
-  // (A bot's seat in a group chat is answered only once.)
-  const forGood = !asked.group;
+  // Always only where it gives something for good, as the box decided when it asked (a bot's seat
+  // in a group chat, or a conversation in a home folder, is answered only once).
+  const forGood = asked.always === true && !asked.group;
   const who = asked.botName ?? "this project";
   const reject = choice("reject", "Don’t Allow", { help: "It goes on without it" });
   const title = asked.kind === "use" ? `${asker} wants to use ${asked.itemName ?? "an item"}` : `${asker} needs ${asked.need ?? "something from your vault"}`;

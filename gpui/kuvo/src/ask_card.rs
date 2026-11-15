@@ -453,7 +453,9 @@ impl AskCard {
             // vault, a command outside the sandbox), as the Mac's cards had no default: only its
             // number, or a click, answers it.
             (Some(Ask::Permission(_)), "enter") => self.choose(0, window, cx),
-            // Escape: a permission's Instead; Don't Allow for what the box asks itself.
+            // Escape: a permission's Instead (a second Escape there says no); Don't Allow at once for
+            // what the box asks itself, which has no Instead line to open first, as the Mac's
+            // sandbox card's Escape did. (No, its safe answer: the agent goes on without it.)
             (Some(_), "escape") if numbered => {
                 let choices = self.choices();
                 if let Some(at) = choices.iter().position(|choice| choice.answer == "instead").or_else(|| choices.iter().position(|choice| choice.answer == "reject")) {

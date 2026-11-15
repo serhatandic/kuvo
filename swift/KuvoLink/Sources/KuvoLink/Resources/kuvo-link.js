@@ -11910,7 +11910,8 @@ var VAULT_ASK = object({
   "why?": string,
   "site?": string,
   "machine?": string,
-  "group?": string
+  "group?": string,
+  "always?": bool
 });
 var VAULT_ASKS = object({ asks: list(VAULT_ASK) });
 var VAULT_KEY = object({ key: string });
@@ -45135,7 +45136,7 @@ import fs145 from "node:fs";
 import path153 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "8b5c84805987";
+var BRIDGE_VERSION = "bf8bd3244c98";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -51103,7 +51104,7 @@ async function mayUse(item, caller, use) {
   if (caller.autopilot)
     return leftUndone();
   note3({ what: "asked", ...itemOf2(item), ...whoOf3(caller), ...where });
-  const { value: answered, onAutopilot } = await untilOnAutopilot(caller.yours ? undefined : use.watch ?? caller.session, use.signal, (signal) => ask2({ kind: "use", ...whoOf3(caller), ...caller.group ? { group: caller.group } : {}, item: item.id, itemName: item.name, ...use.site ? { site: use.site } : {}, ...use.why ? { why: use.why } : {}, ...machineName() ? { machine: machineName() } : {} }, signal));
+  const { value: answered, onAutopilot } = await untilOnAutopilot(caller.yours ? undefined : use.watch ?? caller.session, use.signal, (signal) => ask2({ kind: "use", ...whoOf3(caller), ...caller.group ? { group: caller.group } : {}, always: alwaysFor2(caller) !== null, item: item.id, itemName: item.name, ...use.site ? { site: use.site } : {}, ...use.why ? { why: use.why } : {}, ...machineName() ? { machine: machineName() } : {} }, signal));
   if (onAutopilot)
     return leftUndone();
   if (answered.answer === "no") {
@@ -51952,6 +51953,7 @@ async function askForItem(caller, args, signal) {
     need,
     why,
     ...caller.group ? { group: caller.group } : {},
+    always: alwaysFor2(caller) !== null,
     ...site ? { site } : {},
     ...asker,
     ...IS_MAC ? {} : { machine: os20.hostname() }
@@ -52758,7 +52760,7 @@ function sandboxAskShown(asked) {
 var NOT_A_CLIENT = "Answer it on your iPhone: only a device this computer’s vault knows can answer it.";
 function vaultAskShown(asked, givable) {
   const asker = asked.botName ?? asked.sessionName ?? "An agent";
-  const forGood = !asked.group;
+  const forGood = asked.always === true && !asked.group;
   const who = asked.botName ?? "this project";
   const reject = choice("reject", "Don’t Allow", { help: "It goes on without it" });
   const title = asked.kind === "use" ? `${asker} wants to use ${asked.itemName ?? "an item"}` : `${asker} needs ${asked.need ?? "something from your vault"}`;

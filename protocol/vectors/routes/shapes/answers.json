@@ -17059,7 +17059,8 @@
          "why?": "string",
          "site?": "string",
          "machine?": "string",
-         "group?": "string"
+         "group?": "string",
+         "always?": "bool"
         }
        }
       }

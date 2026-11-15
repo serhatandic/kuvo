@@ -102,6 +102,9 @@ export const VAULT_ASK = object({
   "machine?": string,
   /** From a bot's seat in this group chat, where it shows: answered only once, never for good. */
   "group?": string,
+  /** Whether Always would give it for good (to its bot, or its project): false where it can only be
+   * once (a seat, a conversation in a home folder or at the disk's top), decided as it's asked. */
+  "always?": bool,
 });
 export const VAULT_ASKS = object({ asks: list(VAULT_ASK) });
 
