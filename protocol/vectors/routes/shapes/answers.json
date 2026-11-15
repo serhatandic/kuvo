@@ -13386,6 +13386,12 @@
               }
              }
             },
+            "lines?": {
+             "object": {
+              "min": "number",
+              "max": "number"
+             }
+            },
             "placeholder?": "string",
             "min?": "number",
             "max?": "number",
@@ -13564,6 +13570,12 @@
                   "title": "string",
                   "line?": "string"
                  }
+                }
+               },
+               "lines?": {
+                "object": {
+                 "min": "number",
+                 "max": "number"
                 }
                },
                "placeholder?": "string",
@@ -13832,6 +13844,12 @@
               }
              }
             },
+            "lines?": {
+             "object": {
+              "min": "number",
+              "max": "number"
+             }
+            },
             "placeholder?": "string",
             "min?": "number",
             "max?": "number",
@@ -14010,6 +14028,12 @@
                   "title": "string",
                   "line?": "string"
                  }
+                }
+               },
+               "lines?": {
+                "object": {
+                 "min": "number",
+                 "max": "number"
                 }
                },
                "placeholder?": "string",
@@ -14278,6 +14302,12 @@
               }
              }
             },
+            "lines?": {
+             "object": {
+              "min": "number",
+              "max": "number"
+             }
+            },
             "placeholder?": "string",
             "min?": "number",
             "max?": "number",
@@ -14456,6 +14486,12 @@
                   "title": "string",
                   "line?": "string"
                  }
+                }
+               },
+               "lines?": {
+                "object": {
+                 "min": "number",
+                 "max": "number"
                 }
                },
                "placeholder?": "string",
@@ -14732,6 +14768,12 @@
                 }
                }
               },
+              "lines?": {
+               "object": {
+                "min": "number",
+                "max": "number"
+               }
+              },
               "placeholder?": "string",
               "min?": "number",
               "max?": "number",
@@ -14910,6 +14952,12 @@
                     "title": "string",
                     "line?": "string"
                    }
+                  }
+                 },
+                 "lines?": {
+                  "object": {
+                   "min": "number",
+                   "max": "number"
                   }
                  },
                  "placeholder?": "string",
@@ -15175,6 +15223,12 @@
               }
              }
             },
+            "lines?": {
+             "object": {
+              "min": "number",
+              "max": "number"
+             }
+            },
             "placeholder?": "string",
             "min?": "number",
             "max?": "number",
@@ -15353,6 +15407,12 @@
                   "title": "string",
                   "line?": "string"
                  }
+                }
+               },
+               "lines?": {
+                "object": {
+                 "min": "number",
+                 "max": "number"
                 }
                },
                "placeholder?": "string",
@@ -15629,6 +15689,12 @@
                 }
                }
               },
+              "lines?": {
+               "object": {
+                "min": "number",
+                "max": "number"
+               }
+              },
               "placeholder?": "string",
               "min?": "number",
               "max?": "number",
@@ -15807,6 +15873,12 @@
                     "title": "string",
                     "line?": "string"
                    }
+                  }
+                 },
+                 "lines?": {
+                  "object": {
+                   "min": "number",
+                   "max": "number"
                   }
                  },
                  "placeholder?": "string",

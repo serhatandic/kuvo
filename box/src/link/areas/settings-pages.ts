@@ -19,7 +19,7 @@ import { approvalRoute } from "./approval";
 import { CHANGED_SINCE, CONFIG_FILE } from "./config";
 import { engineControl } from "./engine";
 import { sandboxRoute } from "./sandbox";
-import { GIT_SETTINGS, DEFAULT_BRANCH_PREFIX } from "./git-words";
+import { GIT_SETTINGS, DEFAULT_BRANCH_PREFIX, cleanBranchPrefix } from "./git-words";
 import { settingsRoute } from "./settings";
 import { BROWSER_DATA_ROUTE, browserDataRoute } from "../browser/routes";
 import { browserSettingsFiles, offerAgain } from "../browser/settings";
@@ -65,7 +65,7 @@ const SECTIONS: SettingsSection[] = [
 /** A row's revision: a hash of what it is and what governs whether it can be changed (its value,
  * `can`, its choices' and actions' ids, a list's items' revisions), never its words, so a computer
  * renamed or a line reworded changes none. A `secret`'s, of whether one is set (it has no value). */
-function revised<Row extends Omit<SettingItem, "revision"> & { items?: readonly SettingItem[] }>(row: Row): Row & { revision: string } {
+export function revised<Row extends Omit<SettingItem, "revision"> & { items?: readonly SettingItem[] }>(row: Row): Row & { revision: string } {
   // (Whether it can be, not why not: a why names the computer.)
   const can = (value: SettingCan | undefined) => (value === undefined ? undefined : value === true);
   const action = (each: SettingAction | undefined) => each && { id: each.id, can: can(each.can), opens: each.opens };
@@ -383,19 +383,20 @@ async function browserAct(context: RouteContext, at: SettingItem, action: Settin
 // MARK: Git
 
 const GIT_ROWS = [
-  { id: "branch-prefix", key: "branchPrefix", group: "Branches", title: "Branch prefix", line: "How a session’s own branch in a worktree starts.", placeholder: "None" },
-  { id: "commit-instructions", key: "commitInstructions", group: "Commit Messages", title: "Instructions", line: "Added when Suggest a Message in Changes asks the model for one.", placeholder: "For example: Start with the area changed, like “ui: …”, and never mention tickets." },
-  { id: "pull-request-instructions", key: "pullRequestInstructions", group: "Pull Requests", title: "Instructions", line: "Added when Create Pull Request writes the title and description.", placeholder: "For example: Add a Testing section, and link the issue if the branch names one." },
+  { id: "branch-prefix", key: "branchPrefix", group: "Branches", groupId: "branches", title: "Branch prefix", line: "How a session's own branch in a worktree starts.", placeholder: "None" },
+  { id: "commit-instructions", key: "commitInstructions", group: "Commit Messages", groupId: "commit-messages", title: "Instructions", line: "Added when Suggest a Message in Changes asks the model for one.", placeholder: "For example: Start with the area changed, like “ui: …”, and never mention tickets." },
+  { id: "pull-request-instructions", key: "pullRequestInstructions", group: "Pull Requests", groupId: "pull-requests", title: "Instructions", line: "Added when Create Pull Request writes the title and description.", placeholder: "For example: Add a Testing section, and link the issue if the branch names one." },
 ] as const;
 
 async function gitPage(context: RouteContext): Promise<SettingsPage> {
   const read = await asked(context, settingsRoute, "GET", "kuvo/config");
+  if (read.status !== 200) return { id: "git", title: "Git", groups: [], notes: [{ words: said(read, "This computer's settings couldn't be read."), tone: "warning" }] };
   return { id: "git", title: "Git", groups: GIT_ROWS.map(each => {
     const value = read.value[GIT_SETTINGS[each.key][0]];
-    return { id: each.id, title: each.group, rows: [row({
-      id: each.id, title: each.title, line: each.line, placeholder: each.placeholder,
-      kind: "text", value: typeof value === "string" ? value : each.key === "branchPrefix" ? DEFAULT_BRANCH_PREFIX : "",
-      can: read.status === 200 ? true : { why: said(read, "This computer's settings couldn't be read.") },
+    return { id: each.groupId, title: each.group, ...(each.key === "branchPrefix" ? {} : { note: each.line }), rows: [row({
+      id: each.id, title: each.title, ...(each.key === "branchPrefix" ? { line: each.line } : { lines: { min: 3, max: 8 } }), placeholder: each.placeholder,
+      kind: "text", value: typeof value === "string" ? each.key === "branchPrefix" ? cleanBranchPrefix(value) : value.trim() : each.key === "branchPrefix" ? DEFAULT_BRANCH_PREFIX : "",
+      can: typeof value === "string" || value === undefined ? true : { why: "This value is set in the settings file as something other than text. Change it there." },
     })] };
   }) };
 }
@@ -407,8 +408,7 @@ async function gitChange(context: RouteContext, at: SettingItem, value: unknown)
   const read = await asked(context, settingsRoute, "GET", "kuvo/config");
   if (read.status !== 200) return refusal(read);
   const was = read.value[path[0]!] ?? null;
-  const shown = typeof was === "string" ? was : each.key === "branchPrefix" ? DEFAULT_BRANCH_PREFIX : "";
-  if (shown !== at.value) return STALE;
+  value = each.key === "branchPrefix" ? cleanBranchPrefix(String(value)) : String(value).trim();
   const written = await asked(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path, value, was }] });
   if (written.status === 409 && written.value.message === CHANGED_SINCE) return STALE;
   return refusal(written);
@@ -484,7 +484,7 @@ async function generalChange(_context: RouteContext, at: SettingItem, value: unk
   }
 }
 
-async function generalAct(): Promise<Refused | null> {
+async function noActions(): Promise<Refused | null> {
   return { status: 404, message: "That isn't something it does." };
 }
 
@@ -501,7 +501,7 @@ interface Section {
 const mtime = (file: string): number => { try { return fs.statSync(file).mtimeMs; } catch { return 0; } };
 
 const PAGES: Record<string, Section> = {
-  general: { read: generalPage, change: generalChange, act: generalAct, look: () => `${mtime(ZONE_FILE)} ${ownClock()}` },
+  general: { read: generalPage, change: generalChange, act: noActions, look: () => `${mtime(ZONE_FILE)} ${ownClock()}` },
   permissions: {
     read: permissionsPage, change: permissionsChange, act: permissionsAct,
     look: () => {
@@ -510,8 +510,8 @@ const PAGES: Record<string, Section> = {
       return `${mtime(APPROVAL_FILE)} ${mtime(CONFIG_FILE)} ${mtime(ALLOWED_FILE)} ${fence}`;
     },
   },
-  git: { read: gitPage, change: gitChange, act: generalAct, look: () => `${mtime(CONFIG_FILE)}` },
   browser: { read: browserPage, change: browserChange, act: browserAct, look: () => browserSettingsFiles().map(mtime).join(" ") },
+  git: { read: gitPage, change: gitChange, act: noActions, look: () => `${mtime(CONFIG_FILE)}` },
 };
 
 // Told as a change is made here, so a page followed shows it at once.

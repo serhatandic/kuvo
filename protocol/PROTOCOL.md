@@ -8055,7 +8055,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
 - `GET kuvo/settings`: `{sections}`, in order, each `{id, title, group, icon, line, keywords}`:
   the heading it's under in a sidebar (`group`), its icon by name (`shield`, `globe`, …: a set every
   client has; one a client hasn't, it draws with its own), and the words search finds it by besides
-  its title and line. Today `general`, `permissions` and `browser`; the rest come page by page.
+  its title and line. Today `general`, `permissions`, `browser` and `git`; the rest come page by page.
 - `GET kuvo/settings/<section>`: `{id, title, line?, groups, notes?}`; `404 {message}` for a section
   this box hasn't. A group is `{id, title?, note?, rows}`, a card with its heading and the words
   under it; `notes` are `{words, tone}` (`quiet` or `warning`) after the groups: what couldn't be
@@ -8066,7 +8066,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
   |---|---|---|
   | `switch` | `value`: true or false | A switch |
   | `choice` | `value`: a choice's `id`; `choices: [{id, title, line?}]` | A menu |
-  | `text`, `number`, `folder` | `value`, `placeholder?`, `min?`, `max?` | A field (a folder's opens the box's folder picker, `kuvo/folders`) |
+  | `text`, `number`, `folder` | `value`, `placeholder?`, `min?`, `max?`, `lines?: {min, max}` | A field (text may request a multi-line editor with its preferred visible line range; presentation only, outside revisions) (a folder's opens the box's folder picker, `kuvo/folders`) |
   | `secret` | `set`: whether one is set; never its value | A field written only; Replace and Remove once set |
   | `status` | `value`: words | The words, on the right |
   | `actions` | `actions` | Buttons (past one, a menu) |
@@ -8145,7 +8145,8 @@ The sections now:
   (`commit-instructions`, “Instructions”) and Pull Requests (`pull-request-instructions`,
   “Instructions”), all `text` rows wrapping `kuvo/config`'s `branch_prefix`,
   `commit_instructions` and `pull_request_instructions`. An unset prefix shows `kuvo/`;
-  empty text means no prefix. Instructions are added when suggesting a commit message or
+  empty text means no prefix. Page writes clean the prefix as git uses it and trim instructions;
+  the old config route stays unchanged. Instructions are added when suggesting a commit message or
   writing a pull request. Changes use the existing config route with that field's `was`,
   leaving unrelated fields alone. Unavailable settings say why in `can`. Page events follow
   config changes, including the old Git settings migration route.

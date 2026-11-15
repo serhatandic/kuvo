@@ -427,7 +427,6 @@ test("the sandbox's row warns while commands can still reach your login's servic
   expect("tone" in git).toBe(false)
 })
 
-
 test("Git rows wrap config, with independent revisions and stale writes refused", async () => {
   const shown = await page("git")
   expect(shown.groups.flatMap((g: any) => g.rows.map((r: any) => [r.id, r.kind, r.title, r.value]))).toEqual([
@@ -435,15 +434,21 @@ test("Git rows wrap config, with independent revisions and stale writes refused"
     ["commit-instructions", "text", "Instructions", ""],
     ["pull-request-instructions", "text", "Instructions", ""],
   ])
+})
+
+test("Git writes with independent revisions and refuses stale changes", async () => {
+  const shown = await page("git")
   const prefix = rowOf(shown, "branch-prefix")
   expect((await change("git", prefix, "feature/")).status).toBe(200)
   expect((await ask(handler, "GET", "kuvo/config")).json.branch_prefix).toBe("feature/")
   expect((await change("git", prefix, "other/")).status).toBe(409)
   expect((await change("git", rowOf(shown, "commit-instructions"), "Use imperative mood")).status).toBe(200)
+})
+
+test("Git keeps an explicitly empty prefix", async () => {
   expect((await change("git", rowOf(await page("git"), "branch-prefix"), "")).status).toBe(200)
   expect((await ask(handler, "GET", "kuvo/config")).json.branch_prefix).toBe("")
 })
-
 test("Git events follow both the page and existing config route", async () => {
   const events = follow(handler, "kuvo/settings/git/events")
   try {
@@ -454,15 +459,53 @@ test("Git events follow both the page and existing config route", async () => {
     expect(rowOf(await events.next(), "pull-request-instructions").value).toBe("Include testing")
   } finally { events.stop() }
 })
-
-test("Git says why a broken settings file cannot be changed", async () => {
+test("Git warns without rows when its settings cannot be read", async () => {
   writeFileSync(CONFIG_FILE, "{broken")
-  const prefix = rowOf(await page("git"), "branch-prefix")
-  expect(prefix.can.why).toContain("settings")
-  expect((await change("git", prefix, "feature/")).status).toBe(403)
-  expect(readFileSync(CONFIG_FILE, "utf8")).toBe("{broken")
+  const shown = await page("git")
+  expect(shown.groups).toEqual([])
+  expect(shown.notes[0]).toMatchObject({ tone: "warning" })
+  expect(shown.notes[0].words).toContain("settings")
 })
 
+test("Git refuses a non-text setting without touching the file", async () => {
+  write(CONFIG_FILE, { branch_prefix: false })
+  const before = kept(CONFIG_FILE)
+  const prefix = rowOf(await page("git"), "branch-prefix")
+  expect(prefix.can.why).toContain("other than text")
+  expect((await change("git", prefix, "feature/")).status).toBe(403)
+  expect(kept(CONFIG_FILE)).toBe(before)
+})
+
+test("Git cleans the prefix and trims instructions as they are used", async () => {
+  let shown = await page("git")
+  shown = (await change("git", rowOf(shown, "branch-prefix"), " /bad prefix../ ")).json
+  expect(rowOf(shown, "branch-prefix").value).toBe("badprefix./")
+  shown = (await change("git", rowOf(shown, "commit-instructions"), "  Keep it short\n ")).json
+  expect(rowOf(shown, "commit-instructions").value).toBe("Keep it short")
+  expect((await ask(handler, "GET", "kuvo/config")).json).toMatchObject({ branch_prefix: "badprefix./", commit_instructions: "Keep it short" })
+})
+
+test("Git requires text", async () => {
+  const answer = await change("git", rowOf(await page("git"), "branch-prefix"), false)
+  expect([answer.status, answer.json.message]).toEqual([400, "Send text."])
+})
+
+test("Git wording and multi-line hints match its Swift sections", async () => {
+  const shown = await page("git")
+  expect(shown.groups.map((g: any) => [g.id, g.title, g.note])).toEqual([
+    ["branches", "Branches", undefined],
+    ["commit-messages", "Commit Messages", "Added when Suggest a Message in Changes asks the model for one."],
+    ["pull-requests", "Pull Requests", "Added when Create Pull Request writes the title and description."],
+  ])
+  expect(shown.groups.flatMap((g: any) => g.rows.map((r: any) => [r.title, r.line, r.placeholder, r.lines]))).toEqual([
+    ["Branch prefix", "How a session's own branch in a worktree starts.", "None", undefined],
+    ["Instructions", undefined, "For example: Start with the area changed, like “ui: …”, and never mention tickets.", { min: 3, max: 8 }],
+    ["Instructions", undefined, "For example: Add a Testing section, and link the issue if the branch names one.", { min: 3, max: 8 }],
+  ])
+  const { revised } = await import("../src/link/areas/settings-pages")
+  const original = rowOf(shown, "commit-instructions")
+  expect(revised({ ...original, title: "Reworded", line: "Reworded", lines: { min: 4, max: 9 } }).revision).toBe(original.revision)
+})
 
 test("Git events follow the old one-time settings migration route", async () => {
   const events = follow(handler, "kuvo/settings/git/events")

@@ -45379,7 +45379,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "79b3eb7c1289";
+var BRIDGE_VERSION = "24398e159b4d";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -56865,22 +56865,24 @@ async function browserAct(context, at, action) {
   return null;
 }
 var GIT_ROWS = [
-  { id: "branch-prefix", key: "branchPrefix", group: "Branches", title: "Branch prefix", line: "How a session’s own branch in a worktree starts.", placeholder: "None" },
-  { id: "commit-instructions", key: "commitInstructions", group: "Commit Messages", title: "Instructions", line: "Added when Suggest a Message in Changes asks the model for one.", placeholder: "For example: Start with the area changed, like “ui: …”, and never mention tickets." },
-  { id: "pull-request-instructions", key: "pullRequestInstructions", group: "Pull Requests", title: "Instructions", line: "Added when Create Pull Request writes the title and description.", placeholder: "For example: Add a Testing section, and link the issue if the branch names one." }
+  { id: "branch-prefix", key: "branchPrefix", group: "Branches", groupId: "branches", title: "Branch prefix", line: "How a session's own branch in a worktree starts.", placeholder: "None" },
+  { id: "commit-instructions", key: "commitInstructions", group: "Commit Messages", groupId: "commit-messages", title: "Instructions", line: "Added when Suggest a Message in Changes asks the model for one.", placeholder: "For example: Start with the area changed, like “ui: …”, and never mention tickets." },
+  { id: "pull-request-instructions", key: "pullRequestInstructions", group: "Pull Requests", groupId: "pull-requests", title: "Instructions", line: "Added when Create Pull Request writes the title and description.", placeholder: "For example: Add a Testing section, and link the issue if the branch names one." }
 ];
 async function gitPage(context) {
   const read = await asked8(context, settingsRoute, "GET", "kuvo/config");
+  if (read.status !== 200)
+    return { id: "git", title: "Git", groups: [], notes: [{ words: said8(read, "This computer's settings couldn't be read."), tone: "warning" }] };
   return { id: "git", title: "Git", groups: GIT_ROWS.map((each) => {
     const value = read.value[GIT_SETTINGS[each.key][0]];
-    return { id: each.id, title: each.group, rows: [row({
+    return { id: each.groupId, title: each.group, ...each.key === "branchPrefix" ? {} : { note: each.line }, rows: [row({
       id: each.id,
       title: each.title,
-      line: each.line,
+      ...each.key === "branchPrefix" ? { line: each.line } : { lines: { min: 3, max: 8 } },
       placeholder: each.placeholder,
       kind: "text",
-      value: typeof value === "string" ? value : each.key === "branchPrefix" ? DEFAULT_BRANCH_PREFIX : "",
-      can: read.status === 200 ? true : { why: said8(read, "This computer's settings couldn't be read.") }
+      value: typeof value === "string" ? each.key === "branchPrefix" ? cleanBranchPrefix(value) : value.trim() : each.key === "branchPrefix" ? DEFAULT_BRANCH_PREFIX : "",
+      can: typeof value === "string" || value === undefined ? true : { why: "This value is set in the settings file as something other than text. Change it there." }
     })] };
   }) };
 }
@@ -56893,9 +56895,7 @@ async function gitChange(context, at, value) {
   if (read.status !== 200)
     return refusal4(read);
   const was = read.value[path[0]] ?? null;
-  const shown = typeof was === "string" ? was : each.key === "branchPrefix" ? DEFAULT_BRANCH_PREFIX : "";
-  if (shown !== at.value)
-    return STALE;
+  value = each.key === "branchPrefix" ? cleanBranchPrefix(String(value)) : String(value).trim();
   const written = await asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path, value, was }] });
   if (written.status === 409 && written.value.message === CHANGED_SINCE)
     return STALE;
@@ -56961,7 +56961,7 @@ async function generalChange(_context, at, value) {
     return { status: 503, message: "Your time zone couldn't be changed here just now: try again in a moment." };
   }
 }
-async function generalAct() {
+async function noActions() {
   return { status: 404, message: "That isn't something it does." };
 }
 var mtime2 = (file) => {
@@ -56972,7 +56972,7 @@ var mtime2 = (file) => {
   }
 };
 var PAGES2 = {
-  general: { read: generalPage, change: generalChange, act: generalAct, look: () => `${mtime2(ZONE_FILE)} ${ownClock()}` },
+  general: { read: generalPage, change: generalChange, act: noActions, look: () => `${mtime2(ZONE_FILE)} ${ownClock()}` },
   permissions: {
     read: permissionsPage,
     change: permissionsChange,
@@ -56986,8 +56986,8 @@ var PAGES2 = {
       return `${mtime2(APPROVAL_FILE)} ${mtime2(CONFIG_FILE)} ${mtime2(ALLOWED_FILE)} ${fence}`;
     }
   },
-  git: { read: gitPage, change: gitChange, act: generalAct, look: () => `${mtime2(CONFIG_FILE)}` },
-  browser: { read: browserPage, change: browserChange, act: browserAct, look: () => browserSettingsFiles().map(mtime2).join(" ") }
+  browser: { read: browserPage, change: browserChange, act: browserAct, look: () => browserSettingsFiles().map(mtime2).join(" ") },
+  git: { read: gitPage, change: gitChange, act: noActions, look: () => `${mtime2(CONFIG_FILE)}` }
 };
 var followers2 = new Set;
 var changed5 = () => {

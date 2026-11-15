@@ -45,6 +45,8 @@ const ROW_FIELDS = {
   /** A change under way there, in words ("Restarting…"), until the page's events say it's done. */
   "busy?": string,
   "choices?": list(SETTING_CHOICE),
+  /** Preferred visible lines for a multi-line text editor; presentation only, outside revisions. */
+  "lines?": object({ min: number, max: number }),
   "placeholder?": string, "min?": number, "max?": number,
   /** A `secret`'s: whether one is set (never its value). */
   "set?": bool,
