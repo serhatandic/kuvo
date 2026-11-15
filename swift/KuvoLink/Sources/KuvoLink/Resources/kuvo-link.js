@@ -26992,9 +26992,9 @@ async function forwardAct(computer, named, act, signal, link = readLink(), now =
   }
 }
 var listed2 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
-async function seekElsewhere(ref, signal, link = readLink()) {
+async function seekElsewhere(named, ref, signal, link = readLink()) {
   const peers = sharedMachine(link) ? [] : peersOf(link);
-  if (!peers.length)
+  if (!peers.length || named.length > 300 || signal?.aborted)
     return { missing: true };
   const here = ownName();
   const computerOf = (peer) => ({ key: peer.key, name: computerName(peer), kind: peer.kind, ...peer.id ? { id: peer.id } : {} });
@@ -27004,51 +27004,62 @@ async function seekElsewhere(ref, signal, link = readLink()) {
   const gone = () => rest.abort();
   signal?.addEventListener("abort", gone, { once: true });
   const away = [];
-  const unasked = [];
+  const older = [];
+  const refused = [];
+  let deleted = null;
   try {
     const found = await new Promise((resolve) => {
       let left = peers.length;
       const done = () => {
         if (--left === 0)
-          resolve(null);
+          resolve(deleted);
       };
       for (const peer of peers) {
         const computer = computerOf(peer);
         if (!takesForwarded(peer.key)) {
-          unasked.push(computer);
+          older.push(computer);
           done();
           continue;
         }
-        forwardAct(computer, "", { method: "GET", item: ref }, rest.signal, link).then((there) => {
-          const item = "value" in there && there.status === 200 && isObject(there.value) && isObject(there.value.item) ? there.value.item : null;
-          if (item)
-            return resolve({ computer, item });
-          if ("refused" in there && there.status === 503)
+        forwardAct(computer, "", { method: "GET", item: named }, rest.signal, link).then((there) => {
+          if ("refused" in there)
             away.push(computer);
-          else if (there.status !== 404)
-            unasked.push(computer);
+          else if (there.status === 200) {
+            const item = isObject(there.value) && isObject(there.value.item) ? there.value.item : null;
+            const told = item ? toldItemOf(item) : null;
+            if (!item || !told || !refNames(ref, told))
+              refused.push({ computer, said: "" });
+            else if (!isObject(item.removed))
+              return resolve({ computer, item, told });
+            else if (!deleted || told.updated.at > deleted.told.updated.at)
+              deleted = { computer, item, told };
+          } else if (there.status !== 404) {
+            const said = isObject(there.value) && typeof there.value.message === "string" ? there.value.message.slice(0, 300) : "";
+            refused.push({ computer, said });
+          }
           done();
         }, () => {
-          unasked.push(computer);
+          refused.push({ computer, said: "" });
           done();
         });
       }
     });
-    if (found)
+    if (found && (!isObject(found.item.removed) || !away.length && !older.length && !refused.length))
       return found;
   } finally {
     rest.abort();
     signal?.removeEventListener("abort", gone);
   }
-  if (!away.length && !unasked.length)
+  if (!away.length && !older.length && !refused.length)
     return { missing: true };
   const names = (computers) => listed2(computers.map((each) => each.name));
-  const one = away.length + unasked.length === 1;
   const why = [
     ...away.length ? [`${names(away)} ${away.length === 1 ? "isn't" : "aren't"} answering now (${away.length === 1 ? "it" : "they"} may be asleep, off or offline)`] : [],
-    ...unasked.length ? [`${names(unasked)} couldn't be asked from ${here}`] : []
+    ...older.length ? [`${names(older)} ${older.length === 1 ? "needs" : "need"} a newer Kuvo Code to be asked from ${here}`] : [],
+    ...refused.map((each) => `${each.computer.name} couldn't say${each.said ? ` ("${each.said}")` : ""}`)
   ].join(", and ");
-  return { unsure: [...away, ...unasked], message: `It isn't on ${here}, and ${why}, so it may be there. Try again once ${one ? "it answers" : "they answer"}.` };
+  const again = away.length ? ` Try again once ${away.length === 1 ? `${away[0].name} answers` : "they answer"}.` : "";
+  return { unsure: [...away, ...older, ...refused.map((each) => each.computer)], message: `It isn't on ${here}, and ${why}, so it may be there.${again}` };
 }
 var madeHere = new Set;
 function answered3(id, key, wait, signal) {
@@ -45198,7 +45209,7 @@ import fs145 from "node:fs";
 import path153 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4bdf5d5eeb1d";
+var BRIDGE_VERSION = "f6b70cb1c738";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -54581,13 +54592,12 @@ async function* workQueueRoute(context, match) {
   const seek = async () => {
     if (!fromClient(context))
       return null;
-    const sought = await seekElsewhere(named, signal);
+    const sought = await seekElsewhere(named, ref, signal);
     if ("missing" in sought)
       return null;
     if ("unsure" in sought)
       return { refuse: { message: sought.message, computers: sought.unsure } };
-    const item = toldItemOf(sought.item);
-    return item && refNames(ref, item) ? { far: { ...item, computer: sought.computer }, whole: sought.item } : null;
+    return { far: { ...sought.told, computer: sought.computer }, whole: sought.item };
   };
   if (action === undefined && method === "GET") {
     if (find(allItems()))
