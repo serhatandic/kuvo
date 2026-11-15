@@ -76,6 +76,8 @@ pub enum Go {
     Session(String),
     /// The Sessions area.
     Sessions,
+    /// Your computers read again (something was done to them), where they aren't followed.
+    ReadComputers,
 }
 
 /// One area's sidebar.
@@ -200,7 +202,7 @@ impl AreaView {
             })
             .unwrap_or_default();
         let this_mac = client.here();
-        let computers_page = (area == Area::Computers).then(|| cx.new(|cx| ComputersView::new(this_mac, cx)));
+        let computers_page = (area == Area::Computers).then(|| cx.new(|cx| ComputersView::new(client.clone(), live, this_mac, cx)));
         let computers_subscriptions = computers_page
             .as_ref()
             .map(|page| {
@@ -211,6 +213,7 @@ impl AreaView {
                         cx.emit(Picked);
                     }
                     ComputersEvent::Sessions => cx.emit(Go::Sessions),
+                    ComputersEvent::ReadAgain => cx.emit(Go::ReadComputers),
                 })]
             })
             .unwrap_or_default();
@@ -894,14 +897,14 @@ impl AreaView {
         let selected = self.is_selected(&key);
         let (hover, selected_bg) = (c.hover, c.selected_card);
         let selector = format!("computer-{id}");
-        let working = (computer.working > 0).then(|| {
+        let working = computer.working.filter(|working| *working > 0).map(|working| {
             div()
                 .flex()
                 .flex_none()
                 .items_center()
                 .gap(space::S1)
                 .child(spinner(SharedString::from(format!("computer-spin-{id}")), IconSize::Nav, c.text_muted))
-                .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(computer.working.to_string()))
+                .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(working.to_string()))
         });
         div()
             .id(SharedString::from(selector.clone()))

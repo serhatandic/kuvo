@@ -76,6 +76,7 @@ import { writeCard } from "./setup/card";
 import { hereNow } from "./setup/judge";
 import { pushQueues } from "./work-queue/across";
 import { FORWARDS, forwardsSoon, sendForwards } from "./work-queue/forward";
+import { reachAgainSoon, sendReachAgain } from "./peers/reach-again";
 import { heldSoon, sendHeld } from "./bots/held";
 import { handUpkeepSoon } from "./work-queue/hand";
 import { clearStaging } from "./work-queue/ops";
@@ -207,6 +208,9 @@ export { setupView } from "./setup/view";
 export { foundOf, hereNow, judgeComputer, judgeHere, oursNow, OWN_BOX_RAN } from "./setup/judge";
 export { cardNow, SETUP_CARD, writeCard } from "./setup/card";
 export { keptComputer, keptFeatures, peerOf, readPeerAgents, takeAgents, vouchedOf } from "./peers/directory";
+export { actionsOf, removeHere, renameHere, writerAct, writerOf } from "./peers/manage";
+export { askReachAgain, readTries, sendReachAgain, TRY_FOR } from "./peers/reach-again";
+export { listComputers, ownComputer } from "./areas/computers";
 export { composeLetter } from "./letters/letter";
 export { composeAgents } from "./peers/directory";
 export { nameAgents, namedAgents, namesIn } from "./peers/naming";
@@ -470,6 +474,10 @@ async function run(): Promise<void> {
   // its computer at once, again each minute while it's waited for, and as soon as it's back.
   const heldNow = () => { try { sendHeld(current); } catch {} };
   heldSoon.send = heldNow;
+  // A computer that's away, reached again as a client asks (Connect, left by a route, `box route`
+  // too): told this box's agents and asked for theirs, at once and at the next round.
+  const reachNow = () => sendReachAgain(Boolean(current?.welcomed), key => void announce(current!, readEngineFile, readLink(), Date.now(), true, key).catch(() => {}));
+  reachAgainSoon.send = reachNow;
   setInterval(() => {
     if (!outboxWatch.whole) {
       outboxWatch.close();
@@ -481,6 +489,7 @@ async function run(): Promise<void> {
     }
     forwardNow();
     heldNow();
+    reachNow();
     if (current?.welcomed && docsNoted()) try { docsChanged(current, { tell: true }); } catch {}
     if (current?.welcomed) lastWelcomed = Date.now();
     noteRelay(Boolean(current?.welcomed), lastWelcomed);

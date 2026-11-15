@@ -26,8 +26,9 @@ export const holdsVault = () => holding;
 /** Whether a route is one only the holding process answers: the vault's, and the sandbox's asks
  * and its agents' tool (fence/outside.ts), whose asks wait in it, what it stopped (which the
  * engine's plugin tells it), and Also Allowed, which an ask's Always adds to there (one process
- * changes it). */
-export const heldHere = (route: string) => /^kuvo\/(vault|sandbox\/(asks|tools|allowed|stopped))(\/|\?|$)/.test(route);
+ * changes it); and a change to a settings page (`kuvo/settings/<section>…`), so each is checked
+ * against the page in turn in one process, whichever process it's sent to. */
+export const heldHere = (route: string) => /^kuvo\/(vault|sandbox\/(asks|tools|allowed|stopped)|settings\/[^/?]+(\/[^/?]+\/[^/?]+)?(\?|$))(\/|\?|$)/.test(route);
 
 /** A request as it goes over the socket, and its answer back. */
 interface Sent {
@@ -51,8 +52,9 @@ const covered = (theirs: string, method: string, route: string, body: string) =>
   `${theirs}\0${method.toUpperCase()}\0${route}\0${crypto.createHash("sha256").update(body).digest("base64url")}`;
 
 /** This process holds the vault from now on, answering the socket with `handle` (as a local request:
- * neither a phone nor this Mac's app, whatever it says). */
-export function holdVault(handle: LinkHandler): net.Server {
+ * neither a phone nor this Mac's app, whatever it says). `keepAgents`: what keeps each
+ * conversation's SSH agent (a test's keeps none). */
+export function holdVault(handle: LinkHandler, keepAgents: () => () => void = keepSshAgents): net.Server {
   holding = true;
   fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
   // Copies a box that ended mid-command left (it was killed): gone.
@@ -142,8 +144,10 @@ export function holdVault(handle: LinkHandler): net.Server {
   server.on("error", error => console.error(`The vault's socket (${VAULT_SOCKET}) couldn't listen: ${error.message}`));
   server.unref();
   // Each conversation's SSH agent, from the vault's SSH keys, while its commands are in the sandbox.
-  const stopAgents = keepSshAgents();
+  const stopAgents = keepAgents();
   server.on("close", stopAgents);
+  // (Closed, it holds nothing: what a test's holder does as it ends.)
+  server.on("close", () => { holding = false; });
   return server;
 }
 

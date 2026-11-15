@@ -3,6 +3,7 @@
 // and agents of this Mac's conversations.
 
 import fs from "node:fs";
+import { LIST_FILE } from "./machines";
 import path from "node:path";
 import { isObject, parsed } from "../../shared/json";
 import type { Body } from "../../shared/json";
@@ -65,20 +66,51 @@ const macPhones = (): MacPhones => {
 // for what isn't a list.
 export function setMacPeers(link: LinkState, given: unknown): MacPeersSet {
   if (!isObject(given) || !Array.isArray(given.peers)) return { link: null, gone: [] };
+  // (One you removed from any of your computers stays removed until it's added again, back on this
+  // Mac's list of machines: an app that still lists it, or sets it up as it connects, doesn't bring
+  // it back.)
+  const removedHere = Array.isArray(link.removedHere) ? link.removedHere : [];
+  const listed = savedIds();
+  const keeps = (peer: { key: string; id?: unknown }) => !removedHere.includes(peer.key) || (typeof peer.id === "string" && listed.has(peer.id));
   const now = given.peers.slice(0, MOST_PEERS).map(peer => ({ ...peer, kind: "machine" }))
-    .filter(peer => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign)).map(cleanPeer);
-  const skipped = Math.min(given.peers.length, MOST_PEERS) - now.length;
+    .filter(peer => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && keeps(peer)).map(cleanPeer);
+  const skipped = given.peers.slice(0, MOST_PEERS).filter(peer => !(isObject(peer) && typeof peer.key === "string" && !keeps(peer as { key: string; id?: unknown }))).length - now.length;
   if (skipped) console.error(`${skipped} of this Mac's machines weren't records the box could take, and were left out.`);
   const removed = (Array.isArray(given.removed) ? given.removed : []).filter((key: unknown): key is string => typeof key === "string" && KEY.test(key) && !now.some(peer => peer.key === key));
   const gone = peersOf(link).filter(peer => removed.includes(peer.key));
   const kept = (Array.isArray(link.left) ? link.left : []).filter(key => !now.some(peer => peer.key === key) && !removed.includes(key));
   link.left = [...kept, ...removed].slice(-64);
+  // A name you gave one goes once the app names it otherwise (renamed there), or it's removed; one
+  // just missing from this list keeps it.
+  const before = new Map((Array.isArray(link.macPeers) ? link.macPeers : []).filter(fitsPeer).map(cleanPeer).map(peer => [peer.key, peer.name]));
+  if (link.peerNames) {
+    for (const key of Object.keys(link.peerNames)) {
+      const named = now.find(peer => peer.key === key);
+      if (removed.includes(key) || (named && before.has(key) && before.get(key) !== named.name)) delete link.peerNames[key];
+    }
+    if (!Object.keys(link.peerNames).length) delete link.peerNames;
+  }
+  // (Added again: no longer among those removed.)
+  if (link.removedHere) {
+    link.removedHere = link.removedHere.filter(key => !now.some(peer => peer.key === key));
+    if (!link.removedHere.length) delete link.removedHere;
+  }
   link.macPeers = now;
   link.macMoved = cleanMoved(given.moved);
   pruneDocs(link);
   return { link, gone };
 }
 
+
+// The machines on this Mac's list of machines (`machines.json`), by their ids there.
+function savedIds(): Set<string> {
+  try {
+    const saved: unknown = JSON.parse(fs.readFileSync(LIST_FILE, "utf8"));
+    return new Set(Array.isArray(saved) ? saved.filter(each => typeof each?.destination === "string").map(each => each.destination as string) : []);
+  } catch {
+    return new Set();
+  }
+}
 
 // `kuvo/link/…`, for this Mac's app.
 export async function* macLinkRoute(route: string, request: LinkRequest, signal: AbortSignal | undefined): AsyncGenerator<AnswerPiece> {
@@ -94,6 +126,8 @@ export async function* macLinkRoute(route: string, request: LinkRequest, signal:
       if (!isObject(given) || typeof given.phones !== "boolean" || typeof given.machines !== "boolean" || !relay || !["ws:", "wss:"].includes(relay.protocol)) {
         return yield* json(400, { message: "Say whether the phone link is on (phones) and there are machines (machines), and the relay." });
       }
+      // (Said by the old app as it attaches: it counts attached from now, `oldAppAttached`.)
+      macLink.appSaid = Date.now();
       const config = { phones: given.phones, machines: given.machines, relay: relay.toString().replace(/\/$/, ""), name: String(given.name ?? "Mac").slice(0, 100), app: String(given.app ?? "") };
       const before = macLink.config;
       macLink.config = config;

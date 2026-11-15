@@ -177,3 +177,83 @@ fn a_long_list_reaches_its_last_computer(cx: &mut TestAppContext) {
     click(cx, "computers-row-key_more_39");
     assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::Computer("key_more_39".into()));
 }
+
+/// Manage offers what the box offers for each computer, in its words: Remove asks first with the
+/// box's confirm and has the box remove it; Connect has the box reach one that's away; a computer
+/// that offers nothing has no Manage at all.
+#[gpui::test]
+fn manage_does_what_the_box_offers_and_asks_first_where_it_says(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_workspace, page, cx) = open(cx, stand_in.clone());
+    click(cx, "computer-key_devbox");
+    assert!(shown(cx, "action-rename") && shown(cx, "action-remove") && !shown(cx, "action-reconnect"));
+    // Remove…: the box's question first; Cancel does nothing.
+    click(cx, "action-remove-button");
+    assert_eq!(
+        page.read_with(cx, |page, _| page.confirm_words()),
+        Some(("Remove devbox?".into(), "Your other computers stop reaching devbox. It keeps running, with its sessions, and you can add it again later.".into(), "Remove".into()))
+    );
+    click(cx, "computers-confirm-cancel");
+    assert!(!shown(cx, "computers-confirm") && stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").is_empty());
+    // Escape closes it too, doing nothing.
+    click(cx, "action-remove-button");
+    cx.simulate_keystrokes("escape");
+    assert!(!shown(cx, "computers-confirm") && stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").is_empty());
+    // Going ahead, the box removes it, and it's gone from your computers.
+    click(cx, "action-remove-button");
+    click(cx, "computers-confirm-go");
+    assert_eq!(stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").len(), 1);
+    // Gone from your computers at once, read again as the box did it.
+    assert!(!shown(cx, "computer-key_devbox"));
+    assert_eq!(said(&page, cx, "computer-missing").map(|(words, _)| words).as_deref(), Some("This computer isn’t among yours any more."));
+
+    // Connect, for a Mac that's away: the box reaches it, and it's being connected to.
+    click(cx, "computer-key_studio");
+    assert!(shown(cx, "action-reconnect") && !shown(cx, "action-remove") && !shown(cx, "action-rename"), "a Mac is neither renamed nor removed from here");
+    click(cx, "action-reconnect-button");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_studio/connect").len(), 1);
+    assert!(shown(cx, "notice-connecting") && !shown(cx, "action-reconnect"));
+
+    // Offered nothing (shared with another setup, an older Mac): no Manage; and what an older one
+    // never said of what's at work isn't drawn.
+    click(cx, "computer-key_build");
+    assert!(!shown(cx, "action-rename") && !shown(cx, "action-remove") && !shown(cx, "action-reconnect"));
+    click(cx, "computer-key_old");
+    assert!(!shown(cx, "fact-at-work") && !shown(cx, "at-work-none") && !shown(cx, "action-remove"));
+}
+
+/// What the box refuses is shown in its words on the page it was asked on, and nothing changes.
+#[gpui::test]
+fn a_refusal_is_shown_in_the_boxs_words(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.manage_refused("The Mac that set devbox up isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.");
+    let (_workspace, page, cx) = open(cx, stand_in.clone());
+    click(cx, "computer-key_devbox");
+    click(cx, "action-remove-button");
+    click(cx, "computers-confirm-go");
+    assert_eq!(
+        said(&page, cx, "manage-problem"),
+        Some(("That couldn’t be done".into(), "The Mac that set devbox up isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.".into()))
+    );
+    assert!(shown(cx, "action-remove-button"), "still there");
+    // Another page doesn't carry it.
+    click(cx, "computer-key_studio");
+    assert!(!shown(cx, "manage-problem"));
+}
+
+/// While the old app is open on the Mac that keeps your machines' records, Remove waits and says
+/// why, in the box's words, and sends nothing.
+#[gpui::test]
+fn remove_waits_for_the_old_app_and_says_so(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.old_app_open();
+    let (_workspace, page, cx) = open(cx, stand_in.clone());
+    click(cx, "computer-key_devbox");
+    assert!(shown(cx, "action-remove"));
+    assert_eq!(
+        said(&page, cx, "manage-why").map(|(words, _)| words).as_deref(),
+        Some("Quit the old Kuvo Code app on Stand-in Mac first: it keeps its own list of machines, and would add devbox back.")
+    );
+    click(cx, "action-remove-button");
+    assert!(!shown(cx, "computers-confirm") && stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").is_empty(), "nothing asked, nothing sent");
+}

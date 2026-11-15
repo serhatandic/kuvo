@@ -1574,6 +1574,10 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "btw.threads": ["GET", "kuvo/agents/api/kuvo/btw"],
     "claude-code": ["GET", "kuvo/claude-code"],
     computers: ["GET", "kuvo/computers"],
+    // (What each computer answers and which of its sessions are at work, in kuvo/computers' answer.)
+    "computers.facts": ["GET", "kuvo/computers"],
+    // (Renaming, removing and reaching one again: kuvo/computers/<key>, which says one isn't there.)
+    "computers.manage": ["DELETE", "kuvo/computers/none"],
     config: ["GET", "kuvo/config"],
     "config.apply": ["GET", "kuvo/config/apply"],
     "engine.restart": ["GET", "kuvo/engine/restart"],
@@ -1688,6 +1692,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "sessions.start": ["POST", "kuvo/sessions"],
     // (A client's start without a task, `kuvo/sessions` too.)
     "sessions.start.empty": ["POST", "kuvo/sessions"],
+    // (This box's settings as it describes them, for any client to draw.)
+    settings: ["GET", "kuvo/settings"],
     // (Your setup, and who's its main computer.)
     setup: ["GET", "kuvo/setup"],
     "setup.mainOnly": ["GET", "kuvo/setup"],

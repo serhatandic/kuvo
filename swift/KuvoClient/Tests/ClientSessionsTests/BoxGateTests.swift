@@ -36,6 +36,16 @@ struct BoxGateTests {
         #expect(BoxGate.missing(older) == ["sessions.list"])
     }
 
+    // One of your computers, as a box lists it: older only where it says what it answers and a name
+    // is missing; one that doesn't say isn't called older.
+    @Test func aListedComputerIsOlderOnlyWhereItSaysSo() throws {
+        let machine = try Self.boxFeatures().machine
+        #expect(!BoxGate.isOlder(listed: machine))
+        #expect(BoxGate.isOlder(listed: machine.filter { $0 != "computers.manage" }))
+        #expect(BoxGate.isOlder(listed: []))
+        #expect(!BoxGate.isOlder(listed: nil))
+    }
+
     // A 0.7 bridge answers no features at all (or no `kuvo/info`): every name is missing.
     @Test func aBoxThatNamesNothingLacksEverything() {
         #expect(BoxGate.missing([String]()) == BoxGate.required)
