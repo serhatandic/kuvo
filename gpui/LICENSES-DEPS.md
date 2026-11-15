@@ -1,9 +1,12 @@
 # Dependencies and their licences
 
-Kuvo is PolyForm Noncommercial. Every crate we add ourselves is MIT or Apache-2.0, checked
-before adding, but the link's (#742): `x25519-dalek` is BSD-3-Clause, `ring` and `rustls-webpki`
-are ISC, and `webpki-roots` is CDLA-Permissive-2.0 (a list of certificate authorities, as data).
-All are permissive, with no copyleft; their notices go in the app's third-party licences. Nothing from Zed's GPL-3.0 crates is used or copied: only `gpui` and
+Kuvo is PolyForm Noncommercial. Every crate we add ourselves has a permissive licence, checked
+before adding: MIT, Apache-2.0, or one like them (BSD-3-Clause, ISC, CDLA-Permissive-2.0; the
+user's word, 2026-11-15). Never a copyleft one. Those that aren't MIT or Apache-2.0 are the
+link's: `x25519-dalek` (with `curve25519-dalek`) is BSD-3-Clause, `ring` is Apache-2.0 AND ISC,
+`rustls-webpki` is ISC, and `webpki-roots` is CDLA-Permissive-2.0 (a list of certificate
+authorities, as data). Their notices ship as the others do: each has its licence in `Licenses/`
+and its entry in the repo's `THIRD_PARTY_LICENSES.txt` (`scripts/third-party-licenses.sh`). Nothing from Zed's GPL-3.0 crates is used or copied: only `gpui` and
 `gpui_platform` (and the Apache-2.0 platform crates they pull in) come from Zed's repository.
 
 ## Added by us
@@ -25,10 +28,12 @@ All are permissive, with no copyleft; their notices go in the app's third-party 
 | libc | MIT OR Apache-2.0 | Reading a process's command line on macOS (is it the box's server?) | kuvo_box |
 | percent-encoding | MIT OR Apache-2.0 | Writing a route's path and query | kuvo_box |
 | serde, serde_json | MIT OR Apache-2.0 | Reading and writing a box's JSON | kuvo_box, kuvo (its stand-in box) |
-| x25519-dalek | BSD-3-Clause | The link's keys and its Noise handshake (X25519), to your other computers | kuvo_box |
+| x25519-dalek (with curve25519-dalek) | BSD-3-Clause | The link's keys and its Noise handshake (X25519), to your other computers | kuvo_box |
 | aes-gcm, sha2, hmac | MIT OR Apache-2.0 | The link's encryption (AES-256-GCM, SHA-256, HMAC), held to `protocol/vectors/noise.json` | kuvo_box |
 | tungstenite | MIT OR Apache-2.0 | The WebSocket to the relay | kuvo_box |
-| rustls (with ring) | Apache-2.0 OR ISC OR MIT (ring: Apache-2.0 AND ISC) | TLS to the relay | kuvo_box |
+| rustls | Apache-2.0 OR ISC OR MIT | TLS to the relay | kuvo_box |
+| ring | Apache-2.0 AND ISC | The cryptography under that TLS | kuvo_box (through rustls) |
+| rustls-webpki | ISC | Checking the relay's certificate | kuvo_box (through rustls) |
 | webpki-roots | CDLA-Permissive-2.0 | The certificate authorities the relay's certificate is checked against (Mozilla's list, as data) | kuvo_box |
 
 GPUI's `test-support` feature (Apache-2.0, same crate) is used only by the tests and the
