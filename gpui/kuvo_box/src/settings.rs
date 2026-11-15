@@ -107,9 +107,10 @@ pub struct Sandbox {
     /// The words of the button that does `action`, as the box says them.
     #[serde(default, rename = "actionLabel")]
     pub action_label: Option<String>,
-    /// While it's on, what it can't keep commands from here: `services` (your login's), `git`.
-    #[serde(default)]
-    pub gaps: Vec<String>,
+    /// Its row warns, why and its button with it, as the box says (`needsYou`, `sandbox.needsYou`):
+    /// off, or on while commands can still reach your login's services. No rule of this app's own.
+    #[serde(default, rename = "needsYou")]
+    pub needs_you: bool,
 }
 
 /// What the sandbox's button does.
@@ -122,16 +123,10 @@ pub enum SandboxDoes {
 }
 
 impl Sandbox {
-    /// It needs you: it's off, or on while commands can still reach your login's services (`gaps`),
-    /// where the box says why and names its page as it does for off.
-    pub fn needs_you(&self) -> bool {
-        !self.on || self.gaps.iter().any(|gap| gap == "services")
-    }
-
     /// Its button while it needs you: the box's words for it, and what it does. None where the box
     /// names no action (Kuvo Code's own switch off), or neither a route nor an address.
     pub fn button(&self) -> Option<(String, SandboxDoes)> {
-        if !self.needs_you() {
+        if !self.needs_you {
             return None;
         }
         let label = self.action_label.clone().filter(|label| !label.trim().is_empty())?;

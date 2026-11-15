@@ -43,6 +43,7 @@ pub const REQUIRED: &[&str] = &[
     "queue.items",
     "queue.removed.keyword",
     "queue.stop.arriving",
+    "sandbox.needsYou",
     "sandbox.opens",
     "sandbox.report",
     "sandbox.words",

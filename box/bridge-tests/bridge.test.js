@@ -1678,6 +1678,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     sandbox: ["GET", "kuvo/sandbox"],
     "sandbox.asks": ["GET", "kuvo/sandbox/allowed"],
     "sandbox.check": ["POST", "kuvo/sandbox/check"],
+    // (Whether its row warns: what kuvo/sandbox says.)
+    "sandbox.needsYou": ["GET", "kuvo/sandbox"],
     // (The address a button with no route opens: what kuvo/sandbox says.)
     "sandbox.opens": ["GET", "kuvo/sandbox"],
     // (Its words for a machine's services and what a report of a failing check says: what kuvo/sandbox says.)

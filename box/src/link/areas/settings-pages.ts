@@ -239,10 +239,10 @@ const RESTART = "POST kuvo/engine/restart";
  * it (`boxAnswers`), else the app that runs it does. */
 const restartsItself = () => !IS_MAC || boxAnswers("kuvo/engine/restart");
 
-/** The sandbox's row, as `kuvo/sandbox` says it: on, a quiet line; off, or on while commands can
- * still reach your login's services, why (a warning) and its button. */
+/** The sandbox's row, as `kuvo/sandbox` says it: a quiet line, or while it needs you (`needsYou`),
+ * why (a warning) and its button. */
 export function sandboxRow(state: any, name: string, here: boolean) {
-  const needsYou = !state.on || state.gaps?.includes("services") === true;
+  const needsYou = state.needsYou === true;
   const action = needsYou ? sandboxAction(state, name, here) : null;
   return {
     id: "sandbox", title: "Sandbox", line: needsYou ? String(state.why ?? "") : "Agents' commands here run in it.",
