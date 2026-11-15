@@ -205,6 +205,13 @@ impl Workspace {
         }));
         // The Bots list as it's read again (a bot's conversation may be another session by then).
         if let Some((_, bots)) = areas.iter().find(|(area, _)| *area == Area::Bots) {
+            // A group chat picked takes the keyboard in its composer; New Group and Edit, in its name.
+            area_subscriptions.push(cx.subscribe_in(bots, window, |_: &mut Workspace, view, _: &Picked, window, cx| {
+                let groups = view.read(cx).groups().cloned().filter(|_| view.read(cx).selected().is_some_and(|key| key == "new-group" || key.starts_with("group:") || key.starts_with("edit-group:")));
+                if let Some(groups) = groups {
+                    window.focus(&groups.focus_handle(cx), cx);
+                }
+            }));
             area_subscriptions.push(cx.observe_in(bots, window, |this: &mut Workspace, _, window, cx| this.bots_changed(window, cx)));
         }
         let rings = cx.new(|cx| Rings::new(client.clone(), live, cx));
@@ -782,6 +789,8 @@ impl Workspace {
                     self.unsent.insert(session.clone());
                 }
             }
+            // (A group chat's composer is its chat's.)
+            ComposerEvent::Wrote => {}
         }
     }
 
