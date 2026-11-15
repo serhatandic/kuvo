@@ -55,8 +55,9 @@ export const NO_REWRITE: Rewriter = {
 };
 
 /** The placement whose place in the box's home is `name` (`data`, `agents`, `engine`…). */
-function placementOf(move: MoveContext, name: string): Placement | undefined {
-  return move.placements.find(each => !each.installed && path.relative(move.home, homeSide(each, move.way)) === name);
+export function placementOf(move: MoveContext, name: string): Placement | undefined {
+  // (What's installed is never rewritten: only the engine among it is looked for, to start it.)
+  return move.placements.find(each => (!each.installed || name === "engine") && path.relative(move.home, homeSide(each, move.way)) === name);
 }
 
 /** Where `file` (named as it will be) is staged now, or null where it isn't moving. */
@@ -86,12 +87,12 @@ function readFolders(move: MoveContext): string[] {
 
 /** The engine the staged box starts: the version its keeper names (`V=` in `bin/kuvo-start`), else
  * the newest there. */
-function stagedEngine(move: MoveContext): string | null {
+export function stagedEngine(move: MoveContext): string | null {
   const engines = placementOf(move, "engine");
   if (!engines || !exists(engines.staged)) return null;
   const versions = enginesIn(engines.staged);
   let named: string | undefined;
-  const keeper = move.placements.find(each => each.installed)?.staged;
+  const keeper = move.placements.find(each => each.installed && path.basename(each.to) === "bin")?.staged;
   for (const file of [keeper && path.join(keeper, "kuvo-start"), path.join(move.home, "bin", "kuvo-start")]) {
     if (!file) continue;
     try { named = /^V=([0-9][0-9A-Za-z.+-]*)$/m.exec(fs.readFileSync(file, "utf8"))?.[1]; } catch {}

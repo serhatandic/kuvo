@@ -48,6 +48,7 @@ export const FEATURES = [
   "box.ownHome",
   "box.permissions",
   "box.rehome",
+  "box.rehome.run",
   "box.serve",
   "box.serve.mac",
   "box.uninstall",

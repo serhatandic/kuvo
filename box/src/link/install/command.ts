@@ -5,7 +5,7 @@
 //
 //   install --status --root <name> [--app <bundle>]                       what this computer holds
 //   install --new --root <name> --release <folder> --engine <folder> [--app <bundle>]   a new box, made and started
-//   install --move …                                                      the old app's box moved (not built yet)
+//   install --move --root <name> --release <folder> --engine <folder> --app <bundle>    an earlier Kuvo Code's sessions and settings moved
 //
 // One JSON line on stdout. Exit: 0 done; 1 refused or failed, in words; 2 not asked as above; 4
 // another move holds the lock.
@@ -13,7 +13,7 @@
 // on Linux it's a machine's, in `~/.kuvo-code`, started as a computer that's added is (the one
 // start script, `add/scripts.ts`), with its `@reboot` line and no helper.
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -25,7 +25,9 @@ import { helperStatus } from "../helper";
 import { accountHome, homeFolder, K, located, OWN_RUNTIME } from "../home";
 import { computerName } from "../mac/link";
 import { homeOfRoot, rehomeNew, runningIn } from "../rehome/move";
-import { giveLock, takeLock } from "../rehome/state";
+import { giveLock, progressOf, rehomeFolder, rehomeStatus, takeLock } from "../rehome/state";
+import { Said } from "../rehome/said";
+import { sleep } from "../../shared/wait";
 import { launchTools } from "../uninstall";
 import { judgeInstall, MAKING, type InstallVerdict, type Judgement } from "./verdict";
 
@@ -52,7 +54,7 @@ const NOT_NEW: Record<Exclude<InstallVerdict, "fresh" | "ours">, string> = {
   stuck: "Kuvo Code was moving your sessions to their new place on this Mac and stopped part way: that's finished first.",
   waits: "Another move is under way.",
   back: "Kuvo Code's sessions on this Mac were moved back: they move again when you ask.",
-  machine: "This computer is set up as one of your machines already: Kuvo Code uses the box that's here.",
+  machine: "This computer is set up as one of your machines already: Kuvo Code uses what's here.",
   two: "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: both stay as they are.",
 };
 
@@ -76,7 +78,7 @@ const sha256 = (file: string): string => crypto.createHash("sha256").update(fs.r
 /** The release the installer unpacked, checked against its own `box.json`: its version, its
  * engine's, and every file it names there as it says. Throws in words. */
 export function checkedRelease(release: string): { version: string; engine: string; files: Record<string, string> } {
-  const damaged = new Error("This copy of Kuvo Code is damaged. Download it again, then try again.");
+  const damaged = new Said("This copy of Kuvo Code is damaged. Download it again, then try again.");
   let box: unknown;
   try { box = JSON.parse(fs.readFileSync(path.join(release, "box.json"), "utf8")); } catch { throw damaged; }
   if (!isObject(box) || typeof box.version !== "string" || typeof box.engine !== "string" || !/^[0-9A-Za-z][0-9A-Za-z.-]*$/.test(box.engine) || !isObject(box.files)) throw damaged;
@@ -112,13 +114,13 @@ export async function installCommand(args: string[]): Promise<number> {
   const judged = (): Judgement => judgeInstall(home, appFolder, { helperInPlace: () => (mac && launchTools() ? helperRuns() : null) });
   try {
     if (mac && !app) {
-      say({ result: "refused", message: "Kuvo Code's installer needs the app it's run from (--app <bundle>)." });
+      say({ result: "refused", message: "Kuvo couldn't tell which app started it. Open Kuvo Code again." });
       return EXIT.refused;
     }
     // (A copy of the app, a demo's or a test's, never judges or makes the real one's box, nor the
     // real app a copy's: each has its own folder and its own home. Nothing's said of what's there.)
     if (mac && real !== (app === REAL_APP)) {
-      say({ result: "refused", message: real ? "Only Kuvo Code itself installs its box in ~/.kuvo-code: a copy installs it in a home of its own." : "Kuvo Code itself installs its box in ~/.kuvo-code only." });
+      say({ result: "refused", message: real ? "Only Kuvo Code itself sets up ~/.kuvo-code: a copy of it keeps a folder of its own." : "Kuvo Code itself sets up ~/.kuvo-code only." });
       return EXIT.refused;
     }
     if (verbs[0] === "--status") {
@@ -127,21 +129,24 @@ export async function installCommand(args: string[]): Promise<number> {
       say(judgement);
       return 0;
     }
-    if (verbs[0] === "--move") {
-      // BOX-NEEDED (#713 piece 4): `rehome --run`, the old app's box and data moved by the box itself.
-      say({ result: "refused", message: "Moving an earlier Kuvo Code's sessions into their new place isn't in this version yet.", ...judged() });
-      return EXIT.refused;
-    }
     const release = option("--release"), engine = option("--engine");
     if (!release || !engine || !path.isAbsolute(release) || !path.isAbsolute(engine)) {
       console.error(USAGE);
       return 2;
     }
+    if (verbs[0] === "--move") {
+      const answer = mac ? await moved({ home, root: option("--root")!, bundle: bundle!, release, engine }, judged, say) : { result: "refused" as const, verdict: judged().verdict, message: "There's nothing to move on this computer: Kuvo is where it belongs already." };
+      say({ ...answer, status: judged().status });
+      return EXIT[answer.result];
+    }
     const answer = mac ? await newMac({ home, appFolder: appFolder!, app: app!, release, engine }, judged) : await newMachine({ home, release, engine }, judged);
     say({ ...answer, status: judged().status });
     return EXIT[answer.result];
   } catch (error) {
-    say({ result: "failed", message: error instanceof Error ? error.message : String(error), ...judged() });
+    // (Only what's said for the person at the computer is shown: anything else in one sentence,
+    // with what went wrong on standard error, for support.)
+    if (!(error instanceof Said)) console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    say({ result: "failed", message: error instanceof Said ? error.message : "Kuvo couldn't finish setting up on this computer this time. Try again.", ...judged() });
     return EXIT.failed;
   }
 }
@@ -174,6 +179,76 @@ function tidyStaging(home: string, { verdict, verb }: Judgement, release: string
   } catch {}
 }
 
+/** Why each verdict has nothing to move, in words an app shows as they are. */
+const NOT_MOVED: Partial<Record<InstallVerdict, string>> = {
+  fresh: "There's nothing of an earlier Kuvo Code's on this Mac to move.",
+  machine: "This Mac is set up as one of your machines already: Kuvo Code uses what's here.",
+  two: "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.",
+  back: "Kuvo Code's sessions on this Mac were moved back: they move again when you ask.",
+  waits: "Another move is under way.",
+};
+
+const processAlive = (pid: number): boolean => {
+  if (!Number.isInteger(pid) || pid <= 1) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+};
+
+/** An earlier Kuvo Code's sessions and settings moved by the box itself (`rehome --run`, "Moving
+ * this Mac's box"), started in a session of its own so that the app quitting doesn't stop it,
+ * and followed: a line for each step as it's reached (`{step, title, index, of}`, the box's own
+ * words), then its answer. A move that's done with something still owed (its start, the
+ * Keychain) is finished by running it again. */
+async function moved({ home, root, bundle, release, engine }: { home: string; root: string; bundle: string; release: string; engine: string }, judged: () => Judgement, say: (value: unknown) => void): Promise<Answer> {
+  const before = judged();
+  if (before.verdict === "waits") return { result: "waits", verdict: "waits", message: NOT_MOVED.waits };
+  if (before.verb !== "move") return { result: before.verdict === "ours" ? "nothing" : "refused", verdict: before.verdict, ...(NOT_MOVED[before.verdict] ? { message: NOT_MOVED[before.verdict] } : {}) };
+  // (A move that's done and only owes something needs no release: settling took what was staged away.)
+  if (before.verdict !== "ours") checkedRelease(release);
+  const folder = rehomeFolder(home);
+  fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+  // (Its answer in a file of this installer's own: two at once never read each other's.)
+  const out = path.join(folder, `run.${process.pid}.out`), log = path.join(folder, "run.log");
+  for (const left of fs.readdirSync(folder)) if (/^run\.(\d+\.)?out$/.test(left) && left !== path.basename(out) && !processAlive(Number(left.split(".")[1]))) fs.rmSync(path.join(folder, left), { force: true });
+  const outTo = fs.openSync(out, "w", 0o600), logTo = fs.openSync(log, "a", 0o600);
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(process.execPath, [...OWN_RUNTIME, process.argv[1], "rehome", root, "--run", "--app", bundle, "--release", release, "--engine", engine], {
+      cwd: home, detached: true, stdio: ["ignore", outTo, logTo], env: process.env,
+    });
+  } finally {
+    fs.closeSync(outTo);
+    fs.closeSync(logTo);
+  }
+  const ended = new Promise<number | null>(resolve => { child.once("exit", status => resolve(status)); child.once("error", () => resolve(null)); });
+  // Each step as it's reached, in the box's own words.
+  let shown = "";
+  const show = () => {
+    const progress = rehomeStatus(home).progress;
+    if (progress && progress.step !== shown) {
+      shown = progress.step;
+      say(progress);
+    }
+  };
+  say(progressOf("plan"));
+  shown = "plan";
+  let status: number | null | undefined;
+  while (status === undefined) {
+    status = await Promise.race([ended, sleep(250).then(() => undefined)]);
+    show();
+  }
+  child.unref();
+  let said: unknown = null;
+  try { said = JSON.parse(fs.readFileSync(out, "utf8").trim().split("\n").pop() ?? ""); } catch {}
+  fs.rmSync(out, { force: true });
+  const verdict = judged().verdict;
+  if (!isObject(said) || typeof said.result !== "string") return { result: "failed", verdict, message: "Kuvo stopped while moving your sessions. Try again." };
+  const message = typeof said.message === "string" ? { message: said.message } : {};
+  const started = typeof said.started === "boolean" ? { started: said.started } : {};
+  if (said.result === "done" || said.result === "nothing") return { result: said.result, verdict, ...started, ...message };
+  if (said.result === "waits") return { result: "waits", verdict, ...message };
+  return { result: said.result === "refused" ? "refused" : "failed", verdict, ...message };
+}
+
 interface NewMac { home: string; appFolder: string; app: string; release: string; engine: string }
 
 /** A Mac's new box (`rehome --new`, with the installer's release and engine), then its helper
@@ -187,7 +262,7 @@ async function newMac({ home, appFolder, app, release, engine }: NewMac, judged:
   const asideBefore = new Set(earlier());
   const pinned = checkedRelease(release).engine;
   if (before.verdict === "fresh") {
-    if (!fs.existsSync(path.join(engine, pinned, "opencode"))) throw new Error(NO_ENGINE("this Mac"));
+    if (!fs.existsSync(path.join(engine, pinned, "opencode"))) throw new Said(NO_ENGINE("this Mac"));
     // (Only this release's engine goes into the box: never a download cut short, nor another version's.)
     for (const name of fs.readdirSync(engine)) if (name !== pinned) fs.rmSync(path.join(engine, name), { recursive: true, force: true });
     const outcome = await rehomeNew({ appFolder, home }, { release, engine, waiting: () => console.error("Another move is under way: this one waits for it.") });
@@ -239,7 +314,7 @@ async function newMachine({ home, release, engine }: { home: string; release: st
   if (path.basename(home) !== ".kuvo-code") return { result: "refused", verdict: "fresh", message: "On Linux, Kuvo Code's box is always in ~/.kuvo-code." };
   const { version, engine: engineVersion, files } = checkedRelease(release);
   const staged = path.join(engine, engineVersion, "opencode");
-  if (!fs.existsSync(staged)) throw new Error(NO_ENGINE("this computer"));
+  if (!fs.existsSync(staged)) throw new Said(NO_ENGINE("this computer"));
   if (!(await takeLock(home, { waiting: () => console.error("Another move is under way: this one waits for it.") }))) return { result: "waits", verdict: judged().verdict, message: "Another move is under way." };
   try {
     // (Again, holding it: another may have made it meanwhile.)
