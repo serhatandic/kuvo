@@ -323,43 +323,24 @@ impl Render for SettingsView {
                 )
         });
         let confirm = self.confirm.clone().map(|confirm| {
-            sheet(
-                div()
-                    .debug_selector(|| "settings-confirm".into())
-                    .track_focus(&self.confirm_focus)
-                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                        if event.keystroke.key == "escape" {
-                            this.confirm = None;
-                            cx.notify();
-                        }
-                    }))
-                    .w(px(400.))
-                    .flex()
-                    .flex_col()
-                    .gap(space::S3)
-                    .p(space::S6)
-                    .rounded(radius::CARD)
-                    .bg(c.elevated)
-                    .border_1()
-                    .border_color(c.border)
-                    .shadow(cx.theme().elevated_shadow())
-                    .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(confirm.title))
-                    .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(confirm.body))
-                    .child(
-                        div()
-                            .flex()
-                            .justify_end()
-                            .gap(space::S2)
-                            .pt(space::S2)
-                            .child(Button::new("confirm-cancel", "Cancel").on_click(cx.listener(|this, _, _, cx| {
-                                this.confirm = None;
-                                cx.notify();
-                            })))
-                            .child(Button::new("confirm-go", confirm.button).destructive().on_click(cx.listener(|this, _, _, cx| this.confirmed(cx)))),
-                    )
-                    .into_any_element(),
+            let card = confirm_card(
+                ConfirmIds { card: "settings-confirm", cancel: "confirm-cancel", go: "confirm-go" },
+                &self.confirm_focus,
+                (confirm.title, confirm.body, confirm.button),
+                cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                    this.confirm = None;
+                    cx.notify();
+                }),
+                cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                    if event.keystroke.key == "escape" {
+                        this.confirm = None;
+                        cx.notify();
+                    }
+                }),
+                cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.confirmed(cx)),
                 cx,
-            )
+            );
+            sheet(card, cx)
         });
         let sign_in = self.sign_in.clone().map(|sheet_view| sheet(sheet_view.into_any_element(), cx));
         div()
@@ -373,6 +354,46 @@ impl Render for SettingsView {
             .children(confirm)
             .children(sign_in)
     }
+}
+
+/// The debug selectors of a confirm's card and its two buttons.
+pub(crate) struct ConfirmIds {
+    pub card: &'static str,
+    pub cancel: &'static str,
+    pub go: &'static str,
+}
+
+/// A confirm as a box words it (its question, what it comes to, the button that goes ahead), drawn
+/// alike wherever one is asked: Cancel, Escape, and the destructive button.
+pub(crate) fn confirm_card(
+    ids: ConfirmIds,
+    focus: &gpui::FocusHandle,
+    (title, message, label): (String, String, String),
+    cancel: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+    escape: impl Fn(&gpui::KeyDownEvent, &mut Window, &mut App) + 'static,
+    go: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> AnyElement {
+    let c = &cx.theme().colors;
+    let card = ids.card;
+    div()
+        .debug_selector(move || card.into())
+        .track_focus(focus)
+        .on_key_down(escape)
+        .w(px(400.))
+        .flex()
+        .flex_col()
+        .gap(space::S3)
+        .p(space::S6)
+        .rounded(radius::CARD)
+        .bg(c.elevated)
+        .border_1()
+        .border_color(c.border)
+        .shadow(cx.theme().elevated_shadow())
+        .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
+        .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(message))
+        .child(div().flex().justify_end().gap(space::S2).pt(space::S2).child(Button::new(ids.cancel, "Cancel").on_click(cancel)).child(Button::new(ids.go, label).destructive().on_click(go)))
+        .into_any_element()
 }
 
 /// What's under a sheet is dimmed by.

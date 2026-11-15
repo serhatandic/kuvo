@@ -73,6 +73,8 @@ pub enum Go {
     Session(String),
     /// The Sessions area.
     Sessions,
+    /// Your computers read again (something was done to them), where they aren't followed.
+    ReadComputers,
 }
 
 /// One area's sidebar.
@@ -184,6 +186,7 @@ impl AreaView {
                         cx.emit(Picked);
                     }
                     ComputersEvent::Sessions => cx.emit(Go::Sessions),
+                    ComputersEvent::ReadAgain => cx.emit(Go::ReadComputers),
                 })]
             })
             .unwrap_or_default();
@@ -777,7 +780,7 @@ impl AreaView {
         let selected = self.is_selected(&key);
         let (hover, selected_bg) = (c.hover, c.selected_card);
         let selector = format!("computer-{id}");
-        let working = computer.working.filter(|working| *working > 0 && computer.reach != "away").map(|working| {
+        let working = computer.working.filter(|working| *working > 0).map(|working| {
             div()
                 .flex()
                 .flex_none()

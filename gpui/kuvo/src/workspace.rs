@@ -201,6 +201,11 @@ impl Workspace {
                 Go::BotChat { bot, session, draft } => this.open_bot_chat(bot, session, draft.as_deref(), window, cx),
                 Go::Session(session) => this.open_session_now(session, window, cx),
                 Go::Sessions => this.show_area(Area::Sessions, window, cx),
+                Go::ReadComputers => {
+                    if this._computers_follow.is_none() {
+                        this.read_computers(cx);
+                    }
+                }
             })
         }));
         // The Bots list as it's read again (a bot's conversation may be another session by then).

@@ -25,7 +25,7 @@ use kuvo_ui::{
 };
 
 use crate::areas::Reading;
-use crate::settings::page::sheet;
+use crate::settings::page::{ConfirmIds, confirm_card, sheet};
 use crate::workspace::held_words;
 
 /// The widest the page's cards grow (Settings' width).
@@ -62,6 +62,8 @@ pub enum ComputersEvent {
     Select(Option<String>),
     /// The Sessions area, where this window's own sessions at work are.
     Sessions,
+    /// The box did something to your computers: the list is read again where it isn't followed.
+    ReadAgain,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -95,12 +97,29 @@ enum Item {
 /// What the box is asked to do, off this thread.
 type Work = Box<dyn FnOnce(&BoxClient) -> kuvo_box::Result<()> + Send>;
 
-/// What one of Manage's buttons does, as the box offered it for a computer (by its key).
+/// What one of Manage's buttons does, as the box offered it for a computer (by its key), asked
+/// first where the box gives a confirm.
 #[derive(Clone, Debug, PartialEq)]
-enum Manage {
-    Connect(String),
-    /// Asked first, in the box's words.
-    Remove { key: String, confirm: Option<Confirm> },
+struct Manage {
+    what: What,
+    key: String,
+    confirm: Option<Confirm>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum What {
+    Connect,
+    Remove,
+}
+
+impl What {
+    /// Its row on the page.
+    fn row(self) -> &'static str {
+        match self {
+            What::Connect => "action-reconnect",
+            What::Remove => "action-remove",
+        }
+    }
 }
 
 pub struct ComputersView {
@@ -108,15 +127,14 @@ pub struct ComputersView {
     /// Run against a live box (off this thread), else at once (tests and shots).
     live: bool,
     computers: Reading<Vec<Computer>>,
-    /// The action under way, by its row, and its words meanwhile.
-    busy: Option<(String, String)>,
+    /// The actions under way, by computer and row: their words meanwhile, and the work.
+    busy: HashMap<(String, &'static str), (String, Task<()>)>,
     /// What the box last refused, in its words, over the page it was asked on.
     problem: Option<(Shown, String)>,
     /// The confirm open: its words, and what going ahead does.
     confirm: Option<(Confirm, Manage)>,
     confirm_focus: FocusHandle,
     focus_confirm: bool,
-    tasks: HashMap<String, Task<()>>,
     this_box: String,
     this_kind: String,
     /// The window shows this Mac's own box (as `held_words` takes it).
@@ -141,12 +159,11 @@ impl ComputersView {
             client,
             live,
             computers: Reading::NotYet,
-            busy: None,
+            busy: HashMap::new(),
             problem: None,
             confirm: None,
             confirm_focus: cx.focus_handle(),
             focus_confirm: false,
-            tasks: HashMap::new(),
             this_box: "This Mac".into(),
             this_kind: String::new(),
             this_mac,
@@ -299,9 +316,11 @@ impl ComputersView {
             items.push(Item::Notice { key: "manage-problem".into(), tone: Tone::Attention, title: "That couldn’t be done".into(), words: problem.clone() });
         }
         // What's at work there, as its box counts it, where it said (`working`); none is claimed of
-        // one that never said, or that's away. This window's own are under Sessions.
+        // one that never said. One that's away has no At Work (a drawing choice: its notice says
+        // why, and the box's 0 there means "nothing seen", not "nothing at work"). This window's
+        // own are under Sessions.
         // (Which ones, `atWork`, waits on its design: the count is drawn as before.)
-        let working = computer.working.filter(|_| computer.reach != "away" && !computer.reach.is_empty());
+        let working = computer.working.filter(|_| computer.reach != "away");
         if let Some(working) = working {
             items.push(Item::Group("At Work".into()));
             if working == 0 {
@@ -340,19 +359,18 @@ impl ComputersView {
         let count = facts.len();
         items.extend(facts.into_iter().enumerate().map(|(ix, (key, title, value))| Item::Fact { key: key.into(), title: title.into(), value, first: ix == 0, last: ix + 1 == count }));
         // What can be done with it, as its box offers it here (`actions`), in its order and words.
-        let actions: Vec<(&str, String, String, Option<Manage>)> = computer
+        let actions: Vec<(&'static str, String, String, Option<Manage>)> = computer
             .actions
             .iter()
             .filter_map(|action| {
-                let ellipsis = |label: &str| format!("{label}…");
+                // (Marked as the platform marks a button that asks first.)
+                let label = if action.confirm.is_some() { format!("{}…", action.label) } else { action.label.clone() };
+                let act = |what| Some(Manage { what, key: computer.key.clone(), confirm: action.confirm.clone() });
                 Some(match action.id.as_str() {
-                    // (Renaming waits on its design: drawn, not done.)
-                    "rename" => ("action-rename", "Name".to_owned(), ellipsis(&action.label), None),
-                    "connect" => ("action-reconnect", "Connection".to_owned(), action.label.clone(), Some(Manage::Connect(computer.key.clone()))),
-                    "remove" => {
-                        let label = if action.confirm.is_some() { ellipsis(&action.label) } else { action.label.clone() };
-                        ("action-remove", "Remove".to_owned(), label, Some(Manage::Remove { key: computer.key.clone(), confirm: action.confirm.clone() }))
-                    }
+                    // (Renaming waits on its design: drawn, not done; it opens an editor, hence "…".)
+                    "rename" => ("action-rename", "Name".to_owned(), format!("{}…", action.label), None),
+                    "connect" => (What::Connect.row(), "Connection".to_owned(), label, act(What::Connect)),
+                    "remove" => (What::Remove.row(), "Remove".to_owned(), label, act(What::Remove)),
                     _ => return None,
                 })
             })
@@ -361,7 +379,7 @@ impl ComputersView {
             items.push(Item::Group("Manage".into()));
             let count = actions.len();
             items.extend(actions.into_iter().enumerate().map(|(ix, (key, title, button, act))| {
-                let busy = self.busy.as_ref().filter(|(at, _)| at == key).map(|(_, words)| words.clone());
+                let busy = self.busy.get(&(computer.key.clone(), key)).map(|(words, _)| words.clone());
                 Item::Action { key: key.into(), title, button, act, busy, first: ix == 0, last: ix + 1 == count }
             }));
         }
@@ -369,43 +387,49 @@ impl ComputersView {
         items
     }
 
-    /// Does what a Manage button offers: asked first where the box says to, then done by the box,
-    /// and the list read again as it follows it. A refusal is shown in the box's words.
+    /// Does what a Manage button offers: asked first where the box says to, then done by the box;
+    /// the list is read again (followed, it comes by itself). A refusal is shown in the box's words.
     fn manage(&mut self, act: Manage, cx: &mut Context<Self>) {
-        let (row, words, work): (&str, &str, Work) = match act {
-            Manage::Remove { key, confirm: Some(confirm) } => {
-                self.focus_confirm = true;
-                self.confirm = Some((confirm, Manage::Remove { key, confirm: None }));
-                return self.rebuild(cx);
-            }
-            Manage::Remove { key, confirm: None } => ("action-remove", "Removing…", Box::new(move |client| client.remove_computer(&key))),
-            Manage::Connect(key) => ("action-reconnect", "Connecting…", Box::new(move |client| client.connect_computer(&key))),
+        if let Some(confirm) = act.confirm.clone() {
+            self.focus_confirm = true;
+            self.confirm = Some((confirm, act));
+            return self.rebuild(cx);
+        }
+        let row = act.what.row();
+        let busy = (act.key.clone(), row);
+        if self.busy.contains_key(&busy) {
+            return;
+        }
+        let (words, work): (&str, Work) = match act.what {
+            What::Remove => ("Removing…", Box::new(move |client| client.remove_computer(&act.key))),
+            What::Connect => ("Connecting…", Box::new(move |client| client.connect_computer(&act.key))),
         };
-        self.busy = Some((row.to_owned(), words.to_owned()));
         self.problem = None;
         let on = self.shown.clone();
-        let then = move |this: &mut ComputersView, done: kuvo_box::Result<()>| {
-            this.busy = None;
-            if let Err(error) = done {
-                this.problem = Some((on, said(&error)));
+        let done_with = busy.clone();
+        let then = move |this: &mut ComputersView, done: kuvo_box::Result<()>, cx: &mut Context<ComputersView>| {
+            this.busy.remove(&done_with);
+            match done {
+                Ok(()) => cx.emit(ComputersEvent::ReadAgain),
+                Err(error) => this.problem = Some((on, said(&error))),
             }
         };
         let client = self.client.clone();
         if !self.live {
             let done = work(&client);
-            then(self, done);
+            then(self, done, cx);
             return self.rebuild(cx);
         }
-        self.rebuild(cx);
         let task = cx.spawn(async move |this, cx| {
             let done = cx.background_executor().spawn(async move { work(&client) }).await;
             this.update(cx, |this, cx| {
-                then(this, done);
+                then(this, done, cx);
                 this.rebuild(cx);
             })
             .ok();
         });
-        self.tasks.insert(row.to_owned(), task);
+        self.busy.insert(busy, (words.to_owned(), task));
+        self.rebuild(cx);
     }
 
     /// Why a computer stands as it does, where that's more than "connected".
@@ -562,7 +586,7 @@ impl ComputersView {
         let id = if computer.here { "this".to_owned() } else { computer.key.clone() };
         let selector = format!("computers-row-{id}");
         let version = computer.version.as_ref().map(|version| format!("Kuvo Code {version}"));
-        let working = computer.working.filter(|working| *working > 0 && computer.reach != "away").map(|working| {
+        let working = computer.working.filter(|working| *working > 0).map(|working| {
             div()
                 .flex()
                 .flex_none()
@@ -772,46 +796,27 @@ impl Render for ComputersView {
         }
         // The box's confirm, as Settings draws one: its question, what it comes to, its button.
         let confirm = self.confirm.clone().map(|(confirm, act)| {
-            sheet(
-                div()
-                    .debug_selector(|| "computers-confirm".into())
-                    .track_focus(&self.confirm_focus)
-                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                        if event.keystroke.key == "escape" {
-                            this.confirm = None;
-                            cx.notify();
-                        }
-                    }))
-                    .w(px(400.))
-                    .flex()
-                    .flex_col()
-                    .gap(space::S3)
-                    .p(space::S6)
-                    .rounded(radius::CARD)
-                    .bg(c.elevated)
-                    .border_1()
-                    .border_color(c.border)
-                    .shadow(cx.theme().elevated_shadow())
-                    .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(confirm.title))
-                    .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(confirm.message))
-                    .child(
-                        div()
-                            .flex()
-                            .justify_end()
-                            .gap(space::S2)
-                            .pt(space::S2)
-                            .child(Button::new("computers-confirm-cancel", "Cancel").on_click(cx.listener(|this, _, _, cx| {
-                                this.confirm = None;
-                                cx.notify();
-                            })))
-                            .child(Button::new("computers-confirm-go", confirm.label).destructive().on_click(cx.listener(move |this, _, _, cx| {
-                                this.confirm = None;
-                                this.manage(act.clone(), cx);
-                            }))),
-                    )
-                    .into_any_element(),
+            let card = confirm_card(
+                ConfirmIds { card: "computers-confirm", cancel: "computers-confirm-cancel", go: "computers-confirm-go" },
+                &self.confirm_focus,
+                (confirm.title, confirm.message, confirm.label),
+                cx.listener(|this, _: &gpui::ClickEvent, _, cx| {
+                    this.confirm = None;
+                    cx.notify();
+                }),
+                cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                    if event.keystroke.key == "escape" {
+                        this.confirm = None;
+                        cx.notify();
+                    }
+                }),
+                cx.listener(move |this, _: &gpui::ClickEvent, _, cx| {
+                    this.confirm = None;
+                    this.manage(Manage { confirm: None, ..act.clone() }, cx);
+                }),
                 cx,
-            )
+            );
+            sheet(card, cx)
         });
         let selector = match self.shown {
             Shown::All => "computers-page",

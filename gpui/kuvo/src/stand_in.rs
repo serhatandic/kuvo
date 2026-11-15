@@ -218,13 +218,13 @@ impl StandIn {
         self.state().areas.more_computers = more;
     }
 
-    /// Whether its list of computers can be read (else 503, as a box that isn't answering).
     /// What renaming and removing say (`503`) instead of doing it, as a box that can't ask the
     /// computer that writes the record says it.
     pub fn manage_refused(&self, words: &str) {
         self.state().areas.manage_refused = Some(words.to_owned());
     }
 
+    /// Whether its list of computers can be read (else 503, as a box that isn't answering).
     pub fn computers_readable(&self, readable: bool) {
         self.state().areas.computers_down = !readable;
     }

@@ -82,7 +82,7 @@ pub fn manage(areas: &mut Areas, method: &str, route: &str) -> Option<((u16, Val
         ("POST", true) => "connect",
         ("DELETE", false) => "remove",
         ("PATCH", false) => "rename",
-        _ => return Some(((405, json!({ "message": "Rename (PATCH) or remove (DELETE)." })), false)),
+        _ => return Some(((405, json!({ "message": if connect { "Only POST." } else { "Rename (PATCH) or remove (DELETE)." } })), false)),
     };
     if !offers(wanted) {
         return Some(((409, json!({ "message": format!("{} can’t be {} from here.", computer["name"].as_str().unwrap_or_default(), if wanted == "connect" { "connected to" } else { wanted }) })), false));

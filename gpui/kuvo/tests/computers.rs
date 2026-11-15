@@ -195,12 +195,15 @@ fn manage_does_what_the_box_offers_and_asks_first_where_it_says(cx: &mut TestApp
     );
     click(cx, "computers-confirm-cancel");
     assert!(!shown(cx, "computers-confirm") && stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").is_empty());
+    // Escape closes it too, doing nothing.
+    click(cx, "action-remove-button");
+    cx.simulate_keystrokes("escape");
+    assert!(!shown(cx, "computers-confirm") && stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").is_empty());
     // Going ahead, the box removes it, and it's gone from your computers.
     click(cx, "action-remove-button");
     click(cx, "computers-confirm-go");
     assert_eq!(stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").len(), 1);
-    click(cx, "rail-sessions");
-    click(cx, "rail-computers");
+    // Gone from your computers at once, read again as the box did it.
     assert!(!shown(cx, "computer-key_devbox"));
     assert_eq!(said(&page, cx, "computer-missing").map(|(words, _)| words).as_deref(), Some("This computer isn’t among yours any more."));
 
@@ -209,9 +212,6 @@ fn manage_does_what_the_box_offers_and_asks_first_where_it_says(cx: &mut TestApp
     assert!(shown(cx, "action-reconnect") && !shown(cx, "action-remove") && !shown(cx, "action-rename"), "a Mac is neither renamed nor removed from here");
     click(cx, "action-reconnect-button");
     assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_studio/connect").len(), 1);
-    click(cx, "rail-sessions");
-    click(cx, "rail-computers");
-    click(cx, "computer-key_studio");
     assert!(shown(cx, "notice-connecting") && !shown(cx, "action-reconnect"));
 
     // Offered nothing (shared with another setup, an older Mac): no Manage; and what an older one
@@ -226,14 +226,14 @@ fn manage_does_what_the_box_offers_and_asks_first_where_it_says(cx: &mut TestApp
 #[gpui::test]
 fn a_refusal_is_shown_in_the_boxs_words(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.manage_refused("Studio isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.");
+    stand_in.manage_refused("The Mac that set devbox up isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.");
     let (_workspace, page, cx) = open(cx, stand_in.clone());
     click(cx, "computer-key_devbox");
     click(cx, "action-remove-button");
     click(cx, "computers-confirm-go");
     assert_eq!(
         said(&page, cx, "manage-problem"),
-        Some(("That couldn’t be done".into(), "Studio isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.".into()))
+        Some(("That couldn’t be done".into(), "The Mac that set devbox up isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.".into()))
     );
     assert!(shown(cx, "action-remove-button"), "still there");
     // Another page doesn't carry it.
