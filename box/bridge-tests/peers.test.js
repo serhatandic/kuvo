@@ -582,11 +582,11 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   let { status, body } = await ask();
   assert.equal(status, 200);
   const [own, ...others] = body.computers;
-  assert.deepEqual({ ...own, system: "said", features: "said" }, { key: here.pub, name: "devbox", kind: "machine", here: true, shared: false, reach: "connected", via: "here", system: "said", features: "said", working: 0, atWork: [], limits: [], actions: [] });
+  assert.deepEqual({ ...own, system: "said", features: "said" }, { key: here.pub, name: "devbox", kind: "machine", here: true, shared: false, reach: "connected", via: "here", system: "said", features: "said", working: 0, atWork: [], limits: [], limitServices: [], actions: [] });
   // (Its peers by name: what's at work on one that never said isn't claimed.)
   assert.deepEqual(others, [
-    { key: mac.pub, name: "mac", kind: "mac", shared: false, reach: "connecting", via: "relay", limits: [], actions: [] },
-    { key: second.pub, name: "second", kind: "machine", id: "second", shared: false, reach: "connected", via: "relay", version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", working: 2, limits: [], actions: [] },
+    { key: mac.pub, name: "mac", kind: "mac", shared: false, reach: "connecting", via: "relay", limits: [], limitServices: [], actions: [] },
+    { key: second.pub, name: "second", kind: "machine", id: "second", shared: false, reach: "connected", via: "relay", version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", working: 2, limits: [], limitServices: [], actions: [] },
   ]);
 
   // One the relay says isn't there: away, and nothing there counts as at work now.
