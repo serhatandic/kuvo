@@ -113,10 +113,11 @@ test("the files an earlier box wrote bots' own keys to go once the Keychain has 
   // does only once it finds each one's copy: no copy goes before that, or the move would never settle.
   const record = path.join(box, "updates", "rehome", "state.json");
   fs.mkdirSync(path.dirname(record), { recursive: true });
-  fs.writeFileSync(record, JSON.stringify({ owed: ["keychain", "agent"] }));
+  fs.writeFileSync(record, JSON.stringify({ way: "move", owed: ["keychain", "agent"] }));
   assert.equal(await link.dropBotsOwnKeys(), false);
   assert.equal(host.keys.get(name), "lin_scout", "the helper's copy stays until the originals are gone");
-  fs.writeFileSync(record, JSON.stringify({ owed: ["agent"] }));
+  // (A record a move back left says the same, and nothing settles it: it holds nothing up.)
+  fs.writeFileSync(record, JSON.stringify({ way: "back", movedBack: true, owed: ["keychain", "agent"] }));
   assert.equal(await link.dropBotsOwnKeys(), true);
   assert.equal(host.keys.has(name), false);
   assert.equal(fs.existsSync(botKeys), false);

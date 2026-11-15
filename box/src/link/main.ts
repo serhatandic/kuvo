@@ -316,7 +316,9 @@ function updateIsWell(): void {
   try {
     if (confirmUpdate()) {
       upgradeIntegrations().catch(() => {});
-      dropBotsOwnKeys(runningEngine).catch(() => {});
+      // (Where this Mac's app keeps its keys, tried again while they can't be reached.)
+      if (KEYS_ON_HOST) keepBotsOwnKeysGone(runningEngine);
+      else dropBotsOwnKeys(runningEngine).catch(() => {});
     }
   } catch {}
 }

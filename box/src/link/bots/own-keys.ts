@@ -63,7 +63,7 @@ export function dropOwnServers(folder: string): string[] {
     settings = JSON.parse(text ?? "");
   } catch {
     // (Said, as its server will fail once its key has gone: it's yours to take out of the file.)
-    if (text && namesBotKey(text)) console.error(`kuvo-link: ${file} isn't plain JSON and names a key a bot had of its own, which is removed: take that server out of it.`);
+    if (text && namesBotKey(text) && !saidNotPlain.has(file) && saidNotPlain.add(file)) console.error(`kuvo-link: ${file} isn't plain JSON and names a key a bot had of its own, which is removed: take that server out of it.`);
     return [];
   }
   const servers = isObject(settings) && isObject(settings.mcp) && isObject(settings.mcp.servers) ? settings.mcp.servers : null;
@@ -155,7 +155,12 @@ export function dropBotsOwnServers(engine: () => EngineRecord | null = () => nul
 /** Whether this Mac's box has just moved into a home of its own and its app's program still owes
  * the Keychain: it deletes its originals only once it finds each one's copy beside it (the box's
  * helper's), so no copy goes before that, or the move would never settle. */
-const keychainOwed = (): boolean => OWN_HOME_MAC && Boolean(readRecord(K).owed?.includes("keychain"));
+function keychainOwed(): boolean {
+  if (!OWN_HOME_MAC) return false;
+  const record = readRecord(K);
+  // (Only after a move here: one moved back leaves the same words in a record nothing settles.)
+  return !record.movedBack && Boolean(record.owed?.includes("keychain"));
+}
 
 /** What's left here of bots' own keys, gone: every bot's folder's settings first (so none names a
  * key that's gone), then the keys, then the note of deleted bots' keys still to go
@@ -169,7 +174,11 @@ export function dropBotsOwnKeys(engine: () => EngineRecord | null = () => null):
   return keyWork(async () => {
     if (updateOnTrial()) return false;
     dropBotsOwnServers(engine);
-    if (keychainOwed()) return false;
+    if (keychainOwed()) {
+      if (!saidOwed) console.error("kuvo-link: bots' own keys wait in this Mac's Keychain until Kuvo Code has finished moving its keys to its box: tried again later.");
+      saidOwed = true;
+      return false;
+    }
     try {
       await dropBotKeys();
     } catch (error) {
@@ -180,6 +189,10 @@ export function dropBotsOwnKeys(engine: () => EngineRecord | null = () => null):
     return true;
   });
 }
+
+// Said once while this box runs, each.
+let saidOwed = false;
+const saidNotPlain = new Set<string>();
 
 let again: ReturnType<typeof setTimeout> | null = null;
 /** The same while this box runs (`serve`): now, and again while this Mac's keys can't be reached (a
