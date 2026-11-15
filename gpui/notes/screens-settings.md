@@ -5,12 +5,13 @@ The Settings area (⌃5), in two parts with a sidebar each (the user's pick of t
 `gpui/notes/settings-split.md`):
 
 - **Your settings**: this app's own, on this device. Appearance (the theme) is the one built; the
-  rest are listed under "Not in the Desktop App Yet", each a page saying so.
+  rest are under one row, "Not in the desktop app yet", which opens their short list; each is a page
+  saying "Coming to the desktop app."
 - **A computer's settings**: kept on that computer by its box. The sidebar's title is the
   **picker** (your computers as the window's box lists them, one that isn't reached quieter, Add a
   Machine…), which changes only Settings, never the window. Its sections are the box's
   (`kuvo/settings`), under the box's headings; Accounts, Models and Usage are still this app's own
-  pages (`rows.rs`, BOX-NEEDED, #741); the rest are listed under "Not in the Desktop App Yet".
+  pages (`rows.rs`, BOX-NEEDED, #741); the rest are under the same one row.
 - The **foot row** goes to the other side ("Computer settings · This Mac ›" / "Your settings ›"),
   at the section last open there. The **search** finds on its own side, and lists what it finds on
   the other under "Computer · This Mac" / "Your settings", with an arrow; picking one goes there

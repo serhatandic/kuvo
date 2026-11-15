@@ -70,7 +70,12 @@ fn side(workspace: &Entity<Workspace>, cx: &mut VisualTestContext, side: Side) -
 /// The settings of the computer shown, on `name`, picked in its sidebar.
 fn section(workspace: &Entity<Workspace>, cx: &mut VisualTestContext, name: &str) -> Entity<SettingsView> {
     let view = side(workspace, cx, Side::Computer);
-    click(cx, &format!("setting-{}", name.to_lowercase()));
+    let row = format!("setting-{}", name.to_lowercase());
+    // (One that isn't in the desktop app yet is under their one row.)
+    if !shown(cx, &row) {
+        click(cx, "settings-later");
+    }
+    click(cx, &row);
     view
 }
 
@@ -103,8 +108,14 @@ fn settings_opens_on_your_own_and_the_foot_row_goes_to_the_computers(cx: &mut Te
     assert_eq!(title(&workspace, cx).as_deref(), Some("Appearance"));
     assert!(stand_in.seen_at("GET", "kuvo/settings").is_empty());
     // One of your own that isn't in the desktop app yet says so.
+    // What isn't in the desktop app yet is one row, opening its short list; each says so.
+    assert!(!shown(cx, "setting-shortcuts"));
+    click(cx, "settings-later");
     click(cx, "setting-shortcuts");
     assert!(shown(cx, "placeholder"));
+    // Folded again, the one shown stays listed.
+    click(cx, "settings-later");
+    assert!(shown(cx, "setting-shortcuts"));
     // The foot row goes to the computer's: its picker as the title, its sections as its box says them.
     click(cx, "settings-foot");
     assert!(shown(cx, "settings-computer") && !shown(cx, "settings-yours-title"));
@@ -380,7 +391,7 @@ fn the_search_finds_sections_and_rows(cx: &mut TestAppContext) {
     // Escape clears it: every section again.
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
-    assert!(shown(cx, "setting-models") && shown(cx, "setting-git"));
+    assert!(shown(cx, "setting-models") && shown(cx, "settings-later"));
 }
 
 #[gpui::test]

@@ -36,7 +36,22 @@ impl SettingsView {
         let away = side == Side::Computer && self.standing != Standing::Reached;
         let mut rows: Vec<AnyElement> = Vec::new();
         let mut group = String::new();
+        // What isn't in the desktop app yet is one row, which opens its short list (open too
+        // while one of them is shown, or a search finds one).
+        let later = found.iter().filter(|entry| entry.drawn == Drawn::Later).count();
+        let listed = self.later_open() || self.is_searching() || found.iter().any(|entry| entry.drawn == Drawn::Later && entry.id == open);
         for entry in &found {
+            if entry.drawn == Drawn::Later && entry.group != group {
+                group = entry.group.clone();
+                let fold = NavRow::new("settings-later-row", super::LATER)
+                    .muted(true)
+                    .trailing(div().flex().items_center().gap(space::S2).child(div().text_ui(TypeSize::Small).text_color(c.text_faint).child(later.to_string())).child(Icon::new(if listed { IconName::ChevronDown } else { IconName::ChevronRight }).color(c.icon)))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_later(cx)));
+                rows.push(div().debug_selector(|| "settings-later".into()).pt(space::S3).pb(space::S0_5).child(fold).into_any_element());
+            }
+            if entry.drawn == Drawn::Later && !listed {
+                continue;
+            }
             // A computer's sections under their headings (General, first, has none of its own).
             if entry.group != group {
                 group = entry.group.clone();

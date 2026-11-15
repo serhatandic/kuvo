@@ -28,7 +28,7 @@ computer's, a sidebar and a search each. What it is and how it's drawn: `notes/s
    are worded in the app; Accounts' layout rules are the app's.
 2. **The rest of a computer's sections** (`rows::LATER`): Custom Auto, Agents, Commands, Skills,
    Integrations, Vault, MCP Servers, Git, Worktrees, Archived Sessions, Engine, Storage, Phone. Each
-   is listed and says it isn't in the desktop app yet; one the box describes under the same name
+   is under the one "Not in the desktop app yet" row and says it's coming; one the box describes under the same name
    takes its place by itself.
 3. **`steps`** (signing in, pairing, a vault item led by the box): no box answers it yet; a
    `steps` row says it isn't in the desktop app yet.
@@ -74,7 +74,6 @@ Left:
   number's field takes a number.
 - A row's key is its id alone, so a change in flight on one section would mark a row of the same
   id on another busy.
-- Wording for the user: "This page isn't in the desktop app yet. For now, open it in Kuvo Code on
-  your Mac or iPhone." (kept from before; the window's own held notice still says "this app").
-- The thirteen sections under "Not in the Desktop App Yet" fill most of a computer's sidebar; one
-  folded row would do.
+- Wording: the window's own held notice still says "this app"; the other areas' placeholder
+  (`areas.rs`) and a sign-in the desktop app can't draw still send you to "Kuvo Code on your Mac or
+  iPhone". Settings' own placeholder says "Coming to the desktop app."

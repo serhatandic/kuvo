@@ -43,7 +43,7 @@ const PAGE_WIDTH: f32 = 720.;
 /// box names comes after, in its order.
 const GROUPS: &[&str] = &["General", "Models", "Agents & Tools", "Projects", "System"];
 /// The heading over what isn't in the desktop app yet.
-pub(crate) const LATER: &str = "Not in the Desktop App Yet";
+pub(crate) const LATER: &str = "Not in the desktop app yet";
 
 /// A place picked in Settings (`record`: by a click, so back and forward go to it), or by the
 /// search finding nothing on the page open. `place`: its key ([`yours_key`], [`box_key`]).
@@ -160,6 +160,8 @@ pub struct SettingsView {
     follow: Option<(String, Follow<Followed<Page>>)>,
     search: Entity<TextField>,
     query: String,
+    /// The sections that aren't in the desktop app yet are listed (their one row is open).
+    later_open: bool,
     /// The computer picker's menu, opened from its title.
     picker: kuvo_ui::menu::PopoverMenuHandle,
     accounts: Reading<Accounts>,
@@ -220,7 +222,7 @@ impl Focusable for SettingsView {
 }
 
 const YOURS_WORDS: &str = "The desktop app’s own, on this device. Your other devices keep theirs.";
-const LATER_WORDS: &str = "This page isn’t in the desktop app yet. For now, open it in Kuvo Code on your Mac or iPhone.";
+const LATER_WORDS: &str = "Coming to the desktop app.";
 
 impl SettingsView {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> SettingsView {
@@ -250,6 +252,7 @@ impl SettingsView {
             search,
             query: String::new(),
             picker: Default::default(),
+            later_open: false,
             accounts: Reading::NotYet,
             limits: Reading::NotYet,
             config: Reading::NotYet,
@@ -421,7 +424,7 @@ impl SettingsView {
                 Some(client) => (Some(client), Standing::Reached),
                 // The desktop app reaches the window's box alone for now (as the title bar's
                 // switcher says): said plainly, never read through this Mac instead.
-                None => not(format!("{name}’s settings aren’t in the desktop app yet"), format!("The desktop app shows only {}’s settings for now. For {name}’s, use Kuvo Code on your Mac or iPhone.", self.this_box)),
+                None => not(format!("{name}’s settings aren’t in the desktop app yet"), format!("The desktop app shows only {}’s settings for now.", self.this_box)),
             },
         }
     }
@@ -589,6 +592,16 @@ impl SettingsView {
         }
         hits.truncate(8);
         hits
+    }
+
+    pub(crate) fn later_open(&self) -> bool {
+        self.later_open
+    }
+
+    /// The one row over what isn't in the desktop app yet: opens its short list, or folds it.
+    pub(crate) fn toggle_later(&mut self, cx: &mut Context<Self>) {
+        self.later_open = !self.later_open;
+        cx.notify();
     }
 
     pub(crate) fn is_searching(&self) -> bool {
