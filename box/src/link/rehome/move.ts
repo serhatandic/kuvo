@@ -47,12 +47,12 @@ export const SERVED_FILE = "served.json";
 
 /** The box's release must bring its helper, which starts it in its home at login (#333 piece 4): a
  * box moved or made there without it would start with nothing. */
-const RELEASE_HELPER = path.join("bin", "Kuvo Code Box.app", "Contents", "MacOS", "Kuvo Code Box");
+const RELEASE_HELPER = path.join("bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper");
 /** Why a release folder can't be a box's files in its home, or null. */
 function releaseRefusal(release: string | null): string | null {
   const fileAt = (file: string) => { try { return fs.statSync(file).isFile(); } catch { return false; } };
   if (!release || !fileAt(path.join(release, "bin", "kuvo-start")) || !fileAt(path.join(release, "bin", "kuvo-link.js"))) return "The box's own files to put in its new home weren't given.";
-  if (!fileAt(path.join(release, RELEASE_HELPER))) return "Kuvo Code Box isn't in this copy of Kuvo Code, so nothing would start this Mac's box in its own home.";
+  if (!fileAt(path.join(release, RELEASE_HELPER))) return "Kuvo Helper isn't in this copy of Kuvo Code, so nothing would start this Mac's box in its own home.";
   return null;
 }
 

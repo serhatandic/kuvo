@@ -3,13 +3,13 @@ import Darwin
 import Foundation
 import Security
 
-/// Kuvo Code Box, the helper a Mac's box runs under once it lives in a home of its own (#333 piece
-/// 4; KuvoLink's PROTOCOL.md, "This Mac's box: its helper"): its names and places, and the checks
-/// on its signature. The app carries it (`Contents/Helpers/Kuvo Code Box.app`), the box's release
-/// brings it into the box's `bin`, and it runs from there.
+/// Kuvo Helper, the helper a Mac's box runs under once it lives in a home of its own (#333 piece
+/// 4; protocol/PROTOCOL.md, "This Mac's box: its helper"): its names and places, and the checks
+/// on its signature. The box's release brings it into the box's `bin`, and it runs from there; the
+/// box starts it (`kuvo-link.js helper start`), opening it itself where Login Items doesn't.
 public enum BoxHelperBundle {
     /// What macOS shows for it: in Login Items, and in every permission it asks about.
-    public static let name = "Kuvo Code Box"
+    public static let name = "Kuvo Helper"
     public static let bundleName = "\(name).app"
     /// Its bundle ID is the app's with this after it (`run.kuvo.code.box`), so a test or demo copy's
     /// keeps its own, and its Keychain items are named apart from the app's.
@@ -17,6 +17,8 @@ public enum BoxHelperBundle {
     /// The launch agent that starts a box at login on a Mac: one per computer, whatever set it up
     /// (a machine's runs `kuvo-start` with `/bin/sh`; a Mac's own box's runs this).
     public static let launchAgent = "run.kuvo.code.machine"
+    /// The box's home, in your account's home folder.
+    public static let homeFolder = ".kuvo-code"
 
     public static func helperID(ofApp app: String) -> String { app + idSuffix }
     public static func appID(ofHelper helper: String) -> String? {
@@ -38,6 +40,14 @@ public enum BoxHelperBundle {
         guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
               let information = information as? [String: Any] else { return nil }
         return information[kSecCodeInfoTeamIdentifier as String] as? String
+    }
+
+    /// The identifier the code at `url` (or the running process: nil) is signed with, if signed.
+    public static func identifier(of url: URL? = nil) -> String? {
+        guard let code = staticCode(url) else { return nil }
+        var information: CFDictionary?
+        guard SecCodeCopySigningInformation(code, [], &information) == errSecSuccess else { return nil }
+        return (information as? [String: Any])?[kSecCodeInfoIdentifier as String] as? String
     }
 
     private static func staticCode(_ url: URL?) -> SecStaticCode? {
@@ -104,43 +114,6 @@ public enum BoxHelperBundle {
         var information: CFDictionary?
         guard SecCodeCopySigningInformation(code, [], &information) == errSecSuccess else { return nil }
         return (information as? [String: Any])?[kSecCodeInfoUnique as String] as? Data
-    }
-
-    /// Why the helper installed in `home` won't be opened: missing, or not Kuvo Code Box as the app
-    /// asking (`app`, its bundle ID) carries it. Nil: it's well.
-    public static func trouble(installedIn home: URL, app: String, signer: Signer? = .ofThisProgram, carrier: URL = Bundle.main.bundleURL) -> String? {
-        let bundle = installed(in: home)
-        guard FileManager.default.fileExists(atPath: executable(of: bundle).path(percentEncoded: false)) else {
-            return "\(name) isn’t in this Mac’s box. Open Kuvo Code again to put it back."
-        }
-        // (Ad hoc: the very one the app running now carries.)
-        let carried = cdhash(bundled(in: carrier))
-        guard isGenuine(bundle, identifier: helperID(ofApp: app), signer: signer, adHocMatch: carried != nil && cdhash(bundle) == carried) else {
-            return "\(name) in this Mac’s box was changed since it was installed, so it didn’t start. Open Kuvo Code again to put it back."
-        }
-        return nil
-    }
-
-    // MARK: Opening it
-
-    /// The helper in `home`, opened as its own program (`open -g -j`: no window, nothing in front),
-    /// for the box to run while Login Items doesn't start it: never started as the app's child,
-    /// which would make the app what macOS asks about, and leave it without its Keychain. One that
-    /// runs already stays (it holds the box's lock). Checked first (`trouble`).
-    public static func open(home: URL, app: String, opener: String = "/usr/bin/open", signer: Signer? = .ofThisProgram, carrier: URL = Bundle.main.bundleURL) async throws {
-        if let trouble = trouble(installedIn: home, app: app, signer: signer, carrier: carrier) { throw Refused(trouble) }
-        let result = try await ChildProcess.run(opener, ["-g", "-j", "-n", installed(in: home).path(percentEncoded: false), "--args", "keep", "--home", home.path(percentEncoded: false)],
-                                                output: .discard, errors: .collect, limit: .seconds(20), cancellable: false)
-        guard result.succeeded else {
-            let said = result.errorText.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw Refused(result.timedOut ? "macOS didn’t open \(name) in time." : said.isEmpty ? "macOS didn’t open \(name)." : said)
-        }
-    }
-
-    public struct Refused: LocalizedError {
-        public let why: String
-        public init(_ why: String) { self.why = why }
-        public var errorDescription: String? { why }
     }
 }
 

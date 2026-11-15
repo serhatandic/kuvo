@@ -3930,6 +3930,9 @@
             "literal": "box.ownHome"
            },
            {
+            "literal": "box.permissions"
+           },
+           {
             "literal": "box.rehome"
            },
            {
@@ -4564,6 +4567,9 @@
            },
            {
             "literal": "box.ownHome"
+           },
+           {
+            "literal": "box.permissions"
            },
            {
             "literal": "box.rehome"
@@ -5867,6 +5873,35 @@
       "to": {
        "oneOf": [
         "string",
+        "null"
+       ]
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/box/permissions",
+   "answers": {
+    "200": {
+     "object": {
+      "applies": "bool",
+      "name": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
+      },
+      "known": "bool",
+      "screenRecording": {
+       "oneOf": [
+        "bool",
+        "null"
+       ]
+      },
+      "accessibility": {
+       "oneOf": [
+        "bool",
         "null"
        ]
       }

@@ -1553,6 +1553,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "box.helper": ["GET", "kuvo/info"],
     // (A box in a home of its own: on a Mac's, kuvo/work/settings's keepsAwake.)
     "box.ownHome": ["GET", "kuvo/work/settings"],
+    // (What macOS allows the program this Mac's box runs under: here, a machine's, it doesn't apply.)
+    "box.permissions": ["GET", "kuvo/box/permissions"],
     // (Moving this Mac's box into a home of its own: how it stands, here nothing.)
     "box.rehome": ["GET", "kuvo/box/rehome"],
     // (Its server kept for clients while one wants it.)

@@ -75,20 +75,35 @@ fi
 codesign "$@" "$FRAMEWORK/Versions/B/Autoupdate"
 codesign "$@" "$FRAMEWORK/Versions/B/Updater.app"
 codesign "$@" "$FRAMEWORK"
-# Kuvo Code Box, the helper this Mac's box runs under in ~/.kuvo-code (Contents/Helpers), built and
-# signed with the same identity, its own entitlements and the hardened runtime, before the app that
-# seals it: notarized with the app, and packed into the box's release from it.
-SIGN_IDENTITY="$SIGN_IDENTITY" ./scripts/build-box-helper.sh "$APP"
+# Kuvo Helper, the helper this Mac's box runs under in ~/.kuvo-code, built on its own
+# (scripts/build-helper.sh, from mac/helper) and signed with the same identity, its own entitlements
+# and the hardened runtime, then put in Contents/Helpers before the app that seals it: notarized with
+# the app, and packed into the box's release from it. (No kuvo-keys: build-helper.sh makes none
+# with a real identity unless asked with KUVO_SIGNED_KEYS=1, and this says 0, whatever the
+# environment it's run in says. This app moves its own keys,
+# and no signed kuvo-keys is to exist until #713 piece 4 settles what keeps it to the box's move.)
+info() { /usr/libexec/PlistBuddy -c "Print :$1" "$APP/Contents/Info.plist"; }
+HELPER_BUILD=$(mktemp -d "${TMPDIR:-/tmp}/kuvo-helper.XXXXXXXX")
+trap 'rm -rf "$HELPER_BUILD"' EXIT
+helper_icon=""
+[ ! -f "$APP/Contents/Resources/AppIcon.icns" ] || helper_icon="$APP/Contents/Resources/AppIcon.icns"
+KUVO_SIGNED_KEYS=0 SIGN_IDENTITY="$SIGN_IDENTITY" APP_ID="$(info CFBundleIdentifier)" VERSION="$(info CFBundleShortVersionString)" BUILD="$(info CFBundleVersion)" \
+    MIN_SYSTEM="$(info LSMinimumSystemVersion)" ICON="$helper_icon" ./scripts/build-helper.sh "$HELPER_BUILD"
+mkdir -p "$APP/Contents/Helpers"
+rm -rf "$APP/Contents/Helpers/Kuvo Helper.app"
+mv "$HELPER_BUILD/Kuvo Helper.app" "$APP/Contents/Helpers/"
+rm -rf "$HELPER_BUILD"
+trap - EXIT
 # The helpers the app carries (the box's, `Contents/Helpers/<name>.app`), before the app, and before
 # the box's release packs them: each keeps its own identifier and entitlements.
 for helper in "$APP/Contents/Helpers/"*.app; do
     if [ -d "$helper" ]; then codesign "$@" --preserve-metadata=identifier,entitlements "$helper"; fi
 done
-# (What macOS asks Kuvo Code Box about needs its entitlements: Calendars and Reminders for the box's
+# (What macOS asks Kuvo Helper about needs its entitlements: Calendars and Reminders for the box's
 # integration, and the microphone.)
-entitlements=$(codesign -d --entitlements - --xml "$APP/Contents/Helpers/Kuvo Code Box.app" 2>/dev/null)
+entitlements=$(codesign -d --entitlements - --xml "$APP/Contents/Helpers/Kuvo Helper.app" 2>/dev/null)
 for entitlement in personal-information.calendars device.audio-input; do
-    printf '%s' "$entitlements" | grep -q "$entitlement" || { echo "Kuvo Code Box lost its $entitlement entitlement as it was signed." >&2; exit 1; }
+    printf '%s' "$entitlements" | grep -q "$entitlement" || { echo "Kuvo Helper lost its $entitlement entitlement as it was signed." >&2; exit 1; }
 done
 codesign "$@" --entitlements swift/KuvoCode/KuvoCode.entitlements "$APP"
 # The box's release in the app, for it to offer this Mac's box as it updates: only with the key a

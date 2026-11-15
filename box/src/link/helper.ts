@@ -1,11 +1,12 @@
-// This Mac's box's helper, Kuvo Code Box (#333 piece 4; PROTOCOL.md, "This Mac's box: its helper"):
+// This Mac's box's helper, Kuvo Helper (#333 piece 4, #713; PROTOCOL.md, "This Mac's box: its helper"):
 // the signed program a Mac's box in a home of its own runs under, which macOS asks about and which
-// reaches its keys in the Keychain. Its release brings it into `bin` (`bin/Kuvo Code Box.app`); this
+// reaches its keys in the Keychain. Its release brings it into `bin` (`bin/Kuvo Helper.app`); this
 // starts it at login, as a machine's box is started: the launch agent `run.kuvo.code.machine`, one
 // per computer, whose program is the helper (a machine's is `/bin/sh`). `uninstall` takes it away.
 //
 // `kuvo-link.js helper install [--load] [--app <bundle ID>]` writes the launch agent's file (and with
-// `--load`, has launchd start it now); `helper status` says what's there. Only for a Mac's own box
+// `--load`, has launchd start it now); `helper status` says what's there; `helper start` is the
+// whole start, which opens the helper itself where Login Items is off for it. Only for a Mac's own box
 // (`box/kind` says `mac`) in the real `~/.kuvo-code`: a test's home names stand-ins for `launchctl`
 // (KUVO_TEST_UNINSTALL_TOOLS, as `uninstall` does), else nothing outside the folder is touched.
 
@@ -15,7 +16,7 @@ import path from "node:path";
 import { APP_FOLDER, K, recordedKind } from "./home";
 import { LAUNCH_AGENT, launchTools } from "./uninstall";
 
-export const HELPER_NAME = "Kuvo Code Box";
+export const HELPER_NAME = "Kuvo Helper";
 /** The helper in the box's `bin`, as its release brings it. */
 export const helperBundle = (): string => path.join(K, "bin", `${HELPER_NAME}.app`);
 export const helperProgram = (): string => path.join(helperBundle(), "Contents", "MacOS", HELPER_NAME);
@@ -43,8 +44,8 @@ export function helperPlist(app: string): string {
 
 /** Why the helper's launch agent can't be put in place here, or null. */
 function refusal(): string | null {
-  if (process.platform !== "darwin") return "Only a Mac's own box runs under Kuvo Code Box.";
-  if (APP_FOLDER || recordedKind() !== "mac") return "Only a Mac's own box in a home of its own runs under Kuvo Code Box.";
+  if (process.platform !== "darwin") return "Only a Mac's own box runs under Kuvo Helper.";
+  if (APP_FOLDER || recordedKind() !== "mac") return "Only a Mac's own box in a home of its own runs under Kuvo Helper.";
   if (!launchTools()) return "Only the box in ~/.kuvo-code starts at login.";
   if (!fs.existsSync(helperProgram())) return `${HELPER_NAME} isn't in this box's bin: its release brings it.`;
   return null;
@@ -104,29 +105,41 @@ export function installHelperAgent({ load, app }: { load: boolean; app: string }
  * put in place and loaded where it isn't there (`install --load`), loaded where it's there but not
  * loaded, and started where it's loaded but not running (`launchctl kickstart`, which leaves one
  * running as it is: one that found the box moving went, and launchd leaves it so until it's
- * asked). `ifMissing`: one in place is left as it is, loaded or not (switched off in Login Items, it
- * stays off). `mac`: whether it's a Mac's own box in a home of its own, which only its helper starts. */
-export function startHelperAgent({ app, ifMissing = false }: { app: string; ifMissing?: boolean }): { started: boolean; mac: boolean; left?: boolean; disabled?: boolean; message: string } {
+ * asked). Switched off in Login Items, launchd won't: the box opens the helper itself then (`open
+ * -g -j -n`, through Launch Services, so it's its own program to macOS as launchd's would be, never
+ * this process's child), for until you log out, and says so (`disabled`, `opened`: macOS was asked
+ * and took it, which isn't yet the helper keeping the box). `ifMissing`: one
+ * in place is left as it is, loaded or not (switched off in Login Items, it stays off, and isn't
+ * opened). `mac`: whether it's a Mac's own box in a home of its own, which only its helper starts. */
+export function startHelperAgent({ app, ifMissing = false }: { app: string; ifMissing?: boolean }): { started: boolean; mac: boolean; left?: boolean; disabled?: boolean; opened?: boolean; message: string } {
   const mac = process.platform === "darwin" && !APP_FOLDER && recordedKind() === "mac";
   const why = refusal();
   if (why) return { started: false, mac, message: why };
-  const status = helperStatus();
-  if (!status.agent) {
-    const done = installHelperAgent({ load: true, app });
-    return { started: done.loaded, mac, message: done.message };
-  }
-  if (ifMissing) return { started: false, mac, left: true, message: `${HELPER_NAME}'s launch agent is in place: it's left as it is.` };
   const tools = launchTools()!;
   const domain = `gui/${process.getuid?.() ?? 0}`;
   const run = (args: string[]) => spawnSync(tools.launchctl, args, { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] });
-  // Why launchd won't, said plainly where it's the usual reason: switched off in Login Items.
-  const refusedBy = (what: string, said: ReturnType<typeof run>) => {
+  // Switched off in Login Items (why launchd won't, usually): opened here instead, as its own
+  // program (one that runs already holds the box's lock, and the new one goes at once). Null: it
+  // isn't switched off there.
+  const openedInstead = () => {
     const disabled = run(["print-disabled", domain]);
-    if (disabled.status === 0 && new RegExp(`"${LAUNCH_AGENT.replace(/\./g, "\\.")}"\\s*=>\\s*(disabled|true)`).test(disabled.stdout ?? "")) {
-      return { started: false, mac, disabled: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items. Turn it on, then try again.` };
+    if (disabled.status !== 0 || !new RegExp(`"${LAUNCH_AGENT.replace(/\./g, "\\.")}"\\s*=>\\s*(disabled|true)`).test(disabled.stdout ?? "")) return null;
+    const opened = spawnSync(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "ignore", "pipe"] });
+    if (opened.status === 0) {
+      // (Asked of macOS, which took it: whether it then keeps the box is the helper's to say, in
+      // its own records. Nothing here says it runs.)
+      return { started: true, mac, disabled: true, opened: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items, so it was opened for now, to run this Mac's box until you log out. Turn it on there to start it at login.` };
     }
-    return { started: false, mac, message: `launchd didn't ${what} ${HELPER_NAME}: ${(said.stderr || "").trim().slice(0, 300) || "it said nothing"}.` };
+    return { started: false, mac, disabled: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items, and macOS didn't open it: ${(opened.stderr || "").trim().slice(0, 300) || opened.error?.message || "it said nothing"}. Turn it on there, then try again.` };
   };
+  const status = helperStatus();
+  if (!status.agent) {
+    const done = installHelperAgent({ load: true, app });
+    return done.loaded ? { started: true, mac, message: done.message } : (openedInstead() ?? { started: false, mac, message: done.message });
+  }
+  if (ifMissing) return { started: false, mac, left: true, message: `${HELPER_NAME}'s launch agent is in place: it's left as it is.` };
+  const refusedBy = (what: string, said: ReturnType<typeof run>) =>
+    openedInstead() ?? { started: false, mac, message: `launchd didn't ${what} ${HELPER_NAME}: ${(said.stderr || "").trim().slice(0, 300) || "it said nothing"}.` };
   if (status.loaded === false) {
     const loaded = run(["bootstrap", domain, path.join(tools.agents, `${LAUNCH_AGENT}.plist`)]);
     if (loaded.status !== 0) return refusedBy("load", loaded);

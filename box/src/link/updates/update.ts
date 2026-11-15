@@ -50,7 +50,7 @@ const ED25519_SPKI = Buffer.from("302a300506032b6570032100", "hex");
 const RELEASE_AGE = 3 * 86_400_000;
 const MAC_MEMORY = 30 * 86_400_000;
 const BOX_FILE = /^(bin\/[A-Za-z0-9._-]+|bin\/runtime\/[A-Za-z0-9._-]+|config\/opencode\/plugins\/[A-Za-z0-9._-]+)$/;
-// A Mac bundle a release carries (the box's helper, `bin/Kuvo Code Box.app`), named in `box.json`'s
+// A Mac bundle a release carries (the box's helper, `bin/Kuvo Helper.app`), named in `box.json`'s
 // `bundles` (which a box from before them passes over), each of its files by its path in it:
 // none a link, no part starting with a dot (never `..`), and the bundle swapped whole.
 const BUNDLE = /^bin\/[A-Za-z0-9][A-Za-z0-9._ -]*\.app$/;

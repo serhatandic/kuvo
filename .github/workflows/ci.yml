@@ -140,6 +140,10 @@ jobs:
         working-directory: swift/OpenCodeKit
         run: swift test
 
+      - name: Test Kuvo Helper
+        working-directory: mac/helper
+        run: swift test
+
       - name: Test KuvoClient
         working-directory: swift/KuvoClient
         run: swift test

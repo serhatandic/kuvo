@@ -148,7 +148,7 @@ while IFS= read -r -d '' source; do
         swift/KuvoLink/Sources/KuvoLink/Resources/*) ;;
         *.swift|*.ts|*.js|*.mjs|*.sh|*.py) sources+=("$source");;
     esac
-done < <(git --no-optional-locks ls-files -z swift/KuvoCode swift/OpenCodeKit/Sources swift/KuvoLink/Sources scripts)
+done < <(git --no-optional-locks ls-files -z mac/helper/Sources swift/KuvoCode swift/OpenCodeKit/Sources swift/KuvoLink/Sources scripts)
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude node_modules --exclude .build -czf - \
     box/bridge-tests protocol/vectors swift/KuvoLink/Sources/KuvoLink/Resources \
     protocol/PROTOCOL.md box/src box/dist box/package.json box/bun.lock \

@@ -176,6 +176,52 @@ public struct HostKeychain: Sendable {
         return SecItemDelete(query as CFDictionary)
     }
 
+    // MARK: Sign-ins Kuvo Code 0.7 kept (internet passwords)
+
+    /// One sign-in, as listed (no secret read).
+    public struct InternetPassword: Equatable, Sendable {
+        public var server: String
+        public var account: String
+        public var modified: Date?
+    }
+
+    /// The internet passwords marked with `creator`, with no secret read: nil when the Keychain
+    /// won't list them.
+    public func internetPasswords(creator: OSType) -> [InternetPassword]? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassInternetPassword, kSecAttrCreator as String: creator,
+            kSecReturnAttributes as String: true, kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        guard let query = scoped(query) else { return nil }
+        var result: CFTypeRef?
+        switch SecItemCopyMatching(query as CFDictionary, &result) {
+        case errSecSuccess:
+            return ((result as? [[String: Any]]) ?? []).compactMap { item in
+                guard let server = item[kSecAttrServer as String] as? String else { return nil }
+                return InternetPassword(server: server, account: item[kSecAttrAccount as String] as? String ?? "", modified: item[kSecAttrModificationDate as String] as? Date)
+            }.sorted { ($0.server, $0.account) < ($1.server, $1.account) }
+        case errSecItemNotFound: return []
+        default: return nil
+        }
+    }
+
+    /// One such sign-in's secret.
+    public func internetPassword(server: String, account: String, creator: OSType) -> Read {
+        if isLocked { return .refused(errSecInteractionNotAllowed) }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassInternetPassword, kSecAttrCreator as String: creator, kSecAttrServer as String: server,
+            kSecAttrAccount as String: account, kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        guard let query = scoped(query) else { return .refused(errSecNoSuchKeychain) }
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        switch status {
+        case errSecSuccess: return (result as? Data).map(Read.found) ?? .missing
+        case errSecItemNotFound: return .missing
+        default: return .refused(status)
+        }
+    }
+
     /// For a process with no one to answer macOS (the helper, a test): anything that would ask you
     /// fails at once instead.
     public static func neverAsk() {
