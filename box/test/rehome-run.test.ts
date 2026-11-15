@@ -369,3 +369,21 @@ test.if(mac && REAL_ENGINE !== null)("the real pinned engine makes of 0.7.2's da
   expect(real.session_message.map(each => [each.id, each.session_id, each.type, each.seq])).toEqual(told.session_message.map(each => [each.id, each.session_id, each.type, each.seq]))
   expect(real.session_inbox.map(each => each.id)).toEqual(told.session_inbox.map(each => each.id))
 }, LIMIT)
+
+test.if(mac)("a Mac that's one of your machines already, with an earlier Kuvo Code's sessions too, isn't put together yet: said plainly, with both left exactly as they are", () => {
+  const m = mac07(root, m => {
+    // A machine's box in its home, as another Mac set it up: its keeper's script, its link, its own sessions' folder.
+    put(join(m.K, "bin", "kuvo-start"), "#!/bin/sh\n", 0o700)
+    put(join(m.K, "run", "link.json"), JSON.stringify({ mac: "A".repeat(43), macs: ["A".repeat(43)], phones: [] }))
+    put(join(m.K, "run", "setup-card.json"), JSON.stringify({ self: { key: "k", name: "Mini", kind: "machine" } }))
+    put(join(m.K, "chats", "theirs", "notes.md"), "the machine's own")
+  })
+  expect(judgeInstall(m.K, m.S)).toMatchObject({ verdict: "two", verb: null })
+  const before = { S: snapshot(m.S), K: snapshot(m.K, relative => relative === "updates/rehome") }
+  const refused = run(m)
+  expect(refused.status).toBe(1)
+  expect(refused.said).toMatchObject({ result: "refused", message: "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet." })
+  expect({ S: snapshot(m.S), K: snapshot(m.K, relative => relative === "updates/rehome") }).toEqual(before)
+  expect(existsSync(join(m.keychain, "helper"))).toBe(false)
+  expect(judgeInstall(m.K, m.S)).toMatchObject({ verdict: "two", verb: null })
+}, LIMIT)
