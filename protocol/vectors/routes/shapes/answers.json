@@ -4507,6 +4507,15 @@
           "literal": true
          },
          "id?": "string",
+         "title": "string",
+         "detail?": "string",
+         "notice?": {
+          "object": {
+           "title": "string",
+           "detail": "string"
+          }
+         },
+         "workingTitle?": "string",
          "shared": "bool",
          "apart?": {
           "literal": true
@@ -4650,6 +4659,15 @@
           "literal": true
          },
          "id?": "string",
+         "title": "string",
+         "detail?": "string",
+         "notice?": {
+          "object": {
+           "title": "string",
+           "detail": "string"
+          }
+         },
+         "workingTitle?": "string",
          "shared": "bool",
          "apart?": {
           "literal": true
@@ -5076,6 +5094,9 @@
             "literal": "computers.reach"
            },
            {
+            "literal": "computers.words"
+           },
+           {
             "literal": "config"
            },
            {
@@ -5184,6 +5205,9 @@
             "literal": "groups.seats"
            },
            {
+            "literal": "groups.task-title"
+           },
+           {
             "literal": "handoff"
            },
            {
@@ -5215,6 +5239,9 @@
            },
            {
             "literal": "messages.commands"
+           },
+           {
+            "literal": "messages.compaction-words"
            },
            {
             "literal": "messages.send"
@@ -5742,6 +5769,9 @@
             "literal": "computers.reach"
            },
            {
+            "literal": "computers.words"
+           },
+           {
             "literal": "config"
            },
            {
@@ -5850,6 +5880,9 @@
             "literal": "groups.seats"
            },
            {
+            "literal": "groups.task-title"
+           },
+           {
             "literal": "handoff"
            },
            {
@@ -5881,6 +5914,9 @@
            },
            {
             "literal": "messages.commands"
+           },
+           {
+            "literal": "messages.compaction-words"
            },
            {
             "literal": "messages.send"
@@ -9843,6 +9879,7 @@
                 }
                ]
               },
+              "title": "string",
               "prompt?": "string",
               "started?": "number",
               "finished?": "number",
@@ -10028,6 +10065,7 @@
                  }
                 ]
                },
+               "title": "string",
                "prompt?": "string",
                "started?": "number",
                "finished?": "number",
@@ -10214,6 +10252,7 @@
               }
              ]
             },
+            "title": "string",
             "prompt?": "string",
             "started?": "number",
             "finished?": "number",
@@ -10431,6 +10470,7 @@
                  }
                 ]
                },
+               "title": "string",
                "prompt?": "string",
                "started?": "number",
                "finished?": "number",
