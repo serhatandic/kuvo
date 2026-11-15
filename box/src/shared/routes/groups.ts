@@ -5,6 +5,7 @@
 
 import { any, bool, type Infer, list, literal, NOTHING, nullable, number, object, oneOf, type RouteShape, string, words } from "../shape";
 import { LOOK } from "./bots";
+import { MENTIONS } from "./sessions";
 
 /** A bot as a chat lists it: who it is, how it looks (left out when its description doesn't
  * say), its own conversation and folder, and whether that runs with the coding agents. One of
@@ -102,6 +103,8 @@ export const CHAT = object({
 /** Who can be in a chat made here: this box's bots, the first made first, then those of your
  * other computers that take a chat's turns. */
 export const JOINABLE = object({ bots: list(MEMBER) });
+/** What a chat's box refused, in its words. */
+const REFUSED = object({ message: string });
 /** A message of yours taken back: what it said. */
 export const UNDONE = object({ text: string });
 
@@ -129,4 +132,5 @@ export const GROUP_ROUTES: RouteShape[] = [
   { route: "POST kuvo/groups/:id/viewed", answers: { 200: NOTHING } },
   { route: "POST kuvo/groups/:id/undo", answers: { 200: UNDONE } },
   { route: "POST kuvo/groups/:id/start", answers: { 200: NOTHING } },
+  { route: "GET kuvo/groups/:id/mentions", answers: { 200: MENTIONS, 404: REFUSED, 503: REFUSED } },
 ];

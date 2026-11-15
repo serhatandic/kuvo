@@ -3972,6 +3972,9 @@
             "literal": "groups.make"
            },
            {
+            "literal": "groups.mentions"
+           },
+           {
             "literal": "groups.seats"
            },
            {
@@ -4570,6 +4573,9 @@
            },
            {
             "literal": "groups.make"
+           },
+           {
+            "literal": "groups.mentions"
            },
            {
             "literal": "groups.seats"
@@ -8931,6 +8937,61 @@
    "answers": {
     "200": {
      "object": {}
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/groups/:id/mentions",
+   "answers": {
+    "200": {
+     "object": {
+      "mentions": {
+       "list": {
+        "object": {
+         "text": "string",
+         "title": "string",
+         "detail": {
+          "oneOf": [
+           "string",
+           "null"
+          ]
+         },
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "file"
+           },
+           {
+            "literal": "folder"
+           },
+           {
+            "literal": "bot"
+           },
+           {
+            "literal": "session"
+           }
+          ]
+         },
+         "session": {
+          "oneOf": [
+           "string",
+           "null"
+          ]
+         }
+        }
+       }
+      }
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
     }
    }
   },

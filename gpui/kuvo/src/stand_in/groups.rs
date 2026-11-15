@@ -280,6 +280,49 @@ impl Groups {
         changed
     }
 
+    /// What "&" offers in chat `id` for `typed` (`kuvo/groups/<id>/mentions`), as a box ranks them:
+    /// its bots, then the guests a message can name (`bots` not in it, then the sessions), each
+    /// with names starting with what's typed first; none for no such chat.
+    pub fn mentions(&self, id: &str, typed: &str, bots: &[Value]) -> Option<Vec<Value>> {
+        let chat = self.chats.iter().find(|chat| chat.id == id)?;
+        let typed = typed.to_lowercase();
+        let ranked = |mut found: Vec<(String, Value)>| -> Vec<Value> {
+            found.retain(|(name, _)| name.to_lowercase().contains(&typed));
+            found.sort_by_key(|(name, _)| !name.to_lowercase().starts_with(&typed));
+            found.into_iter().map(|(_, mention)| mention).collect()
+        };
+        let members: Vec<Value> = chat.members.iter().filter_map(|id| bots.iter().find(|bot| bot["id"] == json!(id))).map(member).collect();
+        let theirs = ranked(
+            members
+                .iter()
+                .map(|member| {
+                    let name = member["name"].as_str().unwrap_or("").to_owned();
+                    let detail = match member["computer"].as_str() {
+                        Some(computer) => format!("In this chat · on {computer}"),
+                        None => "In this chat".to_owned(),
+                    };
+                    let session = member["session"].as_str().filter(|session| !session.is_empty());
+                    (name.clone(), json!({ "text": format!("&{name}"), "title": name, "detail": detail, "kind": "bot", "session": session }))
+                })
+                .collect(),
+        );
+        let taken = |name: &str, session: &str| members.iter().any(|member| member["name"].as_str().is_some_and(|each| each.eq_ignore_ascii_case(name)) || member["session"] == json!(session));
+        let guest_bots = bots.iter().filter(|bot| !chat.members.iter().any(|id| bot["id"] == json!(id))).map(|bot| {
+            let name = bot["name"].as_str().unwrap_or("").to_owned();
+            let detail = match bot["computer"].as_str() {
+                Some(computer) => format!("Bot · on {computer}"),
+                None => "Bot".to_owned(),
+            };
+            (name.clone(), json!({ "text": format!("&{name}"), "title": name, "detail": detail, "kind": "bot", "session": bot["session"] }))
+        });
+        let sessions = super::named().into_iter().filter(|(_, kind, _, _)| *kind == "session").map(|(name, kind, session, detail)| (name.to_owned(), json!({ "text": format!("&{name}"), "title": name, "detail": detail, "kind": kind, "session": session })));
+        let guests: Vec<(String, Value)> = guest_bots.chain(sessions).filter(|(name, mention)| !taken(name, mention["session"].as_str().unwrap_or(""))).collect();
+        let mut offered = theirs;
+        offered.extend(ranked(guests));
+        offered.truncate(8);
+        Some(offered)
+    }
+
     /// The chats as `kuvo/groups` lists them (for its followers).
     pub fn list(&self, bots: &[Value]) -> Value {
         json!({ "groups": self.chats.iter().map(|chat| listed(chat, bots)).collect::<Vec<_>>() })

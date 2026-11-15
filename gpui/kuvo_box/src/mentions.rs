@@ -1,5 +1,6 @@
 //! What "@" (files) and "&" (agents and sessions) suggest as you type (PROTOCOL.md, "Mentions",
-//! `sessions.mentions`): the box finds and ranks them; a client lists them and puts in `text`.
+//! `sessions.mentions`), and what "&" offers in a group chat (`groups.mentions`): the box finds and
+//! ranks them; a client lists them and puts in `text`.
 
 use serde::Deserialize;
 
@@ -39,6 +40,17 @@ impl BoxClient {
             For::Agents => "agents",
         };
         let answer: Answer = self.get(&format!("kuvo/sessions/{}/mentions?for={what}&q={}", paths::segment(session), paths::query_value(query)))?;
+        Ok(answer.mentions)
+    }
+
+    /// What "&" offers in group chat `group` for `query`: its bots first, then the guests a
+    /// message there can name, as its box ranks them.
+    pub fn group_mentions(&self, group: &str, query: &str) -> Result<Vec<Mention>> {
+        #[derive(Deserialize)]
+        struct Answer {
+            mentions: Vec<Mention>,
+        }
+        let answer: Answer = self.get(&format!("kuvo/groups/{}/mentions?q={}", paths::segment(group), paths::query_value(query)))?;
         Ok(answer.mentions)
     }
 }

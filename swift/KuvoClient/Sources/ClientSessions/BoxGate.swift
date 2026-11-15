@@ -36,6 +36,8 @@ public enum BoxGate {
     /// Then #733's, the facts a first run draws, which no client works out: `folders.suggested`,
     /// `models.offered.free`, `setup.welcomed` and `sign-in.accounts.plan` (with a key-only
     /// account's Add Key).
+    /// Then #736's, for the desktop client's group chats, whose "&" lists what the box offers there
+    /// (the chat's bots, then guests) and filters nothing itself: `groups.mentions`.
     public static let required: [String] = [
         "agent-tools.own",
         "bots.deletes",
@@ -57,6 +59,7 @@ public enum BoxGate {
         "git.merge",
         "git.pull-request",
         "git.status",
+        "groups.mentions",
         "limits.rings",
         "messages.send",
         "models.offered",

@@ -126,10 +126,18 @@ fn writing_names_a_bot_with_and_its_list_offers_the_chats_bots(cx: &mut TestAppC
     let chat = chat(&workspace, cx, "grp_planning");
     // An empty chat: who's here, and how it goes.
     assert!(shown(cx, "group-intro"));
-    // The keyboard is in its composer. "&" offers the chat's bots, and Return puts one in.
+    // The keyboard is in its composer. "&" offers what the chat's box offers there: its bots first,
+    // then the guests a message can name.
+    let offers = |cx: &mut VisualTestContext| chat.read_with(cx, |chat, cx| chat.composer().read(cx).shown_offers(cx).0.into_iter().map(|offer| (offer.name, offer.summary)).collect::<Vec<_>>());
+    cx.simulate_input("&Ke");
+    let listed = offers(cx);
+    assert_eq!(listed.first(), Some(&("Docs Keeper".to_owned(), "In this chat".to_owned())), "the chat's own bot first");
+    assert!(listed.iter().any(|(name, _)| name == "Rate limits per API key"), "a guest after it: {listed:?}");
+    assert!(stand_in.seen_at("GET", "kuvo/groups/grp_planning/mentions").iter().any(|seen| seen.path.ends_with("?q=Ke")), "asked of the box");
+    cx.simulate_keystrokes("cmd-a backspace");
+    // Return puts one in.
     cx.simulate_input("What's on this week? &Do");
-    let offers = chat.read_with(cx, |chat, cx| chat.composer().read(cx).shown_offers(cx).0.into_iter().map(|offer| offer.name).collect::<Vec<_>>());
-    assert_eq!(offers, vec!["Docs Keeper".to_owned()]);
+    assert_eq!(offers(cx).into_iter().map(|(name, _)| name).collect::<Vec<_>>(), vec!["Docs Keeper".to_owned()]);
     cx.simulate_keystrokes("enter");
     assert_eq!(typed(&chat, cx), "What's on this week? &Docs Keeper ");
     // A face under the field asks that bot by name.
