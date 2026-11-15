@@ -414,7 +414,8 @@ test("a Mac that's one of your machines too is told so in words by the installer
   // A machine's box in its home, as another Mac set it up.
   write(path.join(where.K, "bin", "kuvo-start"), "#!/bin/sh\n", 0o700);
   write(path.join(where.K, "run", "link.json"), JSON.stringify({ mac: "A".repeat(43), macs: ["A".repeat(43)], phones: [] }));
-  assert.deepEqual({ verdict: install(where, "status").said.verdict, verb: install(where, "status").said.verb }, { verdict: "two", verb: null });
+  // (Nothing to run, and said in words: its earlier sessions stay where they are, unseen.)
+  assert.deepEqual({ verdict: install(where, "status").said.verdict, verb: install(where, "status").said.verb, message: install(where, "status").said.message }, { verdict: "two", verb: null, message: "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet." });
   const refused = install(where, "move");
   assert.equal(refused.status, 1);
   assert.deepEqual({ result: refused.said.result, verdict: refused.said.verdict, message: refused.said.message }, { result: "refused", verdict: "two", message: "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet." });

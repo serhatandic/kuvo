@@ -63,13 +63,26 @@ async function ask(method, route) {
 const setup = await ask("GET", "kuvo/link/setup");
 const pair = await ask("POST", "kuvo/phones/pair");
 if (pair.status === 200) await ask("DELETE", "kuvo/phones/pair");
+// "Let my devices connect" turned off on Settings › This Mac, as the app beside it does, then a
+// device's pairing asked for again.
+let switched = null;
+if (process.env.SWITCH_OFF) {
+  const page = await ask("GET", "kuvo/settings/computer");
+  const row = page.value.groups[0].rows.find(row => row.id === "devices");
+  let status = 0, text = "";
+  for await (const piece of handle({ method: "PATCH", path: "kuvo/settings/computer", headers: {}, body: Buffer.from(JSON.stringify({ row: "devices", value: false, was: row.revision })), fromApp: true })) {
+    if (piece.head) status = piece.head.status;
+    if (piece.body) text += piece.body.toString("utf8");
+  }
+  switched = { before: row, status, after: JSON.parse(text).groups?.[0].rows.find(row => row.id === "devices"), pair: await ask("POST", "kuvo/phones/pair") };
+}
 link.stopMacLink();
-console.log(JSON.stringify({ setup, pair, config: link.macLink.config }));
+console.log(JSON.stringify({ setup, pair, switched, config: link.macLink.config }));
 process.exit(0);
 `);
 let count = 0;
 /** A Mac's box in a home of its own (`kept`: what an app said of its link before, if any), asked. */
-async function box({ kept = null, relay = RELAY } = {}) {
+async function box({ kept = null, relay = RELAY, switchOff = false } = {}) {
   const home = path.join(root, `home-${++count}`);
   const K = path.join(home, ".kuvo-code");
   fs.mkdirSync(path.join(K, "box"), { recursive: true });
@@ -77,7 +90,7 @@ async function box({ kept = null, relay = RELAY } = {}) {
   fs.writeFileSync(path.join(K, "box", "kind"), "mac\n");
   if (kept) fs.writeFileSync(path.join(K, "run", "mac-link.json"), JSON.stringify(kept));
   const child = spawn(process.execPath, [asker], {
-    env: { PATH: process.env.PATH, HOME: home, TMPDIR: process.env.TMPDIR ?? os.tmpdir(), KUVO_HOME: K, KUVO_KEYS_ON_HOST: "1", KUVO_HOST_URL: host.url, KUVO_HOST_PASSWORD: PASSWORD, ...(relay ? { KUVO_TEST_RELAY: relay } : {}) },
+    env: { PATH: process.env.PATH, HOME: home, TMPDIR: process.env.TMPDIR ?? os.tmpdir(), KUVO_HOME: K, KUVO_KEYS_ON_HOST: "1", KUVO_HOST_URL: host.url, KUVO_HOST_PASSWORD: PASSWORD, ...(relay ? { KUVO_TEST_RELAY: relay } : {}), ...(switchOff ? { SWITCH_OFF: "1" } : {}) },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let out = "", err = "";
@@ -115,6 +128,22 @@ test("what an app said before stays as it was: its relay, and your devices kept 
   assert.equal(pair.value.message, "“Let my devices connect” is off on this Mac.");
   assert.equal(setup.status, 200, "adding a computer asks for the keys whether or not anything else wants the link yet");
   assert.equal(setup.value.mac, publicKey);
+});
+
+test("Let my devices connect turned off on Settings › This Mac keeps devices out, and stays off when the box starts again, on the relay and name it works out then", { skip: process.platform !== "darwin" && "a Mac's own box" }, async () => {
+  const { switched, config, K } = await box({ switchOff: true });
+  assert.deepEqual([switched.before.kind, switched.before.value, switched.before.can], ["switch", true, true]);
+  assert.equal(switched.status, 200, JSON.stringify(switched));
+  assert.equal(switched.after.value, false);
+  assert.equal(config.phones, false);
+  assert.deepEqual([switched.pair.status, switched.pair.value.message], [409, "“Let my devices connect” is off on this Mac."]);
+  // Kept as the box's own, with only the switch yours.
+  const kept = JSON.parse(fs.readFileSync(path.join(K, "run", "mac-link.json"), "utf8"));
+  assert.deepEqual({ phones: kept.phones, own: kept.own }, { phones: false, own: true });
+  // Started again, on another relay than it was on when you switched it: off still, and on that one.
+  const again = await box({ kept: { ...kept, name: "An Older Name" }, relay: "ws://127.0.0.1:3" });
+  assert.deepEqual({ phones: again.config.phones, relay: again.config.relay }, { phones: false, relay: "ws://127.0.0.1:3" });
+  assert.notEqual(again.config.name, "An Older Name");
 });
 
 test("a test's or a demo copy's box never takes the real relay by itself: with none given it has none, as before", { skip: process.platform !== "darwin" && "a Mac's own box" }, async () => {

@@ -67,6 +67,18 @@ export function helperStatus() {
   return { helper: fs.existsSync(helperProgram()), agent, loaded };
 }
 
+/** Whether Kuvo Helper is switched on in System Settings › General › Login Items (`launchctl
+ * print-disabled`): false where you turned it off there, so launchd won't start it at login; null
+ * where that can't be asked (not a Mac's own box in the real home, or launchd didn't say). */
+export function helperAtLogin(): boolean | null {
+  const tools = launchTools();
+  if (!tools || process.platform !== "darwin" || APP_FOLDER || recordedKind() !== "mac") return null;
+  const asked = spawnSync(tools.launchctl, ["print-disabled", `gui/${process.getuid?.() ?? 0}`], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "ignore"] });
+  if (asked.error || asked.status !== 0) return null;
+  return !SWITCHED_OFF.test(asked.stdout ?? "");
+}
+const SWITCHED_OFF = new RegExp(`"${LAUNCH_AGENT.replace(/\\./g, "\\\\.")}"\\s*=>\\s*(disabled|true)`);
+
 /** The launch agent's file written (whole, in place of any there: one per computer), and with
  * `load`, launchd told to start it now (a launch agent with that label already loaded, let go of
  * first). */
@@ -124,7 +136,7 @@ export function startHelperAgent({ app, ifMissing = false }: { app: string; ifMi
   // isn't switched off there.
   const openedInstead = () => {
     const disabled = run(["print-disabled", domain]);
-    if (disabled.status !== 0 || !new RegExp(`"${LAUNCH_AGENT.replace(/\./g, "\\.")}"\\s*=>\\s*(disabled|true)`).test(disabled.stdout ?? "")) return null;
+    if (disabled.status !== 0 || !SWITCHED_OFF.test(disabled.stdout ?? "")) return null;
     const opened = spawnSync(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "ignore", "pipe"] });
     if (opened.status === 0) {
       // (Asked of macOS, which took it: whether it then keeps the box is the helper's to say, in
