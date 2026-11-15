@@ -253,3 +253,32 @@ test("Connect, for a computer that's away: this box tells it its agents and asks
   computers = await listed();
   assert.deepEqual([computers.second.reach, computers.second.working, ids(computers.second).includes("connect")], ["connected", 1, false]);
 });
+
+// Where a client of your own reaches each computer itself (`computers.reach`, #742): the desktop
+// app connects to every box directly, so each of your own computers says its box's address on the
+// relay and the relay it's reached through; one that isn't yours says neither.
+test("each of your own computers says where its box is reached, and one that isn't yours doesn't", async () => {
+  fresh();
+  const hereAddress = k(link.addressOf(Buffer.from(link.readLink().secret, "base64url")));
+  tell(mac, { features: MAC_TAKES, computer: { version: "1.1.0", working: 0 } });
+  tell(second, { features: MAC_TAKES, computer: { version: "1.1.0", working: 0 } });
+  // A machine Macs of another setup share, as it says itself.
+  tell(third, { features: MAC_TAKES, shared: true });
+  let computers = await listed();
+  const reach = computer => [computer.address, computer.relay];
+  assert.deepEqual(reach(computers.here), [hereAddress, "wss://relay.test"]);
+  assert.deepEqual(reach(computers.Studio), [mac.address, "wss://relay.test"]);
+  assert.deepEqual(reach(computers.second), [second.address, "wss://relay.test"]);
+  assert.equal(computers.third.apart, true);
+  assert.deepEqual(reach(computers.third), [undefined, undefined]);
+  assert.ok(!("address" in computers.third) && !("relay" in computers.third));
+
+  // A box with no relay knows no way in to say; a machine shared with another setup says none of its own.
+  link.writeLink({ ...link.readLink(), relay: undefined });
+  computers = await listed();
+  assert.deepEqual([reach(computers.here), reach(computers.second)], [[undefined, undefined], [undefined, undefined]]);
+  fresh({ macs: [mac.pub, crypto.randomBytes(32).toString("base64url")] });
+  computers = await listed();
+  assert.deepEqual(Object.keys(computers), ["here"]);
+  assert.deepEqual(reach(computers.here), [undefined, undefined]);
+});

@@ -18,12 +18,13 @@ import { fromPatch, unified } from "../diff"
 import { isBinary, isText, kindOf, typeOf, type Kind } from "./kinds"
 import { CopyPolicy, freeSpace, privateReasons, type NoCopy } from "./policy"
 import { inScratch } from "./turnfiles"
+import { budgetConfirmation } from "../../shared/artifact-budget"
 import { writeSecret } from "../../shared/files"
 
 /** The biggest file a copy is kept of (as `kuvo/file` sends at most). */
 export const copyLimit = 25 * 1024 * 1024
 /** What the copies of older versions may take on a box before the oldest go, unless you say otherwise. */
-export const defaultBudget = 1024 * 1024 * 1024
+export const defaultBudget = 1024 ** 3
 /** The biggest text whose lines added and removed are counted. */
 const lineLimit = 1024 * 1024
 /** The longest change kept of a code file git tracks (its tool call's patch). */
@@ -624,11 +625,14 @@ export class ArtifactStore {
   }
 
   /** Your budget for older versions, kept for the next start; older ones past it go now. */
-  setBudget(bytes: number) {
+  setBudget(bytes: number, confirmed?: unknown): string | null {
+    const older = this.storage().older
+    if (Math.floor(bytes) < older && confirmed !== true) return budgetConfirmation(older).body
     this.chosenBudget = Math.max(0, Math.floor(bytes))
     writeFileSync(join(this.root, "settings.json.new"), JSON.stringify({ budget: this.chosenBudget }))
     renameSync(join(this.root, "settings.json.new"), join(this.root, "settings.json"))
     this.settle()
+    return null
   }
 
   /** Older versions' copies cleared (those from before `before`, or all): each stays listed, as no longer kept. */

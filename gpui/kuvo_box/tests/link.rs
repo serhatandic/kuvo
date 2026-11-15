@@ -1,0 +1,415 @@
+//! The link (`kuvo_box::link`): held to the vectors every implementation runs
+//! (`protocol/vectors/noise.json`, `link.json`), and its scenarios against a stand-in relay and a
+//! stand-in box on it. Nothing real is reached.
+
+use std::io::{BufRead, Read};
+use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use kuvo_box::link::client::words;
+use kuvo_box::link::stand_in::{Host, RELAY_URL, Relay};
+use kuvo_box::link::{Identity, LinkBox, LinkClient, Timing, WebSocketDial, frames, is_unpaired, keys, noise};
+use kuvo_box::transport::{Closer, Request, Response, Stream, Transport};
+use kuvo_box::{BoxClient, Error, Gate, gate};
+use serde_json::{Value, json};
+
+fn vectors(name: &str) -> Value {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol/vectors").join(name);
+    serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))).expect("the vectors are JSON")
+}
+
+fn hex(text: &str) -> Vec<u8> {
+    (0..text.len()).step_by(2).map(|at| u8::from_str_radix(&text[at..at + 2], 16).expect("hex")).collect()
+}
+
+fn hex32(value: &Value) -> [u8; 32] {
+    hex(value.as_str().expect("hex text")).try_into().expect("32 bytes")
+}
+
+// MARK: Vectors
+
+#[test]
+fn the_handshake_and_transport_match_the_noise_vectors() {
+    let all = vectors("noise.json");
+    let vector = all["vectors"].as_array().unwrap().iter().find(|vector| vector["protocol_name"] == "Noise_IK_25519_AESGCM_SHA256").expect("the IK vector");
+    let prologue = hex(vector["init_prologue"].as_str().unwrap());
+    let messages = vector["messages"].as_array().unwrap();
+    let mut initiator = noise::Initiator::with_ephemeral(hex32(&vector["init_static"]), hex32(&vector["init_remote_static"]), &prologue, hex32(&vector["init_ephemeral"]));
+    let mut responder = noise::Responder::with_ephemeral(hex32(&vector["resp_static"]), &prologue, hex32(&vector["resp_ephemeral"]));
+    let payload = |index: usize| hex(messages[index]["payload"].as_str().unwrap());
+    let ciphertext = |index: usize| hex(messages[index]["ciphertext"].as_str().unwrap());
+
+    let first = initiator.write_message_1(&payload(0));
+    assert_eq!(first, ciphertext(0));
+    assert_eq!(responder.read_message_1(&first).unwrap(), payload(0));
+    let (second, mut answering) = responder.write_message_2(&payload(1));
+    assert_eq!(second, ciphertext(1));
+    let (read, mut asking) = initiator.read_message_2(&second).unwrap();
+    assert_eq!(read, payload(1));
+    assert_eq!(asking.hash.to_vec(), hex(vector["handshake_hash"].as_str().unwrap()));
+    for index in 2..messages.len() {
+        let (from, to) = if index % 2 == 0 { (&mut asking, &mut answering) } else { (&mut answering, &mut asking) };
+        let sealed = from.seal(&payload(index));
+        assert_eq!(sealed, ciphertext(index), "message {index}");
+        assert_eq!(to.open(&sealed).unwrap(), payload(index));
+    }
+    // Anything that doesn't open ends the session: it's an error, never bytes.
+    assert!(asking.open(b"not a sealed message").is_err());
+}
+
+#[test]
+fn addresses_frames_and_messages_match_the_link_vectors() {
+    let link = vectors("link.json");
+    for case in link["addresses"].as_array().unwrap() {
+        assert_eq!(keys::address_of(&hex32(&case["secret"])).to_vec(), hex(case["address"].as_str().unwrap()));
+    }
+    for case in link["relay"].as_array().unwrap() {
+        let bytes = hex(case["bytes"].as_str().unwrap());
+        let name = case["name"].as_str().unwrap();
+        let address = || -> [u8; 16] { hex(case["address"].as_str().unwrap()).try_into().unwrap() };
+        match (case["from"].as_str().unwrap(), name) {
+            ("device", "hello") => assert_eq!(frames::relay_hello(&bytes[1..].try_into().unwrap()), bytes),
+            ("device", "send") => assert_eq!(frames::relay_send(&hex(case["to"].as_str().unwrap()).try_into().unwrap(), &hex(case["payload"].as_str().unwrap())), bytes),
+            ("relay", "welcome") => assert_eq!(frames::read_relay(&bytes), Some(frames::FromRelay::Welcome(address()))),
+            ("relay", "deliver") => assert_eq!(frames::read_relay(&bytes), Some(frames::FromRelay::Deliver { from: address(), payload: hex(case["payload"].as_str().unwrap()) })),
+            ("relay", "unreachable") => assert_eq!(frames::read_relay(&bytes), Some(frames::FromRelay::Unreachable(address()))),
+            ("relay", "pushed") => assert_eq!(frames::read_relay(&bytes), Some(frames::FromRelay::Pushed { to: address(), status: case["status"].as_u64().unwrap() as u8 })),
+            ("relay", "gone") => assert_eq!(frames::read_relay(&bytes), Some(frames::FromRelay::Gone { address: address(), replaced: case["reads"] == "replaced" })),
+            // What only a phone or a host sends (register, push): not this client's.
+            _ => {}
+        }
+    }
+    for case in link["frames"].as_array().unwrap() {
+        let bytes = hex(case["bytes"].as_str().unwrap());
+        let (kind, session, body) = frames::read_frame(&bytes).expect("a frame");
+        assert_eq!((kind as u64, session as u64, body.to_vec()), (case["kind"].as_u64().unwrap(), case["session"].as_u64().unwrap(), hex(case["body"].as_str().unwrap())));
+        assert_eq!(frames::frame(kind, session, body), bytes);
+    }
+    for case in link["messages"].as_array().unwrap() {
+        let bytes = hex(case["bytes"].as_str().unwrap());
+        let body = hex(case["body"].as_str().unwrap());
+        assert_eq!(frames::encode_message(&case["head"], &body), bytes, "{}", case["head"]);
+        let (head, read) = frames::decode_message(&bytes).expect("a message");
+        assert_eq!((head, read.to_vec()), (case["head"].clone(), body));
+    }
+}
+
+#[test]
+fn a_device_has_an_address_of_its_own_on_each_relay_and_never_shows_its_keys() {
+    let identity = Identity::from_bytes([7; 32], [9; 32]);
+    assert_ne!(identity.address_on("wss://one.example"), identity.address_on("wss://two.example"));
+    assert_eq!(identity.address_on("wss://one.example"), identity.address_on("wss://one.example"));
+    // Kept and read back, it's the same device.
+    let again = Identity::from_kept(&identity.kept()).expect("read back");
+    assert_eq!((again.public(), again.address_on(RELAY_URL)), (identity.public(), identity.address_on(RELAY_URL)));
+    // Never its key or secret, wherever it's shown.
+    let shown = format!("{identity:?}");
+    assert!(!shown.contains(&keys::encode(&[7; 32])) && !shown.contains(&keys::encode(&[9; 32])), "{shown}");
+}
+
+// MARK: Scenarios
+
+/// What the stand-in box answers: a few routes, enough to see requests, big bodies and a followed
+/// route go through the link whole.
+#[derive(Default)]
+struct Served {
+    seen: Mutex<Vec<Request>>,
+    /// The followed route's lines, written by the test; and whether it's been closed.
+    ticks: Mutex<Option<Receiver<String>>>,
+    closed: Arc<Mutex<bool>>,
+    features: Mutex<Option<Vec<String>>>,
+}
+
+impl Served {
+    fn new() -> (Arc<Served>, Sender<String>) {
+        let (sender, receiver) = channel();
+        let served = Served { ticks: Mutex::new(Some(receiver)), ..Served::default() };
+        (Arc::new(served), sender)
+    }
+}
+
+struct Ticks(Receiver<String>, Vec<u8>);
+
+impl Read for Ticks {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.1.is_empty() {
+            match self.0.recv() {
+                Ok(line) => self.1 = line.into_bytes(),
+                Err(_) => return Ok(0),
+            }
+        }
+        let count = buffer.len().min(self.1.len());
+        buffer[..count].copy_from_slice(&self.1[..count]);
+        self.1.drain(..count);
+        Ok(count)
+    }
+}
+
+impl Transport for Served {
+    fn send(&self, request: &Request) -> kuvo_box::Result<Response> {
+        self.seen.lock().unwrap().push(request.clone());
+        let json = |status: u16, value: Value| Ok(Response { status, content_type: Some("application/json".into()), body: value.to_string().into_bytes() });
+        match request.route() {
+            "kuvo/info" => {
+                let features = self.features.lock().unwrap().clone().unwrap_or_else(|| gate::REQUIRED.iter().map(|name| (*name).to_owned()).collect());
+                json(200, json!({ "kind": "machine", "name": "devbox", "features": features, "chats": "/home/me/chats" }))
+            }
+            "echo" => json(200, json!({ "method": request.method, "path": request.path, "headers": request.headers, "body": request.body })),
+            "big" => json(200, json!({ "text": "x".repeat(200_000) })),
+            _ => json(404, json!({})),
+        }
+    }
+
+    fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> kuvo_box::Result<Stream> {
+        self.seen.lock().unwrap().push(request.clone());
+        let closed = self.closed.clone();
+        let closer = Closer::new(move || *closed.lock().unwrap() = true);
+        hold(closer.clone());
+        let ticks = self.ticks.lock().unwrap().take().expect("followed once");
+        Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(std::io::BufReader::new(Ticks(ticks, Vec::new()))), closer })
+    }
+
+    fn streams(&self) -> bool {
+        true
+    }
+
+    fn describe(&self) -> String {
+        "devbox".into()
+    }
+}
+
+struct World {
+    relay: Relay,
+    host: Host,
+    served: Arc<Served>,
+    ticks: Sender<String>,
+    identity: Identity,
+}
+
+impl World {
+    /// A relay, a box on it, and this device paired with the box.
+    fn new() -> World {
+        let relay = Relay::new();
+        let (served, ticks) = Served::new();
+        let host = Host::start(&relay, served.clone(), "devbox");
+        let identity = Identity::new();
+        host.pair(identity.public());
+        World { relay, host, served, ticks, identity }
+    }
+
+    fn client(&self, timing: Timing) -> LinkClient {
+        LinkClient::new(RELAY_URL, self.identity.clone(), "Kuvo on MacBook", "0.8.0", self.relay.dial(), timing)
+    }
+
+    /// Follows the box's ticks: as a followed route does, it says how things are now as it opens.
+    fn follow(&self, linked: &LinkBox) -> Stream {
+        self.ticks.send("{\"at\":0}\n".into()).unwrap();
+        linked.open(&Request::get("ticks/events"), &|_| true).expect("followed")
+    }
+
+    fn linked(&self, timing: Timing) -> (LinkClient, LinkBox) {
+        let client = self.client(timing);
+        (client.clone(), LinkBox::new(client, self.host.facts(), "devbox"))
+    }
+}
+
+/// Never waits to try the relay again, so a test says when it's tried.
+fn at_once() -> Timing {
+    Timing { retry_first: Duration::ZERO, retry_most: Duration::ZERO, ..Timing::default() }
+}
+
+#[test]
+fn a_paired_device_asks_a_box_on_another_computer_and_says_its_a_desktop() {
+    let world = World::new();
+    let (_, linked) = world.linked(at_once());
+    let asked = Request::post("echo?x=1", json!({ "words": "hello" })).header("idempotency-key", "msg_1");
+    let answer = linked.send(&asked).expect("answered");
+    let read: Value = serde_json::from_slice(&answer.body).unwrap();
+    assert_eq!((answer.status, answer.content_type.as_deref()), (200, Some("application/json")));
+    assert_eq!(read["method"], "POST");
+    assert_eq!(read["path"], "echo?x=1");
+    assert_eq!(read["body"], json!({ "words": "hello" }));
+    assert_eq!(read["headers"], json!([["idempotency-key", "msg_1"]]));
+    // What it said as its session opened: a desktop, so the box doesn't take it for a phone.
+    let hellos = world.host.hellos();
+    assert_eq!(hellos.len(), 1, "one session, however many requests");
+    assert_eq!((hellos[0]["client"].as_str(), hellos[0]["name"].as_str(), hellos[0].get("pair")), (Some("desktop"), Some("Kuvo on MacBook"), None));
+    linked.send(&Request::get("echo")).expect("again, on the same session");
+    assert_eq!(world.host.hellos().len(), 1);
+    // The box that isn't on this computer is never taken for the one that is.
+    assert!(!linked.here() && linked.streams());
+}
+
+#[test]
+fn a_body_too_big_for_one_message_arrives_whole_both_ways() {
+    let world = World::new();
+    let (_, linked) = world.linked(at_once());
+    let answer = linked.send(&Request::get("big")).expect("answered");
+    let read: Value = serde_json::from_slice(&answer.body).expect("whole");
+    assert_eq!(read["text"].as_str().map(str::len), Some(200_000));
+    let long = "é".repeat(150_000);
+    let answer = linked.send(&Request::post("echo", json!({ "text": long }))).expect("answered");
+    let read: Value = serde_json::from_slice(&answer.body).expect("whole");
+    assert_eq!(read["body"]["text"].as_str(), Some(long.as_str()));
+}
+
+#[test]
+fn a_device_that_isnt_paired_is_turned_away_and_one_removed_loses_its_session() {
+    let world = World::new();
+    let stranger = LinkClient::new(RELAY_URL, Identity::new(), "Someone", "0.8.0", world.relay.dial(), at_once());
+    let refused = LinkBox::new(stranger, world.host.facts(), "devbox").send(&Request::get("kuvo/info")).expect_err("turned away");
+    assert!(is_unpaired(&refused), "{refused:?}");
+    assert!(world.served.seen.lock().unwrap().is_empty(), "nothing a stranger asks reaches the box's routes");
+
+    let (_, linked) = world.linked(at_once());
+    linked.send(&Request::get("kuvo/info")).expect("paired: answered");
+    world.host.remove(&world.identity.public());
+    let after = linked.send(&Request::get("kuvo/info")).expect_err("removed");
+    assert!(is_unpaired(&after), "{after:?}");
+}
+
+#[test]
+fn a_followed_route_comes_line_by_line_and_closing_it_stops_it_on_the_box() {
+    let world = World::new();
+    let (_, linked) = world.linked(at_once());
+    let stream = world.follow(&linked);
+    assert_eq!(stream.status, 200);
+    let mut reader = stream.reader;
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert_eq!(line, "{\"at\":0}\n", "as it is now, as it opens");
+    for tick in ["{\"at\":1}\n", "{\"at\":2}\n"] {
+        world.ticks.send(tick.to_owned()).unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(line, tick);
+    }
+    stream.closer.close();
+    line.clear();
+    assert_eq!(reader.read_line(&mut line).unwrap(), 0, "closed from here, it ends");
+    // The box hears it's closed, on the same session: a request after it is answered in order.
+    linked.send(&Request::get("echo")).unwrap();
+    assert!(*world.served.closed.lock().unwrap(), "the box stopped following too");
+}
+
+#[test]
+fn a_box_that_started_again_is_asked_again_and_its_gate_is_read_anew() {
+    let world = World::new();
+    let (client, linked) = world.linked(at_once());
+    let host = world.host.facts();
+    let boxed = BoxClient::new(linked);
+    boxed.connect().expect("its info");
+    assert_eq!(boxed.gate(), Gate::Open);
+    world.ticks.send("{\"at\":0}\n".into()).unwrap();
+    let stream = boxed.open(&Request::get("ticks/events"), &|_| true).expect("followed");
+    assert_eq!(client.sessions_over(&host), 0);
+
+    // It starts again, an older version's now: what was followed ends as a failure (so what
+    // follows it opens it again), and the next read finds a new session and reads its gate anew.
+    world.host.stop();
+    *world.served.features.lock().unwrap() = Some(vec!["sessions.list".into()]);
+    world.host.connect();
+    let mut reader = stream.reader;
+    let mut line = String::new();
+    let failed = (0..2).any(|_| reader.read_line(&mut line).is_err());
+    assert!(failed, "the followed route failed, it didn't just end");
+    let held = boxed.send(&Request::get("echo")).expect_err("held: it's older now");
+    assert!(matches!(held, Error::NeedsUpdating { .. }), "{held:?}");
+    assert_eq!(client.sessions_over(&host), 1);
+    assert!(world.served.seen.lock().unwrap().iter().all(|request| request.route() != "echo"), "a held box is sent nothing but what's allowed");
+}
+
+#[test]
+fn a_computer_thats_off_says_so_and_is_reached_again_once_its_back() {
+    let world = World::new();
+    let (_, linked) = world.linked(at_once());
+    linked.send(&Request::get("kuvo/info")).expect("there");
+    world.host.stop();
+    let away = linked.send(&Request::get("kuvo/info")).expect_err("off");
+    assert_eq!(away, Error::Unreachable(words::OFFLINE.into()));
+    world.host.connect();
+    linked.send(&Request::get("kuvo/info")).expect("back");
+}
+
+#[test]
+fn with_the_relay_down_nothing_is_asked_and_its_not_tried_again_before_its_wait() {
+    let world = World::new();
+    world.relay.set_down(true);
+    let patient = Timing { retry_first: Duration::from_secs(3600), retry_most: Duration::from_secs(3600), ..Timing::default() };
+    let (_, linked) = world.linked(patient);
+    let before = world.relay.dials();
+    assert_eq!(linked.send(&Request::get("kuvo/info")), Err(Error::Unreachable(words::RELAY.into())));
+    world.relay.set_down(false);
+    // Asked again at once (a follow that retries, a view that opens): no second try before the wait.
+    assert_eq!(linked.send(&Request::get("kuvo/info")), Err(Error::Unreachable(words::RELAY.into())));
+    assert_eq!(world.relay.dials(), before, "the relay wasn't dialed again");
+
+    // One that tries at once finds it back.
+    let (_, eager) = world.linked(at_once());
+    world.relay.set_down(true);
+    assert!(eager.send(&Request::get("kuvo/info")).is_err());
+    world.relay.set_down(false);
+    eager.send(&Request::get("kuvo/info")).expect("back");
+}
+
+#[test]
+fn the_relay_connection_dropping_fails_what_was_followed_and_the_next_read_connects_again() {
+    let world = World::new();
+    let (client, linked) = world.linked(at_once());
+    let stream = world.follow(&linked);
+    world.relay.drop_device(&client.address());
+    let mut reader = stream.reader;
+    let mut line = String::new();
+    // (What had come before it dropped is still read; then it fails.)
+    let failed = (0..2).any(|_| reader.read_line(&mut line).is_err());
+    assert!(failed, "the followed route failed, it didn't just end");
+    let dials = world.relay.dials();
+    linked.send(&Request::get("kuvo/info")).expect("connected again");
+    assert_eq!(world.relay.dials(), dials + 1);
+}
+
+#[test]
+fn a_box_that_stops_answering_is_checked_on_and_then_said_not_to_answer() {
+    let world = World::new();
+    let quick = Timing { answer_within: Duration::from_millis(20), check: Duration::from_millis(20), ..at_once() };
+    let (_, linked) = world.linked(quick);
+    linked.send(&Request::get("kuvo/info")).expect("there");
+    // Its connection died without closing: it takes frames and never answers them.
+    world.host.set_quiet(true);
+    assert_eq!(linked.send(&Request::post("echo", json!({}))), Err(Error::Unreachable(words::TIMED_OUT.into())));
+}
+
+#[test]
+fn a_device_pairs_with_a_link_s_token_once() {
+    let world = World::new();
+    world.host.take_token("tok_once");
+    let newcomer = Identity::new();
+    let client = LinkClient::new(RELAY_URL, newcomer.clone(), "Laptop", "0.8.0", world.relay.dial(), at_once());
+    let hello = client.pair(&world.host.facts(), "tok_once").expect("paired");
+    assert_eq!(hello.name, "devbox");
+    assert_eq!(world.host.hellos().last().unwrap()["pair"], "tok_once");
+    // Paired now: let in without the token.
+    client.let_go();
+    LinkBox::new(client, world.host.facts(), "devbox").send(&Request::get("kuvo/info")).expect("paired");
+    // The token's used up: another device showing it is turned away.
+    let other = LinkClient::new(RELAY_URL, Identity::new(), "Other", "0.8.0", world.relay.dial(), at_once());
+    assert!(is_unpaired(&other.pair(&world.host.facts(), "tok_once").expect_err("used up")));
+}
+
+#[test]
+fn the_same_goes_through_a_real_websocket() {
+    let world = World::new();
+    let url = world.relay.listen().expect("listening on 127.0.0.1");
+    // (The box is at the address its own relay URL gives it; the device's is by the URL it dials.)
+    let client = LinkClient::new(url, world.identity.clone(), "Kuvo on MacBook", "0.8.0", Arc::new(WebSocketDial), at_once());
+    let linked = LinkBox::new(client, world.host.facts(), "devbox");
+    let answer = linked.send(&Request::get("big")).expect("answered over the socket");
+    assert_eq!(serde_json::from_slice::<Value>(&answer.body).unwrap()["text"].as_str().map(str::len), Some(200_000));
+    let stream = world.follow(&linked);
+    let mut reader = stream.reader;
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert_eq!(line, "{\"at\":0}\n");
+}

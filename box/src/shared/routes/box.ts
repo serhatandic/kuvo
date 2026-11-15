@@ -149,7 +149,9 @@ export const BROWSER = object({
 });
 
 /** The phones paired here, `you` being the one asking. */
-export const PHONES = object({ phones: list(object({ key: string, name: string, added: nullable(number), pairing: string, you: bool })) });
+export const PHONES = object({ phones: list(object({ key: string, name: string, added: nullable(number), pairing: string, kind: words("phone", "desktop"), you: bool })) });
+/** Kuvo Code's desktop app paired as one of your devices (`kuvo/devices/pair`): the pairing it has. */
+export const DEVICE_PAIRED = object({ paired: literal(true), pairing: string });
 /** A link for another phone to pair with (good once), and when it ends, in seconds since 1970. */
 export const PAIRING = object({ link: string, ends: number });
 
@@ -271,8 +273,11 @@ export type Found = Infer<typeof FOUND>;
 /** What can be done with one of your computers from the box that lists it (`computers.manage`):
  * which, its button's words, and where a client asks first, the question, what it comes to and the
  * words of the button that goes ahead, all the box's; `why`, it can't be done now, in words a
- * client shows beside it. */
-export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "setup", "uninstall"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
+ * client shows beside it. `allow-devices` (`devices.allow`): on your setup's main computer, a
+ * computer kept from adding Kuvo Code's app to your devices is let do it again. `setup` and
+ * `uninstall` (`computers.add`): on the box that set a machine up over SSH, setting it up again
+ * and uninstalling Kuvo Code from it. */
+export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "allow-devices", "setup", "uninstall"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
 export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
 
 /** One of your computers, as a box knows it (`kuvo/computers`, PROTOCOL.md "Computers"): its key
@@ -282,16 +287,19 @@ export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
  * heard from (`connected`), not yet or being reached again (`connecting`), not lately (`away`), or not this box's to say (`unknown`: one known by a peer's word alone); Kuvo Code's version
  * there, its engine's and its system, as it said them; what its box answers (`features`, as it
  * said them, whole); how this box knows it (`here`, itself; `relay`, a peer it talks to; `peer`, by
- * another computer's word alone, `through` that one); how many of its sessions are at work and
+ * another computer's word alone, `through` that one); where a client of your own reaches its box
+ * itself (`address`, on the relay, and `relay`, its URL: only on your own computers); how many of its sessions are at work and
  * which (the first few, by id and title), where it said; the services whose plan limits it reads;
- * and what can be done with it from here (`actions`). */
+ * what can be done with it from here (`actions`); and `vouching` (`devices.allow`, on your setup's
+ * main computer alone): it's kept from adding Kuvo Code's app to your devices, since one it added
+ * was removed, in words a client shows as they are. */
 export const LISTED_COMPUTER = object({
   key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
   shared: bool, "apart?": literal(true), reach: words("connected", "connecting", "away", "unknown"),
   "version?": string, "engine?": string, "system?": string, "features?": list(string),
-  via: words("here", "relay", "peer"), "through?": string,
+  via: words("here", "relay", "peer"), "through?": string, "address?": string, "relay?": string,
   "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string), limitServices: list(object({ id: string, title: string })),
-  actions: list(COMPUTER_ACTION),
+  actions: list(COMPUTER_ACTION), "vouching?": object({ blocked: literal(true), words: string }),
 });
 export const COMPUTERS = object({ computers: list(LISTED_COMPUTER) });
 export type ListedComputer = Infer<typeof LISTED_COMPUTER>;
@@ -355,6 +363,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "PATCH kuvo/computers/:key", answers: { 200: object({ name: string }), 400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
   { route: "DELETE kuvo/computers/:key", answers: { 200: NOTHING, 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
   { route: "POST kuvo/computers/:key/connect", answers: { 202: NOTHING, 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
+  { route: "POST kuvo/computers/:key/allow-devices", answers: { 200: NOTHING, 403: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string, "primary?": string }) } },
   { route: "GET kuvo/info", answers: { 200: INFO } },
   { route: "GET kuvo/update", answers: { 200: UPDATE } },
   { route: "POST kuvo/update", answers: { 202: UPDATE } },
@@ -374,6 +383,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "GET kuvo/phones", answers: { 200: PHONES } },
   { route: "POST kuvo/phones/remove", answers: { 200: NOTHING } },
   { route: "POST kuvo/phones/pair", answers: { 200: PAIRING } },
+  { route: "POST kuvo/devices/pair", answers: { 200: DEVICE_PAIRED, 400: object({ message: string }), 403: object({ message: string }), 409: object({ message: string, "reason?": words("removed", "blocked") }), 503: object({ message: string }) } },
   { route: "DELETE kuvo/phones/pair", answers: { 200: NOTHING } },
   { route: "GET kuvo/setup", answers: { 200: SETUP } },
   { route: "GET kuvo/setup/events", answers: { 200: SETUP } },

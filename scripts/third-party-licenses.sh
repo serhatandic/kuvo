@@ -62,6 +62,21 @@ HEADER
     section option-ext 0.2.0 https://github.com/soc/option-ext \
         "Linked unmodified into the GPUI client through GPUI's font loading (font-kit, dirs). Its source is at the location above and on crates.io (crates.io/crates/option-ext)." \
         Licenses/option-ext.txt
+    section x25519-dalek 2.0.1 https://github.com/dalek-cryptography/curve25519-dalek/tree/main/x25519-dalek \
+        "BSD-3-Clause. In the GPUI client: the keys and handshake of its link to your other computers." \
+        Licenses/x25519-dalek.txt
+    section curve25519-dalek 4.1.3 https://github.com/dalek-cryptography/curve25519-dalek \
+        "BSD-3-Clause. In the GPUI client, through x25519-dalek." \
+        Licenses/curve25519-dalek.txt
+    section ring 0.17.14 https://github.com/briansmith/ring \
+        "Apache-2.0 AND ISC. In the GPUI client: the cryptography of its TLS connection to the relay." \
+        Licenses/ring.txt
+    section rustls-webpki 0.103.17 https://github.com/rustls/webpki \
+        "ISC. In the GPUI client: checking the relay's certificate." \
+        Licenses/rustls-webpki.txt
+    section webpki-roots 1.0.12 https://github.com/rustls/webpki-roots \
+        "CDLA-Permissive-2.0. In the GPUI client: Mozilla's list of certificate authorities, as data, unmodified." \
+        Licenses/webpki-roots.txt
 
     python3 - "$resolved" <<'PY' | while IFS='|' read -r location version; do
 import json, sys

@@ -16,6 +16,12 @@ export interface LinkRequest {
   fromApp?: boolean;
   /** From Kuvo Code on another computer (the Mac reaching a machine's box, `box route`), not a phone. */
   fromMac?: boolean;
+  /** Over this box's own server on this computer, with its password (`serve`, `serve --kept`): not
+   * `box route`, which anything on the computer can run, nor the relay. */
+  served?: boolean;
+  /** From Kuvo Code's desktop app over the link (its hello's `client`, PROTOCOL.md "Sessions"):
+   * a remote client like a phone for everything it may do, but not read on a small screen. */
+  desktop?: boolean;
   /** Proved, over the vault's socket, to hold the vault's unlock key (vault/holder.ts): a client. */
   vaultClient?: boolean;
 }
@@ -25,7 +31,19 @@ export interface Asker {
   key?: Buffer;
   name?: string;
   address?: Buffer;
+  /** What it said it is as its session opened (`client`): Kuvo Code's desktop app; none for a phone. */
+  kind?: "desktop";
 }
+
+/** Whether `request` is from Kuvo Code's app on this same computer: over the box's own server
+ * there (`served`), as its own app (`x-kuvo-from: app`, a Mac's own box) or as Kuvo Code attached
+ * to a box in place (`x-kuvo-from: mac`, a machine's server kept for clients). Never `box route`
+ * (a Mac over SSH, or an agent's command here), and never the relay. */
+export const fromLocalApp = (request: LinkRequest): boolean => request.served === true && (request.fromApp === true || request.fromMac === true);
+
+/** Whether what `request` sends a conversation is taken as written on a phone (the agent is told
+ * so, `<from-phone>`): from the relay, by anything but the desktop app. */
+export const fromAPhone = (request: LinkRequest): boolean => request.fromMac !== true && request.fromApp !== true && request.desktop !== true;
 
 /** A piece of an answer: its head (status and headers) first, then its body, in pieces. */
 export type AnswerPiece = { head: { status: number; headers: Record<string, string> } } | { body: Buffer };

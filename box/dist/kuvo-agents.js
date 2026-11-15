@@ -1404,6 +1404,14 @@ function walk(folder, own = []) {
   return files;
 }
 
+// box/src/shared/artifact-budget.ts
+function budgetConfirmation(older) {
+  const units = ["bytes", "KiB", "MiB", "GiB", "TiB"];
+  const scale = older > 0 ? Math.min(4, Math.floor(Math.log2(older) / 10)) : 0;
+  const size = `${new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(older / 1024 ** scale)} ${units[scale]}`;
+  return { title: "Keep less of older versions?", body: `Older versions take ${size} now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what\u2019s kept stay.`, button: "Keep up to" };
+}
+
 // box/src/shared/files.ts
 import crypto2 from "crypto";
 import fs4 from "fs";
@@ -1518,7 +1526,7 @@ async function lockedWhile(lock, work, { stale = 1e4, wait = 3000 } = {}) {
 
 // box/src/agents/artifacts/store.ts
 var copyLimit = 25 * 1024 * 1024;
-var defaultBudget = 1024 * 1024 * 1024;
+var defaultBudget = 1024 ** 3;
 var lineLimit = 1024 * 1024;
 var patchLimit = 1e5;
 var outsideWindow = 5 * 60000;
@@ -1922,11 +1930,15 @@ class ArtifactStore {
     const { free, floor } = this.policy.space();
     return { copies, older, budget: this.budget, free, floor, low: free < floor };
   }
-  setBudget(bytes) {
+  setBudget(bytes, confirmed) {
+    const older = this.storage().older;
+    if (Math.floor(bytes) < older && confirmed !== true)
+      return budgetConfirmation(older).body;
     this.chosenBudget = Math.max(0, Math.floor(bytes));
     writeFileSync3(join6(this.root, "settings.json.new"), JSON.stringify({ budget: this.chosenBudget }));
     renameSync2(join6(this.root, "settings.json.new"), join6(this.root, "settings.json"));
     this.settle();
+    return null;
   }
   clearOlder(before) {
     let cleared = 0;
@@ -29177,7 +29189,11 @@ async function artifactRoutes(store, method, parts, query, body, signal) {
         return message(400, "Say the budget for older versions, in bytes (budget).");
       if ("was" in given && given.was !== store.storage().budget)
         return message(409, "It changed since you read it.");
-      store.setBudget(budget);
+      if ("wasOlder" in given && given.wasOlder !== store.storage().older)
+        return message(409, "It changed since you read it.");
+      const refused = store.setBudget(budget, given.confirmed);
+      if (refused)
+        return message(400, refused);
       return json11(store.storage());
     }
     if (!second)
@@ -36770,4 +36786,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents f6d0f77ee9cdb7025e08e16f9e591f2360c5624aa9d67905d58eb820c7954ed9
+// Built from Packages/Box/src/agents 7d75e0e6e0fce342abd7fb13460057b0a028e830b63eaaffc8bb2bc5505ba7be

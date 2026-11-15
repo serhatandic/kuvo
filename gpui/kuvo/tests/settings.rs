@@ -320,7 +320,7 @@ fn every_kind_of_row_is_drawn_from_the_boxs_description(cx: &mut TestAppContext)
     let last = |stand_in: &StandIn| bodies(stand_in, "PATCH", "kuvo/settings/samples").last().cloned().unwrap_or_default();
     // A field: typed, and saved with Return, from the row's revision.
     click(cx, "row-proxy-field");
-    cx.simulate_input("http://proxy.example:8080");
+    cx.simulate_input("  http://proxy.example:8080  ");
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
     assert_eq!((last(&stand_in)["row"].clone(), last(&stand_in)["value"].clone()), (json!("proxy"), json!("http://proxy.example:8080")));
@@ -987,4 +987,168 @@ mod live {
         assert!(shown(cx, "sign-in"), "on to signing in");
         assert_eq!(stand_in.seen_at("POST", "kuvo/sign-in/start").len(), 1, "its sign-in started");
     }
+}
+
+#[gpui::test]
+fn lowering_a_budget_asks_before_sending_and_cancel_sends_nothing(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.add_settings_section(json!({"id":"storage", "title":"Storage", "group":"System", "icon":"file"}), json!({
+        "id":"storage","title":"Storage","groups":[{"id":"copies","rows":[{
+            "id":"budget","title":"Budget","kind":"number","value":2000000000,"can":true,"unit":{"name":"GiB","factor":1073741824,"decimals":2,"rounding":"nearest"},
+            "confirm":{"title":"Ordinary question","body":"Generic words.","button":"Save"},
+            "confirmBelow":{"value":1500000000,"confirm":{"title":"Keep less?","body":"Old copies go.","button":"Keep"}}
+        }]}]
+    }));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "storage");
+    click(cx, "row-budget-field");
+    cx.simulate_keystrokes("cmd-a backspace");
+    cx.simulate_input("0.5");
+    click(cx, "row-budget-save");
+    assert_eq!(view.read_with(cx, |view, _| view.confirm_words()), Some(("Keep less?".into(), "Old copies go.".into(), "Keep 0.5 GiB".into())));
+    assert!(bodies(&stand_in,"PATCH","kuvo/settings/storage").is_empty());
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(bodies(&stand_in,"PATCH","kuvo/settings/storage").is_empty());
+    click(cx,"row-budget-save");
+    click(cx,"confirm-go");
+    let sent = bodies(&stand_in,"PATCH","kuvo/settings/storage");
+    assert_eq!(sent.len(),1);
+    assert_eq!(sent[0]["value"],json!(536870912.0));
+    assert_eq!(sent[0]["confirmed"],json!(true));
+}
+
+#[gpui::test]
+fn a_described_list_search_filters_items_without_sending_a_change(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.add_settings_section(json!({"id":"archived","title":"Archived Sessions","group":"Projects","icon":"clock"}), json!({
+        "id":"archived","title":"Archived Sessions","groups":[{"id":"sessions","title":"Kuvo Code","rows":[{
+            "id":"sessions","title":"Archived Sessions","kind":"list",
+            "search":{"placeholder":"Search sessions…","empty":"No sessions match {query}."},
+            "items":[{"id":"alpha","title":"Alpha","line":"First project","kind":"status","value":3}, {"id":"beta","title":"Beta","line":"Second project","kind":"status","value":4}]
+        }]}]
+    }));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    section(&workspace,cx,"archived");
+    assert!(shown(cx,"row-alpha") && shown(cx,"row-beta"));
+    click(cx,"row-sessions-field");
+    cx.simulate_input("Second");
+    cx.run_until_parked();
+    assert!(!shown(cx,"row-alpha") && shown(cx,"row-beta"));
+    cx.simulate_keystrokes("cmd-a backspace");
+    cx.simulate_input("archived");
+    cx.run_until_parked();
+    assert!(shown(cx,"row-alpha") && shown(cx,"row-beta"));
+    cx.simulate_keystrokes("cmd-a backspace");
+    cx.simulate_input("missing");
+    cx.run_until_parked();
+    assert!(!shown(cx,"row-alpha") && !shown(cx,"row-beta") && shown(cx,"row-sessions-empty"));
+    assert!(bodies(&stand_in,"PATCH","kuvo/settings/archived").is_empty());
+}
+
+#[gpui::test]
+fn a_rounded_unit_field_keeps_untouched_bytes_and_ordinary_confirmation_has_no_attestation(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.add_settings_section(json!({"id":"storage","title":"Storage","group":"System","icon":"file"}), json!({
+        "id":"storage","title":"Storage","groups":[{"id":"copies","rows":[{
+            "id":"budget","title":"Budget","kind":"number","value":1073741831,"can":true,
+            "unit":{"name":"GiB","factor":1073741824,"decimals":2,"rounding":"nearest"},
+            "confirm":{"title":"Save?","body":"Keep the budget.","button":"Save"}
+        }]}]
+    }));
+    let (workspace,cx) = open(cx,stand_in.clone());
+    section(&workspace,cx,"storage");
+    click(cx,"row-budget-save");
+    click(cx,"confirm-go");
+    let sent = bodies(&stand_in,"PATCH","kuvo/settings/storage");
+    assert_eq!(sent.len(),1);
+    assert_eq!(sent[0]["value"],json!(1073741831));
+    assert!(sent[0].get("confirmed").is_none());
+}
+
+#[gpui::test]
+fn a_folder_picker_browses_the_selected_computers_box_and_cancel_sends_nothing(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never,NOW);
+    let devbox = stand_in.peer_box("key_devbox").unwrap();
+    devbox.add_settings_section(json!({"id":"worktrees","title":"Worktrees","group":"Projects","icon":"folder"}), json!({
+        "id":"worktrees","title":"Worktrees","groups":[{"id":"place","rows":[{
+            "id":"place","title":"Folder","kind":"folder","value":"","can":true,
+            "folder":{"choose":"Choose a Folder…","clear":"Default","prompt":"Choose","message":"Choose where worktrees go."}
+        }]}]
+    }));
+    let (workspace,cx)=open(cx,stand_in.clone());
+    section(&workspace,cx,"Permissions");
+    click(cx,"settings-computer");
+    click(cx,"menu-item-devbox");
+    section(&workspace,cx,"worktrees");
+    click(cx,"row-place-picks-menu");
+    click(cx,"menu-item-Choose a Folder…");
+    assert!(shown(cx,"settings-folder-picker"));
+    assert!(!devbox.seen_at("GET","kuvo/folders").is_empty());
+    assert!(stand_in.seen_at("GET","kuvo/folders").is_empty());
+    click(cx,"settings-folder-cancel");
+    assert!(bodies(&devbox,"PATCH","kuvo/settings/worktrees").is_empty());
+    click(cx,"row-place-picks-menu");
+    click(cx,"menu-item-Choose a Folder…");
+    click(cx,"settings-folder-2");
+    click(cx,"settings-folder-parent");
+    click(cx,"settings-folder-2");
+    click(cx,"settings-folder-choose");
+    let sent=bodies(&devbox,"PATCH","kuvo/settings/worktrees");
+    assert_eq!(sent.len(),1);
+    assert!(sent[0]["value"].as_str().unwrap().ends_with("/Documents"));
+}
+
+#[gpui::test]
+fn multiline_instructions_keep_whitespace_and_return_adds_a_line(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never,NOW);
+    stand_in.add_settings_section(json!({"id":"git","title":"Git","group":"Projects","icon":"branch"}),json!({
+        "id":"git","title":"Git","groups":[{"id":"instructions","rows":[{"id":"instructions","title":"Instructions","kind":"text","can":true,"value":"","lines":{"min":3,"max":8}}]}]
+    }));
+    let (workspace,cx)=open(cx,stand_in.clone());
+    section(&workspace,cx,"git");
+    click(cx,"row-instructions-field");
+    cx.simulate_input("  First");
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("Second  ");
+    assert!(bodies(&stand_in,"PATCH","kuvo/settings/git").is_empty());
+    click(cx,"row-instructions-save");
+    let sent=bodies(&stand_in,"PATCH","kuvo/settings/git");
+    assert_eq!(sent[0]["value"],json!("  First\nSecond  "));
+}
+
+#[gpui::test]
+fn single_line_text_trims_whitespace_and_refreshes_canonical_value(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.add_settings_section(json!({"id":"git","title":"Git","group":"System","icon":"branch"}), json!({
+        "id":"git","title":"Git","groups":[{"id":"prefix","rows":[{"id":"prefix","title":"Branch prefix","kind":"text","can":true,"value":"feature/","revision":"rev-1"}]}]
+    }));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "git");
+    click(cx, "row-prefix-field");
+    cx.simulate_keystrokes("cmd-a backspace");
+    cx.simulate_input("  feature/  ");
+    click(cx, "row-prefix-save");
+    let sent = bodies(&stand_in, "PATCH", "kuvo/settings/git");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["value"], json!("feature/"));
+    let shown_text = view.read_with(cx, |view, cx| view.field("row-prefix").unwrap().read(cx).text().to_owned());
+    assert_eq!(shown_text, "feature/");
+}
+
+#[gpui::test]
+fn matching_list_heading_puts_search_first_without_a_duplicate_heading_row(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.add_settings_section(json!({"id":"archived","title":"Archived Sessions","group":"System","icon":"archive"}), json!({
+        "id":"archived","title":"Archived Sessions","groups":[{"id":"project-kuvo","title":"Kuvo Code","rows":[{
+            "id":"sessions","title":"Kuvo Code","kind":"list",
+            "search":{"placeholder":"Search archived sessions","empty":"No archived session matches “{query}”."},
+            "items":[{"id":"alpha","title":"Alpha","line":"Kuvo Code","kind":"status","value":3}]
+        }]}]
+    }));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    section(&workspace, cx, "archived");
+    assert!(!shown(cx, "row-sessions-heading"));
+    assert!(shown(cx, "row-sessions-field"));
+    assert!(shown(cx, "row-alpha"));
 }

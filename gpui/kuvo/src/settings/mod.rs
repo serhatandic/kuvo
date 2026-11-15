@@ -29,7 +29,7 @@ use kuvo_box::models::Offered;
 use kuvo_box::settings::{Config, UsageSettings};
 use kuvo_box::settings_pages::{Changed, Page, Section};
 use kuvo_ui::{ActiveTheme, Appearance, IconName, TextField, TextFieldEvent, Theme};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::areas::Reading;
 
@@ -175,10 +175,11 @@ pub struct SettingsView {
     replacing: Vec<String>,
     /// The fields of rows that take typing, by row key, made once and kept; and the revision
     /// each last showed its row's value at.
-    fields: HashMap<String, (Entity<TextField>, String, Subscription)>,
+    fields: HashMap<String, (Entity<TextField>, Option<String>, Subscription)>,
     /// What the box last refused, shown over the page until it's closed or the page changes.
     problem: Option<String>,
     confirm: Option<Confirm>,
+    folder_picker: Option<FolderPicker>,
     sign_in: Option<Entity<SignIn>>,
     sign_in_closed: Option<Subscription>,
     /// The confirm asks for the keyboard as it opens (Escape cancels it).
@@ -194,7 +195,18 @@ pub struct SettingsView {
     list: ListState,
     focus: FocusHandle,
     tasks: HashMap<String, Task<()>>,
+    list_filters: HashMap<String, String>,
     _subscriptions: Vec<Subscription>,
+}
+
+#[derive(Clone)]
+struct FolderPicker {
+    at: At,
+    words: kuvo_box::settings_pages::Folder,
+    path: String,
+    back: Option<String>,
+    folder: Option<kuvo_box::folders::Folder>,
+    problem: Option<String>,
 }
 
 /// One of the page list's items.
@@ -263,6 +275,7 @@ impl SettingsView {
             fields: HashMap::new(),
             problem: None,
             confirm: None,
+            folder_picker: None,
             sign_in: None,
             sign_in_closed: None,
             confirm_focus: cx.focus_handle(),
@@ -274,6 +287,7 @@ impl SettingsView {
             list: ListState::new(0, ListAlignment::Top, px(400.)),
             focus: cx.focus_handle(),
             tasks: HashMap::new(),
+            list_filters: HashMap::new(),
             _subscriptions: vec![subscription],
         };
         view.rebuild(cx);
@@ -449,6 +463,7 @@ impl SettingsView {
         self.follow = None;
         self.problem = None;
         self.confirm = None;
+        self.folder_picker = None;
     }
 
     /// Shows the place `key` names: one of your own sections, or a computer's. A section's name
@@ -477,7 +492,9 @@ impl SettingsView {
         if self.place() != before {
             self.problem = None;
             self.confirm = None;
+            self.folder_picker = None;
             self.replacing.clear();
+            self.list_filters.clear();
             self.list.scroll_to(gpui::ListOffset::default());
             if self.follow.as_ref().is_some_and(|(of, _)| self.side != Side::Computer || *of != self.section) {
                 self.follow = None;
@@ -558,7 +575,7 @@ impl SettingsView {
             Drawn::Yours => rows::yours(&entry.id, self.dark),
             Drawn::Own => rows::page(&entry.id, &self.facts()),
             Drawn::Described => match self.pages.get(&entry.id) {
-                Some(Reading::Ready(page)) => described::blocks(page, &described::Drawing { section: &entry.id, busy: &self.busy, replacing: &self.replacing, here: self.client.as_ref().is_some_and(BoxClient::here) }),
+                Some(Reading::Ready(page)) => described::blocks(page, &described::Drawing { section: &entry.id, busy: &self.busy, replacing: &self.replacing, here: self.client.as_ref().is_some_and(BoxClient::here), filters: &self.list_filters }),
                 Some(Reading::Failed(why)) => vec![Block::Note { key: "note-page".into(), words: format!("{} couldn’t be read: {why}", entry.title), busy: false, warning: true }],
                 _ => vec![rows::note("note-page", format!("Reading {}…", entry.title), true)],
             },
@@ -763,18 +780,19 @@ impl SettingsView {
         let mut kept = Vec::new();
         for item in items {
             let Item::Row { row, .. } = item else { continue };
-            let Control::Field { masked, value, placeholder, revision, .. } = &row.control else { continue };
+            let Control::Field { lines, masked, value, placeholder, revision, .. } = &row.control else { continue };
             kept.push(row.key.clone());
             match self.fields.get_mut(&row.key) {
-                Some((_, shown, _)) if shown == revision => {}
+                Some((_, Some(shown), _)) if shown == revision => {}
                 Some((field, shown, _)) => {
                     field.update(cx, |field, cx| field.set_text(value.clone(), cx));
-                    *shown = revision.clone();
+                    *shown = Some(revision.clone());
                 }
                 None => {
-                    let (masked, placeholder, value) = (*masked, placeholder.clone(), value.clone());
+                    let (masked, placeholder, value, lines) = (*masked, placeholder.clone(), value.clone(), *lines);
                     let field = cx.new(|cx| {
                         let mut field = TextField::new(cx).bare().placeholder(placeholder);
+                        if let Some((min, max)) = lines { field = field.multi_line(min, max).submits_on_enter(false); }
                         if masked {
                             field = field.masked();
                         }
@@ -782,7 +800,11 @@ impl SettingsView {
                         field
                     });
                     let key = row.key.clone();
-                    let subscription = cx.subscribe(&field, move |this: &mut SettingsView, _, event: &TextFieldEvent, cx| {
+                    let subscription = cx.subscribe(&field, move |this: &mut SettingsView, field, event: &TextFieldEvent, cx| {
+                        if matches!(event, TextFieldEvent::Changed) && this.items.iter().any(|item| matches!(item, Item::Row { row, .. } if row.key == key && matches!(row.control, Control::Field { save: Act::Filter, .. }))) {
+                            this.list_filters.insert(key.clone(), field.read(cx).text().to_owned());
+                            this.rebuild(cx);
+                        }
                         if let TextFieldEvent::Submit(_) = event {
                             let save = this.items.iter().find_map(|item| match item {
                                 Item::Row { row, .. } if row.key == key => match &row.control {
@@ -796,7 +818,7 @@ impl SettingsView {
                             }
                         }
                     });
-                    self.fields.insert(row.key.clone(), (field, revision.clone(), subscription));
+                    self.fields.insert(row.key.clone(), (field, Some(revision.clone()), subscription));
                 }
             }
         }
@@ -999,6 +1021,8 @@ impl SettingsView {
                 let secret = self.items.iter().any(|item| matches!(item, Item::Row { row, .. } if row.key == key && matches!(row.control, Control::Field { masked: true, .. })));
                 if secret {
                     self.fields.remove(&key);
+                } else if let Some((_, shown, _)) = self.fields.get_mut(&key) {
+                    *shown = None;
                 }
                 self.pages.insert(section.to_owned(), Reading::Ready(page));
             }
@@ -1018,15 +1042,21 @@ impl SettingsView {
         self.problem = None;
         match act {
             Act::Change { at, value, asked } => {
-                if let (false, Some(asks)) = (asked, at.confirm.clone()) {
-                    self.ask(asks.title, asks.body, asks.button, Act::Change { at, value, asked: true });
+                if let (false, Some(asks)) = (asked, at.asks_for(&value)) {
+                    let button = if at.below(&value) { match (&at.unit, value.as_f64()) {
+                        (Some(unit), Some(value)) => format!("{} {}", asks.button, unit.display(value)),
+                        (None, Some(value)) if value.fract() == 0.0 && value >= i64::MIN as f64 && value <= i64::MAX as f64 => format!("{} {}", asks.button, value as i64),
+                        _ => format!("{} {}", asks.button, value),
+                    }} else { asks.button };
+                    self.ask(asks.title, asks.body, button, Act::Change { at, value, asked: true });
                 } else {
                     let key = described::key(&at.row);
                     self.set_busy(&key, "Saving…");
                     let to = at.clone();
+                    let confirmed = asked && at.below(&value);
                     self.run(
                         key.clone(),
-                        move |client| client.change_setting_at(&to.section, &to.row, &to.revision, value),
+                        move |client| client.change_setting_confirmed_at(&to.section, &to.row, &to.revision, value, confirmed),
                         move |this, done, cx| {
                             this.done(&key);
                             this.take_changed(&at.section, &at.row, done, cx);
@@ -1054,22 +1084,21 @@ impl SettingsView {
                 }
             }
             Act::Save { at, number } => {
-                let Some(text) = self.fields.get(&described::key(&at.row)).map(|(field, _, _)| field.read(cx).text().trim().to_owned()) else { return };
-                // (What kind of thing was typed is all that's checked here; whether it fits is the box's.)
-                let value = if number {
-                    match text.parse::<f64>().ok().and_then(serde_json::Number::from_f64) {
-                        Some(number) => Value::Number(number),
-                        None => {
-                            self.problem = Some(format!("{} takes a number.", at.title));
-                            self.rebuild(cx);
-                            return;
-                        }
-                    }
-                } else {
-                    json!(text)
+                let Some(text) = self.fields.get(&described::key(&at.row)).map(|(field, _, _)| field.read(cx).text().to_owned()) else { return };
+                let Some(value) = at.field_value(&text, number) else {
+                    self.problem = Some(format!("{} takes a number.", at.title));
+                    self.rebuild(cx);
+                    return;
                 };
                 self.act(Act::Change { at, value, asked: false }, cx);
                 return;
+            }
+            Act::Filter => {},
+            Act::Folder { at, words } => {
+                let path = at.original.as_ref().and_then(Value::as_str).filter(|path| !path.is_empty()).unwrap_or("~").to_owned();
+                self.folder_picker = Some(FolderPicker { at, words, path: path.clone(), back: None, folder: None, problem: None });
+                self.focus_confirm = true;
+                self.browse_folder(path, cx);
             }
             Act::Replacing { row, on } => {
                 self.replacing.retain(|id| *id != row);
@@ -1224,6 +1253,29 @@ impl SettingsView {
             },
             cx,
         );
+    }
+
+    pub fn browse_folder(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(picker) = self.folder_picker.as_mut() else { return };
+        if let Some(prev) = picker.folder.take() {
+            picker.back = Some(prev.path);
+        }
+        picker.path = path.clone();
+        picker.problem = None;
+        cx.notify();
+        let asked = path.clone();
+        self.run("settings-folder", move |client| client.folders_in(&asked), move |this, read, _| {
+            let Some(picker) = this.folder_picker.as_mut().filter(|picker| picker.path == path) else { return };
+            match read {
+                Ok(folder) => {
+                    picker.back = folder.parent.clone().filter(|parent| *parent != folder.path);
+                    picker.path = folder.path.clone();
+                    picker.folder = Some(folder);
+                }
+                Err(Ok(why)) => picker.problem = Some(why.message),
+                Err(Err(error)) => picker.problem = Some(said(&error)),
+            }
+        }, cx);
     }
 
     /// Opens the confirm the box asked for, with its words; `act` is what going ahead does.
