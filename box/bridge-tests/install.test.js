@@ -447,6 +447,23 @@ test("a copy of the app never judges or installs for the real one, and is refuse
   }
 });
 
+test("the real home is told however it's written: on a Mac's disk a name in other letters' case is the same folder, there or not yet", { skip: !mac && "a Mac's disk" }, () => {
+  // The installer's own rule, asked of folders of the test's own (never of the real home).
+  const text = read(path.join(release, "kuvo-install"));
+  const rule = text.slice(text.indexOf("same_place() {"), text.indexOf("\n}\n", text.indexOf("same_place() {")) + 3);
+  const same = (a, b) => spawnSync("sh", ["-c", `${rule}\nsame_place "$1" "$2"`, "sh", a, b]).status === 0;
+  const home = path.join(scratch, "case");
+  fs.mkdirSync(path.join(home, ".kuvo-code"), { recursive: true });
+  fs.mkdirSync(path.join(home, "other"));
+  const insensitive = exists(path.join(home, ".KUVO-CODE"));
+  assert.equal(same(path.join(home, ".kuvo-code"), path.join(home, ".kuvo-code")), true);
+  assert.equal(same(path.join(home, ".Kuvo-Code"), path.join(home, ".kuvo-code")), insensitive, "the same folder, as the disk has it");
+  assert.equal(same(path.join(home, "other"), path.join(home, ".kuvo-code")), false);
+  // Neither there yet: by name, without regard to case.
+  assert.equal(same(path.join(home, "none", ".Kuvo-Code"), path.join(home, "none", ".kuvo-code")), true);
+  assert.equal(same(path.join(home, "none", ".kuvo-demo"), path.join(home, "none", ".kuvo-code")), false);
+});
+
 test("new on Linux: a machine's box in ~/.kuvo-code, its files and engine in place and started as a computer that's added is; one cut short is made again", { skip: mac && "a Linux computer's box" }, () => {
   const where = computer();
   assert.deepEqual(install(where, "status").said.verdict, "fresh");

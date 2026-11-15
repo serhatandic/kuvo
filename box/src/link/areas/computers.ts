@@ -141,6 +141,16 @@ function reachOf(link: LinkState | null, address: string | undefined): { address
   return { address, relay: link.relay };
 }
 
+/** Display words belong to the answering box; reach remains a machine-readable state. */
+export function computerWords(computer: Pick<ListedComputer, "reach" | "name" | "through" | "working">, here: string): Pick<ListedComputer, "title" | "detail" | "notice" | "workingTitle"> {
+  const { reach, name, through, working } = computer;
+  const title = ({ connected: "Connected", connecting: "Connecting", away: "Can’t be reached", unknown: "Not reached directly" })[reach];
+  const notice = reach === "away" ? { title: `${name} can’t be reached`, detail: `${here} hasn’t heard from it for a while: it may be asleep, off, or offline. It shows here again by itself once it’s back, with what it runs.` }
+    : reach === "connecting" ? { title: `Connecting to ${name}…`, detail: `${here} hasn’t heard from it yet.` }
+    : reach === "unknown" ? { title: `Known through ${through ?? "another computer"}`, detail: `${here} doesn’t reach ${name} itself, so how it stands and what it runs can’t be said here.` } : undefined;
+  return { title, ...(notice ? { detail: notice.detail, notice } : {}), ...(working !== undefined ? { workingTitle: `${working} ${working === 1 ? "session" : "sessions"} at work` } : {}) };
+}
+
 /** Your computers: this box first, then its peers by name, then the boxes they vouch for, each
  * with what can be done with it from here. */
 export async function listComputers(name: string, bridge: Target | null, signal?: AbortSignal, now = Date.now()): Promise<ListedComputer[]> {
@@ -155,7 +165,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const atWork = atWorkHere();
   // (A machine by the name its Macs' records give it, renamed there, else its own.)
   const named = !IS_MAC && own ? namedBoxes(link).find(box => box.key === own)?.name : undefined;
-  const computers: Omit<ListedComputer, "actions" | "limitServices">[] = [{
+  const computers: Omit<ListedComputer, "actions" | "limitServices" | "title">[] = [{
     key: own ?? "",
     name: (IS_MAC ? macLink.config?.name : named || name) || name || os.hostname(),
     kind: IS_MAC ? "mac" : "machine",
@@ -175,7 +185,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const withActions = (): ListedComputer[] => {
     const here = computers[0]!.name;
     const facts = writerFacts(link);
-    return computers.map(computer => ({ ...computer, limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), actions: [...actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...sshActions(computer as ListedComputer, here)] }));
+    return computers.map(computer => ({ ...computer, ...computerWords(computer, here), limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), actions: [...actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...sshActions(computer as ListedComputer, here)] }));
   };
   // A machine Macs of different setups share lists itself alone: the others there aren't all one
   // person's computers (as `kuvo/setup` refuses there).

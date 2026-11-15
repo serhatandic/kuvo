@@ -126,6 +126,9 @@ export function isSocketKey(given: unknown): boolean {
 // writes: the engine reads the file (`OPENCODE_CONFIG`, over the global one) and reloads it when it
 // changes. Before a Mac made them the machine's own (`adoptBox`), its Mac's.
 export const BOX = path.join(K, "box");
+export const VAULT_FOLDER = path.join(BOX, "vault");
+/** Activity is kept this long (D14). */
+export const KEPT_DAYS = 365;
 // The box's folder as its settings name it: "~/.kuvo-code", as the Mac's start wrote key paths.
 const home = homeFolder();
 export const shownRoot = K.startsWith(home + "/") ? "~" + K.slice(home.length) : K;

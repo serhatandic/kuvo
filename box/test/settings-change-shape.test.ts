@@ -1,4 +1,4 @@
-import "./safety";
+import "./safety"
 import { expect, test } from "bun:test";
 import { fitsShape } from "../src/shared/shape";
 import { SETTINGS_CHANGE, SETTINGS_PAGE_ROUTES } from "../src/shared/routes/settings-pages";

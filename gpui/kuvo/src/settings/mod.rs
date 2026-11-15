@@ -431,9 +431,7 @@ impl SettingsView {
             return not(title, words);
         }
         match computer.reach.as_str() {
-            "away" => not(format!("{name} is away"), "Its settings are kept on it, so they show here once it’s back.".into()),
-            "connecting" => not(format!("Connecting to {name}…"), "Its settings show here once it’s connected.".into()),
-            "unknown" => not(format!("{name} isn’t connected"), format!("{} knows it only through {}. Its settings show here once it connects.", self.this_box, computer.through.as_deref().unwrap_or("another computer"))),
+            "away" | "connecting" | "unknown" => not(computer.notice.as_ref().map(|notice| notice.title.clone()).unwrap_or_else(|| computer.title.clone()), computer.detail.clone().unwrap_or_default()),
             _ => match self.home.computer(computer) {
                 Some(client) => (Some(client), Standing::Reached),
                 // The desktop app reaches the window's box alone for now (as the title bar's

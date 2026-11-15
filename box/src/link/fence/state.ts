@@ -871,4 +871,13 @@ export function keepFence(every: (round: () => Promise<void>) => void = round =>
   });
 }
 
-export const fenceFiles = { folder: FOLDER, plugin: PLUGIN, launcher: places.launcher, version: VERSION };
+export const fenceFiles = { folder: FOLDER, plugin: PLUGIN, launcher: places.launcher, runner: places.runner, version: VERSION };
+
+
+/** TEST ONLY: restore the unchecked state after a test sets the sandbox up. */
+export function forgetFence() {
+  checked = { able: false, passed: false, why: "It hasn't been checked yet.", reason: "checking" };
+  failures = 0;
+  lastProfiles = "";
+  fs.rmSync(SANDBOX_NOTE, { force: true });
+}

@@ -297,6 +297,7 @@ export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
  * was removed, in words a client shows as they are. */
 export const LISTED_COMPUTER = object({
   key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
+  title: string, "detail?": string, "notice?": object({ title: string, detail: string }), "workingTitle?": string,
   shared: bool, "apart?": literal(true), reach: words("connected", "connecting", "away", "unknown"),
   "version?": string, "engine?": string, "system?": string, "features?": list(string),
   via: words("here", "relay", "peer"), "through?": string, "address?": string, "relay?": string,

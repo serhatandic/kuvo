@@ -962,14 +962,10 @@ pub fn computer_line(computer: &Computer) -> String {
     if computer.is_older() {
         return "Needs an update".into();
     }
-    match computer.reach.as_str() {
-        "connected" => computer.system.clone().or_else(|| computer.version.as_ref().map(|version| format!("Kuvo Code {version}"))).unwrap_or_else(|| "Connected".into()),
-        "connecting" => "Connecting…".into(),
-        // The box knows it only by another computer's word (`via: peer`): it says who, never that it's away.
-        "unknown" => computer.through.as_ref().map(|through| format!("Known through {through}")).unwrap_or_else(|| "Known through another computer".into()),
-        "away" => "Can’t be reached".into(),
-        // A word a newer box names: what it runs, with no claim about its reach.
-        _ => computer.system.clone().or_else(|| computer.version.as_ref().map(|version| format!("Kuvo Code {version}"))).unwrap_or_else(|| computer.name.clone()),
+    if computer.reach == "connected" {
+        computer.system.clone().or_else(|| computer.version.as_ref().map(|version| format!("Kuvo Code {version}"))).unwrap_or_else(|| computer.title.clone())
+    } else {
+        computer.title.clone()
     }
 }
 
@@ -1109,9 +1105,9 @@ mod tests {
         let computer = |json: &str| serde_json::from_str::<kuvo_box::areas::Computer>(json).unwrap();
         let line = |json: &str| computer_line(&computer(json));
         assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","shared":false,"reach":"connected","system":"Ubuntu 24.04.1 LTS","via":"relay","working":0,"limits":[]}"#), "Ubuntu 24.04.1 LTS");
-        assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","shared":false,"reach":"connecting","via":"relay","working":0,"limits":[]}"#), "Connecting…");
-        assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","shared":false,"reach":"away","via":"relay","working":0,"limits":[]}"#), "Can’t be reached");
-        assert_eq!(line(r#"{"key":"b","name":"Studio","kind":"mac","shared":false,"reach":"unknown","via":"peer","through":"devbox","working":0,"limits":[]}"#), "Known through devbox");
+        assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","shared":false,"reach":"connecting","title":"Connecting…","via":"relay","working":0,"limits":[]}"#), "Connecting…");
+        assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","shared":false,"reach":"away","title":"Can’t be reached","via":"relay","working":0,"limits":[]}"#), "Can’t be reached");
+        assert_eq!(line(r#"{"key":"b","name":"Studio","kind":"mac","shared":false,"reach":"unknown","title":"Known through devbox","via":"peer","through":"devbox","working":0,"limits":[]}"#), "Known through devbox");
     }
 
     #[test]

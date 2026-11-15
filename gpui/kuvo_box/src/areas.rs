@@ -99,9 +99,23 @@ pub struct NamedService {
     pub title: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct ComputerNotice {
+    pub title: String,
+    pub detail: String,
+}
+
 /// One of your computers, as a box knows it (`kuvo/computers`).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct Computer {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub notice: Option<ComputerNotice>,
+    #[serde(default, rename = "workingTitle")]
+    pub working_title: Option<String>,
     /// Its box's public key (`""` for the box itself while it has none).
     #[serde(default)]
     pub key: String,

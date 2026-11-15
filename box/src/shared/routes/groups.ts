@@ -28,6 +28,7 @@ export const TASK = object({
   bot: string,
   task: string,
   state: words("proposed", "waiting", "working", "done", "failed"),
+  title: string,
   "prompt?": string,
   "started?": number,
   "finished?": number,

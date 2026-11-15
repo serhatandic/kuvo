@@ -5,7 +5,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { newID, oneLine } from "../../shared/text";
 import type { VaultActivity } from "../../shared/routes/vault";
-import { KEPT_DAYS, VAULT_FOLDER, vaultWork } from "./store";
+import { KEPT_DAYS, VAULT_FOLDER } from "../home";
+import { vaultWork } from "./work";
 
 const ACTIVITY = path.join(VAULT_FOLDER, "activity.jsonl");
 const DAY = 86_400_000;

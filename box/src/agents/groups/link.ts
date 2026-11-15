@@ -36,7 +36,11 @@ const failed = (status: number) => (status === 409 ? 409 : status >= 500 ? 503 :
 /** An object without what it doesn't have: a chat file may hold null for it, and an answer leaves it out. */
 const present = <T extends object>(value: T) => Object.fromEntries(Object.entries(value).filter(([, each]) => each !== null && each !== undefined)) as T
 
-export function clientMessage(message: GroupMessage | undefined, withSteps = true) {
+export function taskTitle(state: string): string {
+  return ({ proposed: "Not started", waiting: "Waiting", working: "Working", done: "Done", failed: "Didn’t finish" } as Record<string, string>)[state] ?? state
+}
+
+export function clientMessage(message: GroupMessage | undefined, withSteps = true, stopped: string[] = [], nameOf: (id: string) => string = () => "A bot") {
   if (!message) return undefined
   const { named: _named, steps, time, tasks, author, ...rest } = message as GroupMessage & { named?: string }
   return {
@@ -47,7 +51,7 @@ export function clientMessage(message: GroupMessage | undefined, withSteps = tru
     ...(tasks
       ? {
           // `lost` is the box's own note (a report still taken), not a client's.
-          tasks: tasks.map(({ started, finished, lost: _lost, ...task }) => ({ ...task, ...(started ? { started: seconds(started) } : {}), ...(finished ? { finished: seconds(finished) } : {}) })),
+          tasks: tasks.map(({ started, finished, lost: _lost, ...task }) => ({ ...task, title: task.state === "working" && stopped.includes(task.bot) ? `Waiting: ${nameOf(task.bot)}’s conversation is stopped` : taskTitle(task.state), ...(started ? { started: seconds(started) } : {}), ...(finished ? { finished: seconds(finished) } : {}) })),
         }
       : {}),
   }
@@ -115,19 +119,19 @@ function list(runner: GroupRunner, store: GroupStore) {
       discussing: Boolean(state.discussing),
       paused: Boolean(state.paused),
       unread: Boolean(fromBot && (!group.viewed || Date.parse(fromBot.time) > Date.parse(group.viewed))),
-      last: clientMessage(said, false),
+      last: clientMessage(said, false, state.stopped, id => anyMember(id, runner, store)?.name ?? "A bot"),
       meeting: group.meeting ? present({ ...group.meeting, next: seconds(group.meeting.next) }) : undefined,
     }))
   return { groups }
 }
 
 /** One chat as a client follows it: its latest messages (unless `withMessages` says not) and its talk; undefined while it isn't here (gone, or moving). */
-function chat(runner: GroupRunner, id: string, withMessages = true) {
+function chat(runner: GroupRunner, store: GroupStore, id: string, withMessages = true) {
   const found = runner.get(id)
   if (!found || found.status !== "active") return undefined
   const { messages, state } = found
   return {
-    ...(withMessages ? { messages: messages.slice(-300).map((each) => clientMessage(each)) } : {}),
+    ...(withMessages ? { messages: messages.slice(-300).map((each) => clientMessage(each, true, state.stopped, id => anyMember(id, runner, store)?.name ?? "A bot")) } : {}),
     speaking: state.speaking,
     discussing: Boolean(state.discussing),
     paused: Boolean(state.paused),
@@ -142,15 +146,19 @@ function chat(runner: GroupRunner, id: string, withMessages = true) {
  * and only what's said of that chat is looked at. Its messages are read again only when they may
  * have changed, not as its talk does (what a bot is doing changes a few times a second).
  */
-function following(read: (withMessages: boolean) => Record<string, unknown> | undefined, chat: string | undefined, signal?: AbortSignal): Response {
+export function following(read: (withMessages: boolean) => Record<string, unknown> | undefined, chat: string | undefined, signal?: AbortSignal): Response {
   const encoder = new TextEncoder()
   let stop = () => {}
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let lastState = ""
       let lastMessages: string | undefined
+      let lastStopped: string | undefined
       const look = (withMessages: boolean) => {
-        const now = read(withMessages || lastMessages === undefined)
+        let now = read(withMessages || lastMessages === undefined)
+        const stopped = JSON.stringify(now?.stopped ?? [])
+        if (now && lastStopped !== undefined && stopped !== lastStopped) now = read(true)
+        lastStopped = stopped
         if (!now) {
           stop()
           try {
@@ -226,8 +234,8 @@ export async function linkRoutes(runner: GroupRunner | undefined, store: GroupSt
   if (!/^grp_[a-z0-9]+$/.test(id)) return json({}, 404)
 
   if (method === "GET" && (!action || action === "events")) {
-    if (!chat(runner, id)) return json({}, 404)
-    return action ? following((withMessages) => chat(runner, id, withMessages), id, signal) : json(chat(runner, id))
+    if (!chat(runner, store, id)) return json({}, 404)
+    return action ? following((withMessages) => chat(runner, store, id, withMessages), id, signal) : json(chat(runner, store, id))
   }
   // Its name, purpose, bots or meeting, as Edit Group Chat changes them: a meeting as you set it up,
   // worked out here, on your clock.

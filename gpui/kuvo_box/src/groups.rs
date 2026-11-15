@@ -53,6 +53,7 @@ pub struct GroupTask {
     pub task: String,
     #[serde(default)]
     pub state: String,
+    pub title: String,
     #[serde(default)]
     pub after: Vec<String>,
 }

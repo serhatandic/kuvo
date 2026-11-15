@@ -354,18 +354,30 @@ test("over SSH, two changes to one row from the same reading go through one proc
 
 test("the sandbox's row is what kuvo/sandbox says, and its button does what that names", async () => {
   const { sandboxAction } = await import("../src/link/areas/settings-pages")
-  const shown = await page("permissions")
-  const sandbox = rowOf(shown, "sandbox")
-  // (Not checked yet, in a test's home: Try Again, which checks it.)
-  const state = (await ask(handler, "GET", "kuvo/sandbox")).json
-  expect([state.on, state.route]).toEqual([false, "POST kuvo/sandbox/check"])
-  expect(sandbox).toMatchObject({ kind: "actions", value: "Off", line: state.why, tone: "warning", actions: [sandboxAction(state, "devbox", true)] })
-  const done = await act("permissions", sandbox, String(state.action))
-  expect(done.status).toBe(200)
-  // Checked, as kuvo/sandbox/check checks it: the page says what it came to.
-  const now = (await ask(handler, "GET", "kuvo/sandbox")).json
-  expect(rowOf(done.json, "sandbox").line ?? "").toBe(now.on ? "Agents' commands here run in it." : now.why)
-  expect(shown.notes.at(-1).words).toContain("aren't on this page yet")
+  const { fenceFiles, forgetFence } = await import("../src/link/fence/state")
+  try {
+    const shown = await page("permissions")
+    const sandbox = rowOf(shown, "sandbox")
+    // (Not checked yet, in a test's home: Try Again, which checks it.)
+    const state = (await ask(handler, "GET", "kuvo/sandbox")).json
+    expect([state.on, state.route]).toEqual([false, "POST kuvo/sandbox/check"])
+    expect(sandbox).toMatchObject({ kind: "actions", value: "Off", line: state.why, tone: "warning", actions: [sandboxAction(state, "devbox", true)] })
+    const done = await act("permissions", sandbox, String(state.action))
+    expect(done.status).toBe(200)
+    // Checked, as kuvo/sandbox/check checks it: the page says what it came to.
+    const now = (await ask(handler, "GET", "kuvo/sandbox")).json
+    expect(rowOf(done.json, "sandbox").line ?? "").toBe(now.on ? "Agents' commands here run in it." : now.why)
+    expect(shown.notes.at(-1).words).toContain("aren't on this page yet")
+  } finally {
+    // (The check set the sandbox up in the run's own home: every later test file would run its
+    // agents in it, where the engine's own runtime is hidden.)
+    forgetFence()
+    rmSync(fenceFiles.folder, { recursive: true, force: true })
+    rmSync(fenceFiles.launcher, { force: true })
+    rmSync(fenceFiles.runner, { force: true })
+    rmSync(fenceFiles.plugin, { force: true })
+  }
+  expect([existsSync(fenceFiles.folder), existsSync(fenceFiles.launcher), existsSync(fenceFiles.runner), existsSync(fenceFiles.plugin)]).toEqual([false, false, false, false])
 })
 
 test("Restart Engine starts the box's own tool, and answers done; where the app restarts a Mac's engine, it says so", async () => {

@@ -2,8 +2,8 @@
 // from the box's one table, are what the route scenarios set their boxes up with
 // (protocol/vectors/routes/box, scripts/route-vectors.sh): a change to the table that isn't
 // written there too would leave every box's runner on a catalog no release has.
-import { expect, test } from "bun:test"
 import "./safety"
+import { expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

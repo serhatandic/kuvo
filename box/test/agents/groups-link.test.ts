@@ -335,3 +335,28 @@ describe("the box's link and this bridge", () => {
     ])
   })
 })
+
+// State words travel with every task, so each client draws the same title.
+test("task state titles belong to the box", async () => {
+  const { taskTitle } = await import("../../src/agents/groups/link");
+  expect(["proposed", "waiting", "working", "done", "failed"].map(taskTitle)).toEqual(["Not started", "Waiting", "Working", "Done", "Didn’t finish"]);
+});
+
+
+test("followed task titles refresh when a conversation stops and resumes", async () => {
+  const { following, clientMessage } = await import("../../src/agents/groups/link");
+  const { emit } = await import("../../src/agents/events");
+  let stopped: string[] = [];
+  const message = { id: "gm_task", time: new Date().toISOString(), tasks: [{ id: "task_1", bot: "bot_pal", task: "Ship", state: "working" }] } as GroupMessage;
+  const response = following(withMessages => ({ stopped, ...(withMessages ? { messages: [clientMessage(message, true, stopped, () => "Pal")] } : {}) }), "grp_titles");
+  const reader = response.body!.getReader();
+  const readTitle = async () => JSON.parse(new TextDecoder().decode((await reader.read()).value)).messages[0].tasks[0].title;
+  expect(await readTitle()).toBe("Working");
+  stopped = ["bot_pal"];
+  emit("kuvo.group.updated", { id: "grp_titles" });
+  expect(await readTitle()).toBe("Waiting: Pal’s conversation is stopped");
+  stopped = [];
+  emit("kuvo.group.updated", { id: "grp_titles" });
+  expect(await readTitle()).toBe("Working");
+  await reader.cancel();
+});

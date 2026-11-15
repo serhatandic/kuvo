@@ -63,9 +63,21 @@ esac
 ACCOUNT=""
 user=$(id -un 2>/dev/null) || user=""
 case "$user" in '' | *[!A-Za-z0-9._-]*) ;; *) ACCOUNT=$(eval "echo ~$user" 2>/dev/null) || ACCOUNT="" ;; esac
-case "$ACCOUNT" in /*) ;; *) ACCOUNT=$HOME ;; esac
+# (Not known: nothing is taken for a copy's home that might be the real one.)
+case "$ACCOUNT" in /*) ;; *) refuse "Your account's home folder couldn't be found." ;; esac
 placed() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"; }
-if [ "$(placed "$HOME/$ROOT")" = "$(placed "$ACCOUNT/.kuvo-code")" ] || [ "$(placed "$HOME")/$ROOT" = "$(placed "$ACCOUNT")/.kuvo-code" ]; then REAL=1; else REAL=0; fi
+# Whether two paths name one place: the same folder where both are there (however each is
+# written: through links, and on a Mac's disk in any letters' case), else by their names, a Mac's
+# without regard to case.
+same_place() {
+    if [ -e "$1" ] && [ -e "$2" ]; then [ "$1" -ef "$2" ]; return; fi
+    if [ "$(uname -s)" = Darwin ]; then
+        [ "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" ]
+    else
+        [ "$1" = "$2" ]
+    fi
+}
+if same_place "$HOME/$ROOT" "$ACCOUNT/.kuvo-code" || same_place "$(placed "$HOME")/$ROOT" "$(placed "$ACCOUNT")/.kuvo-code"; then REAL=1; else REAL=0; fi
 if [ "$SYSTEM" = darwin ]; then
     [ -n "$APP" ] || refuse "Kuvo Code's installer needs the app it's run from (--app <bundle>)."
     ID=$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist" 2>/dev/null) || ID=""
@@ -112,7 +124,7 @@ done
 
 # What an earlier run of this left when it was cut short (its own scratch copies, named for its
 # process): gone, once that process is. Another run's, still at work, is never touched.
-for left in "$I"/release.new.* "$I"/engine/.fetch.*; do
+for left in "$I"/release.new.* "$I"/release.old.* "$I"/engine/.fetch.*; do
     [ -e "$left" ] || continue
     pid=${left##*.}
     case "$pid" in '' | *[!0-9]*) rm -rf "$left" ;; *) kill -0 "$pid" 2>/dev/null || rm -rf "$left" ;; esac
@@ -135,7 +147,9 @@ if ! whole; then
     if whole; then
         rm -rf "$N"
     else
-        rm -rf "$R"
+        # (An older release's there: taken aside in one step, then gone. Never one that's whole,
+        # which another run may have just put there and be running from.)
+        if [ -e "$R" ] && ! whole; then mv "$R" "$I/release.old.$$" 2>/dev/null; rm -rf "$I/release.old.$$"; fi
         mv "$N" "$R" 2>/dev/null
         # (Another run's got there between the two: this one's went inside it, and goes.)
         rm -rf "$N" "$R/release.new.$$"
