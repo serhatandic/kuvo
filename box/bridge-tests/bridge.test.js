@@ -1627,6 +1627,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "limits.rings": ["GET", "kuvo/agents/api/kuvo/limits"],
     "mcp.catalog": ["GET", "kuvo/mcp/catalog"],
     // (And kuvo/sessions/<id>/send, which the same box answers.)
+    // (A command's message read as typed, by its id.)
+    "messages.commands": ["POST", "kuvo/messages/parts"],
     "messages.send": ["POST", "kuvo/messages/parts"],
     "models.offered": ["GET", "kuvo/models/offered"],
     // (A project's own, its folder asked; each model's side, efforts and aliases; on the same route.)
@@ -1657,6 +1659,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "queue.items": ["GET", "kuvo/sessions/ses_none/queue"],
     // (queue/add taking a message once by its id, sent again.)
     "queue.once": ["POST", "kuvo/sessions/ses_none/queue/add"],
+    "queue.removed.keyword": ["DELETE", "kuvo/sessions/ses_none/queue/msg_none"],
+    "queue.stop.arriving": ["POST", "kuvo/sessions/ses_none/stop"],
     "queue.waits": ["POST", "kuvo/sessions/ses_none/queue/add"],
     reviews: ["GET", "kuvo/agents/api/kuvo/reviews"],
     "reviews.parts": ["GET", "kuvo/agents/api/kuvo/reviews"],
