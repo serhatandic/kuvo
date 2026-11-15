@@ -47,6 +47,7 @@ extension BoxGate {
         "sandbox.words", // #711
         "sessions.actions",
         "sessions.asks", // the desktop client draws asks as the box says them
+        "sessions.asks.box", // and answers the sandbox's and the vault's asks there
         "sessions.list",
         "sessions.mentions", // the desktop client draws "@" and "&" as the box says them
         "sessions.models",

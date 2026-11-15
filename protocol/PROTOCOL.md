@@ -1289,7 +1289,10 @@ the same for every client and with none connected, and keeps them in `run/queues
 What a conversation waits on you for (`sessions.asks`), worded by the box as the cards over the
 composer show it, so a client draws each card and works nothing out: every permission and question
 waiting in the conversation and its subagents, on the engine or the coding agents' bridge, but one
-Auto's reviewer took up.
+Auto's reviewer took up; and what the box asks you itself for them (`sessions.asks.box`): a command
+outside the sandbox, something from the vault. Those wait in the box's long-running process, which
+answers these routes: another (`box route`, a machine's kept server) passes the list and an answer
+to it over `run/vault.sock`, and with none listening lists what the engine asks alone.
 
 - `GET kuvo/sessions/<id>/asks` → `{"asks": [ask…]}`, oldest first, those a client answers
   ahead of those answered elsewhere (`other`, below), so the card it can answer shows first. Each has `id`, `kind`,
@@ -1303,20 +1306,39 @@ Auto's reviewer took up.
     `~/notes`); `choices` its answers in order, `[{answer, title, named, placeholder}]`: `once`
     "Allow Once", `always` (its `title`, then `named`, what Always saves, shown as code: "Always
     Allow" `git push`; null where it names nothing, "Always Allow Edits"), `reject` "Don’t Allow",
-    `instead` "Tell It What to Do Instead…" with the line it opens (`placeholder`). A client shows
-    `command` in place of `resources` when it has one.
+    `instead` "Tell It What to Do Instead…" with the line it opens (`placeholder`). Each choice
+    also has `help`, what it does whole (Always's hover text: "Don’t ask again before running git
+    push commands in this project", "… in this conversation" for a coding agent's), and `spoken`,
+    the button as a screen reader says it ("Always allow working in Home, notes"); either null
+    where the title says it all. `protocol/vectors/always-words.json` holds Always's words. A
+    client shows `command` in place of `resources` when it has one.
   - `question`: the agent's questions (a form whose fields are all words or choices, none shown
     only after another answer), `questions: [{key, title, question, options: [{value, label,
     description}], multiple, custom, required}]`, asked one at a time: `multiple` takes several,
     `custom` takes words of your own (one with no choices does), `required` needs an answer.
+  - `sandbox`: a command it or a subagent asks to run outside the sandbox ("Sandbox", "Asks"),
+    `{message, command, stopped, error, asker, why, choices}`: `title` "Scout wants to run a
+    command outside the sandbox"; `message` what stopped it ("The sandbox stopped it from changing
+    a file outside Scout’s folder."); `stopped` what the sandbox refused, `[{label, detail}]`
+    ("Write", `~/.npm/_cacache/x`); `error`, where it can't say (Linux), the error the command got,
+    else null; `asker` and `why`, who asks and in its words. `choices`: `once` "Allow Once",
+    `always` "Always Allow" naming the one place it keeps (`named`, `after` "in every chat" for the
+    chats') where the box names one, and `reject` "Don’t Allow", each with `help` and `spoken`.
+  - `vault`: what it or a subagent asks of the vault ("Vault"), `{need, message, site, note,
+    choices}`: `need` `use` ("Scout wants to use GitHub token": `once`, `always` where it may be
+    given for good, never from a bot's seat, and `reject`) or `item` ("Scout needs an OpenAI API
+    key": for each item in the vault, `once` "Give" and `always` "Always Give" naming it, with its
+    `item`, then `reject`). `message` its words or null, `site` the site it's for or null. Items are
+    listed only to the vault's clients (a phone, this Mac's app, the Mac proving itself) and only
+    while it's unlocked; `note` says why there are none ("Give it an item in Kuvo Code on your Mac
+    or iPhone."), else null. A choice with `confirm: true` makes a grant: a client makes sure it's
+    you first (Touch ID, the device's password), as a grant made in Settings does, and one that
+    can't doesn't offer it.
   - `other`: anything else it waits on you for: a form a card can't take (an MCP server's: one
     filed under no session, `global`, in the conversation's folder, is its own once one of its
     steps, or its subagents', runs a tool of that server, as the Mac's conversation takes it; fields
-    a card can't take), or what the box asks you for it or its subagents (a command outside the
-    sandbox, something from the vault, as `kuvo/sandbox/asks` and `kuvo/vault/asks` list them;
-    only the box's long-running process has them). `message` says what it asks, and a client says
-    to answer it in Kuvo Code on a Mac or a phone; `dismiss` says whether it can be put away
-    unanswered from here (a form can, the box's own asks can't).
+    a card can't take). `message` says what it asks; `dismiss` says whether it can be put away
+    unanswered from here.
   `404 {"message"}` for no such session here, `503 {"message"}` while its place isn't answering.
 - `GET kuvo/sessions/<id>/asks/events` (ndjson): the same now, and again as an ask comes, is
   answered, or its run ends (as the long-running process notes them, looked at each second, and
@@ -1326,7 +1348,11 @@ Auto's reviewer took up.
   permission with `{"answer": "once"|"always"|"reject"}`, or `{"answer": "instead", "message"}`
   (Don't Allow with your words, which the agent reads); a question with `{"answers": {<key>:
   "words" | ["choice"…]}}`, only what was answered (the box adds the form's defaults for the rest),
-  or `{"dismiss": true}` for any form (not the box's own asks). `200 {}`; `404 {"message"}` when it isn't waiting any more;
+  or `{"dismiss": true}` for any form; the box's own with one of its choices, `{"answer":
+  "once"|"always"|"reject", "item"?}` (`item` as the choice has it), never put away unanswered. The
+  sandbox's goes to it as `POST kuvo/sandbox/asks/<id>` would (`reject` is `no`), the vault's as
+  `POST kuvo/vault/asks/<id>` would, only from the vault's clients (`403` otherwise, `423` to give an
+  item while it's locked). `200 {}`; `404 {"message"}` when it isn't waiting any more;
   `400 {"message"}` for an answer that doesn't fit (a choice it doesn't offer, a required one
   missing, words for `other`); `503` while its place isn't answering, `502` when it refused.
 
@@ -6617,6 +6643,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sessions.actions` | `GET kuvo/sessions/<id>/actions`, `POST …/pin`, `…/archive`, `…/rename` and `DELETE kuvo/sessions/<id>`: a session's menu, done by the box ("A session's actions", #668), and Delete All's question, `POST kuvo/sessions/deletes` |
 | `sessions.agents` | `POST kuvo/sessions/<id>/agents` |
 | `sessions.asks` | `kuvo/sessions/<id>/asks`, `…/events`, and answering one ("A conversation's asks") |
+| `sessions.asks.box` | The box's own asks in `sessions.asks`, `sandbox` and `vault`, answered there (also through `box route`), and each choice's `help` and `spoken` ("A conversation's asks") |
 | `sessions.chat` | A chat made, moved or with its metadata written since carries `kuvo.chat` in its metadata, naming the chats folder it's in; older ones go by their folder ("Chats") |
 | `sessions.glance` | `kuvo/sessions/glance`, `…/events`, and `session` in `POST kuvo/git/pull-request` ("A session at a glance") |
 | `sessions.list` | `kuvo/sessions/list` and `…/events`: what each session is, the project it's filed under, and the projects the lists show ("Session lists") |

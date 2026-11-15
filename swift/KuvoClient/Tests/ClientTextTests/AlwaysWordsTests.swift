@@ -43,14 +43,17 @@ struct AlwaysWordsTests {
     /// The same words as the box's notices for phones, case for case (its bridge test reads them too).
     @Test func theBoxSaysTheSame() throws {
         struct Vectors: Decodable {
-            struct Case: Decodable { var action: String; var save: [String]?; var resources: [String]; var home: String?; var plain: String }
+            struct Case: Decodable { var action: String; var save: [String]?; var resources: [String]; var home: String?; var plain: String; var help: String; var spoken: String }
             var cases: [Case]
         }
         let file = URL(filePath: #filePath).deletingLastPathComponent().appending(path: "../../../../protocol/vectors/always-words.json").standardized
         let vectors = try JSONDecoder().decode(Vectors.self, from: Data(contentsOf: file))
         #expect(vectors.cases.count > 10)
         for each in vectors.cases {
-            #expect(AlwaysWords.of(action: each.action, save: each.save, resources: each.resources, home: each.home).plain == each.plain, "\(each.action) \(each.save ?? [])")
+            let words = AlwaysWords.of(action: each.action, save: each.save, resources: each.resources, home: each.home)
+            #expect(words.plain == each.plain, "\(each.action) \(each.save ?? [])")
+            // Its hover text and VoiceOver's words too, which the box gives a client with each ask.
+            #expect(words.help == each.help && words.spoken == each.spoken, "\(each.action) \(each.save ?? [])")
         }
     }
 

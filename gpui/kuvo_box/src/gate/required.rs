@@ -45,6 +45,7 @@ pub const REQUIRED: &[&str] = &[
     "sandbox.words",
     "sessions.actions",
     "sessions.asks",
+    "sessions.asks.box",
     "sessions.list",
     "sessions.mentions",
     "sessions.models",
