@@ -3,9 +3,9 @@ import Observation
 import OpenCodeKit
 
 /// A message that ran a command shows the command ("/review main") rather than the long
-/// prompt the command sent for it, the same in both apps. The engine doesn't mark these messages,
-/// so the app notes each one as it arrives, and keeps the notes across launches, where it says
-/// (each app's own `shared`, in its settings).
+/// prompt the command sent for it. Only the retired Mac app keeps these notes itself: the phone and
+/// the desktop app read such a message as typed from its box (`messages.commands`, PROTOCOL.md "A
+/// command shows as typed"). It goes with the Mac app's sources.
 @MainActor @Observable
 public final class CommandMessages {
     private static let key = "commandMessages"

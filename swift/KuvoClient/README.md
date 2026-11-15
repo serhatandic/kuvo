@@ -93,8 +93,9 @@ What a client shows of a computer's sessions, the same in both apps. Rules only,
   in view stays while others come, and once it's answered the next after it shows.
 - `SlashCommands`: "/" starting a message: the command name being typed, the commands it matches
   (names starting with it first), and a message that runs one ("/review main"), else as written.
-- `CommandMessages`: which messages a command made, with the command as you wrote it, shown in
-  place of the long prompt it sent; the latest 500, kept where each app says (its settings).
+- `CommandMessages`: the retired Mac app's own notes of which messages a command made. The phone
+  and the desktop app read those as typed from the box (`messages.commands`); it goes with the Mac
+  app's sources.
 - `GoalChart.labeledDays`, `.labeledHours`: which days and hours along a goal's timeline get a
   label, clear of each other, counted from Today; each app gives the room its own labels take.
 - `MachinePieces`: which version a machine's link, coding agents and engine each run, as its box
