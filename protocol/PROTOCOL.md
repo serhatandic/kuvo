@@ -7540,6 +7540,8 @@ above. Only on a Mac.
   - integrations' keys named in the engine's settings (and each bot's) where the app wrote them
     (its temporary folder) or as a version before named them (`{env:KUVO_KEY_…}`) → named where
     the box writes them (`{file:~/.kuvo-code/box/keys/KUVO_KEY_…}`);
+  - the engine's plugin, which the app wrote beside the engine's settings at each start
+    (`config/opencode/plugins/kuvo-code.js`): the release's, in its place;
   - Keep This Mac Awake, off (`keepsAwake`) → `box/work.json`; Ask First as new sessions' start
     (`toolApproval: askFirst`) → `box/approval.json`'s `last`; what the app added to the
     engine's settings once (`engine.defaultsAdded`, `engine.searchMovedToExa`) →

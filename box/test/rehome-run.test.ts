@@ -30,6 +30,8 @@ test.if(mac)("a Mac of 0.7.2 moves whole: its sessions brought up to date and in
   expect(read("box/kind")).toBe("mac\n")
   expect(read("bin/kuvo-start")).toContain("V=2.2.6")
   expect(readdirSync(join(m.K, "engine"))).toEqual(["2.2.6"])
+  // The engine's plugin is the release's, never the one 0.7.2 wrote for its own engine.
+  expect(read("config/opencode/plugins/kuvo-code.js")).toBe("the release's config/opencode/plugins/kuvo-code.js\n")
   // Its sessions, in the pinned engine's database, each in its new folder.
   const db = rows(join(m.K, "data", "opencode", "opencode.db"))
   const chat = join(m.K, "chats", "c1"), worktree = join(m.K, "data", "opencode", "worktree", m.rootCommit.slice(0, 6), "feature one")

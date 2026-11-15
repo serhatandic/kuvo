@@ -500,6 +500,20 @@ function usage({ prefs, staged }: Upgrade): void {
   new UsageSettings(file).take(parts);
 }
 
+/** The engine's plugin, which the earlier Kuvo Code wrote into its settings' folder at each start
+ * (its own version's): the release's, as every box has it (`config/opencode/plugins/kuvo-code.js`,
+ * one of a release's files), in its place. */
+function enginePlugin(release: string, { staged }: Upgrade): void {
+  const name = "config/opencode/plugins/kuvo-code.js";
+  let brought: Buffer;
+  try { brought = fs.readFileSync(path.join(release, name)); } catch { return; }
+  const file = staged(name);
+  const temporary = `${file}.${process.pid}.new`;
+  fs.writeFileSync(temporary, brought, { mode: 0o644 });
+  fs.chmodSync(temporary, 0o644);
+  fs.renameSync(temporary, file);
+}
+
 // What isn't carried
 
 /** What the earlier Kuvo Code kept that the move doesn't carry, said where it applies to this Mac. */
@@ -521,7 +535,7 @@ function said({ S, prefs, dropped }: Upgrade): void {
 
 /** Every upgrade, in the staged copy: what wasn't carried, in words to show once. One that fails
  * stops the move (it goes back): nothing is left half brought along. */
-export function runUpgrades(_run: RunPlan, move: MoveContext): string[] {
+export function runUpgrades(run: RunPlan, move: MoveContext): string[] {
   const made = new Set<string>();
   const upgrade: Upgrade = {
     S: move.appFolder,
@@ -544,6 +558,7 @@ export function runUpgrades(_run: RunPlan, move: MoveContext): string[] {
   // (Places that are folders: there before what's written in them.)
   for (const name of ["box", "run", "bots", "groups", "agents"]) fs.mkdirSync(upgrade.staged(name), { recursive: true, mode: 0o700 });
   for (const each of [projects, worktrees, machines, engineSettings, boxSettings, link, bots, personalities, groupChats, letters, usage, said]) each(upgrade);
+  enginePlugin(run.release, upgrade);
   // (A place nothing was written in isn't made: a Mac with no bots gets no bots' folder from this.)
   for (const name of ["groups", "agents", "bots", "run"]) try { fs.rmdirSync(upgrade.staged(name)); } catch {}
   return upgrade.dropped;

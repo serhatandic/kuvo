@@ -158,6 +158,7 @@ export function mac07(root: string, given: (mac: Mac) => void = () => {}, { at, 
     put(join(snapshot, "objects", "info", "alternates"), `${repository}/.git/objects\n`)
   }
   put(join(S, "opencode", "config", "opencode", "opencode.json"), JSON.stringify({ instructions: [`${S}/opencode/config/opencode/AGENTS.md`] }))
+  put(join(S, "opencode", "config", "opencode", "plugins", "kuvo-code.js"), "// 0.7.2's own plugin, which it wrote at each start")
   put(join(S, "opencode", "state", "x"), "state")
   put(join(S, "opencode", "cache", "x"), "cache")
   put(join(S, "engine", "2.0.32", "opencode"), "the engine 0.7.2 ran", 0o755)
