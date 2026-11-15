@@ -31,6 +31,7 @@ extension BoxGate {
         "git.merge",
         "git.pull-request",
         "git.status",
+        "groups.mentions", // #736: a group chat's "&" lists what the box offers there (its bots, then guests); no client filters
         "limits.rings", // #711
         "messages.send", // #668 item 3, a message sent as fields; a box with it has what came before it too (`sessions.list`, `typed`, plan limits' `rows`, `kuvo/updates`, Cursor's limits, `kuvo/sessions/read`)
         "models.offered",

@@ -29,6 +29,7 @@ pub const REQUIRED: &[&str] = &[
     "git.merge",
     "git.pull-request",
     "git.status",
+    "groups.mentions",
     "limits.rings",
     "messages.send",
     "models.offered",
