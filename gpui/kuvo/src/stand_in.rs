@@ -119,6 +119,8 @@ struct State {
     /// its lines go.
     groups: groups::Groups,
     group_followers: HashMap<u64, (String, Sender<String>)>,
+    /// Those following the chats' list (`kuvo/groups/events`).
+    groups_followers: HashMap<u64, Sender<String>>,
 }
 
 pub const NAME: &str = "Stand-in Mac";
@@ -718,6 +720,14 @@ impl State {
     fn group_changed(&mut self, group: &str) {
         let line = self.groups.line(group);
         self.group_followers.retain(|_, (followed, sender)| followed != group || line.as_ref().is_some_and(|line| sender.send(line.clone()).is_ok()));
+        let list = self.groups_list().to_string();
+        self.groups_followers.retain(|_, sender| sender.send(list.clone()).is_ok());
+    }
+
+    /// The chats as `kuvo/groups` lists them now.
+    fn groups_list(&self) -> Value {
+        let bots: Vec<Value> = self.bots.bots.iter().chain(&self.bots.elsewhere).cloned().collect();
+        self.groups.list(&bots)
     }
 
     fn list_changed(&mut self) {
@@ -1038,6 +1048,15 @@ impl StandIn {
                 };
                 answer(200, json!({ "mentions": mentions }))
             }
+            ("POST", ["kuvo", "sessions", session, "queue", "resume"]) => {
+                let bot = state.bots.bots.iter().find(|bot| bot["session"] == json!(session)).and_then(|bot| bot["id"].as_str()).map(str::to_owned);
+                if let Some(bot) = bot {
+                    for group in state.groups.resumed(&bot) {
+                        state.group_changed(&group);
+                    }
+                }
+                answer(200, json!({}))
+            }
             ("GET", ["kuvo", "sessions", session, "queue"]) if state.sessions.contains_key(*session) => {
                 answer(200, json!({ "paused": false, "held": [], "items": state.queues.get(*session).cloned().unwrap_or_default() }))
             }
@@ -1300,6 +1319,27 @@ impl Transport for StandIn {
             let inner = self.inner.clone();
             let closer = Closer::new(move || {
                 inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).git_followers.remove(&id);
+            });
+            if !hold(closer.clone()) {
+                closer.close();
+            }
+            return Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(Pieces { receiver, piece: Vec::new(), at: 0, sse: false }), closer });
+        }
+        // The chats, followed: as they are now, then the list again as it changes.
+        if route == "kuvo/groups/events" {
+            let (sender, receiver) = channel();
+            let id = {
+                let mut state = self.state();
+                state.seen.push(Seen { method: request.method.clone(), path: request.path.clone(), body: None });
+                let _ = sender.send(state.groups_list().to_string());
+                let id = state.next;
+                state.next += 1;
+                state.groups_followers.insert(id, sender);
+                id
+            };
+            let inner = self.inner.clone();
+            let closer = Closer::new(move || {
+                inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).groups_followers.remove(&id);
             });
             if !hold(closer.clone()) {
                 closer.close();

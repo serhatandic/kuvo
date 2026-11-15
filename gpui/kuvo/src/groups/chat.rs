@@ -92,11 +92,12 @@ pub struct GroupChatView {
     composer: Entity<Composer>,
     /// Whether it's on screen: only then is what's in it marked read.
     shown: bool,
-    /// How many messages there were when it was last marked read.
-    viewed: Option<usize>,
+    /// The last message there was when it was last marked read.
+    viewed: Option<Option<String>>,
     /// Why Keep Going or handing out the work didn't go, until the next change.
     act_failed: Option<String>,
     follow: Option<Rc<Follow<Followed<Chat>>>>,
+    follow_task: Option<Task<()>>,
     tasks: Vec<Task<()>>,
     _composer: Subscription,
     /// When times are read from (none: the clock).
@@ -148,25 +149,41 @@ impl GroupChatView {
             viewed: None,
             act_failed: None,
             follow: None,
+            follow_task: None,
             tasks: Vec::new(),
             _composer: subscription,
             now: None,
         };
-        if live {
-            let follow = Rc::new(client.follow_group(&id, Timing::default()));
-            let updates = follow.updates().clone();
-            view.follow = Some(follow);
-            view.tasks.push(cx.spawn(async move |this, cx| {
-                while let Ok(update) = updates.recv().await {
-                    if this.update(cx, |this, cx| this.take(update, cx)).is_err() {
-                        break;
-                    }
-                }
-            }));
-        } else {
+        // (The app follows it while it's on screen: `set_shown`.)
+        if !live {
             view.refresh(cx);
         }
         view
+    }
+
+    /// Follows the chat on its box, as it comes on screen.
+    fn follow(&mut self, cx: &mut Context<Self>) {
+        if !self.live || self.follow.is_some() {
+            return;
+        }
+        let follow = Rc::new(self.client.follow_group(&self.id, Timing::default()));
+        let updates = follow.updates().clone();
+        self.follow = Some(follow);
+        self.follow_task = Some(cx.spawn(async move |this, cx| {
+            while let Ok(update) = updates.recv().await {
+                if this.update(cx, |this, cx| this.take(update, cx)).is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// Lets it go, off screen: it's followed again as it comes back.
+    fn unfollow(&mut self) {
+        if let Some(follow) = self.follow.take() {
+            follow.stop();
+        }
+        self.follow_task = None;
     }
 
     pub fn id(&self) -> &str {
@@ -202,27 +219,43 @@ impl GroupChatView {
                 composer.set_members(members, cx);
             });
         }
-        if self.group != group || self.bots != bots {
-            self.group = group;
-            self.bots = bots;
-            // Who wrote each message is drawn from these: every row again.
-            self.list.reset(self.rows.len());
-            cx.notify();
+        // Who wrote each message is drawn from these: every row again where any of them changed,
+        // the reader kept where they are.
+        let redraw = authors(self.group.as_ref(), &self.bots) != authors(group.as_ref(), &bots);
+        self.group = group;
+        self.bots = bots;
+        if redraw {
+            for ix in 0..self.rows.len() {
+                self.list.changed(ix);
+            }
         }
+        cx.notify();
     }
 
     /// Whether it's on screen: what's in it is marked read only then.
     pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.shown == shown {
+            return;
+        }
         self.shown = shown;
         self.composer.update(cx, |composer, cx| composer.set_shown(shown, cx));
         if shown {
+            self.follow(cx);
             self.mark_viewed(cx);
+        } else {
+            self.unfollow();
         }
+    }
+
+    pub fn is_shown(&self) -> bool {
+        self.shown
     }
 
     /// Reads it again at once (tests and shots; the app follows it).
     fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.live {
+            // (Its follow says what changed in it; the list of chats is read again.)
+            cx.emit(ChatEvent::Changed);
             return;
         }
         let read = match self.client.group_chat(&self.id) {
@@ -290,10 +323,11 @@ impl GroupChatView {
     /// Says it's been read, once for each message come while it's on screen.
     fn mark_viewed(&mut self, cx: &mut Context<Self>) {
         let unread = self.group.as_ref().is_some_and(|group| group.unread);
-        if !self.shown || !self.read || (self.viewed == Some(self.messages.len()) && !unread) {
+        let last = self.messages.last().map(|message| message.id.clone());
+        if !self.shown || !self.read || (self.viewed.as_ref() == Some(&last) && !unread) {
             return;
         }
-        self.viewed = Some(self.messages.len());
+        self.viewed = Some(last);
         let (client, id) = (self.client.clone(), self.id.clone());
         if !self.live {
             let _ = client.group_viewed(&id);
@@ -340,6 +374,11 @@ impl GroupChatView {
 
     pub fn keep_going(&mut self, cx: &mut Context<Self>) {
         self.act(cx, |client, id| client.keep_going(id));
+    }
+
+    /// Resumes a bot's own conversation, which its part waits on.
+    pub fn resume(&mut self, session: String, cx: &mut Context<Self>) {
+        self.act(cx, move |client, _| client.resume_queue(&session));
     }
 
     pub fn start_work(&mut self, message: String, cx: &mut Context<Self>) {
@@ -436,6 +475,12 @@ impl GroupChatView {
     }
 }
 
+/// What names a message's author: the chat's bots and the box's, each by id, name and look.
+fn authors(group: Option<&Group>, bots: &[Bot]) -> Vec<(String, String, Option<Look>)> {
+    let members = group.into_iter().flat_map(|group| group.members.iter().map(|member| (member.id.clone(), member.name.clone(), member.look.clone())));
+    members.chain(bots.iter().map(|bot| (bot.id.clone(), bot.name.clone(), Some(bot.look.clone())))).collect()
+}
+
 /// A group message as a session's conversation draws it: yours as your message, a bot's as an
 /// agent's step (its tool calls, then its words), the chat's own as a quiet line.
 pub fn drawn(said: &GroupMessage) -> Message {
@@ -494,7 +539,7 @@ pub fn face(look: Option<&Look>, size: gpui::Pixels, cx: &App) -> AnyElement {
     }
 }
 
-/// A short time of day for a message: "14:05", or the day before that for an older one.
+/// How long ago a message was said: "now", "12m ago", "1d ago".
 fn sent_at(at_ms: f64, now_ms: f64) -> String {
     let ago = crate::time::ago(at_ms, now_ms);
     if ago == "now" { "now".into() } else { format!("{ago} ago") }
@@ -602,10 +647,10 @@ impl GroupChatView {
     fn tasks_card(&self, said: &GroupMessage, view: &Entity<GroupChatView>, cx: &App) -> AnyElement {
         let c = &cx.theme().colors;
         let row = |task: &GroupTask, last: bool| {
-            let (look, name) = match self.author(&task.bot) {
-                Author::Member { name, look, .. } => (look, name),
-                Author::Left { name, look } => (Some(look), name),
-                Author::Gone => (None, "A bot that left".into()),
+            let (look, name, session) = match self.author(&task.bot) {
+                Author::Member { name, look, session, .. } => (look, name, session),
+                Author::Left { name, look } => (Some(look), name, None),
+                Author::Gone => (None, "A bot that left".into(), None),
             };
             let after: Vec<String> = task.after.iter().filter_map(|bot| self.name_of(bot)).collect();
             let stopped = task.state == "working" && self.chat.stopped.contains(&task.bot);
@@ -645,7 +690,15 @@ impl GroupChatView {
                         .text_ui(TypeSize::Caption)
                         .text_color(tone)
                         .when(task.state == "working" && !stopped, |d| d.child(spinner(SharedString::from(format!("task-spin-{}", task.id)), IconSize::Nav, c.text_muted)))
-                        .child(state),
+                        .child(state)
+                        // Its conversation resumed where it lives (one on another computer, there).
+                        .when_some(session.filter(|_| stopped), |d, session| {
+                            let view = view.clone();
+                            let selector = format!("resume-{}", task.id);
+                            d.child(div().debug_selector(move || selector).pl(space::S1).child(Button::new(SharedString::from(format!("resume-{}", task.id)), "Resume").size(ButtonSize::Small).disabled(self.client.gate().is_held()).on_click(move |_, _, cx| {
+                                view.update(cx, |this, cx| this.resume(session.clone(), cx));
+                            })))
+                        }),
                 )
         };
         let count = said.tasks.len();
@@ -718,7 +771,7 @@ impl GroupChatView {
                     .items_center()
                     .gap(space::S2)
                     .child(face(look.as_ref(), px(24.), cx))
-                    .child(div().debug_selector(|| "talking-name".into()).text_ui(TypeSize::Small).text_color(c.text_muted).child(format!("{name} is thinking…")))
+                    .child(div().debug_selector(|| "talking-name".into()).text_ui(TypeSize::Small).text_color(c.text_muted).child(if matches!(self.chat.activity.last(), Some(Activity::Writing)) { format!("{name} is writing…") } else { format!("{name} is working…") }))
                     .child(spinner("talking-spin", IconSize::Nav, c.text_faint)),
             )
             .children(lines.into_iter().map(|line| div().pl(px(INDENT)).truncate().text_ui(TypeSize::Caption).text_color(c.text_faint).child(line)))

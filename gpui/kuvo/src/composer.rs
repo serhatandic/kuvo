@@ -606,7 +606,8 @@ impl Composer {
     pub fn send(&mut self, cx: &mut Context<Self>) {
         if self.client.gate().is_held() { return; }
         let text = self.text(cx);
-        if (text.trim().is_empty() && self.attached.is_empty()) || self.sending {
+        let group = matches!(self.target, Target::Group { .. });
+        if (text.trim().is_empty() && (group || self.attached.is_empty())) || self.sending {
             return;
         }
         let mut draft = Draft::new(BoxClient::new_id(), text.clone());
@@ -1035,10 +1036,7 @@ impl Composer {
             .map(|member| {
                 let name = member.name.clone();
                 let selector = format!("ask-{}", member.id);
-                let face = match &member.look {
-                    Some(look) => crate::areas::bot_face(look, px(20.)),
-                    None => crate::areas::bot_face(&kuvo_box::areas::Look { color: String::new(), shape: String::new(), face: String::new() }, px(20.)),
-                };
+                let face = crate::groups::chat::face(member.look.as_ref(), px(20.), cx);
                 div()
                     .id(SharedString::from(selector.clone()))
                     .debug_selector(move || selector)
@@ -1390,7 +1388,7 @@ impl Render for Composer {
                 this.slash_dismissed = Some(this.text(cx));
                 cx.notify();
             }))
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.attach(paths.paths().to_vec(), cx)))
+            .when(!group, |d| d.on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.attach(paths.paths().to_vec(), cx))))
             .w_full()
             .flex()
             .flex_col()

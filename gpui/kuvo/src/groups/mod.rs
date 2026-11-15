@@ -85,6 +85,10 @@ pub struct GroupsView {
     name: Entity<TextField>,
     purpose: Entity<TextField>,
     form: Form,
+    /// Whether the box's list has been read (a chat it doesn't list is gone then), and whether
+    /// this view is on screen (Bots shown, no bot's conversation over it).
+    listed: bool,
+    on_screen: bool,
     now: Option<f64>,
     focus: FocusHandle,
     tasks: Vec<Task<()>>,
@@ -106,7 +110,7 @@ impl GroupsView {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> GroupsView {
         let name = cx.new(|cx| TextField::new(cx).placeholder("Name"));
         let purpose = cx.new(|cx| TextField::new(cx).placeholder("Optional"));
-        GroupsView { client, live, shown: Shown::Nothing, groups: Vec::new(), bots: Vec::new(), chats: HashMap::new(), joinable: Reading::NotYet, name, purpose, form: Form::default(), now: None, focus: cx.focus_handle(), tasks: Vec::new() }
+        GroupsView { client, live, shown: Shown::Nothing, groups: Vec::new(), bots: Vec::new(), chats: HashMap::new(), joinable: Reading::NotYet, name, purpose, form: Form::default(), listed: false, on_screen: false, now: None, focus: cx.focus_handle(), tasks: Vec::new() }
     }
 
     pub fn shown(&self) -> &Shown {
@@ -147,6 +151,13 @@ impl GroupsView {
 
     /// The chats and bots as the box lists them now.
     pub fn set_listed(&mut self, groups: Vec<Group>, bots: Vec<Bot>, cx: &mut Context<Self>) {
+        // A chat no longer listed (deleted elsewhere, moved away) is let go: it's followed no more.
+        let gone: Vec<String> = self.chats.keys().filter(|id| !groups.iter().any(|group| &group.id == *id)).cloned().collect();
+        for id in gone {
+            if let Some((chat, _)) = self.chats.remove(&id) {
+                chat.update(cx, |chat, cx| chat.set_shown(false, cx));
+            }
+        }
         for (id, (chat, _)) in &self.chats {
             let group = groups.iter().find(|group| &group.id == id).cloned();
             let bots = bots.clone();
@@ -154,7 +165,23 @@ impl GroupsView {
         }
         self.groups = groups;
         self.bots = bots;
+        self.listed = true;
         cx.notify();
+    }
+
+    /// Whether it's on screen: only then is the chat shown followed, and marked read.
+    pub fn set_on_screen(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.on_screen = on;
+        if let Shown::Chat(id) = &self.shown
+            && let Some((chat, _)) = self.chats.get(id)
+        {
+            chat.update(cx, |chat, cx| chat.set_shown(on, cx));
+        }
+    }
+
+    /// Whether `id` is known to be gone: the box's list was read, and doesn't have it.
+    fn gone(&self, id: &str) -> bool {
+        self.listed && self.group(id).is_none()
     }
 
     fn group(&self, id: &str) -> Option<&Group> {
@@ -180,9 +207,10 @@ impl GroupsView {
         let fresh = self.shown != shown;
         self.shown = shown.clone();
         match shown {
-            Shown::Chat(id) => {
+            Shown::Chat(id) if !self.gone(&id) => {
                 let chat = self.open_chat(&id, cx);
-                chat.update(cx, |chat, cx| chat.set_shown(true, cx));
+                let on = self.on_screen;
+                chat.update(cx, |chat, cx| chat.set_shown(on, cx));
             }
             Shown::New if fresh => {
                 self.fill(None, cx);
@@ -297,10 +325,16 @@ impl GroupsView {
             Shown::Edit(id) => {
                 let Some(group) = self.group(id) else { return };
                 let before: Vec<String> = group.members.iter().map(|member| member.id.clone()).collect();
+                // The same bots in another order (one taken out and put back) is no change.
+                let sorted = |ids: &[String]| {
+                    let mut ids = ids.to_vec();
+                    ids.sort();
+                    ids
+                };
                 let change = GroupChange {
                     name: (name != group.name).then_some(name),
                     purpose: (purpose != group.purpose.clone().unwrap_or_default()).then_some(purpose),
-                    members: (members != before).then_some(members),
+                    members: (sorted(&members) != sorted(&before)).then_some(members),
                 };
                 // Nothing changed: back to the chat, as it is.
                 if change.is_empty() {
@@ -621,14 +655,12 @@ impl GroupsView {
 impl Render for GroupsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors.clone();
+        let gone = match &self.shown {
+            Shown::Chat(id) | Shown::Edit(id) => self.gone(id),
+            _ => false,
+        };
         let body: AnyElement = match self.shown.clone() {
-            Shown::Chat(id) => {
-                let group = self.group(&id).cloned();
-                let chat = self.chats.get(&id).map(|(chat, _)| chat.clone());
-                div().size_full().flex().flex_col().child(self.strip(group.as_ref(), cx)).child(div().flex_1().min_h_0().children(chat)).into_any_element()
-            }
-            Shown::New | Shown::Edit(_) => self.form_view(cx),
-            Shown::Nothing => div()
+            _ if gone => div()
                 .debug_selector(|| "group-gone".into())
                 .size_full()
                 .flex()
@@ -638,6 +670,13 @@ impl Render for GroupsView {
                 .text_color(c.text_muted)
                 .child("This group chat isn’t here anymore.")
                 .into_any_element(),
+            Shown::Chat(id) => {
+                let group = self.group(&id).cloned();
+                let chat = self.chats.get(&id).map(|(chat, _)| chat.clone());
+                div().size_full().flex().flex_col().child(self.strip(group.as_ref(), cx)).child(div().flex_1().min_h_0().children(chat)).into_any_element()
+            }
+            Shown::New | Shown::Edit(_) => self.form_view(cx),
+            Shown::Nothing => div().size_full().into_any_element(),
         };
         div().track_focus(&self.focus).size_full().child(body)
     }

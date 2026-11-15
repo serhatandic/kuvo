@@ -24,6 +24,8 @@ struct Chat {
     paused: bool,
     unread: bool,
     activity: Vec<Value>,
+    /// The bots whose working part waits on their own conversation, stopped.
+    stopped: Vec<String>,
 }
 
 /// The stand-in's group chats.
@@ -85,6 +87,7 @@ impl Groups {
             paused: false,
             unread: true,
             activity: vec![json!({ "kind": "tool", "call": { "type": "tool", "id": "st_l6", "name": "read", "state": { "status": "running", "input": { "filePath": "/Users/sam/Projects/website/CHANGELOG.md" } } } })],
+            stopped: Vec::new(),
         };
         let mut wrap = message(
             "gm_d4",
@@ -114,6 +117,8 @@ impl Groups {
             paused: true,
             unread: false,
             activity: Vec::new(),
+            // Inbox Helper's conversation was stopped while it did its part.
+            stopped: vec!["bot_inbox".into()],
         };
         let planning = Chat {
             id: "grp_planning".into(),
@@ -126,6 +131,7 @@ impl Groups {
             paused: false,
             unread: false,
             activity: Vec::new(),
+            stopped: Vec::new(),
         };
         Groups { chats: vec![launch, design, planning], next: 1, down: false }
     }
@@ -144,7 +150,7 @@ impl Groups {
         }
         let joinable = || -> Vec<Value> { bots.iter().map(member).collect() };
         Some(match (method, segments.as_slice()) {
-            ("GET", ["kuvo", "groups"]) => (200, json!({ "groups": self.chats.iter().map(|chat| listed(chat, bots)).collect::<Vec<_>>() }), None),
+            ("GET", ["kuvo", "groups"]) => (200, self.list(bots), None),
             ("GET", ["kuvo", "groups", "joinable"]) => (200, json!({ "bots": joinable() }), None),
             ("POST", ["kuvo", "groups"]) => {
                 let members = match self.check(body, bots, true) {
@@ -154,7 +160,7 @@ impl Groups {
                 let id = format!("grp_new{}", self.next);
                 self.next += 1;
                 let purpose = body["purpose"].as_str().map(str::trim).filter(|purpose| !purpose.is_empty()).map(str::to_owned);
-                let chat = Chat { id: id.clone(), name: body["name"].as_str().unwrap_or("").trim().to_owned(), purpose, members, messages: Vec::new(), speaking: None, discussing: false, paused: false, unread: false, activity: Vec::new() };
+                let chat = Chat { id: id.clone(), name: body["name"].as_str().unwrap_or("").trim().to_owned(), purpose, members, messages: Vec::new(), speaking: None, discussing: false, paused: false, unread: false, activity: Vec::new(), stopped: Vec::new() };
                 let said = listed(&chat, bots);
                 self.chats.push(chat);
                 (201, json!({ "group": said }), Some(id))
@@ -261,6 +267,24 @@ impl Groups {
         Ok(Some(members))
     }
 
+    /// `bot`'s conversation resumed (`kuvo/sessions/<its session>/queue/resume`): its parts go on.
+    /// The chats it changed.
+    pub fn resumed(&mut self, bot: &str) -> Vec<String> {
+        let mut changed = Vec::new();
+        for chat in &mut self.chats {
+            if chat.stopped.iter().any(|each| each == bot) {
+                chat.stopped.retain(|each| each != bot);
+                changed.push(chat.id.clone());
+            }
+        }
+        changed
+    }
+
+    /// The chats as `kuvo/groups` lists them (for its followers).
+    pub fn list(&self, bots: &[Value]) -> Value {
+        json!({ "groups": self.chats.iter().map(|chat| listed(chat, bots)).collect::<Vec<_>>() })
+    }
+
     /// The chat's line for those following it (`kuvo/groups/<id>/events`), as it is now.
     pub fn line(&self, id: &str) -> Option<String> {
         self.chats.iter().find(|chat| chat.id == id).map(|chat| said(chat).to_string())
@@ -311,6 +335,9 @@ fn listed(chat: &Chat, bots: &[Value]) -> Value {
 /// One chat as `kuvo/groups/<id>` says it.
 fn said(chat: &Chat) -> Value {
     let mut said = json!({ "messages": chat.messages, "discussing": chat.discussing, "paused": chat.paused });
+    if !chat.stopped.is_empty() {
+        said["stopped"] = json!(chat.stopped);
+    }
     if let Some(speaking) = &chat.speaking {
         said["speaking"] = json!(speaking);
         if !chat.activity.is_empty() {

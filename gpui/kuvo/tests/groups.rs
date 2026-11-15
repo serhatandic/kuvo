@@ -248,3 +248,71 @@ fn a_change_the_box_cant_take_says_why_and_nothing_changed_asks_nothing(cx: &mut
     click(cx, "group-save");
     assert_eq!(groups(&workspace, cx).read_with(cx, |view, _| view.error().map(str::to_owned)).as_deref(), Some("This Mac’s coding agents aren’t running."));
 }
+
+#[gpui::test]
+fn a_chat_off_screen_isnt_marked_read(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let chat = chat(&workspace, cx, "grp_launch");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/groups/grp_launch/viewed").len(), 1);
+    // Away in Sessions, a reply comes: it waits unread for you.
+    click(cx, "rail-sessions");
+    stand_in.group_says("grp_launch", "bot_docs", "The notes are drafted.");
+    chat.update(cx, |chat, cx| chat.take(kuvo_box::follow::Followed::Now(BoxClient::new(stand_in.clone()).group_chat("grp_launch").unwrap()), cx));
+    cx.run_until_parked();
+    assert_eq!(stand_in.seen_at("POST", "kuvo/groups/grp_launch/viewed").len(), 1, "not read while you're elsewhere");
+    // Back in Bots, it's read.
+    click(cx, "rail-bots");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/groups/grp_launch/viewed").len(), 2);
+}
+
+#[gpui::test]
+fn chats_that_cant_be_read_just_now_stay_as_they_were(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let chat = chat(&workspace, cx, "grp_launch");
+    stand_in.groups_readable(false);
+    click(cx, "rail-sessions");
+    click(cx, "rail-bots");
+    // The list as it was, and the chat's bots still its own (not "Left the chat").
+    assert!(shown(cx, "group-grp_launch") && !shown(cx, "groups-none"));
+    assert!(matches!(chat.read_with(cx, |chat, _| chat.author("bot_mira")), Author::Member { .. }));
+    assert!(shown(cx, "group-strip") && !shown(cx, "group-gone"));
+}
+
+#[gpui::test]
+fn a_part_waiting_on_a_stopped_conversation_resumes_it(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    chat(&workspace, cx, "grp_design");
+    click(cx, "resume-tk_2");
+    // The bot's own conversation, resumed where it lives; the part goes on.
+    assert_eq!(stand_in.seen_at("POST", "kuvo/sessions/ses_inbox/queue/resume").len(), 1);
+    assert!(!shown(cx, "resume-tk_2"));
+}
+
+#[gpui::test]
+fn a_chat_deleted_elsewhere_says_its_gone(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    chat(&workspace, cx, "grp_design");
+    // The phone deletes it; the list is read again.
+    BoxClient::new(stand_in.clone()).delete_group("grp_design").unwrap();
+    click(cx, "rail-sessions");
+    click(cx, "rail-bots");
+    assert!(shown(cx, "group-gone"));
+    assert!(!shown(cx, "group-grp_design"));
+}
+
+#[gpui::test]
+fn a_bot_taken_out_and_put_back_is_no_change(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    chat(&workspace, cx, "grp_launch");
+    click(cx, "group-edit");
+    click(cx, "pick-bot_mira");
+    click(cx, "pick-bot_mira");
+    click(cx, "group-save");
+    assert!(stand_in.seen_at("PATCH", "kuvo/groups/grp_launch").is_empty());
+    assert!(shown(cx, "group-chat"));
+}

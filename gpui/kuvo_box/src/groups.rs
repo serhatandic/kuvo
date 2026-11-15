@@ -13,7 +13,7 @@ use serde_json::{Map, Value, json};
 use crate::areas::Look;
 use crate::client::BoxClient;
 use crate::error::Result;
-use crate::follow::{Follow, Followed, Timing, follow_lines};
+use crate::follow::{Follow, Followed, Timing, follow_lines, follow_lines_filled};
 use crate::paths;
 use crate::transport::Request;
 
@@ -133,6 +133,13 @@ impl Group {
     }
 }
 
+/// The chats that live on a box, as `kuvo/groups` and its events list them.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+pub struct Groups {
+    #[serde(default, deserialize_with = "readable")]
+    pub groups: Vec<Group>,
+}
+
 /// What the bot talking is doing now: a tool it called (as a message's `steps` hold one, without
 /// its output), the line its thinking is on, or its reply being written.
 #[derive(Debug, Clone, PartialEq)]
@@ -174,6 +181,18 @@ pub struct Chat {
     pub activity: Vec<Activity>,
     #[serde(default)]
     pub stopped: Vec<String>,
+}
+
+impl Chat {
+    /// A line with its messages, as the latest that had them said (kept in `last`): a line whose
+    /// messages are as they were has them back, so none is lost when a line is passed over.
+    pub fn filled(mut self, last: &mut Option<Vec<GroupMessage>>) -> Chat {
+        match &self.messages {
+            Some(messages) => *last = Some(messages.clone()),
+            None => self.messages = last.clone(),
+        }
+        self
+    }
 }
 
 /// New Group, as it's sent: its name, its bots (by id, of those `kuvo/groups/joinable` names) and
@@ -232,12 +251,12 @@ fn route(group: &str, rest: &str) -> String {
 impl BoxClient {
     /// The group chats that live on this box.
     pub fn groups(&self) -> Result<Vec<Group>> {
-        #[derive(Deserialize)]
-        struct Answer {
-            #[serde(deserialize_with = "readable")]
-            groups: Vec<Group>,
-        }
-        Ok(self.get::<Answer>("kuvo/groups")?.groups)
+        Ok(self.get::<Groups>("kuvo/groups")?.groups)
+    }
+
+    /// Follows the chats that live on this box: the list now, and again as it changes.
+    pub fn follow_groups(&self, timing: Timing) -> Follow<Followed<Groups>> {
+        follow_lines(self, "kuvo-box groups", "kuvo/groups/events".into(), "kuvo/groups".into(), timing)
     }
 
     /// One chat as it is now.
@@ -248,7 +267,8 @@ impl BoxClient {
     /// Follows one chat: as it is now, then again as it changes (a line may leave its messages
     /// out: they're as they were).
     pub fn follow_group(&self, group: &str, timing: Timing) -> Follow<Followed<Chat>> {
-        follow_lines(self, "kuvo-box group", route(group, "/events"), route(group, ""), timing)
+        let mut last = None;
+        follow_lines_filled(self, "kuvo-box group", route(group, "/events"), route(group, ""), timing, move |chat: Chat| chat.filled(&mut last))
     }
 
     /// Who can be in a chat made on this box: its bots, the first made first, then those of your
@@ -285,6 +305,12 @@ impl BoxClient {
     /// Hands each proposed part of a wrap-up (`message`) to its bot.
     pub fn start_work(&self, group: &str, message: &str) -> Result<()> {
         self.done(&Request::post(route(group, "/start"), json!({ "message": message })))
+    }
+
+    /// Resumes a bot's own conversation, whose queue a stopped part waits on (`stopped`): the part
+    /// goes on. Asked of the box the bot lives on.
+    pub fn resume_queue(&self, session: &str) -> Result<()> {
+        self.done(&Request::post(format!("kuvo/sessions/{}/queue/resume", paths::segment(session)), json!({})))
     }
 
     /// Makes a group chat on this box: as the list has it now (none should it not list by then).
@@ -328,6 +354,19 @@ mod tests {
         assert_eq!(line.activity, vec![Activity::Thinking("Weighing it".into()), Activity::Other]);
         let full: Chat = serde_json::from_value(json!({ "messages": [], "discussing": false, "paused": false })).unwrap();
         assert_eq!(full.messages, Some(Vec::new()));
+    }
+
+    /// A bot's reply comes on a line with the messages, and who talks next on one without: should
+    /// the first be passed over for the second, the second carries them.
+    #[test]
+    fn a_line_without_messages_carries_the_last_ones_said() {
+        let mut last = None;
+        let reply: Chat = serde_json::from_value(json!({ "messages": [{ "id": "m1", "author": "bot_a", "text": "Done.", "time": 1.0, "kind": "message" }], "discussing": true, "paused": false })).unwrap();
+        let next: Chat = serde_json::from_value(json!({ "speaking": "bot_b", "discussing": true, "paused": false })).unwrap();
+        let _passed_over = reply.filled(&mut last);
+        let taken = next.filled(&mut last);
+        assert_eq!(taken.messages.map(|messages| messages.len()), Some(1));
+        assert_eq!(taken.speaking.as_deref(), Some("bot_b"));
     }
 
     /// Times are the box's seconds; a member of another computer isn't opened from here.

@@ -53,6 +53,8 @@ pub struct Bots {
     /// The box couldn't say what it holds just now: what it last said is kept.
     pub held_unsaid: bool,
     pub groups: Vec<Group>,
+    /// Why the group chats couldn't be read just now (those last read are kept meanwhile).
+    pub groups_failed: Option<String>,
 }
 
 impl Bots {
@@ -109,6 +111,8 @@ pub struct AreaView {
     /// The Work Queue's main view: the queue and an item's page.
     queue_page: Option<gpui::Entity<QueueView>>,
     _queue_page: Vec<gpui::Subscription>,
+    /// The group chats followed, in Bots (the app): the list as it changes.
+    _groups_follow: Option<(kuvo_box::Follow<kuvo_box::follow::Followed<kuvo_box::groups::Groups>>, Task<()>)>,
 }
 
 impl EventEmitter<Picked> for AreaView {}
@@ -210,7 +214,21 @@ impl AreaView {
                 })]
             })
             .unwrap_or_default();
-        AreaView { groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_changes: changes }
+        let groups_follow = (area == Area::Bots && live).then(|| {
+            let follow = client.follow_groups(kuvo_box::Timing::default());
+            let updates = follow.updates().clone();
+            let task = cx.spawn(async move |this, cx| {
+                while let Ok(update) = updates.recv().await {
+                    if let kuvo_box::follow::Followed::Now(list) = update
+                        && this.update(cx, |this, cx| this.take_groups(list.groups, cx)).is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+            (follow, task)
+        });
+        AreaView { _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
@@ -226,6 +244,30 @@ impl AreaView {
     /// The group chats' main view, in the Bots area.
     pub fn groups(&self) -> Option<&gpui::Entity<GroupsView>> {
         self.groups.as_ref()
+    }
+
+    /// The group chats as the box lists them now (followed): drawn in the sidebar and handed to
+    /// their view. Before the bots are read, they wait for the list's next read.
+    fn take_groups(&mut self, groups: Vec<Group>, cx: &mut Context<Self>) {
+        let Reading::Ready(bots) = &mut self.bots else { return };
+        if bots.groups == groups && bots.groups_failed.is_none() {
+            return;
+        }
+        bots.groups = groups.clone();
+        bots.groups_failed = None;
+        let all = bots.bots.clone();
+        if let Some(view) = &self.groups {
+            view.update(cx, |view, cx| view.set_listed(groups, all, cx));
+        }
+        cx.notify();
+    }
+
+    /// Whether Bots' main view is on screen (Bots shown, no bot's conversation over it): a group
+    /// chat is followed and marked read only then.
+    pub fn set_on_screen(&mut self, on: bool, cx: &mut Context<Self>) {
+        if let Some(groups) = &self.groups {
+            groups.update(cx, |groups, cx| groups.set_on_screen(on, cx));
+        }
     }
 
     /// The Work Queue's main view, in the Work Queue area.
@@ -349,6 +391,12 @@ impl AreaView {
             Read::Bots(bots) => {
                 // What the box couldn't say it holds just now stays as it last said it.
                 let bots = bots.map(|mut bots| {
+                    // Chats that couldn't be read just now stay as they were last read.
+                    if bots.groups_failed.is_some()
+                        && let Reading::Ready(before) = &self.bots
+                    {
+                        bots.groups = before.groups.clone();
+                    }
                     if bots.held_unsaid
                         && let Reading::Ready(before) = &self.bots
                     {
@@ -469,8 +517,11 @@ fn read(area: Area, client: &BoxClient) -> Read {
     match area {
         Area::Bots => Read::Bots(client.bots_said().map(|said| {
             // Group chats come from the same box; a box whose chats can't be read still lists its bots.
-            let groups = client.groups().unwrap_or_default();
-            Bots { bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups }
+            let (groups, groups_failed) = match client.groups() {
+                Ok(groups) => (groups, None),
+                Err(error) => (Vec::new(), Some(kuvo_box::accounts::said(&error))),
+            };
+            Bots { bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups, groups_failed }
         })),
         Area::Queue => Read::Queue(Box::new(client.work_queue_view())),
         _ => Read::Nothing,
@@ -488,7 +539,7 @@ pub fn reading<T: Clone + Default>(read: kuvo_box::Result<T>, before: &Reading<T
 }
 
 /// Whether a sidebar key picks one of the group chats' pages.
-fn is_group_key(key: &str) -> bool {
+pub fn is_group_key(key: &str) -> bool {
     key == "new-group" || key.starts_with("group:") || key.starts_with("edit-group:")
 }
 
@@ -658,7 +709,9 @@ impl AreaView {
         // Group chats: those that live on this box, and New Group beside their header.
         let new_group = Button::icon_only("new-group", kuvo_ui::IconName::Plus, "New Group").ghost().size(ButtonSize::Small).tooltip("New Group").selected(self.is_selected("new-group")).disabled(self.client.gate().is_held()).on_click(self.row_click("new-group".into(), cx));
         rows.push(SectionHeader::new("groups", "Group Chats").action(div().debug_selector(|| "new-group".into()).child(new_group)).into_any_element());
-        if bots.groups.is_empty() {
+        if let (true, Some(why)) = (bots.groups.is_empty(), &bots.groups_failed) {
+            rows.push(div().debug_selector(|| "groups-failed".into()).child(quiet(&format!("Group chats couldn’t be read: {why}"), false, cx)).into_any_element());
+        } else if bots.groups.is_empty() {
             rows.push(div().debug_selector(|| "groups-none".into()).child(quiet("No group chats yet. Make one with the + beside Group Chats, to bring a few bots together.", false, cx)).into_any_element());
         }
         let now = self.now();
